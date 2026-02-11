@@ -252,3 +252,31 @@ Optional:
 - `NEXT_PUBLIC_SERVER_HOST` - API base URL
 - `DEPLOYMENT_PK` - Gasless transaction keypair (base58)
 - `NEXT_PUBLIC_GAS_PUBLIC_KEY` - Gasless payer public key
+
+### Cloudflare R2/CDN (feature-specific)
+
+Core clients live in `/app/src/lib/core`:
+- `r2-upload.ts` (server-only): `getCloudflareR2UploadClientFromEnv()`
+- `cdn-url.ts`: `getCloudflareCdnUrlClientFromEnv()`
+
+Required for R2 upload:
+- `CLOUDFLARE_R2_ACCOUNT_ID`
+- `CLOUDFLARE_R2_ACCESS_KEY_ID`
+- `CLOUDFLARE_R2_SECRET_ACCESS_KEY`
+- `CLOUDFLARE_R2_BUCKET_NAME`
+
+Set at least one CDN base URL:
+- `CLOUDFLARE_CDN_BASE_URL` (preferred)
+- `NEXT_PUBLIC_CLOUDFLARE_CDN_BASE_URL`
+- `CLOUDFLARE_R2_PUBLIC_DEV_URL` (dev fallback)
+
+Optional:
+- `CLOUDFLARE_R2_S3_ENDPOINT`
+- `CLOUDFLARE_R2_UPLOAD_PREFIX`
+
+Run targeted tests:
+
+```bash
+cd app
+bun test src/lib/core/__tests__/object-path.test.ts src/lib/core/__tests__/cdn-url.test.ts src/lib/core/__tests__/r2-upload.test.ts
+```
