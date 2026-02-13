@@ -206,6 +206,116 @@ export type TelegramPrivateTransfer = {
       ]
     },
     {
+      "name": "claimUsernameDepositToDeposit",
+      "discriminator": [
+        147,
+        77,
+        235,
+        126,
+        72,
+        182,
+        30,
+        12
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "relations": [
+            "destinationDeposit"
+          ]
+        },
+        {
+          "name": "sourceUsernameDeposit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  110,
+                  97,
+                  109,
+                  101,
+                  95,
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "source_username_deposit.username",
+                "account": "usernameDeposit"
+              },
+              {
+                "kind": "account",
+                "path": "source_username_deposit.token_mint",
+                "account": "usernameDeposit"
+              }
+            ]
+          }
+        },
+        {
+          "name": "destinationDeposit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "destination_deposit.user",
+                "account": "deposit"
+              },
+              {
+                "kind": "account",
+                "path": "destination_deposit.token_mint",
+                "account": "deposit"
+              }
+            ]
+          }
+        },
+        {
+          "name": "tokenMint",
+          "relations": [
+            "sourceUsernameDeposit",
+            "destinationDeposit"
+          ]
+        },
+        {
+          "name": "session"
+        },
+        {
+          "name": "tokenProgram",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "createPermission",
       "docs": [
         "Creates a permission for a deposit account using the external permission program.",
@@ -588,9 +698,6 @@ export type TelegramPrivateTransfer = {
         {
           "name": "validator",
           "optional": true
-        },
-        {
-          "name": "session"
         },
         {
           "name": "bufferDeposit",
@@ -1060,6 +1167,80 @@ export type TelegramPrivateTransfer = {
         }
       ],
       "args": []
+    },
+    {
+      "name": "initializeUsernameDeposit",
+      "discriminator": [
+        125,
+        255,
+        77,
+        198,
+        75,
+        226,
+        85,
+        91
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "deposit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  110,
+                  97,
+                  109,
+                  101,
+                  95,
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "username"
+              },
+              {
+                "kind": "account",
+                "path": "tokenMint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "tokenMint"
+        },
+        {
+          "name": "tokenProgram",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "username",
+          "type": "string"
+        }
+      ]
     },
     {
       "name": "modifyBalance",

@@ -200,6 +200,116 @@
       ]
     },
     {
+      "name": "claim_username_deposit_to_deposit",
+      "discriminator": [
+        147,
+        77,
+        235,
+        126,
+        72,
+        182,
+        30,
+        12
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "relations": [
+            "destination_deposit"
+          ]
+        },
+        {
+          "name": "source_username_deposit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  110,
+                  97,
+                  109,
+                  101,
+                  95,
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "source_username_deposit.username",
+                "account": "UsernameDeposit"
+              },
+              {
+                "kind": "account",
+                "path": "source_username_deposit.token_mint",
+                "account": "UsernameDeposit"
+              }
+            ]
+          }
+        },
+        {
+          "name": "destination_deposit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "destination_deposit.user",
+                "account": "Deposit"
+              },
+              {
+                "kind": "account",
+                "path": "destination_deposit.token_mint",
+                "account": "Deposit"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_mint",
+          "relations": [
+            "source_username_deposit",
+            "destination_deposit"
+          ]
+        },
+        {
+          "name": "session"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "create_permission",
       "docs": [
         "Creates a permission for a deposit account using the external permission program.",
@@ -582,9 +692,6 @@
         {
           "name": "validator",
           "optional": true
-        },
-        {
-          "name": "session"
         },
         {
           "name": "buffer_deposit",
@@ -1054,6 +1161,80 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "initialize_username_deposit",
+      "discriminator": [
+        125,
+        255,
+        77,
+        198,
+        75,
+        226,
+        85,
+        91
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "deposit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  110,
+                  97,
+                  109,
+                  101,
+                  95,
+                  100,
+                  101,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "username"
+              },
+              {
+                "kind": "account",
+                "path": "token_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_mint"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "username",
+          "type": "string"
+        }
+      ]
     },
     {
       "name": "modify_balance",
