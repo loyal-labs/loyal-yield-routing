@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import { getCloudflareCdnBaseUrlFromEnv, getCloudflareCdnUrlClientFromEnv } from "@/lib/core/cdn-url";
 import {
   getCloudflareR2UploadClientFromEnv,
@@ -7,6 +5,9 @@ import {
 } from "@/lib/core/r2-upload";
 import { getBot } from "@/lib/telegram/bot-api/bot";
 import { downloadTelegramFile } from "@/lib/telegram/bot-api/get-file";
+import {
+  resolveUserAvatarObjectKey,
+} from "@/lib/telegram/photo-path";
 
 const PROFILE_CAPTURE_TIMEOUT_MS = 2500;
 
@@ -14,34 +15,12 @@ type CaptureProfilePhotoOptions = {
   timeoutMs?: number;
 };
 
-function hashTelegramId(telegramId: bigint): string {
-  return createHash("sha256").update(String(telegramId), "utf8").digest("hex");
-}
-
-function resolveExtensionFromContentType(contentType: string): string {
-  const normalized = contentType.split(";")[0]?.trim().toLowerCase();
-
-  switch (normalized) {
-    case "image/png":
-      return "png";
-    case "image/webp":
-      return "webp";
-    case "image/gif":
-      return "gif";
-    case "image/jpeg":
-    case "image/jpg":
-    default:
-      return "jpg";
-  }
-}
-
 export function resolveAvatarObjectKey(
   telegramId: bigint,
   contentType: string
 ): string {
-  const telegramIdHash = hashTelegramId(telegramId);
-  const extension = resolveExtensionFromContentType(contentType);
-  return `telegram/users/${telegramIdHash}/profile.${extension}`;
+  // Backward-compatible wrapper kept for existing tests/import sites.
+  return resolveUserAvatarObjectKey(telegramId, contentType);
 }
 
 async function withTimeout<T>(
