@@ -1,0 +1,11 @@
+[package]
+name = "squads-test-harness"
+version = "0.1.0"
+edition = "2021"
+description = "Lean LiteSVM helpers for testing Squads smart-account flows"
+
+[dependencies]
+borsh.workspace = true
+litesvm.workspace = true
+solana-sdk.workspace = true
+solana-system-interface.workspace = true
