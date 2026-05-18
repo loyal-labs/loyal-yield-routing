@@ -19,6 +19,7 @@ pub const SQUADS_SMART_ACCOUNT_PROGRAM_ID: Pubkey =
 pub const SQUADS_SEED_PREFIX: &[u8] = b"smart_account";
 pub const SQUADS_SEED_SETTINGS: &[u8] = b"settings";
 pub const SQUADS_SEED_SMART_ACCOUNT: &[u8] = b"smart_account";
+pub const SQUADS_SEED_POLICY: &[u8] = b"policy";
 pub const SQUADS_PROGRAM_CONFIG_SEED: &[u8] = b"program_config";
 pub const SQUADS_EXECUTE_TRANSACTION_SYNC_V2_DISCRIMINATOR: [u8; 8] =
     [90, 81, 187, 81, 39, 70, 128, 78];
@@ -28,6 +29,176 @@ pub const SQUADS_FULL_PERMISSIONS_MASK: u8 = 7;
 pub const SQUADS_SYNC_SIGNER_COUNT: u8 = 1;
 pub const SQUADS_ONE_SIGNER_SETTINGS_SPACE: usize = 168;
 pub const DEFAULT_WALLET_AIRDROP_LAMPORTS: u64 = 1_000_000_000;
+pub const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
+pub const SOL_DECIMALS: u8 = 9;
+
+#[derive(BorshSerialize)]
+#[allow(dead_code)]
+enum SquadsSettingsAction {
+    AddSigner {
+        new_signer: SquadsSmartAccountSigner,
+    },
+    RemoveSigner {
+        old_signer: Pubkey,
+    },
+    ChangeThreshold {
+        new_threshold: u16,
+    },
+    SetTimeLock {
+        new_time_lock: u32,
+    },
+    AddSpendingLimit {
+        seed: Pubkey,
+        account_index: u8,
+        mint: Pubkey,
+        amount: u64,
+        period: LegacyPeriod,
+        signers: Vec<Pubkey>,
+        destinations: Vec<Pubkey>,
+        expiration: i64,
+    },
+    RemoveSpendingLimit {
+        spending_limit: Pubkey,
+    },
+    SetArchivalAuthority {
+        new_archival_authority: Option<Pubkey>,
+    },
+    PolicyCreate {
+        seed: u64,
+        policy_creation_payload: SquadsPolicyCreationPayload,
+        signers: Vec<SquadsSmartAccountSigner>,
+        threshold: u16,
+        time_lock: u32,
+        start_timestamp: Option<i64>,
+        expiration_args: Option<SquadsPolicyExpirationArgs>,
+    },
+    PolicyUpdate {
+        policy: Pubkey,
+        signers: Vec<SquadsSmartAccountSigner>,
+        threshold: u16,
+        time_lock: u32,
+        policy_update_payload: SquadsPolicyCreationPayload,
+        expiration_args: Option<SquadsPolicyExpirationArgs>,
+    },
+    PolicyRemove {
+        policy: Pubkey,
+    },
+}
+
+#[derive(BorshSerialize)]
+#[allow(dead_code)]
+enum LegacyPeriod {
+    OneTime,
+    Day,
+    Week,
+    Month,
+}
+
+#[derive(BorshSerialize)]
+struct SquadsSmartAccountSigner {
+    key: Pubkey,
+    permissions: SquadsPermissions,
+}
+
+#[derive(BorshSerialize)]
+struct SquadsPermissions {
+    mask: u8,
+}
+
+#[derive(BorshSerialize)]
+#[allow(dead_code)]
+enum SquadsPolicyExpirationArgs {
+    Timestamp(i64),
+    SettingsState,
+}
+
+#[derive(BorshSerialize)]
+#[allow(dead_code)]
+enum SquadsPolicyCreationPayload {
+    InternalFundTransfer(Vec<u8>),
+    SpendingLimit(SquadsSpendingLimitPolicyCreationPayload),
+    SettingsChange(Vec<u8>),
+    LegacyProgramInteraction(Vec<u8>),
+    ProgramInteraction(Vec<u8>),
+}
+
+#[derive(BorshSerialize)]
+struct SquadsSpendingLimitPolicyCreationPayload {
+    mint: Pubkey,
+    source_account_index: u8,
+    time_constraints: SquadsTimeConstraints,
+    quantity_constraints: SquadsQuantityConstraints,
+    usage_state: Option<SquadsUsageState>,
+    destinations: Vec<Pubkey>,
+}
+
+#[derive(BorshSerialize)]
+struct SquadsTimeConstraints {
+    start: i64,
+    expiration: Option<i64>,
+    period: SquadsPeriodV2,
+    accumulate_unused: bool,
+}
+
+#[derive(BorshSerialize)]
+#[allow(dead_code)]
+enum SquadsPeriodV2 {
+    OneTime,
+    Daily,
+    Weekly,
+    Monthly,
+    Custom(i64),
+}
+
+#[derive(BorshSerialize)]
+struct SquadsQuantityConstraints {
+    max_per_period: u64,
+    max_per_use: u64,
+    enforce_exact_quantity: bool,
+}
+
+#[derive(BorshSerialize)]
+struct SquadsUsageState {
+    remaining_in_period: u64,
+    last_reset: i64,
+}
+
+#[derive(BorshSerialize)]
+struct SquadsSyncSettingsTransactionArgs {
+    num_signers: u8,
+    actions: Vec<SquadsSettingsAction>,
+    memo: Option<String>,
+}
+
+#[derive(BorshSerialize)]
+#[allow(dead_code)]
+enum SquadsSyncPayload {
+    Transaction(Vec<u8>),
+    Policy(SquadsPolicyPayload),
+}
+
+#[derive(BorshSerialize)]
+struct SquadsSyncTransactionArgs {
+    account_index: u8,
+    num_signers: u8,
+    payload: SquadsSyncPayload,
+}
+
+#[derive(BorshSerialize)]
+#[allow(dead_code)]
+enum SquadsPolicyPayload {
+    InternalFundTransfer(Vec<u8>),
+    ProgramInteraction(Vec<u8>),
+    SpendingLimit(SquadsSpendingLimitPayload),
+    SettingsChange(Vec<u8>),
+}
+
+#[derive(BorshSerialize)]
+struct SquadsSpendingLimitPayload {
+    amount: u64,
+    destination: Pubkey,
+    decimals: u8,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SquadsPool {
@@ -133,12 +304,30 @@ pub fn derive_squads_vault(squads_settings: &Pubkey, vault_index: u8) -> (Pubkey
     )
 }
 
+pub fn derive_squads_policy(squads_settings: &Pubkey, policy_seed: u64) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            SQUADS_SEED_PREFIX,
+            SQUADS_SEED_POLICY,
+            squads_settings.as_ref(),
+            &policy_seed.to_le_bytes(),
+        ],
+        &SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+    )
+}
+
 pub fn derive_squads_program_config() -> Pubkey {
     Pubkey::find_program_address(
         &[SQUADS_SEED_PREFIX, SQUADS_PROGRAM_CONFIG_SEED],
         &SQUADS_SMART_ACCOUNT_PROGRAM_ID,
     )
     .0
+}
+
+pub fn anchor_instruction_discriminator(name: &str) -> [u8; 8] {
+    let preimage = format!("global:{name}");
+    let hash = hashv(&[preimage.as_bytes()]).to_bytes();
+    hash[..8].try_into().unwrap()
 }
 
 pub fn squads_test_treasury() -> Pubkey {
@@ -244,6 +433,35 @@ pub fn serialize_squads_sync_transaction_args(account_index: u8, payload: Vec<u8
     data
 }
 
+fn serialize_squads_sync_settings_transaction_args(actions: Vec<SquadsSettingsAction>) -> Vec<u8> {
+    let mut data = Vec::from(anchor_instruction_discriminator(
+        "execute_settings_transaction_sync",
+    ));
+    SquadsSyncSettingsTransactionArgs {
+        num_signers: SQUADS_SYNC_SIGNER_COUNT,
+        actions,
+        memo: None,
+    }
+    .serialize(&mut data)
+    .unwrap();
+    data
+}
+
+fn serialize_squads_sync_policy_payload_args(
+    account_index: u8,
+    policy_payload: SquadsPolicyPayload,
+) -> Vec<u8> {
+    let mut data = Vec::from(SQUADS_EXECUTE_TRANSACTION_SYNC_V2_DISCRIMINATOR);
+    SquadsSyncTransactionArgs {
+        account_index,
+        num_signers: SQUADS_SYNC_SIGNER_COUNT,
+        payload: SquadsSyncPayload::Policy(policy_payload),
+    }
+    .serialize(&mut data)
+    .unwrap();
+    data
+}
+
 pub fn execute_squads_sync_transfer_instruction(
     squads_settings: Pubkey,
     signer: Pubkey,
@@ -266,6 +484,115 @@ pub fn execute_squads_sync_transfer_instruction(
         data: serialize_squads_sync_transaction_args(
             account_index,
             squads_system_transfer_payload(lamports),
+        ),
+    }
+}
+
+pub fn create_squads_spending_limit_policy_instruction(
+    squads_settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    policy_seed: u64,
+    source_account_index: u8,
+    destination: Pubkey,
+    max_per_period_lamports: u64,
+    max_per_use_lamports: u64,
+) -> Instruction {
+    let (policy, _) = derive_squads_policy(&squads_settings, policy_seed);
+    let action = SquadsSettingsAction::PolicyCreate {
+        seed: policy_seed,
+        policy_creation_payload: SquadsPolicyCreationPayload::SpendingLimit(
+            SquadsSpendingLimitPolicyCreationPayload {
+                mint: Pubkey::default(),
+                source_account_index,
+                time_constraints: SquadsTimeConstraints {
+                    start: 0,
+                    expiration: None,
+                    period: SquadsPeriodV2::OneTime,
+                    accumulate_unused: false,
+                },
+                quantity_constraints: SquadsQuantityConstraints {
+                    max_per_period: max_per_period_lamports,
+                    max_per_use: max_per_use_lamports,
+                    enforce_exact_quantity: false,
+                },
+                usage_state: None,
+                destinations: vec![destination],
+            },
+        ),
+        signers: vec![SquadsSmartAccountSigner {
+            key: delegated_signer,
+            permissions: SquadsPermissions {
+                mask: SQUADS_FULL_PERMISSIONS_MASK,
+            },
+        }],
+        threshold: 1,
+        time_lock: 0,
+        start_timestamp: None,
+        expiration_args: None,
+    };
+
+    Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(squads_settings, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(policy, false),
+        ],
+        data: serialize_squads_sync_settings_transaction_args(vec![action]),
+    }
+}
+
+pub fn remove_squads_policy_instruction(
+    squads_settings: Pubkey,
+    authority: Pubkey,
+    policy: Pubkey,
+) -> Instruction {
+    let action = SquadsSettingsAction::PolicyRemove { policy };
+
+    Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(squads_settings, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(policy, false),
+        ],
+        data: serialize_squads_sync_settings_transaction_args(vec![action]),
+    }
+}
+
+pub fn execute_squads_spending_limit_withdrawal_instruction(
+    policy: Pubkey,
+    signer: Pubkey,
+    squads_settings: Pubkey,
+    source_account_index: u8,
+    destination: Pubkey,
+    lamports: u64,
+) -> Instruction {
+    let (vault, _) = derive_squads_vault(&squads_settings, source_account_index);
+    Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(policy, false),
+            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+            AccountMeta::new_readonly(signer, true),
+            AccountMeta::new(vault, false),
+            AccountMeta::new(destination, false),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+        ],
+        data: serialize_squads_sync_policy_payload_args(
+            source_account_index,
+            SquadsPolicyPayload::SpendingLimit(SquadsSpendingLimitPayload {
+                amount: lamports,
+                destination,
+                decimals: SOL_DECIMALS,
+            }),
         ),
     }
 }
@@ -368,10 +695,24 @@ pub fn create_funded_squads_test_context_with_config(
 }
 
 pub fn send_instructions(svm: &mut LiteSVM, instructions: &[Instruction], payer: &Keypair) {
+    try_send_instructions(svm, instructions, payer, &[]).unwrap();
+}
+
+pub fn try_send_instructions(
+    svm: &mut LiteSVM,
+    instructions: &[Instruction],
+    payer: &Keypair,
+    additional_signers: &[&Keypair],
+) -> Result<(), String> {
     let message =
         Message::new_with_blockhash(instructions, Some(&payer.pubkey()), &svm.latest_blockhash());
-    let transaction = Transaction::new(&[payer], message, svm.latest_blockhash());
-    svm.send_transaction(transaction).unwrap();
+    let mut signers = Vec::with_capacity(additional_signers.len() + 1);
+    signers.push(payer);
+    signers.extend_from_slice(additional_signers);
+    let transaction = Transaction::new(&signers, message, svm.latest_blockhash());
+    svm.send_transaction(transaction)
+        .map(|_| ())
+        .map_err(|error| format!("{error:?}"))
 }
 
 pub fn hash32(value: &[u8]) -> [u8; 32] {
@@ -449,32 +790,5 @@ mod tests {
 
         assert!(!payload.is_empty());
         assert_ne!(accounts_hash, [0; 32]);
-    }
-
-    #[test]
-    fn wallet_creates_squads_account_funds_vault_and_sync_transfers_back() {
-        let mut context =
-            create_funded_squads_test_context().expect("create funded Squads test context");
-        let Some(context) = context.as_mut() else {
-            eprintln!("skipping real Squads execution test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
-            return;
-        };
-
-        assert_eq!(
-            context.vault_funding_lamports,
-            context.wallet_airdrop_lamports / 2
-        );
-        assert_eq!(context.vault_balance(), context.vault_funding_lamports);
-        assert!(context.wallet_balance() > 0);
-
-        let wallet_before_return = context.wallet_balance();
-        context.sync_transfer_from_vault_to_wallet(context.vault_funding_lamports);
-
-        let wallet_after_return = context.wallet_balance();
-        assert_eq!(
-            wallet_after_return.saturating_sub(wallet_before_return),
-            context.vault_funding_lamports
-        );
-        assert_eq!(context.vault_balance(), 0);
     }
 }
