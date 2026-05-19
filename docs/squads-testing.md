@@ -8,11 +8,28 @@ Run the current tests with:
 bun run test:squads
 ```
 
-The crate lives in `crates/squads-test-harness`. It provides LiteSVM setup; Squads PDA derivation for settings, vault namespaces, policy accounts, and program config; `create_squads_smart_account` instruction construction; spending-limit and ProgramInteraction policy builders; sync-transfer and sync-transaction helpers; real SPL Token mint/account seeding helpers; test-only Jupiter/Kamino SBF program loading; and account-meta hashing.
+The crate lives in `crates/squads-test-harness`. It provides LiteSVM setup; Squads PDA derivation for settings, vault namespaces, policy accounts, and program config; `create_squads_smart_account` instruction construction; spending-limit and ProgramInteraction policy builders; yield-route policy bundle helpers; sync-transfer and sync-transaction helpers; real SPL Token mint/account seeding helpers; test-only Jupiter/Kamino SBF program loading; and account-meta hashing.
 
 Use `create_funded_squads_test_context()` for tests that need the common funded starting point. The default context airdrops `1 SOL`, creates a Squads smart account with the wallet as signer, and sends `0.5 SOL` into vault index `0`, leaving both the wallet and vault funded for the scenario under test. Use `create_funded_squads_test_context_with_config()` when a test needs a different seed, vault index, or funding split.
 
-The current end-to-end paths live in `crates/squads-test-harness/tests/`. `spending_limits.rs` covers delegated SOL withdrawals, `swap_intents.rs` covers the SOL-to-USDC setup swap plus delegated Jupiter USDC-to-PYUSD ProgramInteraction path using SPL Token transfers, and `kamino_reserves.rs` covers delegated deposit/withdraw against Kamino Main Market's USDC reserve using SPL Token CPIs plus denial for the Prime/Figure USDC reserve and denial after policy removal.
+The current end-to-end paths live in `crates/squads-test-harness/tests/`. `spending_limits.rs` covers delegated SOL withdrawals, `swap_intents.rs` covers the SOL-to-USDC setup swap plus delegated USDC-to-PYUSD stable-swap ProgramInteraction path using SPL Token transfers, and `kamino_reserves.rs` covers delegated deposit/withdraw against a whitelisted Kamino Main Market USDC reserve using SPL Token CPIs plus denial for the Prime/Figure USDC reserve and denial after deposit-policy removal.
+
+For yield-routing tests, prefer the abstraction in the Rust test crate:
+
+```rust
+let route_policy_setup = create_squads_yield_route_policy_instructions(
+    context,
+    delegated_signer,
+    SquadsYieldRoutePolicyWhitelist {
+        stable_mints,
+        kamino_reserves,
+    },
+);
+```
+
+That call hides Squads settings, authority, vault index, default policy seeds, policy PDA derivation, compact ProgramInteraction payload construction, and the three-policy split. Test code should list the stable mints and Kamino reserve account structs needed by the optimized route, send `route_policy_setup.instructions`, then execute against `route_policy_setup.policies.withdraw`, `.swap`, and `.deposit`.
+
+Use `create_squads_yield_route_swap_policy_instruction()` for swap-only tests and `execute_squads_yield_route_stable_swap_instruction()` for the mock Jupiter stable exact-in path.
 
 The setup mirrors the lean parts of `passkey-work`: one static Squads settings account can own many deterministic vault namespaces, and tests should keep the Squads verifier or gateway signer explicit. Future yield-routing tests can build on these helpers instead of recreating PDA seeds and Borsh payload packing in every test.
 

@@ -1,17 +1,16 @@
 use solana_sdk::{signature::Keypair, signer::Signer};
 use squads_test_harness::{
     create_funded_squads_test_context_with_mock_programs,
-    create_squads_program_interaction_kamino_usdc_reserve_policy_instruction, derive_squads_policy,
+    create_squads_yield_route_policy_instructions,
     execute_mock_jupiter_sol_to_usdc_swap_instruction,
     execute_squads_program_interaction_instruction, get_spl_token_amount,
     mock_kamino_deposit_reserve_liquidity_data, mock_kamino_reserve_transaction,
     mock_kamino_withdraw_reserve_liquidity_data, remove_squads_policy_instruction,
     seed_mock_jupiter_spl_accounts, seed_mock_kamino_reserve_spl_accounts, try_send_instructions,
-    MockProgram, KAMINO_MAIN_MARKET, KAMINO_MAIN_USDC_RESERVE, KAMINO_PRIME_MARKET,
-    KAMINO_PRIME_USDC_RESERVE, LAMPORTS_PER_SOL,
+    MockProgram, SquadsYieldRoutePolicyWhitelist, KAMINO_MAIN_MARKET, KAMINO_MAIN_USDC_RESERVE,
+    KAMINO_PRIME_MARKET, KAMINO_PRIME_USDC_RESERVE, LAMPORTS_PER_SOL, USDC_MINT,
 };
 
-const POLICY_SEED: u64 = 1;
 const SOL_TO_USDC_AMOUNT: u64 = 1_000_000;
 const DEPOSIT_USDC_AMOUNT: u64 = 600_000;
 const WITHDRAW_USDC_AMOUNT: u64 = 200_000;
@@ -83,20 +82,24 @@ fn wallet_b_can_only_deposit_and_withdraw_main_market_usdc_reserve() {
         SOL_TO_USDC_AMOUNT
     );
 
-    let (policy, _) = derive_squads_policy(&context.pool.settings, POLICY_SEED);
-    let create_policy_ix = create_squads_program_interaction_kamino_usdc_reserve_policy_instruction(
-        context.pool.settings,
-        context.wallet_pubkey(),
+    let route_policy_setup = create_squads_yield_route_policy_instructions(
+        context,
         wallet_b.pubkey(),
-        POLICY_SEED,
-        context.vault_index,
-        context.vault,
-        vault_usdc,
-        vault_main_kamino_collateral,
-        main_reserve_liquidity_supply,
+        SquadsYieldRoutePolicyWhitelist {
+            stable_mints: vec![USDC_MINT],
+            kamino_reserves: vec![main_reserve_accounts],
+        },
     );
-    try_send_instructions(&mut context.svm, &[create_policy_ix], &context.wallet, &[])
-        .expect("wallet A creates Kamino Main Market USDC reserve policy for wallet B");
+    let route_policies = route_policy_setup.policies;
+    try_send_instructions(
+        &mut context.svm,
+        &route_policy_setup.instructions,
+        &context.wallet,
+        &[],
+    )
+    .expect(
+        "wallet A creates whitelisted Kamino deposit, swap, and withdraw policies for wallet B",
+    );
 
     let (deposit_instructions, deposit_accounts) = mock_kamino_reserve_transaction(
         context.vault,
@@ -104,7 +107,7 @@ fn wallet_b_can_only_deposit_and_withdraw_main_market_usdc_reserve() {
         mock_kamino_deposit_reserve_liquidity_data(DEPOSIT_USDC_AMOUNT),
     );
     let main_deposit_ix = execute_squads_program_interaction_instruction(
-        policy,
+        route_policies.deposit,
         wallet_b.pubkey(),
         context.vault_index,
         deposit_instructions,
@@ -132,11 +135,11 @@ fn wallet_b_can_only_deposit_and_withdraw_main_market_usdc_reserve() {
         mock_kamino_withdraw_reserve_liquidity_data(WITHDRAW_USDC_AMOUNT),
     );
     let main_withdraw_ix = execute_squads_program_interaction_instruction(
-        policy,
+        route_policies.withdraw,
         wallet_b.pubkey(),
         context.vault_index,
         withdraw_instructions,
-        vec![1],
+        vec![0],
         withdraw_accounts,
     );
     try_send_instructions(&mut context.svm, &[main_withdraw_ix], &wallet_b, &[])
@@ -160,7 +163,7 @@ fn wallet_b_can_only_deposit_and_withdraw_main_market_usdc_reserve() {
         mock_kamino_deposit_reserve_liquidity_data(DENIED_DEPOSIT_USDC_AMOUNT),
     );
     let prime_deposit_ix = execute_squads_program_interaction_instruction(
-        policy,
+        route_policies.deposit,
         wallet_b.pubkey(),
         context.vault_index,
         prime_deposit_instructions,
@@ -182,10 +185,13 @@ fn wallet_b_can_only_deposit_and_withdraw_main_market_usdc_reserve() {
         SOL_TO_USDC_AMOUNT - DEPOSIT_USDC_AMOUNT + WITHDRAW_USDC_AMOUNT
     );
 
-    let remove_policy_ix =
-        remove_squads_policy_instruction(context.pool.settings, context.wallet_pubkey(), policy);
+    let remove_policy_ix = remove_squads_policy_instruction(
+        context.pool.settings,
+        context.wallet_pubkey(),
+        route_policies.deposit,
+    );
     try_send_instructions(&mut context.svm, &[remove_policy_ix], &context.wallet, &[])
-        .expect("wallet A removes Kamino USDC reserve policy");
+        .expect("wallet A removes Kamino USDC deposit policy");
 
     let (post_removal_instructions, post_removal_accounts) = mock_kamino_reserve_transaction(
         context.vault,
@@ -193,7 +199,7 @@ fn wallet_b_can_only_deposit_and_withdraw_main_market_usdc_reserve() {
         mock_kamino_deposit_reserve_liquidity_data(DENIED_DEPOSIT_USDC_AMOUNT),
     );
     let post_removal_deposit_ix = execute_squads_program_interaction_instruction(
-        policy,
+        route_policies.deposit,
         wallet_b.pubkey(),
         context.vault_index,
         post_removal_instructions,

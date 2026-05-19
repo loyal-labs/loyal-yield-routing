@@ -1,28 +1,61 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Loyal Yield Routing
 
-## Getting Started
+This repo experiments with yield-routing automation for Squads smart accounts. The current implementation focuses on a lean policy shape for optimized Kamino reserve farming:
 
-First, run the development server:
+- one withdraw policy for whitelisted Kamino reserves
+- one swap policy for whitelisted route mints
+- one deposit policy for whitelisted Kamino reserves
+
+The Rust tests keep Squads authorization separate from protocol validation. Squads bounds the delegated signer to the vault, approved reserves, approved route mints, and instruction discriminators. Kamino and Jupiter are responsible for validating their own internal account relationships.
+
+## Development
+
+Install dependencies with Bun:
+
+```bash
+bun install
+```
+
+Run the Next.js app:
 
 ```bash
 bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Run the frontend build or lint checks:
 
-You can start editing the page by modifying `src/app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+bun run build
+bun run lint
+```
 
-## Learn More
+## Squads Tests
 
-To learn more about Next.js, take a look at the following resources:
+Run the lean Squads test suite:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+bun run test:squads
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Run the ignored historical Kamino replay:
 
-## Deploy on Vercel
+```bash
+bun run test:squads:e2e
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The Squads test crate lives in `crates/squads-test-harness`. New yield-routing tests should use `create_squads_yield_route_policy_instructions()` with a `SquadsYieldRoutePolicyWhitelist` instead of assembling ProgramInteraction policies by hand:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```rust
+let route_policy_setup = create_squads_yield_route_policy_instructions(
+    context,
+    wallet_b.pubkey(),
+    SquadsYieldRoutePolicyWhitelist {
+        stable_mints: vec![USDC_MINT, PYUSD_MINT],
+        kamino_reserves: vec![main_usdc, prime_usdc, main_pyusd],
+    },
+);
+```
+
+The helper returns the three route policy pubkeys plus the create-policy instructions. Swap-only tests can use `create_squads_yield_route_swap_policy_instruction()`.
+
+See `docs/squads-testing.md` and `docs/plans/squads-yield-routing-policy.md` for the policy model and test coverage.

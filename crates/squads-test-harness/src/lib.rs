@@ -67,6 +67,10 @@ pub const MOCK_YIELD_PROTOCOLS_PROGRAM_SO_ENV: &str = "MOCK_YIELD_PROTOCOLS_PROG
 pub const MOCK_YIELD_PROTOCOLS_PROGRAM_SO: &str = "mock_yield_protocols_program.so";
 pub const SQUADS_SMART_ACCOUNT_PROGRAM_SO_FIXTURE: &str =
     "crates/squads-test-harness/fixtures/squads/squads_smart_account_program.so";
+pub const YIELD_ROUTE_WITHDRAW_POLICY_SEED: u64 = 1;
+pub const YIELD_ROUTE_SWAP_POLICY_SEED: u64 = 2;
+pub const YIELD_ROUTE_DEPOSIT_POLICY_SEED: u64 = 3;
+pub const YIELD_ROUTE_STANDALONE_POLICY_SEED: u64 = 1;
 
 #[derive(BorshSerialize)]
 #[allow(dead_code)]
@@ -427,6 +431,48 @@ pub struct MockJupiterStableReserveTokenAccount {
     pub reserve: Pubkey,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SquadsYieldRoutePolicyWhitelist {
+    pub stable_mints: Vec<Pubkey>,
+    pub kamino_reserves: Vec<MockKaminoReserveTokenAccounts>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SquadsYieldRoutePolicySeeds {
+    pub withdraw: u64,
+    pub swap: u64,
+    pub deposit: u64,
+}
+
+impl Default for SquadsYieldRoutePolicySeeds {
+    fn default() -> Self {
+        Self {
+            withdraw: YIELD_ROUTE_WITHDRAW_POLICY_SEED,
+            swap: YIELD_ROUTE_SWAP_POLICY_SEED,
+            deposit: YIELD_ROUTE_DEPOSIT_POLICY_SEED,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SquadsYieldRoutePolicies {
+    pub withdraw: Pubkey,
+    pub swap: Pubkey,
+    pub deposit: Pubkey,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SquadsYieldRoutePolicyInstructions {
+    pub policies: SquadsYieldRoutePolicies,
+    pub instructions: Vec<Instruction>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SquadsYieldRoutePolicyInstruction {
+    pub policy: Pubkey,
+    pub instruction: Instruction,
+}
+
 #[derive(BorshSerialize)]
 struct SquadsSpendingLimitPayload {
     amount: u64,
@@ -506,6 +552,136 @@ impl FundedSquadsTestContext {
         );
         send_instructions(&mut self.svm, &[instruction], &self.wallet);
     }
+}
+
+pub fn create_squads_yield_route_policy_instructions(
+    context: &FundedSquadsTestContext,
+    delegated_signer: Pubkey,
+    whitelist: SquadsYieldRoutePolicyWhitelist,
+) -> SquadsYieldRoutePolicyInstructions {
+    create_squads_yield_route_policy_instructions_with_seeds(
+        context,
+        delegated_signer,
+        whitelist,
+        SquadsYieldRoutePolicySeeds::default(),
+    )
+}
+
+pub fn create_squads_yield_route_policy_instructions_with_seeds(
+    context: &FundedSquadsTestContext,
+    delegated_signer: Pubkey,
+    whitelist: SquadsYieldRoutePolicyWhitelist,
+    seeds: SquadsYieldRoutePolicySeeds,
+) -> SquadsYieldRoutePolicyInstructions {
+    let settings = context.pool.settings;
+    let authority = context.wallet_pubkey();
+    let account_index = context.vault_index;
+    let vault = context.vault;
+    let stable_mints = unique_pubkeys(whitelist.stable_mints);
+    let kamino_reserves = unique_kamino_reserves(whitelist.kamino_reserves);
+    let (withdraw, _) = derive_squads_policy(&settings, seeds.withdraw);
+    let (swap, _) = derive_squads_policy(&settings, seeds.swap);
+    let (deposit, _) = derive_squads_policy(&settings, seeds.deposit);
+
+    SquadsYieldRoutePolicyInstructions {
+        policies: SquadsYieldRoutePolicies {
+            withdraw,
+            swap,
+            deposit,
+        },
+        instructions: vec![
+            create_squads_program_interaction_route_kamino_withdraw_policy_instruction(
+                settings,
+                authority,
+                delegated_signer,
+                seeds.withdraw,
+                account_index,
+                vault,
+                kamino_reserves.clone(),
+            ),
+            create_squads_program_interaction_route_jupiter_stable_swap_policy_instruction(
+                settings,
+                authority,
+                delegated_signer,
+                seeds.swap,
+                account_index,
+                vault,
+                stable_mints,
+            ),
+            create_squads_program_interaction_route_kamino_deposit_policy_instruction(
+                settings,
+                authority,
+                delegated_signer,
+                seeds.deposit,
+                account_index,
+                vault,
+                kamino_reserves,
+            ),
+        ],
+    }
+}
+
+pub fn create_squads_yield_route_swap_policy_instruction(
+    context: &FundedSquadsTestContext,
+    delegated_signer: Pubkey,
+    stable_mints: Vec<Pubkey>,
+) -> SquadsYieldRoutePolicyInstruction {
+    create_squads_yield_route_swap_policy_instruction_with_seed(
+        context,
+        delegated_signer,
+        stable_mints,
+        YIELD_ROUTE_STANDALONE_POLICY_SEED,
+    )
+}
+
+pub fn create_squads_yield_route_swap_policy_instruction_with_seed(
+    context: &FundedSquadsTestContext,
+    delegated_signer: Pubkey,
+    stable_mints: Vec<Pubkey>,
+    policy_seed: u64,
+) -> SquadsYieldRoutePolicyInstruction {
+    let settings = context.pool.settings;
+    let (policy, _) = derive_squads_policy(&settings, policy_seed);
+
+    SquadsYieldRoutePolicyInstruction {
+        policy,
+        instruction: create_squads_program_interaction_route_jupiter_stable_swap_policy_instruction(
+            settings,
+            context.wallet_pubkey(),
+            delegated_signer,
+            policy_seed,
+            context.vault_index,
+            context.vault,
+            unique_pubkeys(stable_mints),
+        ),
+    }
+}
+
+fn unique_pubkeys(pubkeys: Vec<Pubkey>) -> Vec<Pubkey> {
+    let mut unique = Vec::new();
+    for pubkey in pubkeys {
+        if !unique.contains(&pubkey) {
+            unique.push(pubkey);
+        }
+    }
+    unique
+}
+
+fn unique_kamino_reserves(
+    reserves: Vec<MockKaminoReserveTokenAccounts>,
+) -> Vec<MockKaminoReserveTokenAccounts> {
+    let mut unique = Vec::new();
+    for reserve in reserves {
+        if !unique
+            .iter()
+            .any(|existing: &MockKaminoReserveTokenAccounts| {
+                existing.reserve == reserve.reserve && existing.market == reserve.market
+            })
+        {
+            unique.push(reserve);
+        }
+    }
+    unique
 }
 
 pub fn new_litesvm() -> LiteSVM {
@@ -1264,6 +1440,51 @@ pub fn execute_mock_jupiter_sol_to_usdc_swap_instruction(
             AccountMeta::new(jupiter_accounts.usdc_reserve, false),
             AccountMeta::new_readonly(jupiter_accounts.authority, false),
             AccountMeta::new_readonly(spl_token::id(), false),
+        ],
+    )
+}
+
+pub fn execute_squads_yield_route_stable_swap_instruction(
+    swap_policy: Pubkey,
+    signer: Pubkey,
+    account_index: u8,
+    vault: Pubkey,
+    vault_input: Pubkey,
+    vault_output: Pubkey,
+    input_mint: Pubkey,
+    output_mint: Pubkey,
+    in_amount: u64,
+    out_amount: u64,
+) -> Instruction {
+    execute_squads_program_interaction_instruction(
+        swap_policy,
+        signer,
+        account_index,
+        vec![SquadsCompiledInstruction {
+            program_id_index: 9,
+            accounts: vec![0, 1, 2, 3, 4, 5, 6, 7, 8],
+            data: mock_jupiter_stable_exact_in_swap_data(
+                in_amount,
+                out_amount,
+                input_mint,
+                output_mint,
+            ),
+        }],
+        vec![0],
+        vec![
+            AccountMeta::new(vault, false),
+            AccountMeta::new(vault_input, false),
+            AccountMeta::new(vault_output, false),
+            AccountMeta::new_readonly(input_mint, false),
+            AccountMeta::new_readonly(output_mint, false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+            AccountMeta::new(mock_jupiter_stable_reserve_token_account(input_mint), false),
+            AccountMeta::new(
+                mock_jupiter_stable_reserve_token_account(output_mint),
+                false,
+            ),
+            AccountMeta::new_readonly(derive_mock_jupiter_swap_authority(), false),
+            AccountMeta::new_readonly(JUPITER_V6_PROGRAM_ID, false),
         ],
     )
 }

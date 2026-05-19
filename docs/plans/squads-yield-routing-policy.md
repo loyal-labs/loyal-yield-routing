@@ -50,8 +50,8 @@ For each allowed Kamino reserve action, keep the Squads boundary reserve-bounded
 ```text
 program_id = Kamino Lend
 account[0] = vault 0 PDA
-account[1] = one of the optimized-route reserve pubkeys
-account[2] = one of the optimized-route market pubkeys
+account[1] = approved optimized-route reserve pubkey
+account[2] = approved optimized-route market pubkey
 account[10] = SPL Token
 data discriminator = deposit or withdraw
 ```
@@ -65,8 +65,8 @@ program_id = Jupiter v6
 account[0] = vault 0 PDA
 account[1] = source vault token account
 account[2] = destination vault token account
-account[3] = one of the optimized-route source mints
-account[4] = one of the optimized-route destination mints
+account[3] = approved optimized-route source mint
+account[4] = approved optimized-route destination mint
 account[5] = SPL Token
 account[6] = token account owned by SPL Token
 account[7] = token account owned by SPL Token
@@ -75,6 +75,25 @@ data discriminator = stable exact-in
 ```
 
 This keeps the delegated surface lean: every policy execution must still match an allowed constraint, use the vault-owned token accounts, and sign through the selected Squads vault.
+
+## Harness Abstraction
+
+Tests should not assemble the three route policies directly. Use the route policy bundle helper from `crates/squads-test-harness`:
+
+```rust
+let route_policy_setup = create_squads_yield_route_policy_instructions(
+    context,
+    wallet_b.pubkey(),
+    SquadsYieldRoutePolicyWhitelist {
+        stable_mints: vec![USDC_MINT, PYUSD_MINT],
+        kamino_reserves: vec![main_usdc, prime_usdc, main_pyusd],
+    },
+);
+```
+
+The helper derives the default three route policy accounts, binds them to the funded Squads context's settings/vault, deduplicates the whitelist, and returns both the policy pubkeys and the create-policy instructions. Tests only choose the delegated signer and the accounts that belong in the optimized route universe.
+
+For swap-only tests, use `create_squads_yield_route_swap_policy_instruction(context, signer, stable_mints)`. For mock stable exact-in execution, use `execute_squads_yield_route_stable_swap_instruction(...)` so tests do not duplicate Jupiter account ordering.
 
 ## Practical Recommendation
 
@@ -93,16 +112,16 @@ Later, if policy churn becomes too heavy, move to a helper-first design: one imm
 
 - Wallet A creates the smart account and funds vault `0`.
 - Wallet A performs the initial SOL-to-USDC setup swap.
-- Wallet A creates route policies for the delegated Wallet B.
+- Wallet A creates withdraw, route-mint swap, and deposit policies for the delegated Wallet B through `create_squads_yield_route_policy_instructions`.
 - Wallet B switches Main USDC to Prime USDC by packing reserve-withdraw and reserve-deposit policy executions into one transaction.
-- Wallet B switches Prime USDC to Main PYUSD by packing reserve-withdraw, Jupiter-swap, and reserve-deposit policy executions into one transaction.
+- Wallet B switches Prime USDC to Main PYUSD by packing reserve-withdraw, route-mint stable-swap, and reserve-deposit policy executions into one transaction.
 
-The test uses LiteSVM, the real Squads SBF, SPL Token state transitions, mocked Kamino/Jupiter programs only for external protocol logic, and a real Jupiter build fixture for the USDC-to-PYUSD instruction shape.
+The test uses LiteSVM, the real Squads SBF, SPL Token state transitions, mocked Kamino/Jupiter programs only for external protocol logic, and the route-mint stable-swap helper for the USDC-to-PYUSD leg. `swap_intents.rs` keeps the live Jupiter fixture contract check separate from route policy creation.
 
 `crates/squads-test-harness/tests/kamino_hindsight_e2e.rs` is ignored by default and covers the heavy historical route:
 
 - Loads the hourly Kamino APY cache for the March 1 to May 18 window.
 - Recomputes the fixed-start hindsight route beginning from USDC Prime.
-- Creates exactly three delegated policies: withdraw, route-mint swap, and deposit.
-- Uses unique reserves and mints from the optimized route universe, not every stable reserve.
+- Creates exactly three delegated policies through the route policy bundle helper: withdraw, route-mint swap, and deposit.
+- Uses unique reserves and mints from the optimized route universe. The whitelist excludes stable reserves that the route never touches.
 - Replays same-mint and cross-mint route changes, checks account state after every move, accounts for route signature fees, and verifies the final withdrawal value against the fixed-start hindsight result.

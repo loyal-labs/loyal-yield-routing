@@ -1,21 +1,18 @@
-use solana_sdk::{instruction::AccountMeta, pubkey::Pubkey, signature::Keypair, signer::Signer};
+use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
 use squads_test_harness::{
     create_funded_squads_test_context_with_config_and_mock_programs,
-    create_squads_program_interaction_route_jupiter_stable_swap_policy_instruction,
-    create_squads_program_interaction_route_kamino_deposit_policy_instruction,
-    create_squads_program_interaction_route_kamino_withdraw_policy_instruction,
-    derive_mock_jupiter_swap_authority, derive_squads_policy,
+    create_squads_yield_route_policy_instructions,
     execute_mock_jupiter_sol_to_usdc_swap_instruction,
     execute_squads_program_interaction_instruction, execute_squads_sync_transaction_instruction,
-    get_spl_token_amount, mock_jupiter_stable_exact_in_swap_data,
+    execute_squads_yield_route_stable_swap_instruction, get_spl_token_amount,
     mock_jupiter_stable_reserve_token_account, mock_kamino_deposit_reserve_liquidity_data,
     mock_kamino_reserve_transaction, mock_kamino_withdraw_reserve_liquidity_data,
     seed_mock_jupiter_spl_accounts, seed_mock_jupiter_stable_reserve_spl_accounts,
     seed_mock_kamino_reserve_spl_accounts_with_mint, seed_spl_mint_if_missing, set_spl_mint_supply,
     set_spl_token_amount, try_send_instructions, FundedSquadsTestConfig,
     MockJupiterStableReserveTokenAccount, MockKaminoReserveTokenAccounts, MockProgram,
-    SquadsCompiledInstruction, KAMINO_PRIME_MARKET, KAMINO_PRIME_USDC_RESERVE, LAMPORTS_PER_SOL,
-    USDC_DECIMALS, USDC_MINT,
+    SquadsYieldRoutePolicyWhitelist, KAMINO_PRIME_MARKET, KAMINO_PRIME_USDC_RESERVE,
+    LAMPORTS_PER_SOL, USDC_DECIMALS, USDC_MINT,
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -33,9 +30,6 @@ const POOL_CHANGE_LAMPORTS: u64 = 5_000;
 const SOL_PRICE_USD: f64 = 84.82;
 const POOL_CHANGE_USD: f64 =
     (POOL_CHANGE_LAMPORTS as f64 / LAMPORTS_PER_SOL as f64) * SOL_PRICE_USD;
-const WITHDRAW_POLICY_SEED: u64 = 1;
-const SWAP_POLICY_SEED: u64 = 2;
-const DEPOSIT_POLICY_SEED: u64 = 3;
 const JUPITER_RESERVE_RAW_AMOUNT: u64 = 1_000_000_000_000_000_000;
 
 #[test]
@@ -149,67 +143,23 @@ fn wallet_b_replays_fixed_start_kamino_hindsight_route() {
         reserve_accounts.insert(reserve_index, accounts);
     }
 
-    let (withdraw_policy, _) = derive_squads_policy(&context.pool.settings, WITHDRAW_POLICY_SEED);
-    let (swap_policy, _) = derive_squads_policy(&context.pool.settings, SWAP_POLICY_SEED);
-    let (deposit_policy, _) = derive_squads_policy(&context.pool.settings, DEPOSIT_POLICY_SEED);
-    let wallet_a = context.wallet_pubkey();
-    let settings = context.pool.settings;
-    let vault_index = context.vault_index;
-    let vault = context.vault;
     let route_reserve_accounts = reserve_accounts.values().copied().collect::<Vec<_>>();
-    let create_withdraw_policy_ix =
-        create_squads_program_interaction_route_kamino_withdraw_policy_instruction(
-            settings,
-            wallet_a,
-            wallet_b.pubkey(),
-            WITHDRAW_POLICY_SEED,
-            vault_index,
-            vault,
-            route_reserve_accounts.clone(),
-        );
+    let route_policy_setup = create_squads_yield_route_policy_instructions(
+        context,
+        wallet_b.pubkey(),
+        SquadsYieldRoutePolicyWhitelist {
+            stable_mints: route_mints,
+            kamino_reserves: route_reserve_accounts,
+        },
+    );
+    let route_policies = route_policy_setup.policies;
     try_send_instructions(
         &mut context.svm,
-        &[create_withdraw_policy_ix],
+        &route_policy_setup.instructions,
         &context.wallet,
         &[],
     )
-    .expect("wallet A creates the optimized-reserve withdraw policy");
-
-    let create_swap_policy_ix =
-        create_squads_program_interaction_route_jupiter_stable_swap_policy_instruction(
-            settings,
-            wallet_a,
-            wallet_b.pubkey(),
-            SWAP_POLICY_SEED,
-            vault_index,
-            vault,
-            route_mints,
-        );
-    try_send_instructions(
-        &mut context.svm,
-        &[create_swap_policy_ix],
-        &context.wallet,
-        &[],
-    )
-    .expect("wallet A creates the optimized route-mint stable-swap policy");
-
-    let create_deposit_policy_ix =
-        create_squads_program_interaction_route_kamino_deposit_policy_instruction(
-            settings,
-            wallet_a,
-            wallet_b.pubkey(),
-            DEPOSIT_POLICY_SEED,
-            vault_index,
-            vault,
-            route_reserve_accounts,
-        );
-    try_send_instructions(
-        &mut context.svm,
-        &[create_deposit_policy_ix],
-        &context.wallet,
-        &[],
-    )
-    .expect("wallet A creates the optimized-reserve deposit policy");
+    .expect("wallet A creates optimized-reserve withdraw, route-mint swap, and deposit policies");
 
     let first = &route.path[0].point;
     let mut current = first.clone();
@@ -276,9 +226,9 @@ fn wallet_b_replays_fixed_start_kamino_hindsight_route() {
             .unwrap_or(&current);
         let (transaction_instructions, next_amount_raw) = build_rebalance_transaction(
             context.vault,
-            withdraw_policy,
-            swap_policy,
-            deposit_policy,
+            route_policies.withdraw,
+            route_policies.swap,
+            route_policies.deposit,
             wallet_b.pubkey(),
             context.vault_index,
             &vault_token_accounts,
@@ -422,7 +372,7 @@ fn build_rebalance_transaction(
     );
     let out_value_usd = usd_value(in_amount_raw, from) * (1.0 - cost.loss_fraction.unwrap_or(0.0));
     let out_amount_raw = raw_from_usd(out_value_usd, to);
-    let swap_ix = stable_swap_policy_instruction(
+    let swap_ix = execute_squads_yield_route_stable_swap_instruction(
         swap_policy,
         signer,
         vault_index,
@@ -449,51 +399,6 @@ fn build_rebalance_transaction(
     );
 
     (vec![withdraw_ix, swap_ix, deposit_ix], out_amount_raw)
-}
-
-fn stable_swap_policy_instruction(
-    swap_policy: Pubkey,
-    signer: Pubkey,
-    vault_index: u8,
-    vault: Pubkey,
-    vault_input: Pubkey,
-    vault_output: Pubkey,
-    input_mint: Pubkey,
-    output_mint: Pubkey,
-    in_amount: u64,
-    out_amount: u64,
-) -> solana_sdk::instruction::Instruction {
-    execute_squads_program_interaction_instruction(
-        swap_policy,
-        signer,
-        vault_index,
-        vec![SquadsCompiledInstruction {
-            program_id_index: 9,
-            accounts: vec![0, 1, 2, 3, 4, 5, 6, 7, 8],
-            data: mock_jupiter_stable_exact_in_swap_data(
-                in_amount,
-                out_amount,
-                input_mint,
-                output_mint,
-            ),
-        }],
-        vec![0],
-        vec![
-            AccountMeta::new(vault, false),
-            AccountMeta::new(vault_input, false),
-            AccountMeta::new(vault_output, false),
-            AccountMeta::new_readonly(input_mint, false),
-            AccountMeta::new_readonly(output_mint, false),
-            AccountMeta::new_readonly(spl_token::id(), false),
-            AccountMeta::new(mock_jupiter_stable_reserve_token_account(input_mint), false),
-            AccountMeta::new(
-                mock_jupiter_stable_reserve_token_account(output_mint),
-                false,
-            ),
-            AccountMeta::new_readonly(derive_mock_jupiter_swap_authority(), false),
-            AccountMeta::new_readonly(squads_test_harness::JUPITER_V6_PROGRAM_ID, false),
-        ],
-    )
 }
 
 fn apply_mock_kamino_accrual(
