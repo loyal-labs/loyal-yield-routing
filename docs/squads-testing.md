@@ -22,7 +22,7 @@ For tests that need to execute the real Squads program, provide a compiled SBF b
 SQUADS_SMART_ACCOUNT_PROGRAM_SO=/path/to/squads_smart_account_program.so bun run test:squads
 ```
 
-When the environment variable is omitted, the test loader also checks the sibling `../passkey-work/target/deploy/squads_smart_account_program.so` path used during development. Do not commit generated SBF binaries. Keep them in `target/deploy` or point the environment variable at a local checkout.
+When the environment variable is omitted, the test loader uses the committed Squads fixture at `crates/squads-test-harness/fixtures/squads/squads_smart_account_program.so`, then falls back to the sibling `../passkey-work/target/deploy/squads_smart_account_program.so` path used during development.
 
 `bun run test:squads` builds the local test-only protocol mock first:
 

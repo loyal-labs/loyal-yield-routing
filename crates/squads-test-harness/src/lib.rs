@@ -63,6 +63,8 @@ pub const KAMINO_RESERVE_LIQUIDITY_AUTHORITY_SEED: &[u8] = b"kamino-reserve-liqu
 pub const KAMINO_COLLATERAL_MINT_AUTHORITY_SEED: &[u8] = b"kamino-collateral-mint-authority";
 pub const MOCK_YIELD_PROTOCOLS_PROGRAM_SO_ENV: &str = "MOCK_YIELD_PROTOCOLS_PROGRAM_SO";
 pub const MOCK_YIELD_PROTOCOLS_PROGRAM_SO: &str = "mock_yield_protocols_program.so";
+pub const SQUADS_SMART_ACCOUNT_PROGRAM_SO_FIXTURE: &str =
+    "crates/squads-test-harness/fixtures/squads/squads_smart_account_program.so";
 
 #[derive(BorshSerialize)]
 #[allow(dead_code)]
@@ -1897,6 +1899,18 @@ pub fn add_squads_program_from_env_or_sibling_checkout(
 ) -> std::io::Result<Option<PathBuf>> {
     if let Some(path) = add_squads_program_from_env(svm)? {
         return Ok(Some(path));
+    }
+
+    let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(SQUADS_SMART_ACCOUNT_PROGRAM_SO_FIXTURE);
+    if fixture_path.exists() {
+        let program = fs::read(&fixture_path)?;
+        svm.add_program(SQUADS_SMART_ACCOUNT_PROGRAM_ID, &program)
+            .map_err(|error| {
+                std::io::Error::other(format!("add Squads program failed: {error}"))
+            })?;
+        return Ok(Some(fixture_path));
     }
 
     let sibling_path =
