@@ -9,7 +9,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:squads": "cargo build-sbf -- -p mock-yield-protocols-program && cargo test -p squads-test-harness"
+    "test:squads": "cargo build-sbf -- -p mock-yield-protocols-program && cargo test -p squads-test-harness",
+    "test:squads:e2e": "cargo build-sbf -- -p mock-yield-protocols-program && cargo test -p squads-test-harness --test kamino_hindsight_e2e -- --ignored --nocapture"
   },
   "dependencies": {
     "next": "16.2.6",

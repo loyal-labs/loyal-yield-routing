@@ -9,6 +9,7 @@ use solana_program::{
     pubkey,
     pubkey::Pubkey,
 };
+use spl_token::solana_program::program_pack::Pack;
 
 pub const JUPITER_V6_PROGRAM_ID: Pubkey = pubkey!("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4");
 pub const USDC_MINT: Pubkey = pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
@@ -25,6 +26,7 @@ pub const KAMINO_PRIME_USDC_RESERVE: Pubkey =
     pubkey!("9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu");
 pub const MOCK_JUPITER_SOL_TO_USDC: u8 = 1;
 pub const MOCK_JUPITER_USDC_TO_PYUSD: u8 = 2;
+pub const MOCK_JUPITER_STABLE_EXACT_IN: u8 = 3;
 pub const USDC_DECIMALS: u8 = 6;
 pub const PYUSD_DECIMALS: u8 = 6;
 pub const KAMINO_COLLATERAL_DECIMALS: u8 = 6;
@@ -34,14 +36,25 @@ pub const KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR: [u8; 8] =
 pub const KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR: [u8; 8] =
     [235, 52, 119, 152, 149, 197, 20, 7];
 pub const JUPITER_SWAP_AUTHORITY_SEED: &[u8] = b"jupiter-swap-authority";
-pub const KAMINO_RESERVE_LIQUIDITY_AUTHORITY_SEED: &[u8] = b"kamino-reserve-liquidity-authority";
+pub const KAMINO_RESERVE_LIQUIDITY_AUTHORITY_SEED: &[u8] = b"kamino-reserve-liq-authority";
 pub const KAMINO_COLLATERAL_MINT_AUTHORITY_SEED: &[u8] = b"kamino-collateral-mint-authority";
 
 entrypoint!(process_instruction);
 
 enum JupiterInstruction {
-    SolToUsdc { amount: u64 },
-    UsdcToPyusd { in_amount: u64, out_amount: u64 },
+    SolToUsdc {
+        amount: u64,
+    },
+    UsdcToPyusd {
+        in_amount: u64,
+        out_amount: u64,
+    },
+    StableExactIn {
+        in_amount: u64,
+        out_amount: u64,
+        input_mint: Pubkey,
+        output_mint: Pubkey,
+    },
 }
 
 enum KaminoInstruction {
@@ -74,10 +87,32 @@ fn process_jupiter(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -
             in_amount,
             out_amount,
         } => process_jupiter_usdc_to_pyusd(program_id, accounts, in_amount, out_amount),
+        JupiterInstruction::StableExactIn {
+            in_amount,
+            out_amount,
+            input_mint,
+            output_mint,
+        } => process_jupiter_stable_exact_in(
+            program_id,
+            accounts,
+            in_amount,
+            out_amount,
+            input_mint,
+            output_mint,
+        ),
     }
 }
 
 fn parse_jupiter_instruction(data: &[u8]) -> Result<JupiterInstruction, ProgramError> {
+    if data.len() == 81 && data[0] == MOCK_JUPITER_STABLE_EXACT_IN {
+        return Ok(JupiterInstruction::StableExactIn {
+            in_amount: read_u64(&data[1..9])?,
+            out_amount: read_u64(&data[9..17])?,
+            input_mint: Pubkey::new_from_array(read_pubkey(&data[17..49])?),
+            output_mint: Pubkey::new_from_array(read_pubkey(&data[49..81])?),
+        });
+    }
+
     if data.len() == 73 {
         let amount = read_u64(&data[1..9])?;
         let input_mint = Pubkey::new_from_array(read_pubkey(&data[9..41])?);
@@ -181,6 +216,57 @@ fn process_jupiter_usdc_to_pyusd(
         token_program,
         out_amount,
         PYUSD_DECIMALS,
+        &[JUPITER_SWAP_AUTHORITY_SEED],
+    )
+}
+
+fn process_jupiter_stable_exact_in(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    in_amount: u64,
+    out_amount: u64,
+    input_mint: Pubkey,
+    output_mint: Pubkey,
+) -> ProgramResult {
+    let account_info_iter = &mut accounts.iter();
+    let vault = next_account_info(account_info_iter)?;
+    let vault_input = next_account_info(account_info_iter)?;
+    let vault_output = next_account_info(account_info_iter)?;
+    let input_mint_account = next_account_info(account_info_iter)?;
+    let output_mint_account = next_account_info(account_info_iter)?;
+    let token_program = next_account_info(account_info_iter)?;
+    let jupiter_input_reserve = next_account_info(account_info_iter)?;
+    let jupiter_output_reserve = next_account_info(account_info_iter)?;
+    let jupiter_authority = next_account_info(account_info_iter)?;
+
+    require_signer(vault)?;
+    require_key(input_mint_account, &input_mint)?;
+    require_key(output_mint_account, &output_mint)?;
+    require_key(token_program, &spl_token::id())?;
+
+    let input_decimals =
+        spl_token::state::Mint::unpack(&input_mint_account.data.borrow())?.decimals;
+    let output_decimals =
+        spl_token::state::Mint::unpack(&output_mint_account.data.borrow())?.decimals;
+
+    transfer_checked(
+        vault_input,
+        input_mint_account,
+        jupiter_input_reserve,
+        vault,
+        token_program,
+        in_amount,
+        input_decimals,
+    )?;
+    transfer_checked_signed(
+        program_id,
+        jupiter_output_reserve,
+        output_mint_account,
+        vault_output,
+        jupiter_authority,
+        token_program,
+        out_amount,
+        output_decimals,
         &[JUPITER_SWAP_AUTHORITY_SEED],
     )
 }
@@ -313,7 +399,7 @@ fn parse_kamino_accounts<'a, 'info>(
     kamino.liquidity_decimals = kamino_reserve_liquidity_decimals(
         kamino.market.key,
         kamino.reserve.key,
-        kamino.liquidity_mint.key,
+        kamino.liquidity_mint,
     )?;
     if kamino.liquidity_decimals == 0 {
         return Err(ProgramError::InvalidArgument);
@@ -344,32 +430,11 @@ fn parse_kamino_accounts<'a, 'info>(
 }
 
 fn kamino_reserve_liquidity_decimals(
-    market: &Pubkey,
-    reserve: &Pubkey,
-    liquidity_mint: &Pubkey,
+    _market: &Pubkey,
+    _reserve: &Pubkey,
+    liquidity_mint: &AccountInfo,
 ) -> Result<u8, ProgramError> {
-    if market == &KAMINO_MAIN_MARKET
-        && reserve == &KAMINO_MAIN_USDC_RESERVE
-        && liquidity_mint == &USDC_MINT
-    {
-        return Ok(USDC_DECIMALS);
-    }
-
-    if market == &KAMINO_PRIME_MARKET
-        && reserve == &KAMINO_PRIME_USDC_RESERVE
-        && liquidity_mint == &USDC_MINT
-    {
-        return Ok(USDC_DECIMALS);
-    }
-
-    if market == &KAMINO_MAIN_MARKET
-        && reserve == &KAMINO_MAIN_PYUSD_RESERVE
-        && liquidity_mint == &PYUSD_MINT
-    {
-        return Ok(PYUSD_DECIMALS);
-    }
-
-    Err(ProgramError::InvalidArgument)
+    Ok(spl_token::state::Mint::unpack(&liquidity_mint.data.borrow())?.decimals)
 }
 
 fn transfer_checked<'info>(
