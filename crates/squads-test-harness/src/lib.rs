@@ -41,12 +41,21 @@ pub const PYUSD_DECIMALS: u8 = 6;
 pub const MOCK_JUPITER_SOL_TO_USDC: u8 = 1;
 pub const MOCK_JUPITER_USDC_TO_PYUSD: u8 = 2;
 pub const MOCK_JUPITER_STABLE_EXACT_IN: u8 = 3;
+pub const LOYAL_HUB_SWAP_PROGRAM_ID: Pubkey = Pubkey::new_from_array([42; 32]);
+pub const LOYAL_HUB_INITIALIZE_CONFIG: u8 = 0;
+pub const LOYAL_HUB_SWAP_EXACT_IN: u8 = 1;
+pub const LOYAL_HUB_WITHDRAW_INVENTORY: u8 = 2;
+pub const LOYAL_HUB_SET_PAUSED: u8 = 3;
+pub const LOYAL_HUB_SET_CONFIG: u8 = 4;
+pub const LOYAL_HUB_CONFIG_SEED: &[u8] = b"config";
+pub const LOYAL_HUB_AUTHORITY_SEED: &[u8] = b"hub-authority";
 pub const JUPITER_SWAP_AUTHORITY_SEED: &[u8] = b"jupiter-swap-authority";
 pub const MOCK_JUPITER_USDC_RESERVE_TOKEN_ACCOUNT_SEED: &[u8] =
     b"mock-jupiter-usdc-reserve-token-account";
 pub const MOCK_JUPITER_PYUSD_RESERVE_TOKEN_ACCOUNT_SEED: &[u8] =
     b"mock-jupiter-pyusd-reserve-token-account";
 pub const MOCK_JUPITER_STABLE_RESERVE_TOKEN_ACCOUNT_SEED: &[u8] = b"mock-jupiter-stable-reserve";
+pub const LOYAL_HUB_TOKEN_ACCOUNT_SEED: &[u8] = b"loyal-hub-token-account";
 pub const KAMINO_LEND_PROGRAM_ID: Pubkey = pubkey!("KvauGMspG5k6rtzrqqn7WNn3oZdyKqLKwK2XWQ8FLjd");
 pub const KAMINO_MAIN_MARKET: Pubkey = pubkey!("7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF");
 pub const KAMINO_MAIN_USDC_RESERVE: Pubkey =
@@ -65,6 +74,8 @@ pub const KAMINO_RESERVE_LIQUIDITY_AUTHORITY_SEED: &[u8] = b"kamino-reserve-liq-
 pub const KAMINO_COLLATERAL_MINT_AUTHORITY_SEED: &[u8] = b"kamino-collateral-mint-authority";
 pub const MOCK_YIELD_PROTOCOLS_PROGRAM_SO_ENV: &str = "MOCK_YIELD_PROTOCOLS_PROGRAM_SO";
 pub const MOCK_YIELD_PROTOCOLS_PROGRAM_SO: &str = "mock_yield_protocols_program.so";
+pub const LOYAL_HUB_SWAP_PROGRAM_SO_ENV: &str = "LOYAL_HUB_SWAP_PROGRAM_SO";
+pub const LOYAL_HUB_SWAP_PROGRAM_SO: &str = "loyal_hub_swap_program.so";
 pub const SQUADS_SMART_ACCOUNT_PROGRAM_SO_FIXTURE: &str =
     "crates/squads-test-harness/fixtures/squads/squads_smart_account_program.so";
 pub const YIELD_ROUTE_WITHDRAW_POLICY_SEED: u64 = 1;
@@ -438,6 +449,15 @@ pub struct SquadsYieldRoutePolicyWhitelist {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwapLane {
+    Jupiter,
+    LoyalHub {
+        hub_authorizer: Pubkey,
+        max_fee_bps: u16,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SquadsYieldRoutePolicySeeds {
     pub withdraw: u64,
     pub swap: u64,
@@ -521,6 +541,7 @@ pub struct FundedSquadsTestContext {
 pub enum MockProgram {
     Jupiter,
     KaminoLend,
+    LoyalHubSwap,
 }
 
 impl FundedSquadsTestContext {
@@ -559,10 +580,25 @@ pub fn create_squads_yield_route_policy_instructions(
     delegated_signer: Pubkey,
     whitelist: SquadsYieldRoutePolicyWhitelist,
 ) -> SquadsYieldRoutePolicyInstructions {
+    create_squads_yield_route_policy_instructions_with_swap_lanes(
+        context,
+        delegated_signer,
+        whitelist,
+        vec![SwapLane::Jupiter],
+    )
+}
+
+pub fn create_squads_yield_route_policy_instructions_with_swap_lanes(
+    context: &FundedSquadsTestContext,
+    delegated_signer: Pubkey,
+    whitelist: SquadsYieldRoutePolicyWhitelist,
+    swap_lanes: Vec<SwapLane>,
+) -> SquadsYieldRoutePolicyInstructions {
     create_squads_yield_route_policy_instructions_with_seeds(
         context,
         delegated_signer,
         whitelist,
+        swap_lanes,
         SquadsYieldRoutePolicySeeds::default(),
     )
 }
@@ -571,6 +607,7 @@ pub fn create_squads_yield_route_policy_instructions_with_seeds(
     context: &FundedSquadsTestContext,
     delegated_signer: Pubkey,
     whitelist: SquadsYieldRoutePolicyWhitelist,
+    swap_lanes: Vec<SwapLane>,
     seeds: SquadsYieldRoutePolicySeeds,
 ) -> SquadsYieldRoutePolicyInstructions {
     let settings = context.pool.settings;
@@ -599,7 +636,7 @@ pub fn create_squads_yield_route_policy_instructions_with_seeds(
                 vault,
                 kamino_reserves.clone(),
             ),
-            create_squads_program_interaction_route_jupiter_stable_swap_policy_instruction(
+            create_squads_program_interaction_route_stable_swap_policy_instruction(
                 settings,
                 authority,
                 delegated_signer,
@@ -607,6 +644,7 @@ pub fn create_squads_yield_route_policy_instructions_with_seeds(
                 account_index,
                 vault,
                 stable_mints,
+                swap_lanes,
             ),
             create_squads_program_interaction_route_kamino_deposit_policy_instruction(
                 settings,
@@ -626,10 +664,25 @@ pub fn create_squads_yield_route_swap_policy_instruction(
     delegated_signer: Pubkey,
     stable_mints: Vec<Pubkey>,
 ) -> SquadsYieldRoutePolicyInstruction {
+    create_squads_yield_route_swap_policy_instruction_with_swap_lanes(
+        context,
+        delegated_signer,
+        stable_mints,
+        vec![SwapLane::Jupiter],
+    )
+}
+
+pub fn create_squads_yield_route_swap_policy_instruction_with_swap_lanes(
+    context: &FundedSquadsTestContext,
+    delegated_signer: Pubkey,
+    stable_mints: Vec<Pubkey>,
+    swap_lanes: Vec<SwapLane>,
+) -> SquadsYieldRoutePolicyInstruction {
     create_squads_yield_route_swap_policy_instruction_with_seed(
         context,
         delegated_signer,
         stable_mints,
+        swap_lanes,
         YIELD_ROUTE_STANDALONE_POLICY_SEED,
     )
 }
@@ -638,6 +691,7 @@ pub fn create_squads_yield_route_swap_policy_instruction_with_seed(
     context: &FundedSquadsTestContext,
     delegated_signer: Pubkey,
     stable_mints: Vec<Pubkey>,
+    swap_lanes: Vec<SwapLane>,
     policy_seed: u64,
 ) -> SquadsYieldRoutePolicyInstruction {
     let settings = context.pool.settings;
@@ -645,7 +699,7 @@ pub fn create_squads_yield_route_swap_policy_instruction_with_seed(
 
     SquadsYieldRoutePolicyInstruction {
         policy,
-        instruction: create_squads_program_interaction_route_jupiter_stable_swap_policy_instruction(
+        instruction: create_squads_program_interaction_route_stable_swap_policy_instruction(
             settings,
             context.wallet_pubkey(),
             delegated_signer,
@@ -653,6 +707,7 @@ pub fn create_squads_yield_route_swap_policy_instruction_with_seed(
             context.vault_index,
             context.vault,
             unique_pubkeys(stable_mints),
+            swap_lanes,
         ),
     }
 }
@@ -916,6 +971,96 @@ pub fn mock_jupiter_stable_exact_in_swap_data(
     data
 }
 
+pub fn loyal_hub_config_data(
+    admin: Pubkey,
+    hub_authorizer: Pubkey,
+    max_fee_bps: u16,
+    paused: bool,
+    allowed_mints: &[Pubkey],
+) -> Vec<u8> {
+    assert!(
+        !allowed_mints.is_empty() && allowed_mints.len() <= 8,
+        "Loyal Hub supports 1..=8 allowed mints"
+    );
+    let mut data = Vec::with_capacity(68 + (allowed_mints.len() * 32));
+    data.extend_from_slice(admin.as_ref());
+    data.extend_from_slice(hub_authorizer.as_ref());
+    data.extend_from_slice(&max_fee_bps.to_le_bytes());
+    data.push(u8::from(paused));
+    data.push(
+        allowed_mints
+            .len()
+            .try_into()
+            .expect("allowed mint count fits in u8"),
+    );
+    for mint in allowed_mints {
+        data.extend_from_slice(mint.as_ref());
+    }
+    data
+}
+
+pub fn loyal_hub_initialize_config_data(
+    admin: Pubkey,
+    hub_authorizer: Pubkey,
+    max_fee_bps: u16,
+    paused: bool,
+    allowed_mints: &[Pubkey],
+) -> Vec<u8> {
+    let mut data = vec![LOYAL_HUB_INITIALIZE_CONFIG];
+    data.extend_from_slice(&loyal_hub_config_data(
+        admin,
+        hub_authorizer,
+        max_fee_bps,
+        paused,
+        allowed_mints,
+    ));
+    data
+}
+
+pub fn loyal_hub_set_config_data(
+    admin: Pubkey,
+    hub_authorizer: Pubkey,
+    max_fee_bps: u16,
+    paused: bool,
+    allowed_mints: &[Pubkey],
+) -> Vec<u8> {
+    let mut data = vec![LOYAL_HUB_SET_CONFIG];
+    data.extend_from_slice(&loyal_hub_config_data(
+        admin,
+        hub_authorizer,
+        max_fee_bps,
+        paused,
+        allowed_mints,
+    ));
+    data
+}
+
+pub fn loyal_hub_swap_exact_in_data(
+    amount_in: u64,
+    amount_out: u64,
+    min_out: u64,
+    max_fee_bps: u16,
+) -> Vec<u8> {
+    let mut data = Vec::with_capacity(27);
+    data.push(LOYAL_HUB_SWAP_EXACT_IN);
+    data.extend_from_slice(&amount_in.to_le_bytes());
+    data.extend_from_slice(&amount_out.to_le_bytes());
+    data.extend_from_slice(&min_out.to_le_bytes());
+    data.extend_from_slice(&max_fee_bps.to_le_bytes());
+    data
+}
+
+pub fn loyal_hub_set_paused_data(paused: bool) -> Vec<u8> {
+    vec![LOYAL_HUB_SET_PAUSED, u8::from(paused)]
+}
+
+pub fn loyal_hub_withdraw_inventory_data(amount: u64) -> Vec<u8> {
+    let mut data = Vec::with_capacity(9);
+    data.push(LOYAL_HUB_WITHDRAW_INVENTORY);
+    data.extend_from_slice(&amount.to_le_bytes());
+    data
+}
+
 pub fn mock_kamino_deposit_reserve_liquidity_data(amount: u64) -> Vec<u8> {
     mock_kamino_reserve_liquidity_data(KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR, amount)
 }
@@ -963,6 +1108,18 @@ pub fn mock_kamino_reserve_transaction(
 
 pub fn derive_mock_jupiter_swap_authority() -> Pubkey {
     Pubkey::find_program_address(&[JUPITER_SWAP_AUTHORITY_SEED], &JUPITER_V6_PROGRAM_ID).0
+}
+
+pub fn derive_loyal_hub_config() -> Pubkey {
+    Pubkey::find_program_address(&[LOYAL_HUB_CONFIG_SEED], &LOYAL_HUB_SWAP_PROGRAM_ID).0
+}
+
+pub fn derive_loyal_hub_authority() -> Pubkey {
+    Pubkey::find_program_address(&[LOYAL_HUB_AUTHORITY_SEED], &LOYAL_HUB_SWAP_PROGRAM_ID).0
+}
+
+pub fn loyal_hub_token_account(mint: Pubkey) -> Pubkey {
+    Pubkey::new_from_array(hashv(&[LOYAL_HUB_TOKEN_ACCOUNT_SEED, mint.as_ref()]).to_bytes())
 }
 
 pub fn mock_jupiter_usdc_reserve_token_account() -> Pubkey {
@@ -1190,6 +1347,23 @@ pub fn seed_mock_jupiter_stable_reserve_spl_accounts(
     }
 }
 
+pub fn seed_loyal_hub_inventory_spl_accounts(
+    svm: &mut LiteSVM,
+    stable_mints: &[Pubkey],
+    reserve_amount: u64,
+) -> Vec<Pubkey> {
+    let authority = derive_loyal_hub_authority();
+    seed_empty_system_account_if_missing(svm, authority);
+    stable_mints
+        .iter()
+        .map(|mint| {
+            let token_account = loyal_hub_token_account(*mint);
+            seed_spl_token_account(svm, token_account, *mint, authority, reserve_amount);
+            token_account
+        })
+        .collect()
+}
+
 pub fn seed_mock_kamino_reserve_spl_accounts(
     svm: &mut LiteSVM,
     reserve: Pubkey,
@@ -1270,6 +1444,23 @@ pub fn add_mock_kamino_lend_program(svm: &mut LiteSVM) -> std::io::Result<PathBu
     add_mock_yield_protocols_program(svm, KAMINO_LEND_PROGRAM_ID)
 }
 
+pub fn add_loyal_hub_swap_program(svm: &mut LiteSVM) -> std::io::Result<PathBuf> {
+    let path = loyal_hub_swap_program_so_path().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "Loyal Hub swap SBF program not found; run `cargo build-sbf -- -p loyal-hub-swap-program` or set {LOYAL_HUB_SWAP_PROGRAM_SO_ENV}"
+            ),
+        )
+    })?;
+    let program = fs::read(&path)?;
+    svm.add_program(LOYAL_HUB_SWAP_PROGRAM_ID, &program)
+        .map_err(|error| {
+            std::io::Error::other(format!("add Loyal Hub swap program failed: {error}"))
+        })?;
+    Ok(path)
+}
+
 pub fn add_mock_yield_protocols_program(
     svm: &mut LiteSVM,
     program_id: Pubkey,
@@ -1302,6 +1493,28 @@ pub fn mock_yield_protocols_program_so_path() -> Option<PathBuf> {
             .join("../../target/deploy")
             .join(MOCK_YIELD_PROTOCOLS_PROGRAM_SO),
         PathBuf::from("target/deploy").join(MOCK_YIELD_PROTOCOLS_PROGRAM_SO),
+    ] {
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+pub fn loyal_hub_swap_program_so_path() -> Option<PathBuf> {
+    if let Some(path) = env::var_os(LOYAL_HUB_SWAP_PROGRAM_SO_ENV).map(PathBuf::from) {
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for path in [
+        manifest_dir
+            .join("../../target/deploy")
+            .join(LOYAL_HUB_SWAP_PROGRAM_SO),
+        PathBuf::from("target/deploy").join(LOYAL_HUB_SWAP_PROGRAM_SO),
     ] {
         if path.exists() {
             return Some(path);
@@ -1485,6 +1698,168 @@ pub fn execute_squads_yield_route_stable_swap_instruction(
             ),
             AccountMeta::new_readonly(derive_mock_jupiter_swap_authority(), false),
             AccountMeta::new_readonly(JUPITER_V6_PROGRAM_ID, false),
+        ],
+    )
+}
+
+pub fn initialize_loyal_hub_config_instruction(
+    payer: Pubkey,
+    admin: Pubkey,
+    hub_authorizer: Pubkey,
+    max_fee_bps: u16,
+    paused: bool,
+    allowed_mints: &[Pubkey],
+) -> Instruction {
+    assert_eq!(
+        payer, admin,
+        "test helper initializes config with the admin as payer"
+    );
+    Instruction {
+        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(payer, true),
+            AccountMeta::new(derive_loyal_hub_config(), false),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+        ],
+        data: loyal_hub_initialize_config_data(
+            admin,
+            hub_authorizer,
+            max_fee_bps,
+            paused,
+            allowed_mints,
+        ),
+    }
+}
+
+pub fn set_loyal_hub_paused_instruction(admin: Pubkey, paused: bool) -> Instruction {
+    Instruction {
+        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(derive_loyal_hub_config(), false),
+            AccountMeta::new_readonly(admin, true),
+        ],
+        data: loyal_hub_set_paused_data(paused),
+    }
+}
+
+pub fn set_loyal_hub_config_instruction(
+    admin_signer: Pubkey,
+    new_admin: Pubkey,
+    hub_authorizer: Pubkey,
+    max_fee_bps: u16,
+    paused: bool,
+    allowed_mints: &[Pubkey],
+) -> Instruction {
+    Instruction {
+        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(derive_loyal_hub_config(), false),
+            AccountMeta::new_readonly(admin_signer, true),
+        ],
+        data: loyal_hub_set_config_data(
+            new_admin,
+            hub_authorizer,
+            max_fee_bps,
+            paused,
+            allowed_mints,
+        ),
+    }
+}
+
+pub fn withdraw_loyal_hub_inventory_instruction(
+    admin: Pubkey,
+    hub_source: Pubkey,
+    destination: Pubkey,
+    mint: Pubkey,
+    amount: u64,
+) -> Instruction {
+    Instruction {
+        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(derive_loyal_hub_config(), false),
+            AccountMeta::new_readonly(admin, true),
+            AccountMeta::new(hub_source, false),
+            AccountMeta::new(destination, false),
+            AccountMeta::new_readonly(mint, false),
+            AccountMeta::new_readonly(derive_loyal_hub_authority(), false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+        ],
+        data: loyal_hub_withdraw_inventory_data(amount),
+    }
+}
+
+pub fn execute_squads_yield_route_loyal_hub_swap_instruction(
+    swap_policy: Pubkey,
+    signer: Pubkey,
+    account_index: u8,
+    vault: Pubkey,
+    vault_input: Pubkey,
+    vault_output: Pubkey,
+    input_mint: Pubkey,
+    output_mint: Pubkey,
+    hub_authorizer: Pubkey,
+    amount_in: u64,
+    amount_out: u64,
+    min_out: u64,
+    max_fee_bps: u16,
+) -> Instruction {
+    execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
+        swap_policy,
+        signer,
+        account_index,
+        vault,
+        vault_input,
+        vault_output,
+        input_mint,
+        output_mint,
+        hub_authorizer,
+        amount_in,
+        amount_out,
+        min_out,
+        max_fee_bps,
+        0,
+    )
+}
+
+pub fn execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
+    swap_policy: Pubkey,
+    signer: Pubkey,
+    account_index: u8,
+    vault: Pubkey,
+    vault_input: Pubkey,
+    vault_output: Pubkey,
+    input_mint: Pubkey,
+    output_mint: Pubkey,
+    hub_authorizer: Pubkey,
+    amount_in: u64,
+    amount_out: u64,
+    min_out: u64,
+    max_fee_bps: u16,
+    instruction_constraint_index: u8,
+) -> Instruction {
+    execute_squads_program_interaction_instruction(
+        swap_policy,
+        signer,
+        account_index,
+        vec![SquadsCompiledInstruction {
+            program_id_index: 11,
+            accounts: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            data: loyal_hub_swap_exact_in_data(amount_in, amount_out, min_out, max_fee_bps),
+        }],
+        vec![instruction_constraint_index],
+        vec![
+            AccountMeta::new_readonly(derive_loyal_hub_config(), false),
+            AccountMeta::new(vault, false),
+            AccountMeta::new(vault_input, false),
+            AccountMeta::new(vault_output, false),
+            AccountMeta::new(loyal_hub_token_account(input_mint), false),
+            AccountMeta::new(loyal_hub_token_account(output_mint), false),
+            AccountMeta::new_readonly(input_mint, false),
+            AccountMeta::new_readonly(output_mint, false),
+            AccountMeta::new_readonly(derive_loyal_hub_authority(), false),
+            AccountMeta::new_readonly(hub_authorizer, true),
+            AccountMeta::new_readonly(spl_token::id(), false),
+            AccountMeta::new_readonly(LOYAL_HUB_SWAP_PROGRAM_ID, false),
         ],
     )
 }
@@ -1821,6 +2196,48 @@ pub fn create_squads_program_interaction_route_jupiter_stable_swap_policy_instru
     )
 }
 
+pub fn create_squads_program_interaction_route_stable_swap_policy_instruction(
+    squads_settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    policy_seed: u64,
+    account_index: u8,
+    vault: Pubkey,
+    allowed_mints: Vec<Pubkey>,
+    swap_lanes: Vec<SwapLane>,
+) -> Instruction {
+    assert!(
+        !swap_lanes.is_empty(),
+        "yield route swap policy needs at least one swap lane"
+    );
+    let mut constraints = Vec::with_capacity(swap_lanes.len());
+    for lane in swap_lanes {
+        match lane {
+            SwapLane::Jupiter => constraints.push(
+                jupiter_route_stable_swap_instruction_constraint(vault, allowed_mints.clone()),
+            ),
+            SwapLane::LoyalHub {
+                hub_authorizer,
+                max_fee_bps,
+            } => constraints.push(loyal_hub_route_stable_swap_instruction_constraint(
+                vault,
+                allowed_mints.clone(),
+                hub_authorizer,
+                max_fee_bps,
+            )),
+        }
+    }
+
+    create_squads_compact_program_interaction_policy_instruction(
+        squads_settings,
+        authority,
+        delegated_signer,
+        policy_seed,
+        account_index,
+        constraints,
+    )
+}
+
 pub fn create_squads_program_interaction_mock_jupiter_stable_swap_policy_instruction(
     squads_settings: Pubkey,
     authority: Pubkey,
@@ -1955,6 +2372,90 @@ fn jupiter_route_stable_swap_instruction_constraint(
             data_value: SquadsDataValue::U8(MOCK_JUPITER_STABLE_EXACT_IN),
             operator: SquadsDataOperator::Equals,
         }],
+    }
+}
+
+fn loyal_hub_route_stable_swap_instruction_constraint(
+    vault: Pubkey,
+    allowed_mints: Vec<Pubkey>,
+    hub_authorizer: Pubkey,
+    max_fee_bps: u16,
+) -> SquadsInstructionConstraint {
+    SquadsInstructionConstraint {
+        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        account_constraints: vec![
+            SquadsAccountConstraint {
+                account_index: 0,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![
+                    derive_loyal_hub_config(),
+                ]),
+                owner: Some(LOYAL_HUB_SWAP_PROGRAM_ID),
+            },
+            SquadsAccountConstraint {
+                account_index: 1,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![vault]),
+                owner: None,
+            },
+            SquadsAccountConstraint {
+                account_index: 2,
+                account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: 3,
+                account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: 4,
+                account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: 5,
+                account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: 6,
+                account_constraint: SquadsAccountConstraintType::Pubkey(allowed_mints.clone()),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: 7,
+                account_constraint: SquadsAccountConstraintType::Pubkey(allowed_mints),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: 8,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![
+                    derive_loyal_hub_authority(),
+                ]),
+                owner: None,
+            },
+            SquadsAccountConstraint {
+                account_index: 9,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![hub_authorizer]),
+                owner: None,
+            },
+            SquadsAccountConstraint {
+                account_index: 10,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![spl_token::id()]),
+                owner: None,
+            },
+        ],
+        data_constraints: vec![
+            SquadsDataConstraint {
+                data_offset: 0,
+                data_value: SquadsDataValue::U8(LOYAL_HUB_SWAP_EXACT_IN),
+                operator: SquadsDataOperator::Equals,
+            },
+            SquadsDataConstraint {
+                data_offset: 25,
+                data_value: SquadsDataValue::U16Le(max_fee_bps),
+                operator: SquadsDataOperator::LessThanOrEqualTo,
+            },
+        ],
     }
 }
 
@@ -2968,6 +3469,9 @@ pub fn create_funded_squads_test_context_with_config_and_mock_programs(
             }
             MockProgram::KaminoLend => {
                 add_mock_kamino_lend_program(&mut svm)?;
+            }
+            MockProgram::LoyalHubSwap => {
+                add_loyal_hub_swap_program(&mut svm)?;
             }
         }
     }
