@@ -49,6 +49,8 @@ pub const KAMINO_LEND_PROGRAM_ID: Pubkey = pubkey!("KvauGMspG5k6rtzrqqn7WNn3oZdy
 pub const KAMINO_MAIN_MARKET: Pubkey = pubkey!("7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF");
 pub const KAMINO_MAIN_USDC_RESERVE: Pubkey =
     pubkey!("D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59");
+pub const KAMINO_MAIN_PYUSD_RESERVE: Pubkey =
+    pubkey!("2gc9Dm1eB6UgVYFBUN9bWks6Kes9PbWSaPaa9DqyvEiN");
 pub const KAMINO_PRIME_MARKET: Pubkey = pubkey!("CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA");
 pub const KAMINO_PRIME_USDC_RESERVE: Pubkey =
     pubkey!("9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu");
@@ -340,6 +342,7 @@ pub struct MockJupiterTokenAccounts {
 pub struct MockKaminoReserveTokenAccounts {
     pub reserve: Pubkey,
     pub market: Pubkey,
+    pub liquidity_mint: Pubkey,
     pub collateral_mint: Pubkey,
     pub reserve_liquidity_authority: Pubkey,
     pub collateral_mint_authority: Pubkey,
@@ -661,6 +664,36 @@ fn mock_kamino_reserve_liquidity_data(discriminator: [u8; 8], amount: u64) -> Ve
     data
 }
 
+pub fn mock_kamino_reserve_transaction(
+    vault: Pubkey,
+    reserve_accounts: MockKaminoReserveTokenAccounts,
+    data: Vec<u8>,
+) -> (Vec<SquadsCompiledInstruction>, Vec<AccountMeta>) {
+    let transaction_accounts = vec![
+        AccountMeta::new(vault, false),
+        AccountMeta::new(reserve_accounts.reserve, false),
+        AccountMeta::new_readonly(reserve_accounts.market, false),
+        AccountMeta::new_readonly(reserve_accounts.liquidity_mint, false),
+        AccountMeta::new(reserve_accounts.vault_liquidity, false),
+        AccountMeta::new(reserve_accounts.vault_collateral, false),
+        AccountMeta::new(reserve_accounts.reserve_liquidity_supply, false),
+        AccountMeta::new(reserve_accounts.collateral_mint, false),
+        AccountMeta::new_readonly(reserve_accounts.reserve_liquidity_authority, false),
+        AccountMeta::new_readonly(reserve_accounts.collateral_mint_authority, false),
+        AccountMeta::new_readonly(spl_token::id(), false),
+        AccountMeta::new_readonly(KAMINO_LEND_PROGRAM_ID, false),
+    ];
+
+    (
+        vec![SquadsCompiledInstruction {
+            program_id_index: 11,
+            accounts: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            data,
+        }],
+        transaction_accounts,
+    )
+}
+
 pub fn derive_mock_jupiter_swap_authority() -> Pubkey {
     Pubkey::find_program_address(&[JUPITER_SWAP_AUTHORITY_SEED], &JUPITER_V6_PROGRAM_ID).0
 }
@@ -850,6 +883,30 @@ pub fn seed_mock_kamino_reserve_spl_accounts(
     vault_collateral: Pubkey,
     reserve_liquidity_supply: Pubkey,
 ) -> MockKaminoReserveTokenAccounts {
+    seed_mock_kamino_reserve_spl_accounts_with_mint(
+        svm,
+        reserve,
+        market,
+        USDC_MINT,
+        USDC_DECIMALS,
+        vault,
+        vault_liquidity,
+        vault_collateral,
+        reserve_liquidity_supply,
+    )
+}
+
+pub fn seed_mock_kamino_reserve_spl_accounts_with_mint(
+    svm: &mut LiteSVM,
+    reserve: Pubkey,
+    market: Pubkey,
+    liquidity_mint: Pubkey,
+    liquidity_decimals: u8,
+    vault: Pubkey,
+    vault_liquidity: Pubkey,
+    vault_collateral: Pubkey,
+    reserve_liquidity_supply: Pubkey,
+) -> MockKaminoReserveTokenAccounts {
     let reserve_liquidity_authority = derive_mock_kamino_reserve_liquidity_authority(reserve);
     let collateral_mint_authority = derive_mock_kamino_collateral_mint_authority(reserve);
     let collateral_mint = mock_kamino_collateral_mint(reserve);
@@ -858,7 +915,7 @@ pub fn seed_mock_kamino_reserve_spl_accounts(
     seed_empty_system_account_if_missing(svm, reserve);
     seed_empty_system_account_if_missing(svm, reserve_liquidity_authority);
     seed_empty_system_account_if_missing(svm, collateral_mint_authority);
-    seed_spl_mint_if_missing(svm, USDC_MINT, None, USDC_DECIMALS, 0);
+    seed_spl_mint_if_missing(svm, liquidity_mint, None, liquidity_decimals, 0);
     seed_spl_mint(
         svm,
         collateral_mint,
@@ -866,12 +923,12 @@ pub fn seed_mock_kamino_reserve_spl_accounts(
         KAMINO_COLLATERAL_DECIMALS,
         0,
     );
-    seed_spl_token_account_if_missing(svm, vault_liquidity, USDC_MINT, vault, 0);
+    seed_spl_token_account_if_missing(svm, vault_liquidity, liquidity_mint, vault, 0);
     seed_spl_token_account_if_missing(svm, vault_collateral, collateral_mint, vault, 0);
     seed_spl_token_account_if_missing(
         svm,
         reserve_liquidity_supply,
-        USDC_MINT,
+        liquidity_mint,
         reserve_liquidity_authority,
         0,
     );
@@ -879,6 +936,7 @@ pub fn seed_mock_kamino_reserve_spl_accounts(
     MockKaminoReserveTokenAccounts {
         reserve,
         market,
+        liquidity_mint,
         collateral_mint,
         reserve_liquidity_authority,
         collateral_mint_authority,
@@ -1379,18 +1437,90 @@ pub fn create_squads_program_interaction_jupiter_fixture_swap_policy_instruction
     }
 }
 
-fn kamino_usdc_reserve_instruction_constraint(
-    discriminator: [u8; 8],
+fn jupiter_fixture_swap_instruction_constraint(
     vault: Pubkey,
-    vault_usdc_token_account: Pubkey,
+    usdc_ledger: Pubkey,
+    pyusd_ledger: Pubkey,
+    swap_instruction_data: Vec<u8>,
+) -> SquadsInstructionConstraint {
+    let jupiter_accounts = mock_jupiter_token_accounts();
+
+    SquadsInstructionConstraint {
+        program_id: JUPITER_V6_PROGRAM_ID,
+        account_constraints: vec![
+            SquadsAccountConstraint {
+                account_index: 0,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![vault]),
+                owner: None,
+            },
+            SquadsAccountConstraint {
+                account_index: 1,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![usdc_ledger]),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: 2,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![pyusd_ledger]),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: 3,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![USDC_MINT]),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: 4,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![PYUSD_MINT]),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: 5,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![spl_token::id()]),
+                owner: None,
+            },
+            SquadsAccountConstraint {
+                account_index: 6,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![
+                    jupiter_accounts.usdc_reserve,
+                ]),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: 7,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![
+                    jupiter_accounts.pyusd_reserve,
+                ]),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: 8,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![
+                    jupiter_accounts.authority,
+                ]),
+                owner: None,
+            },
+        ],
+        data_constraints: vec![SquadsDataConstraint {
+            data_offset: 0,
+            data_value: SquadsDataValue::U8Slice(swap_instruction_data),
+            operator: SquadsDataOperator::Equals,
+        }],
+    }
+}
+
+fn kamino_reserve_instruction_constraint(
+    reserve: Pubkey,
+    market: Pubkey,
+    liquidity_mint: Pubkey,
+    data_constraint_value: Vec<u8>,
+    vault: Pubkey,
+    vault_liquidity_token_account: Pubkey,
     vault_collateral_token_account: Pubkey,
     reserve_liquidity_supply: Pubkey,
 ) -> SquadsInstructionConstraint {
-    let collateral_mint = mock_kamino_collateral_mint(KAMINO_MAIN_USDC_RESERVE);
-    let reserve_liquidity_authority =
-        derive_mock_kamino_reserve_liquidity_authority(KAMINO_MAIN_USDC_RESERVE);
-    let collateral_mint_authority =
-        derive_mock_kamino_collateral_mint_authority(KAMINO_MAIN_USDC_RESERVE);
+    let collateral_mint = mock_kamino_collateral_mint(reserve);
+    let reserve_liquidity_authority = derive_mock_kamino_reserve_liquidity_authority(reserve);
+    let collateral_mint_authority = derive_mock_kamino_collateral_mint_authority(reserve);
 
     SquadsInstructionConstraint {
         program_id: KAMINO_LEND_PROGRAM_ID,
@@ -1402,25 +1532,23 @@ fn kamino_usdc_reserve_instruction_constraint(
             },
             SquadsAccountConstraint {
                 account_index: 1,
-                account_constraint: SquadsAccountConstraintType::Pubkey(vec![
-                    KAMINO_MAIN_USDC_RESERVE,
-                ]),
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![reserve]),
                 owner: None,
             },
             SquadsAccountConstraint {
                 account_index: 2,
-                account_constraint: SquadsAccountConstraintType::Pubkey(vec![KAMINO_MAIN_MARKET]),
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![market]),
                 owner: None,
             },
             SquadsAccountConstraint {
                 account_index: 3,
-                account_constraint: SquadsAccountConstraintType::Pubkey(vec![USDC_MINT]),
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![liquidity_mint]),
                 owner: Some(spl_token::id()),
             },
             SquadsAccountConstraint {
                 account_index: 4,
                 account_constraint: SquadsAccountConstraintType::Pubkey(vec![
-                    vault_usdc_token_account,
+                    vault_liquidity_token_account,
                 ]),
                 owner: Some(spl_token::id()),
             },
@@ -1465,10 +1593,29 @@ fn kamino_usdc_reserve_instruction_constraint(
         ],
         data_constraints: vec![SquadsDataConstraint {
             data_offset: 0,
-            data_value: SquadsDataValue::U8Slice(discriminator.to_vec()),
+            data_value: SquadsDataValue::U8Slice(data_constraint_value),
             operator: SquadsDataOperator::Equals,
         }],
     }
+}
+
+fn kamino_usdc_reserve_instruction_constraint(
+    discriminator: [u8; 8],
+    vault: Pubkey,
+    vault_usdc_token_account: Pubkey,
+    vault_collateral_token_account: Pubkey,
+    reserve_liquidity_supply: Pubkey,
+) -> SquadsInstructionConstraint {
+    kamino_reserve_instruction_constraint(
+        KAMINO_MAIN_USDC_RESERVE,
+        KAMINO_MAIN_MARKET,
+        USDC_MINT,
+        discriminator.to_vec(),
+        vault,
+        vault_usdc_token_account,
+        vault_collateral_token_account,
+        reserve_liquidity_supply,
+    )
 }
 
 pub fn create_squads_program_interaction_kamino_usdc_reserve_policy_instruction(
@@ -1504,6 +1651,111 @@ pub fn create_squads_program_interaction_kamino_usdc_reserve_policy_instruction(
                         reserve_liquidity_supply,
                     ),
                 ],
+                pre_hook: None,
+                post_hook: None,
+                spending_limits: vec![],
+            },
+        ),
+        signers: vec![SquadsSmartAccountSigner {
+            key: delegated_signer,
+            permissions: SquadsPermissions {
+                mask: SQUADS_FULL_PERMISSIONS_MASK,
+            },
+        }],
+        threshold: 1,
+        time_lock: 0,
+        start_timestamp: None,
+        expiration_args: None,
+    };
+
+    Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(squads_settings, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(policy, false),
+        ],
+        data: serialize_squads_sync_settings_transaction_args(vec![action]),
+    }
+}
+
+pub fn create_squads_program_interaction_usdc_pyusd_kamino_route_policy_instruction(
+    squads_settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    policy_seed: u64,
+    account_index: u8,
+    vault: Pubkey,
+    vault_usdc_token_account: Pubkey,
+    vault_pyusd_token_account: Pubkey,
+    vault_usdc_collateral_token_account: Pubkey,
+    usdc_reserve_liquidity_supply: Pubkey,
+    vault_pyusd_collateral_token_account: Pubkey,
+    pyusd_reserve_liquidity_supply: Pubkey,
+    usdc_deposit_data: Vec<u8>,
+    usdc_withdraw_data: Vec<u8>,
+    jupiter_swap_data: Vec<u8>,
+    pyusd_deposit_data: Vec<u8>,
+    pyusd_withdraw_data: Vec<u8>,
+) -> Instruction {
+    let (policy, _) = derive_squads_policy(&squads_settings, policy_seed);
+    let constraints = vec![
+        kamino_reserve_instruction_constraint(
+            KAMINO_MAIN_USDC_RESERVE,
+            KAMINO_MAIN_MARKET,
+            USDC_MINT,
+            usdc_deposit_data,
+            vault,
+            vault_usdc_token_account,
+            vault_usdc_collateral_token_account,
+            usdc_reserve_liquidity_supply,
+        ),
+        kamino_reserve_instruction_constraint(
+            KAMINO_MAIN_USDC_RESERVE,
+            KAMINO_MAIN_MARKET,
+            USDC_MINT,
+            usdc_withdraw_data,
+            vault,
+            vault_usdc_token_account,
+            vault_usdc_collateral_token_account,
+            usdc_reserve_liquidity_supply,
+        ),
+        jupiter_fixture_swap_instruction_constraint(
+            vault,
+            vault_usdc_token_account,
+            vault_pyusd_token_account,
+            jupiter_swap_data,
+        ),
+        kamino_reserve_instruction_constraint(
+            KAMINO_MAIN_PYUSD_RESERVE,
+            KAMINO_MAIN_MARKET,
+            PYUSD_MINT,
+            pyusd_deposit_data,
+            vault,
+            vault_pyusd_token_account,
+            vault_pyusd_collateral_token_account,
+            pyusd_reserve_liquidity_supply,
+        ),
+        kamino_reserve_instruction_constraint(
+            KAMINO_MAIN_PYUSD_RESERVE,
+            KAMINO_MAIN_MARKET,
+            PYUSD_MINT,
+            pyusd_withdraw_data,
+            vault,
+            vault_pyusd_token_account,
+            vault_pyusd_collateral_token_account,
+            pyusd_reserve_liquidity_supply,
+        ),
+    ];
+    let action = SquadsSettingsAction::PolicyCreate {
+        seed: policy_seed,
+        policy_creation_payload: SquadsPolicyCreationPayload::LegacyProgramInteraction(
+            SquadsProgramInteractionPolicyCreationPayloadLegacy {
+                account_index,
+                instructions_constraints: constraints,
                 pre_hook: None,
                 post_hook: None,
                 spending_limits: vec![],

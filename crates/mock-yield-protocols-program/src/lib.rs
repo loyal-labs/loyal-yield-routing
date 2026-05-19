@@ -18,6 +18,8 @@ pub const KAMINO_LEND_PROGRAM_ID: Pubkey = pubkey!("KvauGMspG5k6rtzrqqn7WNn3oZdy
 pub const KAMINO_MAIN_MARKET: Pubkey = pubkey!("7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF");
 pub const KAMINO_MAIN_USDC_RESERVE: Pubkey =
     pubkey!("D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59");
+pub const KAMINO_MAIN_PYUSD_RESERVE: Pubkey =
+    pubkey!("2gc9Dm1eB6UgVYFBUN9bWks6Kes9PbWSaPaa9DqyvEiN");
 pub const KAMINO_PRIME_MARKET: Pubkey = pubkey!("CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA");
 pub const KAMINO_PRIME_USDC_RESERVE: Pubkey =
     pubkey!("9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu");
@@ -222,6 +224,7 @@ struct KaminoAccounts<'a, 'info> {
     reserve_liquidity_authority: &'a AccountInfo<'info>,
     collateral_mint_authority: &'a AccountInfo<'info>,
     token_program: &'a AccountInfo<'info>,
+    liquidity_decimals: u8,
 }
 
 fn process_kamino_deposit(
@@ -237,7 +240,7 @@ fn process_kamino_deposit(
         kamino.vault,
         kamino.token_program,
         amount,
-        USDC_DECIMALS,
+        kamino.liquidity_decimals,
     )?;
     mint_to_checked_signed(
         program_id,
@@ -276,7 +279,7 @@ fn process_kamino_withdraw(
         kamino.reserve_liquidity_authority,
         kamino.token_program,
         amount,
-        USDC_DECIMALS,
+        kamino.liquidity_decimals,
         &[
             KAMINO_RESERVE_LIQUIDITY_AUTHORITY_SEED,
             kamino.reserve.key.as_ref(),
@@ -289,7 +292,7 @@ fn parse_kamino_accounts<'a, 'info>(
     accounts: &'a [AccountInfo<'info>],
 ) -> Result<KaminoAccounts<'a, 'info>, ProgramError> {
     let account_info_iter = &mut accounts.iter();
-    let kamino = KaminoAccounts {
+    let mut kamino = KaminoAccounts {
         vault: next_account_info(account_info_iter)?,
         reserve: next_account_info(account_info_iter)?,
         market: next_account_info(account_info_iter)?,
@@ -301,17 +304,18 @@ fn parse_kamino_accounts<'a, 'info>(
         reserve_liquidity_authority: next_account_info(account_info_iter)?,
         collateral_mint_authority: next_account_info(account_info_iter)?,
         token_program: next_account_info(account_info_iter)?,
+        liquidity_decimals: 0,
     };
 
     require_signer(kamino.vault)?;
-    require_key(kamino.liquidity_mint, &USDC_MINT)?;
     require_key(kamino.token_program, &spl_token::id())?;
 
-    let is_main_usdc =
-        kamino.market.key == &KAMINO_MAIN_MARKET && kamino.reserve.key == &KAMINO_MAIN_USDC_RESERVE;
-    let is_prime_usdc = kamino.market.key == &KAMINO_PRIME_MARKET
-        && kamino.reserve.key == &KAMINO_PRIME_USDC_RESERVE;
-    if !is_main_usdc && !is_prime_usdc {
+    kamino.liquidity_decimals = kamino_reserve_liquidity_decimals(
+        kamino.market.key,
+        kamino.reserve.key,
+        kamino.liquidity_mint.key,
+    )?;
+    if kamino.liquidity_decimals == 0 {
         return Err(ProgramError::InvalidArgument);
     }
 
@@ -337,6 +341,35 @@ fn parse_kamino_accounts<'a, 'info>(
     require_key(kamino.collateral_mint_authority, &collateral_mint_authority)?;
 
     Ok(kamino)
+}
+
+fn kamino_reserve_liquidity_decimals(
+    market: &Pubkey,
+    reserve: &Pubkey,
+    liquidity_mint: &Pubkey,
+) -> Result<u8, ProgramError> {
+    if market == &KAMINO_MAIN_MARKET
+        && reserve == &KAMINO_MAIN_USDC_RESERVE
+        && liquidity_mint == &USDC_MINT
+    {
+        return Ok(USDC_DECIMALS);
+    }
+
+    if market == &KAMINO_PRIME_MARKET
+        && reserve == &KAMINO_PRIME_USDC_RESERVE
+        && liquidity_mint == &USDC_MINT
+    {
+        return Ok(USDC_DECIMALS);
+    }
+
+    if market == &KAMINO_MAIN_MARKET
+        && reserve == &KAMINO_MAIN_PYUSD_RESERVE
+        && liquidity_mint == &PYUSD_MINT
+    {
+        return Ok(PYUSD_DECIMALS);
+    }
+
+    Err(ProgramError::InvalidArgument)
 }
 
 fn transfer_checked<'info>(
