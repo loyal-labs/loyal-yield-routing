@@ -4,7 +4,7 @@
 
 The live routing strategy cannot match hindsight APY by construction. The hindsight path sees future reserve APY, future route costs, and future reserve eligibility. The live system should use hindsight as a benchmark and measure the gap as regret.
 
-The objective is a future-blind strategy that stays near the hindsight path by learning which APY moves are likely to last long enough to pay for the transaction.
+The objective is a future-blind strategy that stays near the hindsight path by learning which APY moves are likely to persist enough to pay for the transaction.
 
 ## Historical Data
 
@@ -67,7 +67,7 @@ For every simulated or live rebalance, log the current reserve, candidate reserv
 
 The likely production strategy is a baseline allocator plus a spike detector plus a cost-aware online learner.
 
-The baseline allocator chooses a stable home reserve using a three-hour to six-hour signal. The spike detector watches faster 10-minute to 20-minute APY acceleration. A persistence model estimates whether the spike will last long enough to justify a move. The cost model executes only when the expected edge clears costs and an uncertainty buffer.
+The baseline allocator chooses a stable home reserve using a three-hour to six-hour signal. The spike detector watches faster 10-minute to 20-minute APY acceleration. A persistence model estimates whether the spike can justify a move. The cost model executes only when the expected edge clears costs and an uncertainty buffer.
 
 Decision rule:
 
@@ -81,6 +81,60 @@ switch if:
 ```
 
 Expected future value should be evaluated over a predicted holding period instead of only the next five-minute interval.
+
+## 0 To 1 Implementation Plan
+
+The first implementation should be a rules-based expected-edge router. The system should observe every five minutes, score every eligible reserve, and execute only when the candidate reserve has enough expected edge to pay for costs over the likely holding period.
+
+| Step | Build | Done when |
+| --- | --- | --- |
+| 1 | Live reserve tape with raw Kamino reserve metrics, current smart-account position, and timestamped fetch metadata | A full day can be replayed from local data without calling Kamino again |
+| 2 | Quote tape for cross-mint candidates with Jupiter output amount, price impact, route, context slot, and quote age | Every cross-mint decision can explain the exact cost used by the scorer |
+| 3 | Eligibility filter for stablecoin allowlist, TVL floor, APY cap, available liquidity, reserve caps, stale data, and quote availability | The router produces a bounded candidate set before it scores yield |
+| 4 | Expected-edge scorer using 20-minute EWMA, one-hour mean, six-hour mean, volatility penalty, staleness penalty, transaction cost, priority fee, and Jupiter quote loss | Each candidate has a net expected value over the configured holding period |
+| 5 | Shadow runner that logs the best reserve, current reserve, switch decision, skipped reason, expected edge, and expected cost every five minutes | The team can inspect one week of decisions before funds move |
+| 6 | Execution MVP with a 20-minute rebalance cooldown, same-mint moves enabled first, and cross-mint moves behind a larger edge threshold | The smart account can move funds through the approved Kamino reserves while preserving the guardrails |
+| 7 | Daily hindsight audit on the same tape | The report shows strategy APY, hindsight APY, regret, bad switches, missed switches, and cost drag |
+
+## MVP Policy
+
+Start with a simple policy that can be explained line by line. Monitor every five minutes. Use a one-hour expected holding period. Keep a 20-minute cooldown after any successful rebalance unless the current reserve becomes ineligible.
+
+The candidate APY estimate should blend three signals: a 20-minute EWMA for fresh movement, a one-hour mean for short-term persistence, and a six-hour mean for stability. Penalize candidates with high short-window volatility, stale observations, low available liquidity, or missing quotes. Same-mint moves should use only the reserve-change transaction cost. Cross-mint moves should use the live Jupiter quote loss plus transaction and priority fees.
+
+The switch test should be:
+
+```text
+gross_edge_usd =
+  position_value
+  * (exp((candidate_predicted_apy - current_predicted_apy) * holding_period_years) - 1)
+
+switch if:
+  gross_edge_usd > all_switching_costs_usd + uncertainty_buffer_usd
+```
+
+The first uncertainty buffer can be conservative and static. A good starting point is the larger of two values: twice the estimated execution cost, or the value of 10 annualized basis points over the holding period. This should reduce churn while we collect live evidence.
+
+## Data Contracts
+
+The live tape should store small append-only records. These records are enough to replay the router, compute hindsight, and explain every decision.
+
+| Record | Required fields |
+| --- | --- |
+| `reserve_snapshot` | Timestamp, slot, market, reserve, mint, supply APY, borrow APY, utilization, TVL, total supply, total borrow, available liquidity, caps, oracle price, source latency |
+| `quote_snapshot` | Timestamp, input mint, output mint, input amount, output amount, price impact, route labels, context slot, quote latency, quote age, route availability |
+| `position_snapshot` | Timestamp, smart account, current reserve, current mint, deposited amount, estimated USD value, last rebalance timestamp |
+| `decision_snapshot` | Timestamp, current reserve, candidate reserve, predicted current APY, predicted candidate APY, holding period, expected gross edge, estimated costs, buffer, decision, skipped reason |
+| `execution_snapshot` | Timestamp, transaction signature, simulated result, landed result, compute units, priority fee, base fee, realized output, failure reason |
+| `hindsight_snapshot` | Timestamp, hindsight reserve, live-policy reserve, hindsight value, live-policy value, regret, missed-switch flag, bad-switch flag |
+
+## Research Backlog
+
+The first research loop should tune the rules before adding a model. Sweep the holding period across 20 minutes, one hour, three hours, and six hours. Sweep short signals from 10 minutes through one hour. Test whether the one-hour expected-hold scorer beats the plain 20-minute trailing mean from the five-minute backtest.
+
+After that, research market priors and spike persistence. The key question is whether certain markets or reserves produce APY spikes with durable follow-through. If the answer is yes, replace the hand-tuned predicted APY blend with a small persistence model trained on the hindsight-imitation table.
+
+Cross-mint routing should stay behind a stricter gate until there is enough live quote history. The first production policy can prefer same-mint routing and allow cross-mint moves only when the live quote loss is small and the expected edge remains positive after a larger buffer.
 
 ## Hindsight Imitation Dataset
 
