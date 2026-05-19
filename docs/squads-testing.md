@@ -8,11 +8,11 @@ Run the current tests with:
 bun run test:squads
 ```
 
-The crate lives in `crates/squads-test-harness`. It provides LiteSVM setup, Squads settings, vault, and policy PDA derivation, program config seeding, `create_squads_smart_account` instruction construction, spending-limit policy instruction construction, sync-transfer instruction construction, and account-meta hashing.
+The crate lives in `crates/squads-test-harness`. It provides LiteSVM setup; Squads PDA derivation for settings, vault namespaces, policy accounts, and program config; `create_squads_smart_account` instruction construction; spending-limit and ProgramInteraction policy builders; sync-transfer and sync-transaction helpers; real SPL Token mint/account seeding helpers; test-only Jupiter/Kamino SBF program loading; and account-meta hashing.
 
 Use `create_funded_squads_test_context()` for tests that need the common funded starting point. The default context airdrops `1 SOL`, creates a Squads smart account with the wallet as signer, and sends `0.5 SOL` into vault index `0`, leaving both the wallet and vault funded for the scenario under test. Use `create_funded_squads_test_context_with_config()` when a test needs a different seed, vault index, or funding split.
 
-The current end-to-end path lives in `crates/squads-test-harness/tests/spending_limits.rs`. It starts from that context, creates a spending-limit policy that lets a delegated wallet withdraw from vault index `0`, checks allowed withdrawals, checks an oversized withdrawal failure, removes the policy, and checks that the delegated wallet can no longer withdraw.
+The current end-to-end paths live in `crates/squads-test-harness/tests/`. `spending_limits.rs` covers delegated SOL withdrawals, `swap_intents.rs` covers the SOL-to-USDC setup swap plus delegated Jupiter USDC-to-PYUSD ProgramInteraction path using SPL Token transfers, and `kamino_reserves.rs` covers delegated deposit/withdraw against Kamino Main Market's USDC reserve using SPL Token CPIs plus denial for the Prime/Figure USDC reserve and denial after policy removal.
 
 The setup mirrors the lean parts of `passkey-work`: one static Squads settings account can own many deterministic vault namespaces, and tests should keep the Squads verifier or gateway signer explicit. Future yield-routing tests can build on these helpers instead of recreating PDA seeds and Borsh payload packing in every test.
 
@@ -23,3 +23,11 @@ SQUADS_SMART_ACCOUNT_PROGRAM_SO=/path/to/squads_smart_account_program.so bun run
 ```
 
 When the environment variable is omitted, the test loader also checks the sibling `../passkey-work/target/deploy/squads_smart_account_program.so` path used during development. Do not commit generated SBF binaries. Keep them in `target/deploy` or point the environment variable at a local checkout.
+
+`bun run test:squads` builds the local test-only protocol mock first:
+
+```bash
+cargo build-sbf -- -p mock-yield-protocols-program
+```
+
+The test loader installs that SBF binary at the Jupiter and Kamino program IDs so Squads still gates the outer protocol calls while the mocked protocol logic moves real SPL Token balances underneath.

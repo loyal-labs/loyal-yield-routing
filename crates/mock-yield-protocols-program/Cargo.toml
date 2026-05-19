@@ -1,0 +1,12 @@
+[package]
+name = "mock-yield-protocols-program"
+version = "0.1.0"
+edition = "2021"
+description = "Test-only SBF protocol mocks for Squads yield-routing LiteSVM tests"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+solana-program.workspace = true
+spl-token = { workspace = true, features = ["no-entrypoint"] }

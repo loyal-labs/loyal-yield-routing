@@ -7,5 +7,12 @@ description = "Lean LiteSVM helpers for testing Squads smart-account flows"
 [dependencies]
 borsh.workspace = true
 litesvm.workspace = true
+solana-program-runtime = "2.3.13"
 solana-sdk.workspace = true
 solana-system-interface.workspace = true
+spl-token.workspace = true
+
+[dev-dependencies]
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

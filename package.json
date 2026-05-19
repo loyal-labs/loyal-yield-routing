@@ -9,7 +9,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:squads": "cargo test -p squads-test-harness"
+    "test:squads": "cargo build-sbf -- -p mock-yield-protocols-program && cargo test -p squads-test-harness"
   },
   "dependencies": {
     "next": "16.2.6",
