@@ -1,0 +1,603 @@
+#![allow(dead_code, unused_imports)]
+
+use borsh::BorshSerialize;
+use litesvm::LiteSVM;
+use solana_sdk::{
+    account::Account,
+    hash::hashv,
+    instruction::{AccountMeta, Instruction},
+    message::Message,
+    pubkey,
+    pubkey::Pubkey,
+    signature::Keypair,
+    signer::Signer,
+    transaction::Transaction,
+};
+use solana_system_interface::instruction as system_instruction;
+use spl_token::solana_program::{program_option::COption, program_pack::Pack};
+use std::{env, fs, io::Write, path::PathBuf};
+
+use crate::types::*;
+use crate::*;
+
+pub fn mock_jupiter_swap_data(
+    operation: u8,
+    amount: u64,
+    input_mint: Pubkey,
+    output_mint: Pubkey,
+) -> Vec<u8> {
+    let mut data = Vec::with_capacity(73);
+    data.push(operation);
+    data.extend_from_slice(&amount.to_le_bytes());
+    data.extend_from_slice(input_mint.as_ref());
+    data.extend_from_slice(output_mint.as_ref());
+    data
+}
+
+pub fn mock_jupiter_stable_exact_in_swap_data(
+    in_amount: u64,
+    out_amount: u64,
+    input_mint: Pubkey,
+    output_mint: Pubkey,
+) -> Vec<u8> {
+    let mut data = Vec::with_capacity(81);
+    data.push(MOCK_JUPITER_STABLE_EXACT_IN);
+    data.extend_from_slice(&in_amount.to_le_bytes());
+    data.extend_from_slice(&out_amount.to_le_bytes());
+    data.extend_from_slice(input_mint.as_ref());
+    data.extend_from_slice(output_mint.as_ref());
+    data
+}
+
+pub fn loyal_hub_config_data(
+    admin: Pubkey,
+    hub_authorizer: Pubkey,
+    max_fee_bps: u16,
+    paused: bool,
+    allowed_mints: &[Pubkey],
+) -> Vec<u8> {
+    assert!(
+        !allowed_mints.is_empty() && allowed_mints.len() <= 8,
+        "Loyal Hub supports 1..=8 allowed mints"
+    );
+    let mut data = Vec::with_capacity(68 + (allowed_mints.len() * 32));
+    data.extend_from_slice(admin.as_ref());
+    data.extend_from_slice(hub_authorizer.as_ref());
+    data.extend_from_slice(&max_fee_bps.to_le_bytes());
+    data.push(u8::from(paused));
+    data.push(
+        allowed_mints
+            .len()
+            .try_into()
+            .expect("allowed mint count fits in u8"),
+    );
+    for mint in allowed_mints {
+        data.extend_from_slice(mint.as_ref());
+    }
+    data
+}
+
+pub fn loyal_hub_initialize_config_data(
+    admin: Pubkey,
+    hub_authorizer: Pubkey,
+    max_fee_bps: u16,
+    paused: bool,
+    allowed_mints: &[Pubkey],
+) -> Vec<u8> {
+    let mut data = vec![LOYAL_HUB_INITIALIZE_CONFIG];
+    data.extend_from_slice(&loyal_hub_config_data(
+        admin,
+        hub_authorizer,
+        max_fee_bps,
+        paused,
+        allowed_mints,
+    ));
+    data
+}
+
+pub fn loyal_hub_set_config_data(
+    admin: Pubkey,
+    hub_authorizer: Pubkey,
+    max_fee_bps: u16,
+    paused: bool,
+    allowed_mints: &[Pubkey],
+) -> Vec<u8> {
+    let mut data = vec![LOYAL_HUB_SET_CONFIG];
+    data.extend_from_slice(&loyal_hub_config_data(
+        admin,
+        hub_authorizer,
+        max_fee_bps,
+        paused,
+        allowed_mints,
+    ));
+    data
+}
+
+pub fn loyal_hub_swap_exact_in_data(
+    amount_in: u64,
+    amount_out: u64,
+    min_out: u64,
+    max_fee_bps: u16,
+) -> Vec<u8> {
+    let mut data = Vec::with_capacity(27);
+    data.push(LOYAL_HUB_SWAP_EXACT_IN);
+    data.extend_from_slice(&amount_in.to_le_bytes());
+    data.extend_from_slice(&amount_out.to_le_bytes());
+    data.extend_from_slice(&min_out.to_le_bytes());
+    data.extend_from_slice(&max_fee_bps.to_le_bytes());
+    data
+}
+
+pub fn loyal_hub_set_paused_data(paused: bool) -> Vec<u8> {
+    vec![LOYAL_HUB_SET_PAUSED, u8::from(paused)]
+}
+
+pub fn loyal_hub_withdraw_inventory_data(amount: u64) -> Vec<u8> {
+    let mut data = Vec::with_capacity(9);
+    data.push(LOYAL_HUB_WITHDRAW_INVENTORY);
+    data.extend_from_slice(&amount.to_le_bytes());
+    data
+}
+
+pub fn mock_kamino_deposit_reserve_liquidity_data(amount: u64) -> Vec<u8> {
+    mock_kamino_reserve_liquidity_data(KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR, amount)
+}
+
+pub fn mock_kamino_withdraw_reserve_liquidity_data(amount: u64) -> Vec<u8> {
+    mock_kamino_reserve_liquidity_data(KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR, amount)
+}
+
+fn mock_kamino_reserve_liquidity_data(discriminator: [u8; 8], amount: u64) -> Vec<u8> {
+    let mut data = Vec::with_capacity(16);
+    data.extend_from_slice(&discriminator);
+    data.extend_from_slice(&amount.to_le_bytes());
+    data
+}
+
+pub fn mock_kamino_reserve_transaction(
+    vault: Pubkey,
+    reserve_accounts: MockKaminoReserveTokenAccounts,
+    data: Vec<u8>,
+) -> (Vec<SquadsCompiledInstruction>, Vec<AccountMeta>) {
+    let transaction_accounts = vec![
+        AccountMeta::new(vault, false),
+        AccountMeta::new(reserve_accounts.reserve, false),
+        AccountMeta::new_readonly(reserve_accounts.market, false),
+        AccountMeta::new_readonly(reserve_accounts.liquidity_mint, false),
+        AccountMeta::new(reserve_accounts.vault_liquidity, false),
+        AccountMeta::new(reserve_accounts.vault_collateral, false),
+        AccountMeta::new(reserve_accounts.reserve_liquidity_supply, false),
+        AccountMeta::new(reserve_accounts.collateral_mint, false),
+        AccountMeta::new_readonly(reserve_accounts.reserve_liquidity_authority, false),
+        AccountMeta::new_readonly(reserve_accounts.collateral_mint_authority, false),
+        AccountMeta::new_readonly(spl_token::id(), false),
+        AccountMeta::new_readonly(KAMINO_LEND_PROGRAM_ID, false),
+    ];
+
+    (
+        vec![SquadsCompiledInstruction {
+            program_id_index: 11,
+            accounts: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            data,
+        }],
+        transaction_accounts,
+    )
+}
+
+pub fn derive_mock_jupiter_swap_authority() -> Pubkey {
+    Pubkey::find_program_address(&[JUPITER_SWAP_AUTHORITY_SEED], &JUPITER_V6_PROGRAM_ID).0
+}
+
+pub fn derive_loyal_hub_config() -> Pubkey {
+    Pubkey::find_program_address(&[LOYAL_HUB_CONFIG_SEED], &LOYAL_HUB_SWAP_PROGRAM_ID).0
+}
+
+pub fn derive_loyal_hub_authority() -> Pubkey {
+    Pubkey::find_program_address(&[LOYAL_HUB_AUTHORITY_SEED], &LOYAL_HUB_SWAP_PROGRAM_ID).0
+}
+
+pub fn loyal_hub_token_account(mint: Pubkey) -> Pubkey {
+    Pubkey::new_from_array(hashv(&[LOYAL_HUB_TOKEN_ACCOUNT_SEED, mint.as_ref()]).to_bytes())
+}
+
+pub fn mock_jupiter_usdc_reserve_token_account() -> Pubkey {
+    Pubkey::new_from_array(hash32(MOCK_JUPITER_USDC_RESERVE_TOKEN_ACCOUNT_SEED))
+}
+
+pub fn mock_jupiter_pyusd_reserve_token_account() -> Pubkey {
+    Pubkey::new_from_array(hash32(MOCK_JUPITER_PYUSD_RESERVE_TOKEN_ACCOUNT_SEED))
+}
+
+pub fn mock_jupiter_stable_reserve_token_account(mint: Pubkey) -> Pubkey {
+    Pubkey::new_from_array(
+        hashv(&[
+            MOCK_JUPITER_STABLE_RESERVE_TOKEN_ACCOUNT_SEED,
+            mint.as_ref(),
+        ])
+        .to_bytes(),
+    )
+}
+
+pub fn mock_jupiter_token_accounts() -> MockJupiterTokenAccounts {
+    MockJupiterTokenAccounts {
+        authority: derive_mock_jupiter_swap_authority(),
+        usdc_reserve: mock_jupiter_usdc_reserve_token_account(),
+        pyusd_reserve: mock_jupiter_pyusd_reserve_token_account(),
+    }
+}
+
+pub fn derive_mock_kamino_reserve_liquidity_authority(reserve: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[KAMINO_RESERVE_LIQUIDITY_AUTHORITY_SEED, reserve.as_ref()],
+        &KAMINO_LEND_PROGRAM_ID,
+    )
+    .0
+}
+
+pub fn derive_mock_kamino_collateral_mint_authority(reserve: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[KAMINO_COLLATERAL_MINT_AUTHORITY_SEED, reserve.as_ref()],
+        &KAMINO_LEND_PROGRAM_ID,
+    )
+    .0
+}
+
+pub fn mock_kamino_collateral_mint(reserve: Pubkey) -> Pubkey {
+    Pubkey::new_from_array(hashv(&[b"mock-kamino-collateral-mint", reserve.as_ref()]).to_bytes())
+}
+
+pub fn seed_empty_system_account_if_missing(svm: &mut LiteSVM, pubkey: Pubkey) {
+    if svm.get_account(&pubkey).is_some() {
+        return;
+    }
+
+    svm.set_account(
+        pubkey,
+        Account {
+            lamports: LAMPORTS_PER_SOL,
+            data: vec![],
+            owner: solana_sdk::system_program::ID,
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .expect("seed empty system account");
+}
+
+pub fn seed_spl_mint(
+    svm: &mut LiteSVM,
+    mint: Pubkey,
+    mint_authority: Option<Pubkey>,
+    decimals: u8,
+    supply: u64,
+) {
+    let mut data = vec![0; spl_token::state::Mint::LEN];
+    spl_token::state::Mint {
+        mint_authority: mint_authority.map_or(COption::None, COption::Some),
+        supply,
+        decimals,
+        is_initialized: true,
+        freeze_authority: COption::None,
+    }
+    .pack_into_slice(&mut data);
+
+    svm.set_account(
+        mint,
+        Account {
+            lamports: LAMPORTS_PER_SOL,
+            data,
+            owner: spl_token::id(),
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .expect("seed SPL mint");
+}
+
+pub fn seed_spl_mint_if_missing(
+    svm: &mut LiteSVM,
+    mint: Pubkey,
+    mint_authority: Option<Pubkey>,
+    decimals: u8,
+    supply: u64,
+) {
+    if svm.get_account(&mint).is_none() {
+        seed_spl_mint(svm, mint, mint_authority, decimals, supply);
+    }
+}
+
+pub fn seed_spl_token_account(
+    svm: &mut LiteSVM,
+    token_account: Pubkey,
+    mint: Pubkey,
+    owner: Pubkey,
+    amount: u64,
+) {
+    let mut data = vec![0; spl_token::state::Account::LEN];
+    spl_token::state::Account {
+        mint,
+        owner,
+        amount,
+        delegate: COption::None,
+        state: spl_token::state::AccountState::Initialized,
+        is_native: COption::None,
+        delegated_amount: 0,
+        close_authority: COption::None,
+    }
+    .pack_into_slice(&mut data);
+
+    svm.set_account(
+        token_account,
+        Account {
+            lamports: LAMPORTS_PER_SOL,
+            data,
+            owner: spl_token::id(),
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .expect("seed SPL token account");
+}
+
+pub fn seed_spl_token_account_if_missing(
+    svm: &mut LiteSVM,
+    token_account: Pubkey,
+    mint: Pubkey,
+    owner: Pubkey,
+    amount: u64,
+) {
+    if svm.get_account(&token_account).is_none() {
+        seed_spl_token_account(svm, token_account, mint, owner, amount);
+    }
+}
+
+pub fn get_spl_token_amount(svm: &LiteSVM, token_account: Pubkey) -> u64 {
+    let account = svm
+        .get_account(&token_account)
+        .expect("SPL token account exists");
+    let token_account =
+        spl_token::state::Account::unpack(&account.data).expect("unpack SPL token account");
+    token_account.amount
+}
+
+pub fn set_spl_token_amount(svm: &mut LiteSVM, token_account: Pubkey, amount: u64) {
+    let mut account = svm
+        .get_account(&token_account)
+        .expect("SPL token account exists");
+    let mut token =
+        spl_token::state::Account::unpack(&account.data).expect("unpack SPL token account");
+    token.amount = amount;
+    token.pack_into_slice(&mut account.data);
+    svm.set_account(token_account, account)
+        .expect("update SPL token account amount");
+}
+
+pub fn set_spl_mint_supply(svm: &mut LiteSVM, mint: Pubkey, supply: u64) {
+    let mut account = svm.get_account(&mint).expect("SPL mint exists");
+    let mut mint_state = spl_token::state::Mint::unpack(&account.data).expect("unpack SPL mint");
+    mint_state.supply = supply;
+    mint_state.pack_into_slice(&mut account.data);
+    svm.set_account(mint, account)
+        .expect("update SPL mint supply");
+}
+
+pub fn seed_mock_jupiter_spl_accounts(
+    svm: &mut LiteSVM,
+    usdc_reserve_amount: u64,
+    pyusd_reserve_amount: u64,
+) -> MockJupiterTokenAccounts {
+    let accounts = mock_jupiter_token_accounts();
+    seed_empty_system_account_if_missing(svm, accounts.authority);
+    seed_spl_mint_if_missing(svm, USDC_MINT, None, USDC_DECIMALS, usdc_reserve_amount);
+    seed_spl_mint_if_missing(svm, PYUSD_MINT, None, PYUSD_DECIMALS, pyusd_reserve_amount);
+    seed_spl_token_account(
+        svm,
+        accounts.usdc_reserve,
+        USDC_MINT,
+        accounts.authority,
+        usdc_reserve_amount,
+    );
+    seed_spl_token_account(
+        svm,
+        accounts.pyusd_reserve,
+        PYUSD_MINT,
+        accounts.authority,
+        pyusd_reserve_amount,
+    );
+    accounts
+}
+
+pub fn seed_mock_jupiter_stable_reserve_spl_accounts(
+    svm: &mut LiteSVM,
+    stable_reserves: &[MockJupiterStableReserveTokenAccount],
+    reserve_amount: u64,
+) {
+    let authority = derive_mock_jupiter_swap_authority();
+    seed_empty_system_account_if_missing(svm, authority);
+    for stable_reserve in stable_reserves {
+        seed_spl_token_account(
+            svm,
+            stable_reserve.reserve,
+            stable_reserve.mint,
+            authority,
+            reserve_amount,
+        );
+    }
+}
+
+pub fn seed_loyal_hub_inventory_spl_accounts(
+    svm: &mut LiteSVM,
+    stable_mints: &[Pubkey],
+    reserve_amount: u64,
+) -> Vec<Pubkey> {
+    let authority = derive_loyal_hub_authority();
+    seed_empty_system_account_if_missing(svm, authority);
+    stable_mints
+        .iter()
+        .map(|mint| {
+            let token_account = loyal_hub_token_account(*mint);
+            seed_spl_token_account(svm, token_account, *mint, authority, reserve_amount);
+            token_account
+        })
+        .collect()
+}
+
+pub fn seed_mock_kamino_reserve_spl_accounts(
+    svm: &mut LiteSVM,
+    reserve: Pubkey,
+    market: Pubkey,
+    vault: Pubkey,
+    vault_liquidity: Pubkey,
+    vault_collateral: Pubkey,
+    reserve_liquidity_supply: Pubkey,
+) -> MockKaminoReserveTokenAccounts {
+    seed_mock_kamino_reserve_spl_accounts_with_mint(
+        svm,
+        reserve,
+        market,
+        USDC_MINT,
+        USDC_DECIMALS,
+        vault,
+        vault_liquidity,
+        vault_collateral,
+        reserve_liquidity_supply,
+    )
+}
+
+pub fn seed_mock_kamino_reserve_spl_accounts_with_mint(
+    svm: &mut LiteSVM,
+    reserve: Pubkey,
+    market: Pubkey,
+    liquidity_mint: Pubkey,
+    liquidity_decimals: u8,
+    vault: Pubkey,
+    vault_liquidity: Pubkey,
+    vault_collateral: Pubkey,
+    reserve_liquidity_supply: Pubkey,
+) -> MockKaminoReserveTokenAccounts {
+    let reserve_liquidity_authority = derive_mock_kamino_reserve_liquidity_authority(reserve);
+    let collateral_mint_authority = derive_mock_kamino_collateral_mint_authority(reserve);
+    let collateral_mint = mock_kamino_collateral_mint(reserve);
+
+    seed_empty_system_account_if_missing(svm, market);
+    seed_empty_system_account_if_missing(svm, reserve);
+    seed_empty_system_account_if_missing(svm, reserve_liquidity_authority);
+    seed_empty_system_account_if_missing(svm, collateral_mint_authority);
+    seed_spl_mint_if_missing(svm, liquidity_mint, None, liquidity_decimals, 0);
+    seed_spl_mint(
+        svm,
+        collateral_mint,
+        Some(collateral_mint_authority),
+        KAMINO_COLLATERAL_DECIMALS,
+        0,
+    );
+    seed_spl_token_account_if_missing(svm, vault_liquidity, liquidity_mint, vault, 0);
+    seed_spl_token_account_if_missing(svm, vault_collateral, collateral_mint, vault, 0);
+    seed_spl_token_account_if_missing(
+        svm,
+        reserve_liquidity_supply,
+        liquidity_mint,
+        reserve_liquidity_authority,
+        0,
+    );
+
+    MockKaminoReserveTokenAccounts {
+        reserve,
+        market,
+        liquidity_mint,
+        collateral_mint,
+        reserve_liquidity_authority,
+        collateral_mint_authority,
+        vault_liquidity,
+        vault_collateral,
+        reserve_liquidity_supply,
+    }
+}
+
+pub fn add_mock_jupiter_program(svm: &mut LiteSVM) -> std::io::Result<PathBuf> {
+    add_mock_yield_protocols_program(svm, JUPITER_V6_PROGRAM_ID)
+}
+
+pub fn add_mock_kamino_lend_program(svm: &mut LiteSVM) -> std::io::Result<PathBuf> {
+    add_mock_yield_protocols_program(svm, KAMINO_LEND_PROGRAM_ID)
+}
+
+pub fn add_loyal_hub_swap_program(svm: &mut LiteSVM) -> std::io::Result<PathBuf> {
+    let path = loyal_hub_swap_program_so_path().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "Loyal Hub swap SBF program not found; run `cargo build-sbf -- -p loyal-hub-swap-program` or set {LOYAL_HUB_SWAP_PROGRAM_SO_ENV}"
+            ),
+        )
+    })?;
+    let program = fs::read(&path)?;
+    svm.add_program(LOYAL_HUB_SWAP_PROGRAM_ID, &program)
+        .map_err(|error| {
+            std::io::Error::other(format!("add Loyal Hub swap program failed: {error}"))
+        })?;
+    Ok(path)
+}
+
+pub fn add_mock_yield_protocols_program(
+    svm: &mut LiteSVM,
+    program_id: Pubkey,
+) -> std::io::Result<PathBuf> {
+    let path = mock_yield_protocols_program_so_path().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "mock yield protocols SBF program not found; run `cargo build-sbf -- -p mock-yield-protocols-program` or set {MOCK_YIELD_PROTOCOLS_PROGRAM_SO_ENV}"
+            ),
+        )
+    })?;
+    let program = fs::read(&path)?;
+    svm.add_program(program_id, &program).map_err(|error| {
+        std::io::Error::other(format!("add mock yield protocols program failed: {error}"))
+    })?;
+    Ok(path)
+}
+
+pub fn mock_yield_protocols_program_so_path() -> Option<PathBuf> {
+    if let Some(path) = env::var_os(MOCK_YIELD_PROTOCOLS_PROGRAM_SO_ENV).map(PathBuf::from) {
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for path in [
+        manifest_dir
+            .join("../../target/deploy")
+            .join(MOCK_YIELD_PROTOCOLS_PROGRAM_SO),
+        PathBuf::from("target/deploy").join(MOCK_YIELD_PROTOCOLS_PROGRAM_SO),
+    ] {
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+pub fn loyal_hub_swap_program_so_path() -> Option<PathBuf> {
+    if let Some(path) = env::var_os(LOYAL_HUB_SWAP_PROGRAM_SO_ENV).map(PathBuf::from) {
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for path in [
+        manifest_dir
+            .join("../../target/deploy")
+            .join(LOYAL_HUB_SWAP_PROGRAM_SO),
+        PathBuf::from("target/deploy").join(LOYAL_HUB_SWAP_PROGRAM_SO),
+    ] {
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    None
+}
