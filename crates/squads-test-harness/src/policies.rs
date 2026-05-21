@@ -859,6 +859,69 @@ pub fn create_squads_program_interaction_route_kamino_deposit_policy_instruction
     )
 }
 
+pub fn create_squads_program_interaction_route_kamino_rebalance_policy_instruction(
+    squads_settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    policy_seed: u64,
+    account_index: u8,
+    vault: Pubkey,
+    reserves: Vec<MockKaminoReserveTokenAccounts>,
+) -> Instruction {
+    create_squads_compact_program_interaction_policy_instruction(
+        squads_settings,
+        authority,
+        delegated_signer,
+        policy_seed,
+        account_index,
+        vec![
+            kamino_route_reserves_instruction_constraint(
+                vault,
+                &reserves,
+                KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR,
+            ),
+            kamino_route_reserves_instruction_constraint(
+                vault,
+                &reserves,
+                KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR,
+            ),
+        ],
+    )
+}
+
+pub fn create_squads_program_interaction_route_kamino_market_mint_rebalance_policy_instruction(
+    squads_settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    policy_seed: u64,
+    account_index: u8,
+    vault: Pubkey,
+    markets: Vec<Pubkey>,
+    liquidity_mints: Vec<Pubkey>,
+) -> Instruction {
+    create_squads_compact_program_interaction_policy_instruction(
+        squads_settings,
+        authority,
+        delegated_signer,
+        policy_seed,
+        account_index,
+        vec![
+            kamino_route_market_mint_instruction_constraint(
+                vault,
+                markets.clone(),
+                liquidity_mints.clone(),
+                KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR,
+            ),
+            kamino_route_market_mint_instruction_constraint(
+                vault,
+                markets,
+                liquidity_mints,
+                KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR,
+            ),
+        ],
+    )
+}
+
 pub fn create_squads_program_interaction_mock_kamino_reserves_policy_instruction(
     squads_settings: Pubkey,
     authority: Pubkey,
@@ -912,6 +975,44 @@ fn kamino_route_reserves_instruction_constraint(
                     reserves.iter().map(|reserve| reserve.market).collect(),
                 ),
                 owner: None,
+            },
+            SquadsAccountConstraint {
+                account_index: 10,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![spl_token::id()]),
+                owner: None,
+            },
+        ],
+        data_constraints: vec![SquadsDataConstraint {
+            data_offset: 0,
+            data_value: SquadsDataValue::U8Slice(discriminator.to_vec()),
+            operator: SquadsDataOperator::Equals,
+        }],
+    }
+}
+
+fn kamino_route_market_mint_instruction_constraint(
+    vault: Pubkey,
+    markets: Vec<Pubkey>,
+    liquidity_mints: Vec<Pubkey>,
+    discriminator: [u8; 8],
+) -> SquadsInstructionConstraint {
+    SquadsInstructionConstraint {
+        program_id: KAMINO_LEND_PROGRAM_ID,
+        account_constraints: vec![
+            SquadsAccountConstraint {
+                account_index: 0,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![vault]),
+                owner: None,
+            },
+            SquadsAccountConstraint {
+                account_index: 2,
+                account_constraint: SquadsAccountConstraintType::Pubkey(markets),
+                owner: None,
+            },
+            SquadsAccountConstraint {
+                account_index: 3,
+                account_constraint: SquadsAccountConstraintType::Pubkey(liquidity_mints),
+                owner: Some(spl_token::id()),
             },
             SquadsAccountConstraint {
                 account_index: 10,

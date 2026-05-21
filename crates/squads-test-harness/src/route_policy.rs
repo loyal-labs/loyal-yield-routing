@@ -104,6 +104,137 @@ pub fn create_squads_yield_route_policy_instructions_with_seeds(
     }
 }
 
+pub fn create_squads_yield_route_combined_kamino_policy_instructions(
+    context: &FundedSquadsTestContext,
+    delegated_signer: Pubkey,
+    whitelist: SquadsYieldRoutePolicyWhitelist,
+) -> SquadsYieldRoutePolicyInstructions {
+    create_squads_yield_route_combined_kamino_policy_instructions_with_swap_lanes(
+        context,
+        delegated_signer,
+        whitelist,
+        vec![SwapLane::Jupiter],
+    )
+}
+
+pub fn create_squads_yield_route_combined_kamino_policy_instructions_with_swap_lanes(
+    context: &FundedSquadsTestContext,
+    delegated_signer: Pubkey,
+    whitelist: SquadsYieldRoutePolicyWhitelist,
+    swap_lanes: Vec<SwapLane>,
+) -> SquadsYieldRoutePolicyInstructions {
+    let settings = context.pool.settings;
+    let authority = context.wallet_pubkey();
+    let account_index = context.vault_index;
+    let vault = context.vault;
+    let stable_mints = unique_pubkeys(whitelist.stable_mints);
+    let kamino_reserves = unique_kamino_reserves(whitelist.kamino_reserves);
+    let rebalance_seed = YIELD_ROUTE_WITHDRAW_POLICY_SEED;
+    let (rebalance, _) = derive_squads_policy(&settings, rebalance_seed);
+    let (swap, _) = derive_squads_policy(&settings, YIELD_ROUTE_SWAP_POLICY_SEED);
+
+    SquadsYieldRoutePolicyInstructions {
+        policies: SquadsYieldRoutePolicies {
+            withdraw: rebalance,
+            swap,
+            deposit: rebalance,
+        },
+        instructions: vec![
+            create_squads_program_interaction_route_kamino_rebalance_policy_instruction(
+                settings,
+                authority,
+                delegated_signer,
+                rebalance_seed,
+                account_index,
+                vault,
+                kamino_reserves,
+            ),
+            create_squads_program_interaction_route_stable_swap_policy_instruction(
+                settings,
+                authority,
+                delegated_signer,
+                YIELD_ROUTE_SWAP_POLICY_SEED,
+                account_index,
+                vault,
+                stable_mints,
+                swap_lanes,
+            ),
+        ],
+    }
+}
+
+pub fn create_squads_yield_route_market_mint_kamino_policy_instructions(
+    context: &FundedSquadsTestContext,
+    delegated_signer: Pubkey,
+    whitelist: SquadsYieldRoutePolicyWhitelist,
+) -> SquadsYieldRoutePolicyInstructions {
+    create_squads_yield_route_market_mint_kamino_policy_instructions_with_swap_lanes(
+        context,
+        delegated_signer,
+        whitelist,
+        vec![SwapLane::Jupiter],
+    )
+}
+
+pub fn create_squads_yield_route_market_mint_kamino_policy_instructions_with_swap_lanes(
+    context: &FundedSquadsTestContext,
+    delegated_signer: Pubkey,
+    whitelist: SquadsYieldRoutePolicyWhitelist,
+    swap_lanes: Vec<SwapLane>,
+) -> SquadsYieldRoutePolicyInstructions {
+    let settings = context.pool.settings;
+    let authority = context.wallet_pubkey();
+    let account_index = context.vault_index;
+    let vault = context.vault;
+    let stable_mints = unique_pubkeys(whitelist.stable_mints);
+    let kamino_reserves = unique_kamino_reserves(whitelist.kamino_reserves);
+    let kamino_markets = unique_pubkeys(
+        kamino_reserves
+            .iter()
+            .map(|reserve| reserve.market)
+            .collect::<Vec<_>>(),
+    );
+    let kamino_mints = unique_pubkeys(
+        kamino_reserves
+            .iter()
+            .map(|reserve| reserve.liquidity_mint)
+            .collect::<Vec<_>>(),
+    );
+    let rebalance_seed = YIELD_ROUTE_WITHDRAW_POLICY_SEED;
+    let (rebalance, _) = derive_squads_policy(&settings, rebalance_seed);
+    let (swap, _) = derive_squads_policy(&settings, YIELD_ROUTE_SWAP_POLICY_SEED);
+
+    SquadsYieldRoutePolicyInstructions {
+        policies: SquadsYieldRoutePolicies {
+            withdraw: rebalance,
+            swap,
+            deposit: rebalance,
+        },
+        instructions: vec![
+            create_squads_program_interaction_route_kamino_market_mint_rebalance_policy_instruction(
+                settings,
+                authority,
+                delegated_signer,
+                rebalance_seed,
+                account_index,
+                vault,
+                kamino_markets,
+                kamino_mints,
+            ),
+            create_squads_program_interaction_route_stable_swap_policy_instruction(
+                settings,
+                authority,
+                delegated_signer,
+                YIELD_ROUTE_SWAP_POLICY_SEED,
+                account_index,
+                vault,
+                stable_mints,
+                swap_lanes,
+            ),
+        ],
+    }
+}
+
 pub fn create_squads_yield_route_swap_policy_instruction(
     context: &FundedSquadsTestContext,
     delegated_signer: Pubkey,

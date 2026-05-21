@@ -39,7 +39,7 @@ fn build_rebalance_transaction(
             signer,
             vault_index,
             deposit_instructions,
-            vec![0],
+            vec![deposit_constraint_index(withdraw_policy, deposit_policy)],
             deposit_accounts,
         );
         return (vec![withdraw_ix, deposit_ix], in_amount_raw);
@@ -76,11 +76,19 @@ fn build_rebalance_transaction(
         signer,
         vault_index,
         deposit_instructions,
-        vec![0],
+        vec![deposit_constraint_index(withdraw_policy, deposit_policy)],
         deposit_accounts,
     );
 
     (vec![withdraw_ix, swap_ix, deposit_ix], out_amount_raw)
+}
+
+fn deposit_constraint_index(withdraw_policy: Pubkey, deposit_policy: Pubkey) -> u8 {
+    if withdraw_policy == deposit_policy {
+        1
+    } else {
+        0
+    }
 }
 
 fn apply_mock_kamino_accrual(

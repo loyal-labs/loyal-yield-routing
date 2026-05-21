@@ -398,7 +398,7 @@ fn build_hub_rebalance_transaction(
             signer,
             vault_index,
             deposit_instructions,
-            vec![0],
+            vec![deposit_constraint_index(withdraw_policy, deposit_policy)],
             deposit_accounts,
         );
         return HubTransition {
@@ -455,7 +455,7 @@ fn build_hub_rebalance_transaction(
         signer,
         vault_index,
         deposit_instructions,
-        vec![0],
+        vec![deposit_constraint_index(withdraw_policy, deposit_policy)],
         deposit_accounts,
     );
 
@@ -473,6 +473,14 @@ fn build_hub_rebalance_transaction(
         needs_hub_authorizer: true,
         hub_fee_revenue_usd,
         equivalent_jupiter_user_loss_usd,
+    }
+}
+
+fn deposit_constraint_index(withdraw_policy: Pubkey, deposit_policy: Pubkey) -> u8 {
+    if withdraw_policy == deposit_policy {
+        1
+    } else {
+        0
     }
 }
 

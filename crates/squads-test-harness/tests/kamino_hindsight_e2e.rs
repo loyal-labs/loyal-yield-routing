@@ -1,7 +1,7 @@
 use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
 use squads_test_harness::{
     create_funded_squads_test_context_with_config_and_mock_programs,
-    create_squads_yield_route_policy_instructions,
+    create_squads_yield_route_market_mint_kamino_policy_instructions,
     execute_mock_jupiter_sol_to_usdc_swap_instruction,
     execute_squads_program_interaction_instruction, execute_squads_sync_transaction_instruction,
     execute_squads_yield_route_stable_swap_instruction, get_spl_token_amount,
@@ -144,7 +144,7 @@ fn wallet_b_replays_fixed_start_kamino_hindsight_route() {
     }
 
     let route_reserve_accounts = reserve_accounts.values().copied().collect::<Vec<_>>();
-    let route_policy_setup = create_squads_yield_route_policy_instructions(
+    let route_policy_setup = create_squads_yield_route_market_mint_kamino_policy_instructions(
         context,
         wallet_b.pubkey(),
         SquadsYieldRoutePolicyWhitelist {
@@ -159,7 +159,7 @@ fn wallet_b_replays_fixed_start_kamino_hindsight_route() {
         &context.wallet,
         &[],
     )
-    .expect("wallet A creates optimized-reserve withdraw, route-mint swap, and deposit policies");
+    .expect("wallet A creates market/mint-scoped Kamino rebalance and route-mint swap policies");
 
     let first = &route.path[0].point;
     let mut current = first.clone();
