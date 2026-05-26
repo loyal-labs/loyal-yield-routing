@@ -1,12 +1,10 @@
 use borsh::BorshSerialize;
 use litesvm::LiteSVM;
-use solana_sdk::{instruction::Instruction, pubkey::Pubkey, signature::Keypair, signer::Signer};
+use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
 use std::{io::Write, path::PathBuf};
 
 use crate::{
     execute_squads_sync_transfer_instruction, send_instructions, DEFAULT_WALLET_AIRDROP_LAMPORTS,
-    YIELD_ROUTE_DEPOSIT_POLICY_SEED, YIELD_ROUTE_SWAP_POLICY_SEED,
-    YIELD_ROUTE_WITHDRAW_POLICY_SEED,
 };
 
 #[derive(BorshSerialize)]
@@ -366,57 +364,6 @@ pub struct MockKaminoReserveTokenAccounts {
 pub struct MockJupiterStableReserveTokenAccount {
     pub mint: Pubkey,
     pub reserve: Pubkey,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SquadsYieldRoutePolicyWhitelist {
-    pub stable_mints: Vec<Pubkey>,
-    pub kamino_reserves: Vec<MockKaminoReserveTokenAccounts>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SwapLane {
-    Jupiter,
-    LoyalHub {
-        hub_authorizer: Pubkey,
-        max_fee_bps: u16,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SquadsYieldRoutePolicySeeds {
-    pub withdraw: u64,
-    pub swap: u64,
-    pub deposit: u64,
-}
-
-impl Default for SquadsYieldRoutePolicySeeds {
-    fn default() -> Self {
-        Self {
-            withdraw: YIELD_ROUTE_WITHDRAW_POLICY_SEED,
-            swap: YIELD_ROUTE_SWAP_POLICY_SEED,
-            deposit: YIELD_ROUTE_DEPOSIT_POLICY_SEED,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SquadsYieldRoutePolicies {
-    pub withdraw: Pubkey,
-    pub swap: Pubkey,
-    pub deposit: Pubkey,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SquadsYieldRoutePolicyInstructions {
-    pub policies: SquadsYieldRoutePolicies,
-    pub instructions: Vec<Instruction>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SquadsYieldRoutePolicyInstruction {
-    pub policy: Pubkey,
-    pub instruction: Instruction,
 }
 
 #[derive(BorshSerialize)]

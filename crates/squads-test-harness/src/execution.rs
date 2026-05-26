@@ -255,27 +255,14 @@ pub fn set_loyal_hub_paused_instruction(admin: Pubkey, paused: bool) -> Instruct
     }
 }
 
-pub fn set_loyal_hub_config_instruction(
-    admin_signer: Pubkey,
-    new_admin: Pubkey,
-    hub_authorizer: Pubkey,
-    max_fee_bps: u16,
-    paused: bool,
-    allowed_mints: &[Pubkey],
-) -> Instruction {
+pub fn set_loyal_hub_max_fee_instruction(admin: Pubkey, max_fee_bps: u16) -> Instruction {
     Instruction {
         program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
         accounts: vec![
             AccountMeta::new(derive_loyal_hub_config(), false),
-            AccountMeta::new_readonly(admin_signer, true),
+            AccountMeta::new_readonly(admin, true),
         ],
-        data: loyal_hub_set_config_data(
-            new_admin,
-            hub_authorizer,
-            max_fee_bps,
-            paused,
-            allowed_mints,
-        ),
+        data: loyal_hub_set_max_fee_data(max_fee_bps),
     }
 }
 

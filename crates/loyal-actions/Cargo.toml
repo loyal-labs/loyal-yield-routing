@@ -1,0 +1,10 @@
+[package]
+name = "loyal-actions"
+version = "0.1.0"
+edition = "2021"
+description = "Rust SDK for building Loyal delegated Squads actions"
+
+[dependencies]
+borsh.workspace = true
+solana-sdk.workspace = true
+spl-token.workspace = true

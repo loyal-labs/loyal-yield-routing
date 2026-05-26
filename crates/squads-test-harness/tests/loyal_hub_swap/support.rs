@@ -8,7 +8,7 @@ struct HubSwapFixture {
     context: squads_test_harness::FundedSquadsTestContext,
     wallet_b: Keypair,
     hub_authorizer: Keypair,
-    swap_policy: SquadsYieldRoutePolicyInstruction,
+    swap_action: YieldRouteActionInstruction,
     vault_usdc: solana_sdk::pubkey::Pubkey,
     vault_pyusd: solana_sdk::pubkey::Pubkey,
 }
@@ -69,9 +69,8 @@ fn setup_fixture(with_jupiter: bool) -> Option<HubSwapFixture> {
     try_send_instructions(&mut context.svm, &[init_hub_ix], &context.wallet, &[])
         .expect("initialize Loyal Hub config");
 
-    let swap_policy = create_squads_yield_route_swap_policy_instruction_with_swap_lanes(
-        &context,
-        wallet_b.pubkey(),
+    let swap_action = create_swap_yield_route_action_with_swap_lanes(
+        loyal_action_context(&context, wallet_b.pubkey()),
         vec![USDC_MINT, PYUSD_MINT],
         vec![
             SwapLane::Jupiter,
@@ -80,10 +79,12 @@ fn setup_fixture(with_jupiter: bool) -> Option<HubSwapFixture> {
                 max_fee_bps: 50,
             },
         ],
-    );
+        YIELD_ROUTE_STANDALONE_ACTION_SEED,
+    )
+    .expect("build LoyalHub/Jupiter swap action");
     try_send_instructions(
         &mut context.svm,
-        &[swap_policy.instruction.clone()],
+        &[swap_action.instruction.clone()],
         &context.wallet,
         &[],
     )
@@ -93,7 +94,7 @@ fn setup_fixture(with_jupiter: bool) -> Option<HubSwapFixture> {
         context,
         wallet_b,
         hub_authorizer,
-        swap_policy,
+        swap_action,
         vault_usdc,
         vault_pyusd,
     })
@@ -101,7 +102,7 @@ fn setup_fixture(with_jupiter: bool) -> Option<HubSwapFixture> {
 
 fn hub_swap_ix(fixture: &HubSwapFixture, amount_in: u64, amount_out: u64) -> Instruction {
     execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
-        fixture.swap_policy.policy,
+        fixture.swap_action.account,
         fixture.wallet_b.pubkey(),
         fixture.context.vault_index,
         fixture.context.vault,

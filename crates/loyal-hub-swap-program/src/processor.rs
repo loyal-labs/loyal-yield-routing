@@ -12,7 +12,7 @@ use solana_system_interface::instruction as system_instruction;
 use crate::{
     constants::HUB_CONFIG_SPACE,
     instruction::{parse_instruction, HubInstruction, SwapExactInArgs},
-    state::{derive_config, derive_hub_authority, HubConfig},
+    state::{derive_config, derive_hub_authority, derive_inventory_account, HubConfig},
     token::{
         read_mint_decimals, require_matching_token_mint, require_token_account, transfer_checked,
         transfer_checked_signed,
@@ -37,7 +37,9 @@ pub fn process_instruction(
             process_withdraw_inventory(program_id, accounts, amount)
         }
         HubInstruction::SetPaused { paused } => process_set_paused(program_id, accounts, paused),
-        HubInstruction::SetConfig(config) => process_set_config(program_id, accounts, config),
+        HubInstruction::SetMaxFee { max_fee_bps } => {
+            process_set_max_fee(program_id, accounts, max_fee_bps)
+        }
     }
 }
 
@@ -83,19 +85,20 @@ fn process_initialize_config(
     config.write_account(config_account)
 }
 
-fn process_set_config(
+fn process_set_max_fee(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
-    config: HubConfig,
+    max_fee_bps: u16,
 ) -> ProgramResult {
-    validate_fee_bps(config.max_fee_bps)?;
+    validate_fee_bps(max_fee_bps)?;
 
     let account_info_iter = &mut accounts.iter();
     let config_account = next_account_info(account_info_iter)?;
     let admin = next_account_info(account_info_iter)?;
 
-    let existing = HubConfig::read_account(program_id, config_account)?;
-    require_admin(admin, &existing)?;
+    let mut config = HubConfig::read_account(program_id, config_account)?;
+    require_admin(admin, &config)?;
+    config.max_fee_bps = max_fee_bps;
     config.write_account(config_account)
 }
 
@@ -158,6 +161,14 @@ fn process_swap_exact_in(
     config.require_allowed_mint(output_mint.key)?;
     require_distinct_pubkeys(input_mint.key, output_mint.key)?;
     require_distinct_keys(&[user_input, user_output, hub_input, hub_output])?;
+    require_key(
+        hub_input,
+        &derive_inventory_account(program_id, input_mint.key),
+    )?;
+    require_key(
+        hub_output,
+        &derive_inventory_account(program_id, output_mint.key),
+    )?;
 
     let input_decimals = read_mint_decimals(input_mint)?;
     let output_decimals = read_mint_decimals(output_mint)?;
@@ -217,6 +228,7 @@ fn process_withdraw_inventory(
     require_key(token_program, &spl_token::id())?;
     require_key(hub_authority, &derive_hub_authority(program_id).0)?;
     require_distinct_key(hub_source, destination)?;
+    require_key(hub_source, &derive_inventory_account(program_id, mint.key))?;
     config.require_allowed_mint(mint.key)?;
     require_token_account(hub_source, mint.key, hub_authority.key)?;
     require_matching_token_mint(destination, mint.key)?;

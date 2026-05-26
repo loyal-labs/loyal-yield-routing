@@ -80,21 +80,9 @@ pub fn loyal_hub_initialize_config_data(
     data
 }
 
-pub fn loyal_hub_set_config_data(
-    admin: Pubkey,
-    hub_authorizer: Pubkey,
-    max_fee_bps: u16,
-    paused: bool,
-    allowed_mints: &[Pubkey],
-) -> Vec<u8> {
-    let mut data = vec![LOYAL_HUB_SET_CONFIG];
-    data.extend_from_slice(&loyal_hub_config_data(
-        admin,
-        hub_authorizer,
-        max_fee_bps,
-        paused,
-        allowed_mints,
-    ));
+pub fn loyal_hub_set_max_fee_data(max_fee_bps: u16) -> Vec<u8> {
+    let mut data = vec![LOYAL_HUB_SET_MAX_FEE];
+    data.extend_from_slice(&max_fee_bps.to_le_bytes());
     data
 }
 
@@ -182,7 +170,16 @@ pub fn derive_loyal_hub_authority() -> Pubkey {
 }
 
 pub fn loyal_hub_token_account(mint: Pubkey) -> Pubkey {
-    Pubkey::new_from_array(hashv(&[LOYAL_HUB_TOKEN_ACCOUNT_SEED, mint.as_ref()]).to_bytes())
+    let hub_authority = derive_loyal_hub_authority();
+    Pubkey::find_program_address(
+        &[
+            hub_authority.as_ref(),
+            spl_token::id().as_ref(),
+            mint.as_ref(),
+        ],
+        &ASSOCIATED_TOKEN_PROGRAM_ID,
+    )
+    .0
 }
 
 pub fn mock_jupiter_usdc_reserve_token_account() -> Pubkey {

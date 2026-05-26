@@ -4,6 +4,7 @@ use super::common::{
 };
 use crate::types::*;
 use crate::*;
+use loyal_actions::SwapLane;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -462,58 +463,16 @@ fn jupiter_route_stable_swap_instruction_constraint(
     }
 }
 
-pub(super) fn jupiter_route_stable_swap_minimal_instruction_constraint(
-    vault: Pubkey,
-    allowed_mints: Vec<Pubkey>,
-) -> SquadsInstructionConstraint {
-    SquadsInstructionConstraint {
-        program_id: JUPITER_V6_PROGRAM_ID,
-        account_constraints: vec![
-            SquadsAccountConstraint {
-                account_index: 0,
-                account_constraint: SquadsAccountConstraintType::Pubkey(vec![vault]),
-                owner: None,
-            },
-            SquadsAccountConstraint {
-                account_index: 1,
-                account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
-                owner: Some(spl_token::id()),
-            },
-            SquadsAccountConstraint {
-                account_index: 2,
-                account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
-                owner: Some(spl_token::id()),
-            },
-            SquadsAccountConstraint {
-                account_index: 3,
-                account_constraint: SquadsAccountConstraintType::Pubkey(allowed_mints.clone()),
-                owner: Some(spl_token::id()),
-            },
-            SquadsAccountConstraint {
-                account_index: 4,
-                account_constraint: SquadsAccountConstraintType::Pubkey(allowed_mints),
-                owner: Some(spl_token::id()),
-            },
-            SquadsAccountConstraint {
-                account_index: 5,
-                account_constraint: SquadsAccountConstraintType::Pubkey(vec![spl_token::id()]),
-                owner: None,
-            },
-        ],
-        data_constraints: vec![SquadsDataConstraint {
-            data_offset: 0,
-            data_value: SquadsDataValue::U8(MOCK_JUPITER_STABLE_EXACT_IN),
-            operator: SquadsDataOperator::Equals,
-        }],
-    }
-}
-
 pub(super) fn loyal_hub_route_stable_swap_instruction_constraint(
     vault: Pubkey,
     allowed_mints: Vec<Pubkey>,
     hub_authorizer: Pubkey,
     max_fee_bps: u16,
 ) -> SquadsInstructionConstraint {
+    let inventory_accounts = allowed_mints
+        .iter()
+        .map(|mint| loyal_hub_token_account(*mint))
+        .collect::<Vec<_>>();
     SquadsInstructionConstraint {
         program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
         account_constraints: vec![
@@ -528,6 +487,16 @@ pub(super) fn loyal_hub_route_stable_swap_instruction_constraint(
                 account_index: 1,
                 account_constraint: SquadsAccountConstraintType::Pubkey(vec![vault]),
                 owner: None,
+            },
+            SquadsAccountConstraint {
+                account_index: 4,
+                account_constraint: SquadsAccountConstraintType::Pubkey(inventory_accounts.clone()),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: 5,
+                account_constraint: SquadsAccountConstraintType::Pubkey(inventory_accounts),
+                owner: Some(spl_token::id()),
             },
             SquadsAccountConstraint {
                 account_index: 6,

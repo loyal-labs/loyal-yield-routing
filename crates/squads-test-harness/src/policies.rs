@@ -1,7 +1,7 @@
 //! Squads policy builders grouped by policy family.
 //!
-//! Keep broad route-level orchestration in `yield_route`; this module owns the
-//! lower-level Squads policy instructions that those routes compose.
+//! Loyal route action construction lives in the `loyal-actions` crate. This
+//! module owns lower-level Squads policy instructions for focused harness tests.
 
 mod lifecycle;
 mod program_interaction;

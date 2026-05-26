@@ -14,7 +14,7 @@ use solana_program::{
 
 pub use constants::*;
 pub use processor::process_instruction;
-pub use state::{derive_config, derive_hub_authority, HubConfig};
+pub use state::{derive_config, derive_hub_authority, derive_inventory_account, HubConfig};
 
 entrypoint!(entrypoint_process_instruction);
 

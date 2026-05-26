@@ -139,13 +139,9 @@ fn run_litesvm_hub_route(
         .expect("Loyal Treasury initializes Loyal Hub config");
 
     let route_reserve_accounts = reserve_accounts.values().copied().collect::<Vec<_>>();
-    let route_policy_setup = create_squads_yield_route_policy_instructions_with_swap_lanes(
-        context,
-        wallet_b.pubkey(),
-        SquadsYieldRoutePolicyWhitelist {
-            stable_mints: route_mints.clone(),
-            kamino_reserves: route_reserve_accounts,
-        },
+    let route_action_setup = create_three_step_yield_route_actions_with_swap_lanes(
+        loyal_action_context(context, wallet_b.pubkey()),
+        yield_route_universe_from_mock_reserves(route_mints.clone(), route_reserve_accounts),
         vec![
             SwapLane::Jupiter,
             SwapLane::LoyalHub {
@@ -153,11 +149,13 @@ fn run_litesvm_hub_route(
                 max_fee_bps: HUB_MAX_FEE_BPS,
             },
         ],
-    );
-    let route_policies = route_policy_setup.policies;
+        loyal_actions::YieldRouteActionSeeds::default(),
+    )
+    .expect("build route actions with Jupiter and Loyal Hub swap lanes");
+    let route_accounts = route_action_setup.accounts;
     try_send_instructions(
         &mut context.svm,
-        &route_policy_setup.instructions,
+        &route_action_setup.instructions,
         &context.wallet,
         &[],
     )
@@ -234,9 +232,9 @@ fn run_litesvm_hub_route(
             .unwrap_or(&current);
         let transition = build_hub_rebalance_transaction(
             context.vault,
-            route_policies.withdraw,
-            route_policies.swap,
-            route_policies.deposit,
+            route_accounts.withdraw,
+            route_accounts.swap,
+            route_accounts.deposit,
             wallet_b.pubkey(),
             treasury_executor.pubkey(),
             context.vault_index,

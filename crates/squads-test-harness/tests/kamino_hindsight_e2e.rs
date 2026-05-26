@@ -1,19 +1,19 @@
+use loyal_actions::{create_all_in_one_market_mint_yield_route_action_with_swap_lanes, SwapLane};
 use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
 use squads_test_harness::{
     create_funded_squads_test_context_with_config_and_mock_programs,
-    create_squads_yield_route_all_in_one_market_mint_policy_instructions_with_swap_lanes,
     execute_mock_jupiter_sol_to_usdc_swap_instruction,
     execute_squads_program_interaction_instruction, execute_squads_sync_transaction_instruction,
     execute_squads_yield_route_stable_swap_instruction_with_constraint_index, get_spl_token_amount,
-    initialize_loyal_hub_config_instruction, mock_jupiter_stable_reserve_token_account,
-    mock_kamino_deposit_reserve_liquidity_data, mock_kamino_reserve_transaction,
-    mock_kamino_withdraw_reserve_liquidity_data, seed_mock_jupiter_spl_accounts,
-    seed_mock_jupiter_stable_reserve_spl_accounts, seed_mock_kamino_reserve_spl_accounts_with_mint,
-    seed_spl_mint_if_missing, set_spl_mint_supply, set_spl_token_amount, try_send_instructions,
-    try_send_instructions_with_heap_frame, FundedSquadsTestConfig,
+    initialize_loyal_hub_config_instruction, loyal_action_context,
+    mock_jupiter_stable_reserve_token_account, mock_kamino_deposit_reserve_liquidity_data,
+    mock_kamino_reserve_transaction, mock_kamino_withdraw_reserve_liquidity_data,
+    seed_mock_jupiter_spl_accounts, seed_mock_jupiter_stable_reserve_spl_accounts,
+    seed_mock_kamino_reserve_spl_accounts_with_mint, seed_spl_mint_if_missing, set_spl_mint_supply,
+    set_spl_token_amount, try_send_instructions, try_send_instructions_with_heap_frame,
+    yield_route_universe_from_mock_reserves, FundedSquadsTestConfig,
     MockJupiterStableReserveTokenAccount, MockKaminoReserveTokenAccounts, MockProgram,
-    SquadsYieldRoutePolicyWhitelist, SwapLane, KAMINO_PRIME_MARKET, KAMINO_PRIME_USDC_RESERVE,
-    LAMPORTS_PER_SOL, USDC_DECIMALS, USDC_MINT,
+    KAMINO_PRIME_MARKET, KAMINO_PRIME_USDC_RESERVE, LAMPORTS_PER_SOL, USDC_DECIMALS, USDC_MINT,
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -166,26 +166,22 @@ fn wallet_b_replays_fixed_start_kamino_hindsight_route() {
     }
 
     let route_reserve_accounts = reserve_accounts.values().copied().collect::<Vec<_>>();
-    let route_policy_setup =
-        create_squads_yield_route_all_in_one_market_mint_policy_instructions_with_swap_lanes(
-            context,
-            wallet_b.pubkey(),
-            SquadsYieldRoutePolicyWhitelist {
-                stable_mints: route_mints.clone(),
-                kamino_reserves: route_reserve_accounts,
+    let route_action_setup = create_all_in_one_market_mint_yield_route_action_with_swap_lanes(
+        loyal_action_context(context, wallet_b.pubkey()),
+        yield_route_universe_from_mock_reserves(route_mints.clone(), route_reserve_accounts),
+        vec![
+            SwapLane::Jupiter,
+            SwapLane::LoyalHub {
+                hub_authorizer: hub_authorizer.pubkey(),
+                max_fee_bps: LOYAL_HUB_MAX_FEE_BPS,
             },
-            vec![
-                SwapLane::Jupiter,
-                SwapLane::LoyalHub {
-                    hub_authorizer: hub_authorizer.pubkey(),
-                    max_fee_bps: LOYAL_HUB_MAX_FEE_BPS,
-                },
-            ],
-        );
-    let route_policies = route_policy_setup.policies;
+        ],
+    )
+    .expect("build all-in-one market/mint route action");
+    let route_accounts = route_action_setup.accounts;
     try_send_instructions_with_heap_frame(
         &mut context.svm,
-        &route_policy_setup.instructions,
+        &route_action_setup.instructions,
         &context.wallet,
         &[],
     )
@@ -256,9 +252,9 @@ fn wallet_b_replays_fixed_start_kamino_hindsight_route() {
             .unwrap_or(&current);
         let (transaction_instructions, next_amount_raw) = build_rebalance_transaction(
             context.vault,
-            route_policies.withdraw,
-            route_policies.swap,
-            route_policies.deposit,
+            route_accounts.withdraw,
+            route_accounts.swap,
+            route_accounts.deposit,
             wallet_b.pubkey(),
             context.vault_index,
             &vault_token_accounts,

@@ -1,21 +1,22 @@
-//! Vertical-slice helpers for Squads yield-routing tests.
+//! Vertical-slice helpers for Squads and Loyal Actions tests.
 //!
 //! The crate keeps the public API grouped by the concepts a test author is
 //! likely to look for:
 //!
 //! - [`squads`] owns Squads PDA derivation, smart-account setup, and sync
 //!   transaction payload helpers.
-//! - [`policies`] owns raw Squads policy instruction builders.
-//! - [`yield_route`] owns route-level policy bundles such as Kamino
-//!   withdraw/swap/deposit setups.
+//! - [`actions`] adapts test contexts and mock protocol accounts into
+//!   `loyal-actions` SDK inputs.
+//! - [`policies`] owns raw Squads policy instruction builders for focused
+//!   Squads tests.
 //! - [`protocols`] owns test protocol fixtures, SPL account seeding, and mock
 //!   Jupiter/Kamino/Loyal Hub instruction data.
 //! - [`runtime`] owns LiteSVM setup and transaction submission helpers.
 //!
-//! Root-level re-exports are kept for existing tests. New code can import from
-//! the domain modules or from [`prelude`] when a scenario needs the common
+//! New scenario tests can import from [`prelude`] when they need the common
 //! harness surface.
 
+pub mod actions;
 pub mod constants;
 pub mod execution;
 pub mod policies;
@@ -23,8 +24,8 @@ pub mod protocols;
 pub mod runtime;
 pub mod squads;
 pub mod types;
-pub mod yield_route;
 
+pub use actions::*;
 pub use constants::*;
 pub use execution::*;
 pub use policies::*;
@@ -34,13 +35,10 @@ pub use squads::*;
 pub use types::{
     FundedSquadsTestConfig, FundedSquadsTestContext, MockJupiterStableReserveTokenAccount,
     MockJupiterTokenAccounts, MockKaminoReserveTokenAccounts, MockProgram, SquadsPool,
-    SquadsYieldRoutePolicies, SquadsYieldRoutePolicyInstruction,
-    SquadsYieldRoutePolicyInstructions, SquadsYieldRoutePolicySeeds,
-    SquadsYieldRoutePolicyWhitelist, SwapLane,
 };
-pub use yield_route::*;
 
 pub mod prelude {
+    pub use crate::actions::*;
     pub use crate::constants::*;
     pub use crate::execution::*;
     pub use crate::policies::*;
@@ -50,9 +48,5 @@ pub mod prelude {
     pub use crate::types::{
         FundedSquadsTestConfig, FundedSquadsTestContext, MockJupiterStableReserveTokenAccount,
         MockJupiterTokenAccounts, MockKaminoReserveTokenAccounts, MockProgram, SquadsPool,
-        SquadsYieldRoutePolicies, SquadsYieldRoutePolicyInstruction,
-        SquadsYieldRoutePolicyInstructions, SquadsYieldRoutePolicySeeds,
-        SquadsYieldRoutePolicyWhitelist, SwapLane,
     };
-    pub use crate::yield_route::*;
 }

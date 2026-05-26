@@ -345,38 +345,6 @@ pub(super) fn kamino_route_market_mint_instruction_constraint(
     }
 }
 
-pub(super) fn kamino_route_mint_instruction_constraint(
-    vault: Pubkey,
-    liquidity_mints: Vec<Pubkey>,
-    discriminator: [u8; 8],
-) -> SquadsInstructionConstraint {
-    SquadsInstructionConstraint {
-        program_id: KAMINO_LEND_PROGRAM_ID,
-        account_constraints: vec![
-            SquadsAccountConstraint {
-                account_index: 0,
-                account_constraint: SquadsAccountConstraintType::Pubkey(vec![vault]),
-                owner: None,
-            },
-            SquadsAccountConstraint {
-                account_index: 3,
-                account_constraint: SquadsAccountConstraintType::Pubkey(liquidity_mints),
-                owner: Some(spl_token::id()),
-            },
-            SquadsAccountConstraint {
-                account_index: 10,
-                account_constraint: SquadsAccountConstraintType::Pubkey(vec![spl_token::id()]),
-                owner: None,
-            },
-        ],
-        data_constraints: vec![SquadsDataConstraint {
-            data_offset: 0,
-            data_value: SquadsDataValue::U8Slice(discriminator.to_vec()),
-            operator: SquadsDataOperator::Equals,
-        }],
-    }
-}
-
 fn mock_kamino_reserve_instruction_constraint(
     vault: Pubkey,
     discriminator: [u8; 8],

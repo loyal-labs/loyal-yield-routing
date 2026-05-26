@@ -3,9 +3,11 @@ pub const HUB_AUTHORITY_SEED: &[u8] = b"hub-authority";
 pub const CONFIG_MAGIC: &[u8; 8] = b"LHUBCFG1";
 pub const MAX_ALLOWED_MINTS: usize = 8;
 pub const HUB_CONFIG_SPACE: usize = 8 + 32 + 32 + 2 + 1 + 1 + (MAX_ALLOWED_MINTS * 32);
+pub const ASSOCIATED_TOKEN_PROGRAM_ID: solana_program::pubkey::Pubkey =
+    solana_program::pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 
 pub const INITIALIZE_CONFIG: u8 = 0;
 pub const SWAP_EXACT_IN: u8 = 1;
 pub const WITHDRAW_INVENTORY: u8 = 2;
 pub const SET_PAUSED: u8 = 3;
-pub const SET_CONFIG: u8 = 4;
+pub const SET_MAX_FEE: u8 = 4;

@@ -1,3 +1,7 @@
+use loyal_actions::{
+    create_swap_yield_route_action_with_swap_lanes, SwapLane, YieldRouteActionInstruction,
+    YIELD_ROUTE_STANDALONE_ACTION_SEED,
+};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -6,19 +10,18 @@ use solana_sdk::{
 };
 use squads_test_harness::{
     create_funded_squads_test_context_with_mock_programs, create_squads_smart_account_instruction,
-    create_squads_yield_route_swap_policy_instruction_with_swap_lanes, derive_loyal_hub_authority,
-    derive_loyal_hub_config, derive_squads_pool, derive_squads_vault,
+    derive_loyal_hub_authority, derive_loyal_hub_config, derive_squads_pool, derive_squads_vault,
     execute_mock_jupiter_sol_to_usdc_swap_instruction, execute_squads_sync_transaction_instruction,
     execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index,
     execute_squads_yield_route_stable_swap_instruction, get_spl_token_amount,
-    initialize_loyal_hub_config_instruction, loyal_hub_token_account,
-    loyal_hub_withdraw_inventory_data, mock_jupiter_stable_reserve_token_account,
-    seed_loyal_hub_inventory_spl_accounts, seed_mock_jupiter_spl_accounts,
-    seed_mock_jupiter_stable_reserve_spl_accounts, seed_spl_mint_if_missing,
-    seed_spl_token_account, set_loyal_hub_config_instruction, set_loyal_hub_paused_instruction,
-    try_send_instructions, withdraw_loyal_hub_inventory_instruction,
-    MockJupiterStableReserveTokenAccount, MockProgram, SquadsCompiledInstruction, SquadsPool,
-    SquadsYieldRoutePolicyInstruction, SwapLane, LAMPORTS_PER_SOL, LOYAL_HUB_SWAP_PROGRAM_ID,
+    initialize_loyal_hub_config_instruction, loyal_action_context, loyal_hub_swap_exact_in_data,
+    loyal_hub_token_account, loyal_hub_withdraw_inventory_data,
+    mock_jupiter_stable_reserve_token_account, seed_loyal_hub_inventory_spl_accounts,
+    seed_mock_jupiter_spl_accounts, seed_mock_jupiter_stable_reserve_spl_accounts,
+    seed_spl_mint_if_missing, seed_spl_token_account, set_loyal_hub_max_fee_instruction,
+    set_loyal_hub_paused_instruction, try_send_instructions,
+    withdraw_loyal_hub_inventory_instruction, MockJupiterStableReserveTokenAccount, MockProgram,
+    SquadsCompiledInstruction, SquadsPool, LAMPORTS_PER_SOL, LOYAL_HUB_SWAP_PROGRAM_ID,
     PYUSD_DECIMALS, PYUSD_MINT, USDC_DECIMALS, USDC_MINT,
 };
 
@@ -142,9 +145,8 @@ fn treasury_backed_simulation_covers_hub_jupiter_and_inventory_movement() {
         hub_pyusd_top_up
     );
 
-    let swap_policy = create_squads_yield_route_swap_policy_instruction_with_swap_lanes(
-        &context,
-        wallet_b.pubkey(),
+    let swap_action = create_swap_yield_route_action_with_swap_lanes(
+        loyal_action_context(&context, wallet_b.pubkey()),
         vec![USDC_MINT, PYUSD_MINT],
         vec![
             SwapLane::Jupiter,
@@ -153,17 +155,19 @@ fn treasury_backed_simulation_covers_hub_jupiter_and_inventory_movement() {
                 max_fee_bps: 50,
             },
         ],
-    );
+        YIELD_ROUTE_STANDALONE_ACTION_SEED,
+    )
+    .expect("build Jupiter and Loyal Hub swap action");
     try_send_instructions(
         &mut context.svm,
-        &[swap_policy.instruction.clone()],
+        &[swap_action.instruction.clone()],
         &context.wallet,
         &[],
     )
     .expect("wallet A creates policy allowing Jupiter and Loyal Hub lanes for wallet B");
 
     let full_hub_ix = execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
-        swap_policy.policy,
+        swap_action.account,
         wallet_b.pubkey(),
         context.vault_index,
         context.vault,
@@ -186,7 +190,7 @@ fn treasury_backed_simulation_covers_hub_jupiter_and_inventory_movement() {
     let half_jupiter_in = AMOUNT_IN - half_hub_in;
     let half_jupiter_out = half_jupiter_in;
     let half_hub_ix = execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
-        swap_policy.policy,
+        swap_action.account,
         wallet_b.pubkey(),
         context.vault_index,
         context.vault,
@@ -202,7 +206,7 @@ fn treasury_backed_simulation_covers_hub_jupiter_and_inventory_movement() {
         1,
     );
     let half_jupiter_ix = execute_squads_yield_route_stable_swap_instruction(
-        swap_policy.policy,
+        swap_action.account,
         wallet_b.pubkey(),
         context.vault_index,
         context.vault,
@@ -222,7 +226,7 @@ fn treasury_backed_simulation_covers_hub_jupiter_and_inventory_movement() {
     .expect("wallet B executes half Loyal Hub fill and Jupiter residual");
 
     let jupiter_only_ix = execute_squads_yield_route_stable_swap_instruction(
-        swap_policy.policy,
+        swap_action.account,
         wallet_b.pubkey(),
         context.vault_index,
         context.vault,
@@ -369,7 +373,7 @@ fn loyal_hub_rejects_wrong_output_destination() {
     );
 
     let ix = execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
-        fixture.swap_policy.policy,
+        fixture.swap_action.account,
         fixture.wallet_b.pubkey(),
         fixture.context.vault_index,
         fixture.context.vault,
@@ -399,6 +403,170 @@ fn loyal_hub_rejects_wrong_output_destination() {
 }
 
 #[test]
+fn loyal_hub_rejects_non_canonical_inventory_accounts() {
+    let Some(mut fixture) = setup_fixture(false) else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+
+    let direct_user = Keypair::new();
+    fixture
+        .context
+        .svm
+        .airdrop(&direct_user.pubkey(), LAMPORTS_PER_SOL / 10)
+        .expect("airdrop direct user");
+    let direct_user_usdc = Keypair::new().pubkey();
+    let direct_user_pyusd = Keypair::new().pubkey();
+    let wrong_hub_usdc = Keypair::new().pubkey();
+    seed_spl_token_account(
+        &mut fixture.context.svm,
+        direct_user_usdc,
+        USDC_MINT,
+        direct_user.pubkey(),
+        AMOUNT_IN,
+    );
+    seed_spl_token_account(
+        &mut fixture.context.svm,
+        direct_user_pyusd,
+        PYUSD_MINT,
+        direct_user.pubkey(),
+        0,
+    );
+    seed_spl_token_account(
+        &mut fixture.context.svm,
+        wrong_hub_usdc,
+        USDC_MINT,
+        derive_loyal_hub_authority(),
+        0,
+    );
+
+    let ix = Instruction {
+        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new_readonly(derive_loyal_hub_config(), false),
+            AccountMeta::new_readonly(direct_user.pubkey(), true),
+            AccountMeta::new(direct_user_usdc, false),
+            AccountMeta::new(direct_user_pyusd, false),
+            AccountMeta::new(wrong_hub_usdc, false),
+            AccountMeta::new(loyal_hub_token_account(PYUSD_MINT), false),
+            AccountMeta::new_readonly(USDC_MINT, false),
+            AccountMeta::new_readonly(PYUSD_MINT, false),
+            AccountMeta::new_readonly(derive_loyal_hub_authority(), false),
+            AccountMeta::new_readonly(fixture.hub_authorizer.pubkey(), true),
+            AccountMeta::new_readonly(spl_token::id(), false),
+        ],
+        data: loyal_hub_swap_exact_in_data(AMOUNT_IN, HUB_OUT, MIN_OUT, MAX_FEE_BPS),
+    };
+    let error = try_send_instructions(
+        &mut fixture.context.svm,
+        &[ix],
+        &fixture.context.wallet,
+        &[&direct_user, &fixture.hub_authorizer],
+    )
+    .expect_err("hub rejects non-canonical inventory account");
+    assert!(error.contains("InvalidArgument"), "{error}");
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, direct_user_usdc),
+        AMOUNT_IN
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, direct_user_pyusd),
+        0
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, wrong_hub_usdc),
+        0
+    );
+}
+
+#[test]
+fn loyal_hub_rejects_same_mint_swaps() {
+    let Some(mut fixture) = setup_fixture(false) else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+    let second_usdc = Keypair::new().pubkey();
+    seed_spl_token_account(
+        &mut fixture.context.svm,
+        second_usdc,
+        USDC_MINT,
+        fixture.context.vault,
+        0,
+    );
+
+    let ix = execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
+        fixture.swap_action.account,
+        fixture.wallet_b.pubkey(),
+        fixture.context.vault_index,
+        fixture.context.vault,
+        fixture.vault_usdc,
+        second_usdc,
+        USDC_MINT,
+        USDC_MINT,
+        fixture.hub_authorizer.pubkey(),
+        AMOUNT_IN,
+        HUB_OUT,
+        MIN_OUT,
+        MAX_FEE_BPS,
+        1,
+    );
+    let error = try_send_instructions(
+        &mut fixture.context.svm,
+        &[ix],
+        &fixture.wallet_b,
+        &[&fixture.hub_authorizer],
+    )
+    .expect_err("hub rejects same-mint swaps");
+    assert!(error.contains("InvalidArgument"), "{error}");
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, fixture.vault_usdc),
+        AMOUNT_IN
+    );
+    assert_eq!(get_spl_token_amount(&fixture.context.svm, second_usdc), 0);
+}
+
+#[test]
+fn loyal_hub_rejects_duplicate_mutable_token_accounts() {
+    let Some(mut fixture) = setup_fixture(false) else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+
+    let ix = execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
+        fixture.swap_action.account,
+        fixture.wallet_b.pubkey(),
+        fixture.context.vault_index,
+        fixture.context.vault,
+        fixture.vault_usdc,
+        fixture.vault_usdc,
+        USDC_MINT,
+        PYUSD_MINT,
+        fixture.hub_authorizer.pubkey(),
+        AMOUNT_IN,
+        HUB_OUT,
+        MIN_OUT,
+        MAX_FEE_BPS,
+        1,
+    );
+    let error = try_send_instructions(
+        &mut fixture.context.svm,
+        &[ix],
+        &fixture.wallet_b,
+        &[&fixture.hub_authorizer],
+    )
+    .expect_err("hub rejects duplicated mutable token accounts");
+    assert!(error.contains("InvalidArgument"), "{error}");
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, fixture.vault_usdc),
+        AMOUNT_IN
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, fixture.vault_pyusd),
+        0
+    );
+}
+
+#[test]
 fn loyal_hub_rejects_excessive_fee_and_paused_swaps() {
     let Some(mut fixture) = setup_fixture(false) else {
         eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
@@ -407,7 +575,7 @@ fn loyal_hub_rejects_excessive_fee_and_paused_swaps() {
 
     let excessive_fee_ix =
         execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
-            fixture.swap_policy.policy,
+            fixture.swap_action.account,
             fixture.wallet_b.pubkey(),
             fixture.context.vault_index,
             fixture.context.vault,
@@ -492,23 +660,16 @@ fn loyal_hub_admin_can_withdraw_hot_inventory() {
 }
 
 #[test]
-fn loyal_hub_admin_can_update_config() {
+fn loyal_hub_admin_can_update_max_fee() {
     let Some(mut fixture) = setup_fixture(false) else {
         eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
         return;
     };
 
-    let set_config_ix = set_loyal_hub_config_instruction(
-        fixture.context.wallet_pubkey(),
-        fixture.context.wallet_pubkey(),
-        fixture.hub_authorizer.pubkey(),
-        5,
-        false,
-        &[USDC_MINT, PYUSD_MINT],
-    );
+    let set_fee_ix = set_loyal_hub_max_fee_instruction(fixture.context.wallet_pubkey(), 5);
     try_send_instructions(
         &mut fixture.context.svm,
-        &[set_config_ix],
+        &[set_fee_ix],
         &fixture.context.wallet,
         &[],
     )
@@ -551,7 +712,7 @@ fn route_policy_allows_partial_hub_fill_then_jupiter_residual() {
 
     let hub_ix = hub_swap_ix(&fixture, AMOUNT_IN - residual_in, 599_400);
     let jupiter_ix = execute_squads_yield_route_stable_swap_instruction(
-        fixture.swap_policy.policy,
+        fixture.swap_action.account,
         fixture.wallet_b.pubkey(),
         fixture.context.vault_index,
         fixture.context.vault,
@@ -602,7 +763,7 @@ fn route_policy_still_allows_jupiter_only_fallback() {
     );
 
     let jupiter_ix = execute_squads_yield_route_stable_swap_instruction(
-        fixture.swap_policy.policy,
+        fixture.swap_action.account,
         fixture.wallet_b.pubkey(),
         fixture.context.vault_index,
         fixture.context.vault,

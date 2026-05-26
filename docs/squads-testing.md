@@ -8,7 +8,7 @@ Run the current tests with:
 bun run test:squads
 ```
 
-The crate lives in `crates/squads-test-harness`. It provides LiteSVM setup; Squads PDA derivation for settings, vault namespaces, policy accounts, and program config; `create_squads_smart_account` instruction construction; spending-limit and ProgramInteraction policy builders; yield-route policy bundle helpers; sync-transfer and sync-transaction helpers; real SPL Token mint/account seeding helpers; test-only Jupiter/Kamino SBF program loading; and account-meta hashing.
+The action SDK lives in `crates/loyal-actions`. The harness crate lives in `crates/squads-test-harness` and provides LiteSVM setup; Squads PDA derivation for settings, vault namespaces, policy accounts, and program config; `create_squads_smart_account` instruction construction; spending-limit helpers; sync-transfer and sync-transaction helpers; real SPL Token mint/account seeding helpers; test-only Jupiter/Kamino/Loyal Hub SBF program loading; and account-meta hashing.
 
 ## Harness Architecture
 
@@ -16,36 +16,32 @@ The Rust crate is organized as a small vertical-slice test harness instead of a 
 
 - `squads` owns Squads-specific addresses, settings-account setup, smart-account instructions, and compiled instruction payload encoding.
 - `runtime` owns LiteSVM construction, Squads SBF fixture loading, funded test contexts, heap-frame helpers, and transaction submission.
+- `actions` owns harness-only adapters from `FundedSquadsTestContext` and seeded mock Kamino accounts into `loyal-actions` inputs.
 - `policies` owns raw policy builders and low-level policy families:
   - `policies/lifecycle.rs` covers policy removal and other settings-lifecycle instructions.
   - `policies/spending_limits.rs` covers spending-limit policy creation.
-  - `policies/program_interaction/` covers raw `ProgramInteraction` policy constraints for Jupiter, Kamino, Loyal Hub, compact Squads payload encoding, and all-in-one route bundles. Its `mod.rs` is a facade over `stable_swap.rs`, `kamino.rs`, `route_bundles.rs`, and `common.rs`.
-- `yield_route` owns user-facing route policy bundles such as three-policy, combined-Kamino, and all-in-one route setups.
+- `policies/program_interaction/` keeps older low-level ProgramInteraction helpers used by focused tests.
 - `protocols` owns mock protocol instruction data, SPL Token account seeding, and local SBF mock loading for Jupiter, Kamino, and Loyal Hub.
 - `types` owns shared structs and Borsh payload models; most Squads wire types stay `pub(crate)` so the public API stays small.
 
-Root-level exports remain available for existing tests. New tests should prefer `squads_test_harness::prelude::*` for scenario-style imports or module-qualified imports such as `squads_test_harness::yield_route::create_squads_yield_route_policy_instructions` when the dependency should be explicit.
+New tests should prefer `squads_test_harness::prelude::*` for scenario-style runtime/mock imports and import route action builders from `loyal_actions`.
 
 Use `create_funded_squads_test_context()` for tests that need the common funded starting point. The default context airdrops `1 SOL`, creates a Squads smart account with the wallet as signer, and sends `0.5 SOL` into vault index `0`, leaving both the wallet and vault funded for the scenario under test. Use `create_funded_squads_test_context_with_config()` when a test needs a different seed, vault index, or funding split.
 
 The current end-to-end paths live in `crates/squads-test-harness/tests/`. `spending_limits.rs` covers delegated SOL withdrawals, `swap_intents.rs` covers the SOL-to-USDC setup swap plus delegated USDC-to-PYUSD stable-swap ProgramInteraction path using SPL Token transfers, and `kamino_reserves.rs` covers delegated deposit/withdraw against a whitelisted Kamino Main Market USDC reserve using SPL Token CPIs plus denial for the Prime/Figure USDC reserve and denial after deposit-policy removal.
 
-For yield-routing tests, prefer the abstraction in the Rust test crate:
+For yield-routing tests, build actions through the SDK:
 
 ```rust
-let route_policy_setup = create_squads_yield_route_policy_instructions(
-    context,
-    delegated_signer,
-    SquadsYieldRoutePolicyWhitelist {
-        stable_mints,
-        kamino_reserves,
-    },
-);
+let route_action_setup = create_three_step_yield_route_actions(
+    loyal_action_context(context, delegated_signer),
+    yield_route_universe_from_mock_reserves(stable_mints, kamino_reserves),
+)?;
 ```
 
-That call hides Squads settings, authority, vault index, default policy seeds, policy PDA derivation, compact ProgramInteraction payload construction, and the three-policy split. Test code should list the stable mints and Kamino reserve account structs needed by the optimized route, send `route_policy_setup.instructions`, then execute against `route_policy_setup.policies.withdraw`, `.swap`, and `.deposit`.
+That call hides Squads settings, authority, vault index, default action seeds, action account derivation, compact ProgramInteraction payload construction, and the three-action split. Test code should list the stable mints and seeded Kamino accounts needed by the optimized route, send `route_action_setup.instructions`, then execute against `route_action_setup.accounts.withdraw`, `.swap`, and `.deposit`.
 
-Use `create_squads_yield_route_swap_policy_instruction()` for swap-only tests and `execute_squads_yield_route_stable_swap_instruction()` for the mock Jupiter stable exact-in path.
+Use `create_swap_yield_route_action()` for swap-only setup and `execute_squads_yield_route_stable_swap_instruction()` for the mock Jupiter stable exact-in execution path.
 
 The setup mirrors the lean parts of `passkey-work`: one static Squads settings account can own many deterministic vault namespaces, and tests should keep the Squads verifier or gateway signer explicit. Future yield-routing tests can build on these helpers instead of recreating PDA seeds and Borsh payload packing in every test.
 

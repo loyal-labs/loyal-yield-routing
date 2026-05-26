@@ -1,6 +1,11 @@
 mod common;
 
 use common::{load_jupiter_usdc_pyusd_fixture, parse_fixture_amount};
+use loyal_actions::{
+    create_all_in_one_market_mint_yield_route_action,
+    create_all_in_one_mint_yield_route_action_with_swap_lanes,
+    create_three_step_yield_route_actions, SwapLane,
+};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     signature::Keypair,
@@ -9,22 +14,19 @@ use solana_sdk::{
 use solana_system_interface::instruction as system_instruction;
 use squads_test_harness::{
     create_funded_squads_test_context_with_mock_programs,
-    create_squads_yield_route_all_in_one_market_mint_policy_instructions,
-    create_squads_yield_route_all_in_one_mint_policy_instructions_with_swap_lanes,
-    create_squads_yield_route_policy_instructions,
     execute_mock_jupiter_sol_to_usdc_swap_instruction,
     execute_squads_program_interaction_instruction, execute_squads_sync_transaction_instruction,
     execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index,
     execute_squads_yield_route_stable_swap_instruction,
     execute_squads_yield_route_stable_swap_instruction_with_constraint_index, get_spl_token_amount,
-    initialize_loyal_hub_config_instruction, loyal_hub_token_account,
+    initialize_loyal_hub_config_instruction, loyal_action_context, loyal_hub_token_account,
     mock_jupiter_stable_reserve_token_account, mock_jupiter_swap_data, mock_jupiter_token_accounts,
     mock_kamino_deposit_reserve_liquidity_data, mock_kamino_reserve_transaction,
     mock_kamino_withdraw_reserve_liquidity_data, seed_loyal_hub_inventory_spl_accounts,
     seed_mock_jupiter_spl_accounts, seed_mock_jupiter_stable_reserve_spl_accounts,
     seed_mock_kamino_reserve_spl_accounts, seed_mock_kamino_reserve_spl_accounts_with_mint,
     seed_spl_token_account, try_send_instructions, try_send_instructions_with_heap_frame,
-    MockJupiterStableReserveTokenAccount, MockProgram, SquadsYieldRoutePolicyWhitelist, SwapLane,
+    yield_route_universe_from_mock_reserves, MockJupiterStableReserveTokenAccount, MockProgram,
     JUPITER_V6_PROGRAM_ID, KAMINO_MAIN_MARKET, KAMINO_MAIN_PYUSD_RESERVE, KAMINO_MAIN_USDC_RESERVE,
     KAMINO_PRIME_MARKET, KAMINO_PRIME_USDC_RESERVE, LAMPORTS_PER_SOL, MOCK_JUPITER_SOL_TO_USDC,
     PYUSD_DECIMALS, PYUSD_MINT, USDC_DECIMALS, USDC_MINT, WRAPPED_SOL_MINT,
@@ -112,22 +114,22 @@ fn wallet_b_can_execute_bundled_kamino_yield_route_switches() {
     let usdc_withdraw_data = mock_kamino_withdraw_reserve_liquidity_data(fixture_in_amount);
     let pyusd_deposit_data = mock_kamino_deposit_reserve_liquidity_data(fixture_out_amount);
 
-    let route_policy_setup = create_squads_yield_route_policy_instructions(
-        context,
-        wallet_b.pubkey(),
-        SquadsYieldRoutePolicyWhitelist {
-            stable_mints: vec![USDC_MINT, PYUSD_MINT],
-            kamino_reserves: vec![
+    let route_action_setup = create_three_step_yield_route_actions(
+        loyal_action_context(context, wallet_b.pubkey()),
+        yield_route_universe_from_mock_reserves(
+            vec![USDC_MINT, PYUSD_MINT],
+            vec![
                 main_usdc_reserve_accounts,
                 prime_usdc_reserve_accounts,
                 pyusd_reserve_accounts,
             ],
-        },
-    );
-    let route_policies = route_policy_setup.policies;
+        ),
+    )
+    .expect("build route actions");
+    let route_accounts = route_action_setup.accounts;
     try_send_instructions(
         &mut context.svm,
-        &route_policy_setup.instructions,
+        &route_action_setup.instructions,
         &context.wallet,
         &[],
     )
@@ -171,7 +173,7 @@ fn wallet_b_can_execute_bundled_kamino_yield_route_switches() {
         usdc_withdraw_data.clone(),
     );
     let main_withdraw_ix = execute_squads_program_interaction_instruction(
-        route_policies.withdraw,
+        route_accounts.withdraw,
         wallet_b.pubkey(),
         context.vault_index,
         main_withdraw_instructions,
@@ -184,7 +186,7 @@ fn wallet_b_can_execute_bundled_kamino_yield_route_switches() {
         usdc_deposit_data.clone(),
     );
     let prime_deposit_ix = execute_squads_program_interaction_instruction(
-        route_policies.deposit,
+        route_accounts.deposit,
         wallet_b.pubkey(),
         context.vault_index,
         prime_deposit_instructions,
@@ -214,7 +216,7 @@ fn wallet_b_can_execute_bundled_kamino_yield_route_switches() {
         usdc_withdraw_data,
     );
     let prime_withdraw_ix = execute_squads_program_interaction_instruction(
-        route_policies.withdraw,
+        route_accounts.withdraw,
         wallet_b.pubkey(),
         context.vault_index,
         prime_withdraw_instructions,
@@ -222,7 +224,7 @@ fn wallet_b_can_execute_bundled_kamino_yield_route_switches() {
         prime_withdraw_accounts,
     );
     let usdc_to_pyusd_ix = execute_squads_yield_route_stable_swap_instruction(
-        route_policies.swap,
+        route_accounts.swap,
         wallet_b.pubkey(),
         context.vault_index,
         context.vault,
@@ -236,7 +238,7 @@ fn wallet_b_can_execute_bundled_kamino_yield_route_switches() {
     let (pyusd_deposit_instructions, pyusd_deposit_accounts) =
         mock_kamino_reserve_transaction(context.vault, pyusd_reserve_accounts, pyusd_deposit_data);
     let pyusd_deposit_ix = execute_squads_program_interaction_instruction(
-        route_policies.deposit,
+        route_accounts.deposit,
         wallet_b.pubkey(),
         context.vault_index,
         pyusd_deposit_instructions,
@@ -332,21 +334,21 @@ fn wallet_b_can_execute_reduced_all_in_one_yield_route_policy() {
         pyusd_reserve_liquidity_supply,
     );
 
-    let route_policy_setup = create_squads_yield_route_all_in_one_market_mint_policy_instructions(
-        context,
-        wallet_b.pubkey(),
-        SquadsYieldRoutePolicyWhitelist {
-            stable_mints: vec![USDC_MINT, PYUSD_MINT],
-            kamino_reserves: vec![main_usdc_reserve_accounts, pyusd_reserve_accounts],
-        },
-    );
-    let route_policies = route_policy_setup.policies;
-    assert_eq!(route_policy_setup.instructions.len(), 1);
-    assert_eq!(route_policies.withdraw, route_policies.swap);
-    assert_eq!(route_policies.swap, route_policies.deposit);
+    let route_action_setup = create_all_in_one_market_mint_yield_route_action(
+        loyal_action_context(context, wallet_b.pubkey()),
+        yield_route_universe_from_mock_reserves(
+            vec![USDC_MINT, PYUSD_MINT],
+            vec![main_usdc_reserve_accounts, pyusd_reserve_accounts],
+        ),
+    )
+    .expect("build all-in-one route action");
+    let route_accounts = route_action_setup.accounts;
+    assert_eq!(route_action_setup.instructions.len(), 1);
+    assert_eq!(route_accounts.withdraw, route_accounts.swap);
+    assert_eq!(route_accounts.swap, route_accounts.deposit);
     try_send_instructions_with_heap_frame(
         &mut context.svm,
-        &route_policy_setup.instructions,
+        &route_action_setup.instructions,
         &context.wallet,
         &[],
     )
@@ -390,7 +392,7 @@ fn wallet_b_can_execute_reduced_all_in_one_yield_route_policy() {
         mock_kamino_withdraw_reserve_liquidity_data(fixture_in_amount),
     );
     let main_withdraw_ix = execute_squads_program_interaction_instruction(
-        route_policies.withdraw,
+        route_accounts.withdraw,
         wallet_b.pubkey(),
         context.vault_index,
         main_withdraw_instructions,
@@ -398,7 +400,7 @@ fn wallet_b_can_execute_reduced_all_in_one_yield_route_policy() {
         main_withdraw_accounts,
     );
     let usdc_to_pyusd_ix = execute_squads_yield_route_stable_swap_instruction_with_constraint_index(
-        route_policies.swap,
+        route_accounts.swap,
         wallet_b.pubkey(),
         context.vault_index,
         context.vault,
@@ -416,7 +418,7 @@ fn wallet_b_can_execute_reduced_all_in_one_yield_route_policy() {
         mock_kamino_deposit_reserve_liquidity_data(fixture_out_amount),
     );
     let pyusd_deposit_ix = execute_squads_program_interaction_instruction(
-        route_policies.deposit,
+        route_accounts.deposit,
         wallet_b.pubkey(),
         context.vault_index,
         pyusd_deposit_instructions,
@@ -524,26 +526,25 @@ fn wallet_b_can_execute_all_in_one_policy_with_loyal_hub_swap_lane() {
     try_send_instructions(&mut context.svm, &[init_hub_ix], &hub_authorizer, &[])
         .expect("hub authorizer initializes Loyal Hub config");
 
-    let route_policy_setup =
-        create_squads_yield_route_all_in_one_mint_policy_instructions_with_swap_lanes(
-            context,
-            wallet_b.pubkey(),
-            SquadsYieldRoutePolicyWhitelist {
-                stable_mints: vec![USDC_MINT, PYUSD_MINT],
-                kamino_reserves: vec![main_usdc_reserve_accounts, pyusd_reserve_accounts],
+    let route_action_setup = create_all_in_one_mint_yield_route_action_with_swap_lanes(
+        loyal_action_context(context, wallet_b.pubkey()),
+        yield_route_universe_from_mock_reserves(
+            vec![USDC_MINT, PYUSD_MINT],
+            vec![main_usdc_reserve_accounts, pyusd_reserve_accounts],
+        ),
+        vec![
+            SwapLane::Jupiter,
+            SwapLane::LoyalHub {
+                hub_authorizer: hub_authorizer.pubkey(),
+                max_fee_bps,
             },
-            vec![
-                SwapLane::Jupiter,
-                SwapLane::LoyalHub {
-                    hub_authorizer: hub_authorizer.pubkey(),
-                    max_fee_bps,
-                },
-            ],
-        );
-    let route_policies = route_policy_setup.policies;
+        ],
+    )
+    .expect("build all-in-one route action with Loyal Hub lane");
+    let route_accounts = route_action_setup.accounts;
     try_send_instructions_with_heap_frame(
         &mut context.svm,
-        &route_policy_setup.instructions,
+        &route_action_setup.instructions,
         &context.wallet,
         &[],
     )
@@ -587,7 +588,7 @@ fn wallet_b_can_execute_all_in_one_policy_with_loyal_hub_swap_lane() {
         mock_kamino_withdraw_reserve_liquidity_data(amount_in),
     );
     let main_withdraw_ix = execute_squads_program_interaction_instruction(
-        route_policies.withdraw,
+        route_accounts.withdraw,
         wallet_b.pubkey(),
         context.vault_index,
         main_withdraw_instructions,
@@ -595,7 +596,7 @@ fn wallet_b_can_execute_all_in_one_policy_with_loyal_hub_swap_lane() {
         main_withdraw_accounts,
     );
     let hub_swap_ix = execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
-        route_policies.swap,
+        route_accounts.swap,
         wallet_b.pubkey(),
         context.vault_index,
         context.vault,
@@ -616,7 +617,7 @@ fn wallet_b_can_execute_all_in_one_policy_with_loyal_hub_swap_lane() {
         mock_kamino_deposit_reserve_liquidity_data(hub_out),
     );
     let pyusd_deposit_ix = execute_squads_program_interaction_instruction(
-        route_policies.deposit,
+        route_accounts.deposit,
         wallet_b.pubkey(),
         context.vault_index,
         pyusd_deposit_instructions,
@@ -724,18 +725,18 @@ fn wallet_a_can_pack_vault_usdc_deposit_and_three_yield_route_policies() {
     );
     assert_eq!(get_spl_token_amount(&context.svm, vault_usdc), 0);
 
-    let route_policy_setup = create_squads_yield_route_policy_instructions(
-        context,
-        wallet_b.pubkey(),
-        SquadsYieldRoutePolicyWhitelist {
-            stable_mints: vec![USDC_MINT, PYUSD_MINT],
-            kamino_reserves: vec![
+    let route_action_setup = create_three_step_yield_route_actions(
+        loyal_action_context(context, wallet_b.pubkey()),
+        yield_route_universe_from_mock_reserves(
+            vec![USDC_MINT, PYUSD_MINT],
+            vec![
                 main_usdc_reserve_accounts,
                 prime_usdc_reserve_accounts,
                 pyusd_reserve_accounts,
             ],
-        },
-    );
+        ),
+    )
+    .expect("build route actions");
     let deposit_usdc_to_vault0_ix = spl_token::instruction::transfer_checked(
         &spl_token::id(),
         &wallet_usdc,
@@ -749,7 +750,7 @@ fn wallet_a_can_pack_vault_usdc_deposit_and_three_yield_route_policies() {
     .expect("build wallet A USDC deposit into vault 0");
 
     let mut packed_instructions = vec![deposit_usdc_to_vault0_ix];
-    packed_instructions.extend(route_policy_setup.instructions);
+    packed_instructions.extend(route_action_setup.instructions);
     try_send_instructions(
         &mut context.svm,
         &packed_instructions,
@@ -765,15 +766,15 @@ fn wallet_a_can_pack_vault_usdc_deposit_and_three_yield_route_policies() {
     );
     assert!(context
         .svm
-        .get_account(&route_policy_setup.policies.withdraw)
+        .get_account(&route_action_setup.accounts.withdraw)
         .is_some());
     assert!(context
         .svm
-        .get_account(&route_policy_setup.policies.swap)
+        .get_account(&route_action_setup.accounts.swap)
         .is_some());
     assert!(context
         .svm
-        .get_account(&route_policy_setup.policies.deposit)
+        .get_account(&route_action_setup.accounts.deposit)
         .is_some());
 }
 
@@ -842,15 +843,15 @@ fn wallet_a_can_pack_vault_usdc_deposit_and_reduced_all_in_one_policy() {
     )
     .expect("wallet A swaps SOL to wallet-owned USDC after smart-account creation");
 
-    let route_policy_setup = create_squads_yield_route_all_in_one_market_mint_policy_instructions(
-        context,
-        wallet_b.pubkey(),
-        SquadsYieldRoutePolicyWhitelist {
-            stable_mints: vec![USDC_MINT, PYUSD_MINT],
-            kamino_reserves: vec![main_usdc_reserve_accounts, pyusd_reserve_accounts],
-        },
-    );
-    let route_policies = route_policy_setup.policies;
+    let route_action_setup = create_all_in_one_market_mint_yield_route_action(
+        loyal_action_context(context, wallet_b.pubkey()),
+        yield_route_universe_from_mock_reserves(
+            vec![USDC_MINT, PYUSD_MINT],
+            vec![main_usdc_reserve_accounts, pyusd_reserve_accounts],
+        ),
+    )
+    .expect("build all-in-one route action");
+    let route_accounts = route_action_setup.accounts;
     let deposit_usdc_to_vault0_ix = spl_token::instruction::transfer_checked(
         &spl_token::id(),
         &wallet_usdc,
@@ -864,7 +865,7 @@ fn wallet_a_can_pack_vault_usdc_deposit_and_reduced_all_in_one_policy() {
     .expect("build wallet A USDC deposit into vault 0");
 
     let mut packed_instructions = vec![deposit_usdc_to_vault0_ix];
-    packed_instructions.extend(route_policy_setup.instructions);
+    packed_instructions.extend(route_action_setup.instructions);
     try_send_instructions_with_heap_frame(
         &mut context.svm,
         &packed_instructions,
@@ -880,9 +881,9 @@ fn wallet_a_can_pack_vault_usdc_deposit_and_reduced_all_in_one_policy() {
         get_spl_token_amount(&context.svm, vault_usdc),
         deposit_amount
     );
-    assert_eq!(route_policies.withdraw, route_policies.swap);
-    assert_eq!(route_policies.swap, route_policies.deposit);
-    assert!(context.svm.get_account(&route_policies.withdraw).is_some());
+    assert_eq!(route_accounts.withdraw, route_accounts.swap);
+    assert_eq!(route_accounts.swap, route_accounts.deposit);
+    assert!(context.svm.get_account(&route_accounts.withdraw).is_some());
 }
 
 fn wallet_mock_jupiter_sol_to_usdc_swap_instruction(

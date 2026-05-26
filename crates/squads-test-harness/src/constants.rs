@@ -31,16 +31,17 @@ pub const LOYAL_HUB_INITIALIZE_CONFIG: u8 = 0;
 pub const LOYAL_HUB_SWAP_EXACT_IN: u8 = 1;
 pub const LOYAL_HUB_WITHDRAW_INVENTORY: u8 = 2;
 pub const LOYAL_HUB_SET_PAUSED: u8 = 3;
-pub const LOYAL_HUB_SET_CONFIG: u8 = 4;
+pub const LOYAL_HUB_SET_MAX_FEE: u8 = 4;
 pub const LOYAL_HUB_CONFIG_SEED: &[u8] = b"config";
 pub const LOYAL_HUB_AUTHORITY_SEED: &[u8] = b"hub-authority";
+pub const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
+    pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 pub const JUPITER_SWAP_AUTHORITY_SEED: &[u8] = b"jupiter-swap-authority";
 pub const MOCK_JUPITER_USDC_RESERVE_TOKEN_ACCOUNT_SEED: &[u8] =
     b"mock-jupiter-usdc-reserve-token-account";
 pub const MOCK_JUPITER_PYUSD_RESERVE_TOKEN_ACCOUNT_SEED: &[u8] =
     b"mock-jupiter-pyusd-reserve-token-account";
 pub const MOCK_JUPITER_STABLE_RESERVE_TOKEN_ACCOUNT_SEED: &[u8] = b"mock-jupiter-stable-reserve";
-pub const LOYAL_HUB_TOKEN_ACCOUNT_SEED: &[u8] = b"loyal-hub-token-account";
 pub const KAMINO_LEND_PROGRAM_ID: Pubkey = pubkey!("KvauGMspG5k6rtzrqqn7WNn3oZdyKqLKwK2XWQ8FLjd");
 pub const KAMINO_MAIN_MARKET: Pubkey = pubkey!("7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF");
 pub const KAMINO_MAIN_USDC_RESERVE: Pubkey =
@@ -63,7 +64,3 @@ pub const LOYAL_HUB_SWAP_PROGRAM_SO_ENV: &str = "LOYAL_HUB_SWAP_PROGRAM_SO";
 pub const LOYAL_HUB_SWAP_PROGRAM_SO: &str = "loyal_hub_swap_program.so";
 pub const SQUADS_SMART_ACCOUNT_PROGRAM_SO_FIXTURE: &str =
     "crates/squads-test-harness/fixtures/squads/squads_smart_account_program.so";
-pub const YIELD_ROUTE_WITHDRAW_POLICY_SEED: u64 = 1;
-pub const YIELD_ROUTE_SWAP_POLICY_SEED: u64 = 2;
-pub const YIELD_ROUTE_DEPOSIT_POLICY_SEED: u64 = 3;
-pub const YIELD_ROUTE_STANDALONE_POLICY_SEED: u64 = 1;

@@ -2,7 +2,7 @@ use solana_program::program_error::ProgramError;
 
 use crate::{
     codec::{read_u16, read_u64},
-    constants::{INITIALIZE_CONFIG, SET_CONFIG, SET_PAUSED, SWAP_EXACT_IN, WITHDRAW_INVENTORY},
+    constants::{INITIALIZE_CONFIG, SET_MAX_FEE, SET_PAUSED, SWAP_EXACT_IN, WITHDRAW_INVENTORY},
     state::HubConfig,
 };
 
@@ -11,7 +11,7 @@ pub enum HubInstruction {
     SwapExactIn(SwapExactInArgs),
     WithdrawInventory { amount: u64 },
     SetPaused { paused: bool },
-    SetConfig(HubConfig),
+    SetMaxFee { max_fee_bps: u16 },
 }
 
 pub struct SwapExactInArgs {
@@ -34,7 +34,9 @@ pub fn parse_instruction(data: &[u8]) -> Result<HubInstruction, ProgramError> {
         SET_PAUSED => Ok(HubInstruction::SetPaused {
             paused: parse_paused(rest)?,
         }),
-        SET_CONFIG => Ok(HubInstruction::SetConfig(HubConfig::parse(rest)?)),
+        SET_MAX_FEE => Ok(HubInstruction::SetMaxFee {
+            max_fee_bps: parse_max_fee(rest)?,
+        }),
         _ => Err(ProgramError::InvalidInstructionData),
     }
 }
@@ -63,4 +65,11 @@ fn parse_paused(data: &[u8]) -> Result<bool, ProgramError> {
         return Err(ProgramError::InvalidInstructionData);
     }
     Ok(data[0] != 0)
+}
+
+fn parse_max_fee(data: &[u8]) -> Result<u16, ProgramError> {
+    if data.len() != 2 {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    read_u16(data)
 }
