@@ -1,4 +1,4 @@
-use loyal_actions::{create_three_step_yield_route_actions_with_swap_lanes, SwapLane};
+use loyal_actions::{create_three_step_yield_route_actions, SwapLane};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -9,21 +9,20 @@ use squads_test_harness::{
     create_funded_squads_test_context_with_config_and_mock_programs,
     create_squads_smart_account_instruction, derive_loyal_hub_authority, derive_loyal_hub_config,
     derive_mock_jupiter_swap_authority, derive_squads_pool, derive_squads_vault,
-    execute_mock_jupiter_sol_to_usdc_swap_instruction,
-    execute_squads_program_interaction_instruction, execute_squads_sync_transaction_instruction,
-    execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index,
+    execute_mock_jupiter_sol_to_usdc_swap_instruction, execute_squads_sync_transaction_instruction,
     get_spl_token_amount, initialize_loyal_hub_config_instruction, loyal_action_context,
     loyal_hub_token_account, loyal_hub_withdraw_inventory_data,
     mock_jupiter_stable_exact_in_swap_data, mock_jupiter_stable_reserve_token_account,
-    mock_kamino_deposit_reserve_liquidity_data, mock_kamino_reserve_transaction,
-    mock_kamino_withdraw_reserve_liquidity_data, seed_mock_jupiter_spl_accounts,
-    seed_mock_jupiter_stable_reserve_spl_accounts, seed_mock_kamino_reserve_spl_accounts_with_mint,
-    seed_spl_mint_if_missing, seed_spl_token_account, set_spl_mint_supply, set_spl_token_amount,
-    try_send_instructions, yield_route_universe_from_mock_reserves, FundedSquadsTestConfig,
-    MockJupiterStableReserveTokenAccount, MockKaminoReserveTokenAccounts, MockProgram,
-    SquadsCompiledInstruction, SquadsPool, JUPITER_V6_PROGRAM_ID, KAMINO_PRIME_MARKET,
-    KAMINO_PRIME_USDC_RESERVE, LAMPORTS_PER_SOL, LOYAL_HUB_SWAP_PROGRAM_ID, USDC_DECIMALS,
-    USDC_MINT,
+    mock_jupiter_swap_lane, mock_kamino_deposit_reserve_liquidity_data,
+    mock_kamino_reserve_transaction, mock_kamino_withdraw_reserve_liquidity_data,
+    seed_mock_jupiter_spl_accounts, seed_mock_jupiter_stable_reserve_spl_accounts,
+    seed_mock_kamino_reserve_spl_accounts_with_mint, seed_spl_mint_if_missing,
+    seed_spl_token_account, set_spl_mint_supply, set_spl_token_amount, try_send_instructions,
+    yield_route_universe_from_mock_reserves, FundedSquadsTestConfig, HubAction, HubSwapExecution,
+    KaminoAction, MockJupiterStableReserveTokenAccount, MockKaminoReserveTokenAccounts,
+    MockProgram, RouteActionExt, SquadsCompiledInstruction, SquadsPool, JUPITER_V6_PROGRAM_ID,
+    KAMINO_PRIME_MARKET, KAMINO_PRIME_USDC_RESERVE, LAMPORTS_PER_SOL, LOYAL_HUB_SWAP_PROGRAM_ID,
+    USDC_DECIMALS, USDC_MINT,
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet},

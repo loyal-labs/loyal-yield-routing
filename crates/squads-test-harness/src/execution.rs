@@ -1,4 +1,5 @@
 use borsh::BorshSerialize;
+use loyal_actions::LoyalActionStep;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -95,6 +96,23 @@ pub fn execute_squads_sync_transaction_instruction(
             squads_compiled_instruction_payload(&compiled_instructions),
         ),
     }
+}
+
+pub fn execute_loyal_action_step(
+    step: LoyalActionStep,
+    signer: Pubkey,
+    account_index: u8,
+    compiled_instructions: Vec<SquadsCompiledInstruction>,
+    transaction_accounts: Vec<AccountMeta>,
+) -> Instruction {
+    execute_squads_program_interaction_instruction(
+        step.action_account(),
+        signer,
+        account_index,
+        compiled_instructions,
+        step.instruction_constraint_indexes(),
+        transaction_accounts,
+    )
 }
 
 pub fn execute_mock_jupiter_sol_to_usdc_swap_instruction(
@@ -212,6 +230,33 @@ pub fn execute_squads_yield_route_stable_swap_instruction_with_constraint_index(
             AccountMeta::new_readonly(derive_mock_jupiter_swap_authority(), false),
             AccountMeta::new_readonly(JUPITER_V6_PROGRAM_ID, false),
         ],
+    )
+}
+
+pub fn execute_loyal_action_jupiter_swap(
+    step: LoyalActionStep,
+    signer: Pubkey,
+    account_index: u8,
+    vault: Pubkey,
+    vault_input: Pubkey,
+    vault_output: Pubkey,
+    input_mint: Pubkey,
+    output_mint: Pubkey,
+    in_amount: u64,
+    out_amount: u64,
+) -> Instruction {
+    execute_squads_yield_route_stable_swap_instruction_with_constraint_index(
+        step.action_account(),
+        signer,
+        account_index,
+        vault,
+        vault_input,
+        vault_output,
+        input_mint,
+        output_mint,
+        in_amount,
+        out_amount,
+        step.instruction_constraint_index(),
     )
 }
 
@@ -361,5 +406,38 @@ pub fn execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_ind
             AccountMeta::new_readonly(spl_token::id(), false),
             AccountMeta::new_readonly(LOYAL_HUB_SWAP_PROGRAM_ID, false),
         ],
+    )
+}
+
+pub fn execute_loyal_action_hub_swap(
+    step: LoyalActionStep,
+    signer: Pubkey,
+    account_index: u8,
+    vault: Pubkey,
+    vault_input: Pubkey,
+    vault_output: Pubkey,
+    input_mint: Pubkey,
+    output_mint: Pubkey,
+    hub_authorizer: Pubkey,
+    amount_in: u64,
+    amount_out: u64,
+    min_out: u64,
+    max_fee_bps: u16,
+) -> Instruction {
+    execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
+        step.action_account(),
+        signer,
+        account_index,
+        vault,
+        vault_input,
+        vault_output,
+        input_mint,
+        output_mint,
+        hub_authorizer,
+        amount_in,
+        amount_out,
+        min_out,
+        max_fee_bps,
+        step.instruction_constraint_index(),
     )
 }

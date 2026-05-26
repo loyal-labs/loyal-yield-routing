@@ -69,11 +69,11 @@ fn setup_fixture(with_jupiter: bool) -> Option<HubSwapFixture> {
     try_send_instructions(&mut context.svm, &[init_hub_ix], &context.wallet, &[])
         .expect("initialize Loyal Hub config");
 
-    let swap_action = create_swap_yield_route_action_with_swap_lanes(
+    let swap_action = create_swap_yield_route_action(
         loyal_action_context(&context, wallet_b.pubkey()),
         vec![USDC_MINT, PYUSD_MINT],
         vec![
-            SwapLane::Jupiter,
+            mock_jupiter_swap_lane(true),
             SwapLane::LoyalHub {
                 hub_authorizer: hub_authorizer.pubkey(),
                 max_fee_bps: 50,
@@ -101,22 +101,24 @@ fn setup_fixture(with_jupiter: bool) -> Option<HubSwapFixture> {
 }
 
 fn hub_swap_ix(fixture: &HubSwapFixture, amount_in: u64, amount_out: u64) -> Instruction {
-    execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
-        fixture.swap_action.account,
-        fixture.wallet_b.pubkey(),
-        fixture.context.vault_index,
-        fixture.context.vault,
-        fixture.vault_usdc,
-        fixture.vault_pyusd,
-        USDC_MINT,
-        PYUSD_MINT,
-        fixture.hub_authorizer.pubkey(),
-        amount_in,
-        amount_out,
-        MIN_OUT.min(amount_out),
-        MAX_FEE_BPS,
-        1,
-    )
+    fixture
+        .swap_action
+        .hub()
+        .expect("swap action has Loyal Hub lane")
+        .build(HubSwapExecution {
+            signer: fixture.wallet_b.pubkey(),
+            vault_index: fixture.context.vault_index,
+            vault: fixture.context.vault,
+            vault_input: fixture.vault_usdc,
+            vault_output: fixture.vault_pyusd,
+            input_mint: USDC_MINT,
+            output_mint: PYUSD_MINT,
+            hub_authorizer: fixture.hub_authorizer.pubkey(),
+            amount_in,
+            amount_out,
+            min_out: MIN_OUT.min(amount_out),
+            max_fee_bps: MAX_FEE_BPS,
+        })
 }
 
 fn create_treasury_squads(

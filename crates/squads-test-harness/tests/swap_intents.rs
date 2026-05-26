@@ -4,15 +4,16 @@ use common::{
     assert_jupiter_usdc_pyusd_fixture_contract, jupiter_build_url, load_jupiter_usdc_pyusd_fixture,
     parse_fixture_amount, shell_single_quote, JupiterBuildFixture,
 };
-use loyal_actions::create_swap_yield_route_action;
+use loyal_actions::{create_swap_yield_route_action, YIELD_ROUTE_STANDALONE_ACTION_SEED};
 use solana_sdk::{signature::Keypair, signer::Signer};
 use squads_test_harness::{
     create_funded_squads_test_context_with_mock_programs,
-    execute_mock_jupiter_sol_to_usdc_swap_instruction,
-    execute_squads_yield_route_stable_swap_instruction, get_spl_token_amount, loyal_action_context,
-    mock_jupiter_stable_reserve_token_account, seed_mock_jupiter_spl_accounts,
-    seed_mock_jupiter_stable_reserve_spl_accounts, seed_spl_token_account, try_send_instructions,
-    MockJupiterStableReserveTokenAccount, MockProgram, LAMPORTS_PER_SOL, PYUSD_MINT, USDC_MINT,
+    execute_mock_jupiter_sol_to_usdc_swap_instruction, get_spl_token_amount, loyal_action_context,
+    mock_jupiter_stable_reserve_token_account, mock_jupiter_swap_lane,
+    seed_mock_jupiter_spl_accounts, seed_mock_jupiter_stable_reserve_spl_accounts,
+    seed_spl_token_account, try_send_instructions, JupiterSwapExecution,
+    MockJupiterStableReserveTokenAccount, MockProgram, RouteActionExt, LAMPORTS_PER_SOL,
+    PYUSD_MINT, USDC_MINT,
 };
 use std::{env, process::Command};
 
@@ -59,11 +60,13 @@ fn wallet_b_can_execute_allowed_usdc_to_pyusd_swap_intent() {
     let swap_action_setup = create_swap_yield_route_action(
         loyal_action_context(context, wallet_b.pubkey()),
         vec![USDC_MINT, PYUSD_MINT],
+        vec![mock_jupiter_swap_lane(true)],
+        YIELD_ROUTE_STANDALONE_ACTION_SEED,
     )
     .expect("build swap action");
     try_send_instructions(
         &mut context.svm,
-        &[swap_action_setup.instruction],
+        &[swap_action_setup.instruction.clone()],
         &context.wallet,
         &[],
     )
@@ -95,18 +98,20 @@ fn wallet_b_can_execute_allowed_usdc_to_pyusd_swap_intent() {
         fixture_in_amount
     );
 
-    let wallet_b_usdc_to_pyusd_ix = execute_squads_yield_route_stable_swap_instruction(
-        swap_action_setup.account,
-        wallet_b.pubkey(),
-        context.vault_index,
-        context.vault,
-        vault_usdc,
-        vault_pyusd,
-        USDC_MINT,
-        PYUSD_MINT,
-        fixture_in_amount,
-        fixture_out_amount,
-    );
+    let wallet_b_usdc_to_pyusd_ix = swap_action_setup
+        .jupiter()
+        .expect("swap action has Jupiter lane")
+        .build(JupiterSwapExecution {
+            signer: wallet_b.pubkey(),
+            vault_index: context.vault_index,
+            vault: context.vault,
+            vault_input: vault_usdc,
+            vault_output: vault_pyusd,
+            input_mint: USDC_MINT,
+            output_mint: PYUSD_MINT,
+            in_amount: fixture_in_amount,
+            out_amount: fixture_out_amount,
+        });
     try_send_instructions(
         &mut context.svm,
         &[wallet_b_usdc_to_pyusd_ix],

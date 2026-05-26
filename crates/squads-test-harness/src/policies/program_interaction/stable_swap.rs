@@ -301,7 +301,7 @@ pub fn create_squads_program_interaction_route_stable_swap_policy_instruction(
     let mut constraints = Vec::with_capacity(swap_lanes.len());
     for lane in swap_lanes {
         match lane {
-            SwapLane::Jupiter => constraints.push(
+            SwapLane::Jupiter(_) => constraints.push(
                 jupiter_route_stable_swap_instruction_constraint(vault, allowed_mints.clone()),
             ),
             SwapLane::LoyalHub {

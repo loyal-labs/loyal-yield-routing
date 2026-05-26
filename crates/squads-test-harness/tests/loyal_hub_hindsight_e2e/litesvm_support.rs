@@ -139,11 +139,11 @@ fn run_litesvm_hub_route(
         .expect("Loyal Treasury initializes Loyal Hub config");
 
     let route_reserve_accounts = reserve_accounts.values().copied().collect::<Vec<_>>();
-    let route_action_setup = create_three_step_yield_route_actions_with_swap_lanes(
+    let route_action_setup = create_three_step_yield_route_actions(
         loyal_action_context(context, wallet_b.pubkey()),
         yield_route_universe_from_mock_reserves(route_mints.clone(), route_reserve_accounts),
         vec![
-            SwapLane::Jupiter,
+            mock_jupiter_swap_lane(true),
             SwapLane::LoyalHub {
                 hub_authorizer: treasury_executor.pubkey(),
                 max_fee_bps: HUB_MAX_FEE_BPS,
@@ -152,7 +152,9 @@ fn run_litesvm_hub_route(
         loyal_actions::YieldRouteActionSeeds::default(),
     )
     .expect("build route actions with Jupiter and Loyal Hub swap lanes");
-    let route_accounts = route_action_setup.accounts;
+    let withdraw = route_action_setup.withdraw().expect("route has withdraw");
+    let hub = route_action_setup.hub().expect("route has Loyal Hub swap");
+    let deposit = route_action_setup.deposit().expect("route has deposit");
     try_send_instructions(
         &mut context.svm,
         &route_action_setup.instructions,
@@ -232,9 +234,6 @@ fn run_litesvm_hub_route(
             .unwrap_or(&current);
         let transition = build_hub_rebalance_transaction(
             context.vault,
-            route_accounts.withdraw,
-            route_accounts.swap,
-            route_accounts.deposit,
             wallet_b.pubkey(),
             treasury_executor.pubkey(),
             context.vault_index,
@@ -245,6 +244,9 @@ fn run_litesvm_hub_route(
             from_at_switch,
             &next.point,
             amount_raw,
+            withdraw,
+            hub,
+            deposit,
         );
         try_send_instructions(
             &mut context.svm,
@@ -355,9 +357,6 @@ fn run_litesvm_hub_route(
 }
 fn build_hub_rebalance_transaction(
     vault: Pubkey,
-    withdraw_policy: Pubkey,
-    swap_policy: Pubkey,
-    deposit_policy: Pubkey,
     signer: Pubkey,
     hub_authorizer: Pubkey,
     vault_index: u8,
@@ -368,6 +367,9 @@ fn build_hub_rebalance_transaction(
     from: &Choice,
     to: &Choice,
     in_amount_raw: u64,
+    withdraw: KaminoAction,
+    hub: HubAction,
+    deposit: KaminoAction,
 ) -> HubTransition {
     let from_accounts = reserve_accounts[&from.reserve_index];
     let to_accounts = reserve_accounts[&to.reserve_index];
@@ -376,12 +378,10 @@ fn build_hub_rebalance_transaction(
         from_accounts,
         mock_kamino_withdraw_reserve_liquidity_data(in_amount_raw),
     );
-    let withdraw_ix = execute_squads_program_interaction_instruction(
-        withdraw_policy,
+    let withdraw_ix = withdraw.build(
         signer,
         vault_index,
         withdraw_instructions,
-        vec![0],
         withdraw_accounts,
     );
 
@@ -391,12 +391,10 @@ fn build_hub_rebalance_transaction(
             to_accounts,
             mock_kamino_deposit_reserve_liquidity_data(in_amount_raw),
         );
-        let deposit_ix = execute_squads_program_interaction_instruction(
-            deposit_policy,
+        let deposit_ix = deposit.build(
             signer,
             vault_index,
             deposit_instructions,
-            vec![deposit_constraint_index(withdraw_policy, deposit_policy)],
             deposit_accounts,
         );
         return HubTransition {
@@ -427,33 +425,29 @@ fn build_hub_rebalance_transaction(
     let equivalent_jupiter_user_loss_usd =
         usd_value(ideal_out_raw.saturating_sub(jupiter_out_raw), to);
 
-    let swap_ix = execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
-        swap_policy,
+    let swap_ix = hub.build(HubSwapExecution {
         signer,
         vault_index,
         vault,
-        vault_token_accounts[&from.mint_address],
-        vault_token_accounts[&to.mint_address],
-        from.mint_address,
-        to.mint_address,
+        vault_input: vault_token_accounts[&from.mint_address],
+        vault_output: vault_token_accounts[&to.mint_address],
+        input_mint: from.mint_address,
+        output_mint: to.mint_address,
         hub_authorizer,
-        in_amount_raw,
-        user_out_raw,
-        user_out_raw,
-        HUB_MAX_FEE_BPS,
-        1,
-    );
+        amount_in: in_amount_raw,
+        amount_out: user_out_raw,
+        min_out: user_out_raw,
+        max_fee_bps: HUB_MAX_FEE_BPS,
+    });
     let (deposit_instructions, deposit_accounts) = mock_kamino_reserve_transaction(
         vault,
         to_accounts,
         mock_kamino_deposit_reserve_liquidity_data(user_out_raw),
     );
-    let deposit_ix = execute_squads_program_interaction_instruction(
-        deposit_policy,
+    let deposit_ix = deposit.build(
         signer,
         vault_index,
         deposit_instructions,
-        vec![deposit_constraint_index(withdraw_policy, deposit_policy)],
         deposit_accounts,
     );
 
@@ -471,14 +465,6 @@ fn build_hub_rebalance_transaction(
         needs_hub_authorizer: true,
         hub_fee_revenue_usd,
         equivalent_jupiter_user_loss_usd,
-    }
-}
-
-fn deposit_constraint_index(withdraw_policy: Pubkey, deposit_policy: Pubkey) -> u8 {
-    if withdraw_policy == deposit_policy {
-        1
-    } else {
-        0
     }
 }
 

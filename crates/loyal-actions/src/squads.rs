@@ -10,12 +10,34 @@ use std::{fmt, io::Write};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoyalActionError {
     EmptySwapLanes,
+    EmptyStableMints,
+    EmptyKaminoMarkets,
+    EmptyKaminoLiquidityMints,
+    DuplicateActionSeeds,
+    PubkeyTableOverflow,
+    InvalidFeeBps,
+    MissingActionStep,
 }
 
 impl fmt::Display for LoyalActionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptySwapLanes => formatter.write_str("at least one swap lane is required"),
+            Self::EmptyStableMints => formatter.write_str("at least one stable mint is required"),
+            Self::EmptyKaminoMarkets => {
+                formatter.write_str("at least one Kamino market is required")
+            }
+            Self::EmptyKaminoLiquidityMints => {
+                formatter.write_str("at least one Kamino liquidity mint is required")
+            }
+            Self::DuplicateActionSeeds => formatter.write_str("action seeds must be distinct"),
+            Self::PubkeyTableOverflow => {
+                formatter.write_str("Squads ProgramInteraction pubkey table overflow")
+            }
+            Self::InvalidFeeBps => formatter.write_str("fee basis points must be <= 10,000"),
+            Self::MissingActionStep => {
+                formatter.write_str("requested action step is not available")
+            }
         }
     }
 }
@@ -43,12 +65,12 @@ pub(crate) fn create_program_interaction_action_instruction(
     action_seed: u64,
     account_index: u8,
     constraints: Vec<SquadsInstructionConstraint>,
-) -> Instruction {
+) -> Result<Instruction> {
     let (action_account, _) = derive_action_account(&settings, action_seed);
     let action = SquadsSettingsAction::PolicyCreate {
         seed: action_seed,
         policy_creation_payload: SquadsPolicyCreationPayload::ProgramInteraction(
-            compile_program_interaction_payload(account_index, constraints),
+            compile_program_interaction_payload(account_index, constraints)?,
         ),
         signers: vec![SquadsSmartAccountSigner {
             key: delegated_signer,
@@ -62,7 +84,7 @@ pub(crate) fn create_program_interaction_action_instruction(
         expiration_args: None,
     };
 
-    Instruction {
+    Ok(Instruction {
         program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
         accounts: vec![
             AccountMeta::new(settings, false),
@@ -73,50 +95,50 @@ pub(crate) fn create_program_interaction_action_instruction(
             AccountMeta::new(action_account, false),
         ],
         data: serialize_settings_actions(vec![action]),
-    }
+    })
 }
 
 fn compile_program_interaction_payload(
     account_index: u8,
     constraints: Vec<SquadsInstructionConstraint>,
-) -> SquadsProgramInteractionPolicyCreationPayload {
+) -> Result<SquadsProgramInteractionPolicyCreationPayload> {
     let mut pubkey_table = Vec::new();
     let instructions_constraints = constraints
         .into_iter()
         .map(|constraint| compile_instruction_constraint(constraint, &mut pubkey_table))
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
 
-    SquadsProgramInteractionPolicyCreationPayload {
+    Ok(SquadsProgramInteractionPolicyCreationPayload {
         account_index,
         pubkey_table: pubkey_table.into(),
         instructions_constraints: instructions_constraints.into(),
         pre_hook: None,
         post_hook: None,
         spending_limits: Vec::<SquadsCompiledLimitedSpendingLimit>::new().into(),
-    }
+    })
 }
 
 fn compile_instruction_constraint(
     constraint: SquadsInstructionConstraint,
     pubkey_table: &mut Vec<Pubkey>,
-) -> SquadsCompiledInstructionConstraint {
-    SquadsCompiledInstructionConstraint {
-        program_id_index: pubkey_table_index(pubkey_table, constraint.program_id),
+) -> Result<SquadsCompiledInstructionConstraint> {
+    Ok(SquadsCompiledInstructionConstraint {
+        program_id_index: pubkey_table_index(pubkey_table, constraint.program_id)?,
         account_constraints: constraint
             .account_constraints
             .into_iter()
             .map(|account_constraint| compile_account_constraint(account_constraint, pubkey_table))
-            .collect::<Vec<_>>()
+            .collect::<Result<Vec<_>>>()?
             .into(),
         data_constraints: constraint.data_constraints.into(),
-    }
+    })
 }
 
 fn compile_account_constraint(
     constraint: SquadsAccountConstraint,
     pubkey_table: &mut Vec<Pubkey>,
-) -> SquadsCompiledAccountConstraint {
-    SquadsCompiledAccountConstraint {
+) -> Result<SquadsCompiledAccountConstraint> {
+    Ok(SquadsCompiledAccountConstraint {
         account_index: constraint.account_index,
         account_constraint: match constraint.account_constraint {
             SquadsAccountConstraintType::Pubkey(pubkeys) => {
@@ -124,7 +146,7 @@ fn compile_account_constraint(
                     pubkeys
                         .into_iter()
                         .map(|pubkey| pubkey_table_index(pubkey_table, pubkey))
-                        .collect::<Vec<_>>()
+                        .collect::<Result<Vec<_>>>()?
                         .into(),
                 )
             }
@@ -134,22 +156,26 @@ fn compile_account_constraint(
         },
         owner_index: constraint
             .owner
-            .map(|owner| pubkey_table_index(pubkey_table, owner)),
-    }
+            .map(|owner| pubkey_table_index(pubkey_table, owner))
+            .transpose()?,
+    })
 }
 
-fn pubkey_table_index(pubkey_table: &mut Vec<Pubkey>, pubkey: Pubkey) -> u8 {
+fn pubkey_table_index(pubkey_table: &mut Vec<Pubkey>, pubkey: Pubkey) -> Result<u8> {
     if let Some(index) = pubkey_table.iter().position(|existing| *existing == pubkey) {
-        return index.try_into().expect("pubkey table index fits in u8");
+        return index
+            .try_into()
+            .map_err(|_| LoyalActionError::PubkeyTableOverflow);
     }
 
-    assert!(
-        pubkey_table.len() < 240,
-        "Squads ProgramInteraction pubkey table supports up to 240 custom pubkeys"
-    );
+    if pubkey_table.len() >= 240 {
+        return Err(LoyalActionError::PubkeyTableOverflow);
+    }
     let index = pubkey_table.len();
     pubkey_table.push(pubkey);
-    index.try_into().expect("pubkey table index fits in u8")
+    index
+        .try_into()
+        .map_err(|_| LoyalActionError::PubkeyTableOverflow)
 }
 
 fn serialize_settings_actions(actions: Vec<SquadsSettingsAction>) -> Vec<u8> {
@@ -328,18 +354,21 @@ struct SquadsCompiledLimitedSpendingLimit {
     quantity_constraints: SquadsLimitedQuantityConstraints,
 }
 
+#[derive(Clone)]
 pub(crate) struct SquadsInstructionConstraint {
     pub(crate) program_id: Pubkey,
     pub(crate) account_constraints: Vec<SquadsAccountConstraint>,
     pub(crate) data_constraints: Vec<SquadsDataConstraint>,
 }
 
+#[derive(Clone)]
 pub(crate) struct SquadsAccountConstraint {
     pub(crate) account_index: u8,
     pub(crate) account_constraint: SquadsAccountConstraintType,
     pub(crate) owner: Option<Pubkey>,
 }
 
+#[derive(Clone)]
 pub(crate) enum SquadsAccountConstraintType {
     Pubkey(Vec<Pubkey>),
     AccountData(Vec<SquadsDataConstraint>),

@@ -3,10 +3,14 @@
 //! The crate owns production-facing action setup. Test harnesses should use
 //! this SDK to build instructions, then execute them in their own runtime.
 
+mod actions;
 mod ids;
+mod protocols;
 mod squads;
-mod yield_route;
 
+pub use actions::*;
 pub use ids::*;
-pub use squads::derive_action_account;
-pub use yield_route::*;
+pub use protocols::{
+    derive_loyal_hub_authority, derive_loyal_hub_config, derive_loyal_hub_inventory_account,
+};
+pub use squads::{derive_action_account, LoyalActionError, Result};

@@ -4,9 +4,9 @@ This repo experiments with yield-routing automation for Squads smart accounts. T
 
 - Kamino withdraw/deposit actions scoped by whitelisted markets and liquidity mints
 - swap actions scoped by whitelisted route mints
-- all-in-one actions that can cover Kamino, Jupiter, and Loyal Hub lanes
+- all-in-one actions that can cover Kamino plus swap lanes
 
-The Rust tests keep Squads authorization separate from protocol validation. Squads bounds the delegated signer to the vault, approved markets/mints, route mints, and instruction discriminators. Kamino, Jupiter, and Loyal Hub are responsible for validating their own internal account relationships.
+The Rust tests keep Squads authorization separate from protocol validation. Squads bounds the delegated signer to the vault, approved markets/mints, route mints, and instruction discriminators. Each external protocol still validates its own account relationships.
 
 ## Development
 
@@ -52,10 +52,20 @@ let route_action_setup = create_three_step_yield_route_actions(
         vec![USDC_MINT, PYUSD_MINT],
         vec![main_usdc, prime_usdc, main_pyusd],
     ),
+    vec![mock_jupiter_swap_lane(true)],
+    YieldRouteActionSeeds::default(),
 )?;
 ```
 
-The SDK returns delegated action accounts plus the Squads create instructions. Swap-only tests can use `create_swap_yield_route_action()`.
+The SDK returns delegated action accounts, create instructions, and named route actions. Route tests build executable Squads instructions through the fluent action surface instead of assembling Squads constraint indexes directly:
+
+```rust
+let deposit_ix = route_action_setup
+    .deposit()?
+    .build(delegated_signer, vault_index, deposit_instructions, deposit_accounts);
+```
+
+Swap actions use typed execution arguments, for example `.jupiter()?.build(JupiterSwapExecution { ... })` or `.hub()?.build(HubSwapExecution { ... })`. Swap-only tests can use `create_swap_yield_route_action()`.
 
 ### Test Crate Map
 
@@ -66,7 +76,7 @@ The Squads test crate is grouped by domain modules for onboarding.
 | `squads` | Squads PDA derivation, settings setup, smart-account instructions, payload basics |
 | `runtime` | LiteSVM setup, funded contexts, program loading, heap-frame helpers, transaction sending |
 | `policies` | Raw Squads policy families |
-| `actions` | Adapters from harness contexts and mock reserves into `loyal-actions` inputs |
+| `actions` | Adapters from funded contexts and mock reserves into `loyal-actions` inputs |
 | `policies/program_interaction` | Low-level historical Squads ProgramInteraction helpers |
 | `protocols` | Mock Jupiter/Kamino/Loyal Hub instruction data, SPL account seeding, SBF mock loading |
 | `types` | Shared public test structs and crate-private Squads wire types |

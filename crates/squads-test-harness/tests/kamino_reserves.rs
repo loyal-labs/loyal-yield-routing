@@ -1,15 +1,16 @@
 use loyal_actions::{
     create_combined_kamino_yield_route_actions, create_three_step_yield_route_actions,
+    YieldRouteActionSeeds,
 };
 use solana_sdk::{signature::Keypair, signer::Signer};
 use squads_test_harness::{
     create_funded_squads_test_context_with_mock_programs,
-    execute_mock_jupiter_sol_to_usdc_swap_instruction,
-    execute_squads_program_interaction_instruction, get_spl_token_amount, loyal_action_context,
-    mock_kamino_deposit_reserve_liquidity_data, mock_kamino_reserve_transaction,
-    mock_kamino_withdraw_reserve_liquidity_data, remove_squads_policy_instruction,
-    seed_mock_jupiter_spl_accounts, seed_mock_kamino_reserve_spl_accounts, try_send_instructions,
-    yield_route_universe_from_mock_reserves, MockProgram, KAMINO_MAIN_MARKET,
+    execute_mock_jupiter_sol_to_usdc_swap_instruction, get_spl_token_amount, loyal_action_context,
+    mock_jupiter_swap_lane, mock_kamino_deposit_reserve_liquidity_data,
+    mock_kamino_reserve_transaction, mock_kamino_withdraw_reserve_liquidity_data,
+    remove_squads_policy_instruction, seed_mock_jupiter_spl_accounts,
+    seed_mock_kamino_reserve_spl_accounts, try_send_instructions,
+    yield_route_universe_from_mock_reserves, MockProgram, RouteActionExt, KAMINO_MAIN_MARKET,
     KAMINO_MAIN_USDC_RESERVE, KAMINO_PRIME_MARKET, KAMINO_PRIME_USDC_RESERVE, LAMPORTS_PER_SOL,
     USDC_MINT,
 };
@@ -88,9 +89,13 @@ fn wallet_b_can_only_deposit_and_withdraw_main_market_usdc_reserve() {
     let route_action_setup = create_three_step_yield_route_actions(
         loyal_action_context(context, wallet_b.pubkey()),
         yield_route_universe_from_mock_reserves(vec![USDC_MINT], vec![main_reserve_accounts]),
+        vec![mock_jupiter_swap_lane(true)],
+        YieldRouteActionSeeds::default(),
     )
     .expect("build route actions");
     let route_accounts = route_action_setup.accounts;
+    let deposit = route_action_setup.deposit().expect("route has deposit");
+    let withdraw = route_action_setup.withdraw().expect("route has withdraw");
     try_send_instructions(
         &mut context.svm,
         &route_action_setup.instructions,
@@ -106,12 +111,10 @@ fn wallet_b_can_only_deposit_and_withdraw_main_market_usdc_reserve() {
         main_reserve_accounts,
         mock_kamino_deposit_reserve_liquidity_data(DEPOSIT_USDC_AMOUNT),
     );
-    let main_deposit_ix = execute_squads_program_interaction_instruction(
-        route_accounts.deposit,
+    let main_deposit_ix = deposit.build(
         wallet_b.pubkey(),
         context.vault_index,
         deposit_instructions,
-        vec![0],
         deposit_accounts,
     );
     try_send_instructions(&mut context.svm, &[main_deposit_ix], &wallet_b, &[])
@@ -134,12 +137,10 @@ fn wallet_b_can_only_deposit_and_withdraw_main_market_usdc_reserve() {
         main_reserve_accounts,
         mock_kamino_withdraw_reserve_liquidity_data(WITHDRAW_USDC_AMOUNT),
     );
-    let main_withdraw_ix = execute_squads_program_interaction_instruction(
-        route_accounts.withdraw,
+    let main_withdraw_ix = withdraw.build(
         wallet_b.pubkey(),
         context.vault_index,
         withdraw_instructions,
-        vec![0],
         withdraw_accounts,
     );
     try_send_instructions(&mut context.svm, &[main_withdraw_ix], &wallet_b, &[])
@@ -162,12 +163,10 @@ fn wallet_b_can_only_deposit_and_withdraw_main_market_usdc_reserve() {
         prime_reserve_accounts,
         mock_kamino_deposit_reserve_liquidity_data(DENIED_DEPOSIT_USDC_AMOUNT),
     );
-    let prime_deposit_ix = execute_squads_program_interaction_instruction(
-        route_accounts.deposit,
+    let prime_deposit_ix = deposit.build(
         wallet_b.pubkey(),
         context.vault_index,
         prime_deposit_instructions,
-        vec![0],
         prime_deposit_accounts,
     );
     let prime_deposit_result =
@@ -198,12 +197,10 @@ fn wallet_b_can_only_deposit_and_withdraw_main_market_usdc_reserve() {
         main_reserve_accounts,
         mock_kamino_deposit_reserve_liquidity_data(DENIED_DEPOSIT_USDC_AMOUNT),
     );
-    let post_removal_deposit_ix = execute_squads_program_interaction_instruction(
-        route_accounts.deposit,
+    let post_removal_deposit_ix = deposit.build(
         wallet_b.pubkey(),
         context.vault_index,
         post_removal_instructions,
-        vec![0],
         post_removal_accounts,
     );
     let post_removal_result =
@@ -287,9 +284,12 @@ fn wallet_b_can_deposit_and_withdraw_through_one_combined_kamino_policy() {
     let route_action_setup = create_combined_kamino_yield_route_actions(
         loyal_action_context(context, wallet_b.pubkey()),
         yield_route_universe_from_mock_reserves(vec![USDC_MINT], vec![main_reserve_accounts]),
+        vec![mock_jupiter_swap_lane(true)],
     )
     .expect("build combined Kamino actions");
     let route_accounts = route_action_setup.accounts;
+    let deposit = route_action_setup.deposit().expect("route has deposit");
+    let withdraw = route_action_setup.withdraw().expect("route has withdraw");
     assert_eq!(route_action_setup.instructions.len(), 2);
     assert_eq!(route_accounts.withdraw, route_accounts.deposit);
     try_send_instructions(
@@ -305,12 +305,10 @@ fn wallet_b_can_deposit_and_withdraw_through_one_combined_kamino_policy() {
         main_reserve_accounts,
         mock_kamino_deposit_reserve_liquidity_data(DEPOSIT_USDC_AMOUNT),
     );
-    let main_deposit_ix = execute_squads_program_interaction_instruction(
-        route_accounts.deposit,
+    let main_deposit_ix = deposit.build(
         wallet_b.pubkey(),
         context.vault_index,
         deposit_instructions,
-        vec![1],
         deposit_accounts,
     );
     try_send_instructions(&mut context.svm, &[main_deposit_ix], &wallet_b, &[])
@@ -321,12 +319,10 @@ fn wallet_b_can_deposit_and_withdraw_through_one_combined_kamino_policy() {
         main_reserve_accounts,
         mock_kamino_withdraw_reserve_liquidity_data(WITHDRAW_USDC_AMOUNT),
     );
-    let main_withdraw_ix = execute_squads_program_interaction_instruction(
-        route_accounts.withdraw,
+    let main_withdraw_ix = withdraw.build(
         wallet_b.pubkey(),
         context.vault_index,
         withdraw_instructions,
-        vec![0],
         withdraw_accounts,
     );
     try_send_instructions(&mut context.svm, &[main_withdraw_ix], &wallet_b, &[])
@@ -345,12 +341,10 @@ fn wallet_b_can_deposit_and_withdraw_through_one_combined_kamino_policy() {
         prime_reserve_accounts,
         mock_kamino_deposit_reserve_liquidity_data(DENIED_DEPOSIT_USDC_AMOUNT),
     );
-    let prime_deposit_ix = execute_squads_program_interaction_instruction(
-        route_accounts.deposit,
+    let prime_deposit_ix = deposit.build(
         wallet_b.pubkey(),
         context.vault_index,
         prime_deposit_instructions,
-        vec![1],
         prime_deposit_accounts,
     );
     let prime_deposit_result =

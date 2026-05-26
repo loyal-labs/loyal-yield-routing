@@ -1,19 +1,19 @@
-use loyal_actions::{create_all_in_one_market_mint_yield_route_action_with_swap_lanes, SwapLane};
+use loyal_actions::{create_all_in_one_market_mint_yield_route_action, SwapLane};
 use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
 use squads_test_harness::{
     create_funded_squads_test_context_with_config_and_mock_programs,
-    execute_mock_jupiter_sol_to_usdc_swap_instruction,
-    execute_squads_program_interaction_instruction, execute_squads_sync_transaction_instruction,
-    execute_squads_yield_route_stable_swap_instruction_with_constraint_index, get_spl_token_amount,
-    initialize_loyal_hub_config_instruction, loyal_action_context,
-    mock_jupiter_stable_reserve_token_account, mock_kamino_deposit_reserve_liquidity_data,
-    mock_kamino_reserve_transaction, mock_kamino_withdraw_reserve_liquidity_data,
-    seed_mock_jupiter_spl_accounts, seed_mock_jupiter_stable_reserve_spl_accounts,
-    seed_mock_kamino_reserve_spl_accounts_with_mint, seed_spl_mint_if_missing, set_spl_mint_supply,
-    set_spl_token_amount, try_send_instructions, try_send_instructions_with_heap_frame,
-    yield_route_universe_from_mock_reserves, FundedSquadsTestConfig,
+    execute_mock_jupiter_sol_to_usdc_swap_instruction, execute_squads_sync_transaction_instruction,
+    get_spl_token_amount, initialize_loyal_hub_config_instruction, loyal_action_context,
+    mock_jupiter_stable_reserve_token_account, mock_jupiter_swap_lane,
+    mock_kamino_deposit_reserve_liquidity_data, mock_kamino_reserve_transaction,
+    mock_kamino_withdraw_reserve_liquidity_data, seed_mock_jupiter_spl_accounts,
+    seed_mock_jupiter_stable_reserve_spl_accounts, seed_mock_kamino_reserve_spl_accounts_with_mint,
+    seed_spl_mint_if_missing, set_spl_mint_supply, set_spl_token_amount, try_send_instructions,
+    try_send_instructions_with_heap_frame, yield_route_universe_from_mock_reserves,
+    FundedSquadsTestConfig, JupiterAction, JupiterSwapExecution, KaminoAction,
     MockJupiterStableReserveTokenAccount, MockKaminoReserveTokenAccounts, MockProgram,
-    KAMINO_PRIME_MARKET, KAMINO_PRIME_USDC_RESERVE, LAMPORTS_PER_SOL, USDC_DECIMALS, USDC_MINT,
+    RouteActionExt, KAMINO_PRIME_MARKET, KAMINO_PRIME_USDC_RESERVE, LAMPORTS_PER_SOL,
+    USDC_DECIMALS, USDC_MINT,
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -33,7 +33,6 @@ const POOL_CHANGE_USD: f64 =
     (POOL_CHANGE_LAMPORTS as f64 / LAMPORTS_PER_SOL as f64) * SOL_PRICE_USD;
 const JUPITER_RESERVE_RAW_AMOUNT: u64 = 1_000_000_000_000_000_000;
 const LOYAL_HUB_MAX_FEE_BPS: u16 = 50;
-const HINDSIGHT_SWAP_LANE_COUNT: u8 = 2;
 
 #[test]
 #[ignore = "heavy optional historical replay; run with `bun run test:squads:e2e`"]
@@ -166,11 +165,11 @@ fn wallet_b_replays_fixed_start_kamino_hindsight_route() {
     }
 
     let route_reserve_accounts = reserve_accounts.values().copied().collect::<Vec<_>>();
-    let route_action_setup = create_all_in_one_market_mint_yield_route_action_with_swap_lanes(
+    let route_action_setup = create_all_in_one_market_mint_yield_route_action(
         loyal_action_context(context, wallet_b.pubkey()),
         yield_route_universe_from_mock_reserves(route_mints.clone(), route_reserve_accounts),
         vec![
-            SwapLane::Jupiter,
+            mock_jupiter_swap_lane(false),
             SwapLane::LoyalHub {
                 hub_authorizer: hub_authorizer.pubkey(),
                 max_fee_bps: LOYAL_HUB_MAX_FEE_BPS,
@@ -178,7 +177,11 @@ fn wallet_b_replays_fixed_start_kamino_hindsight_route() {
         ],
     )
     .expect("build all-in-one market/mint route action");
-    let route_accounts = route_action_setup.accounts;
+    let withdraw = route_action_setup.withdraw().expect("route has withdraw");
+    let jupiter = route_action_setup
+        .jupiter()
+        .expect("route has Jupiter swap");
+    let deposit = route_action_setup.deposit().expect("route has deposit");
     try_send_instructions_with_heap_frame(
         &mut context.svm,
         &route_action_setup.instructions,
@@ -252,9 +255,6 @@ fn wallet_b_replays_fixed_start_kamino_hindsight_route() {
             .unwrap_or(&current);
         let (transaction_instructions, next_amount_raw) = build_rebalance_transaction(
             context.vault,
-            route_accounts.withdraw,
-            route_accounts.swap,
-            route_accounts.deposit,
             wallet_b.pubkey(),
             context.vault_index,
             &vault_token_accounts,
@@ -263,7 +263,9 @@ fn wallet_b_replays_fixed_start_kamino_hindsight_route() {
             from_at_switch,
             &next.point,
             amount_raw,
-            HINDSIGHT_SWAP_LANE_COUNT,
+            withdraw,
+            jupiter,
+            deposit,
         );
         try_send_instructions_with_heap_frame(
             &mut context.svm,

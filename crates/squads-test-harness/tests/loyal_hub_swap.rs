@@ -1,5 +1,5 @@
 use loyal_actions::{
-    create_swap_yield_route_action_with_swap_lanes, SwapLane, YieldRouteActionInstruction,
+    create_swap_yield_route_action, SwapLane, YieldRouteActionInstruction,
     YIELD_ROUTE_STANDALONE_ACTION_SEED,
 };
 use solana_sdk::{
@@ -12,15 +12,14 @@ use squads_test_harness::{
     create_funded_squads_test_context_with_mock_programs, create_squads_smart_account_instruction,
     derive_loyal_hub_authority, derive_loyal_hub_config, derive_squads_pool, derive_squads_vault,
     execute_mock_jupiter_sol_to_usdc_swap_instruction, execute_squads_sync_transaction_instruction,
-    execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index,
-    execute_squads_yield_route_stable_swap_instruction, get_spl_token_amount,
-    initialize_loyal_hub_config_instruction, loyal_action_context, loyal_hub_swap_exact_in_data,
-    loyal_hub_token_account, loyal_hub_withdraw_inventory_data,
-    mock_jupiter_stable_reserve_token_account, seed_loyal_hub_inventory_spl_accounts,
-    seed_mock_jupiter_spl_accounts, seed_mock_jupiter_stable_reserve_spl_accounts,
-    seed_spl_mint_if_missing, seed_spl_token_account, set_loyal_hub_max_fee_instruction,
-    set_loyal_hub_paused_instruction, try_send_instructions,
-    withdraw_loyal_hub_inventory_instruction, MockJupiterStableReserveTokenAccount, MockProgram,
+    get_spl_token_amount, initialize_loyal_hub_config_instruction, loyal_action_context,
+    loyal_hub_swap_exact_in_data, loyal_hub_token_account, loyal_hub_withdraw_inventory_data,
+    mock_jupiter_stable_reserve_token_account, mock_jupiter_swap_lane,
+    seed_loyal_hub_inventory_spl_accounts, seed_mock_jupiter_spl_accounts,
+    seed_mock_jupiter_stable_reserve_spl_accounts, seed_spl_mint_if_missing,
+    seed_spl_token_account, set_loyal_hub_max_fee_instruction, set_loyal_hub_paused_instruction,
+    try_send_instructions, withdraw_loyal_hub_inventory_instruction, HubSwapExecution,
+    JupiterSwapExecution, MockJupiterStableReserveTokenAccount, MockProgram, RouteActionExt,
     SquadsCompiledInstruction, SquadsPool, LAMPORTS_PER_SOL, LOYAL_HUB_SWAP_PROGRAM_ID,
     PYUSD_DECIMALS, PYUSD_MINT, USDC_DECIMALS, USDC_MINT,
 };
@@ -145,11 +144,11 @@ fn treasury_backed_simulation_covers_hub_jupiter_and_inventory_movement() {
         hub_pyusd_top_up
     );
 
-    let swap_action = create_swap_yield_route_action_with_swap_lanes(
+    let swap_action = create_swap_yield_route_action(
         loyal_action_context(&context, wallet_b.pubkey()),
         vec![USDC_MINT, PYUSD_MINT],
         vec![
-            SwapLane::Jupiter,
+            mock_jupiter_swap_lane(true),
             SwapLane::LoyalHub {
                 hub_authorizer: wallet_c.pubkey(),
                 max_fee_bps: 50,
@@ -166,22 +165,23 @@ fn treasury_backed_simulation_covers_hub_jupiter_and_inventory_movement() {
     )
     .expect("wallet A creates policy allowing Jupiter and Loyal Hub lanes for wallet B");
 
-    let full_hub_ix = execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
-        swap_action.account,
-        wallet_b.pubkey(),
-        context.vault_index,
-        context.vault,
-        vault_usdc,
-        vault_pyusd,
-        USDC_MINT,
-        PYUSD_MINT,
-        wallet_c.pubkey(),
-        AMOUNT_IN,
-        HUB_OUT,
-        MIN_OUT,
-        MAX_FEE_BPS,
-        1,
-    );
+    let full_hub_ix = swap_action
+        .hub()
+        .expect("swap action has Loyal Hub lane")
+        .build(HubSwapExecution {
+            signer: wallet_b.pubkey(),
+            vault_index: context.vault_index,
+            vault: context.vault,
+            vault_input: vault_usdc,
+            vault_output: vault_pyusd,
+            input_mint: USDC_MINT,
+            output_mint: PYUSD_MINT,
+            hub_authorizer: wallet_c.pubkey(),
+            amount_in: AMOUNT_IN,
+            amount_out: HUB_OUT,
+            min_out: MIN_OUT,
+            max_fee_bps: MAX_FEE_BPS,
+        });
     try_send_instructions(&mut context.svm, &[full_hub_ix], &wallet_b, &[&wallet_c])
         .expect("wallet B executes full Loyal Hub fill authorized by wallet C");
 
@@ -189,34 +189,37 @@ fn treasury_backed_simulation_covers_hub_jupiter_and_inventory_movement() {
     let half_hub_out = 499_500;
     let half_jupiter_in = AMOUNT_IN - half_hub_in;
     let half_jupiter_out = half_jupiter_in;
-    let half_hub_ix = execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
-        swap_action.account,
-        wallet_b.pubkey(),
-        context.vault_index,
-        context.vault,
-        vault_usdc,
-        vault_pyusd,
-        USDC_MINT,
-        PYUSD_MINT,
-        wallet_c.pubkey(),
-        half_hub_in,
-        half_hub_out,
-        half_hub_out,
-        MAX_FEE_BPS,
-        1,
-    );
-    let half_jupiter_ix = execute_squads_yield_route_stable_swap_instruction(
-        swap_action.account,
-        wallet_b.pubkey(),
-        context.vault_index,
-        context.vault,
-        vault_usdc,
-        vault_pyusd,
-        USDC_MINT,
-        PYUSD_MINT,
-        half_jupiter_in,
-        half_jupiter_out,
-    );
+    let half_hub_ix = swap_action
+        .hub()
+        .expect("swap action has Loyal Hub lane")
+        .build(HubSwapExecution {
+            signer: wallet_b.pubkey(),
+            vault_index: context.vault_index,
+            vault: context.vault,
+            vault_input: vault_usdc,
+            vault_output: vault_pyusd,
+            input_mint: USDC_MINT,
+            output_mint: PYUSD_MINT,
+            hub_authorizer: wallet_c.pubkey(),
+            amount_in: half_hub_in,
+            amount_out: half_hub_out,
+            min_out: half_hub_out,
+            max_fee_bps: MAX_FEE_BPS,
+        });
+    let half_jupiter_ix = swap_action
+        .jupiter()
+        .expect("swap action has Jupiter lane")
+        .build(JupiterSwapExecution {
+            signer: wallet_b.pubkey(),
+            vault_index: context.vault_index,
+            vault: context.vault,
+            vault_input: vault_usdc,
+            vault_output: vault_pyusd,
+            input_mint: USDC_MINT,
+            output_mint: PYUSD_MINT,
+            in_amount: half_jupiter_in,
+            out_amount: half_jupiter_out,
+        });
     try_send_instructions(
         &mut context.svm,
         &[half_hub_ix, half_jupiter_ix],
@@ -225,18 +228,20 @@ fn treasury_backed_simulation_covers_hub_jupiter_and_inventory_movement() {
     )
     .expect("wallet B executes half Loyal Hub fill and Jupiter residual");
 
-    let jupiter_only_ix = execute_squads_yield_route_stable_swap_instruction(
-        swap_action.account,
-        wallet_b.pubkey(),
-        context.vault_index,
-        context.vault,
-        vault_usdc,
-        vault_pyusd,
-        USDC_MINT,
-        PYUSD_MINT,
-        AMOUNT_IN,
-        AMOUNT_IN,
-    );
+    let jupiter_only_ix = swap_action
+        .jupiter()
+        .expect("swap action has Jupiter lane")
+        .build(JupiterSwapExecution {
+            signer: wallet_b.pubkey(),
+            vault_index: context.vault_index,
+            vault: context.vault,
+            vault_input: vault_usdc,
+            vault_output: vault_pyusd,
+            input_mint: USDC_MINT,
+            output_mint: PYUSD_MINT,
+            in_amount: AMOUNT_IN,
+            out_amount: AMOUNT_IN,
+        });
     try_send_instructions(&mut context.svm, &[jupiter_only_ix], &wallet_b, &[])
         .expect("wallet B executes Jupiter-only fallback fill");
 
@@ -372,22 +377,24 @@ fn loyal_hub_rejects_wrong_output_destination() {
         0,
     );
 
-    let ix = execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
-        fixture.swap_action.account,
-        fixture.wallet_b.pubkey(),
-        fixture.context.vault_index,
-        fixture.context.vault,
-        fixture.vault_usdc,
-        wrong_output,
-        USDC_MINT,
-        PYUSD_MINT,
-        fixture.hub_authorizer.pubkey(),
-        AMOUNT_IN,
-        HUB_OUT,
-        MIN_OUT,
-        MAX_FEE_BPS,
-        1,
-    );
+    let ix = fixture
+        .swap_action
+        .hub()
+        .expect("swap action has Loyal Hub lane")
+        .build(HubSwapExecution {
+            signer: fixture.wallet_b.pubkey(),
+            vault_index: fixture.context.vault_index,
+            vault: fixture.context.vault,
+            vault_input: fixture.vault_usdc,
+            vault_output: wrong_output,
+            input_mint: USDC_MINT,
+            output_mint: PYUSD_MINT,
+            hub_authorizer: fixture.hub_authorizer.pubkey(),
+            amount_in: AMOUNT_IN,
+            amount_out: HUB_OUT,
+            min_out: MIN_OUT,
+            max_fee_bps: MAX_FEE_BPS,
+        });
     let error = try_send_instructions(
         &mut fixture.context.svm,
         &[ix],
@@ -494,22 +501,24 @@ fn loyal_hub_rejects_same_mint_swaps() {
         0,
     );
 
-    let ix = execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
-        fixture.swap_action.account,
-        fixture.wallet_b.pubkey(),
-        fixture.context.vault_index,
-        fixture.context.vault,
-        fixture.vault_usdc,
-        second_usdc,
-        USDC_MINT,
-        USDC_MINT,
-        fixture.hub_authorizer.pubkey(),
-        AMOUNT_IN,
-        HUB_OUT,
-        MIN_OUT,
-        MAX_FEE_BPS,
-        1,
-    );
+    let ix = fixture
+        .swap_action
+        .hub()
+        .expect("swap action has Loyal Hub lane")
+        .build(HubSwapExecution {
+            signer: fixture.wallet_b.pubkey(),
+            vault_index: fixture.context.vault_index,
+            vault: fixture.context.vault,
+            vault_input: fixture.vault_usdc,
+            vault_output: second_usdc,
+            input_mint: USDC_MINT,
+            output_mint: USDC_MINT,
+            hub_authorizer: fixture.hub_authorizer.pubkey(),
+            amount_in: AMOUNT_IN,
+            amount_out: HUB_OUT,
+            min_out: MIN_OUT,
+            max_fee_bps: MAX_FEE_BPS,
+        });
     let error = try_send_instructions(
         &mut fixture.context.svm,
         &[ix],
@@ -532,22 +541,24 @@ fn loyal_hub_rejects_duplicate_mutable_token_accounts() {
         return;
     };
 
-    let ix = execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
-        fixture.swap_action.account,
-        fixture.wallet_b.pubkey(),
-        fixture.context.vault_index,
-        fixture.context.vault,
-        fixture.vault_usdc,
-        fixture.vault_usdc,
-        USDC_MINT,
-        PYUSD_MINT,
-        fixture.hub_authorizer.pubkey(),
-        AMOUNT_IN,
-        HUB_OUT,
-        MIN_OUT,
-        MAX_FEE_BPS,
-        1,
-    );
+    let ix = fixture
+        .swap_action
+        .hub()
+        .expect("swap action has Loyal Hub lane")
+        .build(HubSwapExecution {
+            signer: fixture.wallet_b.pubkey(),
+            vault_index: fixture.context.vault_index,
+            vault: fixture.context.vault,
+            vault_input: fixture.vault_usdc,
+            vault_output: fixture.vault_usdc,
+            input_mint: USDC_MINT,
+            output_mint: PYUSD_MINT,
+            hub_authorizer: fixture.hub_authorizer.pubkey(),
+            amount_in: AMOUNT_IN,
+            amount_out: HUB_OUT,
+            min_out: MIN_OUT,
+            max_fee_bps: MAX_FEE_BPS,
+        });
     let error = try_send_instructions(
         &mut fixture.context.svm,
         &[ix],
@@ -573,23 +584,24 @@ fn loyal_hub_rejects_excessive_fee_and_paused_swaps() {
         return;
     };
 
-    let excessive_fee_ix =
-        execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
-            fixture.swap_action.account,
-            fixture.wallet_b.pubkey(),
-            fixture.context.vault_index,
-            fixture.context.vault,
-            fixture.vault_usdc,
-            fixture.vault_pyusd,
-            USDC_MINT,
-            PYUSD_MINT,
-            fixture.hub_authorizer.pubkey(),
-            AMOUNT_IN,
-            900_000,
-            900_000,
-            MAX_FEE_BPS,
-            1,
-        );
+    let excessive_fee_ix = fixture
+        .swap_action
+        .hub()
+        .expect("swap action has Loyal Hub lane")
+        .build(HubSwapExecution {
+            signer: fixture.wallet_b.pubkey(),
+            vault_index: fixture.context.vault_index,
+            vault: fixture.context.vault,
+            vault_input: fixture.vault_usdc,
+            vault_output: fixture.vault_pyusd,
+            input_mint: USDC_MINT,
+            output_mint: PYUSD_MINT,
+            hub_authorizer: fixture.hub_authorizer.pubkey(),
+            amount_in: AMOUNT_IN,
+            amount_out: 900_000,
+            min_out: 900_000,
+            max_fee_bps: MAX_FEE_BPS,
+        });
     let error = try_send_instructions(
         &mut fixture.context.svm,
         &[excessive_fee_ix],
@@ -711,18 +723,21 @@ fn route_policy_allows_partial_hub_fill_then_jupiter_residual() {
     );
 
     let hub_ix = hub_swap_ix(&fixture, AMOUNT_IN - residual_in, 599_400);
-    let jupiter_ix = execute_squads_yield_route_stable_swap_instruction(
-        fixture.swap_action.account,
-        fixture.wallet_b.pubkey(),
-        fixture.context.vault_index,
-        fixture.context.vault,
-        fixture.vault_usdc,
-        fixture.vault_pyusd,
-        USDC_MINT,
-        PYUSD_MINT,
-        residual_in,
-        residual_out,
-    );
+    let jupiter_ix = fixture
+        .swap_action
+        .jupiter()
+        .expect("swap action has Jupiter lane")
+        .build(JupiterSwapExecution {
+            signer: fixture.wallet_b.pubkey(),
+            vault_index: fixture.context.vault_index,
+            vault: fixture.context.vault,
+            vault_input: fixture.vault_usdc,
+            vault_output: fixture.vault_pyusd,
+            input_mint: USDC_MINT,
+            output_mint: PYUSD_MINT,
+            in_amount: residual_in,
+            out_amount: residual_out,
+        });
 
     try_send_instructions(
         &mut fixture.context.svm,
@@ -762,18 +777,21 @@ fn route_policy_still_allows_jupiter_only_fallback() {
         AMOUNT_IN,
     );
 
-    let jupiter_ix = execute_squads_yield_route_stable_swap_instruction(
-        fixture.swap_action.account,
-        fixture.wallet_b.pubkey(),
-        fixture.context.vault_index,
-        fixture.context.vault,
-        fixture.vault_usdc,
-        fixture.vault_pyusd,
-        USDC_MINT,
-        PYUSD_MINT,
-        AMOUNT_IN,
-        AMOUNT_IN,
-    );
+    let jupiter_ix = fixture
+        .swap_action
+        .jupiter()
+        .expect("swap action has Jupiter lane")
+        .build(JupiterSwapExecution {
+            signer: fixture.wallet_b.pubkey(),
+            vault_index: fixture.context.vault_index,
+            vault: fixture.context.vault,
+            vault_input: fixture.vault_usdc,
+            vault_output: fixture.vault_pyusd,
+            input_mint: USDC_MINT,
+            output_mint: PYUSD_MINT,
+            in_amount: AMOUNT_IN,
+            out_amount: AMOUNT_IN,
+        });
     try_send_instructions(
         &mut fixture.context.svm,
         &[jupiter_ix],

@@ -78,7 +78,7 @@ This keeps the delegated surface lean: every policy execution must still match a
 
 ## Loyal Actions SDK
 
-Tests should not assemble route actions directly. Use `crates/loyal-actions` and the harness adapters:
+Tests should not assemble route actions directly. Use `crates/loyal-actions` and the Squads test adapters:
 
 ```rust
 let route_action_setup = create_three_step_yield_route_actions(
@@ -87,12 +87,14 @@ let route_action_setup = create_three_step_yield_route_actions(
         vec![USDC_MINT, PYUSD_MINT],
         vec![main_usdc, prime_usdc, main_pyusd],
     ),
+    vec![mock_jupiter_swap_lane(true)],
+    YieldRouteActionSeeds::default(),
 )?;
 ```
 
-The SDK derives action accounts, deduplicates the route universe, and returns Squads create instructions. Tests choose the delegated signer and the accounts that belong in the optimized route universe.
+The SDK derives action accounts, deduplicates the route universe, returns Squads create instructions, and exposes named route actions for execution. Tests choose the delegated signer, route universe, and explicit protocol lanes; test adapters own mock Jupiter details.
 
-For swap-only tests, use `create_swap_yield_route_action(...)`. For mock stable exact-in execution, use `execute_squads_yield_route_stable_swap_instruction(...)` so tests do not duplicate Jupiter account ordering.
+For swap-only tests, use `create_swap_yield_route_action(...)`. Route execution should go through `withdraw`, `deposit`, `jupiter`, or `hub` actions and call `build` with the action-specific arguments, so tests do not duplicate Squads constraint-index plumbing.
 
 ## Practical Recommendation
 

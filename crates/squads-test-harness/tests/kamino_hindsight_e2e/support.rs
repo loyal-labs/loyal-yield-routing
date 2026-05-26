@@ -1,8 +1,5 @@
 fn build_rebalance_transaction(
     vault: Pubkey,
-    withdraw_policy: Pubkey,
-    swap_policy: Pubkey,
-    deposit_policy: Pubkey,
     signer: Pubkey,
     vault_index: u8,
     vault_token_accounts: &HashMap<Pubkey, Pubkey>,
@@ -11,7 +8,9 @@ fn build_rebalance_transaction(
     from: &Choice,
     to: &Choice,
     in_amount_raw: u64,
-    swap_lane_count: u8,
+    withdraw: KaminoAction,
+    jupiter: JupiterAction,
+    deposit: KaminoAction,
 ) -> (Vec<solana_sdk::instruction::Instruction>, u64) {
     let from_accounts = reserve_accounts[&from.reserve_index];
     let to_accounts = reserve_accounts[&to.reserve_index];
@@ -20,12 +19,10 @@ fn build_rebalance_transaction(
         from_accounts,
         mock_kamino_withdraw_reserve_liquidity_data(in_amount_raw),
     );
-    let withdraw_ix = execute_squads_program_interaction_instruction(
-        withdraw_policy,
+    let withdraw_ix = withdraw.build(
         signer,
         vault_index,
         withdraw_instructions,
-        vec![0],
         withdraw_accounts,
     );
 
@@ -35,17 +32,10 @@ fn build_rebalance_transaction(
             to_accounts,
             mock_kamino_deposit_reserve_liquidity_data(in_amount_raw),
         );
-        let deposit_ix = execute_squads_program_interaction_instruction(
-            deposit_policy,
+        let deposit_ix = deposit.build(
             signer,
             vault_index,
             deposit_instructions,
-            vec![deposit_constraint_index(
-                withdraw_policy,
-                swap_policy,
-                deposit_policy,
-                swap_lane_count,
-            )],
             deposit_accounts,
         );
         return (vec![withdraw_ix, deposit_ix], in_amount_raw);
@@ -60,62 +50,30 @@ fn build_rebalance_transaction(
     );
     let out_value_usd = usd_value(in_amount_raw, from) * (1.0 - cost.loss_fraction.unwrap_or(0.0));
     let out_amount_raw = raw_from_usd(out_value_usd, to);
-    let swap_ix = execute_squads_yield_route_stable_swap_instruction_with_constraint_index(
-        swap_policy,
+    let swap_ix = jupiter.build(JupiterSwapExecution {
         signer,
         vault_index,
         vault,
-        vault_token_accounts[&from.mint_address],
-        vault_token_accounts[&to.mint_address],
-        from.mint_address,
-        to.mint_address,
-        in_amount_raw,
-        out_amount_raw,
-        swap_constraint_index(withdraw_policy, swap_policy, deposit_policy),
-    );
+        vault_input: vault_token_accounts[&from.mint_address],
+        vault_output: vault_token_accounts[&to.mint_address],
+        input_mint: from.mint_address,
+        output_mint: to.mint_address,
+        in_amount: in_amount_raw,
+        out_amount: out_amount_raw,
+    });
     let (deposit_instructions, deposit_accounts) = mock_kamino_reserve_transaction(
         vault,
         to_accounts,
         mock_kamino_deposit_reserve_liquidity_data(out_amount_raw),
     );
-    let deposit_ix = execute_squads_program_interaction_instruction(
-        deposit_policy,
+    let deposit_ix = deposit.build(
         signer,
         vault_index,
         deposit_instructions,
-        vec![deposit_constraint_index(
-            withdraw_policy,
-            swap_policy,
-            deposit_policy,
-            swap_lane_count,
-        )],
         deposit_accounts,
     );
 
     (vec![withdraw_ix, swap_ix, deposit_ix], out_amount_raw)
-}
-
-fn swap_constraint_index(withdraw_policy: Pubkey, swap_policy: Pubkey, deposit_policy: Pubkey) -> u8 {
-    if withdraw_policy == swap_policy && swap_policy == deposit_policy {
-        1
-    } else {
-        0
-    }
-}
-
-fn deposit_constraint_index(
-    withdraw_policy: Pubkey,
-    swap_policy: Pubkey,
-    deposit_policy: Pubkey,
-    swap_lane_count: u8,
-) -> u8 {
-    if withdraw_policy == swap_policy && swap_policy == deposit_policy {
-        1 + swap_lane_count
-    } else if withdraw_policy == deposit_policy {
-        1
-    } else {
-        0
-    }
 }
 
 fn apply_mock_kamino_accrual(

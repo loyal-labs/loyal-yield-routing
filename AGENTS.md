@@ -47,7 +47,9 @@ Examples of code that may belong in `src/lib/` after reuse is proven include fra
 
 Use `bun run test:squads` for the lean Rust test crate around Squads smart-account flows. Use `bun run test:squads:e2e` for the heavier ignored historical Kamino replay when changes touch route policy composition, heap/compute assumptions, or replay-sensitive behavior.
 
-The helper crate lives in `crates/squads-test-harness` and should stay focused on reusable LiteSVM setup, Squads PDA derivation, instruction builders, account seeding helpers, and deterministic policy scenarios.
+The action SDK lives in `crates/loyal-actions`. Keep route action construction, route topology, protocol lane configuration, and action account planning there so it can move cleanly into Loyal's broader monorepo.
+
+The helper crate lives in `crates/squads-test-harness` and should stay focused on reusable LiteSVM setup, Squads PDA derivation, instruction builders, account seeding helpers, test-only protocol adapters, and deterministic action scenarios.
 
 The Rust test crate follows this module layout:
 
@@ -65,12 +67,25 @@ crates/squads-test-harness/src/
       stable_swap.rs             # Jupiter and Loyal Hub stable-swap constraints
       kamino.rs                  # Kamino reserve constraints and legacy Kamino route helpers
       route_bundles.rs           # all-in-one route policy builders
-  yield_route.rs                 # route-level policy bundles for tests
+  actions.rs                     # adapters into loyal-actions plus fluent route-action execution
   protocols.rs                   # mock protocol data, SPL seeding, SBF mock loading
   types.rs                       # shared public harness structs and crate-private wire types
 ```
 
-Prefer `squads_test_harness::prelude::*` for scenario tests and module-qualified imports when a test is intentionally exercising one slice. Keep route-level orchestration in `yield_route.rs`; keep raw Squads policy instruction builders in `policies/**`; keep mock protocol state and instruction data in `protocols.rs`; keep low-level Squads account and payload primitives in `squads.rs`.
+Prefer `squads_test_harness::prelude::*` for scenario tests and module-qualified imports when a test is intentionally exercising one slice. Keep route action construction in `crates/loyal-actions`; keep test adapters and fluent execution wrappers in `actions.rs`; keep raw Squads instruction builders in `policies/**`; keep mock protocol state and instruction data in `protocols.rs`; keep low-level Squads account and payload primitives in `squads.rs`.
+
+Route tests should execute through named actions instead of raw constraint indexes:
+
+```rust
+let withdraw_ix = route_action_setup.withdraw()?.build(
+    delegated_signer,
+    vault_index,
+    withdraw_instructions,
+    withdraw_accounts,
+);
+```
+
+Use `.jupiter()?.build(JupiterSwapExecution { ... })` and `.hub()?.build(HubSwapExecution { ... })` for swap lanes. Treat the lower-level `execute_loyal_action_*` helpers as internal test plumbing instead of the default surface in scenario tests.
 
 Root-level re-exports exist for compatibility, but new reusable helpers should live in the owning module above instead of becoming broad horizontal utilities. Preserve `pub(crate)` for Squads wire types unless a test truly needs them as public API.
 
