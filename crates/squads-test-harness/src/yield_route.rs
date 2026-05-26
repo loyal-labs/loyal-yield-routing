@@ -1,24 +1,49 @@
-#![allow(dead_code, unused_imports)]
-
-use borsh::BorshSerialize;
-use litesvm::LiteSVM;
-use solana_sdk::{
-    account::Account,
-    hash::hashv,
-    instruction::{AccountMeta, Instruction},
-    message::Message,
-    pubkey,
-    pubkey::Pubkey,
-    signature::Keypair,
-    signer::Signer,
-    transaction::Transaction,
-};
-use solana_system_interface::instruction as system_instruction;
-use spl_token::solana_program::{program_option::COption, program_pack::Pack};
-use std::{env, fs, io::Write, path::PathBuf};
-
-use crate::types::*;
 use crate::*;
+use solana_sdk::pubkey::Pubkey;
+
+struct YieldRoutePolicyContext {
+    settings: Pubkey,
+    authority: Pubkey,
+    account_index: u8,
+    vault: Pubkey,
+    stable_mints: Vec<Pubkey>,
+    kamino_reserves: Vec<MockKaminoReserveTokenAccounts>,
+}
+
+impl YieldRoutePolicyContext {
+    fn new(context: &FundedSquadsTestContext, whitelist: SquadsYieldRoutePolicyWhitelist) -> Self {
+        Self {
+            settings: context.pool.settings,
+            authority: context.wallet_pubkey(),
+            account_index: context.vault_index,
+            vault: context.vault,
+            stable_mints: unique_pubkeys(whitelist.stable_mints),
+            kamino_reserves: unique_kamino_reserves(whitelist.kamino_reserves),
+        }
+    }
+
+    fn policy(&self, seed: u64) -> Pubkey {
+        derive_squads_policy(&self.settings, seed).0
+    }
+
+    fn kamino_markets(&self) -> Vec<Pubkey> {
+        unique_pubkeys(
+            self.kamino_reserves
+                .iter()
+                .map(|reserve| reserve.market)
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn kamino_mints(&self) -> Vec<Pubkey> {
+        unique_pubkeys(
+            self.kamino_reserves
+                .iter()
+                .map(|reserve| reserve.liquidity_mint)
+                .collect::<Vec<_>>(),
+        )
+    }
+}
 
 pub fn create_squads_yield_route_policy_instructions(
     context: &FundedSquadsTestContext,
@@ -55,50 +80,42 @@ pub fn create_squads_yield_route_policy_instructions_with_seeds(
     swap_lanes: Vec<SwapLane>,
     seeds: SquadsYieldRoutePolicySeeds,
 ) -> SquadsYieldRoutePolicyInstructions {
-    let settings = context.pool.settings;
-    let authority = context.wallet_pubkey();
-    let account_index = context.vault_index;
-    let vault = context.vault;
-    let stable_mints = unique_pubkeys(whitelist.stable_mints);
-    let kamino_reserves = unique_kamino_reserves(whitelist.kamino_reserves);
-    let (withdraw, _) = derive_squads_policy(&settings, seeds.withdraw);
-    let (swap, _) = derive_squads_policy(&settings, seeds.swap);
-    let (deposit, _) = derive_squads_policy(&settings, seeds.deposit);
+    let route = YieldRoutePolicyContext::new(context, whitelist);
 
     SquadsYieldRoutePolicyInstructions {
         policies: SquadsYieldRoutePolicies {
-            withdraw,
-            swap,
-            deposit,
+            withdraw: route.policy(seeds.withdraw),
+            swap: route.policy(seeds.swap),
+            deposit: route.policy(seeds.deposit),
         },
         instructions: vec![
             create_squads_program_interaction_route_kamino_withdraw_policy_instruction(
-                settings,
-                authority,
+                route.settings,
+                route.authority,
                 delegated_signer,
                 seeds.withdraw,
-                account_index,
-                vault,
-                kamino_reserves.clone(),
+                route.account_index,
+                route.vault,
+                route.kamino_reserves.clone(),
             ),
             create_squads_program_interaction_route_stable_swap_policy_instruction(
-                settings,
-                authority,
+                route.settings,
+                route.authority,
                 delegated_signer,
                 seeds.swap,
-                account_index,
-                vault,
-                stable_mints,
+                route.account_index,
+                route.vault,
+                route.stable_mints,
                 swap_lanes,
             ),
             create_squads_program_interaction_route_kamino_deposit_policy_instruction(
-                settings,
-                authority,
+                route.settings,
+                route.authority,
                 delegated_signer,
                 seeds.deposit,
-                account_index,
-                vault,
-                kamino_reserves,
+                route.account_index,
+                route.vault,
+                route.kamino_reserves,
             ),
         ],
     }
@@ -123,40 +140,34 @@ pub fn create_squads_yield_route_combined_kamino_policy_instructions_with_swap_l
     whitelist: SquadsYieldRoutePolicyWhitelist,
     swap_lanes: Vec<SwapLane>,
 ) -> SquadsYieldRoutePolicyInstructions {
-    let settings = context.pool.settings;
-    let authority = context.wallet_pubkey();
-    let account_index = context.vault_index;
-    let vault = context.vault;
-    let stable_mints = unique_pubkeys(whitelist.stable_mints);
-    let kamino_reserves = unique_kamino_reserves(whitelist.kamino_reserves);
+    let route = YieldRoutePolicyContext::new(context, whitelist);
     let rebalance_seed = YIELD_ROUTE_WITHDRAW_POLICY_SEED;
-    let (rebalance, _) = derive_squads_policy(&settings, rebalance_seed);
-    let (swap, _) = derive_squads_policy(&settings, YIELD_ROUTE_SWAP_POLICY_SEED);
+    let rebalance = route.policy(rebalance_seed);
 
     SquadsYieldRoutePolicyInstructions {
         policies: SquadsYieldRoutePolicies {
             withdraw: rebalance,
-            swap,
+            swap: route.policy(YIELD_ROUTE_SWAP_POLICY_SEED),
             deposit: rebalance,
         },
         instructions: vec![
             create_squads_program_interaction_route_kamino_rebalance_policy_instruction(
-                settings,
-                authority,
+                route.settings,
+                route.authority,
                 delegated_signer,
                 rebalance_seed,
-                account_index,
-                vault,
-                kamino_reserves,
+                route.account_index,
+                route.vault,
+                route.kamino_reserves,
             ),
             create_squads_program_interaction_route_stable_swap_policy_instruction(
-                settings,
-                authority,
+                route.settings,
+                route.authority,
                 delegated_signer,
                 YIELD_ROUTE_SWAP_POLICY_SEED,
-                account_index,
-                vault,
-                stable_mints,
+                route.account_index,
+                route.vault,
+                route.stable_mints,
                 swap_lanes,
             ),
         ],
@@ -182,53 +193,37 @@ pub fn create_squads_yield_route_market_mint_kamino_policy_instructions_with_swa
     whitelist: SquadsYieldRoutePolicyWhitelist,
     swap_lanes: Vec<SwapLane>,
 ) -> SquadsYieldRoutePolicyInstructions {
-    let settings = context.pool.settings;
-    let authority = context.wallet_pubkey();
-    let account_index = context.vault_index;
-    let vault = context.vault;
-    let stable_mints = unique_pubkeys(whitelist.stable_mints);
-    let kamino_reserves = unique_kamino_reserves(whitelist.kamino_reserves);
-    let kamino_markets = unique_pubkeys(
-        kamino_reserves
-            .iter()
-            .map(|reserve| reserve.market)
-            .collect::<Vec<_>>(),
-    );
-    let kamino_mints = unique_pubkeys(
-        kamino_reserves
-            .iter()
-            .map(|reserve| reserve.liquidity_mint)
-            .collect::<Vec<_>>(),
-    );
+    let route = YieldRoutePolicyContext::new(context, whitelist);
+    let kamino_markets = route.kamino_markets();
+    let kamino_mints = route.kamino_mints();
     let rebalance_seed = YIELD_ROUTE_WITHDRAW_POLICY_SEED;
-    let (rebalance, _) = derive_squads_policy(&settings, rebalance_seed);
-    let (swap, _) = derive_squads_policy(&settings, YIELD_ROUTE_SWAP_POLICY_SEED);
+    let rebalance = route.policy(rebalance_seed);
 
     SquadsYieldRoutePolicyInstructions {
         policies: SquadsYieldRoutePolicies {
             withdraw: rebalance,
-            swap,
+            swap: route.policy(YIELD_ROUTE_SWAP_POLICY_SEED),
             deposit: rebalance,
         },
         instructions: vec![
             create_squads_program_interaction_route_kamino_market_mint_rebalance_policy_instruction(
-                settings,
-                authority,
+                route.settings,
+                route.authority,
                 delegated_signer,
                 rebalance_seed,
-                account_index,
-                vault,
+                route.account_index,
+                route.vault,
                 kamino_markets,
                 kamino_mints,
             ),
             create_squads_program_interaction_route_stable_swap_policy_instruction(
-                settings,
-                authority,
+                route.settings,
+                route.authority,
                 delegated_signer,
                 YIELD_ROUTE_SWAP_POLICY_SEED,
-                account_index,
-                vault,
-                stable_mints,
+                route.account_index,
+                route.vault,
+                route.stable_mints,
                 swap_lanes,
             ),
         ],
@@ -254,26 +249,11 @@ pub fn create_squads_yield_route_all_in_one_market_mint_policy_instructions_with
     whitelist: SquadsYieldRoutePolicyWhitelist,
     swap_lanes: Vec<SwapLane>,
 ) -> SquadsYieldRoutePolicyInstructions {
-    let settings = context.pool.settings;
-    let authority = context.wallet_pubkey();
-    let account_index = context.vault_index;
-    let vault = context.vault;
-    let stable_mints = unique_pubkeys(whitelist.stable_mints);
-    let kamino_reserves = unique_kamino_reserves(whitelist.kamino_reserves);
-    let kamino_markets = unique_pubkeys(
-        kamino_reserves
-            .iter()
-            .map(|reserve| reserve.market)
-            .collect::<Vec<_>>(),
-    );
-    let kamino_mints = unique_pubkeys(
-        kamino_reserves
-            .iter()
-            .map(|reserve| reserve.liquidity_mint)
-            .collect::<Vec<_>>(),
-    );
+    let route = YieldRoutePolicyContext::new(context, whitelist);
+    let kamino_markets = route.kamino_markets();
+    let kamino_mints = route.kamino_mints();
     let seed = YIELD_ROUTE_WITHDRAW_POLICY_SEED;
-    let (policy, _) = derive_squads_policy(&settings, seed);
+    let policy = route.policy(seed);
 
     SquadsYieldRoutePolicyInstructions {
         policies: SquadsYieldRoutePolicies {
@@ -283,15 +263,15 @@ pub fn create_squads_yield_route_all_in_one_market_mint_policy_instructions_with
         },
         instructions: vec![
             create_squads_program_interaction_route_all_in_one_market_mint_policy_instruction(
-                settings,
-                authority,
+                route.settings,
+                route.authority,
                 delegated_signer,
                 seed,
-                account_index,
-                vault,
+                route.account_index,
+                route.vault,
                 kamino_markets,
                 kamino_mints,
-                stable_mints,
+                route.stable_mints,
                 swap_lanes,
             ),
         ],
@@ -317,20 +297,10 @@ pub fn create_squads_yield_route_all_in_one_mint_policy_instructions_with_swap_l
     whitelist: SquadsYieldRoutePolicyWhitelist,
     swap_lanes: Vec<SwapLane>,
 ) -> SquadsYieldRoutePolicyInstructions {
-    let settings = context.pool.settings;
-    let authority = context.wallet_pubkey();
-    let account_index = context.vault_index;
-    let vault = context.vault;
-    let stable_mints = unique_pubkeys(whitelist.stable_mints);
-    let kamino_reserves = unique_kamino_reserves(whitelist.kamino_reserves);
-    let kamino_mints = unique_pubkeys(
-        kamino_reserves
-            .iter()
-            .map(|reserve| reserve.liquidity_mint)
-            .collect::<Vec<_>>(),
-    );
+    let route = YieldRoutePolicyContext::new(context, whitelist);
+    let kamino_mints = route.kamino_mints();
     let seed = YIELD_ROUTE_WITHDRAW_POLICY_SEED;
-    let (policy, _) = derive_squads_policy(&settings, seed);
+    let policy = route.policy(seed);
 
     SquadsYieldRoutePolicyInstructions {
         policies: SquadsYieldRoutePolicies {
@@ -340,14 +310,14 @@ pub fn create_squads_yield_route_all_in_one_mint_policy_instructions_with_swap_l
         },
         instructions: vec![
             create_squads_program_interaction_route_all_in_one_mint_policy_instruction(
-                settings,
-                authority,
+                route.settings,
+                route.authority,
                 delegated_signer,
                 seed,
-                account_index,
-                vault,
+                route.account_index,
+                route.vault,
                 kamino_mints,
-                stable_mints,
+                route.stable_mints,
                 swap_lanes,
             ),
         ],

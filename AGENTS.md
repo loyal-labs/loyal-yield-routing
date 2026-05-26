@@ -1,7 +1,7 @@
 <!-- BEGIN:nextjs-agent-rules -->
 # This is NOT the Next.js you know
 
-This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
+This version has breaking changes. APIs and project structure may differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
 ## Project Setup
@@ -33,14 +33,9 @@ src/features/<feature-name>/
   types.ts
 ```
 
-Rules for feature work:
+Extend an existing slice in place when behavior belongs to that feature. Avoid deep imports across slices; import through a slice's public `index.ts` when cross-slice access is truly needed. Keep feature-specific behavior inside its owning slice until it is clearly reused by multiple slices, then promote stable primitives to `src/lib/`.
 
-- Extend an existing slice in place when behavior belongs to that feature.
-- Avoid deep imports across slices; import through a slice's public `index.ts` when cross-slice access is truly needed.
-- Keep feature-specific behavior inside its owning slice until it is clearly reused by multiple slices.
-- Promote shared, stable cross-slice primitives to `src/lib/` only after reuse is proven.
-- Keep `src/app/**/page.tsx`, `layout.tsx`, and route handlers focused on composition, request handling, and wiring.
-- Preserve server/client boundaries. Server-only helpers should live in dedicated server modules such as `server.ts` or `*.server.ts` and must not be imported by client components.
+Keep `src/app/**/page.tsx`, `layout.tsx`, and route handlers focused on composition, request handling, and wiring. Preserve server/client boundaries. Server-only helpers should live in dedicated server modules such as `server.ts` or `*.server.ts` and must not be imported by client components.
 
 ### Shared Library Direction
 
@@ -50,7 +45,34 @@ Examples of code that may belong in `src/lib/` after reuse is proven include fra
 
 ## Squads Testing
 
-Use `bun run test:squads` for the lean Rust test crate around Squads smart-account flows. The helper crate lives in `crates/squads-test-harness` and should stay focused on reusable LiteSVM setup, Squads PDA derivation, instruction builders, and account seeding helpers.
+Use `bun run test:squads` for the lean Rust test crate around Squads smart-account flows. Use `bun run test:squads:e2e` for the heavier ignored historical Kamino replay when changes touch route policy composition, heap/compute assumptions, or replay-sensitive behavior.
+
+The helper crate lives in `crates/squads-test-harness` and should stay focused on reusable LiteSVM setup, Squads PDA derivation, instruction builders, account seeding helpers, and deterministic policy scenarios.
+
+The Rust test crate follows this module layout:
+
+```text
+crates/squads-test-harness/src/
+  lib.rs                         # public facade and prelude
+  squads.rs                      # Squads PDA derivation, settings setup, payload basics
+  runtime.rs                     # LiteSVM setup, funded contexts, program loading, tx sending
+  policies.rs                    # raw policy-family facade
+  policies/
+    lifecycle.rs                 # policy removal/settings lifecycle helpers
+    spending_limits.rs           # spending-limit policy creation
+    program_interaction/
+      common.rs                  # shared Squads ProgramInteraction encoding
+      stable_swap.rs             # Jupiter and Loyal Hub stable-swap constraints
+      kamino.rs                  # Kamino reserve constraints and legacy Kamino route helpers
+      route_bundles.rs           # all-in-one route policy builders
+  yield_route.rs                 # route-level policy bundles for tests
+  protocols.rs                   # mock protocol data, SPL seeding, SBF mock loading
+  types.rs                       # shared public harness structs and crate-private wire types
+```
+
+Prefer `squads_test_harness::prelude::*` for scenario tests and module-qualified imports when a test is intentionally exercising one slice. Keep route-level orchestration in `yield_route.rs`; keep raw Squads policy instruction builders in `policies/**`; keep mock protocol state and instruction data in `protocols.rs`; keep low-level Squads account and payload primitives in `squads.rs`.
+
+Root-level re-exports exist for compatibility, but new reusable helpers should live in the owning module above instead of becoming broad horizontal utilities. Preserve `pub(crate)` for Squads wire types unless a test truly needs them as public API.
 
 Keep Squads test scaffolding small. Add app-specific test programs or scenarios only when a real yield-routing flow needs them, and prefer deterministic helpers over broad framework wrappers.
 

@@ -1,13 +1,6 @@
-#![allow(dead_code, unused_imports)]
-
 use borsh::BorshSerialize;
 use litesvm::LiteSVM;
-use solana_sdk::{
-    instruction::{AccountMeta, Instruction},
-    pubkey::Pubkey,
-    signature::Keypair,
-    signer::Signer,
-};
+use solana_sdk::{instruction::Instruction, pubkey::Pubkey, signature::Keypair, signer::Signer};
 use std::{io::Write, path::PathBuf};
 
 use crate::{

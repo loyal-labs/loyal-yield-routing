@@ -1,5 +1,3 @@
-#![allow(dead_code, unused_imports)]
-
 use solana_sdk::{pubkey, pubkey::Pubkey};
 
 pub const SQUADS_SMART_ACCOUNT_PROGRAM_ID: Pubkey =

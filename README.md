@@ -58,4 +58,22 @@ let route_policy_setup = create_squads_yield_route_policy_instructions(
 
 The helper returns the three route policy pubkeys plus the create-policy instructions. Swap-only tests can use `create_squads_yield_route_swap_policy_instruction()`.
 
+### Test Crate Map
+
+The Squads test crate is grouped by domain modules for onboarding.
+
+| Module | Owns |
+| --- | --- |
+| `squads` | Squads PDA derivation, settings setup, smart-account instructions, payload basics |
+| `runtime` | LiteSVM setup, funded contexts, program loading, heap-frame helpers, transaction sending |
+| `policies` | Raw Squads policy families |
+| `policies/program_interaction` | `common`, `stable_swap`, `kamino`, and `route_bundles` builders |
+| `yield_route` | Route-level policy bundles that tests should usually call first |
+| `protocols` | Mock Jupiter/Kamino/Loyal Hub instruction data, SPL account seeding, SBF mock loading |
+| `types` | Shared public test structs and crate-private Squads wire types |
+
+Existing root imports still work. New scenario tests can use `squads_test_harness::prelude::*`; reusable helpers should go in the module that owns the domain behavior rather than in a broad utility bucket.
+
+Keep route-level orchestration in `yield_route`; keep low-level ProgramInteraction constraints in `policies/program_interaction`; keep mock protocol state in `protocols`.
+
 See `docs/squads-testing.md` and `docs/plans/squads-yield-routing-policy.md` for the policy model and test coverage.

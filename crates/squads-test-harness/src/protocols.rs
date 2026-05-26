@@ -1,23 +1,8 @@
-#![allow(dead_code, unused_imports)]
-
-use borsh::BorshSerialize;
 use litesvm::LiteSVM;
-use solana_sdk::{
-    account::Account,
-    hash::hashv,
-    instruction::{AccountMeta, Instruction},
-    message::Message,
-    pubkey,
-    pubkey::Pubkey,
-    signature::Keypair,
-    signer::Signer,
-    transaction::Transaction,
-};
-use solana_system_interface::instruction as system_instruction;
+use solana_sdk::{account::Account, hash::hashv, instruction::AccountMeta, pubkey::Pubkey};
 use spl_token::solana_program::{program_option::COption, program_pack::Pack};
-use std::{env, fs, io::Write, path::PathBuf};
+use std::{env, fs, path::PathBuf};
 
-use crate::types::*;
 use crate::*;
 
 pub fn mock_jupiter_swap_data(
