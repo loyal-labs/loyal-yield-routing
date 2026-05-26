@@ -1,17 +1,18 @@
 use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
 use squads_test_harness::{
     create_funded_squads_test_context_with_config_and_mock_programs,
-    create_squads_yield_route_market_mint_kamino_policy_instructions,
+    create_squads_yield_route_all_in_one_market_mint_policy_instructions_with_swap_lanes,
     execute_mock_jupiter_sol_to_usdc_swap_instruction,
     execute_squads_program_interaction_instruction, execute_squads_sync_transaction_instruction,
-    execute_squads_yield_route_stable_swap_instruction, get_spl_token_amount,
-    mock_jupiter_stable_reserve_token_account, mock_kamino_deposit_reserve_liquidity_data,
-    mock_kamino_reserve_transaction, mock_kamino_withdraw_reserve_liquidity_data,
-    seed_mock_jupiter_spl_accounts, seed_mock_jupiter_stable_reserve_spl_accounts,
-    seed_mock_kamino_reserve_spl_accounts_with_mint, seed_spl_mint_if_missing, set_spl_mint_supply,
-    set_spl_token_amount, try_send_instructions, FundedSquadsTestConfig,
+    execute_squads_yield_route_stable_swap_instruction_with_constraint_index, get_spl_token_amount,
+    initialize_loyal_hub_config_instruction, mock_jupiter_stable_reserve_token_account,
+    mock_kamino_deposit_reserve_liquidity_data, mock_kamino_reserve_transaction,
+    mock_kamino_withdraw_reserve_liquidity_data, seed_mock_jupiter_spl_accounts,
+    seed_mock_jupiter_stable_reserve_spl_accounts, seed_mock_kamino_reserve_spl_accounts_with_mint,
+    seed_spl_mint_if_missing, set_spl_mint_supply, set_spl_token_amount, try_send_instructions,
+    try_send_instructions_with_heap_frame, FundedSquadsTestConfig,
     MockJupiterStableReserveTokenAccount, MockKaminoReserveTokenAccounts, MockProgram,
-    SquadsYieldRoutePolicyWhitelist, KAMINO_PRIME_MARKET, KAMINO_PRIME_USDC_RESERVE,
+    SquadsYieldRoutePolicyWhitelist, SwapLane, KAMINO_PRIME_MARKET, KAMINO_PRIME_USDC_RESERVE,
     LAMPORTS_PER_SOL, USDC_DECIMALS, USDC_MINT,
 };
 use std::{
@@ -31,6 +32,8 @@ const SOL_PRICE_USD: f64 = 84.82;
 const POOL_CHANGE_USD: f64 =
     (POOL_CHANGE_LAMPORTS as f64 / LAMPORTS_PER_SOL as f64) * SOL_PRICE_USD;
 const JUPITER_RESERVE_RAW_AMOUNT: u64 = 1_000_000_000_000_000_000;
+const LOYAL_HUB_MAX_FEE_BPS: u16 = 50;
+const HINDSIGHT_SWAP_LANE_COUNT: u8 = 2;
 
 #[test]
 #[ignore = "heavy optional historical replay; run with `bun run test:squads:e2e`"]
@@ -61,7 +64,11 @@ fn wallet_b_replays_fixed_start_kamino_hindsight_route() {
             wallet_airdrop_lamports: 5 * LAMPORTS_PER_SOL,
             vault_funding_lamports: 2 * LAMPORTS_PER_SOL,
         },
-        &[MockProgram::Jupiter, MockProgram::KaminoLend],
+        &[
+            MockProgram::Jupiter,
+            MockProgram::KaminoLend,
+            MockProgram::LoyalHubSwap,
+        ],
     )
     .expect("create funded Squads test context");
     let Some(context) = context.as_mut() else {
@@ -70,10 +77,15 @@ fn wallet_b_replays_fixed_start_kamino_hindsight_route() {
     };
 
     let wallet_b = Keypair::new();
+    let hub_authorizer = Keypair::new();
     context
         .svm
         .airdrop(&wallet_b.pubkey(), LAMPORTS_PER_SOL)
         .expect("airdrop wallet B");
+    context
+        .svm
+        .airdrop(&hub_authorizer.pubkey(), LAMPORTS_PER_SOL)
+        .expect("airdrop hub authorizer");
 
     let route_reserve_indices = route
         .path
@@ -124,6 +136,16 @@ fn wallet_b_replays_fixed_start_kamino_hindsight_route() {
         &jupiter_stable_reserves,
         JUPITER_RESERVE_RAW_AMOUNT,
     );
+    let init_hub_ix = initialize_loyal_hub_config_instruction(
+        hub_authorizer.pubkey(),
+        hub_authorizer.pubkey(),
+        hub_authorizer.pubkey(),
+        LOYAL_HUB_MAX_FEE_BPS,
+        false,
+        &route_mints,
+    );
+    try_send_instructions(&mut context.svm, &[init_hub_ix], &hub_authorizer, &[])
+        .expect("hub authorizer initializes Loyal Hub config for route mints");
 
     let mut reserve_accounts = HashMap::<usize, MockKaminoReserveTokenAccounts>::new();
     for reserve_index in route_reserve_indices {
@@ -144,22 +166,30 @@ fn wallet_b_replays_fixed_start_kamino_hindsight_route() {
     }
 
     let route_reserve_accounts = reserve_accounts.values().copied().collect::<Vec<_>>();
-    let route_policy_setup = create_squads_yield_route_market_mint_kamino_policy_instructions(
-        context,
-        wallet_b.pubkey(),
-        SquadsYieldRoutePolicyWhitelist {
-            stable_mints: route_mints,
-            kamino_reserves: route_reserve_accounts,
-        },
-    );
+    let route_policy_setup =
+        create_squads_yield_route_all_in_one_market_mint_policy_instructions_with_swap_lanes(
+            context,
+            wallet_b.pubkey(),
+            SquadsYieldRoutePolicyWhitelist {
+                stable_mints: route_mints.clone(),
+                kamino_reserves: route_reserve_accounts,
+            },
+            vec![
+                SwapLane::Jupiter,
+                SwapLane::LoyalHub {
+                    hub_authorizer: hub_authorizer.pubkey(),
+                    max_fee_bps: LOYAL_HUB_MAX_FEE_BPS,
+                },
+            ],
+        );
     let route_policies = route_policy_setup.policies;
-    try_send_instructions(
+    try_send_instructions_with_heap_frame(
         &mut context.svm,
         &route_policy_setup.instructions,
         &context.wallet,
         &[],
     )
-    .expect("wallet A creates market/mint-scoped Kamino rebalance and route-mint swap policies");
+    .expect("wallet A creates one market/mint-scoped yield route policy");
 
     let first = &route.path[0].point;
     let mut current = first.clone();
@@ -237,14 +267,20 @@ fn wallet_b_replays_fixed_start_kamino_hindsight_route() {
             from_at_switch,
             &next.point,
             amount_raw,
+            HINDSIGHT_SWAP_LANE_COUNT,
         );
-        try_send_instructions(&mut context.svm, &transaction_instructions, &wallet_b, &[])
-            .unwrap_or_else(|error| {
-                panic!(
-                    "wallet B executes hindsight route at {}: {error:?}",
-                    next.timestamp
-                )
-            });
+        try_send_instructions_with_heap_frame(
+            &mut context.svm,
+            &transaction_instructions,
+            &wallet_b,
+            &[],
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "wallet B executes hindsight route at {}: {error:?}",
+                next.timestamp
+            )
+        });
 
         current = next.point.clone();
         amount_raw = next_amount_raw;

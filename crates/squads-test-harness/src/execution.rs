@@ -167,6 +167,34 @@ pub fn execute_squads_yield_route_stable_swap_instruction(
     in_amount: u64,
     out_amount: u64,
 ) -> Instruction {
+    execute_squads_yield_route_stable_swap_instruction_with_constraint_index(
+        swap_policy,
+        signer,
+        account_index,
+        vault,
+        vault_input,
+        vault_output,
+        input_mint,
+        output_mint,
+        in_amount,
+        out_amount,
+        0,
+    )
+}
+
+pub fn execute_squads_yield_route_stable_swap_instruction_with_constraint_index(
+    swap_policy: Pubkey,
+    signer: Pubkey,
+    account_index: u8,
+    vault: Pubkey,
+    vault_input: Pubkey,
+    vault_output: Pubkey,
+    input_mint: Pubkey,
+    output_mint: Pubkey,
+    in_amount: u64,
+    out_amount: u64,
+    instruction_constraint_index: u8,
+) -> Instruction {
     execute_squads_program_interaction_instruction(
         swap_policy,
         signer,
@@ -181,7 +209,7 @@ pub fn execute_squads_yield_route_stable_swap_instruction(
                 output_mint,
             ),
         }],
-        vec![0],
+        vec![instruction_constraint_index],
         vec![
             AccountMeta::new(vault, false),
             AccountMeta::new(vault_input, false),

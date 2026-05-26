@@ -394,6 +394,121 @@ pub fn create_squads_program_interaction_route_stable_swap_policy_instruction(
     )
 }
 
+pub fn create_squads_program_interaction_route_all_in_one_market_mint_policy_instruction(
+    squads_settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    policy_seed: u64,
+    account_index: u8,
+    vault: Pubkey,
+    markets: Vec<Pubkey>,
+    liquidity_mints: Vec<Pubkey>,
+    allowed_swap_mints: Vec<Pubkey>,
+    swap_lanes: Vec<SwapLane>,
+) -> Instruction {
+    assert!(
+        !swap_lanes.is_empty(),
+        "yield route all-in-one policy needs at least one swap lane"
+    );
+    let mut constraints = Vec::with_capacity(2 + swap_lanes.len());
+    constraints.push(kamino_route_market_mint_instruction_constraint(
+        vault,
+        markets.clone(),
+        liquidity_mints.clone(),
+        KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR,
+    ));
+    for lane in swap_lanes {
+        match lane {
+            SwapLane::Jupiter => {
+                constraints.push(jupiter_route_stable_swap_minimal_instruction_constraint(
+                    vault,
+                    allowed_swap_mints.clone(),
+                ))
+            }
+            SwapLane::LoyalHub {
+                hub_authorizer,
+                max_fee_bps,
+            } => constraints.push(loyal_hub_route_stable_swap_instruction_constraint(
+                vault,
+                allowed_swap_mints.clone(),
+                hub_authorizer,
+                max_fee_bps,
+            )),
+        }
+    }
+    constraints.push(kamino_route_market_mint_instruction_constraint(
+        vault,
+        markets,
+        liquidity_mints,
+        KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR,
+    ));
+
+    create_squads_compact_program_interaction_policy_instruction(
+        squads_settings,
+        authority,
+        delegated_signer,
+        policy_seed,
+        account_index,
+        constraints,
+    )
+}
+
+pub fn create_squads_program_interaction_route_all_in_one_mint_policy_instruction(
+    squads_settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    policy_seed: u64,
+    account_index: u8,
+    vault: Pubkey,
+    liquidity_mints: Vec<Pubkey>,
+    allowed_swap_mints: Vec<Pubkey>,
+    swap_lanes: Vec<SwapLane>,
+) -> Instruction {
+    assert!(
+        !swap_lanes.is_empty(),
+        "yield route all-in-one policy needs at least one swap lane"
+    );
+    let mut constraints = Vec::with_capacity(2 + swap_lanes.len());
+    constraints.push(kamino_route_mint_instruction_constraint(
+        vault,
+        liquidity_mints.clone(),
+        KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR,
+    ));
+    for lane in swap_lanes {
+        match lane {
+            SwapLane::Jupiter => {
+                constraints.push(jupiter_route_stable_swap_minimal_instruction_constraint(
+                    vault,
+                    allowed_swap_mints.clone(),
+                ))
+            }
+            SwapLane::LoyalHub {
+                hub_authorizer,
+                max_fee_bps,
+            } => constraints.push(loyal_hub_route_stable_swap_instruction_constraint(
+                vault,
+                allowed_swap_mints.clone(),
+                hub_authorizer,
+                max_fee_bps,
+            )),
+        }
+    }
+    constraints.push(kamino_route_mint_instruction_constraint(
+        vault,
+        liquidity_mints,
+        KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR,
+    ));
+
+    create_squads_compact_program_interaction_policy_instruction(
+        squads_settings,
+        authority,
+        delegated_signer,
+        policy_seed,
+        account_index,
+        constraints,
+    )
+}
+
 pub fn create_squads_program_interaction_mock_jupiter_stable_swap_policy_instruction(
     squads_settings: Pubkey,
     authority: Pubkey,
@@ -531,6 +646,52 @@ fn jupiter_route_stable_swap_instruction_constraint(
     }
 }
 
+fn jupiter_route_stable_swap_minimal_instruction_constraint(
+    vault: Pubkey,
+    allowed_mints: Vec<Pubkey>,
+) -> SquadsInstructionConstraint {
+    SquadsInstructionConstraint {
+        program_id: JUPITER_V6_PROGRAM_ID,
+        account_constraints: vec![
+            SquadsAccountConstraint {
+                account_index: 0,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![vault]),
+                owner: None,
+            },
+            SquadsAccountConstraint {
+                account_index: 1,
+                account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: 2,
+                account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: 3,
+                account_constraint: SquadsAccountConstraintType::Pubkey(allowed_mints.clone()),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: 4,
+                account_constraint: SquadsAccountConstraintType::Pubkey(allowed_mints),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: 5,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![spl_token::id()]),
+                owner: None,
+            },
+        ],
+        data_constraints: vec![SquadsDataConstraint {
+            data_offset: 0,
+            data_value: SquadsDataValue::U8(MOCK_JUPITER_STABLE_EXACT_IN),
+            operator: SquadsDataOperator::Equals,
+        }],
+    }
+}
+
 fn loyal_hub_route_stable_swap_instruction_constraint(
     vault: Pubkey,
     allowed_mints: Vec<Pubkey>,
@@ -553,26 +714,6 @@ fn loyal_hub_route_stable_swap_instruction_constraint(
                 owner: None,
             },
             SquadsAccountConstraint {
-                account_index: 2,
-                account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
-                owner: Some(spl_token::id()),
-            },
-            SquadsAccountConstraint {
-                account_index: 3,
-                account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
-                owner: Some(spl_token::id()),
-            },
-            SquadsAccountConstraint {
-                account_index: 4,
-                account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
-                owner: Some(spl_token::id()),
-            },
-            SquadsAccountConstraint {
-                account_index: 5,
-                account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
-                owner: Some(spl_token::id()),
-            },
-            SquadsAccountConstraint {
                 account_index: 6,
                 account_constraint: SquadsAccountConstraintType::Pubkey(allowed_mints.clone()),
                 owner: Some(spl_token::id()),
@@ -581,13 +722,6 @@ fn loyal_hub_route_stable_swap_instruction_constraint(
                 account_index: 7,
                 account_constraint: SquadsAccountConstraintType::Pubkey(allowed_mints),
                 owner: Some(spl_token::id()),
-            },
-            SquadsAccountConstraint {
-                account_index: 8,
-                account_constraint: SquadsAccountConstraintType::Pubkey(vec![
-                    derive_loyal_hub_authority(),
-                ]),
-                owner: None,
             },
             SquadsAccountConstraint {
                 account_index: 9,
@@ -1007,6 +1141,38 @@ fn kamino_route_market_mint_instruction_constraint(
             SquadsAccountConstraint {
                 account_index: 2,
                 account_constraint: SquadsAccountConstraintType::Pubkey(markets),
+                owner: None,
+            },
+            SquadsAccountConstraint {
+                account_index: 3,
+                account_constraint: SquadsAccountConstraintType::Pubkey(liquidity_mints),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: 10,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![spl_token::id()]),
+                owner: None,
+            },
+        ],
+        data_constraints: vec![SquadsDataConstraint {
+            data_offset: 0,
+            data_value: SquadsDataValue::U8Slice(discriminator.to_vec()),
+            operator: SquadsDataOperator::Equals,
+        }],
+    }
+}
+
+fn kamino_route_mint_instruction_constraint(
+    vault: Pubkey,
+    liquidity_mints: Vec<Pubkey>,
+    discriminator: [u8; 8],
+) -> SquadsInstructionConstraint {
+    SquadsInstructionConstraint {
+        program_id: KAMINO_LEND_PROGRAM_ID,
+        account_constraints: vec![
+            SquadsAccountConstraint {
+                account_index: 0,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![vault]),
                 owner: None,
             },
             SquadsAccountConstraint {

@@ -235,6 +235,125 @@ pub fn create_squads_yield_route_market_mint_kamino_policy_instructions_with_swa
     }
 }
 
+pub fn create_squads_yield_route_all_in_one_market_mint_policy_instructions(
+    context: &FundedSquadsTestContext,
+    delegated_signer: Pubkey,
+    whitelist: SquadsYieldRoutePolicyWhitelist,
+) -> SquadsYieldRoutePolicyInstructions {
+    create_squads_yield_route_all_in_one_market_mint_policy_instructions_with_swap_lanes(
+        context,
+        delegated_signer,
+        whitelist,
+        vec![SwapLane::Jupiter],
+    )
+}
+
+pub fn create_squads_yield_route_all_in_one_market_mint_policy_instructions_with_swap_lanes(
+    context: &FundedSquadsTestContext,
+    delegated_signer: Pubkey,
+    whitelist: SquadsYieldRoutePolicyWhitelist,
+    swap_lanes: Vec<SwapLane>,
+) -> SquadsYieldRoutePolicyInstructions {
+    let settings = context.pool.settings;
+    let authority = context.wallet_pubkey();
+    let account_index = context.vault_index;
+    let vault = context.vault;
+    let stable_mints = unique_pubkeys(whitelist.stable_mints);
+    let kamino_reserves = unique_kamino_reserves(whitelist.kamino_reserves);
+    let kamino_markets = unique_pubkeys(
+        kamino_reserves
+            .iter()
+            .map(|reserve| reserve.market)
+            .collect::<Vec<_>>(),
+    );
+    let kamino_mints = unique_pubkeys(
+        kamino_reserves
+            .iter()
+            .map(|reserve| reserve.liquidity_mint)
+            .collect::<Vec<_>>(),
+    );
+    let seed = YIELD_ROUTE_WITHDRAW_POLICY_SEED;
+    let (policy, _) = derive_squads_policy(&settings, seed);
+
+    SquadsYieldRoutePolicyInstructions {
+        policies: SquadsYieldRoutePolicies {
+            withdraw: policy,
+            swap: policy,
+            deposit: policy,
+        },
+        instructions: vec![
+            create_squads_program_interaction_route_all_in_one_market_mint_policy_instruction(
+                settings,
+                authority,
+                delegated_signer,
+                seed,
+                account_index,
+                vault,
+                kamino_markets,
+                kamino_mints,
+                stable_mints,
+                swap_lanes,
+            ),
+        ],
+    }
+}
+
+pub fn create_squads_yield_route_all_in_one_mint_policy_instructions(
+    context: &FundedSquadsTestContext,
+    delegated_signer: Pubkey,
+    whitelist: SquadsYieldRoutePolicyWhitelist,
+) -> SquadsYieldRoutePolicyInstructions {
+    create_squads_yield_route_all_in_one_mint_policy_instructions_with_swap_lanes(
+        context,
+        delegated_signer,
+        whitelist,
+        vec![SwapLane::Jupiter],
+    )
+}
+
+pub fn create_squads_yield_route_all_in_one_mint_policy_instructions_with_swap_lanes(
+    context: &FundedSquadsTestContext,
+    delegated_signer: Pubkey,
+    whitelist: SquadsYieldRoutePolicyWhitelist,
+    swap_lanes: Vec<SwapLane>,
+) -> SquadsYieldRoutePolicyInstructions {
+    let settings = context.pool.settings;
+    let authority = context.wallet_pubkey();
+    let account_index = context.vault_index;
+    let vault = context.vault;
+    let stable_mints = unique_pubkeys(whitelist.stable_mints);
+    let kamino_reserves = unique_kamino_reserves(whitelist.kamino_reserves);
+    let kamino_mints = unique_pubkeys(
+        kamino_reserves
+            .iter()
+            .map(|reserve| reserve.liquidity_mint)
+            .collect::<Vec<_>>(),
+    );
+    let seed = YIELD_ROUTE_WITHDRAW_POLICY_SEED;
+    let (policy, _) = derive_squads_policy(&settings, seed);
+
+    SquadsYieldRoutePolicyInstructions {
+        policies: SquadsYieldRoutePolicies {
+            withdraw: policy,
+            swap: policy,
+            deposit: policy,
+        },
+        instructions: vec![
+            create_squads_program_interaction_route_all_in_one_mint_policy_instruction(
+                settings,
+                authority,
+                delegated_signer,
+                seed,
+                account_index,
+                vault,
+                kamino_mints,
+                stable_mints,
+                swap_lanes,
+            ),
+        ],
+    }
+}
+
 pub fn create_squads_yield_route_swap_policy_instruction(
     context: &FundedSquadsTestContext,
     delegated_signer: Pubkey,

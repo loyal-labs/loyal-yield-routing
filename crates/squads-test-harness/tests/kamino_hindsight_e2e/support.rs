@@ -11,6 +11,7 @@ fn build_rebalance_transaction(
     from: &Choice,
     to: &Choice,
     in_amount_raw: u64,
+    swap_lane_count: u8,
 ) -> (Vec<solana_sdk::instruction::Instruction>, u64) {
     let from_accounts = reserve_accounts[&from.reserve_index];
     let to_accounts = reserve_accounts[&to.reserve_index];
@@ -39,7 +40,12 @@ fn build_rebalance_transaction(
             signer,
             vault_index,
             deposit_instructions,
-            vec![deposit_constraint_index(withdraw_policy, deposit_policy)],
+            vec![deposit_constraint_index(
+                withdraw_policy,
+                swap_policy,
+                deposit_policy,
+                swap_lane_count,
+            )],
             deposit_accounts,
         );
         return (vec![withdraw_ix, deposit_ix], in_amount_raw);
@@ -54,7 +60,7 @@ fn build_rebalance_transaction(
     );
     let out_value_usd = usd_value(in_amount_raw, from) * (1.0 - cost.loss_fraction.unwrap_or(0.0));
     let out_amount_raw = raw_from_usd(out_value_usd, to);
-    let swap_ix = execute_squads_yield_route_stable_swap_instruction(
+    let swap_ix = execute_squads_yield_route_stable_swap_instruction_with_constraint_index(
         swap_policy,
         signer,
         vault_index,
@@ -65,6 +71,7 @@ fn build_rebalance_transaction(
         to.mint_address,
         in_amount_raw,
         out_amount_raw,
+        swap_constraint_index(withdraw_policy, swap_policy, deposit_policy),
     );
     let (deposit_instructions, deposit_accounts) = mock_kamino_reserve_transaction(
         vault,
@@ -76,15 +83,35 @@ fn build_rebalance_transaction(
         signer,
         vault_index,
         deposit_instructions,
-        vec![deposit_constraint_index(withdraw_policy, deposit_policy)],
+        vec![deposit_constraint_index(
+            withdraw_policy,
+            swap_policy,
+            deposit_policy,
+            swap_lane_count,
+        )],
         deposit_accounts,
     );
 
     (vec![withdraw_ix, swap_ix, deposit_ix], out_amount_raw)
 }
 
-fn deposit_constraint_index(withdraw_policy: Pubkey, deposit_policy: Pubkey) -> u8 {
-    if withdraw_policy == deposit_policy {
+fn swap_constraint_index(withdraw_policy: Pubkey, swap_policy: Pubkey, deposit_policy: Pubkey) -> u8 {
+    if withdraw_policy == swap_policy && swap_policy == deposit_policy {
+        1
+    } else {
+        0
+    }
+}
+
+fn deposit_constraint_index(
+    withdraw_policy: Pubkey,
+    swap_policy: Pubkey,
+    deposit_policy: Pubkey,
+    swap_lane_count: u8,
+) -> u8 {
+    if withdraw_policy == swap_policy && swap_policy == deposit_policy {
+        1 + swap_lane_count
+    } else if withdraw_policy == deposit_policy {
         1
     } else {
         0

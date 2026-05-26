@@ -4,6 +4,7 @@ use borsh::BorshSerialize;
 use litesvm::LiteSVM;
 use solana_sdk::{
     account::Account,
+    compute_budget::ComputeBudgetInstruction,
     hash::hashv,
     instruction::{AccountMeta, Instruction},
     message::Message,
@@ -19,6 +20,8 @@ use std::{env, fs, io::Write, path::PathBuf};
 
 use crate::types::*;
 use crate::*;
+
+pub const SQUADS_EXTENDED_HEAP_FRAME_BYTES: u32 = 256_000;
 
 pub fn execute_squads_spending_limit_withdrawal_instruction(
     policy: Pubkey,
@@ -223,6 +226,26 @@ pub fn create_funded_squads_test_context_with_config_and_mock_programs(
 
 pub fn send_instructions(svm: &mut LiteSVM, instructions: &[Instruction], payer: &Keypair) {
     try_send_instructions(svm, instructions, payer, &[]).unwrap();
+}
+
+pub fn try_send_instructions_with_heap_frame(
+    svm: &mut LiteSVM,
+    instructions: &[Instruction],
+    payer: &Keypair,
+    additional_signers: &[&Keypair],
+) -> Result<(), String> {
+    let mut instructions_with_heap_frame = Vec::with_capacity(instructions.len() + 1);
+    instructions_with_heap_frame.push(ComputeBudgetInstruction::request_heap_frame(
+        SQUADS_EXTENDED_HEAP_FRAME_BYTES,
+    ));
+    instructions_with_heap_frame.extend_from_slice(instructions);
+
+    try_send_instructions(
+        svm,
+        &instructions_with_heap_frame,
+        payer,
+        additional_signers,
+    )
 }
 
 pub fn try_send_instructions(
