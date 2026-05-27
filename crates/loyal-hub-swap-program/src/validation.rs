@@ -1,6 +1,5 @@
-use solana_program::{
-    account_info::AccountInfo, entrypoint::ProgramResult, program_error::ProgramError,
-    pubkey::Pubkey,
+use pinocchio::{
+    account_info::AccountInfo, program_error::ProgramError, pubkey::Pubkey, ProgramResult,
 };
 
 use crate::state::HubConfig;
@@ -16,21 +15,28 @@ pub fn require_inventory_rebalancer(rebalancer: &AccountInfo, config: &HubConfig
 }
 
 pub fn require_signer(account: &AccountInfo) -> ProgramResult {
-    if !account.is_signer {
+    if !account.is_signer() {
         return Err(ProgramError::MissingRequiredSignature);
     }
     Ok(())
 }
 
+pub fn require_readonly(account: &AccountInfo) -> ProgramResult {
+    if account.is_writable() {
+        return Err(ProgramError::InvalidArgument);
+    }
+    Ok(())
+}
+
 pub fn require_key(account: &AccountInfo, expected: &Pubkey) -> ProgramResult {
-    if account.key != expected {
+    if account.key() != expected {
         return Err(ProgramError::InvalidArgument);
     }
     Ok(())
 }
 
 pub fn require_distinct_key(left: &AccountInfo, right: &AccountInfo) -> ProgramResult {
-    if left.key == right.key {
+    if left.key() == right.key() {
         return Err(ProgramError::InvalidArgument);
     }
     Ok(())
@@ -68,7 +74,7 @@ pub fn require_fee_cap(
 }
 
 pub fn validate_fee_bps(fee_bps: u16) -> ProgramResult {
-    if fee_bps > 10_000 {
+    if fee_bps > loyal_hub_abi::MAX_FEE_BPS as u16 {
         return Err(ProgramError::InvalidArgument);
     }
     Ok(())
@@ -87,10 +93,12 @@ fn minimum_output_after_fee(
     max_fee_bps: u16,
 ) -> Result<u128, ProgramError> {
     validate_fee_bps(max_fee_bps)?;
+    let max_fee_bps = max_fee_bps as u128;
+    let fee_denominator = loyal_hub_abi::MAX_FEE_BPS as u128;
     input_normalized
-        .checked_mul(10_000u128 - max_fee_bps as u128)
+        .checked_mul(fee_denominator - max_fee_bps)
         .ok_or(ProgramError::InvalidArgument)
-        .map(|value| value / 10_000u128)
+        .map(|value| value / fee_denominator)
 }
 
 fn normalize_amount_for_fee(amount: u64, decimals: u8) -> Result<u128, ProgramError> {
@@ -124,7 +132,7 @@ mod tests {
 
     #[test]
     fn fee_cap_rejects_normalized_multiplication_overflow() {
-        let overflowing_input = (u128::MAX / 10_000u128) + 1;
+        let overflowing_input = (u128::MAX / loyal_hub_abi::MAX_FEE_BPS as u128) + 1;
 
         assert_eq!(
             minimum_output_after_fee(overflowing_input, 0),

@@ -473,56 +473,56 @@ pub(super) fn loyal_hub_route_stable_swap_instruction_constraint(
         program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
         account_constraints: vec![
             SquadsAccountConstraint {
-                account_index: 0,
+                account_index: loyal_actions::hub_abi::swap_exact_in_accounts::CONFIG,
                 account_constraint: SquadsAccountConstraintType::Pubkey(vec![
                     derive_loyal_hub_config(),
                 ]),
                 owner: Some(LOYAL_HUB_SWAP_PROGRAM_ID),
             },
             SquadsAccountConstraint {
-                account_index: 1,
+                account_index: loyal_actions::hub_abi::swap_exact_in_accounts::USER_VAULT,
                 account_constraint: SquadsAccountConstraintType::Pubkey(vec![vault]),
                 owner: None,
             },
             SquadsAccountConstraint {
-                account_index: 4,
+                account_index: loyal_actions::hub_abi::swap_exact_in_accounts::HUB_INPUT,
                 account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
                 owner: Some(spl_token::id()),
             },
             SquadsAccountConstraint {
-                account_index: 5,
+                account_index: loyal_actions::hub_abi::swap_exact_in_accounts::HUB_OUTPUT,
                 account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
                 owner: Some(spl_token::id()),
             },
             SquadsAccountConstraint {
-                account_index: 6,
+                account_index: loyal_actions::hub_abi::swap_exact_in_accounts::INPUT_MINT,
                 account_constraint: SquadsAccountConstraintType::Pubkey(allowed_mints.clone()),
                 owner: Some(spl_token::id()),
             },
             SquadsAccountConstraint {
-                account_index: 7,
+                account_index: loyal_actions::hub_abi::swap_exact_in_accounts::OUTPUT_MINT,
                 account_constraint: SquadsAccountConstraintType::Pubkey(allowed_mints),
                 owner: Some(spl_token::id()),
             },
             SquadsAccountConstraint {
-                account_index: 9,
+                account_index: loyal_actions::hub_abi::swap_exact_in_accounts::HUB_AUTHORIZER,
                 account_constraint: SquadsAccountConstraintType::Pubkey(vec![hub_authorizer]),
                 owner: None,
             },
             SquadsAccountConstraint {
-                account_index: 10,
+                account_index: loyal_actions::hub_abi::swap_exact_in_accounts::TOKEN_PROGRAM,
                 account_constraint: SquadsAccountConstraintType::Pubkey(vec![spl_token::id()]),
                 owner: None,
             },
         ],
         data_constraints: vec![
             SquadsDataConstraint {
-                data_offset: 0,
+                data_offset: LOYAL_HUB_SWAP_TAG_OFFSET,
                 data_value: SquadsDataValue::U8(LOYAL_HUB_SWAP_EXACT_IN),
                 operator: SquadsDataOperator::Equals,
             },
             SquadsDataConstraint {
-                data_offset: 25,
+                data_offset: LOYAL_HUB_SWAP_MAX_FEE_BPS_OFFSET,
                 data_value: SquadsDataValue::U16Le(max_fee_bps),
                 operator: SquadsDataOperator::LessThanOrEqualTo,
             },

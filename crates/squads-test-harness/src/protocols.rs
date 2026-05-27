@@ -1,4 +1,5 @@
 use litesvm::LiteSVM;
+pub use loyal_actions::LoyalHubLaneRebalanceTransfer as LoyalHubRebalanceTransfer;
 use solana_sdk::{account::Account, hash::hashv, instruction::AccountMeta, pubkey::Pubkey};
 use spl_token::solana_program::{program_option::COption, program_pack::Pack};
 use std::{env, fs, path::PathBuf};
@@ -43,28 +44,16 @@ pub fn loyal_hub_config_data(
     lane_count: u8,
     allowed_mints: &[Pubkey],
 ) -> Vec<u8> {
-    assert!(
-        !allowed_mints.is_empty() && allowed_mints.len() <= 8,
-        "Loyal Hub supports 1..=8 allowed mints"
-    );
-    assert!(lane_count > 0, "Loyal Hub supports at least one lane");
-    let mut data = Vec::with_capacity(101 + (allowed_mints.len() * 32));
-    data.extend_from_slice(admin.as_ref());
-    data.extend_from_slice(hub_authorizer.as_ref());
-    data.extend_from_slice(inventory_rebalancer.as_ref());
-    data.extend_from_slice(&max_fee_bps.to_le_bytes());
-    data.push(u8::from(paused));
-    data.push(lane_count);
-    data.push(
-        allowed_mints
-            .len()
-            .try_into()
-            .expect("allowed mint count fits in u8"),
-    );
-    for mint in allowed_mints {
-        data.extend_from_slice(mint.as_ref());
-    }
-    data
+    loyal_actions::loyal_hub_config_data(
+        admin,
+        hub_authorizer,
+        inventory_rebalancer,
+        max_fee_bps,
+        paused,
+        lane_count,
+        allowed_mints,
+    )
+    .expect("valid Loyal Hub config data")
 }
 
 pub fn loyal_hub_initialize_config_data(
@@ -76,8 +65,7 @@ pub fn loyal_hub_initialize_config_data(
     lane_count: u8,
     allowed_mints: &[Pubkey],
 ) -> Vec<u8> {
-    let mut data = vec![LOYAL_HUB_INITIALIZE_CONFIG];
-    data.extend_from_slice(&loyal_hub_config_data(
+    loyal_actions::loyal_hub_initialize_config_data(
         admin,
         hub_authorizer,
         inventory_rebalancer,
@@ -85,14 +73,12 @@ pub fn loyal_hub_initialize_config_data(
         paused,
         lane_count,
         allowed_mints,
-    ));
-    data
+    )
+    .expect("valid Loyal Hub initialize config data")
 }
 
 pub fn loyal_hub_set_max_fee_data(max_fee_bps: u16) -> Vec<u8> {
-    let mut data = vec![LOYAL_HUB_SET_MAX_FEE];
-    data.extend_from_slice(&max_fee_bps.to_le_bytes());
-    data
+    loyal_actions::loyal_hub_set_max_fee_data(max_fee_bps).expect("valid Loyal Hub max fee data")
 }
 
 pub fn loyal_hub_swap_exact_in_data(
@@ -102,54 +88,26 @@ pub fn loyal_hub_swap_exact_in_data(
     max_fee_bps: u16,
     lane_id: u8,
 ) -> Vec<u8> {
-    let mut data = Vec::with_capacity(28);
-    data.push(LOYAL_HUB_SWAP_EXACT_IN);
-    data.extend_from_slice(&amount_in.to_le_bytes());
-    data.extend_from_slice(&amount_out.to_le_bytes());
-    data.extend_from_slice(&min_out.to_le_bytes());
-    data.extend_from_slice(&max_fee_bps.to_le_bytes());
-    data.push(lane_id);
-    data
+    loyal_actions::loyal_hub_swap_exact_in_data(loyal_actions::LoyalHubSwapExactIn {
+        amount_in,
+        amount_out,
+        min_out,
+        max_fee_bps,
+        lane_id,
+    })
 }
 
 pub fn loyal_hub_set_paused_data(paused: bool) -> Vec<u8> {
-    vec![LOYAL_HUB_SET_PAUSED, u8::from(paused)]
+    loyal_actions::loyal_hub_set_paused_data(paused)
 }
 
 pub fn loyal_hub_withdraw_inventory_data(amount: u64, lane_id: u8) -> Vec<u8> {
-    let mut data = Vec::with_capacity(10);
-    data.push(LOYAL_HUB_WITHDRAW_INVENTORY);
-    data.extend_from_slice(&amount.to_le_bytes());
-    data.push(lane_id);
-    data
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LoyalHubRebalanceTransfer {
-    pub from_lane_id: u8,
-    pub to_lane_id: u8,
-    pub amount: u64,
+    loyal_actions::loyal_hub_withdraw_inventory_data(amount, lane_id)
 }
 
 pub fn loyal_hub_rebalance_inventory_data(transfers: &[LoyalHubRebalanceTransfer]) -> Vec<u8> {
-    assert!(
-        !transfers.is_empty() && transfers.len() <= 16,
-        "Loyal Hub rebalance supports 1..=16 transfers"
-    );
-    let mut data = Vec::with_capacity(2 + (transfers.len() * 10));
-    data.push(LOYAL_HUB_REBALANCE_INVENTORY);
-    data.push(
-        transfers
-            .len()
-            .try_into()
-            .expect("rebalance transfer count fits in u8"),
-    );
-    for transfer in transfers {
-        data.push(transfer.from_lane_id);
-        data.push(transfer.to_lane_id);
-        data.extend_from_slice(&transfer.amount.to_le_bytes());
-    }
-    data
+    loyal_actions::loyal_hub_rebalance_inventory_data(transfers)
+        .expect("valid Loyal Hub rebalance transfer batch")
 }
 
 pub fn mock_kamino_deposit_reserve_liquidity_data(amount: u64) -> Vec<u8> {
@@ -202,11 +160,11 @@ pub fn derive_mock_jupiter_swap_authority() -> Pubkey {
 }
 
 pub fn derive_loyal_hub_config() -> Pubkey {
-    Pubkey::find_program_address(&[LOYAL_HUB_CONFIG_SEED], &LOYAL_HUB_SWAP_PROGRAM_ID).0
+    loyal_actions::derive_loyal_hub_config()
 }
 
 pub fn derive_loyal_hub_authority() -> Pubkey {
-    derive_loyal_hub_lane_authority(0)
+    loyal_actions::derive_loyal_hub_authority()
 }
 
 pub fn loyal_hub_token_account(mint: Pubkey) -> Pubkey {
@@ -214,24 +172,11 @@ pub fn loyal_hub_token_account(mint: Pubkey) -> Pubkey {
 }
 
 pub fn derive_loyal_hub_lane_authority(lane_id: u8) -> Pubkey {
-    Pubkey::find_program_address(
-        &[LOYAL_HUB_AUTHORITY_SEED, &[lane_id]],
-        &LOYAL_HUB_SWAP_PROGRAM_ID,
-    )
-    .0
+    loyal_actions::derive_loyal_hub_lane_authority(lane_id)
 }
 
 pub fn loyal_hub_lane_token_account(mint: Pubkey, lane_id: u8) -> Pubkey {
-    let hub_authority = derive_loyal_hub_lane_authority(lane_id);
-    Pubkey::find_program_address(
-        &[
-            hub_authority.as_ref(),
-            spl_token::id().as_ref(),
-            mint.as_ref(),
-        ],
-        &ASSOCIATED_TOKEN_PROGRAM_ID,
-    )
-    .0
+    loyal_actions::derive_loyal_hub_lane_inventory_account(mint, lane_id)
 }
 
 pub fn mock_jupiter_usdc_reserve_token_account() -> Pubkey {

@@ -9,9 +9,26 @@ pub(crate) const SQUADS_SYNC_SIGNER_COUNT: u8 = 1;
 
 pub const JUPITER_V6_PROGRAM_ID: Pubkey = pubkey!("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4");
 pub const LOYAL_HUB_SWAP_PROGRAM_ID: Pubkey = Pubkey::new_from_array([42; 32]);
-pub const LOYAL_HUB_SWAP_EXACT_IN: u8 = 1;
-pub const LOYAL_HUB_CONFIG_SEED: &[u8] = b"config";
-pub const LOYAL_HUB_AUTHORITY_SEED: &[u8] = b"hub-authority";
+pub const LOYAL_HUB_INITIALIZE_CONFIG: u8 = loyal_hub_abi::INITIALIZE_CONFIG;
+pub const LOYAL_HUB_SWAP_EXACT_IN: u8 = loyal_hub_abi::SWAP_EXACT_IN;
+pub const LOYAL_HUB_WITHDRAW_INVENTORY: u8 = loyal_hub_abi::WITHDRAW_INVENTORY;
+pub const LOYAL_HUB_SET_PAUSED: u8 = loyal_hub_abi::SET_PAUSED;
+pub const LOYAL_HUB_SET_MAX_FEE: u8 = loyal_hub_abi::SET_MAX_FEE;
+pub const LOYAL_HUB_REBALANCE_INVENTORY: u8 = loyal_hub_abi::REBALANCE_INVENTORY;
+pub const LOYAL_HUB_MAX_ALLOWED_MINTS: usize = loyal_hub_abi::MAX_ALLOWED_MINTS;
+pub const LOYAL_HUB_MAX_REBALANCE_TRANSFERS: usize = loyal_hub_abi::MAX_REBALANCE_TRANSFERS;
+pub const LOYAL_HUB_SWAP_TAG_OFFSET: u64 = loyal_hub_abi::SWAP_EXACT_IN_TAG_OFFSET;
+pub const LOYAL_HUB_SWAP_MAX_FEE_BPS_OFFSET: u64 =
+    loyal_hub_abi::SWAP_EXACT_IN_MAX_FEE_BPS_DATA_OFFSET;
+pub const LOYAL_HUB_SWAP_EXACT_IN_DATA_LEN: usize = loyal_hub_abi::SWAP_EXACT_IN_DATA_LEN;
+pub const LOYAL_HUB_INITIALIZE_CONFIG_DATA_LEN: usize = loyal_hub_abi::INITIALIZE_CONFIG_DATA_LEN;
+pub const LOYAL_HUB_WITHDRAW_INVENTORY_DATA_LEN: usize = loyal_hub_abi::WITHDRAW_INVENTORY_DATA_LEN;
+pub const LOYAL_HUB_SET_PAUSED_DATA_LEN: usize = loyal_hub_abi::SET_PAUSED_DATA_LEN;
+pub const LOYAL_HUB_SET_MAX_FEE_DATA_LEN: usize = loyal_hub_abi::SET_MAX_FEE_DATA_LEN;
+pub const LOYAL_HUB_REBALANCE_INVENTORY_ARGS_OFFSET: usize =
+    loyal_hub_abi::REBALANCE_INVENTORY_ARGS_OFFSET;
+pub const LOYAL_HUB_CONFIG_SEED: &[u8] = loyal_hub_abi::CONFIG_SEED;
+pub const LOYAL_HUB_AUTHORITY_SEED: &[u8] = loyal_hub_abi::HUB_AUTHORITY_SEED;
 pub const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
     pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 pub const KAMINO_LEND_PROGRAM_ID: Pubkey = pubkey!("KvauGMspG5k6rtzrqqn7WNn3oZdyKqLKwK2XWQ8FLjd");

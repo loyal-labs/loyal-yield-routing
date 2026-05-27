@@ -1,0 +1,8 @@
+[package]
+name = "loyal-hub-abi"
+version = "0.1.0"
+edition = "2021"
+description = "Generated Loyal Hub ABI constants and byte layouts"
+build = "build.rs"
+
+[dependencies]

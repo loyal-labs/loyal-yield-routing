@@ -13,9 +13,14 @@ pub enum LoyalActionError {
     EmptyStableMints,
     EmptyKaminoMarkets,
     EmptyKaminoLiquidityMints,
+    EmptyRebalanceTransfers,
+    EmptyAllowedMints,
     DuplicateActionSeeds,
     PubkeyTableOverflow,
     InvalidFeeBps,
+    InvalidAllowedMintCount,
+    InvalidLaneCount,
+    InvalidRebalanceTransferCount,
     MissingActionStep,
 }
 
@@ -30,11 +35,36 @@ impl fmt::Display for LoyalActionError {
             Self::EmptyKaminoLiquidityMints => {
                 formatter.write_str("at least one Kamino liquidity mint is required")
             }
+            Self::EmptyRebalanceTransfers => {
+                formatter.write_str("at least one Loyal Hub rebalance transfer is required")
+            }
+            Self::EmptyAllowedMints => {
+                formatter.write_str("at least one Loyal Hub allowed mint is required")
+            }
             Self::DuplicateActionSeeds => formatter.write_str("action seeds must be distinct"),
             Self::PubkeyTableOverflow => {
                 formatter.write_str("Squads ProgramInteraction pubkey table overflow")
             }
-            Self::InvalidFeeBps => formatter.write_str("fee basis points must be <= 10,000"),
+            Self::InvalidFeeBps => write!(
+                formatter,
+                "fee basis points must be <= {}",
+                loyal_hub_abi::MAX_FEE_BPS
+            ),
+            Self::InvalidAllowedMintCount => {
+                write!(
+                    formatter,
+                    "Loyal Hub supports 1..={} allowed mints",
+                    loyal_hub_abi::MAX_ALLOWED_MINTS
+                )
+            }
+            Self::InvalidLaneCount => formatter.write_str("Loyal Hub supports at least one lane"),
+            Self::InvalidRebalanceTransferCount => {
+                write!(
+                    formatter,
+                    "Loyal Hub rebalance supports 1..={} transfers per mint",
+                    loyal_hub_abi::MAX_REBALANCE_TRANSFERS
+                )
+            }
             Self::MissingActionStep => {
                 formatter.write_str("requested action step is not available")
             }

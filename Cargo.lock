@@ -1694,17 +1694,23 @@ name = "loyal-actions"
 version = "0.1.0"
 dependencies = [
  "borsh 1.6.1",
+ "loyal-hub-abi",
  "solana-sdk",
  "spl-token",
 ]
 
 [[package]]
+name = "loyal-hub-abi"
+version = "0.1.0"
+
+[[package]]
 name = "loyal-hub-swap-program"
 version = "0.1.0"
 dependencies = [
- "solana-program",
- "solana-system-interface",
- "spl-token",
+ "loyal-hub-abi",
+ "pinocchio",
+ "pinocchio-pubkey",
+ "pinocchio-tkn",
 ]
 
 [[package]]
@@ -2014,6 +2020,33 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "pinocchio"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8afe4f39c0e25cc471b35b89963312791a5162d45a86578cbeaad9e5e7d1b3b"
+
+[[package]]
+name = "pinocchio-pubkey"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb0225638cadcbebae8932cb7f49cb5da7c15c21beb19f048f05a5ca7d93f065"
+dependencies = [
+ "five8_const",
+ "pinocchio",
+ "sha2-const-stable",
+]
+
+[[package]]
+name = "pinocchio-tkn"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f54c7abc4cd9fa3a1247a2a1792f783b2bbc70f25ccd056e826d1c0076e68560"
+dependencies = [
+ "pinocchio",
+ "pinocchio-pubkey",
+]
 
 [[package]]
 name = "pkg-config"
@@ -2559,6 +2592,12 @@ dependencies = [
  "cpufeatures 0.2.17",
  "digest 0.10.7",
 ]
+
+[[package]]
+name = "sha2-const-stable"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f179d4e11094a893b82fff208f74d448a7512f99f5a0acbd5c679b705f83ed9"
 
 [[package]]
 name = "sha3"

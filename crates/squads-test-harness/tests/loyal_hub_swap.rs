@@ -12,6 +12,7 @@ use squads_test_harness::{
     create_funded_squads_test_context_with_mock_programs, create_squads_smart_account_instruction,
     derive_loyal_hub_authority, derive_loyal_hub_config, derive_loyal_hub_lane_authority,
     derive_squads_pool, derive_squads_vault, execute_mock_jupiter_sol_to_usdc_swap_instruction,
+    execute_squads_loyal_hub_rebalance_batch_instruction,
     execute_squads_sync_transaction_instruction, get_spl_token_amount,
     initialize_loyal_hub_config_instruction,
     initialize_loyal_hub_config_instruction_with_rebalancer_and_lane_count, loyal_action_context,
@@ -520,6 +521,94 @@ fn loyal_hub_rebalancer_can_move_multiple_transfers_in_one_instruction() {
             loyal_hub_lane_token_account(USDC_MINT, 2)
         ),
         300_000
+    );
+}
+
+#[test]
+fn loyal_hub_owner_can_batch_multi_mint_rebalance_in_one_squads_transaction() {
+    let Some(mut context) =
+        create_funded_squads_test_context_with_mock_programs(&[MockProgram::LoyalHubSwap])
+            .expect("create funded Squads test context")
+    else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+    let hub_authorizer = Keypair::new();
+    context
+        .svm
+        .airdrop(&hub_authorizer.pubkey(), LAMPORTS_PER_SOL / 10)
+        .expect("airdrop hub authorizer");
+    seed_spl_mint_if_missing(&mut context.svm, USDC_MINT, None, USDC_DECIMALS, 0);
+    seed_spl_mint_if_missing(&mut context.svm, PYUSD_MINT, None, PYUSD_DECIMALS, 0);
+    seed_loyal_hub_inventory_spl_accounts_for_lane(
+        &mut context.svm,
+        &[USDC_MINT, PYUSD_MINT],
+        AMOUNT_IN * 2,
+        0,
+    );
+    seed_loyal_hub_inventory_spl_accounts_for_lane(
+        &mut context.svm,
+        &[USDC_MINT, PYUSD_MINT],
+        0,
+        1,
+    );
+
+    let init_ix = initialize_loyal_hub_config_instruction_with_rebalancer_and_lane_count(
+        context.wallet_pubkey(),
+        context.wallet_pubkey(),
+        hub_authorizer.pubkey(),
+        context.vault,
+        50,
+        false,
+        DEFAULT_LOYAL_HUB_LANE_COUNT,
+        &[USDC_MINT, PYUSD_MINT],
+    );
+    try_send_instructions(&mut context.svm, &[init_ix], &context.wallet, &[])
+        .expect("initialize Loyal Hub config with Squads vault rebalancer");
+
+    let transfer_groups = vec![
+        (
+            USDC_MINT,
+            vec![LoyalHubRebalanceTransfer {
+                from_lane_id: 0,
+                to_lane_id: 1,
+                amount: 250_000,
+            }],
+        ),
+        (
+            PYUSD_MINT,
+            vec![LoyalHubRebalanceTransfer {
+                from_lane_id: 0,
+                to_lane_id: 1,
+                amount: 400_000,
+            }],
+        ),
+    ];
+    let ix = execute_squads_loyal_hub_rebalance_batch_instruction(
+        context.pool.settings,
+        context.wallet_pubkey(),
+        context.vault_index,
+        context.vault,
+        &transfer_groups,
+    );
+    try_send_instructions(&mut context.svm, &[ix], &context.wallet, &[])
+        .expect("Squads owner batches multi-mint hub rebalances");
+
+    assert_eq!(
+        get_spl_token_amount(&context.svm, loyal_hub_token_account(USDC_MINT)),
+        (AMOUNT_IN * 2) - 250_000
+    );
+    assert_eq!(
+        get_spl_token_amount(&context.svm, loyal_hub_token_account(PYUSD_MINT)),
+        (AMOUNT_IN * 2) - 400_000
+    );
+    assert_eq!(
+        get_spl_token_amount(&context.svm, loyal_hub_lane_token_account(USDC_MINT, 1)),
+        250_000
+    );
+    assert_eq!(
+        get_spl_token_amount(&context.svm, loyal_hub_lane_token_account(PYUSD_MINT, 1)),
+        400_000
     );
 }
 

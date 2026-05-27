@@ -314,23 +314,17 @@ pub fn initialize_loyal_hub_config_instruction_with_rebalancer_and_lane_count(
         payer, admin,
         "test helper initializes config with the admin as payer"
     );
-    Instruction {
-        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
-        accounts: vec![
-            AccountMeta::new(payer, true),
-            AccountMeta::new(derive_loyal_hub_config(), false),
-            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
-        ],
-        data: loyal_hub_initialize_config_data(
-            admin,
-            hub_authorizer,
-            inventory_rebalancer,
-            max_fee_bps,
-            paused,
-            lane_count,
-            allowed_mints,
-        ),
-    }
+    loyal_actions::loyal_hub_initialize_config_instruction(
+        payer,
+        admin,
+        hub_authorizer,
+        inventory_rebalancer,
+        max_fee_bps,
+        paused,
+        lane_count,
+        allowed_mints,
+    )
+    .expect("valid Loyal Hub initialize config instruction")
 }
 
 pub fn rebalance_loyal_hub_inventory_instruction(
@@ -338,54 +332,84 @@ pub fn rebalance_loyal_hub_inventory_instruction(
     mint: Pubkey,
     transfers: &[LoyalHubRebalanceTransfer],
 ) -> Instruction {
-    let mut accounts = vec![
-        AccountMeta::new_readonly(derive_loyal_hub_config(), false),
-        AccountMeta::new_readonly(inventory_rebalancer, true),
-        AccountMeta::new_readonly(spl_token::id(), false),
-        AccountMeta::new_readonly(mint, false),
-    ];
-    for transfer in transfers {
-        accounts.push(AccountMeta::new_readonly(
-            derive_loyal_hub_lane_authority(transfer.from_lane_id),
-            false,
-        ));
-        accounts.push(AccountMeta::new(
-            loyal_hub_lane_token_account(mint, transfer.from_lane_id),
-            false,
-        ));
-        accounts.push(AccountMeta::new(
-            loyal_hub_lane_token_account(mint, transfer.to_lane_id),
-            false,
-        ));
+    loyal_actions::loyal_hub_rebalance_inventory_instruction(inventory_rebalancer, mint, transfers)
+        .expect("valid Loyal Hub rebalance instruction")
+}
+
+pub fn execute_squads_loyal_hub_rebalance_batch_instruction(
+    squads_settings: Pubkey,
+    signer: Pubkey,
+    vault_index: u8,
+    inventory_rebalancer: Pubkey,
+    transfer_groups: &[(Pubkey, Vec<LoyalHubRebalanceTransfer>)],
+) -> Instruction {
+    assert!(
+        !transfer_groups.is_empty(),
+        "Loyal Hub owner rebalance needs at least one mint group"
+    );
+
+    let mut transaction_accounts = Vec::new();
+    let mut compiled_instructions = Vec::with_capacity(transfer_groups.len());
+    for (mint, transfers) in transfer_groups {
+        let ix = loyal_actions::loyal_hub_rebalance_inventory_instruction(
+            inventory_rebalancer,
+            *mint,
+            transfers,
+        )
+        .expect("valid Loyal Hub rebalance instruction");
+        let accounts = ix
+            .accounts
+            .into_iter()
+            .enumerate()
+            .map(|(index, mut account)| {
+                if index == 1 {
+                    account.is_signer = false;
+                }
+                push_or_update_account_meta(&mut transaction_accounts, account)
+            })
+            .collect();
+        let program_id_index = push_or_update_account_meta(
+            &mut transaction_accounts,
+            AccountMeta::new_readonly(LOYAL_HUB_SWAP_PROGRAM_ID, false),
+        );
+        compiled_instructions.push(SquadsCompiledInstruction {
+            program_id_index,
+            accounts,
+            data: ix.data,
+        });
     }
 
-    Instruction {
-        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
-        accounts,
-        data: loyal_hub_rebalance_inventory_data(transfers),
+    execute_squads_sync_transaction_instruction(
+        squads_settings,
+        signer,
+        vault_index,
+        compiled_instructions,
+        transaction_accounts,
+    )
+}
+
+fn push_or_update_account_meta(accounts: &mut Vec<AccountMeta>, meta: AccountMeta) -> usize {
+    if let Some(index) = accounts
+        .iter()
+        .position(|existing| existing.pubkey == meta.pubkey)
+    {
+        accounts[index].is_writable |= meta.is_writable;
+        accounts[index].is_signer |= meta.is_signer;
+        return index;
     }
+
+    let index = accounts.len();
+    accounts.push(meta);
+    index
 }
 
 pub fn set_loyal_hub_paused_instruction(admin: Pubkey, paused: bool) -> Instruction {
-    Instruction {
-        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
-        accounts: vec![
-            AccountMeta::new(derive_loyal_hub_config(), false),
-            AccountMeta::new_readonly(admin, true),
-        ],
-        data: loyal_hub_set_paused_data(paused),
-    }
+    loyal_actions::loyal_hub_set_paused_instruction(admin, paused)
 }
 
 pub fn set_loyal_hub_max_fee_instruction(admin: Pubkey, max_fee_bps: u16) -> Instruction {
-    Instruction {
-        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
-        accounts: vec![
-            AccountMeta::new(derive_loyal_hub_config(), false),
-            AccountMeta::new_readonly(admin, true),
-        ],
-        data: loyal_hub_set_max_fee_data(max_fee_bps),
-    }
+    loyal_actions::loyal_hub_set_max_fee_instruction(admin, max_fee_bps)
+        .expect("valid Loyal Hub set max fee instruction")
 }
 
 pub fn withdraw_loyal_hub_inventory_instruction(
@@ -396,19 +420,14 @@ pub fn withdraw_loyal_hub_inventory_instruction(
     amount: u64,
     lane_id: u8,
 ) -> Instruction {
-    Instruction {
-        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
-        accounts: vec![
-            AccountMeta::new(derive_loyal_hub_config(), false),
-            AccountMeta::new_readonly(admin, true),
-            AccountMeta::new(hub_source, false),
-            AccountMeta::new(destination, false),
-            AccountMeta::new_readonly(mint, false),
-            AccountMeta::new_readonly(derive_loyal_hub_lane_authority(lane_id), false),
-            AccountMeta::new_readonly(spl_token::id(), false),
-        ],
-        data: loyal_hub_withdraw_inventory_data(amount, lane_id),
-    }
+    loyal_actions::loyal_hub_withdraw_inventory_instruction_with_source(
+        admin,
+        hub_source,
+        destination,
+        mint,
+        amount,
+        lane_id,
+    )
 }
 
 pub fn execute_squads_yield_route_loyal_hub_swap_instruction(
@@ -462,6 +481,25 @@ pub fn execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_ind
     lane_id: u8,
     instruction_constraint_index: u8,
 ) -> Instruction {
+    let hub_swap_ix = loyal_actions::loyal_hub_swap_exact_in_instruction(
+        vault,
+        vault_input,
+        vault_output,
+        input_mint,
+        output_mint,
+        hub_authorizer,
+        loyal_actions::LoyalHubSwapExactIn {
+            amount_in,
+            amount_out,
+            min_out,
+            max_fee_bps,
+            lane_id,
+        },
+    );
+    let mut transaction_accounts = hub_swap_ix.accounts;
+    transaction_accounts[1].is_signer = false;
+    transaction_accounts.push(AccountMeta::new_readonly(LOYAL_HUB_SWAP_PROGRAM_ID, false));
+
     execute_squads_program_interaction_instruction(
         swap_policy,
         signer,
@@ -469,29 +507,10 @@ pub fn execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_ind
         vec![SquadsCompiledInstruction {
             program_id_index: 11,
             accounts: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-            data: loyal_hub_swap_exact_in_data(
-                amount_in,
-                amount_out,
-                min_out,
-                max_fee_bps,
-                lane_id,
-            ),
+            data: hub_swap_ix.data,
         }],
         vec![instruction_constraint_index],
-        vec![
-            AccountMeta::new_readonly(derive_loyal_hub_config(), false),
-            AccountMeta::new(vault, false),
-            AccountMeta::new(vault_input, false),
-            AccountMeta::new(vault_output, false),
-            AccountMeta::new(loyal_hub_lane_token_account(input_mint, lane_id), false),
-            AccountMeta::new(loyal_hub_lane_token_account(output_mint, lane_id), false),
-            AccountMeta::new_readonly(input_mint, false),
-            AccountMeta::new_readonly(output_mint, false),
-            AccountMeta::new_readonly(derive_loyal_hub_lane_authority(lane_id), false),
-            AccountMeta::new_readonly(hub_authorizer, true),
-            AccountMeta::new_readonly(spl_token::id(), false),
-            AccountMeta::new_readonly(LOYAL_HUB_SWAP_PROGRAM_ID, false),
-        ],
+        transaction_accounts,
     )
 }
 

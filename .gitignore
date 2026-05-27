@@ -15,6 +15,7 @@
 
 # generated analysis data
 /data/
+/.qed/
 
 # next.js
 /.next/

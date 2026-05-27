@@ -6,5 +6,6 @@ description = "Rust SDK for building Loyal delegated Squads actions"
 
 [dependencies]
 borsh.workspace = true
+loyal-hub-abi.workspace = true
 solana-sdk.workspace = true
 spl-token.workspace = true

@@ -1,9 +1,9 @@
 // Loyal Hub Swap verification spec.
 //
-// This is the source of truth for the Quasar-native Loyal Hub rewrite. The
-// runtime keeps Loyal Hub's product semantics: one config PDA, lane-scoped hub
-// authorities, canonical inventory accounts, allowed stable mints, fee caps,
-// and admin/rebalancer lifecycle controls.
+// This is the source of truth for the Pinocchio Loyal Hub program. The runtime
+// keeps Loyal Hub's product semantics: one config PDA, global lane IDs,
+// lane-scoped hub authorities, canonical inventory accounts, allowed stable
+// mints, fee caps, and admin/rebalancer lifecycle controls.
 
 spec LoyalHubSwap
 
@@ -121,7 +121,7 @@ handler swap_exact_in
   auth hub_authorizer
 
   accounts {
-    config         : writable, pda ["config"]
+    config         : readonly, pda ["config"]
     user_vault     : signer
     user_input     : writable, token, authority user_vault
     user_output    : writable, token, authority user_vault
@@ -227,7 +227,7 @@ handler rebalance_inventory
   auth inventory_rebalancer
 
   accounts {
-    config               : writable, pda ["config"]
+    config               : readonly, pda ["config"]
     inventory_rebalancer : signer
     token_program        : program, type token
     mint                 : readonly

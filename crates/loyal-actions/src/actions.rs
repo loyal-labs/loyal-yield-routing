@@ -655,7 +655,7 @@ fn validate_swap_lanes(swap_lanes: &[SwapLane]) -> Result<()> {
     }
     for lane in swap_lanes {
         if let SwapLane::LoyalHub { max_fee_bps, .. } = lane {
-            if *max_fee_bps > 10_000 {
+            if *max_fee_bps > loyal_hub_abi::MAX_FEE_BPS as u16 {
                 return Err(LoyalActionError::InvalidFeeBps);
             }
         }

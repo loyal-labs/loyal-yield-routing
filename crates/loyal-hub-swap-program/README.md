@@ -92,6 +92,15 @@ The same route can include a Jupiter lane. A rebalance may fill part of the swap
 through Loyal Hub inventory first, then send the residual through Jupiter if the
 Loyal Action allows both lanes.
 
+## ABI Source
+
+The Loyal Hub wire layout is generated from
+`crates/loyal-hub-abi/schema/loyal_hub_abi.schema`. That schema owns instruction
+tags, account positions, data offsets, PDA seed bytes, max-count limits, and
+byte record lengths. Program parsers, Loyal Actions builders, Squads policy
+constraints, and layout tests should import generated constants instead of
+duplicating byte offsets.
+
 ## Module Layout
 
 The program is split by responsibility:
@@ -99,7 +108,7 @@ The program is split by responsibility:
 | File | Responsibility |
 | --- | --- |
 | `src/lib.rs` | Entrypoint and public exports |
-| `src/constants.rs` | Instruction tags, PDA seeds, config size |
+| `src/constants.rs` | Program IDs plus re-exports from the generated ABI crate |
 | `src/codec.rs` | Small byte readers for instruction and state decoding |
 | `src/instruction.rs` | Instruction enum and instruction-data parsing |
 | `src/state.rs` | Config parsing, account read/write, PDA derivation |

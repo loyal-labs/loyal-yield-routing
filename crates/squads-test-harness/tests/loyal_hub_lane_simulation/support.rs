@@ -731,23 +731,41 @@ impl HubLaneSimulation {
     }
 
     fn submit_rebalances(&mut self, transfers: &[PlannedRebalance]) -> Result<(), String> {
+        let mut transfer_groups: Vec<(Pubkey, Vec<LoyalHubRebalanceTransfer>)> = Vec::new();
         for transfer in transfers {
-            let ix = rebalance_loyal_hub_inventory_instruction(
-                self.inventory_rebalancer.pubkey(),
-                transfer.mint,
-                &[transfer.transfer()],
-            );
-            try_send_instructions(
-                &mut self.context.svm,
-                &[ix],
-                &self.context.wallet,
-                &[&self.inventory_rebalancer],
-            )?;
+            let rebalance_transfer = transfer.transfer();
+            match transfer_groups
+                .iter_mut()
+                .find(|(mint, _)| *mint == transfer.mint)
+            {
+                Some((_, grouped_transfers)) => grouped_transfers.push(rebalance_transfer),
+                None => transfer_groups.push((transfer.mint, vec![rebalance_transfer])),
+            }
+        }
+
+        let instructions = transfer_groups
+            .iter()
+            .map(|(mint, grouped_transfers)| {
+                rebalance_loyal_hub_inventory_instruction(
+                    self.inventory_rebalancer.pubkey(),
+                    *mint,
+                    grouped_transfers,
+                )
+            })
+            .collect::<Vec<_>>();
+        try_send_instructions(
+            &mut self.context.svm,
+            &instructions,
+            &self.context.wallet,
+            &[&self.inventory_rebalancer],
+        )?;
+
+        for transfer in transfers {
             self.events.push(SimulationEvent::RebalanceAccepted {
                 transfer: *transfer,
             });
-            self.assert_invariants();
         }
+        self.assert_invariants();
         Ok(())
     }
 
