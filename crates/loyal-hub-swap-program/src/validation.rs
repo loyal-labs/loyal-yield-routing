@@ -10,6 +10,11 @@ pub fn require_admin(admin: &AccountInfo, config: &HubConfig) -> ProgramResult {
     require_key(admin, &config.admin)
 }
 
+pub fn require_inventory_rebalancer(rebalancer: &AccountInfo, config: &HubConfig) -> ProgramResult {
+    require_signer(rebalancer)?;
+    require_key(rebalancer, &config.inventory_rebalancer)
+}
+
 pub fn require_signer(account: &AccountInfo) -> ProgramResult {
     if !account.is_signer {
         return Err(ProgramError::MissingRequiredSignature);

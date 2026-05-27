@@ -67,6 +67,8 @@ let deposit_ix = route_action_setup
 
 Swap actions use typed execution arguments, for example `.jupiter()?.build(JupiterSwapExecution { ... })` or `.hub()?.build(HubSwapExecution { ... })`. Swap-only tests can use `create_swap_yield_route_action()`.
 
+Loyal Hub lane-load tests live under `crates/squads-test-harness/tests/loyal_hub_lane_simulation.rs`. That test module keeps its simulation support local: LiteSVM, Squads execution, SPL Token accounts, Loyal Actions, and the Hub SBF still run normally, while the support code derives expected balances, lane metrics, scheduling conflicts, and planner output from recorded simulation events.
+
 ### Test Crate Map
 
 The Squads test crate is grouped by domain modules for onboarding.

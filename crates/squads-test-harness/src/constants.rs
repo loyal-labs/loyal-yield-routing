@@ -32,8 +32,10 @@ pub const LOYAL_HUB_SWAP_EXACT_IN: u8 = 1;
 pub const LOYAL_HUB_WITHDRAW_INVENTORY: u8 = 2;
 pub const LOYAL_HUB_SET_PAUSED: u8 = 3;
 pub const LOYAL_HUB_SET_MAX_FEE: u8 = 4;
+pub const LOYAL_HUB_REBALANCE_INVENTORY: u8 = 5;
 pub const LOYAL_HUB_CONFIG_SEED: &[u8] = b"config";
 pub const LOYAL_HUB_AUTHORITY_SEED: &[u8] = b"hub-authority";
+pub const DEFAULT_LOYAL_HUB_LANE_COUNT: u8 = 32;
 pub const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
     pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 pub const JUPITER_SWAP_AUTHORITY_SEED: &[u8] = b"jupiter-swap-authority";

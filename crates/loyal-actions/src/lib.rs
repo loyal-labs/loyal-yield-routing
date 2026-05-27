@@ -12,5 +12,6 @@ pub use actions::*;
 pub use ids::*;
 pub use protocols::{
     derive_loyal_hub_authority, derive_loyal_hub_config, derive_loyal_hub_inventory_account,
+    derive_loyal_hub_lane_authority, derive_loyal_hub_lane_inventory_account,
 };
 pub use squads::{derive_action_account, LoyalActionError, Result};

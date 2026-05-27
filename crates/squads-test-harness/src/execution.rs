@@ -268,6 +268,48 @@ pub fn initialize_loyal_hub_config_instruction(
     paused: bool,
     allowed_mints: &[Pubkey],
 ) -> Instruction {
+    initialize_loyal_hub_config_instruction_with_lane_count(
+        payer,
+        admin,
+        hub_authorizer,
+        max_fee_bps,
+        paused,
+        DEFAULT_LOYAL_HUB_LANE_COUNT,
+        allowed_mints,
+    )
+}
+
+pub fn initialize_loyal_hub_config_instruction_with_lane_count(
+    payer: Pubkey,
+    admin: Pubkey,
+    hub_authorizer: Pubkey,
+    max_fee_bps: u16,
+    paused: bool,
+    lane_count: u8,
+    allowed_mints: &[Pubkey],
+) -> Instruction {
+    initialize_loyal_hub_config_instruction_with_rebalancer_and_lane_count(
+        payer,
+        admin,
+        hub_authorizer,
+        hub_authorizer,
+        max_fee_bps,
+        paused,
+        lane_count,
+        allowed_mints,
+    )
+}
+
+pub fn initialize_loyal_hub_config_instruction_with_rebalancer_and_lane_count(
+    payer: Pubkey,
+    admin: Pubkey,
+    hub_authorizer: Pubkey,
+    inventory_rebalancer: Pubkey,
+    max_fee_bps: u16,
+    paused: bool,
+    lane_count: u8,
+    allowed_mints: &[Pubkey],
+) -> Instruction {
     assert_eq!(
         payer, admin,
         "test helper initializes config with the admin as payer"
@@ -282,10 +324,45 @@ pub fn initialize_loyal_hub_config_instruction(
         data: loyal_hub_initialize_config_data(
             admin,
             hub_authorizer,
+            inventory_rebalancer,
             max_fee_bps,
             paused,
+            lane_count,
             allowed_mints,
         ),
+    }
+}
+
+pub fn rebalance_loyal_hub_inventory_instruction(
+    inventory_rebalancer: Pubkey,
+    mint: Pubkey,
+    transfers: &[LoyalHubRebalanceTransfer],
+) -> Instruction {
+    let mut accounts = vec![
+        AccountMeta::new_readonly(derive_loyal_hub_config(), false),
+        AccountMeta::new_readonly(inventory_rebalancer, true),
+        AccountMeta::new_readonly(spl_token::id(), false),
+        AccountMeta::new_readonly(mint, false),
+    ];
+    for transfer in transfers {
+        accounts.push(AccountMeta::new_readonly(
+            derive_loyal_hub_lane_authority(transfer.from_lane_id),
+            false,
+        ));
+        accounts.push(AccountMeta::new(
+            loyal_hub_lane_token_account(mint, transfer.from_lane_id),
+            false,
+        ));
+        accounts.push(AccountMeta::new(
+            loyal_hub_lane_token_account(mint, transfer.to_lane_id),
+            false,
+        ));
+    }
+
+    Instruction {
+        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        accounts,
+        data: loyal_hub_rebalance_inventory_data(transfers),
     }
 }
 
@@ -317,6 +394,7 @@ pub fn withdraw_loyal_hub_inventory_instruction(
     destination: Pubkey,
     mint: Pubkey,
     amount: u64,
+    lane_id: u8,
 ) -> Instruction {
     Instruction {
         program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
@@ -326,10 +404,10 @@ pub fn withdraw_loyal_hub_inventory_instruction(
             AccountMeta::new(hub_source, false),
             AccountMeta::new(destination, false),
             AccountMeta::new_readonly(mint, false),
-            AccountMeta::new_readonly(derive_loyal_hub_authority(), false),
+            AccountMeta::new_readonly(derive_loyal_hub_lane_authority(lane_id), false),
             AccountMeta::new_readonly(spl_token::id(), false),
         ],
-        data: loyal_hub_withdraw_inventory_data(amount),
+        data: loyal_hub_withdraw_inventory_data(amount, lane_id),
     }
 }
 
@@ -363,6 +441,7 @@ pub fn execute_squads_yield_route_loyal_hub_swap_instruction(
         min_out,
         max_fee_bps,
         0,
+        0,
     )
 }
 
@@ -380,6 +459,7 @@ pub fn execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_ind
     amount_out: u64,
     min_out: u64,
     max_fee_bps: u16,
+    lane_id: u8,
     instruction_constraint_index: u8,
 ) -> Instruction {
     execute_squads_program_interaction_instruction(
@@ -389,7 +469,13 @@ pub fn execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_ind
         vec![SquadsCompiledInstruction {
             program_id_index: 11,
             accounts: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-            data: loyal_hub_swap_exact_in_data(amount_in, amount_out, min_out, max_fee_bps),
+            data: loyal_hub_swap_exact_in_data(
+                amount_in,
+                amount_out,
+                min_out,
+                max_fee_bps,
+                lane_id,
+            ),
         }],
         vec![instruction_constraint_index],
         vec![
@@ -397,11 +483,11 @@ pub fn execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_ind
             AccountMeta::new(vault, false),
             AccountMeta::new(vault_input, false),
             AccountMeta::new(vault_output, false),
-            AccountMeta::new(loyal_hub_token_account(input_mint), false),
-            AccountMeta::new(loyal_hub_token_account(output_mint), false),
+            AccountMeta::new(loyal_hub_lane_token_account(input_mint, lane_id), false),
+            AccountMeta::new(loyal_hub_lane_token_account(output_mint, lane_id), false),
             AccountMeta::new_readonly(input_mint, false),
             AccountMeta::new_readonly(output_mint, false),
-            AccountMeta::new_readonly(derive_loyal_hub_authority(), false),
+            AccountMeta::new_readonly(derive_loyal_hub_lane_authority(lane_id), false),
             AccountMeta::new_readonly(hub_authorizer, true),
             AccountMeta::new_readonly(spl_token::id(), false),
             AccountMeta::new_readonly(LOYAL_HUB_SWAP_PROGRAM_ID, false),
@@ -423,6 +509,7 @@ pub fn execute_loyal_action_hub_swap(
     amount_out: u64,
     min_out: u64,
     max_fee_bps: u16,
+    lane_id: u8,
 ) -> Instruction {
     execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_index(
         step.action_account(),
@@ -438,6 +525,7 @@ pub fn execute_loyal_action_hub_swap(
         amount_out,
         min_out,
         max_fee_bps,
+        lane_id,
         step.instruction_constraint_index(),
     )
 }

@@ -602,6 +602,7 @@ fn wallet_b_can_execute_all_in_one_policy_with_loyal_hub_swap_lane() {
         amount_out: hub_out,
         min_out: hub_out,
         max_fee_bps,
+        lane_id: 0,
     });
     let (pyusd_deposit_instructions, pyusd_deposit_accounts) = mock_kamino_reserve_transaction(
         context.vault,

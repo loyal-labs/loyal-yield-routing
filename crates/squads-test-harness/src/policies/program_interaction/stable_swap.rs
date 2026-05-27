@@ -469,10 +469,6 @@ pub(super) fn loyal_hub_route_stable_swap_instruction_constraint(
     hub_authorizer: Pubkey,
     max_fee_bps: u16,
 ) -> SquadsInstructionConstraint {
-    let inventory_accounts = allowed_mints
-        .iter()
-        .map(|mint| loyal_hub_token_account(*mint))
-        .collect::<Vec<_>>();
     SquadsInstructionConstraint {
         program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
         account_constraints: vec![
@@ -490,12 +486,12 @@ pub(super) fn loyal_hub_route_stable_swap_instruction_constraint(
             },
             SquadsAccountConstraint {
                 account_index: 4,
-                account_constraint: SquadsAccountConstraintType::Pubkey(inventory_accounts.clone()),
+                account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
                 owner: Some(spl_token::id()),
             },
             SquadsAccountConstraint {
                 account_index: 5,
-                account_constraint: SquadsAccountConstraintType::Pubkey(inventory_accounts),
+                account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
                 owner: Some(spl_token::id()),
             },
             SquadsAccountConstraint {

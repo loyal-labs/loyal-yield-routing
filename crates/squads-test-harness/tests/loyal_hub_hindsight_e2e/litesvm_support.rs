@@ -438,6 +438,7 @@ fn build_hub_rebalance_transaction(
         amount_out: user_out_raw,
         min_out: user_out_raw,
         max_fee_bps: HUB_MAX_FEE_BPS,
+        lane_id: 0,
     });
     let (deposit_instructions, deposit_accounts) = mock_kamino_reserve_transaction(
         vault,
@@ -585,7 +586,7 @@ fn treasury_rebalance_hub_through_jupiter_ix(
             SquadsCompiledInstruction {
                 program_id_index: 7,
                 accounts: vec![0, 1, 2, 3, 4, 5, 6],
-                data: loyal_hub_withdraw_inventory_data(hub_input_amount),
+                data: loyal_hub_withdraw_inventory_data(hub_input_amount, 0),
             },
             SquadsCompiledInstruction {
                 program_id_index: 14,

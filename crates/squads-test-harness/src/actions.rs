@@ -189,6 +189,7 @@ impl HubAction {
             args.amount_out,
             args.min_out,
             args.max_fee_bps,
+            args.lane_id,
         )
     }
 }
@@ -207,4 +208,5 @@ pub struct HubSwapExecution {
     pub amount_out: u64,
     pub min_out: u64,
     pub max_fee_bps: u16,
+    pub lane_id: u8,
 }

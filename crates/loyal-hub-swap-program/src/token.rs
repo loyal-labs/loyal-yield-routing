@@ -76,6 +76,7 @@ pub fn transfer_checked_signed<'info>(
     token_program: &AccountInfo<'info>,
     amount: u64,
     decimals: u8,
+    lane_id: u8,
 ) -> ProgramResult {
     let ix = spl_token::instruction::transfer_checked(
         token_program.key,
@@ -94,6 +95,10 @@ pub fn transfer_checked_signed<'info>(
         authority.clone(),
         token_program.clone(),
     ];
-    let (_, bump) = derive_hub_authority(program_id);
-    invoke_signed(&ix, &account_infos, &[&[HUB_AUTHORITY_SEED, &[bump]]])
+    let (_, bump) = derive_hub_authority(program_id, lane_id);
+    invoke_signed(
+        &ix,
+        &account_infos,
+        &[&[HUB_AUTHORITY_SEED, &[lane_id], &[bump]]],
+    )
 }

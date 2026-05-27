@@ -16,28 +16,31 @@ If any validation fails, neither transfer is committed.
 
 ## Accounts And Authorities
 
-The program has two PDAs:
+The program has one config PDA and lane-scoped authority PDAs:
 
-- `config`: stores the admin, hub authorizer, maximum fee in basis points, pause
-  flag, and fixed-size allowed mint list.
-- `hub-authority`: owns the hub inventory token accounts and signs hub inventory
-  transfers through `invoke_signed`.
+- `config`: stores the admin, hub authorizer, inventory rebalancer, maximum fee
+  in basis points, pause flag, lane count, and fixed-size allowed mint list.
+- `hub-authority(lane_id)`: owns that lane's hub inventory token accounts and
+  signs lane inventory transfers through `invoke_signed`.
 
 Hub inventory accounts are canonical associated token accounts for
-`hub-authority`. The program rejects any other hub source or destination account,
-even if that account is an otherwise valid SPL Token account owned by the hub
-authority.
+`hub-authority(lane_id)`. The program rejects any other hub source or
+destination account, even if that account is an otherwise valid SPL Token
+account owned by another hub authority lane.
 
 The admin can initialize config, pause swaps, set the maximum fee, and withdraw
-hub inventory. The allowed mint list is immutable after initialization. The hub
-authorizer must sign each swap. This keeps treasury inventory approval separate
-from the delegated smart-account executor.
+hub inventory from a specific lane. The inventory rebalancer can only move
+inventory between validated lane accounts for an allowlisted mint. The allowed
+mint list and lane count are immutable after initialization. The hub authorizer
+must sign each swap. This keeps treasury inventory approval separate from the
+delegated smart-account executor.
 
 ## Swap Validation
 
-`swap_exact_in` accepts only a configured mint pair and a bounded fee. The
-input and output amounts must be non-zero, and `amount_out` must be at least
-`min_out`. The requested fee cap must stay within the config maximum.
+`swap_exact_in` accepts only a configured mint pair, a configured lane, and a
+bounded fee. The input and output amounts must be non-zero, and `amount_out`
+must be at least `min_out`. The requested fee cap must stay within the config
+maximum.
 
 Both mints must be in the config allowlist, and they must be different from one
 another. The user and hub token accounts must be distinct mutable accounts. Each
@@ -45,13 +48,27 @@ token account is unpacked and checked against the expected mint and owner before
 any CPI runs.
 
 The token program must be SPL Token. The hub authority must be the
-program-derived `hub-authority` PDA. The hub input and output accounts must be
-the canonical inventory accounts for their mints. The user vault and hub
-authorizer must both sign the transaction.
+program-derived `hub-authority(lane_id)` PDA. The hub input and output accounts
+must be the canonical lane inventory accounts for their mints. The user vault
+and hub authorizer must both sign the transaction.
 
 The fee check normalizes both token amounts to 18 decimals before comparing the
 output against the input less `max_fee_bps`. This keeps the check stable across
 USDC/PYUSD-style decimal differences without adding an oracle dependency.
+
+## Inventory Rebalancing
+
+`rebalance_inventory` is a treasury maintenance instruction for moving one mint
+between hub lanes. It accepts a bounded list of lane-to-lane transfers. For each
+transfer, the program checks that both lanes are configured, the source and
+destination lanes are different, the source authority is the expected
+`hub-authority(from_lane_id)` PDA, and both inventory accounts are the canonical
+associated token accounts for the selected mint and lane.
+
+The initial implementation uses repeated SPL Token `transfer_checked` CPIs so it
+is testable with the current LiteSVM Token Program. The instruction shape is
+compatible with a later internal p-token `batch()` implementation, which can
+reduce CPI overhead without changing the external maintenance API.
 
 ## Loyal Actions
 
@@ -62,12 +79,14 @@ crate, each Loyal Action is implemented as a Squads `ProgramInteraction` policy.
 For Loyal Hub swaps, the action constrains the delegated executor to the
 `swap_exact_in` instruction on this program. The route action pins the Loyal Hub
 config PDA, the smart-account vault, the allowed route mints, the hub
-inventory accounts, the hub authorizer, the SPL Token program, and the maximum
-fee argument in instruction data.
+authorizer, the SPL Token program, and the maximum fee argument in instruction
+data. Hub inventory accounts are constrained as SPL Token accounts, while this
+program validates that they are the canonical accounts for the selected lane.
 
 That means a delegated executor can choose a permitted route amount at execution
 time, but cannot redirect the call to another program, use unapproved mints,
-skip the hub authorizer, or exceed the configured fee ceiling.
+skip the hub authorizer, exceed the configured fee ceiling, or use inventory
+outside the selected lane.
 
 The same route can include a Jupiter lane. A rebalance may fill part of the swap
 through Loyal Hub inventory first, then send the residual through Jupiter if the
@@ -102,10 +121,15 @@ bun run test:squads
 
 That script builds the local SBF programs and runs the LiteSVM tests. The
 Loyal Hub coverage lives in
-`crates/squads-test-harness/tests/loyal_hub_swap.rs` and covers successful hub
-fills, missing authorizer signatures, wrong token accounts, same-mint rejection,
-non-canonical inventory rejection, duplicate mutable account rejection, fee caps,
-pauses, max-fee updates, inventory withdrawals, and Jupiter residual fallback.
+`crates/squads-test-harness/tests/loyal_hub_swap.rs` and
+`crates/squads-test-harness/tests/loyal_hub_lane_simulation.rs`.
+The focused swap tests cover successful hub fills, lane-selected inventory,
+lane rebalancing, missing authorizer signatures, wrong token accounts,
+same-mint rejection, non-canonical inventory rejection, duplicate mutable
+account rejection, fee caps, pauses, max-fee updates, inventory withdrawals,
+and Jupiter residual fallback. The lane simulation adds multi-wallet lane load,
+planner-driven inventory refills, scheduler conflicts, event-derived metrics,
+and lane-count growth checks while still executing real Hub instructions.
 
 Historical replay tests are intentionally ignored by default. Use the dedicated
 hub hindsight script only when route economics or replay-sensitive behavior

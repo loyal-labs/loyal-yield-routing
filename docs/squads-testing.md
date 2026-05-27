@@ -10,19 +10,19 @@ bun run test:squads
 
 The action SDK lives in `crates/loyal-actions`. The Squads test crate lives in `crates/squads-test-harness` and provides LiteSVM setup; Squads PDA derivation for settings, vault namespaces, policy accounts, and program config; `create_squads_smart_account` instruction construction; spending-limit helpers; sync-transfer and sync-transaction helpers; SPL Token account seeding helpers; local protocol SBF loading; and account-meta hashing.
 
-## Harness Architecture
+## Crate Architecture
 
-The Rust crate is organized as small vertical slices instead of a generic bag of helpers:
+The Rust crate is organized as small vertical slices instead of a generic bag of helpers.
 
-- `squads` owns Squads-specific addresses, settings-account setup, smart-account instructions, and compiled instruction payload encoding.
-- `runtime` owns LiteSVM construction, Squads SBF fixture loading, funded test contexts, heap-frame helpers, and transaction submission.
-- `actions` owns adapters from `FundedSquadsTestContext` and seeded mock Kamino accounts into `loyal-actions` inputs.
-- `policies` owns raw policy builders and low-level policy families:
-  - `policies/lifecycle.rs` covers policy removal and other settings-lifecycle instructions.
-  - `policies/spending_limits.rs` covers spending-limit policy creation.
-- `policies/program_interaction/` keeps older low-level ProgramInteraction helpers used by focused tests.
-- `protocols` owns mock protocol instruction data, SPL Token account seeding, and local SBF loading for external protocols.
-- `types` owns shared structs and Borsh payload models; most Squads wire types stay `pub(crate)` so the public API stays small.
+| Module | Responsibility |
+| --- | --- |
+| `squads` | Squads addresses, settings-account setup, smart-account instructions, and compiled instruction payload encoding |
+| `runtime` | LiteSVM construction, Squads SBF fixture loading, funded test contexts, heap-frame helpers, and transaction submission |
+| `actions` | Adapters from `FundedSquadsTestContext` and seeded mock Kamino accounts into `loyal-actions` inputs |
+| `policies` | Raw policy builders, settings lifecycle helpers, and spending-limit creation |
+| `policies/program_interaction` | Older low-level ProgramInteraction helpers used by focused tests |
+| `protocols` | Mock protocol instruction data, SPL Token account seeding, and local SBF loading for external protocols |
+| `types` | Shared structs and Borsh payload models; most Squads wire types stay `pub(crate)` so the public API stays small |
 
 New tests should prefer `squads_test_harness::prelude::*` for scenario-style runtime/mock imports and import route action builders from `loyal_actions`.
 
@@ -55,6 +55,8 @@ let withdraw_ix = route_action_setup.withdraw()?.build(
 ```
 
 Use `create_swap_yield_route_action(...)` for swap-only setup. Jupiter and Loyal Hub swaps use typed build arguments, such as `.jupiter()?.build(JupiterSwapExecution { ... })` and `.hub()?.build(HubSwapExecution { ... })`.
+
+Loyal Hub lane simulations have their own test-local support under `tests/loyal_hub_lane_simulation/`. Keep that framework out of the crate public API unless another test family needs it. It records accepted swaps, rejected swaps, accepted rebalances, and scheduler-blocked rebalances as events, then derives balances and metrics from those events before comparing them with LiteSVM state.
 
 The setup mirrors the lean parts of `passkey-work`: one static Squads settings account can own many deterministic vault namespaces, and tests should keep the Squads verifier or gateway signer explicit. Future yield-routing tests can build on these helpers instead of recreating PDA seeds and Borsh payload packing in every test.
 

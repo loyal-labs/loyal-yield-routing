@@ -10,18 +10,23 @@ use solana_sdk::{
 };
 use squads_test_harness::{
     create_funded_squads_test_context_with_mock_programs, create_squads_smart_account_instruction,
-    derive_loyal_hub_authority, derive_loyal_hub_config, derive_squads_pool, derive_squads_vault,
-    execute_mock_jupiter_sol_to_usdc_swap_instruction, execute_squads_sync_transaction_instruction,
-    get_spl_token_amount, initialize_loyal_hub_config_instruction, loyal_action_context,
-    loyal_hub_swap_exact_in_data, loyal_hub_token_account, loyal_hub_withdraw_inventory_data,
+    derive_loyal_hub_authority, derive_loyal_hub_config, derive_loyal_hub_lane_authority,
+    derive_squads_pool, derive_squads_vault, execute_mock_jupiter_sol_to_usdc_swap_instruction,
+    execute_squads_sync_transaction_instruction, get_spl_token_amount,
+    initialize_loyal_hub_config_instruction,
+    initialize_loyal_hub_config_instruction_with_rebalancer_and_lane_count, loyal_action_context,
+    loyal_hub_lane_token_account, loyal_hub_rebalance_inventory_data, loyal_hub_swap_exact_in_data,
+    loyal_hub_token_account, loyal_hub_withdraw_inventory_data,
     mock_jupiter_stable_reserve_token_account, mock_jupiter_swap_lane,
-    seed_loyal_hub_inventory_spl_accounts, seed_mock_jupiter_spl_accounts,
+    rebalance_loyal_hub_inventory_instruction, seed_loyal_hub_inventory_spl_accounts,
+    seed_loyal_hub_inventory_spl_accounts_for_lane, seed_mock_jupiter_spl_accounts,
     seed_mock_jupiter_stable_reserve_spl_accounts, seed_spl_mint_if_missing,
     seed_spl_token_account, set_loyal_hub_max_fee_instruction, set_loyal_hub_paused_instruction,
     try_send_instructions, withdraw_loyal_hub_inventory_instruction, HubSwapExecution,
-    JupiterSwapExecution, MockJupiterStableReserveTokenAccount, MockProgram, RouteActionExt,
-    SquadsCompiledInstruction, SquadsPool, LAMPORTS_PER_SOL, LOYAL_HUB_SWAP_PROGRAM_ID,
-    PYUSD_DECIMALS, PYUSD_MINT, USDC_DECIMALS, USDC_MINT,
+    JupiterSwapExecution, LoyalHubRebalanceTransfer, MockJupiterStableReserveTokenAccount,
+    MockProgram, RouteActionExt, SquadsCompiledInstruction, SquadsPool,
+    DEFAULT_LOYAL_HUB_LANE_COUNT, LAMPORTS_PER_SOL, LOYAL_HUB_SWAP_PROGRAM_ID, PYUSD_DECIMALS,
+    PYUSD_MINT, USDC_DECIMALS, USDC_MINT,
 };
 
 include!("loyal_hub_swap/support.rs");
@@ -181,6 +186,7 @@ fn treasury_backed_simulation_covers_hub_jupiter_and_inventory_movement() {
             amount_out: HUB_OUT,
             min_out: MIN_OUT,
             max_fee_bps: MAX_FEE_BPS,
+            lane_id: 0,
         });
     try_send_instructions(&mut context.svm, &[full_hub_ix], &wallet_b, &[&wallet_c])
         .expect("wallet B executes full Loyal Hub fill authorized by wallet C");
@@ -205,6 +211,7 @@ fn treasury_backed_simulation_covers_hub_jupiter_and_inventory_movement() {
             amount_out: half_hub_out,
             min_out: half_hub_out,
             max_fee_bps: MAX_FEE_BPS,
+            lane_id: 0,
         });
     let half_jupiter_ix = swap_action
         .jupiter()
@@ -336,6 +343,391 @@ fn loyal_hub_full_fill_swaps_atomically_through_squads_policy() {
 }
 
 #[test]
+fn loyal_hub_policy_allows_non_default_inventory_lane() {
+    let Some(mut fixture) = setup_fixture(false) else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+    seed_loyal_hub_inventory_spl_accounts_for_lane(
+        &mut fixture.context.svm,
+        &[USDC_MINT, PYUSD_MINT],
+        AMOUNT_IN * 2,
+        1,
+    );
+
+    let lane_zero_usdc_before =
+        get_spl_token_amount(&fixture.context.svm, loyal_hub_token_account(USDC_MINT));
+    let lane_zero_pyusd_before =
+        get_spl_token_amount(&fixture.context.svm, loyal_hub_token_account(PYUSD_MINT));
+    let lane_one_usdc = loyal_hub_lane_token_account(USDC_MINT, 1);
+    let lane_one_pyusd = loyal_hub_lane_token_account(PYUSD_MINT, 1);
+
+    let ix = fixture
+        .swap_action
+        .hub()
+        .expect("swap action has Loyal Hub lane")
+        .build(HubSwapExecution {
+            signer: fixture.wallet_b.pubkey(),
+            vault_index: fixture.context.vault_index,
+            vault: fixture.context.vault,
+            vault_input: fixture.vault_usdc,
+            vault_output: fixture.vault_pyusd,
+            input_mint: USDC_MINT,
+            output_mint: PYUSD_MINT,
+            hub_authorizer: fixture.hub_authorizer.pubkey(),
+            amount_in: AMOUNT_IN,
+            amount_out: HUB_OUT,
+            min_out: MIN_OUT,
+            max_fee_bps: MAX_FEE_BPS,
+            lane_id: 1,
+        });
+    try_send_instructions(
+        &mut fixture.context.svm,
+        &[ix],
+        &fixture.wallet_b,
+        &[&fixture.hub_authorizer],
+    )
+    .expect("same Loyal Hub policy allows a solver-selected inventory lane");
+
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, fixture.vault_usdc),
+        0
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, fixture.vault_pyusd),
+        HUB_OUT
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, loyal_hub_token_account(USDC_MINT)),
+        lane_zero_usdc_before
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, loyal_hub_token_account(PYUSD_MINT)),
+        lane_zero_pyusd_before
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, lane_one_usdc),
+        AMOUNT_IN * 3
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, lane_one_pyusd),
+        (AMOUNT_IN * 2) - HUB_OUT
+    );
+}
+
+#[test]
+fn loyal_hub_rebalancer_can_move_inventory_between_lanes() {
+    let Some(mut fixture) = setup_fixture(false) else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+    seed_loyal_hub_inventory_spl_accounts_for_lane(
+        &mut fixture.context.svm,
+        &[USDC_MINT, PYUSD_MINT],
+        0,
+        1,
+    );
+
+    let transfer = LoyalHubRebalanceTransfer {
+        from_lane_id: 0,
+        to_lane_id: 1,
+        amount: 250_000,
+    };
+    let ix = rebalance_loyal_hub_inventory_instruction(
+        fixture.inventory_rebalancer.pubkey(),
+        USDC_MINT,
+        &[transfer],
+    );
+    try_send_instructions(
+        &mut fixture.context.svm,
+        &[ix],
+        &fixture.context.wallet,
+        &[&fixture.inventory_rebalancer],
+    )
+    .expect("inventory rebalancer moves hot inventory between lanes");
+
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, loyal_hub_token_account(USDC_MINT)),
+        (AMOUNT_IN * 2) - transfer.amount
+    );
+    assert_eq!(
+        get_spl_token_amount(
+            &fixture.context.svm,
+            loyal_hub_lane_token_account(USDC_MINT, 1)
+        ),
+        transfer.amount
+    );
+}
+
+#[test]
+fn loyal_hub_rebalancer_can_move_multiple_transfers_in_one_instruction() {
+    let Some(mut fixture) = setup_fixture(false) else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+    seed_loyal_hub_inventory_spl_accounts_for_lane(
+        &mut fixture.context.svm,
+        &[USDC_MINT, PYUSD_MINT],
+        0,
+        1,
+    );
+    seed_loyal_hub_inventory_spl_accounts_for_lane(
+        &mut fixture.context.svm,
+        &[USDC_MINT, PYUSD_MINT],
+        0,
+        2,
+    );
+
+    let transfers = [
+        LoyalHubRebalanceTransfer {
+            from_lane_id: 0,
+            to_lane_id: 1,
+            amount: 200_000,
+        },
+        LoyalHubRebalanceTransfer {
+            from_lane_id: 0,
+            to_lane_id: 2,
+            amount: 300_000,
+        },
+    ];
+    let ix = rebalance_loyal_hub_inventory_instruction(
+        fixture.inventory_rebalancer.pubkey(),
+        USDC_MINT,
+        &transfers,
+    );
+    try_send_instructions(
+        &mut fixture.context.svm,
+        &[ix],
+        &fixture.context.wallet,
+        &[&fixture.inventory_rebalancer],
+    )
+    .expect("inventory rebalancer batches multiple lane moves");
+
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, loyal_hub_token_account(USDC_MINT)),
+        (AMOUNT_IN * 2) - 500_000
+    );
+    assert_eq!(
+        get_spl_token_amount(
+            &fixture.context.svm,
+            loyal_hub_lane_token_account(USDC_MINT, 1)
+        ),
+        200_000
+    );
+    assert_eq!(
+        get_spl_token_amount(
+            &fixture.context.svm,
+            loyal_hub_lane_token_account(USDC_MINT, 2)
+        ),
+        300_000
+    );
+}
+
+#[test]
+fn loyal_hub_rebalance_requires_inventory_rebalancer_signature() {
+    let Some(mut fixture) = setup_fixture(false) else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+    seed_loyal_hub_inventory_spl_accounts_for_lane(
+        &mut fixture.context.svm,
+        &[USDC_MINT, PYUSD_MINT],
+        0,
+        1,
+    );
+
+    let ix = Instruction {
+        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new_readonly(derive_loyal_hub_config(), false),
+            AccountMeta::new_readonly(fixture.inventory_rebalancer.pubkey(), false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+            AccountMeta::new_readonly(USDC_MINT, false),
+            AccountMeta::new_readonly(derive_loyal_hub_authority(), false),
+            AccountMeta::new(loyal_hub_token_account(USDC_MINT), false),
+            AccountMeta::new(loyal_hub_lane_token_account(USDC_MINT, 1), false),
+        ],
+        data: loyal_hub_rebalance_inventory_data(&[LoyalHubRebalanceTransfer {
+            from_lane_id: 0,
+            to_lane_id: 1,
+            amount: 250_000,
+        }]),
+    };
+    let error = try_send_instructions(
+        &mut fixture.context.svm,
+        &[ix],
+        &fixture.context.wallet,
+        &[],
+    )
+    .expect_err("inventory rebalancer must sign lane rebalance");
+    assert!(error.contains("MissingRequiredSignature"), "{error}");
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, loyal_hub_token_account(USDC_MINT)),
+        AMOUNT_IN * 2
+    );
+}
+
+#[test]
+fn loyal_hub_rebalance_rejects_wrong_source_lane_account() {
+    let Some(mut fixture) = setup_fixture(false) else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+    seed_loyal_hub_inventory_spl_accounts_for_lane(
+        &mut fixture.context.svm,
+        &[USDC_MINT, PYUSD_MINT],
+        0,
+        1,
+    );
+
+    let ix = Instruction {
+        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new_readonly(derive_loyal_hub_config(), false),
+            AccountMeta::new_readonly(fixture.inventory_rebalancer.pubkey(), true),
+            AccountMeta::new_readonly(spl_token::id(), false),
+            AccountMeta::new_readonly(USDC_MINT, false),
+            AccountMeta::new_readonly(derive_loyal_hub_lane_authority(1), false),
+            AccountMeta::new(loyal_hub_token_account(USDC_MINT), false),
+            AccountMeta::new(loyal_hub_token_account(USDC_MINT), false),
+        ],
+        data: loyal_hub_rebalance_inventory_data(&[LoyalHubRebalanceTransfer {
+            from_lane_id: 1,
+            to_lane_id: 0,
+            amount: 250_000,
+        }]),
+    };
+    let error = try_send_instructions(
+        &mut fixture.context.svm,
+        &[ix],
+        &fixture.context.wallet,
+        &[&fixture.inventory_rebalancer],
+    )
+    .expect_err("hub rejects a rebalance source account from the wrong lane");
+    assert!(error.contains("InvalidArgument"), "{error}");
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, loyal_hub_token_account(USDC_MINT)),
+        AMOUNT_IN * 2
+    );
+}
+
+#[test]
+fn loyal_hub_rebalance_rejects_wrong_destination_lane_account() {
+    let Some(mut fixture) = setup_fixture(false) else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+    seed_loyal_hub_inventory_spl_accounts_for_lane(
+        &mut fixture.context.svm,
+        &[USDC_MINT, PYUSD_MINT],
+        0,
+        1,
+    );
+    seed_loyal_hub_inventory_spl_accounts_for_lane(
+        &mut fixture.context.svm,
+        &[USDC_MINT, PYUSD_MINT],
+        0,
+        2,
+    );
+
+    let ix = Instruction {
+        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new_readonly(derive_loyal_hub_config(), false),
+            AccountMeta::new_readonly(fixture.inventory_rebalancer.pubkey(), true),
+            AccountMeta::new_readonly(spl_token::id(), false),
+            AccountMeta::new_readonly(USDC_MINT, false),
+            AccountMeta::new_readonly(derive_loyal_hub_authority(), false),
+            AccountMeta::new(loyal_hub_token_account(USDC_MINT), false),
+            AccountMeta::new(loyal_hub_lane_token_account(USDC_MINT, 2), false),
+        ],
+        data: loyal_hub_rebalance_inventory_data(&[LoyalHubRebalanceTransfer {
+            from_lane_id: 0,
+            to_lane_id: 1,
+            amount: 250_000,
+        }]),
+    };
+    let error = try_send_instructions(
+        &mut fixture.context.svm,
+        &[ix],
+        &fixture.context.wallet,
+        &[&fixture.inventory_rebalancer],
+    )
+    .expect_err("hub rejects a rebalance destination account from the wrong lane");
+    assert!(error.contains("InvalidArgument"), "{error}");
+    assert_eq!(
+        get_spl_token_amount(
+            &fixture.context.svm,
+            loyal_hub_lane_token_account(USDC_MINT, 2)
+        ),
+        0
+    );
+}
+
+#[test]
+fn loyal_hub_rebalance_rejects_out_of_range_lane() {
+    let Some(mut fixture) = setup_fixture(false) else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+
+    let ix = rebalance_loyal_hub_inventory_instruction(
+        fixture.inventory_rebalancer.pubkey(),
+        USDC_MINT,
+        &[LoyalHubRebalanceTransfer {
+            from_lane_id: 0,
+            to_lane_id: DEFAULT_LOYAL_HUB_LANE_COUNT,
+            amount: 250_000,
+        }],
+    );
+    let error = try_send_instructions(
+        &mut fixture.context.svm,
+        &[ix],
+        &fixture.context.wallet,
+        &[&fixture.inventory_rebalancer],
+    )
+    .expect_err("hub rejects out-of-range rebalance lane");
+    assert!(error.contains("InvalidArgument"), "{error}");
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, loyal_hub_token_account(USDC_MINT)),
+        AMOUNT_IN * 2
+    );
+}
+
+#[test]
+fn loyal_hub_rebalance_rejects_non_allowlisted_mint() {
+    let Some(mut fixture) = setup_fixture(false) else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+    let unapproved_mint = Pubkey::new_unique();
+    seed_spl_mint_if_missing(&mut fixture.context.svm, unapproved_mint, None, 6, 0);
+
+    let ix = Instruction {
+        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new_readonly(derive_loyal_hub_config(), false),
+            AccountMeta::new_readonly(fixture.inventory_rebalancer.pubkey(), true),
+            AccountMeta::new_readonly(spl_token::id(), false),
+            AccountMeta::new_readonly(unapproved_mint, false),
+        ],
+        data: loyal_hub_rebalance_inventory_data(&[LoyalHubRebalanceTransfer {
+            from_lane_id: 0,
+            to_lane_id: 1,
+            amount: 250_000,
+        }]),
+    };
+    let error = try_send_instructions(
+        &mut fixture.context.svm,
+        &[ix],
+        &fixture.context.wallet,
+        &[&fixture.inventory_rebalancer],
+    )
+    .expect_err("hub rejects rebalance for non-allowlisted mint");
+    assert!(error.contains("InvalidArgument"), "{error}");
+}
+
+#[test]
 fn loyal_hub_rejects_missing_hub_authorizer_signature() {
     let Some(mut fixture) = setup_fixture(false) else {
         eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
@@ -394,6 +786,7 @@ fn loyal_hub_rejects_wrong_output_destination() {
             amount_out: HUB_OUT,
             min_out: MIN_OUT,
             max_fee_bps: MAX_FEE_BPS,
+            lane_id: 0,
         });
     let error = try_send_instructions(
         &mut fixture.context.svm,
@@ -462,7 +855,7 @@ fn loyal_hub_rejects_non_canonical_inventory_accounts() {
             AccountMeta::new_readonly(fixture.hub_authorizer.pubkey(), true),
             AccountMeta::new_readonly(spl_token::id(), false),
         ],
-        data: loyal_hub_swap_exact_in_data(AMOUNT_IN, HUB_OUT, MIN_OUT, MAX_FEE_BPS),
+        data: loyal_hub_swap_exact_in_data(AMOUNT_IN, HUB_OUT, MIN_OUT, MAX_FEE_BPS, 0),
     };
     let error = try_send_instructions(
         &mut fixture.context.svm,
@@ -482,6 +875,149 @@ fn loyal_hub_rejects_non_canonical_inventory_accounts() {
     );
     assert_eq!(
         get_spl_token_amount(&fixture.context.svm, wrong_hub_usdc),
+        0
+    );
+}
+
+#[test]
+fn loyal_hub_rejects_inventory_from_a_different_lane() {
+    let Some(mut fixture) = setup_fixture(false) else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+    seed_loyal_hub_inventory_spl_accounts_for_lane(
+        &mut fixture.context.svm,
+        &[USDC_MINT, PYUSD_MINT],
+        AMOUNT_IN * 2,
+        1,
+    );
+
+    let direct_user = Keypair::new();
+    fixture
+        .context
+        .svm
+        .airdrop(&direct_user.pubkey(), LAMPORTS_PER_SOL / 10)
+        .expect("airdrop direct user");
+    let direct_user_usdc = Keypair::new().pubkey();
+    let direct_user_pyusd = Keypair::new().pubkey();
+    seed_spl_token_account(
+        &mut fixture.context.svm,
+        direct_user_usdc,
+        USDC_MINT,
+        direct_user.pubkey(),
+        AMOUNT_IN,
+    );
+    seed_spl_token_account(
+        &mut fixture.context.svm,
+        direct_user_pyusd,
+        PYUSD_MINT,
+        direct_user.pubkey(),
+        0,
+    );
+
+    let ix = Instruction {
+        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new_readonly(derive_loyal_hub_config(), false),
+            AccountMeta::new_readonly(direct_user.pubkey(), true),
+            AccountMeta::new(direct_user_usdc, false),
+            AccountMeta::new(direct_user_pyusd, false),
+            AccountMeta::new(loyal_hub_token_account(USDC_MINT), false),
+            AccountMeta::new(loyal_hub_lane_token_account(PYUSD_MINT, 1), false),
+            AccountMeta::new_readonly(USDC_MINT, false),
+            AccountMeta::new_readonly(PYUSD_MINT, false),
+            AccountMeta::new_readonly(derive_loyal_hub_lane_authority(1), false),
+            AccountMeta::new_readonly(fixture.hub_authorizer.pubkey(), true),
+            AccountMeta::new_readonly(spl_token::id(), false),
+        ],
+        data: loyal_hub_swap_exact_in_data(AMOUNT_IN, HUB_OUT, MIN_OUT, MAX_FEE_BPS, 1),
+    };
+    let error = try_send_instructions(
+        &mut fixture.context.svm,
+        &[ix],
+        &fixture.context.wallet,
+        &[&direct_user, &fixture.hub_authorizer],
+    )
+    .expect_err("hub rejects inventory account from a different lane");
+    assert!(error.contains("InvalidArgument"), "{error}");
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, direct_user_usdc),
+        AMOUNT_IN
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, direct_user_pyusd),
+        0
+    );
+}
+
+#[test]
+fn loyal_hub_rejects_lane_ids_outside_configured_range() {
+    let Some(mut fixture) = setup_fixture(false) else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+
+    let invalid_lane_id = DEFAULT_LOYAL_HUB_LANE_COUNT;
+    let direct_user = Keypair::new();
+    fixture
+        .context
+        .svm
+        .airdrop(&direct_user.pubkey(), LAMPORTS_PER_SOL / 10)
+        .expect("airdrop direct user");
+    let direct_user_usdc = Keypair::new().pubkey();
+    let direct_user_pyusd = Keypair::new().pubkey();
+    seed_spl_token_account(
+        &mut fixture.context.svm,
+        direct_user_usdc,
+        USDC_MINT,
+        direct_user.pubkey(),
+        AMOUNT_IN,
+    );
+    seed_spl_token_account(
+        &mut fixture.context.svm,
+        direct_user_pyusd,
+        PYUSD_MINT,
+        direct_user.pubkey(),
+        0,
+    );
+
+    let ix = Instruction {
+        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new_readonly(derive_loyal_hub_config(), false),
+            AccountMeta::new_readonly(direct_user.pubkey(), true),
+            AccountMeta::new(direct_user_usdc, false),
+            AccountMeta::new(direct_user_pyusd, false),
+            AccountMeta::new(loyal_hub_token_account(USDC_MINT), false),
+            AccountMeta::new(loyal_hub_token_account(PYUSD_MINT), false),
+            AccountMeta::new_readonly(USDC_MINT, false),
+            AccountMeta::new_readonly(PYUSD_MINT, false),
+            AccountMeta::new_readonly(derive_loyal_hub_authority(), false),
+            AccountMeta::new_readonly(fixture.hub_authorizer.pubkey(), true),
+            AccountMeta::new_readonly(spl_token::id(), false),
+        ],
+        data: loyal_hub_swap_exact_in_data(
+            AMOUNT_IN,
+            HUB_OUT,
+            MIN_OUT,
+            MAX_FEE_BPS,
+            invalid_lane_id,
+        ),
+    };
+    let error = try_send_instructions(
+        &mut fixture.context.svm,
+        &[ix],
+        &fixture.context.wallet,
+        &[&direct_user, &fixture.hub_authorizer],
+    )
+    .expect_err("hub rejects lane ids outside configured range");
+    assert!(error.contains("InvalidArgument"), "{error}");
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, direct_user_usdc),
+        AMOUNT_IN
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, direct_user_pyusd),
         0
     );
 }
@@ -518,6 +1054,7 @@ fn loyal_hub_rejects_same_mint_swaps() {
             amount_out: HUB_OUT,
             min_out: MIN_OUT,
             max_fee_bps: MAX_FEE_BPS,
+            lane_id: 0,
         });
     let error = try_send_instructions(
         &mut fixture.context.svm,
@@ -558,6 +1095,7 @@ fn loyal_hub_rejects_duplicate_mutable_token_accounts() {
             amount_out: HUB_OUT,
             min_out: MIN_OUT,
             max_fee_bps: MAX_FEE_BPS,
+            lane_id: 0,
         });
     let error = try_send_instructions(
         &mut fixture.context.svm,
@@ -601,6 +1139,7 @@ fn loyal_hub_rejects_excessive_fee_and_paused_swaps() {
             amount_out: 900_000,
             min_out: 900_000,
             max_fee_bps: MAX_FEE_BPS,
+            lane_id: 0,
         });
     let error = try_send_instructions(
         &mut fixture.context.svm,
@@ -652,6 +1191,7 @@ fn loyal_hub_admin_can_withdraw_hot_inventory() {
         treasury_usdc,
         USDC_MINT,
         250_000,
+        0,
     );
     try_send_instructions(
         &mut fixture.context.svm,

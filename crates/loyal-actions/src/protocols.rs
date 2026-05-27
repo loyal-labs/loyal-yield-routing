@@ -81,10 +81,6 @@ pub(crate) fn loyal_hub_constraint(
     max_fee_bps: u16,
 ) -> SquadsInstructionConstraint {
     let allowed_mints = unique_pubkeys(allowed_mints);
-    let inventory_accounts = allowed_mints
-        .iter()
-        .map(|mint| derive_loyal_hub_inventory_account(*mint))
-        .collect::<Vec<_>>();
 
     SquadsInstructionConstraint {
         program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
@@ -95,8 +91,8 @@ pub(crate) fn loyal_hub_constraint(
                 Some(LOYAL_HUB_SWAP_PROGRAM_ID),
             ),
             pubkey_constraint(1, vec![vault], None),
-            pubkey_constraint(4, inventory_accounts.clone(), Some(spl_token::id())),
-            pubkey_constraint(5, inventory_accounts, Some(spl_token::id())),
+            account_data_constraint(4, Some(spl_token::id())),
+            account_data_constraint(5, Some(spl_token::id())),
             pubkey_constraint(6, allowed_mints.clone(), Some(spl_token::id())),
             pubkey_constraint(7, allowed_mints, Some(spl_token::id())),
             pubkey_constraint(9, vec![hub_authorizer], None),
@@ -153,11 +149,23 @@ pub fn derive_loyal_hub_config() -> Pubkey {
 }
 
 pub fn derive_loyal_hub_authority() -> Pubkey {
-    Pubkey::find_program_address(&[LOYAL_HUB_AUTHORITY_SEED], &LOYAL_HUB_SWAP_PROGRAM_ID).0
+    derive_loyal_hub_lane_authority(0)
+}
+
+pub fn derive_loyal_hub_lane_authority(lane_id: u8) -> Pubkey {
+    Pubkey::find_program_address(
+        &[LOYAL_HUB_AUTHORITY_SEED, &[lane_id]],
+        &LOYAL_HUB_SWAP_PROGRAM_ID,
+    )
+    .0
 }
 
 pub fn derive_loyal_hub_inventory_account(mint: Pubkey) -> Pubkey {
-    let hub_authority = derive_loyal_hub_authority();
+    derive_loyal_hub_lane_inventory_account(mint, 0)
+}
+
+pub fn derive_loyal_hub_lane_inventory_account(mint: Pubkey, lane_id: u8) -> Pubkey {
+    let hub_authority = derive_loyal_hub_lane_authority(lane_id);
     Pubkey::find_program_address(
         &[
             hub_authority.as_ref(),

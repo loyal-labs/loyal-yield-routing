@@ -51,6 +51,8 @@ The action SDK lives in `crates/loyal-actions`. Keep route action construction, 
 
 The helper crate lives in `crates/squads-test-harness` and should stay focused on reusable LiteSVM setup, Squads PDA derivation, instruction builders, account seeding helpers, test-only protocol adapters, and deterministic action scenarios.
 
+Keep multi-wallet Loyal Hub lane simulations test-local until another test family needs the same machinery. `crates/squads-test-harness/tests/loyal_hub_lane_simulation.rs` is the scenario entrypoint; `crates/squads-test-harness/tests/loyal_hub_lane_simulation/support.rs` owns its event-derived ledger, lane scheduler, inventory planner, metric derivation, and balance assertions. The simulation may model scheduling and expected balances, but swaps and rebalances should still execute through LiteSVM, Squads, SPL Token accounts, Loyal Actions, and the Loyal Hub SBF.
+
 The Rust test crate follows this module layout:
 
 ```text

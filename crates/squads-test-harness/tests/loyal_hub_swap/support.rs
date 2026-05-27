@@ -8,6 +8,7 @@ struct HubSwapFixture {
     context: squads_test_harness::FundedSquadsTestContext,
     wallet_b: Keypair,
     hub_authorizer: Keypair,
+    inventory_rebalancer: Keypair,
     swap_action: YieldRouteActionInstruction,
     vault_usdc: solana_sdk::pubkey::Pubkey,
     vault_pyusd: solana_sdk::pubkey::Pubkey,
@@ -31,6 +32,7 @@ fn setup_fixture(with_jupiter: bool) -> Option<HubSwapFixture> {
 
     let wallet_b = Keypair::new();
     let hub_authorizer = Keypair::new();
+    let inventory_rebalancer = Keypair::new();
     context
         .svm
         .airdrop(&wallet_b.pubkey(), LAMPORTS_PER_SOL / 10)
@@ -39,6 +41,10 @@ fn setup_fixture(with_jupiter: bool) -> Option<HubSwapFixture> {
         .svm
         .airdrop(&hub_authorizer.pubkey(), LAMPORTS_PER_SOL / 10)
         .expect("airdrop hub authorizer");
+    context
+        .svm
+        .airdrop(&inventory_rebalancer.pubkey(), LAMPORTS_PER_SOL / 10)
+        .expect("airdrop inventory rebalancer");
 
     seed_spl_mint_if_missing(&mut context.svm, USDC_MINT, None, USDC_DECIMALS, 0);
     seed_spl_mint_if_missing(&mut context.svm, PYUSD_MINT, None, PYUSD_DECIMALS, 0);
@@ -58,12 +64,14 @@ fn setup_fixture(with_jupiter: bool) -> Option<HubSwapFixture> {
         AMOUNT_IN * 2,
     );
 
-    let init_hub_ix = initialize_loyal_hub_config_instruction(
+    let init_hub_ix = initialize_loyal_hub_config_instruction_with_rebalancer_and_lane_count(
         context.wallet_pubkey(),
         context.wallet_pubkey(),
         hub_authorizer.pubkey(),
+        inventory_rebalancer.pubkey(),
         50,
         false,
+        DEFAULT_LOYAL_HUB_LANE_COUNT,
         &[USDC_MINT, PYUSD_MINT],
     );
     try_send_instructions(&mut context.svm, &[init_hub_ix], &context.wallet, &[])
@@ -94,6 +102,7 @@ fn setup_fixture(with_jupiter: bool) -> Option<HubSwapFixture> {
         context,
         wallet_b,
         hub_authorizer,
+        inventory_rebalancer,
         swap_action,
         vault_usdc,
         vault_pyusd,
@@ -118,6 +127,7 @@ fn hub_swap_ix(fixture: &HubSwapFixture, amount_in: u64, amount_out: u64) -> Ins
             amount_out,
             min_out: MIN_OUT.min(amount_out),
             max_fee_bps: MAX_FEE_BPS,
+            lane_id: 0,
         })
 }
 
@@ -243,7 +253,7 @@ fn treasury_withdraw_hub_ix(
         vec![SquadsCompiledInstruction {
             program_id_index: 7,
             accounts: vec![0, 1, 2, 3, 4, 5, 6],
-            data: loyal_hub_withdraw_inventory_data(amount),
+            data: loyal_hub_withdraw_inventory_data(amount, 0),
         }],
         vec![
             AccountMeta::new(derive_loyal_hub_config(), false),
@@ -264,7 +274,7 @@ fn treasury_rebalance_hub_ix(
     withdraw_usdc: u64,
     top_up_pyusd: u64,
 ) -> Instruction {
-    let withdraw_data = loyal_hub_withdraw_inventory_data(withdraw_usdc);
+    let withdraw_data = loyal_hub_withdraw_inventory_data(withdraw_usdc, 0);
     let top_up_data = spl_token::instruction::transfer_checked(
         &spl_token::id(),
         &treasury.pyusd,
