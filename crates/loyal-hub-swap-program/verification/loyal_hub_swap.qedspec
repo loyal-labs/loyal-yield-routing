@@ -1,0 +1,268 @@
+// Loyal Hub Swap verification spec.
+//
+// This is the source of truth for the Quasar-native Loyal Hub rewrite. The
+// runtime keeps Loyal Hub's product semantics: one config PDA, lane-scoped hub
+// authorities, canonical inventory accounts, allowed stable mints, fee caps,
+// and admin/rebalancer lifecycle controls.
+
+spec LoyalHubSwap
+
+program_id "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh"
+
+import Token from "spl"
+
+const U64_MAX = 18446744073709551615
+const NORMALIZED_FEE_MUL_MAX = 34028236692093846346337460743176821
+
+pda config ["config"]
+pda hub_authority ["hub-authority", lane_id]
+
+type State
+  | Uninitialized
+  | Active of {
+      admin_key                : Pubkey,
+      hub_authorizer_key       : Pubkey,
+      inventory_rebalancer_key : Pubkey,
+      allowed_mint_0           : Pubkey,
+      allowed_mint_1           : Pubkey,
+      max_fee_bps              : U128,
+      lane_count               : U64,
+      paused                   : U64,
+    }
+
+type Error
+  | InvalidAmount
+  | InvalidFee
+  | InvalidLane
+  | InvalidMint
+  | InvalidAccount
+  | MissingSignature
+  | InsufficientFunds
+  | MathOverflow
+  | Unauthorized
+
+handler initialize_config
+  (max_fee_bps : U128)
+  (lane_count : U64) : State.Uninitialized -> State.Active {
+  permissionless
+
+  accounts {
+    payer                 : signer, writable
+    config                : writable, pda ["config"]
+    admin                 : readonly
+    hub_authorizer        : readonly
+    inventory_rebalancer  : readonly
+    allowed_mint_0        : readonly
+    allowed_mint_1        : readonly
+    system_program        : program
+  }
+
+  requires max_fee_bps <= 10000 else InvalidFee
+  requires lane_count > 0 else InvalidLane
+  requires allowed_mint_0.pubkey != allowed_mint_1.pubkey else InvalidMint
+
+  effect {
+    admin_key                := admin.pubkey
+    hub_authorizer_key       := hub_authorizer.pubkey
+    inventory_rebalancer_key := inventory_rebalancer.pubkey
+    allowed_mint_0           := allowed_mint_0.pubkey
+    allowed_mint_1           := allowed_mint_1.pubkey
+    max_fee_bps              := max_fee_bps
+    lane_count               := lane_count
+    paused                   := 0
+  }
+}
+
+handler set_max_fee (new_max_fee_bps : U128) : State.Active -> State.Active {
+  auth admin
+
+  accounts {
+    config : writable, pda ["config"]
+    admin  : signer
+  }
+
+  requires admin.pubkey == state.admin_key else Unauthorized
+  requires new_max_fee_bps <= 10000 else InvalidFee
+
+  modifies [max_fee_bps]
+  effect {
+    max_fee_bps := new_max_fee_bps
+  }
+}
+
+handler set_paused (paused_value : U64) : State.Active -> State.Active {
+  auth admin
+
+  accounts {
+    config : writable, pda ["config"]
+    admin  : signer
+  }
+
+  requires admin.pubkey == state.admin_key else Unauthorized
+  requires paused_value <= 1 else InvalidAmount
+
+  modifies [paused]
+  effect {
+    paused := paused_value
+  }
+}
+
+handler swap_exact_in
+  (amount_in : U64)
+  (amount_out : U64)
+  (min_out : U64)
+  (max_fee_bps : U128)
+  (retained_value_bps : U128)
+  (lane_id : U64)
+  (input_decimals : U64)
+  (output_decimals : U64)
+  (fee_input_normalized : U128)
+  (fee_output_normalized : U128) : State.Active -> State.Active {
+  auth hub_authorizer
+
+  accounts {
+    config         : writable, pda ["config"]
+    user_vault     : signer
+    user_input     : writable, token, authority user_vault
+    user_output    : writable, token, authority user_vault
+    hub_input      : writable, token, authority hub_authority
+    hub_output     : writable, token, authority hub_authority
+    input_mint     : readonly
+    output_mint    : readonly
+    hub_authority  : readonly, pda ["hub-authority", lane_id]
+    hub_authorizer : signer
+    token_program  : program, type token
+  }
+
+  requires amount_in > 0 else InvalidAmount
+  requires amount_out > 0 else InvalidAmount
+  requires amount_out >= min_out else InvalidAmount
+  requires state.paused == 0 else InvalidAmount
+  requires max_fee_bps <= state.max_fee_bps else InvalidFee
+  requires max_fee_bps <= 10000 else InvalidFee
+  requires lane_id < state.lane_count else InvalidLane
+  requires hub_authorizer.pubkey == state.hub_authorizer_key else MissingSignature
+  requires input_mint.pubkey != output_mint.pubkey else InvalidMint
+  requires
+    input_mint.pubkey == state.allowed_mint_0 or input_mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires
+    output_mint.pubkey == state.allowed_mint_0 or output_mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires user_input.pubkey != user_output.pubkey else InvalidAccount
+  requires user_input.pubkey != hub_input.pubkey else InvalidAccount
+  requires user_input.pubkey != hub_output.pubkey else InvalidAccount
+  requires user_output.pubkey != hub_input.pubkey else InvalidAccount
+  requires user_output.pubkey != hub_output.pubkey else InvalidAccount
+  requires hub_input.pubkey != hub_output.pubkey else InvalidAccount
+  requires input_decimals <= 18 else InvalidMint
+  requires output_decimals <= 18 else InvalidMint
+  requires retained_value_bps <= 10000 else InvalidFee
+  requires max_fee_bps + retained_value_bps == 10000 else InvalidFee
+  requires fee_input_normalized <= NORMALIZED_FEE_MUL_MAX else InvalidFee
+  requires
+    fee_output_normalized >= (fee_input_normalized * retained_value_bps) / 10000
+    else InvalidFee
+
+  call Token.transfer(
+    from      = user_input,
+    to        = hub_input,
+    authority = user_vault,
+    amount    = amount_in,
+  )
+  call Token.transfer(
+    from      = hub_output,
+    to        = user_output,
+    authority = hub_authority,
+    amount    = amount_out,
+  )
+
+  ensures state.admin_key == old(state.admin_key)
+  ensures state.hub_authorizer_key == old(state.hub_authorizer_key)
+  ensures state.inventory_rebalancer_key == old(state.inventory_rebalancer_key)
+  ensures state.max_fee_bps == old(state.max_fee_bps)
+  ensures state.lane_count == old(state.lane_count)
+  ensures state.paused == old(state.paused)
+}
+
+handler withdraw_inventory
+  (amount : U64)
+  (lane_id : U64) : State.Active -> State.Active {
+  auth admin
+
+  accounts {
+    config        : writable, pda ["config"]
+    admin         : signer
+    hub_source    : writable, token, authority hub_authority
+    destination   : writable, token
+    mint          : readonly
+    hub_authority : readonly, pda ["hub-authority", lane_id]
+    token_program : program, type token
+  }
+
+  requires admin.pubkey == state.admin_key else Unauthorized
+  requires amount > 0 else InvalidAmount
+  requires lane_id < state.lane_count else InvalidLane
+  requires
+    mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires hub_source.pubkey != destination.pubkey else InvalidAccount
+
+  call Token.transfer(
+    from      = hub_source,
+    to        = destination,
+    authority = hub_authority,
+    amount    = amount,
+  )
+
+  ensures state.admin_key == old(state.admin_key)
+  ensures state.max_fee_bps == old(state.max_fee_bps)
+  ensures state.lane_count == old(state.lane_count)
+}
+
+handler rebalance_inventory
+  (amount : U64)
+  (from_lane_id : U64)
+  (to_lane_id : U64) : State.Active -> State.Active {
+  auth inventory_rebalancer
+
+  accounts {
+    config               : writable, pda ["config"]
+    inventory_rebalancer : signer
+    token_program        : program, type token
+    mint                 : readonly
+    source_authority     : readonly, pda ["hub-authority", from_lane_id]
+    source_inventory     : writable, token, authority source_authority
+    destination_inventory: writable, token, authority destination_authority
+    destination_authority: readonly, pda ["hub-authority", to_lane_id]
+  }
+
+  requires inventory_rebalancer.pubkey == state.inventory_rebalancer_key else Unauthorized
+  requires amount > 0 else InvalidAmount
+  requires from_lane_id != to_lane_id else InvalidLane
+  requires from_lane_id < state.lane_count else InvalidLane
+  requires to_lane_id < state.lane_count else InvalidLane
+  requires
+    mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires source_inventory.pubkey != destination_inventory.pubkey else InvalidAccount
+
+  call Token.transfer(
+    from      = source_inventory,
+    to        = destination_inventory,
+    authority = source_authority,
+    amount    = amount,
+  )
+
+  ensures state.admin_key == old(state.admin_key)
+  ensures state.max_fee_bps == old(state.max_fee_bps)
+  ensures state.lane_count == old(state.lane_count)
+}
+
+property config_domain_preserved :
+  state.max_fee_bps <= 10000 and state.lane_count > 0 and state.paused <= 1
+  preserved_by [initialize_config, set_max_fee, set_paused, swap_exact_in, withdraw_inventory, rebalance_inventory]
+
+cover successful_swap [initialize_config, swap_exact_in]
+cover treasury_lifecycle [initialize_config, set_max_fee, set_paused, withdraw_inventory]
+cover lane_rebalance [initialize_config, rebalance_inventory]

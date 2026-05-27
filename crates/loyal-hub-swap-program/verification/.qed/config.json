@@ -1,0 +1,5 @@
+{
+  "name": "loyal_hub_swap",
+  "spec": "loyal_hub_swap.qedspec",
+  "interfaces_dir": ".qed/interfaces"
+}

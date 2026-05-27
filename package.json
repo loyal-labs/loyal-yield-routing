@@ -11,7 +11,11 @@
     "lint": "eslint",
     "test:squads": "cargo build-sbf -- -p mock-yield-protocols-program -p loyal-hub-swap-program && cargo test -p squads-test-harness",
     "test:squads:e2e": "cargo build-sbf -- -p mock-yield-protocols-program -p loyal-hub-swap-program && cargo test -p squads-test-harness --test kamino_hindsight_e2e -- --ignored --nocapture",
-    "test:squads:hub-hindsight": "cargo build-sbf -- -p mock-yield-protocols-program -p loyal-hub-swap-program && cargo test -p squads-test-harness --test loyal_hub_hindsight_e2e -- --ignored --nocapture"
+    "test:squads:hub-hindsight": "cargo build-sbf -- -p mock-yield-protocols-program -p loyal-hub-swap-program && cargo test -p squads-test-harness --test loyal_hub_hindsight_e2e -- --ignored --nocapture",
+    "verify:qedgen:check": "bash scripts/verify-qedgen-check.sh",
+    "verify:qedgen:codegen": "bash scripts/verify-qedgen-codegen.sh",
+    "verify:qedgen:proptest": "bash scripts/verify-qedgen-proptest.sh",
+    "verify:qedgen": "bun run verify:qedgen:check && bun run verify:qedgen:codegen && bun run verify:qedgen:proptest"
   },
   "dependencies": {
     "next": "16.2.6",

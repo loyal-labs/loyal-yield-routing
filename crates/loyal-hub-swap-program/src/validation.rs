@@ -59,14 +59,9 @@ pub fn require_fee_cap(
     output_decimals: u8,
     max_fee_bps: u16,
 ) -> ProgramResult {
-    validate_fee_bps(max_fee_bps)?;
-    let input_normalized = normalize_amount(amount_in, input_decimals)?;
-    let output_normalized = normalize_amount(amount_out, output_decimals)?;
-    let min_output = input_normalized
-        .checked_mul(10_000u128 - max_fee_bps as u128)
-        .ok_or(ProgramError::InvalidArgument)?
-        / 10_000u128;
-    if output_normalized < min_output {
+    let input_normalized = normalize_amount_for_fee(amount_in, input_decimals)?;
+    let output_normalized = normalize_amount_for_fee(amount_out, output_decimals)?;
+    if !fee_cap_holds(input_normalized, output_normalized, max_fee_bps)? {
         return Err(ProgramError::InvalidArgument);
     }
     Ok(())
@@ -79,7 +74,26 @@ pub fn validate_fee_bps(fee_bps: u16) -> ProgramResult {
     Ok(())
 }
 
-fn normalize_amount(amount: u64, decimals: u8) -> Result<u128, ProgramError> {
+fn fee_cap_holds(
+    input_normalized: u128,
+    output_normalized: u128,
+    max_fee_bps: u16,
+) -> Result<bool, ProgramError> {
+    Ok(output_normalized >= minimum_output_after_fee(input_normalized, max_fee_bps)?)
+}
+
+fn minimum_output_after_fee(
+    input_normalized: u128,
+    max_fee_bps: u16,
+) -> Result<u128, ProgramError> {
+    validate_fee_bps(max_fee_bps)?;
+    input_normalized
+        .checked_mul(10_000u128 - max_fee_bps as u128)
+        .ok_or(ProgramError::InvalidArgument)
+        .map(|value| value / 10_000u128)
+}
+
+fn normalize_amount_for_fee(amount: u64, decimals: u8) -> Result<u128, ProgramError> {
     if decimals > 18 {
         return Err(ProgramError::InvalidArgument);
     }
@@ -89,4 +103,67 @@ fn normalize_amount(amount: u64, decimals: u8) -> Result<u128, ProgramError> {
     (amount as u128)
         .checked_mul(scale)
         .ok_or(ProgramError::InvalidArgument)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_amount_rejects_decimals_above_eighteen() {
+        assert_eq!(
+            normalize_amount_for_fee(1, 19),
+            Err(ProgramError::InvalidArgument)
+        );
+    }
+
+    #[test]
+    fn validate_fee_bps_rejects_values_above_ten_thousand() {
+        assert_eq!(validate_fee_bps(10_001), Err(ProgramError::InvalidArgument));
+    }
+
+    #[test]
+    fn fee_cap_rejects_normalized_multiplication_overflow() {
+        let overflowing_input = (u128::MAX / 10_000u128) + 1;
+
+        assert_eq!(
+            minimum_output_after_fee(overflowing_input, 0),
+            Err(ProgramError::InvalidArgument)
+        );
+    }
+
+    #[test]
+    fn fee_cap_accepts_exact_threshold_output() {
+        let input_normalized = 1_000_000u128;
+        let min_output = minimum_output_after_fee(input_normalized, 50).unwrap();
+
+        assert!(fee_cap_holds(input_normalized, min_output, 50).unwrap());
+    }
+
+    #[test]
+    fn fee_cap_rejects_output_below_threshold() {
+        let input_normalized = 1_000_000u128;
+        let min_output = minimum_output_after_fee(input_normalized, 50).unwrap();
+
+        assert!(!fee_cap_holds(input_normalized, min_output - 1, 50).unwrap());
+    }
+
+    #[test]
+    fn higher_output_cannot_break_passing_fee_cap() {
+        let input_normalized = 1_000_000u128;
+        let min_output = minimum_output_after_fee(input_normalized, 50).unwrap();
+
+        for extra_output in 0..1_000u128 {
+            assert!(fee_cap_holds(input_normalized, min_output + extra_output, 50).unwrap());
+        }
+    }
+
+    #[test]
+    fn require_fee_cap_uses_normalized_amounts_from_mint_decimals() {
+        assert!(require_fee_cap(1_000_000, 995_000, 6, 6, 50).is_ok());
+        assert_eq!(
+            require_fee_cap(1_000_000, 994_999, 6, 6, 50),
+            Err(ProgramError::InvalidArgument)
+        );
+    }
 }
