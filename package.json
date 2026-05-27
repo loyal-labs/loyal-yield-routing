@@ -14,7 +14,6 @@
     "test:squads:hub-hindsight": "cargo build-sbf -- -p mock-yield-protocols-program -p loyal-hub-swap-program && cargo test -p squads-test-harness --test loyal_hub_hindsight_e2e -- --ignored --nocapture",
     "verify:hub-abi-spec-drift": "cargo test -p loyal-hub-abi abi_spec_drift -- --nocapture",
     "verify:qedgen:check": "bash scripts/verify-qedgen-check.sh",
-    "verify:qedgen:codegen": "bash scripts/verify-qedgen-codegen.sh",
     "verify:qedgen:probe": "bash scripts/verify-qedgen-probe.sh",
     "verify:qedgen:proptest": "bash scripts/verify-qedgen-proptest.sh",
     "verify:qedgen": "bun run verify:hub-abi-spec-drift && bun run verify:qedgen:check && bun run verify:qedgen:probe && bun run verify:qedgen:proptest"

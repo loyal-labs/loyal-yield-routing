@@ -25,14 +25,10 @@ behavioral contract and generated proptest gate.
 schema and this spec. Run it whenever handler accounts, instruction arguments,
 or their modeled QEDGen equivalents change.
 
-## Current Blocker
+## Active Gates
 
 `qedgen check --coverage`, the generated proptest tests, and the Pinocchio
-probe are the active verification gates. The Quasar program scaffold gate is
-kept as a known drift signal and currently fails in generated code. QEDGen
-2.30.0 emits Anchor CPI snippets for `Token.transfer`, omits a usable `Pubkey`
-import in generated Quasar state, and lowers dynamic PDA seed arguments as
-account-field reads such as `ctx.hub_authority.lane_id`.
+probe are the active verification gates.
 
 The Pinocchio probe should report no indexed-slice catalogue sites. It may
 still print spec-less paired-validator notes for `lane_count` and `mint_count`;
@@ -40,9 +36,7 @@ those are heuristic findings over distinct domain checks. The command should
 exit successfully.
 
 Do not hand-edit generated files under `target/qedgen`. Fix the spec only when
-the change remains truthful; otherwise treat the failing Quasar scaffold as an
-upstream QEDGen codegen issue. QEDGen Pinocchio scaffold generation is not a
-required gate until upstream support exists.
+the change remains truthful.
 
 ## Commands
 
@@ -50,11 +44,6 @@ required gate until upstream support exists.
 bun run verify:qedgen:check
 bun run verify:hub-abi-spec-drift
 bun run verify:qedgen:probe
-bun run verify:qedgen:codegen
 bun run verify:qedgen:proptest
 bun run verify:qedgen
 ```
-
-`verify:qedgen:codegen` regenerates a Quasar scaffold in ignored scratch space
-and runs `cargo check` against it. It is intentionally a failing gate until the
-generated Quasar support code compiles, so `verify:qedgen` does not include it.
