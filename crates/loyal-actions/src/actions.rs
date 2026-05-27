@@ -126,6 +126,25 @@ impl LoyalActionStep {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoyalActionRoute<const N: usize> {
+    action_account: Pubkey,
+    instruction_constraint_indexes: [u8; N],
+}
+
+pub type SameMintRoute = LoyalActionRoute<2>;
+pub type CrossMintRoute = LoyalActionRoute<3>;
+
+impl<const N: usize> LoyalActionRoute<N> {
+    pub fn action_account(&self) -> Pubkey {
+        self.action_account
+    }
+
+    pub fn instruction_constraint_indexes(&self) -> &[u8; N] {
+        &self.instruction_constraint_indexes
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct YieldRouteSteps {
     withdraw: Option<LoyalActionStep>,
@@ -190,6 +209,26 @@ impl YieldRouteActionSetup {
 
     pub fn loyal_hub_swap_step(&self) -> Result<LoyalActionStep> {
         self.steps.loyal_hub_swap()
+    }
+
+    pub fn same_mint_route(&self) -> Result<SameMintRoute> {
+        coalesce_steps([self.withdraw_step()?, self.deposit_step()?])
+    }
+
+    pub fn jupiter_route(&self) -> Result<CrossMintRoute> {
+        coalesce_steps([
+            self.withdraw_step()?,
+            self.jupiter_swap_step()?,
+            self.deposit_step()?,
+        ])
+    }
+
+    pub fn loyal_hub_route(&self) -> Result<CrossMintRoute> {
+        coalesce_steps([
+            self.withdraw_step()?,
+            self.loyal_hub_swap_step()?,
+            self.deposit_step()?,
+        ])
     }
 }
 
@@ -544,6 +583,23 @@ fn setup(
     })
 }
 
+fn coalesce_steps<const N: usize>(steps: [LoyalActionStep; N]) -> Result<LoyalActionRoute<N>> {
+    let Some(first) = steps.first().copied() else {
+        return Err(LoyalActionError::MissingActionStep);
+    };
+    if steps
+        .iter()
+        .any(|step| step.action_account() != first.action_account())
+    {
+        return Err(LoyalActionError::SplitActionRoute);
+    }
+
+    Ok(LoyalActionRoute {
+        action_account: first.action_account(),
+        instruction_constraint_indexes: steps.map(|step| step.instruction_constraint_index()),
+    })
+}
+
 fn action_accounts(settings: Pubkey, seeds: YieldRouteActionSeeds) -> YieldRouteActionAccounts {
     YieldRouteActionAccounts {
         withdraw: derive_action_account(&settings, seeds.withdraw).0,
@@ -765,6 +821,14 @@ mod tests {
             2
         );
         assert_eq!(setup.spec.constraint_count, 3);
+
+        let same_mint_route = setup.same_mint_route().unwrap();
+        assert_eq!(same_mint_route.action_account(), setup.accounts.withdraw);
+        assert_eq!(same_mint_route.instruction_constraint_indexes(), &[0, 2]);
+
+        let jupiter_route = setup.jupiter_route().unwrap();
+        assert_eq!(jupiter_route.action_account(), setup.accounts.withdraw);
+        assert_eq!(jupiter_route.instruction_constraint_indexes(), &[0, 1, 2]);
     }
 
     #[test]
@@ -866,6 +930,26 @@ mod tests {
                 .unwrap()
                 .instruction_constraint_index(),
             1
+        );
+    }
+
+    #[test]
+    fn route_grouping_rejects_split_action_accounts() {
+        let setup = create_three_step_yield_route_actions(
+            context(),
+            universe(),
+            vec![jupiter_lane(false)],
+            YieldRouteActionSeeds::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            setup.same_mint_route().unwrap_err(),
+            LoyalActionError::SplitActionRoute
+        );
+        assert_eq!(
+            setup.jupiter_route().unwrap_err(),
+            LoyalActionError::SplitActionRoute
         );
     }
 }

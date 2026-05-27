@@ -388,7 +388,10 @@ pub fn execute_squads_loyal_hub_rebalance_batch_instruction(
     )
 }
 
-fn push_or_update_account_meta(accounts: &mut Vec<AccountMeta>, meta: AccountMeta) -> usize {
+pub(crate) fn push_or_update_account_meta(
+    accounts: &mut Vec<AccountMeta>,
+    meta: AccountMeta,
+) -> usize {
     if let Some(index) = accounts
         .iter()
         .position(|existing| existing.pubkey == meta.pubkey)
@@ -401,6 +404,65 @@ fn push_or_update_account_meta(accounts: &mut Vec<AccountMeta>, meta: AccountMet
     let index = accounts.len();
     accounts.push(meta);
     index
+}
+
+pub(crate) fn merge_compiled_instructions(
+    transaction_accounts: &mut Vec<AccountMeta>,
+    compiled_instructions: Vec<SquadsCompiledInstruction>,
+    source_accounts: Vec<AccountMeta>,
+) -> Vec<SquadsCompiledInstruction> {
+    compiled_instructions
+        .into_iter()
+        .map(|instruction| {
+            let program_id_index = remap_account_index(
+                transaction_accounts,
+                &source_accounts,
+                instruction.program_id_index,
+            );
+            let accounts = instruction
+                .accounts
+                .into_iter()
+                .map(|index| remap_account_index(transaction_accounts, &source_accounts, index))
+                .collect();
+            SquadsCompiledInstruction {
+                program_id_index,
+                accounts,
+                data: instruction.data,
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn compile_inner_instruction(
+    transaction_accounts: &mut Vec<AccountMeta>,
+    instruction: Instruction,
+) -> SquadsCompiledInstruction {
+    let accounts = instruction
+        .accounts
+        .into_iter()
+        .map(|account| push_or_update_account_meta(transaction_accounts, account))
+        .collect();
+    let program_id_index = push_or_update_account_meta(
+        transaction_accounts,
+        AccountMeta::new_readonly(instruction.program_id, false),
+    );
+
+    SquadsCompiledInstruction {
+        program_id_index,
+        accounts,
+        data: instruction.data,
+    }
+}
+
+fn remap_account_index(
+    transaction_accounts: &mut Vec<AccountMeta>,
+    source_accounts: &[AccountMeta],
+    index: usize,
+) -> usize {
+    let account = source_accounts
+        .get(index)
+        .unwrap_or_else(|| panic!("compiled instruction account index {index} is out of bounds"));
+    push_or_update_account_meta(transaction_accounts, account.clone())
 }
 
 pub fn set_loyal_hub_paused_instruction(admin: Pubkey, paused: bool) -> Instruction {

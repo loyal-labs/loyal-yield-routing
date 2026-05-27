@@ -15,20 +15,17 @@ The APY reports point to a fee-aware router that changes reserves only when the 
 
 Use `ProgramInteractionPolicy` with `time_lock = 0`, threshold `1`, and Wallet B as the sole policy signer.
 
-The key Squads behavior from the `policies` branch is that each policy execution validates the submitted inner instruction against the selected `instruction_constraint_index`. Several policy-execution instructions can still be packed into one outer Solana transaction, so route atomicity comes from the outer transaction:
+The key Squads behavior from the `policies` branch is that each policy execution validates submitted inner instructions against the selected `instruction_constraint_index` values. With the all-in-one action topology, each vault route execution uses one Squads `ProgramInteraction` call whose inner instruction list matches the constraint-index list:
 
 ```text
 same mint:
-  policy exec: Kamino withdraw
-  policy exec: Kamino deposit
+  policy exec: [Kamino withdraw, Kamino deposit]
 
 cross mint:
-  policy exec: Kamino withdraw
-  policy exec: Jupiter swap
-  policy exec: Kamino deposit
+  policy exec: [Kamino withdraw, Jupiter or Loyal Hub swap, Kamino deposit]
 ```
 
-Each policy is bound to one Squads `account_index`, so Wallet B can only act through vault `0`.
+Each policy is bound to one Squads `account_index`, so Wallet B can only act through vault `0`. Multiple vaults still need one policy execution per vault because each action pins its vault pubkey and account index.
 
 ## Minimal Policy Shape
 
@@ -94,7 +91,9 @@ let route_action_setup = create_three_step_yield_route_actions(
 
 The SDK derives action accounts, deduplicates the route universe, returns Squads create instructions, and exposes named route actions for execution. Tests choose the delegated signer, route universe, and explicit protocol lanes; test adapters own mock Jupiter details.
 
-For swap-only tests, use `create_swap_yield_route_action(...)`. Route execution should go through `withdraw`, `deposit`, `jupiter`, or `hub` actions and call `build` with the action-specific arguments, so tests do not duplicate Squads constraint-index plumbing.
+For swap-only tests, use `create_swap_yield_route_action(...)`. Single-step execution should go through `withdraw`, `deposit`, `jupiter`, or `hub` actions and call `build` with the action-specific arguments. Full route execution should use `same_mint_route_action`, `jupiter_route_action`, or `loyal_hub_route_action` so tests submit one Squads policy call per vault route instead of one call per route step.
+
+The production route values are fixed-length: `SameMintRoute` carries exactly two constraint indexes for `[withdraw, deposit]`, while `CrossMintRoute` carries exactly three for `[withdraw, swap, deposit]`. Route construction fails with `SplitActionRoute` when those steps do not share one Loyal action account.
 
 ## Practical Recommendation
 
@@ -102,20 +101,22 @@ Start with route-universe policies created from the optimized APY path. That is 
 
 1. The off-chain router decides a fee-aware move from the APY tape and quote cache.
 2. Wallet A creates route actions for the optimized market/mint universe.
-3. Wallet B relays one outer transaction containing the needed action executions for each step.
+3. Wallet B relays one outer transaction containing one action execution per routed vault.
 4. Wallet A removes or replaces the underlying Squads accounts when the optimized universe changes.
+
+For many vaults, pack the per-vault route executions into one v0 transaction with address lookup tables, bounded by packet size and compute. Do not merge different vaults into one policy execution; the policy account is deliberately vault-scoped.
 
 Later, if policy churn becomes too heavy, move to a helper-first design: one immutable/versioned router helper is whitelisted by Squads, and the helper owns dynamic reserve checks, quote validation, cooldown enforcement, and fee accounting. That is a larger trust surface, so the exact-policy path is the better first implementation.
 
 ## Current Test Evidence
 
-`crates/squads-test-harness/tests/usdc_pyusd_kamino_route.rs` covers the small deterministic route:
+`crates/squads-test-harness/tests/usdc_pyusd_kamino_route.rs` covers the small deterministic route. Wallet A creates the smart account, funds vault `0`, performs the initial SOL-to-USDC setup swap, and creates withdraw, route-mint swap, and deposit actions for delegated Wallet B through `loyal-actions`.
 
-- Wallet A creates the smart account and funds vault `0`.
-- Wallet A performs the initial SOL-to-USDC setup swap.
-- Wallet A creates withdraw, route-mint swap, and deposit actions for the delegated Wallet B through `loyal-actions`.
-- Wallet B switches Main USDC to Prime USDC by packing reserve-withdraw and reserve-deposit policy executions into one transaction.
-- Wallet B switches Prime USDC to Main PYUSD by packing reserve-withdraw, route-mint stable-swap, and reserve-deposit policy executions into one transaction.
+The same file verifies the packed execution surface:
+
+- Main USDC to Prime USDC submits a single policy execution containing reserve-withdraw and reserve-deposit instructions.
+- Prime USDC to Main PYUSD submits reserve-withdraw, route-mint stable-swap, and reserve-deposit inside one policy execution.
+- Main USDC to Main PYUSD follows the same shape with Loyal Hub swap as the middle instruction.
 
 The test uses LiteSVM, the real Squads SBF, SPL Token state transitions, mocked Kamino/Jupiter programs only for external protocol logic, and the route-mint stable-swap helper for the USDC-to-PYUSD leg. `swap_intents.rs` keeps the live Jupiter fixture contract check separate from route policy creation.
 

@@ -22,6 +22,7 @@ pub enum LoyalActionError {
     InvalidLaneCount,
     InvalidRebalanceTransferCount,
     MissingActionStep,
+    SplitActionRoute,
 }
 
 impl fmt::Display for LoyalActionError {
@@ -67,6 +68,9 @@ impl fmt::Display for LoyalActionError {
             }
             Self::MissingActionStep => {
                 formatter.write_str("requested action step is not available")
+            }
+            Self::SplitActionRoute => {
+                formatter.write_str("route steps must share one Loyal action account")
             }
         }
     }
