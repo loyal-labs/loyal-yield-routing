@@ -51,6 +51,8 @@ Even small switching costs matter when the expected edge lasts only a few minute
 
 Store an append-only stream of reserve observations, quote observations, and decision inputs. The raw tape should make every live decision replayable without calling the API again.
 
+In this repo, `crates/loyal-yield-router` is the lean TimescaleDB boundary for routing inputs. It connects to the existing Kamino TimescaleDB, queries reserve rows, catches up by the durable cursor `(observed_at, slot, reserve)`, and listens for reserve-update notifications. Quant policy, eligibility, scoring, shadow decisions, and offset persistence should live in separate router or strategy crates that consume these rows.
+
 ### Hindsight Oracle
 
 Run an offline dynamic program after the fact to compute the best possible path with realized APY and realized costs. The oracle should report strategy APY, hindsight APY, regret, missed switches, bad switches, and cost drag.
@@ -127,6 +129,10 @@ The live tape should store small append-only records. These records are enough t
 | `decision_snapshot` | Timestamp, current reserve, candidate reserve, predicted current APY, predicted candidate APY, holding period, expected gross edge, estimated costs, buffer, decision, skipped reason |
 | `execution_snapshot` | Timestamp, transaction signature, simulated result, landed result, compute units, priority fee, base fee, realized output, failure reason |
 | `hindsight_snapshot` | Timestamp, hindsight reserve, live-policy reserve, hindsight value, live-policy value, regret, missed-switch flag, bad-switch flag |
+
+## V2 Database Boundary
+
+The V2 database boundary lives in `crates/loyal-yield-router` instead of the production action SDK. `TimescaleRouterClient` uses SQLx for explicit Timescale/Postgres reads from the existing Kamino schema, exposes latest-reserve and historical-update queries, returns typed reserve rows with their `(observed_at, slot, reserve)` cursor, and provides a `LISTEN/NOTIFY` stream that catches up missed rows before yielding live notifications. This crate should not own strategy defaults such as stablecoin allowlists, APY caps, leader selection, scoring, decision snapshots, or execution behavior.
 
 ## Research Backlog
 
