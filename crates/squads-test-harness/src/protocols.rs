@@ -26,8 +26,8 @@ pub fn mock_jupiter_stable_exact_in_swap_data(
     input_mint: Pubkey,
     output_mint: Pubkey,
 ) -> Vec<u8> {
-    let mut data = Vec::with_capacity(81);
-    data.push(MOCK_JUPITER_STABLE_EXACT_IN);
+    let mut data = Vec::with_capacity(88);
+    data.extend_from_slice(&MOCK_JUPITER_STABLE_EXACT_IN);
     data.extend_from_slice(&in_amount.to_le_bytes());
     data.extend_from_slice(&out_amount.to_le_bytes());
     data.extend_from_slice(input_mint.as_ref());

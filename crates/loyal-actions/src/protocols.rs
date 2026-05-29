@@ -34,6 +34,7 @@ pub(crate) fn kamino_redeem_reserve_collateral_constraint(
             pubkey_constraint(0, vec![vault], None),
             pubkey_constraint(1, unique_pubkeys(markets), None),
             pubkey_constraint(4, unique_pubkeys(liquidity_mints), Some(spl_token::id())),
+            spl_token_authority_constraint(8, vault),
             pubkey_constraint(10, vec![spl_token::id()], None),
         ],
         data_constraints: discriminator_constraint(KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR),
@@ -64,28 +65,21 @@ pub(crate) fn jupiter_constraint(
     contract: JupiterSwapContract,
 ) -> SquadsInstructionConstraint {
     let allowed_mints = unique_pubkeys(allowed_mints);
-    let mut account_constraints = vec![
+    let account_constraints = vec![
         pubkey_constraint(0, vec![vault], None),
-        account_data_constraint(1, Some(spl_token::id())),
+        spl_token_authority_constraint(1, vault),
         spl_token_authority_constraint(2, vault),
         pubkey_constraint(3, allowed_mints.clone(), Some(spl_token::id())),
         pubkey_constraint(4, allowed_mints, Some(spl_token::id())),
         pubkey_constraint(5, vec![spl_token::id()], None),
     ];
 
-    if contract.include_intermediate_token_accounts {
-        account_constraints.extend([
-            account_data_constraint(6, Some(spl_token::id())),
-            account_data_constraint(7, Some(spl_token::id())),
-        ]);
-    }
-
     SquadsInstructionConstraint {
         program_id: contract.program_id,
         account_constraints,
         data_constraints: vec![SquadsDataConstraint {
             data_offset: 0,
-            data_value: SquadsDataValue::U8(contract.exact_in_discriminator),
+            data_value: SquadsDataValue::U8Slice(contract.exact_in_discriminator.to_vec()),
             operator: SquadsDataOperator::Equals,
         }],
     }
@@ -119,6 +113,14 @@ pub(crate) fn loyal_hub_constraint(
             account_data_constraint(
                 loyal_hub_abi::swap_exact_in_accounts::HUB_OUTPUT,
                 Some(spl_token::id()),
+            ),
+            spl_token_authority_constraint(
+                loyal_hub_abi::swap_exact_in_accounts::USER_INPUT,
+                vault,
+            ),
+            spl_token_authority_constraint(
+                loyal_hub_abi::swap_exact_in_accounts::USER_OUTPUT,
+                vault,
             ),
             pubkey_constraint(
                 loyal_hub_abi::swap_exact_in_accounts::INPUT_MINT,
@@ -994,22 +996,287 @@ mod tests {
     }
 
     #[test]
-    fn loyal_hub_swap_policy_uses_canonical_abi_offsets() {
-        let constraint = loyal_hub_constraint(
-            Pubkey::new_unique(),
-            vec![Pubkey::new_unique()],
-            Pubkey::new_unique(),
-            50,
+    fn kamino_route_constraints_anchor_expected_indexes_and_discriminators() {
+        let vault = Pubkey::new_unique();
+        let market = Pubkey::new_unique();
+        let liquidity_mint = Pubkey::new_unique();
+
+        let withdraw =
+            kamino_redeem_reserve_collateral_constraint(vault, vec![market], vec![liquidity_mint]);
+        assert_eq!(withdraw.program_id, KAMINO_LEND_PROGRAM_ID);
+        assert!(has_pubkey_constraint(&withdraw, 0, &[vault], None));
+        assert!(has_pubkey_constraint(&withdraw, 1, &[market], None));
+        assert!(has_pubkey_constraint(
+            &withdraw,
+            4,
+            &[liquidity_mint],
+            Some(spl_token::id()),
+        ));
+        assert!(has_token_authority_constraint(&withdraw, 8, vault));
+        assert!(has_pubkey_constraint(
+            &withdraw,
+            10,
+            &[spl_token::id()],
+            None
+        ));
+        assert!(has_u8_slice_data_constraint(
+            &withdraw.data_constraints,
+            0,
+            &KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR,
+            SquadsDataOperator::Equals,
+        ));
+
+        let deposit =
+            kamino_deposit_reserve_liquidity_constraint(vault, vec![market], vec![liquidity_mint]);
+        assert_eq!(deposit.program_id, KAMINO_LEND_PROGRAM_ID);
+        assert!(has_pubkey_constraint(&deposit, 0, &[vault], None));
+        assert!(has_pubkey_constraint(&deposit, 2, &[market], None));
+        assert!(has_pubkey_constraint(
+            &deposit,
+            4,
+            &[liquidity_mint],
+            Some(spl_token::id()),
+        ));
+        assert!(has_token_authority_constraint(&deposit, 8, vault));
+        assert!(has_pubkey_constraint(
+            &deposit,
+            10,
+            &[spl_token::id()],
+            None
+        ));
+        assert!(has_u8_slice_data_constraint(
+            &deposit.data_constraints,
+            0,
+            &KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR,
+            SquadsDataOperator::Equals,
+        ));
+    }
+
+    #[test]
+    fn jupiter_route_constraint_anchors_program_mints_token_program_and_output() {
+        let vault = Pubkey::new_unique();
+        let usdc = Pubkey::new_unique();
+        let pyusd = Pubkey::new_unique();
+        let constraint = jupiter_constraint(
+            vault,
+            vec![usdc, pyusd],
+            JupiterSwapContract {
+                program_id: JUPITER_V6_PROGRAM_ID,
+                exact_in_discriminator: JUPITER_SWAP_DISCRIMINATOR,
+            },
         );
 
+        assert_eq!(constraint.program_id, JUPITER_V6_PROGRAM_ID);
+        assert!(has_pubkey_constraint(&constraint, 0, &[vault], None));
+        assert!(has_token_authority_constraint(&constraint, 1, vault));
+        assert!(has_token_authority_constraint(&constraint, 2, vault));
+        assert!(has_pubkey_constraint(
+            &constraint,
+            3,
+            &[usdc, pyusd],
+            Some(spl_token::id()),
+        ));
+        assert!(has_pubkey_constraint(
+            &constraint,
+            4,
+            &[usdc, pyusd],
+            Some(spl_token::id()),
+        ));
+        assert!(has_pubkey_constraint(
+            &constraint,
+            5,
+            &[spl_token::id()],
+            None
+        ));
+        assert_eq!(constraint.account_constraints.len(), 6);
+        assert!(has_u8_slice_data_constraint(
+            &constraint.data_constraints,
+            0,
+            &JUPITER_SWAP_DISCRIMINATOR,
+            SquadsDataOperator::Equals,
+        ));
+    }
+
+    #[test]
+    fn loyal_hub_swap_policy_uses_canonical_abi_offsets_and_accounts() {
+        let vault = Pubkey::new_unique();
+        let usdc = Pubkey::new_unique();
+        let pyusd = Pubkey::new_unique();
+        let authorizer = Pubkey::new_unique();
+        let max_fee_bps = 50;
+        let constraint = loyal_hub_constraint(vault, vec![usdc, pyusd], authorizer, max_fee_bps);
+
         assert_eq!(constraint.program_id, LOYAL_HUB_SWAP_PROGRAM_ID);
-        assert_eq!(
-            constraint.data_constraints[0].data_offset,
-            LOYAL_HUB_SWAP_TAG_OFFSET
-        );
-        assert_eq!(
-            constraint.data_constraints[1].data_offset,
-            LOYAL_HUB_SWAP_MAX_FEE_BPS_OFFSET
-        );
+        assert!(has_pubkey_constraint(
+            &constraint,
+            loyal_hub_abi::swap_exact_in_accounts::CONFIG,
+            &[derive_loyal_hub_config()],
+            Some(LOYAL_HUB_SWAP_PROGRAM_ID),
+        ));
+        assert!(has_pubkey_constraint(
+            &constraint,
+            loyal_hub_abi::swap_exact_in_accounts::USER_VAULT,
+            &[vault],
+            None,
+        ));
+        assert!(has_account_data_constraint(
+            &constraint,
+            loyal_hub_abi::swap_exact_in_accounts::HUB_INPUT,
+            Some(spl_token::id()),
+        ));
+        assert!(has_account_data_constraint(
+            &constraint,
+            loyal_hub_abi::swap_exact_in_accounts::HUB_OUTPUT,
+            Some(spl_token::id()),
+        ));
+        assert!(has_token_authority_constraint(
+            &constraint,
+            loyal_hub_abi::swap_exact_in_accounts::USER_INPUT,
+            vault,
+        ));
+        assert!(has_token_authority_constraint(
+            &constraint,
+            loyal_hub_abi::swap_exact_in_accounts::USER_OUTPUT,
+            vault,
+        ));
+        assert!(has_pubkey_constraint(
+            &constraint,
+            loyal_hub_abi::swap_exact_in_accounts::INPUT_MINT,
+            &[usdc, pyusd],
+            Some(spl_token::id()),
+        ));
+        assert!(has_pubkey_constraint(
+            &constraint,
+            loyal_hub_abi::swap_exact_in_accounts::OUTPUT_MINT,
+            &[usdc, pyusd],
+            Some(spl_token::id()),
+        ));
+        assert!(has_pubkey_constraint(
+            &constraint,
+            loyal_hub_abi::swap_exact_in_accounts::HUB_AUTHORIZER,
+            &[authorizer],
+            None,
+        ));
+        assert!(has_pubkey_constraint(
+            &constraint,
+            loyal_hub_abi::swap_exact_in_accounts::TOKEN_PROGRAM,
+            &[spl_token::id()],
+            None,
+        ));
+        assert!(has_u8_data_constraint(
+            &constraint.data_constraints,
+            LOYAL_HUB_SWAP_TAG_OFFSET,
+            LOYAL_HUB_SWAP_EXACT_IN,
+            SquadsDataOperator::Equals,
+        ));
+        assert!(has_u16_data_constraint(
+            &constraint.data_constraints,
+            LOYAL_HUB_SWAP_MAX_FEE_BPS_OFFSET,
+            max_fee_bps,
+            SquadsDataOperator::LessThanOrEqualTo,
+        ));
+    }
+
+    fn has_token_authority_constraint(
+        constraint: &SquadsInstructionConstraint,
+        account_index: u8,
+        authority: Pubkey,
+    ) -> bool {
+        constraint.account_constraints.iter().any(|account| {
+            account.account_index == account_index
+                && account.owner == Some(spl_token::id())
+                && matches!(
+                    &account.account_constraint,
+                    SquadsAccountConstraintType::AccountData(data_constraints)
+                        if data_constraints.iter().any(|data| {
+                            data.data_offset == SPL_TOKEN_ACCOUNT_AUTHORITY_OFFSET
+                                && matches!(
+                                    &data.data_value,
+                                    SquadsDataValue::U8Slice(bytes)
+                                        if bytes.as_slice() == authority.as_ref()
+                                )
+                                && matches!(&data.operator, SquadsDataOperator::Equals)
+                        })
+                )
+        })
+    }
+
+    fn has_pubkey_constraint(
+        constraint: &SquadsInstructionConstraint,
+        account_index: u8,
+        expected_pubkeys: &[Pubkey],
+        expected_owner: Option<Pubkey>,
+    ) -> bool {
+        constraint.account_constraints.iter().any(|account| {
+            account.account_index == account_index
+                && account.owner == expected_owner
+                && matches!(
+                    &account.account_constraint,
+                    SquadsAccountConstraintType::Pubkey(pubkeys)
+                        if pubkeys.as_slice() == expected_pubkeys
+                )
+        })
+    }
+
+    fn has_account_data_constraint(
+        constraint: &SquadsInstructionConstraint,
+        account_index: u8,
+        expected_owner: Option<Pubkey>,
+    ) -> bool {
+        constraint.account_constraints.iter().any(|account| {
+            account.account_index == account_index
+                && account.owner == expected_owner
+                && matches!(
+                    &account.account_constraint,
+                    SquadsAccountConstraintType::AccountData(data_constraints)
+                        if data_constraints.is_empty()
+                )
+        })
+    }
+
+    fn has_u8_data_constraint(
+        constraints: &[SquadsDataConstraint],
+        data_offset: u64,
+        expected: u8,
+        expected_operator: SquadsDataOperator,
+    ) -> bool {
+        constraints.iter().any(|data| {
+            data.data_offset == data_offset
+                && matches!(&data.data_value, SquadsDataValue::U8(value) if *value == expected)
+                && same_operator(&data.operator, &expected_operator)
+        })
+    }
+
+    fn has_u16_data_constraint(
+        constraints: &[SquadsDataConstraint],
+        data_offset: u64,
+        expected: u16,
+        expected_operator: SquadsDataOperator,
+    ) -> bool {
+        constraints.iter().any(|data| {
+            data.data_offset == data_offset
+                && matches!(&data.data_value, SquadsDataValue::U16Le(value) if *value == expected)
+                && same_operator(&data.operator, &expected_operator)
+        })
+    }
+
+    fn has_u8_slice_data_constraint(
+        constraints: &[SquadsDataConstraint],
+        data_offset: u64,
+        expected: &[u8],
+        expected_operator: SquadsDataOperator,
+    ) -> bool {
+        constraints.iter().any(|data| {
+            data.data_offset == data_offset
+                && matches!(
+                    &data.data_value,
+                    SquadsDataValue::U8Slice(bytes) if bytes.as_slice() == expected
+                )
+                && same_operator(&data.operator, &expected_operator)
+        })
+    }
+
+    fn same_operator(left: &SquadsDataOperator, right: &SquadsDataOperator) -> bool {
+        std::mem::discriminant(left) == std::mem::discriminant(right)
     }
 }

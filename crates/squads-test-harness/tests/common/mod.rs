@@ -5,7 +5,8 @@ use litesvm::LiteSVM;
 use serde::Deserialize;
 use solana_sdk::{account::Account, instruction::AccountMeta, pubkey::Pubkey};
 use squads_test_harness::{
-    mock_jupiter_token_accounts, JUPITER_V6_PROGRAM_ID, LAMPORTS_PER_SOL, PYUSD_MINT, USDC_MINT,
+    mock_jupiter_token_accounts, JUPITER_SWAP_DISCRIMINATOR, JUPITER_V6_PROGRAM_ID,
+    LAMPORTS_PER_SOL, PYUSD_MINT, USDC_MINT,
 };
 use std::{collections::HashMap, str::FromStr};
 
@@ -117,6 +118,21 @@ pub fn assert_jupiter_usdc_pyusd_fixture_contract(fixture: &JupiterBuildFixture)
     assert_eq!(accounts[3].pubkey, USDC_MINT.to_string());
     assert_eq!(accounts[4].pubkey, PYUSD_MINT.to_string());
     assert_eq!(accounts[5].pubkey, spl_token::id().to_string());
+
+    let swap_data = decode_jupiter_swap_data(fixture);
+    assert_eq!(
+        swap_data.get(..8),
+        Some(JUPITER_SWAP_DISCRIMINATOR.as_slice())
+    );
+    assert_eq!(
+        read_u64_le(&swap_data[8..16]),
+        parse_fixture_amount(&fixture.in_amount)
+    );
+    assert_eq!(
+        read_u64_le(&swap_data[16..24]),
+        parse_fixture_amount(&fixture.out_amount)
+    );
+    assert_eq!(read_u16_le(&swap_data[24..26]), fixture.slippage_bps);
 }
 
 pub fn decode_jupiter_swap_data(fixture: &JupiterBuildFixture) -> Vec<u8> {
@@ -217,6 +233,14 @@ fn seed_fixture_account_if_missing(svm: &mut LiteSVM, pubkey: Pubkey) {
         },
     )
     .expect("seed Jupiter fixture account");
+}
+
+fn read_u64_le(bytes: &[u8]) -> u64 {
+    u64::from_le_bytes(bytes.try_into().expect("u64 byte slice"))
+}
+
+fn read_u16_le(bytes: &[u8]) -> u16 {
+    u16::from_le_bytes(bytes.try_into().expect("u16 byte slice"))
 }
 
 fn push_or_update_meta(

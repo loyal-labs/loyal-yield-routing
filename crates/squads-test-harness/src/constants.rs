@@ -31,7 +31,8 @@ pub const USDC_DECIMALS: u8 = 6;
 pub const PYUSD_DECIMALS: u8 = 6;
 pub const MOCK_JUPITER_SOL_TO_USDC: u8 = 1;
 pub const MOCK_JUPITER_USDC_TO_PYUSD: u8 = 2;
-pub const MOCK_JUPITER_STABLE_EXACT_IN: u8 = 3;
+pub const MOCK_JUPITER_STABLE_EXACT_IN: [u8; 8] = [3, 0, 0, 0, 0, 0, 0, 0];
+pub const JUPITER_SWAP_DISCRIMINATOR: [u8; 8] = loyal_actions::JUPITER_SWAP_DISCRIMINATOR;
 pub const DEFAULT_LOYAL_HUB_LANE_COUNT: u8 = 32;
 pub const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
     pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");

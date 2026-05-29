@@ -10,6 +10,8 @@ use solana_sdk::{
     pubkey::Pubkey,
 };
 
+const SPL_TOKEN_ACCOUNT_AUTHORITY_OFFSET: u64 = 32;
+
 pub fn create_squads_program_interaction_swap_policy_instruction(
     squads_settings: Pubkey,
     authority: Pubkey,
@@ -391,11 +393,7 @@ pub fn create_squads_program_interaction_mock_jupiter_stable_swap_policy_instruc
                     owner: None,
                 },
             ],
-            data_constraints: vec![SquadsDataConstraint {
-                data_offset: 0,
-                data_value: SquadsDataValue::U8(MOCK_JUPITER_STABLE_EXACT_IN),
-                operator: SquadsDataOperator::Equals,
-            }],
+            data_constraints: mock_jupiter_stable_discriminator_constraint(),
         }],
     )
 }
@@ -414,12 +412,12 @@ fn jupiter_route_stable_swap_instruction_constraint(
             },
             SquadsAccountConstraint {
                 account_index: 1,
-                account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
+                account_constraint: token_authority_account_data(vault),
                 owner: Some(spl_token::id()),
             },
             SquadsAccountConstraint {
                 account_index: 2,
-                account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
+                account_constraint: token_authority_account_data(vault),
                 owner: Some(spl_token::id()),
             },
             SquadsAccountConstraint {
@@ -437,29 +435,8 @@ fn jupiter_route_stable_swap_instruction_constraint(
                 account_constraint: SquadsAccountConstraintType::Pubkey(vec![spl_token::id()]),
                 owner: None,
             },
-            SquadsAccountConstraint {
-                account_index: 6,
-                account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
-                owner: Some(spl_token::id()),
-            },
-            SquadsAccountConstraint {
-                account_index: 7,
-                account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
-                owner: Some(spl_token::id()),
-            },
-            SquadsAccountConstraint {
-                account_index: 8,
-                account_constraint: SquadsAccountConstraintType::Pubkey(vec![
-                    derive_mock_jupiter_swap_authority(),
-                ]),
-                owner: None,
-            },
         ],
-        data_constraints: vec![SquadsDataConstraint {
-            data_offset: 0,
-            data_value: SquadsDataValue::U8(MOCK_JUPITER_STABLE_EXACT_IN),
-            operator: SquadsDataOperator::Equals,
-        }],
+        data_constraints: mock_jupiter_stable_discriminator_constraint(),
     }
 }
 
@@ -492,6 +469,16 @@ pub(super) fn loyal_hub_route_stable_swap_instruction_constraint(
             SquadsAccountConstraint {
                 account_index: loyal_actions::hub_abi::swap_exact_in_accounts::HUB_OUTPUT,
                 account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: loyal_actions::hub_abi::swap_exact_in_accounts::USER_INPUT,
+                account_constraint: token_authority_account_data(vault),
+                owner: Some(spl_token::id()),
+            },
+            SquadsAccountConstraint {
+                account_index: loyal_actions::hub_abi::swap_exact_in_accounts::USER_OUTPUT,
+                account_constraint: token_authority_account_data(vault),
                 owner: Some(spl_token::id()),
             },
             SquadsAccountConstraint {
@@ -599,10 +586,22 @@ fn jupiter_allowed_stable_swap_instruction_constraint(
                 owner: None,
             },
         ],
-        data_constraints: vec![SquadsDataConstraint {
-            data_offset: 0,
-            data_value: SquadsDataValue::U8(MOCK_JUPITER_STABLE_EXACT_IN),
-            operator: SquadsDataOperator::Equals,
-        }],
+        data_constraints: mock_jupiter_stable_discriminator_constraint(),
     }
+}
+
+fn token_authority_account_data(authority: Pubkey) -> SquadsAccountConstraintType {
+    SquadsAccountConstraintType::AccountData(vec![SquadsDataConstraint {
+        data_offset: SPL_TOKEN_ACCOUNT_AUTHORITY_OFFSET,
+        data_value: SquadsDataValue::U8Slice(authority.to_bytes().to_vec()),
+        operator: SquadsDataOperator::Equals,
+    }])
+}
+
+fn mock_jupiter_stable_discriminator_constraint() -> Vec<SquadsDataConstraint> {
+    vec![SquadsDataConstraint {
+        data_offset: 0,
+        data_value: SquadsDataValue::U8Slice(MOCK_JUPITER_STABLE_EXACT_IN.to_vec()),
+        operator: SquadsDataOperator::Equals,
+    }]
 }

@@ -51,12 +51,11 @@ pub fn yield_route_universe_from_mock_reserves(
 }
 
 pub fn mock_jupiter_swap_contract(
-    include_intermediate_token_accounts: bool,
+    _include_intermediate_token_accounts: bool,
 ) -> JupiterSwapContract {
     JupiterSwapContract {
         program_id: JUPITER_V6_PROGRAM_ID,
         exact_in_discriminator: MOCK_JUPITER_STABLE_EXACT_IN,
-        include_intermediate_token_accounts,
     }
 }
 

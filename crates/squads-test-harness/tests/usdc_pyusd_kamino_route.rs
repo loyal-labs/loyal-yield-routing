@@ -440,6 +440,102 @@ fn wallet_b_can_execute_reduced_all_in_one_yield_route_policy() {
 }
 
 #[test]
+fn all_in_one_route_policy_rejects_unapproved_kamino_market() {
+    let amount = 1_000_000;
+
+    let mut context =
+        create_funded_squads_test_context_with_mock_programs(&[MockProgram::KaminoLend])
+            .expect("create funded Squads test context");
+    let Some(context) = context.as_mut() else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+
+    let wallet_b = Keypair::new();
+    context
+        .svm
+        .airdrop(&wallet_b.pubkey(), LAMPORTS_PER_SOL / 10)
+        .expect("airdrop wallet B");
+
+    let vault_usdc = Keypair::new().pubkey();
+    let vault_main_usdc_collateral = Keypair::new().pubkey();
+    let vault_prime_usdc_collateral = Keypair::new().pubkey();
+    let main_usdc_reserve_liquidity_supply = Keypair::new().pubkey();
+    let prime_usdc_reserve_liquidity_supply = Keypair::new().pubkey();
+
+    seed_spl_token_account(
+        &mut context.svm,
+        vault_usdc,
+        USDC_MINT,
+        context.vault,
+        amount,
+    );
+    let main_usdc_reserve_accounts = seed_mock_kamino_reserve_spl_accounts(
+        &mut context.svm,
+        KAMINO_MAIN_USDC_RESERVE,
+        KAMINO_MAIN_MARKET,
+        context.vault,
+        vault_usdc,
+        vault_main_usdc_collateral,
+        main_usdc_reserve_liquidity_supply,
+    );
+    let prime_usdc_reserve_accounts = seed_mock_kamino_reserve_spl_accounts(
+        &mut context.svm,
+        KAMINO_PRIME_USDC_RESERVE,
+        KAMINO_PRIME_MARKET,
+        context.vault,
+        vault_usdc,
+        vault_prime_usdc_collateral,
+        prime_usdc_reserve_liquidity_supply,
+    );
+
+    let route_action_setup = create_all_in_one_market_mint_yield_route_action(
+        loyal_action_context(context, wallet_b.pubkey()),
+        yield_route_universe_from_mock_reserves(vec![USDC_MINT], vec![main_usdc_reserve_accounts]),
+        vec![mock_jupiter_swap_lane(false)],
+    )
+    .expect("build all-in-one route action");
+    try_send_instructions_with_heap_frame(
+        &mut context.svm,
+        &route_action_setup.instructions,
+        &context.wallet,
+        &[],
+    )
+    .expect("wallet A creates market-scoped route policy for Wallet B");
+
+    let (prime_deposit_instructions, prime_deposit_accounts) = mock_kamino_reserve_transaction(
+        context.vault,
+        prime_usdc_reserve_accounts,
+        mock_kamino_deposit_reserve_liquidity_data(amount),
+    );
+    let prime_deposit_ix = route_action_setup
+        .deposit()
+        .expect("route has deposit")
+        .build(
+            wallet_b.pubkey(),
+            context.vault_index,
+            prime_deposit_instructions,
+            prime_deposit_accounts,
+        );
+
+    let result = try_send_instructions_with_heap_frame(
+        &mut context.svm,
+        &[prime_deposit_ix],
+        &wallet_b,
+        &[],
+    );
+    assert!(
+        result.is_err(),
+        "all-in-one policy should reject unapproved Kamino markets"
+    );
+    assert_eq!(
+        get_spl_token_amount(&context.svm, vault_prime_usdc_collateral),
+        0
+    );
+    assert_eq!(get_spl_token_amount(&context.svm, vault_usdc), amount);
+}
+
+#[test]
 fn raw_mock_kamino_deposit_allows_third_party_collateral_destination() {
     let amount = 1_000_000;
 
@@ -592,7 +688,7 @@ fn route_policy_rejects_third_party_kamino_deposit_collateral_destination() {
 }
 
 #[test]
-fn raw_mock_kamino_redeem_rejects_third_party_liquidity_destination() {
+fn raw_mock_kamino_redeem_allows_third_party_liquidity_destination() {
     let amount = 1_000_000;
 
     let mut context =
@@ -656,12 +752,107 @@ fn raw_mock_kamino_redeem_rejects_third_party_liquidity_destination() {
         withdraw_accounts,
     );
 
-    let result = try_send_instructions(&mut context.svm, &[withdraw_ix], &context.wallet, &[]);
+    try_send_instructions(&mut context.svm, &[withdraw_ix], &context.wallet, &[])
+        .expect("raw mock Kamino matches an unchecked liquidity destination");
+    assert_eq!(get_spl_token_amount(&context.svm, vault_usdc), 0);
+    assert_eq!(get_spl_token_amount(&context.svm, attacker_usdc), amount);
+}
+
+#[test]
+fn route_policy_rejects_third_party_kamino_withdraw_liquidity_destination() {
+    let amount = 1_000_000;
+
+    let mut context =
+        create_funded_squads_test_context_with_mock_programs(&[MockProgram::KaminoLend])
+            .expect("create funded Squads test context");
+    let Some(context) = context.as_mut() else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+
+    let wallet_b = Keypair::new();
+    context
+        .svm
+        .airdrop(&wallet_b.pubkey(), LAMPORTS_PER_SOL / 10)
+        .expect("airdrop wallet B");
+
+    let attacker = Keypair::new().pubkey();
+    let vault_usdc = Keypair::new().pubkey();
+    let attacker_usdc = Keypair::new().pubkey();
+    let vault_collateral = Keypair::new().pubkey();
+    let reserve_liquidity_supply = Keypair::new().pubkey();
+
+    seed_spl_token_account(
+        &mut context.svm,
+        vault_usdc,
+        USDC_MINT,
+        context.vault,
+        amount,
+    );
+    seed_spl_token_account(&mut context.svm, attacker_usdc, USDC_MINT, attacker, 0);
+    let reserve_accounts = seed_mock_kamino_reserve_spl_accounts(
+        &mut context.svm,
+        KAMINO_MAIN_USDC_RESERVE,
+        KAMINO_MAIN_MARKET,
+        context.vault,
+        vault_usdc,
+        vault_collateral,
+        reserve_liquidity_supply,
+    );
+
+    let (deposit_instructions, deposit_accounts) = mock_kamino_reserve_transaction(
+        context.vault,
+        reserve_accounts,
+        mock_kamino_deposit_reserve_liquidity_data(amount),
+    );
+    let deposit_ix = execute_squads_sync_transaction_instruction(
+        context.pool.settings,
+        context.wallet_pubkey(),
+        context.vault_index,
+        deposit_instructions,
+        deposit_accounts,
+    );
+    try_send_instructions(&mut context.svm, &[deposit_ix], &context.wallet, &[])
+        .expect("wallet A deposits into Kamino");
+
+    let route_action_setup = create_all_in_one_market_mint_yield_route_action(
+        loyal_action_context(context, wallet_b.pubkey()),
+        yield_route_universe_from_mock_reserves(vec![USDC_MINT], vec![reserve_accounts]),
+        vec![mock_jupiter_swap_lane(false)],
+    )
+    .expect("build all-in-one route action");
+    try_send_instructions_with_heap_frame(
+        &mut context.svm,
+        &route_action_setup.instructions,
+        &context.wallet,
+        &[],
+    )
+    .expect("wallet A creates route policy for Wallet B");
+
+    let (withdraw_instructions, mut withdraw_accounts) = mock_kamino_reserve_transaction(
+        context.vault,
+        reserve_accounts,
+        mock_kamino_withdraw_reserve_liquidity_data(amount),
+    );
+    withdraw_accounts[8] = AccountMeta::new(attacker_usdc, false);
+    let withdraw_ix = route_action_setup
+        .withdraw()
+        .expect("route has withdraw")
+        .build(
+            wallet_b.pubkey(),
+            context.vault_index,
+            withdraw_instructions,
+            withdraw_accounts,
+        );
+
+    let result =
+        try_send_instructions_with_heap_frame(&mut context.svm, &[withdraw_ix], &wallet_b, &[]);
     assert!(
         result.is_err(),
-        "raw mock Kamino should reject attacker-owned redeem destination"
+        "policy should reject attacker-owned Kamino liquidity destination"
     );
     assert_eq!(get_spl_token_amount(&context.svm, attacker_usdc), 0);
+    assert_eq!(get_spl_token_amount(&context.svm, vault_collateral), amount);
 }
 
 #[test]

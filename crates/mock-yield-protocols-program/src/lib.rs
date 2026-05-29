@@ -26,7 +26,7 @@ pub const KAMINO_PRIME_USDC_RESERVE: Pubkey =
     pubkey!("9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu");
 pub const MOCK_JUPITER_SOL_TO_USDC: u8 = 1;
 pub const MOCK_JUPITER_USDC_TO_PYUSD: u8 = 2;
-pub const MOCK_JUPITER_STABLE_EXACT_IN: u8 = 3;
+pub const MOCK_JUPITER_STABLE_EXACT_IN: [u8; 8] = [3, 0, 0, 0, 0, 0, 0, 0];
 pub const USDC_DECIMALS: u8 = 6;
 pub const PYUSD_DECIMALS: u8 = 6;
 pub const KAMINO_COLLATERAL_DECIMALS: u8 = 6;
@@ -106,12 +106,12 @@ fn process_jupiter(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -
 }
 
 fn parse_jupiter_instruction(data: &[u8]) -> Result<JupiterInstruction, ProgramError> {
-    if data.len() == 81 && data[0] == MOCK_JUPITER_STABLE_EXACT_IN {
+    if data.len() == 88 && data[..8] == MOCK_JUPITER_STABLE_EXACT_IN {
         return Ok(JupiterInstruction::StableExactIn {
-            in_amount: read_u64(&data[1..9])?,
-            out_amount: read_u64(&data[9..17])?,
-            input_mint: Pubkey::new_from_array(read_pubkey(&data[17..49])?),
-            output_mint: Pubkey::new_from_array(read_pubkey(&data[49..81])?),
+            in_amount: read_u64(&data[8..16])?,
+            out_amount: read_u64(&data[16..24])?,
+            input_mint: Pubkey::new_from_array(read_pubkey(&data[24..56])?),
+            output_mint: Pubkey::new_from_array(read_pubkey(&data[56..88])?),
         });
     }
 
@@ -474,7 +474,6 @@ fn parse_kamino_redeem_accounts<'a, 'info>(
     require_key(kamino.reserve_liquidity_mint, &reserve.liquidity_mint)?;
     require_key(kamino.reserve_collateral_mint, &reserve.collateral_mint)?;
     require_key(kamino.reserve_liquidity_supply, &reserve.liquidity_supply)?;
-    require_token_account_authority(kamino.user_destination_liquidity, kamino.owner.key)?;
 
     kamino.liquidity_decimals =
         spl_token::state::Mint::unpack(&kamino.reserve_liquidity_mint.data.borrow())?.decimals;
@@ -514,14 +513,6 @@ fn read_kamino_reserve_state(reserve: &AccountInfo) -> Result<KaminoReserveState
         collateral_mint: Pubkey::new_from_array(read_pubkey(&data[64..96])?),
         liquidity_supply: Pubkey::new_from_array(read_pubkey(&data[96..128])?),
     })
-}
-
-fn require_token_account_authority(account: &AccountInfo, authority: &Pubkey) -> ProgramResult {
-    let token = spl_token::state::Account::unpack(&account.data.borrow())?;
-    if &token.owner != authority {
-        return Err(ProgramError::InvalidAccountData);
-    }
-    Ok(())
 }
 
 fn transfer_checked<'info>(

@@ -42,8 +42,7 @@ impl YieldRouteUniverse {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct JupiterSwapContract {
     pub program_id: Pubkey,
-    pub exact_in_discriminator: u8,
-    pub include_intermediate_token_accounts: bool,
+    pub exact_in_discriminator: [u8; 8],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -691,6 +690,8 @@ fn validate_action_seeds(topology: RouteTopology, seeds: YieldRouteActionSeeds) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocols::derive_loyal_hub_config;
+    use std::collections::BTreeMap;
 
     fn context() -> LoyalActionContext {
         LoyalActionContext {
@@ -709,11 +710,10 @@ mod tests {
         YieldRouteUniverse::new(vec![stable, stable], vec![market, market], vec![mint, mint])
     }
 
-    fn jupiter_lane(include_intermediate_token_accounts: bool) -> SwapLane {
+    fn jupiter_lane(_include_intermediate_token_accounts: bool) -> SwapLane {
         SwapLane::Jupiter(JupiterSwapContract {
             program_id: JUPITER_V6_PROGRAM_ID,
-            exact_in_discriminator: 3,
-            include_intermediate_token_accounts,
+            exact_in_discriminator: JUPITER_SWAP_DISCRIMINATOR,
         })
     }
 
@@ -904,5 +904,488 @@ mod tests {
             setup.jupiter_route().unwrap_err(),
             LoyalActionError::SplitActionRoute
         );
+    }
+
+    #[test]
+    fn all_in_one_compiled_policy_snapshot_covers_same_mint_jupiter_and_hub_routes() {
+        let context = context();
+        let hub_authorizer = Pubkey::new_unique();
+        let setup = create_all_in_one_market_mint_yield_route_action(
+            context,
+            universe(),
+            vec![
+                jupiter_lane(false),
+                SwapLane::LoyalHub {
+                    hub_authorizer,
+                    max_fee_bps: 50,
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            setup
+                .same_mint_route()
+                .unwrap()
+                .instruction_constraint_indexes(),
+            &[0, 3]
+        );
+        assert_eq!(
+            setup
+                .jupiter_route()
+                .unwrap()
+                .instruction_constraint_indexes(),
+            &[0, 1, 3]
+        );
+        assert_eq!(
+            setup
+                .loyal_hub_route()
+                .unwrap()
+                .instruction_constraint_indexes(),
+            &[0, 2, 3]
+        );
+
+        let decoded = decode_program_interaction_policy_create(&setup.instructions[0]);
+        assert_eq!(decoded.account_index, context.account_index);
+        assert_eq!(decoded.constraints.len(), 4);
+        assert_eq!(
+            decoded.pubkey(decoded.constraints[0].program_id_index),
+            KAMINO_LEND_PROGRAM_ID
+        );
+        assert_eq!(
+            decoded.pubkey(decoded.constraints[1].program_id_index),
+            JUPITER_V6_PROGRAM_ID
+        );
+        assert_eq!(
+            decoded.pubkey(decoded.constraints[2].program_id_index),
+            LOYAL_HUB_SWAP_PROGRAM_ID
+        );
+        assert_eq!(
+            decoded.pubkey(decoded.constraints[3].program_id_index),
+            KAMINO_LEND_PROGRAM_ID
+        );
+
+        assert_kamino_withdraw_constraint(&decoded, &decoded.constraints[0], context.vault);
+        assert_jupiter_constraint(&decoded, &decoded.constraints[1], context.vault);
+        assert_hub_constraint(
+            &decoded,
+            &decoded.constraints[2],
+            context.vault,
+            hub_authorizer,
+            50,
+        );
+        assert_kamino_deposit_constraint(&decoded, &decoded.constraints[3], context.vault);
+    }
+
+    fn assert_kamino_withdraw_constraint(
+        policy: &DecodedProgramInteractionPolicy,
+        constraint: &DecodedInstructionConstraint,
+        vault: Pubkey,
+    ) {
+        let accounts = constraint.account_constraints_by_index();
+        assert_pubkey_constraint(policy, &accounts[&0], &[vault], None);
+        assert_eq!(accounts[&1].kind, DecodedAccountConstraintKind::Pubkey);
+        assert_eq!(accounts[&1].pubkey_indexes.len(), 1);
+        assert_eq!(accounts[&4].owner(policy), Some(spl_token::id()));
+        assert_token_authority_constraint(policy, &accounts[&8], vault);
+        assert_pubkey_constraint(policy, &accounts[&10], &[spl_token::id()], None);
+        assert_data_slice_equals(
+            &constraint.data_constraints[0],
+            0,
+            &KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR,
+        );
+    }
+
+    fn assert_kamino_deposit_constraint(
+        policy: &DecodedProgramInteractionPolicy,
+        constraint: &DecodedInstructionConstraint,
+        vault: Pubkey,
+    ) {
+        let accounts = constraint.account_constraints_by_index();
+        assert_pubkey_constraint(policy, &accounts[&0], &[vault], None);
+        assert_eq!(accounts[&2].kind, DecodedAccountConstraintKind::Pubkey);
+        assert_eq!(accounts[&2].pubkey_indexes.len(), 1);
+        assert_eq!(accounts[&4].owner(policy), Some(spl_token::id()));
+        assert_token_authority_constraint(policy, &accounts[&8], vault);
+        assert_pubkey_constraint(policy, &accounts[&10], &[spl_token::id()], None);
+        assert_data_slice_equals(
+            &constraint.data_constraints[0],
+            0,
+            &KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR,
+        );
+    }
+
+    fn assert_jupiter_constraint(
+        policy: &DecodedProgramInteractionPolicy,
+        constraint: &DecodedInstructionConstraint,
+        vault: Pubkey,
+    ) {
+        let accounts = constraint.account_constraints_by_index();
+        assert_pubkey_constraint(policy, &accounts[&0], &[vault], None);
+        assert_token_authority_constraint(policy, &accounts[&1], vault);
+        assert_token_authority_constraint(policy, &accounts[&2], vault);
+        assert_eq!(accounts[&3].owner(policy), Some(spl_token::id()));
+        assert_eq!(accounts[&3].pubkey_indexes.len(), 1);
+        assert_eq!(accounts[&4].owner(policy), Some(spl_token::id()));
+        assert_eq!(accounts[&4].pubkey_indexes.len(), 1);
+        assert_pubkey_constraint(policy, &accounts[&5], &[spl_token::id()], None);
+        assert_eq!(accounts.len(), 6);
+        assert_data_slice_equals(
+            &constraint.data_constraints[0],
+            0,
+            &JUPITER_SWAP_DISCRIMINATOR,
+        );
+    }
+
+    fn assert_hub_constraint(
+        policy: &DecodedProgramInteractionPolicy,
+        constraint: &DecodedInstructionConstraint,
+        vault: Pubkey,
+        hub_authorizer: Pubkey,
+        max_fee_bps: u16,
+    ) {
+        let accounts = constraint.account_constraints_by_index();
+        assert_pubkey_constraint(
+            policy,
+            &accounts[&loyal_hub_abi::swap_exact_in_accounts::CONFIG],
+            &[derive_loyal_hub_config()],
+            Some(LOYAL_HUB_SWAP_PROGRAM_ID),
+        );
+        assert_pubkey_constraint(
+            policy,
+            &accounts[&loyal_hub_abi::swap_exact_in_accounts::USER_VAULT],
+            &[vault],
+            None,
+        );
+        assert_eq!(
+            accounts[&loyal_hub_abi::swap_exact_in_accounts::HUB_INPUT].owner(policy),
+            Some(spl_token::id())
+        );
+        assert_eq!(
+            accounts[&loyal_hub_abi::swap_exact_in_accounts::HUB_OUTPUT].owner(policy),
+            Some(spl_token::id())
+        );
+        assert_token_authority_constraint(
+            policy,
+            &accounts[&loyal_hub_abi::swap_exact_in_accounts::USER_INPUT],
+            vault,
+        );
+        assert_token_authority_constraint(
+            policy,
+            &accounts[&loyal_hub_abi::swap_exact_in_accounts::USER_OUTPUT],
+            vault,
+        );
+        assert_eq!(
+            accounts[&loyal_hub_abi::swap_exact_in_accounts::INPUT_MINT].owner(policy),
+            Some(spl_token::id())
+        );
+        assert_eq!(
+            accounts[&loyal_hub_abi::swap_exact_in_accounts::OUTPUT_MINT].owner(policy),
+            Some(spl_token::id())
+        );
+        assert_pubkey_constraint(
+            policy,
+            &accounts[&loyal_hub_abi::swap_exact_in_accounts::HUB_AUTHORIZER],
+            &[hub_authorizer],
+            None,
+        );
+        assert_pubkey_constraint(
+            policy,
+            &accounts[&loyal_hub_abi::swap_exact_in_accounts::TOKEN_PROGRAM],
+            &[spl_token::id()],
+            None,
+        );
+        assert_data_u8_equals(
+            &constraint.data_constraints[0],
+            LOYAL_HUB_SWAP_TAG_OFFSET,
+            LOYAL_HUB_SWAP_EXACT_IN,
+        );
+        assert_data_u16_lte(
+            &constraint.data_constraints[1],
+            LOYAL_HUB_SWAP_MAX_FEE_BPS_OFFSET,
+            max_fee_bps,
+        );
+    }
+
+    fn assert_pubkey_constraint(
+        policy: &DecodedProgramInteractionPolicy,
+        constraint: &DecodedAccountConstraint,
+        expected_pubkeys: &[Pubkey],
+        owner: Option<Pubkey>,
+    ) {
+        assert_eq!(constraint.kind, DecodedAccountConstraintKind::Pubkey);
+        let pubkeys = constraint
+            .pubkey_indexes
+            .iter()
+            .map(|index| policy.pubkey(*index))
+            .collect::<Vec<_>>();
+        assert_eq!(pubkeys, expected_pubkeys);
+        assert_eq!(constraint.owner(policy), owner);
+    }
+
+    fn assert_token_authority_constraint(
+        policy: &DecodedProgramInteractionPolicy,
+        constraint: &DecodedAccountConstraint,
+        authority: Pubkey,
+    ) {
+        assert_eq!(constraint.kind, DecodedAccountConstraintKind::AccountData);
+        assert_eq!(constraint.owner(policy), Some(spl_token::id()));
+        assert_data_slice_equals(&constraint.data_constraints[0], 32, authority.as_ref());
+    }
+
+    fn assert_data_u8_equals(constraint: &DecodedDataConstraint, offset: u64, expected: u8) {
+        assert_eq!(constraint.offset, offset);
+        assert_eq!(constraint.value, DecodedDataValue::U8(expected));
+        assert_eq!(constraint.operator, DecodedDataOperator::Equals);
+    }
+
+    fn assert_data_u16_lte(constraint: &DecodedDataConstraint, offset: u64, expected: u16) {
+        assert_eq!(constraint.offset, offset);
+        assert_eq!(constraint.value, DecodedDataValue::U16Le(expected));
+        assert_eq!(constraint.operator, DecodedDataOperator::LessThanOrEqualTo);
+    }
+
+    fn assert_data_slice_equals(constraint: &DecodedDataConstraint, offset: u64, expected: &[u8]) {
+        assert_eq!(constraint.offset, offset);
+        assert_eq!(
+            constraint.value,
+            DecodedDataValue::U8Slice(expected.to_vec())
+        );
+        assert_eq!(constraint.operator, DecodedDataOperator::Equals);
+    }
+
+    #[derive(Debug)]
+    struct DecodedProgramInteractionPolicy {
+        account_index: u8,
+        pubkey_table: Vec<Pubkey>,
+        constraints: Vec<DecodedInstructionConstraint>,
+    }
+
+    impl DecodedProgramInteractionPolicy {
+        fn pubkey(&self, index: u8) -> Pubkey {
+            self.pubkey_table[index as usize]
+        }
+    }
+
+    #[derive(Debug)]
+    struct DecodedInstructionConstraint {
+        program_id_index: u8,
+        account_constraints: Vec<DecodedAccountConstraint>,
+        data_constraints: Vec<DecodedDataConstraint>,
+    }
+
+    impl DecodedInstructionConstraint {
+        fn account_constraints_by_index(&self) -> BTreeMap<u8, &DecodedAccountConstraint> {
+            self.account_constraints
+                .iter()
+                .map(|constraint| (constraint.account_index, constraint))
+                .collect()
+        }
+    }
+
+    #[derive(Debug)]
+    struct DecodedAccountConstraint {
+        account_index: u8,
+        kind: DecodedAccountConstraintKind,
+        pubkey_indexes: Vec<u8>,
+        data_constraints: Vec<DecodedDataConstraint>,
+        owner_index: Option<u8>,
+    }
+
+    impl DecodedAccountConstraint {
+        fn owner(&self, policy: &DecodedProgramInteractionPolicy) -> Option<Pubkey> {
+            self.owner_index.map(|index| policy.pubkey(index))
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum DecodedAccountConstraintKind {
+        Pubkey,
+        AccountData,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct DecodedDataConstraint {
+        offset: u64,
+        value: DecodedDataValue,
+        operator: DecodedDataOperator,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum DecodedDataValue {
+        U8(u8),
+        U16Le(u16),
+        U8Slice(Vec<u8>),
+        Other(u8),
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum DecodedDataOperator {
+        Equals,
+        LessThanOrEqualTo,
+        Other(u8),
+    }
+
+    struct Cursor<'a> {
+        data: &'a [u8],
+        offset: usize,
+    }
+
+    impl<'a> Cursor<'a> {
+        fn new(data: &'a [u8]) -> Self {
+            Self { data, offset: 0 }
+        }
+
+        fn read_u8(&mut self) -> u8 {
+            let value = self.data[self.offset];
+            self.offset += 1;
+            value
+        }
+
+        fn read_u16(&mut self) -> u16 {
+            let bytes: [u8; 2] = self.data[self.offset..self.offset + 2].try_into().unwrap();
+            self.offset += 2;
+            u16::from_le_bytes(bytes)
+        }
+
+        fn read_u32(&mut self) -> u32 {
+            let bytes: [u8; 4] = self.data[self.offset..self.offset + 4].try_into().unwrap();
+            self.offset += 4;
+            u32::from_le_bytes(bytes)
+        }
+
+        fn read_u64(&mut self) -> u64 {
+            let bytes: [u8; 8] = self.data[self.offset..self.offset + 8].try_into().unwrap();
+            self.offset += 8;
+            u64::from_le_bytes(bytes)
+        }
+
+        fn read_pubkey(&mut self) -> Pubkey {
+            let bytes: [u8; 32] = self.data[self.offset..self.offset + 32].try_into().unwrap();
+            self.offset += 32;
+            Pubkey::new_from_array(bytes)
+        }
+
+        fn read_vec_u8(&mut self) -> Vec<u8> {
+            let len = self.read_u32() as usize;
+            let bytes = self.data[self.offset..self.offset + len].to_vec();
+            self.offset += len;
+            bytes
+        }
+
+        fn skip(&mut self, len: usize) {
+            self.offset += len;
+        }
+    }
+
+    fn decode_program_interaction_policy_create(
+        instruction: &solana_sdk::instruction::Instruction,
+    ) -> DecodedProgramInteractionPolicy {
+        let mut cursor = Cursor::new(&instruction.data);
+        cursor.skip(8);
+        assert_eq!(cursor.read_u8(), SQUADS_SYNC_SIGNER_COUNT);
+        assert_eq!(cursor.read_u32(), 1);
+        assert_eq!(cursor.read_u8(), 7);
+        cursor.read_u64();
+        assert_eq!(cursor.read_u8(), 4);
+
+        let account_index = cursor.read_u8();
+        let pubkey_table = read_small_pubkey_vec(&mut cursor);
+        let constraints = read_small_vec(&mut cursor, read_instruction_constraint);
+        assert_eq!(cursor.read_u8(), 0);
+        assert_eq!(cursor.read_u8(), 0);
+        assert_eq!(cursor.read_u8(), 0);
+
+        DecodedProgramInteractionPolicy {
+            account_index,
+            pubkey_table,
+            constraints,
+        }
+    }
+
+    fn read_instruction_constraint(cursor: &mut Cursor<'_>) -> DecodedInstructionConstraint {
+        DecodedInstructionConstraint {
+            program_id_index: cursor.read_u8(),
+            account_constraints: read_small_vec(cursor, read_account_constraint),
+            data_constraints: read_small_vec(cursor, read_data_constraint),
+        }
+    }
+
+    fn read_account_constraint(cursor: &mut Cursor<'_>) -> DecodedAccountConstraint {
+        let account_index = cursor.read_u8();
+        let kind_tag = cursor.read_u8();
+        let (kind, pubkey_indexes, data_constraints) = match kind_tag {
+            0 => (
+                DecodedAccountConstraintKind::Pubkey,
+                read_small_u8_vec(cursor),
+                Vec::new(),
+            ),
+            1 => (
+                DecodedAccountConstraintKind::AccountData,
+                Vec::new(),
+                read_small_vec(cursor, read_data_constraint),
+            ),
+            _ => panic!("unexpected account constraint kind {kind_tag}"),
+        };
+        let owner_index = match cursor.read_u8() {
+            0 => None,
+            1 => Some(cursor.read_u8()),
+            tag => panic!("unexpected option tag {tag}"),
+        };
+        DecodedAccountConstraint {
+            account_index,
+            kind,
+            pubkey_indexes,
+            data_constraints,
+            owner_index,
+        }
+    }
+
+    fn read_data_constraint(cursor: &mut Cursor<'_>) -> DecodedDataConstraint {
+        let offset = cursor.read_u64();
+        let value_tag = cursor.read_u8();
+        let value = match value_tag {
+            0 => DecodedDataValue::U8(cursor.read_u8()),
+            1 => DecodedDataValue::U16Le(cursor.read_u16()),
+            2 => {
+                cursor.skip(4);
+                DecodedDataValue::Other(value_tag)
+            }
+            3 => {
+                cursor.skip(8);
+                DecodedDataValue::Other(value_tag)
+            }
+            4 => {
+                cursor.skip(16);
+                DecodedDataValue::Other(value_tag)
+            }
+            5 => DecodedDataValue::U8Slice(cursor.read_vec_u8()),
+            _ => DecodedDataValue::Other(value_tag),
+        };
+        let operator = match cursor.read_u8() {
+            0 => DecodedDataOperator::Equals,
+            5 => DecodedDataOperator::LessThanOrEqualTo,
+            tag => DecodedDataOperator::Other(tag),
+        };
+        DecodedDataConstraint {
+            offset,
+            value,
+            operator,
+        }
+    }
+
+    fn read_small_pubkey_vec(cursor: &mut Cursor<'_>) -> Vec<Pubkey> {
+        let len = cursor.read_u8() as usize;
+        (0..len).map(|_| cursor.read_pubkey()).collect()
+    }
+
+    fn read_small_u8_vec(cursor: &mut Cursor<'_>) -> Vec<u8> {
+        let len = cursor.read_u8() as usize;
+        (0..len).map(|_| cursor.read_u8()).collect()
+    }
+
+    fn read_small_vec<T>(cursor: &mut Cursor<'_>, read_item: fn(&mut Cursor<'_>) -> T) -> Vec<T> {
+        let len = cursor.read_u8() as usize;
+        (0..len).map(|_| read_item(cursor)).collect()
     }
 }

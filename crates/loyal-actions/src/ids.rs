@@ -8,6 +8,7 @@ pub(crate) const SQUADS_FULL_PERMISSIONS_MASK: u8 = 7;
 pub(crate) const SQUADS_SYNC_SIGNER_COUNT: u8 = 1;
 
 pub const JUPITER_V6_PROGRAM_ID: Pubkey = pubkey!("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4");
+pub const JUPITER_SWAP_DISCRIMINATOR: [u8; 8] = [187, 100, 250, 204, 49, 196, 175, 20];
 pub const LOYAL_HUB_SWAP_PROGRAM_ID: Pubkey = Pubkey::new_from_array([42; 32]);
 pub const LOYAL_HUB_INITIALIZE_CONFIG: u8 = loyal_hub_abi::INITIALIZE_CONFIG;
 pub const LOYAL_HUB_SWAP_EXACT_IN: u8 = loyal_hub_abi::SWAP_EXACT_IN;
