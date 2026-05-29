@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use clap::ValueEnum;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{future::BoxFuture, SinkExt, StreamExt};
 use loyal_actions::{
     decode_squads_policy_create_actions, detect_yield_route_policy_create, DetectedSwapLane,
     DetectedYieldRouteMode, DetectedYieldRoutePolicy, KaminoStableRiskProfile,
@@ -146,17 +146,20 @@ impl From<OrchestratorError> for MonitorError {
 }
 
 pub trait PolicyMatchSink {
-    fn emit(&mut self, event: PolicyMatchEvent) -> Result<(), MonitorError>;
+    fn emit(&mut self, event: PolicyMatchEvent) -> BoxFuture<'_, Result<(), MonitorError>>;
 }
 
 pub struct StdoutPolicyMatchSink;
 
 impl PolicyMatchSink for StdoutPolicyMatchSink {
-    fn emit(&mut self, event: PolicyMatchEvent) -> Result<(), MonitorError> {
-        let mut stdout = io::stdout().lock();
-        serde_json::to_writer(&mut stdout, &event)?;
-        stdout.write_all(b"\n")?;
-        Ok(())
+    fn emit(&mut self, event: PolicyMatchEvent) -> BoxFuture<'_, Result<(), MonitorError>> {
+        let result = (|| {
+            let mut stdout = io::stdout().lock();
+            serde_json::to_writer(&mut stdout, &event)?;
+            stdout.write_all(b"\n")?;
+            Ok(())
+        })();
+        Box::pin(async move { result })
     }
 }
 
@@ -173,15 +176,13 @@ impl PostgresPolicyMatchSink {
 }
 
 impl PolicyMatchSink for PostgresPolicyMatchSink {
-    fn emit(&mut self, event: PolicyMatchEvent) -> Result<(), MonitorError> {
+    fn emit(&mut self, event: PolicyMatchEvent) -> BoxFuture<'_, Result<(), MonitorError>> {
         let store = self.store.clone();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                store
-                    .record_policy_match(PolicyMatchInput::from(event))
-                    .await?;
-                Ok(())
-            })
+        Box::pin(async move {
+            store
+                .record_policy_match(PolicyMatchInput::from(event))
+                .await?;
+            Ok(())
         })
     }
 }
@@ -269,14 +270,14 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
                     };
                     match message? {
                         Message::Text(text) => {
-                            let (processed, _) = self.process_message_text(&text)?;
+                    let (processed, _) = self.process_message_text(&text).await?;
                             if once && processed {
                                 return Ok(());
                             }
                         }
                         Message::Binary(bytes) => {
                             let text = String::from_utf8_lossy(&bytes);
-                            let (processed, _) = self.process_message_text(&text)?;
+                    let (processed, _) = self.process_message_text(&text).await?;
                             if once && processed {
                                 return Ok(());
                             }
@@ -312,19 +313,21 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
         .to_string()
     }
 
-    pub fn process_notification_text(&mut self, text: &str) -> Result<usize, MonitorError> {
-        self.process_message_text(text).map(|(_, emitted)| emitted)
+    pub async fn process_notification_text(&mut self, text: &str) -> Result<usize, MonitorError> {
+        self.process_message_text(text)
+            .await
+            .map(|(_, emitted)| emitted)
     }
 
-    fn process_message_text(&mut self, text: &str) -> Result<(bool, usize), MonitorError> {
+    async fn process_message_text(&mut self, text: &str) -> Result<(bool, usize), MonitorError> {
         let value: Value = serde_json::from_str(text)?;
         let processed =
             value.get("method").and_then(Value::as_str) == Some("transactionNotification");
-        self.process_notification(&value)
-            .map(|emitted| (processed, emitted))
+        let emitted = self.process_notification(&value).await?;
+        Ok((processed, emitted))
     }
 
-    pub fn process_notification(&mut self, value: &Value) -> Result<usize, MonitorError> {
+    pub async fn process_notification(&mut self, value: &Value) -> Result<usize, MonitorError> {
         let Some(notification) = HeliusNotification::from_value(value) else {
             return Ok(0);
         };
@@ -341,12 +344,14 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
             };
             for action in actions {
                 if let Some(policy) = detect_yield_route_policy_create(&action) {
-                    self.sink.emit(PolicyMatchEvent::from_policy(
-                        &notification.signature,
-                        notification.slot,
-                        self.config.cluster,
-                        policy,
-                    ))?;
+                    self.sink
+                        .emit(PolicyMatchEvent::from_policy(
+                            &notification.signature,
+                            notification.slot,
+                            self.config.cluster,
+                            policy,
+                        ))
+                        .await?;
                     emitted += 1;
                 }
             }
@@ -617,9 +622,9 @@ mod tests {
     }
 
     impl PolicyMatchSink for VecSink {
-        fn emit(&mut self, event: PolicyMatchEvent) -> Result<(), MonitorError> {
+        fn emit(&mut self, event: PolicyMatchEvent) -> BoxFuture<'_, Result<(), MonitorError>> {
             self.events.push(event);
-            Ok(())
+            Box::pin(async move { Ok(()) })
         }
     }
 
@@ -686,8 +691,8 @@ mod tests {
         })
     }
 
-    #[test]
-    fn parses_mocked_notification_and_emits_policy_match() {
+    #[tokio::test]
+    async fn parses_mocked_notification_and_emits_policy_match() {
         let authority = Keypair::new();
         let setup = create_all_in_one_market_mint_yield_route_action(
             context(authority.pubkey()),
@@ -704,6 +709,7 @@ mod tests {
                 setup.instructions[0].clone(),
                 &authority,
             ))
+            .await
             .unwrap();
 
         assert_eq!(emitted, 1);
@@ -716,8 +722,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn emits_detected_kamino_stable_preset_shape() {
+    #[tokio::test]
+    async fn emits_detected_kamino_stable_preset_shape() {
         let authority = Keypair::new();
         let setup = create_preset_all_in_one_yield_route_action(
             context(authority.pubkey()),
@@ -734,6 +740,7 @@ mod tests {
                 setup.instructions[0].clone(),
                 &authority,
             ))
+            .await
             .unwrap();
 
         assert_eq!(emitted, 1);
@@ -747,8 +754,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn emitted_json_uses_chain_provided_policy_account() {
+    #[tokio::test]
+    async fn emitted_json_uses_chain_provided_policy_account() {
         let authority = Keypair::new();
         let setup = create_all_in_one_market_mint_yield_route_action(
             context(authority.pubkey()),
@@ -763,6 +770,7 @@ mod tests {
 
         let emitted = monitor
             .process_notification(&notification("sig1", 42, instruction, &authority))
+            .await
             .unwrap();
 
         assert_eq!(emitted, 1);
@@ -772,8 +780,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn deduplicates_repeated_signatures() {
+    #[tokio::test]
+    async fn deduplicates_repeated_signatures() {
         let authority = Keypair::new();
         let setup = create_all_in_one_market_mint_yield_route_action(
             context(authority.pubkey()),
@@ -784,13 +792,13 @@ mod tests {
         let value = notification("sig1", 42, setup.instructions[0].clone(), &authority);
         let mut monitor = PolicyMonitor::new(config(), VecSink::default());
 
-        assert_eq!(monitor.process_notification(&value).unwrap(), 1);
-        assert_eq!(monitor.process_notification(&value).unwrap(), 0);
+        assert_eq!(monitor.process_notification(&value).await.unwrap(), 1);
+        assert_eq!(monitor.process_notification(&value).await.unwrap(), 0);
         assert_eq!(monitor.sink.events.len(), 1);
     }
 
-    #[test]
-    fn ignores_failed_transactions() {
+    #[tokio::test]
+    async fn ignores_failed_transactions() {
         let authority = Keypair::new();
         let setup = create_all_in_one_market_mint_yield_route_action(
             context(authority.pubkey()),
@@ -803,12 +811,12 @@ mod tests {
             json!({"InstructionError":[0,"Custom"]});
         let mut monitor = PolicyMonitor::new(config(), VecSink::default());
 
-        assert_eq!(monitor.process_notification(&value).unwrap(), 0);
+        assert_eq!(monitor.process_notification(&value).await.unwrap(), 0);
         assert!(monitor.sink.events.is_empty());
     }
 
-    #[test]
-    fn ignores_non_policy_settings_actions() {
+    #[tokio::test]
+    async fn ignores_non_policy_settings_actions() {
         let authority = Keypair::new();
         let action = create_swap_yield_route_action(
             context(authority.pubkey()),
@@ -821,6 +829,7 @@ mod tests {
 
         let emitted = monitor
             .process_notification(&notification("sig1", 42, action.instruction, &authority))
+            .await
             .unwrap();
 
         assert_eq!(emitted, 0);

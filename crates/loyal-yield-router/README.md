@@ -1,8 +1,8 @@
 # Loyal Yield Router
 
-`loyal-yield-router` is the read-only TimescaleDB boundary for Loyal yield-routing inputs.
+`loyal-yield-router` is the read-only data-lake SQL boundary for Loyal yield-routing inputs.
 
-It connects to the existing Kamino Timescale schema, reads `kamino.reserve_updates` and `kamino.latest_reserve_updates`, exposes typed reserve rows, and streams updates from `LISTEN kamino_reserve_updates`. Durable catch-up reads use the `(observed_at, slot, reserve)` cursor.
+It connects to the existing Kamino Timescale schema through `data_lake::DataLakeSqlClient`, reads `kamino.reserve_updates` and `kamino.latest_reserve_updates`, exposes typed reserve rows, and streams updates from `LISTEN kamino_reserve_updates`. Durable catch-up reads use the `(observed_at, slot, reserve)` cursor.
 
 This crate should stay narrow. Do not put quant policy here. Keep eligibility rules, scoring code, decision records, execution behavior, and offset persistence in separate strategy or router crates that consume `timescale::ReserveUpdateRow`.
 
