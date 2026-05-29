@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{PgConnection, PgPool, Row};
+use sqlx::{PgConnection, PgPool};
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_loyal_yield_orchestration.sql");
 
@@ -16,7 +16,7 @@ pub struct NeonSqlClient {
 
 pub type OrchestratorStore = NeonSqlClient;
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug)]
 struct RoutePolicyRow {
     id: i64,
     cluster: String,
@@ -42,7 +42,7 @@ struct RoutePolicyRow {
     last_seen_signature: String,
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug)]
 struct ManagedVaultRow {
     id: i64,
     cluster: String,
@@ -55,7 +55,7 @@ struct ManagedVaultRow {
     last_seen_at: DateTime<Utc>,
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug)]
 struct SnapshotRow {
     id: i64,
     vault_id: i64,
@@ -68,7 +68,7 @@ struct SnapshotRow {
     context: Value,
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug)]
 struct CurrentPositionRow {
     vault_id: i64,
     reserve: String,
@@ -84,7 +84,7 @@ struct CurrentPositionRow {
     planning_metadata: Value,
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug)]
 struct DecisionRow {
     id: i64,
     vault_id: i64,
@@ -147,33 +147,31 @@ impl NeonSqlClient {
         &self,
         vault_id: VaultId,
     ) -> Result<Vec<CurrentReservePosition>, OrchestratorError> {
-        let rows = sqlx::query_as::<_, CurrentPositionRow>(
-            "SELECT vault_id, reserve, market, liquidity_mint, amount_raw, supply_apy_bps, borrow_apy_bps, \
-             has_value, snapshot_id, observed_slot, observed_at, planning_metadata \
-             FROM loyal_yield.vault_reserve_positions_current WHERE vault_id = $1",
+        let rows = sqlx::query_as!(
+            CurrentPositionRow,
+            r#"
+            SELECT
+                vault_id,
+                reserve,
+                market,
+                liquidity_mint,
+                amount_raw,
+                supply_apy_bps,
+                borrow_apy_bps,
+                has_value,
+                snapshot_id,
+                observed_slot,
+                observed_at,
+                planning_metadata
+            FROM loyal_yield.vault_reserve_positions_current
+            WHERE vault_id = $1
+            "#,
+            vault_id.as_i64()
         )
-        .bind(vault_id.as_i64())
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter()
-            .map(|row| {
-                Ok(CurrentReservePosition {
-                    vault_id: VaultId(row.vault_id),
-                    reserve: row.reserve,
-                    market: row.market,
-                    liquidity_mint: row.liquidity_mint,
-                    amount_raw: row.amount_raw,
-                    has_value: row.has_value,
-                    supply_apy_bps: row.supply_apy_bps,
-                    borrow_apy_bps: row.borrow_apy_bps,
-                    snapshot_id: SnapshotId(row.snapshot_id),
-                    observed_slot: row.observed_slot,
-                    observed_at: row.observed_at,
-                    planning_metadata: row.planning_metadata,
-                })
-            })
-            .collect()
+        rows.into_iter().map(current_position_from_row).collect()
     }
 
     pub async fn reconcile_vault(
@@ -188,24 +186,42 @@ impl NeonSqlClient {
         let mut tx = self.pool.begin().await?;
         let vault = fetch_managed_vault_for_update(&mut *tx, vault_id).await?;
 
-        sqlx::query("UPDATE loyal_yield.vault_position_snapshots SET is_current = FALSE WHERE vault_id = $1 AND is_current")
-            .bind(vault_id.as_i64())
-            .execute(&mut *tx)
-            .await?;
-
-        let snapshot_row = sqlx::query_as::<_, SnapshotRow>(
-            "INSERT INTO loyal_yield.vault_position_snapshots \
-             (vault_id, policy_id, observed_slot, observed_at, chain_slot, lock_attempt_id, context) \
-             VALUES ($1, $2, $3, COALESCE($4, now()), $5, $6, $7) \
-             RETURNING id, vault_id, policy_id, observed_slot, observed_at, chain_slot, lock_attempt_id, is_current, context",
+        sqlx::query!(
+            r#"
+            UPDATE loyal_yield.vault_position_snapshots
+            SET is_current = FALSE
+            WHERE vault_id = $1 AND is_current
+            "#,
+            vault_id.as_i64()
         )
-        .bind(vault_id.as_i64())
-        .bind(vault.active_policy_id.as_i64())
-        .bind(state.observed_slot)
-        .bind(state.observed_at)
-        .bind(state.chain_slot)
-        .bind(state.lock_attempt_id)
-        .bind(state.context)
+        .execute(&mut *tx)
+        .await?;
+
+        let snapshot_row = sqlx::query_as!(
+            SnapshotRow,
+            r#"
+            INSERT INTO loyal_yield.vault_position_snapshots
+                (vault_id, policy_id, observed_slot, observed_at, chain_slot, lock_attempt_id, context)
+            VALUES ($1, $2, $3, COALESCE($4, now()), $5, $6, $7)
+            RETURNING
+                id,
+                vault_id,
+                policy_id,
+                observed_slot,
+                observed_at,
+                chain_slot,
+                lock_attempt_id,
+                is_current,
+                context
+            "#,
+            vault_id.as_i64(),
+            vault.active_policy_id.as_i64(),
+            state.observed_slot,
+            state.observed_at,
+            state.chain_slot,
+            state.lock_attempt_id,
+            state.context
+        )
         .fetch_one(&mut *tx)
         .await?;
 
@@ -220,62 +236,68 @@ impl NeonSqlClient {
             let planning_metadata = position.planning_metadata;
             observed_reserves.push(reserve.clone());
 
-            sqlx::query(
-                "INSERT INTO loyal_yield.vault_position_snapshot_positions \
-                 (snapshot_id, reserve, market, liquidity_mint, amount_raw, supply_apy_bps, borrow_apy_bps, has_value, planning_metadata) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            sqlx::query!(
+                r#"
+                INSERT INTO loyal_yield.vault_position_snapshot_positions
+                    (snapshot_id, reserve, market, liquidity_mint, amount_raw, supply_apy_bps, borrow_apy_bps, has_value, planning_metadata)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                "#,
+                snapshot_row.id,
+                reserve,
+                market,
+                liquidity_mint,
+                amount,
+                supply_apy_bps,
+                borrow_apy_bps,
+                amount > 0,
+                planning_metadata
             )
-            .bind(snapshot_row.id)
-            .bind(&reserve)
-            .bind(&market)
-            .bind(&liquidity_mint)
-            .bind(amount)
-            .bind(supply_apy_bps)
-            .bind(borrow_apy_bps)
-            .bind(amount > 0)
-            .bind(&planning_metadata)
             .execute(&mut *tx)
             .await?;
 
-            sqlx::query(
-                "INSERT INTO loyal_yield.vault_reserve_positions_current \
-                 (vault_id, reserve, market, liquidity_mint, amount_raw, has_value, supply_apy_bps, borrow_apy_bps, \
-                  snapshot_id, observed_slot, observed_at, planning_metadata) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
-                 ON CONFLICT (vault_id, reserve) DO UPDATE SET \
-                    amount_raw = EXCLUDED.amount_raw, \
-                    has_value = EXCLUDED.has_value, \
-                    supply_apy_bps = EXCLUDED.supply_apy_bps, \
-                    borrow_apy_bps = EXCLUDED.borrow_apy_bps, \
-                    snapshot_id = EXCLUDED.snapshot_id, \
-                    observed_slot = EXCLUDED.observed_slot, \
-                    observed_at = EXCLUDED.observed_at, \
-                    market = EXCLUDED.market, \
-                    liquidity_mint = EXCLUDED.liquidity_mint, \
-                    planning_metadata = EXCLUDED.planning_metadata",
+            sqlx::query!(
+                r#"
+                INSERT INTO loyal_yield.vault_reserve_positions_current
+                    (vault_id, reserve, market, liquidity_mint, amount_raw, has_value, supply_apy_bps, borrow_apy_bps,
+                     snapshot_id, observed_slot, observed_at, planning_metadata)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                ON CONFLICT (vault_id, reserve) DO UPDATE SET
+                    amount_raw = EXCLUDED.amount_raw,
+                    has_value = EXCLUDED.has_value,
+                    supply_apy_bps = EXCLUDED.supply_apy_bps,
+                    borrow_apy_bps = EXCLUDED.borrow_apy_bps,
+                    snapshot_id = EXCLUDED.snapshot_id,
+                    observed_slot = EXCLUDED.observed_slot,
+                    observed_at = EXCLUDED.observed_at,
+                    market = EXCLUDED.market,
+                    liquidity_mint = EXCLUDED.liquidity_mint,
+                    planning_metadata = EXCLUDED.planning_metadata
+                "#,
+                vault_id.as_i64(),
+                reserve,
+                market,
+                liquidity_mint,
+                amount,
+                amount > 0,
+                supply_apy_bps,
+                borrow_apy_bps,
+                snapshot_row.id,
+                snapshot_row.observed_slot,
+                snapshot_row.observed_at,
+                planning_metadata
             )
-            .bind(vault_id.as_i64())
-            .bind(&reserve)
-            .bind(&market)
-            .bind(&liquidity_mint)
-            .bind(amount)
-            .bind(amount > 0)
-            .bind(supply_apy_bps)
-            .bind(borrow_apy_bps)
-            .bind(snapshot_row.id)
-            .bind(snapshot_row.observed_slot)
-            .bind(snapshot_row.observed_at)
-            .bind(&planning_metadata)
             .execute(&mut *tx)
             .await?;
         }
 
-        sqlx::query(
-            "DELETE FROM loyal_yield.vault_reserve_positions_current \
-             WHERE vault_id = $1 AND NOT (reserve = ANY($2))",
+        sqlx::query!(
+            r#"
+            DELETE FROM loyal_yield.vault_reserve_positions_current
+            WHERE vault_id = $1 AND NOT (reserve = ANY($2))
+            "#,
+            vault_id.as_i64(),
+            &observed_reserves
         )
-        .bind(vault_id.as_i64())
-        .bind(&observed_reserves)
         .execute(&mut *tx)
         .await?;
 
@@ -351,25 +373,53 @@ impl NeonSqlClient {
         }
 
         let status = transition.status.as_str();
-        let row = sqlx::query_as::<_, DecisionRow>(
-            "UPDATE loyal_yield.rebalance_decisions \
-             SET status = $2, signature = COALESCE($3, signature), submitted_slot = COALESCE($4, submitted_slot), \
-             confirmed_slot = COALESCE($5, confirmed_slot), preflight_chain_slot = COALESCE($6, preflight_chain_slot), \
-             post_snapshot_id = COALESCE($7, post_snapshot_id), abandon_reason = COALESCE($8, abandon_reason), \
-             updated_at = now() \
-             WHERE id = $1 \
-             RETURNING id, vault_id, source_snapshot_id, status, source_reserve, target_reserve, liquidity_mint, amount_raw, \
-                     source_apy_bps, target_apy_bps, estimated_edge_bps, estimated_cost_lamports, decision_reason, abandon_reason, \
-                     signature, submitted_slot, confirmed_slot, preflight_chain_slot, post_snapshot_id, created_at, updated_at",
+        let post_snapshot_id = transition.post_snapshot_id.map(SnapshotId::as_i64);
+        let row = sqlx::query_as!(
+            DecisionRow,
+            r#"
+            UPDATE loyal_yield.rebalance_decisions
+            SET
+                status = $2::text::loyal_yield.decision_status,
+                signature = COALESCE($3, signature),
+                submitted_slot = COALESCE($4, submitted_slot),
+                confirmed_slot = COALESCE($5, confirmed_slot),
+                preflight_chain_slot = COALESCE($6, preflight_chain_slot),
+                post_snapshot_id = COALESCE($7, post_snapshot_id),
+                abandon_reason = COALESCE($8, abandon_reason),
+                updated_at = now()
+            WHERE id = $1
+            RETURNING
+                id,
+                vault_id,
+                source_snapshot_id,
+                status::text AS "status!",
+                source_reserve,
+                target_reserve,
+                liquidity_mint,
+                amount_raw,
+                source_apy_bps,
+                target_apy_bps,
+                estimated_edge_bps,
+                estimated_cost_lamports,
+                decision_reason::text AS "decision_reason!",
+                abandon_reason,
+                signature,
+                submitted_slot,
+                confirmed_slot,
+                preflight_chain_slot,
+                post_snapshot_id,
+                created_at,
+                updated_at
+            "#,
+            decision_id.as_i64(),
+            status,
+            transition.signature,
+            transition.submitted_slot,
+            transition.confirmed_slot,
+            transition.preflight_chain_slot,
+            post_snapshot_id,
+            transition.abandon_reason
         )
-        .bind(decision_id.as_i64())
-        .bind(status)
-        .bind(transition.signature)
-        .bind(transition.submitted_slot)
-        .bind(transition.confirmed_slot)
-        .bind(transition.preflight_chain_slot)
-        .bind(transition.post_snapshot_id.map(SnapshotId::as_i64))
-        .bind(transition.abandon_reason)
         .fetch_one(&mut *tx)
         .await?;
 
@@ -387,57 +437,331 @@ async fn upsert_policy(
         i64::try_from(event.slot).map_err(|_| OrchestratorError::SlotOutOfRange(event.slot))?;
     let policy_seed = i64::try_from(event.policy_seed)
         .map_err(|_| OrchestratorError::PolicySeedOutOfRange(event.policy_seed))?;
-    let row = sqlx::query_as::<_, RoutePolicyRow>(
-        "INSERT INTO loyal_yield.route_policies \
-         (cluster, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey, \
-          delegated_signers, threshold, route_modes, stable_mints, kamino_markets, kamino_liquidity_mints, \
-          universe_preset, risk_profile, swap_lanes, active, last_seen_slot, last_seen_signature) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, TRUE, $17, $18) \
-         ON CONFLICT (cluster, policy_account) DO UPDATE SET \
-             settings = EXCLUDED.settings, \
-             authority = EXCLUDED.authority, \
-             policy_seed = EXCLUDED.policy_seed, \
-             vault_index = EXCLUDED.vault_index, \
-             vault_pubkey = EXCLUDED.vault_pubkey, \
-             delegated_signers = EXCLUDED.delegated_signers, \
-             threshold = EXCLUDED.threshold, \
-             route_modes = EXCLUDED.route_modes, \
-             stable_mints = EXCLUDED.stable_mints, \
-             kamino_markets = EXCLUDED.kamino_markets, \
-             kamino_liquidity_mints = EXCLUDED.kamino_liquidity_mints, \
-             universe_preset = EXCLUDED.universe_preset, \
-             risk_profile = EXCLUDED.risk_profile, \
-             swap_lanes = EXCLUDED.swap_lanes, \
-             active = TRUE, \
-             last_seen_at = now(), \
-             last_seen_slot = EXCLUDED.last_seen_slot, \
-             last_seen_signature = EXCLUDED.last_seen_signature \
-         RETURNING id, cluster, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey, \
-                   delegated_signers, threshold, route_modes, stable_mints, kamino_markets, kamino_liquidity_mints, \
-                   universe_preset, risk_profile, swap_lanes, active, first_seen_at, last_seen_at, last_seen_slot, last_seen_signature",
+    let row = sqlx::query_as!(
+        RoutePolicyRow,
+        r#"
+        INSERT INTO loyal_yield.route_policies
+            (cluster, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
+             delegated_signers, threshold, route_modes, stable_mints, kamino_markets, kamino_liquidity_mints,
+             universe_preset, risk_profile, swap_lanes, active, last_seen_slot, last_seen_signature)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, TRUE, $17, $18)
+        ON CONFLICT (cluster, policy_account) DO UPDATE SET
+            settings = EXCLUDED.settings,
+            authority = EXCLUDED.authority,
+            policy_seed = EXCLUDED.policy_seed,
+            vault_index = EXCLUDED.vault_index,
+            vault_pubkey = EXCLUDED.vault_pubkey,
+            delegated_signers = EXCLUDED.delegated_signers,
+            threshold = EXCLUDED.threshold,
+            route_modes = EXCLUDED.route_modes,
+            stable_mints = EXCLUDED.stable_mints,
+            kamino_markets = EXCLUDED.kamino_markets,
+            kamino_liquidity_mints = EXCLUDED.kamino_liquidity_mints,
+            universe_preset = EXCLUDED.universe_preset,
+            risk_profile = EXCLUDED.risk_profile,
+            swap_lanes = EXCLUDED.swap_lanes,
+            active = TRUE,
+            last_seen_at = now(),
+            last_seen_slot = EXCLUDED.last_seen_slot,
+            last_seen_signature = EXCLUDED.last_seen_signature
+        RETURNING
+            id,
+            cluster,
+            settings,
+            authority,
+            policy_seed,
+            policy_account,
+            vault_index,
+            vault_pubkey,
+            delegated_signers AS "delegated_signers!",
+            threshold,
+            route_modes AS "route_modes!",
+            stable_mints AS "stable_mints!",
+            kamino_markets AS "kamino_markets!",
+            kamino_liquidity_mints AS "kamino_liquidity_mints!",
+            universe_preset,
+            risk_profile,
+            swap_lanes,
+            active,
+            first_seen_at,
+            last_seen_at,
+            last_seen_slot,
+            last_seen_signature
+        "#,
+        &event.cluster,
+        &event.settings,
+        &event.authority,
+        policy_seed,
+        &event.policy_account,
+        i16::from(event.vault_index),
+        &event.vault_pubkey,
+        &event.delegated_signers,
+        i32::from(event.threshold),
+        &event.route_modes,
+        &event.stable_mints,
+        &event.kamino_markets,
+        &event.kamino_liquidity_mints,
+        event.universe_preset.as_deref(),
+        event.risk_profile.as_deref(),
+        &event.swap_lanes,
+        slot,
+        &event.signature
     )
-    .bind(&event.cluster)
-    .bind(&event.settings)
-    .bind(&event.authority)
-    .bind(policy_seed)
-    .bind(&event.policy_account)
-    .bind(i16::from(event.vault_index))
-    .bind(&event.vault_pubkey)
-    .bind(&event.delegated_signers)
-    .bind(i32::from(event.threshold))
-    .bind(&event.route_modes)
-    .bind(&event.stable_mints)
-    .bind(&event.kamino_markets)
-    .bind(&event.kamino_liquidity_mints)
-    .bind(event.universe_preset.as_deref())
-    .bind(event.risk_profile.as_deref())
-    .bind(&event.swap_lanes)
-    .bind(slot)
-    .bind(&event.signature)
     .fetch_one(conn)
     .await?;
 
-    Ok(RoutePolicy {
+    Ok(route_policy_from_row(row))
+}
+
+async fn upsert_vault(
+    conn: &mut PgConnection,
+    policy_id: PolicyId,
+    event: &PolicyMatchInput,
+) -> Result<ManagedVault, OrchestratorError> {
+    let row = sqlx::query_as!(
+        ManagedVaultRow,
+        r#"
+        INSERT INTO loyal_yield.managed_vaults
+            (cluster, settings, vault_index, vault_pubkey, active_policy_id, active)
+        VALUES ($1, $2, $3, $4, $5, TRUE)
+        ON CONFLICT (cluster, settings, vault_index, vault_pubkey) DO UPDATE SET
+            active_policy_id = EXCLUDED.active_policy_id,
+            active = TRUE,
+            last_seen_at = now()
+        RETURNING id, cluster, settings, vault_index, vault_pubkey, active_policy_id, active, first_seen_at, last_seen_at
+        "#,
+        &event.cluster,
+        &event.settings,
+        i16::from(event.vault_index),
+        &event.vault_pubkey,
+        policy_id.as_i64()
+    )
+    .fetch_one(conn)
+    .await?;
+
+    Ok(managed_vault_from_row(row))
+}
+
+async fn fetch_managed_vault_for_update(
+    conn: &mut PgConnection,
+    vault_id: VaultId,
+) -> Result<ManagedVault, OrchestratorError> {
+    let row = sqlx::query_as!(
+        ManagedVaultRow,
+        r#"
+        SELECT id, cluster, settings, vault_index, vault_pubkey, active_policy_id, active, first_seen_at, last_seen_at
+        FROM loyal_yield.managed_vaults
+        WHERE id = $1
+        FOR UPDATE
+        "#,
+        vault_id.as_i64()
+    )
+    .fetch_one(conn)
+    .await?;
+
+    Ok(managed_vault_from_row(row))
+}
+
+async fn active_decision_exists(
+    conn: &mut PgConnection,
+    vault_id: VaultId,
+) -> Result<bool, OrchestratorError> {
+    let active_statuses = ACTIVE_DECISION_STATUSES
+        .iter()
+        .map(|status| (*status).to_owned())
+        .collect::<Vec<_>>();
+
+    sqlx::query_scalar!(
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM loyal_yield.rebalance_decisions
+            WHERE vault_id = $1 AND status::text = ANY($2)
+        ) AS "exists!"
+        "#,
+        vault_id.as_i64(),
+        &active_statuses
+    )
+    .fetch_one(conn)
+    .await
+    .map_err(OrchestratorError::from)
+}
+
+async fn current_positions_for_update(
+    conn: &mut PgConnection,
+    vault_id: VaultId,
+) -> Result<Vec<CurrentReservePosition>, OrchestratorError> {
+    let rows = sqlx::query_as!(
+        CurrentPositionRow,
+        r#"
+        SELECT
+            vault_id,
+            reserve,
+            market,
+            liquidity_mint,
+            amount_raw,
+            supply_apy_bps,
+            borrow_apy_bps,
+            has_value,
+            snapshot_id,
+            observed_slot,
+            observed_at,
+            planning_metadata
+        FROM loyal_yield.vault_reserve_positions_current
+        WHERE vault_id = $1
+        FOR UPDATE
+        "#,
+        vault_id.as_i64()
+    )
+    .fetch_all(conn)
+    .await?;
+
+    rows.into_iter().map(current_position_from_row).collect()
+}
+
+async fn insert_planned_decision(
+    conn: &mut PgConnection,
+    vault_id: VaultId,
+    planned: &PlannedDecision,
+    estimated_cost_lamports: i64,
+) -> Result<DecisionRow, OrchestratorError> {
+    let idempotency_key = rebalance_idempotency_key(vault_id, planned.source_snapshot_id, planned);
+    sqlx::query_as!(
+        DecisionRow,
+        r#"
+        INSERT INTO loyal_yield.rebalance_decisions
+            (vault_id, source_snapshot_id, status, source_reserve, target_reserve, liquidity_mint, amount_raw,
+             source_apy_bps, target_apy_bps, estimated_edge_bps, estimated_cost_lamports, decision_reason, idempotency_key)
+        VALUES ($1, $2, 'planned'::loyal_yield.decision_status, $3, $4, $5, $6, $7, $8, $9, $10, $11::text::loyal_yield.decision_reason, $12)
+        ON CONFLICT (idempotency_key) DO UPDATE SET updated_at = now()
+        RETURNING
+            id,
+            vault_id,
+            source_snapshot_id,
+            status::text AS "status!",
+            source_reserve,
+            target_reserve,
+            liquidity_mint,
+            amount_raw,
+            source_apy_bps,
+            target_apy_bps,
+            estimated_edge_bps,
+            estimated_cost_lamports,
+            decision_reason::text AS "decision_reason!",
+            abandon_reason,
+            signature,
+            submitted_slot,
+            confirmed_slot,
+            preflight_chain_slot,
+            post_snapshot_id,
+            created_at,
+            updated_at
+        "#,
+        vault_id.as_i64(),
+        planned.source_snapshot_id.as_i64(),
+        &planned.source_reserve,
+        &planned.target_reserve,
+        &planned.liquidity_mint,
+        planned.amount_raw,
+        planned.source_apy_bps,
+        planned.target_apy_bps,
+        planned.estimated_edge_bps,
+        estimated_cost_lamports,
+        DecisionReason::TargetSupplyApyExceedsSource.as_str(),
+        idempotency_key
+    )
+    .fetch_one(conn)
+    .await
+    .map_err(OrchestratorError::from)
+}
+
+async fn insert_skipped_decision(
+    conn: &mut PgConnection,
+    vault_id: VaultId,
+    reason: SkipReason,
+) -> Result<DecisionRow, OrchestratorError> {
+    let idempotency_key = skipped_idempotency_key(vault_id, reason);
+    sqlx::query_as!(
+        DecisionRow,
+        r#"
+        INSERT INTO loyal_yield.rebalance_decisions
+            (vault_id, status, estimated_cost_lamports, decision_reason, idempotency_key)
+        VALUES ($1, 'skipped'::loyal_yield.decision_status, 0, $2::text::loyal_yield.decision_reason, $3)
+        ON CONFLICT (idempotency_key) DO UPDATE SET updated_at = now()
+        RETURNING
+            id,
+            vault_id,
+            source_snapshot_id,
+            status::text AS "status!",
+            source_reserve,
+            target_reserve,
+            liquidity_mint,
+            amount_raw,
+            source_apy_bps,
+            target_apy_bps,
+            estimated_edge_bps,
+            estimated_cost_lamports,
+            decision_reason::text AS "decision_reason!",
+            abandon_reason,
+            signature,
+            submitted_slot,
+            confirmed_slot,
+            preflight_chain_slot,
+            post_snapshot_id,
+            created_at,
+            updated_at
+        "#,
+        vault_id.as_i64(),
+        reason.decision_reason().as_str(),
+        idempotency_key
+    )
+    .fetch_one(conn)
+    .await
+    .map_err(OrchestratorError::from)
+}
+
+async fn fetch_decision_for_update(
+    conn: &mut PgConnection,
+    decision_id: DecisionId,
+) -> Result<RebalanceDecision, OrchestratorError> {
+    let row = sqlx::query_as!(
+        DecisionRow,
+        r#"
+        SELECT
+            id,
+            vault_id,
+            source_snapshot_id,
+            status::text AS "status!",
+            source_reserve,
+            target_reserve,
+            liquidity_mint,
+            amount_raw,
+            source_apy_bps,
+            target_apy_bps,
+            estimated_edge_bps,
+            estimated_cost_lamports,
+            decision_reason::text AS "decision_reason!",
+            abandon_reason,
+            signature,
+            submitted_slot,
+            confirmed_slot,
+            preflight_chain_slot,
+            post_snapshot_id,
+            created_at,
+            updated_at
+        FROM loyal_yield.rebalance_decisions
+        WHERE id = $1
+        FOR UPDATE
+        "#,
+        decision_id.as_i64()
+    )
+    .fetch_one(conn)
+    .await?;
+    from_row_to_decision(row)
+}
+
+fn route_policy_from_row(row: RoutePolicyRow) -> RoutePolicy {
+    RoutePolicy {
         id: PolicyId(row.id),
         cluster: row.cluster,
         settings: row.settings,
@@ -460,33 +784,11 @@ async fn upsert_policy(
         last_seen_at: row.last_seen_at,
         last_seen_slot: row.last_seen_slot,
         last_seen_signature: row.last_seen_signature,
-    })
+    }
 }
 
-async fn upsert_vault(
-    conn: &mut PgConnection,
-    policy_id: PolicyId,
-    event: &PolicyMatchInput,
-) -> Result<ManagedVault, OrchestratorError> {
-    let row = sqlx::query_as::<_, ManagedVaultRow>(
-        "INSERT INTO loyal_yield.managed_vaults \
-         (cluster, settings, vault_index, vault_pubkey, active_policy_id, active) \
-         VALUES ($1, $2, $3, $4, $5, TRUE) \
-         ON CONFLICT (cluster, settings, vault_index, vault_pubkey) DO UPDATE SET \
-             active_policy_id = EXCLUDED.active_policy_id, \
-             active = TRUE, \
-             last_seen_at = now() \
-         RETURNING id, cluster, settings, vault_index, vault_pubkey, active_policy_id, active, first_seen_at, last_seen_at",
-    )
-    .bind(&event.cluster)
-    .bind(&event.settings)
-    .bind(i16::from(event.vault_index))
-    .bind(&event.vault_pubkey)
-    .bind(policy_id.as_i64())
-    .fetch_one(conn)
-    .await?;
-
-    Ok(ManagedVault {
+fn managed_vault_from_row(row: ManagedVaultRow) -> ManagedVault {
+    ManagedVault {
         id: VaultId(row.id),
         cluster: row.cluster,
         settings: row.settings,
@@ -496,150 +798,26 @@ async fn upsert_vault(
         active: row.active,
         first_seen_at: row.first_seen_at,
         last_seen_at: row.last_seen_at,
+    }
+}
+
+fn current_position_from_row(
+    row: CurrentPositionRow,
+) -> Result<CurrentReservePosition, OrchestratorError> {
+    Ok(CurrentReservePosition {
+        vault_id: VaultId(row.vault_id),
+        reserve: row.reserve,
+        market: row.market,
+        liquidity_mint: row.liquidity_mint,
+        amount_raw: row.amount_raw,
+        has_value: row.has_value,
+        supply_apy_bps: row.supply_apy_bps,
+        borrow_apy_bps: row.borrow_apy_bps,
+        snapshot_id: SnapshotId(row.snapshot_id),
+        observed_slot: row.observed_slot,
+        observed_at: row.observed_at,
+        planning_metadata: row.planning_metadata,
     })
-}
-
-async fn fetch_managed_vault_for_update(
-    conn: &mut PgConnection,
-    vault_id: VaultId,
-) -> Result<ManagedVault, OrchestratorError> {
-    let row = sqlx::query_as::<_, ManagedVaultRow>(
-        "SELECT id, cluster, settings, vault_index, vault_pubkey, active_policy_id, active, first_seen_at, last_seen_at \
-         FROM loyal_yield.managed_vaults WHERE id = $1 FOR UPDATE",
-    )
-    .bind(vault_id.as_i64())
-    .fetch_one(conn)
-    .await?;
-
-    Ok(ManagedVault {
-        id: VaultId(row.id),
-        cluster: row.cluster,
-        settings: row.settings,
-        vault_index: row.vault_index,
-        vault_pubkey: row.vault_pubkey,
-        active_policy_id: PolicyId(row.active_policy_id),
-        active: row.active,
-        first_seen_at: row.first_seen_at,
-        last_seen_at: row.last_seen_at,
-    })
-}
-
-async fn active_decision_exists(
-    conn: &mut PgConnection,
-    vault_id: VaultId,
-) -> Result<bool, OrchestratorError> {
-    let row = sqlx::query("SELECT EXISTS(SELECT 1 FROM loyal_yield.rebalance_decisions WHERE vault_id = $1 AND status::text = ANY($2))")
-        .bind(vault_id.as_i64())
-        .bind(&ACTIVE_DECISION_STATUSES)
-        .fetch_one(conn)
-        .await?;
-    row.try_get::<bool, _>(0).map_err(OrchestratorError::from)
-}
-
-async fn current_positions_for_update(
-    conn: &mut PgConnection,
-    vault_id: VaultId,
-) -> Result<Vec<CurrentReservePosition>, OrchestratorError> {
-    let rows = sqlx::query_as::<_, CurrentPositionRow>(
-        "SELECT vault_id, reserve, market, liquidity_mint, amount_raw, supply_apy_bps, borrow_apy_bps, \
-         has_value, snapshot_id, observed_slot, observed_at, planning_metadata \
-         FROM loyal_yield.vault_reserve_positions_current WHERE vault_id = $1 FOR UPDATE",
-    )
-    .bind(vault_id.as_i64())
-    .fetch_all(conn)
-    .await?;
-
-    rows.into_iter()
-        .map(|row| {
-            Ok(CurrentReservePosition {
-                vault_id: VaultId(row.vault_id),
-                reserve: row.reserve,
-                market: row.market,
-                liquidity_mint: row.liquidity_mint,
-                amount_raw: row.amount_raw,
-                has_value: row.has_value,
-                supply_apy_bps: row.supply_apy_bps,
-                borrow_apy_bps: row.borrow_apy_bps,
-                snapshot_id: SnapshotId(row.snapshot_id),
-                observed_slot: row.observed_slot,
-                observed_at: row.observed_at,
-                planning_metadata: row.planning_metadata,
-            })
-        })
-        .collect()
-}
-
-async fn insert_planned_decision(
-    conn: &mut PgConnection,
-    vault_id: VaultId,
-    planned: &PlannedDecision,
-    estimated_cost_lamports: i64,
-) -> Result<DecisionRow, OrchestratorError> {
-    let idempotency_key = rebalance_idempotency_key(vault_id, planned.source_snapshot_id, planned);
-    sqlx::query_as::<_, DecisionRow>(
-        "INSERT INTO loyal_yield.rebalance_decisions \
-         (vault_id, source_snapshot_id, status, source_reserve, target_reserve, liquidity_mint, amount_raw, \
-          source_apy_bps, target_apy_bps, estimated_edge_bps, estimated_cost_lamports, decision_reason, idempotency_key) \
-         VALUES ($1, $2, 'planned', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
-         ON CONFLICT (idempotency_key) DO UPDATE SET updated_at = now() \
-         RETURNING id, vault_id, source_snapshot_id, status, source_reserve, target_reserve, liquidity_mint, amount_raw, \
-         source_apy_bps, target_apy_bps, estimated_edge_bps, estimated_cost_lamports, decision_reason, abandon_reason, \
-         signature, submitted_slot, confirmed_slot, preflight_chain_slot, post_snapshot_id, created_at, updated_at",
-    )
-    .bind(vault_id.as_i64())
-    .bind(planned.source_snapshot_id.as_i64())
-    .bind(&planned.source_reserve)
-    .bind(&planned.target_reserve)
-    .bind(&planned.liquidity_mint)
-    .bind(planned.amount_raw)
-    .bind(planned.source_apy_bps)
-    .bind(planned.target_apy_bps)
-    .bind(planned.estimated_edge_bps)
-    .bind(estimated_cost_lamports)
-    .bind(DecisionReason::TargetSupplyApyExceedsSource.as_str())
-    .bind(idempotency_key)
-    .fetch_one(conn)
-    .await
-    .map_err(OrchestratorError::from)
-}
-
-async fn insert_skipped_decision(
-    conn: &mut PgConnection,
-    vault_id: VaultId,
-    reason: SkipReason,
-) -> Result<DecisionRow, OrchestratorError> {
-    let idempotency_key = skipped_idempotency_key(vault_id, reason);
-    sqlx::query_as::<_, DecisionRow>(
-        "INSERT INTO loyal_yield.rebalance_decisions \
-         (vault_id, status, estimated_cost_lamports, decision_reason, idempotency_key) \
-         VALUES ($1, 'skipped', 0, $2, $3) \
-         ON CONFLICT (idempotency_key) DO UPDATE SET updated_at = now() \
-         RETURNING id, vault_id, source_snapshot_id, status, source_reserve, target_reserve, liquidity_mint, amount_raw, \
-         source_apy_bps, target_apy_bps, estimated_edge_bps, estimated_cost_lamports, decision_reason, abandon_reason, \
-         signature, submitted_slot, confirmed_slot, preflight_chain_slot, post_snapshot_id, created_at, updated_at",
-    )
-    .bind(vault_id.as_i64())
-    .bind(reason.decision_reason().as_str())
-    .bind(idempotency_key)
-    .fetch_one(conn)
-    .await
-    .map_err(OrchestratorError::from)
-}
-
-async fn fetch_decision_for_update(
-    conn: &mut PgConnection,
-    decision_id: DecisionId,
-) -> Result<RebalanceDecision, OrchestratorError> {
-    let row = sqlx::query_as::<_, DecisionRow>(
-        "SELECT id, vault_id, source_snapshot_id, status, source_reserve, target_reserve, liquidity_mint, amount_raw, \
-         source_apy_bps, target_apy_bps, estimated_edge_bps, estimated_cost_lamports, decision_reason, abandon_reason, \
-         signature, submitted_slot, confirmed_slot, preflight_chain_slot, post_snapshot_id, created_at, updated_at \
-         FROM loyal_yield.rebalance_decisions WHERE id = $1 FOR UPDATE",
-    )
-    .bind(decision_id.as_i64())
-    .fetch_one(conn)
-    .await?;
-    from_row_to_decision(row)
 }
 
 fn ensure_terminal_repeat_matches(
