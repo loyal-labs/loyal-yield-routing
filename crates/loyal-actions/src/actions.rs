@@ -25,6 +25,18 @@ pub struct YieldRouteUniverse {
     pub kamino_liquidity_mints: Vec<Pubkey>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KaminoStableRiskProfile {
+    Safe,
+    Medium,
+    Aggressive,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum YieldRouteUniversePreset {
+    KaminoStable(KaminoStableRiskProfile),
+}
+
 impl YieldRouteUniverse {
     pub fn new(
         stable_mints: Vec<Pubkey>,
@@ -36,6 +48,16 @@ impl YieldRouteUniverse {
             kamino_markets: unique_pubkeys(kamino_markets),
             kamino_liquidity_mints: unique_pubkeys(kamino_liquidity_mints),
         }
+    }
+}
+
+pub fn yield_route_universe_for_preset(preset: YieldRouteUniversePreset) -> YieldRouteUniverse {
+    match preset {
+        YieldRouteUniversePreset::KaminoStable(profile) => YieldRouteUniverse::new(
+            production_stable_mints(),
+            kamino_stable_markets_for_profile(profile),
+            production_stable_mints(),
+        ),
     }
 }
 
@@ -327,6 +349,87 @@ pub fn create_all_in_one_market_mint_yield_route_action(
         .topology(RouteTopology::AllInOne)
         .swap_lanes(swap_lanes)
         .build()
+}
+
+pub fn create_preset_all_in_one_yield_route_action(
+    context: LoyalActionContext,
+    preset: YieldRouteUniversePreset,
+    swap_lanes: Vec<SwapLane>,
+) -> Result<YieldRouteActionSetup> {
+    create_all_in_one_market_mint_yield_route_action(
+        context,
+        yield_route_universe_for_preset(preset),
+        swap_lanes,
+    )
+}
+
+pub fn detect_yield_route_universe_preset(
+    kamino_markets: &[Pubkey],
+) -> Option<YieldRouteUniversePreset> {
+    let markets = unique_pubkeys(kamino_markets.to_vec());
+    [
+        KaminoStableRiskProfile::Safe,
+        KaminoStableRiskProfile::Medium,
+        KaminoStableRiskProfile::Aggressive,
+    ]
+    .into_iter()
+    .find(|profile| markets == kamino_stable_markets_for_profile(*profile))
+    .map(YieldRouteUniversePreset::KaminoStable)
+}
+
+fn kamino_stable_markets_for_profile(profile: KaminoStableRiskProfile) -> Vec<Pubkey> {
+    let mut markets = safe_kamino_markets();
+    if matches!(
+        profile,
+        KaminoStableRiskProfile::Medium | KaminoStableRiskProfile::Aggressive
+    ) {
+        markets.extend([
+            KAMINO_JLP_MARKET,
+            KAMINO_BITCOIN_MARKET,
+            KAMINO_SUPERSTATE_OPENING_BELL_MARKET,
+        ]);
+    }
+    if matches!(profile, KaminoStableRiskProfile::Aggressive) {
+        markets.extend([
+            KAMINO_HUMA_MARKET,
+            KAMINO_SOLSTICE_MARKET,
+            KAMINO_XSTOCKS_MARKET,
+            KAMINO_ALTCOINS_MARKET,
+        ]);
+    }
+    unique_pubkeys(markets)
+}
+
+// Production Kamino Stable preset allowlists are sourced from the local Kamino
+// cache/report; USCC was additionally verified against Multiliquid's Solana
+// deployment docs.
+fn safe_kamino_markets() -> Vec<Pubkey> {
+    vec![
+        KAMINO_MAIN_MARKET,
+        KAMINO_FIGURE_MARKET,
+        KAMINO_MAPLE_MARKET,
+        KAMINO_ONRE_MARKET,
+        KAMINO_ETHENA_MARKET,
+    ]
+}
+
+fn production_stable_mints() -> Vec<Pubkey> {
+    vec![
+        USDC_MINT,
+        USDT_MINT,
+        PYUSD_MINT,
+        USDS_MINT,
+        USDG_MINT,
+        USDE_MINT,
+        SUSDE_MINT,
+        CASH_MINT,
+        SYRUP_USDC_MINT,
+        USD1_MINT,
+        FDUSD_MINT,
+        AUSD_MINT,
+        EUSX_MINT,
+        USCC_MINT,
+    ]
 }
 
 pub fn create_swap_yield_route_action(
@@ -784,6 +887,164 @@ mod tests {
         let jupiter_route = setup.jupiter_route().unwrap();
         assert_eq!(jupiter_route.action_account(), setup.accounts.withdraw);
         assert_eq!(jupiter_route.instruction_constraint_indexes(), &[0, 1, 2]);
+    }
+
+    #[test]
+    fn kamino_stable_presets_are_cumulative() {
+        let safe = yield_route_universe_for_preset(YieldRouteUniversePreset::KaminoStable(
+            KaminoStableRiskProfile::Safe,
+        ));
+        let medium = yield_route_universe_for_preset(YieldRouteUniversePreset::KaminoStable(
+            KaminoStableRiskProfile::Medium,
+        ));
+        let aggressive = yield_route_universe_for_preset(YieldRouteUniversePreset::KaminoStable(
+            KaminoStableRiskProfile::Aggressive,
+        ));
+
+        assert!(safe
+            .kamino_markets
+            .iter()
+            .all(|market| medium.kamino_markets.contains(market)));
+        assert!(medium
+            .kamino_markets
+            .iter()
+            .all(|market| aggressive.kamino_markets.contains(market)));
+        assert!(safe
+            .stable_mints
+            .iter()
+            .all(|mint| medium.stable_mints.contains(mint)));
+        assert_eq!(medium.stable_mints, aggressive.stable_mints);
+        assert_eq!(safe.kamino_liquidity_mints, safe.stable_mints);
+    }
+
+    #[test]
+    fn kamino_stable_presets_include_expected_markets() {
+        let safe = yield_route_universe_for_preset(YieldRouteUniversePreset::KaminoStable(
+            KaminoStableRiskProfile::Safe,
+        ));
+        let medium = yield_route_universe_for_preset(YieldRouteUniversePreset::KaminoStable(
+            KaminoStableRiskProfile::Medium,
+        ));
+        let aggressive = yield_route_universe_for_preset(YieldRouteUniversePreset::KaminoStable(
+            KaminoStableRiskProfile::Aggressive,
+        ));
+
+        for market in [
+            KAMINO_MAIN_MARKET,
+            KAMINO_FIGURE_MARKET,
+            KAMINO_MAPLE_MARKET,
+            KAMINO_ONRE_MARKET,
+            KAMINO_ETHENA_MARKET,
+        ] {
+            assert!(safe.kamino_markets.contains(&market));
+        }
+        for market in [
+            KAMINO_JLP_MARKET,
+            KAMINO_BITCOIN_MARKET,
+            KAMINO_SUPERSTATE_OPENING_BELL_MARKET,
+        ] {
+            assert!(!safe.kamino_markets.contains(&market));
+            assert!(medium.kamino_markets.contains(&market));
+        }
+        for market in [
+            KAMINO_HUMA_MARKET,
+            KAMINO_SOLSTICE_MARKET,
+            KAMINO_XSTOCKS_MARKET,
+            KAMINO_ALTCOINS_MARKET,
+        ] {
+            assert!(!safe.kamino_markets.contains(&market));
+            assert!(!medium.kamino_markets.contains(&market));
+            assert!(aggressive.kamino_markets.contains(&market));
+        }
+    }
+
+    #[test]
+    fn production_stable_mints_include_allowlist_and_exclude_explicit_denials() {
+        let universe = yield_route_universe_for_preset(YieldRouteUniversePreset::KaminoStable(
+            KaminoStableRiskProfile::Aggressive,
+        ));
+
+        for mint in [
+            USDC_MINT,
+            USDT_MINT,
+            PYUSD_MINT,
+            USDS_MINT,
+            USDG_MINT,
+            USDE_MINT,
+            SUSDE_MINT,
+            CASH_MINT,
+            SYRUP_USDC_MINT,
+            USD1_MINT,
+            FDUSD_MINT,
+            AUSD_MINT,
+            EUSX_MINT,
+            USCC_MINT,
+        ] {
+            assert!(universe.stable_mints.contains(&mint));
+            assert!(universe.kamino_liquidity_mints.contains(&mint));
+        }
+        assert!(!universe.stable_mints.contains(&USDH_MINT));
+        assert!(!universe.stable_mints.contains(&Pubkey::new_unique()));
+    }
+
+    #[test]
+    fn preset_all_in_one_builder_uses_preset_universe() {
+        let context = context();
+        let preset = YieldRouteUniversePreset::KaminoStable(KaminoStableRiskProfile::Medium);
+        let setup =
+            create_preset_all_in_one_yield_route_action(context, preset, vec![jupiter_lane(false)])
+                .unwrap();
+
+        assert_eq!(setup.instructions.len(), 1);
+        assert_eq!(setup.spec.topology, RouteTopology::AllInOne);
+        assert_eq!(setup.spec.constraint_count, 3);
+        assert_eq!(
+            setup
+                .withdraw_step()
+                .unwrap()
+                .instruction_constraint_index(),
+            0
+        );
+        assert_eq!(
+            setup
+                .jupiter_swap_step()
+                .unwrap()
+                .instruction_constraint_index(),
+            1
+        );
+        assert_eq!(
+            setup.deposit_step().unwrap().instruction_constraint_index(),
+            2
+        );
+        assert_eq!(setup.spec.universe, yield_route_universe_for_preset(preset));
+    }
+
+    #[test]
+    fn preset_detection_requires_exact_market_set() {
+        let safe_preset = YieldRouteUniversePreset::KaminoStable(KaminoStableRiskProfile::Safe);
+        let medium_preset = YieldRouteUniversePreset::KaminoStable(KaminoStableRiskProfile::Medium);
+        let aggressive_preset =
+            YieldRouteUniversePreset::KaminoStable(KaminoStableRiskProfile::Aggressive);
+        let safe = yield_route_universe_for_preset(safe_preset);
+        let medium = yield_route_universe_for_preset(medium_preset);
+        let aggressive = yield_route_universe_for_preset(aggressive_preset);
+
+        assert_eq!(
+            detect_yield_route_universe_preset(&safe.kamino_markets),
+            Some(safe_preset)
+        );
+        assert_eq!(
+            detect_yield_route_universe_preset(&medium.kamino_markets),
+            Some(medium_preset)
+        );
+        assert_eq!(
+            detect_yield_route_universe_preset(&aggressive.kamino_markets),
+            Some(aggressive_preset)
+        );
+
+        let mut custom = safe.kamino_markets.clone();
+        custom.push(Pubkey::new_unique());
+        assert_eq!(detect_yield_route_universe_preset(&custom), None);
     }
 
     #[test]

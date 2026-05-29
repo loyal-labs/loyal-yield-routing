@@ -1,4 +1,7 @@
-use crate::{derive_action_account, derive_loyal_hub_config, ids::*, JupiterSwapContract};
+use crate::{
+    derive_action_account, derive_loyal_hub_config, detect_yield_route_universe_preset, ids::*,
+    JupiterSwapContract, YieldRouteUniversePreset,
+};
 use solana_sdk::{hash::hashv, instruction::Instruction, pubkey::Pubkey};
 use std::{collections::BTreeMap, fmt};
 
@@ -99,6 +102,7 @@ pub struct DetectedYieldRoutePolicy {
     pub stable_mints: Vec<Pubkey>,
     pub kamino_markets: Vec<Pubkey>,
     pub kamino_liquidity_mints: Vec<Pubkey>,
+    pub universe_preset: Option<YieldRouteUniversePreset>,
     pub swap_lanes: Vec<DetectedSwapLane>,
 }
 
@@ -242,8 +246,10 @@ pub fn detect_yield_route_policy_create(
 
     let mut kamino_markets = withdraw.markets;
     kamino_markets.extend(deposit.markets);
+    let kamino_markets = unique_pubkeys(kamino_markets);
     let mut kamino_liquidity_mints = withdraw.liquidity_mints;
     kamino_liquidity_mints.extend(deposit.liquidity_mints);
+    let universe_preset = detect_yield_route_universe_preset(&kamino_markets);
 
     Some(DetectedYieldRoutePolicy {
         settings: action.settings,
@@ -255,8 +261,9 @@ pub fn detect_yield_route_policy_create(
         threshold: action.threshold,
         route_modes,
         stable_mints: unique_pubkeys(stable_mints),
-        kamino_markets: unique_pubkeys(kamino_markets),
+        kamino_markets,
         kamino_liquidity_mints: unique_pubkeys(kamino_liquidity_mints),
+        universe_preset,
         swap_lanes,
     })
 }
@@ -889,9 +896,11 @@ impl<'a> Cursor<'a> {
 mod tests {
     use super::*;
     use crate::{
-        create_all_in_one_market_mint_yield_route_action, create_three_step_yield_route_actions,
-        LoyalActionContext, RouteTopology, SwapLane, YieldRouteActionBuilder,
-        YieldRouteActionSeeds, YieldRouteUniverse, JUPITER_V6_PROGRAM_ID,
+        create_all_in_one_market_mint_yield_route_action,
+        create_preset_all_in_one_yield_route_action, create_three_step_yield_route_actions,
+        yield_route_universe_for_preset, KaminoStableRiskProfile, LoyalActionContext,
+        RouteTopology, SwapLane, YieldRouteActionBuilder, YieldRouteActionSeeds,
+        YieldRouteUniverse, YieldRouteUniversePreset, JUPITER_V6_PROGRAM_ID,
     };
 
     fn context() -> LoyalActionContext {
@@ -969,6 +978,30 @@ mod tests {
         assert!(detected.stable_mints.len() >= 2);
         assert_eq!(detected.kamino_markets.len(), 1);
         assert_eq!(detected.kamino_liquidity_mints.len(), 1);
+        assert_eq!(detected.universe_preset, None);
+    }
+
+    #[test]
+    fn detects_preset_all_in_one_policy() {
+        let setup = create_preset_all_in_one_yield_route_action(
+            context(),
+            YieldRouteUniversePreset::KaminoStable(KaminoStableRiskProfile::Safe),
+            vec![jupiter_lane()],
+        )
+        .unwrap();
+
+        let actions = decode_squads_policy_create_actions(&setup.instructions[0]).unwrap();
+        let detected = detect_yield_route_policy_create(&actions[0]).unwrap();
+        let preset = YieldRouteUniversePreset::KaminoStable(KaminoStableRiskProfile::Safe);
+        let universe = yield_route_universe_for_preset(preset);
+
+        assert_eq!(detected.universe_preset, Some(preset));
+        assert_eq!(detected.kamino_markets, universe.kamino_markets);
+        assert_eq!(
+            detected.kamino_liquidity_mints,
+            universe.kamino_liquidity_mints
+        );
+        assert_eq!(detected.stable_mints, universe.stable_mints);
     }
 
     #[test]

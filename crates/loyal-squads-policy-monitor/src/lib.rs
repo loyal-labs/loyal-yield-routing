@@ -3,7 +3,8 @@ use clap::ValueEnum;
 use futures_util::{SinkExt, StreamExt};
 use loyal_actions::{
     decode_squads_policy_create_actions, detect_yield_route_policy_create, DetectedSwapLane,
-    DetectedYieldRouteMode, DetectedYieldRoutePolicy, SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+    DetectedYieldRouteMode, DetectedYieldRoutePolicy, KaminoStableRiskProfile,
+    YieldRouteUniversePreset, SQUADS_SMART_ACCOUNT_PROGRAM_ID,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -164,6 +165,8 @@ pub struct PolicyMatchEvent {
     pub stable_mints: Vec<String>,
     pub kamino_markets: Vec<String>,
     pub kamino_liquidity_mints: Vec<String>,
+    pub universe_preset: Option<String>,
+    pub risk_profile: Option<String>,
     pub swap_lanes: Vec<SwapLaneEvent>,
 }
 
@@ -341,6 +344,8 @@ impl PolicyMatchEvent {
             stable_mints: pubkeys_to_strings(policy.stable_mints),
             kamino_markets: pubkeys_to_strings(policy.kamino_markets),
             kamino_liquidity_mints: pubkeys_to_strings(policy.kamino_liquidity_mints),
+            universe_preset: policy.universe_preset.map(universe_preset_name),
+            risk_profile: policy.universe_preset.and_then(preset_risk_profile_name),
             swap_lanes: policy
                 .swap_lanes
                 .into_iter()
@@ -382,6 +387,30 @@ fn route_mode_name(value: DetectedYieldRouteMode) -> String {
         DetectedYieldRouteMode::CrossMintLoyalHub => "cross_mint_loyal_hub",
     }
     .to_owned()
+}
+
+fn universe_preset_name(value: YieldRouteUniversePreset) -> String {
+    match value {
+        YieldRouteUniversePreset::KaminoStable(_) => "kamino_stable",
+    }
+    .to_string()
+}
+
+fn preset_risk_profile_name(value: YieldRouteUniversePreset) -> Option<String> {
+    match value {
+        YieldRouteUniversePreset::KaminoStable(profile) => {
+            Some(kamino_stable_profile_name(profile))
+        }
+    }
+}
+
+fn kamino_stable_profile_name(value: KaminoStableRiskProfile) -> String {
+    match value {
+        KaminoStableRiskProfile::Safe => "safe",
+        KaminoStableRiskProfile::Medium => "medium",
+        KaminoStableRiskProfile::Aggressive => "aggressive",
+    }
+    .to_string()
 }
 
 struct HeliusNotification<'a> {
@@ -492,9 +521,11 @@ fn loaded_addresses(meta: Option<&Value>) -> Result<Vec<Pubkey>, MonitorError> {
 mod tests {
     use super::*;
     use loyal_actions::{
-        create_all_in_one_market_mint_yield_route_action, create_swap_yield_route_action,
-        JupiterSwapContract, LoyalActionContext, SwapLane, YieldRouteUniverse,
-        JUPITER_SWAP_DISCRIMINATOR, JUPITER_V6_PROGRAM_ID,
+        create_all_in_one_market_mint_yield_route_action,
+        create_preset_all_in_one_yield_route_action, create_swap_yield_route_action,
+        JupiterSwapContract, KaminoStableRiskProfile, LoyalActionContext, SwapLane,
+        YieldRouteUniverse, YieldRouteUniversePreset, JUPITER_SWAP_DISCRIMINATOR,
+        JUPITER_V6_PROGRAM_ID,
     };
     use solana_sdk::{
         hash::Hash,
@@ -605,6 +636,37 @@ mod tests {
         assert_eq!(
             monitor.sink.events[0].route_modes,
             vec!["same_mint", "cross_mint_jupiter"]
+        );
+    }
+
+    #[test]
+    fn emits_detected_kamino_stable_preset_shape() {
+        let authority = Keypair::new();
+        let setup = create_preset_all_in_one_yield_route_action(
+            context(authority.pubkey()),
+            YieldRouteUniversePreset::KaminoStable(KaminoStableRiskProfile::Aggressive),
+            vec![jupiter_lane()],
+        )
+        .unwrap();
+        let mut monitor = PolicyMonitor::new(config(), VecSink::default());
+
+        let emitted = monitor
+            .process_notification(&notification(
+                "sig1",
+                42,
+                setup.instructions[0].clone(),
+                &authority,
+            ))
+            .unwrap();
+
+        assert_eq!(emitted, 1);
+        assert_eq!(
+            monitor.sink.events[0].universe_preset.as_deref(),
+            Some("kamino_stable")
+        );
+        assert_eq!(
+            monitor.sink.events[0].risk_profile.as_deref(),
+            Some("aggressive")
         );
     }
 

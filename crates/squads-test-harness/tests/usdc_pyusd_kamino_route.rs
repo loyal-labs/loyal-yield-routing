@@ -2,12 +2,16 @@ mod common;
 
 use common::{load_jupiter_usdc_pyusd_fixture, parse_fixture_amount};
 use loyal_actions::{
-    create_all_in_one_market_mint_yield_route_action, create_swap_yield_route_action,
-    create_three_step_yield_route_actions, SwapLane, YieldRouteActionSeeds,
+    create_all_in_one_market_mint_yield_route_action, create_preset_all_in_one_yield_route_action,
+    create_swap_yield_route_action, create_three_step_yield_route_actions, KaminoStableRiskProfile,
+    SwapLane, YieldRouteActionSeeds, YieldRouteUniversePreset, KAMINO_ALTCOINS_MARKET,
+    KAMINO_BITCOIN_MARKET, KAMINO_HUMA_MARKET, KAMINO_JLP_MARKET, KAMINO_SOLSTICE_MARKET,
+    KAMINO_SUPERSTATE_OPENING_BELL_MARKET, KAMINO_XSTOCKS_MARKET,
     YIELD_ROUTE_STANDALONE_ACTION_SEED,
 };
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
+    pubkey::Pubkey,
     signature::Keypair,
     signer::Signer,
 };
@@ -533,6 +537,349 @@ fn all_in_one_route_policy_rejects_unapproved_kamino_market() {
         0
     );
     assert_eq!(get_spl_token_amount(&context.svm, vault_usdc), amount);
+}
+
+#[test]
+fn kamino_stable_presets_execute_through_real_constraints() {
+    let cases = [
+        (
+            KaminoStableRiskProfile::Safe,
+            KAMINO_MAIN_MARKET,
+            KAMINO_JLP_MARKET,
+            "Safe should reject JLP-style markets",
+        ),
+        (
+            KaminoStableRiskProfile::Safe,
+            KAMINO_MAIN_MARKET,
+            KAMINO_HUMA_MARKET,
+            "Safe should reject Huma-style markets",
+        ),
+        (
+            KaminoStableRiskProfile::Safe,
+            KAMINO_MAIN_MARKET,
+            KAMINO_XSTOCKS_MARKET,
+            "Safe should reject xStocks-style markets",
+        ),
+        (
+            KaminoStableRiskProfile::Safe,
+            KAMINO_MAIN_MARKET,
+            KAMINO_SOLSTICE_MARKET,
+            "Safe should reject Solstice-style markets",
+        ),
+        (
+            KaminoStableRiskProfile::Safe,
+            KAMINO_MAIN_MARKET,
+            KAMINO_ALTCOINS_MARKET,
+            "Safe should reject Altcoins",
+        ),
+        (
+            KaminoStableRiskProfile::Medium,
+            KAMINO_JLP_MARKET,
+            KAMINO_ALTCOINS_MARKET,
+            "Medium should reject Altcoins",
+        ),
+        (
+            KaminoStableRiskProfile::Medium,
+            KAMINO_BITCOIN_MARKET,
+            KAMINO_ALTCOINS_MARKET,
+            "Medium should reject Altcoins",
+        ),
+        (
+            KaminoStableRiskProfile::Medium,
+            KAMINO_SUPERSTATE_OPENING_BELL_MARKET,
+            KAMINO_ALTCOINS_MARKET,
+            "Medium should reject Altcoins",
+        ),
+        (
+            KaminoStableRiskProfile::Aggressive,
+            KAMINO_ALTCOINS_MARKET,
+            Pubkey::new_unique(),
+            "Aggressive should reject unknown markets",
+        ),
+    ];
+
+    for (profile, allowed_market, rejected_market, message) in cases {
+        assert_preset_deposit_constraints(profile, allowed_market, rejected_market, message);
+    }
+}
+
+fn assert_preset_deposit_constraints(
+    profile: KaminoStableRiskProfile,
+    allowed_market: Pubkey,
+    rejected_market: Pubkey,
+    message: &str,
+) {
+    let amount = 1_000_000;
+
+    let mut context =
+        create_funded_squads_test_context_with_mock_programs(&[MockProgram::KaminoLend])
+            .expect("create funded Squads test context");
+    let Some(context) = context.as_mut() else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+
+    let wallet_b = Keypair::new();
+    context
+        .svm
+        .airdrop(&wallet_b.pubkey(), LAMPORTS_PER_SOL / 10)
+        .expect("airdrop wallet B");
+
+    let vault_usdc = Keypair::new().pubkey();
+    let vault_allowed_collateral = Keypair::new().pubkey();
+    let vault_rejected_collateral = Keypair::new().pubkey();
+    let allowed_liquidity_supply = Keypair::new().pubkey();
+    let rejected_liquidity_supply = Keypair::new().pubkey();
+
+    seed_spl_token_account(
+        &mut context.svm,
+        vault_usdc,
+        USDC_MINT,
+        context.vault,
+        amount * 2,
+    );
+    let allowed_reserve_accounts = seed_mock_kamino_reserve_spl_accounts_with_mint(
+        &mut context.svm,
+        Pubkey::new_unique(),
+        allowed_market,
+        USDC_MINT,
+        USDC_DECIMALS,
+        context.vault,
+        vault_usdc,
+        vault_allowed_collateral,
+        allowed_liquidity_supply,
+    );
+    let rejected_reserve_accounts = seed_mock_kamino_reserve_spl_accounts_with_mint(
+        &mut context.svm,
+        Pubkey::new_unique(),
+        rejected_market,
+        USDC_MINT,
+        USDC_DECIMALS,
+        context.vault,
+        vault_usdc,
+        vault_rejected_collateral,
+        rejected_liquidity_supply,
+    );
+
+    let route_action_setup = create_preset_all_in_one_yield_route_action(
+        loyal_action_context(context, wallet_b.pubkey()),
+        YieldRouteUniversePreset::KaminoStable(profile),
+        vec![mock_jupiter_swap_lane(false)],
+    )
+    .expect("build preset route action");
+    try_send_instructions_with_heap_frame(
+        &mut context.svm,
+        &route_action_setup.instructions,
+        &context.wallet,
+        &[],
+    )
+    .expect("wallet A creates preset route policy for Wallet B");
+
+    let (allowed_deposit_instructions, allowed_deposit_accounts) = mock_kamino_reserve_transaction(
+        context.vault,
+        allowed_reserve_accounts,
+        mock_kamino_deposit_reserve_liquidity_data(amount),
+    );
+    let allowed_deposit_ix = route_action_setup
+        .deposit()
+        .expect("route has deposit")
+        .build(
+            wallet_b.pubkey(),
+            context.vault_index,
+            allowed_deposit_instructions,
+            allowed_deposit_accounts,
+        );
+    try_send_instructions_with_heap_frame(&mut context.svm, &[allowed_deposit_ix], &wallet_b, &[])
+        .expect("preset should permit its allowed Kamino market");
+
+    let (rejected_deposit_instructions, rejected_deposit_accounts) =
+        mock_kamino_reserve_transaction(
+            context.vault,
+            rejected_reserve_accounts,
+            mock_kamino_deposit_reserve_liquidity_data(amount),
+        );
+    let rejected_deposit_ix = route_action_setup
+        .deposit()
+        .expect("route has deposit")
+        .build(
+            wallet_b.pubkey(),
+            context.vault_index,
+            rejected_deposit_instructions,
+            rejected_deposit_accounts,
+        );
+    let result = try_send_instructions_with_heap_frame(
+        &mut context.svm,
+        &[rejected_deposit_ix],
+        &wallet_b,
+        &[],
+    );
+    assert!(result.is_err(), "{message}");
+}
+
+#[test]
+fn kamino_stable_presets_reject_unapproved_liquidity_mint() {
+    let amount = 1_000_000;
+
+    let mut context =
+        create_funded_squads_test_context_with_mock_programs(&[MockProgram::KaminoLend])
+            .expect("create funded Squads test context");
+    let Some(context) = context.as_mut() else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+
+    let wallet_b = Keypair::new();
+    context
+        .svm
+        .airdrop(&wallet_b.pubkey(), LAMPORTS_PER_SOL / 10)
+        .expect("airdrop wallet B");
+
+    let unknown_mint = Pubkey::new_unique();
+    let vault_unknown = Keypair::new().pubkey();
+    let vault_collateral = Keypair::new().pubkey();
+    let liquidity_supply = Keypair::new().pubkey();
+
+    seed_spl_token_account(
+        &mut context.svm,
+        vault_unknown,
+        unknown_mint,
+        context.vault,
+        amount,
+    );
+    let reserve_accounts = seed_mock_kamino_reserve_spl_accounts_with_mint(
+        &mut context.svm,
+        Pubkey::new_unique(),
+        KAMINO_MAIN_MARKET,
+        unknown_mint,
+        USDC_DECIMALS,
+        context.vault,
+        vault_unknown,
+        vault_collateral,
+        liquidity_supply,
+    );
+
+    let route_action_setup = create_preset_all_in_one_yield_route_action(
+        loyal_action_context(context, wallet_b.pubkey()),
+        YieldRouteUniversePreset::KaminoStable(KaminoStableRiskProfile::Aggressive),
+        vec![mock_jupiter_swap_lane(false)],
+    )
+    .expect("build preset route action");
+    try_send_instructions_with_heap_frame(
+        &mut context.svm,
+        &route_action_setup.instructions,
+        &context.wallet,
+        &[],
+    )
+    .expect("wallet A creates preset route policy for Wallet B");
+
+    let (deposit_instructions, deposit_accounts) = mock_kamino_reserve_transaction(
+        context.vault,
+        reserve_accounts,
+        mock_kamino_deposit_reserve_liquidity_data(amount),
+    );
+    let deposit_ix = route_action_setup
+        .deposit()
+        .expect("route has deposit")
+        .build(
+            wallet_b.pubkey(),
+            context.vault_index,
+            deposit_instructions,
+            deposit_accounts,
+        );
+
+    let result =
+        try_send_instructions_with_heap_frame(&mut context.svm, &[deposit_ix], &wallet_b, &[]);
+    assert!(
+        result.is_err(),
+        "preset should reject an unapproved liquidity mint"
+    );
+}
+
+#[test]
+fn kamino_stable_presets_reject_non_allowlisted_swap_mint() {
+    let amount = 1_000_000;
+
+    let mut context = create_funded_squads_test_context_with_mock_programs(&[MockProgram::Jupiter])
+        .expect("create funded Squads test context");
+    let Some(context) = context.as_mut() else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+
+    let wallet_b = Keypair::new();
+    let unknown_mint = Pubkey::new_unique();
+    let vault_usdc = Keypair::new().pubkey();
+    let vault_unknown = Keypair::new().pubkey();
+
+    context
+        .svm
+        .airdrop(&wallet_b.pubkey(), LAMPORTS_PER_SOL / 10)
+        .expect("airdrop wallet B");
+    seed_spl_token_account(
+        &mut context.svm,
+        vault_usdc,
+        USDC_MINT,
+        context.vault,
+        amount,
+    );
+    seed_spl_token_account(
+        &mut context.svm,
+        vault_unknown,
+        unknown_mint,
+        context.vault,
+        0,
+    );
+    seed_mock_jupiter_stable_reserve_spl_accounts(
+        &mut context.svm,
+        &[
+            MockJupiterStableReserveTokenAccount {
+                mint: USDC_MINT,
+                reserve: mock_jupiter_stable_reserve_token_account(USDC_MINT),
+            },
+            MockJupiterStableReserveTokenAccount {
+                mint: unknown_mint,
+                reserve: mock_jupiter_stable_reserve_token_account(unknown_mint),
+            },
+        ],
+        amount,
+    );
+
+    let route_action_setup = create_preset_all_in_one_yield_route_action(
+        loyal_action_context(context, wallet_b.pubkey()),
+        YieldRouteUniversePreset::KaminoStable(KaminoStableRiskProfile::Aggressive),
+        vec![mock_jupiter_swap_lane(false)],
+    )
+    .expect("build preset route action");
+    try_send_instructions_with_heap_frame(
+        &mut context.svm,
+        &route_action_setup.instructions,
+        &context.wallet,
+        &[],
+    )
+    .expect("wallet A creates preset route policy for Wallet B");
+
+    let swap_ix = route_action_setup
+        .jupiter()
+        .expect("route has Jupiter step")
+        .build(JupiterSwapExecution {
+            signer: wallet_b.pubkey(),
+            vault_index: context.vault_index,
+            vault: context.vault,
+            vault_input: vault_usdc,
+            vault_output: vault_unknown,
+            input_mint: USDC_MINT,
+            output_mint: unknown_mint,
+            in_amount: amount,
+            out_amount: amount,
+        });
+
+    let result =
+        try_send_instructions_with_heap_frame(&mut context.svm, &[swap_ix], &wallet_b, &[]);
+    assert!(
+        result.is_err(),
+        "preset should reject a non-allowlisted swap mint"
+    );
+    assert_eq!(get_spl_token_amount(&context.svm, vault_unknown), 0);
 }
 
 #[test]
