@@ -19,7 +19,7 @@ use squads_test_harness::{
 
 pub(super) const WALLET_COUNT: usize = 30;
 pub(super) const DEFAULT_LANE_COUNT: u8 = 4;
-pub(super) const GROWTH_LANE_COUNT: u8 = 8;
+pub(super) const GROWTH_LANE_COUNT: u8 = 32;
 const VAULT_INDEX: u8 = 0;
 const MAX_FEE_BPS: u16 = 10;
 const HUB_FEE_BPS: u64 = 10;
@@ -429,6 +429,13 @@ pub(super) struct MaintenanceWindow;
 
 pub(super) struct LaneScheduler;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct LaneCandidate {
+    pub(super) lane_id: u8,
+    pub(super) output_inventory: u64,
+    pub(super) in_flight_count: u16,
+}
+
 impl LaneScheduler {
     fn active_lanes(wave: &SwapWave) -> Vec<u8> {
         let mut lanes = Vec::new();
@@ -455,6 +462,17 @@ impl LaneScheduler {
             }
         }
         Ok(())
+    }
+
+    pub(super) fn choose_swap_lane(
+        candidates: &[LaneCandidate],
+        required_output_amount: u64,
+    ) -> Option<u8> {
+        candidates
+            .iter()
+            .filter(|candidate| candidate.output_inventory >= required_output_amount)
+            .min_by_key(|candidate| (candidate.in_flight_count, candidate.lane_id))
+            .map(|candidate| candidate.lane_id)
     }
 }
 

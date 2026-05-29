@@ -35,6 +35,8 @@ use squads_test_harness::{
     WRAPPED_SOL_MINT,
 };
 
+const PACKET_DATA_SIZE: usize = solana_sdk::packet::PACKET_DATA_SIZE as usize;
+
 #[test]
 fn wallet_b_can_execute_bundled_kamino_yield_route_switches() {
     let jupiter_fixture = load_jupiter_usdc_pyusd_fixture();
@@ -1848,6 +1850,275 @@ fn wallet_a_can_pack_vault_usdc_deposit_and_reduced_all_in_one_policy() {
     assert_eq!(route_accounts.withdraw, route_accounts.swap);
     assert_eq!(route_accounts.swap, route_accounts.deposit);
     assert!(context.svm.get_account(&route_accounts.withdraw).is_some());
+}
+
+#[test]
+fn same_mint_route_execution_pack_size_is_packet_bound_by_measurement() {
+    let amount = 1_000_000;
+
+    let mut context =
+        create_funded_squads_test_context_with_mock_programs(&[MockProgram::KaminoLend])
+            .expect("create funded Squads test context");
+    let Some(context) = context.as_mut() else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+
+    let wallet_b = Keypair::new();
+    context
+        .svm
+        .airdrop(&wallet_b.pubkey(), LAMPORTS_PER_SOL / 10)
+        .expect("airdrop wallet B");
+
+    let vault_usdc = Keypair::new().pubkey();
+    let vault_main_usdc_collateral = Keypair::new().pubkey();
+    let vault_prime_usdc_collateral = Keypair::new().pubkey();
+    let main_usdc_reserve_liquidity_supply = Keypair::new().pubkey();
+    let prime_usdc_reserve_liquidity_supply = Keypair::new().pubkey();
+
+    seed_spl_token_account(
+        &mut context.svm,
+        vault_usdc,
+        USDC_MINT,
+        context.vault,
+        amount,
+    );
+    let main_usdc_reserve_accounts = seed_mock_kamino_reserve_spl_accounts(
+        &mut context.svm,
+        KAMINO_MAIN_USDC_RESERVE,
+        KAMINO_MAIN_MARKET,
+        context.vault,
+        vault_usdc,
+        vault_main_usdc_collateral,
+        main_usdc_reserve_liquidity_supply,
+    );
+    let prime_usdc_reserve_accounts = seed_mock_kamino_reserve_spl_accounts(
+        &mut context.svm,
+        KAMINO_PRIME_USDC_RESERVE,
+        KAMINO_PRIME_MARKET,
+        context.vault,
+        vault_usdc,
+        vault_prime_usdc_collateral,
+        prime_usdc_reserve_liquidity_supply,
+    );
+
+    let route_action_setup = create_all_in_one_market_mint_yield_route_action(
+        loyal_action_context(context, wallet_b.pubkey()),
+        yield_route_universe_from_mock_reserves(
+            vec![USDC_MINT],
+            vec![main_usdc_reserve_accounts, prime_usdc_reserve_accounts],
+        ),
+        vec![mock_jupiter_swap_lane(false)],
+    )
+    .expect("build same-mint all-in-one route action");
+    let same_mint_route = route_action_setup
+        .same_mint_route_action()
+        .expect("route has one same-mint execution");
+
+    let (main_withdraw_instructions, main_withdraw_accounts) = mock_kamino_reserve_transaction(
+        context.vault,
+        main_usdc_reserve_accounts,
+        mock_kamino_withdraw_reserve_liquidity_data(amount),
+    );
+    let (prime_deposit_instructions, prime_deposit_accounts) = mock_kamino_reserve_transaction(
+        context.vault,
+        prime_usdc_reserve_accounts,
+        mock_kamino_deposit_reserve_liquidity_data(amount),
+    );
+    let same_mint_route_ix = same_mint_route.build(
+        wallet_b.pubkey(),
+        context.vault_index,
+        main_withdraw_instructions,
+        main_withdraw_accounts,
+        prime_deposit_instructions,
+        prime_deposit_accounts,
+    );
+
+    let max_packable = max_packable_route_executions(&same_mint_route_ix, &wallet_b);
+    assert!(
+        max_packable > 0,
+        "same-mint route execution should pack at least one instruction in a packet"
+    );
+    assert!(
+        route_execution_fits_packet(&same_mint_route_ix, max_packable, &wallet_b),
+        "measured max same-mint route execution count should fit packet"
+    );
+    assert!(
+        !route_execution_fits_packet(&same_mint_route_ix, max_packable + 1, &wallet_b),
+        "same-mint route execution capacity should be bounded by packet size"
+    );
+}
+
+#[test]
+fn cross_mint_route_execution_pack_size_is_packet_bound_by_measurement() {
+    let amount = 1_000_000;
+
+    let mut context = create_funded_squads_test_context_with_mock_programs(&[
+        MockProgram::Jupiter,
+        MockProgram::KaminoLend,
+    ])
+    .expect("create funded Squads test context");
+    let Some(context) = context.as_mut() else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+
+    let wallet_b = Keypair::new();
+    context
+        .svm
+        .airdrop(&wallet_b.pubkey(), LAMPORTS_PER_SOL / 10)
+        .expect("airdrop wallet B");
+
+    let vault_usdc = Keypair::new().pubkey();
+    let vault_pyusd = Keypair::new().pubkey();
+    let vault_main_usdc_collateral = Keypair::new().pubkey();
+    let vault_pyusd_collateral = Keypair::new().pubkey();
+    let main_usdc_reserve_liquidity_supply = Keypair::new().pubkey();
+    let pyusd_reserve_liquidity_supply = Keypair::new().pubkey();
+
+    seed_mock_jupiter_spl_accounts(&mut context.svm, amount, amount);
+    let main_usdc_reserve_accounts = seed_mock_kamino_reserve_spl_accounts(
+        &mut context.svm,
+        KAMINO_MAIN_USDC_RESERVE,
+        KAMINO_MAIN_MARKET,
+        context.vault,
+        vault_usdc,
+        vault_main_usdc_collateral,
+        main_usdc_reserve_liquidity_supply,
+    );
+    let pyusd_reserve_accounts = seed_mock_kamino_reserve_spl_accounts_with_mint(
+        &mut context.svm,
+        KAMINO_MAIN_PYUSD_RESERVE,
+        KAMINO_MAIN_MARKET,
+        PYUSD_MINT,
+        PYUSD_DECIMALS,
+        context.vault,
+        vault_pyusd,
+        vault_pyusd_collateral,
+        pyusd_reserve_liquidity_supply,
+    );
+
+    let route_action_setup = create_all_in_one_market_mint_yield_route_action(
+        loyal_action_context(context, wallet_b.pubkey()),
+        yield_route_universe_from_mock_reserves(
+            vec![USDC_MINT, PYUSD_MINT],
+            vec![main_usdc_reserve_accounts, pyusd_reserve_accounts],
+        ),
+        vec![mock_jupiter_swap_lane(false)],
+    )
+    .expect("build cross-mint all-in-one route action");
+    let jupiter_route = route_action_setup
+        .jupiter_route_action()
+        .expect("route has one Jupiter execution");
+
+    let (main_withdraw_instructions, main_withdraw_accounts) = mock_kamino_reserve_transaction(
+        context.vault,
+        main_usdc_reserve_accounts,
+        mock_kamino_withdraw_reserve_liquidity_data(amount),
+    );
+    let (pyusd_deposit_instructions, pyusd_deposit_accounts) =
+        mock_kamino_reserve_transaction(
+            context.vault,
+            pyusd_reserve_accounts,
+            mock_kamino_deposit_reserve_liquidity_data(amount),
+        );
+    let cross_mint_route_ix = jupiter_route.build(JupiterRouteExecution {
+        withdraw_instructions: main_withdraw_instructions,
+        withdraw_accounts: main_withdraw_accounts,
+        swap: JupiterSwapExecution {
+            signer: wallet_b.pubkey(),
+            vault_index: context.vault_index,
+            vault: context.vault,
+            vault_input: vault_usdc,
+            vault_output: vault_pyusd,
+            input_mint: USDC_MINT,
+            output_mint: PYUSD_MINT,
+            in_amount: amount,
+            out_amount: amount,
+        },
+        deposit_instructions: pyusd_deposit_instructions,
+        deposit_accounts: pyusd_deposit_accounts,
+    });
+
+    let max_packable = max_packable_route_executions(&cross_mint_route_ix, &wallet_b);
+    assert!(
+        max_packable > 0,
+        "cross-mint route execution should pack at least one instruction in a packet"
+    );
+    assert!(
+        route_execution_fits_packet(&cross_mint_route_ix, max_packable, &wallet_b),
+        "measured max cross-mint route execution count should fit packet"
+    );
+    assert!(
+        !route_execution_fits_packet(&cross_mint_route_ix, max_packable + 1, &wallet_b),
+        "cross-mint route execution capacity should be bounded by packet size"
+    );
+}
+
+fn route_execution_fits_packet(
+    route_execution_instruction: &Instruction,
+    route_count: usize,
+    fee_payer: &Keypair,
+) -> bool {
+    if route_count == 0 {
+        return true;
+    }
+    packet_bytes_for_repeated_route_executions(route_execution_instruction, route_count, fee_payer)
+        .is_some_and(|bytes| bytes <= PACKET_DATA_SIZE)
+}
+
+fn packet_bytes_for_repeated_route_executions(
+    route_execution_instruction: &Instruction,
+    route_count: usize,
+    fee_payer: &Keypair,
+) -> Option<usize> {
+    if route_count == 0 {
+        return Some(0);
+    }
+
+    let repeated_route_executions = (0..route_count)
+        .map(|_| route_execution_instruction.clone())
+        .collect::<Vec<_>>();
+    let versioned_message =
+        match solana_sdk::message::v0::Message::try_compile(&fee_payer.pubkey(), &repeated_route_executions, &[], solana_sdk::hash::Hash::new_unique()) {
+            Ok(message) => solana_sdk::message::VersionedMessage::V0(message),
+            Err(_) => return None,
+        };
+    let transaction = match solana_sdk::transaction::VersionedTransaction::try_new(
+        versioned_message,
+        &[fee_payer],
+    ) {
+        Ok(transaction) => transaction,
+        Err(_) => return None,
+    };
+    bincode::serialize(&transaction).ok().map(|serialized| serialized.len())
+}
+
+fn max_packable_route_executions(
+    route_execution_instruction: &Instruction,
+    fee_payer: &Keypair,
+) -> usize {
+    let mut lo = 0usize;
+    let mut hi = 1usize;
+
+    while route_execution_fits_packet(route_execution_instruction, hi, fee_payer) {
+        lo = hi;
+        hi = hi.saturating_mul(2);
+        if hi == 0 {
+            return lo;
+        }
+    }
+
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if route_execution_fits_packet(route_execution_instruction, mid, fee_payer) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+
+    lo
 }
 
 fn wallet_mock_jupiter_sol_to_usdc_swap_instruction(

@@ -22,7 +22,10 @@ mod tests {
     fn config_layout_has_expected_capacity() {
         assert_eq!(CONFIG_INIT_FIXED_LEN, config_init::FIXED_LEN);
         assert_eq!(CONFIG_ACCOUNT_MAX_LEN, config_account::MAX_LEN);
-        assert_eq!(CONFIG_ACCOUNT_MAX_LEN, 365);
+        assert_eq!(
+            CONFIG_ACCOUNT_MAX_LEN,
+            config_init::FIXED_LEN + (MAX_ALLOWED_MINTS * config_init::ALLOWED_MINT_ITEM_LEN),
+        );
     }
 
     #[test]

@@ -136,6 +136,41 @@ fn simulation_rejects_rebalance_on_active_swap_lane() {
 }
 
 #[test]
+fn simulation_scheduler_selects_sufficient_lowest_load_lane() {
+    let candidates = [
+        LaneCandidate {
+            lane_id: 0,
+            output_inventory: 2_000_000,
+            in_flight_count: 3,
+        },
+        LaneCandidate {
+            lane_id: 1,
+            output_inventory: 900_000,
+            in_flight_count: 0,
+        },
+        LaneCandidate {
+            lane_id: 15,
+            output_inventory: 2_000_000,
+            in_flight_count: 1,
+        },
+        LaneCandidate {
+            lane_id: GROWTH_LANE_COUNT - 1,
+            output_inventory: 2_000_000,
+            in_flight_count: 1,
+        },
+    ];
+
+    assert_eq!(
+        LaneScheduler::choose_swap_lane(&candidates, 1_000_000),
+        Some(15)
+    );
+    assert_eq!(
+        LaneScheduler::choose_swap_lane(&candidates, 3_000_000),
+        None
+    );
+}
+
+#[test]
 fn simulation_policy_does_not_change_when_lane_count_grows() {
     let Some(mut simulation) = HubLaneSimulation::setup(GROWTH_LANE_COUNT, 1) else {
         return;

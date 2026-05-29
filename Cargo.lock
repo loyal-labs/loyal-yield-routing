@@ -5438,6 +5438,7 @@ name = "squads-test-harness"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "bincode",
  "borsh 1.6.1",
  "litesvm",
  "loyal-actions",

@@ -33,6 +33,11 @@ use squads_test_harness::{
 include!("loyal_hub_swap/support.rs");
 
 #[test]
+fn loyal_hub_default_lane_count_matches_32_lane_contract() {
+    assert_eq!(DEFAULT_LOYAL_HUB_LANE_COUNT, 32);
+}
+
+#[test]
 fn treasury_backed_simulation_covers_hub_jupiter_and_inventory_movement() {
     let Some(mut context) = create_funded_squads_test_context_with_mock_programs(&[
         MockProgram::LoyalHubSwap,
@@ -344,76 +349,199 @@ fn loyal_hub_full_fill_swaps_atomically_through_squads_policy() {
 }
 
 #[test]
-fn loyal_hub_policy_allows_non_default_inventory_lane() {
+fn loyal_hub_policy_isolates_representative_inventory_lanes() {
+    for selected_lane in [0, 1, 15, DEFAULT_LOYAL_HUB_LANE_COUNT - 1] {
+        let Some(mut fixture) = setup_fixture(false) else {
+            eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+            return;
+        };
+
+        for lane_id in [1, 15, DEFAULT_LOYAL_HUB_LANE_COUNT - 1] {
+            seed_loyal_hub_inventory_spl_accounts_for_lane(
+                &mut fixture.context.svm,
+                &[USDC_MINT, PYUSD_MINT],
+                AMOUNT_IN * 2,
+                lane_id,
+            );
+        }
+
+        let observed_lanes = [0, 1, 15, DEFAULT_LOYAL_HUB_LANE_COUNT - 1];
+        let before = observed_lanes.map(|lane_id| {
+            (
+                lane_id,
+                get_spl_token_amount(
+                    &fixture.context.svm,
+                    loyal_hub_lane_token_account(USDC_MINT, lane_id),
+                ),
+                get_spl_token_amount(
+                    &fixture.context.svm,
+                    loyal_hub_lane_token_account(PYUSD_MINT, lane_id),
+                ),
+            )
+        });
+
+        let ix = hub_swap_ix_for_lane(&fixture, AMOUNT_IN, HUB_OUT, selected_lane);
+        try_send_instructions(
+            &mut fixture.context.svm,
+            &[ix],
+            &fixture.wallet_b,
+            &[&fixture.hub_authorizer],
+        )
+        .expect("same Loyal Hub policy allows a solver-selected inventory lane");
+
+        assert_eq!(
+            get_spl_token_amount(&fixture.context.svm, fixture.vault_usdc),
+            0
+        );
+        assert_eq!(
+            get_spl_token_amount(&fixture.context.svm, fixture.vault_pyusd),
+            HUB_OUT
+        );
+
+        for (lane_id, before_usdc, before_pyusd) in before {
+            let actual_usdc = get_spl_token_amount(
+                &fixture.context.svm,
+                loyal_hub_lane_token_account(USDC_MINT, lane_id),
+            );
+            let actual_pyusd = get_spl_token_amount(
+                &fixture.context.svm,
+                loyal_hub_lane_token_account(PYUSD_MINT, lane_id),
+            );
+            if lane_id == selected_lane {
+                assert_eq!(actual_usdc, before_usdc + AMOUNT_IN, "lane {lane_id} USDC");
+                assert_eq!(actual_pyusd, before_pyusd - HUB_OUT, "lane {lane_id} PYUSD");
+            } else {
+                assert_eq!(actual_usdc, before_usdc, "lane {lane_id} USDC");
+                assert_eq!(actual_pyusd, before_pyusd, "lane {lane_id} PYUSD");
+            }
+        }
+    }
+}
+
+#[test]
+fn loyal_hub_rebalancer_can_move_inventory_between_high_lanes() {
     let Some(mut fixture) = setup_fixture(false) else {
         eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
         return;
     };
+    let source_lane = DEFAULT_LOYAL_HUB_LANE_COUNT - 2;
+    let destination_lane = DEFAULT_LOYAL_HUB_LANE_COUNT - 1;
     seed_loyal_hub_inventory_spl_accounts_for_lane(
         &mut fixture.context.svm,
         &[USDC_MINT, PYUSD_MINT],
         AMOUNT_IN * 2,
-        1,
+        source_lane,
     );
 
-    let lane_zero_usdc_before =
-        get_spl_token_amount(&fixture.context.svm, loyal_hub_token_account(USDC_MINT));
-    let lane_zero_pyusd_before =
-        get_spl_token_amount(&fixture.context.svm, loyal_hub_token_account(PYUSD_MINT));
-    let lane_one_usdc = loyal_hub_lane_token_account(USDC_MINT, 1);
-    let lane_one_pyusd = loyal_hub_lane_token_account(PYUSD_MINT, 1);
-
-    let ix = fixture
-        .swap_action
-        .hub()
-        .expect("swap action has Loyal Hub lane")
-        .build(HubSwapExecution {
-            signer: fixture.wallet_b.pubkey(),
-            vault_index: fixture.context.vault_index,
-            vault: fixture.context.vault,
-            vault_input: fixture.vault_usdc,
-            vault_output: fixture.vault_pyusd,
-            input_mint: USDC_MINT,
-            output_mint: PYUSD_MINT,
-            hub_authorizer: fixture.hub_authorizer.pubkey(),
-            amount_in: AMOUNT_IN,
-            amount_out: HUB_OUT,
-            min_out: MIN_OUT,
-            max_fee_bps: MAX_FEE_BPS,
-            lane_id: 1,
-        });
+    let transfer = LoyalHubRebalanceTransfer {
+        from_lane_id: source_lane,
+        to_lane_id: destination_lane,
+        amount: 250_000,
+    };
+    let ix = rebalance_loyal_hub_inventory_instruction(
+        fixture.inventory_rebalancer.pubkey(),
+        USDC_MINT,
+        &[transfer],
+    );
     try_send_instructions(
         &mut fixture.context.svm,
         &[ix],
-        &fixture.wallet_b,
-        &[&fixture.hub_authorizer],
+        &fixture.context.wallet,
+        &[&fixture.inventory_rebalancer],
     )
-    .expect("same Loyal Hub policy allows a solver-selected inventory lane");
+    .expect("inventory rebalancer moves hot inventory across high-numbered lanes");
 
     assert_eq!(
-        get_spl_token_amount(&fixture.context.svm, fixture.vault_usdc),
-        0
+        get_spl_token_amount(
+            &fixture.context.svm,
+            loyal_hub_lane_token_account(USDC_MINT, source_lane)
+        ),
+        (AMOUNT_IN * 2) - transfer.amount
     );
     assert_eq!(
-        get_spl_token_amount(&fixture.context.svm, fixture.vault_pyusd),
-        HUB_OUT
+        get_spl_token_amount(
+            &fixture.context.svm,
+            loyal_hub_lane_token_account(USDC_MINT, destination_lane)
+        ),
+        transfer.amount
     );
-    assert_eq!(
-        get_spl_token_amount(&fixture.context.svm, loyal_hub_token_account(USDC_MINT)),
-        lane_zero_usdc_before
-    );
-    assert_eq!(
-        get_spl_token_amount(&fixture.context.svm, loyal_hub_token_account(PYUSD_MINT)),
-        lane_zero_pyusd_before
-    );
-    assert_eq!(
-        get_spl_token_amount(&fixture.context.svm, lane_one_usdc),
-        AMOUNT_IN * 3
-    );
-    assert_eq!(
-        get_spl_token_amount(&fixture.context.svm, lane_one_pyusd),
-        (AMOUNT_IN * 2) - HUB_OUT
-    );
+}
+
+#[test]
+fn loyal_hub_rebalancer_can_move_inventory_between_edge_lanes() {
+    for (source_lane, destination_lane) in [
+        (0, DEFAULT_LOYAL_HUB_LANE_COUNT - 1),
+        (DEFAULT_LOYAL_HUB_LANE_COUNT - 1, 0),
+        (
+            DEFAULT_LOYAL_HUB_LANE_COUNT - 2,
+            DEFAULT_LOYAL_HUB_LANE_COUNT - 1,
+        ),
+    ] {
+        let Some(mut fixture) = setup_fixture(false) else {
+            eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+            return;
+        };
+        if source_lane != 0 {
+            seed_loyal_hub_inventory_spl_accounts_for_lane(
+                &mut fixture.context.svm,
+                &[USDC_MINT, PYUSD_MINT],
+                AMOUNT_IN * 2,
+                source_lane,
+            );
+        }
+        if destination_lane != 0 {
+            seed_loyal_hub_inventory_spl_accounts_for_lane(
+                &mut fixture.context.svm,
+                &[USDC_MINT, PYUSD_MINT],
+                0,
+                destination_lane,
+            );
+        }
+
+        let amount = 250_000;
+        let source_before = get_spl_token_amount(
+            &fixture.context.svm,
+            loyal_hub_lane_token_account(USDC_MINT, source_lane),
+        );
+        let destination_before = get_spl_token_amount(
+            &fixture.context.svm,
+            loyal_hub_lane_token_account(USDC_MINT, destination_lane),
+        );
+        let transfer = LoyalHubRebalanceTransfer {
+            from_lane_id: source_lane,
+            to_lane_id: destination_lane,
+            amount,
+        };
+        let ix = rebalance_loyal_hub_inventory_instruction(
+            fixture.inventory_rebalancer.pubkey(),
+            USDC_MINT,
+            &[transfer],
+        );
+        try_send_instructions(
+            &mut fixture.context.svm,
+            &[ix],
+            &fixture.context.wallet,
+            &[&fixture.inventory_rebalancer],
+        )
+        .expect("inventory rebalancer moves inventory across edge lanes");
+
+        assert_eq!(
+            get_spl_token_amount(
+                &fixture.context.svm,
+                loyal_hub_lane_token_account(USDC_MINT, source_lane)
+            ),
+            source_before - amount,
+            "{source_lane} -> {destination_lane} source"
+        );
+        assert_eq!(
+            get_spl_token_amount(
+                &fixture.context.svm,
+                loyal_hub_lane_token_account(USDC_MINT, destination_lane)
+            ),
+            destination_before + amount,
+            "{source_lane} -> {destination_lane} destination"
+        );
+    }
 }
 
 #[test]

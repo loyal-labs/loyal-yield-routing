@@ -374,6 +374,49 @@ fn qed_swap_rejects_out_of_range_lane() {
 }
 
 #[test]
+fn qed_swap_accepts_highest_configured_lane() {
+    let Some(mut fixture) = setup_or_skip() else {
+        return;
+    };
+    let accounts = seed_direct_swap_accounts(&mut fixture, AMOUNT_IN);
+    let before = swap_balances(&fixture, &accounts);
+    let high_lane = DEFAULT_LOYAL_HUB_LANE_COUNT - 1;
+    seed_loyal_hub_inventory_spl_accounts_for_lane(
+        &mut fixture.context.svm,
+        &[USDC_MINT, PYUSD_MINT],
+        AMOUNT_IN * 3,
+        high_lane,
+    );
+
+    let ix = direct_hub_swap_ix(
+        accounts.user.pubkey(),
+        accounts.user_input,
+        accounts.user_output,
+        loyal_hub_lane_token_account(USDC_MINT, high_lane),
+        loyal_hub_lane_token_account(PYUSD_MINT, high_lane),
+        USDC_MINT,
+        PYUSD_MINT,
+        derive_loyal_hub_lane_authority(high_lane),
+        fixture.hub_authorizer.pubkey(),
+        true,
+        AMOUNT_IN,
+        HUB_OUT,
+        MIN_OUT,
+        MAX_FEE_BPS,
+        high_lane,
+    );
+    try_send_instructions(
+        &mut fixture.context.svm,
+        &[ix],
+        &fixture.context.wallet,
+        &[&accounts.user, &fixture.hub_authorizer],
+    )
+    .expect("valid lane_id at upper in-range boundary executes");
+
+    assert_successful_swap_deltas(&fixture, &accounts, &before, AMOUNT_IN, HUB_OUT);
+}
+
+#[test]
 fn qed_swap_rejects_missing_hub_authorizer_signature() {
     let Some(mut fixture) = setup_or_skip() else {
         return;

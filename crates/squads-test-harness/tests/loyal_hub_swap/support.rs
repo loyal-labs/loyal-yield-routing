@@ -110,6 +110,15 @@ fn setup_fixture(with_jupiter: bool) -> Option<HubSwapFixture> {
 }
 
 fn hub_swap_ix(fixture: &HubSwapFixture, amount_in: u64, amount_out: u64) -> Instruction {
+    hub_swap_ix_for_lane(fixture, amount_in, amount_out, 0)
+}
+
+fn hub_swap_ix_for_lane(
+    fixture: &HubSwapFixture,
+    amount_in: u64,
+    amount_out: u64,
+    lane_id: u8,
+) -> Instruction {
     fixture
         .swap_action
         .hub()
@@ -127,7 +136,7 @@ fn hub_swap_ix(fixture: &HubSwapFixture, amount_in: u64, amount_out: u64) -> Ins
             amount_out,
             min_out: MIN_OUT.min(amount_out),
             max_fee_bps: MAX_FEE_BPS,
-            lane_id: 0,
+            lane_id,
         })
 }
 
