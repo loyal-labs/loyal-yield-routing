@@ -168,6 +168,7 @@ fn wallet_b_can_execute_captured_jupiter_build_swap_instruction_through_policy()
         vec![SwapLane::Jupiter(JupiterSwapContract {
             program_id: JUPITER_V6_PROGRAM_ID,
             exact_in_discriminator: JUPITER_SWAP_DISCRIMINATOR,
+            max_slippage_bps: 100,
         })],
         YIELD_ROUTE_STANDALONE_ACTION_SEED,
     )

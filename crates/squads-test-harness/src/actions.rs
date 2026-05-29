@@ -3,7 +3,7 @@
 use loyal_actions::{
     CrossMintRoute, JupiterSwapContract, LoyalActionContext, LoyalActionError, LoyalActionStep,
     Result, SameMintRoute, SwapLane, YieldRouteActionInstruction, YieldRouteActionSetup,
-    YieldRouteUniverse, JUPITER_V6_PROGRAM_ID,
+    YieldRouteUniverse, JUPITER_DEFAULT_MAX_SLIPPAGE_BPS, JUPITER_V6_PROGRAM_ID,
 };
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
@@ -56,6 +56,7 @@ pub fn mock_jupiter_swap_contract(
     JupiterSwapContract {
         program_id: JUPITER_V6_PROGRAM_ID,
         exact_in_discriminator: MOCK_JUPITER_STABLE_EXACT_IN,
+        max_slippage_bps: JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
     }
 }
 

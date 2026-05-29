@@ -11,21 +11,21 @@ use squads_test_harness::{
     derive_squads_vault, execute_squads_program_interaction_instruction,
     execute_squads_sync_transaction_instruction, get_spl_token_amount,
     initialize_loyal_hub_config_instruction, loyal_action_context, loyal_hub_token_account,
-    mock_jupiter_stable_exact_in_swap_data, mock_jupiter_stable_reserve_token_account,
-    mock_jupiter_swap_data, mock_jupiter_swap_lane, mock_kamino_deposit_reserve_liquidity_data,
-    mock_kamino_reserve_transaction, mock_kamino_withdraw_reserve_liquidity_data,
-    remove_squads_policy_instruction, seed_empty_system_account_if_missing,
-    seed_loyal_hub_inventory_spl_accounts, seed_mock_jupiter_stable_reserve_spl_accounts,
-    seed_mock_kamino_reserve_spl_accounts, seed_mock_kamino_reserve_spl_accounts_with_mint,
-    seed_spl_mint_if_missing, seed_spl_token_account, try_send_instructions,
-    try_send_instructions_with_heap_frame, yield_route_universe_from_mock_reserves,
-    FundedSquadsTestContext, HubRouteExecution, HubSwapExecution, JupiterRouteExecution,
-    JupiterSwapExecution, MockJupiterStableReserveTokenAccount, MockKaminoReserveTokenAccounts,
-    MockProgram, RouteActionExt, SquadsCompiledInstruction, JUPITER_V6_PROGRAM_ID,
-    KAMINO_LEND_PROGRAM_ID, KAMINO_MAIN_MARKET, KAMINO_MAIN_PYUSD_RESERVE,
-    KAMINO_MAIN_USDC_RESERVE, KAMINO_PRIME_MARKET, KAMINO_PRIME_USDC_RESERVE, LAMPORTS_PER_SOL,
-    LOYAL_HUB_SWAP_PROGRAM_ID, MOCK_JUPITER_USDC_TO_PYUSD, PYUSD_DECIMALS, PYUSD_MINT,
-    USDC_DECIMALS, USDC_MINT,
+    mock_jupiter_stable_exact_in_swap_data, mock_jupiter_stable_exact_in_swap_data_with_slippage,
+    mock_jupiter_stable_reserve_token_account, mock_jupiter_swap_data, mock_jupiter_swap_lane,
+    mock_kamino_deposit_reserve_liquidity_data, mock_kamino_reserve_transaction,
+    mock_kamino_withdraw_reserve_liquidity_data, remove_squads_policy_instruction,
+    seed_empty_system_account_if_missing, seed_loyal_hub_inventory_spl_accounts,
+    seed_mock_jupiter_stable_reserve_spl_accounts, seed_mock_kamino_reserve_spl_accounts,
+    seed_mock_kamino_reserve_spl_accounts_with_mint, seed_spl_mint_if_missing,
+    seed_spl_token_account, try_send_instructions, try_send_instructions_with_heap_frame,
+    yield_route_universe_from_mock_reserves, FundedSquadsTestContext, HubRouteExecution,
+    HubSwapExecution, JupiterRouteExecution, JupiterSwapExecution,
+    MockJupiterStableReserveTokenAccount, MockKaminoReserveTokenAccounts, MockProgram,
+    RouteActionExt, SquadsCompiledInstruction, JUPITER_V6_PROGRAM_ID, KAMINO_LEND_PROGRAM_ID,
+    KAMINO_MAIN_MARKET, KAMINO_MAIN_PYUSD_RESERVE, KAMINO_MAIN_USDC_RESERVE, KAMINO_PRIME_MARKET,
+    KAMINO_PRIME_USDC_RESERVE, LAMPORTS_PER_SOL, LOYAL_HUB_SWAP_PROGRAM_ID,
+    MOCK_JUPITER_USDC_TO_PYUSD, PYUSD_DECIMALS, PYUSD_MINT, USDC_DECIMALS, USDC_MINT,
 };
 
 const AMOUNT: u64 = 1_000_000;
@@ -1081,6 +1081,19 @@ fn rejects_unapproved_mints_markets_and_venue_accounts() {
         result.is_err(),
         "wrong Jupiter discriminator should fail at policy"
     );
+
+    let before = fixture.custody_snapshot();
+    let mut excessive_slippage_payload = fixture.raw_jupiter_route();
+    excessive_slippage_payload.compiled_instructions[1].data =
+        mock_jupiter_stable_exact_in_swap_data_with_slippage(
+            AMOUNT, AMOUNT, 101, USDC_MINT, PYUSD_MINT,
+        );
+    let result = fixture.send_raw_route(excessive_slippage_payload, false);
+    assert!(
+        result.is_err(),
+        "Jupiter slippage above the policy cap should fail"
+    );
+    fixture.assert_custody_unchanged(&before);
 
     let wrong_hub_authorizer = Keypair::new();
     let wrong_hub_authorizer_ix =

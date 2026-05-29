@@ -106,12 +106,12 @@ fn process_jupiter(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -
 }
 
 fn parse_jupiter_instruction(data: &[u8]) -> Result<JupiterInstruction, ProgramError> {
-    if data.len() == 88 && data[..8] == MOCK_JUPITER_STABLE_EXACT_IN {
+    if data.len() == 90 && data[..8] == MOCK_JUPITER_STABLE_EXACT_IN {
         return Ok(JupiterInstruction::StableExactIn {
             in_amount: read_u64(&data[8..16])?,
             out_amount: read_u64(&data[16..24])?,
-            input_mint: Pubkey::new_from_array(read_pubkey(&data[24..56])?),
-            output_mint: Pubkey::new_from_array(read_pubkey(&data[56..88])?),
+            input_mint: Pubkey::new_from_array(read_pubkey(&data[26..58])?),
+            output_mint: Pubkey::new_from_array(read_pubkey(&data[58..90])?),
         });
     }
 

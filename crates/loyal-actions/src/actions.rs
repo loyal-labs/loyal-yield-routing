@@ -43,6 +43,7 @@ impl YieldRouteUniverse {
 pub struct JupiterSwapContract {
     pub program_id: Pubkey,
     pub exact_in_discriminator: [u8; 8],
+    pub max_slippage_bps: u16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -714,6 +715,7 @@ mod tests {
         SwapLane::Jupiter(JupiterSwapContract {
             program_id: JUPITER_V6_PROGRAM_ID,
             exact_in_discriminator: JUPITER_SWAP_DISCRIMINATOR,
+            max_slippage_bps: JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
         })
     }
 
@@ -1034,6 +1036,11 @@ mod tests {
             &constraint.data_constraints[0],
             0,
             &JUPITER_SWAP_DISCRIMINATOR,
+        );
+        assert_data_u16_lte(
+            &constraint.data_constraints[1],
+            JUPITER_SWAP_SLIPPAGE_BPS_OFFSET,
+            JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
         );
     }
 

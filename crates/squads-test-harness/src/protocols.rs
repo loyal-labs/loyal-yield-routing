@@ -26,10 +26,27 @@ pub fn mock_jupiter_stable_exact_in_swap_data(
     input_mint: Pubkey,
     output_mint: Pubkey,
 ) -> Vec<u8> {
-    let mut data = Vec::with_capacity(88);
+    mock_jupiter_stable_exact_in_swap_data_with_slippage(
+        in_amount,
+        out_amount,
+        50,
+        input_mint,
+        output_mint,
+    )
+}
+
+pub fn mock_jupiter_stable_exact_in_swap_data_with_slippage(
+    in_amount: u64,
+    out_amount: u64,
+    slippage_bps: u16,
+    input_mint: Pubkey,
+    output_mint: Pubkey,
+) -> Vec<u8> {
+    let mut data = Vec::with_capacity(90);
     data.extend_from_slice(&MOCK_JUPITER_STABLE_EXACT_IN);
     data.extend_from_slice(&in_amount.to_le_bytes());
     data.extend_from_slice(&out_amount.to_le_bytes());
+    data.extend_from_slice(&slippage_bps.to_le_bytes());
     data.extend_from_slice(input_mint.as_ref());
     data.extend_from_slice(output_mint.as_ref());
     data

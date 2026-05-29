@@ -4,11 +4,13 @@
 //! this SDK to build instructions, then execute them in their own runtime.
 
 mod actions;
+mod detection;
 mod ids;
 mod protocols;
 mod squads;
 
 pub use actions::*;
+pub use detection::*;
 pub use ids::*;
 pub use loyal_hub_abi as hub_abi;
 pub use protocols::{

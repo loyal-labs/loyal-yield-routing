@@ -77,11 +77,18 @@ pub(crate) fn jupiter_constraint(
     SquadsInstructionConstraint {
         program_id: contract.program_id,
         account_constraints,
-        data_constraints: vec![SquadsDataConstraint {
-            data_offset: 0,
-            data_value: SquadsDataValue::U8Slice(contract.exact_in_discriminator.to_vec()),
-            operator: SquadsDataOperator::Equals,
-        }],
+        data_constraints: vec![
+            SquadsDataConstraint {
+                data_offset: 0,
+                data_value: SquadsDataValue::U8Slice(contract.exact_in_discriminator.to_vec()),
+                operator: SquadsDataOperator::Equals,
+            },
+            SquadsDataConstraint {
+                data_offset: JUPITER_SWAP_SLIPPAGE_BPS_OFFSET,
+                data_value: SquadsDataValue::U16Le(contract.max_slippage_bps),
+                operator: SquadsDataOperator::LessThanOrEqualTo,
+            },
+        ],
     }
 }
 
@@ -1063,6 +1070,7 @@ mod tests {
             JupiterSwapContract {
                 program_id: JUPITER_V6_PROGRAM_ID,
                 exact_in_discriminator: JUPITER_SWAP_DISCRIMINATOR,
+                max_slippage_bps: JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
             },
         );
 
@@ -1094,6 +1102,12 @@ mod tests {
             0,
             &JUPITER_SWAP_DISCRIMINATOR,
             SquadsDataOperator::Equals,
+        ));
+        assert!(has_u16_data_constraint(
+            &constraint.data_constraints,
+            JUPITER_SWAP_SLIPPAGE_BPS_OFFSET,
+            JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
+            SquadsDataOperator::LessThanOrEqualTo,
         ));
     }
 
