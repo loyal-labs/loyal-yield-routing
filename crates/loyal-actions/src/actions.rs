@@ -1,7 +1,7 @@
 use crate::ids::*;
 use crate::protocols::{
-    jupiter_constraint, kamino_market_mint_constraint, kamino_mint_constraint,
-    loyal_hub_constraint, unique_pubkeys,
+    jupiter_constraint, kamino_deposit_reserve_liquidity_constraint,
+    kamino_redeem_reserve_collateral_constraint, loyal_hub_constraint, unique_pubkeys,
 };
 use crate::squads::{
     create_program_interaction_action_instruction, derive_action_account, LoyalActionError, Result,
@@ -56,16 +56,10 @@ pub enum SwapLane {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KaminoScope {
-    MarketMint,
-    MintOnly,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RouteTopology {
     ThreeStep,
     CombinedKamino,
-    AllInOne { scope: KaminoScope },
+    AllInOne,
     SwapOnly,
 }
 
@@ -330,22 +324,7 @@ pub fn create_all_in_one_market_mint_yield_route_action(
     swap_lanes: Vec<SwapLane>,
 ) -> Result<YieldRouteActionSetup> {
     YieldRouteActionBuilder::new(context, universe)
-        .topology(RouteTopology::AllInOne {
-            scope: KaminoScope::MarketMint,
-        })
-        .swap_lanes(swap_lanes)
-        .build()
-}
-
-pub fn create_all_in_one_mint_yield_route_action(
-    context: LoyalActionContext,
-    universe: YieldRouteUniverse,
-    swap_lanes: Vec<SwapLane>,
-) -> Result<YieldRouteActionSetup> {
-    YieldRouteActionBuilder::new(context, universe)
-        .topology(RouteTopology::AllInOne {
-            scope: KaminoScope::MintOnly,
-        })
+        .topology(RouteTopology::AllInOne)
         .swap_lanes(swap_lanes)
         .build()
 }
@@ -398,7 +377,7 @@ fn build_yield_route_actions(plan: YieldRouteActionPlan) -> Result<YieldRouteAct
     match plan.topology {
         RouteTopology::ThreeStep => build_three_step(plan),
         RouteTopology::CombinedKamino => build_combined_kamino(plan),
-        RouteTopology::AllInOne { scope } => build_all_in_one(plan, scope),
+        RouteTopology::AllInOne => build_all_in_one(plan),
         RouteTopology::SwapOnly => build_swap_only(plan),
     }
 }
@@ -423,22 +402,20 @@ fn build_swap_only(plan: YieldRouteActionPlan) -> Result<YieldRouteActionSetup> 
 
 fn build_three_step(plan: YieldRouteActionPlan) -> Result<YieldRouteActionSetup> {
     let accounts = action_accounts(plan.context.settings, plan.seeds);
-    let withdraw_constraints = vec![kamino_market_mint_constraint(
+    let withdraw_constraints = vec![kamino_redeem_reserve_collateral_constraint(
         plan.context.vault,
         plan.universe.kamino_markets.clone(),
         plan.universe.kamino_liquidity_mints.clone(),
-        KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR,
     )];
     let swap_constraints = stable_swap_constraints(
         plan.context.vault,
         plan.universe.stable_mints.clone(),
         &plan.swap_lanes,
     )?;
-    let deposit_constraints = vec![kamino_market_mint_constraint(
+    let deposit_constraints = vec![kamino_deposit_reserve_liquidity_constraint(
         plan.context.vault,
         plan.universe.kamino_markets.clone(),
         plan.universe.kamino_liquidity_mints.clone(),
-        KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR,
     )];
     let instructions = vec![
         action_instruction(
@@ -477,17 +454,15 @@ fn build_combined_kamino(plan: YieldRouteActionPlan) -> Result<YieldRouteActionS
         deposit: rebalance,
     };
     let kamino_constraints = vec![
-        kamino_market_mint_constraint(
+        kamino_redeem_reserve_collateral_constraint(
             plan.context.vault,
             plan.universe.kamino_markets.clone(),
             plan.universe.kamino_liquidity_mints.clone(),
-            KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR,
         ),
-        kamino_market_mint_constraint(
+        kamino_deposit_reserve_liquidity_constraint(
             plan.context.vault,
             plan.universe.kamino_markets.clone(),
             plan.universe.kamino_liquidity_mints.clone(),
-            KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR,
         ),
     ];
     let swap_constraints = stable_swap_constraints(
@@ -518,10 +493,7 @@ fn build_combined_kamino(plan: YieldRouteActionPlan) -> Result<YieldRouteActionS
     )
 }
 
-fn build_all_in_one(
-    plan: YieldRouteActionPlan,
-    scope: KaminoScope,
-) -> Result<YieldRouteActionSetup> {
+fn build_all_in_one(plan: YieldRouteActionPlan) -> Result<YieldRouteActionSetup> {
     let action = derive_action_account(&plan.context.settings, plan.seeds.withdraw).0;
     let accounts = YieldRouteActionAccounts {
         withdraw: action,
@@ -529,24 +501,20 @@ fn build_all_in_one(
         deposit: action,
     };
     let mut constraints = Vec::with_capacity(2 + plan.swap_lanes.len());
-    constraints.push(kamino_constraint(
-        scope,
+    constraints.push(kamino_redeem_reserve_collateral_constraint(
         plan.context.vault,
         plan.universe.kamino_markets.clone(),
         plan.universe.kamino_liquidity_mints.clone(),
-        KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR,
     ));
     constraints.extend(stable_swap_constraints(
         plan.context.vault,
         plan.universe.stable_mints.clone(),
         &plan.swap_lanes,
     )?);
-    constraints.push(kamino_constraint(
-        scope,
+    constraints.push(kamino_deposit_reserve_liquidity_constraint(
         plan.context.vault,
         plan.universe.kamino_markets.clone(),
         plan.universe.kamino_liquidity_mints.clone(),
-        KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR,
     ));
     let instruction = action_instruction(plan.context, plan.seeds.withdraw, constraints.clone())?;
     let steps = YieldRouteSteps {
@@ -621,21 +589,6 @@ fn action_instruction(
         context.account_index,
         constraints,
     )
-}
-
-fn kamino_constraint(
-    scope: KaminoScope,
-    vault: Pubkey,
-    markets: Vec<Pubkey>,
-    liquidity_mints: Vec<Pubkey>,
-    discriminator: [u8; 8],
-) -> SquadsInstructionConstraint {
-    match scope {
-        KaminoScope::MarketMint => {
-            kamino_market_mint_constraint(vault, markets, liquidity_mints, discriminator)
-        }
-        KaminoScope::MintOnly => kamino_mint_constraint(vault, liquidity_mints, discriminator),
-    }
 }
 
 fn stable_swap_constraints(

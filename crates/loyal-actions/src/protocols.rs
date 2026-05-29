@@ -21,37 +21,40 @@ fn write_bytes(data: &mut [u8], offset: usize, bytes: &[u8]) {
     data[offset..offset + bytes.len()].copy_from_slice(bytes);
 }
 
-pub(crate) fn kamino_market_mint_constraint(
+const SPL_TOKEN_ACCOUNT_AUTHORITY_OFFSET: u64 = 32;
+
+pub(crate) fn kamino_redeem_reserve_collateral_constraint(
     vault: Pubkey,
     markets: Vec<Pubkey>,
     liquidity_mints: Vec<Pubkey>,
-    discriminator: [u8; 8],
+) -> SquadsInstructionConstraint {
+    SquadsInstructionConstraint {
+        program_id: KAMINO_LEND_PROGRAM_ID,
+        account_constraints: vec![
+            pubkey_constraint(0, vec![vault], None),
+            pubkey_constraint(1, unique_pubkeys(markets), None),
+            pubkey_constraint(4, unique_pubkeys(liquidity_mints), Some(spl_token::id())),
+            pubkey_constraint(10, vec![spl_token::id()], None),
+        ],
+        data_constraints: discriminator_constraint(KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR),
+    }
+}
+
+pub(crate) fn kamino_deposit_reserve_liquidity_constraint(
+    vault: Pubkey,
+    markets: Vec<Pubkey>,
+    liquidity_mints: Vec<Pubkey>,
 ) -> SquadsInstructionConstraint {
     SquadsInstructionConstraint {
         program_id: KAMINO_LEND_PROGRAM_ID,
         account_constraints: vec![
             pubkey_constraint(0, vec![vault], None),
             pubkey_constraint(2, unique_pubkeys(markets), None),
-            pubkey_constraint(3, unique_pubkeys(liquidity_mints), Some(spl_token::id())),
+            pubkey_constraint(4, unique_pubkeys(liquidity_mints), Some(spl_token::id())),
+            spl_token_authority_constraint(8, vault),
             pubkey_constraint(10, vec![spl_token::id()], None),
         ],
-        data_constraints: discriminator_constraint(discriminator),
-    }
-}
-
-pub(crate) fn kamino_mint_constraint(
-    vault: Pubkey,
-    liquidity_mints: Vec<Pubkey>,
-    discriminator: [u8; 8],
-) -> SquadsInstructionConstraint {
-    SquadsInstructionConstraint {
-        program_id: KAMINO_LEND_PROGRAM_ID,
-        account_constraints: vec![
-            pubkey_constraint(0, vec![vault], None),
-            pubkey_constraint(3, unique_pubkeys(liquidity_mints), Some(spl_token::id())),
-            pubkey_constraint(10, vec![spl_token::id()], None),
-        ],
-        data_constraints: discriminator_constraint(discriminator),
+        data_constraints: discriminator_constraint(KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR),
     }
 }
 
@@ -64,7 +67,7 @@ pub(crate) fn jupiter_constraint(
     let mut account_constraints = vec![
         pubkey_constraint(0, vec![vault], None),
         account_data_constraint(1, Some(spl_token::id())),
-        account_data_constraint(2, Some(spl_token::id())),
+        spl_token_authority_constraint(2, vault),
         pubkey_constraint(3, allowed_mints.clone(), Some(spl_token::id())),
         pubkey_constraint(4, allowed_mints, Some(spl_token::id())),
         pubkey_constraint(5, vec![spl_token::id()], None),
@@ -173,6 +176,21 @@ pub(crate) fn account_data_constraint(
         account_index,
         account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
         owner,
+    }
+}
+
+pub(crate) fn spl_token_authority_constraint(
+    account_index: u8,
+    authority: Pubkey,
+) -> SquadsAccountConstraint {
+    SquadsAccountConstraint {
+        account_index,
+        account_constraint: SquadsAccountConstraintType::AccountData(vec![SquadsDataConstraint {
+            data_offset: SPL_TOKEN_ACCOUNT_AUTHORITY_OFFSET,
+            data_value: SquadsDataValue::U8Slice(authority.to_bytes().to_vec()),
+            operator: SquadsDataOperator::Equals,
+        }]),
+        owner: Some(spl_token::id()),
     }
 }
 

@@ -130,25 +130,53 @@ pub fn mock_kamino_reserve_transaction(
     reserve_accounts: MockKaminoReserveTokenAccounts,
     data: Vec<u8>,
 ) -> (Vec<SquadsCompiledInstruction>, Vec<AccountMeta>) {
-    let transaction_accounts = vec![
-        AccountMeta::new(vault, false),
-        AccountMeta::new(reserve_accounts.reserve, false),
-        AccountMeta::new_readonly(reserve_accounts.market, false),
-        AccountMeta::new_readonly(reserve_accounts.liquidity_mint, false),
-        AccountMeta::new(reserve_accounts.vault_liquidity, false),
-        AccountMeta::new(reserve_accounts.vault_collateral, false),
-        AccountMeta::new(reserve_accounts.reserve_liquidity_supply, false),
-        AccountMeta::new(reserve_accounts.collateral_mint, false),
-        AccountMeta::new_readonly(reserve_accounts.reserve_liquidity_authority, false),
-        AccountMeta::new_readonly(reserve_accounts.collateral_mint_authority, false),
-        AccountMeta::new_readonly(spl_token::id(), false),
-        AccountMeta::new_readonly(KAMINO_LEND_PROGRAM_ID, false),
-    ];
+    let is_deposit = data.get(..8).is_some_and(|discriminator| {
+        discriminator == KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR
+    });
+    let is_withdraw = data.get(..8).is_some_and(|discriminator| {
+        discriminator == KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR
+    });
+    assert!(
+        is_deposit || is_withdraw,
+        "mock Kamino transaction requires deposit or withdraw data"
+    );
+
+    let transaction_accounts = if is_deposit {
+        vec![
+            AccountMeta::new(vault, false),
+            AccountMeta::new(reserve_accounts.reserve, false),
+            AccountMeta::new_readonly(reserve_accounts.market, false),
+            AccountMeta::new_readonly(reserve_accounts.lending_market_authority, false),
+            AccountMeta::new_readonly(reserve_accounts.liquidity_mint, false),
+            AccountMeta::new(reserve_accounts.reserve_liquidity_supply, false),
+            AccountMeta::new(reserve_accounts.collateral_mint, false),
+            AccountMeta::new(reserve_accounts.vault_liquidity, false),
+            AccountMeta::new(reserve_accounts.vault_collateral, false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+            AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false),
+            AccountMeta::new_readonly(KAMINO_LEND_PROGRAM_ID, false),
+        ]
+    } else {
+        vec![
+            AccountMeta::new(vault, false),
+            AccountMeta::new_readonly(reserve_accounts.market, false),
+            AccountMeta::new(reserve_accounts.reserve, false),
+            AccountMeta::new_readonly(reserve_accounts.lending_market_authority, false),
+            AccountMeta::new_readonly(reserve_accounts.liquidity_mint, false),
+            AccountMeta::new(reserve_accounts.collateral_mint, false),
+            AccountMeta::new(reserve_accounts.reserve_liquidity_supply, false),
+            AccountMeta::new(reserve_accounts.vault_collateral, false),
+            AccountMeta::new(reserve_accounts.vault_liquidity, false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+            AccountMeta::new_readonly(solana_sdk::sysvar::instructions::id(), false),
+            AccountMeta::new_readonly(KAMINO_LEND_PROGRAM_ID, false),
+        ]
+    };
 
     (
         vec![SquadsCompiledInstruction {
             program_id_index: 11,
-            accounts: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            accounts: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10],
             data,
         }],
         transaction_accounts,
@@ -216,6 +244,14 @@ pub fn derive_mock_kamino_reserve_liquidity_authority(reserve: Pubkey) -> Pubkey
 pub fn derive_mock_kamino_collateral_mint_authority(reserve: Pubkey) -> Pubkey {
     Pubkey::find_program_address(
         &[KAMINO_COLLATERAL_MINT_AUTHORITY_SEED, reserve.as_ref()],
+        &KAMINO_LEND_PROGRAM_ID,
+    )
+    .0
+}
+
+pub fn derive_mock_kamino_lending_market_authority(market: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[KAMINO_LENDING_MARKET_AUTHORITY_SEED, market.as_ref()],
         &KAMINO_LEND_PROGRAM_ID,
     )
     .0
@@ -463,14 +499,21 @@ pub fn seed_mock_kamino_reserve_spl_accounts_with_mint(
     vault_collateral: Pubkey,
     reserve_liquidity_supply: Pubkey,
 ) -> MockKaminoReserveTokenAccounts {
-    let reserve_liquidity_authority = derive_mock_kamino_reserve_liquidity_authority(reserve);
-    let collateral_mint_authority = derive_mock_kamino_collateral_mint_authority(reserve);
+    let lending_market_authority = derive_mock_kamino_lending_market_authority(market);
+    let reserve_liquidity_authority = lending_market_authority;
+    let collateral_mint_authority = lending_market_authority;
     let collateral_mint = mock_kamino_collateral_mint(reserve);
 
     seed_empty_system_account_if_missing(svm, market);
-    seed_empty_system_account_if_missing(svm, reserve);
-    seed_empty_system_account_if_missing(svm, reserve_liquidity_authority);
-    seed_empty_system_account_if_missing(svm, collateral_mint_authority);
+    seed_mock_kamino_reserve_account(
+        svm,
+        reserve,
+        market,
+        liquidity_mint,
+        collateral_mint,
+        reserve_liquidity_supply,
+    );
+    seed_empty_system_account_if_missing(svm, lending_market_authority);
     seed_spl_mint_if_missing(svm, liquidity_mint, None, liquidity_decimals, 0);
     seed_spl_mint(
         svm,
@@ -485,13 +528,14 @@ pub fn seed_mock_kamino_reserve_spl_accounts_with_mint(
         svm,
         reserve_liquidity_supply,
         liquidity_mint,
-        reserve_liquidity_authority,
+        lending_market_authority,
         0,
     );
 
     MockKaminoReserveTokenAccounts {
         reserve,
         market,
+        lending_market_authority,
         liquidity_mint,
         collateral_mint,
         reserve_liquidity_authority,
@@ -500,6 +544,33 @@ pub fn seed_mock_kamino_reserve_spl_accounts_with_mint(
         vault_collateral,
         reserve_liquidity_supply,
     }
+}
+
+fn seed_mock_kamino_reserve_account(
+    svm: &mut LiteSVM,
+    reserve: Pubkey,
+    market: Pubkey,
+    liquidity_mint: Pubkey,
+    collateral_mint: Pubkey,
+    reserve_liquidity_supply: Pubkey,
+) {
+    let mut data = vec![0; KAMINO_RESERVE_STATE_LEN];
+    data[0..32].copy_from_slice(market.as_ref());
+    data[32..64].copy_from_slice(liquidity_mint.as_ref());
+    data[64..96].copy_from_slice(collateral_mint.as_ref());
+    data[96..128].copy_from_slice(reserve_liquidity_supply.as_ref());
+
+    svm.set_account(
+        reserve,
+        Account {
+            lamports: LAMPORTS_PER_SOL,
+            data,
+            owner: solana_sdk::system_program::ID,
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .expect("seed mock Kamino reserve account");
 }
 
 pub fn add_mock_jupiter_program(svm: &mut LiteSVM) -> std::io::Result<PathBuf> {

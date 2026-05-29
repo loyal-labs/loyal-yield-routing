@@ -351,6 +351,7 @@ pub struct MockJupiterTokenAccounts {
 pub struct MockKaminoReserveTokenAccounts {
     pub reserve: Pubkey,
     pub market: Pubkey,
+    pub lending_market_authority: Pubkey,
     pub liquidity_mint: Pubkey,
     pub collateral_mint: Pubkey,
     pub reserve_liquidity_authority: Pubkey,
