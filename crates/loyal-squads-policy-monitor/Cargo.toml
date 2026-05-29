@@ -13,5 +13,6 @@ loyal-actions = { path = "../loyal-actions" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 solana-sdk.workspace = true
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
