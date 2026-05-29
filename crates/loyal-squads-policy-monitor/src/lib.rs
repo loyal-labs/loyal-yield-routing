@@ -173,6 +173,10 @@ impl PostgresPolicyMatchSink {
         store.apply_migrations().await?;
         Ok(Self { store })
     }
+
+    pub fn from_store(store: OrchestratorStore) -> Self {
+        Self { store }
+    }
 }
 
 impl PolicyMatchSink for PostgresPolicyMatchSink {
@@ -609,12 +613,14 @@ mod tests {
         YieldRouteUniverse, YieldRouteUniversePreset, JUPITER_SWAP_DISCRIMINATOR,
         JUPITER_V6_PROGRAM_ID,
     };
+    use loyal_yield_orchestrator::{sqlx, NeonSqlConfig};
     use solana_sdk::{
         hash::Hash,
         message::{v0, VersionedMessage},
         signature::{Keypair, Signer},
         transaction::VersionedTransaction,
     };
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[derive(Default)]
     struct VecSink {
@@ -660,6 +666,55 @@ mod tests {
             exact_in_discriminator: JUPITER_SWAP_DISCRIMINATOR,
             max_slippage_bps: 100,
         })
+    }
+
+    async fn database_store() -> Option<OrchestratorStore> {
+        let url = match std::env::var("DATABASE_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("skipping database test because DATABASE_URL is not set");
+                return None;
+            }
+        };
+        let store = OrchestratorStore::connect(
+            NeonSqlConfig::new(url)
+                .with_max_connections(1)
+                .with_acquire_timeout(Duration::from_secs(10)),
+        )
+        .await
+        .expect("connect to test database");
+        store.apply_migrations().await.expect("apply migrations");
+        Some(store)
+    }
+
+    fn unique_signature(test_name: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after unix epoch")
+            .as_nanos();
+        format!("{test_name}-{nanos}")
+    }
+
+    async fn delete_policy_signature(store: &OrchestratorStore, signature: &str) {
+        sqlx::query(
+            r#"
+            DELETE FROM loyal_yield.managed_vaults
+            WHERE active_policy_id IN (
+                SELECT id
+                FROM loyal_yield.route_policies
+                WHERE last_seen_signature = $1
+            )
+            "#,
+        )
+        .bind(signature)
+        .execute(store.pool())
+        .await
+        .expect("delete test vault");
+        sqlx::query("DELETE FROM loyal_yield.route_policies WHERE last_seen_signature = $1")
+            .bind(signature)
+            .execute(store.pool())
+            .await
+            .expect("delete test policy");
     }
 
     fn notification(
@@ -834,5 +889,46 @@ mod tests {
 
         assert_eq!(emitted, 0);
         assert!(monitor.sink.events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mocked_notification_records_policy_match_in_postgres_store() {
+        let Some(store) = database_store().await else {
+            return;
+        };
+        let signature = unique_signature("monitor-integration");
+        delete_policy_signature(&store, &signature).await;
+
+        let authority = Keypair::new();
+        let setup = create_all_in_one_market_mint_yield_route_action(
+            context(authority.pubkey()),
+            universe(),
+            vec![jupiter_lane()],
+        )
+        .unwrap();
+        let mut monitor =
+            PolicyMonitor::new(config(), PostgresPolicyMatchSink::from_store(store.clone()));
+
+        let emitted = monitor
+            .process_notification(&notification(
+                &signature,
+                4242,
+                setup.instructions[0].clone(),
+                &authority,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(emitted, 1);
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM loyal_yield.route_policies WHERE last_seen_signature = $1",
+        )
+        .bind(&signature)
+        .fetch_one(store.pool())
+        .await
+        .expect("count stored policy");
+        assert_eq!(count, 1);
+
+        delete_policy_signature(&store, &signature).await;
     }
 }

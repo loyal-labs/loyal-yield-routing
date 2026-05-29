@@ -446,24 +446,24 @@ async fn upsert_policy(
              universe_preset, risk_profile, swap_lanes, active, last_seen_slot, last_seen_signature)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, TRUE, $17, $18)
         ON CONFLICT (cluster, policy_account) DO UPDATE SET
-            settings = EXCLUDED.settings,
-            authority = EXCLUDED.authority,
-            policy_seed = EXCLUDED.policy_seed,
-            vault_index = EXCLUDED.vault_index,
-            vault_pubkey = EXCLUDED.vault_pubkey,
-            delegated_signers = EXCLUDED.delegated_signers,
-            threshold = EXCLUDED.threshold,
-            route_modes = EXCLUDED.route_modes,
-            stable_mints = EXCLUDED.stable_mints,
-            kamino_markets = EXCLUDED.kamino_markets,
-            kamino_liquidity_mints = EXCLUDED.kamino_liquidity_mints,
-            universe_preset = EXCLUDED.universe_preset,
-            risk_profile = EXCLUDED.risk_profile,
-            swap_lanes = EXCLUDED.swap_lanes,
-            active = TRUE,
-            last_seen_at = now(),
-            last_seen_slot = EXCLUDED.last_seen_slot,
-            last_seen_signature = EXCLUDED.last_seen_signature
+            settings = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.settings ELSE loyal_yield.route_policies.settings END,
+            authority = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.authority ELSE loyal_yield.route_policies.authority END,
+            policy_seed = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.policy_seed ELSE loyal_yield.route_policies.policy_seed END,
+            vault_index = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.vault_index ELSE loyal_yield.route_policies.vault_index END,
+            vault_pubkey = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.vault_pubkey ELSE loyal_yield.route_policies.vault_pubkey END,
+            delegated_signers = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.delegated_signers ELSE loyal_yield.route_policies.delegated_signers END,
+            threshold = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.threshold ELSE loyal_yield.route_policies.threshold END,
+            route_modes = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.route_modes ELSE loyal_yield.route_policies.route_modes END,
+            stable_mints = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.stable_mints ELSE loyal_yield.route_policies.stable_mints END,
+            kamino_markets = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.kamino_markets ELSE loyal_yield.route_policies.kamino_markets END,
+            kamino_liquidity_mints = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.kamino_liquidity_mints ELSE loyal_yield.route_policies.kamino_liquidity_mints END,
+            universe_preset = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.universe_preset ELSE loyal_yield.route_policies.universe_preset END,
+            risk_profile = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.risk_profile ELSE loyal_yield.route_policies.risk_profile END,
+            swap_lanes = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.swap_lanes ELSE loyal_yield.route_policies.swap_lanes END,
+            active = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN TRUE ELSE loyal_yield.route_policies.active END,
+            last_seen_at = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN now() ELSE loyal_yield.route_policies.last_seen_at END,
+            last_seen_slot = GREATEST(loyal_yield.route_policies.last_seen_slot, EXCLUDED.last_seen_slot),
+            last_seen_signature = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.last_seen_signature ELSE loyal_yield.route_policies.last_seen_signature END
         RETURNING
             id,
             cluster,
@@ -525,9 +525,45 @@ async fn upsert_vault(
             (cluster, settings, vault_index, vault_pubkey, active_policy_id, active)
         VALUES ($1, $2, $3, $4, $5, TRUE)
         ON CONFLICT (cluster, settings, vault_index, vault_pubkey) DO UPDATE SET
-            active_policy_id = EXCLUDED.active_policy_id,
-            active = TRUE,
-            last_seen_at = now()
+            active_policy_id = CASE
+                WHEN (
+                    SELECT last_seen_slot
+                    FROM loyal_yield.route_policies
+                    WHERE id = EXCLUDED.active_policy_id
+                ) > (
+                    SELECT last_seen_slot
+                    FROM loyal_yield.route_policies
+                    WHERE id = loyal_yield.managed_vaults.active_policy_id
+                )
+                THEN EXCLUDED.active_policy_id
+                ELSE loyal_yield.managed_vaults.active_policy_id
+            END,
+            active = CASE
+                WHEN (
+                    SELECT last_seen_slot
+                    FROM loyal_yield.route_policies
+                    WHERE id = EXCLUDED.active_policy_id
+                ) > (
+                    SELECT last_seen_slot
+                    FROM loyal_yield.route_policies
+                    WHERE id = loyal_yield.managed_vaults.active_policy_id
+                )
+                THEN TRUE
+                ELSE loyal_yield.managed_vaults.active
+            END,
+            last_seen_at = CASE
+                WHEN (
+                    SELECT last_seen_slot
+                    FROM loyal_yield.route_policies
+                    WHERE id = EXCLUDED.active_policy_id
+                ) > (
+                    SELECT last_seen_slot
+                    FROM loyal_yield.route_policies
+                    WHERE id = loyal_yield.managed_vaults.active_policy_id
+                )
+                THEN now()
+                ELSE loyal_yield.managed_vaults.last_seen_at
+            END
         RETURNING id, cluster, settings, vault_index, vault_pubkey, active_policy_id, active, first_seen_at, last_seen_at
         "#,
         &event.cluster,
@@ -916,4 +952,157 @@ fn skipped_idempotency_key(vault_id: VaultId, reason: SkipReason) -> String {
 
 fn to_i64_amount(amount: u64) -> Result<i64, OrchestratorError> {
     i64::try_from(amount).map_err(|_| OrchestratorError::amount_out_of_range(amount))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    async fn database_store() -> Option<OrchestratorStore> {
+        let url = match std::env::var("DATABASE_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("skipping database test because DATABASE_URL is not set");
+                return None;
+            }
+        };
+        let store = OrchestratorStore::connect(
+            NeonSqlConfig::new(url)
+                .with_max_connections(1)
+                .with_acquire_timeout(std::time::Duration::from_secs(10)),
+        )
+        .await
+        .expect("connect to test database");
+        store.apply_migrations().await.expect("apply migrations");
+        Some(store)
+    }
+
+    fn unique_cluster(test_name: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after unix epoch")
+            .as_nanos();
+        format!("test_{test_name}_{nanos}")
+    }
+
+    async fn delete_cluster(store: &OrchestratorStore, cluster: &str) {
+        sqlx::query("DELETE FROM loyal_yield.managed_vaults WHERE cluster = $1")
+            .bind(cluster)
+            .execute(store.pool())
+            .await
+            .expect("delete test vaults");
+        sqlx::query("DELETE FROM loyal_yield.route_policies WHERE cluster = $1")
+            .bind(cluster)
+            .execute(store.pool())
+            .await
+            .expect("delete test policies");
+    }
+
+    fn policy_match(cluster: &str, policy_account: &str, slot: u64) -> PolicyMatchInput {
+        PolicyMatchInput {
+            signature: format!("sig-{policy_account}-{slot}"),
+            slot,
+            cluster: cluster.to_owned(),
+            settings: "settings-1".to_owned(),
+            authority: "authority-1".to_owned(),
+            policy_seed: 7,
+            policy_account: policy_account.to_owned(),
+            vault_index: 2,
+            vault_pubkey: "vault-1".to_owned(),
+            delegated_signers: vec!["delegated-1".to_owned()],
+            threshold: 1,
+            route_modes: vec!["same_mint".to_owned()],
+            stable_mints: vec!["USDC".to_owned()],
+            kamino_markets: vec!["market-1".to_owned()],
+            kamino_liquidity_mints: vec!["USDC".to_owned()],
+            universe_preset: Some("kamino_stable".to_owned()),
+            risk_profile: Some("safe".to_owned()),
+            swap_lanes: json!([{
+                "kind": "jupiter",
+                "program_id": "jupiter-1",
+                "exact_in_discriminator": [1, 2, 3, 4, 5, 6, 7, 8]
+            }]),
+        }
+    }
+
+    #[tokio::test]
+    async fn record_policy_match_is_slot_safe_and_idempotent() {
+        let Some(store) = database_store().await else {
+            return;
+        };
+        let cluster = unique_cluster("record_policy_match");
+        delete_cluster(&store, &cluster).await;
+
+        let first = store
+            .record_policy_match(policy_match(&cluster, "policy-a", 100))
+            .await
+            .expect("insert first policy match");
+        assert_eq!(first.policy.last_seen_slot, 100);
+        assert_eq!(first.policy.threshold, 1);
+        assert_eq!(first.vault.active_policy_id, first.policy.id);
+
+        let mut equal_slot = policy_match(&cluster, "policy-a", 100);
+        equal_slot.signature = "sig-policy-a-equal".to_owned();
+        equal_slot.threshold = 9;
+        let repeated = store
+            .record_policy_match(equal_slot)
+            .await
+            .expect("repeat same-slot policy match");
+        assert_eq!(repeated.policy.id, first.policy.id);
+        assert_eq!(repeated.policy.last_seen_slot, 100);
+        assert_eq!(
+            repeated.policy.last_seen_signature,
+            first.policy.last_seen_signature
+        );
+        assert_eq!(repeated.policy.threshold, 1);
+        assert_eq!(repeated.vault.active_policy_id, first.policy.id);
+
+        let mut newer_same_policy = policy_match(&cluster, "policy-a", 110);
+        newer_same_policy.signature = "sig-policy-a-newer".to_owned();
+        newer_same_policy.threshold = 3;
+        let newer = store
+            .record_policy_match(newer_same_policy)
+            .await
+            .expect("record newer same policy match");
+        assert_eq!(newer.policy.id, first.policy.id);
+        assert_eq!(newer.policy.last_seen_slot, 110);
+        assert_eq!(newer.policy.last_seen_signature, "sig-policy-a-newer");
+        assert_eq!(newer.policy.threshold, 3);
+        assert_eq!(newer.vault.active_policy_id, newer.policy.id);
+
+        let newer_policy = store
+            .record_policy_match(policy_match(&cluster, "policy-b", 120))
+            .await
+            .expect("record newer replacement policy");
+        assert_ne!(newer_policy.policy.id, first.policy.id);
+        assert_eq!(newer_policy.policy.last_seen_slot, 120);
+        assert_eq!(newer_policy.vault.active_policy_id, newer_policy.policy.id);
+
+        let older_policy = store
+            .record_policy_match(policy_match(&cluster, "policy-c", 90))
+            .await
+            .expect("record older out-of-order policy");
+        assert_eq!(older_policy.policy.last_seen_slot, 90);
+        assert_eq!(older_policy.vault.active_policy_id, newer_policy.policy.id);
+
+        let mut older_same_policy = policy_match(&cluster, "policy-b", 80);
+        older_same_policy.signature = "sig-policy-b-older".to_owned();
+        older_same_policy.threshold = 8;
+        let older_repeat = store
+            .record_policy_match(older_same_policy)
+            .await
+            .expect("record older repeat for active policy");
+        assert_eq!(older_repeat.policy.id, newer_policy.policy.id);
+        assert_eq!(older_repeat.policy.last_seen_slot, 120);
+        assert_eq!(
+            older_repeat.policy.last_seen_signature,
+            newer_policy.policy.last_seen_signature
+        );
+        assert_eq!(older_repeat.policy.threshold, newer_policy.policy.threshold);
+        assert_eq!(older_repeat.vault.active_policy_id, newer_policy.policy.id);
+
+        delete_cluster(&store, &cluster).await;
+    }
 }

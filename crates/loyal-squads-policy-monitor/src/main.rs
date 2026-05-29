@@ -17,7 +17,7 @@ struct Cli {
     commitment: Commitment,
     #[arg(long)]
     once: bool,
-    #[arg(long, env = "LOYAL_YIELD_DATABASE_URL")]
+    #[arg(long, env = "NEON_DATABASE_URL")]
     postgres_url: Option<String>,
 }
 

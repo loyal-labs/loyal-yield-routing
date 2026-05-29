@@ -29,6 +29,31 @@ bun run build
 bun run lint
 ```
 
+Use the mounted 1Password env file for local non-critical secrets. Store the
+delegated yield router signer as `YIELD_ROUTER_KEYPAIR`, using a hex
+encoded private key. The orchestrator accepts either a 32-byte private seed or a
+64-byte Solana keypair encoded as hex, and exposes
+`yield_router_keypair_from_env()` so transaction code can load the signer
+without writing key material to disk or logs.
+
+## Squads Policy Monitor
+
+Run the Helius Squads policy monitor with the Neon-backed sink:
+
+```bash
+op run --env-file=.env.1password -- sh -c 'cargo run -p loyal-squads-policy-monitor -- --postgres-url "$NEON_DATABASE_URL"'
+```
+
+The monitor also reads `NEON_DATABASE_URL` directly when `--postgres-url` is omitted.
+
+For Rust SQLx validation against Neon, set `DATABASE_URL` from the same direct
+Neon URL. Avoid the pooled `-pooler` URL for these tests because SQLx prepared
+statements need a stable backend connection.
+
+```bash
+op run --env-file=.env.1password -- sh -c 'DATABASE_URL="$NEON_DATABASE_URL" cargo test -p loyal-yield-orchestrator -p loyal-squads-policy-monitor'
+```
+
 ## Squads Tests
 
 Run the lean Squads test suite:
