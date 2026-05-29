@@ -8,6 +8,18 @@ This version has breaking changes. APIs and project structure may differ from yo
 
 This is a Bun-managed Next.js app. Use `bun install`, `bun dev`, `bun run build`, and `bun run lint`.
 
+## Secrets
+
+Use the 1Password Environment `loyal-noncritical-env` for local non-critical secrets. The environment is mounted at `.env.1password`, which is ignored by Git through `.env*`.
+
+Do not write plaintext secrets to `.env` files, source files, command arguments, logs, or chat. When a command needs environment variables, use the 1Password CLI with the mounted env file:
+
+```sh
+op run --env-file=.env.1password -- sh -c '<command>'
+```
+
+Keep shell variable expansion inside the `sh -c` subprocess so `op run` injects values before the command reads them.
+
 ## Architecture
 
 This project should follow Loyal's vertical-slice architecture style as it grows.
