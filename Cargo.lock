@@ -2107,12 +2107,26 @@ dependencies = [
  "clap",
  "futures-util",
  "loyal-actions",
+ "loyal-yield-orchestrator",
  "rustls",
  "serde",
  "serde_json",
  "solana-sdk",
  "tokio",
  "tokio-tungstenite",
+]
+
+[[package]]
+name = "loyal-yield-orchestrator"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

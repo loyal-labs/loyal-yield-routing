@@ -6,6 +6,9 @@ use loyal_actions::{
     DetectedYieldRouteMode, DetectedYieldRoutePolicy, KaminoStableRiskProfile,
     YieldRouteUniversePreset, SQUADS_SMART_ACCOUNT_PROGRAM_ID,
 };
+use loyal_yield_orchestrator::{
+    OrchestratorConfig, OrchestratorError, OrchestratorStore, PolicyMatchInput,
+};
 use serde::Serialize;
 use serde_json::{json, Value};
 use solana_sdk::{
@@ -97,6 +100,7 @@ pub enum MonitorError {
     WebSocket(tokio_tungstenite::tungstenite::Error),
     Json(serde_json::Error),
     Io(io::Error),
+    Orchestrator(OrchestratorError),
     Decode(String),
 }
 
@@ -109,6 +113,7 @@ impl fmt::Display for MonitorError {
             Self::WebSocket(error) => write!(formatter, "websocket error: {error}"),
             Self::Json(error) => write!(formatter, "json error: {error}"),
             Self::Io(error) => write!(formatter, "io error: {error}"),
+            Self::Orchestrator(error) => write!(formatter, "orchestrator error: {error}"),
             Self::Decode(message) => formatter.write_str(message),
         }
     }
@@ -134,6 +139,12 @@ impl From<io::Error> for MonitorError {
     }
 }
 
+impl From<OrchestratorError> for MonitorError {
+    fn from(value: OrchestratorError) -> Self {
+        Self::Orchestrator(value)
+    }
+}
+
 pub trait PolicyMatchSink {
     fn emit(&mut self, event: PolicyMatchEvent) -> Result<(), MonitorError>;
 }
@@ -149,6 +160,32 @@ impl PolicyMatchSink for StdoutPolicyMatchSink {
     }
 }
 
+pub struct PostgresPolicyMatchSink {
+    store: OrchestratorStore,
+}
+
+impl PostgresPolicyMatchSink {
+    pub async fn connect(url: impl Into<String>) -> Result<Self, MonitorError> {
+        let store = OrchestratorStore::connect(OrchestratorConfig::new(url)).await?;
+        store.apply_migrations().await?;
+        Ok(Self { store })
+    }
+}
+
+impl PolicyMatchSink for PostgresPolicyMatchSink {
+    fn emit(&mut self, event: PolicyMatchEvent) -> Result<(), MonitorError> {
+        let store = self.store.clone();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async move {
+                store
+                    .record_policy_match(PolicyMatchInput::from(event))
+                    .await?;
+                Ok(())
+            })
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PolicyMatchEvent {
     pub signature: String,
@@ -159,6 +196,7 @@ pub struct PolicyMatchEvent {
     pub policy_seed: u64,
     pub policy_account: String,
     pub vault_index: u8,
+    pub vault_pubkey: String,
     pub delegated_signers: Vec<String>,
     pub threshold: u16,
     pub route_modes: Vec<String>,
@@ -334,6 +372,7 @@ impl PolicyMatchEvent {
             policy_seed: policy.policy_seed,
             policy_account: policy.policy_account.to_string(),
             vault_index: policy.vault_index,
+            vault_pubkey: derive_squads_vault(&policy.settings, policy.vault_index).to_string(),
             delegated_signers: pubkeys_to_strings(policy.delegated_signers),
             threshold: policy.threshold,
             route_modes: policy
@@ -353,6 +392,44 @@ impl PolicyMatchEvent {
                 .collect(),
         }
     }
+}
+
+impl From<PolicyMatchEvent> for PolicyMatchInput {
+    fn from(event: PolicyMatchEvent) -> Self {
+        Self {
+            signature: event.signature,
+            slot: event.slot,
+            cluster: event.cluster.to_string(),
+            settings: event.settings,
+            authority: event.authority,
+            policy_seed: event.policy_seed,
+            policy_account: event.policy_account,
+            vault_index: event.vault_index,
+            vault_pubkey: event.vault_pubkey,
+            delegated_signers: event.delegated_signers,
+            threshold: event.threshold,
+            route_modes: event.route_modes,
+            stable_mints: event.stable_mints,
+            kamino_markets: event.kamino_markets,
+            kamino_liquidity_mints: event.kamino_liquidity_mints,
+            universe_preset: event.universe_preset,
+            risk_profile: event.risk_profile,
+            swap_lanes: json!(event.swap_lanes),
+        }
+    }
+}
+
+fn derive_squads_vault(settings: &Pubkey, vault_index: u8) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            b"smart_account",
+            settings.as_ref(),
+            b"smart_account",
+            &[vault_index],
+        ],
+        &SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+    )
+    .0
 }
 
 impl From<DetectedSwapLane> for SwapLaneEvent {

@@ -1,6 +1,7 @@
 use clap::Parser;
 use loyal_squads_policy_monitor::{
-    Cluster, Commitment, MonitorConfig, MonitorError, PolicyMonitor, StdoutPolicyMatchSink,
+    Cluster, Commitment, MonitorConfig, MonitorError, PolicyMonitor, PostgresPolicyMatchSink,
+    StdoutPolicyMatchSink,
 };
 
 #[derive(Debug, Parser)]
@@ -16,12 +17,23 @@ struct Cli {
     commitment: Commitment,
     #[arg(long)]
     once: bool,
+    #[arg(long, env = "LOYAL_YIELD_DATABASE_URL")]
+    postgres_url: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), MonitorError> {
     let cli = Cli::parse();
     let config = MonitorConfig::new(cli.cluster, cli.commitment, cli.ws_url, cli.api_key)?;
-    let mut monitor = PolicyMonitor::new(config, StdoutPolicyMatchSink);
-    monitor.run(cli.once).await
+    match cli.postgres_url {
+        Some(url) => {
+            let mut monitor =
+                PolicyMonitor::new(config, PostgresPolicyMatchSink::connect(url).await?);
+            monitor.run(cli.once).await
+        }
+        None => {
+            let mut monitor = PolicyMonitor::new(config, StdoutPolicyMatchSink);
+            monitor.run(cli.once).await
+        }
+    }
 }
