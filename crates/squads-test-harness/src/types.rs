@@ -90,11 +90,18 @@ pub(crate) enum SquadsPolicyExpirationArgs {
 #[derive(BorshSerialize)]
 #[allow(dead_code)]
 pub(crate) enum SquadsPolicyCreationPayload {
-    InternalFundTransfer(Vec<u8>),
+    InternalFundTransfer(SquadsInternalFundTransferPolicyCreationPayload),
     SpendingLimit(SquadsSpendingLimitPolicyCreationPayload),
     SettingsChange(Vec<u8>),
     LegacyProgramInteraction(SquadsProgramInteractionPolicyCreationPayloadLegacy),
     ProgramInteraction(SquadsProgramInteractionPolicyCreationPayload),
+}
+
+#[derive(BorshSerialize)]
+pub struct SquadsInternalFundTransferPolicyCreationPayload {
+    pub source_account_indices: Vec<u8>,
+    pub destination_account_indices: Vec<u8>,
+    pub allowed_mints: Vec<Pubkey>,
 }
 
 #[derive(BorshSerialize)]
@@ -315,10 +322,19 @@ pub(crate) struct SquadsSyncTransactionArgs {
 #[derive(BorshSerialize)]
 #[allow(dead_code)]
 pub(crate) enum SquadsPolicyPayload {
-    InternalFundTransfer(Vec<u8>),
+    InternalFundTransfer(SquadsInternalFundTransferPayload),
     ProgramInteraction(SquadsProgramInteractionPayload),
     SpendingLimit(SquadsSpendingLimitPayload),
     SettingsChange(Vec<u8>),
+}
+
+#[derive(BorshSerialize)]
+pub struct SquadsInternalFundTransferPayload {
+    pub source_index: u8,
+    pub destination_index: u8,
+    pub mint: Pubkey,
+    pub decimals: u8,
+    pub amount: u64,
 }
 
 #[derive(BorshSerialize)]
@@ -446,5 +462,53 @@ impl FundedSquadsTestContext {
             lamports,
         );
         send_instructions(&mut self.svm, &[instruction], &self.wallet);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn internal_fund_transfer_creation_payload_wire_layout_is_stable() {
+        let mint = Pubkey::new_from_array([7; 32]);
+        let mut actual = Vec::new();
+        SquadsPolicyCreationPayload::InternalFundTransfer(
+            SquadsInternalFundTransferPolicyCreationPayload {
+                source_account_indices: vec![0, 1],
+                destination_account_indices: vec![1],
+                allowed_mints: vec![mint],
+            },
+        )
+        .serialize(&mut actual)
+        .unwrap();
+
+        let mut expected = vec![
+            0, // SquadsPolicyCreationPayload::InternalFundTransfer
+            2, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0,
+        ];
+        expected.extend_from_slice(&[7; 32]);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn internal_fund_transfer_execution_payload_wire_layout_is_stable() {
+        let mint = Pubkey::new_from_array([9; 32]);
+        let mut actual = Vec::new();
+        SquadsPolicyPayload::InternalFundTransfer(SquadsInternalFundTransferPayload {
+            source_index: 0,
+            destination_index: 1,
+            mint,
+            decimals: 6,
+            amount: 42,
+        })
+        .serialize(&mut actual)
+        .unwrap();
+
+        let mut expected = vec![0, 0, 1];
+        expected.extend_from_slice(&[9; 32]);
+        expected.push(6);
+        expected.extend_from_slice(&42u64.to_le_bytes());
+        assert_eq!(actual, expected);
     }
 }

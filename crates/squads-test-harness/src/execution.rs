@@ -1,9 +1,11 @@
 use borsh::BorshSerialize;
+use litesvm::LiteSVM;
 use loyal_actions::LoyalActionStep;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
 };
+use spl_token::solana_program::program_pack::Pack;
 
 use crate::types::*;
 use crate::*;
@@ -46,6 +48,93 @@ pub(crate) fn serialize_squads_sync_policy_payload_args(
     .serialize(&mut data)
     .unwrap();
     data
+}
+
+pub fn execute_squads_internal_fund_transfer_instruction(
+    policy: Pubkey,
+    signer: Pubkey,
+    squads_settings: Pubkey,
+    source_index: u8,
+    destination_index: u8,
+    source_token_account: Pubkey,
+    destination_token_account: Pubkey,
+    mint: Pubkey,
+    decimals: u8,
+    amount: u64,
+) -> Instruction {
+    let (source_account, _) = derive_squads_vault(&squads_settings, source_index);
+    execute_squads_internal_fund_transfer_instruction_with_accounts(
+        policy,
+        signer,
+        source_index,
+        SquadsInternalFundTransferPayload {
+            source_index,
+            destination_index,
+            mint,
+            decimals,
+            amount,
+        },
+        vec![
+            AccountMeta::new_readonly(source_account, false),
+            AccountMeta::new(source_token_account, false),
+            AccountMeta::new(destination_token_account, false),
+            AccountMeta::new_readonly(mint, false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+        ],
+    )
+}
+
+pub fn execute_squads_internal_fund_transfer_instruction_from_mint_account(
+    svm: &LiteSVM,
+    policy: Pubkey,
+    signer: Pubkey,
+    squads_settings: Pubkey,
+    source_index: u8,
+    destination_index: u8,
+    source_token_account: Pubkey,
+    destination_token_account: Pubkey,
+    mint: Pubkey,
+    amount: u64,
+) -> Instruction {
+    let mint_account = svm.get_account(&mint).expect("SPL mint account exists");
+    let mint_state =
+        spl_token::state::Mint::unpack(&mint_account.data).expect("unpack SPL mint account");
+    execute_squads_internal_fund_transfer_instruction(
+        policy,
+        signer,
+        squads_settings,
+        source_index,
+        destination_index,
+        source_token_account,
+        destination_token_account,
+        mint,
+        mint_state.decimals,
+        amount,
+    )
+}
+
+pub(crate) fn execute_squads_internal_fund_transfer_instruction_with_accounts(
+    policy: Pubkey,
+    signer: Pubkey,
+    account_index: u8,
+    payload: SquadsInternalFundTransferPayload,
+    mut transfer_accounts: Vec<AccountMeta>,
+) -> Instruction {
+    let mut accounts = vec![
+        AccountMeta::new(policy, false),
+        AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+        AccountMeta::new_readonly(signer, true),
+    ];
+    accounts.append(&mut transfer_accounts);
+
+    Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts,
+        data: serialize_squads_sync_policy_payload_args(
+            account_index,
+            SquadsPolicyPayload::InternalFundTransfer(payload),
+        ),
+    }
 }
 
 pub fn execute_squads_sync_transfer_instruction(

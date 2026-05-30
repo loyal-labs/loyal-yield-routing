@@ -54,9 +54,9 @@ impl YieldRouteUniverse {
 pub fn yield_route_universe_for_preset(preset: YieldRouteUniversePreset) -> YieldRouteUniverse {
     match preset {
         YieldRouteUniversePreset::KaminoStable(profile) => YieldRouteUniverse::new(
-            production_stable_mints(),
+            supported_yield_route_stable_mints(),
             kamino_stable_markets_for_profile(profile),
-            production_stable_mints(),
+            supported_yield_route_stable_mints(),
         ),
     }
 }
@@ -413,7 +413,7 @@ fn safe_kamino_markets() -> Vec<Pubkey> {
     ]
 }
 
-fn production_stable_mints() -> Vec<Pubkey> {
+pub fn supported_yield_route_stable_mints() -> Vec<Pubkey> {
     vec![
         USDC_MINT,
         USDT_MINT,
@@ -959,7 +959,8 @@ mod tests {
     }
 
     #[test]
-    fn production_stable_mints_include_allowlist_and_exclude_explicit_denials() {
+    fn supported_yield_route_stable_mints_include_allowlist_and_exclude_explicit_denials() {
+        let stable_mints = supported_yield_route_stable_mints();
         let universe = yield_route_universe_for_preset(YieldRouteUniversePreset::KaminoStable(
             KaminoStableRiskProfile::Aggressive,
         ));
@@ -980,9 +981,12 @@ mod tests {
             EUSX_MINT,
             USCC_MINT,
         ] {
+            assert!(stable_mints.contains(&mint));
             assert!(universe.stable_mints.contains(&mint));
             assert!(universe.kamino_liquidity_mints.contains(&mint));
         }
+        assert!(!stable_mints.contains(&USDH_MINT));
+        assert!(!stable_mints.contains(&Pubkey::default()));
         assert!(!universe.stable_mints.contains(&USDH_MINT));
         assert!(!universe.stable_mints.contains(&Pubkey::new_unique()));
     }

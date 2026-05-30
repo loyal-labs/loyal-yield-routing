@@ -34,7 +34,8 @@ pub use runtime::*;
 pub use squads::*;
 pub use types::{
     FundedSquadsTestConfig, FundedSquadsTestContext, MockJupiterStableReserveTokenAccount,
-    MockJupiterTokenAccounts, MockKaminoReserveTokenAccounts, MockProgram, SquadsPool,
+    MockJupiterTokenAccounts, MockKaminoReserveTokenAccounts, MockProgram,
+    SquadsInternalFundTransferPayload, SquadsInternalFundTransferPolicyCreationPayload, SquadsPool,
 };
 
 pub mod prelude {
@@ -47,6 +48,8 @@ pub mod prelude {
     pub use crate::squads::*;
     pub use crate::types::{
         FundedSquadsTestConfig, FundedSquadsTestContext, MockJupiterStableReserveTokenAccount,
-        MockJupiterTokenAccounts, MockKaminoReserveTokenAccounts, MockProgram, SquadsPool,
+        MockJupiterTokenAccounts, MockKaminoReserveTokenAccounts, MockProgram,
+        SquadsInternalFundTransferPayload, SquadsInternalFundTransferPolicyCreationPayload,
+        SquadsPool,
     };
 }

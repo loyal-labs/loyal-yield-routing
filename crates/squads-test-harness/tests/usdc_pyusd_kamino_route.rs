@@ -2016,12 +2016,11 @@ fn cross_mint_route_execution_pack_size_is_packet_bound_by_measurement() {
         main_usdc_reserve_accounts,
         mock_kamino_withdraw_reserve_liquidity_data(amount),
     );
-    let (pyusd_deposit_instructions, pyusd_deposit_accounts) =
-        mock_kamino_reserve_transaction(
-            context.vault,
-            pyusd_reserve_accounts,
-            mock_kamino_deposit_reserve_liquidity_data(amount),
-        );
+    let (pyusd_deposit_instructions, pyusd_deposit_accounts) = mock_kamino_reserve_transaction(
+        context.vault,
+        pyusd_reserve_accounts,
+        mock_kamino_deposit_reserve_liquidity_data(amount),
+    );
     let cross_mint_route_ix = jupiter_route.build(JupiterRouteExecution {
         withdraw_instructions: main_withdraw_instructions,
         withdraw_accounts: main_withdraw_accounts,
@@ -2079,11 +2078,15 @@ fn packet_bytes_for_repeated_route_executions(
     let repeated_route_executions = (0..route_count)
         .map(|_| route_execution_instruction.clone())
         .collect::<Vec<_>>();
-    let versioned_message =
-        match solana_sdk::message::v0::Message::try_compile(&fee_payer.pubkey(), &repeated_route_executions, &[], solana_sdk::hash::Hash::new_unique()) {
-            Ok(message) => solana_sdk::message::VersionedMessage::V0(message),
-            Err(_) => return None,
-        };
+    let versioned_message = match solana_sdk::message::v0::Message::try_compile(
+        &fee_payer.pubkey(),
+        &repeated_route_executions,
+        &[],
+        solana_sdk::hash::Hash::new_unique(),
+    ) {
+        Ok(message) => solana_sdk::message::VersionedMessage::V0(message),
+        Err(_) => return None,
+    };
     let transaction = match solana_sdk::transaction::VersionedTransaction::try_new(
         versioned_message,
         &[fee_payer],
@@ -2091,7 +2094,9 @@ fn packet_bytes_for_repeated_route_executions(
         Ok(transaction) => transaction,
         Err(_) => return None,
     };
-    bincode::serialize(&transaction).ok().map(|serialized| serialized.len())
+    bincode::serialize(&transaction)
+        .ok()
+        .map(|serialized| serialized.len())
 }
 
 fn max_packable_route_executions(
