@@ -39,12 +39,10 @@ if [[ -n "$KANI_IMPL_HARNESS" ]]; then
   fi
 elif [[ "$KANI_IMPL_SCOPE" == "smoke" ]]; then
   harnesses=(
-    verify_initialize_config_impl
-    verify_set_max_fee_impl
-    verify_set_paused_impl
     verify_withdraw_inventory_impl
     verify_swap_exact_in_impl
     verify_rebalance_inventory_impl
+    verify_rebalance_inventory_2_impl
     verify_rebalance_inventory_4_impl
     verify_rebalance_inventory_16_impl
   )
