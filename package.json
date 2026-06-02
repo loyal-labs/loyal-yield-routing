@@ -4,11 +4,17 @@
   "private": true,
   "type": "module",
   "packageManager": "bun@1.2.17",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "loyal-actions:build": "bun run --cwd packages/loyal-actions build",
+    "loyal-actions:test": "bun run --cwd packages/loyal-actions test",
+    "loyal-actions:typecheck": "bun run --cwd packages/loyal-actions typecheck",
     "test:squads": "cargo build-sbf -- -p mock-yield-protocols-program -p loyal-hub-swap-program && cargo test -p squads-test-harness",
     "test:squads:e2e": "cargo build-sbf -- -p mock-yield-protocols-program -p loyal-hub-swap-program && cargo test -p squads-test-harness --test kamino_hindsight_e2e -- --ignored --nocapture",
     "test:squads:hub-hindsight": "cargo build-sbf -- -p mock-yield-protocols-program -p loyal-hub-swap-program && cargo test -p squads-test-harness --test loyal_hub_hindsight_e2e -- --ignored --nocapture",
