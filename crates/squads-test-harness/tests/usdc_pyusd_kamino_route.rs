@@ -1853,6 +1853,142 @@ fn wallet_a_can_pack_vault_usdc_deposit_and_reduced_all_in_one_policy() {
 }
 
 #[test]
+fn wallet_a_can_pack_vault_usdc_deposit_policy_creation_and_reserve_deposit() {
+    let deposit_amount = 1_000_000;
+    let mut context = create_funded_squads_test_context_with_mock_programs(&[
+        MockProgram::Jupiter,
+        MockProgram::KaminoLend,
+    ])
+    .expect("create funded Squads test context");
+    let Some(context) = context.as_mut() else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+    let wallet_a = context.wallet_pubkey();
+
+    let wallet_b = Keypair::new();
+    context
+        .svm
+        .airdrop(&wallet_b.pubkey(), LAMPORTS_PER_SOL / 10)
+        .expect("airdrop wallet B");
+
+    let wallet_usdc = Keypair::new().pubkey();
+    let vault_usdc = Keypair::new().pubkey();
+    let vault_pyusd = Keypair::new().pubkey();
+    let vault_main_usdc_collateral = Keypair::new().pubkey();
+    let vault_pyusd_collateral = Keypair::new().pubkey();
+    let main_usdc_reserve_liquidity_supply = Keypair::new().pubkey();
+    let pyusd_reserve_liquidity_supply = Keypair::new().pubkey();
+    let jupiter_sol_escrow = Keypair::new().pubkey();
+
+    seed_mock_jupiter_spl_accounts(&mut context.svm, deposit_amount, deposit_amount);
+    seed_spl_token_account(&mut context.svm, wallet_usdc, USDC_MINT, wallet_a, 0);
+    let main_usdc_reserve_accounts = seed_mock_kamino_reserve_spl_accounts(
+        &mut context.svm,
+        KAMINO_MAIN_USDC_RESERVE,
+        KAMINO_MAIN_MARKET,
+        context.vault,
+        vault_usdc,
+        vault_main_usdc_collateral,
+        main_usdc_reserve_liquidity_supply,
+    );
+    let pyusd_reserve_accounts = seed_mock_kamino_reserve_spl_accounts_with_mint(
+        &mut context.svm,
+        KAMINO_MAIN_PYUSD_RESERVE,
+        KAMINO_MAIN_MARKET,
+        PYUSD_MINT,
+        PYUSD_DECIMALS,
+        context.vault,
+        vault_pyusd,
+        vault_pyusd_collateral,
+        pyusd_reserve_liquidity_supply,
+    );
+
+    let wallet_a_sol_to_usdc_ix =
+        wallet_mock_jupiter_sol_to_usdc_swap_instruction(wallet_a, wallet_usdc, deposit_amount);
+    try_send_instructions(
+        &mut context.svm,
+        &[
+            system_instruction::transfer(&wallet_a, &jupiter_sol_escrow, deposit_amount),
+            wallet_a_sol_to_usdc_ix,
+        ],
+        &context.wallet,
+        &[],
+    )
+    .expect("wallet A swaps SOL to wallet-owned USDC after smart-account creation");
+    assert_eq!(
+        get_spl_token_amount(&context.svm, wallet_usdc),
+        deposit_amount
+    );
+    assert_eq!(get_spl_token_amount(&context.svm, vault_usdc), 0);
+    assert_eq!(
+        get_spl_token_amount(&context.svm, main_usdc_reserve_liquidity_supply),
+        0
+    );
+
+    let route_action_setup = create_all_in_one_market_mint_yield_route_action(
+        loyal_action_context(context, wallet_b.pubkey()),
+        yield_route_universe_from_mock_reserves(
+            vec![USDC_MINT, PYUSD_MINT],
+            vec![main_usdc_reserve_accounts, pyusd_reserve_accounts],
+        ),
+        vec![mock_jupiter_swap_lane(false)],
+    )
+    .expect("build all-in-one route action");
+    let route_accounts = route_action_setup.accounts;
+    let deposit_usdc_to_vault0_ix = spl_token::instruction::transfer_checked(
+        &spl_token::id(),
+        &wallet_usdc,
+        &USDC_MINT,
+        &vault_usdc,
+        &wallet_a,
+        &[],
+        deposit_amount,
+        USDC_DECIMALS,
+    )
+    .expect("build wallet A USDC deposit into vault 0");
+    let (main_deposit_instructions, main_deposit_accounts) = mock_kamino_reserve_transaction(
+        context.vault,
+        main_usdc_reserve_accounts,
+        mock_kamino_deposit_reserve_liquidity_data(deposit_amount),
+    );
+    let deposit_vault_usdc_to_reserve_ix = execute_squads_sync_transaction_instruction(
+        context.pool.settings,
+        wallet_a,
+        context.vault_index,
+        main_deposit_instructions,
+        main_deposit_accounts,
+    );
+
+    let mut packed_instructions = vec![deposit_usdc_to_vault0_ix];
+    packed_instructions.extend(route_action_setup.instructions);
+    packed_instructions.push(deposit_vault_usdc_to_reserve_ix);
+    try_send_instructions_with_heap_frame(
+        &mut context.svm,
+        &packed_instructions,
+        &context.wallet,
+        &[],
+    )
+    .expect(
+        "wallet A deposits USDC into vault 0, creates the all-in-one policy, and deposits into reserve in one transaction",
+    );
+
+    assert_eq!(get_spl_token_amount(&context.svm, wallet_usdc), 0);
+    assert_eq!(get_spl_token_amount(&context.svm, vault_usdc), 0);
+    assert_eq!(
+        get_spl_token_amount(&context.svm, main_usdc_reserve_liquidity_supply),
+        deposit_amount
+    );
+    assert_eq!(
+        get_spl_token_amount(&context.svm, vault_main_usdc_collateral),
+        deposit_amount
+    );
+    assert_eq!(route_accounts.withdraw, route_accounts.swap);
+    assert_eq!(route_accounts.swap, route_accounts.deposit);
+    assert!(context.svm.get_account(&route_accounts.withdraw).is_some());
+}
+
+#[test]
 fn same_mint_route_execution_pack_size_is_packet_bound_by_measurement() {
     let amount = 1_000_000;
 
