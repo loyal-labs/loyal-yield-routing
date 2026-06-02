@@ -233,8 +233,7 @@ handler rebalance_inventory
     mint                 : readonly
     source_authority     : readonly, pda ["hub-authority", from_lane_id]
     source_inventory     : writable, token, authority source_authority
-    destination_inventory: writable, token, authority destination_authority
-    destination_authority: readonly, pda ["hub-authority", to_lane_id]
+    destination_inventory: writable, token
   }
 
   requires inventory_rebalancer.pubkey == state.inventory_rebalancer_key else Unauthorized
@@ -259,10 +258,2688 @@ handler rebalance_inventory
   ensures state.lane_count == old(state.lane_count)
 }
 
+// The runtime rebalance instruction accepts 1..MAX_REBALANCE_TRANSFERS
+// transfer records. QEDGen does not yet expose an ABI-style repeated-record
+// parameter, so the batch model is specialized by arity. The base
+// rebalance_inventory handler above remains the single-transfer ABI drift
+// anchor; rebalance_inventory_2 through rebalance_inventory_16 prove the
+// additional bounded batch shapes.
+
+handler rebalance_inventory_2
+  (amount_0 : U64)
+  (from_lane_id_0 : U64)
+  (to_lane_id_0 : U64)
+  (amount_1 : U64)
+  (from_lane_id_1 : U64)
+  (to_lane_id_1 : U64)
+  : State.Active -> State.Active {
+  auth inventory_rebalancer
+
+  accounts {
+    config                 : readonly, pda ["config"]
+    inventory_rebalancer   : signer
+    token_program          : program, type token
+    mint                   : readonly
+    source_authority_0     : readonly, pda ["hub-authority", from_lane_id_0]
+    source_inventory_0     : writable, token, authority source_authority_0
+    destination_inventory_0: writable, token
+    source_authority_1     : readonly, pda ["hub-authority", from_lane_id_1]
+    source_inventory_1     : writable, token, authority source_authority_1
+    destination_inventory_1: writable, token
+  }
+
+  requires inventory_rebalancer.pubkey == state.inventory_rebalancer_key else Unauthorized
+  requires
+    mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires amount_0 > 0 else InvalidAmount
+  requires from_lane_id_0 != to_lane_id_0 else InvalidLane
+  requires from_lane_id_0 < state.lane_count else InvalidLane
+  requires to_lane_id_0 < state.lane_count else InvalidLane
+  requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
+  requires amount_1 > 0 else InvalidAmount
+  requires from_lane_id_1 != to_lane_id_1 else InvalidLane
+  requires from_lane_id_1 < state.lane_count else InvalidLane
+  requires to_lane_id_1 < state.lane_count else InvalidLane
+  requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
+
+  call Token.transfer(
+    from      = source_inventory_0,
+    to        = destination_inventory_0,
+    authority = source_authority_0,
+    amount    = amount_0,
+  )
+  call Token.transfer(
+    from      = source_inventory_1,
+    to        = destination_inventory_1,
+    authority = source_authority_1,
+    amount    = amount_1,
+  )
+
+  ensures state.admin_key == old(state.admin_key)
+  ensures state.hub_authorizer_key == old(state.hub_authorizer_key)
+  ensures state.inventory_rebalancer_key == old(state.inventory_rebalancer_key)
+  ensures state.max_fee_bps == old(state.max_fee_bps)
+  ensures state.lane_count == old(state.lane_count)
+  ensures state.paused == old(state.paused)
+}
+
+handler rebalance_inventory_3
+  (amount_0 : U64)
+  (from_lane_id_0 : U64)
+  (to_lane_id_0 : U64)
+  (amount_1 : U64)
+  (from_lane_id_1 : U64)
+  (to_lane_id_1 : U64)
+  (amount_2 : U64)
+  (from_lane_id_2 : U64)
+  (to_lane_id_2 : U64)
+  : State.Active -> State.Active {
+  auth inventory_rebalancer
+
+  accounts {
+    config                 : readonly, pda ["config"]
+    inventory_rebalancer   : signer
+    token_program          : program, type token
+    mint                   : readonly
+    source_authority_0     : readonly, pda ["hub-authority", from_lane_id_0]
+    source_inventory_0     : writable, token, authority source_authority_0
+    destination_inventory_0: writable, token
+    source_authority_1     : readonly, pda ["hub-authority", from_lane_id_1]
+    source_inventory_1     : writable, token, authority source_authority_1
+    destination_inventory_1: writable, token
+    source_authority_2     : readonly, pda ["hub-authority", from_lane_id_2]
+    source_inventory_2     : writable, token, authority source_authority_2
+    destination_inventory_2: writable, token
+  }
+
+  requires inventory_rebalancer.pubkey == state.inventory_rebalancer_key else Unauthorized
+  requires
+    mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires amount_0 > 0 else InvalidAmount
+  requires from_lane_id_0 != to_lane_id_0 else InvalidLane
+  requires from_lane_id_0 < state.lane_count else InvalidLane
+  requires to_lane_id_0 < state.lane_count else InvalidLane
+  requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
+  requires amount_1 > 0 else InvalidAmount
+  requires from_lane_id_1 != to_lane_id_1 else InvalidLane
+  requires from_lane_id_1 < state.lane_count else InvalidLane
+  requires to_lane_id_1 < state.lane_count else InvalidLane
+  requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
+  requires amount_2 > 0 else InvalidAmount
+  requires from_lane_id_2 != to_lane_id_2 else InvalidLane
+  requires from_lane_id_2 < state.lane_count else InvalidLane
+  requires to_lane_id_2 < state.lane_count else InvalidLane
+  requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
+
+  call Token.transfer(
+    from      = source_inventory_0,
+    to        = destination_inventory_0,
+    authority = source_authority_0,
+    amount    = amount_0,
+  )
+  call Token.transfer(
+    from      = source_inventory_1,
+    to        = destination_inventory_1,
+    authority = source_authority_1,
+    amount    = amount_1,
+  )
+  call Token.transfer(
+    from      = source_inventory_2,
+    to        = destination_inventory_2,
+    authority = source_authority_2,
+    amount    = amount_2,
+  )
+
+  ensures state.admin_key == old(state.admin_key)
+  ensures state.hub_authorizer_key == old(state.hub_authorizer_key)
+  ensures state.inventory_rebalancer_key == old(state.inventory_rebalancer_key)
+  ensures state.max_fee_bps == old(state.max_fee_bps)
+  ensures state.lane_count == old(state.lane_count)
+  ensures state.paused == old(state.paused)
+}
+
+handler rebalance_inventory_4
+  (amount_0 : U64)
+  (from_lane_id_0 : U64)
+  (to_lane_id_0 : U64)
+  (amount_1 : U64)
+  (from_lane_id_1 : U64)
+  (to_lane_id_1 : U64)
+  (amount_2 : U64)
+  (from_lane_id_2 : U64)
+  (to_lane_id_2 : U64)
+  (amount_3 : U64)
+  (from_lane_id_3 : U64)
+  (to_lane_id_3 : U64)
+  : State.Active -> State.Active {
+  auth inventory_rebalancer
+
+  accounts {
+    config                 : readonly, pda ["config"]
+    inventory_rebalancer   : signer
+    token_program          : program, type token
+    mint                   : readonly
+    source_authority_0     : readonly, pda ["hub-authority", from_lane_id_0]
+    source_inventory_0     : writable, token, authority source_authority_0
+    destination_inventory_0: writable, token
+    source_authority_1     : readonly, pda ["hub-authority", from_lane_id_1]
+    source_inventory_1     : writable, token, authority source_authority_1
+    destination_inventory_1: writable, token
+    source_authority_2     : readonly, pda ["hub-authority", from_lane_id_2]
+    source_inventory_2     : writable, token, authority source_authority_2
+    destination_inventory_2: writable, token
+    source_authority_3     : readonly, pda ["hub-authority", from_lane_id_3]
+    source_inventory_3     : writable, token, authority source_authority_3
+    destination_inventory_3: writable, token
+  }
+
+  requires inventory_rebalancer.pubkey == state.inventory_rebalancer_key else Unauthorized
+  requires
+    mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires amount_0 > 0 else InvalidAmount
+  requires from_lane_id_0 != to_lane_id_0 else InvalidLane
+  requires from_lane_id_0 < state.lane_count else InvalidLane
+  requires to_lane_id_0 < state.lane_count else InvalidLane
+  requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
+  requires amount_1 > 0 else InvalidAmount
+  requires from_lane_id_1 != to_lane_id_1 else InvalidLane
+  requires from_lane_id_1 < state.lane_count else InvalidLane
+  requires to_lane_id_1 < state.lane_count else InvalidLane
+  requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
+  requires amount_2 > 0 else InvalidAmount
+  requires from_lane_id_2 != to_lane_id_2 else InvalidLane
+  requires from_lane_id_2 < state.lane_count else InvalidLane
+  requires to_lane_id_2 < state.lane_count else InvalidLane
+  requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
+  requires amount_3 > 0 else InvalidAmount
+  requires from_lane_id_3 != to_lane_id_3 else InvalidLane
+  requires from_lane_id_3 < state.lane_count else InvalidLane
+  requires to_lane_id_3 < state.lane_count else InvalidLane
+  requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
+
+  call Token.transfer(
+    from      = source_inventory_0,
+    to        = destination_inventory_0,
+    authority = source_authority_0,
+    amount    = amount_0,
+  )
+  call Token.transfer(
+    from      = source_inventory_1,
+    to        = destination_inventory_1,
+    authority = source_authority_1,
+    amount    = amount_1,
+  )
+  call Token.transfer(
+    from      = source_inventory_2,
+    to        = destination_inventory_2,
+    authority = source_authority_2,
+    amount    = amount_2,
+  )
+  call Token.transfer(
+    from      = source_inventory_3,
+    to        = destination_inventory_3,
+    authority = source_authority_3,
+    amount    = amount_3,
+  )
+
+  ensures state.admin_key == old(state.admin_key)
+  ensures state.hub_authorizer_key == old(state.hub_authorizer_key)
+  ensures state.inventory_rebalancer_key == old(state.inventory_rebalancer_key)
+  ensures state.max_fee_bps == old(state.max_fee_bps)
+  ensures state.lane_count == old(state.lane_count)
+  ensures state.paused == old(state.paused)
+}
+
+handler rebalance_inventory_5
+  (amount_0 : U64)
+  (from_lane_id_0 : U64)
+  (to_lane_id_0 : U64)
+  (amount_1 : U64)
+  (from_lane_id_1 : U64)
+  (to_lane_id_1 : U64)
+  (amount_2 : U64)
+  (from_lane_id_2 : U64)
+  (to_lane_id_2 : U64)
+  (amount_3 : U64)
+  (from_lane_id_3 : U64)
+  (to_lane_id_3 : U64)
+  (amount_4 : U64)
+  (from_lane_id_4 : U64)
+  (to_lane_id_4 : U64)
+  : State.Active -> State.Active {
+  auth inventory_rebalancer
+
+  accounts {
+    config                 : readonly, pda ["config"]
+    inventory_rebalancer   : signer
+    token_program          : program, type token
+    mint                   : readonly
+    source_authority_0     : readonly, pda ["hub-authority", from_lane_id_0]
+    source_inventory_0     : writable, token, authority source_authority_0
+    destination_inventory_0: writable, token
+    source_authority_1     : readonly, pda ["hub-authority", from_lane_id_1]
+    source_inventory_1     : writable, token, authority source_authority_1
+    destination_inventory_1: writable, token
+    source_authority_2     : readonly, pda ["hub-authority", from_lane_id_2]
+    source_inventory_2     : writable, token, authority source_authority_2
+    destination_inventory_2: writable, token
+    source_authority_3     : readonly, pda ["hub-authority", from_lane_id_3]
+    source_inventory_3     : writable, token, authority source_authority_3
+    destination_inventory_3: writable, token
+    source_authority_4     : readonly, pda ["hub-authority", from_lane_id_4]
+    source_inventory_4     : writable, token, authority source_authority_4
+    destination_inventory_4: writable, token
+  }
+
+  requires inventory_rebalancer.pubkey == state.inventory_rebalancer_key else Unauthorized
+  requires
+    mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires amount_0 > 0 else InvalidAmount
+  requires from_lane_id_0 != to_lane_id_0 else InvalidLane
+  requires from_lane_id_0 < state.lane_count else InvalidLane
+  requires to_lane_id_0 < state.lane_count else InvalidLane
+  requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
+  requires amount_1 > 0 else InvalidAmount
+  requires from_lane_id_1 != to_lane_id_1 else InvalidLane
+  requires from_lane_id_1 < state.lane_count else InvalidLane
+  requires to_lane_id_1 < state.lane_count else InvalidLane
+  requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
+  requires amount_2 > 0 else InvalidAmount
+  requires from_lane_id_2 != to_lane_id_2 else InvalidLane
+  requires from_lane_id_2 < state.lane_count else InvalidLane
+  requires to_lane_id_2 < state.lane_count else InvalidLane
+  requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
+  requires amount_3 > 0 else InvalidAmount
+  requires from_lane_id_3 != to_lane_id_3 else InvalidLane
+  requires from_lane_id_3 < state.lane_count else InvalidLane
+  requires to_lane_id_3 < state.lane_count else InvalidLane
+  requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
+  requires amount_4 > 0 else InvalidAmount
+  requires from_lane_id_4 != to_lane_id_4 else InvalidLane
+  requires from_lane_id_4 < state.lane_count else InvalidLane
+  requires to_lane_id_4 < state.lane_count else InvalidLane
+  requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
+
+  call Token.transfer(
+    from      = source_inventory_0,
+    to        = destination_inventory_0,
+    authority = source_authority_0,
+    amount    = amount_0,
+  )
+  call Token.transfer(
+    from      = source_inventory_1,
+    to        = destination_inventory_1,
+    authority = source_authority_1,
+    amount    = amount_1,
+  )
+  call Token.transfer(
+    from      = source_inventory_2,
+    to        = destination_inventory_2,
+    authority = source_authority_2,
+    amount    = amount_2,
+  )
+  call Token.transfer(
+    from      = source_inventory_3,
+    to        = destination_inventory_3,
+    authority = source_authority_3,
+    amount    = amount_3,
+  )
+  call Token.transfer(
+    from      = source_inventory_4,
+    to        = destination_inventory_4,
+    authority = source_authority_4,
+    amount    = amount_4,
+  )
+
+  ensures state.admin_key == old(state.admin_key)
+  ensures state.hub_authorizer_key == old(state.hub_authorizer_key)
+  ensures state.inventory_rebalancer_key == old(state.inventory_rebalancer_key)
+  ensures state.max_fee_bps == old(state.max_fee_bps)
+  ensures state.lane_count == old(state.lane_count)
+  ensures state.paused == old(state.paused)
+}
+
+handler rebalance_inventory_6
+  (amount_0 : U64)
+  (from_lane_id_0 : U64)
+  (to_lane_id_0 : U64)
+  (amount_1 : U64)
+  (from_lane_id_1 : U64)
+  (to_lane_id_1 : U64)
+  (amount_2 : U64)
+  (from_lane_id_2 : U64)
+  (to_lane_id_2 : U64)
+  (amount_3 : U64)
+  (from_lane_id_3 : U64)
+  (to_lane_id_3 : U64)
+  (amount_4 : U64)
+  (from_lane_id_4 : U64)
+  (to_lane_id_4 : U64)
+  (amount_5 : U64)
+  (from_lane_id_5 : U64)
+  (to_lane_id_5 : U64)
+  : State.Active -> State.Active {
+  auth inventory_rebalancer
+
+  accounts {
+    config                 : readonly, pda ["config"]
+    inventory_rebalancer   : signer
+    token_program          : program, type token
+    mint                   : readonly
+    source_authority_0     : readonly, pda ["hub-authority", from_lane_id_0]
+    source_inventory_0     : writable, token, authority source_authority_0
+    destination_inventory_0: writable, token
+    source_authority_1     : readonly, pda ["hub-authority", from_lane_id_1]
+    source_inventory_1     : writable, token, authority source_authority_1
+    destination_inventory_1: writable, token
+    source_authority_2     : readonly, pda ["hub-authority", from_lane_id_2]
+    source_inventory_2     : writable, token, authority source_authority_2
+    destination_inventory_2: writable, token
+    source_authority_3     : readonly, pda ["hub-authority", from_lane_id_3]
+    source_inventory_3     : writable, token, authority source_authority_3
+    destination_inventory_3: writable, token
+    source_authority_4     : readonly, pda ["hub-authority", from_lane_id_4]
+    source_inventory_4     : writable, token, authority source_authority_4
+    destination_inventory_4: writable, token
+    source_authority_5     : readonly, pda ["hub-authority", from_lane_id_5]
+    source_inventory_5     : writable, token, authority source_authority_5
+    destination_inventory_5: writable, token
+  }
+
+  requires inventory_rebalancer.pubkey == state.inventory_rebalancer_key else Unauthorized
+  requires
+    mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires amount_0 > 0 else InvalidAmount
+  requires from_lane_id_0 != to_lane_id_0 else InvalidLane
+  requires from_lane_id_0 < state.lane_count else InvalidLane
+  requires to_lane_id_0 < state.lane_count else InvalidLane
+  requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
+  requires amount_1 > 0 else InvalidAmount
+  requires from_lane_id_1 != to_lane_id_1 else InvalidLane
+  requires from_lane_id_1 < state.lane_count else InvalidLane
+  requires to_lane_id_1 < state.lane_count else InvalidLane
+  requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
+  requires amount_2 > 0 else InvalidAmount
+  requires from_lane_id_2 != to_lane_id_2 else InvalidLane
+  requires from_lane_id_2 < state.lane_count else InvalidLane
+  requires to_lane_id_2 < state.lane_count else InvalidLane
+  requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
+  requires amount_3 > 0 else InvalidAmount
+  requires from_lane_id_3 != to_lane_id_3 else InvalidLane
+  requires from_lane_id_3 < state.lane_count else InvalidLane
+  requires to_lane_id_3 < state.lane_count else InvalidLane
+  requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
+  requires amount_4 > 0 else InvalidAmount
+  requires from_lane_id_4 != to_lane_id_4 else InvalidLane
+  requires from_lane_id_4 < state.lane_count else InvalidLane
+  requires to_lane_id_4 < state.lane_count else InvalidLane
+  requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
+  requires amount_5 > 0 else InvalidAmount
+  requires from_lane_id_5 != to_lane_id_5 else InvalidLane
+  requires from_lane_id_5 < state.lane_count else InvalidLane
+  requires to_lane_id_5 < state.lane_count else InvalidLane
+  requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
+
+  call Token.transfer(
+    from      = source_inventory_0,
+    to        = destination_inventory_0,
+    authority = source_authority_0,
+    amount    = amount_0,
+  )
+  call Token.transfer(
+    from      = source_inventory_1,
+    to        = destination_inventory_1,
+    authority = source_authority_1,
+    amount    = amount_1,
+  )
+  call Token.transfer(
+    from      = source_inventory_2,
+    to        = destination_inventory_2,
+    authority = source_authority_2,
+    amount    = amount_2,
+  )
+  call Token.transfer(
+    from      = source_inventory_3,
+    to        = destination_inventory_3,
+    authority = source_authority_3,
+    amount    = amount_3,
+  )
+  call Token.transfer(
+    from      = source_inventory_4,
+    to        = destination_inventory_4,
+    authority = source_authority_4,
+    amount    = amount_4,
+  )
+  call Token.transfer(
+    from      = source_inventory_5,
+    to        = destination_inventory_5,
+    authority = source_authority_5,
+    amount    = amount_5,
+  )
+
+  ensures state.admin_key == old(state.admin_key)
+  ensures state.hub_authorizer_key == old(state.hub_authorizer_key)
+  ensures state.inventory_rebalancer_key == old(state.inventory_rebalancer_key)
+  ensures state.max_fee_bps == old(state.max_fee_bps)
+  ensures state.lane_count == old(state.lane_count)
+  ensures state.paused == old(state.paused)
+}
+
+handler rebalance_inventory_7
+  (amount_0 : U64)
+  (from_lane_id_0 : U64)
+  (to_lane_id_0 : U64)
+  (amount_1 : U64)
+  (from_lane_id_1 : U64)
+  (to_lane_id_1 : U64)
+  (amount_2 : U64)
+  (from_lane_id_2 : U64)
+  (to_lane_id_2 : U64)
+  (amount_3 : U64)
+  (from_lane_id_3 : U64)
+  (to_lane_id_3 : U64)
+  (amount_4 : U64)
+  (from_lane_id_4 : U64)
+  (to_lane_id_4 : U64)
+  (amount_5 : U64)
+  (from_lane_id_5 : U64)
+  (to_lane_id_5 : U64)
+  (amount_6 : U64)
+  (from_lane_id_6 : U64)
+  (to_lane_id_6 : U64)
+  : State.Active -> State.Active {
+  auth inventory_rebalancer
+
+  accounts {
+    config                 : readonly, pda ["config"]
+    inventory_rebalancer   : signer
+    token_program          : program, type token
+    mint                   : readonly
+    source_authority_0     : readonly, pda ["hub-authority", from_lane_id_0]
+    source_inventory_0     : writable, token, authority source_authority_0
+    destination_inventory_0: writable, token
+    source_authority_1     : readonly, pda ["hub-authority", from_lane_id_1]
+    source_inventory_1     : writable, token, authority source_authority_1
+    destination_inventory_1: writable, token
+    source_authority_2     : readonly, pda ["hub-authority", from_lane_id_2]
+    source_inventory_2     : writable, token, authority source_authority_2
+    destination_inventory_2: writable, token
+    source_authority_3     : readonly, pda ["hub-authority", from_lane_id_3]
+    source_inventory_3     : writable, token, authority source_authority_3
+    destination_inventory_3: writable, token
+    source_authority_4     : readonly, pda ["hub-authority", from_lane_id_4]
+    source_inventory_4     : writable, token, authority source_authority_4
+    destination_inventory_4: writable, token
+    source_authority_5     : readonly, pda ["hub-authority", from_lane_id_5]
+    source_inventory_5     : writable, token, authority source_authority_5
+    destination_inventory_5: writable, token
+    source_authority_6     : readonly, pda ["hub-authority", from_lane_id_6]
+    source_inventory_6     : writable, token, authority source_authority_6
+    destination_inventory_6: writable, token
+  }
+
+  requires inventory_rebalancer.pubkey == state.inventory_rebalancer_key else Unauthorized
+  requires
+    mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires amount_0 > 0 else InvalidAmount
+  requires from_lane_id_0 != to_lane_id_0 else InvalidLane
+  requires from_lane_id_0 < state.lane_count else InvalidLane
+  requires to_lane_id_0 < state.lane_count else InvalidLane
+  requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
+  requires amount_1 > 0 else InvalidAmount
+  requires from_lane_id_1 != to_lane_id_1 else InvalidLane
+  requires from_lane_id_1 < state.lane_count else InvalidLane
+  requires to_lane_id_1 < state.lane_count else InvalidLane
+  requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
+  requires amount_2 > 0 else InvalidAmount
+  requires from_lane_id_2 != to_lane_id_2 else InvalidLane
+  requires from_lane_id_2 < state.lane_count else InvalidLane
+  requires to_lane_id_2 < state.lane_count else InvalidLane
+  requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
+  requires amount_3 > 0 else InvalidAmount
+  requires from_lane_id_3 != to_lane_id_3 else InvalidLane
+  requires from_lane_id_3 < state.lane_count else InvalidLane
+  requires to_lane_id_3 < state.lane_count else InvalidLane
+  requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
+  requires amount_4 > 0 else InvalidAmount
+  requires from_lane_id_4 != to_lane_id_4 else InvalidLane
+  requires from_lane_id_4 < state.lane_count else InvalidLane
+  requires to_lane_id_4 < state.lane_count else InvalidLane
+  requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
+  requires amount_5 > 0 else InvalidAmount
+  requires from_lane_id_5 != to_lane_id_5 else InvalidLane
+  requires from_lane_id_5 < state.lane_count else InvalidLane
+  requires to_lane_id_5 < state.lane_count else InvalidLane
+  requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
+  requires amount_6 > 0 else InvalidAmount
+  requires from_lane_id_6 != to_lane_id_6 else InvalidLane
+  requires from_lane_id_6 < state.lane_count else InvalidLane
+  requires to_lane_id_6 < state.lane_count else InvalidLane
+  requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
+
+  call Token.transfer(
+    from      = source_inventory_0,
+    to        = destination_inventory_0,
+    authority = source_authority_0,
+    amount    = amount_0,
+  )
+  call Token.transfer(
+    from      = source_inventory_1,
+    to        = destination_inventory_1,
+    authority = source_authority_1,
+    amount    = amount_1,
+  )
+  call Token.transfer(
+    from      = source_inventory_2,
+    to        = destination_inventory_2,
+    authority = source_authority_2,
+    amount    = amount_2,
+  )
+  call Token.transfer(
+    from      = source_inventory_3,
+    to        = destination_inventory_3,
+    authority = source_authority_3,
+    amount    = amount_3,
+  )
+  call Token.transfer(
+    from      = source_inventory_4,
+    to        = destination_inventory_4,
+    authority = source_authority_4,
+    amount    = amount_4,
+  )
+  call Token.transfer(
+    from      = source_inventory_5,
+    to        = destination_inventory_5,
+    authority = source_authority_5,
+    amount    = amount_5,
+  )
+  call Token.transfer(
+    from      = source_inventory_6,
+    to        = destination_inventory_6,
+    authority = source_authority_6,
+    amount    = amount_6,
+  )
+
+  ensures state.admin_key == old(state.admin_key)
+  ensures state.hub_authorizer_key == old(state.hub_authorizer_key)
+  ensures state.inventory_rebalancer_key == old(state.inventory_rebalancer_key)
+  ensures state.max_fee_bps == old(state.max_fee_bps)
+  ensures state.lane_count == old(state.lane_count)
+  ensures state.paused == old(state.paused)
+}
+
+handler rebalance_inventory_8
+  (amount_0 : U64)
+  (from_lane_id_0 : U64)
+  (to_lane_id_0 : U64)
+  (amount_1 : U64)
+  (from_lane_id_1 : U64)
+  (to_lane_id_1 : U64)
+  (amount_2 : U64)
+  (from_lane_id_2 : U64)
+  (to_lane_id_2 : U64)
+  (amount_3 : U64)
+  (from_lane_id_3 : U64)
+  (to_lane_id_3 : U64)
+  (amount_4 : U64)
+  (from_lane_id_4 : U64)
+  (to_lane_id_4 : U64)
+  (amount_5 : U64)
+  (from_lane_id_5 : U64)
+  (to_lane_id_5 : U64)
+  (amount_6 : U64)
+  (from_lane_id_6 : U64)
+  (to_lane_id_6 : U64)
+  (amount_7 : U64)
+  (from_lane_id_7 : U64)
+  (to_lane_id_7 : U64)
+  : State.Active -> State.Active {
+  auth inventory_rebalancer
+
+  accounts {
+    config                 : readonly, pda ["config"]
+    inventory_rebalancer   : signer
+    token_program          : program, type token
+    mint                   : readonly
+    source_authority_0     : readonly, pda ["hub-authority", from_lane_id_0]
+    source_inventory_0     : writable, token, authority source_authority_0
+    destination_inventory_0: writable, token
+    source_authority_1     : readonly, pda ["hub-authority", from_lane_id_1]
+    source_inventory_1     : writable, token, authority source_authority_1
+    destination_inventory_1: writable, token
+    source_authority_2     : readonly, pda ["hub-authority", from_lane_id_2]
+    source_inventory_2     : writable, token, authority source_authority_2
+    destination_inventory_2: writable, token
+    source_authority_3     : readonly, pda ["hub-authority", from_lane_id_3]
+    source_inventory_3     : writable, token, authority source_authority_3
+    destination_inventory_3: writable, token
+    source_authority_4     : readonly, pda ["hub-authority", from_lane_id_4]
+    source_inventory_4     : writable, token, authority source_authority_4
+    destination_inventory_4: writable, token
+    source_authority_5     : readonly, pda ["hub-authority", from_lane_id_5]
+    source_inventory_5     : writable, token, authority source_authority_5
+    destination_inventory_5: writable, token
+    source_authority_6     : readonly, pda ["hub-authority", from_lane_id_6]
+    source_inventory_6     : writable, token, authority source_authority_6
+    destination_inventory_6: writable, token
+    source_authority_7     : readonly, pda ["hub-authority", from_lane_id_7]
+    source_inventory_7     : writable, token, authority source_authority_7
+    destination_inventory_7: writable, token
+  }
+
+  requires inventory_rebalancer.pubkey == state.inventory_rebalancer_key else Unauthorized
+  requires
+    mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires amount_0 > 0 else InvalidAmount
+  requires from_lane_id_0 != to_lane_id_0 else InvalidLane
+  requires from_lane_id_0 < state.lane_count else InvalidLane
+  requires to_lane_id_0 < state.lane_count else InvalidLane
+  requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
+  requires amount_1 > 0 else InvalidAmount
+  requires from_lane_id_1 != to_lane_id_1 else InvalidLane
+  requires from_lane_id_1 < state.lane_count else InvalidLane
+  requires to_lane_id_1 < state.lane_count else InvalidLane
+  requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
+  requires amount_2 > 0 else InvalidAmount
+  requires from_lane_id_2 != to_lane_id_2 else InvalidLane
+  requires from_lane_id_2 < state.lane_count else InvalidLane
+  requires to_lane_id_2 < state.lane_count else InvalidLane
+  requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
+  requires amount_3 > 0 else InvalidAmount
+  requires from_lane_id_3 != to_lane_id_3 else InvalidLane
+  requires from_lane_id_3 < state.lane_count else InvalidLane
+  requires to_lane_id_3 < state.lane_count else InvalidLane
+  requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
+  requires amount_4 > 0 else InvalidAmount
+  requires from_lane_id_4 != to_lane_id_4 else InvalidLane
+  requires from_lane_id_4 < state.lane_count else InvalidLane
+  requires to_lane_id_4 < state.lane_count else InvalidLane
+  requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
+  requires amount_5 > 0 else InvalidAmount
+  requires from_lane_id_5 != to_lane_id_5 else InvalidLane
+  requires from_lane_id_5 < state.lane_count else InvalidLane
+  requires to_lane_id_5 < state.lane_count else InvalidLane
+  requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
+  requires amount_6 > 0 else InvalidAmount
+  requires from_lane_id_6 != to_lane_id_6 else InvalidLane
+  requires from_lane_id_6 < state.lane_count else InvalidLane
+  requires to_lane_id_6 < state.lane_count else InvalidLane
+  requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
+  requires amount_7 > 0 else InvalidAmount
+  requires from_lane_id_7 != to_lane_id_7 else InvalidLane
+  requires from_lane_id_7 < state.lane_count else InvalidLane
+  requires to_lane_id_7 < state.lane_count else InvalidLane
+  requires source_inventory_7.pubkey != destination_inventory_7.pubkey else InvalidAccount
+
+  call Token.transfer(
+    from      = source_inventory_0,
+    to        = destination_inventory_0,
+    authority = source_authority_0,
+    amount    = amount_0,
+  )
+  call Token.transfer(
+    from      = source_inventory_1,
+    to        = destination_inventory_1,
+    authority = source_authority_1,
+    amount    = amount_1,
+  )
+  call Token.transfer(
+    from      = source_inventory_2,
+    to        = destination_inventory_2,
+    authority = source_authority_2,
+    amount    = amount_2,
+  )
+  call Token.transfer(
+    from      = source_inventory_3,
+    to        = destination_inventory_3,
+    authority = source_authority_3,
+    amount    = amount_3,
+  )
+  call Token.transfer(
+    from      = source_inventory_4,
+    to        = destination_inventory_4,
+    authority = source_authority_4,
+    amount    = amount_4,
+  )
+  call Token.transfer(
+    from      = source_inventory_5,
+    to        = destination_inventory_5,
+    authority = source_authority_5,
+    amount    = amount_5,
+  )
+  call Token.transfer(
+    from      = source_inventory_6,
+    to        = destination_inventory_6,
+    authority = source_authority_6,
+    amount    = amount_6,
+  )
+  call Token.transfer(
+    from      = source_inventory_7,
+    to        = destination_inventory_7,
+    authority = source_authority_7,
+    amount    = amount_7,
+  )
+
+  ensures state.admin_key == old(state.admin_key)
+  ensures state.hub_authorizer_key == old(state.hub_authorizer_key)
+  ensures state.inventory_rebalancer_key == old(state.inventory_rebalancer_key)
+  ensures state.max_fee_bps == old(state.max_fee_bps)
+  ensures state.lane_count == old(state.lane_count)
+  ensures state.paused == old(state.paused)
+}
+
+handler rebalance_inventory_9
+  (amount_0 : U64)
+  (from_lane_id_0 : U64)
+  (to_lane_id_0 : U64)
+  (amount_1 : U64)
+  (from_lane_id_1 : U64)
+  (to_lane_id_1 : U64)
+  (amount_2 : U64)
+  (from_lane_id_2 : U64)
+  (to_lane_id_2 : U64)
+  (amount_3 : U64)
+  (from_lane_id_3 : U64)
+  (to_lane_id_3 : U64)
+  (amount_4 : U64)
+  (from_lane_id_4 : U64)
+  (to_lane_id_4 : U64)
+  (amount_5 : U64)
+  (from_lane_id_5 : U64)
+  (to_lane_id_5 : U64)
+  (amount_6 : U64)
+  (from_lane_id_6 : U64)
+  (to_lane_id_6 : U64)
+  (amount_7 : U64)
+  (from_lane_id_7 : U64)
+  (to_lane_id_7 : U64)
+  (amount_8 : U64)
+  (from_lane_id_8 : U64)
+  (to_lane_id_8 : U64)
+  : State.Active -> State.Active {
+  auth inventory_rebalancer
+
+  accounts {
+    config                 : readonly, pda ["config"]
+    inventory_rebalancer   : signer
+    token_program          : program, type token
+    mint                   : readonly
+    source_authority_0     : readonly, pda ["hub-authority", from_lane_id_0]
+    source_inventory_0     : writable, token, authority source_authority_0
+    destination_inventory_0: writable, token
+    source_authority_1     : readonly, pda ["hub-authority", from_lane_id_1]
+    source_inventory_1     : writable, token, authority source_authority_1
+    destination_inventory_1: writable, token
+    source_authority_2     : readonly, pda ["hub-authority", from_lane_id_2]
+    source_inventory_2     : writable, token, authority source_authority_2
+    destination_inventory_2: writable, token
+    source_authority_3     : readonly, pda ["hub-authority", from_lane_id_3]
+    source_inventory_3     : writable, token, authority source_authority_3
+    destination_inventory_3: writable, token
+    source_authority_4     : readonly, pda ["hub-authority", from_lane_id_4]
+    source_inventory_4     : writable, token, authority source_authority_4
+    destination_inventory_4: writable, token
+    source_authority_5     : readonly, pda ["hub-authority", from_lane_id_5]
+    source_inventory_5     : writable, token, authority source_authority_5
+    destination_inventory_5: writable, token
+    source_authority_6     : readonly, pda ["hub-authority", from_lane_id_6]
+    source_inventory_6     : writable, token, authority source_authority_6
+    destination_inventory_6: writable, token
+    source_authority_7     : readonly, pda ["hub-authority", from_lane_id_7]
+    source_inventory_7     : writable, token, authority source_authority_7
+    destination_inventory_7: writable, token
+    source_authority_8     : readonly, pda ["hub-authority", from_lane_id_8]
+    source_inventory_8     : writable, token, authority source_authority_8
+    destination_inventory_8: writable, token
+  }
+
+  requires inventory_rebalancer.pubkey == state.inventory_rebalancer_key else Unauthorized
+  requires
+    mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires amount_0 > 0 else InvalidAmount
+  requires from_lane_id_0 != to_lane_id_0 else InvalidLane
+  requires from_lane_id_0 < state.lane_count else InvalidLane
+  requires to_lane_id_0 < state.lane_count else InvalidLane
+  requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
+  requires amount_1 > 0 else InvalidAmount
+  requires from_lane_id_1 != to_lane_id_1 else InvalidLane
+  requires from_lane_id_1 < state.lane_count else InvalidLane
+  requires to_lane_id_1 < state.lane_count else InvalidLane
+  requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
+  requires amount_2 > 0 else InvalidAmount
+  requires from_lane_id_2 != to_lane_id_2 else InvalidLane
+  requires from_lane_id_2 < state.lane_count else InvalidLane
+  requires to_lane_id_2 < state.lane_count else InvalidLane
+  requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
+  requires amount_3 > 0 else InvalidAmount
+  requires from_lane_id_3 != to_lane_id_3 else InvalidLane
+  requires from_lane_id_3 < state.lane_count else InvalidLane
+  requires to_lane_id_3 < state.lane_count else InvalidLane
+  requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
+  requires amount_4 > 0 else InvalidAmount
+  requires from_lane_id_4 != to_lane_id_4 else InvalidLane
+  requires from_lane_id_4 < state.lane_count else InvalidLane
+  requires to_lane_id_4 < state.lane_count else InvalidLane
+  requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
+  requires amount_5 > 0 else InvalidAmount
+  requires from_lane_id_5 != to_lane_id_5 else InvalidLane
+  requires from_lane_id_5 < state.lane_count else InvalidLane
+  requires to_lane_id_5 < state.lane_count else InvalidLane
+  requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
+  requires amount_6 > 0 else InvalidAmount
+  requires from_lane_id_6 != to_lane_id_6 else InvalidLane
+  requires from_lane_id_6 < state.lane_count else InvalidLane
+  requires to_lane_id_6 < state.lane_count else InvalidLane
+  requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
+  requires amount_7 > 0 else InvalidAmount
+  requires from_lane_id_7 != to_lane_id_7 else InvalidLane
+  requires from_lane_id_7 < state.lane_count else InvalidLane
+  requires to_lane_id_7 < state.lane_count else InvalidLane
+  requires source_inventory_7.pubkey != destination_inventory_7.pubkey else InvalidAccount
+  requires amount_8 > 0 else InvalidAmount
+  requires from_lane_id_8 != to_lane_id_8 else InvalidLane
+  requires from_lane_id_8 < state.lane_count else InvalidLane
+  requires to_lane_id_8 < state.lane_count else InvalidLane
+  requires source_inventory_8.pubkey != destination_inventory_8.pubkey else InvalidAccount
+
+  call Token.transfer(
+    from      = source_inventory_0,
+    to        = destination_inventory_0,
+    authority = source_authority_0,
+    amount    = amount_0,
+  )
+  call Token.transfer(
+    from      = source_inventory_1,
+    to        = destination_inventory_1,
+    authority = source_authority_1,
+    amount    = amount_1,
+  )
+  call Token.transfer(
+    from      = source_inventory_2,
+    to        = destination_inventory_2,
+    authority = source_authority_2,
+    amount    = amount_2,
+  )
+  call Token.transfer(
+    from      = source_inventory_3,
+    to        = destination_inventory_3,
+    authority = source_authority_3,
+    amount    = amount_3,
+  )
+  call Token.transfer(
+    from      = source_inventory_4,
+    to        = destination_inventory_4,
+    authority = source_authority_4,
+    amount    = amount_4,
+  )
+  call Token.transfer(
+    from      = source_inventory_5,
+    to        = destination_inventory_5,
+    authority = source_authority_5,
+    amount    = amount_5,
+  )
+  call Token.transfer(
+    from      = source_inventory_6,
+    to        = destination_inventory_6,
+    authority = source_authority_6,
+    amount    = amount_6,
+  )
+  call Token.transfer(
+    from      = source_inventory_7,
+    to        = destination_inventory_7,
+    authority = source_authority_7,
+    amount    = amount_7,
+  )
+  call Token.transfer(
+    from      = source_inventory_8,
+    to        = destination_inventory_8,
+    authority = source_authority_8,
+    amount    = amount_8,
+  )
+
+  ensures state.admin_key == old(state.admin_key)
+  ensures state.hub_authorizer_key == old(state.hub_authorizer_key)
+  ensures state.inventory_rebalancer_key == old(state.inventory_rebalancer_key)
+  ensures state.max_fee_bps == old(state.max_fee_bps)
+  ensures state.lane_count == old(state.lane_count)
+  ensures state.paused == old(state.paused)
+}
+
+handler rebalance_inventory_10
+  (amount_0 : U64)
+  (from_lane_id_0 : U64)
+  (to_lane_id_0 : U64)
+  (amount_1 : U64)
+  (from_lane_id_1 : U64)
+  (to_lane_id_1 : U64)
+  (amount_2 : U64)
+  (from_lane_id_2 : U64)
+  (to_lane_id_2 : U64)
+  (amount_3 : U64)
+  (from_lane_id_3 : U64)
+  (to_lane_id_3 : U64)
+  (amount_4 : U64)
+  (from_lane_id_4 : U64)
+  (to_lane_id_4 : U64)
+  (amount_5 : U64)
+  (from_lane_id_5 : U64)
+  (to_lane_id_5 : U64)
+  (amount_6 : U64)
+  (from_lane_id_6 : U64)
+  (to_lane_id_6 : U64)
+  (amount_7 : U64)
+  (from_lane_id_7 : U64)
+  (to_lane_id_7 : U64)
+  (amount_8 : U64)
+  (from_lane_id_8 : U64)
+  (to_lane_id_8 : U64)
+  (amount_9 : U64)
+  (from_lane_id_9 : U64)
+  (to_lane_id_9 : U64)
+  : State.Active -> State.Active {
+  auth inventory_rebalancer
+
+  accounts {
+    config                 : readonly, pda ["config"]
+    inventory_rebalancer   : signer
+    token_program          : program, type token
+    mint                   : readonly
+    source_authority_0     : readonly, pda ["hub-authority", from_lane_id_0]
+    source_inventory_0     : writable, token, authority source_authority_0
+    destination_inventory_0: writable, token
+    source_authority_1     : readonly, pda ["hub-authority", from_lane_id_1]
+    source_inventory_1     : writable, token, authority source_authority_1
+    destination_inventory_1: writable, token
+    source_authority_2     : readonly, pda ["hub-authority", from_lane_id_2]
+    source_inventory_2     : writable, token, authority source_authority_2
+    destination_inventory_2: writable, token
+    source_authority_3     : readonly, pda ["hub-authority", from_lane_id_3]
+    source_inventory_3     : writable, token, authority source_authority_3
+    destination_inventory_3: writable, token
+    source_authority_4     : readonly, pda ["hub-authority", from_lane_id_4]
+    source_inventory_4     : writable, token, authority source_authority_4
+    destination_inventory_4: writable, token
+    source_authority_5     : readonly, pda ["hub-authority", from_lane_id_5]
+    source_inventory_5     : writable, token, authority source_authority_5
+    destination_inventory_5: writable, token
+    source_authority_6     : readonly, pda ["hub-authority", from_lane_id_6]
+    source_inventory_6     : writable, token, authority source_authority_6
+    destination_inventory_6: writable, token
+    source_authority_7     : readonly, pda ["hub-authority", from_lane_id_7]
+    source_inventory_7     : writable, token, authority source_authority_7
+    destination_inventory_7: writable, token
+    source_authority_8     : readonly, pda ["hub-authority", from_lane_id_8]
+    source_inventory_8     : writable, token, authority source_authority_8
+    destination_inventory_8: writable, token
+    source_authority_9     : readonly, pda ["hub-authority", from_lane_id_9]
+    source_inventory_9     : writable, token, authority source_authority_9
+    destination_inventory_9: writable, token
+  }
+
+  requires inventory_rebalancer.pubkey == state.inventory_rebalancer_key else Unauthorized
+  requires
+    mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires amount_0 > 0 else InvalidAmount
+  requires from_lane_id_0 != to_lane_id_0 else InvalidLane
+  requires from_lane_id_0 < state.lane_count else InvalidLane
+  requires to_lane_id_0 < state.lane_count else InvalidLane
+  requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
+  requires amount_1 > 0 else InvalidAmount
+  requires from_lane_id_1 != to_lane_id_1 else InvalidLane
+  requires from_lane_id_1 < state.lane_count else InvalidLane
+  requires to_lane_id_1 < state.lane_count else InvalidLane
+  requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
+  requires amount_2 > 0 else InvalidAmount
+  requires from_lane_id_2 != to_lane_id_2 else InvalidLane
+  requires from_lane_id_2 < state.lane_count else InvalidLane
+  requires to_lane_id_2 < state.lane_count else InvalidLane
+  requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
+  requires amount_3 > 0 else InvalidAmount
+  requires from_lane_id_3 != to_lane_id_3 else InvalidLane
+  requires from_lane_id_3 < state.lane_count else InvalidLane
+  requires to_lane_id_3 < state.lane_count else InvalidLane
+  requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
+  requires amount_4 > 0 else InvalidAmount
+  requires from_lane_id_4 != to_lane_id_4 else InvalidLane
+  requires from_lane_id_4 < state.lane_count else InvalidLane
+  requires to_lane_id_4 < state.lane_count else InvalidLane
+  requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
+  requires amount_5 > 0 else InvalidAmount
+  requires from_lane_id_5 != to_lane_id_5 else InvalidLane
+  requires from_lane_id_5 < state.lane_count else InvalidLane
+  requires to_lane_id_5 < state.lane_count else InvalidLane
+  requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
+  requires amount_6 > 0 else InvalidAmount
+  requires from_lane_id_6 != to_lane_id_6 else InvalidLane
+  requires from_lane_id_6 < state.lane_count else InvalidLane
+  requires to_lane_id_6 < state.lane_count else InvalidLane
+  requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
+  requires amount_7 > 0 else InvalidAmount
+  requires from_lane_id_7 != to_lane_id_7 else InvalidLane
+  requires from_lane_id_7 < state.lane_count else InvalidLane
+  requires to_lane_id_7 < state.lane_count else InvalidLane
+  requires source_inventory_7.pubkey != destination_inventory_7.pubkey else InvalidAccount
+  requires amount_8 > 0 else InvalidAmount
+  requires from_lane_id_8 != to_lane_id_8 else InvalidLane
+  requires from_lane_id_8 < state.lane_count else InvalidLane
+  requires to_lane_id_8 < state.lane_count else InvalidLane
+  requires source_inventory_8.pubkey != destination_inventory_8.pubkey else InvalidAccount
+  requires amount_9 > 0 else InvalidAmount
+  requires from_lane_id_9 != to_lane_id_9 else InvalidLane
+  requires from_lane_id_9 < state.lane_count else InvalidLane
+  requires to_lane_id_9 < state.lane_count else InvalidLane
+  requires source_inventory_9.pubkey != destination_inventory_9.pubkey else InvalidAccount
+
+  call Token.transfer(
+    from      = source_inventory_0,
+    to        = destination_inventory_0,
+    authority = source_authority_0,
+    amount    = amount_0,
+  )
+  call Token.transfer(
+    from      = source_inventory_1,
+    to        = destination_inventory_1,
+    authority = source_authority_1,
+    amount    = amount_1,
+  )
+  call Token.transfer(
+    from      = source_inventory_2,
+    to        = destination_inventory_2,
+    authority = source_authority_2,
+    amount    = amount_2,
+  )
+  call Token.transfer(
+    from      = source_inventory_3,
+    to        = destination_inventory_3,
+    authority = source_authority_3,
+    amount    = amount_3,
+  )
+  call Token.transfer(
+    from      = source_inventory_4,
+    to        = destination_inventory_4,
+    authority = source_authority_4,
+    amount    = amount_4,
+  )
+  call Token.transfer(
+    from      = source_inventory_5,
+    to        = destination_inventory_5,
+    authority = source_authority_5,
+    amount    = amount_5,
+  )
+  call Token.transfer(
+    from      = source_inventory_6,
+    to        = destination_inventory_6,
+    authority = source_authority_6,
+    amount    = amount_6,
+  )
+  call Token.transfer(
+    from      = source_inventory_7,
+    to        = destination_inventory_7,
+    authority = source_authority_7,
+    amount    = amount_7,
+  )
+  call Token.transfer(
+    from      = source_inventory_8,
+    to        = destination_inventory_8,
+    authority = source_authority_8,
+    amount    = amount_8,
+  )
+  call Token.transfer(
+    from      = source_inventory_9,
+    to        = destination_inventory_9,
+    authority = source_authority_9,
+    amount    = amount_9,
+  )
+
+  ensures state.admin_key == old(state.admin_key)
+  ensures state.hub_authorizer_key == old(state.hub_authorizer_key)
+  ensures state.inventory_rebalancer_key == old(state.inventory_rebalancer_key)
+  ensures state.max_fee_bps == old(state.max_fee_bps)
+  ensures state.lane_count == old(state.lane_count)
+  ensures state.paused == old(state.paused)
+}
+
+handler rebalance_inventory_11
+  (amount_0 : U64)
+  (from_lane_id_0 : U64)
+  (to_lane_id_0 : U64)
+  (amount_1 : U64)
+  (from_lane_id_1 : U64)
+  (to_lane_id_1 : U64)
+  (amount_2 : U64)
+  (from_lane_id_2 : U64)
+  (to_lane_id_2 : U64)
+  (amount_3 : U64)
+  (from_lane_id_3 : U64)
+  (to_lane_id_3 : U64)
+  (amount_4 : U64)
+  (from_lane_id_4 : U64)
+  (to_lane_id_4 : U64)
+  (amount_5 : U64)
+  (from_lane_id_5 : U64)
+  (to_lane_id_5 : U64)
+  (amount_6 : U64)
+  (from_lane_id_6 : U64)
+  (to_lane_id_6 : U64)
+  (amount_7 : U64)
+  (from_lane_id_7 : U64)
+  (to_lane_id_7 : U64)
+  (amount_8 : U64)
+  (from_lane_id_8 : U64)
+  (to_lane_id_8 : U64)
+  (amount_9 : U64)
+  (from_lane_id_9 : U64)
+  (to_lane_id_9 : U64)
+  (amount_10 : U64)
+  (from_lane_id_10 : U64)
+  (to_lane_id_10 : U64)
+  : State.Active -> State.Active {
+  auth inventory_rebalancer
+
+  accounts {
+    config                 : readonly, pda ["config"]
+    inventory_rebalancer   : signer
+    token_program          : program, type token
+    mint                   : readonly
+    source_authority_0     : readonly, pda ["hub-authority", from_lane_id_0]
+    source_inventory_0     : writable, token, authority source_authority_0
+    destination_inventory_0: writable, token
+    source_authority_1     : readonly, pda ["hub-authority", from_lane_id_1]
+    source_inventory_1     : writable, token, authority source_authority_1
+    destination_inventory_1: writable, token
+    source_authority_2     : readonly, pda ["hub-authority", from_lane_id_2]
+    source_inventory_2     : writable, token, authority source_authority_2
+    destination_inventory_2: writable, token
+    source_authority_3     : readonly, pda ["hub-authority", from_lane_id_3]
+    source_inventory_3     : writable, token, authority source_authority_3
+    destination_inventory_3: writable, token
+    source_authority_4     : readonly, pda ["hub-authority", from_lane_id_4]
+    source_inventory_4     : writable, token, authority source_authority_4
+    destination_inventory_4: writable, token
+    source_authority_5     : readonly, pda ["hub-authority", from_lane_id_5]
+    source_inventory_5     : writable, token, authority source_authority_5
+    destination_inventory_5: writable, token
+    source_authority_6     : readonly, pda ["hub-authority", from_lane_id_6]
+    source_inventory_6     : writable, token, authority source_authority_6
+    destination_inventory_6: writable, token
+    source_authority_7     : readonly, pda ["hub-authority", from_lane_id_7]
+    source_inventory_7     : writable, token, authority source_authority_7
+    destination_inventory_7: writable, token
+    source_authority_8     : readonly, pda ["hub-authority", from_lane_id_8]
+    source_inventory_8     : writable, token, authority source_authority_8
+    destination_inventory_8: writable, token
+    source_authority_9     : readonly, pda ["hub-authority", from_lane_id_9]
+    source_inventory_9     : writable, token, authority source_authority_9
+    destination_inventory_9: writable, token
+    source_authority_10     : readonly, pda ["hub-authority", from_lane_id_10]
+    source_inventory_10     : writable, token, authority source_authority_10
+    destination_inventory_10: writable, token
+  }
+
+  requires inventory_rebalancer.pubkey == state.inventory_rebalancer_key else Unauthorized
+  requires
+    mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires amount_0 > 0 else InvalidAmount
+  requires from_lane_id_0 != to_lane_id_0 else InvalidLane
+  requires from_lane_id_0 < state.lane_count else InvalidLane
+  requires to_lane_id_0 < state.lane_count else InvalidLane
+  requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
+  requires amount_1 > 0 else InvalidAmount
+  requires from_lane_id_1 != to_lane_id_1 else InvalidLane
+  requires from_lane_id_1 < state.lane_count else InvalidLane
+  requires to_lane_id_1 < state.lane_count else InvalidLane
+  requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
+  requires amount_2 > 0 else InvalidAmount
+  requires from_lane_id_2 != to_lane_id_2 else InvalidLane
+  requires from_lane_id_2 < state.lane_count else InvalidLane
+  requires to_lane_id_2 < state.lane_count else InvalidLane
+  requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
+  requires amount_3 > 0 else InvalidAmount
+  requires from_lane_id_3 != to_lane_id_3 else InvalidLane
+  requires from_lane_id_3 < state.lane_count else InvalidLane
+  requires to_lane_id_3 < state.lane_count else InvalidLane
+  requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
+  requires amount_4 > 0 else InvalidAmount
+  requires from_lane_id_4 != to_lane_id_4 else InvalidLane
+  requires from_lane_id_4 < state.lane_count else InvalidLane
+  requires to_lane_id_4 < state.lane_count else InvalidLane
+  requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
+  requires amount_5 > 0 else InvalidAmount
+  requires from_lane_id_5 != to_lane_id_5 else InvalidLane
+  requires from_lane_id_5 < state.lane_count else InvalidLane
+  requires to_lane_id_5 < state.lane_count else InvalidLane
+  requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
+  requires amount_6 > 0 else InvalidAmount
+  requires from_lane_id_6 != to_lane_id_6 else InvalidLane
+  requires from_lane_id_6 < state.lane_count else InvalidLane
+  requires to_lane_id_6 < state.lane_count else InvalidLane
+  requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
+  requires amount_7 > 0 else InvalidAmount
+  requires from_lane_id_7 != to_lane_id_7 else InvalidLane
+  requires from_lane_id_7 < state.lane_count else InvalidLane
+  requires to_lane_id_7 < state.lane_count else InvalidLane
+  requires source_inventory_7.pubkey != destination_inventory_7.pubkey else InvalidAccount
+  requires amount_8 > 0 else InvalidAmount
+  requires from_lane_id_8 != to_lane_id_8 else InvalidLane
+  requires from_lane_id_8 < state.lane_count else InvalidLane
+  requires to_lane_id_8 < state.lane_count else InvalidLane
+  requires source_inventory_8.pubkey != destination_inventory_8.pubkey else InvalidAccount
+  requires amount_9 > 0 else InvalidAmount
+  requires from_lane_id_9 != to_lane_id_9 else InvalidLane
+  requires from_lane_id_9 < state.lane_count else InvalidLane
+  requires to_lane_id_9 < state.lane_count else InvalidLane
+  requires source_inventory_9.pubkey != destination_inventory_9.pubkey else InvalidAccount
+  requires amount_10 > 0 else InvalidAmount
+  requires from_lane_id_10 != to_lane_id_10 else InvalidLane
+  requires from_lane_id_10 < state.lane_count else InvalidLane
+  requires to_lane_id_10 < state.lane_count else InvalidLane
+  requires source_inventory_10.pubkey != destination_inventory_10.pubkey else InvalidAccount
+
+  call Token.transfer(
+    from      = source_inventory_0,
+    to        = destination_inventory_0,
+    authority = source_authority_0,
+    amount    = amount_0,
+  )
+  call Token.transfer(
+    from      = source_inventory_1,
+    to        = destination_inventory_1,
+    authority = source_authority_1,
+    amount    = amount_1,
+  )
+  call Token.transfer(
+    from      = source_inventory_2,
+    to        = destination_inventory_2,
+    authority = source_authority_2,
+    amount    = amount_2,
+  )
+  call Token.transfer(
+    from      = source_inventory_3,
+    to        = destination_inventory_3,
+    authority = source_authority_3,
+    amount    = amount_3,
+  )
+  call Token.transfer(
+    from      = source_inventory_4,
+    to        = destination_inventory_4,
+    authority = source_authority_4,
+    amount    = amount_4,
+  )
+  call Token.transfer(
+    from      = source_inventory_5,
+    to        = destination_inventory_5,
+    authority = source_authority_5,
+    amount    = amount_5,
+  )
+  call Token.transfer(
+    from      = source_inventory_6,
+    to        = destination_inventory_6,
+    authority = source_authority_6,
+    amount    = amount_6,
+  )
+  call Token.transfer(
+    from      = source_inventory_7,
+    to        = destination_inventory_7,
+    authority = source_authority_7,
+    amount    = amount_7,
+  )
+  call Token.transfer(
+    from      = source_inventory_8,
+    to        = destination_inventory_8,
+    authority = source_authority_8,
+    amount    = amount_8,
+  )
+  call Token.transfer(
+    from      = source_inventory_9,
+    to        = destination_inventory_9,
+    authority = source_authority_9,
+    amount    = amount_9,
+  )
+  call Token.transfer(
+    from      = source_inventory_10,
+    to        = destination_inventory_10,
+    authority = source_authority_10,
+    amount    = amount_10,
+  )
+
+  ensures state.admin_key == old(state.admin_key)
+  ensures state.hub_authorizer_key == old(state.hub_authorizer_key)
+  ensures state.inventory_rebalancer_key == old(state.inventory_rebalancer_key)
+  ensures state.max_fee_bps == old(state.max_fee_bps)
+  ensures state.lane_count == old(state.lane_count)
+  ensures state.paused == old(state.paused)
+}
+
+handler rebalance_inventory_12
+  (amount_0 : U64)
+  (from_lane_id_0 : U64)
+  (to_lane_id_0 : U64)
+  (amount_1 : U64)
+  (from_lane_id_1 : U64)
+  (to_lane_id_1 : U64)
+  (amount_2 : U64)
+  (from_lane_id_2 : U64)
+  (to_lane_id_2 : U64)
+  (amount_3 : U64)
+  (from_lane_id_3 : U64)
+  (to_lane_id_3 : U64)
+  (amount_4 : U64)
+  (from_lane_id_4 : U64)
+  (to_lane_id_4 : U64)
+  (amount_5 : U64)
+  (from_lane_id_5 : U64)
+  (to_lane_id_5 : U64)
+  (amount_6 : U64)
+  (from_lane_id_6 : U64)
+  (to_lane_id_6 : U64)
+  (amount_7 : U64)
+  (from_lane_id_7 : U64)
+  (to_lane_id_7 : U64)
+  (amount_8 : U64)
+  (from_lane_id_8 : U64)
+  (to_lane_id_8 : U64)
+  (amount_9 : U64)
+  (from_lane_id_9 : U64)
+  (to_lane_id_9 : U64)
+  (amount_10 : U64)
+  (from_lane_id_10 : U64)
+  (to_lane_id_10 : U64)
+  (amount_11 : U64)
+  (from_lane_id_11 : U64)
+  (to_lane_id_11 : U64)
+  : State.Active -> State.Active {
+  auth inventory_rebalancer
+
+  accounts {
+    config                 : readonly, pda ["config"]
+    inventory_rebalancer   : signer
+    token_program          : program, type token
+    mint                   : readonly
+    source_authority_0     : readonly, pda ["hub-authority", from_lane_id_0]
+    source_inventory_0     : writable, token, authority source_authority_0
+    destination_inventory_0: writable, token
+    source_authority_1     : readonly, pda ["hub-authority", from_lane_id_1]
+    source_inventory_1     : writable, token, authority source_authority_1
+    destination_inventory_1: writable, token
+    source_authority_2     : readonly, pda ["hub-authority", from_lane_id_2]
+    source_inventory_2     : writable, token, authority source_authority_2
+    destination_inventory_2: writable, token
+    source_authority_3     : readonly, pda ["hub-authority", from_lane_id_3]
+    source_inventory_3     : writable, token, authority source_authority_3
+    destination_inventory_3: writable, token
+    source_authority_4     : readonly, pda ["hub-authority", from_lane_id_4]
+    source_inventory_4     : writable, token, authority source_authority_4
+    destination_inventory_4: writable, token
+    source_authority_5     : readonly, pda ["hub-authority", from_lane_id_5]
+    source_inventory_5     : writable, token, authority source_authority_5
+    destination_inventory_5: writable, token
+    source_authority_6     : readonly, pda ["hub-authority", from_lane_id_6]
+    source_inventory_6     : writable, token, authority source_authority_6
+    destination_inventory_6: writable, token
+    source_authority_7     : readonly, pda ["hub-authority", from_lane_id_7]
+    source_inventory_7     : writable, token, authority source_authority_7
+    destination_inventory_7: writable, token
+    source_authority_8     : readonly, pda ["hub-authority", from_lane_id_8]
+    source_inventory_8     : writable, token, authority source_authority_8
+    destination_inventory_8: writable, token
+    source_authority_9     : readonly, pda ["hub-authority", from_lane_id_9]
+    source_inventory_9     : writable, token, authority source_authority_9
+    destination_inventory_9: writable, token
+    source_authority_10     : readonly, pda ["hub-authority", from_lane_id_10]
+    source_inventory_10     : writable, token, authority source_authority_10
+    destination_inventory_10: writable, token
+    source_authority_11     : readonly, pda ["hub-authority", from_lane_id_11]
+    source_inventory_11     : writable, token, authority source_authority_11
+    destination_inventory_11: writable, token
+  }
+
+  requires inventory_rebalancer.pubkey == state.inventory_rebalancer_key else Unauthorized
+  requires
+    mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires amount_0 > 0 else InvalidAmount
+  requires from_lane_id_0 != to_lane_id_0 else InvalidLane
+  requires from_lane_id_0 < state.lane_count else InvalidLane
+  requires to_lane_id_0 < state.lane_count else InvalidLane
+  requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
+  requires amount_1 > 0 else InvalidAmount
+  requires from_lane_id_1 != to_lane_id_1 else InvalidLane
+  requires from_lane_id_1 < state.lane_count else InvalidLane
+  requires to_lane_id_1 < state.lane_count else InvalidLane
+  requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
+  requires amount_2 > 0 else InvalidAmount
+  requires from_lane_id_2 != to_lane_id_2 else InvalidLane
+  requires from_lane_id_2 < state.lane_count else InvalidLane
+  requires to_lane_id_2 < state.lane_count else InvalidLane
+  requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
+  requires amount_3 > 0 else InvalidAmount
+  requires from_lane_id_3 != to_lane_id_3 else InvalidLane
+  requires from_lane_id_3 < state.lane_count else InvalidLane
+  requires to_lane_id_3 < state.lane_count else InvalidLane
+  requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
+  requires amount_4 > 0 else InvalidAmount
+  requires from_lane_id_4 != to_lane_id_4 else InvalidLane
+  requires from_lane_id_4 < state.lane_count else InvalidLane
+  requires to_lane_id_4 < state.lane_count else InvalidLane
+  requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
+  requires amount_5 > 0 else InvalidAmount
+  requires from_lane_id_5 != to_lane_id_5 else InvalidLane
+  requires from_lane_id_5 < state.lane_count else InvalidLane
+  requires to_lane_id_5 < state.lane_count else InvalidLane
+  requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
+  requires amount_6 > 0 else InvalidAmount
+  requires from_lane_id_6 != to_lane_id_6 else InvalidLane
+  requires from_lane_id_6 < state.lane_count else InvalidLane
+  requires to_lane_id_6 < state.lane_count else InvalidLane
+  requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
+  requires amount_7 > 0 else InvalidAmount
+  requires from_lane_id_7 != to_lane_id_7 else InvalidLane
+  requires from_lane_id_7 < state.lane_count else InvalidLane
+  requires to_lane_id_7 < state.lane_count else InvalidLane
+  requires source_inventory_7.pubkey != destination_inventory_7.pubkey else InvalidAccount
+  requires amount_8 > 0 else InvalidAmount
+  requires from_lane_id_8 != to_lane_id_8 else InvalidLane
+  requires from_lane_id_8 < state.lane_count else InvalidLane
+  requires to_lane_id_8 < state.lane_count else InvalidLane
+  requires source_inventory_8.pubkey != destination_inventory_8.pubkey else InvalidAccount
+  requires amount_9 > 0 else InvalidAmount
+  requires from_lane_id_9 != to_lane_id_9 else InvalidLane
+  requires from_lane_id_9 < state.lane_count else InvalidLane
+  requires to_lane_id_9 < state.lane_count else InvalidLane
+  requires source_inventory_9.pubkey != destination_inventory_9.pubkey else InvalidAccount
+  requires amount_10 > 0 else InvalidAmount
+  requires from_lane_id_10 != to_lane_id_10 else InvalidLane
+  requires from_lane_id_10 < state.lane_count else InvalidLane
+  requires to_lane_id_10 < state.lane_count else InvalidLane
+  requires source_inventory_10.pubkey != destination_inventory_10.pubkey else InvalidAccount
+  requires amount_11 > 0 else InvalidAmount
+  requires from_lane_id_11 != to_lane_id_11 else InvalidLane
+  requires from_lane_id_11 < state.lane_count else InvalidLane
+  requires to_lane_id_11 < state.lane_count else InvalidLane
+  requires source_inventory_11.pubkey != destination_inventory_11.pubkey else InvalidAccount
+
+  call Token.transfer(
+    from      = source_inventory_0,
+    to        = destination_inventory_0,
+    authority = source_authority_0,
+    amount    = amount_0,
+  )
+  call Token.transfer(
+    from      = source_inventory_1,
+    to        = destination_inventory_1,
+    authority = source_authority_1,
+    amount    = amount_1,
+  )
+  call Token.transfer(
+    from      = source_inventory_2,
+    to        = destination_inventory_2,
+    authority = source_authority_2,
+    amount    = amount_2,
+  )
+  call Token.transfer(
+    from      = source_inventory_3,
+    to        = destination_inventory_3,
+    authority = source_authority_3,
+    amount    = amount_3,
+  )
+  call Token.transfer(
+    from      = source_inventory_4,
+    to        = destination_inventory_4,
+    authority = source_authority_4,
+    amount    = amount_4,
+  )
+  call Token.transfer(
+    from      = source_inventory_5,
+    to        = destination_inventory_5,
+    authority = source_authority_5,
+    amount    = amount_5,
+  )
+  call Token.transfer(
+    from      = source_inventory_6,
+    to        = destination_inventory_6,
+    authority = source_authority_6,
+    amount    = amount_6,
+  )
+  call Token.transfer(
+    from      = source_inventory_7,
+    to        = destination_inventory_7,
+    authority = source_authority_7,
+    amount    = amount_7,
+  )
+  call Token.transfer(
+    from      = source_inventory_8,
+    to        = destination_inventory_8,
+    authority = source_authority_8,
+    amount    = amount_8,
+  )
+  call Token.transfer(
+    from      = source_inventory_9,
+    to        = destination_inventory_9,
+    authority = source_authority_9,
+    amount    = amount_9,
+  )
+  call Token.transfer(
+    from      = source_inventory_10,
+    to        = destination_inventory_10,
+    authority = source_authority_10,
+    amount    = amount_10,
+  )
+  call Token.transfer(
+    from      = source_inventory_11,
+    to        = destination_inventory_11,
+    authority = source_authority_11,
+    amount    = amount_11,
+  )
+
+  ensures state.admin_key == old(state.admin_key)
+  ensures state.hub_authorizer_key == old(state.hub_authorizer_key)
+  ensures state.inventory_rebalancer_key == old(state.inventory_rebalancer_key)
+  ensures state.max_fee_bps == old(state.max_fee_bps)
+  ensures state.lane_count == old(state.lane_count)
+  ensures state.paused == old(state.paused)
+}
+
+handler rebalance_inventory_13
+  (amount_0 : U64)
+  (from_lane_id_0 : U64)
+  (to_lane_id_0 : U64)
+  (amount_1 : U64)
+  (from_lane_id_1 : U64)
+  (to_lane_id_1 : U64)
+  (amount_2 : U64)
+  (from_lane_id_2 : U64)
+  (to_lane_id_2 : U64)
+  (amount_3 : U64)
+  (from_lane_id_3 : U64)
+  (to_lane_id_3 : U64)
+  (amount_4 : U64)
+  (from_lane_id_4 : U64)
+  (to_lane_id_4 : U64)
+  (amount_5 : U64)
+  (from_lane_id_5 : U64)
+  (to_lane_id_5 : U64)
+  (amount_6 : U64)
+  (from_lane_id_6 : U64)
+  (to_lane_id_6 : U64)
+  (amount_7 : U64)
+  (from_lane_id_7 : U64)
+  (to_lane_id_7 : U64)
+  (amount_8 : U64)
+  (from_lane_id_8 : U64)
+  (to_lane_id_8 : U64)
+  (amount_9 : U64)
+  (from_lane_id_9 : U64)
+  (to_lane_id_9 : U64)
+  (amount_10 : U64)
+  (from_lane_id_10 : U64)
+  (to_lane_id_10 : U64)
+  (amount_11 : U64)
+  (from_lane_id_11 : U64)
+  (to_lane_id_11 : U64)
+  (amount_12 : U64)
+  (from_lane_id_12 : U64)
+  (to_lane_id_12 : U64)
+  : State.Active -> State.Active {
+  auth inventory_rebalancer
+
+  accounts {
+    config                 : readonly, pda ["config"]
+    inventory_rebalancer   : signer
+    token_program          : program, type token
+    mint                   : readonly
+    source_authority_0     : readonly, pda ["hub-authority", from_lane_id_0]
+    source_inventory_0     : writable, token, authority source_authority_0
+    destination_inventory_0: writable, token
+    source_authority_1     : readonly, pda ["hub-authority", from_lane_id_1]
+    source_inventory_1     : writable, token, authority source_authority_1
+    destination_inventory_1: writable, token
+    source_authority_2     : readonly, pda ["hub-authority", from_lane_id_2]
+    source_inventory_2     : writable, token, authority source_authority_2
+    destination_inventory_2: writable, token
+    source_authority_3     : readonly, pda ["hub-authority", from_lane_id_3]
+    source_inventory_3     : writable, token, authority source_authority_3
+    destination_inventory_3: writable, token
+    source_authority_4     : readonly, pda ["hub-authority", from_lane_id_4]
+    source_inventory_4     : writable, token, authority source_authority_4
+    destination_inventory_4: writable, token
+    source_authority_5     : readonly, pda ["hub-authority", from_lane_id_5]
+    source_inventory_5     : writable, token, authority source_authority_5
+    destination_inventory_5: writable, token
+    source_authority_6     : readonly, pda ["hub-authority", from_lane_id_6]
+    source_inventory_6     : writable, token, authority source_authority_6
+    destination_inventory_6: writable, token
+    source_authority_7     : readonly, pda ["hub-authority", from_lane_id_7]
+    source_inventory_7     : writable, token, authority source_authority_7
+    destination_inventory_7: writable, token
+    source_authority_8     : readonly, pda ["hub-authority", from_lane_id_8]
+    source_inventory_8     : writable, token, authority source_authority_8
+    destination_inventory_8: writable, token
+    source_authority_9     : readonly, pda ["hub-authority", from_lane_id_9]
+    source_inventory_9     : writable, token, authority source_authority_9
+    destination_inventory_9: writable, token
+    source_authority_10     : readonly, pda ["hub-authority", from_lane_id_10]
+    source_inventory_10     : writable, token, authority source_authority_10
+    destination_inventory_10: writable, token
+    source_authority_11     : readonly, pda ["hub-authority", from_lane_id_11]
+    source_inventory_11     : writable, token, authority source_authority_11
+    destination_inventory_11: writable, token
+    source_authority_12     : readonly, pda ["hub-authority", from_lane_id_12]
+    source_inventory_12     : writable, token, authority source_authority_12
+    destination_inventory_12: writable, token
+  }
+
+  requires inventory_rebalancer.pubkey == state.inventory_rebalancer_key else Unauthorized
+  requires
+    mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires amount_0 > 0 else InvalidAmount
+  requires from_lane_id_0 != to_lane_id_0 else InvalidLane
+  requires from_lane_id_0 < state.lane_count else InvalidLane
+  requires to_lane_id_0 < state.lane_count else InvalidLane
+  requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
+  requires amount_1 > 0 else InvalidAmount
+  requires from_lane_id_1 != to_lane_id_1 else InvalidLane
+  requires from_lane_id_1 < state.lane_count else InvalidLane
+  requires to_lane_id_1 < state.lane_count else InvalidLane
+  requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
+  requires amount_2 > 0 else InvalidAmount
+  requires from_lane_id_2 != to_lane_id_2 else InvalidLane
+  requires from_lane_id_2 < state.lane_count else InvalidLane
+  requires to_lane_id_2 < state.lane_count else InvalidLane
+  requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
+  requires amount_3 > 0 else InvalidAmount
+  requires from_lane_id_3 != to_lane_id_3 else InvalidLane
+  requires from_lane_id_3 < state.lane_count else InvalidLane
+  requires to_lane_id_3 < state.lane_count else InvalidLane
+  requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
+  requires amount_4 > 0 else InvalidAmount
+  requires from_lane_id_4 != to_lane_id_4 else InvalidLane
+  requires from_lane_id_4 < state.lane_count else InvalidLane
+  requires to_lane_id_4 < state.lane_count else InvalidLane
+  requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
+  requires amount_5 > 0 else InvalidAmount
+  requires from_lane_id_5 != to_lane_id_5 else InvalidLane
+  requires from_lane_id_5 < state.lane_count else InvalidLane
+  requires to_lane_id_5 < state.lane_count else InvalidLane
+  requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
+  requires amount_6 > 0 else InvalidAmount
+  requires from_lane_id_6 != to_lane_id_6 else InvalidLane
+  requires from_lane_id_6 < state.lane_count else InvalidLane
+  requires to_lane_id_6 < state.lane_count else InvalidLane
+  requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
+  requires amount_7 > 0 else InvalidAmount
+  requires from_lane_id_7 != to_lane_id_7 else InvalidLane
+  requires from_lane_id_7 < state.lane_count else InvalidLane
+  requires to_lane_id_7 < state.lane_count else InvalidLane
+  requires source_inventory_7.pubkey != destination_inventory_7.pubkey else InvalidAccount
+  requires amount_8 > 0 else InvalidAmount
+  requires from_lane_id_8 != to_lane_id_8 else InvalidLane
+  requires from_lane_id_8 < state.lane_count else InvalidLane
+  requires to_lane_id_8 < state.lane_count else InvalidLane
+  requires source_inventory_8.pubkey != destination_inventory_8.pubkey else InvalidAccount
+  requires amount_9 > 0 else InvalidAmount
+  requires from_lane_id_9 != to_lane_id_9 else InvalidLane
+  requires from_lane_id_9 < state.lane_count else InvalidLane
+  requires to_lane_id_9 < state.lane_count else InvalidLane
+  requires source_inventory_9.pubkey != destination_inventory_9.pubkey else InvalidAccount
+  requires amount_10 > 0 else InvalidAmount
+  requires from_lane_id_10 != to_lane_id_10 else InvalidLane
+  requires from_lane_id_10 < state.lane_count else InvalidLane
+  requires to_lane_id_10 < state.lane_count else InvalidLane
+  requires source_inventory_10.pubkey != destination_inventory_10.pubkey else InvalidAccount
+  requires amount_11 > 0 else InvalidAmount
+  requires from_lane_id_11 != to_lane_id_11 else InvalidLane
+  requires from_lane_id_11 < state.lane_count else InvalidLane
+  requires to_lane_id_11 < state.lane_count else InvalidLane
+  requires source_inventory_11.pubkey != destination_inventory_11.pubkey else InvalidAccount
+  requires amount_12 > 0 else InvalidAmount
+  requires from_lane_id_12 != to_lane_id_12 else InvalidLane
+  requires from_lane_id_12 < state.lane_count else InvalidLane
+  requires to_lane_id_12 < state.lane_count else InvalidLane
+  requires source_inventory_12.pubkey != destination_inventory_12.pubkey else InvalidAccount
+
+  call Token.transfer(
+    from      = source_inventory_0,
+    to        = destination_inventory_0,
+    authority = source_authority_0,
+    amount    = amount_0,
+  )
+  call Token.transfer(
+    from      = source_inventory_1,
+    to        = destination_inventory_1,
+    authority = source_authority_1,
+    amount    = amount_1,
+  )
+  call Token.transfer(
+    from      = source_inventory_2,
+    to        = destination_inventory_2,
+    authority = source_authority_2,
+    amount    = amount_2,
+  )
+  call Token.transfer(
+    from      = source_inventory_3,
+    to        = destination_inventory_3,
+    authority = source_authority_3,
+    amount    = amount_3,
+  )
+  call Token.transfer(
+    from      = source_inventory_4,
+    to        = destination_inventory_4,
+    authority = source_authority_4,
+    amount    = amount_4,
+  )
+  call Token.transfer(
+    from      = source_inventory_5,
+    to        = destination_inventory_5,
+    authority = source_authority_5,
+    amount    = amount_5,
+  )
+  call Token.transfer(
+    from      = source_inventory_6,
+    to        = destination_inventory_6,
+    authority = source_authority_6,
+    amount    = amount_6,
+  )
+  call Token.transfer(
+    from      = source_inventory_7,
+    to        = destination_inventory_7,
+    authority = source_authority_7,
+    amount    = amount_7,
+  )
+  call Token.transfer(
+    from      = source_inventory_8,
+    to        = destination_inventory_8,
+    authority = source_authority_8,
+    amount    = amount_8,
+  )
+  call Token.transfer(
+    from      = source_inventory_9,
+    to        = destination_inventory_9,
+    authority = source_authority_9,
+    amount    = amount_9,
+  )
+  call Token.transfer(
+    from      = source_inventory_10,
+    to        = destination_inventory_10,
+    authority = source_authority_10,
+    amount    = amount_10,
+  )
+  call Token.transfer(
+    from      = source_inventory_11,
+    to        = destination_inventory_11,
+    authority = source_authority_11,
+    amount    = amount_11,
+  )
+  call Token.transfer(
+    from      = source_inventory_12,
+    to        = destination_inventory_12,
+    authority = source_authority_12,
+    amount    = amount_12,
+  )
+
+  ensures state.admin_key == old(state.admin_key)
+  ensures state.hub_authorizer_key == old(state.hub_authorizer_key)
+  ensures state.inventory_rebalancer_key == old(state.inventory_rebalancer_key)
+  ensures state.max_fee_bps == old(state.max_fee_bps)
+  ensures state.lane_count == old(state.lane_count)
+  ensures state.paused == old(state.paused)
+}
+
+handler rebalance_inventory_14
+  (amount_0 : U64)
+  (from_lane_id_0 : U64)
+  (to_lane_id_0 : U64)
+  (amount_1 : U64)
+  (from_lane_id_1 : U64)
+  (to_lane_id_1 : U64)
+  (amount_2 : U64)
+  (from_lane_id_2 : U64)
+  (to_lane_id_2 : U64)
+  (amount_3 : U64)
+  (from_lane_id_3 : U64)
+  (to_lane_id_3 : U64)
+  (amount_4 : U64)
+  (from_lane_id_4 : U64)
+  (to_lane_id_4 : U64)
+  (amount_5 : U64)
+  (from_lane_id_5 : U64)
+  (to_lane_id_5 : U64)
+  (amount_6 : U64)
+  (from_lane_id_6 : U64)
+  (to_lane_id_6 : U64)
+  (amount_7 : U64)
+  (from_lane_id_7 : U64)
+  (to_lane_id_7 : U64)
+  (amount_8 : U64)
+  (from_lane_id_8 : U64)
+  (to_lane_id_8 : U64)
+  (amount_9 : U64)
+  (from_lane_id_9 : U64)
+  (to_lane_id_9 : U64)
+  (amount_10 : U64)
+  (from_lane_id_10 : U64)
+  (to_lane_id_10 : U64)
+  (amount_11 : U64)
+  (from_lane_id_11 : U64)
+  (to_lane_id_11 : U64)
+  (amount_12 : U64)
+  (from_lane_id_12 : U64)
+  (to_lane_id_12 : U64)
+  (amount_13 : U64)
+  (from_lane_id_13 : U64)
+  (to_lane_id_13 : U64)
+  : State.Active -> State.Active {
+  auth inventory_rebalancer
+
+  accounts {
+    config                 : readonly, pda ["config"]
+    inventory_rebalancer   : signer
+    token_program          : program, type token
+    mint                   : readonly
+    source_authority_0     : readonly, pda ["hub-authority", from_lane_id_0]
+    source_inventory_0     : writable, token, authority source_authority_0
+    destination_inventory_0: writable, token
+    source_authority_1     : readonly, pda ["hub-authority", from_lane_id_1]
+    source_inventory_1     : writable, token, authority source_authority_1
+    destination_inventory_1: writable, token
+    source_authority_2     : readonly, pda ["hub-authority", from_lane_id_2]
+    source_inventory_2     : writable, token, authority source_authority_2
+    destination_inventory_2: writable, token
+    source_authority_3     : readonly, pda ["hub-authority", from_lane_id_3]
+    source_inventory_3     : writable, token, authority source_authority_3
+    destination_inventory_3: writable, token
+    source_authority_4     : readonly, pda ["hub-authority", from_lane_id_4]
+    source_inventory_4     : writable, token, authority source_authority_4
+    destination_inventory_4: writable, token
+    source_authority_5     : readonly, pda ["hub-authority", from_lane_id_5]
+    source_inventory_5     : writable, token, authority source_authority_5
+    destination_inventory_5: writable, token
+    source_authority_6     : readonly, pda ["hub-authority", from_lane_id_6]
+    source_inventory_6     : writable, token, authority source_authority_6
+    destination_inventory_6: writable, token
+    source_authority_7     : readonly, pda ["hub-authority", from_lane_id_7]
+    source_inventory_7     : writable, token, authority source_authority_7
+    destination_inventory_7: writable, token
+    source_authority_8     : readonly, pda ["hub-authority", from_lane_id_8]
+    source_inventory_8     : writable, token, authority source_authority_8
+    destination_inventory_8: writable, token
+    source_authority_9     : readonly, pda ["hub-authority", from_lane_id_9]
+    source_inventory_9     : writable, token, authority source_authority_9
+    destination_inventory_9: writable, token
+    source_authority_10     : readonly, pda ["hub-authority", from_lane_id_10]
+    source_inventory_10     : writable, token, authority source_authority_10
+    destination_inventory_10: writable, token
+    source_authority_11     : readonly, pda ["hub-authority", from_lane_id_11]
+    source_inventory_11     : writable, token, authority source_authority_11
+    destination_inventory_11: writable, token
+    source_authority_12     : readonly, pda ["hub-authority", from_lane_id_12]
+    source_inventory_12     : writable, token, authority source_authority_12
+    destination_inventory_12: writable, token
+    source_authority_13     : readonly, pda ["hub-authority", from_lane_id_13]
+    source_inventory_13     : writable, token, authority source_authority_13
+    destination_inventory_13: writable, token
+  }
+
+  requires inventory_rebalancer.pubkey == state.inventory_rebalancer_key else Unauthorized
+  requires
+    mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires amount_0 > 0 else InvalidAmount
+  requires from_lane_id_0 != to_lane_id_0 else InvalidLane
+  requires from_lane_id_0 < state.lane_count else InvalidLane
+  requires to_lane_id_0 < state.lane_count else InvalidLane
+  requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
+  requires amount_1 > 0 else InvalidAmount
+  requires from_lane_id_1 != to_lane_id_1 else InvalidLane
+  requires from_lane_id_1 < state.lane_count else InvalidLane
+  requires to_lane_id_1 < state.lane_count else InvalidLane
+  requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
+  requires amount_2 > 0 else InvalidAmount
+  requires from_lane_id_2 != to_lane_id_2 else InvalidLane
+  requires from_lane_id_2 < state.lane_count else InvalidLane
+  requires to_lane_id_2 < state.lane_count else InvalidLane
+  requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
+  requires amount_3 > 0 else InvalidAmount
+  requires from_lane_id_3 != to_lane_id_3 else InvalidLane
+  requires from_lane_id_3 < state.lane_count else InvalidLane
+  requires to_lane_id_3 < state.lane_count else InvalidLane
+  requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
+  requires amount_4 > 0 else InvalidAmount
+  requires from_lane_id_4 != to_lane_id_4 else InvalidLane
+  requires from_lane_id_4 < state.lane_count else InvalidLane
+  requires to_lane_id_4 < state.lane_count else InvalidLane
+  requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
+  requires amount_5 > 0 else InvalidAmount
+  requires from_lane_id_5 != to_lane_id_5 else InvalidLane
+  requires from_lane_id_5 < state.lane_count else InvalidLane
+  requires to_lane_id_5 < state.lane_count else InvalidLane
+  requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
+  requires amount_6 > 0 else InvalidAmount
+  requires from_lane_id_6 != to_lane_id_6 else InvalidLane
+  requires from_lane_id_6 < state.lane_count else InvalidLane
+  requires to_lane_id_6 < state.lane_count else InvalidLane
+  requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
+  requires amount_7 > 0 else InvalidAmount
+  requires from_lane_id_7 != to_lane_id_7 else InvalidLane
+  requires from_lane_id_7 < state.lane_count else InvalidLane
+  requires to_lane_id_7 < state.lane_count else InvalidLane
+  requires source_inventory_7.pubkey != destination_inventory_7.pubkey else InvalidAccount
+  requires amount_8 > 0 else InvalidAmount
+  requires from_lane_id_8 != to_lane_id_8 else InvalidLane
+  requires from_lane_id_8 < state.lane_count else InvalidLane
+  requires to_lane_id_8 < state.lane_count else InvalidLane
+  requires source_inventory_8.pubkey != destination_inventory_8.pubkey else InvalidAccount
+  requires amount_9 > 0 else InvalidAmount
+  requires from_lane_id_9 != to_lane_id_9 else InvalidLane
+  requires from_lane_id_9 < state.lane_count else InvalidLane
+  requires to_lane_id_9 < state.lane_count else InvalidLane
+  requires source_inventory_9.pubkey != destination_inventory_9.pubkey else InvalidAccount
+  requires amount_10 > 0 else InvalidAmount
+  requires from_lane_id_10 != to_lane_id_10 else InvalidLane
+  requires from_lane_id_10 < state.lane_count else InvalidLane
+  requires to_lane_id_10 < state.lane_count else InvalidLane
+  requires source_inventory_10.pubkey != destination_inventory_10.pubkey else InvalidAccount
+  requires amount_11 > 0 else InvalidAmount
+  requires from_lane_id_11 != to_lane_id_11 else InvalidLane
+  requires from_lane_id_11 < state.lane_count else InvalidLane
+  requires to_lane_id_11 < state.lane_count else InvalidLane
+  requires source_inventory_11.pubkey != destination_inventory_11.pubkey else InvalidAccount
+  requires amount_12 > 0 else InvalidAmount
+  requires from_lane_id_12 != to_lane_id_12 else InvalidLane
+  requires from_lane_id_12 < state.lane_count else InvalidLane
+  requires to_lane_id_12 < state.lane_count else InvalidLane
+  requires source_inventory_12.pubkey != destination_inventory_12.pubkey else InvalidAccount
+  requires amount_13 > 0 else InvalidAmount
+  requires from_lane_id_13 != to_lane_id_13 else InvalidLane
+  requires from_lane_id_13 < state.lane_count else InvalidLane
+  requires to_lane_id_13 < state.lane_count else InvalidLane
+  requires source_inventory_13.pubkey != destination_inventory_13.pubkey else InvalidAccount
+
+  call Token.transfer(
+    from      = source_inventory_0,
+    to        = destination_inventory_0,
+    authority = source_authority_0,
+    amount    = amount_0,
+  )
+  call Token.transfer(
+    from      = source_inventory_1,
+    to        = destination_inventory_1,
+    authority = source_authority_1,
+    amount    = amount_1,
+  )
+  call Token.transfer(
+    from      = source_inventory_2,
+    to        = destination_inventory_2,
+    authority = source_authority_2,
+    amount    = amount_2,
+  )
+  call Token.transfer(
+    from      = source_inventory_3,
+    to        = destination_inventory_3,
+    authority = source_authority_3,
+    amount    = amount_3,
+  )
+  call Token.transfer(
+    from      = source_inventory_4,
+    to        = destination_inventory_4,
+    authority = source_authority_4,
+    amount    = amount_4,
+  )
+  call Token.transfer(
+    from      = source_inventory_5,
+    to        = destination_inventory_5,
+    authority = source_authority_5,
+    amount    = amount_5,
+  )
+  call Token.transfer(
+    from      = source_inventory_6,
+    to        = destination_inventory_6,
+    authority = source_authority_6,
+    amount    = amount_6,
+  )
+  call Token.transfer(
+    from      = source_inventory_7,
+    to        = destination_inventory_7,
+    authority = source_authority_7,
+    amount    = amount_7,
+  )
+  call Token.transfer(
+    from      = source_inventory_8,
+    to        = destination_inventory_8,
+    authority = source_authority_8,
+    amount    = amount_8,
+  )
+  call Token.transfer(
+    from      = source_inventory_9,
+    to        = destination_inventory_9,
+    authority = source_authority_9,
+    amount    = amount_9,
+  )
+  call Token.transfer(
+    from      = source_inventory_10,
+    to        = destination_inventory_10,
+    authority = source_authority_10,
+    amount    = amount_10,
+  )
+  call Token.transfer(
+    from      = source_inventory_11,
+    to        = destination_inventory_11,
+    authority = source_authority_11,
+    amount    = amount_11,
+  )
+  call Token.transfer(
+    from      = source_inventory_12,
+    to        = destination_inventory_12,
+    authority = source_authority_12,
+    amount    = amount_12,
+  )
+  call Token.transfer(
+    from      = source_inventory_13,
+    to        = destination_inventory_13,
+    authority = source_authority_13,
+    amount    = amount_13,
+  )
+
+  ensures state.admin_key == old(state.admin_key)
+  ensures state.hub_authorizer_key == old(state.hub_authorizer_key)
+  ensures state.inventory_rebalancer_key == old(state.inventory_rebalancer_key)
+  ensures state.max_fee_bps == old(state.max_fee_bps)
+  ensures state.lane_count == old(state.lane_count)
+  ensures state.paused == old(state.paused)
+}
+
+handler rebalance_inventory_15
+  (amount_0 : U64)
+  (from_lane_id_0 : U64)
+  (to_lane_id_0 : U64)
+  (amount_1 : U64)
+  (from_lane_id_1 : U64)
+  (to_lane_id_1 : U64)
+  (amount_2 : U64)
+  (from_lane_id_2 : U64)
+  (to_lane_id_2 : U64)
+  (amount_3 : U64)
+  (from_lane_id_3 : U64)
+  (to_lane_id_3 : U64)
+  (amount_4 : U64)
+  (from_lane_id_4 : U64)
+  (to_lane_id_4 : U64)
+  (amount_5 : U64)
+  (from_lane_id_5 : U64)
+  (to_lane_id_5 : U64)
+  (amount_6 : U64)
+  (from_lane_id_6 : U64)
+  (to_lane_id_6 : U64)
+  (amount_7 : U64)
+  (from_lane_id_7 : U64)
+  (to_lane_id_7 : U64)
+  (amount_8 : U64)
+  (from_lane_id_8 : U64)
+  (to_lane_id_8 : U64)
+  (amount_9 : U64)
+  (from_lane_id_9 : U64)
+  (to_lane_id_9 : U64)
+  (amount_10 : U64)
+  (from_lane_id_10 : U64)
+  (to_lane_id_10 : U64)
+  (amount_11 : U64)
+  (from_lane_id_11 : U64)
+  (to_lane_id_11 : U64)
+  (amount_12 : U64)
+  (from_lane_id_12 : U64)
+  (to_lane_id_12 : U64)
+  (amount_13 : U64)
+  (from_lane_id_13 : U64)
+  (to_lane_id_13 : U64)
+  (amount_14 : U64)
+  (from_lane_id_14 : U64)
+  (to_lane_id_14 : U64)
+  : State.Active -> State.Active {
+  auth inventory_rebalancer
+
+  accounts {
+    config                 : readonly, pda ["config"]
+    inventory_rebalancer   : signer
+    token_program          : program, type token
+    mint                   : readonly
+    source_authority_0     : readonly, pda ["hub-authority", from_lane_id_0]
+    source_inventory_0     : writable, token, authority source_authority_0
+    destination_inventory_0: writable, token
+    source_authority_1     : readonly, pda ["hub-authority", from_lane_id_1]
+    source_inventory_1     : writable, token, authority source_authority_1
+    destination_inventory_1: writable, token
+    source_authority_2     : readonly, pda ["hub-authority", from_lane_id_2]
+    source_inventory_2     : writable, token, authority source_authority_2
+    destination_inventory_2: writable, token
+    source_authority_3     : readonly, pda ["hub-authority", from_lane_id_3]
+    source_inventory_3     : writable, token, authority source_authority_3
+    destination_inventory_3: writable, token
+    source_authority_4     : readonly, pda ["hub-authority", from_lane_id_4]
+    source_inventory_4     : writable, token, authority source_authority_4
+    destination_inventory_4: writable, token
+    source_authority_5     : readonly, pda ["hub-authority", from_lane_id_5]
+    source_inventory_5     : writable, token, authority source_authority_5
+    destination_inventory_5: writable, token
+    source_authority_6     : readonly, pda ["hub-authority", from_lane_id_6]
+    source_inventory_6     : writable, token, authority source_authority_6
+    destination_inventory_6: writable, token
+    source_authority_7     : readonly, pda ["hub-authority", from_lane_id_7]
+    source_inventory_7     : writable, token, authority source_authority_7
+    destination_inventory_7: writable, token
+    source_authority_8     : readonly, pda ["hub-authority", from_lane_id_8]
+    source_inventory_8     : writable, token, authority source_authority_8
+    destination_inventory_8: writable, token
+    source_authority_9     : readonly, pda ["hub-authority", from_lane_id_9]
+    source_inventory_9     : writable, token, authority source_authority_9
+    destination_inventory_9: writable, token
+    source_authority_10     : readonly, pda ["hub-authority", from_lane_id_10]
+    source_inventory_10     : writable, token, authority source_authority_10
+    destination_inventory_10: writable, token
+    source_authority_11     : readonly, pda ["hub-authority", from_lane_id_11]
+    source_inventory_11     : writable, token, authority source_authority_11
+    destination_inventory_11: writable, token
+    source_authority_12     : readonly, pda ["hub-authority", from_lane_id_12]
+    source_inventory_12     : writable, token, authority source_authority_12
+    destination_inventory_12: writable, token
+    source_authority_13     : readonly, pda ["hub-authority", from_lane_id_13]
+    source_inventory_13     : writable, token, authority source_authority_13
+    destination_inventory_13: writable, token
+    source_authority_14     : readonly, pda ["hub-authority", from_lane_id_14]
+    source_inventory_14     : writable, token, authority source_authority_14
+    destination_inventory_14: writable, token
+  }
+
+  requires inventory_rebalancer.pubkey == state.inventory_rebalancer_key else Unauthorized
+  requires
+    mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires amount_0 > 0 else InvalidAmount
+  requires from_lane_id_0 != to_lane_id_0 else InvalidLane
+  requires from_lane_id_0 < state.lane_count else InvalidLane
+  requires to_lane_id_0 < state.lane_count else InvalidLane
+  requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
+  requires amount_1 > 0 else InvalidAmount
+  requires from_lane_id_1 != to_lane_id_1 else InvalidLane
+  requires from_lane_id_1 < state.lane_count else InvalidLane
+  requires to_lane_id_1 < state.lane_count else InvalidLane
+  requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
+  requires amount_2 > 0 else InvalidAmount
+  requires from_lane_id_2 != to_lane_id_2 else InvalidLane
+  requires from_lane_id_2 < state.lane_count else InvalidLane
+  requires to_lane_id_2 < state.lane_count else InvalidLane
+  requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
+  requires amount_3 > 0 else InvalidAmount
+  requires from_lane_id_3 != to_lane_id_3 else InvalidLane
+  requires from_lane_id_3 < state.lane_count else InvalidLane
+  requires to_lane_id_3 < state.lane_count else InvalidLane
+  requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
+  requires amount_4 > 0 else InvalidAmount
+  requires from_lane_id_4 != to_lane_id_4 else InvalidLane
+  requires from_lane_id_4 < state.lane_count else InvalidLane
+  requires to_lane_id_4 < state.lane_count else InvalidLane
+  requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
+  requires amount_5 > 0 else InvalidAmount
+  requires from_lane_id_5 != to_lane_id_5 else InvalidLane
+  requires from_lane_id_5 < state.lane_count else InvalidLane
+  requires to_lane_id_5 < state.lane_count else InvalidLane
+  requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
+  requires amount_6 > 0 else InvalidAmount
+  requires from_lane_id_6 != to_lane_id_6 else InvalidLane
+  requires from_lane_id_6 < state.lane_count else InvalidLane
+  requires to_lane_id_6 < state.lane_count else InvalidLane
+  requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
+  requires amount_7 > 0 else InvalidAmount
+  requires from_lane_id_7 != to_lane_id_7 else InvalidLane
+  requires from_lane_id_7 < state.lane_count else InvalidLane
+  requires to_lane_id_7 < state.lane_count else InvalidLane
+  requires source_inventory_7.pubkey != destination_inventory_7.pubkey else InvalidAccount
+  requires amount_8 > 0 else InvalidAmount
+  requires from_lane_id_8 != to_lane_id_8 else InvalidLane
+  requires from_lane_id_8 < state.lane_count else InvalidLane
+  requires to_lane_id_8 < state.lane_count else InvalidLane
+  requires source_inventory_8.pubkey != destination_inventory_8.pubkey else InvalidAccount
+  requires amount_9 > 0 else InvalidAmount
+  requires from_lane_id_9 != to_lane_id_9 else InvalidLane
+  requires from_lane_id_9 < state.lane_count else InvalidLane
+  requires to_lane_id_9 < state.lane_count else InvalidLane
+  requires source_inventory_9.pubkey != destination_inventory_9.pubkey else InvalidAccount
+  requires amount_10 > 0 else InvalidAmount
+  requires from_lane_id_10 != to_lane_id_10 else InvalidLane
+  requires from_lane_id_10 < state.lane_count else InvalidLane
+  requires to_lane_id_10 < state.lane_count else InvalidLane
+  requires source_inventory_10.pubkey != destination_inventory_10.pubkey else InvalidAccount
+  requires amount_11 > 0 else InvalidAmount
+  requires from_lane_id_11 != to_lane_id_11 else InvalidLane
+  requires from_lane_id_11 < state.lane_count else InvalidLane
+  requires to_lane_id_11 < state.lane_count else InvalidLane
+  requires source_inventory_11.pubkey != destination_inventory_11.pubkey else InvalidAccount
+  requires amount_12 > 0 else InvalidAmount
+  requires from_lane_id_12 != to_lane_id_12 else InvalidLane
+  requires from_lane_id_12 < state.lane_count else InvalidLane
+  requires to_lane_id_12 < state.lane_count else InvalidLane
+  requires source_inventory_12.pubkey != destination_inventory_12.pubkey else InvalidAccount
+  requires amount_13 > 0 else InvalidAmount
+  requires from_lane_id_13 != to_lane_id_13 else InvalidLane
+  requires from_lane_id_13 < state.lane_count else InvalidLane
+  requires to_lane_id_13 < state.lane_count else InvalidLane
+  requires source_inventory_13.pubkey != destination_inventory_13.pubkey else InvalidAccount
+  requires amount_14 > 0 else InvalidAmount
+  requires from_lane_id_14 != to_lane_id_14 else InvalidLane
+  requires from_lane_id_14 < state.lane_count else InvalidLane
+  requires to_lane_id_14 < state.lane_count else InvalidLane
+  requires source_inventory_14.pubkey != destination_inventory_14.pubkey else InvalidAccount
+
+  call Token.transfer(
+    from      = source_inventory_0,
+    to        = destination_inventory_0,
+    authority = source_authority_0,
+    amount    = amount_0,
+  )
+  call Token.transfer(
+    from      = source_inventory_1,
+    to        = destination_inventory_1,
+    authority = source_authority_1,
+    amount    = amount_1,
+  )
+  call Token.transfer(
+    from      = source_inventory_2,
+    to        = destination_inventory_2,
+    authority = source_authority_2,
+    amount    = amount_2,
+  )
+  call Token.transfer(
+    from      = source_inventory_3,
+    to        = destination_inventory_3,
+    authority = source_authority_3,
+    amount    = amount_3,
+  )
+  call Token.transfer(
+    from      = source_inventory_4,
+    to        = destination_inventory_4,
+    authority = source_authority_4,
+    amount    = amount_4,
+  )
+  call Token.transfer(
+    from      = source_inventory_5,
+    to        = destination_inventory_5,
+    authority = source_authority_5,
+    amount    = amount_5,
+  )
+  call Token.transfer(
+    from      = source_inventory_6,
+    to        = destination_inventory_6,
+    authority = source_authority_6,
+    amount    = amount_6,
+  )
+  call Token.transfer(
+    from      = source_inventory_7,
+    to        = destination_inventory_7,
+    authority = source_authority_7,
+    amount    = amount_7,
+  )
+  call Token.transfer(
+    from      = source_inventory_8,
+    to        = destination_inventory_8,
+    authority = source_authority_8,
+    amount    = amount_8,
+  )
+  call Token.transfer(
+    from      = source_inventory_9,
+    to        = destination_inventory_9,
+    authority = source_authority_9,
+    amount    = amount_9,
+  )
+  call Token.transfer(
+    from      = source_inventory_10,
+    to        = destination_inventory_10,
+    authority = source_authority_10,
+    amount    = amount_10,
+  )
+  call Token.transfer(
+    from      = source_inventory_11,
+    to        = destination_inventory_11,
+    authority = source_authority_11,
+    amount    = amount_11,
+  )
+  call Token.transfer(
+    from      = source_inventory_12,
+    to        = destination_inventory_12,
+    authority = source_authority_12,
+    amount    = amount_12,
+  )
+  call Token.transfer(
+    from      = source_inventory_13,
+    to        = destination_inventory_13,
+    authority = source_authority_13,
+    amount    = amount_13,
+  )
+  call Token.transfer(
+    from      = source_inventory_14,
+    to        = destination_inventory_14,
+    authority = source_authority_14,
+    amount    = amount_14,
+  )
+
+  ensures state.admin_key == old(state.admin_key)
+  ensures state.hub_authorizer_key == old(state.hub_authorizer_key)
+  ensures state.inventory_rebalancer_key == old(state.inventory_rebalancer_key)
+  ensures state.max_fee_bps == old(state.max_fee_bps)
+  ensures state.lane_count == old(state.lane_count)
+  ensures state.paused == old(state.paused)
+}
+
+handler rebalance_inventory_16
+  (amount_0 : U64)
+  (from_lane_id_0 : U64)
+  (to_lane_id_0 : U64)
+  (amount_1 : U64)
+  (from_lane_id_1 : U64)
+  (to_lane_id_1 : U64)
+  (amount_2 : U64)
+  (from_lane_id_2 : U64)
+  (to_lane_id_2 : U64)
+  (amount_3 : U64)
+  (from_lane_id_3 : U64)
+  (to_lane_id_3 : U64)
+  (amount_4 : U64)
+  (from_lane_id_4 : U64)
+  (to_lane_id_4 : U64)
+  (amount_5 : U64)
+  (from_lane_id_5 : U64)
+  (to_lane_id_5 : U64)
+  (amount_6 : U64)
+  (from_lane_id_6 : U64)
+  (to_lane_id_6 : U64)
+  (amount_7 : U64)
+  (from_lane_id_7 : U64)
+  (to_lane_id_7 : U64)
+  (amount_8 : U64)
+  (from_lane_id_8 : U64)
+  (to_lane_id_8 : U64)
+  (amount_9 : U64)
+  (from_lane_id_9 : U64)
+  (to_lane_id_9 : U64)
+  (amount_10 : U64)
+  (from_lane_id_10 : U64)
+  (to_lane_id_10 : U64)
+  (amount_11 : U64)
+  (from_lane_id_11 : U64)
+  (to_lane_id_11 : U64)
+  (amount_12 : U64)
+  (from_lane_id_12 : U64)
+  (to_lane_id_12 : U64)
+  (amount_13 : U64)
+  (from_lane_id_13 : U64)
+  (to_lane_id_13 : U64)
+  (amount_14 : U64)
+  (from_lane_id_14 : U64)
+  (to_lane_id_14 : U64)
+  (amount_15 : U64)
+  (from_lane_id_15 : U64)
+  (to_lane_id_15 : U64)
+  : State.Active -> State.Active {
+  auth inventory_rebalancer
+
+  accounts {
+    config                 : readonly, pda ["config"]
+    inventory_rebalancer   : signer
+    token_program          : program, type token
+    mint                   : readonly
+    source_authority_0     : readonly, pda ["hub-authority", from_lane_id_0]
+    source_inventory_0     : writable, token, authority source_authority_0
+    destination_inventory_0: writable, token
+    source_authority_1     : readonly, pda ["hub-authority", from_lane_id_1]
+    source_inventory_1     : writable, token, authority source_authority_1
+    destination_inventory_1: writable, token
+    source_authority_2     : readonly, pda ["hub-authority", from_lane_id_2]
+    source_inventory_2     : writable, token, authority source_authority_2
+    destination_inventory_2: writable, token
+    source_authority_3     : readonly, pda ["hub-authority", from_lane_id_3]
+    source_inventory_3     : writable, token, authority source_authority_3
+    destination_inventory_3: writable, token
+    source_authority_4     : readonly, pda ["hub-authority", from_lane_id_4]
+    source_inventory_4     : writable, token, authority source_authority_4
+    destination_inventory_4: writable, token
+    source_authority_5     : readonly, pda ["hub-authority", from_lane_id_5]
+    source_inventory_5     : writable, token, authority source_authority_5
+    destination_inventory_5: writable, token
+    source_authority_6     : readonly, pda ["hub-authority", from_lane_id_6]
+    source_inventory_6     : writable, token, authority source_authority_6
+    destination_inventory_6: writable, token
+    source_authority_7     : readonly, pda ["hub-authority", from_lane_id_7]
+    source_inventory_7     : writable, token, authority source_authority_7
+    destination_inventory_7: writable, token
+    source_authority_8     : readonly, pda ["hub-authority", from_lane_id_8]
+    source_inventory_8     : writable, token, authority source_authority_8
+    destination_inventory_8: writable, token
+    source_authority_9     : readonly, pda ["hub-authority", from_lane_id_9]
+    source_inventory_9     : writable, token, authority source_authority_9
+    destination_inventory_9: writable, token
+    source_authority_10     : readonly, pda ["hub-authority", from_lane_id_10]
+    source_inventory_10     : writable, token, authority source_authority_10
+    destination_inventory_10: writable, token
+    source_authority_11     : readonly, pda ["hub-authority", from_lane_id_11]
+    source_inventory_11     : writable, token, authority source_authority_11
+    destination_inventory_11: writable, token
+    source_authority_12     : readonly, pda ["hub-authority", from_lane_id_12]
+    source_inventory_12     : writable, token, authority source_authority_12
+    destination_inventory_12: writable, token
+    source_authority_13     : readonly, pda ["hub-authority", from_lane_id_13]
+    source_inventory_13     : writable, token, authority source_authority_13
+    destination_inventory_13: writable, token
+    source_authority_14     : readonly, pda ["hub-authority", from_lane_id_14]
+    source_inventory_14     : writable, token, authority source_authority_14
+    destination_inventory_14: writable, token
+    source_authority_15     : readonly, pda ["hub-authority", from_lane_id_15]
+    source_inventory_15     : writable, token, authority source_authority_15
+    destination_inventory_15: writable, token
+  }
+
+  requires inventory_rebalancer.pubkey == state.inventory_rebalancer_key else Unauthorized
+  requires
+    mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
+    else InvalidMint
+  requires amount_0 > 0 else InvalidAmount
+  requires from_lane_id_0 != to_lane_id_0 else InvalidLane
+  requires from_lane_id_0 < state.lane_count else InvalidLane
+  requires to_lane_id_0 < state.lane_count else InvalidLane
+  requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
+  requires amount_1 > 0 else InvalidAmount
+  requires from_lane_id_1 != to_lane_id_1 else InvalidLane
+  requires from_lane_id_1 < state.lane_count else InvalidLane
+  requires to_lane_id_1 < state.lane_count else InvalidLane
+  requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
+  requires amount_2 > 0 else InvalidAmount
+  requires from_lane_id_2 != to_lane_id_2 else InvalidLane
+  requires from_lane_id_2 < state.lane_count else InvalidLane
+  requires to_lane_id_2 < state.lane_count else InvalidLane
+  requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
+  requires amount_3 > 0 else InvalidAmount
+  requires from_lane_id_3 != to_lane_id_3 else InvalidLane
+  requires from_lane_id_3 < state.lane_count else InvalidLane
+  requires to_lane_id_3 < state.lane_count else InvalidLane
+  requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
+  requires amount_4 > 0 else InvalidAmount
+  requires from_lane_id_4 != to_lane_id_4 else InvalidLane
+  requires from_lane_id_4 < state.lane_count else InvalidLane
+  requires to_lane_id_4 < state.lane_count else InvalidLane
+  requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
+  requires amount_5 > 0 else InvalidAmount
+  requires from_lane_id_5 != to_lane_id_5 else InvalidLane
+  requires from_lane_id_5 < state.lane_count else InvalidLane
+  requires to_lane_id_5 < state.lane_count else InvalidLane
+  requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
+  requires amount_6 > 0 else InvalidAmount
+  requires from_lane_id_6 != to_lane_id_6 else InvalidLane
+  requires from_lane_id_6 < state.lane_count else InvalidLane
+  requires to_lane_id_6 < state.lane_count else InvalidLane
+  requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
+  requires amount_7 > 0 else InvalidAmount
+  requires from_lane_id_7 != to_lane_id_7 else InvalidLane
+  requires from_lane_id_7 < state.lane_count else InvalidLane
+  requires to_lane_id_7 < state.lane_count else InvalidLane
+  requires source_inventory_7.pubkey != destination_inventory_7.pubkey else InvalidAccount
+  requires amount_8 > 0 else InvalidAmount
+  requires from_lane_id_8 != to_lane_id_8 else InvalidLane
+  requires from_lane_id_8 < state.lane_count else InvalidLane
+  requires to_lane_id_8 < state.lane_count else InvalidLane
+  requires source_inventory_8.pubkey != destination_inventory_8.pubkey else InvalidAccount
+  requires amount_9 > 0 else InvalidAmount
+  requires from_lane_id_9 != to_lane_id_9 else InvalidLane
+  requires from_lane_id_9 < state.lane_count else InvalidLane
+  requires to_lane_id_9 < state.lane_count else InvalidLane
+  requires source_inventory_9.pubkey != destination_inventory_9.pubkey else InvalidAccount
+  requires amount_10 > 0 else InvalidAmount
+  requires from_lane_id_10 != to_lane_id_10 else InvalidLane
+  requires from_lane_id_10 < state.lane_count else InvalidLane
+  requires to_lane_id_10 < state.lane_count else InvalidLane
+  requires source_inventory_10.pubkey != destination_inventory_10.pubkey else InvalidAccount
+  requires amount_11 > 0 else InvalidAmount
+  requires from_lane_id_11 != to_lane_id_11 else InvalidLane
+  requires from_lane_id_11 < state.lane_count else InvalidLane
+  requires to_lane_id_11 < state.lane_count else InvalidLane
+  requires source_inventory_11.pubkey != destination_inventory_11.pubkey else InvalidAccount
+  requires amount_12 > 0 else InvalidAmount
+  requires from_lane_id_12 != to_lane_id_12 else InvalidLane
+  requires from_lane_id_12 < state.lane_count else InvalidLane
+  requires to_lane_id_12 < state.lane_count else InvalidLane
+  requires source_inventory_12.pubkey != destination_inventory_12.pubkey else InvalidAccount
+  requires amount_13 > 0 else InvalidAmount
+  requires from_lane_id_13 != to_lane_id_13 else InvalidLane
+  requires from_lane_id_13 < state.lane_count else InvalidLane
+  requires to_lane_id_13 < state.lane_count else InvalidLane
+  requires source_inventory_13.pubkey != destination_inventory_13.pubkey else InvalidAccount
+  requires amount_14 > 0 else InvalidAmount
+  requires from_lane_id_14 != to_lane_id_14 else InvalidLane
+  requires from_lane_id_14 < state.lane_count else InvalidLane
+  requires to_lane_id_14 < state.lane_count else InvalidLane
+  requires source_inventory_14.pubkey != destination_inventory_14.pubkey else InvalidAccount
+  requires amount_15 > 0 else InvalidAmount
+  requires from_lane_id_15 != to_lane_id_15 else InvalidLane
+  requires from_lane_id_15 < state.lane_count else InvalidLane
+  requires to_lane_id_15 < state.lane_count else InvalidLane
+  requires source_inventory_15.pubkey != destination_inventory_15.pubkey else InvalidAccount
+
+  call Token.transfer(
+    from      = source_inventory_0,
+    to        = destination_inventory_0,
+    authority = source_authority_0,
+    amount    = amount_0,
+  )
+  call Token.transfer(
+    from      = source_inventory_1,
+    to        = destination_inventory_1,
+    authority = source_authority_1,
+    amount    = amount_1,
+  )
+  call Token.transfer(
+    from      = source_inventory_2,
+    to        = destination_inventory_2,
+    authority = source_authority_2,
+    amount    = amount_2,
+  )
+  call Token.transfer(
+    from      = source_inventory_3,
+    to        = destination_inventory_3,
+    authority = source_authority_3,
+    amount    = amount_3,
+  )
+  call Token.transfer(
+    from      = source_inventory_4,
+    to        = destination_inventory_4,
+    authority = source_authority_4,
+    amount    = amount_4,
+  )
+  call Token.transfer(
+    from      = source_inventory_5,
+    to        = destination_inventory_5,
+    authority = source_authority_5,
+    amount    = amount_5,
+  )
+  call Token.transfer(
+    from      = source_inventory_6,
+    to        = destination_inventory_6,
+    authority = source_authority_6,
+    amount    = amount_6,
+  )
+  call Token.transfer(
+    from      = source_inventory_7,
+    to        = destination_inventory_7,
+    authority = source_authority_7,
+    amount    = amount_7,
+  )
+  call Token.transfer(
+    from      = source_inventory_8,
+    to        = destination_inventory_8,
+    authority = source_authority_8,
+    amount    = amount_8,
+  )
+  call Token.transfer(
+    from      = source_inventory_9,
+    to        = destination_inventory_9,
+    authority = source_authority_9,
+    amount    = amount_9,
+  )
+  call Token.transfer(
+    from      = source_inventory_10,
+    to        = destination_inventory_10,
+    authority = source_authority_10,
+    amount    = amount_10,
+  )
+  call Token.transfer(
+    from      = source_inventory_11,
+    to        = destination_inventory_11,
+    authority = source_authority_11,
+    amount    = amount_11,
+  )
+  call Token.transfer(
+    from      = source_inventory_12,
+    to        = destination_inventory_12,
+    authority = source_authority_12,
+    amount    = amount_12,
+  )
+  call Token.transfer(
+    from      = source_inventory_13,
+    to        = destination_inventory_13,
+    authority = source_authority_13,
+    amount    = amount_13,
+  )
+  call Token.transfer(
+    from      = source_inventory_14,
+    to        = destination_inventory_14,
+    authority = source_authority_14,
+    amount    = amount_14,
+  )
+  call Token.transfer(
+    from      = source_inventory_15,
+    to        = destination_inventory_15,
+    authority = source_authority_15,
+    amount    = amount_15,
+  )
+
+  ensures state.admin_key == old(state.admin_key)
+  ensures state.hub_authorizer_key == old(state.hub_authorizer_key)
+  ensures state.inventory_rebalancer_key == old(state.inventory_rebalancer_key)
+  ensures state.max_fee_bps == old(state.max_fee_bps)
+  ensures state.lane_count == old(state.lane_count)
+  ensures state.paused == old(state.paused)
+}
+
 property config_domain_preserved :
   state.max_fee_bps <= 10000 and state.lane_count > 0 and state.paused <= 1
-  preserved_by [initialize_config, set_max_fee, set_paused, swap_exact_in, withdraw_inventory, rebalance_inventory]
+  preserved_by [initialize_config, set_max_fee, set_paused, swap_exact_in, withdraw_inventory, rebalance_inventory, rebalance_inventory_2, rebalance_inventory_3, rebalance_inventory_4, rebalance_inventory_5, rebalance_inventory_6, rebalance_inventory_7, rebalance_inventory_8, rebalance_inventory_9, rebalance_inventory_10, rebalance_inventory_11, rebalance_inventory_12, rebalance_inventory_13, rebalance_inventory_14, rebalance_inventory_15, rebalance_inventory_16]
 
 cover successful_swap [initialize_config, swap_exact_in]
 cover treasury_lifecycle [initialize_config, set_max_fee, set_paused, withdraw_inventory]
 cover lane_rebalance [initialize_config, rebalance_inventory]
+cover lane_rebalance_max_batch [initialize_config, rebalance_inventory_16]

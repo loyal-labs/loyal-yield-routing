@@ -1,8 +1,9 @@
 use loyal_actions::{
     create_swap_yield_route_action, SwapLane, YieldRouteActionInstruction,
-    YIELD_ROUTE_STANDALONE_ACTION_SEED,
+    LOYAL_HUB_MAX_REBALANCE_TRANSFERS, YIELD_ROUTE_STANDALONE_ACTION_SEED,
 };
 use solana_sdk::{
+    compute_budget::ComputeBudgetInstruction,
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
     signature::Keypair,
@@ -650,6 +651,66 @@ fn loyal_hub_rebalancer_can_move_multiple_transfers_in_one_instruction() {
         ),
         300_000
     );
+}
+
+#[test]
+fn loyal_hub_rebalancer_can_move_max_transfers_in_one_instruction() {
+    let Some(mut fixture) = setup_fixture(false) else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+
+    for lane_id in 1..=LOYAL_HUB_MAX_REBALANCE_TRANSFERS as u8 {
+        seed_loyal_hub_inventory_spl_accounts_for_lane(
+            &mut fixture.context.svm,
+            &[USDC_MINT],
+            0,
+            lane_id,
+        );
+    }
+
+    let transfers = (0..LOYAL_HUB_MAX_REBALANCE_TRANSFERS)
+        .map(|index| LoyalHubRebalanceTransfer {
+            from_lane_id: 0,
+            to_lane_id: (index + 1) as u8,
+            amount: ((index + 1) as u64) * 1_000,
+        })
+        .collect::<Vec<_>>();
+    let total_rebalanced = transfers.iter().map(|transfer| transfer.amount).sum::<u64>();
+    let ix = rebalance_loyal_hub_inventory_instruction(
+        fixture.inventory_rebalancer.pubkey(),
+        USDC_MINT,
+        &transfers,
+    );
+    assert_eq!(
+        ix.accounts.len(),
+        4 + (LOYAL_HUB_MAX_REBALANCE_TRANSFERS * 3)
+    );
+
+    try_send_instructions(
+        &mut fixture.context.svm,
+        &[
+            ComputeBudgetInstruction::set_compute_unit_limit(1_400_000),
+            ix,
+        ],
+        &fixture.context.wallet,
+        &[&fixture.inventory_rebalancer],
+    )
+    .expect("inventory rebalancer executes max transfer batch with explicit compute budget");
+
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, loyal_hub_token_account(USDC_MINT)),
+        (AMOUNT_IN * 2) - total_rebalanced
+    );
+    for transfer in transfers {
+        assert_eq!(
+            get_spl_token_amount(
+                &fixture.context.svm,
+                loyal_hub_lane_token_account(USDC_MINT, transfer.to_lane_id)
+            ),
+            transfer.amount
+        );
+    }
 }
 
 #[test]

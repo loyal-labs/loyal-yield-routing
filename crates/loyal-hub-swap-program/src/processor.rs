@@ -1,16 +1,21 @@
 use pinocchio::{
     account_info::AccountInfo,
-    instruction::{AccountMeta, Instruction, Seed, Signer},
-    program::invoke_signed,
+    instruction::Seed,
     program_error::ProgramError,
     pubkey::Pubkey,
     sysvars::rent::Rent,
     sysvars::Sysvar,
     ProgramResult,
 };
+#[cfg(not(kani))]
+use pinocchio::{
+    instruction::{AccountMeta, Instruction, Signer},
+    program::invoke_signed,
+};
+#[cfg(kani)]
+use pinocchio::instruction::Signer;
 
 use crate::{
-    codec::write_bytes_at,
     constants::{HUB_CONFIG_SPACE, SYSTEM_PROGRAM_ID},
     instruction::{
         parse_instruction, AllowedMint, HubInstruction, InventoryAccount, RebalanceInventoryArgs,
@@ -28,6 +33,8 @@ use crate::{
     },
     SPL_TOKEN_ID,
 };
+#[cfg(not(kani))]
+use crate::codec::write_bytes_at;
 
 fn next_account_info<'a, I>(iter: &mut I) -> Result<&'a AccountInfo, ProgramError>
 where
@@ -105,20 +112,44 @@ fn invoke_create_account(
     owner: &Pubkey,
     signers: &[Signer],
 ) -> ProgramResult {
-    let account_metas = [
-        AccountMeta::writable_signer(payer.key()),
-        AccountMeta::writable_signer(new_account.key()),
-    ];
-    let mut data = [0u8; 52];
-    write_bytes_at(&mut data, 4, &lamports.to_le_bytes())?;
-    write_bytes_at(&mut data, 12, &space.to_le_bytes())?;
-    write_bytes_at(&mut data, 20, owner.as_ref())?;
-    let instruction = Instruction {
-        program_id: system_program.key(),
-        accounts: &account_metas,
-        data: &data,
-    };
-    invoke_signed(&instruction, &[payer, new_account], signers)
+    #[cfg(kani)]
+    {
+        let payer_lamports = payer.lamports();
+        if payer_lamports < lamports {
+            return Err(ProgramError::InsufficientFunds);
+        }
+        // SAFETY: this branch is a Kani-only model of system create-account.
+        // The harness constructs distinct writable account objects, and no
+        // lamport references are live while this model mutates their headers.
+        unsafe {
+            *payer.borrow_mut_lamports_unchecked() = payer_lamports - lamports;
+            *new_account.borrow_mut_lamports_unchecked() =
+                new_account.lamports().saturating_add(lamports);
+            new_account.assign(owner);
+        }
+        new_account.resize(space as usize)?;
+        let _ = system_program;
+        let _ = signers;
+        return Ok(());
+    }
+
+    #[cfg(not(kani))]
+    {
+        let account_metas = [
+            AccountMeta::writable_signer(payer.key()),
+            AccountMeta::writable_signer(new_account.key()),
+        ];
+        let mut data = [0u8; 52];
+        write_bytes_at(&mut data, 4, &lamports.to_le_bytes())?;
+        write_bytes_at(&mut data, 12, &space.to_le_bytes())?;
+        write_bytes_at(&mut data, 20, owner.as_ref())?;
+        let instruction = Instruction {
+            program_id: system_program.key(),
+            accounts: &account_metas,
+            data: &data,
+        };
+        invoke_signed(&instruction, &[payer, new_account], signers)
+    }
 }
 
 fn process_set_max_fee(

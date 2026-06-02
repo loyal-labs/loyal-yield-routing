@@ -24,7 +24,8 @@ mod tests {
         assert_eq!(CONFIG_ACCOUNT_MAX_LEN, config_account::MAX_LEN);
         assert_eq!(
             CONFIG_ACCOUNT_MAX_LEN,
-            config_init::FIXED_LEN + (MAX_ALLOWED_MINTS * config_init::ALLOWED_MINT_ITEM_LEN),
+            config_account::FIXED_LEN
+                + (MAX_ALLOWED_MINTS * config_account::ALLOWED_MINT_ITEM_LEN),
         );
     }
 
@@ -89,6 +90,32 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn rebalance_batch_model_tracks_abi_stride() {
+        let spec = parse_qedspec(include_str!(
+            "../../loyal-hub-swap-program/verification/loyal_hub_swap.qedspec"
+        ));
+
+        for arity in 2..=MAX_REBALANCE_TRANSFERS {
+            let handler = format!("rebalance_inventory_{arity}");
+            let spec_handler = spec
+                .handlers
+                .get(&handler)
+                .unwrap_or_else(|| panic!("missing QEDGen handler {handler}"));
+
+            assert_eq!(
+                spec_handler.params,
+                expected_rebalance_batch_params(arity),
+                "{handler} params drifted from repeated REBALANCE_TRANSFER shape"
+            );
+            assert_eq!(
+                spec_handler.accounts,
+                expected_rebalance_batch_accounts(arity),
+                "{handler} accounts drifted from ABI transfer stride"
+            );
         }
     }
 
@@ -360,6 +387,31 @@ mod tests {
                     .unwrap_or(arg)
             })
             .collect()
+    }
+
+    fn expected_rebalance_batch_params(arity: usize) -> Vec<String> {
+        let mut params = Vec::with_capacity(arity * 3);
+        for index in 0..arity {
+            params.push(format!("amount_{index}"));
+            params.push(format!("from_lane_id_{index}"));
+            params.push(format!("to_lane_id_{index}"));
+        }
+        params
+    }
+
+    fn expected_rebalance_batch_accounts(arity: usize) -> Vec<String> {
+        let mut accounts = vec![
+            "config".to_owned(),
+            "inventory_rebalancer".to_owned(),
+            "token_program".to_owned(),
+            "mint".to_owned(),
+        ];
+        for index in 0..arity {
+            accounts.push(format!("source_authority_{index}"));
+            accounts.push(format!("source_inventory_{index}"));
+            accounts.push(format!("destination_inventory_{index}"));
+        }
+        accounts
     }
 
     fn assert_ordered_subset(actual: &[String], expected: &[String], label: &str) {

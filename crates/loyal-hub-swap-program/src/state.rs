@@ -198,14 +198,32 @@ impl HubConfig {
     }
 }
 
+#[cfg(not(kani))]
 pub fn derive_config(program_id: &Pubkey) -> (Pubkey, u8) {
     pinocchio::pubkey::find_program_address(&[CONFIG_SEED], program_id)
 }
 
+#[cfg(kani)]
+pub fn derive_config(program_id: &Pubkey) -> (Pubkey, u8) {
+    let derived = pinocchio::pubkey::try_find_program_address(&[CONFIG_SEED], program_id);
+    kani::assume(derived.is_some());
+    derived.unwrap()
+}
+
+#[cfg(not(kani))]
 pub fn derive_hub_authority(program_id: &Pubkey, lane_id: u8) -> (Pubkey, u8) {
     pinocchio::pubkey::find_program_address(&[HUB_AUTHORITY_SEED, &[lane_id]], program_id)
 }
 
+#[cfg(kani)]
+pub fn derive_hub_authority(program_id: &Pubkey, lane_id: u8) -> (Pubkey, u8) {
+    let derived =
+        pinocchio::pubkey::try_find_program_address(&[HUB_AUTHORITY_SEED, &[lane_id]], program_id);
+    kani::assume(derived.is_some());
+    derived.unwrap()
+}
+
+#[cfg(not(kani))]
 pub fn derive_inventory_account(program_id: &Pubkey, mint: &Pubkey, lane_id: u8) -> Pubkey {
     let hub_authority = derive_hub_authority(program_id, lane_id).0;
     pinocchio::pubkey::find_program_address(
@@ -217,4 +235,19 @@ pub fn derive_inventory_account(program_id: &Pubkey, mint: &Pubkey, lane_id: u8)
         &ASSOCIATED_TOKEN_PROGRAM_ID,
     )
     .0
+}
+
+#[cfg(kani)]
+pub fn derive_inventory_account(program_id: &Pubkey, mint: &Pubkey, lane_id: u8) -> Pubkey {
+    let hub_authority = derive_hub_authority(program_id, lane_id).0;
+    let derived = pinocchio::pubkey::try_find_program_address(
+        &[
+            hub_authority.as_ref(),
+            crate::SPL_TOKEN_ID.as_ref(),
+            mint.as_ref(),
+        ],
+        &ASSOCIATED_TOKEN_PROGRAM_ID,
+    );
+    kani::assume(derived.is_some());
+    derived.unwrap().0
 }

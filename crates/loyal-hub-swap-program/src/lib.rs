@@ -15,4 +15,9 @@ pub use pinocchio_tkn::TOKEN_PROGRAM_ID as SPL_TOKEN_ID;
 pub use processor::process_instruction;
 pub use state::{derive_config, derive_hub_authority, derive_inventory_account, HubConfig};
 
+#[cfg(kani)]
+extern crate kani;
+#[cfg(kani)]
+mod kani_impl;
+
 entrypoint!(process_instruction);
