@@ -115,9 +115,23 @@ pub fn state_transition(
         (DecisionStatus::Planned, DecisionAdvance::StartSimulation) => {
             Ok(DecisionTransition::simple(DecisionStatus::Simulating))
         }
-        (DecisionStatus::Simulating, DecisionAdvance::SimulationReady) => {
-            Ok(DecisionTransition::simple(DecisionStatus::Ready))
-        }
+        (
+            DecisionStatus::Simulating,
+            DecisionAdvance::SimulationReady {
+                preflight_chain_slot,
+            },
+        ) => Ok(DecisionTransition {
+            status: DecisionStatus::Ready,
+            idempotent: false,
+            signature: None,
+            submitted_slot: None,
+            confirmed_slot: None,
+            preflight_chain_slot,
+            post_snapshot_id: None,
+            abandon_reason: None,
+            reason: Some("simulation_ready".to_owned()),
+            payload: json!({ "preflight_chain_slot": preflight_chain_slot }),
+        }),
         (DecisionStatus::Ready, DecisionAdvance::Submit { signature, slot }) => {
             Ok(DecisionTransition {
                 status: DecisionStatus::Submitted,

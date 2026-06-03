@@ -402,7 +402,9 @@ impl Default for PlannerConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecisionAdvance {
     StartSimulation,
-    SimulationReady,
+    SimulationReady {
+        preflight_chain_slot: Option<i64>,
+    },
     Submit {
         signature: String,
         slot: Option<i64>,

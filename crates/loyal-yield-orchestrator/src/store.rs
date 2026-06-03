@@ -174,6 +174,37 @@ impl NeonSqlClient {
         rows.into_iter().map(current_position_from_row).collect()
     }
 
+    pub async fn same_mint_candidate_vaults(
+        &self,
+        target_reserve: &str,
+        liquidity_mint: &str,
+    ) -> Result<Vec<VaultId>, OrchestratorError> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT DISTINCT source.vault_id
+            FROM loyal_yield.vault_reserve_positions_current source
+            JOIN loyal_yield.vault_reserve_positions_current target
+                ON target.vault_id = source.vault_id
+               AND target.reserve = $1
+               AND target.liquidity_mint = source.liquidity_mint
+            JOIN loyal_yield.managed_vaults vault
+                ON vault.id = source.vault_id
+               AND vault.active
+            WHERE source.reserve <> $1
+              AND source.liquidity_mint = $2
+              AND source.has_value
+              AND source.amount_raw > 0
+            ORDER BY source.vault_id
+            "#,
+            target_reserve,
+            liquidity_mint
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|row| VaultId(row.vault_id)).collect())
+    }
+
     pub async fn reconcile_vault(
         &self,
         vault_id: VaultId,
