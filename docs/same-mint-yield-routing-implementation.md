@@ -105,6 +105,56 @@ Adds a binary runner that wires:
 
 It prints the final `SameMintRoutingLoopReport` as JSON.
 
+### `timescale_same_mint.rs`
+
+Maps Kamino TimescaleDB reserve rows into same-mint routing APY inputs:
+
+- reads rows from `loyal-yield-router`'s `TimescaleRouterClient`;
+- converts fractional APY values like `0.0521` into bps (`521`);
+- exposes env names for the local Kamino APY stream contract;
+- provides small parsing helpers for watcher filters.
+
+This keeps the APY source compatible with
+`loyal-labs/kamino-streaming-apy`, whose local TimescaleDB sink writes
+`kamino.reserve_updates`, maintains `kamino.latest_reserve_updates`, and emits
+`LISTEN/NOTIFY` updates on `kamino_reserve_updates`.
+
+### `src/bin/same_mint_route_watcher.rs`
+
+Adds a Timescale-triggered runner. It wires the orchestrator DB, Solana RPC
+executor, configured route preparer, and Kamino APY subscription:
+
+- `DATABASE_URL` or `NEON_DATABASE_URL`
+- `TIMESCALEDB_URL`
+- optional `TIMESCALEDB_SCHEMA` and `TIMESCALEDB_NOTIFY_CHANNEL`
+- optional `SAME_MINT_TIMESCALE_SYMBOLS`, `SAME_MINT_TIMESCALE_RESERVES`,
+  `SAME_MINT_TIMESCALE_MARKETS`, and changed-field filters
+- normal route config/signing env used by `same_mint_route_runner`
+
+When an APY notification arrives, the watcher fetches the latest matching
+reserve rows, maps them into `SameMintReserveApy`, runs the same-mint loop, and
+prints the JSON report. Set `SAME_MINT_WATCH_ONCE=true` for harness or smoke
+runs.
+
+### `src/bin/same_mint_local_validator_e2e.rs`
+
+Adds an opt-in local harness that attempts the full requested flow:
+
+1. Starts a temporary Homebrew Timescale/Postgres cluster under `/private/tmp`.
+2. Applies orchestrator migrations and a local Kamino `reserve_updates` schema.
+3. Starts `solana-test-validator`.
+4. Preloads mock Kamino reserve, market, mint, collateral, and token accounts.
+5. Loads the Squads fixture and mock Kamino SBF program at their production IDs.
+6. Creates a Squads smart account and same-mint ProgramInteraction policy.
+7. Seeds an initial Main USDC Kamino deposit.
+8. Records policy and vault state in the orchestrator DB.
+9. Inserts a Prime USDC APY update into Timescale.
+10. Subscribes to the APY notification, runs the same-mint route, and checks DB
+    submission plus token balances.
+
+The harness is deliberately a binary rather than a default test because it
+starts local services and depends on SBF/runtime compatibility.
+
 ## Store And State Changes
 
 The orchestrator store now exposes `same_mint_candidate_vaults`, which finds
@@ -138,22 +188,58 @@ op run --env-file=.env.1password -- sh -c 'DATABASE_URL="$NEON_DATABASE_URL" car
 Set `SAME_MINT_SUBMIT_TXS=true` only after simulation succeeds and the route
 config has been reviewed.
 
+## Local Validator Setup
+
+The local path avoids mainnet env and DB state by using generated state:
+
+```bash
+cargo build-sbf -- -p mock-yield-protocols-program
+DATABASE_URL=postgres://zotho@127.0.0.1:15432/loyal_check \
+  cargo run -p loyal-yield-orchestrator --bin same_mint_local_validator_e2e
+```
+
+`cargo build-sbf` currently exits nonzero after building the mock Kamino artifact
+because workspace post-processing also looks for `loyal_hub_swap_program.so`.
+The needed mock artifact is still produced at:
+
+```text
+target/sbpf-solana-solana/release/mock_yield_protocols_program.so
+```
+
+The harness also accepts:
+
+- `SAME_MINT_LOCAL_VALIDATOR_BIN` to choose a specific installed validator.
+- `SAME_MINT_LOCAL_VALIDATOR_RPC_PORT` and
+  `SAME_MINT_LOCAL_VALIDATOR_FAUCET_PORT` to avoid port conflicts.
+
+Current local-validator blocker found during testing: Agave 3.1.12 and 3.1.13
+load the Squads and mock Kamino program accounts and programdata accounts at
+genesis, but invoking the Squads fixture fails during simulation with
+`Unsupported program id` / `Program is not deployed`. The harness prints the
+program account and programdata metadata before setup transactions so this is
+visible. The likely missing piece is a Squads SBF fixture built for the installed
+Agave runtime, or a compatible validator release for the existing fixture.
+
 ## Verification
 
 Commands run during implementation:
 
 ```bash
-cargo fmt --package loyal-yield-orchestrator --check
-cargo test -p loyal-actions
+DATABASE_URL=postgres://zotho@127.0.0.1:15432/loyal_check cargo check -p loyal-yield-orchestrator --bins --tests
+DATABASE_URL=postgres://zotho@127.0.0.1:15432/loyal_check cargo test -p loyal-yield-orchestrator
 ```
 
-An isolated source-file harness was also used to compile and test the new
-orchestrator modules and runner without requiring SQLx online query validation.
-It passed 15 tests covering Kamino payloads, the same-mint loop, the mainnet
-executor, the configured preparer, and the runner target.
+The orchestrator test pass ran 25 tests, including the Timescale APY mapper,
+Kamino instruction builders, same-mint loop, mainnet executor, configured
+preparer, and store idempotency coverage.
 
-The full command below still requires a live `DATABASE_URL` or a SQLx prepared
-query cache because this crate uses SQLx query macros:
+The local validator harness was run with the installed Agave 3.1.12 and 3.1.13
+validators. Both runs reached validator startup and confirmed executable Squads
+and mock Kamino program accounts plus programdata accounts, then failed on the
+first Squads instruction with the runtime loader error described above.
+
+The full crate still requires a live `DATABASE_URL` or a SQLx prepared query
+cache because this crate uses SQLx query macros:
 
 ```bash
 cargo test -p loyal-yield-orchestrator --lib

@@ -2212,16 +2212,21 @@ dependencies = [
 name = "loyal-yield-orchestrator"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "base64 0.22.1",
  "borsh 1.6.1",
  "chrono",
  "loyal-actions",
+ "loyal-yield-router",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "solana-rpc-client",
  "solana-sdk",
+ "solana-system-interface",
  "spl-token",
  "sqlx",
+ "squads-test-harness",
  "thiserror 2.0.18",
  "tokio",
 ]
