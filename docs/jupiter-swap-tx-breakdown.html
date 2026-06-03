@@ -1,0 +1,1195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jupiter Batch Swap TX Breakdown</title>
+    <style>
+      :root {
+        --bg: #f7f8fb;
+        --ink: #101828;
+        --muted: #667085;
+        --line: #d8dee9;
+        --panel: #ffffff;
+        --signature: #c7435b;
+        --message: #2d6cdf;
+        --accounts: #0d8c74;
+        --instructions: #b7791f;
+        --batch: #7c3aed;
+        --alt: #0a7c99;
+        --neutral: #475467;
+        --focus: #111827;
+        --shadow: 0 18px 45px rgba(16, 24, 40, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.45;
+      }
+
+      a {
+        color: #155eef;
+        text-decoration: none;
+      }
+
+      a:hover,
+      a:focus-visible {
+        text-decoration: underline;
+      }
+
+      header {
+        border-bottom: 1px solid var(--line);
+        background:
+          linear-gradient(135deg, rgba(13, 140, 116, 0.10), transparent 35%),
+          linear-gradient(315deg, rgba(124, 58, 237, 0.12), transparent 34%),
+          var(--panel);
+      }
+
+      .wrap {
+        width: min(1320px, calc(100vw - 32px));
+        margin: 0 auto;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        padding: 18px 0;
+      }
+
+      .brand {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .brand strong {
+        font-size: 15px;
+      }
+
+      .brand span {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      nav {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 10px;
+        font-size: 13px;
+      }
+
+      nav a {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.75);
+        padding: 7px 10px;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+        gap: 32px;
+        padding: 42px 0 34px;
+        align-items: end;
+      }
+
+      h1 {
+        margin: 0;
+        max-width: 900px;
+        font-size: clamp(36px, 6vw, 66px);
+        line-height: 0.98;
+        letter-spacing: 0;
+      }
+
+      .subtitle {
+        max-width: 820px;
+        margin: 18px 0 0;
+        color: #344054;
+        font-size: 17px;
+      }
+
+      .status-strip {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .metric {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.82);
+        padding: 14px;
+        min-height: 82px;
+      }
+
+      .metric .label {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      .metric .value {
+        margin-top: 6px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 24px;
+        font-weight: 700;
+      }
+
+      main {
+        padding: 26px 0 72px;
+      }
+
+      section {
+        margin-top: 26px;
+      }
+
+      h2 {
+        margin: 0 0 14px;
+        font-size: 24px;
+        letter-spacing: 0;
+      }
+
+      h3 {
+        margin: 0 0 10px;
+        font-size: 17px;
+        letter-spacing: 0;
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+      }
+
+      .panel-pad {
+        padding: 18px;
+      }
+
+      .dashboard {
+        display: grid;
+        grid-template-columns: minmax(0, 1.6fr) minmax(340px, 0.9fr);
+        gap: 18px;
+        align-items: start;
+      }
+
+      .budget-grid {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(120px, 1fr));
+        gap: 10px;
+      }
+
+      .budget-item {
+        border-top: 4px solid var(--neutral);
+        background: var(--panel);
+        border-radius: 8px;
+        padding: 12px;
+        border-left: 1px solid var(--line);
+        border-right: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+      }
+
+      .budget-item.signature {
+        border-top-color: var(--signature);
+      }
+
+      .budget-item.message {
+        border-top-color: var(--message);
+      }
+
+      .budget-item.accounts {
+        border-top-color: var(--accounts);
+      }
+
+      .budget-item.instructions {
+        border-top-color: var(--instructions);
+      }
+
+      .budget-item.batch {
+        border-top-color: var(--batch);
+      }
+
+      .budget-item.alt {
+        border-top-color: var(--alt);
+      }
+
+      .budget-item b {
+        display: block;
+        font-size: 18px;
+      }
+
+      .budget-item span {
+        color: var(--muted);
+        display: block;
+        font-size: 12px;
+        margin-top: 2px;
+      }
+
+      .segment-track {
+        display: flex;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        height: 54px;
+        background: #eef2f7;
+      }
+
+      .segment {
+        border: 0;
+        padding: 0;
+        cursor: pointer;
+        color: #fff;
+        min-width: 3px;
+      }
+
+      .segment:focus-visible,
+      .byte:focus-visible,
+      .table-button:focus-visible {
+        outline: 3px solid rgba(17, 24, 39, 0.28);
+        outline-offset: 2px;
+      }
+
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px 14px;
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .legend span {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .swatch {
+        width: 12px;
+        height: 12px;
+        border-radius: 3px;
+        display: inline-block;
+      }
+
+      .byte-workbench {
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(340px, 0.75fr);
+        gap: 18px;
+        align-items: start;
+      }
+
+      .toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 14px;
+        flex-wrap: wrap;
+      }
+
+      .controls {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      label {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      input,
+      select {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        min-height: 36px;
+        padding: 7px 10px;
+        color: var(--ink);
+        font: inherit;
+        font-size: 13px;
+      }
+
+      .byte-grid {
+        overflow: auto;
+        max-height: 610px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #0f172a;
+        padding: 12px;
+      }
+
+      .byte-row {
+        display: grid;
+        grid-template-columns: 54px repeat(16, 34px);
+        gap: 4px;
+        align-items: center;
+        margin-bottom: 4px;
+      }
+
+      .offset {
+        color: #cbd5e1;
+        font-size: 12px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      }
+
+      .byte {
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 5px;
+        color: #fff;
+        cursor: pointer;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 12px;
+        line-height: 1;
+        min-height: 28px;
+        padding: 0;
+        width: 34px;
+      }
+
+      .byte.is-selected {
+        border-color: #fff;
+        box-shadow:
+          inset 0 0 0 2px rgba(255, 255, 255, 0.85),
+          0 0 0 2px rgba(255, 255, 255, 0.22);
+      }
+
+      .byte.is-dimmed {
+        opacity: 0.32;
+      }
+
+      .cat-signature,
+      .bg-signature {
+        background: var(--signature);
+      }
+
+      .cat-message,
+      .bg-message {
+        background: var(--message);
+      }
+
+      .cat-accounts,
+      .bg-accounts {
+        background: var(--accounts);
+      }
+
+      .cat-instructions,
+      .bg-instructions {
+        background: var(--instructions);
+      }
+
+      .cat-batch,
+      .bg-batch {
+        background: var(--batch);
+      }
+
+      .cat-alt,
+      .bg-alt {
+        background: var(--alt);
+      }
+
+      .cat-neutral,
+      .bg-neutral {
+        background: var(--neutral);
+      }
+
+      .inspector {
+        position: sticky;
+        top: 16px;
+      }
+
+      .inspector dl {
+        display: grid;
+        grid-template-columns: 116px minmax(0, 1fr);
+        gap: 8px 10px;
+        margin: 0;
+      }
+
+      .inspector dt {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .inspector dd {
+        margin: 0;
+        min-width: 0;
+        overflow-wrap: anywhere;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 13px;
+      }
+
+      .chunk-list {
+        margin-top: 16px;
+        display: grid;
+        gap: 8px;
+      }
+
+      .chunk-button {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        padding: 10px;
+        cursor: pointer;
+        text-align: left;
+      }
+
+      .chunk-button.is-active {
+        border-color: var(--focus);
+        box-shadow: 0 0 0 2px rgba(17, 24, 39, 0.08);
+      }
+
+      .chunk-button strong {
+        display: block;
+        font-size: 13px;
+      }
+
+      .chunk-button span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 2px;
+      }
+
+      .split {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 18px;
+      }
+
+      .table-wrap {
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid var(--line);
+        padding: 9px 10px;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: #f2f4f7;
+        color: #344054;
+        font-size: 12px;
+        position: sticky;
+        top: 0;
+        z-index: 1;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      code,
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      }
+
+      .table-button {
+        border: 0;
+        border-radius: 6px;
+        background: #eef2ff;
+        color: #1d4ed8;
+        cursor: pointer;
+        font: inherit;
+        padding: 3px 6px;
+      }
+
+      .note {
+        border-left: 4px solid var(--alt);
+        padding: 10px 12px;
+        background: #eef8fb;
+        color: #344054;
+        border-radius: 0 8px 8px 0;
+        margin: 14px 0 0;
+      }
+
+      .links {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .link-tile {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        padding: 12px;
+      }
+
+      .link-tile b {
+        display: block;
+        font-size: 13px;
+      }
+
+      .link-tile span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 3px;
+      }
+
+      footer {
+        color: var(--muted);
+        font-size: 12px;
+        padding: 28px 0 36px;
+      }
+
+      @media (max-width: 980px) {
+        .hero,
+        .dashboard,
+        .byte-workbench,
+        .split,
+        .links {
+          grid-template-columns: 1fr;
+        }
+
+        .budget-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .inspector {
+          position: static;
+        }
+      }
+
+      @media (max-width: 680px) {
+        .topbar {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        nav {
+          justify-content: flex-start;
+        }
+
+        .status-strip,
+        .budget-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .byte-grid {
+          max-height: 520px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="wrap">
+        <div class="topbar">
+          <div class="brand">
+            <strong>Loyal Yield Routing</strong>
+            <span>LiteSVM transaction data artifact</span>
+          </div>
+          <nav aria-label="Reference links">
+            <a href="./jupiter-swap-batch-capacity.md">Markdown note</a>
+            <a href="../crates/squads-test-harness/tests/jupiter_swap_batch_size.rs">Probe test</a>
+            <a href="../crates/mock-yield-protocols-program/src/lib.rs">Mock batch program</a>
+            <a href="https://solana.com/docs/core/transactions">Solana transactions</a>
+            <a href="https://solana.com/developers/guides/advanced/lookup-tables">ALT guide</a>
+          </nav>
+        </div>
+        <div class="hero">
+          <div>
+            <h1>20-swap v0 + ALT Jupiter batch transaction</h1>
+            <p class="subtitle">
+              A deterministic 690-byte serialized transaction that executes one compute-budget
+              instruction and one compact batch instruction. The batch instruction carries twenty
+              swap records and CPIs into the mock Jupiter program inside LiteSVM.
+            </p>
+          </div>
+          <div class="status-strip" aria-label="Transaction summary">
+            <div class="metric">
+              <span class="label">Serialized size</span>
+              <span class="value">690 B</span>
+            </div>
+            <div class="metric">
+              <span class="label">Packet headroom</span>
+              <span class="value">542 B</span>
+            </div>
+            <div class="metric">
+              <span class="label">Loaded accounts</span>
+              <span class="value">50</span>
+            </div>
+            <div class="metric">
+              <span class="label">Trace entries</span>
+              <span class="value">62 / 64</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section class="dashboard" aria-labelledby="budget-title">
+        <div>
+          <h2 id="budget-title">Serialized Budget</h2>
+          <div id="segmentTrack" class="segment-track" aria-label="Serialized transaction segments"></div>
+          <div id="legend" class="legend"></div>
+        </div>
+        <div class="panel panel-pad">
+          <h3>Binding limit</h3>
+          <p>
+            The transaction is below the 1,232-byte packet cap. The next swap fails because the
+            mock route reaches <span class="mono">2 + 3n</span> runtime trace entries:
+            one compute-budget ix, one batch ix, one Jupiter CPI per swap, and two SPL Token CPIs
+            per swap.
+          </p>
+          <div class="note">
+            At 20 swaps the trace length is 62. At 21 swaps it becomes 65 and fails with
+            <span class="mono">MaxInstructionTraceLengthExceeded</span>.
+          </div>
+        </div>
+      </section>
+
+      <section aria-label="Component bytes">
+        <div id="budgetGrid" class="budget-grid"></div>
+      </section>
+
+      <section class="byte-workbench" aria-labelledby="byte-title">
+        <div class="panel panel-pad">
+          <div class="toolbar">
+            <div>
+              <h2 id="byte-title">Byte Map</h2>
+            </div>
+            <div class="controls">
+              <label for="categoryFilter">Category</label>
+              <select id="categoryFilter">
+                <option value="all">All</option>
+                <option value="signature">Signatures</option>
+                <option value="message">Message</option>
+                <option value="accounts">Accounts</option>
+                <option value="instructions">Instructions</option>
+                <option value="batch">Batch data</option>
+                <option value="alt">ALT lookup</option>
+              </select>
+              <label for="byteSearch">Find</label>
+              <input id="byteSearch" type="search" placeholder="offset, label, or hex" />
+            </div>
+          </div>
+          <div id="byteGrid" class="byte-grid" aria-label="Serialized transaction bytes"></div>
+        </div>
+
+        <aside class="panel panel-pad inspector" aria-labelledby="inspector-title">
+          <h2 id="inspector-title">Selection</h2>
+          <dl id="inspector"></dl>
+          <div id="chunkList" class="chunk-list"></div>
+        </aside>
+      </section>
+
+      <section class="split" aria-label="Instruction indexes and swap records">
+        <div class="panel panel-pad">
+          <h2>Batch Instruction Account Indexes</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Position</th>
+                  <th>Compiled index</th>
+                  <th>Source</th>
+                  <th>Meaning</th>
+                </tr>
+              </thead>
+              <tbody id="accountIndexRows"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel panel-pad">
+          <h2>Swap Records</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Swap</th>
+                  <th>Offset</th>
+                  <th>Direction</th>
+                  <th>Input</th>
+                  <th>Output</th>
+                </tr>
+              </thead>
+              <tbody id="swapRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="split" aria-label="ALT lookup decoder and source links">
+        <div class="panel panel-pad">
+          <h2>ALT Loaded Account Order</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Compiled index</th>
+                  <th>ALT index</th>
+                  <th>Access</th>
+                  <th>Account</th>
+                </tr>
+              </thead>
+              <tbody id="altRows"></tbody>
+            </table>
+          </div>
+          <p class="note">
+            v0 compilation appends writable lookup accounts first, then readonly lookup accounts,
+            after the three static keys. The instruction therefore references loaded indexes such
+            as <span class="mono">0x2d</span> for Jupiter instead of raw ALT index
+            <span class="mono">0x00</span>.
+          </p>
+        </div>
+
+        <div class="panel panel-pad">
+          <h2>Data Links</h2>
+          <div class="links">
+            <a class="link-tile" href="./jupiter-swap-batch-capacity.md">
+              <b>Capacity note</b>
+              <span>Raw dump, capacity table, trace model</span>
+            </a>
+            <a class="link-tile" href="../crates/squads-test-harness/tests/jupiter_swap_batch_size.rs">
+              <b>LiteSVM test</b>
+              <span>Deterministic dump and max batch probe</span>
+            </a>
+            <a class="link-tile" href="../crates/mock-yield-protocols-program/src/lib.rs">
+              <b>Mock SBF program</b>
+              <span>Batch CPI loop and mock Jupiter handler</span>
+            </a>
+            <a class="link-tile" href="https://solana.com/docs/core/transactions">
+              <b>Solana transactions</b>
+              <span>Signatures, message, size and trace limits</span>
+            </a>
+            <a class="link-tile" href="https://solana.com/docs/core/instructions">
+              <b>Solana instructions</b>
+              <span>Program id, account list, data payload</span>
+            </a>
+            <a class="link-tile" href="https://solana.com/developers/guides/advanced/lookup-tables">
+              <b>Address lookup tables</b>
+              <span>v0 lookup compression and table indexes</span>
+            </a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="wrap">
+      Generated from the deterministic ignored test
+      <span class="mono">dumps_serialized_v0_alt_compact_batch_transaction_layout</span>.
+    </footer>
+
+    <script>
+      const TX_HEX = `
+01 4a 89 08 01 50 90 d4 ed 5f 55 6b db fc 5a 38
+e4 af 35 3e e8 7d aa 12 8c 17 0e 75 6b e5 fa 46
+b6 e0 7c dc 5c 5d c8 be 48 4f 79 4a 28 c5 be 4b
+b6 cf fb ea 11 19 7b a8 ac d8 65 e9 3b 88 58 8d
+0b 80 01 00 02 03 14 c7 0c 7e 0c 4c 77 12 75 6e
+bb df d3 33 17 be 8f df 76 35 88 24 e6 36 09 89
+12 ce d8 1c 1f b1 03 06 46 6f e5 21 17 32 ff ec
+ad ba 72 c3 9b e7 bc 8c e5 bb c5 f7 12 6b 2c 43
+9b 3a 40 00 00 00 42 42 42 42 42 42 42 42 42 42
+42 42 42 42 42 42 42 42 42 42 42 42 42 42 42 42
+42 42 42 42 42 42 32 a7 2a 80 43 f4 ce 5c 96 29
+94 ae 13 7d 35 0a 0b ff 30 32 e9 71 9e 29 23 63
+8c bc 6a bf cc 9f 02 01 00 05 02 c0 5c 15 00 02
+30 00 2d 2e 31 2f 04 03 30 05 19 06 1a 07 1b 08
+1c 09 1d 0a 1e 0b 1f 0c 20 0d 21 0e 22 0f 23 10
+24 11 25 12 26 13 27 14 28 15 29 16 2a 17 2b 18
+2c dd 02 04 00 00 00 00 00 00 00 14 00 e8 03 00
+00 00 00 00 00 e8 03 00 00 00 00 00 00 01 e8 03
+00 00 00 00 00 00 e8 03 00 00 00 00 00 00 00 e8
+03 00 00 00 00 00 00 e8 03 00 00 00 00 00 00 01
+e8 03 00 00 00 00 00 00 e8 03 00 00 00 00 00 00
+00 e8 03 00 00 00 00 00 00 e8 03 00 00 00 00 00
+00 01 e8 03 00 00 00 00 00 00 e8 03 00 00 00 00
+00 00 00 e8 03 00 00 00 00 00 00 e8 03 00 00 00
+00 00 00 01 e8 03 00 00 00 00 00 00 e8 03 00 00
+00 00 00 00 00 e8 03 00 00 00 00 00 00 e8 03 00
+00 00 00 00 00 01 e8 03 00 00 00 00 00 00 e8 03
+00 00 00 00 00 00 00 e8 03 00 00 00 00 00 00 e8
+03 00 00 00 00 00 00 01 e8 03 00 00 00 00 00 00
+e8 03 00 00 00 00 00 00 00 e8 03 00 00 00 00 00
+00 e8 03 00 00 00 00 00 00 01 e8 03 00 00 00 00
+00 00 e8 03 00 00 00 00 00 00 00 e8 03 00 00 00
+00 00 00 e8 03 00 00 00 00 00 00 01 e8 03 00 00
+00 00 00 00 e8 03 00 00 00 00 00 00 00 e8 03 00
+00 00 00 00 00 e8 03 00 00 00 00 00 00 01 e8 03
+00 00 00 00 00 00 e8 03 00 00 00 00 00 00 00 e8
+03 00 00 00 00 00 00 e8 03 00 00 00 00 00 00 01
+e8 03 00 00 00 00 00 00 e8 03 00 00 00 00 00 00
+01 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90
+90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 00
+00 2a 05 04 07 09 0b 0d 0f 11 13 15 17 19 1b 1d
+1f 21 23 25 27 29 2b 2d 08 0a 0c 0e 10 12 14 16
+18 1a 1c 1e 20 22 24 26 28 2a 2c 2e 05 00 01 03
+06 02`;
+
+      const bytes = TX_HEX.trim().split(/\s+/).map((value) => parseInt(value, 16));
+      const totalBytes = bytes.length;
+      const packetLimit = 1232;
+
+      const chunks = [
+        { id: "sig-count", start: 0x0000, end: 0x0000, category: "signature", title: "Signature count", detail: "Shortvec count of signatures: 1." },
+        { id: "signature", start: 0x0001, end: 0x0040, category: "signature", title: "Batch signer signature", detail: "One 64-byte Ed25519 signature from the delegated batch signer." },
+        { id: "version", start: 0x0041, end: 0x0041, category: "message", title: "Version prefix", detail: "0x80 marks a versioned message with v0 layout." },
+        { id: "header", start: 0x0042, end: 0x0044, category: "message", title: "Message header", detail: "01 00 02: one required signature, zero readonly signed accounts, two readonly unsigned static accounts." },
+        { id: "static-count", start: 0x0045, end: 0x0045, category: "accounts", title: "Static account count", detail: "Shortvec count of static account keys: 3." },
+        { id: "static-signer", start: 0x0046, end: 0x0065, category: "accounts", title: "Static account 0", detail: "Batch signer and fee payer." },
+        { id: "static-compute", start: 0x0066, end: 0x0085, category: "accounts", title: "Static account 1", detail: "Compute Budget program id." },
+        { id: "static-batch", start: 0x0086, end: 0x00a5, category: "accounts", title: "Static account 2", detail: "Test batch program id, shown as repeated 0x42 bytes." },
+        { id: "blockhash", start: 0x00a6, end: 0x00c5, category: "message", title: "Recent blockhash", detail: "32-byte recent blockhash from LiteSVM." },
+        { id: "ix-count", start: 0x00c6, end: 0x00c6, category: "instructions", title: "Instruction count", detail: "Two top-level instructions." },
+        { id: "ix0", start: 0x00c7, end: 0x00ce, category: "instructions", title: "Compute-budget instruction", detail: "Program index 1, zero accounts, five data bytes for SetComputeUnitLimit(1,400,000)." },
+        { id: "ix1-program", start: 0x00cf, end: 0x00cf, category: "instructions", title: "Batch instruction program index", detail: "Program id index 2: the static batch program account." },
+        { id: "ix1-account-count", start: 0x00d0, end: 0x00d0, category: "instructions", title: "Batch account index count", detail: "0x30 = 48 accounts supplied to the batch instruction." },
+        { id: "ix1-account-indexes", start: 0x00d1, end: 0x0100, category: "instructions", title: "Batch account indexes", detail: "Compiled account indexes for signer, CPI programs, mints, reserves, authority, and 40 user token accounts." },
+        { id: "ix1-data-len", start: 0x0101, end: 0x0102, category: "batch", title: "Batch data length", detail: "Shortvec dd 02 = 349 bytes." },
+        { id: "ix1-discriminator", start: 0x0103, end: 0x010a, category: "batch", title: "Batch discriminator", detail: "Test discriminator for compact Jupiter exact-in batch." },
+        { id: "swap-count", start: 0x010b, end: 0x010b, category: "batch", title: "Swap count", detail: "0x14 = 20 swap records." },
+        { id: "swap-records", start: 0x010c, end: 0x025f, category: "batch", title: "Swap records", detail: "Twenty 17-byte records: direction, input amount, output amount." },
+        { id: "lookup-count", start: 0x0260, end: 0x0260, category: "alt", title: "Lookup table count", detail: "One address lookup table descriptor." },
+        { id: "lookup-key", start: 0x0261, end: 0x0280, category: "alt", title: "Lookup table account", detail: "Deterministic lookup table account key used for the dump." },
+        { id: "writable-count", start: 0x0281, end: 0x0281, category: "alt", title: "Writable lookup count", detail: "0x2a = 42 writable lookup indexes." },
+        { id: "writable-indexes", start: 0x0282, end: 0x02ab, category: "alt", title: "Writable lookup indexes", detail: "Two reserves plus 40 user token accounts." },
+        { id: "readonly-count", start: 0x02ac, end: 0x02ac, category: "alt", title: "Readonly lookup count", detail: "Five readonly lookup indexes." },
+        { id: "readonly-indexes", start: 0x02ad, end: 0x02b1, category: "alt", title: "Readonly lookup indexes", detail: "Jupiter, SPL Token, mints, and authority." }
+      ];
+
+      const budgets = [
+        { label: "Signatures", bytes: 65, category: "signature", detail: "shortvec + one signature" },
+        { label: "Version/header", bytes: 4, category: "message", detail: "v0 prefix + header" },
+        { label: "Static keys", bytes: 97, category: "accounts", detail: "count + three keys" },
+        { label: "Blockhash", bytes: 32, category: "message", detail: "recent blockhash" },
+        { label: "Instructions", bytes: 410, category: "instructions", detail: "compute budget + batch ix" },
+        { label: "ALT lookup", bytes: 82, category: "alt", detail: "table key + indexes" }
+      ];
+
+      const categoryNames = {
+        signature: "Signatures",
+        message: "Message",
+        accounts: "Accounts",
+        instructions: "Instructions",
+        batch: "Batch data",
+        alt: "ALT lookup",
+        neutral: "Other"
+      };
+
+      const fixedAccountIndexes = [
+        [0, "0x00", "static", "Batch signer / fee payer"],
+        [1, "0x2d", "ALT readonly index 0", "Jupiter v6 program id"],
+        [2, "0x2e", "ALT readonly index 1", "SPL Token program id"],
+        [3, "0x31", "ALT readonly index 2", "USDC mint"],
+        [4, "0x2f", "ALT readonly index 3", "PYUSD mint"],
+        [5, "0x04", "ALT writable index 4", "Mock Jupiter USDC reserve"],
+        [6, "0x03", "ALT writable index 5", "Mock Jupiter PYUSD reserve"],
+        [7, "0x30", "ALT readonly index 6", "Mock Jupiter authority"]
+      ];
+
+      const writableAltIndexes = [
+        0x05, 0x04, 0x07, 0x09, 0x0b, 0x0d, 0x0f, 0x11, 0x13, 0x15, 0x17, 0x19, 0x1b, 0x1d,
+        0x1f, 0x21, 0x23, 0x25, 0x27, 0x29, 0x2b, 0x2d, 0x08, 0x0a, 0x0c, 0x0e, 0x10, 0x12,
+        0x14, 0x16, 0x18, 0x1a, 0x1c, 0x1e, 0x20, 0x22, 0x24, 0x26, 0x28, 0x2a, 0x2c, 0x2e
+      ];
+      const readonlyAltIndexes = [0x00, 0x01, 0x03, 0x06, 0x02];
+
+      const rawAltLabels = new Map([
+        [0x00, "Jupiter v6 program id"],
+        [0x01, "SPL Token program id"],
+        [0x02, "USDC mint"],
+        [0x03, "PYUSD mint"],
+        [0x04, "USDC reserve"],
+        [0x05, "PYUSD reserve"],
+        [0x06, "Mock Jupiter authority"]
+      ]);
+      for (let i = 0; i < 20; i += 1) {
+        rawAltLabels.set(0x07 + i * 2, `Swap ${i} USDC token account`);
+        rawAltLabels.set(0x08 + i * 2, `Swap ${i} PYUSD token account`);
+      }
+
+      let selected = chunks.find((chunk) => chunk.id === "swap-records");
+      let filter = "all";
+      let query = "";
+
+      const hex = (n, width = 2) => n.toString(16).padStart(width, "0");
+      const rangeText = (start, end) => `${hex(start, 4)}..${hex(end, 4)}`;
+      const byteHex = (start, end) => bytes.slice(start, end + 1).map((byte) => hex(byte)).join(" ");
+      const chunkForByte = (index) => chunks.find((chunk) => index >= chunk.start && index <= chunk.end);
+
+      function littleEndianU64(start) {
+        let value = 0n;
+        for (let i = 0; i < 8; i += 1) {
+          value += BigInt(bytes[start + i]) << BigInt(i * 8);
+        }
+        return value.toString();
+      }
+
+      function selectRange(selection) {
+        selected = selection;
+        renderInspector();
+        updateByteSelection();
+        updateChunkButtons();
+      }
+
+      function matchesVisible(byteIndex) {
+        const chunk = chunkForByte(byteIndex);
+        if (!chunk) return true;
+        if (filter !== "all" && chunk.category !== filter) return false;
+        if (!query) return true;
+        const haystack = `${hex(byteIndex, 4)} ${hex(bytes[byteIndex])} ${chunk.title} ${chunk.detail}`.toLowerCase();
+        return haystack.includes(query);
+      }
+
+      function renderSegmentTrack() {
+        const track = document.getElementById("segmentTrack");
+        track.innerHTML = "";
+        budgets.forEach((item) => {
+          const button = document.createElement("button");
+          button.className = `segment bg-${item.category}`;
+          button.style.width = `${(item.bytes / totalBytes) * 100}%`;
+          button.title = `${item.label}: ${item.bytes} bytes`;
+          const firstChunk = chunks.find((chunk) => chunk.category === item.category);
+          if (firstChunk) button.addEventListener("click", () => selectRange(firstChunk));
+          track.appendChild(button);
+        });
+
+        const legend = document.getElementById("legend");
+        legend.innerHTML = "";
+        ["signature", "message", "accounts", "instructions", "batch", "alt"].forEach((category) => {
+          const item = document.createElement("span");
+          item.innerHTML = `<i class="swatch bg-${category}"></i>${categoryNames[category]}`;
+          legend.appendChild(item);
+        });
+      }
+
+      function renderBudgetGrid() {
+        const grid = document.getElementById("budgetGrid");
+        grid.innerHTML = "";
+        budgets.forEach((item) => {
+          const div = document.createElement("div");
+          div.className = `budget-item ${item.category}`;
+          div.innerHTML = `<b>${item.bytes} B</b><span>${item.label}</span><span>${item.detail}</span>`;
+          grid.appendChild(div);
+        });
+      }
+
+      function renderByteGrid() {
+        const grid = document.getElementById("byteGrid");
+        grid.innerHTML = "";
+        for (let rowStart = 0; rowStart < bytes.length; rowStart += 16) {
+          const row = document.createElement("div");
+          row.className = "byte-row";
+          const label = document.createElement("span");
+          label.className = "offset";
+          label.textContent = hex(rowStart, 4);
+          row.appendChild(label);
+          for (let i = rowStart; i < Math.min(rowStart + 16, bytes.length); i += 1) {
+            const chunk = chunkForByte(i);
+            const button = document.createElement("button");
+            button.className = `byte cat-${chunk?.category || "neutral"}`;
+            button.dataset.index = String(i);
+            button.type = "button";
+            button.textContent = hex(bytes[i]);
+            button.title = `${hex(i, 4)} ${chunk?.title || ""}`;
+            button.addEventListener("click", () => selectRange({
+              id: `byte-${i}`,
+              start: i,
+              end: i,
+              category: chunk?.category || "neutral",
+              title: `Byte ${hex(i, 4)}`,
+              detail: chunk ? chunk.detail : "Serialized transaction byte."
+            }));
+            row.appendChild(button);
+          }
+          grid.appendChild(row);
+        }
+        updateByteSelection();
+      }
+
+      function updateByteSelection() {
+        document.querySelectorAll(".byte").forEach((button) => {
+          const index = Number(button.dataset.index);
+          button.classList.toggle("is-selected", index >= selected.start && index <= selected.end);
+          button.classList.toggle("is-dimmed", !matchesVisible(index));
+        });
+      }
+
+      function renderInspector() {
+        const inspector = document.getElementById("inspector");
+        const length = selected.end - selected.start + 1;
+        const bytesText = byteHex(selected.start, selected.end);
+        inspector.innerHTML = `
+          <dt>Label</dt><dd>${selected.title}</dd>
+          <dt>Range</dt><dd>${rangeText(selected.start, selected.end)}</dd>
+          <dt>Length</dt><dd>${length} byte${length === 1 ? "" : "s"}</dd>
+          <dt>Category</dt><dd>${categoryNames[selected.category] || selected.category}</dd>
+          <dt>Bytes</dt><dd>${bytesText}</dd>
+          <dt>Decoded</dt><dd>${decodeSelection(selected)}</dd>
+          <dt>Note</dt><dd>${selected.detail}</dd>
+        `;
+      }
+
+      function decodeSelection(selection) {
+        if (/^swap-\d+$/.test(selection.id || "")) {
+          const index = Number(selection.id.split("-")[1]);
+          const start = 0x010c + index * 17;
+          const direction = bytes[start] === 0 ? "USDC -> PYUSD" : "PYUSD -> USDC";
+          return `${direction}, in=${littleEndianU64(start + 1)}, out=${littleEndianU64(start + 9)}`;
+        }
+        if (selection.id === "ix0") return "SetComputeUnitLimit, units=1,400,000";
+        if (selection.id === "ix1-data-len") return "349";
+        if (selection.id === "swap-count") return "20";
+        if (selection.id === "writable-count") return "42";
+        if (selection.id === "readonly-count") return "5";
+        if (selection.end - selection.start === 7) return littleEndianU64(selection.start);
+        if (selection.start === selection.end) return String(bytes[selection.start]);
+        return "raw bytes";
+      }
+
+      function renderChunkList() {
+        const list = document.getElementById("chunkList");
+        list.innerHTML = "";
+        chunks.forEach((chunk) => {
+          const button = document.createElement("button");
+          button.className = "chunk-button";
+          button.type = "button";
+          button.dataset.id = chunk.id;
+          button.innerHTML = `<strong>${chunk.title}</strong><span>${rangeText(chunk.start, chunk.end)} · ${chunk.end - chunk.start + 1} bytes</span>`;
+          button.addEventListener("click", () => selectRange(chunk));
+          list.appendChild(button);
+        });
+        updateChunkButtons();
+      }
+
+      function updateChunkButtons() {
+        document.querySelectorAll(".chunk-button").forEach((button) => {
+          button.classList.toggle("is-active", button.dataset.id === selected.id);
+        });
+      }
+
+      function renderAccountIndexRows() {
+        const rows = document.getElementById("accountIndexRows");
+        rows.innerHTML = "";
+        const entries = [...fixedAccountIndexes];
+        for (let i = 0; i < 20; i += 1) {
+          entries.push([8 + i * 2, `0x${hex(0x05 + i)}`, `ALT writable index ${0x07 + i * 2}`, `Swap ${i} USDC token account`]);
+          entries.push([9 + i * 2, `0x${hex(0x19 + i)}`, `ALT writable index ${0x08 + i * 2}`, `Swap ${i} PYUSD token account`]);
+        }
+        entries.forEach(([position, compiledIndex, source, meaning]) => {
+          const offset = 0x00d1 + Number(position);
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td><button class="table-button" type="button">${position}</button></td>
+            <td class="mono">${compiledIndex}</td>
+            <td>${source}</td>
+            <td>${meaning}</td>
+          `;
+          tr.querySelector("button").addEventListener("click", () => selectRange({
+            id: `acct-${position}`,
+            start: offset,
+            end: offset,
+            category: "instructions",
+            title: `Batch account index ${position}`,
+            detail: `${meaning}; compiled account index ${compiledIndex}.`
+          }));
+          rows.appendChild(tr);
+        });
+      }
+
+      function renderSwapRows() {
+        const rows = document.getElementById("swapRows");
+        rows.innerHTML = "";
+        for (let i = 0; i < 20; i += 1) {
+          const start = 0x010c + i * 17;
+          const direction = bytes[start] === 0 ? "USDC -> PYUSD" : "PYUSD -> USDC";
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td><button class="table-button" type="button">${i}</button></td>
+            <td class="mono">${rangeText(start, start + 16)}</td>
+            <td>${direction}</td>
+            <td class="mono">${littleEndianU64(start + 1)}</td>
+            <td class="mono">${littleEndianU64(start + 9)}</td>
+          `;
+          tr.querySelector("button").addEventListener("click", () => selectRange({
+            id: `swap-${i}`,
+            start,
+            end: start + 16,
+            category: "batch",
+            title: `Swap record ${i}`,
+            detail: "One direction byte, eight input-amount bytes, and eight output-amount bytes."
+          }));
+          rows.appendChild(tr);
+        }
+      }
+
+      function renderAltRows() {
+        const rows = document.getElementById("altRows");
+        rows.innerHTML = "";
+        const loaded = [
+          ...writableAltIndexes.map((altIndex, i) => ({ compiled: 3 + i, altIndex, access: "writable" })),
+          ...readonlyAltIndexes.map((altIndex, i) => ({ compiled: 3 + writableAltIndexes.length + i, altIndex, access: "readonly" }))
+        ];
+        loaded.forEach((entry, i) => {
+          const offset = entry.access === "writable"
+            ? 0x0282 + i
+            : 0x02ad + (i - writableAltIndexes.length);
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td class="mono">0x${hex(entry.compiled)} (${entry.compiled})</td>
+            <td><button class="table-button" type="button">0x${hex(entry.altIndex)}</button></td>
+            <td>${entry.access}</td>
+            <td>${rawAltLabels.get(entry.altIndex)}</td>
+          `;
+          tr.querySelector("button").addEventListener("click", () => selectRange({
+            id: `alt-${entry.altIndex}-${entry.access}`,
+            start: offset,
+            end: offset,
+            category: "alt",
+            title: `ALT ${entry.access} index 0x${hex(entry.altIndex)}`,
+            detail: `Loaded as compiled account index 0x${hex(entry.compiled)}: ${rawAltLabels.get(entry.altIndex)}.`
+          }));
+          rows.appendChild(tr);
+        });
+      }
+
+      document.getElementById("categoryFilter").addEventListener("change", (event) => {
+        filter = event.target.value;
+        updateByteSelection();
+      });
+
+      document.getElementById("byteSearch").addEventListener("input", (event) => {
+        query = event.target.value.trim().toLowerCase();
+        updateByteSelection();
+      });
+
+      renderSegmentTrack();
+      renderBudgetGrid();
+      renderByteGrid();
+      renderInspector();
+      renderChunkList();
+      renderAccountIndexRows();
+      renderSwapRows();
+      renderAltRows();
+    </script>
+  </body>
+</html>

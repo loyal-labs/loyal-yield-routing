@@ -75,3 +75,6 @@ cargo build-sbf -- -p mock-yield-protocols-program
 ```
 
 The test loader installs that SBF binary at the Jupiter and Kamino program IDs so Squads still gates the outer protocol calls while the mocked protocol logic moves real SPL Token balances underneath.
+
+For packet-size measurements around batching mock Jupiter swaps into one legacy
+or v0 transaction, see `docs/jupiter-swap-batch-capacity.md`.

@@ -4,6 +4,7 @@ use solana_program::{
     account_info::{next_account_info, AccountInfo},
     entrypoint,
     entrypoint::ProgramResult,
+    instruction::{AccountMeta, Instruction},
     program::{invoke, invoke_signed},
     program_error::ProgramError,
     pubkey,
@@ -12,6 +13,7 @@ use solana_program::{
 use spl_token::solana_program::program_pack::Pack;
 
 pub const JUPITER_V6_PROGRAM_ID: Pubkey = pubkey!("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4");
+pub const JUPITER_BATCH_PROGRAM_ID: Pubkey = Pubkey::new_from_array([66; 32]);
 pub const USDC_MINT: Pubkey = pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 pub const PYUSD_MINT: Pubkey = pubkey!("2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo");
 pub const WRAPPED_SOL_MINT: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
@@ -27,6 +29,7 @@ pub const KAMINO_PRIME_USDC_RESERVE: Pubkey =
 pub const MOCK_JUPITER_SOL_TO_USDC: u8 = 1;
 pub const MOCK_JUPITER_USDC_TO_PYUSD: u8 = 2;
 pub const MOCK_JUPITER_STABLE_EXACT_IN: [u8; 8] = [3, 0, 0, 0, 0, 0, 0, 0];
+pub const MOCK_JUPITER_BATCH_EXACT_IN: [u8; 8] = [4, 0, 0, 0, 0, 0, 0, 0];
 pub const USDC_DECIMALS: u8 = 6;
 pub const PYUSD_DECIMALS: u8 = 6;
 pub const KAMINO_COLLATERAL_DECIMALS: u8 = 6;
@@ -75,6 +78,10 @@ pub fn process_instruction(
 
     if program_id == &KAMINO_LEND_PROGRAM_ID {
         return process_kamino(program_id, accounts, data);
+    }
+
+    if program_id == &JUPITER_BATCH_PROGRAM_ID {
+        return process_jupiter_batch(accounts, data);
     }
 
     Err(ProgramError::IncorrectProgramId)
@@ -146,6 +153,120 @@ fn parse_jupiter_instruction(data: &[u8]) -> Result<JupiterInstruction, ProgramE
     }
 
     Err(ProgramError::InvalidInstructionData)
+}
+
+struct BatchSwapRecord {
+    direction: u8,
+    in_amount: u64,
+    out_amount: u64,
+}
+
+fn process_jupiter_batch(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
+    if data.len() < 9 || data[..8] != MOCK_JUPITER_BATCH_EXACT_IN {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    let swap_count = data[8] as usize;
+    let expected_data_len = 9 + swap_count * 17;
+    if data.len() != expected_data_len {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    if accounts.len() != 8 + swap_count * 2 {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+
+    let batch_signer = &accounts[0];
+    let jupiter_program = &accounts[1];
+    let token_program = &accounts[2];
+    let usdc_mint = &accounts[3];
+    let pyusd_mint = &accounts[4];
+    let jupiter_usdc_reserve = &accounts[5];
+    let jupiter_pyusd_reserve = &accounts[6];
+    let jupiter_authority = &accounts[7];
+
+    require_signer(batch_signer)?;
+    require_key(jupiter_program, &JUPITER_V6_PROGRAM_ID)?;
+    require_key(token_program, &spl_token::id())?;
+    require_key(usdc_mint, &USDC_MINT)?;
+    require_key(pyusd_mint, &PYUSD_MINT)?;
+
+    for index in 0..swap_count {
+        let record_offset = 9 + index * 17;
+        let record = BatchSwapRecord {
+            direction: data[record_offset],
+            in_amount: read_u64(&data[record_offset + 1..record_offset + 9])?,
+            out_amount: read_u64(&data[record_offset + 9..record_offset + 17])?,
+        };
+        let user_usdc = &accounts[8 + index * 2];
+        let user_pyusd = &accounts[9 + index * 2];
+
+        let (
+            vault_input,
+            vault_output,
+            input_mint,
+            output_mint,
+            jupiter_input_reserve,
+            jupiter_output_reserve,
+        ) = match record.direction {
+            0 => (
+                user_usdc,
+                user_pyusd,
+                usdc_mint,
+                pyusd_mint,
+                jupiter_usdc_reserve,
+                jupiter_pyusd_reserve,
+            ),
+            1 => (
+                user_pyusd,
+                user_usdc,
+                pyusd_mint,
+                usdc_mint,
+                jupiter_pyusd_reserve,
+                jupiter_usdc_reserve,
+            ),
+            _ => return Err(ProgramError::InvalidInstructionData),
+        };
+
+        let mut jupiter_data = Vec::with_capacity(90);
+        jupiter_data.extend_from_slice(&MOCK_JUPITER_STABLE_EXACT_IN);
+        jupiter_data.extend_from_slice(&record.in_amount.to_le_bytes());
+        jupiter_data.extend_from_slice(&record.out_amount.to_le_bytes());
+        jupiter_data.extend_from_slice(&50u16.to_le_bytes());
+        jupiter_data.extend_from_slice(input_mint.key.as_ref());
+        jupiter_data.extend_from_slice(output_mint.key.as_ref());
+
+        let jupiter_ix = Instruction {
+            program_id: JUPITER_V6_PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new_readonly(*batch_signer.key, true),
+                AccountMeta::new(*vault_input.key, false),
+                AccountMeta::new(*vault_output.key, false),
+                AccountMeta::new_readonly(*input_mint.key, false),
+                AccountMeta::new_readonly(*output_mint.key, false),
+                AccountMeta::new_readonly(*token_program.key, false),
+                AccountMeta::new(*jupiter_input_reserve.key, false),
+                AccountMeta::new(*jupiter_output_reserve.key, false),
+                AccountMeta::new_readonly(*jupiter_authority.key, false),
+            ],
+            data: jupiter_data,
+        };
+        invoke(
+            &jupiter_ix,
+            &[
+                batch_signer.clone(),
+                vault_input.clone(),
+                vault_output.clone(),
+                input_mint.clone(),
+                output_mint.clone(),
+                token_program.clone(),
+                jupiter_input_reserve.clone(),
+                jupiter_output_reserve.clone(),
+                jupiter_authority.clone(),
+                jupiter_program.clone(),
+            ],
+        )?;
+    }
+
+    Ok(())
 }
 
 fn process_jupiter_sol_to_usdc(
