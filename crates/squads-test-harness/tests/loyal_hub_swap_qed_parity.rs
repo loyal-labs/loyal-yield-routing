@@ -185,11 +185,25 @@ fn send_direct_swap_with_extra_signer(
 }
 
 fn swap_balances(fixture: &HubSwapFixture, accounts: &DirectSwapAccounts) -> SwapBalances {
+    swap_balances_for_lane(fixture, accounts, 0)
+}
+
+fn swap_balances_for_lane(
+    fixture: &HubSwapFixture,
+    accounts: &DirectSwapAccounts,
+    lane_id: u8,
+) -> SwapBalances {
     SwapBalances {
         user_input: get_spl_token_amount(&fixture.context.svm, accounts.user_input),
         user_output: get_spl_token_amount(&fixture.context.svm, accounts.user_output),
-        hub_input: get_spl_token_amount(&fixture.context.svm, loyal_hub_token_account(USDC_MINT)),
-        hub_output: get_spl_token_amount(&fixture.context.svm, loyal_hub_token_account(PYUSD_MINT)),
+        hub_input: get_spl_token_amount(
+            &fixture.context.svm,
+            loyal_hub_lane_token_account(USDC_MINT, lane_id),
+        ),
+        hub_output: get_spl_token_amount(
+            &fixture.context.svm,
+            loyal_hub_lane_token_account(PYUSD_MINT, lane_id),
+        ),
     }
 }
 
@@ -212,7 +226,18 @@ fn assert_successful_swap_deltas(
     amount_in: u64,
     amount_out: u64,
 ) {
-    let after = swap_balances(fixture, accounts);
+    assert_successful_swap_deltas_for_lane(fixture, accounts, before, amount_in, amount_out, 0);
+}
+
+fn assert_successful_swap_deltas_for_lane(
+    fixture: &HubSwapFixture,
+    accounts: &DirectSwapAccounts,
+    before: &SwapBalances,
+    amount_in: u64,
+    amount_out: u64,
+    lane_id: u8,
+) {
+    let after = swap_balances_for_lane(fixture, accounts, lane_id);
     assert_eq!(after.user_input, before.user_input - amount_in);
     assert_eq!(after.user_output, before.user_output + amount_out);
     assert_eq!(after.hub_input, before.hub_input + amount_in);
@@ -379,7 +404,6 @@ fn qed_swap_accepts_highest_configured_lane() {
         return;
     };
     let accounts = seed_direct_swap_accounts(&mut fixture, AMOUNT_IN);
-    let before = swap_balances(&fixture, &accounts);
     let high_lane = DEFAULT_LOYAL_HUB_LANE_COUNT - 1;
     seed_loyal_hub_inventory_spl_accounts_for_lane(
         &mut fixture.context.svm,
@@ -387,6 +411,7 @@ fn qed_swap_accepts_highest_configured_lane() {
         AMOUNT_IN * 3,
         high_lane,
     );
+    let before = swap_balances_for_lane(&fixture, &accounts, high_lane);
 
     let ix = direct_hub_swap_ix(
         accounts.user.pubkey(),
@@ -413,7 +438,9 @@ fn qed_swap_accepts_highest_configured_lane() {
     )
     .expect("valid lane_id at upper in-range boundary executes");
 
-    assert_successful_swap_deltas(&fixture, &accounts, &before, AMOUNT_IN, HUB_OUT);
+    assert_successful_swap_deltas_for_lane(
+        &fixture, &accounts, &before, AMOUNT_IN, HUB_OUT, high_lane,
+    );
 }
 
 #[test]

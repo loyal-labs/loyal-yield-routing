@@ -1,20 +1,17 @@
+#[cfg(kani)]
+use pinocchio::instruction::Signer;
 use pinocchio::{
-    account_info::AccountInfo,
-    instruction::Seed,
-    program_error::ProgramError,
-    pubkey::Pubkey,
-    sysvars::rent::Rent,
-    sysvars::Sysvar,
-    ProgramResult,
+    account_info::AccountInfo, instruction::Seed, program_error::ProgramError, pubkey::Pubkey,
+    sysvars::rent::Rent, sysvars::Sysvar, ProgramResult,
 };
 #[cfg(not(kani))]
 use pinocchio::{
     instruction::{AccountMeta, Instruction, Signer},
     program::invoke_signed,
 };
-#[cfg(kani)]
-use pinocchio::instruction::Signer;
 
+#[cfg(not(kani))]
+use crate::codec::write_bytes_at;
 use crate::{
     constants::{HUB_CONFIG_SPACE, SYSTEM_PROGRAM_ID},
     instruction::{
@@ -33,8 +30,6 @@ use crate::{
     },
     SPL_TOKEN_ID,
 };
-#[cfg(not(kani))]
-use crate::codec::write_bytes_at;
 
 fn next_account_info<'a, I>(iter: &mut I) -> Result<&'a AccountInfo, ProgramError>
 where

@@ -24,8 +24,7 @@ mod tests {
         assert_eq!(CONFIG_ACCOUNT_MAX_LEN, config_account::MAX_LEN);
         assert_eq!(
             CONFIG_ACCOUNT_MAX_LEN,
-            config_account::FIXED_LEN
-                + (MAX_ALLOWED_MINTS * config_account::ALLOWED_MINT_ITEM_LEN),
+            config_account::FIXED_LEN + (MAX_ALLOWED_MINTS * config_account::ALLOWED_MINT_ITEM_LEN),
         );
     }
 
