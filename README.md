@@ -1,12 +1,81 @@
 # Loyal Yield Routing
 
-This repo experiments with yield-routing automation for Squads smart accounts. The current implementation centers on `loyal-actions`, a Rust SDK for constructing delegated route actions:
+This repo experiments with yield-routing automation for Squads smart accounts.
+It contains a small Next.js app shell, production-facing Loyal Action builders,
+an on-chain Loyal Hub swap program, read/write orchestration storage, and a
+LiteSVM test harness for proving delegated route policies.
+
+At a high level, the system separates strategy, authorization, execution, and
+verification:
+
+- route planning decides whether a stablecoin route can be filled directly,
+  through Loyal Hub inventory, through Jupiter, or through a combination of
+  lanes;
+- Loyal Actions construct narrow Squads `ProgramInteraction` policies for the
+  delegated executor;
+- external protocols and the Loyal Hub program still validate their own account
+  relationships and token movements;
+- Rust tests execute the resulting actions through LiteSVM, Squads, SPL Token,
+  local protocol mocks, and the Loyal Hub SBF.
+
+## Repo Map
+
+| Path | Owns |
+| --- | --- |
+| `src/app` | Next.js App Router shell. The current page is intentionally minimal. |
+| `src/features/yield-routing` | App-side domain helpers, currently the stable-swap lane planner. |
+| `packages/loyal-actions` | TypeScript package for unsigned Loyal yield-route policy instruction builders. |
+| `crates/loyal-actions` | Rust SDK for constructing delegated Squads route actions and Loyal Hub instructions. |
+| `crates/loyal-hub-abi` | Generated Loyal Hub instruction tags, account indexes, data offsets, PDA seed bytes, and layout constants. Edit the schema, not generated output. |
+| `crates/loyal-hub-swap-program` | Pinocchio SBF program that fills stablecoin swaps from lane-scoped Loyal Hub inventory. |
+| `crates/squads-test-harness` | LiteSVM, Squads PDA/setup helpers, policy adapters, protocol seeding, and deterministic route scenarios. |
+| `crates/mock-yield-protocols-program` | Test-only SBF mocks for Jupiter and Kamino behavior used by the harness. |
+| `crates/loyal-yield-router` | Read-only TimescaleDB boundary for Kamino reserve updates and update streams. |
+| `crates/loyal-yield-orchestrator` | Postgres-backed orchestration state, policy-match persistence, decision state transitions, and delegated signer loading. |
+| `crates/loyal-squads-policy-monitor` | Helius websocket monitor that detects Loyal route-policy creations and emits or stores matches. |
+| `scripts` | QEDGen/Kani verification wrappers and data-analysis helpers. |
+| `docs` | Architecture notes, plans, verification reports, and Squads testing details. |
+
+## Core Workflows
+
+### App And TypeScript SDK
+
+The Next.js app is Bun-managed and follows a vertical-slice structure. Keep
+route files thin and put feature-specific UI, server code, domain logic, data
+access, and integrations under `src/features/<feature-name>/`.
+
+The TypeScript `@loyal/actions` package builds unsigned policy initialization
+instructions for app or service consumers. It generates its Loyal Hub ABI mirror
+from `crates/loyal-hub-abi/schema/loyal_hub_abi.schema` during package builds.
+
+### Rust Action And Program Layer
+
+The Rust `loyal-actions` crate owns production-facing route action
+construction:
 
 - Kamino withdraw/deposit actions scoped by whitelisted markets and liquidity mints
 - swap actions scoped by whitelisted route mints
 - all-in-one actions that can cover Kamino plus swap lanes
 
-The Rust tests keep Squads authorization separate from protocol validation. Squads bounds the delegated signer to the vault, approved markets/mints, route mints, and instruction discriminators. Each external protocol still validates its own account relationships.
+The Loyal Hub wire layout is centralized in `crates/loyal-hub-abi`; program
+parsers, SDK builders, Squads policies, and verification tests should import
+generated constants instead of duplicating byte offsets or account positions.
+
+The `loyal-hub-swap-program` crate is the on-chain inventory leg. It does not
+quote or choose routes. It validates the configured lane, mint pair, fee cap,
+hub authorizer, canonical inventory accounts, and user vault accounts before
+performing checked SPL Token transfers.
+
+### Data And Orchestration
+
+`loyal-yield-router` reads Kamino reserve history and live updates from the
+existing Timescale schema. It should stay read-only and avoid strategy or
+execution policy.
+
+`loyal-yield-orchestrator` owns durable Postgres state for discovered policies
+and route decisions. `loyal-squads-policy-monitor` streams Squads transactions
+from Helius, detects Loyal route-policy creation, and writes matches through
+the orchestrator store when a Neon URL is provided.
 
 ## Development
 
@@ -27,6 +96,22 @@ Run the frontend build or lint checks:
 ```bash
 bun run build
 bun run lint
+```
+
+Build or validate the TypeScript action package:
+
+```bash
+bun run loyal-actions:build
+bun run loyal-actions:typecheck
+bun run loyal-actions:test
+```
+
+Run focused Rust checks for crates that do not need SBF builds:
+
+```bash
+cargo test -p loyal-yield-router
+cargo test -p loyal-yield-orchestrator -p loyal-squads-policy-monitor
+cargo test -p loyal-hub-abi -- --nocapture
 ```
 
 Use the mounted 1Password env file for local non-critical secrets. Store the
@@ -54,6 +139,28 @@ statements need a stable backend connection.
 op run --env-file=.env.1password -- sh -c 'DATABASE_URL="$NEON_DATABASE_URL" cargo test -p loyal-yield-orchestrator -p loyal-squads-policy-monitor'
 ```
 
+## Loyal Hub Verification
+
+Treat `crates/loyal-hub-abi/schema/loyal_hub_abi.schema` as the byte-layout
+source of truth and
+`crates/loyal-hub-swap-program/verification/loyal_hub_swap.qedspec` as the
+behavioral source of truth.
+
+Run the ABI/spec drift gate whenever the schema or QEDGen spec changes:
+
+```bash
+bun run verify:hub-abi-spec-drift
+```
+
+Run the active QEDGen verification bundle with:
+
+```bash
+bun run verify:qedgen
+```
+
+Additional Kani wrappers are available through `bun run verify:qedgen:kani`,
+`bun run verify:qedgen:kani-impl`, and `bun run verify:hub-kani-impl`.
+
 ## Squads Tests
 
 Run the lean Squads test suite:
@@ -66,6 +173,12 @@ Run the ignored historical Kamino replay:
 
 ```bash
 bun run test:squads:e2e
+```
+
+Run the ignored Loyal Hub hindsight replay:
+
+```bash
+bun run test:squads:hub-hindsight
 ```
 
 The action SDK lives in `crates/loyal-actions`. The Squads test crate lives in `crates/squads-test-harness` and consumes the SDK through small test adapters:
