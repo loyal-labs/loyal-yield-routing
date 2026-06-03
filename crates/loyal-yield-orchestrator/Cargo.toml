@@ -5,13 +5,19 @@ edition = "2021"
 description = "Postgres-backed orchestration state for Loyal yield routing"
 
 [dependencies]
+borsh.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+hex = "0.4"
+loyal-actions = { path = "../loyal-actions" }
+loyal-yield-router = { path = "../loyal-yield-router" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+solana-rpc-client = "2.3.13"
+solana-rpc-client-api = "2.3.13"
 solana-sdk.workspace = true
+solana-transaction-status-client-types = "2.3.13"
 sqlx = { version = "0.8", default-features = false, features = ["chrono", "json", "macros", "postgres", "runtime-tokio-rustls"] }
+spl-token.workspace = true
 thiserror = "2"
-
-[dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }

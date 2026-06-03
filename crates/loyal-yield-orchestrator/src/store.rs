@@ -8,6 +8,7 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgConnection, PgPool};
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_loyal_yield_orchestration.sql");
+const MIGRATION_0002: &str = include_str!("../migrations/0002_orchestrator_pipeline.sql");
 
 #[derive(Clone)]
 pub struct NeonSqlClient {
@@ -129,6 +130,7 @@ impl NeonSqlClient {
 
     pub async fn apply_migrations(&self) -> Result<(), OrchestratorError> {
         sqlx::raw_sql(MIGRATION_0001).execute(&self.pool).await?;
+        sqlx::raw_sql(MIGRATION_0002).execute(&self.pool).await?;
         Ok(())
     }
 

@@ -47,28 +47,7 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, PolicySignerError> {
         .or_else(|| value.strip_prefix("0X"))
         .unwrap_or(value);
 
-    if value.len() % 2 != 0 {
-        return Err(PolicySignerError::InvalidHex);
-    }
-
-    value
-        .as_bytes()
-        .chunks_exact(2)
-        .map(|chunk| {
-            let high = hex_nibble(chunk[0])?;
-            let low = hex_nibble(chunk[1])?;
-            Ok((high << 4) | low)
-        })
-        .collect()
-}
-
-fn hex_nibble(byte: u8) -> Result<u8, PolicySignerError> {
-    match byte {
-        b'0'..=b'9' => Ok(byte - b'0'),
-        b'a'..=b'f' => Ok(byte - b'a' + 10),
-        b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => Err(PolicySignerError::InvalidHex),
-    }
+    hex::decode(value).map_err(|_| PolicySignerError::InvalidHex)
 }
 
 #[cfg(test)]
@@ -120,12 +99,6 @@ mod tests {
     }
 
     fn hex_encode(bytes: &[u8]) -> String {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut output = String::with_capacity(bytes.len() * 2);
-        for byte in bytes {
-            output.push(HEX[(byte >> 4) as usize] as char);
-            output.push(HEX[(byte & 0x0f) as usize] as char);
-        }
-        output
+        hex::encode(bytes)
     }
 }

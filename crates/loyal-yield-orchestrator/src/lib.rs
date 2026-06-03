@@ -1,14 +1,27 @@
 mod domain;
+mod kamino;
+mod pipeline;
+mod pipeline_store;
+mod policy_execution;
+mod rpc;
+mod runtime;
 mod signer;
 mod store;
 mod types;
+pub mod workers;
 
 pub use domain::state_transition;
+pub use kamino::*;
+pub use pipeline::*;
+pub use policy_execution::*;
+pub use rpc::*;
+pub use runtime::{RuntimeTick, WorkerRuntime, WorkerRuntimeConfig};
 pub use signer::{
     keypair_from_hex, yield_router_keypair_from_env, PolicySignerError, YIELD_ROUTER_KEYPAIR_ENV,
 };
 pub use store::{NeonSqlClient, OrchestratorStore};
 pub use types::*;
+pub use workers::*;
 
 pub use sqlx;
 use thiserror::Error;
@@ -38,6 +51,12 @@ pub enum OrchestratorError {
     },
     #[error("unexpected store state: {0}")]
     StoreInvariant(String),
+    #[error("configuration error: {0}")]
+    Config(String),
+    #[error("execution build error: {0}")]
+    Execution(String),
+    #[error("solana rpc error: {0}")]
+    Rpc(String),
 }
 
 impl OrchestratorError {
