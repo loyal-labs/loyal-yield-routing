@@ -54,6 +54,69 @@ statements need a stable backend connection.
 op run --env-file=.env.1password -- sh -c 'DATABASE_URL="$NEON_DATABASE_URL" cargo test -p loyal-yield-orchestrator -p loyal-squads-policy-monitor'
 ```
 
+## Same-Mint Route Runner
+
+The pre-production same-mint runner lives in `crates/loyal-yield-orchestrator`:
+
+```bash
+op run --env-file=.env.1password -- sh -c 'DATABASE_URL="$NEON_DATABASE_URL" cargo run -p loyal-yield-orchestrator --bin same_mint_route_runner'
+```
+
+Required env:
+
+- `SOLANA_RPC_URL`: mainnet RPC URL.
+- `YIELD_ROUTER_KEYPAIR`: hex-encoded delegated signer keypair.
+- `SAME_MINT_RESERVE_APYS_JSON`: JSON array of reserve APY rows.
+- `SAME_MINT_ROUTE_CONFIG_JSON` or `SAME_MINT_ROUTE_CONFIG_PATH`: route address and quote config.
+
+Submission is off by default. Set `SAME_MINT_SUBMIT_TXS=true` only after dry-run simulation succeeds. The runner uses that same flag to decide whether the loop stops after simulation or submits the batch.
+
+Route config shape:
+
+```json
+{
+  "routes": [
+    {
+      "vault_id": 1,
+      "source_reserve": "source reserve pubkey or DB label",
+      "target_reserve": "target reserve pubkey or DB label",
+      "liquidity_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "policy_account": "Squads ProgramInteraction policy account",
+      "delegated_signer": "delegated signer pubkey",
+      "vault_index": 0,
+      "vault": "Squads vault pubkey",
+      "withdraw_constraint_index": 0,
+      "deposit_constraint_index": 2,
+      "source_accounts": {
+        "reserve": "source Kamino reserve",
+        "market": "source Kamino lending market",
+        "lending_market_authority": "source market authority",
+        "liquidity_mint": "USDC mint",
+        "reserve_liquidity_supply": "source reserve liquidity supply",
+        "collateral_mint": "source collateral mint",
+        "vault_liquidity": "vault USDC token account",
+        "vault_collateral": "vault source collateral token account"
+      },
+      "target_accounts": {
+        "reserve": "target Kamino reserve",
+        "market": "target Kamino lending market",
+        "lending_market_authority": "target market authority",
+        "liquidity_mint": "USDC mint",
+        "reserve_liquidity_supply": "target reserve liquidity supply",
+        "collateral_mint": "target collateral mint",
+        "vault_liquidity": "vault USDC token account",
+        "vault_collateral": "vault target collateral token account"
+      },
+      "quote": {
+        "redeem_collateral_to_liquidity_bps": 10000,
+        "deposit_liquidity_bps": 10000,
+        "max_redeem_collateral_raw": 1000000
+      }
+    }
+  ]
+}
+```
+
 ## Squads Tests
 
 Run the lean Squads test suite:
