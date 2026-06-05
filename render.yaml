@@ -18,7 +18,7 @@ services:
       - key: HELIUS_API_KEY
         sync: false
       - key: LASERSTREAM_ENDPOINT
-        value: https://laserstream-mainnet-lax.helius-rpc.com
+        value: https://laserstream-mainnet-ewr.helius-rpc.com
       - key: KAMINO_API_BASE
         value: https://api.kamino.finance
       - key: RUST_LOG
