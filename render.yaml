@@ -24,4 +24,4 @@ services:
       - key: KAMINO_API_BASE
         value: https://api.kamino.finance
       - key: RUST_LOG
-        value: warn
+        value: warn,kamino_reserve_monitor=info

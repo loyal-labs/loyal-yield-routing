@@ -166,34 +166,75 @@ async fn run_laserstream_subscription(
     tx: mpsc::UnboundedSender<AccountUpdateEvent>,
     running: Arc<AtomicBool>,
 ) {
-    for reserve in &reserves {
-        if !send_event(
-            &tx,
-            AccountUpdateEvent::Connecting {
-                reserve: *reserve,
-                attempt: 1,
-            },
-        ) {
-            return;
+    let mut reconnect_attempts = 0usize;
+    while running.load(Ordering::Relaxed) {
+        let attempt = reconnect_attempts + 1;
+        for reserve in &reserves {
+            if !send_event(
+                &tx,
+                AccountUpdateEvent::Connecting {
+                    reserve: *reserve,
+                    attempt,
+                },
+            ) {
+                return;
+            }
+        }
+
+        match run_laserstream_attempt(&source, &reserves, attempt, &tx, &running).await {
+            Ok(()) => break,
+            Err(error) => {
+                if !running.load(Ordering::Relaxed) {
+                    break;
+                }
+                if error.reached_connected {
+                    reconnect_attempts = 0;
+                }
+                reconnect_attempts += 1;
+                if !schedule_batch_reconnect_or_fail(
+                    &reserves,
+                    reconnect_attempts,
+                    error.message,
+                    source.config,
+                    &tx,
+                    &running,
+                )
+                .await
+                {
+                    break;
+                }
+            }
         }
     }
 
-    let request = build_laserstream_subscribe_request(&reserves, source.from_slot);
-    let config = LaserstreamConfig::new(source.endpoint, source.api_key)
+    for reserve in &reserves {
+        let _ = send_event(&tx, AccountUpdateEvent::Stopped { reserve: *reserve });
+    }
+}
+
+async fn run_laserstream_attempt(
+    source: &LaserstreamAccountUpdateSource,
+    reserves: &[Pubkey],
+    attempt: usize,
+    tx: &mpsc::UnboundedSender<AccountUpdateEvent>,
+    running: &Arc<AtomicBool>,
+) -> std::result::Result<(), SubscriptionAttemptError> {
+    let request = build_laserstream_subscribe_request(reserves, source.from_slot);
+    let config = LaserstreamConfig::new(source.endpoint.clone(), source.api_key.clone())
         .with_max_reconnect_attempts(source.config.max_reconnect_attempts as u32)
         .with_replay(true);
     let (stream, _handle) = subscribe(config, request);
     futures_util::pin_mut!(stream);
 
-    for reserve in &reserves {
+    for reserve in reserves {
         if !send_event(
-            &tx,
+            tx,
             AccountUpdateEvent::Connected {
                 reserve: *reserve,
-                attempt: 1,
+                attempt,
             },
         ) {
-            return;
+            return Ok(());
         }
     }
 
@@ -205,34 +246,29 @@ async fn run_laserstream_subscription(
             update = stream.next() => {
                 match update {
                     Some(Ok(update)) => {
-                        if let Err(err) = forward_laserstream_update(update, &tx) {
-                            send_laserstream_failed(&reserves, &tx, format!("{err:#}"));
-                            return;
+                        if let Err(err) = forward_laserstream_update(update, tx) {
+                            return Err(SubscriptionAttemptError::after_connected(format!("{err:#}")));
                         }
                     }
                     Some(Err(err)) => {
-                        send_laserstream_failed(&reserves, &tx, err.to_string());
-                        return;
+                        return Err(SubscriptionAttemptError::after_connected(err.to_string()));
                     }
                     None => {
-                        send_laserstream_failed(&reserves, &tx, "LaserStream stream ended".to_string());
-                        return;
+                        return Err(SubscriptionAttemptError::after_connected("LaserStream stream ended"));
                     }
                 }
             }
             _ = heartbeat.tick() => {
-                for reserve in &reserves {
-                    if !send_event(&tx, AccountUpdateEvent::Heartbeat { reserve: *reserve }) {
-                        return;
+                for reserve in reserves {
+                    if !send_event(tx, AccountUpdateEvent::Heartbeat { reserve: *reserve }) {
+                        return Ok(());
                     }
                 }
             }
         }
     }
 
-    for reserve in &reserves {
-        let _ = send_event(&tx, AccountUpdateEvent::Stopped { reserve: *reserve });
-    }
+    Ok(())
 }
 
 fn forward_laserstream_update(
@@ -276,23 +312,6 @@ fn pubkey_from_laserstream_bytes(bytes: &[u8], label: &str) -> Result<Pubkey> {
     let mut array = [0_u8; 32];
     array.copy_from_slice(bytes);
     Ok(Pubkey::new_from_array(array))
-}
-
-fn send_laserstream_failed(
-    reserves: &[Pubkey],
-    tx: &mpsc::UnboundedSender<AccountUpdateEvent>,
-    error: String,
-) {
-    for reserve in reserves {
-        let _ = send_event(
-            tx,
-            AccountUpdateEvent::Failed {
-                reserve: *reserve,
-                attempts: 1,
-                error: error.clone(),
-            },
-        );
-    }
 }
 
 async fn subscription_batch_loop(
