@@ -63,6 +63,20 @@ CREATE TABLE IF NOT EXISTS loyal_yield.route_policies (
     UNIQUE (cluster, policy_account)
 );
 
+CREATE SEQUENCE IF NOT EXISTS loyal_yield.route_policies_id_seq AS BIGINT;
+
+ALTER SEQUENCE loyal_yield.route_policies_id_seq
+    OWNED BY loyal_yield.route_policies.id;
+
+ALTER TABLE loyal_yield.route_policies
+    ALTER COLUMN id SET DEFAULT nextval('loyal_yield.route_policies_id_seq'::regclass);
+
+SELECT setval(
+    'loyal_yield.route_policies_id_seq'::regclass,
+    COALESCE((SELECT MAX(id) FROM loyal_yield.route_policies), 1),
+    (SELECT MAX(id) IS NOT NULL FROM loyal_yield.route_policies)
+);
+
 CREATE INDEX IF NOT EXISTS route_policies_active_idx
     ON loyal_yield.route_policies (cluster, active, settings, vault_index);
 

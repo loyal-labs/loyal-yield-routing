@@ -1262,6 +1262,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn route_policy_ids_are_generated_and_used_for_active_vault_policy() {
+        let Some(store) = database_store().await else {
+            return;
+        };
+        let cluster = unique_cluster("route_policy_generated_ids");
+        delete_cluster(&store, &cluster).await;
+
+        let mut manual_id = None;
+        for _ in 0..10 {
+            manual_id = sqlx::query_scalar(
+                r#"
+                WITH candidate AS (
+                    SELECT GREATEST(
+                        COALESCE((SELECT MAX(id) FROM loyal_yield.route_policies), 0),
+                        (SELECT last_value FROM loyal_yield.route_policies_id_seq)
+                    ) + 1 AS id
+                ), inserted AS (
+                    INSERT INTO loyal_yield.route_policies
+                        (id, cluster, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
+                         delegated_signers, threshold, route_modes, stable_mints, kamino_markets, kamino_liquidity_mints,
+                         universe_preset, risk_profile, swap_lanes, active, last_seen_slot, last_seen_signature)
+                    SELECT
+                        candidate.id, $1, 'settings-manual', 'authority-manual', 1, 'policy-manual', 1, 'vault-manual',
+                        ARRAY[]::TEXT[], 1, ARRAY[]::TEXT[], ARRAY[]::TEXT[], ARRAY[]::TEXT[], ARRAY[]::TEXT[],
+                        NULL, NULL, '[]'::jsonb, TRUE, 1, 'sig-manual'
+                    FROM candidate
+                    ON CONFLICT (id) DO NOTHING
+                    RETURNING id
+                ), repaired AS (
+                    SELECT setval('loyal_yield.route_policies_id_seq'::regclass, inserted.id, TRUE)
+                    FROM inserted
+                )
+                SELECT inserted.id
+                FROM inserted
+                JOIN repaired ON TRUE
+                "#,
+            )
+            .bind(&cluster)
+            .fetch_optional(store.pool())
+            .await
+            .expect("insert manually numbered route policy");
+            if manual_id.is_some() {
+                break;
+            }
+        }
+        let manual_id = manual_id.expect("reserve manual route policy id");
+
+        store
+            .apply_migrations()
+            .await
+            .expect("repair route policy id sequence");
+
+        let first = store
+            .record_policy_match(policy_match(&cluster, "policy-a", 100))
+            .await
+            .expect("record first generated policy");
+        let second = store
+            .record_policy_match(policy_match(&cluster, "policy-b", 110))
+            .await
+            .expect("record same-seed policy with different account");
+
+        assert_eq!(first.policy.policy_seed, second.policy.policy_seed);
+        assert_ne!(first.policy.policy_account, second.policy.policy_account);
+        assert_ne!(first.policy.id, second.policy.id);
+        assert!(first.policy.id.as_i64() > manual_id);
+        assert!(second.policy.id.as_i64() > manual_id);
+        assert_eq!(first.vault.active_policy_id, first.policy.id);
+        assert_eq!(second.vault.active_policy_id, second.policy.id);
+        assert_ne!(
+            second.vault.active_policy_id.as_i64(),
+            second.policy.policy_seed
+        );
+
+        delete_cluster(&store, &cluster).await;
+    }
+
+    #[tokio::test]
     async fn reconcile_vault_replaces_current_positions_and_keeps_snapshots() {
         let Some(store) = database_store().await else {
             return;
