@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -10,6 +11,13 @@ use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
 use futures_util::{Stream, StreamExt};
+use helius_laserstream::{
+    grpc::{
+        subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
+        SubscribeRequestFilterAccounts, SubscribeUpdate,
+    },
+    subscribe, LaserstreamConfig,
+};
 use solana_account_decoder::{UiAccount, UiAccountData, UiAccountEncoding};
 use solana_client::rpc_config::RpcAccountInfoConfig;
 use solana_client::rpc_response::Response;
@@ -26,6 +34,9 @@ type AccountNotification = Response<UiAccount>;
 const SUBSCRIPTION_READ_INTERVAL: Duration = Duration::from_millis(500);
 const WEBSOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const SUBSCRIPTION_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+pub const LASERSTREAM_SOURCE: &str = "laserstream_grpc";
+pub const WEBSOCKET_SOURCE: &str = "websocket";
+pub const CONFIRMED_COMMITMENT: &str = "confirmed";
 
 #[derive(Clone, Copy, Debug)]
 pub struct SubscriptionConfig {
@@ -33,6 +44,12 @@ pub struct SubscriptionConfig {
     pub reconnect_base_delay: Duration,
     pub reconnect_max_delay: Duration,
     pub heartbeat_interval: Duration,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UpdateSourceMetadata {
+    pub source: &'static str,
+    pub source_commitment: &'static str,
 }
 
 #[derive(Debug)]
@@ -46,6 +63,7 @@ pub enum AccountUpdateEvent {
         attempt: usize,
     },
     AccountUpdate {
+        metadata: UpdateSourceMetadata,
         reserve: Pubkey,
         slot: u64,
         owner: String,
@@ -97,6 +115,183 @@ impl AccountUpdateSource for RpcWebsocketAccountUpdateSource {
         tokio::spawn(async move {
             subscription_batch_loop(self.ws_url, reserves, self.config, tx, running).await;
         })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LaserstreamAccountUpdateSource {
+    pub endpoint: String,
+    pub api_key: String,
+    pub from_slot: u64,
+    pub config: SubscriptionConfig,
+}
+
+impl AccountUpdateSource for LaserstreamAccountUpdateSource {
+    fn spawn(
+        self,
+        reserves: Vec<Pubkey>,
+        tx: mpsc::UnboundedSender<AccountUpdateEvent>,
+        running: Arc<AtomicBool>,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            run_laserstream_subscription(self, reserves, tx, running).await;
+        })
+    }
+}
+
+pub fn build_laserstream_subscribe_request(
+    reserves: &[Pubkey],
+    from_slot: u64,
+) -> SubscribeRequest {
+    SubscribeRequest {
+        accounts: HashMap::from([(
+            "kamino_reserves".to_string(),
+            SubscribeRequestFilterAccounts {
+                account: reserves.iter().map(ToString::to_string).collect(),
+                owner: Vec::new(),
+                filters: Vec::new(),
+                nonempty_txn_signature: None,
+            },
+        )]),
+        commitment: Some(CommitmentLevel::Confirmed as i32),
+        accounts_data_slice: Vec::new(),
+        from_slot: Some(from_slot),
+        ..Default::default()
+    }
+}
+
+async fn run_laserstream_subscription(
+    source: LaserstreamAccountUpdateSource,
+    reserves: Vec<Pubkey>,
+    tx: mpsc::UnboundedSender<AccountUpdateEvent>,
+    running: Arc<AtomicBool>,
+) {
+    for reserve in &reserves {
+        if !send_event(
+            &tx,
+            AccountUpdateEvent::Connecting {
+                reserve: *reserve,
+                attempt: 1,
+            },
+        ) {
+            return;
+        }
+    }
+
+    let request = build_laserstream_subscribe_request(&reserves, source.from_slot);
+    let config = LaserstreamConfig::new(source.endpoint, source.api_key)
+        .with_max_reconnect_attempts(source.config.max_reconnect_attempts as u32)
+        .with_replay(true);
+    let (stream, _handle) = subscribe(config, request);
+    futures_util::pin_mut!(stream);
+
+    for reserve in &reserves {
+        if !send_event(
+            &tx,
+            AccountUpdateEvent::Connected {
+                reserve: *reserve,
+                attempt: 1,
+            },
+        ) {
+            return;
+        }
+    }
+
+    let mut heartbeat = time::interval(source.config.heartbeat_interval);
+    heartbeat.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+
+    while running.load(Ordering::Relaxed) {
+        tokio::select! {
+            update = stream.next() => {
+                match update {
+                    Some(Ok(update)) => {
+                        if let Err(err) = forward_laserstream_update(update, &tx) {
+                            send_laserstream_failed(&reserves, &tx, format!("{err:#}"));
+                            return;
+                        }
+                    }
+                    Some(Err(err)) => {
+                        send_laserstream_failed(&reserves, &tx, err.to_string());
+                        return;
+                    }
+                    None => {
+                        send_laserstream_failed(&reserves, &tx, "LaserStream stream ended".to_string());
+                        return;
+                    }
+                }
+            }
+            _ = heartbeat.tick() => {
+                for reserve in &reserves {
+                    if !send_event(&tx, AccountUpdateEvent::Heartbeat { reserve: *reserve }) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    for reserve in &reserves {
+        let _ = send_event(&tx, AccountUpdateEvent::Stopped { reserve: *reserve });
+    }
+}
+
+fn forward_laserstream_update(
+    update: SubscribeUpdate,
+    tx: &mpsc::UnboundedSender<AccountUpdateEvent>,
+) -> Result<()> {
+    let Some(UpdateOneof::Account(account_update)) = update.update_oneof else {
+        return Ok(());
+    };
+    let account = account_update
+        .account
+        .context("LaserStream account update was missing account payload")?;
+    let reserve = pubkey_from_laserstream_bytes(&account.pubkey, "account pubkey")?;
+    let owner = pubkey_from_laserstream_bytes(&account.owner, "account owner")?;
+    let received_at = Utc::now();
+    send_event(
+        tx,
+        AccountUpdateEvent::AccountUpdate {
+            metadata: UpdateSourceMetadata {
+                source: LASERSTREAM_SOURCE,
+                source_commitment: CONFIRMED_COMMITMENT,
+            },
+            reserve,
+            slot: account_update.slot,
+            owner: owner.to_string(),
+            data: account.data,
+            received_at,
+            received_instant: Instant::now(),
+        },
+    );
+    Ok(())
+}
+
+fn pubkey_from_laserstream_bytes(bytes: &[u8], label: &str) -> Result<Pubkey> {
+    if bytes.len() != 32 {
+        bail!(
+            "LaserStream {label} decoded to {} bytes, expected 32",
+            bytes.len()
+        );
+    }
+    let mut array = [0_u8; 32];
+    array.copy_from_slice(bytes);
+    Ok(Pubkey::new_from_array(array))
+}
+
+fn send_laserstream_failed(
+    reserves: &[Pubkey],
+    tx: &mpsc::UnboundedSender<AccountUpdateEvent>,
+    error: String,
+) {
+    for reserve in reserves {
+        let _ = send_event(
+            tx,
+            AccountUpdateEvent::Failed {
+                reserve: *reserve,
+                attempts: 1,
+                error: error.clone(),
+            },
+        );
     }
 }
 
@@ -309,6 +504,10 @@ where
                         if !send_event(
                             tx,
                             AccountUpdateEvent::AccountUpdate {
+                                metadata: UpdateSourceMetadata {
+                                    source: WEBSOCKET_SOURCE,
+                                    source_commitment: CONFIRMED_COMMITMENT,
+                                },
                                 reserve,
                                 slot: notification.context.slot,
                                 owner: notification.value.owner.clone(),
@@ -413,5 +612,32 @@ fn decode_ui_account_data(account: &UiAccount) -> Result<Vec<u8>> {
             .decode(encoded)
             .context("decode base64 account data"),
         UiAccountData::Json(_) => bail!("expected base64 account data, got JSON encoding"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn laserstream_request_filters_exact_reserve_accounts_with_overlap_slot() {
+        let reserves = vec![Pubkey::new_unique(), Pubkey::new_unique()];
+        let request = build_laserstream_subscribe_request(&reserves, 123_424);
+
+        assert_eq!(request.commitment, Some(CommitmentLevel::Confirmed as i32));
+        assert_eq!(request.from_slot, Some(123_424));
+        assert!(request.accounts_data_slice.is_empty());
+        assert!(request.transactions.is_empty());
+
+        let account_filter = request
+            .accounts
+            .get("kamino_reserves")
+            .expect("Kamino reserve account filter");
+        assert_eq!(
+            account_filter.account,
+            reserves.iter().map(ToString::to_string).collect::<Vec<_>>()
+        );
+        assert!(account_filter.owner.is_empty());
+        assert!(account_filter.filters.is_empty());
     }
 }

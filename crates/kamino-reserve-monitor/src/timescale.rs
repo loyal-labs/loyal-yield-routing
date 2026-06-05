@@ -2,7 +2,7 @@ use std::{str::FromStr, time::Duration};
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use solana_sdk::pubkey::Pubkey;
 use sqlx::{
@@ -41,6 +41,7 @@ impl TimescaleSinkConfig {
 pub struct TimescaleSink {
     pool: PgPool,
     insert_sql: String,
+    insert_batch_sql: String,
     dedupe_lookup_sql: String,
     load_supported_targets_sql: String,
     load_supported_targets_filtered_sql: String,
@@ -85,6 +86,7 @@ impl TimescaleSink {
         Ok(Self {
             pool,
             insert_sql: insert_sql(&config.schema),
+            insert_batch_sql: insert_batch_sql(&config.schema),
             dedupe_lookup_sql: dedupe_lookup_sql(&config.schema),
             load_supported_targets_sql: load_supported_targets_sql(&config.schema, false),
             load_supported_targets_filtered_sql: load_supported_targets_sql(&config.schema, true),
@@ -166,11 +168,6 @@ impl TimescaleSink {
         let receive_to_decode_ms =
             i64_from_u128(record.receive_to_decode_ms, "receive_to_decode_ms")?;
 
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .context("begin TimescaleDB insert transaction")?;
         let inserted_event_id = sqlx::query_scalar::<_, i64>(&self.insert_sql)
             .bind(dedupe_key.clone())
             .bind(record.snapshot.reserve.to_string())
@@ -226,7 +223,7 @@ impl TimescaleSink {
             .bind(record.decoded_at)
             .bind(receive_to_decode_ms)
             .bind(decode_to_insert_ms)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&self.pool)
             .await
             .context("insert TimescaleDB reserve update")?;
 
@@ -238,7 +235,7 @@ impl TimescaleSink {
         } else {
             let event_id = sqlx::query_scalar::<_, i64>(&self.dedupe_lookup_sql)
                 .bind(&dedupe_key)
-                .fetch_one(&mut *tx)
+                .fetch_one(&self.pool)
                 .await
                 .context("lookup duplicate TimescaleDB reserve update")?;
             TimescaleInsertOutcome {
@@ -247,10 +244,27 @@ impl TimescaleSink {
             }
         };
 
-        tx.commit()
-            .await
-            .context("commit TimescaleDB insert transaction")?;
         Ok(outcome)
+    }
+
+    pub async fn insert_batch_skip_duplicates(
+        &self,
+        records: &[ReserveUpdateRecord<'_>],
+    ) -> Result<usize> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+        let rows = records
+            .iter()
+            .map(batch_record_json)
+            .collect::<Result<Vec<_>>>()?;
+        let rows_json = Value::Array(rows);
+        let inserted = sqlx::query_scalar::<_, i64>(&self.insert_batch_sql)
+            .bind(rows_json)
+            .fetch_one(&self.pool)
+            .await
+            .context("batch insert TimescaleDB reserve updates")?;
+        Ok(inserted.max(0) as usize)
     }
 
     pub async fn load_supported_targets(
@@ -413,6 +427,221 @@ FROM inserted_dedupe
 RETURNING event_id;
 "#
     )
+}
+
+fn insert_batch_sql(schema: &str) -> String {
+    let qualified_table = format!("{}.{}", quote_ident(schema), quote_ident(TABLE_NAME));
+    let qualified_dedupe = format!(
+        "{}.{}",
+        quote_ident(schema),
+        quote_ident("reserve_update_dedupe")
+    );
+    let qualified_sequence = format!(
+        "{}.{}",
+        quote_ident(schema),
+        quote_ident("reserve_update_event_id_seq")
+    );
+    format!(
+        r#"
+WITH input AS (
+    SELECT *
+    FROM jsonb_to_recordset($1::jsonb) AS row (
+        dedupe_key text,
+        reserve text,
+        slot bigint,
+        account_data_hash text,
+        observed_at timestamptz,
+        kind text,
+        source text,
+        market text,
+        market_name text,
+        symbol text,
+        liquidity_mint text,
+        mint_decimals integer,
+        reserve_last_update_slot bigint,
+        reserve_last_update_stale boolean,
+        reserve_price_status smallint,
+        available_amount double precision,
+        borrowed_amount double precision,
+        borrowed_amount_sf text,
+        total_supply_amount double precision,
+        market_price_usd double precision,
+        market_price_last_updated_ts bigint,
+        cumulative_borrow_rate_bsf text,
+        total_supply_usd_estimate double precision,
+        total_borrow_usd_estimate double precision,
+        utilization double precision,
+        borrow_apr double precision,
+        supply_apr double precision,
+        borrow_apy double precision,
+        supply_apy double precision,
+        protocol_take_rate_pct smallint,
+        host_fixed_interest_rate_bps integer,
+        diff_changed boolean,
+        changed_fields text[],
+        diff_summary text,
+        diff jsonb,
+        target jsonb,
+        snapshot jsonb,
+        record jsonb,
+        raw_account_data_base64 text,
+        api_supply_apy double precision,
+        api_borrow_apy double precision,
+        api_total_supply_usd double precision,
+        api_total_borrow_usd double precision,
+        source_commitment text,
+        received_at timestamptz,
+        decoded_at timestamptz,
+        receive_to_decode_ms bigint,
+        decode_to_insert_ms bigint
+    )
+),
+inserted_dedupe AS (
+    INSERT INTO {qualified_dedupe} (
+        dedupe_key, event_id, reserve, slot, account_data_hash
+    )
+    SELECT
+        dedupe_key,
+        nextval('{qualified_sequence}'::regclass),
+        reserve,
+        slot,
+        account_data_hash
+    FROM input
+    ON CONFLICT (dedupe_key) DO NOTHING
+    RETURNING dedupe_key, event_id
+),
+inserted_updates AS (
+    INSERT INTO {qualified_table} (
+        event_id, observed_at, slot, kind, source, reserve, market, market_name, symbol,
+        liquidity_mint, mint_decimals, reserve_last_update_slot, reserve_last_update_stale,
+        reserve_price_status, available_amount, borrowed_amount, borrowed_amount_sf,
+        total_supply_amount, market_price_usd, market_price_last_updated_ts,
+        cumulative_borrow_rate_bsf, total_supply_usd_estimate, total_borrow_usd_estimate,
+        utilization, borrow_apr, supply_apr, borrow_apy, supply_apy,
+        protocol_take_rate_pct, host_fixed_interest_rate_bps, diff_changed,
+        changed_fields, diff_summary, diff, target, snapshot, record,
+        raw_account_data_base64, api_supply_apy, api_borrow_apy,
+        api_total_supply_usd, api_total_borrow_usd, source_commitment,
+        account_data_hash, received_at, decoded_at, receive_to_decode_ms,
+        decode_to_insert_ms
+    )
+    SELECT
+        d.event_id, i.observed_at, i.slot, i.kind, i.source, i.reserve, i.market,
+        i.market_name, i.symbol, i.liquidity_mint, i.mint_decimals,
+        i.reserve_last_update_slot, i.reserve_last_update_stale, i.reserve_price_status,
+        i.available_amount, i.borrowed_amount, i.borrowed_amount_sf,
+        i.total_supply_amount, i.market_price_usd, i.market_price_last_updated_ts,
+        i.cumulative_borrow_rate_bsf, i.total_supply_usd_estimate,
+        i.total_borrow_usd_estimate, i.utilization, i.borrow_apr, i.supply_apr,
+        i.borrow_apy, i.supply_apy, i.protocol_take_rate_pct,
+        i.host_fixed_interest_rate_bps, i.diff_changed, i.changed_fields,
+        i.diff_summary, i.diff, i.target, i.snapshot, i.record,
+        i.raw_account_data_base64, i.api_supply_apy, i.api_borrow_apy,
+        i.api_total_supply_usd, i.api_total_borrow_usd, i.source_commitment,
+        i.account_data_hash, i.received_at, i.decoded_at, i.receive_to_decode_ms,
+        i.decode_to_insert_ms
+    FROM input i
+    JOIN inserted_dedupe d USING (dedupe_key)
+    RETURNING event_id
+)
+SELECT count(*)::bigint FROM inserted_updates;
+"#
+    )
+}
+
+fn batch_record_json(record: &ReserveUpdateRecord<'_>) -> Result<Value> {
+    let target_json = serde_json::to_value(record.target).context("serialize target JSON")?;
+    let snapshot_json = serde_json::to_value(record.snapshot).context("serialize snapshot JSON")?;
+    let diff_json = record
+        .diff
+        .map(serde_json::to_value)
+        .transpose()
+        .context("serialize diff JSON")?
+        .unwrap_or(Value::Null);
+    let record_json = serde_json::to_value(record).context("serialize full reserve update JSON")?;
+    let slot = i64_from_u64(record.slot, "slot")?;
+    let reserve_last_update_slot = i64_from_u64(
+        record.snapshot.reserve_last_update_slot,
+        "reserve_last_update_slot",
+    )?;
+    let market_price_last_updated_ts = i64_from_u64(
+        record.snapshot.market_price_last_updated_ts,
+        "market_price_last_updated_ts",
+    )?;
+    let mint_decimals = i32_from_u64(record.snapshot.mint_decimals, "mint_decimals")?;
+    let cumulative_borrow_rate_bsf = record
+        .snapshot
+        .cumulative_borrow_rate_bsf
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(":");
+    let changed_fields = record
+        .diff
+        .map(|diff| {
+            diff.changed_fields
+                .iter()
+                .map(|field| (*field).to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let dedupe_key = TimescaleSink::dedupe_key(record);
+    let decode_to_insert_ms = chrono::Utc::now()
+        .signed_duration_since(record.decoded_at)
+        .num_milliseconds()
+        .max(0);
+    let receive_to_decode_ms = i64_from_u128(record.receive_to_decode_ms, "receive_to_decode_ms")?;
+
+    Ok(json!({
+        "dedupe_key": dedupe_key,
+        "reserve": record.snapshot.reserve.to_string(),
+        "slot": slot,
+        "account_data_hash": record.account_data_hash,
+        "observed_at": record.observed_at,
+        "kind": record.kind,
+        "source": record.source,
+        "market": record.snapshot.market.map(|market| market.to_string()),
+        "market_name": record.target.market_name,
+        "symbol": record.snapshot.symbol.clone().or_else(|| record.target.symbol.clone()),
+        "liquidity_mint": record.snapshot.liquidity_mint.to_string(),
+        "mint_decimals": mint_decimals,
+        "reserve_last_update_slot": reserve_last_update_slot,
+        "reserve_last_update_stale": record.snapshot.reserve_last_update_stale,
+        "reserve_price_status": i16::from(record.snapshot.reserve_price_status),
+        "available_amount": record.snapshot.available_amount,
+        "borrowed_amount": record.snapshot.borrowed_amount,
+        "borrowed_amount_sf": record.snapshot.borrowed_amount_sf,
+        "total_supply_amount": record.snapshot.total_supply_amount,
+        "market_price_usd": record.snapshot.market_price_usd,
+        "market_price_last_updated_ts": market_price_last_updated_ts,
+        "cumulative_borrow_rate_bsf": cumulative_borrow_rate_bsf,
+        "total_supply_usd_estimate": record.snapshot.total_supply_usd_estimate,
+        "total_borrow_usd_estimate": record.snapshot.total_borrow_usd_estimate,
+        "utilization": record.snapshot.utilization,
+        "borrow_apr": record.snapshot.borrow_apr,
+        "supply_apr": record.snapshot.supply_apr,
+        "borrow_apy": record.snapshot.borrow_apy,
+        "supply_apy": record.snapshot.supply_apy,
+        "protocol_take_rate_pct": i16::from(record.snapshot.protocol_take_rate_pct),
+        "host_fixed_interest_rate_bps": i32::from(record.snapshot.host_fixed_interest_rate_bps),
+        "diff_changed": record.diff.is_some_and(|diff| diff.changed),
+        "changed_fields": changed_fields,
+        "diff_summary": record.diff_summary,
+        "diff": diff_json,
+        "target": target_json,
+        "snapshot": snapshot_json,
+        "record": record_json,
+        "raw_account_data_base64": record.raw_account_data_base64,
+        "api_supply_apy": record.target.api_supply_apy,
+        "api_borrow_apy": record.target.api_borrow_apy,
+        "api_total_supply_usd": record.target.api_total_supply_usd,
+        "api_total_borrow_usd": record.target.api_total_borrow_usd,
+        "source_commitment": record.source_commitment,
+        "received_at": record.received_at,
+        "decoded_at": record.decoded_at,
+        "receive_to_decode_ms": receive_to_decode_ms,
+        "decode_to_insert_ms": decode_to_insert_ms,
+    }))
 }
 
 fn dedupe_lookup_sql(schema: &str) -> String {

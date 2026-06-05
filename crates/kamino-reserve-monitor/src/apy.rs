@@ -218,12 +218,23 @@ pub fn snapshot_from_account(
     data: &[u8],
     slot_duration_ms: f64,
 ) -> Result<ReserveSnapshot> {
+    snapshot_from_account_at(target, slot, data, slot_duration_ms, Utc::now())
+}
+
+pub fn snapshot_from_account_at(
+    target: &ReserveTarget,
+    slot: u64,
+    data: &[u8],
+    slot_duration_ms: f64,
+    observed_at: DateTime<Utc>,
+) -> Result<ReserveSnapshot> {
     let reserve = klend_interface::from_account_data::<Reserve>(data)?;
     Ok(snapshot_from_reserve(
         target,
         slot,
         reserve,
         slot_duration_ms,
+        observed_at,
     ))
 }
 
@@ -232,6 +243,7 @@ fn snapshot_from_reserve(
     slot: u64,
     reserve: &Reserve,
     slot_duration_ms: f64,
+    observed_at: DateTime<Utc>,
 ) -> ReserveSnapshot {
     let borrowed_amount = scaled_fraction_to_f64(u128::from(reserve.liquidity.borrowed_amount_sf));
     let borrowed_amount_sf = u128::from(reserve.liquidity.borrowed_amount_sf).to_string();
@@ -276,7 +288,7 @@ fn snapshot_from_reserve(
     let mint_factor = 10_f64.powi(mint_decimals as i32);
 
     ReserveSnapshot {
-        observed_at: Utc::now(),
+        observed_at,
         slot,
         reserve: target.reserve,
         market: Some(reserve.lending_market),
