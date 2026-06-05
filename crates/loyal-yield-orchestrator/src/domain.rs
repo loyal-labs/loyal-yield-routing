@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::types::{
     CurrentReservePosition, DecisionAdvance, DecisionStatus, DecisionTransition, PlannerConfig,
@@ -13,11 +13,14 @@ pub struct PlannedDecision {
     pub source_snapshot_id: crate::types::SnapshotId,
     pub source_reserve: String,
     pub target_reserve: String,
-    pub liquidity_mint: String,
+    pub liquidity_mint: Option<String>,
+    pub source_liquidity_mint: String,
+    pub target_liquidity_mint: String,
     pub amount_raw: i64,
     pub source_apy_bps: i64,
     pub target_apy_bps: i64,
     pub estimated_edge_bps: i64,
+    pub execution_plan: Value,
 }
 
 pub fn draft_same_mint_decision(
@@ -78,11 +81,19 @@ pub fn draft_same_mint_decision(
         source_snapshot_id: source.snapshot_id,
         source_reserve: source.reserve.clone(),
         target_reserve: target.reserve.clone(),
-        liquidity_mint: source.liquidity_mint.clone(),
+        liquidity_mint: Some(source.liquidity_mint.clone()),
+        source_liquidity_mint: source.liquidity_mint.clone(),
+        target_liquidity_mint: source.liquidity_mint.clone(),
         amount_raw: source.amount_raw,
         source_apy_bps,
         target_apy_bps,
         estimated_edge_bps: target_apy_bps - source_apy_bps,
+        execution_plan: json!({
+            "kind": "same_mint",
+            "source_reserve": source.reserve.clone(),
+            "target_reserve": target.reserve.clone(),
+            "liquidity_mint": source.liquidity_mint.clone(),
+        }),
     })
 }
 

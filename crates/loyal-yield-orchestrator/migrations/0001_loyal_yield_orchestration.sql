@@ -142,12 +142,15 @@ CREATE TABLE IF NOT EXISTS loyal_yield.rebalance_decisions (
     source_reserve TEXT,
     target_reserve TEXT,
     liquidity_mint TEXT,
+    source_liquidity_mint TEXT,
+    target_liquidity_mint TEXT,
     amount_raw BIGINT,
     source_apy_bps BIGINT,
     target_apy_bps BIGINT,
     estimated_edge_bps BIGINT,
     estimated_cost_lamports BIGINT NOT NULL DEFAULT 0,
     decision_reason loyal_yield.decision_reason NOT NULL,
+    execution_plan JSONB NOT NULL DEFAULT '{}'::jsonb,
     abandon_reason TEXT,
     idempotency_key TEXT NOT NULL,
     signature TEXT,
@@ -166,6 +169,11 @@ ALTER TABLE loyal_yield.rebalance_decisions
     ALTER COLUMN target_reserve DROP NOT NULL,
     ALTER COLUMN liquidity_mint DROP NOT NULL,
     ALTER COLUMN amount_raw DROP NOT NULL;
+
+ALTER TABLE loyal_yield.rebalance_decisions
+    ADD COLUMN IF NOT EXISTS source_liquidity_mint TEXT,
+    ADD COLUMN IF NOT EXISTS target_liquidity_mint TEXT,
+    ADD COLUMN IF NOT EXISTS execution_plan JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE INDEX IF NOT EXISTS rebalance_decisions_vault_status_idx
     ON loyal_yield.rebalance_decisions (vault_id, status, created_at DESC);

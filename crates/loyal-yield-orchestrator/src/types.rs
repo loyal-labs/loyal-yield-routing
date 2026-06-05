@@ -314,12 +314,15 @@ pub struct RebalanceDecision {
     pub source_reserve: Option<String>,
     pub target_reserve: Option<String>,
     pub liquidity_mint: Option<String>,
+    pub source_liquidity_mint: Option<String>,
+    pub target_liquidity_mint: Option<String>,
     pub amount_raw: Option<i64>,
     pub source_apy_bps: Option<i64>,
     pub target_apy_bps: Option<i64>,
     pub estimated_edge_bps: Option<i64>,
     pub estimated_cost_lamports: i64,
     pub decision_reason: DecisionReason,
+    pub execution_plan: Value,
     pub abandon_reason: Option<String>,
     pub signature: Option<String>,
     pub submitted_slot: Option<i64>,
@@ -328,6 +331,49 @@ pub struct RebalanceDecision {
     pub post_snapshot_id: Option<SnapshotId>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlannedRebalanceDecisionInput {
+    pub source_snapshot_id: SnapshotId,
+    pub source_reserve: String,
+    pub target_reserve: String,
+    pub source_liquidity_mint: String,
+    pub target_liquidity_mint: String,
+    pub amount_raw: i64,
+    pub source_apy_bps: i64,
+    pub target_apy_bps: i64,
+    pub estimated_edge_bps: i64,
+    pub estimated_cost_lamports: i64,
+    pub execution_plan: Value,
+}
+
+impl PlannedRebalanceDecisionInput {
+    pub fn same_mint(
+        source_snapshot_id: SnapshotId,
+        source_reserve: impl Into<String>,
+        target_reserve: impl Into<String>,
+        liquidity_mint: impl Into<String>,
+        amount_raw: i64,
+        source_apy_bps: i64,
+        target_apy_bps: i64,
+        estimated_edge_bps: i64,
+    ) -> Self {
+        let liquidity_mint = liquidity_mint.into();
+        Self {
+            source_snapshot_id,
+            source_reserve: source_reserve.into(),
+            target_reserve: target_reserve.into(),
+            source_liquidity_mint: liquidity_mint.clone(),
+            target_liquidity_mint: liquidity_mint,
+            amount_raw,
+            source_apy_bps,
+            target_apy_bps,
+            estimated_edge_bps,
+            estimated_cost_lamports: 0,
+            execution_plan: Value::Object(Default::default()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

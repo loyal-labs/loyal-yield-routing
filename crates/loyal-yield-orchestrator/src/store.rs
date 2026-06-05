@@ -93,12 +93,15 @@ struct DecisionRow {
     source_reserve: Option<String>,
     target_reserve: Option<String>,
     liquidity_mint: Option<String>,
+    source_liquidity_mint: Option<String>,
+    target_liquidity_mint: Option<String>,
     amount_raw: Option<i64>,
     source_apy_bps: Option<i64>,
     target_apy_bps: Option<i64>,
     estimated_edge_bps: Option<i64>,
     estimated_cost_lamports: i64,
     decision_reason: String,
+    execution_plan: Value,
     abandon_reason: Option<String>,
     signature: Option<String>,
     submitted_slot: Option<i64>,
@@ -358,6 +361,52 @@ impl NeonSqlClient {
         Ok(PlanOutcome::planned(vault_id, decision))
     }
 
+    pub async fn record_planned_rebalance_decision(
+        &self,
+        vault_id: VaultId,
+        input: PlannedRebalanceDecisionInput,
+    ) -> Result<PlanOutcome, OrchestratorError> {
+        let mut tx = self.pool.begin().await?;
+        let _ = fetch_managed_vault_for_update(&mut *tx, vault_id).await?;
+
+        if active_decision_exists(&mut *tx, vault_id).await? {
+            let decision =
+                insert_skipped_decision(&mut *tx, vault_id, SkipReason::ActiveDecision).await?;
+            tx.commit().await?;
+            return Ok(PlanOutcome::skipped(
+                vault_id,
+                SkipReason::ActiveDecision,
+                Some(from_row_to_decision(decision)?),
+            ));
+        }
+
+        let liquidity_mint = if input.source_liquidity_mint == input.target_liquidity_mint {
+            Some(input.source_liquidity_mint.clone())
+        } else {
+            None
+        };
+        let planned = PlannedDecision {
+            source_snapshot_id: input.source_snapshot_id,
+            source_reserve: input.source_reserve,
+            target_reserve: input.target_reserve,
+            liquidity_mint,
+            source_liquidity_mint: input.source_liquidity_mint,
+            target_liquidity_mint: input.target_liquidity_mint,
+            amount_raw: input.amount_raw,
+            source_apy_bps: input.source_apy_bps,
+            target_apy_bps: input.target_apy_bps,
+            estimated_edge_bps: input.estimated_edge_bps,
+            execution_plan: input.execution_plan,
+        };
+
+        let row =
+            insert_planned_decision(&mut *tx, vault_id, &planned, input.estimated_cost_lamports)
+                .await?;
+        let decision = from_row_to_decision(row)?;
+        tx.commit().await?;
+        Ok(PlanOutcome::planned(vault_id, decision))
+    }
+
     pub async fn advance_decision(
         &self,
         decision_id: DecisionId,
@@ -396,12 +445,15 @@ impl NeonSqlClient {
                 source_reserve,
                 target_reserve,
                 liquidity_mint,
+                source_liquidity_mint,
+                target_liquidity_mint,
                 amount_raw,
                 source_apy_bps,
                 target_apy_bps,
                 estimated_edge_bps,
                 estimated_cost_lamports,
                 decision_reason::text AS "decision_reason!",
+                execution_plan,
                 abandon_reason,
                 signature,
                 submitted_slot,
@@ -666,9 +718,11 @@ async fn insert_planned_decision(
         DecisionRow,
         r#"
         INSERT INTO loyal_yield.rebalance_decisions
-            (vault_id, source_snapshot_id, status, source_reserve, target_reserve, liquidity_mint, amount_raw,
-             source_apy_bps, target_apy_bps, estimated_edge_bps, estimated_cost_lamports, decision_reason, idempotency_key)
-        VALUES ($1, $2, 'planned'::loyal_yield.decision_status, $3, $4, $5, $6, $7, $8, $9, $10, $11::text::loyal_yield.decision_reason, $12)
+            (vault_id, source_snapshot_id, status, source_reserve, target_reserve, liquidity_mint,
+             source_liquidity_mint, target_liquidity_mint, amount_raw, source_apy_bps,
+             target_apy_bps, estimated_edge_bps, estimated_cost_lamports, decision_reason,
+             execution_plan, idempotency_key)
+        VALUES ($1, $2, 'planned'::loyal_yield.decision_status, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::text::loyal_yield.decision_reason, $14, $15)
         ON CONFLICT (idempotency_key) DO UPDATE SET updated_at = now()
         RETURNING
             id,
@@ -678,12 +732,15 @@ async fn insert_planned_decision(
             source_reserve,
             target_reserve,
             liquidity_mint,
+            source_liquidity_mint,
+            target_liquidity_mint,
             amount_raw,
             source_apy_bps,
             target_apy_bps,
             estimated_edge_bps,
             estimated_cost_lamports,
             decision_reason::text AS "decision_reason!",
+            execution_plan,
             abandon_reason,
             signature,
             submitted_slot,
@@ -697,13 +754,16 @@ async fn insert_planned_decision(
         planned.source_snapshot_id.as_i64(),
         &planned.source_reserve,
         &planned.target_reserve,
-        &planned.liquidity_mint,
+        planned.liquidity_mint.as_deref(),
+        &planned.source_liquidity_mint,
+        &planned.target_liquidity_mint,
         planned.amount_raw,
         planned.source_apy_bps,
         planned.target_apy_bps,
         planned.estimated_edge_bps,
         estimated_cost_lamports,
         DecisionReason::TargetSupplyApyExceedsSource.as_str(),
+        &planned.execution_plan,
         idempotency_key
     )
     .fetch_one(conn)
@@ -732,12 +792,15 @@ async fn insert_skipped_decision(
             source_reserve,
             target_reserve,
             liquidity_mint,
+            source_liquidity_mint,
+            target_liquidity_mint,
             amount_raw,
             source_apy_bps,
             target_apy_bps,
             estimated_edge_bps,
             estimated_cost_lamports,
             decision_reason::text AS "decision_reason!",
+            execution_plan,
             abandon_reason,
             signature,
             submitted_slot,
@@ -771,12 +834,15 @@ async fn fetch_decision_for_update(
             source_reserve,
             target_reserve,
             liquidity_mint,
+            source_liquidity_mint,
+            target_liquidity_mint,
             amount_raw,
             source_apy_bps,
             target_apy_bps,
             estimated_edge_bps,
             estimated_cost_lamports,
             decision_reason::text AS "decision_reason!",
+            execution_plan,
             abandon_reason,
             signature,
             submitted_slot,
@@ -910,12 +976,15 @@ fn from_row_to_decision(row: DecisionRow) -> Result<RebalanceDecision, Orchestra
         source_reserve: row.source_reserve,
         target_reserve: row.target_reserve,
         liquidity_mint: row.liquidity_mint,
+        source_liquidity_mint: row.source_liquidity_mint,
+        target_liquidity_mint: row.target_liquidity_mint,
         amount_raw: row.amount_raw,
         source_apy_bps: row.source_apy_bps,
         target_apy_bps: row.target_apy_bps,
         estimated_edge_bps: row.estimated_edge_bps,
         estimated_cost_lamports: row.estimated_cost_lamports,
         decision_reason,
+        execution_plan: row.execution_plan,
         abandon_reason: row.abandon_reason,
         signature: row.signature,
         submitted_slot: row.submitted_slot,
@@ -937,8 +1006,14 @@ fn rebalance_idempotency_key(
     hasher.update(snapshot_id.as_i64().to_le_bytes());
     hasher.update(planned.source_reserve.as_bytes());
     hasher.update(planned.target_reserve.as_bytes());
-    hasher.update(planned.liquidity_mint.as_bytes());
+    if let Some(liquidity_mint) = &planned.liquidity_mint {
+        hasher.update(b"liquidity_mint");
+        hasher.update(liquidity_mint.as_bytes());
+    }
+    hasher.update(planned.source_liquidity_mint.as_bytes());
+    hasher.update(planned.target_liquidity_mint.as_bytes());
     hasher.update(planned.amount_raw.to_le_bytes());
+    hasher.update(planned.execution_plan.to_string().as_bytes());
     format!("{:x}", hasher.finalize())
 }
 
@@ -988,6 +1063,42 @@ mod tests {
     }
 
     async fn delete_cluster(store: &OrchestratorStore, cluster: &str) {
+        sqlx::query(
+            r#"
+            DELETE FROM loyal_yield.rebalance_decisions
+            WHERE vault_id IN (
+                SELECT id FROM loyal_yield.managed_vaults WHERE cluster = $1
+            )
+            "#,
+        )
+        .bind(cluster)
+        .execute(store.pool())
+        .await
+        .expect("delete test decisions");
+        sqlx::query(
+            r#"
+            DELETE FROM loyal_yield.vault_reserve_positions_current
+            WHERE vault_id IN (
+                SELECT id FROM loyal_yield.managed_vaults WHERE cluster = $1
+            )
+            "#,
+        )
+        .bind(cluster)
+        .execute(store.pool())
+        .await
+        .expect("delete test current positions");
+        sqlx::query(
+            r#"
+            DELETE FROM loyal_yield.vault_position_snapshots
+            WHERE vault_id IN (
+                SELECT id FROM loyal_yield.managed_vaults WHERE cluster = $1
+            )
+            "#,
+        )
+        .bind(cluster)
+        .execute(store.pool())
+        .await
+        .expect("delete test snapshots");
         sqlx::query("DELETE FROM loyal_yield.managed_vaults WHERE cluster = $1")
             .bind(cluster)
             .execute(store.pool())
@@ -1024,6 +1135,33 @@ mod tests {
                 "program_id": "jupiter-1",
                 "exact_in_discriminator": [1, 2, 3, 4, 5, 6, 7, 8]
             }]),
+        }
+    }
+
+    fn reconciled_state(
+        observed_slot: i64,
+        positions: Vec<(&str, &str, u64, Option<i64>)>,
+    ) -> ReconciledVaultState {
+        ReconciledVaultState {
+            observed_slot,
+            observed_at: None,
+            chain_slot: Some(observed_slot + 1),
+            lock_attempt_id: None,
+            context: json!({ "test_observed_slot": observed_slot }),
+            positions: positions
+                .into_iter()
+                .map(|(reserve, liquidity_mint, amount_raw, supply_apy_bps)| {
+                    ReconciledReservePosition {
+                        reserve: reserve.to_owned(),
+                        market: Some("market-1".to_owned()),
+                        liquidity_mint: liquidity_mint.to_owned(),
+                        amount_raw,
+                        supply_apy_bps,
+                        borrow_apy_bps: None,
+                        planning_metadata: json!({ "reserve": reserve }),
+                    }
+                })
+                .collect(),
         }
     }
 
@@ -1102,6 +1240,317 @@ mod tests {
         );
         assert_eq!(older_repeat.policy.threshold, newer_policy.policy.threshold);
         assert_eq!(older_repeat.vault.active_policy_id, newer_policy.policy.id);
+
+        let policy_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM loyal_yield.route_policies WHERE cluster = $1",
+        )
+        .bind(&cluster)
+        .fetch_one(store.pool())
+        .await
+        .expect("count route policies");
+        let vault_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM loyal_yield.managed_vaults WHERE cluster = $1",
+        )
+        .bind(&cluster)
+        .fetch_one(store.pool())
+        .await
+        .expect("count managed vaults");
+        assert_eq!(policy_count, 3);
+        assert_eq!(vault_count, 1);
+
+        delete_cluster(&store, &cluster).await;
+    }
+
+    #[tokio::test]
+    async fn reconcile_vault_replaces_current_positions_and_keeps_snapshots() {
+        let Some(store) = database_store().await else {
+            return;
+        };
+        let cluster = unique_cluster("reconcile_vault");
+        delete_cluster(&store, &cluster).await;
+
+        let stored = store
+            .record_policy_match(policy_match(&cluster, "policy-a", 100))
+            .await
+            .expect("record policy match");
+
+        let first_snapshot = store
+            .reconcile_vault(
+                stored.vault.id,
+                reconciled_state(
+                    200,
+                    vec![
+                        ("reserve-a", "USDC", 1_000, Some(100)),
+                        ("reserve-b", "USDC", 0, Some(140)),
+                    ],
+                ),
+            )
+            .await
+            .expect("write first snapshot");
+        assert!(first_snapshot.is_current);
+
+        let second_snapshot = store
+            .reconcile_vault(
+                stored.vault.id,
+                reconciled_state(
+                    210,
+                    vec![
+                        ("reserve-a", "USDC", 700, Some(105)),
+                        ("reserve-c", "PYUSD", 0, Some(180)),
+                    ],
+                ),
+            )
+            .await
+            .expect("write replacement snapshot");
+
+        let current = store
+            .current_positions(stored.vault.id)
+            .await
+            .expect("load current positions");
+        let reserves = current
+            .iter()
+            .map(|position| position.reserve.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(reserves.len(), 2);
+        assert!(reserves.contains(&"reserve-a"));
+        assert!(reserves.contains(&"reserve-c"));
+        assert!(!reserves.contains(&"reserve-b"));
+        assert!(current
+            .iter()
+            .all(|position| position.snapshot_id == second_snapshot.id));
+
+        let snapshot_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM loyal_yield.vault_position_snapshots WHERE vault_id = $1",
+        )
+        .bind(stored.vault.id.as_i64())
+        .fetch_one(store.pool())
+        .await
+        .expect("count snapshots");
+        let current_snapshot_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM loyal_yield.vault_position_snapshots WHERE vault_id = $1 AND is_current",
+        )
+        .bind(stored.vault.id.as_i64())
+        .fetch_one(store.pool())
+        .await
+        .expect("count current snapshots");
+        assert_eq!(snapshot_count, 2);
+        assert_eq!(current_snapshot_count, 1);
+
+        delete_cluster(&store, &cluster).await;
+    }
+
+    #[tokio::test]
+    async fn rebalance_decisions_record_mints_execution_plan_and_terminal_reuse() {
+        let Some(store) = database_store().await else {
+            return;
+        };
+        let cluster = unique_cluster("rebalance_decisions");
+        delete_cluster(&store, &cluster).await;
+
+        let stored = store
+            .record_policy_match(policy_match(&cluster, "policy-a", 100))
+            .await
+            .expect("record policy match");
+        let snapshot = store
+            .reconcile_vault(
+                stored.vault.id,
+                reconciled_state(
+                    200,
+                    vec![
+                        ("reserve-a", "USDC", 1_000, Some(100)),
+                        ("reserve-b", "USDC", 0, Some(160)),
+                        ("reserve-c", "PYUSD", 0, Some(240)),
+                    ],
+                ),
+            )
+            .await
+            .expect("write snapshot");
+
+        let same_mint = store
+            .plan_same_mint_rebalance(
+                stored.vault.id,
+                vec![
+                    ReserveScore {
+                        reserve: "reserve-a".to_owned(),
+                        supply_apy_bps: 100,
+                        borrow_apy_bps: None,
+                    },
+                    ReserveScore {
+                        reserve: "reserve-b".to_owned(),
+                        supply_apy_bps: 160,
+                        borrow_apy_bps: None,
+                    },
+                ],
+                PlannerConfig {
+                    min_edge_bps: 10,
+                    estimated_cost_lamports: 5,
+                },
+            )
+            .await
+            .expect("plan same mint rebalance");
+
+        let PlanOutcomeStatus::Planned(same_mint_decision) = same_mint.status else {
+            panic!("expected same-mint planned decision");
+        };
+        assert_eq!(same_mint_decision.source_snapshot_id, Some(snapshot.id));
+        assert_eq!(
+            same_mint_decision.source_reserve.as_deref(),
+            Some("reserve-a")
+        );
+        assert_eq!(
+            same_mint_decision.target_reserve.as_deref(),
+            Some("reserve-b")
+        );
+        assert_eq!(same_mint_decision.liquidity_mint.as_deref(), Some("USDC"));
+        assert_eq!(
+            same_mint_decision.source_liquidity_mint.as_deref(),
+            Some("USDC")
+        );
+        assert_eq!(
+            same_mint_decision.target_liquidity_mint.as_deref(),
+            Some("USDC")
+        );
+        assert_eq!(same_mint_decision.amount_raw, Some(1_000));
+        assert_eq!(same_mint_decision.source_apy_bps, Some(100));
+        assert_eq!(same_mint_decision.target_apy_bps, Some(160));
+        assert_eq!(same_mint_decision.estimated_edge_bps, Some(60));
+        assert_eq!(same_mint_decision.estimated_cost_lamports, 5);
+        assert_eq!(same_mint_decision.execution_plan["kind"], "same_mint");
+
+        let blocked = store
+            .record_planned_rebalance_decision(
+                stored.vault.id,
+                PlannedRebalanceDecisionInput {
+                    source_snapshot_id: snapshot.id,
+                    source_reserve: "reserve-a".to_owned(),
+                    target_reserve: "reserve-c".to_owned(),
+                    source_liquidity_mint: "USDC".to_owned(),
+                    target_liquidity_mint: "PYUSD".to_owned(),
+                    amount_raw: 1_000,
+                    source_apy_bps: 100,
+                    target_apy_bps: 240,
+                    estimated_edge_bps: 140,
+                    estimated_cost_lamports: 9,
+                    execution_plan: json!({ "kind": "swap", "via": "jupiter" }),
+                },
+            )
+            .await
+            .expect("active decision blocks cross-mint plan");
+        assert_eq!(
+            blocked.status,
+            PlanOutcomeStatus::Skipped {
+                reason: SkipReason::ActiveDecision
+            }
+        );
+
+        let active_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM loyal_yield.rebalance_decisions
+            WHERE vault_id = $1
+              AND status IN ('planned', 'simulating', 'ready', 'submitted', 'confirming')
+            "#,
+        )
+        .bind(stored.vault.id.as_i64())
+        .fetch_one(store.pool())
+        .await
+        .expect("count active decisions");
+        assert_eq!(active_count, 1);
+
+        store
+            .advance_decision(
+                same_mint_decision.id,
+                DecisionAdvance::Fail {
+                    reason: "simulation failed".to_owned(),
+                },
+            )
+            .await
+            .expect("fail same-mint decision");
+
+        let cross_mint = store
+            .record_planned_rebalance_decision(
+                stored.vault.id,
+                PlannedRebalanceDecisionInput {
+                    source_snapshot_id: snapshot.id,
+                    source_reserve: "reserve-a".to_owned(),
+                    target_reserve: "reserve-c".to_owned(),
+                    source_liquidity_mint: "USDC".to_owned(),
+                    target_liquidity_mint: "PYUSD".to_owned(),
+                    amount_raw: 1_000,
+                    source_apy_bps: 100,
+                    target_apy_bps: 240,
+                    estimated_edge_bps: 140,
+                    estimated_cost_lamports: 9,
+                    execution_plan: json!({
+                        "kind": "swap",
+                        "legs": [
+                            { "kind": "withdraw", "reserve": "reserve-a" },
+                            { "kind": "swap", "source_mint": "USDC", "target_mint": "PYUSD" },
+                            { "kind": "deposit", "reserve": "reserve-c" }
+                        ]
+                    }),
+                },
+            )
+            .await
+            .expect("record cross-mint decision after terminal prior decision");
+        let PlanOutcomeStatus::Planned(cross_mint_decision) = cross_mint.status else {
+            panic!("expected cross-mint planned decision");
+        };
+        assert_eq!(cross_mint_decision.source_snapshot_id, Some(snapshot.id));
+        assert_eq!(
+            cross_mint_decision.source_reserve.as_deref(),
+            Some("reserve-a")
+        );
+        assert_eq!(
+            cross_mint_decision.target_reserve.as_deref(),
+            Some("reserve-c")
+        );
+        assert_eq!(cross_mint_decision.liquidity_mint, None);
+        assert_eq!(
+            cross_mint_decision.source_liquidity_mint.as_deref(),
+            Some("USDC")
+        );
+        assert_eq!(
+            cross_mint_decision.target_liquidity_mint.as_deref(),
+            Some("PYUSD")
+        );
+        assert_eq!(cross_mint_decision.amount_raw, Some(1_000));
+        assert_eq!(cross_mint_decision.execution_plan["kind"], "swap");
+        assert_eq!(
+            cross_mint_decision.execution_plan["legs"][1]["target_mint"],
+            "PYUSD"
+        );
+
+        store
+            .advance_decision(
+                cross_mint_decision.id,
+                DecisionAdvance::Abandon {
+                    reason: "route expired".to_owned(),
+                },
+            )
+            .await
+            .expect("abandon cross-mint decision");
+
+        let later = store
+            .record_planned_rebalance_decision(
+                stored.vault.id,
+                PlannedRebalanceDecisionInput {
+                    source_snapshot_id: snapshot.id,
+                    source_reserve: "reserve-a".to_owned(),
+                    target_reserve: "reserve-c".to_owned(),
+                    source_liquidity_mint: "USDC".to_owned(),
+                    target_liquidity_mint: "PYUSD".to_owned(),
+                    amount_raw: 900,
+                    source_apy_bps: 100,
+                    target_apy_bps: 250,
+                    estimated_edge_bps: 150,
+                    estimated_cost_lamports: 11,
+                    execution_plan: json!({ "kind": "swap", "nonce": "later" }),
+                },
+            )
+            .await
+            .expect("terminal decisions do not block later decisions");
+        assert!(matches!(later.status, PlanOutcomeStatus::Planned(_)));
 
         delete_cluster(&store, &cluster).await;
     }
