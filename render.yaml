@@ -3,7 +3,7 @@ services:
     name: loyal-kamino-reserve-monitor
     runtime: docker
     region: oregon
-    plan: pro
+    plan: starter
     autoDeploy: false
     dockerfilePath: ./Dockerfile
     dockerContext: .
@@ -24,4 +24,4 @@ services:
       - key: KAMINO_API_BASE
         value: https://api.kamino.finance
       - key: RUST_LOG
-        value: info
+        value: warn

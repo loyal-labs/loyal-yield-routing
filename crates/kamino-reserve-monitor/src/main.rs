@@ -784,11 +784,11 @@ async fn run_event_loop(
                 match event {
                     AccountUpdateEvent::Connecting { reserve, attempt } => {
                         subscription_states.insert(reserve, SubscriptionRuntimeState::Connecting);
-                        tracing::info!(%reserve, attempt, "subscription connecting");
+                        tracing::debug!(%reserve, attempt, "subscription connecting");
                     }
                     AccountUpdateEvent::Connected { reserve, attempt } => {
                         subscription_states.insert(reserve, SubscriptionRuntimeState::Active);
-                        tracing::info!(%reserve, attempt, "subscription connected");
+                        tracing::debug!(%reserve, attempt, "subscription connected");
                     }
                     AccountUpdateEvent::AccountUpdate { metadata, reserve, slot, owner, data, received_at, received_instant } => {
                         subscription_states.insert(reserve, SubscriptionRuntimeState::Active);
@@ -888,7 +888,7 @@ async fn handle_account_data(
     let insert_outcome = insert_owned_update(timescale.clone(), update.clone()).await?;
     let event_id = insert_outcome.event_id;
 
-    tracing::info!(
+    tracing::debug!(
         source = update.metadata.source,
         event_id,
         inserted = insert_outcome.inserted,

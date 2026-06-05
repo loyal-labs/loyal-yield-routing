@@ -452,7 +452,7 @@ async fn run_subscription_on_client(
 
     match client.account_subscribe(&reserve, Some(rpc_config)).await {
         Ok((mut receiver, unsubscribe)) => {
-            tracing::info!(%reserve, attempt, "subscribed to reserve account");
+            tracing::debug!(%reserve, attempt, "subscribed to reserve account");
             let read_result = if send_event(tx, AccountUpdateEvent::Connected { reserve, attempt })
             {
                 read_subscription(
