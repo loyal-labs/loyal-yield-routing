@@ -48,6 +48,8 @@ pub const KAMINO_HUMA_MARKET: Pubkey = pubkey!("52FSGeeokLpgvgAMdqxyt5Hoc2TbUYj5
 pub const KAMINO_SOLSTICE_MARKET: Pubkey = pubkey!("9Y7uwXgQ68mGqRtZfuFaP4hc4fxeJ7cE9zTtqTxVhfGU");
 pub const KAMINO_XSTOCKS_MARKET: Pubkey = pubkey!("5wJeMrUYECGq41fxRESKALVcHnNX26TAWy4W98yULsua");
 pub const KAMINO_ALTCOINS_MARKET: Pubkey = pubkey!("ByYiZxp8QrdN9qbdtaAiePN8AAr3qvTPppNJDpf5DVJ5");
+pub const KAMINO_MAIN_USDC_RESERVE: Pubkey =
+    pubkey!("D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59");
 pub const KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR: [u8; 8] =
     [242, 35, 198, 137, 82, 225, 242, 182];
 pub const KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR: [u8; 8] =

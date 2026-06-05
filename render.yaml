@@ -1,0 +1,19 @@
+services:
+  - type: worker
+    name: loyal-kamino-reserve-monitor
+    runtime: rust
+    buildCommand: cargo build --release -p kamino-reserve-monitor -p kamino-timescale-migrations
+    preDeployCommand: ./target/release/kamino-timescale-migrations --apply && ./target/release/kamino-reserve-monitor --sync-supported-reserves
+    startCommand: ./target/release/kamino-reserve-monitor
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: TIMESCALEDB_URL
+        sync: false
+      - key: SOLANA_RPC_URL
+        sync: false
+      - key: SOLANA_WS_URL
+        sync: false
+      - key: KAMINO_API_BASE
+        sync: false
+      - key: RUST_LOG
+        value: info

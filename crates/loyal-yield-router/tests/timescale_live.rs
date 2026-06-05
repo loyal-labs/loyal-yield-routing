@@ -86,6 +86,7 @@ async fn subscribe_yields_catch_up_rows_before_notifications_when_available() ->
         .subscribe(
             ReserveUpdateFilter::new(),
             SubscribeOptions {
+                start_after_event_id: None,
                 start_after: Some(rows[1].cursor()),
                 catch_up_limit: 10,
             },

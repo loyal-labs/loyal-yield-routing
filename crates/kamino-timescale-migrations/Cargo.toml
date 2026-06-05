@@ -1,0 +1,10 @@
+[package]
+name = "kamino-timescale-migrations"
+version = "0.1.0"
+edition = "2021"
+description = "SQLx migration runner for the Kamino Timescale market-data database"
+
+[dependencies]
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

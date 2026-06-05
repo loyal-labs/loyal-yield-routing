@@ -11,7 +11,7 @@ const DEFAULT_SCHEMA: &str = "kamino";
 const DEFAULT_NOTIFY_CHANNEL: &str = "kamino_reserve_updates";
 const RESERVE_UPDATES_TABLE: &str = "reserve_updates";
 const LATEST_RESERVE_UPDATES_VIEW: &str = "latest_reserve_updates";
-const RESERVE_UPDATE_ROW_COLUMNS: &str = "observed_at, slot, source, reserve, market, market_name, symbol, liquidity_mint, supply_apy, borrow_apy, utilization, total_supply_usd_estimate, total_borrow_usd_estimate, reserve_last_update_stale, diff_changed, changed_fields, diff_summary";
+const RESERVE_UPDATE_ROW_COLUMNS: &str = "event_id, observed_at, slot, source, source_commitment, reserve, market, market_name, symbol, liquidity_mint, supply_apy, borrow_apy, utilization, total_supply_usd_estimate, total_borrow_usd_estimate, reserve_last_update_stale, diff_changed, changed_fields, diff_summary";
 const RESERVE_WINDOW_STATS_COLUMNS: &str = "reserve, market, symbol, COUNT(*)::BIGINT AS update_count, AVG(supply_apy) AS avg_supply_apy, MIN(supply_apy) AS min_supply_apy, MAX(supply_apy) AS max_supply_apy, AVG(borrow_apy) AS avg_borrow_apy, AVG(utilization) AS avg_utilization, AVG(total_supply_usd_estimate) AS avg_supply_usd, AVG(total_borrow_usd_estimate) AS avg_borrow_usd, MAX(slot) AS max_slot, MAX(observed_at) AS last_observed_at";
 
 #[derive(Debug, Clone)]
@@ -134,6 +134,21 @@ impl TimescaleRouterClient {
         fetch_update_rows(builder, &self.pool).await
     }
 
+    pub async fn reserve_updates_after_event_id(
+        &self,
+        cursor: ReserveUpdateEventIdCursor,
+        filter: ReserveUpdateFilter,
+        limit: usize,
+    ) -> sqlx::Result<Vec<ReserveUpdateRow>> {
+        let mut builder = self.select_update_rows_from(RESERVE_UPDATES_TABLE);
+        push_update_filters(&mut builder, &filter);
+        push_where_or_and(&mut builder);
+        builder.push("event_id > ").push_bind(cursor.event_id);
+        builder.push(" ORDER BY event_id ASC LIMIT ");
+        builder.push_bind(limit_i64(limit));
+        fetch_update_rows(builder, &self.pool).await
+    }
+
     pub async fn latest_cursor(
         &self,
         filter: ReserveUpdateFilter,
@@ -147,6 +162,23 @@ impl TimescaleRouterClient {
 
         builder
             .build_query_as::<ReserveUpdateCursor>()
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn latest_event_id_cursor(
+        &self,
+        filter: ReserveUpdateFilter,
+    ) -> sqlx::Result<Option<ReserveUpdateEventIdCursor>> {
+        let mut builder = QueryBuilder::<Postgres>::new(format!(
+            "SELECT event_id FROM {}",
+            self.qualified(RESERVE_UPDATES_TABLE)
+        ));
+        push_update_filters(&mut builder, &filter);
+        builder.push(" ORDER BY event_id DESC LIMIT 1");
+
+        builder
+            .build_query_as::<ReserveUpdateEventIdCursor>()
             .fetch_optional(&self.pool)
             .await
     }
@@ -180,43 +212,23 @@ impl TimescaleRouterClient {
         let mut listener = PgListener::connect_with(&self.pool).await?;
         listener.listen(&self.notify_channel).await?;
 
-        let last_cursor = match options.start_after {
+        let last_event_id_cursor = match options.start_after_event_id {
             Some(cursor) => Some(cursor),
-            None => self.latest_cursor(filter.clone()).await?,
+            None if options.start_after.is_none() => {
+                self.latest_event_id_cursor(filter.clone()).await?
+            }
+            None => None,
         };
 
         Ok(ReserveUpdateStream {
             client: self.clone(),
             listener,
             filter,
-            last_cursor,
+            last_event_id_cursor,
+            legacy_last_cursor: options.start_after,
             pending: VecDeque::new(),
             catch_up_limit: options.catch_up_limit.max(1),
         })
-    }
-
-    async fn fetch_update_row(
-        &self,
-        notification: &ReserveUpdateNotification,
-    ) -> sqlx::Result<Option<ReserveUpdateRow>> {
-        let mut builder = self.select_update_rows_from(RESERVE_UPDATES_TABLE);
-        push_where_or_and(&mut builder);
-        builder
-            .push("reserve = ")
-            .push_bind(notification.reserve.clone())
-            .push(" AND slot = ")
-            .push_bind(notification.slot)
-            .push(" AND observed_at >= ")
-            .push_bind(notification.observed_at)
-            .push("::timestamptz - INTERVAL '5 seconds' AND observed_at <= ")
-            .push_bind(notification.observed_at)
-            .push("::timestamptz + INTERVAL '5 seconds'");
-        builder.push(" ORDER BY observed_at DESC LIMIT 1");
-
-        builder
-            .build_query_as::<ReserveUpdateRow>()
-            .fetch_optional(&self.pool)
-            .await
     }
 
     fn select_update_rows_from(&self, table_or_view: &str) -> QueryBuilder<'static, Postgres> {
@@ -228,8 +240,7 @@ impl TimescaleRouterClient {
 
     fn select_latest_update_rows(&self) -> QueryBuilder<'static, Postgres> {
         QueryBuilder::<Postgres>::new(format!(
-            "SELECT {RESERVE_UPDATE_ROW_COLUMNS} FROM {} WHERE (observed_at, slot, reserve) IN (SELECT observed_at, slot, reserve FROM {})",
-            self.qualified(RESERVE_UPDATES_TABLE),
+            "SELECT {RESERVE_UPDATE_ROW_COLUMNS} FROM {}",
             self.qualified(LATEST_RESERVE_UPDATES_VIEW)
         ))
     }
@@ -247,7 +258,8 @@ pub struct ReserveUpdateStream {
     client: TimescaleRouterClient,
     listener: PgListener,
     filter: ReserveUpdateFilter,
-    last_cursor: Option<ReserveUpdateCursor>,
+    last_event_id_cursor: Option<ReserveUpdateEventIdCursor>,
+    legacy_last_cursor: Option<ReserveUpdateCursor>,
     pending: VecDeque<ReserveUpdateRow>,
     catch_up_limit: usize,
 }
@@ -263,7 +275,20 @@ impl ReserveUpdateStream {
                 });
             }
 
-            if let Some(cursor) = self.last_cursor.clone() {
+            if let Some(cursor) = self.last_event_id_cursor {
+                let rows = self
+                    .client
+                    .reserve_updates_after_event_id(
+                        cursor,
+                        self.filter.clone(),
+                        self.catch_up_limit,
+                    )
+                    .await?;
+                if !rows.is_empty() {
+                    self.pending = rows.into();
+                    continue;
+                }
+            } else if let Some(cursor) = self.legacy_last_cursor.clone() {
                 let rows = self
                     .client
                     .reserve_updates_after(&cursor, self.filter.clone(), self.catch_up_limit)
@@ -277,31 +302,17 @@ impl ReserveUpdateStream {
             let notification = self.listener.recv().await?;
             let payload = serde_json::from_str::<ReserveUpdateNotification>(notification.payload())
                 .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
-            if !self.filter.matches_notification(&payload) {
-                continue;
+            if self.last_event_id_cursor.is_none() && self.legacy_last_cursor.is_none() {
+                self.last_event_id_cursor = Some(ReserveUpdateEventIdCursor {
+                    event_id: payload.event_id.saturating_sub(1),
+                });
             }
-
-            let Some(row) = self.client.fetch_update_row(&payload).await? else {
-                continue;
-            };
-            if self
-                .last_cursor
-                .as_ref()
-                .is_some_and(|cursor| row.cursor() <= *cursor)
-            {
-                continue;
-            }
-
-            self.remember(&row);
-            return Ok(ReserveStreamItem {
-                notification: Some(payload),
-                row,
-            });
         }
     }
 
     fn remember(&mut self, row: &ReserveUpdateRow) {
-        self.last_cursor = Some(row.cursor());
+        self.last_event_id_cursor = Some(row.event_id_cursor());
+        self.legacy_last_cursor = Some(row.cursor());
     }
 }
 
@@ -370,29 +381,6 @@ impl ReserveUpdateFilter {
         self.stale = Some(stale);
         self
     }
-
-    fn matches_notification(&self, notification: &ReserveUpdateNotification) -> bool {
-        if !self.reserves.is_empty() && !self.reserves.contains(&notification.reserve) {
-            return false;
-        }
-        if !self.markets.is_empty() {
-            let Some(market) = notification.market.as_ref() else {
-                return false;
-            };
-            if !self.markets.contains(market) {
-                return false;
-            }
-        }
-        if !self.symbols.is_empty() {
-            let Some(symbol) = notification.symbol.as_ref() else {
-                return false;
-            };
-            if !self.symbols.contains(&symbol.to_ascii_uppercase()) {
-                return false;
-            }
-        }
-        true
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -452,6 +440,7 @@ impl Default for ReserveWindowStatsQuery {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SubscribeOptions {
+    pub start_after_event_id: Option<ReserveUpdateEventIdCursor>,
     pub start_after: Option<ReserveUpdateCursor>,
     pub catch_up_limit: usize,
 }
@@ -459,6 +448,7 @@ pub struct SubscribeOptions {
 impl Default for SubscribeOptions {
     fn default() -> Self {
         Self {
+            start_after_event_id: None,
             start_after: None,
             catch_up_limit: 500,
         }
@@ -467,6 +457,7 @@ impl Default for SubscribeOptions {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ReserveUpdateNotification {
+    pub event_id: i64,
     pub observed_at: DateTime<Utc>,
     pub slot: i64,
     pub reserve: String,
@@ -475,10 +466,25 @@ pub struct ReserveUpdateNotification {
     #[serde(default)]
     pub symbol: Option<String>,
     pub source: String,
+    #[serde(default)]
+    pub source_commitment: Option<String>,
     pub supply_apy: f64,
     pub borrow_apy: f64,
     pub utilization: f64,
     pub diff_changed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, Serialize)]
+pub struct ReserveUpdateEventIdCursor {
+    pub event_id: i64,
+}
+
+impl<'r> FromRow<'r, PgRow> for ReserveUpdateEventIdCursor {
+    fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            event_id: row.try_get("event_id")?,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Serialize)]
@@ -500,9 +506,11 @@ impl<'r> FromRow<'r, PgRow> for ReserveUpdateCursor {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ReserveUpdateRow {
+    pub event_id: i64,
     pub observed_at: DateTime<Utc>,
     pub slot: i64,
     pub source: String,
+    pub source_commitment: String,
     pub reserve: String,
     pub market: Option<String>,
     pub market_name: Option<String>,
@@ -520,6 +528,12 @@ pub struct ReserveUpdateRow {
 }
 
 impl ReserveUpdateRow {
+    pub fn event_id_cursor(&self) -> ReserveUpdateEventIdCursor {
+        ReserveUpdateEventIdCursor {
+            event_id: self.event_id,
+        }
+    }
+
     pub fn cursor(&self) -> ReserveUpdateCursor {
         ReserveUpdateCursor {
             observed_at: self.observed_at,
@@ -532,9 +546,11 @@ impl ReserveUpdateRow {
 impl<'r> FromRow<'r, PgRow> for ReserveUpdateRow {
     fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
         Ok(Self {
+            event_id: row.try_get("event_id")?,
             observed_at: row.try_get("observed_at")?,
             slot: row.try_get("slot")?,
             source: row.try_get("source")?,
+            source_commitment: row.try_get("source_commitment")?,
             reserve: row.try_get("reserve")?,
             market: row.try_get("market")?,
             market_name: row.try_get("market_name")?,
@@ -740,7 +756,6 @@ mod tests {
         };
         let builder = client.select_latest_update_rows();
 
-        assert!(builder.sql().contains("\"kamino\".\"reserve_updates\""));
         assert!(builder
             .sql()
             .contains("\"kamino\".\"latest_reserve_updates\""));
@@ -760,6 +775,7 @@ mod tests {
         assert_eq!(stats.limit, 500);
 
         let subscribe = SubscribeOptions::default();
+        assert_eq!(subscribe.start_after_event_id, None);
         assert_eq!(subscribe.catch_up_limit, 500);
     }
 
@@ -770,27 +786,26 @@ mod tests {
     }
 
     #[test]
-    fn notification_filter_matches_supported_identity_fields() {
-        let notification = ReserveUpdateNotification {
-            observed_at: Utc::now(),
-            slot: 42,
-            reserve: "reserve-a".to_string(),
-            market: Some("market-a".to_string()),
-            symbol: Some("usdc".to_string()),
-            source: "poll".to_string(),
-            supply_apy: 0.04,
-            borrow_apy: 0.08,
-            utilization: 0.5,
-            diff_changed: true,
-        };
+    fn notification_payload_includes_event_id_for_wakeup_catch_up() {
+        let payload = serde_json::json!({
+            "event_id": 7,
+            "observed_at": "2026-05-28T00:00:00Z",
+            "slot": 42,
+            "reserve": "reserve-a",
+            "market": "market-a",
+            "symbol": "USDC",
+            "source": "websocket",
+            "source_commitment": "confirmed",
+            "supply_apy": 0.04,
+            "borrow_apy": 0.08,
+            "utilization": 0.5,
+            "diff_changed": true
+        });
 
-        assert!(ReserveUpdateFilter::new()
-            .with_reserves(["reserve-a"])
-            .with_symbols(["USDC"])
-            .with_markets(["market-a"])
-            .matches_notification(&notification));
-        assert!(!ReserveUpdateFilter::new()
-            .with_symbols(["PYUSD"])
-            .matches_notification(&notification));
+        let notification: ReserveUpdateNotification =
+            serde_json::from_value(payload).expect("notification payload should decode");
+
+        assert_eq!(notification.event_id, 7);
+        assert_eq!(notification.source_commitment.as_deref(), Some("confirmed"));
     }
 }

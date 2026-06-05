@@ -1,8 +1,25 @@
 use chrono::{TimeZone, Utc};
-use loyal_yield_router::timescale::{ReserveUpdateCursor, ReserveUpdateRow};
+use loyal_yield_router::timescale::{
+    ReserveUpdateCursor, ReserveUpdateEventIdCursor, ReserveUpdateRow,
+};
 
 #[test]
 fn reserve_update_row_exposes_durable_cursor() {
+    let row = reserve_update_row("USDC", 0.04, 1_000_000.0, false);
+
+    assert_eq!(
+        row.event_id_cursor(),
+        ReserveUpdateEventIdCursor { event_id: 7 }
+    );
+    assert_eq!(row.source_commitment, "confirmed");
+    assert_eq!(row.symbol.as_deref(), Some("USDC"));
+    assert_eq!(row.liquidity_mint, "mint-a");
+    assert_eq!(row.total_supply_usd_estimate, 1_000_000.0);
+    assert!(!row.reserve_last_update_stale);
+}
+
+#[test]
+fn legacy_reserve_update_cursor_stays_available() {
     let row = reserve_update_row("USDC", 0.04, 1_000_000.0, false);
 
     assert_eq!(
@@ -13,10 +30,6 @@ fn reserve_update_row_exposes_durable_cursor() {
             reserve: "reserve-a".to_string(),
         }
     );
-    assert_eq!(row.symbol.as_deref(), Some("USDC"));
-    assert_eq!(row.liquidity_mint, "mint-a");
-    assert_eq!(row.total_supply_usd_estimate, 1_000_000.0);
-    assert!(!row.reserve_last_update_stale);
 }
 
 #[test]
@@ -46,9 +59,11 @@ fn reserve_update_row(
     stale: bool,
 ) -> ReserveUpdateRow {
     ReserveUpdateRow {
+        event_id: 7,
         observed_at: Utc.with_ymd_and_hms(2026, 5, 28, 0, 0, 0).unwrap(),
         slot: 42,
         source: "poll".to_string(),
+        source_commitment: "confirmed".to_string(),
         reserve: "reserve-a".to_string(),
         market: Some("main".to_string()),
         market_name: Some("Main market".to_string()),
