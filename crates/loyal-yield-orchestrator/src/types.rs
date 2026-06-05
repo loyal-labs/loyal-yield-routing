@@ -120,6 +120,12 @@ pub struct StoredPolicyMatch {
     pub vault: ManagedVault,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedVaultRoutePolicy {
+    pub vault: ManagedVault,
+    pub policy: RoutePolicy,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RoutePolicy {
     pub id: PolicyId,
@@ -511,3 +517,60 @@ pub const ACTIVE_DECISION_STATUSES: [&str; 5] = [
     DecisionStatus::Submitted.as_str(),
     DecisionStatus::Confirming.as_str(),
 ];
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RebalanceAttemptInput {
+    pub status: String,
+    pub worker_id: Option<String>,
+    pub dry_run: bool,
+    pub transaction_plan: Value,
+    pub simulation_result: Value,
+    pub submit_result: Value,
+    pub signature: Option<String>,
+    pub slot: Option<i64>,
+    pub error: Option<String>,
+}
+
+impl RebalanceAttemptInput {
+    pub fn new(status: impl Into<String>, dry_run: bool) -> Self {
+        Self {
+            status: status.into(),
+            worker_id: None,
+            dry_run,
+            transaction_plan: Value::Object(Default::default()),
+            simulation_result: Value::Object(Default::default()),
+            submit_result: Value::Object(Default::default()),
+            signature: None,
+            slot: None,
+            error: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RebalanceAttemptUpdate {
+    pub status: String,
+    pub simulation_result: Value,
+    pub submit_result: Value,
+    pub signature: Option<String>,
+    pub slot: Option<i64>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RebalanceAttempt {
+    pub id: i64,
+    pub decision_id: DecisionId,
+    pub attempt_no: i32,
+    pub status: String,
+    pub worker_id: Option<String>,
+    pub dry_run: bool,
+    pub transaction_plan: Value,
+    pub simulation_result: Value,
+    pub submit_result: Value,
+    pub signature: Option<String>,
+    pub slot: Option<i64>,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}

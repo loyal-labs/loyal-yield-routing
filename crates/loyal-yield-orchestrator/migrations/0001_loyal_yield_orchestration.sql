@@ -195,3 +195,27 @@ CREATE INDEX IF NOT EXISTS rebalance_decisions_vault_status_idx
 CREATE UNIQUE INDEX IF NOT EXISTS rebalance_decisions_one_active_per_vault_idx
     ON loyal_yield.rebalance_decisions (vault_id)
     WHERE status IN ('planned', 'simulating', 'ready', 'submitted', 'confirming');
+
+CREATE TABLE IF NOT EXISTS loyal_yield.rebalance_attempts (
+    id BIGSERIAL PRIMARY KEY,
+    decision_id BIGINT NOT NULL REFERENCES loyal_yield.rebalance_decisions(id) ON DELETE CASCADE,
+    attempt_no INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    worker_id TEXT,
+    dry_run BOOLEAN NOT NULL DEFAULT TRUE,
+    transaction_plan JSONB NOT NULL DEFAULT '{}'::jsonb,
+    simulation_result JSONB NOT NULL DEFAULT '{}'::jsonb,
+    submit_result JSONB NOT NULL DEFAULT '{}'::jsonb,
+    signature TEXT,
+    slot BIGINT,
+    error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (decision_id, attempt_no)
+);
+
+CREATE INDEX IF NOT EXISTS rebalance_attempts_decision_idx
+    ON loyal_yield.rebalance_attempts (decision_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS rebalance_attempts_status_idx
+    ON loyal_yield.rebalance_attempts (status, updated_at DESC);

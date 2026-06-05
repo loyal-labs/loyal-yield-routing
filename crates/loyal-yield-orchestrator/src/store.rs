@@ -4,8 +4,8 @@ use crate::{OrchestratorError, ACTIVE_DECISION_STATUSES};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::postgres::PgPoolOptions;
-use sqlx::{PgConnection, PgPool};
+use sqlx::postgres::{PgPoolOptions, PgRow};
+use sqlx::{PgConnection, PgPool, Row};
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_loyal_yield_orchestration.sql");
 
@@ -144,6 +144,64 @@ impl NeonSqlClient {
         let vault = upsert_vault(&mut *tx, policy.id, &event).await?;
         tx.commit().await?;
         Ok(StoredPolicyMatch { policy, vault })
+    }
+
+    pub async fn active_vault_route_policies(
+        &self,
+        cluster: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<ManagedVaultRoutePolicy>, OrchestratorError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                mv.id AS vault_id,
+                mv.cluster AS vault_cluster,
+                mv.settings AS vault_settings,
+                mv.vault_index AS vault_vault_index,
+                mv.vault_pubkey AS vault_vault_pubkey,
+                mv.active_policy_id AS vault_active_policy_id,
+                mv.active AS vault_active,
+                mv.first_seen_at AS vault_first_seen_at,
+                mv.last_seen_at AS vault_last_seen_at,
+                rp.id AS policy_id,
+                rp.cluster AS policy_cluster,
+                rp.settings AS policy_settings,
+                rp.authority AS policy_authority,
+                rp.policy_seed AS policy_policy_seed,
+                rp.policy_account AS policy_policy_account,
+                rp.vault_index AS policy_vault_index,
+                rp.vault_pubkey AS policy_vault_pubkey,
+                rp.delegated_signers AS policy_delegated_signers,
+                rp.threshold AS policy_threshold,
+                rp.route_modes AS policy_route_modes,
+                rp.stable_mints AS policy_stable_mints,
+                rp.kamino_markets AS policy_kamino_markets,
+                rp.kamino_liquidity_mints AS policy_kamino_liquidity_mints,
+                rp.universe_preset AS policy_universe_preset,
+                rp.risk_profile AS policy_risk_profile,
+                rp.swap_lanes AS policy_swap_lanes,
+                rp.active AS policy_active,
+                rp.first_seen_at AS policy_first_seen_at,
+                rp.last_seen_at AS policy_last_seen_at,
+                rp.last_seen_slot AS policy_last_seen_slot,
+                rp.last_seen_signature AS policy_last_seen_signature
+            FROM loyal_yield.managed_vaults mv
+            JOIN loyal_yield.route_policies rp ON rp.id = mv.active_policy_id
+            WHERE mv.active
+              AND rp.active
+              AND ($1::text IS NULL OR mv.cluster = $1)
+            ORDER BY mv.last_seen_at DESC, mv.id ASC
+            LIMIT $2
+            "#,
+        )
+        .bind(cluster)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(managed_vault_route_policy_from_row)
+            .collect()
     }
 
     pub async fn current_positions(
@@ -478,6 +536,157 @@ impl NeonSqlClient {
         let decision = from_row_to_decision(row)?;
         tx.commit().await?;
         Ok(decision)
+    }
+
+    pub async fn claim_same_mint_decisions(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<RebalanceDecision>, OrchestratorError> {
+        let rows = sqlx::query(
+            r#"
+            WITH claimed AS (
+                SELECT id
+                FROM loyal_yield.rebalance_decisions
+                WHERE status = 'planned'::loyal_yield.decision_status
+                  AND execution_plan->>'kind' = 'same_mint'
+                ORDER BY created_at ASC
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED
+            )
+            UPDATE loyal_yield.rebalance_decisions decisions
+            SET status = 'simulating'::loyal_yield.decision_status,
+                updated_at = now()
+            FROM claimed
+            WHERE decisions.id = claimed.id
+            RETURNING
+                decisions.id,
+                decisions.vault_id,
+                decisions.source_snapshot_id,
+                decisions.status::text AS status,
+                decisions.source_reserve,
+                decisions.target_reserve,
+                decisions.liquidity_mint,
+                decisions.source_liquidity_mint,
+                decisions.target_liquidity_mint,
+                decisions.amount_raw,
+                decisions.source_apy_bps,
+                decisions.target_apy_bps,
+                decisions.estimated_edge_bps,
+                decisions.estimated_cost_lamports,
+                decisions.decision_reason::text AS decision_reason,
+                decisions.execution_plan,
+                decisions.abandon_reason,
+                decisions.signature,
+                decisions.submitted_slot,
+                decisions.confirmed_slot,
+                decisions.preflight_chain_slot,
+                decisions.post_snapshot_id,
+                decisions.created_at,
+                decisions.updated_at
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(decision_from_pg_row).collect()
+    }
+
+    pub async fn record_rebalance_attempt(
+        &self,
+        decision_id: DecisionId,
+        input: RebalanceAttemptInput,
+    ) -> Result<RebalanceAttempt, OrchestratorError> {
+        let row = sqlx::query(
+            r#"
+            WITH next_attempt AS (
+                SELECT COALESCE(MAX(attempt_no), 0) + 1 AS attempt_no
+                FROM loyal_yield.rebalance_attempts
+                WHERE decision_id = $1
+            )
+            INSERT INTO loyal_yield.rebalance_attempts
+                (decision_id, attempt_no, status, worker_id, dry_run, transaction_plan,
+                 simulation_result, submit_result, signature, slot, error)
+            SELECT
+                $1, next_attempt.attempt_no, $2, $3, $4, $5, $6, $7, $8, $9, $10
+            FROM next_attempt
+            RETURNING
+                id,
+                decision_id,
+                attempt_no,
+                status,
+                worker_id,
+                dry_run,
+                transaction_plan,
+                simulation_result,
+                submit_result,
+                signature,
+                slot,
+                error,
+                created_at,
+                updated_at
+            "#,
+        )
+        .bind(decision_id.as_i64())
+        .bind(input.status)
+        .bind(input.worker_id)
+        .bind(input.dry_run)
+        .bind(input.transaction_plan)
+        .bind(input.simulation_result)
+        .bind(input.submit_result)
+        .bind(input.signature)
+        .bind(input.slot)
+        .bind(input.error)
+        .fetch_one(&self.pool)
+        .await?;
+
+        attempt_from_pg_row(row)
+    }
+
+    pub async fn update_rebalance_attempt(
+        &self,
+        attempt_id: i64,
+        update: RebalanceAttemptUpdate,
+    ) -> Result<RebalanceAttempt, OrchestratorError> {
+        let row = sqlx::query(
+            r#"
+            UPDATE loyal_yield.rebalance_attempts
+            SET status = $2,
+                simulation_result = $3,
+                submit_result = $4,
+                signature = COALESCE($5, signature),
+                slot = COALESCE($6, slot),
+                error = $7,
+                updated_at = now()
+            WHERE id = $1
+            RETURNING
+                id,
+                decision_id,
+                attempt_no,
+                status,
+                worker_id,
+                dry_run,
+                transaction_plan,
+                simulation_result,
+                submit_result,
+                signature,
+                slot,
+                error,
+                created_at,
+                updated_at
+            "#,
+        )
+        .bind(attempt_id)
+        .bind(update.status)
+        .bind(update.simulation_result)
+        .bind(update.submit_result)
+        .bind(update.signature)
+        .bind(update.slot)
+        .bind(update.error)
+        .fetch_one(&self.pool)
+        .await?;
+
+        attempt_from_pg_row(row)
     }
 }
 
@@ -862,6 +1071,48 @@ async fn fetch_decision_for_update(
     from_row_to_decision(row)
 }
 
+fn managed_vault_route_policy_from_row(
+    row: PgRow,
+) -> Result<ManagedVaultRoutePolicy, OrchestratorError> {
+    Ok(ManagedVaultRoutePolicy {
+        vault: ManagedVault {
+            id: VaultId(row.try_get("vault_id")?),
+            cluster: row.try_get("vault_cluster")?,
+            settings: row.try_get("vault_settings")?,
+            vault_index: row.try_get("vault_vault_index")?,
+            vault_pubkey: row.try_get("vault_vault_pubkey")?,
+            active_policy_id: PolicyId(row.try_get("vault_active_policy_id")?),
+            active: row.try_get("vault_active")?,
+            first_seen_at: row.try_get("vault_first_seen_at")?,
+            last_seen_at: row.try_get("vault_last_seen_at")?,
+        },
+        policy: RoutePolicy {
+            id: PolicyId(row.try_get("policy_id")?),
+            cluster: row.try_get("policy_cluster")?,
+            settings: row.try_get("policy_settings")?,
+            authority: row.try_get("policy_authority")?,
+            policy_seed: row.try_get("policy_policy_seed")?,
+            policy_account: row.try_get("policy_policy_account")?,
+            vault_index: row.try_get("policy_vault_index")?,
+            vault_pubkey: row.try_get("policy_vault_pubkey")?,
+            delegated_signers: row.try_get("policy_delegated_signers")?,
+            threshold: row.try_get("policy_threshold")?,
+            route_modes: row.try_get("policy_route_modes")?,
+            stable_mints: row.try_get("policy_stable_mints")?,
+            kamino_markets: row.try_get("policy_kamino_markets")?,
+            kamino_liquidity_mints: row.try_get("policy_kamino_liquidity_mints")?,
+            universe_preset: row.try_get("policy_universe_preset")?,
+            risk_profile: row.try_get("policy_risk_profile")?,
+            swap_lanes: row.try_get("policy_swap_lanes")?,
+            active: row.try_get("policy_active")?,
+            first_seen_at: row.try_get("policy_first_seen_at")?,
+            last_seen_at: row.try_get("policy_last_seen_at")?,
+            last_seen_slot: row.try_get("policy_last_seen_slot")?,
+            last_seen_signature: row.try_get("policy_last_seen_signature")?,
+        },
+    })
+}
+
 fn route_policy_from_row(row: RoutePolicyRow) -> RoutePolicy {
     RoutePolicy {
         id: PolicyId(row.id),
@@ -960,6 +1211,65 @@ fn ensure_terminal_repeat_matches(
         _ => {}
     }
     Ok(())
+}
+
+fn decision_from_pg_row(row: PgRow) -> Result<RebalanceDecision, OrchestratorError> {
+    let status: String = row.try_get("status")?;
+    let decision_reason: String = row.try_get("decision_reason")?;
+    let status = DecisionStatus::parse(&status)
+        .ok_or_else(|| OrchestratorError::UnknownDecisionStatus(status))?;
+    let decision_reason = DecisionReason::parse(&decision_reason)
+        .ok_or_else(|| OrchestratorError::StoreInvariant("unknown decision_reason".to_owned()))?;
+
+    Ok(RebalanceDecision {
+        id: DecisionId(row.try_get("id")?),
+        vault_id: VaultId(row.try_get("vault_id")?),
+        source_snapshot_id: row
+            .try_get::<Option<i64>, _>("source_snapshot_id")?
+            .map(SnapshotId),
+        status,
+        source_reserve: row.try_get("source_reserve")?,
+        target_reserve: row.try_get("target_reserve")?,
+        liquidity_mint: row.try_get("liquidity_mint")?,
+        source_liquidity_mint: row.try_get("source_liquidity_mint")?,
+        target_liquidity_mint: row.try_get("target_liquidity_mint")?,
+        amount_raw: row.try_get("amount_raw")?,
+        source_apy_bps: row.try_get("source_apy_bps")?,
+        target_apy_bps: row.try_get("target_apy_bps")?,
+        estimated_edge_bps: row.try_get("estimated_edge_bps")?,
+        estimated_cost_lamports: row.try_get("estimated_cost_lamports")?,
+        decision_reason,
+        execution_plan: row.try_get("execution_plan")?,
+        abandon_reason: row.try_get("abandon_reason")?,
+        signature: row.try_get("signature")?,
+        submitted_slot: row.try_get("submitted_slot")?,
+        confirmed_slot: row.try_get("confirmed_slot")?,
+        preflight_chain_slot: row.try_get("preflight_chain_slot")?,
+        post_snapshot_id: row
+            .try_get::<Option<i64>, _>("post_snapshot_id")?
+            .map(SnapshotId),
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+    })
+}
+
+fn attempt_from_pg_row(row: PgRow) -> Result<RebalanceAttempt, OrchestratorError> {
+    Ok(RebalanceAttempt {
+        id: row.try_get("id")?,
+        decision_id: DecisionId(row.try_get("decision_id")?),
+        attempt_no: row.try_get("attempt_no")?,
+        status: row.try_get("status")?,
+        worker_id: row.try_get("worker_id")?,
+        dry_run: row.try_get("dry_run")?,
+        transaction_plan: row.try_get("transaction_plan")?,
+        simulation_result: row.try_get("simulation_result")?,
+        submit_result: row.try_get("submit_result")?,
+        signature: row.try_get("signature")?,
+        slot: row.try_get("slot")?,
+        error: row.try_get("error")?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+    })
 }
 
 fn from_row_to_decision(row: DecisionRow) -> Result<RebalanceDecision, OrchestratorError> {
@@ -1269,7 +1579,7 @@ mod tests {
         let cluster = unique_cluster("route_policy_generated_ids");
         delete_cluster(&store, &cluster).await;
 
-        let mut manual_id = None;
+        let mut manual_id: Option<i64> = None;
         for _ in 0..10 {
             manual_id = sqlx::query_scalar(
                 r#"
@@ -1314,12 +1624,16 @@ mod tests {
             .await
             .expect("repair route policy id sequence");
 
+        let mut first_match = policy_match(&cluster, "policy-a", 100);
+        first_match.policy_seed = 70_000;
         let first = store
-            .record_policy_match(policy_match(&cluster, "policy-a", 100))
+            .record_policy_match(first_match)
             .await
             .expect("record first generated policy");
+        let mut second_match = policy_match(&cluster, "policy-b", 110);
+        second_match.policy_seed = 70_000;
         let second = store
-            .record_policy_match(policy_match(&cluster, "policy-b", 110))
+            .record_policy_match(second_match)
             .await
             .expect("record same-seed policy with different account");
 

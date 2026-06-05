@@ -1,9 +1,19 @@
 mod domain;
+mod planner;
+mod reconcile;
+mod route_builder;
+mod rpc;
+mod same_mint_loop;
 mod signer;
 mod store;
 mod types;
 
 pub use domain::state_transition;
+pub use planner::*;
+pub use reconcile::*;
+pub use route_builder::*;
+pub use rpc::*;
+pub use same_mint_loop::*;
 pub use signer::{
     keypair_from_hex, yield_router_keypair_from_env, PolicySignerError, YIELD_ROUTER_KEYPAIR_ENV,
 };

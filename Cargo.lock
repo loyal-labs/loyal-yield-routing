@@ -3029,10 +3029,33 @@ dependencies = [
 name = "loyal-yield-orchestrator"
 version = "0.1.0"
 dependencies = [
+ "borsh 1.6.1",
  "chrono",
+ "clap",
+ "loyal-actions",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "solana-client",
+ "solana-sdk",
+ "spl-token",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "loyal-yield-policy-init"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bincode",
+ "borsh 1.6.1",
+ "bs58",
+ "clap",
+ "loyal-actions",
+ "serde_json",
+ "solana-client",
  "solana-sdk",
  "sqlx",
  "thiserror 2.0.18",
