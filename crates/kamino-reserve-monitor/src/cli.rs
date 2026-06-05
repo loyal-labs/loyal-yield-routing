@@ -1,7 +1,6 @@
-use std::path::PathBuf;
-
 use anyhow::{bail, Result};
-use clap::{ArgAction, Parser, ValueEnum};
+use clap::Parser;
+use clap::ValueEnum;
 use solana_sdk::pubkey::Pubkey;
 
 const DEFAULT_RPC_URL: &str = "https://api.mainnet-beta.solana.com";
@@ -65,52 +64,7 @@ pub struct Args {
     pub sync_supported_reserves: bool,
 
     #[arg(long)]
-    pub substreams_backfill: bool,
-
-    #[arg(long, default_value = "substreams")]
-    pub substreams_cli: PathBuf,
-
-    #[arg(long, default_value = "solana-accounts-foundational@v0.1.1")]
-    pub substreams_package: String,
-
-    #[arg(long, default_value = "filtered_accounts")]
-    pub substreams_module: String,
-
-    #[arg(long)]
-    pub substreams_start_block: Option<u64>,
-
-    #[arg(long)]
-    pub substreams_start_unix: Option<i64>,
-
-    #[arg(long)]
-    pub substreams_stop_block: Option<u64>,
-
-    #[arg(long)]
-    pub substreams_stop_unix: Option<i64>,
-
-    #[arg(long, default_value_t = 100_000)]
-    pub substreams_chunk_blocks: u64,
-
-    #[arg(long, default_value_t = 5_000)]
-    pub substreams_progress_rows: u64,
-
-    #[arg(long, default_value_t = 8)]
-    pub substreams_insert_concurrency: usize,
-
-    #[arg(long, default_value_t = 1_000)]
-    pub substreams_insert_batch_size: usize,
-
-    #[arg(long, action = ArgAction::SetTrue)]
-    pub substreams_production_mode: bool,
-
-    #[arg(long)]
-    pub substreams_parallel_workers: Option<usize>,
-
-    #[arg(long, default_value = "SF_API_TOKEN")]
-    pub substreams_api_key_envvar: String,
-
-    #[arg(long)]
-    pub jsonl: Option<PathBuf>,
+    pub jsonl: Option<std::path::PathBuf>,
 
     #[arg(long, default_value_t = 10)]
     pub max_reconnect_attempts: usize,
@@ -126,6 +80,9 @@ pub struct Args {
 
     #[arg(long, default_value_t = 90)]
     pub progress_timeout_secs: u64,
+
+    #[arg(long, default_value_t = 60)]
+    pub status_log_interval_secs: u64,
 }
 
 impl Args {
@@ -159,6 +116,9 @@ pub fn validate_args(args: &Args) -> Result<()> {
     if args.progress_timeout_secs == 0 {
         bail!("--progress-timeout-secs must be greater than zero");
     }
+    if args.status_log_interval_secs == 0 {
+        bail!("--status-log-interval-secs must be greater than zero");
+    }
     if requires_account_update_source(args) {
         match args.update_source {
             UpdateSourceKind::Laserstream => {
@@ -188,52 +148,11 @@ pub fn validate_args(args: &Args) -> Result<()> {
             }
         }
     }
-    if args.substreams_backfill {
-        if args.substreams_start_block.is_none() {
-            bail!("--substreams-start-block is required with --substreams-backfill");
-        }
-        if args.substreams_start_unix.is_none() {
-            bail!("--substreams-start-unix is required with --substreams-backfill");
-        }
-        if args.substreams_stop_block.is_none() {
-            bail!("--substreams-stop-block is required with --substreams-backfill");
-        }
-        if args.substreams_stop_unix.is_none() {
-            bail!("--substreams-stop-unix is required with --substreams-backfill");
-        }
-        if args.substreams_start_block >= args.substreams_stop_block {
-            bail!("--substreams-start-block must be lower than --substreams-stop-block");
-        }
-        if args.substreams_start_unix >= args.substreams_stop_unix {
-            bail!("--substreams-start-unix must be lower than --substreams-stop-unix");
-        }
-        if args.substreams_chunk_blocks == 0 {
-            bail!("--substreams-chunk-blocks must be greater than zero");
-        }
-        if args.substreams_progress_rows == 0 {
-            bail!("--substreams-progress-rows must be greater than zero");
-        }
-        if args.substreams_insert_concurrency == 0 {
-            bail!("--substreams-insert-concurrency must be greater than zero");
-        }
-        if args.substreams_insert_batch_size == 0 {
-            bail!("--substreams-insert-batch-size must be greater than zero");
-        }
-        if args
-            .substreams_parallel_workers
-            .is_some_and(|workers| workers == 0)
-        {
-            bail!("--substreams-parallel-workers must be greater than zero");
-        }
-        if args.substreams_api_key_envvar.trim().is_empty() {
-            bail!("--substreams-api-key-envvar cannot be empty");
-        }
-    }
     validate_pg_identifier(&args.timescaledb_schema, "--timescaledb-schema")
 }
 
 fn requires_account_update_source(args: &Args) -> bool {
-    !(args.sync_supported_reserves || args.substreams_backfill || args.once)
+    !(args.sync_supported_reserves || args.once)
 }
 
 fn validate_pg_identifier(value: &str, flag: &str) -> Result<()> {
@@ -369,24 +288,13 @@ mod tests {
     }
 
     #[test]
-    fn accepts_substreams_backfill_mode() {
-        let args = Args::try_parse_from([
+    fn rejects_historic_data_backfill_args() {
+        assert!(Args::try_parse_from([
             "kamino-reserve-monitor",
             "--timescaledb-url",
             "postgres://example.invalid/kamino",
             "--substreams-backfill",
-            "--substreams-start-block",
-            "410195947",
-            "--substreams-start-unix",
-            "1775001600",
-            "--substreams-stop-block",
-            "424374151",
-            "--substreams-stop-unix",
-            "1780628135",
         ])
-        .expect("backfill args should parse");
-
-        validate_args(&args).expect("backfill args should validate");
-        assert!(args.substreams_backfill);
+        .is_err());
     }
 }

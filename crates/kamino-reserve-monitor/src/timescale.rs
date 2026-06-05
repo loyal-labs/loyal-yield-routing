@@ -131,7 +131,7 @@ impl TimescaleSink {
             .map(serde_json::to_value)
             .transpose()
             .context("serialize diff JSON")?
-            .unwrap_or(Value::Null);
+            .unwrap_or_else(|| json!({}));
         let record_json =
             serde_json::to_value(record).context("serialize full reserve update JSON")?;
         let slot = i64_from_u64(record.slot, "slot")?;
@@ -264,6 +264,19 @@ impl TimescaleSink {
             .fetch_one(&self.pool)
             .await
             .context("batch insert TimescaleDB reserve updates")?;
+        Ok(inserted.max(0) as usize)
+    }
+
+    pub async fn insert_prepared_batch_skip_duplicates(&self, rows: Vec<Value>) -> Result<usize> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        let rows_json = Value::Array(rows);
+        let inserted = sqlx::query_scalar::<_, i64>(&self.insert_batch_sql)
+            .bind(rows_json)
+            .fetch_one(&self.pool)
+            .await
+            .context("batch insert prepared TimescaleDB reserve updates")?;
         Ok(inserted.max(0) as usize)
     }
 
@@ -557,7 +570,7 @@ fn batch_record_json(record: &ReserveUpdateRecord<'_>) -> Result<Value> {
         .map(serde_json::to_value)
         .transpose()
         .context("serialize diff JSON")?
-        .unwrap_or(Value::Null);
+        .unwrap_or_else(|| json!({}));
     let record_json = serde_json::to_value(record).context("serialize full reserve update JSON")?;
     let slot = i64_from_u64(record.slot, "slot")?;
     let reserve_last_update_slot = i64_from_u64(

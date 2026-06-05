@@ -1,0 +1,21 @@
+[package]
+name = "kamino-historic-data"
+version = "0.1.0"
+edition = "2021"
+description = "Historic Kamino reserve data backfills and JSONL imports for Loyal yield routing"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+kamino-reserve-monitor = { path = "../kamino-reserve-monitor" }
+klend-interface = { git = "https://github.com/Kamino-Finance/klend" }
+prost = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+solana-client = "2.3"
+solana-sdk.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

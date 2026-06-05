@@ -1,19 +1,17 @@
 use std::{
     collections::HashMap,
     fs::{File, OpenOptions},
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{BufWriter, Write},
     path::Path,
-    process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::{Duration, Instant as StdInstant},
+    time::Duration,
 };
 
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use chrono::TimeZone;
 use chrono::{DateTime, Utc};
 use kamino_reserve_monitor::{
     cli::{validate_args, Args, UpdateSourceKind},
@@ -28,7 +26,6 @@ use kamino_reserve_monitor::{
     ReserveDiff, ReserveSnapshot,
 };
 use klend_interface::KLEND_PROGRAM_ID;
-use serde::Deserialize;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
 use tokio::{
@@ -56,47 +53,6 @@ impl SubscriptionRuntimeState {
     fn is_terminal(self) -> bool {
         matches!(self, Self::Failed | Self::Stopped)
     }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct SlotTimeEstimator {
-    start_block: u64,
-    start_unix: i64,
-    stop_block: u64,
-    stop_unix: i64,
-}
-
-impl SlotTimeEstimator {
-    fn observed_at(self, slot: u64) -> Result<DateTime<Utc>> {
-        let slot = slot.clamp(self.start_block, self.stop_block);
-        let slot_span = (self.stop_block - self.start_block) as f64;
-        let time_span = (self.stop_unix - self.start_unix) as f64;
-        let offset_slots = (slot - self.start_block) as f64;
-        let timestamp = self.start_unix + (offset_slots * time_span / slot_span).round() as i64;
-        Utc.timestamp_opt(timestamp, 0)
-            .single()
-            .with_context(|| format!("derive observed_at for slot {slot}"))
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct SubstreamsEnvelope {
-    #[serde(rename = "@block")]
-    block: u64,
-    #[serde(rename = "@data")]
-    data: SubstreamsData,
-}
-
-#[derive(Debug, Deserialize)]
-struct SubstreamsData {
-    accounts: Vec<SubstreamsAccount>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SubstreamsAccount {
-    address: String,
-    owner: String,
-    data: String,
 }
 
 #[derive(Clone, Debug)]
@@ -135,52 +91,6 @@ impl OwnedReserveUpdate {
     }
 }
 
-#[derive(Debug)]
-struct SubstreamsProgress {
-    started_at: StdInstant,
-    start_block: u64,
-    stop_block: u64,
-    total_rows: u64,
-    reserve_rows: HashMap<Pubkey, u64>,
-}
-
-impl SubstreamsProgress {
-    fn new(start_block: u64, stop_block: u64) -> Self {
-        Self {
-            started_at: StdInstant::now(),
-            start_block,
-            stop_block,
-            total_rows: 0,
-            reserve_rows: HashMap::new(),
-        }
-    }
-
-    fn record_row(&mut self, reserve: Pubkey) -> u64 {
-        self.total_rows += 1;
-        let reserve_count = self.reserve_rows.entry(reserve).or_default();
-        *reserve_count += 1;
-        *reserve_count
-    }
-
-    fn percent_at(&self, block: u64) -> f64 {
-        percent_between(block, self.start_block, self.stop_block)
-    }
-
-    fn eta_at(&self, block: u64) -> Option<Duration> {
-        let completed = block.saturating_sub(self.start_block);
-        if completed < 10_000 {
-            return None;
-        }
-        let total = self.stop_block.saturating_sub(self.start_block);
-        let remaining = total.saturating_sub(completed);
-        let elapsed = self.started_at.elapsed().as_secs_f64();
-        let seconds = elapsed * remaining as f64 / completed as f64;
-        seconds
-            .is_finite()
-            .then(|| Duration::from_secs_f64(seconds))
-    }
-}
-
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -198,15 +108,11 @@ async fn run() -> Result<()> {
     let args = Args::parse_args();
     validate_args(&args)?;
 
-    let mut timescale_config = TimescaleSinkConfig {
+    let timescale_config = TimescaleSinkConfig {
         url: args.timescaledb_url.clone(),
         schema: args.timescaledb_schema.clone(),
         ..TimescaleSinkConfig::new(args.timescaledb_url.clone())
     };
-    if args.substreams_backfill {
-        timescale_config.max_connections = args.substreams_insert_concurrency as u32;
-        timescale_config.acquire_timeout = Duration::from_secs(30);
-    }
     let timescale = TimescaleSink::connect(timescale_config).await?;
 
     if args.sync_supported_reserves {
@@ -242,41 +148,10 @@ async fn run() -> Result<()> {
         bail!("no active supported Kamino reserve targets selected; run --sync-supported-reserves first");
     }
 
-    if args.substreams_backfill {
-        let estimator = SlotTimeEstimator {
-            start_block: args
-                .substreams_start_block
-                .expect("validated substreams start block"),
-            start_unix: args
-                .substreams_start_unix
-                .expect("validated substreams start unix"),
-            stop_block: args
-                .substreams_stop_block
-                .expect("validated substreams stop block"),
-            stop_unix: args
-                .substreams_stop_unix
-                .expect("validated substreams stop unix"),
-        };
-        let processing = ProcessingConfig {
-            slot_duration_ms,
-            store_raw: args.store_raw,
-        };
-        let mut jsonl = args.jsonl.as_deref().map(open_jsonl_writer).transpose()?;
-        run_substreams_backfill(
-            &args,
-            &targets,
-            processing,
-            estimator,
-            &timescale,
-            jsonl.as_mut(),
-        )
-        .await?;
-        return Ok(());
-    }
-
     let running = Arc::new(AtomicBool::new(true));
     install_ctrlc_handler(running.clone())?;
     let progress_timeout = Duration::from_secs(args.progress_timeout_secs);
+    let status_log_interval = Duration::from_secs(args.status_log_interval_secs);
 
     let processing = ProcessingConfig {
         slot_duration_ms,
@@ -354,6 +229,7 @@ async fn run() -> Result<()> {
         jsonl.as_mut(),
         running,
         progress_timeout,
+        status_log_interval,
     )
     .await;
 
@@ -389,321 +265,6 @@ async fn fetch_slot_duration_ms_blocking(
     })
     .await
     .context("join Kamino slot duration task")?
-}
-
-async fn run_substreams_backfill(
-    args: &Args,
-    targets: &[ReserveTarget],
-    processing: ProcessingConfig,
-    estimator: SlotTimeEstimator,
-    timescale: &TimescaleSink,
-    jsonl: Option<&mut BufWriter<File>>,
-) -> Result<()> {
-    let target_by_reserve = targets
-        .iter()
-        .cloned()
-        .map(|target| (target.reserve, target))
-        .collect::<HashMap<_, _>>();
-    let filter = build_substreams_account_filter(targets);
-    let mut snapshots = HashMap::<Pubkey, ReserveSnapshot>::new();
-    let mut jsonl = jsonl;
-    let mut start_block = estimator.start_block;
-    let mut total_rows = 0_u64;
-    let mut chunk_index = 0_u64;
-    let total_blocks = estimator.stop_block - estimator.start_block;
-    let total_chunks = total_blocks.div_ceil(args.substreams_chunk_blocks);
-    let mut progress = SubstreamsProgress::new(estimator.start_block, estimator.stop_block);
-
-    eprintln!(
-        "Substreams backfill starting: reserves={} blocks={}..{} chunks={} chunk_blocks={} progress_rows={} insert_batch_size={} production_mode={} parallel_workers={}",
-        targets.len(),
-        estimator.start_block,
-        estimator.stop_block,
-        total_chunks,
-        args.substreams_chunk_blocks,
-        args.substreams_progress_rows,
-        args.substreams_insert_batch_size,
-        args.substreams_production_mode,
-        args.substreams_parallel_workers
-            .map(|workers| workers.to_string())
-            .unwrap_or_else(|| "none".to_string())
-    );
-
-    while start_block < estimator.stop_block {
-        chunk_index += 1;
-        let stop_block = start_block
-            .saturating_add(args.substreams_chunk_blocks)
-            .min(estimator.stop_block);
-        eprintln!(
-            "chunk {chunk_index}/{total_chunks} starting: blocks {start_block}..{stop_block} overall={} elapsed={}",
-            format_percent(progress.percent_at(start_block)),
-            format_duration(progress.started_at.elapsed())
-        );
-        let chunk_rows = run_substreams_chunk(
-            args,
-            &filter,
-            start_block,
-            stop_block,
-            &target_by_reserve,
-            processing,
-            estimator,
-            timescale,
-            &mut snapshots,
-            &mut progress,
-            jsonl.as_deref_mut(),
-        )
-        .await
-        .with_context(|| format!("backfill Substreams blocks {start_block}..{stop_block}"))?;
-        total_rows += chunk_rows;
-        eprintln!(
-            "chunk {chunk_index}/{total_chunks} complete: rows={chunk_rows} total_rows={total_rows} reserves_seen={}/{} overall={} elapsed={} eta={}",
-            progress.reserve_rows.len(),
-            targets.len(),
-            format_percent(progress.percent_at(stop_block)),
-            format_duration(progress.started_at.elapsed()),
-            progress
-                        .eta_at(stop_block)
-                        .map(format_duration)
-                        .unwrap_or_else(|| "warming_up".to_string())
-        );
-        tracing::info!(
-            start_block,
-            stop_block,
-            chunk_rows,
-            total_rows,
-            "Substreams backfill chunk complete"
-        );
-        start_block = stop_block;
-    }
-
-    if let Some(writer) = jsonl.as_deref_mut() {
-        writer.flush().context("flush Substreams backfill JSONL")?;
-    }
-    tracing::info!(
-        total_rows,
-        reserves = targets.len(),
-        start_block = estimator.start_block,
-        stop_block = estimator.stop_block,
-        "Substreams backfill complete"
-    );
-    Ok(())
-}
-
-async fn run_substreams_chunk(
-    args: &Args,
-    filter: &str,
-    start_block: u64,
-    stop_block: u64,
-    target_by_reserve: &HashMap<Pubkey, ReserveTarget>,
-    processing: ProcessingConfig,
-    estimator: SlotTimeEstimator,
-    timescale: &TimescaleSink,
-    snapshots: &mut HashMap<Pubkey, ReserveSnapshot>,
-    progress: &mut SubstreamsProgress,
-    mut jsonl: Option<&mut BufWriter<File>>,
-) -> Result<u64> {
-    let params = format!("{}={filter}", args.substreams_module);
-    let limit_processed_blocks = (stop_block - start_block).saturating_add(1_000);
-    let mut command = Command::new(&args.substreams_cli);
-    command
-        .arg("run")
-        .arg(&args.substreams_package)
-        .arg(&args.substreams_module)
-        .arg("-p")
-        .arg(params)
-        .arg("--bytes-encoding")
-        .arg("base64")
-        .arg("--start-block")
-        .arg(start_block.to_string())
-        .arg("--stop-block")
-        .arg(stop_block.to_string())
-        .arg("--output")
-        .arg("jsonl")
-        .arg("--limit-processed-blocks")
-        .arg(limit_processed_blocks.to_string())
-        .arg("--api-key-envvar")
-        .arg(&args.substreams_api_key_envvar);
-    if args.substreams_production_mode {
-        command.arg("--production-mode");
-    }
-    if let Some(workers) = args.substreams_parallel_workers {
-        command
-            .arg("-H")
-            .arg(format!("X-Substreams-Parallel-Workers={workers}"));
-    }
-    let mut child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .with_context(|| format!("spawn Substreams CLI {:?}", args.substreams_cli))?;
-    let stdout = child.stdout.take().context("capture Substreams stdout")?;
-    let reader = BufReader::new(stdout);
-    let mut rows = 0_u64;
-    let mut pending_updates =
-        Vec::<OwnedReserveUpdate>::with_capacity(args.substreams_insert_batch_size.min(10_000));
-    let mut inserted_rows = 0_usize;
-
-    for line in reader.lines() {
-        let line = line.context("read Substreams JSONL line")?;
-        let trimmed = line.trim_start();
-        if !trimmed.starts_with('{') {
-            continue;
-        }
-        let envelope: SubstreamsEnvelope =
-            serde_json::from_str(trimmed).context("parse Substreams JSONL envelope")?;
-        for account in envelope.data.accounts {
-            let reserve = decode_pubkey_base64(&account.address, "account address")?;
-            let Some(target) = target_by_reserve.get(&reserve) else {
-                tracing::debug!(%reserve, "dropping Substreams account for unknown reserve");
-                continue;
-            };
-            let reserve_count = progress.record_row(reserve);
-            let owner = decode_pubkey_base64(&account.owner, "account owner")?;
-            ensure_klend_owner(&owner.to_string(), target, "substreams_backfill")?;
-            let data = BASE64_STANDARD
-                .decode(&account.data)
-                .context("decode Substreams account data")?;
-            let observed_at = estimator.observed_at(envelope.block)?;
-            let now = Utc::now();
-            let update = build_owned_update(
-                UpdateSourceMetadata {
-                    source: "substreams_backfill",
-                    source_commitment: CONFIRMED_COMMITMENT,
-                },
-                target,
-                envelope.block,
-                &data,
-                Some(observed_at),
-                now,
-                Instant::now(),
-                processing,
-                snapshots,
-            )?;
-            if let Some(writer) = jsonl.as_deref_mut() {
-                let record = update.as_record();
-                serde_json::to_writer(&mut *writer, &record)
-                    .context("write Substreams backfill JSONL reserve update")?;
-                writer
-                    .write_all(b"\n")
-                    .context("write Substreams backfill JSONL newline")?;
-            }
-            snapshots.insert(target.reserve, update.snapshot.clone());
-            pending_updates.push(update);
-            rows += 1;
-            if progress.total_rows == 1 || progress.total_rows % args.substreams_progress_rows == 0
-            {
-                eprintln!(
-                    "progress: rows={} chunk_rows={} slot={} overall={} reserves_seen={}/{} current_reserve=\"{}\" reserve_rows={} elapsed={} eta={}",
-                    progress.total_rows,
-                    rows,
-                    envelope.block,
-                    format_percent(progress.percent_at(envelope.block)),
-                    progress.reserve_rows.len(),
-                    target_by_reserve.len(),
-                    reserve_label(target),
-                    reserve_count,
-                    format_duration(progress.started_at.elapsed()),
-                    progress
-                        .eta_at(envelope.block)
-                        .map(format_duration)
-                        .unwrap_or_else(|| "warming_up".to_string())
-                );
-            }
-            if pending_updates.len() >= args.substreams_insert_batch_size {
-                inserted_rows += flush_substreams_batch(timescale, &mut pending_updates).await?;
-            }
-        }
-    }
-
-    inserted_rows += flush_substreams_batch(timescale, &mut pending_updates).await?;
-
-    let status = child.wait().context("wait for Substreams CLI")?;
-    if !status.success() {
-        bail!("Substreams CLI exited with {status}");
-    }
-    tracing::info!(
-        rows,
-        inserted_rows,
-        start_block,
-        stop_block,
-        "Substreams chunk inserted"
-    );
-    Ok(rows)
-}
-
-fn build_substreams_account_filter(targets: &[ReserveTarget]) -> String {
-    targets
-        .iter()
-        .map(|target| format!("account:{}", target.reserve))
-        .collect::<Vec<_>>()
-        .join(" || ")
-}
-
-async fn flush_substreams_batch(
-    timescale: &TimescaleSink,
-    pending_updates: &mut Vec<OwnedReserveUpdate>,
-) -> Result<usize> {
-    if pending_updates.is_empty() {
-        return Ok(0);
-    }
-    let records = pending_updates
-        .iter()
-        .map(OwnedReserveUpdate::as_record)
-        .collect::<Vec<_>>();
-    let inserted = timescale.insert_batch_skip_duplicates(&records).await?;
-    pending_updates.clear();
-    Ok(inserted)
-}
-
-fn decode_pubkey_base64(encoded: &str, label: &str) -> Result<Pubkey> {
-    let bytes = BASE64_STANDARD
-        .decode(encoded)
-        .with_context(|| format!("decode Substreams {label}"))?;
-    if bytes.len() != 32 {
-        bail!(
-            "Substreams {label} decoded to {} bytes, expected 32",
-            bytes.len()
-        );
-    }
-    let mut array = [0_u8; 32];
-    array.copy_from_slice(&bytes);
-    Ok(Pubkey::new_from_array(array))
-}
-
-fn reserve_label(target: &ReserveTarget) -> String {
-    match (&target.market_name, &target.symbol) {
-        (Some(market), Some(symbol)) => format!("{market} {symbol} {}", target.reserve),
-        (Some(market), None) => format!("{market} {}", target.reserve),
-        (None, Some(symbol)) => format!("{symbol} {}", target.reserve),
-        (None, None) => target.reserve.to_string(),
-    }
-}
-
-fn percent_between(block: u64, start_block: u64, stop_block: u64) -> f64 {
-    let total = stop_block.saturating_sub(start_block);
-    if total == 0 {
-        return 100.0;
-    }
-    let completed = block.saturating_sub(start_block).min(total);
-    completed as f64 * 100.0 / total as f64
-}
-
-fn format_percent(value: f64) -> String {
-    format!("{value:.2}%")
-}
-
-fn format_duration(duration: Duration) -> String {
-    let total = duration.as_secs();
-    let hours = total / 3_600;
-    let minutes = (total % 3_600) / 60;
-    let seconds = total % 60;
-    if hours > 0 {
-        format!("{hours}h{minutes:02}m{seconds:02}s")
-    } else if minutes > 0 {
-        format!("{minutes}m{seconds:02}s")
-    } else {
-        format!("{seconds}s")
-    }
 }
 
 async fn seed_http_snapshots(
@@ -764,6 +325,7 @@ async fn run_event_loop(
     mut jsonl: Option<&mut BufWriter<File>>,
     running: Arc<AtomicBool>,
     progress_timeout: Duration,
+    status_log_interval: Duration,
 ) -> Result<()> {
     let mut subscription_states = target_by_reserve
         .keys()
@@ -773,6 +335,10 @@ async fn run_event_loop(
     let mut last_progress_at = Instant::now();
     let mut timeout_tick = tokio::time::interval(Duration::from_millis(500));
     timeout_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut status_tick = tokio::time::interval(status_log_interval);
+    status_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut updates_processed = 0_u64;
+    let mut last_status_updates_processed = 0_u64;
 
     while running.load(Ordering::Relaxed) {
         tokio::select! {
@@ -811,6 +377,7 @@ async fn run_event_loop(
                             jsonl.as_deref_mut(),
                         )
                         .await?;
+                        updates_processed = updates_processed.saturating_add(1);
                     }
                     AccountUpdateEvent::Heartbeat { reserve } => {
                         subscription_states.insert(reserve, SubscriptionRuntimeState::Active);
@@ -827,6 +394,22 @@ async fn run_event_loop(
                         subscription_states.insert(reserve, SubscriptionRuntimeState::Stopped);
                     }
                 }
+            }
+            _ = status_tick.tick() => {
+                let states = count_subscription_states(&subscription_states);
+                let interval_updates = updates_processed.saturating_sub(last_status_updates_processed);
+                last_status_updates_processed = updates_processed;
+                tracing::info!(
+                    updates_processed,
+                    interval_updates,
+                    active = states.active,
+                    connecting = states.connecting,
+                    reconnecting = states.reconnecting,
+                    failed = states.failed,
+                    stopped = states.stopped,
+                    total_reserves = subscription_states.len(),
+                    "reserve monitor status"
+                );
             }
             _ = timeout_tick.tick() => {}
         }
@@ -853,6 +436,31 @@ async fn run_event_loop(
         writer.flush().context("flush JSONL before shutdown")?;
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SubscriptionStateCounts {
+    connecting: usize,
+    active: usize,
+    reconnecting: usize,
+    failed: usize,
+    stopped: usize,
+}
+
+fn count_subscription_states(
+    states: &HashMap<Pubkey, SubscriptionRuntimeState>,
+) -> SubscriptionStateCounts {
+    let mut counts = SubscriptionStateCounts::default();
+    for state in states.values() {
+        match state {
+            SubscriptionRuntimeState::Connecting => counts.connecting += 1,
+            SubscriptionRuntimeState::Active => counts.active += 1,
+            SubscriptionRuntimeState::Reconnecting => counts.reconnecting += 1,
+            SubscriptionRuntimeState::Failed => counts.failed += 1,
+            SubscriptionRuntimeState::Stopped => counts.stopped += 1,
+        }
+    }
+    counts
 }
 
 async fn handle_account_data(
