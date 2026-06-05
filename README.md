@@ -46,6 +46,52 @@ op run --env-file=.env.1password -- sh -c 'cargo run -p loyal-squads-policy-moni
 
 The monitor also reads `NEON_DATABASE_URL` directly when `--postgres-url` is omitted.
 
+## Yield Policy Initialization
+
+Create a Squads smart account for a user keypair, install the all-in-one Loyal
+yield-routing policy, and upsert the resulting `route_policies` /
+`managed_vaults` rows into Neon:
+
+```bash
+op run --env-file=.env.1password -- sh -c 'bun run yield-policy:init -- -k /path/to/user.json'
+```
+
+The command reads the user's Solana CLI-style keypair file from
+`-k/--keypair <KP_FILE>`. It reads `SOLANA_RPC_URL`, `NEON_DATABASE_URL`, and
+`YIELD_ROUTER_KEYPAIR` from the mounted 1Password environment. The router
+keypair env accepts a 32-byte private seed or 64-byte Solana keypair encoded as
+hex, base58, base64, or a Solana keypair JSON array. The initializer defaults
+the persisted cluster label to `mainnet`; pass `--cluster devnet` with a devnet
+RPC for testing. The created smart account uses threshold `1` with the user as
+its only full-permission Squads signer. The user keypair signs smart-account
+creation and policy creation; the installed yield-routing policy has the yield
+router keypair as its single delegated signer, matching `loyal-actions`
+behavior. The initializer submits a split setup sequence: one smart-account
+creation transaction followed by one policy-creation transaction each for the
+withdraw, swap, and deposit route actions. Each transaction gets its own
+compute-budget setup and is checked against the Solana packet size limit before
+submission.
+
+Use `--dry-run` to sign locally, simulate over RPC, and print the derived
+settings, vault, policy account, allowlists, route modes, transaction size,
+fee estimate, rent estimate for newly created accounts, estimated total
+lamports, payer balance, compute units, and simulation logs without submitting
+the transaction or writing Neon rows. When the script is creating a new smart
+account, dry-run simulates the smart-account creation and reports fee/size
+estimates for the dependent policy transactions, but it skips policy
+transaction simulation because Solana RPC simulation does not persist the
+simulated smart-account account across later transactions.
+
+```bash
+op run --env-file=.env.1password -- sh -c 'bun run yield-policy:init -- -k /path/to/user.json --dry-run'
+```
+
+`mainnet` and `devnet` currently use the repo's shared hardcoded Loyal cluster
+config from `packages/loyal-actions`: Squads smart-account, Jupiter V6, Loyal
+Hub swap, Loyal Hub authorizer, and Kamino Lend program IDs are the same for
+both cluster labels. Pass `--loyal-hub-authorizer <PUBKEY>` only when using the
+Loyal Hub lane with a different configured Hub authorizer.
+
 For Rust SQLx validation against Neon, set `DATABASE_URL` from the same direct
 Neon URL. Avoid the pooled `-pooler` URL for these tests because SQLx prepared
 statements need a stable backend connection.
