@@ -4,6 +4,7 @@ services:
     runtime: rust
     region: oregon
     plan: pro
+    autoDeploy: false
     buildCommand: cargo build --release -p kamino-reserve-monitor -p kamino-timescale-migrations
     preDeployCommand: ./target/release/kamino-timescale-migrations --apply && ./target/release/kamino-reserve-monitor --sync-supported-reserves
     startCommand: ./target/release/kamino-reserve-monitor
