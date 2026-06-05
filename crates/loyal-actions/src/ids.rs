@@ -34,7 +34,7 @@ pub const LOYAL_HUB_CONFIG_SEED: &[u8] = loyal_hub_abi::CONFIG_SEED;
 pub const LOYAL_HUB_AUTHORITY_SEED: &[u8] = loyal_hub_abi::HUB_AUTHORITY_SEED;
 pub const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
     pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
-pub const KAMINO_LEND_PROGRAM_ID: Pubkey = pubkey!("KvauGMspG5k6rtzrqqn7WNn3oZdyKqLKwK2XWQ8FLjd");
+pub const KAMINO_LEND_PROGRAM_ID: Pubkey = pubkey!("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD");
 pub const KAMINO_MAIN_MARKET: Pubkey = pubkey!("7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF");
 pub const KAMINO_FIGURE_MARKET: Pubkey = pubkey!("CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA");
 pub const KAMINO_MAPLE_MARKET: Pubkey = pubkey!("6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y");
@@ -51,9 +51,9 @@ pub const KAMINO_ALTCOINS_MARKET: Pubkey = pubkey!("ByYiZxp8QrdN9qbdtaAiePN8AAr3
 pub const KAMINO_MAIN_USDC_RESERVE: Pubkey =
     pubkey!("D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59");
 pub const KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR: [u8; 8] =
-    [242, 35, 198, 137, 82, 225, 242, 182];
+    klend_interface::discriminators::DEPOSIT_RESERVE_LIQUIDITY;
 pub const KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR: [u8; 8] =
-    [235, 52, 119, 152, 149, 197, 20, 7];
+    klend_interface::discriminators::REDEEM_RESERVE_COLLATERAL;
 
 pub const USDC_MINT: Pubkey = pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 pub const USDT_MINT: Pubkey = pubkey!("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB");

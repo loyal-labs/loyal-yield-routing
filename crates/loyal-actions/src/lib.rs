@@ -6,12 +6,14 @@
 mod actions;
 mod detection;
 mod ids;
+mod kamino;
 mod protocols;
 mod squads;
 
 pub use actions::*;
 pub use detection::*;
 pub use ids::*;
+pub use kamino::*;
 pub use loyal_hub_abi as hub_abi;
 pub use protocols::{
     derive_loyal_hub_authority, derive_loyal_hub_config, derive_loyal_hub_inventory_account,

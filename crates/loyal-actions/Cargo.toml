@@ -6,6 +6,7 @@ description = "Rust SDK for building Loyal delegated Squads actions"
 
 [dependencies]
 borsh.workspace = true
+klend-interface = { git = "https://github.com/Kamino-Finance/klend" }
 loyal-hub-abi.workspace = true
 solana-sdk.workspace = true
 spl-token.workspace = true

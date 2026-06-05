@@ -2987,6 +2987,7 @@ name = "loyal-actions"
 version = "0.1.0"
 dependencies = [
  "borsh 1.6.1",
+ "klend-interface",
  "loyal-hub-abi",
  "solana-sdk",
  "spl-token",
