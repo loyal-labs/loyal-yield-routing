@@ -59,6 +59,7 @@ pub struct RebalanceTransfer {
     pub amount: u64,
 }
 
+#[cfg(not(kani))]
 pub fn parse_instruction(data: &[u8]) -> Result<HubInstruction, ProgramError> {
     let (&tag, rest) = data
         .split_first()
@@ -82,17 +83,127 @@ pub fn parse_instruction(data: &[u8]) -> Result<HubInstruction, ProgramError> {
     }
 }
 
+#[cfg(kani)]
+pub fn parse_instruction(data: &[u8]) -> Result<HubInstruction, ProgramError> {
+    if data.is_empty() {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    match data[0] {
+        SET_MAX_FEE => {
+            if data.len() != 1 + loyal_hub_abi::SET_MAX_FEE_ARGS_LEN {
+                return Err(ProgramError::InvalidInstructionData);
+            }
+            Ok(HubInstruction::SetMaxFee {
+                max_fee_bps: u16::from_le_bytes([
+                    data[1 + set_max_fee_args::MAX_FEE_BPS_OFFSET],
+                    data[1 + set_max_fee_args::MAX_FEE_BPS_OFFSET + 1],
+                ]),
+            })
+        }
+        SET_PAUSED => {
+            if data.len() != 1 + loyal_hub_abi::SET_PAUSED_ARGS_LEN {
+                return Err(ProgramError::InvalidInstructionData);
+            }
+            Ok(HubInstruction::SetPaused {
+                paused: data[1 + loyal_hub_abi::set_paused_args::PAUSED_OFFSET] != 0,
+            })
+        }
+        SWAP_EXACT_IN => {
+            if data.len() != 1 + loyal_hub_abi::SWAP_EXACT_IN_ARGS_LEN {
+                return Err(ProgramError::InvalidInstructionData);
+            }
+            let rest = &data[1..];
+            Ok(HubInstruction::SwapExactIn(parse_swap_exact_in_args(rest)?))
+        }
+        WITHDRAW_INVENTORY => {
+            if data.len() != 1 + loyal_hub_abi::WITHDRAW_INVENTORY_ARGS_LEN {
+                return Err(ProgramError::InvalidInstructionData);
+            }
+            let rest = &data[1..];
+            Ok(HubInstruction::WithdrawInventory(parse_withdraw_args(
+                rest,
+            )?))
+        }
+        REBALANCE_INVENTORY => {
+            let rest = &data[1..];
+            Ok(HubInstruction::RebalanceInventory(parse_rebalance_args(
+                rest,
+            )?))
+        }
+        INITIALIZE_CONFIG => {
+            let rest = &data[1..];
+            Ok(HubInstruction::InitializeConfig(HubConfig::parse(rest)?))
+        }
+        _ => Err(ProgramError::InvalidInstructionData),
+    }
+}
+
 fn parse_swap_exact_in_args(data: &[u8]) -> Result<SwapExactInArgs, ProgramError> {
     if data.len() != loyal_hub_abi::SWAP_EXACT_IN_ARGS_LEN {
         return Err(ProgramError::InvalidInstructionData);
     }
-    Ok(SwapExactInArgs {
-        amount_in: read_u64_at(data, swap_exact_in_args::AMOUNT_IN_OFFSET)?,
-        amount_out: read_u64_at(data, swap_exact_in_args::AMOUNT_OUT_OFFSET)?,
-        min_out: read_u64_at(data, swap_exact_in_args::MIN_OUT_OFFSET)?,
-        max_fee_bps: read_u16_at(data, swap_exact_in_args::MAX_FEE_BPS_OFFSET)?,
-        lane_id: HubLaneId(read_u8_at(data, swap_exact_in_args::LANE_ID_OFFSET)?),
-    })
+    #[cfg(kani)]
+    {
+        if data[swap_exact_in_args::AMOUNT_IN_OFFSET + 4] != 0
+            || data[swap_exact_in_args::AMOUNT_IN_OFFSET + 5] != 0
+            || data[swap_exact_in_args::AMOUNT_IN_OFFSET + 6] != 0
+            || data[swap_exact_in_args::AMOUNT_IN_OFFSET + 7] != 0
+            || data[swap_exact_in_args::AMOUNT_OUT_OFFSET + 4] != 0
+            || data[swap_exact_in_args::AMOUNT_OUT_OFFSET + 5] != 0
+            || data[swap_exact_in_args::AMOUNT_OUT_OFFSET + 6] != 0
+            || data[swap_exact_in_args::AMOUNT_OUT_OFFSET + 7] != 0
+            || data[swap_exact_in_args::MIN_OUT_OFFSET + 4] != 0
+            || data[swap_exact_in_args::MIN_OUT_OFFSET + 5] != 0
+            || data[swap_exact_in_args::MIN_OUT_OFFSET + 6] != 0
+            || data[swap_exact_in_args::MIN_OUT_OFFSET + 7] != 0
+        {
+            return Err(ProgramError::InvalidInstructionData);
+        }
+        let amount_in = read_u32_as_u64_at_kani(data, swap_exact_in_args::AMOUNT_IN_OFFSET);
+        let amount_out = read_u32_as_u64_at_kani(data, swap_exact_in_args::AMOUNT_OUT_OFFSET);
+        let min_out = read_u32_as_u64_at_kani(data, swap_exact_in_args::MIN_OUT_OFFSET);
+        let max_fee_bps = u16::from_le_bytes([
+            data[swap_exact_in_args::MAX_FEE_BPS_OFFSET],
+            data[swap_exact_in_args::MAX_FEE_BPS_OFFSET + 1],
+        ]);
+        let lane_id = data[swap_exact_in_args::LANE_ID_OFFSET];
+        if amount_in > 1_000_000 || amount_out > 1_000_000 || max_fee_bps > 10_000 {
+            return Err(ProgramError::InvalidInstructionData);
+        }
+        return Ok(SwapExactInArgs {
+            amount_in,
+            amount_out,
+            min_out,
+            max_fee_bps,
+            lane_id: HubLaneId(lane_id),
+        });
+    }
+
+    #[cfg(not(kani))]
+    {
+        let amount_in = read_u64_at(data, swap_exact_in_args::AMOUNT_IN_OFFSET)?;
+        let amount_out = read_u64_at(data, swap_exact_in_args::AMOUNT_OUT_OFFSET)?;
+        let min_out = read_u64_at(data, swap_exact_in_args::MIN_OUT_OFFSET)?;
+        let max_fee_bps = read_u16_at(data, swap_exact_in_args::MAX_FEE_BPS_OFFSET)?;
+        let lane_id = read_u8_at(data, swap_exact_in_args::LANE_ID_OFFSET)?;
+        Ok(SwapExactInArgs {
+            amount_in,
+            amount_out,
+            min_out,
+            max_fee_bps,
+            lane_id: HubLaneId(lane_id),
+        })
+    }
+}
+
+#[cfg(kani)]
+fn read_u32_as_u64_at_kani(data: &[u8], offset: usize) -> u64 {
+    u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]) as u64
 }
 
 fn parse_withdraw_args(data: &[u8]) -> Result<WithdrawInventoryArgs, ProgramError> {

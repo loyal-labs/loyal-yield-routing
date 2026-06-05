@@ -676,7 +676,10 @@ fn loyal_hub_rebalancer_can_move_max_transfers_in_one_instruction() {
             amount: ((index + 1) as u64) * 1_000,
         })
         .collect::<Vec<_>>();
-    let total_rebalanced = transfers.iter().map(|transfer| transfer.amount).sum::<u64>();
+    let total_rebalanced = transfers
+        .iter()
+        .map(|transfer| transfer.amount)
+        .sum::<u64>();
     let ix = rebalance_loyal_hub_inventory_instruction(
         fixture.inventory_rebalancer.pubkey(),
         USDC_MINT,

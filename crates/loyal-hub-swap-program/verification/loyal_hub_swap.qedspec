@@ -136,7 +136,10 @@ handler swap_exact_in
 
   requires amount_in > 0 else InvalidAmount
   requires amount_out > 0 else InvalidAmount
+  requires amount_in <= 1000000 else InvalidAmount
+  requires amount_out <= 1000000 else InvalidAmount
   requires amount_out >= min_out else InvalidAmount
+  requires amount_out >= amount_in else InvalidAmount
   requires state.paused == 0 else InvalidAmount
   requires max_fee_bps <= state.max_fee_bps else InvalidFee
   requires max_fee_bps <= 10000 else InvalidFee
@@ -157,6 +160,8 @@ handler swap_exact_in
   requires hub_input.pubkey != hub_output.pubkey else InvalidAccount
   requires input_decimals <= 18 else InvalidMint
   requires output_decimals <= 18 else InvalidMint
+  requires input_decimals == 6 else InvalidMint
+  requires output_decimals == 6 else InvalidMint
   requires retained_value_bps <= 10000 else InvalidFee
   requires max_fee_bps + retained_value_bps == 10000 else InvalidFee
   requires fee_input_normalized <= NORMALIZED_FEE_MUL_MAX else InvalidFee
@@ -202,6 +207,7 @@ handler withdraw_inventory
 
   requires admin.pubkey == state.admin_key else Unauthorized
   requires amount > 0 else InvalidAmount
+  requires amount <= 1000000 else InvalidAmount
   requires lane_id < state.lane_count else InvalidLane
   requires
     mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
@@ -238,6 +244,7 @@ handler rebalance_inventory
 
   requires inventory_rebalancer.pubkey == state.inventory_rebalancer_key else Unauthorized
   requires amount > 0 else InvalidAmount
+  requires amount <= 1000000 else InvalidAmount
   requires from_lane_id != to_lane_id else InvalidLane
   requires from_lane_id < state.lane_count else InvalidLane
   requires to_lane_id < state.lane_count else InvalidLane
@@ -263,7 +270,9 @@ handler rebalance_inventory
 // parameter, so the batch model is specialized by arity. The base
 // rebalance_inventory handler above remains the single-transfer ABI drift
 // anchor; rebalance_inventory_2 through rebalance_inventory_16 prove the
-// additional bounded batch shapes.
+// additional bounded batch shapes. The accepted end-to-end Kani proof gate
+// currently covers arities 1, 2, and 4; larger generated arities remain
+// solver-splitting future work until they are final-gated with real Kani.
 
 handler rebalance_inventory_2
   (amount_0 : U64)
@@ -293,11 +302,13 @@ handler rebalance_inventory_2
     mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
     else InvalidMint
   requires amount_0 > 0 else InvalidAmount
+  requires amount_0 <= 1000000 else InvalidAmount
   requires from_lane_id_0 != to_lane_id_0 else InvalidLane
   requires from_lane_id_0 < state.lane_count else InvalidLane
   requires to_lane_id_0 < state.lane_count else InvalidLane
   requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
   requires amount_1 > 0 else InvalidAmount
+  requires amount_1 <= 1000000 else InvalidAmount
   requires from_lane_id_1 != to_lane_id_1 else InvalidLane
   requires from_lane_id_1 < state.lane_count else InvalidLane
   requires to_lane_id_1 < state.lane_count else InvalidLane
@@ -358,16 +369,19 @@ handler rebalance_inventory_3
     mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
     else InvalidMint
   requires amount_0 > 0 else InvalidAmount
+  requires amount_0 <= 1000000 else InvalidAmount
   requires from_lane_id_0 != to_lane_id_0 else InvalidLane
   requires from_lane_id_0 < state.lane_count else InvalidLane
   requires to_lane_id_0 < state.lane_count else InvalidLane
   requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
   requires amount_1 > 0 else InvalidAmount
+  requires amount_1 <= 1000000 else InvalidAmount
   requires from_lane_id_1 != to_lane_id_1 else InvalidLane
   requires from_lane_id_1 < state.lane_count else InvalidLane
   requires to_lane_id_1 < state.lane_count else InvalidLane
   requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
   requires amount_2 > 0 else InvalidAmount
+  requires amount_2 <= 1000000 else InvalidAmount
   requires from_lane_id_2 != to_lane_id_2 else InvalidLane
   requires from_lane_id_2 < state.lane_count else InvalidLane
   requires to_lane_id_2 < state.lane_count else InvalidLane
@@ -440,21 +454,25 @@ handler rebalance_inventory_4
     mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
     else InvalidMint
   requires amount_0 > 0 else InvalidAmount
+  requires amount_0 <= 1000000 else InvalidAmount
   requires from_lane_id_0 != to_lane_id_0 else InvalidLane
   requires from_lane_id_0 < state.lane_count else InvalidLane
   requires to_lane_id_0 < state.lane_count else InvalidLane
   requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
   requires amount_1 > 0 else InvalidAmount
+  requires amount_1 <= 1000000 else InvalidAmount
   requires from_lane_id_1 != to_lane_id_1 else InvalidLane
   requires from_lane_id_1 < state.lane_count else InvalidLane
   requires to_lane_id_1 < state.lane_count else InvalidLane
   requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
   requires amount_2 > 0 else InvalidAmount
+  requires amount_2 <= 1000000 else InvalidAmount
   requires from_lane_id_2 != to_lane_id_2 else InvalidLane
   requires from_lane_id_2 < state.lane_count else InvalidLane
   requires to_lane_id_2 < state.lane_count else InvalidLane
   requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
   requires amount_3 > 0 else InvalidAmount
+  requires amount_3 <= 1000000 else InvalidAmount
   requires from_lane_id_3 != to_lane_id_3 else InvalidLane
   requires from_lane_id_3 < state.lane_count else InvalidLane
   requires to_lane_id_3 < state.lane_count else InvalidLane
@@ -539,26 +557,31 @@ handler rebalance_inventory_5
     mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
     else InvalidMint
   requires amount_0 > 0 else InvalidAmount
+  requires amount_0 <= 1000000 else InvalidAmount
   requires from_lane_id_0 != to_lane_id_0 else InvalidLane
   requires from_lane_id_0 < state.lane_count else InvalidLane
   requires to_lane_id_0 < state.lane_count else InvalidLane
   requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
   requires amount_1 > 0 else InvalidAmount
+  requires amount_1 <= 1000000 else InvalidAmount
   requires from_lane_id_1 != to_lane_id_1 else InvalidLane
   requires from_lane_id_1 < state.lane_count else InvalidLane
   requires to_lane_id_1 < state.lane_count else InvalidLane
   requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
   requires amount_2 > 0 else InvalidAmount
+  requires amount_2 <= 1000000 else InvalidAmount
   requires from_lane_id_2 != to_lane_id_2 else InvalidLane
   requires from_lane_id_2 < state.lane_count else InvalidLane
   requires to_lane_id_2 < state.lane_count else InvalidLane
   requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
   requires amount_3 > 0 else InvalidAmount
+  requires amount_3 <= 1000000 else InvalidAmount
   requires from_lane_id_3 != to_lane_id_3 else InvalidLane
   requires from_lane_id_3 < state.lane_count else InvalidLane
   requires to_lane_id_3 < state.lane_count else InvalidLane
   requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
   requires amount_4 > 0 else InvalidAmount
+  requires amount_4 <= 1000000 else InvalidAmount
   requires from_lane_id_4 != to_lane_id_4 else InvalidLane
   requires from_lane_id_4 < state.lane_count else InvalidLane
   requires to_lane_id_4 < state.lane_count else InvalidLane
@@ -655,31 +678,37 @@ handler rebalance_inventory_6
     mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
     else InvalidMint
   requires amount_0 > 0 else InvalidAmount
+  requires amount_0 <= 1000000 else InvalidAmount
   requires from_lane_id_0 != to_lane_id_0 else InvalidLane
   requires from_lane_id_0 < state.lane_count else InvalidLane
   requires to_lane_id_0 < state.lane_count else InvalidLane
   requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
   requires amount_1 > 0 else InvalidAmount
+  requires amount_1 <= 1000000 else InvalidAmount
   requires from_lane_id_1 != to_lane_id_1 else InvalidLane
   requires from_lane_id_1 < state.lane_count else InvalidLane
   requires to_lane_id_1 < state.lane_count else InvalidLane
   requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
   requires amount_2 > 0 else InvalidAmount
+  requires amount_2 <= 1000000 else InvalidAmount
   requires from_lane_id_2 != to_lane_id_2 else InvalidLane
   requires from_lane_id_2 < state.lane_count else InvalidLane
   requires to_lane_id_2 < state.lane_count else InvalidLane
   requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
   requires amount_3 > 0 else InvalidAmount
+  requires amount_3 <= 1000000 else InvalidAmount
   requires from_lane_id_3 != to_lane_id_3 else InvalidLane
   requires from_lane_id_3 < state.lane_count else InvalidLane
   requires to_lane_id_3 < state.lane_count else InvalidLane
   requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
   requires amount_4 > 0 else InvalidAmount
+  requires amount_4 <= 1000000 else InvalidAmount
   requires from_lane_id_4 != to_lane_id_4 else InvalidLane
   requires from_lane_id_4 < state.lane_count else InvalidLane
   requires to_lane_id_4 < state.lane_count else InvalidLane
   requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
   requires amount_5 > 0 else InvalidAmount
+  requires amount_5 <= 1000000 else InvalidAmount
   requires from_lane_id_5 != to_lane_id_5 else InvalidLane
   requires from_lane_id_5 < state.lane_count else InvalidLane
   requires to_lane_id_5 < state.lane_count else InvalidLane
@@ -788,36 +817,43 @@ handler rebalance_inventory_7
     mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
     else InvalidMint
   requires amount_0 > 0 else InvalidAmount
+  requires amount_0 <= 1000000 else InvalidAmount
   requires from_lane_id_0 != to_lane_id_0 else InvalidLane
   requires from_lane_id_0 < state.lane_count else InvalidLane
   requires to_lane_id_0 < state.lane_count else InvalidLane
   requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
   requires amount_1 > 0 else InvalidAmount
+  requires amount_1 <= 1000000 else InvalidAmount
   requires from_lane_id_1 != to_lane_id_1 else InvalidLane
   requires from_lane_id_1 < state.lane_count else InvalidLane
   requires to_lane_id_1 < state.lane_count else InvalidLane
   requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
   requires amount_2 > 0 else InvalidAmount
+  requires amount_2 <= 1000000 else InvalidAmount
   requires from_lane_id_2 != to_lane_id_2 else InvalidLane
   requires from_lane_id_2 < state.lane_count else InvalidLane
   requires to_lane_id_2 < state.lane_count else InvalidLane
   requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
   requires amount_3 > 0 else InvalidAmount
+  requires amount_3 <= 1000000 else InvalidAmount
   requires from_lane_id_3 != to_lane_id_3 else InvalidLane
   requires from_lane_id_3 < state.lane_count else InvalidLane
   requires to_lane_id_3 < state.lane_count else InvalidLane
   requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
   requires amount_4 > 0 else InvalidAmount
+  requires amount_4 <= 1000000 else InvalidAmount
   requires from_lane_id_4 != to_lane_id_4 else InvalidLane
   requires from_lane_id_4 < state.lane_count else InvalidLane
   requires to_lane_id_4 < state.lane_count else InvalidLane
   requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
   requires amount_5 > 0 else InvalidAmount
+  requires amount_5 <= 1000000 else InvalidAmount
   requires from_lane_id_5 != to_lane_id_5 else InvalidLane
   requires from_lane_id_5 < state.lane_count else InvalidLane
   requires to_lane_id_5 < state.lane_count else InvalidLane
   requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
   requires amount_6 > 0 else InvalidAmount
+  requires amount_6 <= 1000000 else InvalidAmount
   requires from_lane_id_6 != to_lane_id_6 else InvalidLane
   requires from_lane_id_6 < state.lane_count else InvalidLane
   requires to_lane_id_6 < state.lane_count else InvalidLane
@@ -938,41 +974,49 @@ handler rebalance_inventory_8
     mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
     else InvalidMint
   requires amount_0 > 0 else InvalidAmount
+  requires amount_0 <= 1000000 else InvalidAmount
   requires from_lane_id_0 != to_lane_id_0 else InvalidLane
   requires from_lane_id_0 < state.lane_count else InvalidLane
   requires to_lane_id_0 < state.lane_count else InvalidLane
   requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
   requires amount_1 > 0 else InvalidAmount
+  requires amount_1 <= 1000000 else InvalidAmount
   requires from_lane_id_1 != to_lane_id_1 else InvalidLane
   requires from_lane_id_1 < state.lane_count else InvalidLane
   requires to_lane_id_1 < state.lane_count else InvalidLane
   requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
   requires amount_2 > 0 else InvalidAmount
+  requires amount_2 <= 1000000 else InvalidAmount
   requires from_lane_id_2 != to_lane_id_2 else InvalidLane
   requires from_lane_id_2 < state.lane_count else InvalidLane
   requires to_lane_id_2 < state.lane_count else InvalidLane
   requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
   requires amount_3 > 0 else InvalidAmount
+  requires amount_3 <= 1000000 else InvalidAmount
   requires from_lane_id_3 != to_lane_id_3 else InvalidLane
   requires from_lane_id_3 < state.lane_count else InvalidLane
   requires to_lane_id_3 < state.lane_count else InvalidLane
   requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
   requires amount_4 > 0 else InvalidAmount
+  requires amount_4 <= 1000000 else InvalidAmount
   requires from_lane_id_4 != to_lane_id_4 else InvalidLane
   requires from_lane_id_4 < state.lane_count else InvalidLane
   requires to_lane_id_4 < state.lane_count else InvalidLane
   requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
   requires amount_5 > 0 else InvalidAmount
+  requires amount_5 <= 1000000 else InvalidAmount
   requires from_lane_id_5 != to_lane_id_5 else InvalidLane
   requires from_lane_id_5 < state.lane_count else InvalidLane
   requires to_lane_id_5 < state.lane_count else InvalidLane
   requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
   requires amount_6 > 0 else InvalidAmount
+  requires amount_6 <= 1000000 else InvalidAmount
   requires from_lane_id_6 != to_lane_id_6 else InvalidLane
   requires from_lane_id_6 < state.lane_count else InvalidLane
   requires to_lane_id_6 < state.lane_count else InvalidLane
   requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
   requires amount_7 > 0 else InvalidAmount
+  requires amount_7 <= 1000000 else InvalidAmount
   requires from_lane_id_7 != to_lane_id_7 else InvalidLane
   requires from_lane_id_7 < state.lane_count else InvalidLane
   requires to_lane_id_7 < state.lane_count else InvalidLane
@@ -1105,46 +1149,55 @@ handler rebalance_inventory_9
     mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
     else InvalidMint
   requires amount_0 > 0 else InvalidAmount
+  requires amount_0 <= 1000000 else InvalidAmount
   requires from_lane_id_0 != to_lane_id_0 else InvalidLane
   requires from_lane_id_0 < state.lane_count else InvalidLane
   requires to_lane_id_0 < state.lane_count else InvalidLane
   requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
   requires amount_1 > 0 else InvalidAmount
+  requires amount_1 <= 1000000 else InvalidAmount
   requires from_lane_id_1 != to_lane_id_1 else InvalidLane
   requires from_lane_id_1 < state.lane_count else InvalidLane
   requires to_lane_id_1 < state.lane_count else InvalidLane
   requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
   requires amount_2 > 0 else InvalidAmount
+  requires amount_2 <= 1000000 else InvalidAmount
   requires from_lane_id_2 != to_lane_id_2 else InvalidLane
   requires from_lane_id_2 < state.lane_count else InvalidLane
   requires to_lane_id_2 < state.lane_count else InvalidLane
   requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
   requires amount_3 > 0 else InvalidAmount
+  requires amount_3 <= 1000000 else InvalidAmount
   requires from_lane_id_3 != to_lane_id_3 else InvalidLane
   requires from_lane_id_3 < state.lane_count else InvalidLane
   requires to_lane_id_3 < state.lane_count else InvalidLane
   requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
   requires amount_4 > 0 else InvalidAmount
+  requires amount_4 <= 1000000 else InvalidAmount
   requires from_lane_id_4 != to_lane_id_4 else InvalidLane
   requires from_lane_id_4 < state.lane_count else InvalidLane
   requires to_lane_id_4 < state.lane_count else InvalidLane
   requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
   requires amount_5 > 0 else InvalidAmount
+  requires amount_5 <= 1000000 else InvalidAmount
   requires from_lane_id_5 != to_lane_id_5 else InvalidLane
   requires from_lane_id_5 < state.lane_count else InvalidLane
   requires to_lane_id_5 < state.lane_count else InvalidLane
   requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
   requires amount_6 > 0 else InvalidAmount
+  requires amount_6 <= 1000000 else InvalidAmount
   requires from_lane_id_6 != to_lane_id_6 else InvalidLane
   requires from_lane_id_6 < state.lane_count else InvalidLane
   requires to_lane_id_6 < state.lane_count else InvalidLane
   requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
   requires amount_7 > 0 else InvalidAmount
+  requires amount_7 <= 1000000 else InvalidAmount
   requires from_lane_id_7 != to_lane_id_7 else InvalidLane
   requires from_lane_id_7 < state.lane_count else InvalidLane
   requires to_lane_id_7 < state.lane_count else InvalidLane
   requires source_inventory_7.pubkey != destination_inventory_7.pubkey else InvalidAccount
   requires amount_8 > 0 else InvalidAmount
+  requires amount_8 <= 1000000 else InvalidAmount
   requires from_lane_id_8 != to_lane_id_8 else InvalidLane
   requires from_lane_id_8 < state.lane_count else InvalidLane
   requires to_lane_id_8 < state.lane_count else InvalidLane
@@ -1289,51 +1342,61 @@ handler rebalance_inventory_10
     mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
     else InvalidMint
   requires amount_0 > 0 else InvalidAmount
+  requires amount_0 <= 1000000 else InvalidAmount
   requires from_lane_id_0 != to_lane_id_0 else InvalidLane
   requires from_lane_id_0 < state.lane_count else InvalidLane
   requires to_lane_id_0 < state.lane_count else InvalidLane
   requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
   requires amount_1 > 0 else InvalidAmount
+  requires amount_1 <= 1000000 else InvalidAmount
   requires from_lane_id_1 != to_lane_id_1 else InvalidLane
   requires from_lane_id_1 < state.lane_count else InvalidLane
   requires to_lane_id_1 < state.lane_count else InvalidLane
   requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
   requires amount_2 > 0 else InvalidAmount
+  requires amount_2 <= 1000000 else InvalidAmount
   requires from_lane_id_2 != to_lane_id_2 else InvalidLane
   requires from_lane_id_2 < state.lane_count else InvalidLane
   requires to_lane_id_2 < state.lane_count else InvalidLane
   requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
   requires amount_3 > 0 else InvalidAmount
+  requires amount_3 <= 1000000 else InvalidAmount
   requires from_lane_id_3 != to_lane_id_3 else InvalidLane
   requires from_lane_id_3 < state.lane_count else InvalidLane
   requires to_lane_id_3 < state.lane_count else InvalidLane
   requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
   requires amount_4 > 0 else InvalidAmount
+  requires amount_4 <= 1000000 else InvalidAmount
   requires from_lane_id_4 != to_lane_id_4 else InvalidLane
   requires from_lane_id_4 < state.lane_count else InvalidLane
   requires to_lane_id_4 < state.lane_count else InvalidLane
   requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
   requires amount_5 > 0 else InvalidAmount
+  requires amount_5 <= 1000000 else InvalidAmount
   requires from_lane_id_5 != to_lane_id_5 else InvalidLane
   requires from_lane_id_5 < state.lane_count else InvalidLane
   requires to_lane_id_5 < state.lane_count else InvalidLane
   requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
   requires amount_6 > 0 else InvalidAmount
+  requires amount_6 <= 1000000 else InvalidAmount
   requires from_lane_id_6 != to_lane_id_6 else InvalidLane
   requires from_lane_id_6 < state.lane_count else InvalidLane
   requires to_lane_id_6 < state.lane_count else InvalidLane
   requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
   requires amount_7 > 0 else InvalidAmount
+  requires amount_7 <= 1000000 else InvalidAmount
   requires from_lane_id_7 != to_lane_id_7 else InvalidLane
   requires from_lane_id_7 < state.lane_count else InvalidLane
   requires to_lane_id_7 < state.lane_count else InvalidLane
   requires source_inventory_7.pubkey != destination_inventory_7.pubkey else InvalidAccount
   requires amount_8 > 0 else InvalidAmount
+  requires amount_8 <= 1000000 else InvalidAmount
   requires from_lane_id_8 != to_lane_id_8 else InvalidLane
   requires from_lane_id_8 < state.lane_count else InvalidLane
   requires to_lane_id_8 < state.lane_count else InvalidLane
   requires source_inventory_8.pubkey != destination_inventory_8.pubkey else InvalidAccount
   requires amount_9 > 0 else InvalidAmount
+  requires amount_9 <= 1000000 else InvalidAmount
   requires from_lane_id_9 != to_lane_id_9 else InvalidLane
   requires from_lane_id_9 < state.lane_count else InvalidLane
   requires to_lane_id_9 < state.lane_count else InvalidLane
@@ -1490,56 +1553,67 @@ handler rebalance_inventory_11
     mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
     else InvalidMint
   requires amount_0 > 0 else InvalidAmount
+  requires amount_0 <= 1000000 else InvalidAmount
   requires from_lane_id_0 != to_lane_id_0 else InvalidLane
   requires from_lane_id_0 < state.lane_count else InvalidLane
   requires to_lane_id_0 < state.lane_count else InvalidLane
   requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
   requires amount_1 > 0 else InvalidAmount
+  requires amount_1 <= 1000000 else InvalidAmount
   requires from_lane_id_1 != to_lane_id_1 else InvalidLane
   requires from_lane_id_1 < state.lane_count else InvalidLane
   requires to_lane_id_1 < state.lane_count else InvalidLane
   requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
   requires amount_2 > 0 else InvalidAmount
+  requires amount_2 <= 1000000 else InvalidAmount
   requires from_lane_id_2 != to_lane_id_2 else InvalidLane
   requires from_lane_id_2 < state.lane_count else InvalidLane
   requires to_lane_id_2 < state.lane_count else InvalidLane
   requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
   requires amount_3 > 0 else InvalidAmount
+  requires amount_3 <= 1000000 else InvalidAmount
   requires from_lane_id_3 != to_lane_id_3 else InvalidLane
   requires from_lane_id_3 < state.lane_count else InvalidLane
   requires to_lane_id_3 < state.lane_count else InvalidLane
   requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
   requires amount_4 > 0 else InvalidAmount
+  requires amount_4 <= 1000000 else InvalidAmount
   requires from_lane_id_4 != to_lane_id_4 else InvalidLane
   requires from_lane_id_4 < state.lane_count else InvalidLane
   requires to_lane_id_4 < state.lane_count else InvalidLane
   requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
   requires amount_5 > 0 else InvalidAmount
+  requires amount_5 <= 1000000 else InvalidAmount
   requires from_lane_id_5 != to_lane_id_5 else InvalidLane
   requires from_lane_id_5 < state.lane_count else InvalidLane
   requires to_lane_id_5 < state.lane_count else InvalidLane
   requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
   requires amount_6 > 0 else InvalidAmount
+  requires amount_6 <= 1000000 else InvalidAmount
   requires from_lane_id_6 != to_lane_id_6 else InvalidLane
   requires from_lane_id_6 < state.lane_count else InvalidLane
   requires to_lane_id_6 < state.lane_count else InvalidLane
   requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
   requires amount_7 > 0 else InvalidAmount
+  requires amount_7 <= 1000000 else InvalidAmount
   requires from_lane_id_7 != to_lane_id_7 else InvalidLane
   requires from_lane_id_7 < state.lane_count else InvalidLane
   requires to_lane_id_7 < state.lane_count else InvalidLane
   requires source_inventory_7.pubkey != destination_inventory_7.pubkey else InvalidAccount
   requires amount_8 > 0 else InvalidAmount
+  requires amount_8 <= 1000000 else InvalidAmount
   requires from_lane_id_8 != to_lane_id_8 else InvalidLane
   requires from_lane_id_8 < state.lane_count else InvalidLane
   requires to_lane_id_8 < state.lane_count else InvalidLane
   requires source_inventory_8.pubkey != destination_inventory_8.pubkey else InvalidAccount
   requires amount_9 > 0 else InvalidAmount
+  requires amount_9 <= 1000000 else InvalidAmount
   requires from_lane_id_9 != to_lane_id_9 else InvalidLane
   requires from_lane_id_9 < state.lane_count else InvalidLane
   requires to_lane_id_9 < state.lane_count else InvalidLane
   requires source_inventory_9.pubkey != destination_inventory_9.pubkey else InvalidAccount
   requires amount_10 > 0 else InvalidAmount
+  requires amount_10 <= 1000000 else InvalidAmount
   requires from_lane_id_10 != to_lane_id_10 else InvalidLane
   requires from_lane_id_10 < state.lane_count else InvalidLane
   requires to_lane_id_10 < state.lane_count else InvalidLane
@@ -1708,61 +1782,73 @@ handler rebalance_inventory_12
     mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
     else InvalidMint
   requires amount_0 > 0 else InvalidAmount
+  requires amount_0 <= 1000000 else InvalidAmount
   requires from_lane_id_0 != to_lane_id_0 else InvalidLane
   requires from_lane_id_0 < state.lane_count else InvalidLane
   requires to_lane_id_0 < state.lane_count else InvalidLane
   requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
   requires amount_1 > 0 else InvalidAmount
+  requires amount_1 <= 1000000 else InvalidAmount
   requires from_lane_id_1 != to_lane_id_1 else InvalidLane
   requires from_lane_id_1 < state.lane_count else InvalidLane
   requires to_lane_id_1 < state.lane_count else InvalidLane
   requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
   requires amount_2 > 0 else InvalidAmount
+  requires amount_2 <= 1000000 else InvalidAmount
   requires from_lane_id_2 != to_lane_id_2 else InvalidLane
   requires from_lane_id_2 < state.lane_count else InvalidLane
   requires to_lane_id_2 < state.lane_count else InvalidLane
   requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
   requires amount_3 > 0 else InvalidAmount
+  requires amount_3 <= 1000000 else InvalidAmount
   requires from_lane_id_3 != to_lane_id_3 else InvalidLane
   requires from_lane_id_3 < state.lane_count else InvalidLane
   requires to_lane_id_3 < state.lane_count else InvalidLane
   requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
   requires amount_4 > 0 else InvalidAmount
+  requires amount_4 <= 1000000 else InvalidAmount
   requires from_lane_id_4 != to_lane_id_4 else InvalidLane
   requires from_lane_id_4 < state.lane_count else InvalidLane
   requires to_lane_id_4 < state.lane_count else InvalidLane
   requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
   requires amount_5 > 0 else InvalidAmount
+  requires amount_5 <= 1000000 else InvalidAmount
   requires from_lane_id_5 != to_lane_id_5 else InvalidLane
   requires from_lane_id_5 < state.lane_count else InvalidLane
   requires to_lane_id_5 < state.lane_count else InvalidLane
   requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
   requires amount_6 > 0 else InvalidAmount
+  requires amount_6 <= 1000000 else InvalidAmount
   requires from_lane_id_6 != to_lane_id_6 else InvalidLane
   requires from_lane_id_6 < state.lane_count else InvalidLane
   requires to_lane_id_6 < state.lane_count else InvalidLane
   requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
   requires amount_7 > 0 else InvalidAmount
+  requires amount_7 <= 1000000 else InvalidAmount
   requires from_lane_id_7 != to_lane_id_7 else InvalidLane
   requires from_lane_id_7 < state.lane_count else InvalidLane
   requires to_lane_id_7 < state.lane_count else InvalidLane
   requires source_inventory_7.pubkey != destination_inventory_7.pubkey else InvalidAccount
   requires amount_8 > 0 else InvalidAmount
+  requires amount_8 <= 1000000 else InvalidAmount
   requires from_lane_id_8 != to_lane_id_8 else InvalidLane
   requires from_lane_id_8 < state.lane_count else InvalidLane
   requires to_lane_id_8 < state.lane_count else InvalidLane
   requires source_inventory_8.pubkey != destination_inventory_8.pubkey else InvalidAccount
   requires amount_9 > 0 else InvalidAmount
+  requires amount_9 <= 1000000 else InvalidAmount
   requires from_lane_id_9 != to_lane_id_9 else InvalidLane
   requires from_lane_id_9 < state.lane_count else InvalidLane
   requires to_lane_id_9 < state.lane_count else InvalidLane
   requires source_inventory_9.pubkey != destination_inventory_9.pubkey else InvalidAccount
   requires amount_10 > 0 else InvalidAmount
+  requires amount_10 <= 1000000 else InvalidAmount
   requires from_lane_id_10 != to_lane_id_10 else InvalidLane
   requires from_lane_id_10 < state.lane_count else InvalidLane
   requires to_lane_id_10 < state.lane_count else InvalidLane
   requires source_inventory_10.pubkey != destination_inventory_10.pubkey else InvalidAccount
   requires amount_11 > 0 else InvalidAmount
+  requires amount_11 <= 1000000 else InvalidAmount
   requires from_lane_id_11 != to_lane_id_11 else InvalidLane
   requires from_lane_id_11 < state.lane_count else InvalidLane
   requires to_lane_id_11 < state.lane_count else InvalidLane
@@ -1943,66 +2029,79 @@ handler rebalance_inventory_13
     mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
     else InvalidMint
   requires amount_0 > 0 else InvalidAmount
+  requires amount_0 <= 1000000 else InvalidAmount
   requires from_lane_id_0 != to_lane_id_0 else InvalidLane
   requires from_lane_id_0 < state.lane_count else InvalidLane
   requires to_lane_id_0 < state.lane_count else InvalidLane
   requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
   requires amount_1 > 0 else InvalidAmount
+  requires amount_1 <= 1000000 else InvalidAmount
   requires from_lane_id_1 != to_lane_id_1 else InvalidLane
   requires from_lane_id_1 < state.lane_count else InvalidLane
   requires to_lane_id_1 < state.lane_count else InvalidLane
   requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
   requires amount_2 > 0 else InvalidAmount
+  requires amount_2 <= 1000000 else InvalidAmount
   requires from_lane_id_2 != to_lane_id_2 else InvalidLane
   requires from_lane_id_2 < state.lane_count else InvalidLane
   requires to_lane_id_2 < state.lane_count else InvalidLane
   requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
   requires amount_3 > 0 else InvalidAmount
+  requires amount_3 <= 1000000 else InvalidAmount
   requires from_lane_id_3 != to_lane_id_3 else InvalidLane
   requires from_lane_id_3 < state.lane_count else InvalidLane
   requires to_lane_id_3 < state.lane_count else InvalidLane
   requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
   requires amount_4 > 0 else InvalidAmount
+  requires amount_4 <= 1000000 else InvalidAmount
   requires from_lane_id_4 != to_lane_id_4 else InvalidLane
   requires from_lane_id_4 < state.lane_count else InvalidLane
   requires to_lane_id_4 < state.lane_count else InvalidLane
   requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
   requires amount_5 > 0 else InvalidAmount
+  requires amount_5 <= 1000000 else InvalidAmount
   requires from_lane_id_5 != to_lane_id_5 else InvalidLane
   requires from_lane_id_5 < state.lane_count else InvalidLane
   requires to_lane_id_5 < state.lane_count else InvalidLane
   requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
   requires amount_6 > 0 else InvalidAmount
+  requires amount_6 <= 1000000 else InvalidAmount
   requires from_lane_id_6 != to_lane_id_6 else InvalidLane
   requires from_lane_id_6 < state.lane_count else InvalidLane
   requires to_lane_id_6 < state.lane_count else InvalidLane
   requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
   requires amount_7 > 0 else InvalidAmount
+  requires amount_7 <= 1000000 else InvalidAmount
   requires from_lane_id_7 != to_lane_id_7 else InvalidLane
   requires from_lane_id_7 < state.lane_count else InvalidLane
   requires to_lane_id_7 < state.lane_count else InvalidLane
   requires source_inventory_7.pubkey != destination_inventory_7.pubkey else InvalidAccount
   requires amount_8 > 0 else InvalidAmount
+  requires amount_8 <= 1000000 else InvalidAmount
   requires from_lane_id_8 != to_lane_id_8 else InvalidLane
   requires from_lane_id_8 < state.lane_count else InvalidLane
   requires to_lane_id_8 < state.lane_count else InvalidLane
   requires source_inventory_8.pubkey != destination_inventory_8.pubkey else InvalidAccount
   requires amount_9 > 0 else InvalidAmount
+  requires amount_9 <= 1000000 else InvalidAmount
   requires from_lane_id_9 != to_lane_id_9 else InvalidLane
   requires from_lane_id_9 < state.lane_count else InvalidLane
   requires to_lane_id_9 < state.lane_count else InvalidLane
   requires source_inventory_9.pubkey != destination_inventory_9.pubkey else InvalidAccount
   requires amount_10 > 0 else InvalidAmount
+  requires amount_10 <= 1000000 else InvalidAmount
   requires from_lane_id_10 != to_lane_id_10 else InvalidLane
   requires from_lane_id_10 < state.lane_count else InvalidLane
   requires to_lane_id_10 < state.lane_count else InvalidLane
   requires source_inventory_10.pubkey != destination_inventory_10.pubkey else InvalidAccount
   requires amount_11 > 0 else InvalidAmount
+  requires amount_11 <= 1000000 else InvalidAmount
   requires from_lane_id_11 != to_lane_id_11 else InvalidLane
   requires from_lane_id_11 < state.lane_count else InvalidLane
   requires to_lane_id_11 < state.lane_count else InvalidLane
   requires source_inventory_11.pubkey != destination_inventory_11.pubkey else InvalidAccount
   requires amount_12 > 0 else InvalidAmount
+  requires amount_12 <= 1000000 else InvalidAmount
   requires from_lane_id_12 != to_lane_id_12 else InvalidLane
   requires from_lane_id_12 < state.lane_count else InvalidLane
   requires to_lane_id_12 < state.lane_count else InvalidLane
@@ -2195,71 +2294,85 @@ handler rebalance_inventory_14
     mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
     else InvalidMint
   requires amount_0 > 0 else InvalidAmount
+  requires amount_0 <= 1000000 else InvalidAmount
   requires from_lane_id_0 != to_lane_id_0 else InvalidLane
   requires from_lane_id_0 < state.lane_count else InvalidLane
   requires to_lane_id_0 < state.lane_count else InvalidLane
   requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
   requires amount_1 > 0 else InvalidAmount
+  requires amount_1 <= 1000000 else InvalidAmount
   requires from_lane_id_1 != to_lane_id_1 else InvalidLane
   requires from_lane_id_1 < state.lane_count else InvalidLane
   requires to_lane_id_1 < state.lane_count else InvalidLane
   requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
   requires amount_2 > 0 else InvalidAmount
+  requires amount_2 <= 1000000 else InvalidAmount
   requires from_lane_id_2 != to_lane_id_2 else InvalidLane
   requires from_lane_id_2 < state.lane_count else InvalidLane
   requires to_lane_id_2 < state.lane_count else InvalidLane
   requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
   requires amount_3 > 0 else InvalidAmount
+  requires amount_3 <= 1000000 else InvalidAmount
   requires from_lane_id_3 != to_lane_id_3 else InvalidLane
   requires from_lane_id_3 < state.lane_count else InvalidLane
   requires to_lane_id_3 < state.lane_count else InvalidLane
   requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
   requires amount_4 > 0 else InvalidAmount
+  requires amount_4 <= 1000000 else InvalidAmount
   requires from_lane_id_4 != to_lane_id_4 else InvalidLane
   requires from_lane_id_4 < state.lane_count else InvalidLane
   requires to_lane_id_4 < state.lane_count else InvalidLane
   requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
   requires amount_5 > 0 else InvalidAmount
+  requires amount_5 <= 1000000 else InvalidAmount
   requires from_lane_id_5 != to_lane_id_5 else InvalidLane
   requires from_lane_id_5 < state.lane_count else InvalidLane
   requires to_lane_id_5 < state.lane_count else InvalidLane
   requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
   requires amount_6 > 0 else InvalidAmount
+  requires amount_6 <= 1000000 else InvalidAmount
   requires from_lane_id_6 != to_lane_id_6 else InvalidLane
   requires from_lane_id_6 < state.lane_count else InvalidLane
   requires to_lane_id_6 < state.lane_count else InvalidLane
   requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
   requires amount_7 > 0 else InvalidAmount
+  requires amount_7 <= 1000000 else InvalidAmount
   requires from_lane_id_7 != to_lane_id_7 else InvalidLane
   requires from_lane_id_7 < state.lane_count else InvalidLane
   requires to_lane_id_7 < state.lane_count else InvalidLane
   requires source_inventory_7.pubkey != destination_inventory_7.pubkey else InvalidAccount
   requires amount_8 > 0 else InvalidAmount
+  requires amount_8 <= 1000000 else InvalidAmount
   requires from_lane_id_8 != to_lane_id_8 else InvalidLane
   requires from_lane_id_8 < state.lane_count else InvalidLane
   requires to_lane_id_8 < state.lane_count else InvalidLane
   requires source_inventory_8.pubkey != destination_inventory_8.pubkey else InvalidAccount
   requires amount_9 > 0 else InvalidAmount
+  requires amount_9 <= 1000000 else InvalidAmount
   requires from_lane_id_9 != to_lane_id_9 else InvalidLane
   requires from_lane_id_9 < state.lane_count else InvalidLane
   requires to_lane_id_9 < state.lane_count else InvalidLane
   requires source_inventory_9.pubkey != destination_inventory_9.pubkey else InvalidAccount
   requires amount_10 > 0 else InvalidAmount
+  requires amount_10 <= 1000000 else InvalidAmount
   requires from_lane_id_10 != to_lane_id_10 else InvalidLane
   requires from_lane_id_10 < state.lane_count else InvalidLane
   requires to_lane_id_10 < state.lane_count else InvalidLane
   requires source_inventory_10.pubkey != destination_inventory_10.pubkey else InvalidAccount
   requires amount_11 > 0 else InvalidAmount
+  requires amount_11 <= 1000000 else InvalidAmount
   requires from_lane_id_11 != to_lane_id_11 else InvalidLane
   requires from_lane_id_11 < state.lane_count else InvalidLane
   requires to_lane_id_11 < state.lane_count else InvalidLane
   requires source_inventory_11.pubkey != destination_inventory_11.pubkey else InvalidAccount
   requires amount_12 > 0 else InvalidAmount
+  requires amount_12 <= 1000000 else InvalidAmount
   requires from_lane_id_12 != to_lane_id_12 else InvalidLane
   requires from_lane_id_12 < state.lane_count else InvalidLane
   requires to_lane_id_12 < state.lane_count else InvalidLane
   requires source_inventory_12.pubkey != destination_inventory_12.pubkey else InvalidAccount
   requires amount_13 > 0 else InvalidAmount
+  requires amount_13 <= 1000000 else InvalidAmount
   requires from_lane_id_13 != to_lane_id_13 else InvalidLane
   requires from_lane_id_13 < state.lane_count else InvalidLane
   requires to_lane_id_13 < state.lane_count else InvalidLane
@@ -2464,76 +2577,91 @@ handler rebalance_inventory_15
     mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
     else InvalidMint
   requires amount_0 > 0 else InvalidAmount
+  requires amount_0 <= 1000000 else InvalidAmount
   requires from_lane_id_0 != to_lane_id_0 else InvalidLane
   requires from_lane_id_0 < state.lane_count else InvalidLane
   requires to_lane_id_0 < state.lane_count else InvalidLane
   requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
   requires amount_1 > 0 else InvalidAmount
+  requires amount_1 <= 1000000 else InvalidAmount
   requires from_lane_id_1 != to_lane_id_1 else InvalidLane
   requires from_lane_id_1 < state.lane_count else InvalidLane
   requires to_lane_id_1 < state.lane_count else InvalidLane
   requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
   requires amount_2 > 0 else InvalidAmount
+  requires amount_2 <= 1000000 else InvalidAmount
   requires from_lane_id_2 != to_lane_id_2 else InvalidLane
   requires from_lane_id_2 < state.lane_count else InvalidLane
   requires to_lane_id_2 < state.lane_count else InvalidLane
   requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
   requires amount_3 > 0 else InvalidAmount
+  requires amount_3 <= 1000000 else InvalidAmount
   requires from_lane_id_3 != to_lane_id_3 else InvalidLane
   requires from_lane_id_3 < state.lane_count else InvalidLane
   requires to_lane_id_3 < state.lane_count else InvalidLane
   requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
   requires amount_4 > 0 else InvalidAmount
+  requires amount_4 <= 1000000 else InvalidAmount
   requires from_lane_id_4 != to_lane_id_4 else InvalidLane
   requires from_lane_id_4 < state.lane_count else InvalidLane
   requires to_lane_id_4 < state.lane_count else InvalidLane
   requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
   requires amount_5 > 0 else InvalidAmount
+  requires amount_5 <= 1000000 else InvalidAmount
   requires from_lane_id_5 != to_lane_id_5 else InvalidLane
   requires from_lane_id_5 < state.lane_count else InvalidLane
   requires to_lane_id_5 < state.lane_count else InvalidLane
   requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
   requires amount_6 > 0 else InvalidAmount
+  requires amount_6 <= 1000000 else InvalidAmount
   requires from_lane_id_6 != to_lane_id_6 else InvalidLane
   requires from_lane_id_6 < state.lane_count else InvalidLane
   requires to_lane_id_6 < state.lane_count else InvalidLane
   requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
   requires amount_7 > 0 else InvalidAmount
+  requires amount_7 <= 1000000 else InvalidAmount
   requires from_lane_id_7 != to_lane_id_7 else InvalidLane
   requires from_lane_id_7 < state.lane_count else InvalidLane
   requires to_lane_id_7 < state.lane_count else InvalidLane
   requires source_inventory_7.pubkey != destination_inventory_7.pubkey else InvalidAccount
   requires amount_8 > 0 else InvalidAmount
+  requires amount_8 <= 1000000 else InvalidAmount
   requires from_lane_id_8 != to_lane_id_8 else InvalidLane
   requires from_lane_id_8 < state.lane_count else InvalidLane
   requires to_lane_id_8 < state.lane_count else InvalidLane
   requires source_inventory_8.pubkey != destination_inventory_8.pubkey else InvalidAccount
   requires amount_9 > 0 else InvalidAmount
+  requires amount_9 <= 1000000 else InvalidAmount
   requires from_lane_id_9 != to_lane_id_9 else InvalidLane
   requires from_lane_id_9 < state.lane_count else InvalidLane
   requires to_lane_id_9 < state.lane_count else InvalidLane
   requires source_inventory_9.pubkey != destination_inventory_9.pubkey else InvalidAccount
   requires amount_10 > 0 else InvalidAmount
+  requires amount_10 <= 1000000 else InvalidAmount
   requires from_lane_id_10 != to_lane_id_10 else InvalidLane
   requires from_lane_id_10 < state.lane_count else InvalidLane
   requires to_lane_id_10 < state.lane_count else InvalidLane
   requires source_inventory_10.pubkey != destination_inventory_10.pubkey else InvalidAccount
   requires amount_11 > 0 else InvalidAmount
+  requires amount_11 <= 1000000 else InvalidAmount
   requires from_lane_id_11 != to_lane_id_11 else InvalidLane
   requires from_lane_id_11 < state.lane_count else InvalidLane
   requires to_lane_id_11 < state.lane_count else InvalidLane
   requires source_inventory_11.pubkey != destination_inventory_11.pubkey else InvalidAccount
   requires amount_12 > 0 else InvalidAmount
+  requires amount_12 <= 1000000 else InvalidAmount
   requires from_lane_id_12 != to_lane_id_12 else InvalidLane
   requires from_lane_id_12 < state.lane_count else InvalidLane
   requires to_lane_id_12 < state.lane_count else InvalidLane
   requires source_inventory_12.pubkey != destination_inventory_12.pubkey else InvalidAccount
   requires amount_13 > 0 else InvalidAmount
+  requires amount_13 <= 1000000 else InvalidAmount
   requires from_lane_id_13 != to_lane_id_13 else InvalidLane
   requires from_lane_id_13 < state.lane_count else InvalidLane
   requires to_lane_id_13 < state.lane_count else InvalidLane
   requires source_inventory_13.pubkey != destination_inventory_13.pubkey else InvalidAccount
   requires amount_14 > 0 else InvalidAmount
+  requires amount_14 <= 1000000 else InvalidAmount
   requires from_lane_id_14 != to_lane_id_14 else InvalidLane
   requires from_lane_id_14 < state.lane_count else InvalidLane
   requires to_lane_id_14 < state.lane_count else InvalidLane
@@ -2750,81 +2878,97 @@ handler rebalance_inventory_16
     mint.pubkey == state.allowed_mint_0 or mint.pubkey == state.allowed_mint_1
     else InvalidMint
   requires amount_0 > 0 else InvalidAmount
+  requires amount_0 <= 1000000 else InvalidAmount
   requires from_lane_id_0 != to_lane_id_0 else InvalidLane
   requires from_lane_id_0 < state.lane_count else InvalidLane
   requires to_lane_id_0 < state.lane_count else InvalidLane
   requires source_inventory_0.pubkey != destination_inventory_0.pubkey else InvalidAccount
   requires amount_1 > 0 else InvalidAmount
+  requires amount_1 <= 1000000 else InvalidAmount
   requires from_lane_id_1 != to_lane_id_1 else InvalidLane
   requires from_lane_id_1 < state.lane_count else InvalidLane
   requires to_lane_id_1 < state.lane_count else InvalidLane
   requires source_inventory_1.pubkey != destination_inventory_1.pubkey else InvalidAccount
   requires amount_2 > 0 else InvalidAmount
+  requires amount_2 <= 1000000 else InvalidAmount
   requires from_lane_id_2 != to_lane_id_2 else InvalidLane
   requires from_lane_id_2 < state.lane_count else InvalidLane
   requires to_lane_id_2 < state.lane_count else InvalidLane
   requires source_inventory_2.pubkey != destination_inventory_2.pubkey else InvalidAccount
   requires amount_3 > 0 else InvalidAmount
+  requires amount_3 <= 1000000 else InvalidAmount
   requires from_lane_id_3 != to_lane_id_3 else InvalidLane
   requires from_lane_id_3 < state.lane_count else InvalidLane
   requires to_lane_id_3 < state.lane_count else InvalidLane
   requires source_inventory_3.pubkey != destination_inventory_3.pubkey else InvalidAccount
   requires amount_4 > 0 else InvalidAmount
+  requires amount_4 <= 1000000 else InvalidAmount
   requires from_lane_id_4 != to_lane_id_4 else InvalidLane
   requires from_lane_id_4 < state.lane_count else InvalidLane
   requires to_lane_id_4 < state.lane_count else InvalidLane
   requires source_inventory_4.pubkey != destination_inventory_4.pubkey else InvalidAccount
   requires amount_5 > 0 else InvalidAmount
+  requires amount_5 <= 1000000 else InvalidAmount
   requires from_lane_id_5 != to_lane_id_5 else InvalidLane
   requires from_lane_id_5 < state.lane_count else InvalidLane
   requires to_lane_id_5 < state.lane_count else InvalidLane
   requires source_inventory_5.pubkey != destination_inventory_5.pubkey else InvalidAccount
   requires amount_6 > 0 else InvalidAmount
+  requires amount_6 <= 1000000 else InvalidAmount
   requires from_lane_id_6 != to_lane_id_6 else InvalidLane
   requires from_lane_id_6 < state.lane_count else InvalidLane
   requires to_lane_id_6 < state.lane_count else InvalidLane
   requires source_inventory_6.pubkey != destination_inventory_6.pubkey else InvalidAccount
   requires amount_7 > 0 else InvalidAmount
+  requires amount_7 <= 1000000 else InvalidAmount
   requires from_lane_id_7 != to_lane_id_7 else InvalidLane
   requires from_lane_id_7 < state.lane_count else InvalidLane
   requires to_lane_id_7 < state.lane_count else InvalidLane
   requires source_inventory_7.pubkey != destination_inventory_7.pubkey else InvalidAccount
   requires amount_8 > 0 else InvalidAmount
+  requires amount_8 <= 1000000 else InvalidAmount
   requires from_lane_id_8 != to_lane_id_8 else InvalidLane
   requires from_lane_id_8 < state.lane_count else InvalidLane
   requires to_lane_id_8 < state.lane_count else InvalidLane
   requires source_inventory_8.pubkey != destination_inventory_8.pubkey else InvalidAccount
   requires amount_9 > 0 else InvalidAmount
+  requires amount_9 <= 1000000 else InvalidAmount
   requires from_lane_id_9 != to_lane_id_9 else InvalidLane
   requires from_lane_id_9 < state.lane_count else InvalidLane
   requires to_lane_id_9 < state.lane_count else InvalidLane
   requires source_inventory_9.pubkey != destination_inventory_9.pubkey else InvalidAccount
   requires amount_10 > 0 else InvalidAmount
+  requires amount_10 <= 1000000 else InvalidAmount
   requires from_lane_id_10 != to_lane_id_10 else InvalidLane
   requires from_lane_id_10 < state.lane_count else InvalidLane
   requires to_lane_id_10 < state.lane_count else InvalidLane
   requires source_inventory_10.pubkey != destination_inventory_10.pubkey else InvalidAccount
   requires amount_11 > 0 else InvalidAmount
+  requires amount_11 <= 1000000 else InvalidAmount
   requires from_lane_id_11 != to_lane_id_11 else InvalidLane
   requires from_lane_id_11 < state.lane_count else InvalidLane
   requires to_lane_id_11 < state.lane_count else InvalidLane
   requires source_inventory_11.pubkey != destination_inventory_11.pubkey else InvalidAccount
   requires amount_12 > 0 else InvalidAmount
+  requires amount_12 <= 1000000 else InvalidAmount
   requires from_lane_id_12 != to_lane_id_12 else InvalidLane
   requires from_lane_id_12 < state.lane_count else InvalidLane
   requires to_lane_id_12 < state.lane_count else InvalidLane
   requires source_inventory_12.pubkey != destination_inventory_12.pubkey else InvalidAccount
   requires amount_13 > 0 else InvalidAmount
+  requires amount_13 <= 1000000 else InvalidAmount
   requires from_lane_id_13 != to_lane_id_13 else InvalidLane
   requires from_lane_id_13 < state.lane_count else InvalidLane
   requires to_lane_id_13 < state.lane_count else InvalidLane
   requires source_inventory_13.pubkey != destination_inventory_13.pubkey else InvalidAccount
   requires amount_14 > 0 else InvalidAmount
+  requires amount_14 <= 1000000 else InvalidAmount
   requires from_lane_id_14 != to_lane_id_14 else InvalidLane
   requires from_lane_id_14 < state.lane_count else InvalidLane
   requires to_lane_id_14 < state.lane_count else InvalidLane
   requires source_inventory_14.pubkey != destination_inventory_14.pubkey else InvalidAccount
   requires amount_15 > 0 else InvalidAmount
+  requires amount_15 <= 1000000 else InvalidAmount
   requires from_lane_id_15 != to_lane_id_15 else InvalidLane
   requires from_lane_id_15 < state.lane_count else InvalidLane
   requires to_lane_id_15 < state.lane_count else InvalidLane

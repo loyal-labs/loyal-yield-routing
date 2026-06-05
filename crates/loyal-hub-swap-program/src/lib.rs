@@ -1,4 +1,5 @@
 #![allow(unexpected_cfgs)]
+#![cfg_attr(kani, allow(dead_code, unreachable_code, unused_imports))]
 
 mod codec;
 mod constants;
@@ -17,6 +18,8 @@ pub use state::{derive_config, derive_hub_authority, derive_inventory_account, H
 
 #[cfg(kani)]
 extern crate kani;
+#[cfg(kani)]
+mod kani_contracts;
 #[cfg(kani)]
 mod kani_impl;
 
