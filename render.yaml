@@ -1,13 +1,14 @@
 services:
   - type: worker
     name: loyal-kamino-reserve-monitor
-    runtime: rust
+    runtime: docker
     region: oregon
     plan: pro
     autoDeploy: false
-    buildCommand: cargo build --release -p kamino-reserve-monitor -p kamino-timescale-migrations
-    preDeployCommand: ./target/release/kamino-timescale-migrations --apply && ./target/release/kamino-reserve-monitor --sync-supported-reserves
-    startCommand: ./target/release/kamino-reserve-monitor
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    preDeployCommand: /usr/local/bin/kamino-reserve-monitor --sync-supported-reserves
+    dockerCommand: /usr/local/bin/kamino-reserve-monitor
     maxShutdownDelaySeconds: 60
     envVars:
       - key: TIMESCALEDB_URL
