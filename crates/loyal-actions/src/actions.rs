@@ -4,6 +4,7 @@ use crate::protocols::{
     kamino_redeem_reserve_collateral_constraint, loyal_hub_constraint, unique_pubkeys,
 };
 use crate::squads::{
+    create_legacy_program_interaction_action_instruction,
     create_program_interaction_action_instruction, derive_action_account, LoyalActionError, Result,
     SquadsInstructionConstraint,
 };
@@ -53,11 +54,14 @@ impl YieldRouteUniverse {
 
 pub fn yield_route_universe_for_preset(preset: YieldRouteUniversePreset) -> YieldRouteUniverse {
     match preset {
-        YieldRouteUniversePreset::KaminoStable(profile) => YieldRouteUniverse::new(
-            supported_yield_route_stable_mints(),
-            kamino_stable_markets_for_profile(profile),
-            supported_yield_route_stable_mints(),
-        ),
+        YieldRouteUniversePreset::KaminoStable(profile) => {
+            let stable_mints = kamino_stable_mints_for_profile(profile);
+            YieldRouteUniverse::new(
+                stable_mints.clone(),
+                kamino_stable_markets_for_profile(profile),
+                stable_mints,
+            )
+        }
     }
 }
 
@@ -83,6 +87,13 @@ pub enum RouteTopology {
     CombinedKamino,
     AllInOne,
     SwapOnly,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SquadsProgramInteractionEncoding {
+    #[default]
+    Compiled,
+    Legacy,
 }
 
 impl Default for RouteTopology {
@@ -277,6 +288,7 @@ pub struct YieldRouteActionPlan {
     pub topology: RouteTopology,
     pub swap_lanes: Vec<SwapLane>,
     pub seeds: YieldRouteActionSeeds,
+    pub program_interaction_encoding: SquadsProgramInteractionEncoding,
 }
 
 pub struct YieldRouteActionBuilder {
@@ -292,6 +304,7 @@ impl YieldRouteActionBuilder {
                 topology: RouteTopology::default(),
                 swap_lanes: Vec::new(),
                 seeds: YieldRouteActionSeeds::default(),
+                program_interaction_encoding: SquadsProgramInteractionEncoding::default(),
             },
         }
     }
@@ -308,6 +321,14 @@ impl YieldRouteActionBuilder {
 
     pub fn seeds(mut self, seeds: YieldRouteActionSeeds) -> Self {
         self.plan.seeds = seeds;
+        self
+    }
+
+    pub fn program_interaction_encoding(
+        mut self,
+        encoding: SquadsProgramInteractionEncoding,
+    ) -> Self {
+        self.plan.program_interaction_encoding = encoding;
         self
     }
 
@@ -398,6 +419,15 @@ fn kamino_stable_markets_for_profile(profile: KaminoStableRiskProfile) -> Vec<Pu
         ]);
     }
     unique_pubkeys(markets)
+}
+
+fn kamino_stable_mints_for_profile(profile: KaminoStableRiskProfile) -> Vec<Pubkey> {
+    match profile {
+        KaminoStableRiskProfile::Safe => vec![USDC_MINT, USDT_MINT, PYUSD_MINT],
+        KaminoStableRiskProfile::Medium | KaminoStableRiskProfile::Aggressive => {
+            supported_yield_route_stable_mints()
+        }
+    }
 }
 
 // Production Kamino Stable preset allowlists are sourced from the local Kamino
@@ -497,7 +527,12 @@ fn build_swap_only(plan: YieldRouteActionPlan) -> Result<YieldRouteActionSetup> 
         plan.universe.stable_mints.clone(),
         &plan.swap_lanes,
     )?;
-    let instruction = action_instruction(plan.context, plan.seeds.swap, constraints.clone())?;
+    let instruction = action_instruction(
+        plan.context,
+        plan.program_interaction_encoding,
+        plan.seeds.swap,
+        constraints.clone(),
+    )?;
     let steps = swap_steps(action, &plan.swap_lanes, 0);
 
     setup(plan, accounts, vec![instruction], steps, constraints.len())
@@ -523,12 +558,19 @@ fn build_three_step(plan: YieldRouteActionPlan) -> Result<YieldRouteActionSetup>
     let instructions = vec![
         action_instruction(
             plan.context,
+            plan.program_interaction_encoding,
             plan.seeds.withdraw,
             withdraw_constraints.clone(),
         )?,
-        action_instruction(plan.context, plan.seeds.swap, swap_constraints.clone())?,
         action_instruction(
             plan.context,
+            plan.program_interaction_encoding,
+            plan.seeds.swap,
+            swap_constraints.clone(),
+        )?,
+        action_instruction(
+            plan.context,
+            plan.program_interaction_encoding,
             plan.seeds.deposit,
             deposit_constraints.clone(),
         )?,
@@ -576,10 +618,16 @@ fn build_combined_kamino(plan: YieldRouteActionPlan) -> Result<YieldRouteActionS
     let instructions = vec![
         action_instruction(
             plan.context,
+            plan.program_interaction_encoding,
             plan.seeds.withdraw,
             kamino_constraints.clone(),
         )?,
-        action_instruction(plan.context, plan.seeds.swap, swap_constraints.clone())?,
+        action_instruction(
+            plan.context,
+            plan.program_interaction_encoding,
+            plan.seeds.swap,
+            swap_constraints.clone(),
+        )?,
     ];
     let steps = YieldRouteSteps {
         withdraw: Some(LoyalActionStep::new(accounts.withdraw, 0)),
@@ -619,7 +667,12 @@ fn build_all_in_one(plan: YieldRouteActionPlan) -> Result<YieldRouteActionSetup>
         plan.universe.kamino_markets.clone(),
         plan.universe.kamino_liquidity_mints.clone(),
     ));
-    let instruction = action_instruction(plan.context, plan.seeds.withdraw, constraints.clone())?;
+    let instruction = action_instruction(
+        plan.context,
+        plan.program_interaction_encoding,
+        plan.seeds.withdraw,
+        constraints.clone(),
+    )?;
     let steps = YieldRouteSteps {
         withdraw: Some(LoyalActionStep::new(action, 0)),
         deposit: Some(LoyalActionStep::new(
@@ -681,17 +734,32 @@ fn action_accounts(settings: Pubkey, seeds: YieldRouteActionSeeds) -> YieldRoute
 
 fn action_instruction(
     context: LoyalActionContext,
+    encoding: SquadsProgramInteractionEncoding,
     action_seed: u64,
     constraints: Vec<SquadsInstructionConstraint>,
 ) -> Result<Instruction> {
-    create_program_interaction_action_instruction(
-        context.settings,
-        context.authority,
-        context.delegated_signer,
-        action_seed,
-        context.account_index,
-        constraints,
-    )
+    match encoding {
+        SquadsProgramInteractionEncoding::Compiled => {
+            create_program_interaction_action_instruction(
+                context.settings,
+                context.authority,
+                context.delegated_signer,
+                action_seed,
+                context.account_index,
+                constraints,
+            )
+        }
+        SquadsProgramInteractionEncoding::Legacy => {
+            create_legacy_program_interaction_action_instruction(
+                context.settings,
+                context.authority,
+                context.delegated_signer,
+                action_seed,
+                context.account_index,
+                constraints,
+            )
+        }
+    }
 }
 
 fn stable_swap_constraints(

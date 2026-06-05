@@ -118,7 +118,61 @@ pub(crate) fn create_program_interaction_action_instruction(
         expiration_args: None,
     };
 
-    Ok(Instruction {
+    Ok(policy_create_instruction(
+        settings,
+        authority,
+        action_account,
+        action,
+    ))
+}
+
+pub(crate) fn create_legacy_program_interaction_action_instruction(
+    settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    action_seed: u64,
+    account_index: u8,
+    constraints: Vec<SquadsInstructionConstraint>,
+) -> Result<Instruction> {
+    let (action_account, _) = derive_action_account(&settings, action_seed);
+    let action = SquadsSettingsAction::PolicyCreate {
+        seed: action_seed,
+        policy_creation_payload: SquadsPolicyCreationPayload::LegacyProgramInteraction(
+            SquadsProgramInteractionPolicyCreationPayloadLegacy {
+                account_index,
+                instructions_constraints: constraints,
+                pre_hook: None,
+                post_hook: None,
+                spending_limits: Vec::new(),
+            },
+        ),
+        signers: vec![SquadsSmartAccountSigner {
+            key: delegated_signer,
+            permissions: SquadsPermissions {
+                mask: SQUADS_FULL_PERMISSIONS_MASK,
+            },
+        }],
+        threshold: 1,
+        time_lock: 0,
+        start_timestamp: None,
+        expiration_args: None,
+    };
+
+    Ok(policy_create_instruction(
+        settings,
+        authority,
+        action_account,
+        action,
+    ))
+}
+
+fn policy_create_instruction(
+    settings: Pubkey,
+    authority: Pubkey,
+    action_account: Pubkey,
+    action: SquadsSettingsAction,
+) -> Instruction {
+    Instruction {
         program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
         accounts: vec![
             AccountMeta::new(settings, false),
@@ -129,7 +183,7 @@ pub(crate) fn create_program_interaction_action_instruction(
             AccountMeta::new(action_account, false),
         ],
         data: serialize_settings_actions(vec![action]),
-    })
+    }
 }
 
 fn compile_program_interaction_payload(
@@ -318,8 +372,17 @@ enum SquadsPolicyCreationPayload {
     InternalFundTransfer(Vec<u8>),
     SpendingLimit(Vec<u8>),
     SettingsChange(Vec<u8>),
-    LegacyProgramInteraction(Vec<u8>),
+    LegacyProgramInteraction(SquadsProgramInteractionPolicyCreationPayloadLegacy),
     ProgramInteraction(SquadsProgramInteractionPolicyCreationPayload),
+}
+
+#[derive(BorshSerialize)]
+struct SquadsProgramInteractionPolicyCreationPayloadLegacy {
+    account_index: u8,
+    instructions_constraints: Vec<SquadsInstructionConstraint>,
+    pre_hook: Option<SquadsHook>,
+    post_hook: Option<SquadsHook>,
+    spending_limits: Vec<SquadsLimitedSpendingLimit>,
 }
 
 #[derive(BorshSerialize)]
@@ -388,24 +451,40 @@ struct SquadsCompiledLimitedSpendingLimit {
     quantity_constraints: SquadsLimitedQuantityConstraints,
 }
 
-#[derive(Clone)]
+#[derive(BorshSerialize, Clone)]
 pub(crate) struct SquadsInstructionConstraint {
     pub(crate) program_id: Pubkey,
     pub(crate) account_constraints: Vec<SquadsAccountConstraint>,
     pub(crate) data_constraints: Vec<SquadsDataConstraint>,
 }
 
-#[derive(Clone)]
+#[derive(BorshSerialize, Clone)]
 pub(crate) struct SquadsAccountConstraint {
     pub(crate) account_index: u8,
     pub(crate) account_constraint: SquadsAccountConstraintType,
     pub(crate) owner: Option<Pubkey>,
 }
 
-#[derive(Clone)]
+#[derive(BorshSerialize, Clone)]
 pub(crate) enum SquadsAccountConstraintType {
     Pubkey(Vec<Pubkey>),
     AccountData(Vec<SquadsDataConstraint>),
+}
+
+#[derive(BorshSerialize)]
+struct SquadsHook {
+    num_extra_accounts: u8,
+    account_constraints: Vec<SquadsAccountConstraint>,
+    instruction_data: Vec<u8>,
+    program_id: Pubkey,
+    pass_inner_instructions: bool,
+}
+
+#[derive(BorshSerialize)]
+struct SquadsLimitedSpendingLimit {
+    mint: Pubkey,
+    time_constraints: SquadsLimitedTimeConstraints,
+    quantity_constraints: SquadsLimitedQuantityConstraints,
 }
 
 #[derive(BorshSerialize, Clone)]
