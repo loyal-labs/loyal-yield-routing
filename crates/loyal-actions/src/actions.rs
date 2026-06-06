@@ -768,7 +768,7 @@ fn stable_swap_constraints(
     swap_lanes: &[SwapLane],
 ) -> Result<Vec<SquadsInstructionConstraint>> {
     validate_stable_mints(&allowed_mints)?;
-    validate_swap_lanes(swap_lanes)?;
+    validate_swap_lanes_when_present(swap_lanes)?;
 
     let allowed_mints = unique_pubkeys(allowed_mints);
     let mut constraints = Vec::with_capacity(swap_lanes.len());
@@ -808,8 +808,16 @@ fn validate_plan(plan: &YieldRouteActionPlan) -> Result<()> {
     if plan.topology != RouteTopology::SwapOnly {
         validate_kamino_universe(&plan.universe)?;
     }
-    validate_swap_lanes(&plan.swap_lanes)?;
+    if topology_requires_swap_lanes(plan.topology) {
+        validate_swap_lanes(&plan.swap_lanes)?;
+    } else {
+        validate_swap_lanes_when_present(&plan.swap_lanes)?;
+    }
     validate_action_seeds(plan.topology, plan.seeds)
+}
+
+fn topology_requires_swap_lanes(topology: RouteTopology) -> bool {
+    !matches!(topology, RouteTopology::AllInOne)
 }
 
 fn validate_stable_mints(stable_mints: &[Pubkey]) -> Result<()> {
@@ -833,6 +841,10 @@ fn validate_swap_lanes(swap_lanes: &[SwapLane]) -> Result<()> {
     if swap_lanes.is_empty() {
         return Err(LoyalActionError::EmptySwapLanes);
     }
+    validate_swap_lanes_when_present(swap_lanes)
+}
+
+fn validate_swap_lanes_when_present(swap_lanes: &[SwapLane]) -> Result<()> {
     for lane in swap_lanes {
         if let SwapLane::LoyalHub { max_fee_bps, .. } = lane {
             if *max_fee_bps > loyal_hub_abi::MAX_FEE_BPS as u16 {
@@ -905,9 +917,45 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_swap_lanes() {
+    fn builds_same_mint_only_all_in_one_route() {
+        let context = context();
         let result =
-            create_all_in_one_market_mint_yield_route_action(context(), universe(), vec![]);
+            create_all_in_one_market_mint_yield_route_action(context, universe(), vec![]).unwrap();
+
+        assert_eq!(result.instructions.len(), 1);
+        assert_eq!(
+            result.jupiter_route().unwrap_err(),
+            LoyalActionError::MissingActionStep
+        );
+        assert_eq!(
+            result
+                .withdraw_step()
+                .unwrap()
+                .instruction_constraint_index(),
+            0
+        );
+        assert_eq!(
+            result
+                .deposit_step()
+                .unwrap()
+                .instruction_constraint_index(),
+            1
+        );
+        assert_eq!(result.spec.constraint_count, 2);
+
+        let same_mint_route = result.same_mint_route().unwrap();
+        assert_eq!(same_mint_route.action_account(), result.accounts.withdraw);
+        assert_eq!(same_mint_route.instruction_constraint_indexes(), &[0, 1]);
+    }
+
+    #[test]
+    fn rejects_empty_swap_lanes_for_swap_only_route() {
+        let result = create_swap_yield_route_action(
+            context(),
+            universe().stable_mints,
+            vec![],
+            YIELD_ROUTE_SWAP_ACTION_SEED,
+        );
         assert_eq!(result.unwrap_err(), LoyalActionError::EmptySwapLanes);
     }
 

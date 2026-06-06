@@ -9,10 +9,10 @@ use clap::{Parser, ValueEnum, ValueHint};
 use loyal_actions::{
     yield_route_universe_for_preset, JupiterSwapContract, KaminoStableRiskProfile,
     LoyalActionContext, RouteTopology, SquadsProgramInteractionEncoding, SwapLane,
-    YieldRouteActionBuilder, YieldRouteUniversePreset, JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
-    JUPITER_SWAP_DISCRIMINATOR, KAMINO_LEND_PROGRAM_ID, LOYAL_HUB_SWAP_PROGRAM_ID,
-    SQUADS_SMART_ACCOUNT_PROGRAM_ID, YIELD_ROUTE_DEPOSIT_ACTION_SEED, YIELD_ROUTE_SWAP_ACTION_SEED,
-    YIELD_ROUTE_WITHDRAW_ACTION_SEED,
+    YieldRouteActionBuilder, YieldRouteActionSeeds, YieldRouteUniverse, YieldRouteUniversePreset,
+    JUPITER_DEFAULT_MAX_SLIPPAGE_BPS, JUPITER_SWAP_DISCRIMINATOR, KAMINO_LEND_PROGRAM_ID,
+    LOYAL_HUB_SWAP_PROGRAM_ID, SQUADS_SMART_ACCOUNT_PROGRAM_ID, YIELD_ROUTE_DEPOSIT_ACTION_SEED,
+    YIELD_ROUTE_SWAP_ACTION_SEED, YIELD_ROUTE_WITHDRAW_ACTION_SEED,
 };
 use serde_json::{json, Value};
 use solana_client::{
@@ -91,6 +91,20 @@ struct Cli {
     user_keypair: PathBuf,
     #[arg(long, value_enum, default_value_t = RiskProfile::Safe)]
     risk_profile: RiskProfile,
+    #[arg(long, value_enum, default_value_t = TopologyArg::ThreeStep)]
+    topology: TopologyArg,
+    #[arg(
+        long = "program-interaction-encoding",
+        value_enum,
+        default_value_t = ProgramInteractionEncodingArg::Legacy
+    )]
+    program_interaction_encoding: ProgramInteractionEncodingArg,
+    #[arg(long = "stable-mint", value_delimiter = ',')]
+    stable_mints: Vec<Pubkey>,
+    #[arg(long = "kamino-market", value_delimiter = ',')]
+    kamino_markets: Vec<Pubkey>,
+    #[arg(long = "kamino-liquidity-mint", value_delimiter = ',')]
+    kamino_liquidity_mints: Vec<Pubkey>,
     #[arg(
         long = "swap-lane",
         value_enum,
@@ -98,6 +112,8 @@ struct Cli {
         default_value = "jupiter"
     )]
     swap_lanes: Vec<SwapLaneArg>,
+    #[arg(long = "same-mint-only")]
+    same_mint_only: bool,
     #[arg(long, default_value_t = DEFAULT_VAULT_INDEX)]
     vault_index: u8,
     #[arg(long)]
@@ -108,6 +124,12 @@ struct Cli {
     loyal_hub_authorizer: Option<Pubkey>,
     #[arg(long, default_value_t = DEFAULT_MAX_FEE_BPS)]
     max_fee_bps: u16,
+    #[arg(long, default_value_t = YIELD_ROUTE_WITHDRAW_ACTION_SEED)]
+    withdraw_action_seed: u64,
+    #[arg(long, default_value_t = YIELD_ROUTE_SWAP_ACTION_SEED)]
+    swap_action_seed: u64,
+    #[arg(long, default_value_t = YIELD_ROUTE_DEPOSIT_ACTION_SEED)]
+    deposit_action_seed: u64,
     #[arg(long, default_value_t = JUPITER_DEFAULT_MAX_SLIPPAGE_BPS)]
     jupiter_max_slippage_bps: u16,
     #[arg(long, default_value_t = DEFAULT_HEAP_FRAME_BYTES)]
@@ -171,12 +193,42 @@ enum SwapLaneArg {
     LoyalHub,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum TopologyArg {
+    ThreeStep,
+    CombinedKamino,
+    AllInOne,
+}
+
+impl TopologyArg {
+    fn as_route_topology(self) -> RouteTopology {
+        match self {
+            Self::ThreeStep => RouteTopology::ThreeStep,
+            Self::CombinedKamino => RouteTopology::CombinedKamino,
+            Self::AllInOne => RouteTopology::AllInOne,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ProgramInteractionEncodingArg {
+    Compiled,
+    Legacy,
+}
+
+impl ProgramInteractionEncodingArg {
+    fn as_squads_encoding(self) -> SquadsProgramInteractionEncoding {
+        match self {
+            Self::Compiled => SquadsProgramInteractionEncoding::Compiled,
+            Self::Legacy => SquadsProgramInteractionEncoding::Legacy,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 enum InitError {
     #[error("NEON_DATABASE_URL is required unless --skip-db or --dry-run is set")]
     MissingPostgresUrl,
-    #[error("at least one --swap-lane is required")]
-    EmptySwapLanes,
     #[error("--settings and --smart-account-seed cannot be used together")]
     ConflictingSettingsInputs,
     #[error("Squads program config account is too short: expected at least {expected} bytes, got {actual}")]
@@ -331,10 +383,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if cli.settings.is_some() && cli.smart_account_seed.is_some() {
         return Err(InitError::ConflictingSettingsInputs.into());
     }
-    if cli.swap_lanes.is_empty() {
-        return Err(InitError::EmptySwapLanes.into());
-    }
-
     let cluster_config = cluster_config(cli.cluster);
     ensure_cluster_config_matches_sdk(cluster_config)?;
 
@@ -378,6 +426,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let swap_lanes = build_swap_lanes(&cli, cluster_config);
+    let action_seeds = YieldRouteActionSeeds {
+        withdraw: cli.withdraw_action_seed,
+        swap: cli.swap_action_seed,
+        deposit: cli.deposit_action_seed,
+    };
     let action_setup = YieldRouteActionBuilder::new(
         LoyalActionContext {
             settings,
@@ -386,14 +439,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             account_index: cli.vault_index,
             vault,
         },
-        yield_route_universe_for_preset(cli.risk_profile.as_preset()),
+        build_route_universe(&cli),
     )
-    .topology(RouteTopology::ThreeStep)
+    .topology(cli.topology.as_route_topology())
     .swap_lanes(swap_lanes.clone())
-    .seeds(Default::default())
-    .program_interaction_encoding(SquadsProgramInteractionEncoding::Legacy)
+    .seeds(action_seeds)
+    .program_interaction_encoding(cli.program_interaction_encoding.as_squads_encoding())
     .build()?;
-    let policy_actions = policy_actions_for_setup(&action_setup);
+    let policy_actions = policy_actions_for_setup(&action_setup, action_seeds);
     for action in &policy_actions {
         if account_exists(&rpc, action.account)? {
             return Err(InitError::PolicyAccountAlreadyExists {
@@ -562,24 +615,65 @@ fn ensure_cluster_config_matches_sdk(config: ClusterConfig) -> Result<(), InitEr
     Ok(())
 }
 
-fn policy_actions_for_setup(setup: &loyal_actions::YieldRouteActionSetup) -> Vec<PolicyActionPlan> {
-    vec![
+fn build_route_universe(cli: &Cli) -> YieldRouteUniverse {
+    if cli.stable_mints.is_empty()
+        && cli.kamino_markets.is_empty()
+        && cli.kamino_liquidity_mints.is_empty()
+    {
+        return yield_route_universe_for_preset(cli.risk_profile.as_preset());
+    }
+
+    let stable_mints = if cli.stable_mints.is_empty() {
+        cli.kamino_liquidity_mints.clone()
+    } else {
+        cli.stable_mints.clone()
+    };
+    let kamino_liquidity_mints = if cli.kamino_liquidity_mints.is_empty() {
+        stable_mints.clone()
+    } else {
+        cli.kamino_liquidity_mints.clone()
+    };
+
+    YieldRouteUniverse::new(
+        stable_mints,
+        cli.kamino_markets.clone(),
+        kamino_liquidity_mints,
+    )
+}
+
+fn policy_actions_for_setup(
+    setup: &loyal_actions::YieldRouteActionSetup,
+    seeds: YieldRouteActionSeeds,
+) -> Vec<PolicyActionPlan> {
+    let candidates = [
         PolicyActionPlan {
             label: "withdraw_policy",
-            seed: YIELD_ROUTE_WITHDRAW_ACTION_SEED,
+            seed: seeds.withdraw,
             account: setup.accounts.withdraw,
         },
         PolicyActionPlan {
             label: "swap_policy",
-            seed: YIELD_ROUTE_SWAP_ACTION_SEED,
+            seed: seeds.swap,
             account: setup.accounts.swap,
         },
         PolicyActionPlan {
             label: "deposit_policy",
-            seed: YIELD_ROUTE_DEPOSIT_ACTION_SEED,
+            seed: seeds.deposit,
             account: setup.accounts.deposit,
         },
-    ]
+    ];
+
+    let mut actions = Vec::new();
+    for candidate in candidates {
+        if actions
+            .iter()
+            .any(|existing: &PolicyActionPlan| existing.account == candidate.account)
+        {
+            continue;
+        }
+        actions.push(candidate);
+    }
+    actions
 }
 
 fn policy_action_json(action: PolicyActionPlan) -> Value {
@@ -1655,6 +1749,10 @@ fn serialize_squads_policy_remove_probe_args(probe_policy_account: Pubkey) -> Ve
 }
 
 fn build_swap_lanes(cli: &Cli, cluster_config: ClusterConfig) -> Vec<SwapLane> {
+    if cli.same_mint_only {
+        return Vec::new();
+    }
+
     let mut lanes = Vec::with_capacity(cli.swap_lanes.len());
     for lane in &cli.swap_lanes {
         match lane {
