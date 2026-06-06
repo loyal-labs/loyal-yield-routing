@@ -2,7 +2,7 @@ use borsh::BorshSerialize;
 use loyal_actions::{
     kamino_deposit_reserve_liquidity_instruction, kamino_withdraw_reserve_liquidity_instruction,
     KaminoDepositReserveLiquidityAccounts, KaminoWithdrawReserveLiquidityAccounts,
-    SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+    KAMINO_LENDING_PROGRAM_ID, SQUADS_SMART_ACCOUNT_PROGRAM_ID,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -37,6 +37,12 @@ pub enum RouteBuildError {
 
 #[derive(Debug, Clone)]
 pub struct SameMintRouteTransaction {
+    pub instruction: Instruction,
+    pub report: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct KaminoDepositSyncTransaction {
     pub instruction: Instruction,
     pub report: Value,
 }
@@ -136,8 +142,8 @@ pub fn build_same_mint_route_transaction(
 
     let mut transaction_accounts = Vec::new();
     let compiled_instructions = vec![
-        compile_inner_instruction(&mut transaction_accounts, withdraw),
-        compile_inner_instruction(&mut transaction_accounts, deposit),
+        compile_squads_vault_instruction(&mut transaction_accounts, vault, withdraw),
+        compile_squads_vault_instruction(&mut transaction_accounts, vault, deposit),
     ];
     let instruction = execute_squads_program_interaction_instruction(
         policy,
@@ -166,6 +172,45 @@ pub fn build_same_mint_route_transaction(
     })
 }
 
+pub fn build_kamino_deposit_sync_transaction(
+    settings: Pubkey,
+    signer: Pubkey,
+    vault_index: u8,
+    vault: Pubkey,
+    target: &SameMintReserveTarget,
+    amount: u64,
+) -> Result<KaminoDepositSyncTransaction, RouteBuildError> {
+    let deposit =
+        kamino_deposit_reserve_liquidity_instruction(deposit_accounts(vault, target)?, amount);
+
+    let mut transaction_accounts = Vec::new();
+    let compiled_instructions = vec![compile_squads_vault_instruction(
+        &mut transaction_accounts,
+        vault,
+        deposit,
+    )];
+    let instruction = execute_squads_sync_transaction_instruction(
+        settings,
+        signer,
+        vault_index,
+        compiled_instructions,
+        transaction_accounts,
+    );
+
+    Ok(KaminoDepositSyncTransaction {
+        instruction,
+        report: json!({
+            "kind": "kamino_deposit_sync_transaction",
+            "settings": settings.to_string(),
+            "vault": vault.to_string(),
+            "vaultIndex": vault_index,
+            "signer": signer.to_string(),
+            "target": target,
+            "amount": amount,
+        }),
+    })
+}
+
 pub fn associated_token_address(wallet: Pubkey, token_program: Pubkey, mint: Pubkey) -> Pubkey {
     Pubkey::find_program_address(
         &[wallet.as_ref(), token_program.as_ref(), mint.as_ref()],
@@ -184,13 +229,15 @@ fn withdraw_accounts(
         "source.accounts.reserve_collateral_mint",
         &target.accounts.reserve_collateral_mint,
     )?;
+    let lending_market = parse_pubkey("source.market", &target.market)?;
     Ok(KaminoWithdrawReserveLiquidityAccounts {
         owner: vault,
-        lending_market: parse_pubkey("source.market", &target.market)?,
+        lending_market,
         reserve: parse_pubkey("source.reserve", &target.reserve)?,
-        lending_market_authority: parse_pubkey(
+        lending_market_authority: parse_lending_market_authority(
             "source.accounts.lending_market_authority",
             &target.accounts.lending_market_authority,
+            lending_market,
         )?,
         reserve_liquidity_mint: liquidity_mint,
         reserve_collateral_mint: collateral_mint,
@@ -214,13 +261,15 @@ fn deposit_accounts(
         "target.accounts.reserve_collateral_mint",
         &target.accounts.reserve_collateral_mint,
     )?;
+    let lending_market = parse_pubkey("target.market", &target.market)?;
     Ok(KaminoDepositReserveLiquidityAccounts {
         owner: vault,
         reserve: parse_pubkey("target.reserve", &target.reserve)?,
-        lending_market: parse_pubkey("target.market", &target.market)?,
-        lending_market_authority: parse_pubkey(
+        lending_market,
+        lending_market_authority: parse_lending_market_authority(
             "target.accounts.lending_market_authority",
             &target.accounts.lending_market_authority,
+            lending_market,
         )?,
         reserve_liquidity_mint: liquidity_mint,
         reserve_liquidity_supply: parse_pubkey(
@@ -279,6 +328,30 @@ fn execute_squads_program_interaction_instruction(
     }
 }
 
+fn execute_squads_sync_transaction_instruction(
+    settings: Pubkey,
+    signer: Pubkey,
+    account_index: u8,
+    compiled_instructions: Vec<SquadsCompiledInstruction>,
+    mut transaction_accounts: Vec<AccountMeta>,
+) -> Instruction {
+    let mut accounts = vec![
+        AccountMeta::new(settings, false),
+        AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+        AccountMeta::new_readonly(signer, true),
+    ];
+    accounts.append(&mut transaction_accounts);
+
+    Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts,
+        data: serialize_squads_sync_transaction_args(
+            account_index,
+            squads_compiled_instruction_payload(&compiled_instructions),
+        ),
+    }
+}
+
 fn serialize_squads_sync_policy_payload_args(
     account_index: u8,
     policy_payload: SquadsPolicyPayload,
@@ -291,6 +364,22 @@ fn serialize_squads_sync_policy_payload_args(
     }
     .serialize(&mut data)
     .expect("serialize Squads sync policy payload");
+    data
+}
+
+fn serialize_squads_sync_transaction_args(account_index: u8, payload: Vec<u8>) -> Vec<u8> {
+    let mut data = Vec::from(SQUADS_EXECUTE_TRANSACTION_SYNC_V2_DISCRIMINATOR);
+    account_index
+        .serialize(&mut data)
+        .expect("serialize Squads account index");
+    SQUADS_SYNC_SIGNER_COUNT
+        .serialize(&mut data)
+        .expect("serialize Squads signer count");
+    0u8.serialize(&mut data)
+        .expect("serialize Squads transaction payload variant");
+    payload
+        .serialize(&mut data)
+        .expect("serialize Squads transaction payload");
     data
 }
 
@@ -352,6 +441,27 @@ fn compile_inner_instruction(
     }
 }
 
+fn compile_squads_vault_instruction(
+    transaction_accounts: &mut Vec<AccountMeta>,
+    vault: Pubkey,
+    instruction: Instruction,
+) -> SquadsCompiledInstruction {
+    let instruction = Instruction {
+        accounts: instruction
+            .accounts
+            .into_iter()
+            .map(|mut account| {
+                if account.pubkey == vault {
+                    account.is_signer = false;
+                }
+                account
+            })
+            .collect(),
+        ..instruction
+    };
+    compile_inner_instruction(transaction_accounts, instruction)
+}
+
 fn push_or_update_account_meta(accounts: &mut Vec<AccountMeta>, meta: AccountMeta) -> usize {
     if let Some(index) = accounts
         .iter()
@@ -372,4 +482,19 @@ fn parse_pubkey(field: &'static str, value: &str) -> Result<Pubkey, RouteBuildEr
         field,
         value: value.to_owned(),
     })
+}
+
+fn parse_lending_market_authority(
+    field: &'static str,
+    value: &str,
+    lending_market: Pubkey,
+) -> Result<Pubkey, RouteBuildError> {
+    if value.is_empty() {
+        return Ok(Pubkey::find_program_address(
+            &[b"lma", lending_market.as_ref()],
+            &KAMINO_LENDING_PROGRAM_ID,
+        )
+        .0);
+    }
+    parse_pubkey(field, value)
 }
