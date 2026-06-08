@@ -64,6 +64,8 @@ pub struct AtaTarget {
     pub cluster: String,
     pub wallet: String,
     pub wallet_usdc_ata: Pubkey,
+    pub vault_pubkey: String,
+    pub vault_usdc_ata: Pubkey,
 }
 
 impl TryFrom<&BalanceSweepTarget> for AtaTarget {
@@ -75,6 +77,8 @@ impl TryFrom<&BalanceSweepTarget> for AtaTarget {
             cluster: value.cluster.clone(),
             wallet: value.wallet.clone(),
             wallet_usdc_ata: value.wallet_usdc_ata.parse()?,
+            vault_pubkey: value.vault_pubkey.clone(),
+            vault_usdc_ata: value.vault_usdc_ata.parse()?,
         })
     }
 }
@@ -235,6 +239,11 @@ pub async fn process_account_update(
     sink: &impl WalletBalanceSink,
 ) -> Result<WalletAtaBalanceCurrent> {
     if owner != spl_token::id() {
+        tracing::warn!(
+            wallet_usdc_ata = %target.wallet_usdc_ata,
+            owner = %owner,
+            "skipping wallet ATA update owned by non-SPL-token program"
+        );
         bail!(
             "wallet ATA {} owner is not SPL Token",
             target.wallet_usdc_ata
@@ -242,6 +251,11 @@ pub async fn process_account_update(
     }
     let snapshot = decode_spl_token_account(&data)?;
     if snapshot.mint != USDC_MINT {
+        tracing::warn!(
+            wallet_usdc_ata = %target.wallet_usdc_ata,
+            mint = %snapshot.mint,
+            "skipping wallet ATA update for non-USDC mint"
+        );
         bail!("wallet ATA {} mint is not USDC", target.wallet_usdc_ata);
     }
     let hash = account_data_hash(&data);
@@ -262,6 +276,10 @@ pub async fn process_account_update(
             "lamports": lamports,
             "account_data_hash": hash,
             "source": source,
+            "wallet": target.wallet,
+            "wallet_usdc_ata": target.wallet_usdc_ata.to_string(),
+            "vault_pubkey": target.vault_pubkey,
+            "vault_usdc_ata": target.vault_usdc_ata.to_string(),
         }),
     };
     Ok(sink.record_wallet_ata_balance_update(input).await?)
@@ -288,8 +306,16 @@ pub async fn run_event_loop(
         } = event
         {
             let Some(target) = targets.get(&account) else {
+                tracing::debug!(account = %account, "ignoring unwatched ATA update");
                 continue;
             };
+            tracing::debug!(
+                account = %account,
+                target_id = target.id.as_i64(),
+                slot,
+                source,
+                "writing wallet ATA balance update"
+            );
             process_account_update(
                 target,
                 0,
@@ -335,12 +361,19 @@ async fn run_laserstream_loop(
     running: Arc<AtomicBool>,
 ) {
     let request = build_laserstream_subscribe_request(&accounts, source.from_slot);
+    tracing::info!(
+        account_count = accounts.len(),
+        endpoint = %source.endpoint,
+        from_slot = source.from_slot,
+        "starting Laserstream ATA subscription"
+    );
     let config = LaserstreamConfig::new(source.endpoint, source.api_key)
         .with_max_reconnect_attempts(source.config.max_reconnect_attempts as u32)
         .with_replay(true);
     let (stream, _handle) = subscribe(config, request);
     futures_util::pin_mut!(stream);
     for account in &accounts {
+        tracing::info!(account = %account, "Laserstream ATA subscription connected");
         let _ = tx.send(AtaUpdateEvent::Connected {
             account: *account,
             attempt: 1,
@@ -355,6 +388,7 @@ async fn run_laserstream_loop(
                         let _ = forward_laserstream_update(update, &tx);
                     }
                     Some(Err(error)) => {
+                        tracing::warn!(error = %error, "Laserstream ATA stream failed");
                         for account in &accounts {
                             let _ = tx.send(AtaUpdateEvent::Failed {
                                 account: *account,
@@ -420,6 +454,7 @@ async fn run_websocket_loop(
     running: Arc<AtomicBool>,
 ) {
     let Ok(client) = PubsubClient::new(&ws_url).await else {
+        tracing::warn!(ws_url = %ws_url, "failed to connect websocket ATA source");
         for account in accounts {
             let _ = tx.send(AtaUpdateEvent::Failed {
                 account,
@@ -444,6 +479,7 @@ async fn run_websocket_loop(
             let Ok((mut stream, unsubscribe)) =
                 client.account_subscribe(&account, Some(config)).await
             else {
+                tracing::warn!(account = %account, "failed to subscribe websocket ATA account");
                 let _ = tx.send(AtaUpdateEvent::Failed {
                     account,
                     attempts: 1,
@@ -455,6 +491,7 @@ async fn run_websocket_loop(
                 account,
                 attempt: 1,
             });
+            tracing::info!(account = %account, "websocket ATA subscription connected");
             while running.load(Ordering::Relaxed) {
                 match time::timeout(Duration::from_millis(500), stream.next()).await {
                     Ok(Some(notification)) => {
@@ -578,6 +615,8 @@ mod tests {
             cluster: "devnet".to_owned(),
             wallet: wallet.to_string(),
             wallet_usdc_ata: ata,
+            vault_pubkey: Pubkey::new_unique().to_string(),
+            vault_usdc_ata: Pubkey::new_unique(),
         };
         let sink = VecSink {
             updates: std::sync::Mutex::new(Vec::new()),
@@ -599,5 +638,25 @@ mod tests {
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].amount_raw, 456);
         assert_eq!(updates[0].target_id, BalanceSweepTargetId(7));
+        assert_eq!(updates[0].account_data_hash.as_deref().unwrap().len(), 64);
+        assert_eq!(
+            updates[0].raw_evidence["wallet_usdc_ata"],
+            serde_json::Value::String(ata.to_string())
+        );
+    }
+
+    #[test]
+    fn laserstream_subscription_uses_dynamic_ata_targets() {
+        let first = Pubkey::new_unique();
+        let second = Pubkey::new_unique();
+        let request = build_laserstream_subscribe_request(&[first, second], 123);
+        let filter = request
+            .accounts
+            .get("balance_sweep_wallet_atas")
+            .expect("balance sweep account filter");
+        assert_eq!(filter.account, vec![first.to_string(), second.to_string()]);
+        assert_eq!(filter.owner.len(), 0);
+        assert_eq!(request.from_slot, Some(123));
+        assert_eq!(request.commitment, Some(CommitmentLevel::Confirmed as i32));
     }
 }

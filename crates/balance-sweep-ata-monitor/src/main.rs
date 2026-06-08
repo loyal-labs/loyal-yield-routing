@@ -56,6 +56,12 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let args = Args::parse();
+    tracing::info!(
+        cluster = %args.cluster,
+        update_source = ?args.update_source,
+        once = args.once,
+        "starting balance sweep ATA monitor"
+    );
     let store = OrchestratorStore::connect(OrchestratorConfig::new(args.postgres_url)).await?;
     store.apply_migrations().await?;
     let targets = store
@@ -64,8 +70,17 @@ async fn main() -> Result<()> {
         .iter()
         .map(AtaTarget::try_from)
         .collect::<Result<Vec<_>>>()?;
+    tracing::info!(
+        target_count = targets.len(),
+        "loaded active balance sweep ATA targets"
+    );
     seed_current_balances(&args.rpc_url, &targets, &store).await?;
+    tracing::info!(
+        target_count = targets.len(),
+        "seeded current wallet ATA balances"
+    );
     if args.once {
+        tracing::info!("exiting after one-shot balance seed");
         return Ok(());
     }
     if targets.is_empty() {
