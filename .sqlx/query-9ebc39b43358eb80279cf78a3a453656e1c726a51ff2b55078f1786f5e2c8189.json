@@ -1,0 +1,72 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT id, cluster, settings, vault_index, vault_pubkey, active_policy_id, active, first_seen_at, last_seen_at\n        FROM loyal_yield.managed_vaults\n        WHERE cluster = $1 AND settings = $2 AND vault_index = $3 AND active\n        ORDER BY last_seen_at DESC, id DESC\n        LIMIT 1\n        FOR UPDATE\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "cluster",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "settings",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "vault_index",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 4,
+        "name": "vault_pubkey",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "active_policy_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "first_seen_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int2"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9ebc39b43358eb80279cf78a3a453656e1c726a51ff2b55078f1786f5e2c8189"
+}

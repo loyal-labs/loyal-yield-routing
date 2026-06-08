@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO loyal_yield.vault_reserve_positions_current\n                    (vault_id, reserve, market, liquidity_mint, amount_raw, has_value, supply_apy_bps, borrow_apy_bps,\n                     snapshot_id, observed_slot, observed_at, planning_metadata)\n                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)\n                ON CONFLICT (vault_id, reserve) DO UPDATE SET\n                    amount_raw = EXCLUDED.amount_raw,\n                    has_value = EXCLUDED.has_value,\n                    supply_apy_bps = EXCLUDED.supply_apy_bps,\n                    borrow_apy_bps = EXCLUDED.borrow_apy_bps,\n                    snapshot_id = EXCLUDED.snapshot_id,\n                    observed_slot = EXCLUDED.observed_slot,\n                    observed_at = EXCLUDED.observed_at,\n                    market = EXCLUDED.market,\n                    liquidity_mint = EXCLUDED.liquidity_mint,\n                    planning_metadata = EXCLUDED.planning_metadata\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Bool",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Timestamptz",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "36d43c3b366ab4c674648a6111a60917278cf0b949dc95c541cee9ae9ee87666"
+}

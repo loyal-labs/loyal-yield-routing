@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO loyal_yield.managed_vaults\n            (cluster, settings, vault_index, vault_pubkey, active_policy_id, active)\n        VALUES ($1, $2, $3, $4, $5, TRUE)\n        ON CONFLICT (cluster, settings, vault_index, vault_pubkey) DO UPDATE SET\n            active_policy_id = CASE\n                WHEN (\n                    SELECT last_seen_slot\n                    FROM loyal_yield.route_policies\n                    WHERE id = EXCLUDED.active_policy_id\n                ) > (\n                    SELECT last_seen_slot\n                    FROM loyal_yield.route_policies\n                    WHERE id = loyal_yield.managed_vaults.active_policy_id\n                )\n                THEN EXCLUDED.active_policy_id\n                ELSE loyal_yield.managed_vaults.active_policy_id\n            END,\n            active = CASE\n                WHEN (\n                    SELECT last_seen_slot\n                    FROM loyal_yield.route_policies\n                    WHERE id = EXCLUDED.active_policy_id\n                ) > (\n                    SELECT last_seen_slot\n                    FROM loyal_yield.route_policies\n                    WHERE id = loyal_yield.managed_vaults.active_policy_id\n                )\n                THEN TRUE\n                ELSE loyal_yield.managed_vaults.active\n            END,\n            last_seen_at = CASE\n                WHEN (\n                    SELECT last_seen_slot\n                    FROM loyal_yield.route_policies\n                    WHERE id = EXCLUDED.active_policy_id\n                ) > (\n                    SELECT last_seen_slot\n                    FROM loyal_yield.route_policies\n                    WHERE id = loyal_yield.managed_vaults.active_policy_id\n                )\n                THEN now()\n                ELSE loyal_yield.managed_vaults.last_seen_at\n            END\n        RETURNING id, cluster, settings, vault_index, vault_pubkey, active_policy_id, active, first_seen_at, last_seen_at\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "cluster",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "settings",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "vault_index",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 4,
+        "name": "vault_pubkey",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "active_policy_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "first_seen_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int2",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "f1a883706d64a339b8d9314b62973dd588549670681f1bc3364c7280e9c16e2e"
+}

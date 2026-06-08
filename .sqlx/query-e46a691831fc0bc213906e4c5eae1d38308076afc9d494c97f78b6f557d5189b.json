@@ -1,0 +1,160 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            id,\n            vault_id,\n            source_snapshot_id,\n            status::text AS \"status!\",\n            source_reserve,\n            target_reserve,\n            liquidity_mint,\n            source_liquidity_mint,\n            target_liquidity_mint,\n            amount_raw,\n            source_apy_bps,\n            target_apy_bps,\n            estimated_edge_bps,\n            estimated_cost_lamports,\n            decision_reason::text AS \"decision_reason!\",\n            execution_plan,\n            abandon_reason,\n            signature,\n            submitted_slot,\n            confirmed_slot,\n            preflight_chain_slot,\n            post_snapshot_id,\n            created_at,\n            updated_at\n        FROM loyal_yield.rebalance_decisions\n        WHERE id = $1\n        FOR UPDATE\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "vault_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "source_snapshot_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "status!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "source_reserve",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "target_reserve",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "liquidity_mint",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "source_liquidity_mint",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "target_liquidity_mint",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "amount_raw",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "source_apy_bps",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "target_apy_bps",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "estimated_edge_bps",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 13,
+        "name": "estimated_cost_lamports",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 14,
+        "name": "decision_reason!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 15,
+        "name": "execution_plan",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 16,
+        "name": "abandon_reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 17,
+        "name": "signature",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 18,
+        "name": "submitted_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 19,
+        "name": "confirmed_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 20,
+        "name": "preflight_chain_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 21,
+        "name": "post_snapshot_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 22,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 23,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      null,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      null,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "e46a691831fc0bc213906e4c5eae1d38308076afc9d494c97f78b6f557d5189b"
+}

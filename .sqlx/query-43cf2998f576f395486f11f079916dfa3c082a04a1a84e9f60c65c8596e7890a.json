@@ -1,0 +1,165 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO loyal_yield.route_policies\n            (cluster, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,\n             delegated_signers, threshold, route_modes, stable_mints, kamino_markets, kamino_liquidity_mints,\n             universe_preset, risk_profile, swap_lanes, active, last_seen_slot, last_seen_signature)\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, TRUE, $17, $18)\n        ON CONFLICT (cluster, policy_account) DO UPDATE SET\n            settings = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.settings ELSE loyal_yield.route_policies.settings END,\n            authority = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.authority ELSE loyal_yield.route_policies.authority END,\n            policy_seed = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.policy_seed ELSE loyal_yield.route_policies.policy_seed END,\n            vault_index = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.vault_index ELSE loyal_yield.route_policies.vault_index END,\n            vault_pubkey = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.vault_pubkey ELSE loyal_yield.route_policies.vault_pubkey END,\n            delegated_signers = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.delegated_signers ELSE loyal_yield.route_policies.delegated_signers END,\n            threshold = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.threshold ELSE loyal_yield.route_policies.threshold END,\n            route_modes = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.route_modes ELSE loyal_yield.route_policies.route_modes END,\n            stable_mints = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.stable_mints ELSE loyal_yield.route_policies.stable_mints END,\n            kamino_markets = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.kamino_markets ELSE loyal_yield.route_policies.kamino_markets END,\n            kamino_liquidity_mints = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.kamino_liquidity_mints ELSE loyal_yield.route_policies.kamino_liquidity_mints END,\n            universe_preset = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.universe_preset ELSE loyal_yield.route_policies.universe_preset END,\n            risk_profile = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.risk_profile ELSE loyal_yield.route_policies.risk_profile END,\n            swap_lanes = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.swap_lanes ELSE loyal_yield.route_policies.swap_lanes END,\n            active = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN TRUE ELSE loyal_yield.route_policies.active END,\n            last_seen_at = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN now() ELSE loyal_yield.route_policies.last_seen_at END,\n            last_seen_slot = GREATEST(loyal_yield.route_policies.last_seen_slot, EXCLUDED.last_seen_slot),\n            last_seen_signature = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.last_seen_signature ELSE loyal_yield.route_policies.last_seen_signature END\n        RETURNING\n            id,\n            cluster,\n            settings,\n            authority,\n            policy_seed,\n            policy_account,\n            vault_index,\n            vault_pubkey,\n            delegated_signers AS \"delegated_signers!\",\n            threshold,\n            route_modes AS \"route_modes!\",\n            stable_mints AS \"stable_mints!\",\n            kamino_markets AS \"kamino_markets!\",\n            kamino_liquidity_mints AS \"kamino_liquidity_mints!\",\n            universe_preset,\n            risk_profile,\n            swap_lanes,\n            active,\n            first_seen_at,\n            last_seen_at,\n            last_seen_slot,\n            last_seen_signature\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "cluster",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "settings",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "authority",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "policy_seed",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "policy_account",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "vault_index",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 7,
+        "name": "vault_pubkey",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "delegated_signers!",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 9,
+        "name": "threshold",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "route_modes!",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 11,
+        "name": "stable_mints!",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 12,
+        "name": "kamino_markets!",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 13,
+        "name": "kamino_liquidity_mints!",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 14,
+        "name": "universe_preset",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 15,
+        "name": "risk_profile",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 16,
+        "name": "swap_lanes",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 17,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 18,
+        "name": "first_seen_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 19,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 20,
+        "name": "last_seen_slot",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 21,
+        "name": "last_seen_signature",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        "Int2",
+        "Text",
+        "TextArray",
+        "Int4",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "43cf2998f576f395486f11f079916dfa3c082a04a1a84e9f60c65c8596e7890a"
+}
