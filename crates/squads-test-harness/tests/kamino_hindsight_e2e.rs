@@ -71,7 +71,7 @@ fn wallet_b_replays_fixed_start_kamino_hindsight_route() {
     )
     .expect("create funded Squads test context");
     let Some(context) = context.as_mut() else {
-        eprintln!("skipping historical Squads policy E2E; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        eprintln!("skipping Squads policy E2E; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
         return;
     };
 

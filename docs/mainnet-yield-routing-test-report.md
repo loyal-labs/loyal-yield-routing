@@ -135,9 +135,54 @@ System key final token balances:
 
 Jupiter conclusion: actual Jupiter swaps work on mainnet, but setup instruction overhead can matter for compute budget.
 
-## Cross-Mint Orchestration Attempt
+## Cross-Mint Policy Recheck
 
-Resolved a USDT Kamino target:
+The installed active policy looked wrong for the requested cross-mint test. It was still the original same-mint-only policy:
+
+- Active route policy id: `36`
+- Active policy account: `2UWE4yu43VQpRcdT5QPmikrDWQMw4JFiB7kpkTNkaKK4`
+- Route modes: `{same_mint}`
+- Stable/liquidity mints: USDC only
+- Swap lanes: none
+
+The all-in-one legacy cross-mint policy still exceeded the Solana packet limit, and the compact/compiled policy create payload still failed Squads deserialization on mainnet. The viable mainnet topology was the split legacy topology:
+
+- Main withdraw/deposit policy: `BJgmjzDJUJdDE5XNU5RJphxrdWM7Nym3c8XSDrnpS1y4`
+- Swap-only Jupiter policy: `B53LFhxNE5rAsQmbyEggDzYSDG7UPgYqVU4KSbjcPKJg`
+- Active DB route policy id: `37`
+- Route modes: `{same_mint,cross_mint_jupiter}`
+- Stable/liquidity mints: USDC and USDT
+- Swap lane policy account: `B53LFhxNE5rAsQmbyEggDzYSDG7UPgYqVU4KSbjcPKJg`
+- Swap lane constraint index: `0`
+
+Policy recreation signatures:
+
+- Withdraw/deposit policy seed `2`: `3dD4zTwnGHa969g9ninXk5pZKBaFX1BVwE7t4zVUH71Q7NfPzaVy3zQNFsBxpqSkUBw3urGdrFTmm95MNqoqyw2z`, slot `425176075`
+- Swap policy seed `3`: `2QqRNkiGzuaiXEvfzRyvmS7kdrPcJyPQEKoAcHmzGbpyqEwWeDHqvXRJiatqt77vhr8JdZ9GjoUNfGY5gWpfZjCZ`, slot `425176109`
+
+The Jupiter route policy was corrected to the live `Route` discriminator `[229, 23, 203, 151, 122, 227, 173, 42]`. The current route instruction has nine accounts with destination mint at account index `5`; slippage/min-out is carried inside variable-length route data, so the policy constrains the discriminator, account shape, vault source/destination ATAs, destination mint, and Jupiter program rather than a fixed slippage byte offset.
+
+## Code Corrections
+
+Corrections applied before the successful mainnet run:
+
+- Added a live Jupiter quote/swap-instruction provider for the worker.
+- Made the worker reject Jupiter setup/cleanup instructions so vault token accounts must be pre-created outside the Squads-protected route.
+- Added split cross-mint route building so withdraw, swap, and deposit can execute through separate ProgramInteraction policies.
+- Changed worker execution to submit multi-step split routes sequentially. This avoids packet-size problems and lets later steps see the state changes from earlier submitted steps.
+- Fixed `YIELD_ROUTER_KEYPAIR` parsing so JSON-array, hex, base58, and base64 key material formats work consistently.
+- Recorded worker planning skips and submitted signatures in the worker report.
+- Updated policy-init DB metadata so split Jupiter lanes persist their separate `policy_account` and `constraint_index`.
+
+## Cross-Mint Orchestration Test
+
+Prepared required vault token accounts:
+
+- Vault USDT ATA creation signature: `KHj8RWnphS11Qn7MeTo2EUXXtBpPAKWQ5WbJcF2dAZitTM5udZpftErKcFanGKsffbXexbojojcrMj8pedKGdn7`
+- Vault WSOL ATA creation signature: `2FVJhwZMoArRECiBST91tmLR24vZkQQ66SYarpWrSpcRNu8298zcpyyUVz7vNFApA76Y8TAvyBwo1gRfeYiCt9iU`
+- Target USDT collateral ATA creation signature: `2tTb81bPQQppjS7McqBaSdB3r9GCwzJEtfxG5FRimVWhuh1NbWo2nnKxdHKGgwk7GJyzdU22ctHN45qGfK5rSMFG`
+
+Resolved USDT Kamino target:
 
 - Reserve: `H3t6qZ1JkguCNTi9uzVKqQ7dvt2cum4XiXWom6Gn5e5S`
 - Market: `7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF`
@@ -145,126 +190,82 @@ Resolved a USDT Kamino target:
 - Collateral mint: `B8zf4kojJbwgCRKA7rLaLhRCZBGhgAJp8wPBVZZHMhSv`
 - Token program: SPL Token
 
-Tried to install a Jupiter cross-mint policy on the same settings.
+Ran `yield_route_worker` on mainnet with a forced USDC-to-USDT target override. The worker planned and claimed one cross-mint decision, then built a three-instruction split route. It submitted the first two steps:
 
-Legacy all-in-one encoding failed before submission:
+- Decision id: `28`
+- Amount: `4,102,798` raw USDC collateral-side liquidity
+- Source reserve: `9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu`
+- Target reserve: `H3t6qZ1JkguCNTi9uzVKqQ7dvt2cum4XiXWom6Gn5e5S`
+- Withdraw signature: `4ekXVpezEiAT1hB5quQga5YnsZ1rTCqjSfSYVxy1weuG5cQSiZT8NyB7so1a7JQGQa1iuuaVFxFXusiKUmVvKQCq`
+- Jupiter swap signature: `5sP3kG1Ec1dKCEenyTZLGfnUWyUML5RcPFuYdUYxm4WMPAHjNaFtkqpeqcNa4pduY8NXUS4AJpgpgb74PD8zXjaE`, slot `425179583`
 
-- Transaction size: `1726` bytes
-- Solana packet limit: `1232` bytes
+The deposit step initially failed simulation with Squads `IllegalAccountOwner` because the target USDT collateral ATA did not yet exist. After creating the target collateral ATA, the stranded `4.099744` USDT liquidity was deposited manually through Squads sync execution:
 
-Compiled all-in-one encoding dry-run fit the packet:
+- Manual recovery deposit signature: `5tBFjft8hakCRwZYcthzhjNBrJBm42hKM8imQi5SrmQmWr1P2dD5roGaLDajqbJJgnZQyduScDF78n7oF3u5qLxi`
+- Recovery deposit slot: `425180827`
+- Simulated compute for recovery deposit: `80,251` units
 
-- Transaction size: `978` bytes
-- But Squads rejected it with `InstructionDidNotDeserialize` (`102`)
-- No cross-mint policy transaction was submitted.
+The worker decision row remains `failed` because its third sequential step failed before the recovery deposit. Funds were recovered on-chain and reconciled into the target reserve afterwards.
 
-Cross-mint conclusion: cross-mint routing is not currently executable through this orchestration on mainnet.
+## Final Verification
 
-## Blockers
+A dry `yield_route_worker --once` pass on mainnet reconciled the vault and skipped planning with `NoEdge`:
 
-1. Cross-mint policy creation does not fit with legacy encoding.
+- Active vaults: `1`
+- Reconciled vaults: `1`
+- Planned decisions: `0`
+- Claimed decisions: `0`
+- Submitted: `false`
+- Skip: `vault 92 skipped planning: NoEdge`
 
-   The Jupiter all-in-one policy with USDC and USDT allowlists was `1726` bytes, above the `1232` byte packet limit.
+Current DB state for vault `92` after reconciliation at observed slot `425181200`:
 
-2. Latest Squads policies-branch compiled encoding is not accepted by the current mainnet path.
+- Source reserve `9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu`: `0`, `has_value = false`
+- Target reserve `H3t6qZ1JkguCNTi9uzVKqQ7dvt2cum4XiXWom6Gn5e5S`: `3,502,811`, `has_value = true`
 
-   Reproduction used the existing mainnet settings account and the next expected Squads policy seed after the installed same-mint policy. The initial run used a persistent shell with `op signin` and the delegated signer loaded from `YIELD_ROUTER_KEYPAIR`.
+Current on-chain vault token balances:
 
-   ```sh
-   op run --env-file=.env.1password -- sh -c 'cargo run -p loyal-yield-policy-init --bin loyal-yield-policy-init -- --cluster mainnet --rpc-url https://api.mainnet-beta.solana.com -k GTpqQfB9wgXWqdhkEmSWsnHVvxaPbJs1qWsomh1MjQ5N.json --settings 4aWMf1dFxviHisBFfi9apgqNDUBH4rLWHQYHUANbLAdi --topology all-in-one --program-interaction-encoding compiled --stable-mint EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB --kamino-market 7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF --kamino-liquidity-mint EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB --swap-lane jupiter --withdraw-action-seed 2 --swap-action-seed 3 --deposit-action-seed 4 --dry-run'
-   ```
+- USDC liquidity ATA `7T51A827fqEp1ZV5hC5dHBMJHGpKthCvswb4xQKm3MbH`: `0.897276`
+- USDT liquidity ATA `4mKVRYQ4ePx9uT4wRWsnwSHHVPrKApqhfmyProM58sMa`: `0`
+- Source USDC collateral ATA `6j19pCtMugTnJU84neP79WhAH1h6p3e9YvUz8eeCnuUd`: `0`
+- Target USDT collateral ATA `b9AmYaPZrqiPhbfY6UMBH2zz1xV3u3Uh4dQKMfbEn9E`: `3.502811`
 
-   The all-in-one compiled policy dry-run still fit the packet:
+Cross-mint conclusion: the worker can execute the mainnet cross-mint withdraw and Jupiter swap through split Squads ProgramInteraction policies, and the funds ended in the target USDT Kamino reserve after creating the missing target collateral ATA and submitting the recovery deposit.
 
-   - Policy account: `BJgmjzDJUJdDE5XNU5RJphxrdWM7Nym3c8XSDrnpS1y4`
-   - Transaction bytes (legacy transaction format): `978`
-   - Message bytes: `913`
-   - Instruction data bytes: `668`
-   - Simulation slot: `425161966`
-   - Simulation error: `InstructionError(2, Custom(102))`
-   - Squads log: `InstructionDidNotDeserialize. Error Number: 102. Error Message: The program could not deserialize the given instruction.`
+## Remaining Follow-Ups
 
-   The policy-support probe in the same dry-run deserialized `execute_settings_transaction_sync` correctly and failed later with `AccountNotInitialized` on the intentionally missing probe policy account. That isolates the `102` failure to the actual compiled `PolicyCreate` payload, not the outer instruction discriminator, signer list, settings account, or delegated signer.
+1. Add an idempotent "ensure vault token accounts" setup phase before route submission.
 
-   Local fixes applied after checking the Squads policies branch:
+   The worker now deliberately rejects Jupiter setup/cleanup instructions. It should derive and create required vault ATAs in a separate payer-funded setup transaction before submitting a protected route. For cross-mint USDC to USDT, the required vault accounts are source collateral, source liquidity, target liquidity, and target collateral.
 
-   - Corrected the local V2 compiled hook wire model so `CompiledHook.instruction_data` uses a `u16` length prefix, matching Squads `SmallVec<u16, u8>`.
-   - Corrected the local policy decoder skip path for compiled hooks to read the same `u16` length prefix.
-   - Added a `--delegated-signer <PUBKEY>` override to the policy-init CLI because policy creation only needs the delegated signer's public key; this avoids requiring the router private key for dry-run/policy construction checks.
+2. Improve partial-route recovery bookkeeping.
 
-   Re-running the mainnet cross-mint all-in-one compiled dry-run after those local fixes still failed the same way:
+   Decision `28` correctly shows the worker failure at step 2, but the later recovery deposit is not linked to that decision. Add a recovery/follow-up status or metadata path so operational history can show "worker partial success, manual recovery complete".
 
-   ```sh
-   cargo run -p loyal-yield-policy-init --bin loyal-yield-policy-init -- --cluster mainnet --rpc-url https://api.mainnet-beta.solana.com -k GTpqQfB9wgXWqdhkEmSWsnHVvxaPbJs1qWsomh1MjQ5N.json --settings 4aWMf1dFxviHisBFfi9apgqNDUBH4rLWHQYHUANbLAdi --delegated-signer BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ --topology all-in-one --program-interaction-encoding compiled --stable-mint EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB --kamino-market 7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF --kamino-liquidity-mint EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB --swap-lane jupiter --withdraw-action-seed 2 --swap-action-seed 3 --deposit-action-seed 4 --dry-run
-   ```
+3. Keep compact ProgramInteraction as a future optimization, not the current mainnet path.
 
-   - Simulation slot: `425164696`
-   - Transaction bytes: `978`
-   - Message bytes: `913`
-   - Instruction data bytes: `668`
-   - Simulation error: `InstructionError(2, Custom(102))`
-   - Squads log: `InstructionDidNotDeserialize. Error Number: 102. Error Message: The program could not deserialize the given instruction.`
+   Legacy all-in-one cross-mint remains too large for the packet limit, while the compact compiled policy-create path still needs payload-level verification against the deployed Squads program. The working mainnet topology today is the split legacy topology.
 
-   The deployed mainnet program also does not match the locally built `policies` branch binary:
+4. Timescale target rows used for overrides still need freshness cleanup.
 
-   - Squads policies branch commit tested: `c8138e972a967fcd9341d6c49a2bbf619432bca9`
-   - Locally built policies-branch SBF SHA-256: `8fc55f8d19af93c02a0db6a612d24612aadab04a0a1bb9e1062f5c5329d9be92`
-   - Dumped mainnet `SMRT...` SBF SHA-256: `49cf27024d211ab827eadc11219a935abf9a5138ece1c0b0631c26790fd4f3c0`
-   - Mainnet `SMRT...` last deployed slot: `383815455`
-   - Mainnet `SMRT...` upgrade authority: `HT3JknwuufXdtVJggz5Z9JcnYtanPpLzTCqLWsVX1Vu2`
+   Some latest rows used during these tests had stale March 2026 timestamps, so forced target overrides were used for the mainnet cross-mint test.
 
-   Root cause: the transaction is reaching a Squads Smart Account binary/ABI path that does not deserialize the latest policies-branch V2 `PolicyCreate` payload. This is an ABI/version mismatch, not a policy-validation failure. The policies branch is the relevant source of truth for the current policy work: it defines `PolicyCreationPayload` with five variants, where tag `3` is `LegacyProgramInteraction` and tag `4` is the compact V2 `ProgramInteraction` payload. That V2 payload has `account_index`, `pubkey_table`, compiled instruction constraints, optional compiled hooks, and compiled spending limits. Our no-hook compiled all-in-one payload is intended to use that tag `4` shape; reverting to legacy is not the latest-policy fix.
+## Validation Commands
 
-   The failed legacy comparison is still useful only as a size proof. Re-running the same USDC/USDT all-in-one policy with legacy encoding failed before simulation with `transaction is 1662 bytes, which exceeds the 1232 byte Solana packet limit`. Solana's transaction format keeps instruction data as opaque bytes inside the packet, so v0/address lookup tables can reduce account-key bytes but cannot remove the oversized policy payload itself. The latest Squads policies branch solves that class of problem with the compact V2 payload, so the route should stay on compiled V2 once the program/ABI version is verified.
+Passed:
 
-   Proposed fix:
+- `cargo fmt --all`
+- `cargo test -p loyal-actions`
+- `cargo test -p loyal-yield-policy-init split_swap_policy_metadata_is_recorded_in_lane_json`
+- `cargo test -p loyal-yield-orchestrator --lib`
+- `cargo check -p loyal-yield-orchestrator --bins`
 
-   - Pin the Squads Smart Account dependency to the `policies` branch, preferably to exact commit `c8138e972a967fcd9341d6c49a2bbf619432bca9` or a later reviewed policies commit, and generate or vendor the local policy wire types from that source instead of hand-maintaining enum variants and small-vector wrappers.
-   - Do not submit compact V2 policies to the current mainnet `SMRT...` binary unless Squads upgrades that program to a binary matching the policies branch. The current mainnet deployment is controlled by upgrade authority `HT3JknwuufXdtVJggz5Z9JcnYtanPpLzTCqLWsVX1Vu2`, so this repo cannot fix the existing `4aWM...` settings account path by code changes alone.
-   - If immediate mainnet V2 testing is required before Squads upgrades `SMRT...`, deploy the policies-branch program under a new program id, create a fresh settings/vault under that program, and make the Loyal action builder/policy-init CLI accept a configurable Squads program id for instruction program ids and PDA derivations. Existing settings created under `SMRT...` cannot be reused under a different program id.
-   - Keep `--program-interaction-encoding compiled` for latest policies, but gate it on the hash/ABI check above. If the check fails, fail policy installation with an actionable error instead of falling back to legacy.
-   - Add a golden serialization test that compares the local serialized `SettingsAction::PolicyCreate { policy_creation_payload: ProgramInteraction(..) }` bytes against the pinned Squads policies-branch crate for a tiny V2 payload. This catches enum order, `SmallVec` length width, and field-order drift before mainnet simulation.
-   - Continue deriving policy PDAs from the settings account's sequential internal `policy_seed`. The policies-branch handler increments `settings.policy_seed` and derives the next policy PDA from that counter; arbitrary seeds produce `MissingAccount`. On existing settings `4aWM...`, the next policy after the same-mint seed `1` is seed `2`.
-   - After the V2 binary/ABI check passes, prefer the compact all-in-one route policy again. Keep the split withdraw/swap/deposit topology as the fallback only if the V2 all-in-one policy still exceeds packet or compute limits.
+Residual failure:
 
-   References checked:
+- `bun run test:squads` still fails in the Kamino mock reserve tests with `InstructionError(0, IncorrectProgramId)` while invoking mock `KLend2g3c...`. The failure happens outside the live Jupiter cross-mint path.
 
-   - [Squads Smart Account Program policies branch](https://github.com/Squads-Protocol/smart-account-program/tree/policies): current policy work branch.
-   - [Squads policies-branch README](https://raw.githubusercontent.com/Squads-Protocol/smart-account-program/policies/README.md): confirms the `SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG` program id and gives the deployed-program hash verification flow.
-   - [Squads policies-branch `PolicyCreationPayload`](https://raw.githubusercontent.com/Squads-Protocol/smart-account-program/policies/programs/squads_smart_account_program/src/state/policies/policy_core/payloads.rs): defines `LegacyProgramInteraction` followed by compact V2 `ProgramInteraction`.
-   - [Squads policies-branch `ProgramInteractionPolicyCreationPayload`](https://raw.githubusercontent.com/Squads-Protocol/smart-account-program/policies/programs/squads_smart_account_program/src/state/policies/implementations/program_interaction.rs): defines the latest V2 payload, built-in pubkey indexes, and compiled hook layout.
-   - [Squads policies-branch settings handler](https://raw.githubusercontent.com/Squads-Protocol/smart-account-program/policies/programs/squads_smart_account_program/src/state/settings.rs): derives policy PDAs from the incremented `settings.policy_seed`.
-   - [Solana transaction structure docs](https://solana.com/docs/core/transactions/transaction-structure): confirms the `1232` byte packet limit and that instruction data remains opaque bytes inside the transaction packet.
+## References
 
-3. Worker cross-mint quote provider is not live-Jupiter enabled.
-
-   The planner requires `quote.swap.instruction` for cross-mint execution. The current conservative quote provider cannot produce a live Jupiter swap instruction for the orchestration route.
-
-4. Actual Jupiter instructions do not match current policy assumptions.
-
-   Earlier instruction inspection showed Jupiter swap instructions with a different discriminator/account layout than the policy currently expects. Some routes also include setup instructions and shared-account route layouts that are not represented by the current Squads policy constraints.
-
-5. Post-route decision bookkeeping is incomplete.
-
-   The same-mint decision row was marked `confirmed`, but `post_snapshot_id` remained `null`. A later dry worker pass reconciled `vault_reserve_positions_current` correctly, so the current-position truth is correct, but the confirmed decision is not linked to its post snapshot.
-
-6. Timescale target rows used for overrides had stale `observedAt` timestamps.
-
-   The worker run used high `--max-apy-age-secs` because the latest rows API returned rows with March 2026 timestamps for these reserves, even though the reserve account metadata decoded over RPC was valid.
-
-## Token Account Requirement
-
-For the same-mint test, the minimum vault token accounts were:
-
-- Source liquidity ATA
-- Source collateral ATA
-- Target collateral ATA
-
-For cross-mint USDC to USDT, expect at least:
-
-- Source collateral ATA
-- Source liquidity ATA
-- Target liquidity ATA
-- Target collateral ATA
-
-Recommendation: add an idempotent "ensure vault token accounts" setup phase to the worker. It should derive required ATAs from the planned route and create missing accounts in a separate payer-funded setup transaction before submitting the Squads-protected route. This avoids pre-provisioning every possible reserve while keeping route policy execution narrow.
+- [Squads Smart Account Program policies branch](https://github.com/Squads-Protocol/smart-account-program/tree/policies)
+- [Jupiter `ROUTE_IX_DISCM` source](https://docs.rs/jupiter_interface/latest/src/jupiter_interface/instructions.rs.html)
+- [Jupiter routing documentation](https://dev.jup.ag/docs/swap/routing)

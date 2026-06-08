@@ -167,7 +167,7 @@ The Squads test crate is grouped by domain modules for onboarding.
 | `runtime` | LiteSVM setup, funded contexts, program loading, heap-frame helpers, transaction sending |
 | `policies` | Raw Squads policy families |
 | `actions` | Adapters from funded contexts and mock reserves into `loyal-actions` inputs |
-| `policies/program_interaction` | Low-level historical Squads ProgramInteraction helpers |
+| `policies/program_interaction` | Low-level compact Squads ProgramInteraction helpers |
 | `protocols` | Mock Jupiter/Kamino/Loyal Hub instruction data, SPL account seeding, SBF mock loading |
 | `types` | Shared public test structs and crate-private Squads wire types |
 

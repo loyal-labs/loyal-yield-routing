@@ -20,6 +20,8 @@ op run --env-file=.env.1password -- sh -c '<command>'
 
 Keep shell variable expansion inside the `sh -c` subprocess so `op run` injects values before the command reads them.
 
+If you need to run multiple `op run ...` commands, run a permanent interactive shell instead of prompting the user for each and individual `op run` request. In this shell start with `op signin` and do the rest `op run` commands without waiting for user confirmation for 1Password.
+
 ## Architecture
 
 This project should follow Loyal's vertical-slice architecture style as it grows.
@@ -56,6 +58,12 @@ Use `src/lib/` for cross-slice infrastructure and integration primitives only. D
 Examples of code that may belong in `src/lib/` after reuse is proven include framework-safe utilities, shared API clients, validation or serialization helpers, and stable integration wrappers used by multiple features.
 
 ## Squads Testing
+
+Squads Smart accounts Policies actual latest docs are here:
+https://github.com/Squads-Protocol/smart-account-program/tree/policies
+Prefer the latest compact ProgramInteraction policy model when it is verified
+against the deployed Squads program. Use legacy ProgramInteraction only as an
+explicit compatibility fallback for deployed-program or packet-size constraints.
 
 Use `bun run test:squads` for the lean Rust test crate around Squads smart-account flows. Use `bun run test:squads:e2e` for the heavier ignored historical Kamino replay when changes touch route policy composition, heap/compute assumptions, or replay-sensitive behavior.
 
