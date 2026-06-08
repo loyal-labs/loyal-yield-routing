@@ -1,5 +1,7 @@
 use crate::{
-    derive_action_account, derive_loyal_hub_config, detect_yield_route_universe_preset, ids::*,
+    derive_action_account, derive_loyal_hub_config, detect_yield_route_universe_preset,
+    ids::*,
+    protocols::{derive_subscription_authority, derive_subscription_event_authority},
     JupiterSwapContract, YieldRouteUniversePreset,
 };
 use solana_sdk::{hash::hashv, instruction::Instruction, pubkey::Pubkey};
@@ -104,6 +106,22 @@ pub struct DetectedYieldRoutePolicy {
     pub kamino_liquidity_mints: Vec<Pubkey>,
     pub universe_preset: Option<YieldRouteUniversePreset>,
     pub swap_lanes: Vec<DetectedSwapLane>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetectedBalanceSweepPolicy {
+    pub settings: Pubkey,
+    pub authority: Pubkey,
+    pub policy_seed: u64,
+    pub policy_account: Pubkey,
+    pub vault_index: u8,
+    pub vault_pubkey: Pubkey,
+    pub wallet: Pubkey,
+    pub wallet_usdc_ata: Pubkey,
+    pub vault_usdc_ata: Pubkey,
+    pub delegated_signers: Vec<Pubkey>,
+    pub threshold: u16,
+    pub max_amount_per_period: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,8 +286,44 @@ pub fn detect_yield_route_policy_create(
     })
 }
 
+pub fn detect_balance_sweep_policy_create(
+    action: &SquadsSettingsActionView,
+) -> Option<DetectedBalanceSweepPolicy> {
+    let [constraint] = action.payload.constraints.as_slice() else {
+        return None;
+    };
+    let sweep = classify_subscription_sweep(constraint)?;
+    let vault_pubkey = derive_squads_vault(&action.settings, action.payload.vault_index);
+    if sweep.vault != vault_pubkey {
+        return None;
+    }
+
+    Some(DetectedBalanceSweepPolicy {
+        settings: action.settings,
+        authority: action.authority,
+        policy_seed: action.policy_seed,
+        policy_account: action.policy_account,
+        vault_index: action.payload.vault_index,
+        vault_pubkey,
+        wallet: sweep.wallet,
+        wallet_usdc_ata: sweep.wallet_usdc_ata,
+        vault_usdc_ata: sweep.vault_usdc_ata,
+        delegated_signers: unique_pubkeys(delegated_signers_as_pubkeys(&action.delegated_signers)),
+        threshold: action.threshold,
+        max_amount_per_period: sweep.max_amount_per_period,
+    })
+}
+
 fn delegated_signers_as_pubkeys(signers: &[Pubkey]) -> Vec<Pubkey> {
     signers.to_vec()
+}
+
+struct SubscriptionSweepLeg {
+    wallet: Pubkey,
+    vault: Pubkey,
+    wallet_usdc_ata: Pubkey,
+    vault_usdc_ata: Pubkey,
+    max_amount_per_period: u64,
 }
 
 struct KaminoLeg {
@@ -422,6 +476,86 @@ fn classify_loyal_hub_swap(
     })
 }
 
+fn classify_subscription_sweep(
+    constraint: &SquadsInstructionConstraintView,
+) -> Option<SubscriptionSweepLeg> {
+    if constraint.program_id != SUBSCRIPTIONS_PROGRAM_ID
+        || !has_data_u8_equals(
+            &constraint.data_constraints,
+            0,
+            SUBSCRIPTIONS_TRANSFER_RECURRING,
+        )
+        || !has_data_slice_equals(
+            &constraint.data_constraints,
+            SUBSCRIPTION_TRANSFER_MINT_OFFSET,
+            USDC_MINT.as_ref(),
+        )
+    {
+        return None;
+    }
+
+    let accounts = accounts_by_index(constraint);
+    let recurring = accounts.get(&0)?;
+    let wallet = account_data_pubkey_equals(
+        recurring,
+        Some(SUBSCRIPTIONS_PROGRAM_ID),
+        SUBSCRIPTION_RECURRING_DELEGATION_DELEGATOR_OFFSET,
+    )?;
+    has_data_slice_equals(
+        &constraint.data_constraints,
+        SUBSCRIPTION_TRANSFER_DELEGATOR_OFFSET,
+        wallet.as_ref(),
+    )
+    .then_some(())?;
+    has_account_data_u8_equals(
+        recurring,
+        SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR_OFFSET,
+        SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR,
+    )?;
+    let vault = account_data_pubkey_equals(
+        recurring,
+        Some(SUBSCRIPTIONS_PROGRAM_ID),
+        SUBSCRIPTION_RECURRING_DELEGATION_DELEGATEE_OFFSET,
+    )?;
+    let subscription_authority = account_data_pubkey_equals(
+        recurring,
+        Some(SUBSCRIPTIONS_PROGRAM_ID),
+        SUBSCRIPTION_RECURRING_DELEGATION_AUTHORITY_OFFSET,
+    )?;
+    if subscription_authority != derive_subscription_authority(wallet, USDC_MINT) {
+        return None;
+    }
+    account_data_pubkey_equals(
+        recurring,
+        Some(SUBSCRIPTIONS_PROGRAM_ID),
+        SUBSCRIPTION_RECURRING_DELEGATION_MINT_OFFSET,
+    )
+    .filter(|mint| *mint == USDC_MINT)?;
+    let max_amount_per_period = account_data_u64_lte(
+        recurring,
+        SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PER_PERIOD_OFFSET,
+    )?;
+
+    single_pubkey(accounts.get(&1)?, Some(SUBSCRIPTIONS_PROGRAM_ID))
+        .filter(|key| *key == subscription_authority)?;
+    let wallet_usdc_ata = single_pubkey(accounts.get(&2)?, Some(spl_token::id()))?;
+    let vault_usdc_ata = single_pubkey(accounts.get(&3)?, Some(spl_token::id()))?;
+    single_pubkey(accounts.get(&4)?, Some(spl_token::id())).filter(|key| *key == USDC_MINT)?;
+    single_pubkey(accounts.get(&5)?, None).filter(|key| *key == spl_token::id())?;
+    single_pubkey(accounts.get(&6)?, None).filter(|key| *key == vault)?;
+    single_pubkey(accounts.get(&7)?, None)
+        .filter(|key| *key == derive_subscription_event_authority())?;
+    single_pubkey(accounts.get(&8)?, None).filter(|key| *key == SUBSCRIPTIONS_PROGRAM_ID)?;
+
+    Some(SubscriptionSweepLeg {
+        wallet,
+        vault,
+        wallet_usdc_ata,
+        vault_usdc_ata,
+        max_amount_per_period,
+    })
+}
+
 fn accounts_by_index(
     constraint: &SquadsInstructionConstraintView,
 ) -> BTreeMap<u8, &SquadsAccountConstraintView> {
@@ -430,6 +564,19 @@ fn accounts_by_index(
         .iter()
         .map(|account| (account.account_index, account))
         .collect()
+}
+
+fn derive_squads_vault(settings: &Pubkey, vault_index: u8) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            SQUADS_SEED_PREFIX,
+            settings.as_ref(),
+            SQUADS_SEED_PREFIX,
+            &[vault_index],
+        ],
+        &SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+    )
+    .0
 }
 
 fn pubkeys(constraint: &SquadsAccountConstraintView, owner: Option<Pubkey>) -> Option<Vec<Pubkey>> {
@@ -452,6 +599,59 @@ fn single_pubkey(
     } else {
         None
     }
+}
+
+fn account_data_pubkey_equals(
+    constraint: &SquadsAccountConstraintView,
+    owner: Option<Pubkey>,
+    offset: u64,
+) -> Option<Pubkey> {
+    if constraint.owner != owner {
+        return None;
+    }
+    let SquadsAccountConstraintKindView::AccountData(data_constraints) = &constraint.kind else {
+        return None;
+    };
+    data_constraints.iter().find_map(|constraint| {
+        if constraint.data_offset == offset && constraint.operator == SquadsDataOperatorView::Equals
+        {
+            if let SquadsDataValueView::U8Slice(value) = &constraint.data_value {
+                let bytes: [u8; 32] = value.as_slice().try_into().ok()?;
+                return Some(Pubkey::new_from_array(bytes));
+            }
+        }
+        None
+    })
+}
+
+fn has_account_data_u8_equals(
+    constraint: &SquadsAccountConstraintView,
+    offset: u64,
+    expected: u8,
+) -> Option<()> {
+    if constraint.owner.is_none() {
+        return None;
+    }
+    let SquadsAccountConstraintKindView::AccountData(data_constraints) = &constraint.kind else {
+        return None;
+    };
+    has_data_u8_equals(data_constraints, offset, expected).then_some(())
+}
+
+fn account_data_u64_lte(constraint: &SquadsAccountConstraintView, offset: u64) -> Option<u64> {
+    let SquadsAccountConstraintKindView::AccountData(data_constraints) = &constraint.kind else {
+        return None;
+    };
+    data_constraints.iter().find_map(|constraint| {
+        if constraint.data_offset == offset
+            && constraint.operator == SquadsDataOperatorView::LessThanOrEqualTo
+        {
+            if let SquadsDataValueView::U64Le(value) = constraint.data_value {
+                return Some(value);
+            }
+        }
+        None
+    })
 }
 
 fn has_token_authority(constraint: &SquadsAccountConstraintView, authority: Pubkey) -> Option<()> {
@@ -939,6 +1139,178 @@ mod tests {
         decode_squads_policy_create_actions(&setup.instructions[0])
             .unwrap()
             .remove(0)
+    }
+
+    fn balance_sweep_action() -> SquadsSettingsActionView {
+        let settings = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let delegated_signer = Pubkey::new_unique();
+        let vault_index = 1;
+        let vault = derive_squads_vault(&settings, vault_index);
+        let wallet = Pubkey::new_unique();
+        let wallet_usdc_ata = Pubkey::new_unique();
+        let vault_usdc_ata = Pubkey::new_unique();
+        let subscription_authority = derive_subscription_authority(wallet, USDC_MINT);
+        let event_authority = derive_subscription_event_authority();
+
+        SquadsSettingsActionView {
+            settings,
+            authority,
+            policy_seed: 7,
+            policy_account: Pubkey::new_unique(),
+            delegated_signers: vec![delegated_signer],
+            threshold: 1,
+            payload: SquadsProgramInteractionPolicyView {
+                vault_index,
+                pubkey_table: vec![],
+                constraints: vec![SquadsInstructionConstraintView {
+                    program_id: SUBSCRIPTIONS_PROGRAM_ID,
+                    account_constraints: vec![
+                        account_data_view(
+                            0,
+                            Some(SUBSCRIPTIONS_PROGRAM_ID),
+                            vec![
+                                data_u8_eq(
+                                    SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR_OFFSET,
+                                    SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR,
+                                ),
+                                data_pubkey_eq(
+                                    SUBSCRIPTION_RECURRING_DELEGATION_DELEGATOR_OFFSET,
+                                    wallet,
+                                ),
+                                data_pubkey_eq(
+                                    SUBSCRIPTION_RECURRING_DELEGATION_DELEGATEE_OFFSET,
+                                    vault,
+                                ),
+                                data_pubkey_eq(
+                                    SUBSCRIPTION_RECURRING_DELEGATION_AUTHORITY_OFFSET,
+                                    subscription_authority,
+                                ),
+                                data_pubkey_eq(
+                                    SUBSCRIPTION_RECURRING_DELEGATION_MINT_OFFSET,
+                                    USDC_MINT,
+                                ),
+                                data_u64_lte(
+                                    SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PER_PERIOD_OFFSET,
+                                    500_000,
+                                ),
+                            ],
+                        ),
+                        pubkey_view(1, subscription_authority, Some(SUBSCRIPTIONS_PROGRAM_ID)),
+                        pubkey_view(2, wallet_usdc_ata, Some(spl_token::id())),
+                        pubkey_view(3, vault_usdc_ata, Some(spl_token::id())),
+                        pubkey_view(4, USDC_MINT, Some(spl_token::id())),
+                        pubkey_view(5, spl_token::id(), None),
+                        pubkey_view(6, vault, None),
+                        pubkey_view(7, event_authority, None),
+                        pubkey_view(8, SUBSCRIPTIONS_PROGRAM_ID, None),
+                    ],
+                    data_constraints: vec![
+                        data_u8_eq(0, SUBSCRIPTIONS_TRANSFER_RECURRING),
+                        data_pubkey_eq(SUBSCRIPTION_TRANSFER_DELEGATOR_OFFSET, wallet),
+                        data_pubkey_eq(SUBSCRIPTION_TRANSFER_MINT_OFFSET, USDC_MINT),
+                    ],
+                }],
+            },
+        }
+    }
+
+    fn pubkey_view(
+        account_index: u8,
+        pubkey: Pubkey,
+        owner: Option<Pubkey>,
+    ) -> SquadsAccountConstraintView {
+        SquadsAccountConstraintView {
+            account_index,
+            kind: SquadsAccountConstraintKindView::Pubkey(vec![pubkey]),
+            owner,
+        }
+    }
+
+    fn account_data_view(
+        account_index: u8,
+        owner: Option<Pubkey>,
+        data_constraints: Vec<SquadsDataConstraintView>,
+    ) -> SquadsAccountConstraintView {
+        SquadsAccountConstraintView {
+            account_index,
+            kind: SquadsAccountConstraintKindView::AccountData(data_constraints),
+            owner,
+        }
+    }
+
+    fn data_u8_eq(offset: u64, value: u8) -> SquadsDataConstraintView {
+        SquadsDataConstraintView {
+            data_offset: offset,
+            data_value: SquadsDataValueView::U8(value),
+            operator: SquadsDataOperatorView::Equals,
+        }
+    }
+
+    fn data_pubkey_eq(offset: u64, pubkey: Pubkey) -> SquadsDataConstraintView {
+        SquadsDataConstraintView {
+            data_offset: offset,
+            data_value: SquadsDataValueView::U8Slice(pubkey.to_bytes().to_vec()),
+            operator: SquadsDataOperatorView::Equals,
+        }
+    }
+
+    fn data_u64_lte(offset: u64, value: u64) -> SquadsDataConstraintView {
+        SquadsDataConstraintView {
+            data_offset: offset,
+            data_value: SquadsDataValueView::U64Le(value),
+            operator: SquadsDataOperatorView::LessThanOrEqualTo,
+        }
+    }
+
+    #[test]
+    fn detects_balance_sweep_policy() {
+        let action = balance_sweep_action();
+        let detected = detect_balance_sweep_policy_create(&action).unwrap();
+
+        assert_eq!(detected.settings, action.settings);
+        assert_eq!(detected.authority, action.authority);
+        assert_eq!(detected.policy_seed, action.policy_seed);
+        assert_eq!(detected.policy_account, action.policy_account);
+        assert_eq!(detected.vault_index, 1);
+        assert_eq!(detected.delegated_signers, action.delegated_signers);
+        assert_eq!(detected.threshold, 1);
+        assert_eq!(detected.max_amount_per_period, 500_000);
+        assert_eq!(
+            detected.vault_pubkey,
+            derive_squads_vault(&action.settings, 1)
+        );
+    }
+
+    #[test]
+    fn rejects_balance_sweep_when_vault_or_mint_do_not_match() {
+        let mut wrong_vault = balance_sweep_action();
+        let recurring = wrong_vault.payload.constraints[0]
+            .account_constraints
+            .iter_mut()
+            .find(|constraint| constraint.account_index == 0)
+            .unwrap();
+        let SquadsAccountConstraintKindView::AccountData(data_constraints) = &mut recurring.kind
+        else {
+            panic!("recurring delegation should use data constraints");
+        };
+        data_constraints
+            .iter_mut()
+            .find(|constraint| {
+                constraint.data_offset == SUBSCRIPTION_RECURRING_DELEGATION_DELEGATEE_OFFSET
+            })
+            .unwrap()
+            .data_value = SquadsDataValueView::U8Slice(Pubkey::new_unique().to_bytes().to_vec());
+        assert!(detect_balance_sweep_policy_create(&wrong_vault).is_none());
+
+        let mut wrong_mint = balance_sweep_action();
+        wrong_mint.payload.constraints[0]
+            .data_constraints
+            .iter_mut()
+            .find(|constraint| constraint.data_offset == SUBSCRIPTION_TRANSFER_MINT_OFFSET)
+            .unwrap()
+            .data_value = SquadsDataValueView::U8Slice(Pubkey::new_unique().to_bytes().to_vec());
+        assert!(detect_balance_sweep_policy_create(&wrong_mint).is_none());
     }
 
     #[test]

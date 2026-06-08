@@ -1,0 +1,603 @@
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+
+use anyhow::{bail, Context, Result};
+use chrono::{DateTime, Utc};
+use futures_util::{future::BoxFuture, StreamExt};
+use helius_laserstream::{
+    grpc::{
+        subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
+        SubscribeRequestFilterAccounts, SubscribeUpdate,
+    },
+    subscribe, LaserstreamConfig,
+};
+use loyal_actions::USDC_MINT;
+use loyal_yield_orchestrator::{
+    BalanceSweepTarget, BalanceSweepTargetId, OrchestratorError, OrchestratorStore,
+    WalletAtaBalanceCurrent, WalletAtaBalanceUpdateInput,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use solana_account_decoder::{UiAccount, UiAccountData, UiAccountEncoding};
+use solana_client::{rpc_client::RpcClient, rpc_config::RpcAccountInfoConfig};
+use solana_program::program_pack::Pack;
+use solana_pubsub_client::nonblocking::pubsub_client::PubsubClient;
+use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
+use tokio::{
+    sync::mpsc,
+    task::{JoinHandle, JoinSet},
+    time,
+};
+
+type AccountNotification = solana_client::rpc_response::Response<UiAccount>;
+
+pub const LASERSTREAM_SOURCE: &str = "laserstream_grpc";
+pub const WEBSOCKET_SOURCE: &str = "websocket";
+pub const RPC_SEED_SOURCE: &str = "rpc_seed";
+pub const CONFIRMED_COMMITMENT: &str = "confirmed";
+
+#[derive(Clone, Copy, Debug)]
+pub struct SubscriptionConfig {
+    pub max_reconnect_attempts: usize,
+    pub reconnect_base_delay: Duration,
+    pub reconnect_max_delay: Duration,
+    pub heartbeat_interval: Duration,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TokenAccountSnapshot {
+    pub mint: Pubkey,
+    pub owner: Pubkey,
+    pub amount: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AtaTarget {
+    pub id: BalanceSweepTargetId,
+    pub cluster: String,
+    pub wallet: String,
+    pub wallet_usdc_ata: Pubkey,
+}
+
+impl TryFrom<&BalanceSweepTarget> for AtaTarget {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &BalanceSweepTarget) -> Result<Self> {
+        Ok(Self {
+            id: value.id,
+            cluster: value.cluster.clone(),
+            wallet: value.wallet.clone(),
+            wallet_usdc_ata: value.wallet_usdc_ata.parse()?,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub enum AtaUpdateEvent {
+    Connecting {
+        account: Pubkey,
+        attempt: usize,
+    },
+    Connected {
+        account: Pubkey,
+        attempt: usize,
+    },
+    AccountUpdate {
+        account: Pubkey,
+        slot: u64,
+        owner: Pubkey,
+        data: Vec<u8>,
+        source: &'static str,
+        source_commitment: &'static str,
+        received_at: DateTime<Utc>,
+    },
+    Heartbeat {
+        account: Pubkey,
+    },
+    Reconnecting {
+        account: Pubkey,
+        attempt: usize,
+        backoff: Duration,
+        error: String,
+    },
+    Failed {
+        account: Pubkey,
+        attempts: usize,
+        error: String,
+    },
+    Stopped {
+        account: Pubkey,
+    },
+}
+
+pub trait AtaUpdateSource {
+    fn spawn(
+        self,
+        accounts: Vec<Pubkey>,
+        tx: mpsc::UnboundedSender<AtaUpdateEvent>,
+        running: Arc<AtomicBool>,
+    ) -> JoinHandle<()>;
+}
+
+#[derive(Debug, Clone)]
+pub struct LaserstreamAtaUpdateSource {
+    pub endpoint: String,
+    pub api_key: String,
+    pub from_slot: u64,
+    pub config: SubscriptionConfig,
+}
+
+impl AtaUpdateSource for LaserstreamAtaUpdateSource {
+    fn spawn(
+        self,
+        accounts: Vec<Pubkey>,
+        tx: mpsc::UnboundedSender<AtaUpdateEvent>,
+        running: Arc<AtomicBool>,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            run_laserstream_loop(self, accounts, tx, running).await;
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WebsocketAtaUpdateSource {
+    pub ws_url: String,
+    pub config: SubscriptionConfig,
+}
+
+impl AtaUpdateSource for WebsocketAtaUpdateSource {
+    fn spawn(
+        self,
+        accounts: Vec<Pubkey>,
+        tx: mpsc::UnboundedSender<AtaUpdateEvent>,
+        running: Arc<AtomicBool>,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            run_websocket_loop(self.ws_url, accounts, self.config, tx, running).await;
+        })
+    }
+}
+
+pub trait WalletBalanceSink {
+    fn record_wallet_ata_balance_update(
+        &self,
+        input: WalletAtaBalanceUpdateInput,
+    ) -> BoxFuture<'_, Result<WalletAtaBalanceCurrent, OrchestratorError>>;
+}
+
+impl WalletBalanceSink for OrchestratorStore {
+    fn record_wallet_ata_balance_update(
+        &self,
+        input: WalletAtaBalanceUpdateInput,
+    ) -> BoxFuture<'_, Result<WalletAtaBalanceCurrent, OrchestratorError>> {
+        Box::pin(async move { self.record_wallet_ata_balance_update(input).await })
+    }
+}
+
+pub fn decode_spl_token_account(data: &[u8]) -> Result<TokenAccountSnapshot> {
+    let account = spl_token::state::Account::unpack(data).context("decode SPL token account")?;
+    Ok(TokenAccountSnapshot {
+        mint: account.mint,
+        owner: account.owner,
+        amount: account.amount,
+    })
+}
+
+pub fn account_data_hash(data: &[u8]) -> String {
+    let digest = Sha256::digest(data);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+pub async fn seed_current_balances(
+    rpc_url: &str,
+    targets: &[AtaTarget],
+    sink: &impl WalletBalanceSink,
+) -> Result<()> {
+    let rpc = RpcClient::new_with_commitment(rpc_url.to_owned(), CommitmentConfig::confirmed());
+    for target in targets {
+        let account = rpc
+            .get_account(&target.wallet_usdc_ata)
+            .with_context(|| format!("fetch wallet ATA {}", target.wallet_usdc_ata))?;
+        process_account_update(
+            target,
+            account.lamports,
+            0,
+            account.owner,
+            account.data,
+            RPC_SEED_SOURCE,
+            CONFIRMED_COMMITMENT,
+            Utc::now(),
+            sink,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn process_account_update(
+    target: &AtaTarget,
+    lamports: u64,
+    slot: u64,
+    owner: Pubkey,
+    data: Vec<u8>,
+    source: &str,
+    source_commitment: &str,
+    received_at: DateTime<Utc>,
+    sink: &impl WalletBalanceSink,
+) -> Result<WalletAtaBalanceCurrent> {
+    if owner != spl_token::id() {
+        bail!(
+            "wallet ATA {} owner is not SPL Token",
+            target.wallet_usdc_ata
+        );
+    }
+    let snapshot = decode_spl_token_account(&data)?;
+    if snapshot.mint != USDC_MINT {
+        bail!("wallet ATA {} mint is not USDC", target.wallet_usdc_ata);
+    }
+    let hash = account_data_hash(&data);
+    let input = WalletAtaBalanceUpdateInput {
+        target_id: target.id,
+        cluster: target.cluster.clone(),
+        wallet: target.wallet.clone(),
+        wallet_usdc_ata: target.wallet_usdc_ata.to_string(),
+        amount_raw: snapshot.amount,
+        owner: Some(snapshot.owner.to_string()),
+        mint: snapshot.mint.to_string(),
+        observed_slot: slot,
+        observed_at: Some(received_at),
+        source: source.to_owned(),
+        source_commitment: source_commitment.to_owned(),
+        account_data_hash: Some(hash.clone()),
+        raw_evidence: json!({
+            "lamports": lamports,
+            "account_data_hash": hash,
+            "source": source,
+        }),
+    };
+    Ok(sink.record_wallet_ata_balance_update(input).await?)
+}
+
+pub async fn run_event_loop(
+    mut rx: mpsc::UnboundedReceiver<AtaUpdateEvent>,
+    targets: HashMap<Pubkey, AtaTarget>,
+    sink: impl WalletBalanceSink,
+    running: Arc<AtomicBool>,
+) -> Result<()> {
+    while running.load(Ordering::Relaxed) {
+        let Some(event) = rx.recv().await else {
+            break;
+        };
+        if let AtaUpdateEvent::AccountUpdate {
+            account,
+            slot,
+            owner,
+            data,
+            source,
+            source_commitment,
+            received_at,
+        } = event
+        {
+            let Some(target) = targets.get(&account) else {
+                continue;
+            };
+            process_account_update(
+                target,
+                0,
+                slot,
+                owner,
+                data,
+                source,
+                source_commitment,
+                received_at,
+                &sink,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+pub fn build_laserstream_subscribe_request(
+    accounts: &[Pubkey],
+    from_slot: u64,
+) -> SubscribeRequest {
+    SubscribeRequest {
+        accounts: HashMap::from([(
+            "balance_sweep_wallet_atas".to_string(),
+            SubscribeRequestFilterAccounts {
+                account: accounts.iter().map(ToString::to_string).collect(),
+                owner: Vec::new(),
+                filters: Vec::new(),
+                nonempty_txn_signature: None,
+            },
+        )]),
+        commitment: Some(CommitmentLevel::Confirmed as i32),
+        accounts_data_slice: Vec::new(),
+        from_slot: Some(from_slot),
+        ..Default::default()
+    }
+}
+
+async fn run_laserstream_loop(
+    source: LaserstreamAtaUpdateSource,
+    accounts: Vec<Pubkey>,
+    tx: mpsc::UnboundedSender<AtaUpdateEvent>,
+    running: Arc<AtomicBool>,
+) {
+    let request = build_laserstream_subscribe_request(&accounts, source.from_slot);
+    let config = LaserstreamConfig::new(source.endpoint, source.api_key)
+        .with_max_reconnect_attempts(source.config.max_reconnect_attempts as u32)
+        .with_replay(true);
+    let (stream, _handle) = subscribe(config, request);
+    futures_util::pin_mut!(stream);
+    for account in &accounts {
+        let _ = tx.send(AtaUpdateEvent::Connected {
+            account: *account,
+            attempt: 1,
+        });
+    }
+    let mut heartbeat = time::interval(source.config.heartbeat_interval);
+    while running.load(Ordering::Relaxed) {
+        tokio::select! {
+            update = stream.next() => {
+                match update {
+                    Some(Ok(update)) => {
+                        let _ = forward_laserstream_update(update, &tx);
+                    }
+                    Some(Err(error)) => {
+                        for account in &accounts {
+                            let _ = tx.send(AtaUpdateEvent::Failed {
+                                account: *account,
+                                attempts: 1,
+                                error: error.to_string(),
+                            });
+                        }
+                        break;
+                    }
+                    None => break,
+                }
+            }
+            _ = heartbeat.tick() => {
+                for account in &accounts {
+                    let _ = tx.send(AtaUpdateEvent::Heartbeat { account: *account });
+                }
+            }
+        }
+    }
+}
+
+fn forward_laserstream_update(
+    update: SubscribeUpdate,
+    tx: &mpsc::UnboundedSender<AtaUpdateEvent>,
+) -> Result<()> {
+    let Some(UpdateOneof::Account(account_update)) = update.update_oneof else {
+        return Ok(());
+    };
+    let account = account_update
+        .account
+        .context("LaserStream account update was missing account payload")?;
+    let pubkey = pubkey_from_laserstream_bytes(&account.pubkey, "account pubkey")?;
+    let owner = pubkey_from_laserstream_bytes(&account.owner, "account owner")?;
+    let _ = tx.send(AtaUpdateEvent::AccountUpdate {
+        account: pubkey,
+        slot: account_update.slot,
+        owner,
+        data: account.data,
+        source: LASERSTREAM_SOURCE,
+        source_commitment: CONFIRMED_COMMITMENT,
+        received_at: Utc::now(),
+    });
+    Ok(())
+}
+
+fn pubkey_from_laserstream_bytes(bytes: &[u8], label: &str) -> Result<Pubkey> {
+    if bytes.len() != 32 {
+        bail!(
+            "LaserStream {label} decoded to {} bytes, expected 32",
+            bytes.len()
+        );
+    }
+    let mut array = [0_u8; 32];
+    array.copy_from_slice(bytes);
+    Ok(Pubkey::new_from_array(array))
+}
+
+async fn run_websocket_loop(
+    ws_url: String,
+    accounts: Vec<Pubkey>,
+    _config: SubscriptionConfig,
+    tx: mpsc::UnboundedSender<AtaUpdateEvent>,
+    running: Arc<AtomicBool>,
+) {
+    let Ok(client) = PubsubClient::new(&ws_url).await else {
+        for account in accounts {
+            let _ = tx.send(AtaUpdateEvent::Failed {
+                account,
+                attempts: 1,
+                error: "connect websocket".to_owned(),
+            });
+        }
+        return;
+    };
+    let client = Arc::new(client);
+    let mut join_set = JoinSet::new();
+    for account in accounts {
+        let client = Arc::clone(&client);
+        let tx = tx.clone();
+        let running = Arc::clone(&running);
+        join_set.spawn(async move {
+            let config = RpcAccountInfoConfig {
+                encoding: Some(UiAccountEncoding::Base64),
+                commitment: Some(CommitmentConfig::confirmed()),
+                ..Default::default()
+            };
+            let Ok((mut stream, unsubscribe)) =
+                client.account_subscribe(&account, Some(config)).await
+            else {
+                let _ = tx.send(AtaUpdateEvent::Failed {
+                    account,
+                    attempts: 1,
+                    error: "subscribe websocket account".to_owned(),
+                });
+                return;
+            };
+            let _ = tx.send(AtaUpdateEvent::Connected {
+                account,
+                attempt: 1,
+            });
+            while running.load(Ordering::Relaxed) {
+                match time::timeout(Duration::from_millis(500), stream.next()).await {
+                    Ok(Some(notification)) => {
+                        let _ = forward_websocket_update(account, notification, &tx);
+                    }
+                    Ok(None) => break,
+                    Err(_) => {}
+                }
+            }
+            unsubscribe().await;
+        });
+    }
+    while join_set.join_next().await.is_some() {}
+}
+
+fn forward_websocket_update(
+    account: Pubkey,
+    notification: AccountNotification,
+    tx: &mpsc::UnboundedSender<AtaUpdateEvent>,
+) -> Result<()> {
+    let data = decode_ui_account_data(notification.value.data)?;
+    let owner = notification.value.owner.parse()?;
+    let _ = tx.send(AtaUpdateEvent::AccountUpdate {
+        account,
+        slot: notification.context.slot,
+        owner,
+        data,
+        source: WEBSOCKET_SOURCE,
+        source_commitment: CONFIRMED_COMMITMENT,
+        received_at: Utc::now(),
+    });
+    Ok(())
+}
+
+fn decode_ui_account_data(data: UiAccountData) -> Result<Vec<u8>> {
+    match data {
+        UiAccountData::Binary(encoded, UiAccountEncoding::Base64) => {
+            use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+            BASE64_STANDARD
+                .decode(encoded)
+                .context("decode base64 account data")
+        }
+        UiAccountData::LegacyBinary(encoded) => {
+            use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+            BASE64_STANDARD
+                .decode(encoded)
+                .context("decode legacy base64 account data")
+        }
+        _ => bail!("unsupported account data encoding"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_program::program_pack::Pack;
+    use spl_token::state::AccountState;
+
+    struct VecSink {
+        updates: std::sync::Mutex<Vec<WalletAtaBalanceUpdateInput>>,
+    }
+
+    impl WalletBalanceSink for VecSink {
+        fn record_wallet_ata_balance_update(
+            &self,
+            input: WalletAtaBalanceUpdateInput,
+        ) -> BoxFuture<'_, Result<WalletAtaBalanceCurrent, OrchestratorError>> {
+            self.updates.lock().unwrap().push(input.clone());
+            Box::pin(async move {
+                Ok(WalletAtaBalanceCurrent {
+                    target_id: input.target_id,
+                    cluster: input.cluster,
+                    wallet: input.wallet,
+                    wallet_usdc_ata: input.wallet_usdc_ata,
+                    amount_raw: input.amount_raw as i64,
+                    owner: input.owner,
+                    mint: input.mint,
+                    observed_slot: input.observed_slot as i64,
+                    observed_at: input.observed_at.unwrap_or_else(Utc::now),
+                    source: input.source,
+                    source_commitment: input.source_commitment,
+                    account_data_hash: input.account_data_hash,
+                    raw_evidence: input.raw_evidence,
+                    updated_at: Utc::now(),
+                })
+            })
+        }
+    }
+
+    fn token_account_data(owner: Pubkey, amount: u64) -> Vec<u8> {
+        let account = spl_token::state::Account {
+            mint: USDC_MINT,
+            owner,
+            amount,
+            delegate: Default::default(),
+            state: AccountState::Initialized,
+            is_native: Default::default(),
+            delegated_amount: 0,
+            close_authority: Default::default(),
+        };
+        let mut data = vec![0_u8; spl_token::state::Account::LEN];
+        spl_token::state::Account::pack(account, &mut data).unwrap();
+        data
+    }
+
+    #[test]
+    fn decodes_spl_token_account_amount_owner_and_mint() {
+        let owner = Pubkey::new_unique();
+        let snapshot = decode_spl_token_account(&token_account_data(owner, 123)).unwrap();
+        assert_eq!(snapshot.mint, USDC_MINT);
+        assert_eq!(snapshot.owner, owner);
+        assert_eq!(snapshot.amount, 123);
+    }
+
+    #[tokio::test]
+    async fn account_update_writes_current_balance_without_execution() {
+        let wallet = Pubkey::new_unique();
+        let ata = Pubkey::new_unique();
+        let target = AtaTarget {
+            id: BalanceSweepTargetId(7),
+            cluster: "devnet".to_owned(),
+            wallet: wallet.to_string(),
+            wallet_usdc_ata: ata,
+        };
+        let sink = VecSink {
+            updates: std::sync::Mutex::new(Vec::new()),
+        };
+        process_account_update(
+            &target,
+            1_000_000,
+            55,
+            spl_token::id(),
+            token_account_data(wallet, 456),
+            LASERSTREAM_SOURCE,
+            CONFIRMED_COMMITMENT,
+            Utc::now(),
+            &sink,
+        )
+        .await
+        .unwrap();
+        let updates = sink.updates.lock().unwrap();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].amount_raw, 456);
+        assert_eq!(updates[0].target_id, BalanceSweepTargetId(7));
+    }
+}

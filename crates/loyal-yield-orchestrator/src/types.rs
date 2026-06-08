@@ -120,6 +120,142 @@ pub struct StoredPolicyMatch {
     pub vault: ManagedVault,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+pub struct BalanceSweepTargetId(pub i64);
+
+impl BalanceSweepTargetId {
+    pub fn as_i64(self) -> i64 {
+        self.0
+    }
+}
+
+impl fmt::Display for BalanceSweepTargetId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BalanceSweepPolicyMatchInput {
+    pub signature: String,
+    pub slot: u64,
+    pub cluster: String,
+    pub settings: String,
+    pub authority: String,
+    pub policy_seed: u64,
+    pub policy_account: String,
+    pub vault_index: u8,
+    pub vault_pubkey: String,
+    pub wallet: String,
+    pub wallet_usdc_ata: String,
+    pub vault_usdc_ata: String,
+    pub delegated_signers: Vec<String>,
+    pub threshold: u16,
+    pub max_amount_per_period: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BalanceSweepTarget {
+    pub id: BalanceSweepTargetId,
+    pub cluster: String,
+    pub settings: String,
+    pub authority: String,
+    pub policy_seed: i64,
+    pub policy_account: String,
+    pub vault_index: i16,
+    pub vault_pubkey: String,
+    pub wallet: String,
+    pub wallet_usdc_ata: String,
+    pub vault_usdc_ata: String,
+    pub delegated_signers: Vec<String>,
+    pub threshold: i32,
+    pub max_amount_per_period: i64,
+    pub active: bool,
+    pub first_seen_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+    pub last_seen_slot: i64,
+    pub last_seen_signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WalletAtaBalanceUpdateInput {
+    pub target_id: BalanceSweepTargetId,
+    pub cluster: String,
+    pub wallet: String,
+    pub wallet_usdc_ata: String,
+    pub amount_raw: u64,
+    pub owner: Option<String>,
+    pub mint: String,
+    pub observed_slot: u64,
+    pub observed_at: Option<DateTime<Utc>>,
+    pub source: String,
+    pub source_commitment: String,
+    pub account_data_hash: Option<String>,
+    pub raw_evidence: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WalletAtaBalanceCurrent {
+    pub target_id: BalanceSweepTargetId,
+    pub cluster: String,
+    pub wallet: String,
+    pub wallet_usdc_ata: String,
+    pub amount_raw: i64,
+    pub owner: Option<String>,
+    pub mint: String,
+    pub observed_slot: i64,
+    pub observed_at: DateTime<Utc>,
+    pub source: String,
+    pub source_commitment: String,
+    pub account_data_hash: Option<String>,
+    pub raw_evidence: Value,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BalanceSweepExecutionInput {
+    pub target_id: BalanceSweepTargetId,
+    pub cluster: String,
+    pub signature: String,
+    pub slot: u64,
+    pub source_wallet_ata: String,
+    pub destination_vault_ata: String,
+    pub amount_raw: u64,
+    pub source_pre_balance_raw: Option<u64>,
+    pub source_post_balance_raw: Option<u64>,
+    pub destination_pre_balance_raw: Option<u64>,
+    pub destination_post_balance_raw: Option<u64>,
+    pub source_commitment: String,
+    pub raw_evidence: Value,
+    pub decoded_evidence: Value,
+    pub received_at: Option<DateTime<Utc>>,
+    pub decoded_at: Option<DateTime<Utc>>,
+    pub dedupe_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BalanceSweepExecution {
+    pub id: i64,
+    pub target_id: BalanceSweepTargetId,
+    pub cluster: String,
+    pub signature: String,
+    pub slot: i64,
+    pub source_wallet_ata: String,
+    pub destination_vault_ata: String,
+    pub amount_raw: i64,
+    pub source_pre_balance_raw: Option<i64>,
+    pub source_post_balance_raw: Option<i64>,
+    pub destination_pre_balance_raw: Option<i64>,
+    pub destination_post_balance_raw: Option<i64>,
+    pub source_commitment: String,
+    pub raw_evidence: Value,
+    pub decoded_evidence: Value,
+    pub received_at: Option<DateTime<Utc>>,
+    pub decoded_at: Option<DateTime<Utc>>,
+    pub inserted_at: DateTime<Utc>,
+    pub dedupe_key: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RoutePolicy {
     pub id: PolicyId,

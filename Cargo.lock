@@ -622,6 +622,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be5eb007b7cacc6c660343e96f650fedf4b5a77512399eb952ca6642cf8d13f7"
 
 [[package]]
+name = "balance-sweep-ata-monitor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "futures-util",
+ "helius-laserstream",
+ "loyal-actions",
+ "loyal-yield-orchestrator",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "solana-account-decoder 2.3.13",
+ "solana-client",
+ "solana-program",
+ "solana-pubsub-client",
+ "solana-sdk",
+ "spl-token",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "base64"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3032,6 +3058,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bincode",
+ "chrono",
  "clap",
  "futures-util",
  "loyal-actions",
@@ -3040,6 +3067,7 @@ dependencies = [
  "serde",
  "serde_json",
  "solana-sdk",
+ "spl-token",
  "tokio",
  "tokio-tungstenite 0.26.2",
 ]

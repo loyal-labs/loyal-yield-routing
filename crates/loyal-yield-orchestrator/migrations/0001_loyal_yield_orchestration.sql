@@ -96,6 +96,80 @@ CREATE TABLE IF NOT EXISTS loyal_yield.managed_vaults (
 CREATE INDEX IF NOT EXISTS managed_vaults_active_idx
     ON loyal_yield.managed_vaults (cluster, active, active_policy_id);
 
+CREATE TABLE IF NOT EXISTS loyal_yield.balance_sweep_targets (
+    id BIGSERIAL PRIMARY KEY,
+    cluster TEXT NOT NULL,
+    settings TEXT NOT NULL,
+    authority TEXT NOT NULL,
+    policy_seed BIGINT NOT NULL,
+    policy_account TEXT NOT NULL,
+    vault_index SMALLINT NOT NULL,
+    vault_pubkey TEXT NOT NULL,
+    wallet TEXT NOT NULL,
+    wallet_usdc_ata TEXT NOT NULL,
+    vault_usdc_ata TEXT NOT NULL,
+    delegated_signers TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+    threshold INTEGER NOT NULL,
+    max_amount_per_period BIGINT NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen_slot BIGINT NOT NULL,
+    last_seen_signature TEXT NOT NULL,
+    UNIQUE (cluster, policy_account)
+);
+
+CREATE INDEX IF NOT EXISTS balance_sweep_targets_active_wallet_ata_idx
+    ON loyal_yield.balance_sweep_targets (cluster, active, wallet_usdc_ata);
+
+CREATE INDEX IF NOT EXISTS balance_sweep_targets_wallet_idx
+    ON loyal_yield.balance_sweep_targets (cluster, wallet, active);
+
+CREATE TABLE IF NOT EXISTS loyal_yield.balance_sweep_wallet_balances_current (
+    target_id BIGINT PRIMARY KEY REFERENCES loyal_yield.balance_sweep_targets(id) ON DELETE CASCADE,
+    cluster TEXT NOT NULL,
+    wallet TEXT NOT NULL,
+    wallet_usdc_ata TEXT NOT NULL,
+    amount_raw BIGINT NOT NULL,
+    owner TEXT,
+    mint TEXT NOT NULL,
+    observed_slot BIGINT NOT NULL,
+    observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    source TEXT NOT NULL,
+    source_commitment TEXT NOT NULL,
+    account_data_hash TEXT,
+    raw_evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS balance_sweep_wallet_balances_wallet_idx
+    ON loyal_yield.balance_sweep_wallet_balances_current (cluster, wallet, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS loyal_yield.balance_sweep_executions (
+    id BIGSERIAL PRIMARY KEY,
+    target_id BIGINT NOT NULL REFERENCES loyal_yield.balance_sweep_targets(id),
+    cluster TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    slot BIGINT NOT NULL,
+    source_wallet_ata TEXT NOT NULL,
+    destination_vault_ata TEXT NOT NULL,
+    amount_raw BIGINT NOT NULL,
+    source_pre_balance_raw BIGINT,
+    source_post_balance_raw BIGINT,
+    destination_pre_balance_raw BIGINT,
+    destination_post_balance_raw BIGINT,
+    source_commitment TEXT NOT NULL,
+    raw_evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+    decoded_evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+    received_at TIMESTAMPTZ,
+    decoded_at TIMESTAMPTZ,
+    inserted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    dedupe_key TEXT NOT NULL UNIQUE
+);
+
+CREATE INDEX IF NOT EXISTS balance_sweep_executions_target_slot_idx
+    ON loyal_yield.balance_sweep_executions (target_id, slot DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS loyal_yield.vault_position_snapshots (
     id BIGSERIAL PRIMARY KEY,
     vault_id BIGINT NOT NULL REFERENCES loyal_yield.managed_vaults(id),

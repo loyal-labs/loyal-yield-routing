@@ -2,10 +2,10 @@ use crate::domain::{draft_same_mint_decision, state_transition, PlannedDecision}
 use crate::types::*;
 use crate::{OrchestratorError, ACTIVE_DECISION_STATUSES};
 use chrono::{DateTime, Utc};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{PgConnection, PgPool};
+use sqlx::{PgConnection, PgPool, Row};
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_loyal_yield_orchestration.sql");
 
@@ -144,6 +144,286 @@ impl NeonSqlClient {
         let vault = upsert_vault(&mut *tx, policy.id, &event).await?;
         tx.commit().await?;
         Ok(StoredPolicyMatch { policy, vault })
+    }
+
+    pub async fn record_balance_sweep_policy_match(
+        &self,
+        event: BalanceSweepPolicyMatchInput,
+    ) -> Result<BalanceSweepTarget, OrchestratorError> {
+        let policy_seed = to_i64_policy_seed(event.policy_seed)?;
+        let slot = to_i64_slot(event.slot)?;
+        let max_amount_per_period = to_i64_amount(event.max_amount_per_period)?;
+        let row = sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.balance_sweep_targets
+                (cluster, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
+                 wallet, wallet_usdc_ata, vault_usdc_ata, delegated_signers, threshold,
+                 max_amount_per_period, active, last_seen_slot, last_seen_signature)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, TRUE, $14, $15)
+            ON CONFLICT (cluster, policy_account) DO UPDATE SET
+                settings = CASE
+                    WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
+                    THEN EXCLUDED.settings
+                    ELSE loyal_yield.balance_sweep_targets.settings
+                END,
+                authority = CASE
+                    WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
+                    THEN EXCLUDED.authority
+                    ELSE loyal_yield.balance_sweep_targets.authority
+                END,
+                vault_index = CASE
+                    WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
+                    THEN EXCLUDED.vault_index
+                    ELSE loyal_yield.balance_sweep_targets.vault_index
+                END,
+                vault_pubkey = CASE
+                    WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
+                    THEN EXCLUDED.vault_pubkey
+                    ELSE loyal_yield.balance_sweep_targets.vault_pubkey
+                END,
+                wallet = CASE
+                    WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
+                    THEN EXCLUDED.wallet
+                    ELSE loyal_yield.balance_sweep_targets.wallet
+                END,
+                wallet_usdc_ata = CASE
+                    WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
+                    THEN EXCLUDED.wallet_usdc_ata
+                    ELSE loyal_yield.balance_sweep_targets.wallet_usdc_ata
+                END,
+                vault_usdc_ata = CASE
+                    WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
+                    THEN EXCLUDED.vault_usdc_ata
+                    ELSE loyal_yield.balance_sweep_targets.vault_usdc_ata
+                END,
+                delegated_signers = CASE
+                    WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
+                    THEN EXCLUDED.delegated_signers
+                    ELSE loyal_yield.balance_sweep_targets.delegated_signers
+                END,
+                threshold = CASE
+                    WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
+                    THEN EXCLUDED.threshold
+                    ELSE loyal_yield.balance_sweep_targets.threshold
+                END,
+                max_amount_per_period = CASE
+                    WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
+                    THEN EXCLUDED.max_amount_per_period
+                    ELSE loyal_yield.balance_sweep_targets.max_amount_per_period
+                END,
+                active = CASE
+                    WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
+                    THEN TRUE
+                    ELSE loyal_yield.balance_sweep_targets.active
+                END,
+                last_seen_at = CASE
+                    WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
+                    THEN now()
+                    ELSE loyal_yield.balance_sweep_targets.last_seen_at
+                END,
+                last_seen_slot = GREATEST(loyal_yield.balance_sweep_targets.last_seen_slot, EXCLUDED.last_seen_slot),
+                last_seen_signature = CASE
+                    WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
+                    THEN EXCLUDED.last_seen_signature
+                    ELSE loyal_yield.balance_sweep_targets.last_seen_signature
+                END
+            RETURNING
+                id, cluster, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
+                wallet, wallet_usdc_ata, vault_usdc_ata, delegated_signers, threshold,
+                max_amount_per_period, active, first_seen_at, last_seen_at, last_seen_slot, last_seen_signature
+            "#,
+        )
+        .bind(&event.cluster)
+        .bind(&event.settings)
+        .bind(&event.authority)
+        .bind(policy_seed)
+        .bind(&event.policy_account)
+        .bind(i16::from(event.vault_index))
+        .bind(&event.vault_pubkey)
+        .bind(&event.wallet)
+        .bind(&event.wallet_usdc_ata)
+        .bind(&event.vault_usdc_ata)
+        .bind(&event.delegated_signers)
+        .bind(i32::from(event.threshold))
+        .bind(max_amount_per_period)
+        .bind(slot)
+        .bind(&event.signature)
+        .fetch_one(&self.pool)
+        .await?;
+
+        balance_sweep_target_from_row(&row)
+    }
+
+    pub async fn load_active_balance_sweep_targets(
+        &self,
+        cluster: &str,
+    ) -> Result<Vec<BalanceSweepTarget>, OrchestratorError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id, cluster, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
+                wallet, wallet_usdc_ata, vault_usdc_ata, delegated_signers, threshold,
+                max_amount_per_period, active, first_seen_at, last_seen_at, last_seen_slot, last_seen_signature
+            FROM loyal_yield.balance_sweep_targets
+            WHERE cluster = $1 AND active
+            ORDER BY id
+            "#,
+        )
+        .bind(cluster)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter().map(balance_sweep_target_from_row).collect()
+    }
+
+    pub async fn record_wallet_ata_balance_update(
+        &self,
+        input: WalletAtaBalanceUpdateInput,
+    ) -> Result<WalletAtaBalanceCurrent, OrchestratorError> {
+        let amount_raw = to_i64_amount(input.amount_raw)?;
+        let observed_slot = to_i64_slot(input.observed_slot)?;
+        let row = sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.balance_sweep_wallet_balances_current
+                (target_id, cluster, wallet, wallet_usdc_ata, amount_raw, owner, mint,
+                 observed_slot, observed_at, source, source_commitment, account_data_hash, raw_evidence)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, now()), $10, $11, $12, $13)
+            ON CONFLICT (target_id) DO UPDATE SET
+                cluster = CASE
+                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                    THEN EXCLUDED.cluster
+                    ELSE loyal_yield.balance_sweep_wallet_balances_current.cluster
+                END,
+                wallet = CASE
+                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                    THEN EXCLUDED.wallet
+                    ELSE loyal_yield.balance_sweep_wallet_balances_current.wallet
+                END,
+                wallet_usdc_ata = CASE
+                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                    THEN EXCLUDED.wallet_usdc_ata
+                    ELSE loyal_yield.balance_sweep_wallet_balances_current.wallet_usdc_ata
+                END,
+                amount_raw = CASE
+                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                    THEN EXCLUDED.amount_raw
+                    ELSE loyal_yield.balance_sweep_wallet_balances_current.amount_raw
+                END,
+                owner = CASE
+                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                    THEN EXCLUDED.owner
+                    ELSE loyal_yield.balance_sweep_wallet_balances_current.owner
+                END,
+                mint = CASE
+                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                    THEN EXCLUDED.mint
+                    ELSE loyal_yield.balance_sweep_wallet_balances_current.mint
+                END,
+                observed_slot = GREATEST(loyal_yield.balance_sweep_wallet_balances_current.observed_slot, EXCLUDED.observed_slot),
+                observed_at = CASE
+                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                    THEN EXCLUDED.observed_at
+                    ELSE loyal_yield.balance_sweep_wallet_balances_current.observed_at
+                END,
+                source = CASE
+                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                    THEN EXCLUDED.source
+                    ELSE loyal_yield.balance_sweep_wallet_balances_current.source
+                END,
+                source_commitment = CASE
+                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                    THEN EXCLUDED.source_commitment
+                    ELSE loyal_yield.balance_sweep_wallet_balances_current.source_commitment
+                END,
+                account_data_hash = CASE
+                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                    THEN EXCLUDED.account_data_hash
+                    ELSE loyal_yield.balance_sweep_wallet_balances_current.account_data_hash
+                END,
+                raw_evidence = CASE
+                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                    THEN EXCLUDED.raw_evidence
+                    ELSE loyal_yield.balance_sweep_wallet_balances_current.raw_evidence
+                END,
+                updated_at = CASE
+                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                    THEN now()
+                    ELSE loyal_yield.balance_sweep_wallet_balances_current.updated_at
+                END
+            RETURNING
+                target_id, cluster, wallet, wallet_usdc_ata, amount_raw, owner, mint,
+                observed_slot, observed_at, source, source_commitment, account_data_hash,
+                raw_evidence, updated_at
+            "#,
+        )
+        .bind(input.target_id.as_i64())
+        .bind(&input.cluster)
+        .bind(&input.wallet)
+        .bind(&input.wallet_usdc_ata)
+        .bind(amount_raw)
+        .bind(input.owner.as_deref())
+        .bind(&input.mint)
+        .bind(observed_slot)
+        .bind(input.observed_at)
+        .bind(&input.source)
+        .bind(&input.source_commitment)
+        .bind(input.account_data_hash.as_deref())
+        .bind(&input.raw_evidence)
+        .fetch_one(&self.pool)
+        .await?;
+
+        wallet_ata_balance_from_row(&row)
+    }
+
+    pub async fn record_balance_sweep_execution(
+        &self,
+        input: BalanceSweepExecutionInput,
+    ) -> Result<BalanceSweepExecution, OrchestratorError> {
+        let slot = to_i64_slot(input.slot)?;
+        let amount_raw = to_i64_amount(input.amount_raw)?;
+        let source_pre_balance_raw = optional_to_i64_amount(input.source_pre_balance_raw)?;
+        let source_post_balance_raw = optional_to_i64_amount(input.source_post_balance_raw)?;
+        let destination_pre_balance_raw =
+            optional_to_i64_amount(input.destination_pre_balance_raw)?;
+        let destination_post_balance_raw =
+            optional_to_i64_amount(input.destination_post_balance_raw)?;
+        let row = sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.balance_sweep_executions
+                (target_id, cluster, signature, slot, source_wallet_ata, destination_vault_ata,
+                 amount_raw, source_pre_balance_raw, source_post_balance_raw,
+                 destination_pre_balance_raw, destination_post_balance_raw, source_commitment,
+                 raw_evidence, decoded_evidence, received_at, decoded_at, dedupe_key)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            ON CONFLICT (dedupe_key) DO UPDATE SET dedupe_key = EXCLUDED.dedupe_key
+            RETURNING
+                id, target_id, cluster, signature, slot, source_wallet_ata, destination_vault_ata,
+                amount_raw, source_pre_balance_raw, source_post_balance_raw,
+                destination_pre_balance_raw, destination_post_balance_raw, source_commitment,
+                raw_evidence, decoded_evidence, received_at, decoded_at, inserted_at, dedupe_key
+            "#,
+        )
+        .bind(input.target_id.as_i64())
+        .bind(&input.cluster)
+        .bind(&input.signature)
+        .bind(slot)
+        .bind(&input.source_wallet_ata)
+        .bind(&input.destination_vault_ata)
+        .bind(amount_raw)
+        .bind(source_pre_balance_raw)
+        .bind(source_post_balance_raw)
+        .bind(destination_pre_balance_raw)
+        .bind(destination_post_balance_raw)
+        .bind(&input.source_commitment)
+        .bind(&input.raw_evidence)
+        .bind(&input.decoded_evidence)
+        .bind(input.received_at)
+        .bind(input.decoded_at)
+        .bind(&input.dedupe_key)
+        .fetch_one(&self.pool)
+        .await?;
+
+        balance_sweep_execution_from_row(&row)
     }
 
     pub async fn current_positions(
@@ -903,6 +1183,93 @@ fn managed_vault_from_row(row: ManagedVaultRow) -> ManagedVault {
     }
 }
 
+fn managed_vault_from_row(row: ManagedVaultRow) -> ManagedVault {
+    ManagedVault {
+        id: VaultId(row.id),
+        cluster: row.cluster,
+        settings: row.settings,
+        vault_index: row.vault_index,
+        vault_pubkey: row.vault_pubkey,
+        active_policy_id: PolicyId(row.active_policy_id),
+        active: row.active,
+        first_seen_at: row.first_seen_at,
+        last_seen_at: row.last_seen_at,
+    }
+}
+
+fn balance_sweep_target_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<BalanceSweepTarget, OrchestratorError> {
+    Ok(BalanceSweepTarget {
+        id: BalanceSweepTargetId(row.try_get("id")?),
+        cluster: row.try_get("cluster")?,
+        settings: row.try_get("settings")?,
+        authority: row.try_get("authority")?,
+        policy_seed: row.try_get("policy_seed")?,
+        policy_account: row.try_get("policy_account")?,
+        vault_index: row.try_get("vault_index")?,
+        vault_pubkey: row.try_get("vault_pubkey")?,
+        wallet: row.try_get("wallet")?,
+        wallet_usdc_ata: row.try_get("wallet_usdc_ata")?,
+        vault_usdc_ata: row.try_get("vault_usdc_ata")?,
+        delegated_signers: row.try_get("delegated_signers")?,
+        threshold: row.try_get("threshold")?,
+        max_amount_per_period: row.try_get("max_amount_per_period")?,
+        active: row.try_get("active")?,
+        first_seen_at: row.try_get("first_seen_at")?,
+        last_seen_at: row.try_get("last_seen_at")?,
+        last_seen_slot: row.try_get("last_seen_slot")?,
+        last_seen_signature: row.try_get("last_seen_signature")?,
+    })
+}
+
+fn wallet_ata_balance_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<WalletAtaBalanceCurrent, OrchestratorError> {
+    Ok(WalletAtaBalanceCurrent {
+        target_id: BalanceSweepTargetId(row.try_get("target_id")?),
+        cluster: row.try_get("cluster")?,
+        wallet: row.try_get("wallet")?,
+        wallet_usdc_ata: row.try_get("wallet_usdc_ata")?,
+        amount_raw: row.try_get("amount_raw")?,
+        owner: row.try_get("owner")?,
+        mint: row.try_get("mint")?,
+        observed_slot: row.try_get("observed_slot")?,
+        observed_at: row.try_get("observed_at")?,
+        source: row.try_get("source")?,
+        source_commitment: row.try_get("source_commitment")?,
+        account_data_hash: row.try_get("account_data_hash")?,
+        raw_evidence: row.try_get("raw_evidence")?,
+        updated_at: row.try_get("updated_at")?,
+    })
+}
+
+fn balance_sweep_execution_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<BalanceSweepExecution, OrchestratorError> {
+    Ok(BalanceSweepExecution {
+        id: row.try_get("id")?,
+        target_id: BalanceSweepTargetId(row.try_get("target_id")?),
+        cluster: row.try_get("cluster")?,
+        signature: row.try_get("signature")?,
+        slot: row.try_get("slot")?,
+        source_wallet_ata: row.try_get("source_wallet_ata")?,
+        destination_vault_ata: row.try_get("destination_vault_ata")?,
+        amount_raw: row.try_get("amount_raw")?,
+        source_pre_balance_raw: row.try_get("source_pre_balance_raw")?,
+        source_post_balance_raw: row.try_get("source_post_balance_raw")?,
+        destination_pre_balance_raw: row.try_get("destination_pre_balance_raw")?,
+        destination_post_balance_raw: row.try_get("destination_post_balance_raw")?,
+        source_commitment: row.try_get("source_commitment")?,
+        raw_evidence: row.try_get("raw_evidence")?,
+        decoded_evidence: row.try_get("decoded_evidence")?,
+        received_at: row.try_get("received_at")?,
+        decoded_at: row.try_get("decoded_at")?,
+        inserted_at: row.try_get("inserted_at")?,
+        dedupe_key: row.try_get("dedupe_key")?,
+    })
+}
+
 fn current_position_from_row(
     row: CurrentPositionRow,
 ) -> Result<CurrentReservePosition, OrchestratorError> {
@@ -1029,6 +1396,18 @@ fn to_i64_amount(amount: u64) -> Result<i64, OrchestratorError> {
     i64::try_from(amount).map_err(|_| OrchestratorError::amount_out_of_range(amount))
 }
 
+fn to_i64_slot(slot: u64) -> Result<i64, OrchestratorError> {
+    i64::try_from(slot).map_err(|_| OrchestratorError::SlotOutOfRange(slot))
+}
+
+fn to_i64_policy_seed(policy_seed: u64) -> Result<i64, OrchestratorError> {
+    i64::try_from(policy_seed).map_err(|_| OrchestratorError::PolicySeedOutOfRange(policy_seed))
+}
+
+fn optional_to_i64_amount(amount: Option<u64>) -> Result<Option<i64>, OrchestratorError> {
+    amount.map(to_i64_amount).transpose()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1062,7 +1441,48 @@ mod tests {
         format!("test_{test_name}_{nanos}")
     }
 
+    fn balance_sweep_policy_match(
+        cluster: &str,
+        policy_account: &str,
+        slot: u64,
+    ) -> BalanceSweepPolicyMatchInput {
+        BalanceSweepPolicyMatchInput {
+            signature: format!("sweep-sig-{policy_account}-{slot}"),
+            slot,
+            cluster: cluster.to_owned(),
+            settings: "settings-1".to_owned(),
+            authority: "authority-1".to_owned(),
+            policy_seed: 9,
+            policy_account: policy_account.to_owned(),
+            vault_index: 1,
+            vault_pubkey: "vault-1".to_owned(),
+            wallet: "wallet-1".to_owned(),
+            wallet_usdc_ata: "wallet-usdc-ata-1".to_owned(),
+            vault_usdc_ata: "vault-usdc-ata-1".to_owned(),
+            delegated_signers: vec!["automation-1".to_owned()],
+            threshold: 1,
+            max_amount_per_period: 250_000,
+        }
+    }
+
     async fn delete_cluster(store: &OrchestratorStore, cluster: &str) {
+        sqlx::query("DELETE FROM loyal_yield.balance_sweep_executions WHERE cluster = $1")
+            .bind(cluster)
+            .execute(store.pool())
+            .await
+            .expect("delete test balance sweep executions");
+        sqlx::query(
+            "DELETE FROM loyal_yield.balance_sweep_wallet_balances_current WHERE cluster = $1",
+        )
+        .bind(cluster)
+        .execute(store.pool())
+        .await
+        .expect("delete test balance sweep wallet balances");
+        sqlx::query("DELETE FROM loyal_yield.balance_sweep_targets WHERE cluster = $1")
+            .bind(cluster)
+            .execute(store.pool())
+            .await
+            .expect("delete test balance sweep targets");
         sqlx::query(
             r#"
             DELETE FROM loyal_yield.rebalance_decisions
@@ -1257,6 +1677,127 @@ mod tests {
         .expect("count managed vaults");
         assert_eq!(policy_count, 3);
         assert_eq!(vault_count, 1);
+
+        delete_cluster(&store, &cluster).await;
+    }
+
+    #[tokio::test]
+    async fn balance_sweep_store_tracks_targets_balances_and_execution_dedupe() {
+        let Some(store) = database_store().await else {
+            return;
+        };
+        let cluster = unique_cluster("balance_sweep_store");
+        delete_cluster(&store, &cluster).await;
+
+        let first = store
+            .record_balance_sweep_policy_match(balance_sweep_policy_match(
+                &cluster,
+                "sweep-policy-a",
+                100,
+            ))
+            .await
+            .expect("insert sweep target");
+        assert_eq!(first.last_seen_slot, 100);
+        assert_eq!(first.wallet_usdc_ata, "wallet-usdc-ata-1");
+        assert_eq!(first.max_amount_per_period, 250_000);
+
+        let mut stale = balance_sweep_policy_match(&cluster, "sweep-policy-a", 99);
+        stale.wallet_usdc_ata = "stale-wallet-usdc-ata".to_owned();
+        let repeated = store
+            .record_balance_sweep_policy_match(stale)
+            .await
+            .expect("stale sweep target replay is ignored");
+        assert_eq!(repeated.id, first.id);
+        assert_eq!(repeated.last_seen_slot, 100);
+        assert_eq!(repeated.wallet_usdc_ata, "wallet-usdc-ata-1");
+
+        let targets = store
+            .load_active_balance_sweep_targets(&cluster)
+            .await
+            .expect("load active sweep targets");
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].id, first.id);
+
+        let current = store
+            .record_wallet_ata_balance_update(WalletAtaBalanceUpdateInput {
+                target_id: first.id,
+                cluster: cluster.clone(),
+                wallet: first.wallet.clone(),
+                wallet_usdc_ata: first.wallet_usdc_ata.clone(),
+                amount_raw: 1_000_000,
+                owner: Some(first.wallet.clone()),
+                mint: "USDC".to_owned(),
+                observed_slot: 200,
+                observed_at: None,
+                source: "test".to_owned(),
+                source_commitment: "confirmed".to_owned(),
+                account_data_hash: Some("hash-200".to_owned()),
+                raw_evidence: json!({"slot": 200}),
+            })
+            .await
+            .expect("record current wallet balance");
+        assert_eq!(current.amount_raw, 1_000_000);
+        assert_eq!(current.observed_slot, 200);
+
+        let stale_current = store
+            .record_wallet_ata_balance_update(WalletAtaBalanceUpdateInput {
+                target_id: first.id,
+                cluster: cluster.clone(),
+                wallet: first.wallet.clone(),
+                wallet_usdc_ata: first.wallet_usdc_ata.clone(),
+                amount_raw: 5,
+                owner: Some(first.wallet.clone()),
+                mint: "USDC".to_owned(),
+                observed_slot: 199,
+                observed_at: None,
+                source: "test".to_owned(),
+                source_commitment: "confirmed".to_owned(),
+                account_data_hash: Some("hash-199".to_owned()),
+                raw_evidence: json!({"slot": 199}),
+            })
+            .await
+            .expect("stale wallet balance replay is ignored");
+        assert_eq!(stale_current.amount_raw, 1_000_000);
+        assert_eq!(stale_current.observed_slot, 200);
+
+        let execution_input = BalanceSweepExecutionInput {
+            target_id: first.id,
+            cluster: cluster.clone(),
+            signature: "sweep-exec-sig".to_owned(),
+            slot: 210,
+            source_wallet_ata: first.wallet_usdc_ata.clone(),
+            destination_vault_ata: first.vault_usdc_ata.clone(),
+            amount_raw: 250_000,
+            source_pre_balance_raw: Some(1_000_000),
+            source_post_balance_raw: Some(750_000),
+            destination_pre_balance_raw: Some(0),
+            destination_post_balance_raw: Some(250_000),
+            source_commitment: "confirmed".to_owned(),
+            raw_evidence: json!({"signature": "sweep-exec-sig"}),
+            decoded_evidence: json!({"kind": "subscriptions_transfer_recurring"}),
+            received_at: None,
+            decoded_at: None,
+            dedupe_key: format!("{cluster}:sweep-exec-sig:0"),
+        };
+        let execution = store
+            .record_balance_sweep_execution(execution_input.clone())
+            .await
+            .expect("insert sweep execution");
+        let replay = store
+            .record_balance_sweep_execution(execution_input)
+            .await
+            .expect("dedupe sweep execution replay");
+        assert_eq!(replay.id, execution.id);
+        assert_eq!(replay.amount_raw, 250_000);
+
+        let execution_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM loyal_yield.balance_sweep_executions WHERE cluster = $1",
+        )
+        .bind(&cluster)
+        .fetch_one(store.pool())
+        .await
+        .expect("count sweep executions");
+        assert_eq!(execution_count, 1);
 
         delete_cluster(&store, &cluster).await;
     }
