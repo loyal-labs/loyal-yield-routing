@@ -165,6 +165,55 @@ pub(crate) fn loyal_hub_constraint(
     }
 }
 
+#[allow(dead_code)]
+pub(crate) fn subscription_recurring_sweep_constraint(
+    delegator: Pubkey,
+    vault: Pubkey,
+    delegator_usdc_ata: Pubkey,
+    vault_usdc_ata: Pubkey,
+    nonce: u64,
+) -> SquadsInstructionConstraint {
+    let subscription_authority = derive_subscription_authority(delegator, USDC_MINT);
+    let delegation = derive_recurring_delegation(subscription_authority, delegator, vault, nonce);
+    let event_authority = derive_subscription_event_authority();
+
+    SquadsInstructionConstraint {
+        program_id: SUBSCRIPTIONS_PROGRAM_ID,
+        account_constraints: vec![
+            pubkey_constraint(0, vec![delegation], Some(SUBSCRIPTIONS_PROGRAM_ID)),
+            pubkey_constraint(
+                1,
+                vec![subscription_authority],
+                Some(SUBSCRIPTIONS_PROGRAM_ID),
+            ),
+            pubkey_constraint(2, vec![delegator_usdc_ata], Some(spl_token::id())),
+            pubkey_constraint(3, vec![vault_usdc_ata], Some(spl_token::id())),
+            pubkey_constraint(4, vec![USDC_MINT], Some(spl_token::id())),
+            pubkey_constraint(5, vec![spl_token::id()], None),
+            pubkey_constraint(6, vec![vault], None),
+            pubkey_constraint(7, vec![event_authority], None),
+            pubkey_constraint(8, vec![SUBSCRIPTIONS_PROGRAM_ID], None),
+        ],
+        data_constraints: vec![
+            SquadsDataConstraint {
+                data_offset: 0,
+                data_value: SquadsDataValue::U8(SUBSCRIPTIONS_TRANSFER_RECURRING),
+                operator: SquadsDataOperator::Equals,
+            },
+            SquadsDataConstraint {
+                data_offset: SUBSCRIPTION_TRANSFER_DELEGATOR_OFFSET,
+                data_value: SquadsDataValue::U8Slice(delegator.to_bytes().to_vec()),
+                operator: SquadsDataOperator::Equals,
+            },
+            SquadsDataConstraint {
+                data_offset: SUBSCRIPTION_TRANSFER_MINT_OFFSET,
+                data_value: SquadsDataValue::U8Slice(USDC_MINT.to_bytes().to_vec()),
+                operator: SquadsDataOperator::Equals,
+            },
+        ],
+    }
+}
+
 pub(crate) fn pubkey_constraint(
     account_index: u8,
     pubkeys: Vec<Pubkey>,
@@ -217,6 +266,81 @@ pub fn derive_loyal_hub_config() -> Pubkey {
 
 pub fn derive_loyal_hub_authority() -> Pubkey {
     derive_loyal_hub_lane_authority(0)
+}
+
+pub fn derive_subscription_authority(user: Pubkey, mint: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[SUBSCRIPTION_AUTHORITY_SEED, user.as_ref(), mint.as_ref()],
+        &SUBSCRIPTIONS_PROGRAM_ID,
+    )
+    .0
+}
+
+pub fn derive_recurring_delegation(
+    subscription_authority: Pubkey,
+    delegator: Pubkey,
+    delegatee: Pubkey,
+    nonce: u64,
+) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            SUBSCRIPTION_DELEGATION_SEED,
+            subscription_authority.as_ref(),
+            delegator.as_ref(),
+            delegatee.as_ref(),
+            &nonce.to_le_bytes(),
+        ],
+        &SUBSCRIPTIONS_PROGRAM_ID,
+    )
+    .0
+}
+
+pub fn derive_subscription_event_authority() -> Pubkey {
+    Pubkey::find_program_address(
+        &[SUBSCRIPTION_EVENT_AUTHORITY_SEED],
+        &SUBSCRIPTIONS_PROGRAM_ID,
+    )
+    .0
+}
+
+pub fn subscription_init_authority_data() -> Vec<u8> {
+    vec![SUBSCRIPTIONS_INIT_AUTHORITY]
+}
+
+pub fn subscription_create_recurring_delegation_data(
+    nonce: u64,
+    amount_per_period: u64,
+    period_length_s: u64,
+    start_ts: i64,
+    expiry_ts: i64,
+    expected_subscription_authority_init_id: i64,
+) -> Vec<u8> {
+    let mut data = Vec::with_capacity(49);
+    data.push(SUBSCRIPTIONS_CREATE_RECURRING_DELEGATION);
+    data.extend_from_slice(&nonce.to_le_bytes());
+    data.extend_from_slice(&amount_per_period.to_le_bytes());
+    data.extend_from_slice(&period_length_s.to_le_bytes());
+    data.extend_from_slice(&start_ts.to_le_bytes());
+    data.extend_from_slice(&expiry_ts.to_le_bytes());
+    data.extend_from_slice(&expected_subscription_authority_init_id.to_le_bytes());
+    data
+}
+
+pub fn subscription_transfer_recurring_data(
+    amount: u64,
+    delegator: Pubkey,
+    mint: Pubkey,
+) -> Vec<u8> {
+    let mut data = Vec::with_capacity(73);
+    data.push(SUBSCRIPTIONS_TRANSFER_RECURRING);
+    data.extend_from_slice(&amount.to_le_bytes());
+    data.extend_from_slice(delegator.as_ref());
+    data.extend_from_slice(mint.as_ref());
+    data
+}
+
+pub fn subscription_revoke_delegation_data() -> Vec<u8> {
+    vec![SUBSCRIPTIONS_REVOKE_DELEGATION]
 }
 
 pub fn derive_loyal_hub_lane_authority(lane_id: u8) -> Pubkey {

@@ -224,6 +224,114 @@ pub fn loyal_hub_lane_token_account(mint: Pubkey, lane_id: u8) -> Pubkey {
     loyal_actions::derive_loyal_hub_lane_inventory_account(mint, lane_id)
 }
 
+pub fn derive_associated_token_account(owner: Pubkey, mint: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[owner.as_ref(), spl_token::id().as_ref(), mint.as_ref()],
+        &ASSOCIATED_TOKEN_PROGRAM_ID,
+    )
+    .0
+}
+
+pub fn derive_subscription_authority(user: Pubkey, mint: Pubkey) -> Pubkey {
+    loyal_actions::derive_subscription_authority(user, mint)
+}
+
+pub fn derive_recurring_delegation(
+    subscription_authority: Pubkey,
+    delegator: Pubkey,
+    delegatee: Pubkey,
+    nonce: u64,
+) -> Pubkey {
+    loyal_actions::derive_recurring_delegation(subscription_authority, delegator, delegatee, nonce)
+}
+
+pub fn derive_subscription_event_authority() -> Pubkey {
+    loyal_actions::derive_subscription_event_authority()
+}
+
+pub fn subscription_init_authority_instruction(
+    owner: Pubkey,
+    subscription_authority: Pubkey,
+    token_mint: Pubkey,
+    user_ata: Pubkey,
+) -> solana_sdk::instruction::Instruction {
+    solana_sdk::instruction::Instruction {
+        program_id: SUBSCRIPTIONS_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(owner, true),
+            AccountMeta::new(subscription_authority, false),
+            AccountMeta::new_readonly(token_mint, false),
+            AccountMeta::new(user_ata, false),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+        ],
+        data: loyal_actions::subscription_init_authority_data(),
+    }
+}
+
+pub struct SubscriptionRecurringDelegationArgs {
+    pub delegator: Pubkey,
+    pub subscription_authority: Pubkey,
+    pub delegation: Pubkey,
+    pub delegatee: Pubkey,
+    pub nonce: u64,
+    pub amount_per_period: u64,
+    pub period_length_s: u64,
+    pub start_ts: i64,
+    pub expiry_ts: i64,
+    pub expected_subscription_authority_init_id: i64,
+}
+
+pub fn subscription_create_recurring_delegation_instruction(
+    args: SubscriptionRecurringDelegationArgs,
+) -> solana_sdk::instruction::Instruction {
+    solana_sdk::instruction::Instruction {
+        program_id: SUBSCRIPTIONS_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(args.delegator, true),
+            AccountMeta::new_readonly(args.subscription_authority, false),
+            AccountMeta::new(args.delegation, false),
+            AccountMeta::new_readonly(args.delegatee, false),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+        ],
+        data: loyal_actions::subscription_create_recurring_delegation_data(
+            args.nonce,
+            args.amount_per_period,
+            args.period_length_s,
+            args.start_ts,
+            args.expiry_ts,
+            args.expected_subscription_authority_init_id,
+        ),
+    }
+}
+
+pub fn subscription_revoke_delegation_instruction(
+    authority: Pubkey,
+    delegation: Pubkey,
+) -> solana_sdk::instruction::Instruction {
+    solana_sdk::instruction::Instruction {
+        program_id: SUBSCRIPTIONS_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(authority, true),
+            AccountMeta::new(delegation, false),
+        ],
+        data: loyal_actions::subscription_revoke_delegation_data(),
+    }
+}
+
+pub fn recurring_delegation_amount_pulled_in_period(svm: &LiteSVM, delegation: Pubkey) -> u64 {
+    let account = svm
+        .get_account(&delegation)
+        .expect("recurring delegation account exists");
+    let offset = usize::try_from(SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PULLED_OFFSET)
+        .expect("amount pulled offset fits in usize");
+    let amount = account
+        .data
+        .get(offset..offset + 8)
+        .expect("recurring delegation amount field exists");
+    u64::from_le_bytes(amount.try_into().expect("amount field is 8 bytes"))
+}
+
 pub fn mock_jupiter_usdc_reserve_token_account() -> Pubkey {
     Pubkey::new_from_array(hash32(MOCK_JUPITER_USDC_RESERVE_TOKEN_ACCOUNT_SEED))
 }

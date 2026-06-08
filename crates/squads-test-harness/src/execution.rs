@@ -276,6 +276,51 @@ pub fn execute_squads_yield_route_stable_swap_instruction(
     )
 }
 
+pub struct SubscriptionRecurringTransferExecution {
+    pub policy: Pubkey,
+    pub signer: Pubkey,
+    pub account_index: u8,
+    pub delegation: Pubkey,
+    pub subscription_authority: Pubkey,
+    pub delegator_ata: Pubkey,
+    pub receiver_ata: Pubkey,
+    pub delegatee: Pubkey,
+    pub amount: u64,
+    pub delegator: Pubkey,
+    pub mint: Pubkey,
+}
+
+pub fn execute_squads_subscription_recurring_transfer_instruction(
+    args: SubscriptionRecurringTransferExecution,
+) -> Instruction {
+    execute_squads_program_interaction_instruction(
+        args.policy,
+        args.signer,
+        args.account_index,
+        vec![SquadsCompiledInstruction {
+            program_id_index: 8,
+            accounts: vec![0, 1, 2, 3, 4, 5, 6, 7, 8],
+            data: loyal_actions::subscription_transfer_recurring_data(
+                args.amount,
+                args.delegator,
+                args.mint,
+            ),
+        }],
+        vec![0],
+        vec![
+            AccountMeta::new(args.delegation, false),
+            AccountMeta::new_readonly(args.subscription_authority, false),
+            AccountMeta::new(args.delegator_ata, false),
+            AccountMeta::new(args.receiver_ata, false),
+            AccountMeta::new_readonly(args.mint, false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+            AccountMeta::new_readonly(args.delegatee, false),
+            AccountMeta::new_readonly(derive_subscription_event_authority(), false),
+            AccountMeta::new_readonly(SUBSCRIPTIONS_PROGRAM_ID, false),
+        ],
+    )
+}
+
 pub fn execute_squads_yield_route_stable_swap_instruction_with_constraint_index(
     swap_policy: Pubkey,
     signer: Pubkey,

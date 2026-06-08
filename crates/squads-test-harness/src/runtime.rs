@@ -132,6 +132,34 @@ pub fn add_squads_program_from_env_or_sibling_checkout(
     Ok(Some(sibling_path))
 }
 
+pub fn add_subscriptions_program_from_env_or_fixture(
+    svm: &mut LiteSVM,
+) -> std::io::Result<Option<PathBuf>> {
+    if let Some(path) = env::var_os(SUBSCRIPTIONS_PROGRAM_SO_ENV).map(PathBuf::from) {
+        let program = fs::read(&path)?;
+        svm.add_program(SUBSCRIPTIONS_PROGRAM_ID, &program)
+            .map_err(|error| {
+                std::io::Error::other(format!("add Subscriptions program failed: {error}"))
+            })?;
+        return Ok(Some(path));
+    }
+
+    let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("fixtures")
+        .join("subscriptions")
+        .join(SUBSCRIPTIONS_PROGRAM_SO);
+    if fixture_path.exists() {
+        let program = fs::read(&fixture_path)?;
+        svm.add_program(SUBSCRIPTIONS_PROGRAM_ID, &program)
+            .map_err(|error| {
+                std::io::Error::other(format!("add Subscriptions program failed: {error}"))
+            })?;
+        return Ok(Some(fixture_path));
+    }
+
+    Ok(None)
+}
+
 pub fn create_funded_squads_test_context() -> std::io::Result<Option<FundedSquadsTestContext>> {
     create_funded_squads_test_context_with_config(FundedSquadsTestConfig::default())
 }
