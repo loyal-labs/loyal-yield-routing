@@ -46,12 +46,12 @@ op run --env-file=.env.1password -- sh -c 'cargo run -p loyal-squads-policy-moni
 
 The monitor also reads `NEON_DATABASE_URL` directly when `--postgres-url` is omitted.
 
-For Rust SQLx validation against Neon, set `DATABASE_URL` from the same direct
-Neon URL. Avoid the pooled `-pooler` URL for these tests because SQLx prepared
-statements need a stable backend connection.
+For monitor SQLx validation against Neon, set `DATABASE_URL` from the same
+direct Neon URL. Avoid the pooled `-pooler` URL for these tests because SQLx
+prepared statements need a stable backend connection.
 
 ```bash
-op run --env-file=.env.1password -- sh -c 'DATABASE_URL="$NEON_DATABASE_URL" cargo test -p loyal-yield-orchestrator -p loyal-squads-policy-monitor'
+op run --env-file=.env.1password -- sh -c 'DATABASE_URL="$NEON_DATABASE_URL" cargo test -p loyal-squads-policy-monitor'
 ```
 
 ## Kamino Timescale Migrations
