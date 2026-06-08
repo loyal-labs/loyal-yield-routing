@@ -45,6 +45,8 @@ services:
         sync: false
       - key: BALANCE_SWEEP_UPDATE_SOURCE
         value: laserstream
+      - key: BALANCE_SWEEP_TARGET_REFRESH_SECONDS
+        value: "60"
       - key: HELIUS_API_KEY
         sync: false
       - key: LASERSTREAM_ENDPOINT

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -149,6 +149,37 @@ pub trait AtaUpdateSource {
         tx: mpsc::UnboundedSender<AtaUpdateEvent>,
         running: Arc<AtomicBool>,
     ) -> JoinHandle<()>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AtaTargetSetDiff {
+    pub added: Vec<Pubkey>,
+    pub removed: Vec<Pubkey>,
+}
+
+impl AtaTargetSetDiff {
+    pub fn has_changes(&self) -> bool {
+        !self.added.is_empty() || !self.removed.is_empty()
+    }
+}
+
+pub fn ata_target_set(targets: &[AtaTarget]) -> HashSet<Pubkey> {
+    targets
+        .iter()
+        .map(|target| target.wallet_usdc_ata)
+        .collect()
+}
+
+pub fn diff_ata_target_sets(current: &HashSet<Pubkey>, next: &HashSet<Pubkey>) -> AtaTargetSetDiff {
+    let mut added = next.difference(current).copied().collect::<Vec<Pubkey>>();
+    let mut removed = current.difference(next).copied().collect::<Vec<Pubkey>>();
+    added.sort_by_key(ToString::to_string);
+    removed.sort_by_key(ToString::to_string);
+    AtaTargetSetDiff { added, removed }
+}
+
+pub fn laserstream_replay_from_slot(current_slot: u64, replay_overlap_slots: u64) -> u64 {
+    current_slot.saturating_sub(replay_overlap_slots)
 }
 
 #[derive(Debug, Clone)]
@@ -1029,6 +1060,74 @@ mod tests {
     }
 
     #[test]
+    fn target_set_diff_is_empty_for_unchanged_targets() {
+        let first = Pubkey::new_unique();
+        let second = Pubkey::new_unique();
+        let current = HashSet::from([first, second]);
+        let next = HashSet::from([second, first]);
+
+        let diff = diff_ata_target_sets(&current, &next);
+
+        assert!(!diff.has_changes());
+        assert!(diff.added.is_empty());
+        assert!(diff.removed.is_empty());
+    }
+
+    #[test]
+    fn target_set_diff_detects_added_ata() {
+        let first = Pubkey::new_unique();
+        let second = Pubkey::new_unique();
+        let current = HashSet::from([first]);
+        let next = HashSet::from([first, second]);
+
+        let diff = diff_ata_target_sets(&current, &next);
+
+        assert!(diff.has_changes());
+        assert_eq!(diff.added, vec![second]);
+        assert!(diff.removed.is_empty());
+    }
+
+    #[test]
+    fn target_set_diff_detects_removed_ata() {
+        let first = Pubkey::new_unique();
+        let second = Pubkey::new_unique();
+        let current = HashSet::from([first, second]);
+        let next = HashSet::from([second]);
+
+        let diff = diff_ata_target_sets(&current, &next);
+
+        assert!(diff.has_changes());
+        assert!(diff.added.is_empty());
+        assert_eq!(diff.removed, vec![first]);
+    }
+
+    #[test]
+    fn target_set_diff_allows_empty_target_set() {
+        let removed = Pubkey::new_unique();
+        let current = HashSet::from([removed]);
+        let next = HashSet::new();
+
+        let diff = diff_ata_target_sets(&current, &next);
+
+        assert!(diff.has_changes());
+        assert!(diff.added.is_empty());
+        assert_eq!(diff.removed, vec![removed]);
+    }
+
+    #[tokio::test]
+    async fn seed_current_balances_allows_empty_targets() {
+        let sink = VecSink {
+            observations: std::sync::Mutex::new(Vec::new()),
+        };
+
+        seed_current_balances("http://127.0.0.1:0", &[], &sink)
+            .await
+            .unwrap();
+
+        assert!(sink.observations.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn observation_dedupe_key_is_stable_for_commitment_ata_slot_and_hash() {
         let observation = BalanceSweepAtaObservation {
             target_id: BalanceSweepTargetId(7),
@@ -1115,6 +1214,12 @@ mod tests {
         assert_eq!(filter.owner.len(), 0);
         assert_eq!(request.from_slot, Some(123));
         assert_eq!(request.commitment, Some(CommitmentLevel::Confirmed as i32));
+    }
+
+    #[test]
+    fn laserstream_replay_slot_uses_current_slot_minus_overlap() {
+        assert_eq!(laserstream_replay_from_slot(10_000, 32), 9_968);
+        assert_eq!(laserstream_replay_from_slot(10, 32), 0);
     }
 
     #[test]
