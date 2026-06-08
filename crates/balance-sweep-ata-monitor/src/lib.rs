@@ -367,47 +367,96 @@ async fn run_laserstream_loop(
         from_slot = source.from_slot,
         "starting Laserstream ATA subscription"
     );
-    let config = LaserstreamConfig::new(source.endpoint, source.api_key)
-        .with_max_reconnect_attempts(source.config.max_reconnect_attempts as u32)
-        .with_replay(true);
-    let (stream, _handle) = subscribe(config, request);
-    futures_util::pin_mut!(stream);
-    for account in &accounts {
-        tracing::info!(account = %account, "Laserstream ATA subscription connected");
-        let _ = tx.send(AtaUpdateEvent::Connected {
-            account: *account,
-            attempt: 1,
-        });
-    }
-    let mut heartbeat = time::interval(source.config.heartbeat_interval);
-    while running.load(Ordering::Relaxed) {
-        tokio::select! {
-            update = stream.next() => {
-                match update {
-                    Some(Ok(update)) => {
-                        let _ = forward_laserstream_update(update, &tx);
-                    }
-                    Some(Err(error)) => {
-                        tracing::warn!(error = %error, "Laserstream ATA stream failed");
-                        for account in &accounts {
-                            let _ = tx.send(AtaUpdateEvent::Failed {
-                                account: *account,
-                                attempts: 1,
-                                error: error.to_string(),
-                            });
-                        }
-                        break;
-                    }
-                    None => break,
-                }
-            }
-            _ = heartbeat.tick() => {
-                for account in &accounts {
-                    let _ = tx.send(AtaUpdateEvent::Heartbeat { account: *account });
-                }
-            }
+    let mut attempt = 1;
+    while running.load(Ordering::Relaxed) && attempt <= source.config.max_reconnect_attempts {
+        for account in &accounts {
+            let _ = tx.send(AtaUpdateEvent::Connecting {
+                account: *account,
+                attempt,
+            });
         }
+        let config = LaserstreamConfig::new(source.endpoint.clone(), source.api_key.clone())
+            .with_max_reconnect_attempts(0)
+            .with_replay(true);
+        let (stream, _handle) = subscribe(config, request.clone());
+        futures_util::pin_mut!(stream);
+        for account in &accounts {
+            tracing::info!(
+                account = %account,
+                attempt,
+                "Laserstream ATA subscription connected"
+            );
+            let _ = tx.send(AtaUpdateEvent::Connected {
+                account: *account,
+                attempt,
+            });
+        }
+        let mut heartbeat = time::interval(source.config.heartbeat_interval);
+        let disconnect_error = loop {
+            if !running.load(Ordering::Relaxed) {
+                break None;
+            }
+            tokio::select! {
+                update = stream.next() => {
+                    match update {
+                        Some(Ok(update)) => {
+                            let _ = forward_laserstream_update(update, &tx);
+                        }
+                        Some(Err(error)) => {
+                            tracing::warn!(error = %error, attempt, "Laserstream ATA stream failed");
+                            break Some(error.to_string());
+                        }
+                        None => break Some("Laserstream ATA stream ended".to_owned()),
+                    }
+                }
+                _ = heartbeat.tick() => {
+                    for account in &accounts {
+                        let _ = tx.send(AtaUpdateEvent::Heartbeat { account: *account });
+                    }
+                }
+            }
+        };
+        let Some(error) = disconnect_error else {
+            break;
+        };
+        if attempt >= source.config.max_reconnect_attempts {
+            for account in &accounts {
+                let _ = tx.send(AtaUpdateEvent::Failed {
+                    account: *account,
+                    attempts: attempt,
+                    error: error.clone(),
+                });
+            }
+            break;
+        }
+        let backoff = reconnect_backoff(source.config, attempt);
+        tracing::warn!(
+            attempt,
+            next_attempt = attempt + 1,
+            backoff_ms = backoff.as_millis(),
+            error = %error,
+            "reconnecting Laserstream ATA subscription"
+        );
+        for account in &accounts {
+            let _ = tx.send(AtaUpdateEvent::Reconnecting {
+                account: *account,
+                attempt,
+                backoff,
+                error: error.clone(),
+            });
+        }
+        time::sleep(backoff).await;
+        attempt += 1;
     }
+}
+
+pub fn reconnect_backoff(config: SubscriptionConfig, completed_attempt: usize) -> Duration {
+    let shift = completed_attempt.saturating_sub(1).min(31);
+    let multiplier = 1_u32 << shift;
+    config
+        .reconnect_base_delay
+        .saturating_mul(multiplier)
+        .min(config.reconnect_max_delay)
 }
 
 fn forward_laserstream_update(
@@ -658,5 +707,20 @@ mod tests {
         assert_eq!(filter.owner.len(), 0);
         assert_eq!(request.from_slot, Some(123));
         assert_eq!(request.commitment, Some(CommitmentLevel::Confirmed as i32));
+    }
+
+    #[test]
+    fn reconnect_backoff_is_exponential_and_capped() {
+        let config = SubscriptionConfig {
+            max_reconnect_attempts: 10,
+            reconnect_base_delay: Duration::from_millis(500),
+            reconnect_max_delay: Duration::from_secs(2),
+            heartbeat_interval: Duration::from_secs(15),
+        };
+
+        assert_eq!(reconnect_backoff(config, 1), Duration::from_millis(500));
+        assert_eq!(reconnect_backoff(config, 2), Duration::from_secs(1));
+        assert_eq!(reconnect_backoff(config, 3), Duration::from_secs(2));
+        assert_eq!(reconnect_backoff(config, 8), Duration::from_secs(2));
     }
 }
