@@ -97,7 +97,7 @@ struct Cli {
         long = "program-interaction-encoding",
         value_enum,
         default_value_t = ProgramInteractionEncodingArg::Compiled,
-        help = "ProgramInteraction policy encoding; only latest compact V2 is supported"
+        help = "ProgramInteraction policy encoding to submit"
     )]
     program_interaction_encoding: ProgramInteractionEncodingArg,
     #[arg(long = "stable-mint", value_delimiter = ',')]
@@ -219,12 +219,14 @@ impl TopologyArg {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ProgramInteractionEncodingArg {
     Compiled,
+    Legacy,
 }
 
 impl ProgramInteractionEncodingArg {
     fn as_squads_encoding(self) -> SquadsProgramInteractionEncoding {
         match self {
             Self::Compiled => SquadsProgramInteractionEncoding::Compiled,
+            Self::Legacy => SquadsProgramInteractionEncoding::Legacy,
         }
     }
 }
@@ -1903,6 +1905,32 @@ async fn upsert_policy_actions_and_vault(
     setup: &loyal_actions::YieldRouteActionSetup,
     submitted_transactions: &[SubmittedTransaction],
 ) -> Result<Vec<(PolicyActionPlan, i64, i64)>, Box<dyn std::error::Error>> {
+    if setup.spec.topology == RouteTopology::CombinedKamino {
+        let rebalance = submitted_policy_transaction(submitted_transactions, "withdraw_policy")?;
+        let swap = submitted_policy_transaction(submitted_transactions, "swap_policy")?;
+        let rebalance_action = rebalance
+            .policy_action
+            .expect("submitted_policy_transaction returns policy transaction");
+        let swap_action = swap
+            .policy_action
+            .expect("submitted_policy_transaction returns policy transaction");
+        let mut input = db_input(
+            cli,
+            user_pubkey,
+            router_pubkey,
+            settings,
+            vault,
+            rebalance_action,
+            setup,
+            rebalance.signature,
+            rebalance.slot,
+        );
+        input.swap_lanes =
+            swap_lanes_json_with_policy_account(&setup.spec.swap_lanes, Some(swap_action.account));
+        let (policy_id, vault_id) = upsert_policy_and_vault(pool, &input).await?;
+        return Ok(vec![(rebalance_action, policy_id, vault_id)]);
+    }
+
     let mut rows = Vec::new();
     for submitted in submitted_transactions {
         let Some(policy_action) = submitted.policy_action else {
@@ -1923,6 +1951,20 @@ async fn upsert_policy_actions_and_vault(
         rows.push((policy_action, policy_id, vault_id));
     }
     Ok(rows)
+}
+
+fn submitted_policy_transaction<'a>(
+    submitted_transactions: &'a [SubmittedTransaction],
+    label: &str,
+) -> Result<&'a SubmittedTransaction, Box<dyn std::error::Error>> {
+    submitted_transactions
+        .iter()
+        .find(|transaction| {
+            transaction
+                .policy_action
+                .is_some_and(|action| action.label == label)
+        })
+        .ok_or_else(|| format!("submitted transaction missing {label}").into())
 }
 
 fn planned_output(
@@ -2036,24 +2078,39 @@ fn route_modes(swap_lanes: &[SwapLane]) -> Vec<String> {
 }
 
 fn swap_lanes_json(swap_lanes: &[SwapLane]) -> Value {
+    swap_lanes_json_with_policy_account(swap_lanes, None)
+}
+
+fn swap_lanes_json_with_policy_account(
+    swap_lanes: &[SwapLane],
+    policy_account: Option<Pubkey>,
+) -> Value {
     let lanes = swap_lanes
         .iter()
-        .map(|lane| match lane {
-            SwapLane::Jupiter(contract) => json!({
-                "kind": "jupiter",
-                "program_id": contract.program_id.to_string(),
-                "exact_in_discriminator": contract.exact_in_discriminator,
-                "max_slippage_bps": contract.max_slippage_bps,
-            }),
-            SwapLane::LoyalHub {
-                hub_authorizer,
-                max_fee_bps,
-            } => json!({
-                "kind": "loyal_hub",
-                "program_id": LOYAL_HUB_SWAP_PROGRAM_ID.to_string(),
-                "hub_authorizer": hub_authorizer.to_string(),
-                "max_fee_bps": max_fee_bps,
-            }),
+        .enumerate()
+        .map(|(index, lane)| {
+            let mut value = match lane {
+                SwapLane::Jupiter(contract) => json!({
+                    "kind": "jupiter",
+                    "program_id": contract.program_id.to_string(),
+                    "exact_in_discriminator": contract.exact_in_discriminator,
+                    "max_slippage_bps": contract.max_slippage_bps,
+                }),
+                SwapLane::LoyalHub {
+                    hub_authorizer,
+                    max_fee_bps,
+                } => json!({
+                    "kind": "loyal_hub",
+                    "program_id": LOYAL_HUB_SWAP_PROGRAM_ID.to_string(),
+                    "hub_authorizer": hub_authorizer.to_string(),
+                    "max_fee_bps": max_fee_bps,
+                }),
+            };
+            if let (Some(account), Some(object)) = (policy_account, value.as_object_mut()) {
+                object.insert("policy_account".to_owned(), json!(account.to_string()));
+                object.insert("constraint_index".to_owned(), json!(index));
+            }
+            value
         })
         .collect::<Vec<_>>();
     json!(lanes)
@@ -2105,5 +2162,20 @@ mod tests {
             parsed.pubkey(),
             Keypair::new_from_array([9; SOLANA_SECRET_KEY_LENGTH]).pubkey()
         );
+    }
+
+    #[test]
+    fn split_swap_policy_metadata_is_recorded_in_lane_json() {
+        let swap_policy = Pubkey::new_unique();
+        let lane = SwapLane::Jupiter(JupiterSwapContract {
+            program_id: Pubkey::new_unique(),
+            exact_in_discriminator: JUPITER_SWAP_DISCRIMINATOR,
+            max_slippage_bps: 100,
+        });
+
+        let lanes = swap_lanes_json_with_policy_account(&[lane], Some(swap_policy));
+
+        assert_eq!(lanes[0]["policy_account"], swap_policy.to_string());
+        assert_eq!(lanes[0]["constraint_index"], 0);
     }
 }
