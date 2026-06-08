@@ -96,7 +96,8 @@ struct Cli {
     #[arg(
         long = "program-interaction-encoding",
         value_enum,
-        default_value_t = ProgramInteractionEncodingArg::Legacy
+        default_value_t = ProgramInteractionEncodingArg::Compiled,
+        help = "ProgramInteraction policy encoding; only latest compact V2 is supported"
     )]
     program_interaction_encoding: ProgramInteractionEncodingArg,
     #[arg(long = "stable-mint", value_delimiter = ',')]
@@ -118,6 +119,11 @@ struct Cli {
     vault_index: u8,
     #[arg(long)]
     settings: Option<Pubkey>,
+    #[arg(
+        long,
+        help = "Delegated signer pubkey to attach to created policies; defaults to YIELD_ROUTER_KEYPAIR pubkey"
+    )]
+    delegated_signer: Option<Pubkey>,
     #[arg(long)]
     smart_account_seed: Option<u128>,
     #[arg(long)]
@@ -213,14 +219,12 @@ impl TopologyArg {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ProgramInteractionEncodingArg {
     Compiled,
-    Legacy,
 }
 
 impl ProgramInteractionEncodingArg {
     fn as_squads_encoding(self) -> SquadsProgramInteractionEncoding {
         match self {
             Self::Compiled => SquadsProgramInteractionEncoding::Compiled,
-            Self::Legacy => SquadsProgramInteractionEncoding::Legacy,
         }
     }
 }
@@ -388,8 +392,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let user = user_keypair_from_file(&cli.user_keypair)?;
     let user_pubkey = user.pubkey();
-    let router = keypair_from_env(YIELD_ROUTER_KEYPAIR_ENV)?;
-    let router_pubkey = router.pubkey();
+    let router_pubkey = match cli.delegated_signer {
+        Some(pubkey) => pubkey,
+        None => keypair_from_env(YIELD_ROUTER_KEYPAIR_ENV)?.pubkey(),
+    };
     let rpc = RpcClient::new(cli.rpc_url.clone());
     let db = connect_database(&cli).await?;
 
