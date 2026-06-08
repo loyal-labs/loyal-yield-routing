@@ -52,6 +52,8 @@ describe("initYieldRoutePolicy", () => {
       [policy.actionAccount.toBase58(), false, true],
     ]);
     expect(policy.instructions[0]?.data.subarray(0, 8).toJSON().data).toEqual([138, 209, 64, 163, 79, 67, 233, 76]);
+    expect(policy.instructions[0]?.data[13]).toBe(7);
+    expect(policy.instructions[0]?.data[22]).toBe(4);
     expect(policy.routes.sameMint.instructionConstraintIndexes).toEqual([0, 2]);
     expect(policy.routes.jupiter.instructionConstraintIndexes).toEqual([0, 1, 2]);
     expect(policy.routes.loyal).toBeUndefined();

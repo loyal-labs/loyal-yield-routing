@@ -10,6 +10,8 @@ use crate::{
 #[derive(BorshSerialize)]
 #[allow(dead_code)]
 pub(crate) enum SquadsSettingsAction {
+    // Historical settings actions remain in this enum to preserve upstream
+    // Borsh tag numbers. New Loyal policy creation must use PolicyCreate.
     AddSigner {
         new_signer: SquadsSmartAccountSigner,
     },
@@ -93,6 +95,8 @@ pub(crate) enum SquadsPolicyCreationPayload {
     InternalFundTransfer(SquadsInternalFundTransferPolicyCreationPayload),
     SpendingLimit(SquadsSpendingLimitPolicyCreationPayload),
     SettingsChange(Vec<u8>),
+    // ABI tag 3 is the historical uncompiled payload. Keep the slot so the
+    // policies-branch compact ProgramInteraction payload serializes as tag 4.
     LegacyProgramInteraction(SquadsProgramInteractionPolicyCreationPayloadLegacy),
     ProgramInteraction(SquadsProgramInteractionPolicyCreationPayload),
 }
@@ -143,6 +147,26 @@ impl<T: BorshSerialize> BorshSerialize for SquadsSmallVec<T> {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct SquadsSmallVecU16<T>(pub(crate) Vec<T>);
+
+impl<T> From<Vec<T>> for SquadsSmallVecU16<T> {
+    fn from(value: Vec<T>) -> Self {
+        Self(value)
+    }
+}
+
+impl<T: BorshSerialize> BorshSerialize for SquadsSmallVecU16<T> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        let len = u16::try_from(self.0.len()).map_err(|_| std::io::ErrorKind::InvalidInput)?;
+        writer.write_all(&len.to_le_bytes())?;
+        for item in &self.0 {
+            item.serialize(writer)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(BorshSerialize)]
 pub(crate) struct SquadsCompiledInstructionConstraint {
     pub(crate) program_id_index: u8,
@@ -167,7 +191,7 @@ pub(crate) enum SquadsCompiledAccountConstraintType {
 pub(crate) struct SquadsCompiledHook {
     pub(crate) num_extra_accounts: u8,
     pub(crate) account_constraints: SquadsSmallVec<SquadsCompiledAccountConstraint>,
-    pub(crate) instruction_data: SquadsSmallVec<u8>,
+    pub(crate) instruction_data: SquadsSmallVecU16<u8>,
     pub(crate) program_id_index: u8,
     pub(crate) pass_inner_instructions: bool,
 }

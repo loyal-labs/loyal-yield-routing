@@ -130,40 +130,12 @@ pub(super) fn create_squads_program_interaction_policy_instruction(
     account_index: u8,
     constraints: Vec<SquadsInstructionConstraint>,
 ) -> Instruction {
-    let (policy, _) = derive_squads_policy(&squads_settings, policy_seed);
-    let action = SquadsSettingsAction::PolicyCreate {
-        seed: policy_seed,
-        policy_creation_payload: SquadsPolicyCreationPayload::LegacyProgramInteraction(
-            SquadsProgramInteractionPolicyCreationPayloadLegacy {
-                account_index,
-                instructions_constraints: constraints,
-                pre_hook: None,
-                post_hook: None,
-                spending_limits: vec![],
-            },
-        ),
-        signers: vec![SquadsSmartAccountSigner {
-            key: delegated_signer,
-            permissions: SquadsPermissions {
-                mask: SQUADS_FULL_PERMISSIONS_MASK,
-            },
-        }],
-        threshold: 1,
-        time_lock: 0,
-        start_timestamp: None,
-        expiration_args: None,
-    };
-
-    Instruction {
-        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
-        accounts: vec![
-            AccountMeta::new(squads_settings, false),
-            AccountMeta::new(authority, true),
-            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
-            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(policy, false),
-        ],
-        data: serialize_squads_sync_settings_transaction_args(vec![action]),
-    }
+    create_squads_compact_program_interaction_policy_instruction(
+        squads_settings,
+        authority,
+        delegated_signer,
+        policy_seed,
+        account_index,
+        constraints,
+    )
 }

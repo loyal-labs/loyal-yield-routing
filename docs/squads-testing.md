@@ -20,7 +20,7 @@ The Rust crate is organized as small vertical slices instead of a generic bag of
 | `runtime` | LiteSVM construction, Squads SBF fixture loading, funded test contexts, heap-frame helpers, and transaction submission |
 | `actions` | Adapters from `FundedSquadsTestContext` and seeded mock Kamino accounts into `loyal-actions` inputs |
 | `policies` | Raw policy builders, settings lifecycle helpers, and spending-limit creation |
-| `policies/program_interaction` | Older low-level ProgramInteraction helpers used by focused tests |
+| `policies/program_interaction` | Low-level compact ProgramInteraction helpers used by focused tests |
 | `protocols` | Mock protocol instruction data, SPL Token account seeding, and local SBF loading for external protocols |
 | `types` | Shared structs and Borsh payload models; most Squads wire types stay `pub(crate)` so the public API stays small |
 

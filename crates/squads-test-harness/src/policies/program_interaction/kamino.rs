@@ -4,10 +4,7 @@ use super::common::{
 };
 use crate::types::*;
 use crate::*;
-use solana_sdk::{
-    instruction::{AccountMeta, Instruction},
-    pubkey::Pubkey,
-};
+use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
 
 fn kamino_reserve_instruction_constraint(
     reserve: Pubkey,
@@ -556,57 +553,29 @@ pub fn create_squads_program_interaction_kamino_usdc_reserve_policy_instruction(
     vault_collateral_token_account: Pubkey,
     reserve_liquidity_supply: Pubkey,
 ) -> Instruction {
-    let (policy, _) = derive_squads_policy(&squads_settings, policy_seed);
-    let action = SquadsSettingsAction::PolicyCreate {
-        seed: policy_seed,
-        policy_creation_payload: SquadsPolicyCreationPayload::LegacyProgramInteraction(
-            SquadsProgramInteractionPolicyCreationPayloadLegacy {
-                account_index,
-                instructions_constraints: vec![
-                    kamino_usdc_reserve_instruction_constraint(
-                        KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR,
-                        vault,
-                        vault_usdc_token_account,
-                        vault_collateral_token_account,
-                        reserve_liquidity_supply,
-                    ),
-                    kamino_usdc_reserve_instruction_constraint(
-                        KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR,
-                        vault,
-                        vault_usdc_token_account,
-                        vault_collateral_token_account,
-                        reserve_liquidity_supply,
-                    ),
-                ],
-                pre_hook: None,
-                post_hook: None,
-                spending_limits: vec![],
-            },
-        ),
-        signers: vec![SquadsSmartAccountSigner {
-            key: delegated_signer,
-            permissions: SquadsPermissions {
-                mask: SQUADS_FULL_PERMISSIONS_MASK,
-            },
-        }],
-        threshold: 1,
-        time_lock: 0,
-        start_timestamp: None,
-        expiration_args: None,
-    };
-
-    Instruction {
-        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
-        accounts: vec![
-            AccountMeta::new(squads_settings, false),
-            AccountMeta::new(authority, true),
-            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
-            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(policy, false),
+    create_squads_compact_program_interaction_policy_instruction(
+        squads_settings,
+        authority,
+        delegated_signer,
+        policy_seed,
+        account_index,
+        vec![
+            kamino_usdc_reserve_instruction_constraint(
+                KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR,
+                vault,
+                vault_usdc_token_account,
+                vault_collateral_token_account,
+                reserve_liquidity_supply,
+            ),
+            kamino_usdc_reserve_instruction_constraint(
+                KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR,
+                vault,
+                vault_usdc_token_account,
+                vault_collateral_token_account,
+                reserve_liquidity_supply,
+            ),
         ],
-        data: serialize_squads_sync_settings_transaction_args(vec![action]),
-    }
+    )
 }
 
 pub fn create_squads_program_interaction_main_to_prime_usdc_route_policy_instruction(

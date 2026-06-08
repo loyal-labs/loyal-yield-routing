@@ -126,46 +126,6 @@ pub(crate) fn create_program_interaction_action_instruction(
     ))
 }
 
-pub(crate) fn create_legacy_program_interaction_action_instruction(
-    settings: Pubkey,
-    authority: Pubkey,
-    delegated_signer: Pubkey,
-    action_seed: u64,
-    account_index: u8,
-    constraints: Vec<SquadsInstructionConstraint>,
-) -> Result<Instruction> {
-    let (action_account, _) = derive_action_account(&settings, action_seed);
-    let action = SquadsSettingsAction::PolicyCreate {
-        seed: action_seed,
-        policy_creation_payload: SquadsPolicyCreationPayload::LegacyProgramInteraction(
-            SquadsProgramInteractionPolicyCreationPayloadLegacy {
-                account_index,
-                instructions_constraints: constraints,
-                pre_hook: None,
-                post_hook: None,
-                spending_limits: Vec::new(),
-            },
-        ),
-        signers: vec![SquadsSmartAccountSigner {
-            key: delegated_signer,
-            permissions: SquadsPermissions {
-                mask: SQUADS_FULL_PERMISSIONS_MASK,
-            },
-        }],
-        threshold: 1,
-        time_lock: 0,
-        start_timestamp: None,
-        expiration_args: None,
-    };
-
-    Ok(policy_create_instruction(
-        settings,
-        authority,
-        action_account,
-        action,
-    ))
-}
-
 fn policy_create_instruction(
     settings: Pubkey,
     authority: Pubkey,
@@ -289,6 +249,8 @@ fn anchor_instruction_discriminator(name: &str) -> [u8; 8] {
 #[derive(BorshSerialize)]
 #[allow(dead_code)]
 enum SquadsSettingsAction {
+    // Historical settings actions remain in this enum to preserve upstream
+    // Borsh tag numbers. New Loyal policy creation must use PolicyCreate.
     AddSigner {
         new_signer: SquadsSmartAccountSigner,
     },
@@ -372,6 +334,8 @@ enum SquadsPolicyCreationPayload {
     InternalFundTransfer(Vec<u8>),
     SpendingLimit(Vec<u8>),
     SettingsChange(Vec<u8>),
+    // ABI tag 3 is the historical uncompiled payload. Keep the slot so the
+    // policies-branch compact ProgramInteraction payload serializes as tag 4.
     LegacyProgramInteraction(SquadsProgramInteractionPolicyCreationPayloadLegacy),
     ProgramInteraction(SquadsProgramInteractionPolicyCreationPayload),
 }
@@ -415,6 +379,26 @@ impl<T: BorshSerialize> BorshSerialize for SquadsSmallVec<T> {
     }
 }
 
+#[derive(Clone)]
+struct SquadsSmallVecU16<T>(Vec<T>);
+
+impl<T> From<Vec<T>> for SquadsSmallVecU16<T> {
+    fn from(value: Vec<T>) -> Self {
+        Self(value)
+    }
+}
+
+impl<T: BorshSerialize> BorshSerialize for SquadsSmallVecU16<T> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        let len = u16::try_from(self.0.len()).map_err(|_| std::io::ErrorKind::InvalidInput)?;
+        writer.write_all(&len.to_le_bytes())?;
+        for item in &self.0 {
+            item.serialize(writer)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(BorshSerialize)]
 struct SquadsCompiledInstructionConstraint {
     program_id_index: u8,
@@ -439,7 +423,7 @@ enum SquadsCompiledAccountConstraintType {
 struct SquadsCompiledHook {
     num_extra_accounts: u8,
     account_constraints: SquadsSmallVec<SquadsCompiledAccountConstraint>,
-    instruction_data: SquadsSmallVec<u8>,
+    instruction_data: SquadsSmallVecU16<u8>,
     program_id_index: u8,
     pass_inner_instructions: bool,
 }
@@ -561,6 +545,25 @@ mod tests {
                 ],
                 &SQUADS_SMART_ACCOUNT_PROGRAM_ID,
             )
+        );
+    }
+
+    #[test]
+    fn program_interaction_policy_create_uses_compact_payload_tag() {
+        let instruction = create_program_interaction_action_instruction(
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            7,
+            0,
+            vec![],
+        )
+        .unwrap();
+
+        assert_eq!(instruction.data[13], 7, "SettingsAction::PolicyCreate tag");
+        assert_eq!(
+            instruction.data[22], 4,
+            "PolicyCreationPayload::ProgramInteraction compact V2 tag"
         );
     }
 }

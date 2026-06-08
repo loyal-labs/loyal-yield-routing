@@ -680,7 +680,7 @@ fn skip_compiled_hook(cursor: &mut Cursor<'_>) -> Result<(), PolicyDetectionErro
             let pubkey_table = Vec::new();
             read_account_constraint(cursor, &pubkey_table).map(|_| ())
         })?;
-        cursor.read_small_u8_vec()?;
+        cursor.read_small_u16_u8_vec()?;
         cursor.read_u8()?;
         cursor.read_u8()?;
         Ok(())
@@ -872,6 +872,11 @@ impl<'a> Cursor<'a> {
     fn read_small_u8_vec(&mut self) -> Result<Vec<u8>, PolicyDetectionError> {
         let len = self.read_u8()? as usize;
         (0..len).map(|_| self.read_u8()).collect()
+    }
+
+    fn read_small_u16_u8_vec(&mut self) -> Result<Vec<u8>, PolicyDetectionError> {
+        let len = self.read_u16()? as usize;
+        Ok(self.take(len)?.to_vec())
     }
 
     fn read_small_pubkey_vec(&mut self) -> Result<Vec<Pubkey>, PolicyDetectionError> {

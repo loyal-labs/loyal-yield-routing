@@ -5,10 +5,7 @@ use super::common::{
 use crate::types::*;
 use crate::*;
 use loyal_actions::SwapLane;
-use solana_sdk::{
-    instruction::{AccountMeta, Instruction},
-    pubkey::Pubkey,
-};
+use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
 
 const SPL_TOKEN_ACCOUNT_AUTHORITY_OFFSET: u64 = 32;
 
@@ -22,125 +19,87 @@ pub fn create_squads_program_interaction_swap_policy_instruction(
     usdc_ledger: Pubkey,
     pyusd_ledger: Pubkey,
 ) -> Instruction {
-    let (policy, _) = derive_squads_policy(&squads_settings, policy_seed);
     let jupiter_accounts = mock_jupiter_token_accounts();
-    let action = SquadsSettingsAction::PolicyCreate {
-        seed: policy_seed,
-        policy_creation_payload: SquadsPolicyCreationPayload::LegacyProgramInteraction(
-            SquadsProgramInteractionPolicyCreationPayloadLegacy {
-                account_index,
-                instructions_constraints: vec![SquadsInstructionConstraint {
-                    program_id: JUPITER_V6_PROGRAM_ID,
-                    account_constraints: vec![
-                        SquadsAccountConstraint {
-                            account_index: 0,
-                            account_constraint: SquadsAccountConstraintType::Pubkey(vec![vault]),
-                            owner: None,
-                        },
-                        SquadsAccountConstraint {
-                            account_index: 1,
-                            account_constraint: SquadsAccountConstraintType::Pubkey(vec![
-                                usdc_ledger,
-                            ]),
-                            owner: Some(spl_token::id()),
-                        },
-                        SquadsAccountConstraint {
-                            account_index: 2,
-                            account_constraint: SquadsAccountConstraintType::Pubkey(vec![
-                                pyusd_ledger,
-                            ]),
-                            owner: Some(spl_token::id()),
-                        },
-                        SquadsAccountConstraint {
-                            account_index: 3,
-                            account_constraint: SquadsAccountConstraintType::Pubkey(vec![
-                                USDC_MINT,
-                            ]),
-                            owner: Some(spl_token::id()),
-                        },
-                        SquadsAccountConstraint {
-                            account_index: 4,
-                            account_constraint: SquadsAccountConstraintType::Pubkey(vec![
-                                PYUSD_MINT,
-                            ]),
-                            owner: Some(spl_token::id()),
-                        },
-                        SquadsAccountConstraint {
-                            account_index: 5,
-                            account_constraint: SquadsAccountConstraintType::Pubkey(vec![
-                                spl_token::id(),
-                            ]),
-                            owner: None,
-                        },
-                        SquadsAccountConstraint {
-                            account_index: 6,
-                            account_constraint: SquadsAccountConstraintType::Pubkey(vec![
-                                jupiter_accounts.usdc_reserve,
-                            ]),
-                            owner: Some(spl_token::id()),
-                        },
-                        SquadsAccountConstraint {
-                            account_index: 7,
-                            account_constraint: SquadsAccountConstraintType::Pubkey(vec![
-                                jupiter_accounts.pyusd_reserve,
-                            ]),
-                            owner: Some(spl_token::id()),
-                        },
-                        SquadsAccountConstraint {
-                            account_index: 8,
-                            account_constraint: SquadsAccountConstraintType::Pubkey(vec![
-                                jupiter_accounts.authority,
-                            ]),
-                            owner: None,
-                        },
-                    ],
-                    data_constraints: vec![
-                        SquadsDataConstraint {
-                            data_offset: 0,
-                            data_value: SquadsDataValue::U8(MOCK_JUPITER_USDC_TO_PYUSD),
-                            operator: SquadsDataOperator::Equals,
-                        },
-                        SquadsDataConstraint {
-                            data_offset: 9,
-                            data_value: SquadsDataValue::U8Slice(USDC_MINT.to_bytes().to_vec()),
-                            operator: SquadsDataOperator::Equals,
-                        },
-                        SquadsDataConstraint {
-                            data_offset: 41,
-                            data_value: SquadsDataValue::U8Slice(PYUSD_MINT.to_bytes().to_vec()),
-                            operator: SquadsDataOperator::Equals,
-                        },
-                    ],
-                }],
-                pre_hook: None,
-                post_hook: None,
-                spending_limits: vec![],
-            },
-        ),
-        signers: vec![SquadsSmartAccountSigner {
-            key: delegated_signer,
-            permissions: SquadsPermissions {
-                mask: SQUADS_FULL_PERMISSIONS_MASK,
-            },
+    create_squads_compact_program_interaction_policy_instruction(
+        squads_settings,
+        authority,
+        delegated_signer,
+        policy_seed,
+        account_index,
+        vec![SquadsInstructionConstraint {
+            program_id: JUPITER_V6_PROGRAM_ID,
+            account_constraints: vec![
+                SquadsAccountConstraint {
+                    account_index: 0,
+                    account_constraint: SquadsAccountConstraintType::Pubkey(vec![vault]),
+                    owner: None,
+                },
+                SquadsAccountConstraint {
+                    account_index: 1,
+                    account_constraint: SquadsAccountConstraintType::Pubkey(vec![usdc_ledger]),
+                    owner: Some(spl_token::id()),
+                },
+                SquadsAccountConstraint {
+                    account_index: 2,
+                    account_constraint: SquadsAccountConstraintType::Pubkey(vec![pyusd_ledger]),
+                    owner: Some(spl_token::id()),
+                },
+                SquadsAccountConstraint {
+                    account_index: 3,
+                    account_constraint: SquadsAccountConstraintType::Pubkey(vec![USDC_MINT]),
+                    owner: Some(spl_token::id()),
+                },
+                SquadsAccountConstraint {
+                    account_index: 4,
+                    account_constraint: SquadsAccountConstraintType::Pubkey(vec![PYUSD_MINT]),
+                    owner: Some(spl_token::id()),
+                },
+                SquadsAccountConstraint {
+                    account_index: 5,
+                    account_constraint: SquadsAccountConstraintType::Pubkey(vec![spl_token::id()]),
+                    owner: None,
+                },
+                SquadsAccountConstraint {
+                    account_index: 6,
+                    account_constraint: SquadsAccountConstraintType::Pubkey(vec![
+                        jupiter_accounts.usdc_reserve,
+                    ]),
+                    owner: Some(spl_token::id()),
+                },
+                SquadsAccountConstraint {
+                    account_index: 7,
+                    account_constraint: SquadsAccountConstraintType::Pubkey(vec![
+                        jupiter_accounts.pyusd_reserve,
+                    ]),
+                    owner: Some(spl_token::id()),
+                },
+                SquadsAccountConstraint {
+                    account_index: 8,
+                    account_constraint: SquadsAccountConstraintType::Pubkey(vec![
+                        jupiter_accounts.authority,
+                    ]),
+                    owner: None,
+                },
+            ],
+            data_constraints: vec![
+                SquadsDataConstraint {
+                    data_offset: 0,
+                    data_value: SquadsDataValue::U8(MOCK_JUPITER_USDC_TO_PYUSD),
+                    operator: SquadsDataOperator::Equals,
+                },
+                SquadsDataConstraint {
+                    data_offset: 9,
+                    data_value: SquadsDataValue::U8Slice(USDC_MINT.to_bytes().to_vec()),
+                    operator: SquadsDataOperator::Equals,
+                },
+                SquadsDataConstraint {
+                    data_offset: 41,
+                    data_value: SquadsDataValue::U8Slice(PYUSD_MINT.to_bytes().to_vec()),
+                    operator: SquadsDataOperator::Equals,
+                },
+            ],
         }],
-        threshold: 1,
-        time_lock: 0,
-        start_timestamp: None,
-        expiration_args: None,
-    };
-
-    Instruction {
-        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
-        accounts: vec![
-            AccountMeta::new(squads_settings, false),
-            AccountMeta::new(authority, true),
-            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
-            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(policy, false),
-        ],
-        data: serialize_squads_sync_settings_transaction_args(vec![action]),
-    }
+    )
 }
 
 pub fn create_squads_program_interaction_jupiter_fixture_swap_policy_instruction(

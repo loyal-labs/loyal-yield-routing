@@ -4,7 +4,6 @@ use crate::protocols::{
     kamino_redeem_reserve_collateral_constraint, loyal_hub_constraint, unique_pubkeys,
 };
 use crate::squads::{
-    create_legacy_program_interaction_action_instruction,
     create_program_interaction_action_instruction, derive_action_account, LoyalActionError, Result,
     SquadsInstructionConstraint,
 };
@@ -93,7 +92,6 @@ pub enum RouteTopology {
 pub enum SquadsProgramInteractionEncoding {
     #[default]
     Compiled,
-    Legacy,
 }
 
 impl Default for RouteTopology {
@@ -741,16 +739,6 @@ fn action_instruction(
     match encoding {
         SquadsProgramInteractionEncoding::Compiled => {
             create_program_interaction_action_instruction(
-                context.settings,
-                context.authority,
-                context.delegated_signer,
-                action_seed,
-                context.account_index,
-                constraints,
-            )
-        }
-        SquadsProgramInteractionEncoding::Legacy => {
-            create_legacy_program_interaction_action_instruction(
                 context.settings,
                 context.authority,
                 context.delegated_signer,
