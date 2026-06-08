@@ -57,7 +57,7 @@ struct Args {
     #[arg(
         long,
         env = "BALANCE_SWEEP_TARGET_REFRESH_SECONDS",
-        default_value_t = 60,
+        default_value_t = 300,
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     target_refresh_seconds: u64,
