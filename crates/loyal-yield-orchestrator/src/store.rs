@@ -1183,20 +1183,6 @@ fn managed_vault_from_row(row: ManagedVaultRow) -> ManagedVault {
     }
 }
 
-fn managed_vault_from_row(row: ManagedVaultRow) -> ManagedVault {
-    ManagedVault {
-        id: VaultId(row.id),
-        cluster: row.cluster,
-        settings: row.settings,
-        vault_index: row.vault_index,
-        vault_pubkey: row.vault_pubkey,
-        active_policy_id: PolicyId(row.active_policy_id),
-        active: row.active,
-        first_seen_at: row.first_seen_at,
-        last_seen_at: row.last_seen_at,
-    }
-}
-
 fn balance_sweep_target_from_row(
     row: &sqlx::postgres::PgRow,
 ) -> Result<BalanceSweepTarget, OrchestratorError> {
