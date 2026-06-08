@@ -41,6 +41,10 @@ yarn-error.log*
 .env*
 !.env.example
 
+# local Solana keypairs used during mainnet probes
+/6T7U8nSZmkRYsrsA5ivhk4YHkqE1JkCdCNHYVtCrMThr.json
+/GTpqQfB9wgXWqdhkEmSWsnHVvxaPbJs1qWsomh1MjQ5N.json
+
 # vercel
 .vercel
 

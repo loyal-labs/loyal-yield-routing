@@ -41,10 +41,18 @@ pub enum RouteBuildError {
 #[derive(Debug, Clone)]
 pub struct YieldRouteTransaction {
     pub instructions: Vec<Instruction>,
+    pub preflight_accounts: Vec<RoutePreflightAccount>,
     pub report: Value,
 }
 
 pub type SameMintRouteTransaction = YieldRouteTransaction;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutePreflightAccount {
+    pub label: String,
+    pub address: Pubkey,
+    pub owner_program: Pubkey,
+}
 
 #[derive(Debug, Clone)]
 pub struct KaminoDepositSyncTransaction {
@@ -202,6 +210,7 @@ fn build_same_mint_route_transaction_inner(
         ],
         transaction_accounts,
     );
+    let preflight_accounts = required_token_accounts(vault, &plan.source, &plan.target)?;
 
     Ok(YieldRouteTransaction {
         report: json!({
@@ -213,7 +222,9 @@ fn build_same_mint_route_transaction_inner(
             "withdrawConstraintIndex": plan.route.withdraw_constraint_index,
             "depositConstraintIndex": plan.route.deposit_constraint_index,
             "quote": plan.quote,
+            "preflightAccounts": preflight_accounts_json(&preflight_accounts),
         }),
+        preflight_accounts,
         instructions: vec![instruction],
     })
 }
@@ -305,6 +316,8 @@ pub fn build_cross_mint_route_transaction(
         )]
     };
 
+    let preflight_accounts = required_token_accounts(vault, &plan.source, &plan.target)?;
+
     Ok(YieldRouteTransaction {
         report: json!({
             "kind": "cross_mint_route_transaction",
@@ -317,7 +330,9 @@ pub fn build_cross_mint_route_transaction(
             "swapConstraintIndex": plan.route.swap_constraint_index,
             "depositConstraintIndex": plan.route.deposit_constraint_index,
             "quote": plan.quote,
+            "preflightAccounts": preflight_accounts_json(&preflight_accounts),
         }),
+        preflight_accounts,
         instructions,
     })
 }
@@ -367,6 +382,86 @@ pub fn associated_token_address(wallet: Pubkey, token_program: Pubkey, mint: Pub
         &ASSOCIATED_TOKEN_PROGRAM_ID,
     )
     .0
+}
+
+fn required_token_accounts(
+    vault: Pubkey,
+    source: &SameMintReserveTarget,
+    target: &SameMintReserveTarget,
+) -> Result<Vec<RoutePreflightAccount>, RouteBuildError> {
+    let mut accounts = Vec::new();
+    push_target_token_accounts(&mut accounts, vault, "source", source)?;
+    push_target_token_accounts(&mut accounts, vault, "target", target)?;
+    Ok(accounts)
+}
+
+fn push_target_token_accounts(
+    accounts: &mut Vec<RoutePreflightAccount>,
+    vault: Pubkey,
+    label_prefix: &'static str,
+    target: &SameMintReserveTarget,
+) -> Result<(), RouteBuildError> {
+    let token_program = token_program(&target.accounts)?;
+    let liquidity_mint = parse_pubkey(
+        if label_prefix == "source" {
+            "source.liquidity_mint"
+        } else {
+            "target.liquidity_mint"
+        },
+        &target.liquidity_mint,
+    )?;
+    let collateral_mint = parse_pubkey(
+        if label_prefix == "source" {
+            "source.accounts.reserve_collateral_mint"
+        } else {
+            "target.accounts.reserve_collateral_mint"
+        },
+        &target.accounts.reserve_collateral_mint,
+    )?;
+    push_preflight_account(
+        accounts,
+        format!("{label_prefix}_liquidity_ata"),
+        associated_token_address(vault, token_program, liquidity_mint),
+        token_program,
+    );
+    push_preflight_account(
+        accounts,
+        format!("{label_prefix}_collateral_ata"),
+        associated_token_address(vault, token_program, collateral_mint),
+        token_program,
+    );
+    Ok(())
+}
+
+fn push_preflight_account(
+    accounts: &mut Vec<RoutePreflightAccount>,
+    label: String,
+    address: Pubkey,
+    owner_program: Pubkey,
+) {
+    if accounts.iter().any(|account| account.address == address) {
+        return;
+    }
+    accounts.push(RoutePreflightAccount {
+        label,
+        address,
+        owner_program,
+    });
+}
+
+fn preflight_accounts_json(accounts: &[RoutePreflightAccount]) -> Value {
+    Value::Array(
+        accounts
+            .iter()
+            .map(|account| {
+                json!({
+                    "label": account.label,
+                    "address": account.address.to_string(),
+                    "ownerProgram": account.owner_program.to_string(),
+                })
+            })
+            .collect(),
+    )
 }
 
 fn swap_instruction(config: &RouteInstructionConfig) -> Result<Instruction, RouteBuildError> {
@@ -754,6 +849,7 @@ mod tests {
         assert_eq!(transaction.report["depositConstraintIndex"], 2);
         assert_eq!(transaction.instructions.len(), 1);
         assert_eq!(transaction.instructions[0].accounts[0].pubkey, policy);
+        assert_eq!(transaction.preflight_accounts.len(), 4);
     }
 
     #[test]
@@ -813,6 +909,15 @@ mod tests {
         assert_eq!(transaction.instructions[0].accounts[0].pubkey, policy);
         assert_eq!(transaction.instructions[1].accounts[0].pubkey, swap_policy);
         assert_eq!(transaction.instructions[2].accounts[0].pubkey, policy);
+        assert!(transaction.preflight_accounts.iter().any(|account| {
+            account.label == "target_collateral_ata"
+                && account.address
+                    == associated_token_address(
+                        vault,
+                        spl_token::ID,
+                        Pubkey::from_str(&target.accounts.reserve_collateral_mint).unwrap(),
+                    )
+        }));
     }
 
     fn target(reserve: Pubkey, mint: Pubkey) -> SameMintReserveTarget {

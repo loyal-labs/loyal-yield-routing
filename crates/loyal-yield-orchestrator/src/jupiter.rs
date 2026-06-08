@@ -96,13 +96,13 @@ impl RouteQuoteProvider for JupiterRouteQuoteProvider {
 
             Ok(CrossMintQuote {
                 redeem_collateral_amount: request.amount,
-                redeem_liquidity_amount: request.amount,
+                redeem_liquidity_amount: request.redeem_liquidity_amount,
                 swap: SwapQuote {
                     lane_kind: request.lane.kind.as_str().to_owned(),
                     lane_index: request.lane.lane_index,
                     source_mint: request.source.liquidity_mint.clone(),
                     target_mint: request.target.liquidity_mint.clone(),
-                    amount_in: request.amount,
+                    amount_in: request.redeem_liquidity_amount,
                     min_out: quote.other_amount_threshold,
                     max_slippage_bps: request.lane.max_slippage_bps,
                     max_fee_bps: request.lane.max_fee_bps,
@@ -126,7 +126,7 @@ impl JupiterRouteQuoteProvider {
         url.query_pairs_mut()
             .append_pair("inputMint", &request.source.liquidity_mint)
             .append_pair("outputMint", &request.target.liquidity_mint)
-            .append_pair("amount", &request.amount.to_string())
+            .append_pair("amount", &request.redeem_liquidity_amount.to_string())
             .append_pair("slippageBps", &slippage_bps.to_string())
             .append_pair("restrictIntermediateTokens", "true");
 

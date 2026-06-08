@@ -5,7 +5,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use klend_interface::state::Reserve;
+use klend_interface::{state::Reserve, FRACTION_ONE_SCALED};
 use loyal_actions::KAMINO_LENDING_PROGRAM_ID;
 use loyal_yield_router::timescale::ReserveUpdateRow;
 use serde_json::json;
@@ -16,6 +16,7 @@ use thiserror::Error;
 use crate::{KaminoReserveAccountsConfig, YieldReserveTarget};
 
 const DEFAULT_METADATA_TTL: Duration = Duration::from_secs(60 * 60);
+const COLLATERAL_TO_LIQUIDITY_RATE_SCALE: u64 = 1_000_000_000_000;
 
 #[derive(Debug, Error)]
 pub enum KaminoMetadataError {
@@ -39,6 +40,15 @@ pub struct ReserveAccountMetadata {
     pub reserve_collateral_mint: String,
     pub lending_market_authority: String,
     pub liquidity_token_program: String,
+    pub collateral_to_liquidity_rate: CollateralToLiquidityRateMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollateralToLiquidityRateMetadata {
+    pub scale: u64,
+    pub liquidity_per_scale_collateral: u64,
+    pub collateral_mint_total_supply: u64,
+    pub total_available_liquidity_amount: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +151,21 @@ pub fn reserve_target_from_row_and_metadata(
             "diffChanged": row.diff_changed,
             "changedFields": row.changed_fields,
             "diffSummary": row.diff_summary,
+            "collateralToLiquidityRate": {
+                "scale": metadata.collateral_to_liquidity_rate.scale.to_string(),
+                "liquidityPerScaleCollateral": metadata
+                    .collateral_to_liquidity_rate
+                    .liquidity_per_scale_collateral
+                    .to_string(),
+                "collateralMintTotalSupply": metadata
+                    .collateral_to_liquidity_rate
+                    .collateral_mint_total_supply
+                    .to_string(),
+                "totalAvailableLiquidityAmount": metadata
+                    .collateral_to_liquidity_rate
+                    .total_available_liquidity_amount
+                    .to_string(),
+            },
         }),
     })
 }
@@ -202,7 +227,37 @@ fn decode_reserve_account_metadata(
         reserve_collateral_mint: reserve.collateral.mint_pubkey.to_string(),
         lending_market_authority: lending_market_authority.to_string(),
         liquidity_token_program: reserve.liquidity.token_program.to_string(),
+        collateral_to_liquidity_rate: collateral_to_liquidity_rate_metadata(&reserve),
     })
+}
+
+fn collateral_to_liquidity_rate_metadata(reserve: &Reserve) -> CollateralToLiquidityRateMetadata {
+    let collateral_supply = u128::from(reserve.collateral.mint_total_supply);
+    let total_liquidity = reserve_total_supply_floor(reserve);
+    let liquidity_per_scale_collateral = if collateral_supply == 0 || total_liquidity == 0 {
+        COLLATERAL_TO_LIQUIDITY_RATE_SCALE
+    } else {
+        let scaled = u128::from(COLLATERAL_TO_LIQUIDITY_RATE_SCALE).saturating_mul(total_liquidity)
+            / collateral_supply;
+        u64::try_from(scaled).unwrap_or(u64::MAX)
+    };
+
+    CollateralToLiquidityRateMetadata {
+        scale: COLLATERAL_TO_LIQUIDITY_RATE_SCALE,
+        liquidity_per_scale_collateral,
+        collateral_mint_total_supply: reserve.collateral.mint_total_supply,
+        total_available_liquidity_amount: reserve.liquidity.total_available_amount,
+    }
+}
+
+fn reserve_total_supply_floor(reserve: &Reserve) -> u128 {
+    u128::from(reserve.liquidity.total_available_amount)
+        .saturating_mul(FRACTION_ONE_SCALED)
+        .saturating_add(u128::from(reserve.liquidity.borrowed_amount_sf))
+        .saturating_sub(u128::from(reserve.liquidity.accumulated_protocol_fees_sf))
+        .saturating_sub(u128::from(reserve.liquidity.accumulated_referrer_fees_sf))
+        .saturating_sub(u128::from(reserve.liquidity.pending_referrer_fees_sf))
+        / FRACTION_ONE_SCALED
 }
 
 fn parse_pubkey(field: &'static str, value: &str) -> Result<Pubkey, KaminoMetadataError> {
@@ -236,6 +291,12 @@ mod tests {
                 reserve_collateral_mint: "collateral-a".to_owned(),
                 lending_market_authority: "authority-a".to_owned(),
                 liquidity_token_program: spl_token::ID.to_string(),
+                collateral_to_liquidity_rate: CollateralToLiquidityRateMetadata {
+                    scale: 1_000,
+                    liquidity_per_scale_collateral: 995,
+                    collateral_mint_total_supply: 10_000,
+                    total_available_liquidity_amount: 9_950,
+                },
             },
         )
         .unwrap();
@@ -246,6 +307,10 @@ mod tests {
         assert_eq!(target.supply_apy_bps, 525);
         assert_eq!(target.accounts.reserve_liquidity_supply, "supply-a");
         assert_eq!(target.metadata["eventId"], 9);
+        assert_eq!(
+            target.metadata["collateralToLiquidityRate"]["liquidityPerScaleCollateral"],
+            "995"
+        );
     }
 
     #[test]

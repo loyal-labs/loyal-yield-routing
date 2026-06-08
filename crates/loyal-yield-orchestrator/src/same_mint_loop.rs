@@ -1,7 +1,7 @@
 use crate::{
     planner::{SameMintPlannerConfig, YieldRoutePlanner},
     reconcile::{ReconcileError, RpcPositionReconciler},
-    route_builder::{build_yield_route_transaction, RouteBuildError},
+    route_builder::{build_yield_route_transaction, RouteBuildError, RoutePreflightAccount},
     rpc::{RpcRouteSubmitter, RpcSubmitError},
     DecisionAdvance, DecisionId, JupiterRouteQuoteProvider, OrchestratorError, OrchestratorStore,
     PlanOutcomeStatus, RebalanceAttemptInput, RebalanceAttemptUpdate,
@@ -81,6 +81,7 @@ struct RouteExecutionGroup {
     attempt_id: i64,
     decision_id: DecisionId,
     instructions: Vec<Instruction>,
+    preflight_accounts: Vec<RoutePreflightAccount>,
 }
 
 #[derive(Debug, Error)]
@@ -245,6 +246,7 @@ impl<'a> SameMintYieldRoutingLoop<'a> {
                 attempt_id: attempt.id,
                 decision_id: decision.id,
                 instructions: transaction.instructions,
+                preflight_accounts: transaction.preflight_accounts,
             });
         }
 
@@ -305,6 +307,46 @@ impl<'a> SameMintYieldRoutingLoop<'a> {
         let mut last_slot = None;
         let dry_run_sequence = self.config.dry_run || !self.config.submit_txs;
 
+        if let Err(error) = self.preflight_token_accounts(&group.preflight_accounts) {
+            let aggregate_simulation = json!({
+                "attempted": false,
+                "mode": "sequential",
+                "preflight": {
+                    "ok": false,
+                    "error": error,
+                },
+            });
+            self.store
+                .update_rebalance_attempt(
+                    group.attempt_id,
+                    RebalanceAttemptUpdate {
+                        status: "failed".to_owned(),
+                        simulation_result: aggregate_simulation,
+                        submit_result: json!({
+                            "attempted": false,
+                            "mode": "sequential",
+                            "steps": [],
+                        }),
+                        signature: None,
+                        slot: None,
+                        error: Some(format!("route preflight failed: {error}")),
+                    },
+                )
+                .await?;
+            self.store
+                .advance_decision(
+                    group.decision_id,
+                    DecisionAdvance::Fail {
+                        reason: format!("route preflight failed: {error}"),
+                    },
+                )
+                .await?;
+            report
+                .failures
+                .push(format!("route preflight failed: {error}"));
+            return Ok(());
+        }
+
         for (index, instruction) in group.instructions.iter().enumerate() {
             let simulation =
                 submitter.simulate_instructions(&[instruction.clone()], self.signer)?;
@@ -362,7 +404,58 @@ impl<'a> SameMintYieldRoutingLoop<'a> {
                 break;
             }
 
-            let submitted = submitter.submit_and_confirm(&[instruction.clone()], self.signer)?;
+            let submitted = match submitter.submit_and_confirm(&[instruction.clone()], self.signer)
+            {
+                Ok(submitted) => submitted,
+                Err(error) => {
+                    let error = error.to_string();
+                    let aggregate_simulation = json!({
+                        "attempted": true,
+                        "ok": true,
+                        "mode": "sequential",
+                        "failedSubmitStep": index,
+                        "steps": simulation_reports,
+                    });
+                    let aggregate_submit = json!({
+                        "attempted": true,
+                        "ok": false,
+                        "mode": "sequential",
+                        "failedStep": index,
+                        "steps": submission_reports,
+                        "signatures": signatures.clone(),
+                        "error": error.clone(),
+                    });
+                    self.store
+                        .update_rebalance_attempt(
+                            group.attempt_id,
+                            RebalanceAttemptUpdate {
+                                status: "failed".to_owned(),
+                                simulation_result: aggregate_simulation,
+                                submit_result: aggregate_submit,
+                                signature: signatures.last().cloned(),
+                                slot: last_slot.map(|slot| slot as i64),
+                                error: Some(format!(
+                                    "sequential submit failed at step {index}: {error}"
+                                )),
+                            },
+                        )
+                        .await?;
+                    self.store
+                        .advance_decision(
+                            group.decision_id,
+                            DecisionAdvance::Fail {
+                                reason: format!(
+                                    "sequential submit failed at step {index}: {error}"
+                                ),
+                            },
+                        )
+                        .await?;
+                    report
+                        .failures
+                        .push(format!("sequential submit failed at step {index}: {error}"));
+                    return Ok(());
+                }
+            };
             report.submitted = true;
             report.submitted_signature = Some(submitted.signature.to_string());
             report
@@ -457,6 +550,29 @@ impl<'a> SameMintYieldRoutingLoop<'a> {
             )
             .await?;
         Ok(())
+    }
+
+    fn preflight_token_accounts(&self, accounts: &[RoutePreflightAccount]) -> Result<(), String> {
+        let mut failures = Vec::new();
+        for account in accounts {
+            match self.rpc.get_account(&account.address) {
+                Ok(actual) if actual.owner == account.owner_program => {}
+                Ok(actual) => failures.push(format!(
+                    "{} {} has owner {}, expected {}",
+                    account.label, account.address, actual.owner, account.owner_program
+                )),
+                Err(error) => failures.push(format!(
+                    "{} {} is unavailable: {}",
+                    account.label, account.address, error
+                )),
+            }
+        }
+
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
     }
 
     async fn execute_batch(

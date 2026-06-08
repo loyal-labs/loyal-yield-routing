@@ -112,6 +112,7 @@ pub struct CrossMintQuoteRequest<'a> {
     pub target: &'a YieldReserveTarget,
     pub lane: CrossMintSwapLane,
     pub amount: u64,
+    pub redeem_liquidity_amount: u64,
 }
 
 pub trait RouteQuoteProvider {
@@ -425,6 +426,11 @@ impl YieldRoutePlanner {
                 target,
                 lane: lane.clone(),
                 amount,
+                redeem_liquidity_amount: collateral_to_liquidity_amount(
+                    amount,
+                    source,
+                    source_target,
+                )?,
             })
             .await
             .map_err(|error| RoutePlanSkip::QuoteUnavailable(error.to_string()))?;
@@ -634,6 +640,52 @@ fn list_allows(allowlist: &[String], value: &str) -> bool {
     allowlist.is_empty() || allowlist.iter().any(|allowed| allowed == value)
 }
 
+fn collateral_to_liquidity_amount(
+    collateral_amount: u64,
+    source: &CurrentReservePosition,
+    source_target: &YieldReserveTarget,
+) -> Result<u64, RoutePlanSkip> {
+    let Some(rate) = collateral_to_liquidity_rate(source, source_target) else {
+        return Ok(collateral_amount);
+    };
+    let amount = u128::from(collateral_amount)
+        .checked_mul(u128::from(rate.liquidity_per_scale_collateral))
+        .ok_or(RoutePlanSkip::InvalidAmount)?
+        / u128::from(rate.scale);
+    u64::try_from(amount).map_err(|_| RoutePlanSkip::InvalidAmount)
+}
+
+struct CollateralToLiquidityRate {
+    scale: u64,
+    liquidity_per_scale_collateral: u64,
+}
+
+fn collateral_to_liquidity_rate(
+    source: &CurrentReservePosition,
+    source_target: &YieldReserveTarget,
+) -> Option<CollateralToLiquidityRate> {
+    source
+        .planning_metadata
+        .pointer("/reserve/metadata/collateralToLiquidityRate")
+        .or_else(|| source_target.metadata.get("collateralToLiquidityRate"))
+        .and_then(parse_collateral_to_liquidity_rate)
+}
+
+fn parse_collateral_to_liquidity_rate(value: &Value) -> Option<CollateralToLiquidityRate> {
+    let scale = parse_u64_json(value.get("scale")?)?;
+    let liquidity_per_scale_collateral = parse_u64_json(value.get("liquidityPerScaleCollateral")?)?;
+    (scale > 0).then_some(CollateralToLiquidityRate {
+        scale,
+        liquidity_per_scale_collateral,
+    })
+}
+
+fn parse_u64_json(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|raw| raw.parse::<u64>().ok()))
+}
+
 fn default_min_edge_bps() -> i64 {
     1
 }
@@ -740,14 +792,14 @@ mod tests {
             async move {
                 Ok(CrossMintQuote {
                     redeem_collateral_amount: request.amount,
-                    redeem_liquidity_amount: request.amount,
+                    redeem_liquidity_amount: request.redeem_liquidity_amount,
                     swap: SwapQuote {
                         lane_kind: request.lane.kind.as_str().to_owned(),
                         lane_index: request.lane.lane_index,
                         source_mint: request.source.liquidity_mint.clone(),
                         target_mint: request.target.liquidity_mint.clone(),
-                        amount_in: request.amount,
-                        min_out: request.amount.saturating_sub(10),
+                        amount_in: request.redeem_liquidity_amount,
+                        min_out: request.redeem_liquidity_amount.saturating_sub(10),
                         max_slippage_bps: request.lane.max_slippage_bps,
                         max_fee_bps: request.lane.max_fee_bps,
                         instruction: Some(RouteInstructionConfig {
@@ -756,8 +808,8 @@ mod tests {
                             data: vec![1, 2, 3],
                         }),
                     },
-                    deposit_liquidity_amount: request.amount.saturating_sub(10),
-                    expected_collateral_amount: request.amount.saturating_sub(10),
+                    deposit_liquidity_amount: request.redeem_liquidity_amount.saturating_sub(10),
+                    expected_collateral_amount: request.redeem_liquidity_amount.saturating_sub(10),
                 })
             }
         }
@@ -797,6 +849,43 @@ mod tests {
             planned.execution_plan["route"]["deposit_constraint_index"],
             1
         );
+    }
+
+    #[tokio::test]
+    async fn cross_mint_quotes_redeemed_liquidity_not_collateral_amount() {
+        let mut source = target("reserve-a", "market-a", "USDC", 100);
+        source.metadata = json!({
+            "collateralToLiquidityRate": {
+                "scale": "1000",
+                "liquidityPerScaleCollateral": "900"
+            }
+        });
+        let planner = YieldRoutePlanner::new(YieldRoutePlannerConfig {
+            targets: vec![source, target("reserve-c", "market-b", "PYUSD", 240)],
+            min_edge_bps: 10,
+            estimated_cost_lamports: 0,
+        });
+        let positions = vec![position("reserve-a", "USDC", 10_000, Some(100))];
+
+        let planned = planner
+            .plan_vault(
+                &vault_policy(vec!["cross_mint_jupiter"], json!([{ "kind": "jupiter" }])),
+                &positions,
+                &StaticQuoteProvider,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(planned.amount_raw, 10_000);
+        assert_eq!(
+            planned.execution_plan["quote"]["redeem_collateral_amount"],
+            10_000
+        );
+        assert_eq!(
+            planned.execution_plan["quote"]["redeem_liquidity_amount"],
+            9_000
+        );
+        assert_eq!(planned.execution_plan["quote"]["swap"]["amount_in"], 9_000);
     }
 
     #[tokio::test]
