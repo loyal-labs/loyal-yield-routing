@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgConnection, PgPool, Row};
+use std::future::Future;
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_loyal_yield_orchestration.sql");
 
@@ -280,99 +281,99 @@ impl NeonSqlClient {
         &self,
         input: WalletAtaBalanceUpdateInput,
     ) -> Result<WalletAtaBalanceCurrent, OrchestratorError> {
-        let amount_raw = to_i64_amount(input.amount_raw)?;
-        let observed_slot = to_i64_slot(input.observed_slot)?;
-        let row = sqlx::query(
+        let mut connection = self.pool.acquire().await?;
+        record_wallet_ata_balance_update_in_tx(&mut connection, input).await
+    }
+
+    pub async fn project_wallet_ata_balance_updates<F, Fut>(
+        &self,
+        consumer_name: &str,
+        batch_limit: i64,
+        fetch_after_cursor: F,
+    ) -> Result<ProjectionBatchOutcome, OrchestratorError>
+    where
+        F: FnOnce(i64, i64) -> Fut,
+        Fut: Future<Output = Result<Vec<ProjectedWalletAtaBalanceUpdateInput>, OrchestratorError>>,
+    {
+        let mut tx = self.pool.begin().await?;
+        let last_event_id = lock_projection_offset(&mut *tx, consumer_name).await?;
+        let updates = fetch_after_cursor(last_event_id, batch_limit).await?;
+        let mut projected_count = 0_usize;
+        let mut next_event_id = last_event_id;
+
+        for projected in updates {
+            if projected.event_id <= last_event_id {
+                continue;
+            }
+            record_wallet_ata_balance_update_in_tx(&mut *tx, projected.update).await?;
+            next_event_id = projected.event_id;
+            projected_count += 1;
+        }
+
+        if next_event_id > last_event_id {
+            sqlx::query(
+                r#"
+                UPDATE loyal_yield.projection_offsets
+                SET last_event_id = $2,
+                    updated_at = now()
+                WHERE consumer_name = $1
+                "#,
+            )
+            .bind(consumer_name)
+            .bind(next_event_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(ProjectionBatchOutcome {
+            projected_count,
+            previous_event_id: last_event_id,
+            last_event_id: next_event_id,
+        })
+    }
+
+    pub async fn projection_offset(&self, consumer_name: &str) -> Result<i64, OrchestratorError> {
+        let event_id = sqlx::query_scalar(
             r#"
-            INSERT INTO loyal_yield.balance_sweep_wallet_balances_current
-                (target_id, cluster, wallet, wallet_usdc_ata, amount_raw, owner, mint,
-                 observed_slot, observed_at, source, source_commitment, account_data_hash, raw_evidence)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, now()), $10, $11, $12, $13)
-            ON CONFLICT (target_id) DO UPDATE SET
-                cluster = CASE
-                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
-                    THEN EXCLUDED.cluster
-                    ELSE loyal_yield.balance_sweep_wallet_balances_current.cluster
-                END,
-                wallet = CASE
-                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
-                    THEN EXCLUDED.wallet
-                    ELSE loyal_yield.balance_sweep_wallet_balances_current.wallet
-                END,
-                wallet_usdc_ata = CASE
-                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
-                    THEN EXCLUDED.wallet_usdc_ata
-                    ELSE loyal_yield.balance_sweep_wallet_balances_current.wallet_usdc_ata
-                END,
-                amount_raw = CASE
-                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
-                    THEN EXCLUDED.amount_raw
-                    ELSE loyal_yield.balance_sweep_wallet_balances_current.amount_raw
-                END,
-                owner = CASE
-                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
-                    THEN EXCLUDED.owner
-                    ELSE loyal_yield.balance_sweep_wallet_balances_current.owner
-                END,
-                mint = CASE
-                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
-                    THEN EXCLUDED.mint
-                    ELSE loyal_yield.balance_sweep_wallet_balances_current.mint
-                END,
-                observed_slot = GREATEST(loyal_yield.balance_sweep_wallet_balances_current.observed_slot, EXCLUDED.observed_slot),
-                observed_at = CASE
-                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
-                    THEN EXCLUDED.observed_at
-                    ELSE loyal_yield.balance_sweep_wallet_balances_current.observed_at
-                END,
-                source = CASE
-                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
-                    THEN EXCLUDED.source
-                    ELSE loyal_yield.balance_sweep_wallet_balances_current.source
-                END,
-                source_commitment = CASE
-                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
-                    THEN EXCLUDED.source_commitment
-                    ELSE loyal_yield.balance_sweep_wallet_balances_current.source_commitment
-                END,
-                account_data_hash = CASE
-                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
-                    THEN EXCLUDED.account_data_hash
-                    ELSE loyal_yield.balance_sweep_wallet_balances_current.account_data_hash
-                END,
-                raw_evidence = CASE
-                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
-                    THEN EXCLUDED.raw_evidence
-                    ELSE loyal_yield.balance_sweep_wallet_balances_current.raw_evidence
-                END,
-                updated_at = CASE
-                    WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
-                    THEN now()
-                    ELSE loyal_yield.balance_sweep_wallet_balances_current.updated_at
-                END
-            RETURNING
-                target_id, cluster, wallet, wallet_usdc_ata, amount_raw, owner, mint,
-                observed_slot, observed_at, source, source_commitment, account_data_hash,
-                raw_evidence, updated_at
+            SELECT last_event_id
+            FROM loyal_yield.projection_offsets
+            WHERE consumer_name = $1
             "#,
         )
-        .bind(input.target_id.as_i64())
-        .bind(&input.cluster)
-        .bind(&input.wallet)
-        .bind(&input.wallet_usdc_ata)
-        .bind(amount_raw)
-        .bind(input.owner.as_deref())
-        .bind(&input.mint)
-        .bind(observed_slot)
-        .bind(input.observed_at)
-        .bind(&input.source)
-        .bind(&input.source_commitment)
-        .bind(input.account_data_hash.as_deref())
-        .bind(&input.raw_evidence)
-        .fetch_one(&self.pool)
-        .await?;
+        .bind(consumer_name)
+        .fetch_optional(&self.pool)
+        .await?
+        .unwrap_or(0);
+        Ok(event_id)
+    }
 
-        wallet_ata_balance_from_row(&row)
+    pub async fn advance_projection_offset(
+        &self,
+        consumer_name: &str,
+        event_id: i64,
+    ) -> Result<(), OrchestratorError> {
+        sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.projection_offsets (consumer_name, last_event_id)
+            VALUES ($1, $2)
+            ON CONFLICT (consumer_name) DO UPDATE SET
+                last_event_id = GREATEST(loyal_yield.projection_offsets.last_event_id, EXCLUDED.last_event_id),
+                updated_at = now()
+            "#,
+        )
+        .bind(consumer_name)
+        .bind(event_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn record_wallet_ata_balance_update_in_connection(
+        connection: &mut PgConnection,
+        input: WalletAtaBalanceUpdateInput,
+    ) -> Result<WalletAtaBalanceCurrent, OrchestratorError> {
+        record_wallet_ata_balance_update_in_tx(connection, input).await
     }
 
     pub async fn record_balance_sweep_execution(
@@ -687,6 +688,237 @@ impl NeonSqlClient {
         Ok(PlanOutcome::planned(vault_id, decision))
     }
 
+    pub async fn prepare_same_mint_rebalance(
+        &self,
+        input: SameMintRebalanceInput,
+    ) -> Result<SameMintRebalanceResult, OrchestratorError> {
+        let mut tx = self.pool.begin().await?;
+        let vault = fetch_rebalance_input_vault_for_update(&mut *tx, &input).await?;
+        let vault_id = vault.id;
+
+        if active_decision_exists(&mut *tx, vault_id).await? {
+            let decision =
+                insert_skipped_decision(&mut *tx, vault_id, SkipReason::ActiveDecision).await?;
+            let decision = from_row_to_decision(decision)?;
+            tx.commit().await?;
+            return Ok(same_mint_result_from_decision(
+                vault_id,
+                input,
+                decision,
+                Some(SkipReason::ActiveDecision),
+                None,
+            ));
+        }
+
+        let positions = current_positions_for_update(&mut *tx, vault_id).await?;
+        if let Err(reason) = validate_same_mint_input(&input, &positions) {
+            tx.commit().await?;
+            return Ok(same_mint_error_result(vault_id, input, reason));
+        }
+
+        let planned = PlannedDecision {
+            source_snapshot_id: input.expected_source_snapshot_id,
+            source_reserve: input.source_reserve.clone(),
+            target_reserve: input.target_reserve.clone(),
+            liquidity_mint: Some(input.liquidity_mint.clone()),
+            source_liquidity_mint: input.liquidity_mint.clone(),
+            target_liquidity_mint: input.liquidity_mint.clone(),
+            amount_raw: input.amount_raw,
+            source_apy_bps: input.source_apy_bps,
+            target_apy_bps: input.target_apy_bps,
+            estimated_edge_bps: input.estimated_edge_bps,
+            execution_plan: same_mint_execution_plan(&input),
+        };
+        let row =
+            insert_planned_decision(&mut *tx, vault_id, &planned, input.estimated_cost_lamports)
+                .await?;
+        let decision = from_row_to_decision(row)?;
+        tx.commit().await?;
+        Ok(same_mint_result_from_decision(
+            vault_id,
+            input,
+            decision,
+            None,
+            Some(same_mint_execution_preview(&planned)),
+        ))
+    }
+
+    pub async fn prepare_same_mint_rebalance_batch(
+        &self,
+        inputs: Vec<SameMintRebalanceInput>,
+    ) -> Vec<Result<SameMintRebalanceResult, OrchestratorError>> {
+        let mut results = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            results.push(self.prepare_same_mint_rebalance(input).await);
+        }
+        results
+    }
+
+    pub async fn confirm_same_mint_rebalance(
+        &self,
+        input: ConfirmSameMintRebalanceInput,
+    ) -> Result<SameMintRebalanceResult, OrchestratorError> {
+        let mut tx = self.pool.begin().await?;
+        let decision = fetch_decision_for_update(&mut *tx, input.decision_id).await?;
+        if decision.status == DecisionStatus::Confirmed {
+            ensure_same_mint_confirm_repeat_matches(&decision, &input)?;
+            tx.commit().await?;
+            return Ok(same_mint_result_from_confirmed_decision(decision));
+        }
+        ensure_confirmable_same_mint_decision(&decision)?;
+        let vault = fetch_managed_vault_for_update(&mut *tx, decision.vault_id).await?;
+        let current = current_positions_for_update(&mut *tx, decision.vault_id).await?;
+        let source_reserve = required_decision_field(&decision.source_reserve, "source_reserve")?;
+        let target_reserve = required_decision_field(&decision.target_reserve, "target_reserve")?;
+        let _ = required_decision_field(&decision.liquidity_mint, "liquidity_mint")?;
+        let amount_raw = decision
+            .amount_raw
+            .ok_or_else(|| OrchestratorError::StoreInvariant("missing amount_raw".to_owned()))?;
+
+        let mut next_positions = Vec::with_capacity(current.len());
+        let mut saw_source = false;
+        let mut saw_target = false;
+        for mut position in current {
+            if position.reserve == source_reserve {
+                saw_source = true;
+                position.amount_raw = 0;
+                position.has_value = false;
+            } else if position.reserve == target_reserve {
+                saw_target = true;
+                position.amount_raw = amount_raw;
+                position.has_value = amount_raw > 0;
+            }
+            next_positions.push(position);
+        }
+        if !saw_source || !saw_target {
+            return Err(OrchestratorError::StoreInvariant(
+                "same-mint confirm requires source and target current positions".to_owned(),
+            ));
+        }
+
+        sqlx::query!(
+            r#"
+            UPDATE loyal_yield.vault_position_snapshots
+            SET is_current = FALSE
+            WHERE vault_id = $1 AND is_current
+            "#,
+            decision.vault_id.as_i64()
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        let snapshot_row = sqlx::query_as!(
+            SnapshotRow,
+            r#"
+            INSERT INTO loyal_yield.vault_position_snapshots
+                (vault_id, policy_id, observed_slot, observed_at, chain_slot, context)
+            VALUES ($1, $2, $3, COALESCE($4, now()), $5, $6)
+            RETURNING
+                id,
+                vault_id,
+                policy_id,
+                observed_slot,
+                observed_at,
+                chain_slot,
+                lock_attempt_id,
+                is_current,
+                context
+            "#,
+            decision.vault_id.as_i64(),
+            vault.active_policy_id.as_i64(),
+            input.confirmed_slot,
+            input.observed_at,
+            input.confirmed_slot,
+            json!({
+                "kind": "same_mint_rebalance_confirmed",
+                "decision_id": input.decision_id.as_i64(),
+                "signature": input.signature,
+            })
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let mut observed_reserves = Vec::with_capacity(next_positions.len());
+        for position in next_positions {
+            observed_reserves.push(position.reserve.clone());
+            sqlx::query!(
+                r#"
+                INSERT INTO loyal_yield.vault_position_snapshot_positions
+                    (snapshot_id, reserve, market, liquidity_mint, amount_raw, supply_apy_bps, borrow_apy_bps, has_value, planning_metadata)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                "#,
+                snapshot_row.id,
+                position.reserve,
+                position.market,
+                position.liquidity_mint,
+                position.amount_raw,
+                position.supply_apy_bps,
+                position.borrow_apy_bps,
+                position.has_value,
+                position.planning_metadata
+            )
+            .execute(&mut *tx)
+            .await?;
+
+            sqlx::query!(
+                r#"
+                INSERT INTO loyal_yield.vault_reserve_positions_current
+                    (vault_id, reserve, market, liquidity_mint, amount_raw, has_value, supply_apy_bps, borrow_apy_bps,
+                     snapshot_id, observed_slot, observed_at, planning_metadata)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                ON CONFLICT (vault_id, reserve) DO UPDATE SET
+                    amount_raw = EXCLUDED.amount_raw,
+                    has_value = EXCLUDED.has_value,
+                    supply_apy_bps = EXCLUDED.supply_apy_bps,
+                    borrow_apy_bps = EXCLUDED.borrow_apy_bps,
+                    snapshot_id = EXCLUDED.snapshot_id,
+                    observed_slot = EXCLUDED.observed_slot,
+                    observed_at = EXCLUDED.observed_at,
+                    market = EXCLUDED.market,
+                    liquidity_mint = EXCLUDED.liquidity_mint,
+                    planning_metadata = EXCLUDED.planning_metadata
+                "#,
+                decision.vault_id.as_i64(),
+                position.reserve,
+                position.market,
+                position.liquidity_mint,
+                position.amount_raw,
+                position.has_value,
+                position.supply_apy_bps,
+                position.borrow_apy_bps,
+                snapshot_row.id,
+                snapshot_row.observed_slot,
+                snapshot_row.observed_at,
+                position.planning_metadata
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        sqlx::query!(
+            r#"
+            DELETE FROM loyal_yield.vault_reserve_positions_current
+            WHERE vault_id = $1 AND NOT (reserve = ANY($2))
+            "#,
+            decision.vault_id.as_i64(),
+            &observed_reserves
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        let decision = update_confirmed_decision(
+            &mut *tx,
+            input.decision_id,
+            &input.signature,
+            input.submitted_slot,
+            input.confirmed_slot,
+            SnapshotId(snapshot_row.id),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(same_mint_result_from_confirmed_decision(decision))
+    }
+
     pub async fn advance_decision(
         &self,
         decision_id: DecisionId,
@@ -930,6 +1162,50 @@ async fn fetch_managed_vault_for_update(
     Ok(managed_vault_from_row(row))
 }
 
+async fn fetch_rebalance_input_vault_for_update(
+    conn: &mut PgConnection,
+    input: &SameMintRebalanceInput,
+) -> Result<ManagedVault, OrchestratorError> {
+    if let Some(vault_id) = input.vault_id {
+        let vault = fetch_managed_vault_for_update(conn, vault_id).await?;
+        if vault.cluster != input.cluster {
+            return Err(OrchestratorError::SameMintRebalanceValidation(
+                "vault_id cluster does not match input cluster".to_owned(),
+            ));
+        }
+        return Ok(vault);
+    }
+
+    let settings = input.settings.as_deref().ok_or_else(|| {
+        OrchestratorError::SameMintRebalanceValidation(
+            "settings is required when vault_id is omitted".to_owned(),
+        )
+    })?;
+    let vault_index = input.vault_index.ok_or_else(|| {
+        OrchestratorError::SameMintRebalanceValidation(
+            "vault_index is required when vault_id is omitted".to_owned(),
+        )
+    })?;
+
+    let row = sqlx::query_as!(
+        ManagedVaultRow,
+        r#"
+        SELECT id, cluster, settings, vault_index, vault_pubkey, active_policy_id, active, first_seen_at, last_seen_at
+        FROM loyal_yield.managed_vaults
+        WHERE cluster = $1 AND settings = $2 AND vault_index = $3 AND active
+        ORDER BY last_seen_at DESC, id DESC
+        LIMIT 1
+        FOR UPDATE
+        "#,
+        &input.cluster,
+        settings,
+        vault_index
+    )
+    .fetch_one(conn)
+    .await?;
+    Ok(managed_vault_from_row(row))
+}
+
 async fn active_decision_exists(
     conn: &mut PgConnection,
     vault_id: VaultId,
@@ -1140,6 +1416,367 @@ async fn fetch_decision_for_update(
     .fetch_one(conn)
     .await?;
     from_row_to_decision(row)
+}
+
+async fn update_confirmed_decision(
+    conn: &mut PgConnection,
+    decision_id: DecisionId,
+    signature: &str,
+    submitted_slot: Option<i64>,
+    confirmed_slot: i64,
+    post_snapshot_id: SnapshotId,
+) -> Result<RebalanceDecision, OrchestratorError> {
+    let row = sqlx::query_as!(
+        DecisionRow,
+        r#"
+        UPDATE loyal_yield.rebalance_decisions
+        SET
+            status = 'confirmed'::loyal_yield.decision_status,
+            signature = $2,
+            submitted_slot = COALESCE($3, submitted_slot),
+            confirmed_slot = $4,
+            post_snapshot_id = $5,
+            updated_at = now()
+        WHERE id = $1
+        RETURNING
+            id,
+            vault_id,
+            source_snapshot_id,
+            status::text AS "status!",
+            source_reserve,
+            target_reserve,
+            liquidity_mint,
+            source_liquidity_mint,
+            target_liquidity_mint,
+            amount_raw,
+            source_apy_bps,
+            target_apy_bps,
+            estimated_edge_bps,
+            estimated_cost_lamports,
+            decision_reason::text AS "decision_reason!",
+            execution_plan,
+            abandon_reason,
+            signature,
+            submitted_slot,
+            confirmed_slot,
+            preflight_chain_slot,
+            post_snapshot_id,
+            created_at,
+            updated_at
+        "#,
+        decision_id.as_i64(),
+        signature,
+        submitted_slot,
+        confirmed_slot,
+        post_snapshot_id.as_i64()
+    )
+    .fetch_one(conn)
+    .await?;
+    from_row_to_decision(row)
+}
+
+fn validate_same_mint_input(
+    input: &SameMintRebalanceInput,
+    positions: &[CurrentReservePosition],
+) -> Result<(), String> {
+    if input.source_reserve == input.target_reserve {
+        return Err("source and target reserve must differ".to_owned());
+    }
+    if input.amount_raw <= 0 {
+        return Err("amount_raw must be greater than 0".to_owned());
+    }
+
+    let source = positions
+        .iter()
+        .find(|position| position.reserve == input.source_reserve)
+        .ok_or_else(|| "source reserve is not in current positions".to_owned())?;
+    let target = positions
+        .iter()
+        .find(|position| position.reserve == input.target_reserve)
+        .ok_or_else(|| "target reserve is not in current positions".to_owned())?;
+
+    if source.snapshot_id != input.expected_source_snapshot_id {
+        return Err("current source snapshot does not match expected snapshot".to_owned());
+    }
+    if source.amount_raw <= 0 || !source.has_value {
+        return Err("source reserve has no value".to_owned());
+    }
+    if input.amount_raw != source.amount_raw {
+        return Err("amount_raw must equal source position amount for same-mint v1".to_owned());
+    }
+    if source.liquidity_mint != input.liquidity_mint {
+        return Err("source liquidity mint does not match input mint".to_owned());
+    }
+    if target.liquidity_mint != input.liquidity_mint {
+        return Err("target liquidity mint does not match input mint".to_owned());
+    }
+    Ok(())
+}
+
+fn same_mint_execution_plan(input: &SameMintRebalanceInput) -> Value {
+    json!({
+        "kind": "same_mint",
+        "source_reserve": input.source_reserve,
+        "target_reserve": input.target_reserve,
+        "liquidity_mint": input.liquidity_mint,
+        "amount_raw": input.amount_raw,
+        "policy_executions": 1,
+        "route_steps": ["kamino_withdraw", "kamino_deposit"],
+    })
+}
+
+fn same_mint_execution_preview(planned: &PlannedDecision) -> SameMintExecutionPreview {
+    SameMintExecutionPreview {
+        kind: "same_mint".to_owned(),
+        source_reserve: planned.source_reserve.clone(),
+        target_reserve: planned.target_reserve.clone(),
+        liquidity_mint: planned.source_liquidity_mint.clone(),
+        amount_raw: planned.amount_raw,
+        policy_executions: 1,
+        route_steps: vec!["kamino_withdraw".to_owned(), "kamino_deposit".to_owned()],
+    }
+}
+
+fn same_mint_result_from_decision(
+    vault_id: VaultId,
+    input: SameMintRebalanceInput,
+    decision: RebalanceDecision,
+    skip_reason: Option<SkipReason>,
+    execution_preview: Option<SameMintExecutionPreview>,
+) -> SameMintRebalanceResult {
+    SameMintRebalanceResult {
+        vault_id,
+        decision_id: Some(decision.id),
+        status: decision.status,
+        source_reserve: input.source_reserve,
+        target_reserve: input.target_reserve,
+        liquidity_mint: input.liquidity_mint,
+        amount_raw: input.amount_raw,
+        signature: decision.signature,
+        confirmed_slot: decision.confirmed_slot,
+        skip_reason,
+        error_reason: None,
+        dry_run: input.dry_run,
+        execution_preview,
+    }
+}
+
+fn same_mint_error_result(
+    vault_id: VaultId,
+    input: SameMintRebalanceInput,
+    reason: String,
+) -> SameMintRebalanceResult {
+    SameMintRebalanceResult {
+        vault_id,
+        decision_id: None,
+        status: DecisionStatus::Skipped,
+        source_reserve: input.source_reserve,
+        target_reserve: input.target_reserve,
+        liquidity_mint: input.liquidity_mint,
+        amount_raw: input.amount_raw,
+        signature: None,
+        confirmed_slot: None,
+        skip_reason: None,
+        error_reason: Some(reason),
+        dry_run: input.dry_run,
+        execution_preview: None,
+    }
+}
+
+fn ensure_confirmable_same_mint_decision(
+    decision: &RebalanceDecision,
+) -> Result<(), OrchestratorError> {
+    if decision.status != DecisionStatus::Confirming {
+        return Err(OrchestratorError::TerminalDecision(decision.status));
+    }
+    if decision.liquidity_mint.is_none()
+        || decision.source_liquidity_mint != decision.target_liquidity_mint
+    {
+        return Err(OrchestratorError::SameMintRebalanceValidation(
+            "decision is not same-mint".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_same_mint_confirm_repeat_matches(
+    decision: &RebalanceDecision,
+    input: &ConfirmSameMintRebalanceInput,
+) -> Result<(), OrchestratorError> {
+    if decision
+        .signature
+        .as_deref()
+        .is_some_and(|stored| stored != input.signature)
+    {
+        return Err(OrchestratorError::ConflictingTerminalRepeat { field: "signature" });
+    }
+    if decision.confirmed_slot != Some(input.confirmed_slot) {
+        return Err(OrchestratorError::ConflictingTerminalRepeat {
+            field: "confirmed_slot",
+        });
+    }
+    Ok(())
+}
+
+fn same_mint_result_from_confirmed_decision(
+    decision: RebalanceDecision,
+) -> SameMintRebalanceResult {
+    SameMintRebalanceResult {
+        vault_id: decision.vault_id,
+        decision_id: Some(decision.id),
+        status: decision.status,
+        source_reserve: decision.source_reserve.unwrap_or_default(),
+        target_reserve: decision.target_reserve.unwrap_or_default(),
+        liquidity_mint: decision.liquidity_mint.unwrap_or_default(),
+        amount_raw: decision.amount_raw.unwrap_or_default(),
+        signature: decision.signature,
+        confirmed_slot: decision.confirmed_slot,
+        skip_reason: None,
+        error_reason: None,
+        dry_run: false,
+        execution_preview: None,
+    }
+}
+
+async fn lock_projection_offset(
+    connection: &mut PgConnection,
+    consumer_name: &str,
+) -> Result<i64, OrchestratorError> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.projection_offsets (consumer_name, last_event_id)
+        VALUES ($1, 0)
+        ON CONFLICT (consumer_name) DO UPDATE
+        SET consumer_name = EXCLUDED.consumer_name
+        RETURNING last_event_id
+        "#,
+    )
+    .bind(consumer_name)
+    .fetch_one(&mut *connection)
+    .await?;
+
+    let last_event_id: i64 = row.try_get("last_event_id")?;
+    let locked: i64 = sqlx::query_scalar(
+        r#"
+        SELECT last_event_id
+        FROM loyal_yield.projection_offsets
+        WHERE consumer_name = $1
+        FOR UPDATE
+        "#,
+    )
+    .bind(consumer_name)
+    .fetch_one(&mut *connection)
+    .await?;
+
+    Ok(locked.max(last_event_id))
+}
+
+async fn record_wallet_ata_balance_update_in_tx(
+    connection: &mut PgConnection,
+    input: WalletAtaBalanceUpdateInput,
+) -> Result<WalletAtaBalanceCurrent, OrchestratorError> {
+    let amount_raw = to_i64_amount(input.amount_raw)?;
+    let observed_slot = to_i64_slot(input.observed_slot)?;
+    let row = sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.balance_sweep_wallet_balances_current
+            (target_id, cluster, wallet, wallet_usdc_ata, amount_raw, owner, mint,
+             observed_slot, observed_at, source, source_commitment, account_data_hash, raw_evidence)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, now()), $10, $11, $12, $13)
+        ON CONFLICT (target_id) DO UPDATE SET
+            cluster = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                THEN EXCLUDED.cluster
+                ELSE loyal_yield.balance_sweep_wallet_balances_current.cluster
+            END,
+            wallet = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                THEN EXCLUDED.wallet
+                ELSE loyal_yield.balance_sweep_wallet_balances_current.wallet
+            END,
+            wallet_usdc_ata = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                THEN EXCLUDED.wallet_usdc_ata
+                ELSE loyal_yield.balance_sweep_wallet_balances_current.wallet_usdc_ata
+            END,
+            amount_raw = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                THEN EXCLUDED.amount_raw
+                ELSE loyal_yield.balance_sweep_wallet_balances_current.amount_raw
+            END,
+            owner = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                THEN EXCLUDED.owner
+                ELSE loyal_yield.balance_sweep_wallet_balances_current.owner
+            END,
+            mint = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                THEN EXCLUDED.mint
+                ELSE loyal_yield.balance_sweep_wallet_balances_current.mint
+            END,
+            observed_slot = GREATEST(loyal_yield.balance_sweep_wallet_balances_current.observed_slot, EXCLUDED.observed_slot),
+            observed_at = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                THEN EXCLUDED.observed_at
+                ELSE loyal_yield.balance_sweep_wallet_balances_current.observed_at
+            END,
+            source = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                THEN EXCLUDED.source
+                ELSE loyal_yield.balance_sweep_wallet_balances_current.source
+            END,
+            source_commitment = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                THEN EXCLUDED.source_commitment
+                ELSE loyal_yield.balance_sweep_wallet_balances_current.source_commitment
+            END,
+            account_data_hash = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                THEN EXCLUDED.account_data_hash
+                ELSE loyal_yield.balance_sweep_wallet_balances_current.account_data_hash
+            END,
+            raw_evidence = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                THEN EXCLUDED.raw_evidence
+                ELSE loyal_yield.balance_sweep_wallet_balances_current.raw_evidence
+            END,
+            updated_at = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                THEN now()
+                ELSE loyal_yield.balance_sweep_wallet_balances_current.updated_at
+            END
+        RETURNING
+            target_id, cluster, wallet, wallet_usdc_ata, amount_raw, owner, mint,
+            observed_slot, observed_at, source, source_commitment, account_data_hash,
+            raw_evidence, updated_at
+        "#,
+    )
+    .bind(input.target_id.as_i64())
+    .bind(&input.cluster)
+    .bind(&input.wallet)
+    .bind(&input.wallet_usdc_ata)
+    .bind(amount_raw)
+    .bind(input.owner.as_deref())
+    .bind(&input.mint)
+    .bind(observed_slot)
+    .bind(input.observed_at)
+    .bind(&input.source)
+    .bind(&input.source_commitment)
+    .bind(input.account_data_hash.as_deref())
+    .bind(&input.raw_evidence)
+    .fetch_one(&mut *connection)
+    .await?;
+
+    wallet_ata_balance_from_row(&row)
+}
+
+fn required_decision_field<'a>(
+    value: &'a Option<String>,
+    field: &'static str,
+) -> Result<&'a str, OrchestratorError> {
+    value
+        .as_deref()
+        .ok_or_else(|| OrchestratorError::StoreInvariant(format!("missing {field}")))
 }
 
 fn route_policy_from_row(row: RoutePolicyRow) -> RoutePolicy {

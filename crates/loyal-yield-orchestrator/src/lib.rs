@@ -38,6 +38,8 @@ pub enum OrchestratorError {
     },
     #[error("unexpected store state: {0}")]
     StoreInvariant(String),
+    #[error("same-mint rebalance validation failed: {0}")]
+    SameMintRebalanceValidation(String),
 }
 
 impl OrchestratorError {

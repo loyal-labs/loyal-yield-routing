@@ -54,11 +54,11 @@ prepared statements need a stable backend connection.
 op run --env-file=.env.1password -- sh -c 'DATABASE_URL="$NEON_DATABASE_URL" cargo test -p loyal-squads-policy-monitor'
 ```
 
-## Kamino Timescale Migrations
+## Loyal Timescale Migrations
 
-Kamino market data lives in the separate `kamino_timescale` Neon database. Its
-schema is managed by the Rust SQLx migration runner in
-`crates/kamino-timescale-migrations`.
+Kamino market data and Loyal telemetry live in the separate Timescale database.
+Its schema is managed by the Rust SQLx migration runner in
+`crates/loyal-timescale-migrations`.
 
 ```bash
 op run --env-file=.env.1password -- sh -c 'bun run timescale:migrate'
@@ -68,8 +68,8 @@ Use `bun run timescale:migrate:check` in the same wrapper to verify that no
 migrations are pending.
 
 The runner reads `TIMESCALEDB_URL` from 1Password, applies checked-in SQL files
-under `crates/kamino-timescale-migrations/migrations`, and records applied
-versions in `kamino.schema_migrations`.
+under `crates/loyal-timescale-migrations/migrations`, and records applied
+versions in `loyal.timescale_schema_migrations`.
 
 ## Squads Tests
 

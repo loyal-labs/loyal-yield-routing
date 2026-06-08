@@ -7,7 +7,7 @@ use std::{
 use anyhow::{bail, Result};
 use balance_sweep_ata_monitor::{
     run_event_loop, seed_current_balances, AtaTarget, AtaUpdateSource, LaserstreamAtaUpdateSource,
-    SubscriptionConfig, WebsocketAtaUpdateSource,
+    SubscriptionConfig, TimescaleAtaConfig, TimescaleAtaObservationSink, WebsocketAtaUpdateSource,
 };
 use clap::{Parser, ValueEnum};
 use loyal_yield_orchestrator::{OrchestratorConfig, OrchestratorStore};
@@ -32,6 +32,8 @@ struct Args {
     ws_url: Option<String>,
     #[arg(long, env = "NEON_DATABASE_URL")]
     postgres_url: String,
+    #[arg(long, env = "TIMESCALEDB_URL")]
+    timescaledb_url: String,
     #[arg(long, default_value = "mainnet")]
     cluster: String,
     #[arg(
@@ -63,7 +65,6 @@ async fn main() -> Result<()> {
         "starting balance sweep ATA monitor"
     );
     let store = OrchestratorStore::connect(OrchestratorConfig::new(args.postgres_url)).await?;
-    store.apply_migrations().await?;
     let targets = store
         .load_active_balance_sweep_targets(&args.cluster)
         .await?
@@ -74,7 +75,9 @@ async fn main() -> Result<()> {
         target_count = targets.len(),
         "loaded active balance sweep ATA targets"
     );
-    seed_current_balances(&args.rpc_url, &targets, &store).await?;
+    let observations =
+        TimescaleAtaObservationSink::connect(TimescaleAtaConfig::new(args.timescaledb_url)).await?;
+    seed_current_balances(&args.rpc_url, &targets, &observations).await?;
     tracing::info!(
         target_count = targets.len(),
         "seeded current wallet ATA balances"
@@ -125,5 +128,5 @@ async fn main() -> Result<()> {
         }
         .spawn(accounts, tx, running.clone()),
     };
-    run_event_loop(rx, target_by_ata, store, running).await
+    run_event_loop(rx, target_by_ata, observations, running).await
 }

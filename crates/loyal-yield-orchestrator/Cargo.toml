@@ -12,6 +12,4 @@ sha2 = "0.10"
 solana-sdk.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["chrono", "json", "macros", "postgres", "runtime-tokio-rustls"] }
 thiserror = "2"
-
-[dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

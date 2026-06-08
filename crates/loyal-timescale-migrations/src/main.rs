@@ -6,14 +6,21 @@ use sqlx::{
     PgPool,
 };
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "kamino_timescale_v1",
-    sql: include_str!("../migrations/0001_kamino_timescale_v1.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "kamino_timescale_v1",
+        sql: include_str!("../migrations/0001_kamino_timescale_v1.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "loyal_balance_sweep_ata_observations",
+        sql: include_str!("../migrations/0002_loyal_balance_sweep_ata_observations.sql"),
+    },
+];
 
-const LEDGER_SCHEMA: &str = "kamino";
-const LEDGER_TABLE: &str = "schema_migrations";
+const LEDGER_SCHEMA: &str = "loyal";
+const LEDGER_TABLE: &str = "timescale_schema_migrations";
 
 struct Migration {
     version: i64,
@@ -30,7 +37,7 @@ enum Mode {
 async fn main() -> Result<(), Box<dyn Error>> {
     let mode = parse_mode()?;
     let database_url = env::var("TIMESCALEDB_URL")
-        .map_err(|_| "TIMESCALEDB_URL must be set for Kamino Timescale migrations")?;
+        .map_err(|_| "TIMESCALEDB_URL must be set for Loyal Timescale migrations")?;
     let pool = connect(&database_url).await?;
 
     ensure_ledger(&pool).await?;
@@ -56,12 +63,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     if pending.is_empty() {
-        println!("kamino_timescale migrations are up to date");
+        validate_loyal_ata_schema(&pool).await?;
+        println!("loyal_timescale migrations are up to date");
         return Ok(());
     }
 
     if matches!(mode, Mode::Check) {
-        return Err(format!("{} kamino_timescale migration(s) pending", pending.len()).into());
+        return Err(format!("{} loyal_timescale migration(s) pending", pending.len()).into());
     }
 
     for migration in pending {
@@ -73,7 +81,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         record_applied(&pool, migration).await?;
     }
 
-    println!("kamino_timescale migrations are up to date");
+    validate_loyal_ata_schema(&pool).await?;
+    println!("loyal_timescale migrations are up to date");
     Ok(())
 }
 
@@ -85,7 +94,7 @@ fn parse_mode() -> Result<Mode, Box<dyn Error>> {
             "--apply" => mode = Mode::Apply,
             "--help" | "-h" => {
                 println!(
-                    "Usage: kamino-timescale-migrations [--apply|--check]\n\nReads TIMESCALEDB_URL from the environment."
+                    "Usage: loyal-timescale-migrations [--apply|--check]\n\nReads TIMESCALEDB_URL from the environment."
                 );
                 std::process::exit(0);
             }
@@ -142,6 +151,77 @@ async fn record_applied(pool: &PgPool, migration: &Migration) -> Result<(), sqlx
     .bind(checksum(migration.sql))
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+async fn validate_loyal_ata_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
+    for (schema, relation, kind) in [
+        ("loyal", "balance_sweep_wallet_ata_observations", "r"),
+        ("loyal", "balance_sweep_wallet_ata_observation_dedupe", "r"),
+        ("loyal", "latest_balance_sweep_wallet_ata_observations", "v"),
+    ] {
+        let exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = $1
+                  AND c.relname = $2
+                  AND c.relkind = $3::"char"
+            )
+            "#,
+        )
+        .bind(schema)
+        .bind(relation)
+        .bind(kind)
+        .fetch_one(pool)
+        .await?;
+        if !exists {
+            return Err(format!("missing Timescale relation {schema}.{relation}").into());
+        }
+    }
+
+    let has_raw_account_data: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'loyal'
+              AND table_name = 'balance_sweep_wallet_ata_observations'
+              AND column_name = 'raw_account_data_base64'
+        )
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if !has_raw_account_data {
+        return Err(
+            "loyal.balance_sweep_wallet_ata_observations is missing raw_account_data_base64".into(),
+        );
+    }
+
+    let dedupe_columns: i64 = sqlx::query_scalar(
+        r#"
+        SELECT count(*)
+        FROM information_schema.columns
+        WHERE table_schema = 'loyal'
+          AND table_name = 'balance_sweep_wallet_ata_observation_dedupe'
+          AND column_name = ANY($1)
+        "#,
+    )
+    .bind(&[
+        "source_commitment",
+        "wallet_usdc_ata",
+        "slot",
+        "account_data_hash",
+    ])
+    .fetch_one(pool)
+    .await?;
+    if dedupe_columns != 4 {
+        return Err("loyal ATA observation dedupe table is missing key columns".into());
+    }
+
     Ok(())
 }
 

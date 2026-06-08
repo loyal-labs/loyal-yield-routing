@@ -213,6 +213,19 @@ pub struct WalletAtaBalanceCurrent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectedWalletAtaBalanceUpdateInput {
+    pub event_id: i64,
+    pub update: WalletAtaBalanceUpdateInput,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectionBatchOutcome {
+    pub projected_count: usize,
+    pub previous_event_id: i64,
+    pub last_event_id: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BalanceSweepExecutionInput {
     pub target_id: BalanceSweepTargetId,
     pub cluster: String,
@@ -352,7 +365,7 @@ pub struct ReserveScore {
     pub borrow_apy_bps: Option<i64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DecisionStatus {
     Planned,
     Simulating,
@@ -512,7 +525,62 @@ impl PlannedRebalanceDecisionInput {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SameMintRebalanceInput {
+    pub cluster: String,
+    pub vault_id: Option<VaultId>,
+    pub settings: Option<String>,
+    pub vault_index: Option<i16>,
+    pub source_reserve: String,
+    pub target_reserve: String,
+    pub liquidity_mint: String,
+    pub amount_raw: i64,
+    pub expected_source_snapshot_id: SnapshotId,
+    pub source_apy_bps: i64,
+    pub target_apy_bps: i64,
+    pub estimated_edge_bps: i64,
+    pub estimated_cost_lamports: i64,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SameMintExecutionPreview {
+    pub kind: String,
+    pub source_reserve: String,
+    pub target_reserve: String,
+    pub liquidity_mint: String,
+    pub amount_raw: i64,
+    pub policy_executions: u8,
+    pub route_steps: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SameMintRebalanceResult {
+    pub vault_id: VaultId,
+    pub decision_id: Option<DecisionId>,
+    pub status: DecisionStatus,
+    pub source_reserve: String,
+    pub target_reserve: String,
+    pub liquidity_mint: String,
+    pub amount_raw: i64,
+    pub signature: Option<String>,
+    pub confirmed_slot: Option<i64>,
+    pub skip_reason: Option<SkipReason>,
+    pub error_reason: Option<String>,
+    pub dry_run: bool,
+    pub execution_preview: Option<SameMintExecutionPreview>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConfirmSameMintRebalanceInput {
+    pub decision_id: DecisionId,
+    pub signature: String,
+    pub submitted_slot: Option<i64>,
+    pub confirmed_slot: i64,
+    pub observed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SkipReason {
     ActiveDecision,
     NoValueSource,

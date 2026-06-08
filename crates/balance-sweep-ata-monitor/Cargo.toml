@@ -22,6 +22,7 @@ solana-pubsub-client = "2.3"
 solana-program.workspace = true
 solana-sdk.workspace = true
 spl-token.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["chrono", "json", "postgres", "runtime-tokio-rustls"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

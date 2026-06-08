@@ -1,5 +1,18 @@
 CREATE SCHEMA IF NOT EXISTS loyal_yield;
 
+CREATE TABLE IF NOT EXISTS loyal_yield.schema_migrations (
+    version BIGINT PRIMARY KEY,
+    name TEXT NOT NULL,
+    checksum TEXT NOT NULL,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS loyal_yield.projection_offsets (
+    consumer_name TEXT PRIMARY KEY,
+    last_event_id BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 DO $$
 BEGIN
     CREATE TYPE loyal_yield.decision_status AS ENUM (

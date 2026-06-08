@@ -189,7 +189,6 @@ pub struct PostgresPolicyMatchSink {
 impl PostgresPolicyMatchSink {
     pub async fn connect(url: impl Into<String>) -> Result<Self, MonitorError> {
         let store = OrchestratorStore::connect(OrchestratorConfig::new(url)).await?;
-        store.apply_migrations().await?;
         Ok(Self { store })
     }
 

@@ -1,5 +1,5 @@
 [package]
-name = "kamino-timescale-migrations"
+name = "loyal-timescale-migrations"
 version = "0.1.0"
 edition = "2021"
 description = "SQLx migration runner for the Kamino Timescale market-data database"

@@ -31,7 +31,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
     cargo build --release -p balance-sweep-ata-monitor \
-    && cp /app/target/release/balance-sweep-ata-monitor /usr/local/bin/balance-sweep-ata-monitor
+    && cp /app/target/release/balance-sweep-ata-monitor /usr/local/bin/balance-sweep-ata-monitor \
+    && cp /app/target/release/balance-sweep-ata-projector /usr/local/bin/balance-sweep-ata-projector
 
 FROM debian:bookworm-slim AS runtime
 
@@ -40,5 +41,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local/bin/balance-sweep-ata-monitor /usr/local/bin/balance-sweep-ata-monitor
+COPY --from=builder /usr/local/bin/balance-sweep-ata-projector /usr/local/bin/balance-sweep-ata-projector
 
 ENTRYPOINT ["/usr/local/bin/balance-sweep-ata-monitor"]
