@@ -65,31 +65,57 @@ pub(crate) fn jupiter_constraint(
     contract: JupiterSwapContract,
 ) -> SquadsInstructionConstraint {
     let allowed_mints = unique_pubkeys(allowed_mints);
-    let account_constraints = vec![
-        pubkey_constraint(0, vec![vault], None),
-        spl_token_authority_constraint(1, vault),
-        spl_token_authority_constraint(2, vault),
-        pubkey_constraint(3, allowed_mints.clone(), Some(spl_token::id())),
-        pubkey_constraint(4, allowed_mints, Some(spl_token::id())),
-        pubkey_constraint(5, vec![spl_token::id()], None),
-    ];
+    let is_current_jupiter_route = contract.exact_in_discriminator == JUPITER_SWAP_DISCRIMINATOR;
+    let account_constraints = if is_current_jupiter_route {
+        let allowed_token_accounts = allowed_mints
+            .iter()
+            .map(|mint| associated_token_address(vault, spl_token::id(), *mint))
+            .collect::<Vec<_>>();
+        vec![
+            pubkey_constraint(0, vec![spl_token::id()], None),
+            pubkey_constraint(1, vec![vault], None),
+            pubkey_constraint(2, allowed_token_accounts.clone(), Some(spl_token::id())),
+            pubkey_constraint(3, allowed_token_accounts, Some(spl_token::id())),
+            pubkey_constraint(5, allowed_mints, Some(spl_token::id())),
+            pubkey_constraint(8, vec![contract.program_id], None),
+        ]
+    } else {
+        vec![
+            pubkey_constraint(0, vec![vault], None),
+            spl_token_authority_constraint(1, vault),
+            spl_token_authority_constraint(2, vault),
+            pubkey_constraint(3, allowed_mints.clone(), Some(spl_token::id())),
+            pubkey_constraint(4, allowed_mints, Some(spl_token::id())),
+            pubkey_constraint(5, vec![spl_token::id()], None),
+        ]
+    };
+
+    let mut data_constraints = vec![SquadsDataConstraint {
+        data_offset: 0,
+        data_value: SquadsDataValue::U8Slice(contract.exact_in_discriminator.to_vec()),
+        operator: SquadsDataOperator::Equals,
+    }];
+    if !is_current_jupiter_route {
+        data_constraints.push(SquadsDataConstraint {
+            data_offset: JUPITER_LEGACY_SWAP_SLIPPAGE_BPS_OFFSET,
+            data_value: SquadsDataValue::U16Le(contract.max_slippage_bps),
+            operator: SquadsDataOperator::LessThanOrEqualTo,
+        });
+    }
 
     SquadsInstructionConstraint {
         program_id: contract.program_id,
         account_constraints,
-        data_constraints: vec![
-            SquadsDataConstraint {
-                data_offset: 0,
-                data_value: SquadsDataValue::U8Slice(contract.exact_in_discriminator.to_vec()),
-                operator: SquadsDataOperator::Equals,
-            },
-            SquadsDataConstraint {
-                data_offset: JUPITER_SWAP_SLIPPAGE_BPS_OFFSET,
-                data_value: SquadsDataValue::U16Le(contract.max_slippage_bps),
-                operator: SquadsDataOperator::LessThanOrEqualTo,
-            },
-        ],
+        data_constraints,
     }
+}
+
+fn associated_token_address(wallet: Pubkey, token_program: Pubkey, mint: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[wallet.as_ref(), token_program.as_ref(), mint.as_ref()],
+        &ASSOCIATED_TOKEN_PROGRAM_ID,
+    )
+    .0
 }
 
 pub(crate) fn loyal_hub_constraint(
@@ -1064,6 +1090,8 @@ mod tests {
         let vault = Pubkey::new_unique();
         let usdc = Pubkey::new_unique();
         let pyusd = Pubkey::new_unique();
+        let usdc_ata = associated_token_address(vault, spl_token::id(), usdc);
+        let pyusd_ata = associated_token_address(vault, spl_token::id(), pyusd);
         let constraint = jupiter_constraint(
             vault,
             vec![usdc, pyusd],
@@ -1075,26 +1103,36 @@ mod tests {
         );
 
         assert_eq!(constraint.program_id, JUPITER_V6_PROGRAM_ID);
-        assert!(has_pubkey_constraint(&constraint, 0, &[vault], None));
-        assert!(has_token_authority_constraint(&constraint, 1, vault));
-        assert!(has_token_authority_constraint(&constraint, 2, vault));
         assert!(has_pubkey_constraint(
             &constraint,
-            3,
-            &[usdc, pyusd],
+            0,
+            &[spl_token::id()],
+            None
+        ));
+        assert!(has_pubkey_constraint(&constraint, 1, &[vault], None));
+        assert!(has_pubkey_constraint(
+            &constraint,
+            2,
+            &[usdc_ata, pyusd_ata],
             Some(spl_token::id()),
         ));
         assert!(has_pubkey_constraint(
             &constraint,
-            4,
-            &[usdc, pyusd],
+            3,
+            &[usdc_ata, pyusd_ata],
             Some(spl_token::id()),
         ));
         assert!(has_pubkey_constraint(
             &constraint,
             5,
-            &[spl_token::id()],
-            None
+            &[usdc, pyusd],
+            Some(spl_token::id()),
+        ));
+        assert!(has_pubkey_constraint(
+            &constraint,
+            8,
+            &[JUPITER_V6_PROGRAM_ID],
+            None,
         ));
         assert_eq!(constraint.account_constraints.len(), 6);
         assert!(has_u8_slice_data_constraint(
@@ -1103,12 +1141,7 @@ mod tests {
             &JUPITER_SWAP_DISCRIMINATOR,
             SquadsDataOperator::Equals,
         ));
-        assert!(has_u16_data_constraint(
-            &constraint.data_constraints,
-            JUPITER_SWAP_SLIPPAGE_BPS_OFFSET,
-            JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
-            SquadsDataOperator::LessThanOrEqualTo,
-        ));
+        assert_eq!(constraint.data_constraints.len(), 1);
     }
 
     #[test]

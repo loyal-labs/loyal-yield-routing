@@ -341,23 +341,19 @@ fn classify_jupiter_swap(
     if !has_data_slice_equals(&constraint.data_constraints, 0, &JUPITER_SWAP_DISCRIMINATOR) {
         return None;
     }
-    let max_slippage_bps = data_u16_lte(
-        &constraint.data_constraints,
-        JUPITER_SWAP_SLIPPAGE_BPS_OFFSET,
-    )?;
     let accounts = accounts_by_index(constraint);
-    single_pubkey(accounts.get(&0)?, None).filter(|key| *key == vault)?;
-    has_token_authority(accounts.get(&1)?, vault)?;
-    has_token_authority(accounts.get(&2)?, vault)?;
-    single_pubkey(accounts.get(&5)?, None).filter(|key| *key == spl_token::id())?;
-    let mut stable_mints = pubkeys(accounts.get(&3)?, Some(spl_token::id()))?;
-    stable_mints.extend(pubkeys(accounts.get(&4)?, Some(spl_token::id()))?);
+    single_pubkey(accounts.get(&0)?, None).filter(|key| *key == spl_token::id())?;
+    single_pubkey(accounts.get(&1)?, None).filter(|key| *key == vault)?;
+    pubkeys(accounts.get(&2)?, Some(spl_token::id()))?;
+    pubkeys(accounts.get(&3)?, Some(spl_token::id()))?;
+    single_pubkey(accounts.get(&8)?, None).filter(|key| *key == constraint.program_id)?;
+    let stable_mints = pubkeys(accounts.get(&5)?, Some(spl_token::id()))?;
     Some(JupiterLeg {
         stable_mints,
         contract: JupiterSwapContract {
             program_id: constraint.program_id,
             exact_in_discriminator: JUPITER_SWAP_DISCRIMINATOR,
-            max_slippage_bps,
+            max_slippage_bps: JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
         },
     })
 }

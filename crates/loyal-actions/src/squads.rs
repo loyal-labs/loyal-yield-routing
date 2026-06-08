@@ -99,13 +99,28 @@ pub(crate) fn create_program_interaction_action_instruction(
     action_seed: u64,
     account_index: u8,
     constraints: Vec<SquadsInstructionConstraint>,
+    compact: bool,
 ) -> Result<Instruction> {
     let (action_account, _) = derive_action_account(&settings, action_seed);
+    let policy_creation_payload = if compact {
+        SquadsPolicyCreationPayload::ProgramInteraction(compile_program_interaction_payload(
+            account_index,
+            constraints,
+        )?)
+    } else {
+        SquadsPolicyCreationPayload::LegacyProgramInteraction(
+            SquadsProgramInteractionPolicyCreationPayloadLegacy {
+                account_index,
+                instructions_constraints: constraints,
+                pre_hook: None,
+                post_hook: None,
+                spending_limits: Vec::new(),
+            },
+        )
+    };
     let action = SquadsSettingsAction::PolicyCreate {
         seed: action_seed,
-        policy_creation_payload: SquadsPolicyCreationPayload::ProgramInteraction(
-            compile_program_interaction_payload(account_index, constraints)?,
-        ),
+        policy_creation_payload,
         signers: vec![SquadsSmartAccountSigner {
             key: delegated_signer,
             permissions: SquadsPermissions {
@@ -557,6 +572,7 @@ mod tests {
             7,
             0,
             vec![],
+            true,
         )
         .unwrap();
 
@@ -564,6 +580,26 @@ mod tests {
         assert_eq!(
             instruction.data[22], 4,
             "PolicyCreationPayload::ProgramInteraction compact V2 tag"
+        );
+    }
+
+    #[test]
+    fn program_interaction_policy_create_can_use_legacy_payload_tag() {
+        let instruction = create_program_interaction_action_instruction(
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            7,
+            0,
+            vec![],
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(instruction.data[13], 7, "SettingsAction::PolicyCreate tag");
+        assert_eq!(
+            instruction.data[22], 3,
+            "PolicyCreationPayload::LegacyProgramInteraction tag"
         );
     }
 }

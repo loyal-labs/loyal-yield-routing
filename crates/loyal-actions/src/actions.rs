@@ -92,6 +92,7 @@ pub enum RouteTopology {
 pub enum SquadsProgramInteractionEncoding {
     #[default]
     Compiled,
+    Legacy,
 }
 
 impl Default for RouteTopology {
@@ -480,6 +481,7 @@ pub fn create_swap_yield_route_action(
         action_seed,
         context.account_index,
         constraints.clone(),
+        true,
     )?;
     let accounts = YieldRouteActionAccounts {
         withdraw: account,
@@ -745,8 +747,18 @@ fn action_instruction(
                 action_seed,
                 context.account_index,
                 constraints,
+                true,
             )
         }
+        SquadsProgramInteractionEncoding::Legacy => create_program_interaction_action_instruction(
+            context.settings,
+            context.authority,
+            context.delegated_signer,
+            action_seed,
+            context.account_index,
+            constraints,
+            false,
+        ),
     }
 }
 
@@ -1392,25 +1404,30 @@ mod tests {
         vault: Pubkey,
     ) {
         let accounts = constraint.account_constraints_by_index();
-        assert_pubkey_constraint(policy, &accounts[&0], &[vault], None);
-        assert_token_authority_constraint(policy, &accounts[&1], vault);
-        assert_token_authority_constraint(policy, &accounts[&2], vault);
+        assert_pubkey_constraint(policy, &accounts[&0], &[spl_token::id()], None);
+        assert_pubkey_constraint(policy, &accounts[&1], &[vault], None);
+        assert_eq!(accounts[&2].kind, DecodedAccountConstraintKind::Pubkey);
+        assert_eq!(accounts[&2].owner(policy), Some(spl_token::id()));
+        assert_eq!(accounts[&3].kind, DecodedAccountConstraintKind::Pubkey);
         assert_eq!(accounts[&3].owner(policy), Some(spl_token::id()));
-        assert_eq!(accounts[&3].pubkey_indexes.len(), 1);
-        assert_eq!(accounts[&4].owner(policy), Some(spl_token::id()));
-        assert_eq!(accounts[&4].pubkey_indexes.len(), 1);
-        assert_pubkey_constraint(policy, &accounts[&5], &[spl_token::id()], None);
+        assert_eq!(accounts[&5].owner(policy), Some(spl_token::id()));
+        assert!(!accounts[&5].pubkey_indexes.is_empty());
+        assert_eq!(
+            accounts[&2].pubkey_indexes.len(),
+            accounts[&5].pubkey_indexes.len()
+        );
+        assert_eq!(
+            accounts[&3].pubkey_indexes.len(),
+            accounts[&5].pubkey_indexes.len()
+        );
+        assert_pubkey_constraint(policy, &accounts[&8], &[JUPITER_V6_PROGRAM_ID], None);
         assert_eq!(accounts.len(), 6);
         assert_data_slice_equals(
             &constraint.data_constraints[0],
             0,
             &JUPITER_SWAP_DISCRIMINATOR,
         );
-        assert_data_u16_lte(
-            &constraint.data_constraints[1],
-            JUPITER_SWAP_SLIPPAGE_BPS_OFFSET,
-            JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
-        );
+        assert_eq!(constraint.data_constraints.len(), 1);
     }
 
     fn assert_hub_constraint(
