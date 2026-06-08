@@ -542,13 +542,30 @@ impl NeonSqlClient {
         &self,
         limit: i64,
     ) -> Result<Vec<RebalanceDecision>, OrchestratorError> {
+        self.claim_route_decisions(limit, vec!["same_mint".to_owned()])
+            .await
+    }
+
+    pub async fn claim_yield_route_decisions(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<RebalanceDecision>, OrchestratorError> {
+        self.claim_route_decisions(limit, vec!["same_mint".to_owned(), "cross_mint".to_owned()])
+            .await
+    }
+
+    async fn claim_route_decisions(
+        &self,
+        limit: i64,
+        plan_kinds: Vec<String>,
+    ) -> Result<Vec<RebalanceDecision>, OrchestratorError> {
         let rows = sqlx::query(
             r#"
             WITH claimed AS (
                 SELECT id
                 FROM loyal_yield.rebalance_decisions
                 WHERE status = 'planned'::loyal_yield.decision_status
-                  AND execution_plan->>'kind' = 'same_mint'
+                  AND execution_plan->>'kind' = ANY($2::text[])
                 ORDER BY created_at ASC
                 LIMIT $1
                 FOR UPDATE SKIP LOCKED
@@ -586,6 +603,7 @@ impl NeonSqlClient {
             "#,
         )
         .bind(limit)
+        .bind(plan_kinds)
         .fetch_all(&self.pool)
         .await?;
 

@@ -2,6 +2,7 @@ use std::{collections::VecDeque, time::Duration};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sqlx::{
     postgres::{PgListener, PgPoolOptions, PgRow},
     FromRow, PgPool, Postgres, QueryBuilder, Row,
@@ -11,7 +12,7 @@ const DEFAULT_SCHEMA: &str = "kamino";
 const DEFAULT_NOTIFY_CHANNEL: &str = "kamino_reserve_updates";
 const RESERVE_UPDATES_TABLE: &str = "reserve_updates";
 const LATEST_RESERVE_UPDATES_VIEW: &str = "latest_reserve_updates";
-const RESERVE_UPDATE_ROW_COLUMNS: &str = "event_id, observed_at, slot, source, source_commitment, reserve, market, market_name, symbol, liquidity_mint, supply_apy, borrow_apy, utilization, total_supply_usd_estimate, total_borrow_usd_estimate, reserve_last_update_stale, diff_changed, changed_fields, diff_summary";
+const RESERVE_UPDATE_ROW_COLUMNS: &str = "event_id, observed_at, slot, source, source_commitment, reserve, market, market_name, symbol, liquidity_mint, supply_apy, borrow_apy, utilization, total_supply_usd_estimate, total_borrow_usd_estimate, reserve_last_update_stale, diff_changed, changed_fields, diff_summary, record";
 const RESERVE_WINDOW_STATS_COLUMNS: &str = "reserve, market, symbol, COUNT(*)::BIGINT AS update_count, AVG(supply_apy) AS avg_supply_apy, MIN(supply_apy) AS min_supply_apy, MAX(supply_apy) AS max_supply_apy, AVG(borrow_apy) AS avg_borrow_apy, AVG(utilization) AS avg_utilization, AVG(total_supply_usd_estimate) AS avg_supply_usd, AVG(total_borrow_usd_estimate) AS avg_borrow_usd, MAX(slot) AS max_slot, MAX(observed_at) AS last_observed_at";
 
 #[derive(Debug, Clone)]
@@ -525,6 +526,7 @@ pub struct ReserveUpdateRow {
     pub diff_changed: bool,
     pub changed_fields: Vec<String>,
     pub diff_summary: String,
+    pub record: Value,
 }
 
 impl ReserveUpdateRow {
@@ -565,6 +567,7 @@ impl<'r> FromRow<'r, PgRow> for ReserveUpdateRow {
             diff_changed: row.try_get("diff_changed")?,
             changed_fields: row.try_get("changed_fields")?,
             diff_summary: row.try_get("diff_summary")?,
+            record: row.try_get("record")?,
         })
     }
 }

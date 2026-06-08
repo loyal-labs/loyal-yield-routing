@@ -1,10 +1,10 @@
 use crate::{
-    planner::{SameMintPlannerConfig, SameMintRoutePlanner},
+    planner::{SameMintPlannerConfig, YieldRoutePlanner},
     reconcile::{ReconcileError, RpcPositionReconciler},
-    route_builder::{build_same_mint_route_transaction, RouteBuildError},
+    route_builder::{build_yield_route_transaction, RouteBuildError},
     rpc::{RpcRouteSubmitter, RpcSubmitError},
-    DecisionAdvance, DecisionId, OrchestratorError, OrchestratorStore, PlanOutcomeStatus,
-    RebalanceAttemptInput, RebalanceAttemptUpdate,
+    DecisionAdvance, DecisionId, JupiterRouteQuoteProvider, OrchestratorError, OrchestratorStore,
+    PlanOutcomeStatus, RebalanceAttemptInput, RebalanceAttemptUpdate,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -55,6 +55,9 @@ pub struct SameMintRouteRunConfig {
     pub planner_config: SameMintPlannerConfig,
 }
 
+pub type YieldRouteLoopConfig = SameMintLoopConfig;
+pub type YieldRouteRunConfig = SameMintRouteRunConfig;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SameMintLoopReport {
     pub active_vaults: usize,
@@ -66,8 +69,18 @@ pub struct SameMintLoopReport {
     pub simulation_ok: Option<bool>,
     pub submitted: bool,
     pub submitted_signature: Option<String>,
+    pub submitted_signatures: Vec<String>,
     pub confirmed_slot: Option<u64>,
+    pub skips: Vec<String>,
     pub failures: Vec<String>,
+}
+
+pub type YieldRouteLoopReport = SameMintLoopReport;
+
+struct RouteExecutionGroup {
+    attempt_id: i64,
+    decision_id: DecisionId,
+    instructions: Vec<Instruction>,
 }
 
 #[derive(Debug, Error)]
@@ -86,9 +99,11 @@ pub struct SameMintYieldRoutingLoop<'a> {
     store: &'a OrchestratorStore,
     rpc: &'a RpcClient,
     signer: &'a Keypair,
-    planner: SameMintRoutePlanner,
+    planner: YieldRoutePlanner,
     config: SameMintLoopConfig,
 }
+
+pub type YieldRoutingLoop<'a> = SameMintYieldRoutingLoop<'a>;
 
 impl<'a> SameMintYieldRoutingLoop<'a> {
     pub fn new(
@@ -101,7 +116,7 @@ impl<'a> SameMintYieldRoutingLoop<'a> {
             store,
             rpc,
             signer,
-            planner: SameMintRoutePlanner::new(route_config.planner_config),
+            planner: YieldRoutePlanner::new(route_config.planner_config),
             config: route_config.loop_config,
         }
     }
@@ -130,10 +145,22 @@ impl<'a> SameMintYieldRoutingLoop<'a> {
             }
         }
 
+        let quote_provider = JupiterRouteQuoteProvider::default();
         for vault_policy in &active_vaults {
             let positions = self.store.current_positions(vault_policy.vault.id).await?;
-            let Ok(input) = self.planner.plan_vault(vault_policy, &positions) else {
-                continue;
+            let input = match self
+                .planner
+                .plan_vault(vault_policy, &positions, &quote_provider)
+                .await
+            {
+                Ok(input) => input,
+                Err(error) => {
+                    report.skips.push(format!(
+                        "vault {} skipped planning: {:?}",
+                        vault_policy.vault.id, error
+                    ));
+                    continue;
+                }
             };
             let outcome = self
                 .store
@@ -146,56 +173,55 @@ impl<'a> SameMintYieldRoutingLoop<'a> {
 
         let decisions = self
             .store
-            .claim_same_mint_decisions(self.config.batch_size as i64)
+            .claim_yield_route_decisions(self.config.batch_size as i64)
             .await?;
         report.claimed_decisions = decisions.len();
         if decisions.is_empty() {
             return Ok(report);
         }
 
-        let mut batch_instructions = Vec::new();
+        let mut execution_groups = Vec::new();
         let mut attempt_ids = Vec::new();
         for decision in decisions {
-            let transaction = match build_same_mint_route_transaction(
-                &decision.execution_plan,
-                self.signer.pubkey(),
-            ) {
-                Ok(transaction) => transaction,
-                Err(error) => {
-                    let attempt = self
-                        .store
-                        .record_rebalance_attempt(
-                            decision.id,
-                            RebalanceAttemptInput {
-                                status: "failed".to_owned(),
-                                worker_id: Some(self.config.worker_id.clone()),
-                                dry_run: self.config.dry_run,
-                                transaction_plan: json!({
-                                    "decisionExecutionPlan": decision.execution_plan,
-                                }),
-                                simulation_result: Value::Object(Default::default()),
-                                submit_result: Value::Object(Default::default()),
-                                signature: None,
-                                slot: None,
-                                error: Some(error.to_string()),
-                            },
-                        )
-                        .await?;
-                    self.store
-                        .advance_decision(
-                            decision.id,
-                            DecisionAdvance::Fail {
-                                reason: format!(
-                                    "same-mint route build failed in attempt {}: {error}",
-                                    attempt.attempt_no
-                                ),
-                            },
-                        )
-                        .await?;
-                    report.failures.push(error.to_string());
-                    continue;
-                }
-            };
+            let transaction =
+                match build_yield_route_transaction(&decision.execution_plan, self.signer.pubkey())
+                {
+                    Ok(transaction) => transaction,
+                    Err(error) => {
+                        let attempt = self
+                            .store
+                            .record_rebalance_attempt(
+                                decision.id,
+                                RebalanceAttemptInput {
+                                    status: "failed".to_owned(),
+                                    worker_id: Some(self.config.worker_id.clone()),
+                                    dry_run: self.config.dry_run,
+                                    transaction_plan: json!({
+                                        "decisionExecutionPlan": decision.execution_plan,
+                                    }),
+                                    simulation_result: Value::Object(Default::default()),
+                                    submit_result: Value::Object(Default::default()),
+                                    signature: None,
+                                    slot: None,
+                                    error: Some(error.to_string()),
+                                },
+                            )
+                            .await?;
+                        self.store
+                            .advance_decision(
+                                decision.id,
+                                DecisionAdvance::Fail {
+                                    reason: format!(
+                                        "yield route build failed in attempt {}: {error}",
+                                        attempt.attempt_no
+                                    ),
+                                },
+                            )
+                            .await?;
+                        report.failures.push(error.to_string());
+                        continue;
+                    }
+                };
 
             let attempt = self
                 .store
@@ -215,17 +241,222 @@ impl<'a> SameMintYieldRoutingLoop<'a> {
                 )
                 .await?;
             attempt_ids.push((attempt.id, decision.id));
-            batch_instructions.push(transaction.instruction);
+            execution_groups.push(RouteExecutionGroup {
+                attempt_id: attempt.id,
+                decision_id: decision.id,
+                instructions: transaction.instructions,
+            });
         }
 
-        report.built_transactions = batch_instructions.len();
-        if batch_instructions.is_empty() {
+        report.built_transactions = execution_groups
+            .iter()
+            .map(|group| group.instructions.len())
+            .sum();
+        if execution_groups.is_empty() {
             return Ok(report);
         }
 
-        self.execute_batch(batch_instructions, attempt_ids, &mut report)
-            .await?;
+        if execution_groups
+            .iter()
+            .all(|group| group.instructions.len() == 1)
+        {
+            let batch_instructions = execution_groups
+                .iter()
+                .map(|group| group.instructions[0].clone())
+                .collect::<Vec<_>>();
+            self.execute_batch(batch_instructions, attempt_ids, &mut report)
+                .await?;
+        } else {
+            self.execute_execution_groups(execution_groups, &mut report)
+                .await?;
+        }
         Ok(report)
+    }
+
+    async fn execute_execution_groups(
+        &self,
+        groups: Vec<RouteExecutionGroup>,
+        report: &mut SameMintLoopReport,
+    ) -> Result<(), SameMintLoopError> {
+        for group in groups {
+            if group.instructions.len() <= 1 {
+                self.execute_batch(
+                    group.instructions,
+                    vec![(group.attempt_id, group.decision_id)],
+                    report,
+                )
+                .await?;
+            } else {
+                self.execute_sequence(group, report).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn execute_sequence(
+        &self,
+        group: RouteExecutionGroup,
+        report: &mut SameMintLoopReport,
+    ) -> Result<(), SameMintLoopError> {
+        let submitter = RpcRouteSubmitter::new(self.rpc);
+        let mut simulation_reports = Vec::new();
+        let mut submission_reports = Vec::new();
+        let mut signatures = Vec::new();
+        let mut last_slot = None;
+        let dry_run_sequence = self.config.dry_run || !self.config.submit_txs;
+
+        for (index, instruction) in group.instructions.iter().enumerate() {
+            let simulation =
+                submitter.simulate_instructions(&[instruction.clone()], self.signer)?;
+            report.simulated = true;
+            simulation_reports.push(json!({
+                "step": index,
+                "result": simulation.report,
+            }));
+            if !simulation.ok {
+                report.simulation_ok = Some(false);
+                let aggregate_simulation = json!({
+                    "attempted": true,
+                    "ok": false,
+                    "mode": "sequential",
+                    "failedStep": index,
+                    "steps": simulation_reports,
+                });
+                self.store
+                    .update_rebalance_attempt(
+                        group.attempt_id,
+                        RebalanceAttemptUpdate {
+                            status: "failed".to_owned(),
+                            simulation_result: aggregate_simulation,
+                            submit_result: json!({
+                                "attempted": !submission_reports.is_empty(),
+                                "mode": "sequential",
+                                "steps": submission_reports,
+                            }),
+                            signature: signatures.last().cloned(),
+                            slot: last_slot.map(|slot| slot as i64),
+                            error: Some(format!("sequential simulation failed at step {index}")),
+                        },
+                    )
+                    .await?;
+                self.store
+                    .advance_decision(
+                        group.decision_id,
+                        DecisionAdvance::Fail {
+                            reason: format!("sequential simulation failed at step {index}"),
+                        },
+                    )
+                    .await?;
+                return Ok(());
+            }
+
+            if dry_run_sequence {
+                let skipped_reason =
+                    "dry-run sequential execution cannot simulate state after the first step";
+                for skipped_index in (index + 1)..group.instructions.len() {
+                    simulation_reports.push(json!({
+                        "step": skipped_index,
+                        "skipped": skipped_reason,
+                    }));
+                }
+                break;
+            }
+
+            let submitted = submitter.submit_and_confirm(&[instruction.clone()], self.signer)?;
+            report.submitted = true;
+            report.submitted_signature = Some(submitted.signature.to_string());
+            report
+                .submitted_signatures
+                .push(submitted.signature.to_string());
+            report.confirmed_slot = Some(submitted.slot);
+            signatures.push(submitted.signature.to_string());
+            last_slot = Some(submitted.slot);
+            submission_reports.push(json!({
+                "step": index,
+                "result": submitted.report,
+            }));
+        }
+
+        report.simulation_ok = Some(true);
+        let aggregate_simulation = json!({
+            "attempted": true,
+            "ok": true,
+            "mode": "sequential",
+            "complete": !dry_run_sequence,
+            "steps": simulation_reports,
+        });
+
+        if dry_run_sequence {
+            self.store
+                .update_rebalance_attempt(
+                    group.attempt_id,
+                    RebalanceAttemptUpdate {
+                        status: "simulated".to_owned(),
+                        simulation_result: aggregate_simulation,
+                        submit_result: Value::Object(Default::default()),
+                        signature: None,
+                        slot: None,
+                        error: None,
+                    },
+                )
+                .await?;
+            self.store
+                .advance_decision(group.decision_id, DecisionAdvance::SimulationReady)
+                .await?;
+            if self.config.abandon_dry_run_decisions {
+                self.store
+                    .advance_decision(
+                        group.decision_id,
+                        DecisionAdvance::Abandon {
+                            reason: "dry_run_simulation_only".to_owned(),
+                        },
+                    )
+                    .await?;
+            }
+            return Ok(());
+        }
+
+        let aggregate_submit = json!({
+            "attempted": true,
+            "mode": "sequential",
+            "steps": submission_reports,
+            "signatures": signatures,
+        });
+        self.store
+            .update_rebalance_attempt(
+                group.attempt_id,
+                RebalanceAttemptUpdate {
+                    status: "confirmed".to_owned(),
+                    simulation_result: aggregate_simulation,
+                    submit_result: aggregate_submit,
+                    signature: report.submitted_signature.clone(),
+                    slot: report.confirmed_slot.map(|slot| slot as i64),
+                    error: None,
+                },
+            )
+            .await?;
+        self.store
+            .advance_decision(
+                group.decision_id,
+                DecisionAdvance::Submit {
+                    signature: report.submitted_signature.clone().unwrap_or_default(),
+                    slot: report.confirmed_slot.map(|slot| slot as i64),
+                },
+            )
+            .await?;
+        self.store
+            .advance_decision(group.decision_id, DecisionAdvance::StartConfirmation)
+            .await?;
+        self.store
+            .advance_decision(
+                group.decision_id,
+                DecisionAdvance::Confirm {
+                    slot: report.confirmed_slot.map(|slot| slot as i64),
+                    post_snapshot_id: None,
+                },
+            )
+            .await?;
+        Ok(())
     }
 
     async fn execute_batch(
@@ -298,6 +529,7 @@ impl<'a> SameMintYieldRoutingLoop<'a> {
         let submitted = submitter.submit_and_confirm(&instructions, self.signer)?;
         report.submitted = true;
         report.submitted_signature = Some(submitted.signature.to_string());
+        report.submitted_signatures = vec![submitted.signature.to_string()];
         report.confirmed_slot = Some(submitted.slot);
 
         for (attempt_id, decision_id) in &attempts {

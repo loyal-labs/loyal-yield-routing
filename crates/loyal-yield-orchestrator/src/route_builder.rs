@@ -14,7 +14,10 @@ use solana_sdk::{
 use std::str::FromStr;
 use thiserror::Error;
 
-use crate::planner::{KaminoReserveAccountsConfig, SameMintQuote, SameMintReserveTarget};
+use crate::planner::{
+    CrossMintQuote, KaminoReserveAccountsConfig, RouteInstructionConfig, SameMintQuote,
+    SameMintReserveTarget,
+};
 
 const SQUADS_EXECUTE_TRANSACTION_SYNC_V2_DISCRIMINATOR: [u8; 8] =
     [90, 81, 187, 81, 39, 70, 128, 78];
@@ -23,7 +26,7 @@ const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey = pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5
 
 #[derive(Debug, Error)]
 pub enum RouteBuildError {
-    #[error("execution plan is not a same_mint plan")]
+    #[error("execution plan kind is not supported")]
     WrongPlanKind,
     #[error("missing execution plan field: {0}")]
     MissingField(&'static str),
@@ -36,10 +39,12 @@ pub enum RouteBuildError {
 }
 
 #[derive(Debug, Clone)]
-pub struct SameMintRouteTransaction {
-    pub instruction: Instruction,
+pub struct YieldRouteTransaction {
+    pub instructions: Vec<Instruction>,
     pub report: Value,
 }
+
+pub type SameMintRouteTransaction = YieldRouteTransaction;
 
 #[derive(Debug, Clone)]
 pub struct KaminoDepositSyncTransaction {
@@ -57,11 +62,32 @@ struct SameMintExecutionPlan {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct CrossMintExecutionPlan {
+    kind: String,
+    route: CrossMintRouteFields,
+    quote: CrossMintQuote,
+    source: SameMintReserveTarget,
+    target: SameMintReserveTarget,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct SameMintRouteFields {
     policy_account: String,
     vault_pubkey: String,
     vault_index: i16,
     withdraw_constraint_index: u8,
+    deposit_constraint_index: u8,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CrossMintRouteFields {
+    policy_account: String,
+    #[serde(default)]
+    swap_policy_account: Option<String>,
+    vault_pubkey: String,
+    vault_index: i16,
+    withdraw_constraint_index: u8,
+    swap_constraint_index: u8,
     deposit_constraint_index: u8,
 }
 
@@ -118,6 +144,26 @@ pub fn build_same_mint_route_transaction(
     execution_plan: &Value,
     delegated_signer: Pubkey,
 ) -> Result<SameMintRouteTransaction, RouteBuildError> {
+    build_same_mint_route_transaction_inner(execution_plan, delegated_signer)
+}
+
+pub fn build_yield_route_transaction(
+    execution_plan: &Value,
+    delegated_signer: Pubkey,
+) -> Result<YieldRouteTransaction, RouteBuildError> {
+    match execution_plan.get("kind").and_then(Value::as_str) {
+        Some("same_mint") => {
+            build_same_mint_route_transaction_inner(execution_plan, delegated_signer)
+        }
+        Some("cross_mint") => build_cross_mint_route_transaction(execution_plan, delegated_signer),
+        _ => Err(RouteBuildError::WrongPlanKind),
+    }
+}
+
+fn build_same_mint_route_transaction_inner(
+    execution_plan: &Value,
+    delegated_signer: Pubkey,
+) -> Result<YieldRouteTransaction, RouteBuildError> {
     let plan: SameMintExecutionPlan = serde_json::from_value(execution_plan.clone())?;
     if plan.kind != "same_mint" {
         return Err(RouteBuildError::WrongPlanKind);
@@ -157,7 +203,7 @@ pub fn build_same_mint_route_transaction(
         transaction_accounts,
     );
 
-    Ok(SameMintRouteTransaction {
+    Ok(YieldRouteTransaction {
         report: json!({
             "kind": "same_mint_route_transaction",
             "policy": policy.to_string(),
@@ -168,7 +214,111 @@ pub fn build_same_mint_route_transaction(
             "depositConstraintIndex": plan.route.deposit_constraint_index,
             "quote": plan.quote,
         }),
-        instruction,
+        instructions: vec![instruction],
+    })
+}
+
+pub fn build_cross_mint_route_transaction(
+    execution_plan: &Value,
+    delegated_signer: Pubkey,
+) -> Result<YieldRouteTransaction, RouteBuildError> {
+    let plan: CrossMintExecutionPlan = serde_json::from_value(execution_plan.clone())?;
+    if plan.kind != "cross_mint" {
+        return Err(RouteBuildError::WrongPlanKind);
+    }
+
+    let policy = parse_pubkey("route.policy_account", &plan.route.policy_account)?;
+    let vault = parse_pubkey("route.vault_pubkey", &plan.route.vault_pubkey)?;
+    let vault_index =
+        u8::try_from(plan.route.vault_index).map_err(|_| RouteBuildError::InvalidNumber {
+            field: "route.vault_index",
+            value: i64::from(plan.route.vault_index),
+        })?;
+
+    let withdraw = kamino_withdraw_reserve_liquidity_instruction(
+        withdraw_accounts(vault, &plan.source)?,
+        plan.quote.redeem_collateral_amount,
+    );
+    let swap = plan
+        .quote
+        .swap
+        .instruction
+        .as_ref()
+        .ok_or(RouteBuildError::MissingField("quote.swap.instruction"))
+        .and_then(swap_instruction)?;
+    let deposit = kamino_deposit_reserve_liquidity_instruction(
+        deposit_accounts(vault, &plan.target)?,
+        plan.quote.deposit_liquidity_amount,
+    );
+
+    let swap_policy = plan
+        .route
+        .swap_policy_account
+        .as_deref()
+        .map(|value| parse_pubkey("route.swap_policy_account", value))
+        .transpose()?;
+    let instructions = if let Some(swap_policy) = swap_policy {
+        vec![
+            execute_single_squads_program_interaction_instruction(
+                policy,
+                delegated_signer,
+                vault_index,
+                vault,
+                withdraw,
+                plan.route.withdraw_constraint_index,
+            ),
+            execute_single_squads_program_interaction_instruction(
+                swap_policy,
+                delegated_signer,
+                vault_index,
+                vault,
+                swap,
+                plan.route.swap_constraint_index,
+            ),
+            execute_single_squads_program_interaction_instruction(
+                policy,
+                delegated_signer,
+                vault_index,
+                vault,
+                deposit,
+                plan.route.deposit_constraint_index,
+            ),
+        ]
+    } else {
+        let mut transaction_accounts = Vec::new();
+        let compiled_instructions = vec![
+            compile_squads_vault_instruction(&mut transaction_accounts, vault, withdraw),
+            compile_squads_vault_instruction(&mut transaction_accounts, vault, swap),
+            compile_squads_vault_instruction(&mut transaction_accounts, vault, deposit),
+        ];
+        vec![execute_squads_program_interaction_instruction(
+            policy,
+            delegated_signer,
+            vault_index,
+            compiled_instructions,
+            vec![
+                plan.route.withdraw_constraint_index,
+                plan.route.swap_constraint_index,
+                plan.route.deposit_constraint_index,
+            ],
+            transaction_accounts,
+        )]
+    };
+
+    Ok(YieldRouteTransaction {
+        report: json!({
+            "kind": "cross_mint_route_transaction",
+            "policy": policy.to_string(),
+            "swapPolicy": swap_policy.map(|policy| policy.to_string()),
+            "vault": vault.to_string(),
+            "vaultIndex": vault_index,
+            "delegatedSigner": delegated_signer.to_string(),
+            "withdrawConstraintIndex": plan.route.withdraw_constraint_index,
+            "swapConstraintIndex": plan.route.swap_constraint_index,
+            "depositConstraintIndex": plan.route.deposit_constraint_index,
+            "quote": plan.quote,
+        }),
+        instructions,
     })
 }
 
@@ -217,6 +367,26 @@ pub fn associated_token_address(wallet: Pubkey, token_program: Pubkey, mint: Pub
         &ASSOCIATED_TOKEN_PROGRAM_ID,
     )
     .0
+}
+
+fn swap_instruction(config: &RouteInstructionConfig) -> Result<Instruction, RouteBuildError> {
+    Ok(Instruction {
+        program_id: parse_pubkey("quote.swap.instruction.program_id", &config.program_id)?,
+        accounts: config
+            .accounts
+            .iter()
+            .map(|account| {
+                let pubkey =
+                    parse_pubkey("quote.swap.instruction.accounts.pubkey", &account.pubkey)?;
+                Ok(if account.is_writable {
+                    AccountMeta::new(pubkey, account.is_signer)
+                } else {
+                    AccountMeta::new_readonly(pubkey, account.is_signer)
+                })
+            })
+            .collect::<Result<Vec<_>, RouteBuildError>>()?,
+        data: config.data.clone(),
+    })
 }
 
 fn withdraw_accounts(
@@ -326,6 +496,27 @@ fn execute_squads_program_interaction_instruction(
             }),
         ),
     }
+}
+
+fn execute_single_squads_program_interaction_instruction(
+    policy: Pubkey,
+    signer: Pubkey,
+    account_index: u8,
+    vault: Pubkey,
+    instruction: Instruction,
+    instruction_constraint_index: u8,
+) -> Instruction {
+    let mut transaction_accounts = Vec::new();
+    let compiled_instruction =
+        compile_squads_vault_instruction(&mut transaction_accounts, vault, instruction);
+    execute_squads_program_interaction_instruction(
+        policy,
+        signer,
+        account_index,
+        vec![compiled_instruction],
+        vec![instruction_constraint_index],
+        transaction_accounts,
+    )
 }
 
 fn execute_squads_sync_transaction_instruction(
@@ -497,4 +688,146 @@ fn parse_lending_market_authority(
         .0);
     }
     parse_pubkey(field, value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::planner::{
+        CrossMintQuote, RouteAccountMetaConfig, RouteInstructionConfig, SwapQuote,
+    };
+
+    #[test]
+    fn builds_cross_mint_route_with_policy_constraint_indexes() {
+        let policy = Pubkey::new_unique();
+        let vault = Pubkey::new_unique();
+        let delegated_signer = Pubkey::new_unique();
+        let source = target(Pubkey::new_unique(), Pubkey::new_unique());
+        let target = target(Pubkey::new_unique(), Pubkey::new_unique());
+        let swap_program = Pubkey::new_unique();
+        let plan = json!({
+            "kind": "cross_mint",
+            "route": {
+                "policy_account": policy.to_string(),
+                "vault_pubkey": vault.to_string(),
+                "vault_index": 2,
+                "withdraw_constraint_index": 0,
+                "swap_constraint_index": 1,
+                "deposit_constraint_index": 2
+            },
+            "quote": CrossMintQuote {
+                redeem_collateral_amount: 1_000,
+                redeem_liquidity_amount: 1_000,
+                swap: SwapQuote {
+                    lane_kind: "jupiter".to_owned(),
+                    lane_index: 0,
+                    source_mint: source.liquidity_mint.clone(),
+                    target_mint: target.liquidity_mint.clone(),
+                    amount_in: 1_000,
+                    min_out: 990,
+                    max_slippage_bps: Some(100),
+                    max_fee_bps: None,
+                    instruction: Some(RouteInstructionConfig {
+                        program_id: swap_program.to_string(),
+                        accounts: vec![
+                            RouteAccountMetaConfig {
+                                pubkey: vault.to_string(),
+                                is_signer: true,
+                                is_writable: false,
+                            },
+                        ],
+                        data: vec![1, 2, 3],
+                    }),
+                },
+                deposit_liquidity_amount: 990,
+                expected_collateral_amount: 990,
+            },
+            "source": source,
+            "target": target
+        });
+
+        let transaction = build_yield_route_transaction(&plan, delegated_signer).unwrap();
+
+        assert_eq!(transaction.report["kind"], "cross_mint_route_transaction");
+        assert_eq!(transaction.report["withdrawConstraintIndex"], 0);
+        assert_eq!(transaction.report["swapConstraintIndex"], 1);
+        assert_eq!(transaction.report["depositConstraintIndex"], 2);
+        assert_eq!(transaction.instructions.len(), 1);
+        assert_eq!(transaction.instructions[0].accounts[0].pubkey, policy);
+    }
+
+    #[test]
+    fn builds_split_cross_mint_route_with_swap_policy() {
+        let policy = Pubkey::new_unique();
+        let swap_policy = Pubkey::new_unique();
+        let vault = Pubkey::new_unique();
+        let delegated_signer = Pubkey::new_unique();
+        let source = target(Pubkey::new_unique(), Pubkey::new_unique());
+        let target = target(Pubkey::new_unique(), Pubkey::new_unique());
+        let swap_program = Pubkey::new_unique();
+        let plan = json!({
+            "kind": "cross_mint",
+            "route": {
+                "policy_account": policy.to_string(),
+                "swap_policy_account": swap_policy.to_string(),
+                "vault_pubkey": vault.to_string(),
+                "vault_index": 2,
+                "withdraw_constraint_index": 0,
+                "swap_constraint_index": 0,
+                "deposit_constraint_index": 1
+            },
+            "quote": CrossMintQuote {
+                redeem_collateral_amount: 1_000,
+                redeem_liquidity_amount: 1_000,
+                swap: SwapQuote {
+                    lane_kind: "jupiter".to_owned(),
+                    lane_index: 0,
+                    source_mint: source.liquidity_mint.clone(),
+                    target_mint: target.liquidity_mint.clone(),
+                    amount_in: 1_000,
+                    min_out: 990,
+                    max_slippage_bps: Some(100),
+                    max_fee_bps: None,
+                    instruction: Some(RouteInstructionConfig {
+                        program_id: swap_program.to_string(),
+                        accounts: vec![
+                            RouteAccountMetaConfig {
+                                pubkey: vault.to_string(),
+                                is_signer: true,
+                                is_writable: false,
+                            },
+                        ],
+                        data: vec![1, 2, 3],
+                    }),
+                },
+                deposit_liquidity_amount: 990,
+                expected_collateral_amount: 990,
+            },
+            "source": source,
+            "target": target
+        });
+
+        let transaction = build_yield_route_transaction(&plan, delegated_signer).unwrap();
+
+        assert_eq!(transaction.instructions.len(), 3);
+        assert_eq!(transaction.instructions[0].accounts[0].pubkey, policy);
+        assert_eq!(transaction.instructions[1].accounts[0].pubkey, swap_policy);
+        assert_eq!(transaction.instructions[2].accounts[0].pubkey, policy);
+    }
+
+    fn target(reserve: Pubkey, mint: Pubkey) -> SameMintReserveTarget {
+        SameMintReserveTarget {
+            reserve: reserve.to_string(),
+            market: Pubkey::new_unique().to_string(),
+            liquidity_mint: mint.to_string(),
+            supply_apy_bps: 100,
+            accounts: KaminoReserveAccountsConfig {
+                lending_market_authority: String::new(),
+                reserve_liquidity_supply: Pubkey::new_unique().to_string(),
+                reserve_collateral_mint: Pubkey::new_unique().to_string(),
+                liquidity_token_program: Some(spl_token::ID.to_string()),
+            },
+            metadata: json!({}),
+        }
+    }
 }

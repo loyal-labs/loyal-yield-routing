@@ -1,4 +1,6 @@
 mod domain;
+mod jupiter;
+mod kamino_metadata;
 mod planner;
 mod reconcile;
 mod route_builder;
@@ -9,6 +11,8 @@ mod store;
 mod types;
 
 pub use domain::state_transition;
+pub use jupiter::*;
+pub use kamino_metadata::*;
 pub use planner::*;
 pub use reconcile::*;
 pub use route_builder::*;

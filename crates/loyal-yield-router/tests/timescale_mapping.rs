@@ -78,5 +78,11 @@ fn reserve_update_row(
         diff_changed: true,
         changed_fields: vec!["supply_apy".to_string()],
         diff_summary: "changed supply_apy".to_string(),
+        record: serde_json::json!({
+            "target": {
+                "reserve": "reserve-a",
+                "liquidity_mint": "mint-a"
+            }
+        }),
     }
 }
