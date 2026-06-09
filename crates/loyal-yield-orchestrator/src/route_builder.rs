@@ -34,6 +34,10 @@ pub enum RouteBuildError {
     InvalidPubkey { field: &'static str, value: String },
     #[error("invalid numeric field {field}: {value}")]
     InvalidNumber { field: &'static str, value: i64 },
+    #[error(
+        "split cross-mint swap policies are not supported; install a unified compact route policy"
+    )]
+    SplitSwapPolicyUnsupported,
     #[error("execution plan json error: {0}")]
     Json(#[from] serde_json::Error),
 }
@@ -268,53 +272,27 @@ pub fn build_cross_mint_route_transaction(
         .as_deref()
         .map(|value| parse_pubkey("route.swap_policy_account", value))
         .transpose()?;
-    let instructions = if let Some(swap_policy) = swap_policy {
+    if swap_policy.is_some() {
+        return Err(RouteBuildError::SplitSwapPolicyUnsupported);
+    }
+    let mut transaction_accounts = Vec::new();
+    let compiled_instructions = vec![
+        compile_squads_vault_instruction(&mut transaction_accounts, vault, withdraw),
+        compile_squads_vault_instruction(&mut transaction_accounts, vault, swap),
+        compile_squads_vault_instruction(&mut transaction_accounts, vault, deposit),
+    ];
+    let instructions = vec![execute_squads_program_interaction_instruction(
+        policy,
+        delegated_signer,
+        vault_index,
+        compiled_instructions,
         vec![
-            execute_single_squads_program_interaction_instruction(
-                policy,
-                delegated_signer,
-                vault_index,
-                vault,
-                withdraw,
-                plan.route.withdraw_constraint_index,
-            ),
-            execute_single_squads_program_interaction_instruction(
-                swap_policy,
-                delegated_signer,
-                vault_index,
-                vault,
-                swap,
-                plan.route.swap_constraint_index,
-            ),
-            execute_single_squads_program_interaction_instruction(
-                policy,
-                delegated_signer,
-                vault_index,
-                vault,
-                deposit,
-                plan.route.deposit_constraint_index,
-            ),
-        ]
-    } else {
-        let mut transaction_accounts = Vec::new();
-        let compiled_instructions = vec![
-            compile_squads_vault_instruction(&mut transaction_accounts, vault, withdraw),
-            compile_squads_vault_instruction(&mut transaction_accounts, vault, swap),
-            compile_squads_vault_instruction(&mut transaction_accounts, vault, deposit),
-        ];
-        vec![execute_squads_program_interaction_instruction(
-            policy,
-            delegated_signer,
-            vault_index,
-            compiled_instructions,
-            vec![
-                plan.route.withdraw_constraint_index,
-                plan.route.swap_constraint_index,
-                plan.route.deposit_constraint_index,
-            ],
-            transaction_accounts,
-        )]
-    };
+            plan.route.withdraw_constraint_index,
+            plan.route.swap_constraint_index,
+            plan.route.deposit_constraint_index,
+        ],
+        transaction_accounts,
+    )];
 
     let preflight_accounts = required_token_accounts(vault, &plan.source, &plan.target)?;
 
@@ -593,27 +571,6 @@ fn execute_squads_program_interaction_instruction(
     }
 }
 
-fn execute_single_squads_program_interaction_instruction(
-    policy: Pubkey,
-    signer: Pubkey,
-    account_index: u8,
-    vault: Pubkey,
-    instruction: Instruction,
-    instruction_constraint_index: u8,
-) -> Instruction {
-    let mut transaction_accounts = Vec::new();
-    let compiled_instruction =
-        compile_squads_vault_instruction(&mut transaction_accounts, vault, instruction);
-    execute_squads_program_interaction_instruction(
-        policy,
-        signer,
-        account_index,
-        vec![compiled_instruction],
-        vec![instruction_constraint_index],
-        transaction_accounts,
-    )
-}
-
 fn execute_squads_sync_transaction_instruction(
     settings: Pubkey,
     signer: Pubkey,
@@ -853,7 +810,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_split_cross_mint_route_with_swap_policy() {
+    fn rejects_split_cross_mint_route_with_swap_policy() {
         let policy = Pubkey::new_unique();
         let swap_policy = Pubkey::new_unique();
         let vault = Pubkey::new_unique();
@@ -903,21 +860,9 @@ mod tests {
             "target": target
         });
 
-        let transaction = build_yield_route_transaction(&plan, delegated_signer).unwrap();
+        let error = build_yield_route_transaction(&plan, delegated_signer).unwrap_err();
 
-        assert_eq!(transaction.instructions.len(), 3);
-        assert_eq!(transaction.instructions[0].accounts[0].pubkey, policy);
-        assert_eq!(transaction.instructions[1].accounts[0].pubkey, swap_policy);
-        assert_eq!(transaction.instructions[2].accounts[0].pubkey, policy);
-        assert!(transaction.preflight_accounts.iter().any(|account| {
-            account.label == "target_collateral_ata"
-                && account.address
-                    == associated_token_address(
-                        vault,
-                        spl_token::ID,
-                        Pubkey::from_str(&target.accounts.reserve_collateral_mint).unwrap(),
-                    )
-        }));
+        assert!(matches!(error, RouteBuildError::SplitSwapPolicyUnsupported));
     }
 
     fn target(reserve: Pubkey, mint: Pubkey) -> SameMintReserveTarget {

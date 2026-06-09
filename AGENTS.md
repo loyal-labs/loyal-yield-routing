@@ -61,9 +61,7 @@ Examples of code that may belong in `src/lib/` after reuse is proven include fra
 
 Squads Smart accounts Policies actual latest docs are here:
 https://github.com/Squads-Protocol/smart-account-program/tree/policies
-Prefer the latest compact ProgramInteraction policy model when it is verified
-against the deployed Squads program. Use legacy ProgramInteraction only as an
-explicit compatibility fallback for deployed-program or packet-size constraints.
+Use only latest non-legacy policies.
 
 Use `bun run test:squads` for the lean Rust test crate around Squads smart-account flows. Use `bun run test:squads:e2e` for the heavier ignored historical Kamino replay when changes touch route policy composition, heap/compute assumptions, or replay-sensitive behavior.
 

@@ -99,25 +99,11 @@ pub(crate) fn create_program_interaction_action_instruction(
     action_seed: u64,
     account_index: u8,
     constraints: Vec<SquadsInstructionConstraint>,
-    compact: bool,
 ) -> Result<Instruction> {
     let (action_account, _) = derive_action_account(&settings, action_seed);
-    let policy_creation_payload = if compact {
-        SquadsPolicyCreationPayload::ProgramInteraction(compile_program_interaction_payload(
-            account_index,
-            constraints,
-        )?)
-    } else {
-        SquadsPolicyCreationPayload::LegacyProgramInteraction(
-            SquadsProgramInteractionPolicyCreationPayloadLegacy {
-                account_index,
-                instructions_constraints: constraints,
-                pre_hook: None,
-                post_hook: None,
-                spending_limits: Vec::new(),
-            },
-        )
-    };
+    let policy_creation_payload = SquadsPolicyCreationPayload::ProgramInteraction(
+        compile_program_interaction_payload(account_index, constraints)?,
+    );
     let action = SquadsSettingsAction::PolicyCreate {
         seed: action_seed,
         policy_creation_payload,
@@ -133,7 +119,7 @@ pub(crate) fn create_program_interaction_action_instruction(
         expiration_args: None,
     };
 
-    Ok(policy_create_instruction(
+    Ok(policy_settings_instruction(
         settings,
         authority,
         action_account,
@@ -141,7 +127,37 @@ pub(crate) fn create_program_interaction_action_instruction(
     ))
 }
 
-fn policy_create_instruction(
+pub(crate) fn update_program_interaction_action_instruction(
+    settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    policy: Pubkey,
+    account_index: u8,
+    constraints: Vec<SquadsInstructionConstraint>,
+) -> Result<Instruction> {
+    let policy_update_payload = SquadsPolicyCreationPayload::ProgramInteraction(
+        compile_program_interaction_payload(account_index, constraints)?,
+    );
+    let action = SquadsSettingsAction::PolicyUpdate {
+        policy,
+        signers: vec![SquadsSmartAccountSigner {
+            key: delegated_signer,
+            permissions: SquadsPermissions {
+                mask: SQUADS_FULL_PERMISSIONS_MASK,
+            },
+        }],
+        threshold: 1,
+        time_lock: 0,
+        policy_update_payload,
+        expiration_args: None,
+    };
+
+    Ok(policy_settings_instruction(
+        settings, authority, policy, action,
+    ))
+}
+
+fn policy_settings_instruction(
     settings: Pubkey,
     authority: Pubkey,
     action_account: Pubkey,
@@ -351,17 +367,8 @@ enum SquadsPolicyCreationPayload {
     SettingsChange(Vec<u8>),
     // ABI tag 3 is the historical uncompiled payload. Keep the slot so the
     // policies-branch compact ProgramInteraction payload serializes as tag 4.
-    LegacyProgramInteraction(SquadsProgramInteractionPolicyCreationPayloadLegacy),
+    LegacyProgramInteraction,
     ProgramInteraction(SquadsProgramInteractionPolicyCreationPayload),
-}
-
-#[derive(BorshSerialize)]
-struct SquadsProgramInteractionPolicyCreationPayloadLegacy {
-    account_index: u8,
-    instructions_constraints: Vec<SquadsInstructionConstraint>,
-    pre_hook: Option<SquadsHook>,
-    post_hook: Option<SquadsHook>,
-    spending_limits: Vec<SquadsLimitedSpendingLimit>,
 }
 
 #[derive(BorshSerialize)]
@@ -470,22 +477,6 @@ pub(crate) enum SquadsAccountConstraintType {
     AccountData(Vec<SquadsDataConstraint>),
 }
 
-#[derive(BorshSerialize)]
-struct SquadsHook {
-    num_extra_accounts: u8,
-    account_constraints: Vec<SquadsAccountConstraint>,
-    instruction_data: Vec<u8>,
-    program_id: Pubkey,
-    pass_inner_instructions: bool,
-}
-
-#[derive(BorshSerialize)]
-struct SquadsLimitedSpendingLimit {
-    mint: Pubkey,
-    time_constraints: SquadsLimitedTimeConstraints,
-    quantity_constraints: SquadsLimitedQuantityConstraints,
-}
-
 #[derive(BorshSerialize, Clone)]
 pub(crate) struct SquadsDataConstraint {
     pub(crate) data_offset: u64,
@@ -572,7 +563,6 @@ mod tests {
             7,
             0,
             vec![],
-            true,
         )
         .unwrap();
 
@@ -584,22 +574,19 @@ mod tests {
     }
 
     #[test]
-    fn program_interaction_policy_create_can_use_legacy_payload_tag() {
-        let instruction = create_program_interaction_action_instruction(
+    fn program_interaction_policy_update_uses_policy_update_action() {
+        let policy = Pubkey::new_unique();
+        let instruction = update_program_interaction_action_instruction(
             Pubkey::new_unique(),
             Pubkey::new_unique(),
             Pubkey::new_unique(),
-            7,
+            policy,
             0,
             vec![],
-            false,
         )
         .unwrap();
 
-        assert_eq!(instruction.data[13], 7, "SettingsAction::PolicyCreate tag");
-        assert_eq!(
-            instruction.data[22], 3,
-            "PolicyCreationPayload::LegacyProgramInteraction tag"
-        );
+        assert_eq!(instruction.accounts[5].pubkey, policy);
+        assert_eq!(instruction.data[13], 8, "SettingsAction::PolicyUpdate tag");
     }
 }

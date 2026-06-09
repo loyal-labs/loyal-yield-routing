@@ -4,7 +4,8 @@ use crate::protocols::{
     kamino_redeem_reserve_collateral_constraint, loyal_hub_constraint, unique_pubkeys,
 };
 use crate::squads::{
-    create_program_interaction_action_instruction, derive_action_account, LoyalActionError, Result,
+    create_program_interaction_action_instruction, derive_action_account,
+    update_program_interaction_action_instruction, LoyalActionError, Result,
     SquadsInstructionConstraint,
 };
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
@@ -92,7 +93,6 @@ pub enum RouteTopology {
 pub enum SquadsProgramInteractionEncoding {
     #[default]
     Compiled,
-    Legacy,
 }
 
 impl Default for RouteTopology {
@@ -212,6 +212,7 @@ pub struct YieldRouteActionSpec {
 pub struct YieldRouteActionSetup {
     pub accounts: YieldRouteActionAccounts,
     pub instructions: Vec<Instruction>,
+    pub update_instructions: Vec<Instruction>,
     steps: YieldRouteSteps,
     pub spec: YieldRouteActionSpec,
 }
@@ -262,6 +263,7 @@ impl YieldRouteActionSetup {
 pub struct YieldRouteActionInstruction {
     pub account: Pubkey,
     pub instruction: Instruction,
+    pub update_instruction: Instruction,
     steps: YieldRouteSteps,
     pub spec: YieldRouteActionSpec,
 }
@@ -481,7 +483,14 @@ pub fn create_swap_yield_route_action(
         action_seed,
         context.account_index,
         constraints.clone(),
-        true,
+    )?;
+    let update_instruction = update_program_interaction_action_instruction(
+        context.settings,
+        context.authority,
+        context.delegated_signer,
+        account,
+        context.account_index,
+        constraints.clone(),
     )?;
     let accounts = YieldRouteActionAccounts {
         withdraw: account,
@@ -492,6 +501,7 @@ pub fn create_swap_yield_route_action(
     Ok(YieldRouteActionInstruction {
         account,
         instruction,
+        update_instruction,
         steps,
         spec: YieldRouteActionSpec {
             topology: RouteTopology::SwapOnly,
@@ -533,9 +543,22 @@ fn build_swap_only(plan: YieldRouteActionPlan) -> Result<YieldRouteActionSetup> 
         plan.seeds.swap,
         constraints.clone(),
     )?;
+    let update_instruction = action_update_instruction(
+        plan.context,
+        plan.program_interaction_encoding,
+        action,
+        constraints.clone(),
+    )?;
     let steps = swap_steps(action, &plan.swap_lanes, 0);
 
-    setup(plan, accounts, vec![instruction], steps, constraints.len())
+    setup(
+        plan,
+        accounts,
+        vec![instruction],
+        vec![update_instruction],
+        steps,
+        constraints.len(),
+    )
 }
 
 fn build_three_step(plan: YieldRouteActionPlan) -> Result<YieldRouteActionSetup> {
@@ -575,6 +598,26 @@ fn build_three_step(plan: YieldRouteActionPlan) -> Result<YieldRouteActionSetup>
             deposit_constraints.clone(),
         )?,
     ];
+    let update_instructions = vec![
+        action_update_instruction(
+            plan.context,
+            plan.program_interaction_encoding,
+            accounts.withdraw,
+            withdraw_constraints.clone(),
+        )?,
+        action_update_instruction(
+            plan.context,
+            plan.program_interaction_encoding,
+            accounts.swap,
+            swap_constraints.clone(),
+        )?,
+        action_update_instruction(
+            plan.context,
+            plan.program_interaction_encoding,
+            accounts.deposit,
+            deposit_constraints.clone(),
+        )?,
+    ];
     let steps = YieldRouteSteps {
         withdraw: Some(LoyalActionStep::new(accounts.withdraw, 0)),
         deposit: Some(LoyalActionStep::new(accounts.deposit, 0)),
@@ -585,6 +628,7 @@ fn build_three_step(plan: YieldRouteActionPlan) -> Result<YieldRouteActionSetup>
         plan,
         accounts,
         instructions,
+        update_instructions,
         steps,
         2 + swap_constraints.len(),
     )
@@ -629,6 +673,20 @@ fn build_combined_kamino(plan: YieldRouteActionPlan) -> Result<YieldRouteActionS
             swap_constraints.clone(),
         )?,
     ];
+    let update_instructions = vec![
+        action_update_instruction(
+            plan.context,
+            plan.program_interaction_encoding,
+            accounts.withdraw,
+            kamino_constraints.clone(),
+        )?,
+        action_update_instruction(
+            plan.context,
+            plan.program_interaction_encoding,
+            accounts.swap,
+            swap_constraints.clone(),
+        )?,
+    ];
     let steps = YieldRouteSteps {
         withdraw: Some(LoyalActionStep::new(accounts.withdraw, 0)),
         deposit: Some(LoyalActionStep::new(accounts.deposit, 1)),
@@ -639,6 +697,7 @@ fn build_combined_kamino(plan: YieldRouteActionPlan) -> Result<YieldRouteActionS
         plan,
         accounts,
         instructions,
+        update_instructions,
         steps,
         2 + swap_constraints.len(),
     )
@@ -673,6 +732,12 @@ fn build_all_in_one(plan: YieldRouteActionPlan) -> Result<YieldRouteActionSetup>
         plan.seeds.withdraw,
         constraints.clone(),
     )?;
+    let update_instruction = action_update_instruction(
+        plan.context,
+        plan.program_interaction_encoding,
+        action,
+        constraints.clone(),
+    )?;
     let steps = YieldRouteSteps {
         withdraw: Some(LoyalActionStep::new(action, 0)),
         deposit: Some(LoyalActionStep::new(
@@ -682,13 +747,21 @@ fn build_all_in_one(plan: YieldRouteActionPlan) -> Result<YieldRouteActionSetup>
         ..swap_steps(action, &plan.swap_lanes, 1)
     };
 
-    setup(plan, accounts, vec![instruction], steps, constraints.len())
+    setup(
+        plan,
+        accounts,
+        vec![instruction],
+        vec![update_instruction],
+        steps,
+        constraints.len(),
+    )
 }
 
 fn setup(
     plan: YieldRouteActionPlan,
     accounts: YieldRouteActionAccounts,
     instructions: Vec<Instruction>,
+    update_instructions: Vec<Instruction>,
     steps: YieldRouteSteps,
     constraint_count: usize,
 ) -> Result<YieldRouteActionSetup> {
@@ -703,6 +776,7 @@ fn setup(
             constraint_count,
         },
         instructions,
+        update_instructions,
         steps,
     })
 }
@@ -734,32 +808,34 @@ fn action_accounts(settings: Pubkey, seeds: YieldRouteActionSeeds) -> YieldRoute
 
 fn action_instruction(
     context: LoyalActionContext,
-    encoding: SquadsProgramInteractionEncoding,
+    _encoding: SquadsProgramInteractionEncoding,
     action_seed: u64,
     constraints: Vec<SquadsInstructionConstraint>,
 ) -> Result<Instruction> {
-    match encoding {
-        SquadsProgramInteractionEncoding::Compiled => {
-            create_program_interaction_action_instruction(
-                context.settings,
-                context.authority,
-                context.delegated_signer,
-                action_seed,
-                context.account_index,
-                constraints,
-                true,
-            )
-        }
-        SquadsProgramInteractionEncoding::Legacy => create_program_interaction_action_instruction(
-            context.settings,
-            context.authority,
-            context.delegated_signer,
-            action_seed,
-            context.account_index,
-            constraints,
-            false,
-        ),
-    }
+    create_program_interaction_action_instruction(
+        context.settings,
+        context.authority,
+        context.delegated_signer,
+        action_seed,
+        context.account_index,
+        constraints,
+    )
+}
+
+fn action_update_instruction(
+    context: LoyalActionContext,
+    _encoding: SquadsProgramInteractionEncoding,
+    action_account: Pubkey,
+    constraints: Vec<SquadsInstructionConstraint>,
+) -> Result<Instruction> {
+    update_program_interaction_action_instruction(
+        context.settings,
+        context.authority,
+        context.delegated_signer,
+        action_account,
+        context.account_index,
+        constraints,
+    )
 }
 
 fn stable_swap_constraints(

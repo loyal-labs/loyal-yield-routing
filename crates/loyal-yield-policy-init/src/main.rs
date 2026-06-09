@@ -8,11 +8,11 @@ use borsh::BorshSerialize;
 use clap::{Parser, ValueEnum, ValueHint};
 use loyal_actions::{
     yield_route_universe_for_preset, JupiterSwapContract, KaminoStableRiskProfile,
-    LoyalActionContext, RouteTopology, SquadsProgramInteractionEncoding, SwapLane,
-    YieldRouteActionBuilder, YieldRouteActionSeeds, YieldRouteUniverse, YieldRouteUniversePreset,
-    JUPITER_DEFAULT_MAX_SLIPPAGE_BPS, JUPITER_SWAP_DISCRIMINATOR, KAMINO_LEND_PROGRAM_ID,
-    LOYAL_HUB_SWAP_PROGRAM_ID, SQUADS_SMART_ACCOUNT_PROGRAM_ID, YIELD_ROUTE_DEPOSIT_ACTION_SEED,
-    YIELD_ROUTE_SWAP_ACTION_SEED, YIELD_ROUTE_WITHDRAW_ACTION_SEED,
+    LoyalActionContext, RouteTopology, SwapLane, YieldRouteActionBuilder, YieldRouteActionSeeds,
+    YieldRouteUniverse, YieldRouteUniversePreset, JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
+    JUPITER_SWAP_DISCRIMINATOR, KAMINO_LEND_PROGRAM_ID, LOYAL_HUB_SWAP_PROGRAM_ID,
+    SQUADS_SMART_ACCOUNT_PROGRAM_ID, YIELD_ROUTE_DEPOSIT_ACTION_SEED, YIELD_ROUTE_SWAP_ACTION_SEED,
+    YIELD_ROUTE_WITHDRAW_ACTION_SEED,
 };
 use serde_json::{json, Value};
 use solana_client::{
@@ -91,15 +91,8 @@ struct Cli {
     user_keypair: PathBuf,
     #[arg(long, value_enum, default_value_t = RiskProfile::Safe)]
     risk_profile: RiskProfile,
-    #[arg(long, value_enum, default_value_t = TopologyArg::ThreeStep)]
+    #[arg(long, value_enum, default_value_t = TopologyArg::AllInOne)]
     topology: TopologyArg,
-    #[arg(
-        long = "program-interaction-encoding",
-        value_enum,
-        default_value_t = ProgramInteractionEncodingArg::Compiled,
-        help = "ProgramInteraction policy encoding to submit"
-    )]
-    program_interaction_encoding: ProgramInteractionEncodingArg,
     #[arg(long = "stable-mint", value_delimiter = ',')]
     stable_mints: Vec<Pubkey>,
     #[arg(long = "kamino-market", value_delimiter = ',')]
@@ -167,6 +160,8 @@ impl Cluster {
     }
 }
 
+/// Kamino stable reserve universe preset: Safe is narrowest, Medium expands
+/// the allowlist, and Aggressive includes the broadest configured stable set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum RiskProfile {
     Safe,
@@ -193,12 +188,17 @@ impl RiskProfile {
     }
 }
 
+/// Cross-mint swap venue allowed by the route policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum SwapLaneArg {
     Jupiter,
+    // Policy creation is wired, but orchestrator quoting is not enabled yet.
     LoyalHub,
 }
 
+/// Policy topology for route execution: ThreeStep creates separate
+/// withdraw/swap/deposit policies, CombinedKamino shares withdraw+deposit while
+/// splitting swap, and AllInOne keeps the full route under one compact policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum TopologyArg {
     ThreeStep,
@@ -216,21 +216,6 @@ impl TopologyArg {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum ProgramInteractionEncodingArg {
-    Compiled,
-    Legacy,
-}
-
-impl ProgramInteractionEncodingArg {
-    fn as_squads_encoding(self) -> SquadsProgramInteractionEncoding {
-        match self {
-            Self::Compiled => SquadsProgramInteractionEncoding::Compiled,
-            Self::Legacy => SquadsProgramInteractionEncoding::Legacy,
-        }
-    }
-}
-
 #[derive(Debug, Error)]
 enum InitError {
     #[error("NEON_DATABASE_URL is required unless --skip-db or --dry-run is set")]
@@ -243,8 +228,6 @@ enum InitError {
     SmartAccountIndexOverflow,
     #[error("derived settings account already exists; rerun with --settings {settings} to install the policy on it")]
     SettingsAlreadyExists { settings: Pubkey },
-    #[error("derived policy account already exists: {policy_account}")]
-    PolicyAccountAlreadyExists { policy_account: Pubkey },
     #[error(
         "existing --settings account {settings} is not owned by the Squads smart-account program"
     )]
@@ -294,6 +277,8 @@ enum InitError {
         "Squads smart-account program {program_id} on {cluster} does not support policy settings actions; the preflight probe failed during instruction deserialization"
     )]
     PolicyActionsUnsupported { cluster: String, program_id: Pubkey },
+    #[error("policy transaction {label} failed preflight simulation: {error}")]
+    PolicyTransactionPreflightFailed { label: &'static str, error: String },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -338,6 +323,22 @@ struct PolicyActionPlan {
     label: &'static str,
     seed: u64,
     account: Pubkey,
+    operation: PolicyActionOperation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PolicyActionOperation {
+    Create,
+    Update,
+}
+
+impl PolicyActionOperation {
+    fn as_json_value(self) -> &'static str {
+        match self {
+            Self::Create => "create",
+            Self::Update => "update",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -452,17 +453,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     .topology(cli.topology.as_route_topology())
     .swap_lanes(swap_lanes.clone())
     .seeds(action_seeds)
-    .program_interaction_encoding(cli.program_interaction_encoding.as_squads_encoding())
     .build()?;
-    let policy_actions = policy_actions_for_setup(&action_setup, action_seeds);
-    for action in &policy_actions {
-        if account_exists(&rpc, action.account)? {
-            return Err(InitError::PolicyAccountAlreadyExists {
-                policy_account: action.account,
-            }
-            .into());
-        }
-    }
+    let mut policy_actions = policy_actions_for_setup(&action_setup, action_seeds);
+    set_policy_action_operations(&rpc, &mut policy_actions)?;
 
     let transaction_plan = build_transaction_plan(
         &cli,
@@ -537,6 +530,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         .into());
     }
+    ensure_existing_settings_policy_preflight(&rpc, &transaction_plan, &user)?;
+
     let submitted_transactions = send_and_confirm_plan(&rpc, &transaction_plan, &user)?;
 
     let db_result = if let Some(pool) = db.as_ref() {
@@ -658,16 +653,19 @@ fn policy_actions_for_setup(
             label: "withdraw_policy",
             seed: seeds.withdraw,
             account: setup.accounts.withdraw,
+            operation: PolicyActionOperation::Create,
         },
         PolicyActionPlan {
             label: "swap_policy",
             seed: seeds.swap,
             account: setup.accounts.swap,
+            operation: PolicyActionOperation::Create,
         },
         PolicyActionPlan {
             label: "deposit_policy",
             seed: seeds.deposit,
             account: setup.accounts.deposit,
+            operation: PolicyActionOperation::Create,
         },
     ];
 
@@ -684,11 +682,26 @@ fn policy_actions_for_setup(
     actions
 }
 
+fn set_policy_action_operations(
+    rpc: &RpcClient,
+    actions: &mut [PolicyActionPlan],
+) -> Result<(), Box<dyn std::error::Error>> {
+    for action in actions {
+        action.operation = if account_exists(rpc, action.account)? {
+            PolicyActionOperation::Update
+        } else {
+            PolicyActionOperation::Create
+        };
+    }
+    Ok(())
+}
+
 fn policy_action_json(action: PolicyActionPlan) -> Value {
     json!({
         "label": action.label,
         "seed": action.seed,
         "account": action.account.to_string(),
+        "operation": action.operation.as_json_value(),
     })
 }
 
@@ -723,16 +736,28 @@ fn build_transaction_plan(
         });
     }
 
-    for (instruction, action) in setup.instructions.iter().zip(policy_actions.iter()) {
+    for ((create_instruction, update_instruction), action) in setup
+        .instructions
+        .iter()
+        .zip(setup.update_instructions.iter())
+        .zip(policy_actions.iter())
+    {
         let mut instructions = compute_budget_instructions(cli);
-        instructions.push(instruction.clone());
-        transactions.push(PlannedTransaction {
-            label: action.label,
-            instructions,
-            rent_accounts: vec![RentAccountTarget {
+        instructions.push(match action.operation {
+            PolicyActionOperation::Create => create_instruction.clone(),
+            PolicyActionOperation::Update => update_instruction.clone(),
+        });
+        let rent_accounts = match action.operation {
+            PolicyActionOperation::Create => vec![RentAccountTarget {
                 label: action.label,
                 pubkey: action.account,
             }],
+            PolicyActionOperation::Update => Vec::new(),
+        };
+        transactions.push(PlannedTransaction {
+            label: action.label,
+            instructions,
+            rent_accounts,
             policy_action: Some(*action),
         });
     }
@@ -778,6 +803,42 @@ fn ensure_plan_transactions_fit(
         let signed = signed_transaction(rpc, &transaction.instructions, signer)?;
         ensure_transaction_fits_packet(&signed)?;
     }
+    Ok(())
+}
+
+fn ensure_existing_settings_policy_preflight(
+    rpc: &RpcClient,
+    plan: &TransactionPlan,
+    signer: &impl Signer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if plan.creates_smart_account {
+        return Ok(());
+    }
+
+    for transaction in &plan.transactions {
+        if transaction.policy_action.is_none() {
+            continue;
+        }
+
+        let signed = signed_transaction(rpc, &transaction.instructions, signer)?;
+        let simulation = rpc.simulate_transaction_with_config(
+            &signed,
+            RpcSimulateTransactionConfig {
+                sig_verify: true,
+                inner_instructions: true,
+                ..RpcSimulateTransactionConfig::default()
+            },
+        )?;
+
+        if let Some(error) = simulation.value.err {
+            return Err(InitError::PolicyTransactionPreflightFailed {
+                label: transaction.label,
+                error: format!("{error:?}"),
+            }
+            .into());
+        }
+    }
+
     Ok(())
 }
 
@@ -2010,6 +2071,7 @@ fn planned_output(
                         "label": action.label,
                         "seed": action.seed,
                         "policyAccount": action.account.to_string(),
+                        "operation": action.operation.as_json_value(),
                         "signature": transaction.signature.to_string(),
                         "slot": transaction.slot,
                     })

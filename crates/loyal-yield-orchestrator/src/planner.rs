@@ -163,6 +163,7 @@ pub enum RoutePlanSkip {
     MissingSourceTarget,
     NoSameMintTarget,
     NoCrossMintTarget,
+    SplitSwapPolicyUnsupported,
     NoEdge,
     InvalidAmount,
     QuoteUnavailable(String),
@@ -244,6 +245,13 @@ impl YieldRoutePlanner {
         let same_mint_candidate = self.best_same_mint_target(vault_policy, source, source_apy_bps);
         let cross_mint_candidate =
             self.best_cross_mint_target(vault_policy, source, source_apy_bps);
+        if same_mint_candidate.is_none()
+            && cross_mint_candidate.is_none()
+            && supports_cross_mint(vault_policy)
+            && uses_split_swap_policy(vault_policy)
+        {
+            return Err(RoutePlanSkip::SplitSwapPolicyUnsupported);
+        }
 
         match (same_mint_candidate, cross_mint_candidate) {
             (Some(same), Some((cross, lane))) if cross.edge_bps > same.edge_bps => {
@@ -540,9 +548,20 @@ fn supports_same_mint(vault_policy: &ManagedVaultRoutePolicy) -> bool {
         .any(|mode| mode == "same_mint")
 }
 
+fn supports_cross_mint(vault_policy: &ManagedVaultRoutePolicy) -> bool {
+    vault_policy
+        .policy
+        .route_modes
+        .iter()
+        .any(|mode| mode.starts_with("cross_mint_"))
+}
+
 fn cross_mint_lane(vault_policy: &ManagedVaultRoutePolicy) -> Option<CrossMintSwapLane> {
     let route_modes = &vault_policy.policy.route_modes;
     let lanes = vault_policy.policy.swap_lanes.as_array()?;
+    if uses_split_swap_policy(vault_policy) {
+        return None;
+    }
     for (index, lane) in lanes.iter().enumerate() {
         let kind = lane.get("kind").and_then(Value::as_str)?;
         let lane_index = u8::try_from(index).ok()?;
@@ -593,9 +612,6 @@ fn cross_mint_lane(vault_policy: &ManagedVaultRoutePolicy) -> Option<CrossMintSw
 }
 
 fn deposit_constraint_index(vault_policy: &ManagedVaultRoutePolicy) -> u8 {
-    if uses_split_swap_policy(vault_policy) {
-        return 1;
-    }
     1 + swap_lane_count(vault_policy)
 }
 
@@ -933,7 +949,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drafts_cross_mint_with_split_swap_policy_metadata() {
+    async fn rejects_cross_mint_with_split_swap_policy_metadata() {
         let planner = YieldRoutePlanner::new(YieldRoutePlannerConfig {
             targets: vec![
                 target("reserve-a", "market-a", "USDC", 100),
@@ -945,7 +961,7 @@ mod tests {
         let positions = vec![position("reserve-a", "USDC", 1_000, Some(100))];
         let swap_policy = "swap-policy-1";
 
-        let planned = planner
+        let skip = planner
             .plan_vault(
                 &vault_policy(
                     vec!["same_mint", "cross_mint_jupiter"],
@@ -960,18 +976,9 @@ mod tests {
                 &StaticQuoteProvider,
             )
             .await
-            .unwrap();
+            .unwrap_err();
 
-        assert_eq!(planned.execution_plan["kind"], "cross_mint");
-        assert_eq!(
-            planned.execution_plan["route"]["swap_policy_account"],
-            swap_policy
-        );
-        assert_eq!(planned.execution_plan["route"]["swap_constraint_index"], 0);
-        assert_eq!(
-            planned.execution_plan["route"]["deposit_constraint_index"],
-            1
-        );
+        assert_eq!(skip, RoutePlanSkip::SplitSwapPolicyUnsupported);
     }
 
     #[tokio::test]
