@@ -1,6 +1,6 @@
 # Mainnet Yield Routing Test Report
 
-Date: 2026-06-08
+Date: 2026-06-09
 
 ## Target
 
@@ -11,12 +11,33 @@ Validate the Loyal yield routing orchestration on Solana mainnet with real funds
 - Trigger the worker loop to reroute funds.
 - Verify same-mint routing, cross-mint/Jupiter readiness, DB state, and blockchain state.
 - Check that actual Jupiter swaps work on mainnet.
+- Recheck the live accounts against the latest Squads Policy Framework and the
+  current non-legacy ProgramInteraction policy code path.
 
 Accounts used:
 
 - System/setup key: `GTpqQfB9wgXWqdhkEmSWsnHVvxaPbJs1qWsomh1MjQ5N`
 - Additional provided key: `6T7U8nSZmkRYsrsA5ivhk4YHkqE1JkCdCNHYVtCrMThr`
 - Worker delegated signer from 1Password env: `BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ`
+
+Latest account/policy status checked on 2026-06-09:
+
+- Settings: `4aWMf1dFxviHisBFfi9apgqNDUBH4rLWHQYHUANbLAdi`
+- Vault: `EVaVYyDRuD3mnSjwJktAnmfe6v4QuDgEEu66ZCDvFopr`
+- Managed vault id: `92`
+- Active DB route policy id: `37`
+- Active route policy seed/account: seed `2`, `BJgmjzDJUJdDE5XNU5RJphxrdWM7Nym3c8XSDrnpS1y4`
+- Active route modes: `{same_mint,cross_mint_jupiter}`
+- Active stable/liquidity mints: USDC and USDT
+- Active swap lane still contains split swap-policy metadata:
+  `policy_account = B53LFhxNE5rAsQmbyEggDzYSDG7UPgYqVU4KSbjcPKJg`,
+  `constraint_index = 0`
+
+Current status: these live accounts are still configured with old split
+cross-mint metadata. Current orchestrator code rejects split
+`swap_policy_account` metadata and requires one unified compact
+ProgramInteraction policy, so the live accounts are not currently runnable by
+the current non-legacy orchestrator path.
 
 ## Setup Performed
 
@@ -137,15 +158,15 @@ Jupiter conclusion: actual Jupiter swaps work on mainnet, but setup instruction 
 
 ## Cross-Mint Policy Recheck
 
-The installed active policy looked wrong for the requested cross-mint test. It was still the original same-mint-only policy:
+The 2026-06-09 recheck used the latest Squads policies branch as the source of
+truth:
 
-- Active route policy id: `36`
-- Active policy account: `2UWE4yu43VQpRcdT5QPmikrDWQMw4JFiB7kpkTNkaKK4`
-- Route modes: `{same_mint}`
-- Stable/liquidity mints: USDC only
-- Swap lanes: none
+- Policy PDA family: `["smart_account", "policy", settings_key, policy_seed]`
+- Policy type: compact `PolicyCreationPayload::ProgramInteraction`
+- Updates: `SettingsAction::PolicyUpdate`
+- Legacy spending-limit actions are not part of the current route policy path.
 
-The all-in-one legacy cross-mint policy still exceeded the Solana packet limit, and the compact/compiled policy create payload still failed Squads deserialization on mainnet. The viable mainnet topology was the split legacy topology:
+The live DB state for the accounts above is still the previous split topology:
 
 - Main withdraw/deposit policy: `BJgmjzDJUJdDE5XNU5RJphxrdWM7Nym3c8XSDrnpS1y4`
 - Swap-only Jupiter policy: `B53LFhxNE5rAsQmbyEggDzYSDG7UPgYqVU4KSbjcPKJg`
@@ -155,26 +176,58 @@ The all-in-one legacy cross-mint policy still exceeded the Solana packet limit, 
 - Swap lane policy account: `B53LFhxNE5rAsQmbyEggDzYSDG7UPgYqVU4KSbjcPKJg`
 - Swap lane constraint index: `0`
 
-Policy recreation signatures:
+That split metadata is stale for the current code. Current orchestrator route
+planning and transaction building both reject it instead of building
+multi-policy cross-mint routes.
 
-- Withdraw/deposit policy seed `2`: `3dD4zTwnGHa969g9ninXk5pZKBaFX1BVwE7t4zVUH71Q7NfPzaVy3zQNFsBxpqSkUBw3urGdrFTmm95MNqoqyw2z`, slot `425176075`
-- Swap policy seed `3`: `2QqRNkiGzuaiXEvfzRyvmS7kdrPcJyPQEKoAcHmzGbpyqEwWeDHqvXRJiatqt77vhr8JdZ9GjoUNfGY5gWpfZjCZ`, slot `425176109`
+Policy update dry-runs:
 
-The Jupiter route policy was corrected to the live `Route` discriminator `[229, 23, 203, 151, 122, 227, 173, 42]`. The current route instruction has nine accounts with destination mint at account index `5`; slippage/min-out is carried inside variable-length route data, so the policy constrains the discriminator, account shape, vault source/destination ATAs, destination mint, and Jupiter program rather than a fixed slippage byte offset.
+- Seed `1` update against existing policy
+  `2UWE4yu43VQpRcdT5QPmikrDWQMw4JFiB7kpkTNkaKK4`: operation `update`; legacy
+  transaction fit the packet; simulation failed in
+  `ExecuteSettingsTransactionSync` with `InstructionError(2, Custom(102))`
+  / `InstructionDidNotDeserialize`.
+- Seed `4` create for a fresh unified policy
+  `Hn7hzhSCJAYiYoE25rHeyz5jfU1GUAQkUNCkcr8vsbg`: operation `create`; legacy
+  transaction fit the packet at `974` bytes; simulation failed in
+  `ExecuteSettingsTransactionSync` with `InstructionError(2, Custom(102))`
+  / `InstructionDidNotDeserialize`.
+
+No mainnet policy update was submitted. The current code now performs an
+additional non-dry-run simulation preflight for existing settings and refuses to
+send a policy create/update when the actual policy transaction simulation fails.
 
 ## Code Corrections
 
-Corrections applied before the successful mainnet run:
+Corrections in the current 2026-06-09 code state:
+
+- `loyal-actions` now emits only compact
+  `PolicyCreationPayload::ProgramInteraction` route policies.
+- Existing policy accounts are updated with `SettingsAction::PolicyUpdate`
+  instead of delete/create churn.
+- `yield-policy:init` chooses create versus update by checking whether each
+  derived policy account already exists.
+- The policy-init CLI no longer exposes a legacy ProgramInteraction encoding
+  option; the default topology is the unified all-in-one compact policy.
+- `yield-policy:init` simulates policy transactions for existing settings before
+  non-dry-run submission and fails closed if Squads rejects the payload.
+- The root `bun run yield-policy:init` script now names the
+  `loyal-yield-policy-init` binary explicitly.
+- The orchestrator planner and route builder reject old split
+  `swap_policy_account` metadata with a typed unsupported-policy error.
+
+Earlier corrections applied before the historical 2026-06-08 mainnet run:
 
 - Added a live Jupiter quote/swap-instruction provider for the worker.
 - Made the worker reject Jupiter setup/cleanup instructions so vault token accounts must be pre-created outside the Squads-protected route.
-- Added split cross-mint route building so withdraw, swap, and deposit can execute through separate ProgramInteraction policies.
-- Changed worker execution to submit multi-step split routes sequentially. This avoids packet-size problems and lets later steps see the state changes from earlier submitted steps.
 - Fixed `YIELD_ROUTER_KEYPAIR` parsing so JSON-array, hex, base58, and base64 key material formats work consistently.
 - Recorded worker planning skips and submitted signatures in the worker report.
-- Updated policy-init DB metadata so split Jupiter lanes persist their separate `policy_account` and `constraint_index`.
 
 ## Cross-Mint Orchestration Test
+
+This section is historical evidence from the 2026-06-08 split-policy run. It is
+not the current supported topology after the 2026-06-09 non-legacy policy
+change.
 
 Prepared required vault token accounts:
 
@@ -209,6 +262,10 @@ The worker decision row remains `failed` because its third sequential step faile
 
 ## Final Verification
 
+The first part of this section is historical verification from the 2026-06-08
+split-policy run. The latest 2026-06-09 verification is listed afterwards and
+supersedes the split-policy routing status.
+
 A dry `yield_route_worker --once` pass on mainnet reconciled the vault and skipped planning with `NoEdge`:
 
 - Active vaults: `1`
@@ -230,39 +287,83 @@ Current on-chain vault token balances:
 - Source USDC collateral ATA `6j19pCtMugTnJU84neP79WhAH1h6p3e9YvUz8eeCnuUd`: `0`
 - Target USDT collateral ATA `b9AmYaPZrqiPhbfY6UMBH2zz1xV3u3Uh4dQKMfbEn9E`: `3.502811`
 
-Cross-mint conclusion: the worker can execute the mainnet cross-mint withdraw and Jupiter swap through split Squads ProgramInteraction policies, and the funds ended in the target USDT Kamino reserve after creating the missing target collateral ATA and submitting the recovery deposit.
+Latest 2026-06-09 verification:
+
+- Live DB still marks policy id `37` active for vault `92`.
+- Policy id `37` still carries split Jupiter lane metadata with
+  `swap_lanes[0].policy_account = B53LFhxNE5rAsQmbyEggDzYSDG7UPgYqVU4KSbjcPKJg`.
+- Current orchestrator rejects that split metadata before execution.
+- Compact all-in-one policy update/create dry-runs both fail Squads simulation
+  with `InstructionDidNotDeserialize`, so no mainnet policy update was sent.
+- The live accounts therefore need a compatible compact ProgramInteraction
+  policy update before current cross-mint orchestration can run again.
+
+Historical cross-mint conclusion: the worker executed the mainnet cross-mint
+withdraw and Jupiter swap through split Squads ProgramInteraction policies, and
+the funds ended in the target USDT Kamino reserve after creating the missing
+target collateral ATA and submitting the recovery deposit. Current code no
+longer treats this split-policy topology as valid.
 
 ## Remaining Follow-Ups
 
-1. Add an idempotent "ensure vault token accounts" setup phase before route submission.
+1. Resolve the compact ProgramInteraction create/update mismatch on mainnet.
 
-   The worker now deliberately rejects Jupiter setup/cleanup instructions. It should derive and create required vault ATAs in a separate payer-funded setup transaction before submitting a protected route. For cross-mint USDC to USDT, the required vault accounts are source collateral, source liquidity, target liquidity, and target collateral.
+   The local encoder matches the policies-branch shape checked on 2026-06-09,
+   but the deployed mainnet Squads program rejects the actual
+   `ExecuteSettingsTransactionSync` payload with
+   `InstructionDidNotDeserialize`. Do not submit policy changes for these
+   accounts until the full transaction simulation passes.
 
-2. Improve partial-route recovery bookkeeping.
+2. Update the live DB/on-chain policy for vault `92` only after compact
+   ProgramInteraction preflight succeeds.
 
-   Decision `28` correctly shows the worker failure at step 2, but the later recovery deposit is not linked to that decision. Add a recovery/follow-up status or metadata path so operational history can show "worker partial success, manual recovery complete".
+   The current DB still points at split `swap_policy_account` metadata. Current
+   orchestrator code intentionally rejects that state.
 
-3. Keep compact ProgramInteraction as a future optimization, not the current mainnet path.
+3. Add an idempotent "ensure vault token accounts" setup phase before route
+   submission.
 
-   Legacy all-in-one cross-mint remains too large for the packet limit, while the compact compiled policy-create path still needs payload-level verification against the deployed Squads program. The working mainnet topology today is the split legacy topology.
+   The worker deliberately rejects Jupiter setup/cleanup instructions. It should
+   derive and create required vault ATAs in a separate payer-funded setup
+   transaction before submitting a protected route. For cross-mint USDC to USDT,
+   the required vault accounts are source collateral, source liquidity, target
+   liquidity, and target collateral.
 
-4. Timescale target rows used for overrides still need freshness cleanup.
+4. Improve partial-route recovery bookkeeping for historical split executions.
 
-   Some latest rows used during these tests had stale March 2026 timestamps, so forced target overrides were used for the mainnet cross-mint test.
+   Decision `28` correctly shows the worker failure at step 2, but the later
+   recovery deposit is not linked to that decision. Add a recovery/follow-up
+   status or metadata path so operational history can show "worker partial
+   success, manual recovery complete".
+
+5. Timescale target rows used for overrides still need freshness cleanup.
+
+   Some latest rows used during these tests had stale March 2026 timestamps, so
+   forced target overrides were used for the historical mainnet cross-mint test.
 
 ## Validation Commands
 
 Passed:
 
-- `cargo fmt --all`
+- `cargo fmt`
 - `cargo test -p loyal-actions`
-- `cargo test -p loyal-yield-policy-init split_swap_policy_metadata_is_recorded_in_lane_json`
-- `cargo test -p loyal-yield-orchestrator --lib`
-- `cargo check -p loyal-yield-orchestrator --bins`
+- `cargo test -p loyal-yield-policy-init`
+- `bun run yield-policy:init -- --help`
+- `cargo test -p loyal-yield-orchestrator -- --test-threads=1`
+  using a temporary local PostgreSQL 17 database with migration
+  `crates/loyal-yield-orchestrator/migrations/0001_loyal_yield_orchestration.sql`
+- `cargo test -p squads-test-harness --test usdc_pyusd_kamino_route cross_mint_route_execution_pack_size_is_packet_bound_by_measurement -- --exact`
+- Mainnet dry-run through a permanent `op signin` shell:
+  `loyal-yield-policy-init --cluster mainnet --settings 4aWM... --topology all-in-one --withdraw-action-seed 4 --dry-run`
 
 Residual failure:
 
-- `bun run test:squads` still fails in the Kamino mock reserve tests with `InstructionError(0, IncorrectProgramId)` while invoking mock `KLend2g3c...`. The failure happens outside the live Jupiter cross-mint path.
+- `bun run test:squads` still fails in `kamino_reserves` with
+  `InstructionError(0, IncorrectProgramId)` while invoking mock
+  `KLend2g3c...`.
+- `cargo test -p squads-test-harness --test yield_route_policy_adversarial happy_path_same_mint_jupiter_and_hub_routes_are_live -- --exact`
+  fails at the same KLend mock setup step before reaching the Jupiter or Loyal
+  Hub cross-mint route assertions.
 
 ## References
 
