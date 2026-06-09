@@ -17,10 +17,9 @@ pub struct NeonSqlClient {
 
 pub type OrchestratorStore = NeonSqlClient;
 
-#[derive(Debug)]
+#[derive(Debug, sqlx::FromRow)]
 struct RoutePolicyRow {
     id: i64,
-    cluster: String,
     settings: String,
     authority: String,
     policy_seed: i64,
@@ -43,10 +42,9 @@ struct RoutePolicyRow {
     last_seen_signature: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, sqlx::FromRow)]
 struct ManagedVaultRow {
     id: i64,
-    cluster: String,
     settings: String,
     vault_index: i16,
     vault_pubkey: String,
@@ -157,11 +155,11 @@ impl NeonSqlClient {
         let row = sqlx::query(
             r#"
             INSERT INTO loyal_yield.balance_sweep_targets
-                (cluster, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
+                (settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
                  wallet, wallet_usdc_ata, vault_usdc_ata, delegated_signers, threshold,
                  max_amount_per_period, active, last_seen_slot, last_seen_signature)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, TRUE, $14, $15)
-            ON CONFLICT (cluster, policy_account) DO UPDATE SET
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, TRUE, $13, $14)
+            ON CONFLICT (policy_account) DO UPDATE SET
                 settings = CASE
                     WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
                     THEN EXCLUDED.settings
@@ -229,12 +227,11 @@ impl NeonSqlClient {
                     ELSE loyal_yield.balance_sweep_targets.last_seen_signature
                 END
             RETURNING
-                id, cluster, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
+                id, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
                 wallet, wallet_usdc_ata, vault_usdc_ata, delegated_signers, threshold,
                 max_amount_per_period, active, first_seen_at, last_seen_at, last_seen_slot, last_seen_signature
             "#,
         )
-        .bind(&event.cluster)
         .bind(&event.settings)
         .bind(&event.authority)
         .bind(policy_seed)
@@ -257,20 +254,18 @@ impl NeonSqlClient {
 
     pub async fn load_active_balance_sweep_targets(
         &self,
-        cluster: &str,
     ) -> Result<Vec<BalanceSweepTarget>, OrchestratorError> {
         let rows = sqlx::query(
             r#"
             SELECT
-                id, cluster, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
+                id, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
                 wallet, wallet_usdc_ata, vault_usdc_ata, delegated_signers, threshold,
                 max_amount_per_period, active, first_seen_at, last_seen_at, last_seen_slot, last_seen_signature
             FROM loyal_yield.balance_sweep_targets
-            WHERE cluster = $1 AND active
+            WHERE active
             ORDER BY id
             "#,
         )
-        .bind(cluster)
         .fetch_all(&self.pool)
         .await?;
 
@@ -391,21 +386,20 @@ impl NeonSqlClient {
         let row = sqlx::query(
             r#"
             INSERT INTO loyal_yield.balance_sweep_executions
-                (target_id, cluster, signature, slot, source_wallet_ata, destination_vault_ata,
+                (target_id, signature, slot, source_wallet_ata, destination_vault_ata,
                  amount_raw, source_pre_balance_raw, source_post_balance_raw,
                  destination_pre_balance_raw, destination_post_balance_raw, source_commitment,
                  raw_evidence, decoded_evidence, received_at, decoded_at, dedupe_key)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             ON CONFLICT (dedupe_key) DO UPDATE SET dedupe_key = EXCLUDED.dedupe_key
             RETURNING
-                id, target_id, cluster, signature, slot, source_wallet_ata, destination_vault_ata,
+                id, target_id, signature, slot, source_wallet_ata, destination_vault_ata,
                 amount_raw, source_pre_balance_raw, source_post_balance_raw,
                 destination_pre_balance_raw, destination_post_balance_raw, source_commitment,
                 raw_evidence, decoded_evidence, received_at, decoded_at, inserted_at, dedupe_key
             "#,
         )
         .bind(input.target_id.as_i64())
-        .bind(&input.cluster)
         .bind(&input.signature)
         .bind(slot)
         .bind(&input.source_wallet_ata)
@@ -1001,15 +995,14 @@ async fn upsert_policy(
         i64::try_from(event.slot).map_err(|_| OrchestratorError::SlotOutOfRange(event.slot))?;
     let policy_seed = i64::try_from(event.policy_seed)
         .map_err(|_| OrchestratorError::PolicySeedOutOfRange(event.policy_seed))?;
-    let row = sqlx::query_as!(
-        RoutePolicyRow,
+    let row = sqlx::query_as::<_, RoutePolicyRow>(
         r#"
         INSERT INTO loyal_yield.route_policies
-            (cluster, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
+            (settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
              delegated_signers, threshold, route_modes, stable_mints, kamino_markets, kamino_liquidity_mints,
              universe_preset, risk_profile, swap_lanes, active, last_seen_slot, last_seen_signature)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, TRUE, $17, $18)
-        ON CONFLICT (cluster, policy_account) DO UPDATE SET
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, TRUE, $16, $17)
+        ON CONFLICT (policy_account) DO UPDATE SET
             settings = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.settings ELSE loyal_yield.route_policies.settings END,
             authority = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.authority ELSE loyal_yield.route_policies.authority END,
             policy_seed = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.policy_seed ELSE loyal_yield.route_policies.policy_seed END,
@@ -1030,7 +1023,6 @@ async fn upsert_policy(
             last_seen_signature = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.last_seen_signature ELSE loyal_yield.route_policies.last_seen_signature END
         RETURNING
             id,
-            cluster,
             settings,
             authority,
             policy_seed,
@@ -1052,25 +1044,24 @@ async fn upsert_policy(
             last_seen_slot,
             last_seen_signature
         "#,
-        &event.cluster,
-        &event.settings,
-        &event.authority,
-        policy_seed,
-        &event.policy_account,
-        i16::from(event.vault_index),
-        &event.vault_pubkey,
-        &event.delegated_signers,
-        i32::from(event.threshold),
-        &event.route_modes,
-        &event.stable_mints,
-        &event.kamino_markets,
-        &event.kamino_liquidity_mints,
-        event.universe_preset.as_deref(),
-        event.risk_profile.as_deref(),
-        &event.swap_lanes,
-        slot,
-        &event.signature
     )
+    .bind(&event.settings)
+    .bind(&event.authority)
+    .bind(policy_seed)
+    .bind(&event.policy_account)
+    .bind(i16::from(event.vault_index))
+    .bind(&event.vault_pubkey)
+    .bind(&event.delegated_signers)
+    .bind(i32::from(event.threshold))
+    .bind(&event.route_modes)
+    .bind(&event.stable_mints)
+    .bind(&event.kamino_markets)
+    .bind(&event.kamino_liquidity_mints)
+    .bind(event.universe_preset.as_deref())
+    .bind(event.risk_profile.as_deref())
+    .bind(&event.swap_lanes)
+    .bind(slot)
+    .bind(&event.signature)
     .fetch_one(conn)
     .await?;
 
@@ -1082,13 +1073,12 @@ async fn upsert_vault(
     policy_id: PolicyId,
     event: &PolicyMatchInput,
 ) -> Result<ManagedVault, OrchestratorError> {
-    let row = sqlx::query_as!(
-        ManagedVaultRow,
+    let row = sqlx::query_as::<_, ManagedVaultRow>(
         r#"
         INSERT INTO loyal_yield.managed_vaults
-            (cluster, settings, vault_index, vault_pubkey, active_policy_id, active)
-        VALUES ($1, $2, $3, $4, $5, TRUE)
-        ON CONFLICT (cluster, settings, vault_index, vault_pubkey) DO UPDATE SET
+            (settings, vault_index, vault_pubkey, active_policy_id, active)
+        VALUES ($1, $2, $3, $4, TRUE)
+        ON CONFLICT (settings, vault_index, vault_pubkey) DO UPDATE SET
             active_policy_id = CASE
                 WHEN (
                     SELECT last_seen_slot
@@ -1128,14 +1118,13 @@ async fn upsert_vault(
                 THEN now()
                 ELSE loyal_yield.managed_vaults.last_seen_at
             END
-        RETURNING id, cluster, settings, vault_index, vault_pubkey, active_policy_id, active, first_seen_at, last_seen_at
+        RETURNING id, settings, vault_index, vault_pubkey, active_policy_id, active, first_seen_at, last_seen_at
         "#,
-        &event.cluster,
-        &event.settings,
-        i16::from(event.vault_index),
-        &event.vault_pubkey,
-        policy_id.as_i64()
     )
+    .bind(&event.settings)
+    .bind(i16::from(event.vault_index))
+    .bind(&event.vault_pubkey)
+    .bind(policy_id.as_i64())
     .fetch_one(conn)
     .await?;
 
@@ -1146,16 +1135,15 @@ async fn fetch_managed_vault_for_update(
     conn: &mut PgConnection,
     vault_id: VaultId,
 ) -> Result<ManagedVault, OrchestratorError> {
-    let row = sqlx::query_as!(
-        ManagedVaultRow,
+    let row = sqlx::query_as::<_, ManagedVaultRow>(
         r#"
-        SELECT id, cluster, settings, vault_index, vault_pubkey, active_policy_id, active, first_seen_at, last_seen_at
+        SELECT id, settings, vault_index, vault_pubkey, active_policy_id, active, first_seen_at, last_seen_at
         FROM loyal_yield.managed_vaults
         WHERE id = $1
         FOR UPDATE
         "#,
-        vault_id.as_i64()
     )
+    .bind(vault_id.as_i64())
     .fetch_one(conn)
     .await?;
 
@@ -1167,13 +1155,7 @@ async fn fetch_rebalance_input_vault_for_update(
     input: &SameMintRebalanceInput,
 ) -> Result<ManagedVault, OrchestratorError> {
     if let Some(vault_id) = input.vault_id {
-        let vault = fetch_managed_vault_for_update(conn, vault_id).await?;
-        if vault.cluster != input.cluster {
-            return Err(OrchestratorError::SameMintRebalanceValidation(
-                "vault_id cluster does not match input cluster".to_owned(),
-            ));
-        }
-        return Ok(vault);
+        return fetch_managed_vault_for_update(conn, vault_id).await;
     }
 
     let settings = input.settings.as_deref().ok_or_else(|| {
@@ -1187,20 +1169,18 @@ async fn fetch_rebalance_input_vault_for_update(
         )
     })?;
 
-    let row = sqlx::query_as!(
-        ManagedVaultRow,
+    let row = sqlx::query_as::<_, ManagedVaultRow>(
         r#"
-        SELECT id, cluster, settings, vault_index, vault_pubkey, active_policy_id, active, first_seen_at, last_seen_at
+        SELECT id, settings, vault_index, vault_pubkey, active_policy_id, active, first_seen_at, last_seen_at
         FROM loyal_yield.managed_vaults
-        WHERE cluster = $1 AND settings = $2 AND vault_index = $3 AND active
+        WHERE settings = $1 AND vault_index = $2 AND active
         ORDER BY last_seen_at DESC, id DESC
         LIMIT 1
         FOR UPDATE
         "#,
-        &input.cluster,
-        settings,
-        vault_index
     )
+    .bind(settings)
+    .bind(vault_index)
     .fetch_one(conn)
     .await?;
     Ok(managed_vault_from_row(row))
@@ -1680,15 +1660,10 @@ async fn record_wallet_ata_balance_update_in_tx(
     let row = sqlx::query(
         r#"
         INSERT INTO loyal_yield.balance_sweep_wallet_balances_current
-            (target_id, cluster, wallet, wallet_usdc_ata, amount_raw, owner, mint,
+            (target_id, wallet, wallet_usdc_ata, amount_raw, owner, mint,
              observed_slot, observed_at, source, source_commitment, account_data_hash, raw_evidence)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, now()), $10, $11, $12, $13)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, now()), $9, $10, $11, $12)
         ON CONFLICT (target_id) DO UPDATE SET
-            cluster = CASE
-                WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
-                THEN EXCLUDED.cluster
-                ELSE loyal_yield.balance_sweep_wallet_balances_current.cluster
-            END,
             wallet = CASE
                 WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
                 THEN EXCLUDED.wallet
@@ -1746,13 +1721,12 @@ async fn record_wallet_ata_balance_update_in_tx(
                 ELSE loyal_yield.balance_sweep_wallet_balances_current.updated_at
             END
         RETURNING
-            target_id, cluster, wallet, wallet_usdc_ata, amount_raw, owner, mint,
+            target_id, wallet, wallet_usdc_ata, amount_raw, owner, mint,
             observed_slot, observed_at, source, source_commitment, account_data_hash,
             raw_evidence, updated_at
         "#,
     )
     .bind(input.target_id.as_i64())
-    .bind(&input.cluster)
     .bind(&input.wallet)
     .bind(&input.wallet_usdc_ata)
     .bind(amount_raw)
@@ -1782,7 +1756,6 @@ fn required_decision_field<'a>(
 fn route_policy_from_row(row: RoutePolicyRow) -> RoutePolicy {
     RoutePolicy {
         id: PolicyId(row.id),
-        cluster: row.cluster,
         settings: row.settings,
         authority: row.authority,
         policy_seed: row.policy_seed,
@@ -1809,7 +1782,6 @@ fn route_policy_from_row(row: RoutePolicyRow) -> RoutePolicy {
 fn managed_vault_from_row(row: ManagedVaultRow) -> ManagedVault {
     ManagedVault {
         id: VaultId(row.id),
-        cluster: row.cluster,
         settings: row.settings,
         vault_index: row.vault_index,
         vault_pubkey: row.vault_pubkey,
@@ -1825,7 +1797,6 @@ fn balance_sweep_target_from_row(
 ) -> Result<BalanceSweepTarget, OrchestratorError> {
     Ok(BalanceSweepTarget {
         id: BalanceSweepTargetId(row.try_get("id")?),
-        cluster: row.try_get("cluster")?,
         settings: row.try_get("settings")?,
         authority: row.try_get("authority")?,
         policy_seed: row.try_get("policy_seed")?,
@@ -1851,7 +1822,6 @@ fn wallet_ata_balance_from_row(
 ) -> Result<WalletAtaBalanceCurrent, OrchestratorError> {
     Ok(WalletAtaBalanceCurrent {
         target_id: BalanceSweepTargetId(row.try_get("target_id")?),
-        cluster: row.try_get("cluster")?,
         wallet: row.try_get("wallet")?,
         wallet_usdc_ata: row.try_get("wallet_usdc_ata")?,
         amount_raw: row.try_get("amount_raw")?,
@@ -1873,7 +1843,6 @@ fn balance_sweep_execution_from_row(
     Ok(BalanceSweepExecution {
         id: row.try_get("id")?,
         target_id: BalanceSweepTargetId(row.try_get("target_id")?),
-        cluster: row.try_get("cluster")?,
         signature: row.try_get("signature")?,
         slot: row.try_get("slot")?,
         source_wallet_ata: row.try_get("source_wallet_ata")?,

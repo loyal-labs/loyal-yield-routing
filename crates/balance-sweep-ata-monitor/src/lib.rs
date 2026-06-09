@@ -89,13 +89,14 @@ pub struct AtaTarget {
     pub vault_usdc_ata: Pubkey,
 }
 
-impl TryFrom<&BalanceSweepTarget> for AtaTarget {
-    type Error = anyhow::Error;
-
-    fn try_from(value: &BalanceSweepTarget) -> Result<Self> {
+impl AtaTarget {
+    pub fn from_balance_sweep_target(
+        value: &BalanceSweepTarget,
+        cluster: impl Into<String>,
+    ) -> Result<Self> {
         Ok(Self {
             id: value.id,
-            cluster: value.cluster.clone(),
+            cluster: cluster.into(),
             wallet: value.wallet.clone(),
             wallet_usdc_ata: value.wallet_usdc_ata.parse()?,
             vault_pubkey: value.vault_pubkey.clone(),
@@ -568,7 +569,6 @@ pub fn observation_to_wallet_balance_update(
     );
     WalletAtaBalanceUpdateInput {
         target_id: observation.target_id,
-        cluster: observation.cluster,
         wallet: observation.wallet,
         wallet_usdc_ata: observation.wallet_usdc_ata,
         amount_raw: observation.amount_raw,

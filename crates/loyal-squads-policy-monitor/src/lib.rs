@@ -225,9 +225,7 @@ impl PolicyMatchSink for PostgresPolicyMatchSink {
     ) -> BoxFuture<'_, Result<(), MonitorError>> {
         let store = self.store.clone();
         Box::pin(async move {
-            let targets = store
-                .load_active_balance_sweep_targets(&event.cluster.to_string())
-                .await?;
+            let targets = store.load_active_balance_sweep_targets().await?;
             for target in targets {
                 if target.wallet_usdc_ata == event.source_wallet_ata
                     && target.vault_usdc_ata == event.destination_vault_ata
@@ -235,7 +233,6 @@ impl PolicyMatchSink for PostgresPolicyMatchSink {
                     store
                         .record_balance_sweep_execution(BalanceSweepExecutionInput {
                             target_id: target.id,
-                            cluster: event.cluster.to_string(),
                             signature: event.signature,
                             slot: event.slot,
                             source_wallet_ata: event.source_wallet_ata,
@@ -584,7 +581,6 @@ impl From<PolicyMatchEvent> for PolicyMatchInput {
         Self {
             signature: event.signature,
             slot: event.slot,
-            cluster: event.cluster.to_string(),
             settings: event.settings,
             authority: event.authority,
             policy_seed: event.policy_seed,
@@ -609,7 +605,6 @@ impl From<BalanceSweepPolicyEvent> for BalanceSweepPolicyMatchInput {
         Self {
             signature: event.signature,
             slot: event.slot,
-            cluster: event.cluster.to_string(),
             settings: event.settings,
             authority: event.authority,
             policy_seed: event.policy_seed,
@@ -1585,7 +1580,6 @@ mod tests {
             .record_balance_sweep_policy_match(BalanceSweepPolicyMatchInput {
                 signature: policy_signature.clone(),
                 slot: 1,
-                cluster: Cluster::Devnet.to_string(),
                 settings: Pubkey::new_unique().to_string(),
                 authority: Pubkey::new_unique().to_string(),
                 policy_seed: 1,

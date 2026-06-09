@@ -46,6 +46,12 @@ op run --env-file=.env.1password -- sh -c 'cargo run -p loyal-squads-policy-moni
 
 The monitor also reads `NEON_DATABASE_URL` directly when `--postgres-url` is omitted.
 
+`NEON_DATABASE_URL` is the Yield Neon environment boundary. Mainnet and devnet
+deployments should point this single variable at their branch-specific Neon
+connection string; `loyal_yield` tables are not partitioned or queried by a
+database `cluster` column. Solana cluster arguments still select RPC and chain
+targets for monitors and action construction.
+
 For monitor SQLx validation against Neon, set `DATABASE_URL` from the same
 direct Neon URL. Avoid the pooled `-pooler` URL for these tests because SQLx
 prepared statements need a stable backend connection.

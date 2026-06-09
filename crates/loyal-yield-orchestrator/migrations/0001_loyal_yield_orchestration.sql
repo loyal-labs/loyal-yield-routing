@@ -52,7 +52,6 @@ ALTER TYPE loyal_yield.decision_reason ADD VALUE IF NOT EXISTS 'no_same_mint_edg
 
 CREATE TABLE IF NOT EXISTS loyal_yield.route_policies (
     id BIGSERIAL PRIMARY KEY,
-    cluster TEXT NOT NULL,
     settings TEXT NOT NULL,
     authority TEXT NOT NULL,
     policy_seed BIGINT NOT NULL,
@@ -73,7 +72,7 @@ CREATE TABLE IF NOT EXISTS loyal_yield.route_policies (
     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_seen_slot BIGINT NOT NULL,
     last_seen_signature TEXT NOT NULL,
-    UNIQUE (cluster, policy_account)
+    UNIQUE (policy_account)
 );
 
 CREATE SEQUENCE IF NOT EXISTS loyal_yield.route_policies_id_seq AS BIGINT;
@@ -91,11 +90,10 @@ SELECT setval(
 );
 
 CREATE INDEX IF NOT EXISTS route_policies_active_idx
-    ON loyal_yield.route_policies (cluster, active, settings, vault_index);
+    ON loyal_yield.route_policies (active, settings, vault_index);
 
 CREATE TABLE IF NOT EXISTS loyal_yield.managed_vaults (
     id BIGSERIAL PRIMARY KEY,
-    cluster TEXT NOT NULL,
     settings TEXT NOT NULL,
     vault_index SMALLINT NOT NULL,
     vault_pubkey TEXT NOT NULL,
@@ -103,15 +101,14 @@ CREATE TABLE IF NOT EXISTS loyal_yield.managed_vaults (
     active BOOLEAN NOT NULL DEFAULT TRUE,
     first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (cluster, settings, vault_index, vault_pubkey)
+    UNIQUE (settings, vault_index, vault_pubkey)
 );
 
 CREATE INDEX IF NOT EXISTS managed_vaults_active_idx
-    ON loyal_yield.managed_vaults (cluster, active, active_policy_id);
+    ON loyal_yield.managed_vaults (active, active_policy_id);
 
 CREATE TABLE IF NOT EXISTS loyal_yield.balance_sweep_targets (
     id BIGSERIAL PRIMARY KEY,
-    cluster TEXT NOT NULL,
     settings TEXT NOT NULL,
     authority TEXT NOT NULL,
     policy_seed BIGINT NOT NULL,
@@ -129,18 +126,17 @@ CREATE TABLE IF NOT EXISTS loyal_yield.balance_sweep_targets (
     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_seen_slot BIGINT NOT NULL,
     last_seen_signature TEXT NOT NULL,
-    UNIQUE (cluster, policy_account)
+    UNIQUE (policy_account)
 );
 
 CREATE INDEX IF NOT EXISTS balance_sweep_targets_active_wallet_ata_idx
-    ON loyal_yield.balance_sweep_targets (cluster, active, wallet_usdc_ata);
+    ON loyal_yield.balance_sweep_targets (active, wallet_usdc_ata);
 
 CREATE INDEX IF NOT EXISTS balance_sweep_targets_wallet_idx
-    ON loyal_yield.balance_sweep_targets (cluster, wallet, active);
+    ON loyal_yield.balance_sweep_targets (wallet, active);
 
 CREATE TABLE IF NOT EXISTS loyal_yield.balance_sweep_wallet_balances_current (
     target_id BIGINT PRIMARY KEY REFERENCES loyal_yield.balance_sweep_targets(id) ON DELETE CASCADE,
-    cluster TEXT NOT NULL,
     wallet TEXT NOT NULL,
     wallet_usdc_ata TEXT NOT NULL,
     amount_raw BIGINT NOT NULL,
@@ -156,12 +152,11 @@ CREATE TABLE IF NOT EXISTS loyal_yield.balance_sweep_wallet_balances_current (
 );
 
 CREATE INDEX IF NOT EXISTS balance_sweep_wallet_balances_wallet_idx
-    ON loyal_yield.balance_sweep_wallet_balances_current (cluster, wallet, updated_at DESC);
+    ON loyal_yield.balance_sweep_wallet_balances_current (wallet, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS loyal_yield.balance_sweep_executions (
     id BIGSERIAL PRIMARY KEY,
     target_id BIGINT NOT NULL REFERENCES loyal_yield.balance_sweep_targets(id),
-    cluster TEXT NOT NULL,
     signature TEXT NOT NULL,
     slot BIGINT NOT NULL,
     source_wallet_ata TEXT NOT NULL,

@@ -96,7 +96,6 @@ impl fmt::Display for DecisionId {
 pub struct PolicyMatchInput {
     pub signature: String,
     pub slot: u64,
-    pub cluster: String,
     pub settings: String,
     pub authority: String,
     pub policy_seed: u64,
@@ -139,7 +138,6 @@ impl fmt::Display for BalanceSweepTargetId {
 pub struct BalanceSweepPolicyMatchInput {
     pub signature: String,
     pub slot: u64,
-    pub cluster: String,
     pub settings: String,
     pub authority: String,
     pub policy_seed: u64,
@@ -157,7 +155,6 @@ pub struct BalanceSweepPolicyMatchInput {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BalanceSweepTarget {
     pub id: BalanceSweepTargetId,
-    pub cluster: String,
     pub settings: String,
     pub authority: String,
     pub policy_seed: i64,
@@ -180,7 +177,6 @@ pub struct BalanceSweepTarget {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WalletAtaBalanceUpdateInput {
     pub target_id: BalanceSweepTargetId,
-    pub cluster: String,
     pub wallet: String,
     pub wallet_usdc_ata: String,
     pub amount_raw: u64,
@@ -197,7 +193,6 @@ pub struct WalletAtaBalanceUpdateInput {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WalletAtaBalanceCurrent {
     pub target_id: BalanceSweepTargetId,
-    pub cluster: String,
     pub wallet: String,
     pub wallet_usdc_ata: String,
     pub amount_raw: i64,
@@ -228,7 +223,6 @@ pub struct ProjectionBatchOutcome {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BalanceSweepExecutionInput {
     pub target_id: BalanceSweepTargetId,
-    pub cluster: String,
     pub signature: String,
     pub slot: u64,
     pub source_wallet_ata: String,
@@ -250,7 +244,6 @@ pub struct BalanceSweepExecutionInput {
 pub struct BalanceSweepExecution {
     pub id: i64,
     pub target_id: BalanceSweepTargetId,
-    pub cluster: String,
     pub signature: String,
     pub slot: i64,
     pub source_wallet_ata: String,
@@ -272,7 +265,6 @@ pub struct BalanceSweepExecution {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RoutePolicy {
     pub id: PolicyId,
-    pub cluster: String,
     pub settings: String,
     pub authority: String,
     pub policy_seed: i64,
@@ -298,7 +290,6 @@ pub struct RoutePolicy {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ManagedVault {
     pub id: VaultId,
-    pub cluster: String,
     pub settings: String,
     pub vault_index: i16,
     pub vault_pubkey: String,
@@ -527,7 +518,6 @@ impl PlannedRebalanceDecisionInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SameMintRebalanceInput {
-    pub cluster: String,
     pub vault_id: Option<VaultId>,
     pub settings: Option<String>,
     pub vault_index: Option<i16>,

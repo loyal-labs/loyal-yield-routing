@@ -206,11 +206,11 @@ async fn load_active_ata_targets(
     cluster: &str,
 ) -> Result<Vec<AtaTarget>> {
     let targets = store
-        .load_active_balance_sweep_targets(cluster)
+        .load_active_balance_sweep_targets()
         .await
         .map_err(orchestrator_error)?
         .iter()
-        .map(AtaTarget::try_from)
+        .map(|target| AtaTarget::from_balance_sweep_target(target, cluster))
         .collect::<Result<Vec<_>>>()?;
     Ok(targets)
 }
