@@ -4,9 +4,14 @@ import type { LoyalClusterConfig } from "../cluster.js";
 import { BytesEncoder } from "./bytes.js";
 
 const SQUADS_SEED_PREFIX = new TextEncoder().encode("smart_account");
+const SQUADS_SEED_SETTINGS = new TextEncoder().encode("settings");
+const SQUADS_SEED_SMART_ACCOUNT = new TextEncoder().encode("smart_account");
 const SQUADS_SEED_POLICY = new TextEncoder().encode("policy");
+const SQUADS_PROGRAM_CONFIG_SEED = new TextEncoder().encode("program_config");
 const SQUADS_FULL_PERMISSIONS_MASK = 7;
 const SQUADS_SYNC_SIGNER_COUNT = 1;
+const SQUADS_CREATE_SMART_ACCOUNT_DISCRIMINATOR = [197, 102, 253, 231, 77, 84, 50, 17] as const;
+const SQUADS_PROGRAM_CONFIG_DISCRIMINATOR = [196, 210, 90, 231, 144, 149, 140, 63] as const;
 const EXECUTE_SETTINGS_TRANSACTION_SYNC_DISCRIMINATOR = [138, 209, 64, 163, 79, 67, 233, 76] as const;
 
 export type DataConstraint = {
@@ -49,6 +54,36 @@ export type SquadsContext = {
   vault: PublicKey;
 };
 
+export type SquadsProgramConfig = {
+  smartAccountIndex: bigint;
+  authority: PublicKey;
+  smartAccountCreationFeeLamports: bigint;
+  treasury: PublicKey;
+};
+
+export function deriveSquadsSettings(config: LoyalClusterConfig, seed: bigint): PublicKey {
+  assertPositiveU128(seed, "Squads smart-account seed");
+  return PublicKey.findProgramAddressSync(
+    [SQUADS_SEED_PREFIX, SQUADS_SEED_SETTINGS, littleEndianBytes(seed, 16)],
+    config.squadsSmartAccountProgramId,
+  )[0];
+}
+
+export function deriveSquadsVault(config: LoyalClusterConfig, settings: PublicKey, vaultIndex: number): PublicKey {
+  assertU8(vaultIndex, "vault index");
+  return PublicKey.findProgramAddressSync(
+    [SQUADS_SEED_PREFIX, settings.toBytes(), SQUADS_SEED_SMART_ACCOUNT, new Uint8Array([vaultIndex])],
+    config.squadsSmartAccountProgramId,
+  )[0];
+}
+
+export function deriveSquadsProgramConfig(config: LoyalClusterConfig): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [SQUADS_SEED_PREFIX, SQUADS_PROGRAM_CONFIG_SEED],
+    config.squadsSmartAccountProgramId,
+  )[0];
+}
+
 export function deriveActionAccount(config: LoyalClusterConfig, settings: PublicKey): PublicKey {
   const seedBytes = new Uint8Array(8);
   new DataView(seedBytes.buffer).setBigUint64(0, YIELD_ROUTE_STANDALONE_ACTION_SEED, true);
@@ -56,6 +91,50 @@ export function deriveActionAccount(config: LoyalClusterConfig, settings: Public
     [SQUADS_SEED_PREFIX, SQUADS_SEED_POLICY, settings.toBytes(), seedBytes],
     config.squadsSmartAccountProgramId,
   )[0];
+}
+
+export function createSquadsSmartAccountInstruction(
+  config: LoyalClusterConfig,
+  input: {
+    payer: PublicKey;
+    verifier: PublicKey;
+    seed: bigint;
+    treasury: PublicKey;
+  },
+): TransactionInstruction {
+  assertPositiveU128(input.seed, "Squads smart-account seed");
+  const settings = deriveSquadsSettings(config, input.seed);
+
+  return new TransactionInstruction({
+    programId: config.squadsSmartAccountProgramId,
+    keys: [
+      { pubkey: deriveSquadsProgramConfig(config), isSigner: false, isWritable: true },
+      { pubkey: input.treasury, isSigner: false, isWritable: true },
+      { pubkey: input.payer, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: config.squadsSmartAccountProgramId, isSigner: false, isWritable: false },
+      { pubkey: settings, isSigner: false, isWritable: true },
+    ],
+    data: Buffer.from(serializeSquadsCreateSmartAccountArgs(input.verifier)),
+  });
+}
+
+export function decodeSquadsProgramConfig(data: Uint8Array): SquadsProgramConfig {
+  if (data.length < 96) {
+    throw new Error("Squads program config account is too short");
+  }
+  for (const [index, byte] of SQUADS_PROGRAM_CONFIG_DISCRIMINATOR.entries()) {
+    if (data[index] !== byte) {
+      throw new Error("account does not match Squads program config discriminator");
+    }
+  }
+
+  return {
+    smartAccountIndex: littleEndianBigInt(data.subarray(8, 24)),
+    authority: new PublicKey(data.subarray(24, 56)),
+    smartAccountCreationFeeLamports: littleEndianBigInt(data.subarray(56, 64)),
+    treasury: new PublicKey(data.subarray(64, 96)),
+  };
 }
 
 export function createProgramInteractionPolicyInstruction(
@@ -82,6 +161,24 @@ export function createProgramInteractionPolicyInstruction(
     ],
     data: Buffer.from(data),
   });
+}
+
+function serializeSquadsCreateSmartAccountArgs(verifier: PublicKey): Uint8Array {
+  const encoder = new BytesEncoder();
+  encoder.pushBytes(SQUADS_CREATE_SMART_ACCOUNT_DISCRIMINATOR);
+  encoder.pushOption<PublicKey>(undefined, (pubkey) => encoder.pushPubkey(pubkey));
+  encoder.pushU16(1);
+  encoder.pushU32(1);
+  encoder.pushPubkey(verifier);
+  encoder.pushU8(SQUADS_FULL_PERMISSIONS_MASK);
+  encoder.pushU32(0);
+  encoder.pushOption<PublicKey>(undefined, (pubkey) => encoder.pushPubkey(pubkey));
+  encoder.pushOption<string>(undefined, (memo) => {
+    const bytes = new TextEncoder().encode(memo);
+    encoder.pushU32(bytes.length);
+    encoder.pushBytes(bytes);
+  });
+  return encoder.finish();
 }
 
 type CompiledPayload = {
@@ -265,5 +362,41 @@ function operatorTag(operator: DataConstraint["operator"]): number {
       return 4;
     case "lessThanOrEqualTo":
       return 5;
+  }
+}
+
+function littleEndianBytes(value: bigint, byteLength: number): Uint8Array {
+  if (value < 0n) {
+    throw new Error("cannot encode a negative integer");
+  }
+  const bytes = new Uint8Array(byteLength);
+  let remaining = value;
+  for (let index = 0; index < byteLength; index += 1) {
+    bytes[index] = Number(remaining & 0xffn);
+    remaining >>= 8n;
+  }
+  if (remaining !== 0n) {
+    throw new Error(`integer does not fit in ${byteLength} bytes`);
+  }
+  return bytes;
+}
+
+function littleEndianBigInt(bytes: Uint8Array): bigint {
+  let value = 0n;
+  for (let index = bytes.length - 1; index >= 0; index -= 1) {
+    value = (value << 8n) + BigInt(bytes[index] ?? 0);
+  }
+  return value;
+}
+
+function assertPositiveU128(value: bigint, label: string): void {
+  if (value <= 0n || value > (1n << 128n) - 1n) {
+    throw new Error(`${label} must be in the range 1..=u128::MAX`);
+  }
+}
+
+function assertU8(value: number, label: string): void {
+  if (!Number.isInteger(value) || value < 0 || value > 255) {
+    throw new Error(`${label} must be a u8`);
   }
 }

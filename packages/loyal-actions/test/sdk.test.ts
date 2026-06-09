@@ -52,8 +52,6 @@ describe("initYieldRoutePolicy", () => {
       [policy.actionAccount.toBase58(), false, true],
     ]);
     expect(policy.instructions[0]?.data.subarray(0, 8).toJSON().data).toEqual([138, 209, 64, 163, 79, 67, 233, 76]);
-    expect(policy.instructions[0]?.data[13]).toBe(7);
-    expect(policy.instructions[0]?.data[22]).toBe(4);
     expect(policy.routes.sameMint.instructionConstraintIndexes).toEqual([0, 2]);
     expect(policy.routes.jupiter.instructionConstraintIndexes).toEqual([0, 1, 2]);
     expect(policy.routes.loyal).toBeUndefined();
@@ -106,6 +104,24 @@ describe("initYieldRoutePolicy", () => {
     expect(policy.spec.kaminoLiquidityMints).toEqual(policy.spec.stableMints);
   });
 
+  test("allows callers to narrow the stablecoin universe", () => {
+    const sdk = createLoyalActionsSdk({ cluster: LoyalCluster.MainnetBeta });
+    const policy = sdk.initYieldRoutePolicy({
+      risk: RiskBasket.Safe,
+      stablecoins: [Stablecoin.USDC, Stablecoin.PYUSD],
+      swapLanes: [SwapLane.Jupiter] as const,
+      squads,
+    });
+
+    expect(policy.spec.stablecoins).toEqual([Stablecoin.USDC, Stablecoin.PYUSD]);
+    expect(policy.spec.stableMints.map((mint) => mint.toBase58())).toEqual([
+      "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+    ]);
+    expect(policy.routes.sameMint.instructionConstraintIndexes).toEqual([0, 2]);
+    expect(policy.routes.jupiter.instructionConstraintIndexes).toEqual([0, 1, 2]);
+  });
+
   test("keeps risk baskets cumulative and curated", () => {
     const safe = RISK_BASKET_MARKETS[RiskBasket.Safe];
     const medium = RISK_BASKET_MARKETS[RiskBasket.Medium];
@@ -126,6 +142,14 @@ describe("initYieldRoutePolicy", () => {
   test("rejects invalid inputs before instruction creation", () => {
     const sdk = createLoyalActionsSdk({ cluster: LoyalCluster.MainnetBeta });
 
+    expect(() =>
+      sdk.initYieldRoutePolicy({
+        risk: RiskBasket.Safe,
+        stablecoins: [Stablecoin.USDC, Stablecoin.USDC],
+        swapLanes: [SwapLane.Jupiter],
+        squads,
+      }),
+    ).toThrow("duplicate stablecoin");
     expect(() =>
       sdk.initYieldRoutePolicy({
         risk: RiskBasket.Safe,

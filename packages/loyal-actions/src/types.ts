@@ -51,6 +51,7 @@ export type InitYieldRoutePolicyInput<
   Lanes extends readonly SwapLane[] = readonly SwapLane[],
 > = {
   risk: RiskBasket;
+  stablecoins?: readonly Stablecoin[];
   swapLanes: Lanes;
   maxFeeBps?: MaxFeeBps;
   squads: {

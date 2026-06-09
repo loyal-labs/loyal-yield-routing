@@ -3,7 +3,7 @@ import { DEFAULT_MAX_FEE_BPS, RISK_BASKET_MARKETS, STABLECOIN_MINTS, STABLECOINS
 import { clusterConfigFor } from "./cluster.js";
 import { kaminoDepositConstraint, kaminoWithdrawConstraint, jupiterConstraint, loyalHubConstraint, uniquePubkeys } from "./internal/protocols.js";
 import { createProgramInteractionPolicyInstruction, deriveActionAccount } from "./internal/squads.js";
-import { LoyalCluster, MaxFeeBps, RiskBasket, SwapLane } from "./types.js";
+import { LoyalCluster, MaxFeeBps, RiskBasket, Stablecoin, SwapLane } from "./types.js";
 import type { InitYieldRoutePolicyInput, InitYieldRoutePolicyResult, LoyalActionsSdk, LoyalActionRoute3 } from "./types.js";
 
 const VALID_MAX_FEE_BPS = new Set<number>([
@@ -27,7 +27,8 @@ export function createLoyalActionsSdk(config: { cluster: LoyalCluster }): LoyalA
       validateInput(input);
 
       const maxFeeBps = input.maxFeeBps ?? DEFAULT_MAX_FEE_BPS;
-      const stableMints = STABLECOINS.map((stablecoin) => STABLECOIN_MINTS[stablecoin]);
+      const stablecoins = input.stablecoins ?? STABLECOINS;
+      const stableMints = stablecoins.map((stablecoin) => STABLECOIN_MINTS[stablecoin]);
       const kaminoMarkets = [...RISK_BASKET_MARKETS[input.risk]];
       const kaminoLiquidityMints = [...stableMints];
       const actionAccount = deriveActionAccount(clusterConfig, input.squads.settings);
@@ -68,7 +69,7 @@ export function createLoyalActionsSdk(config: { cluster: LoyalCluster }): LoyalA
         routes: routes as InitYieldRoutePolicyResult<Lanes>["routes"],
         spec: {
           risk: input.risk,
-          stablecoins: [...STABLECOINS],
+          stablecoins: [...stablecoins],
           stableMints,
           kaminoMarkets,
           kaminoLiquidityMints,
@@ -83,6 +84,21 @@ export function createLoyalActionsSdk(config: { cluster: LoyalCluster }): LoyalA
 function validateInput(input: InitYieldRoutePolicyInput): void {
   if (!Object.values(RiskBasket).includes(input.risk)) {
     throw new Error(`unsupported risk basket: ${String(input.risk)}`);
+  }
+  if (input.stablecoins !== undefined) {
+    if (!Array.isArray(input.stablecoins) || input.stablecoins.length === 0) {
+      throw new Error("at least one stablecoin is required");
+    }
+    const seenStablecoins = new Set<Stablecoin>();
+    for (const stablecoin of input.stablecoins) {
+      if (!Object.values(Stablecoin).includes(stablecoin)) {
+        throw new Error(`unsupported stablecoin: ${String(stablecoin)}`);
+      }
+      if (seenStablecoins.has(stablecoin)) {
+        throw new Error(`duplicate stablecoin: ${stablecoin}`);
+      }
+      seenStablecoins.add(stablecoin);
+    }
   }
   if (!Array.isArray(input.swapLanes) || input.swapLanes.length === 0) {
     throw new Error("at least one swap lane is required");
@@ -112,7 +128,8 @@ function validateInput(input: InitYieldRoutePolicyInput): void {
       throw new Error(`squads.${name} must be a PublicKey`);
     }
   }
-  const stableMints = STABLECOINS.map((stablecoin) => STABLECOIN_MINTS[stablecoin]);
+  const stablecoins: readonly Stablecoin[] = input.stablecoins ?? STABLECOINS;
+  const stableMints = stablecoins.map((stablecoin) => STABLECOIN_MINTS[stablecoin]);
   if (uniquePubkeys(stableMints).length !== stableMints.length) {
     throw new Error("stablecoin mint registry contains duplicates");
   }

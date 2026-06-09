@@ -1,5 +1,5 @@
 import { PublicKey } from "@solana/web3.js";
-import { LoyalCluster, RiskBasket, SwapLane, createLoyalActionsSdk } from "../src/index.js";
+import { LoyalCluster, RiskBasket, Stablecoin, SwapLane, createLoyalActionsSdk } from "../src/index.js";
 
 const sdk = createLoyalActionsSdk({ cluster: LoyalCluster.MainnetBeta });
 const key = new PublicKey("11111111111111111111111111111112");
@@ -25,6 +25,7 @@ void loyalIndexes;
 
 sdk.initYieldRoutePolicy({
   risk: RiskBasket.Safe,
+  stablecoins: [Stablecoin.USDC, Stablecoin.PYUSD],
   swapLanes: [SwapLane.Jupiter] as const,
   squads: {
     settings: key,
@@ -33,8 +34,6 @@ sdk.initYieldRoutePolicy({
     accountIndex: 0,
     vault: key,
   },
-  // @ts-expect-error Stablecoin exposure is fixed by the SDK in v1.
-  stablecoins: [],
 });
 
 sdk.initYieldRoutePolicy({
