@@ -182,23 +182,40 @@ async fn validate_loyal_ata_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> 
         }
     }
 
-    let has_raw_account_data: bool = sqlx::query_scalar(
+    let observation_columns: i64 = sqlx::query_scalar(
         r#"
-        SELECT EXISTS (
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_schema = 'loyal'
-              AND table_name = 'balance_sweep_wallet_ata_observations'
-              AND column_name = 'raw_account_data_base64'
-        )
+        SELECT count(*)
+        FROM information_schema.columns
+        WHERE table_schema = 'loyal'
+          AND table_name = 'balance_sweep_wallet_ata_observations'
+          AND column_name = ANY($1)
         "#,
     )
+    .bind(&[
+        "event_id",
+        "cluster",
+        "target_id",
+        "wallet",
+        "wallet_usdc_ata",
+        "vault_pubkey",
+        "vault_usdc_ata",
+        "amount_raw",
+        "owner",
+        "mint",
+        "slot",
+        "observed_at",
+        "source",
+        "source_commitment",
+        "account_data_hash",
+        "raw_account_data_base64",
+        "raw_evidence",
+        "received_at",
+        "inserted_at",
+    ])
     .fetch_one(pool)
     .await?;
-    if !has_raw_account_data {
-        return Err(
-            "loyal.balance_sweep_wallet_ata_observations is missing raw_account_data_base64".into(),
-        );
+    if observation_columns != 19 {
+        return Err("loyal ATA observations table is missing required columns".into());
     }
 
     let dedupe_columns: i64 = sqlx::query_scalar(

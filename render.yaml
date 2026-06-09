@@ -34,6 +34,7 @@ services:
     autoDeploy: false
     dockerfilePath: ./Dockerfile.balance-sweep-ata-monitor
     dockerContext: .
+    preDeployCommand: /usr/local/bin/loyal-timescale-migrations --apply
     dockerCommand: /usr/local/bin/balance-sweep-ata-monitor
     maxShutdownDelaySeconds: 60
     envVars:
@@ -62,6 +63,7 @@ services:
     autoDeploy: false
     dockerfilePath: ./Dockerfile.balance-sweep-ata-monitor
     dockerContext: .
+    preDeployCommand: /usr/local/bin/loyal-timescale-migrations --apply
     dockerCommand: /usr/local/bin/balance-sweep-ata-projector
     maxShutdownDelaySeconds: 60
     envVars:

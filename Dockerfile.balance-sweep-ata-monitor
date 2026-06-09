@@ -24,15 +24,16 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    cargo chef cook --release -p balance-sweep-ata-monitor --recipe-path recipe.json
+    cargo chef cook --release -p balance-sweep-ata-monitor -p loyal-timescale-migrations --recipe-path recipe.json
 
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    cargo build --release -p balance-sweep-ata-monitor \
+    cargo build --release -p balance-sweep-ata-monitor -p loyal-timescale-migrations \
     && cp /app/target/release/balance-sweep-ata-monitor /usr/local/bin/balance-sweep-ata-monitor \
-    && cp /app/target/release/balance-sweep-ata-projector /usr/local/bin/balance-sweep-ata-projector
+    && cp /app/target/release/balance-sweep-ata-projector /usr/local/bin/balance-sweep-ata-projector \
+    && cp /app/target/release/loyal-timescale-migrations /usr/local/bin/loyal-timescale-migrations
 
 FROM debian:bookworm-slim AS runtime
 
@@ -42,5 +43,6 @@ RUN apt-get update \
 
 COPY --from=builder /usr/local/bin/balance-sweep-ata-monitor /usr/local/bin/balance-sweep-ata-monitor
 COPY --from=builder /usr/local/bin/balance-sweep-ata-projector /usr/local/bin/balance-sweep-ata-projector
+COPY --from=builder /usr/local/bin/loyal-timescale-migrations /usr/local/bin/loyal-timescale-migrations
 
 ENTRYPOINT ["/usr/local/bin/balance-sweep-ata-monitor"]
