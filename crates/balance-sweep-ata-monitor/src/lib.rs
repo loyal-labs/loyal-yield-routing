@@ -40,6 +40,8 @@ use tokio::{
     time,
 };
 
+pub mod earn_apy;
+
 type AccountNotification = solana_client::rpc_response::Response<UiAccount>;
 
 pub const LASERSTREAM_SOURCE: &str = "laserstream_grpc";

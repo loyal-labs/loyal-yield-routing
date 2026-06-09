@@ -8,11 +8,15 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use balance_sweep_ata_monitor::earn_apy::{
+    earn_apy_strategy_for_risk_profile, EarnApyRefreshConfig, EarnApySnapshotRefresher,
+};
 use balance_sweep_ata_monitor::{
     ata_target_set, diff_ata_target_sets, laserstream_replay_from_slot, run_event_loop,
     seed_current_balances, AtaTarget, AtaUpdateSource, LaserstreamAtaUpdateSource,
     SubscriptionConfig, TimescaleAtaConfig, TimescaleAtaObservationSink, WebsocketAtaUpdateSource,
 };
+use chrono::Utc;
 use clap::{Parser, ValueEnum};
 use loyal_yield_orchestrator::{OrchestratorConfig, OrchestratorError, OrchestratorStore};
 use solana_client::rpc_client::RpcClient;
@@ -63,6 +67,19 @@ struct Args {
     target_refresh_seconds: u64,
     #[arg(long)]
     once: bool,
+    #[arg(
+        long,
+        env = "EARN_APY_REFRESH_INTERVAL_SECONDS",
+        default_value_t = 3600,
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    earn_apy_refresh_interval_seconds: u64,
+    #[arg(long, env = "DISABLE_EARN_APY_REFRESH")]
+    disable_earn_apy_refresh: bool,
+    #[arg(long, env = "EARN_APY_RISK_PROFILES", default_value = "safe")]
+    earn_apy_risk_profiles: String,
+    #[arg(long)]
+    earn_apy_only: bool,
 }
 
 struct MonitorSession {
@@ -91,6 +108,12 @@ async fn main() -> Result<()> {
         once = args.once,
         "starting balance sweep ATA monitor"
     );
+    if args.earn_apy_only {
+        refresh_earn_apy_once(&args).await?;
+        tracing::info!("exiting after one-shot Earn APY snapshot refresh");
+        return Ok(());
+    }
+
     let store =
         OrchestratorStore::connect(OrchestratorConfig::new(args.postgres_url.clone())).await?;
     let observations =
@@ -114,7 +137,79 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    if !args.disable_earn_apy_refresh {
+        let refresher = connect_earn_apy_refresher(&args).await?;
+        tokio::spawn(run_earn_apy_refresh_loop(
+            refresher,
+            Duration::from_secs(args.earn_apy_refresh_interval_seconds),
+        ));
+    }
+
     supervise_monitor_sessions(args, store, observations, config, targets).await
+}
+
+async fn connect_earn_apy_refresher(args: &Args) -> Result<EarnApySnapshotRefresher> {
+    let mut config = EarnApyRefreshConfig::default();
+    config.strategies = parse_earn_apy_strategies(&args.earn_apy_risk_profiles)?;
+    EarnApySnapshotRefresher::connect(&args.timescaledb_url, &args.postgres_url, config).await
+}
+
+fn parse_earn_apy_strategies(
+    value: &str,
+) -> Result<Vec<balance_sweep_ata_monitor::earn_apy::EarnApyStrategy>> {
+    let strategies = value
+        .split(',')
+        .map(str::trim)
+        .filter(|profile| !profile.is_empty())
+        .map(|profile| {
+            earn_apy_strategy_for_risk_profile(profile)
+                .ok_or_else(|| anyhow::anyhow!("unsupported Earn APY risk profile: {profile}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if strategies.is_empty() {
+        anyhow::bail!("at least one Earn APY risk profile is required");
+    }
+    Ok(strategies)
+}
+
+async fn refresh_earn_apy_once(args: &Args) -> Result<()> {
+    let refresher = connect_earn_apy_refresher(args).await?;
+    let outcome = refresher.refresh(Utc::now()).await?;
+    tracing::info!(
+        generated_at = %outcome.generated_at,
+        profiles = outcome.profiles,
+        inserted_or_updated = outcome.inserted_or_updated,
+        first_sample_hour = ?outcome.first_sample_hour,
+        last_sample_hour = ?outcome.last_sample_hour,
+        "refreshed hourly Earn APY snapshots"
+    );
+    Ok(())
+}
+
+async fn run_earn_apy_refresh_loop(
+    refresher: EarnApySnapshotRefresher,
+    refresh_interval: Duration,
+) {
+    loop {
+        let now = Utc::now();
+        match refresher.refresh(now).await {
+            Ok(outcome) => {
+                tracing::info!(
+                    generated_at = %outcome.generated_at,
+                    profiles = outcome.profiles,
+                    inserted_or_updated = outcome.inserted_or_updated,
+                    first_sample_hour = ?outcome.first_sample_hour,
+                    last_sample_hour = ?outcome.last_sample_hour,
+                    "refreshed hourly Earn APY snapshots"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to refresh hourly Earn APY snapshots");
+            }
+        }
+
+        time::sleep(refresh_interval).await;
+    }
 }
 
 async fn supervise_monitor_sessions(

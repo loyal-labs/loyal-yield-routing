@@ -48,28 +48,13 @@ services:
         value: laserstream
       - key: BALANCE_SWEEP_TARGET_REFRESH_SECONDS
         value: "300"
+      - key: EARN_APY_REFRESH_INTERVAL_SECONDS
+        value: "3600"
+      - key: EARN_APY_RISK_PROFILES
+        value: safe
       - key: HELIUS_API_KEY
         sync: false
       - key: LASERSTREAM_ENDPOINT
         value: https://laserstream-mainnet-ewr.helius-rpc.com
-      - key: RUST_LOG
-        value: warn,balance_sweep_ata_monitor=info
-
-  - type: worker
-    name: loyal-balance-sweep-ata-projector
-    runtime: docker
-    region: oregon
-    plan: starter
-    autoDeploy: false
-    dockerfilePath: ./Dockerfile.balance-sweep-ata-monitor
-    dockerContext: .
-    preDeployCommand: /usr/local/bin/loyal-timescale-migrations --apply
-    dockerCommand: /usr/local/bin/balance-sweep-ata-projector
-    maxShutdownDelaySeconds: 60
-    envVars:
-      - key: TIMESCALEDB_URL
-        sync: false
-      - key: NEON_DATABASE_URL
-        sync: false
       - key: RUST_LOG
         value: warn,balance_sweep_ata_monitor=info
