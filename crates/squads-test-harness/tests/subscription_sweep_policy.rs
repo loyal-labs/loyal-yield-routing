@@ -27,6 +27,10 @@ struct CreatedDelegation {
 
 impl SubscriptionSweepFixture {
     fn new() -> Self {
+        Self::new_with_minimum_delegator_balance(None)
+    }
+
+    fn new_with_minimum_delegator_balance(minimum_delegator_balance: Option<u64>) -> Self {
         let mut context = create_funded_squads_test_context_with_config(FundedSquadsTestConfig {
             vault_index: 1,
             ..FundedSquadsTestConfig::default()
@@ -87,6 +91,7 @@ impl SubscriptionSweepFixture {
                 wallet_usdc,
                 vault_usdc,
                 PERIOD_CAP,
+                minimum_delegator_balance,
             );
         try_send_instructions(&mut context.svm, &[create_policy_ix], &context.wallet, &[])
             .expect("create subscription sweep policy");
@@ -271,6 +276,30 @@ fn flexible_policy_allows_rotated_recurring_delegation_nonces() {
     );
     assert_eq!(fixture.context.wallet_balance(), wallet_lamports_before);
     assert_eq!(fixture.context.vault_balance(), vault_lamports_before);
+}
+
+#[test]
+fn subscription_sweep_policy_enforces_delegator_balance_floor() {
+    let mut exact_floor =
+        SubscriptionSweepFixture::new_with_minimum_delegator_balance(Some(WALLET_USDC));
+    let delegation = exact_floor.create_delegation(7, PERIOD_CAP, PERIOD_LENGTH_S, 0);
+    let ix = exact_floor.transfer_ix(delegation.pubkey, SWEEP_AMOUNT);
+    exact_floor
+        .send_transfer(ix)
+        .expect("source balance exactly at floor passes before transfer");
+
+    let mut fixture = SubscriptionSweepFixture::new_with_minimum_delegator_balance(Some(
+        WALLET_USDC - SWEEP_AMOUNT + 1,
+    ));
+    let delegation = fixture.create_delegation(7, PERIOD_CAP, PERIOD_LENGTH_S, 0);
+    let ix = fixture.transfer_ix(delegation.pubkey, SWEEP_AMOUNT);
+    fixture
+        .send_transfer(ix)
+        .expect("source balance above floor passes");
+
+    let ix = fixture.transfer_ix(delegation.pubkey, SWEEP_AMOUNT);
+    fixture
+        .assert_rejected_with_automation_without_balance_change("source balance below floor", ix);
 }
 
 #[test]

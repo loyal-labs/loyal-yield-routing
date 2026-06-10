@@ -14,6 +14,7 @@ pub fn create_squads_program_interaction_subscription_sweep_policy_instruction(
     delegator_usdc_ata: Pubkey,
     vault_usdc_ata: Pubkey,
     max_amount_per_period: u64,
+    minimum_delegator_balance: Option<u64>,
 ) -> Instruction {
     create_squads_program_interaction_flexible_subscription_sweep_policy_instruction(
         squads_settings,
@@ -26,6 +27,7 @@ pub fn create_squads_program_interaction_subscription_sweep_policy_instruction(
         delegator_usdc_ata,
         vault_usdc_ata,
         max_amount_per_period,
+        minimum_delegator_balance,
     )
 }
 
@@ -40,6 +42,7 @@ pub fn create_squads_program_interaction_flexible_subscription_sweep_policy_inst
     delegator_usdc_ata: Pubkey,
     vault_usdc_ata: Pubkey,
     max_amount_per_period: u64,
+    minimum_delegator_balance: Option<u64>,
 ) -> Instruction {
     create_squads_compact_program_interaction_policy_instruction(
         squads_settings,
@@ -53,6 +56,7 @@ pub fn create_squads_program_interaction_flexible_subscription_sweep_policy_inst
             delegator_usdc_ata,
             vault_usdc_ata,
             max_amount_per_period,
+            minimum_delegator_balance,
         )],
     )
 }
@@ -63,28 +67,36 @@ fn subscription_sweep_constraint(
     delegator_usdc_ata: Pubkey,
     vault_usdc_ata: Pubkey,
     max_amount_per_period: u64,
+    minimum_delegator_balance: Option<u64>,
 ) -> SquadsInstructionConstraint {
     let subscription_authority = derive_subscription_authority(delegator, USDC_MINT);
     let event_authority = derive_subscription_event_authority();
 
+    let mut account_constraints = vec![
+        recurring_delegation_account_constraint(
+            delegator,
+            vault,
+            subscription_authority,
+            max_amount_per_period,
+        ),
+        pubkey_constraint(1, subscription_authority, Some(SUBSCRIPTIONS_PROGRAM_ID)),
+        pubkey_constraint(2, delegator_usdc_ata, Some(spl_token::id())),
+    ];
+    if let Some(minimum_balance) = minimum_delegator_balance {
+        account_constraints.push(delegator_token_balance_constraint(minimum_balance));
+    }
+    account_constraints.extend([
+        pubkey_constraint(3, vault_usdc_ata, Some(spl_token::id())),
+        pubkey_constraint(4, USDC_MINT, Some(spl_token::id())),
+        pubkey_constraint(5, spl_token::id(), None),
+        pubkey_constraint(6, vault, None),
+        pubkey_constraint(7, event_authority, None),
+        pubkey_constraint(8, SUBSCRIPTIONS_PROGRAM_ID, None),
+    ]);
+
     SquadsInstructionConstraint {
         program_id: SUBSCRIPTIONS_PROGRAM_ID,
-        account_constraints: vec![
-            recurring_delegation_account_constraint(
-                delegator,
-                vault,
-                subscription_authority,
-                max_amount_per_period,
-            ),
-            pubkey_constraint(1, subscription_authority, Some(SUBSCRIPTIONS_PROGRAM_ID)),
-            pubkey_constraint(2, delegator_usdc_ata, Some(spl_token::id())),
-            pubkey_constraint(3, vault_usdc_ata, Some(spl_token::id())),
-            pubkey_constraint(4, USDC_MINT, Some(spl_token::id())),
-            pubkey_constraint(5, spl_token::id(), None),
-            pubkey_constraint(6, vault, None),
-            pubkey_constraint(7, event_authority, None),
-            pubkey_constraint(8, SUBSCRIPTIONS_PROGRAM_ID, None),
-        ],
+        account_constraints,
         data_constraints: vec![
             SquadsDataConstraint {
                 data_offset: 0,
@@ -102,6 +114,20 @@ fn subscription_sweep_constraint(
                 operator: SquadsDataOperator::Equals,
             },
         ],
+    }
+}
+
+fn delegator_token_balance_constraint(minimum_balance: u64) -> SquadsAccountConstraint {
+    const SPL_TOKEN_ACCOUNT_AMOUNT_OFFSET: u64 = 64;
+
+    SquadsAccountConstraint {
+        account_index: 2,
+        account_constraint: SquadsAccountConstraintType::AccountData(vec![SquadsDataConstraint {
+            data_offset: SPL_TOKEN_ACCOUNT_AMOUNT_OFFSET,
+            data_value: SquadsDataValue::U64Le(minimum_balance),
+            operator: SquadsDataOperator::GreaterThanOrEqualTo,
+        }]),
+        owner: Some(spl_token::id()),
     }
 }
 
