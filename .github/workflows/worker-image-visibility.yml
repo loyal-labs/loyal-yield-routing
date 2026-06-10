@@ -1,0 +1,36 @@
+name: worker-image-visibility
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/worker-image-visibility.yml
+  workflow_dispatch:
+
+permissions:
+  packages: write
+
+jobs:
+  make-public:
+    name: Make approved worker package public
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - loyal-yield-routing/laserstream-workers
+          - loyal-yield-routing/light-workers
+    steps:
+      - name: Make GHCR package public
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORG: loyal-labs
+          PACKAGE: ${{ matrix.package }}
+        run: |
+          set -euo pipefail
+          encoded_package="${PACKAGE//\//%2F}"
+          gh api \
+            --method PATCH \
+            "/orgs/${ORG}/packages/container/${encoded_package}/visibility" \
+            -f visibility=public
