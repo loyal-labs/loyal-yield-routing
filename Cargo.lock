@@ -626,6 +626,7 @@ name = "balance-sweep-ata-monitor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "balance-sweep-ata-observations",
  "base64 0.22.1",
  "chrono",
  "clap",
@@ -643,6 +644,33 @@ dependencies = [
  "solana-sdk",
  "spl-token",
  "sqlx",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "balance-sweep-ata-observations"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "futures-util",
+ "loyal-yield-orchestrator",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+]
+
+[[package]]
+name = "balance-sweep-ata-projector"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "balance-sweep-ata-observations",
+ "clap",
+ "loyal-yield-orchestrator",
  "tokio",
  "tracing",
  "tracing-subscriber",

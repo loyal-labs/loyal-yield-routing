@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use balance_sweep_ata_monitor::{
+use balance_sweep_ata_observations::{
     observation_to_wallet_balance_update, BalanceSweepAtaObservationEvent, TimescaleAtaConfig,
     TimescaleAtaObservationSink,
 };

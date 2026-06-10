@@ -14,6 +14,7 @@
     "lint": "eslint",
     "autodeposit:execute": "bun scripts/execute-autodeposit-policy.ts",
     "autodeposit:test": "bun test scripts/execute-autodeposit-policy.test.ts",
+    "balance-sweep:project": "cargo run -p balance-sweep-ata-projector",
     "loyal-actions:build": "bun run --cwd packages/loyal-actions build",
     "loyal-actions:test": "bun run --cwd packages/loyal-actions test",
     "loyal-actions:typecheck": "bun run --cwd packages/loyal-actions typecheck",
