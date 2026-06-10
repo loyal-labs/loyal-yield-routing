@@ -21,10 +21,10 @@ Target split IDs, once created/imported in Render, must be recorded here before 
 
 | Object | ID |
 | --- | --- |
-| Heavy Render project | `TODO-render-heavy-project-id` |
-| Heavy production environment | `TODO-render-heavy-production-environment-id` |
-| Light Render project | `TODO-render-light-project-id` |
-| Light production environment | `TODO-render-light-production-environment-id` |
+| Heavy Render project | `prj-d8kgt3a8qa3s7382glb0` |
+| Heavy production environment | `evm-d8kgt3a8qa3s7382glc0` |
+| Light Render project | `prj-d8kgt4r7uimc73b1ul0g` |
+| Light production environment | `evm-d8kgt4r7uimc73b1ul1g` |
 
 CI builds both images in `.github/workflows/worker-images.yml` and tags them as `sha-${GITHUB_SHA}`. Render services should use those immutable SHA tags or image digests. Do not use `latest` as the only service image reference.
 
