@@ -1,60 +1,86 @@
-services:
-  - type: worker
-    name: loyal-kamino-reserve-monitor
-    runtime: docker
-    region: oregon
-    plan: starter
-    autoDeploy: false
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-    preDeployCommand: /usr/local/bin/kamino-reserve-monitor --sync-supported-reserves
-    dockerCommand: /usr/local/bin/kamino-reserve-monitor
-    maxShutdownDelaySeconds: 60
-    envVars:
-      - key: TIMESCALEDB_URL
-        sync: false
-      - key: SOLANA_RPC_URL
-        sync: false
-      - key: KAMINO_UPDATE_SOURCE
-        value: laserstream
-      - key: HELIUS_API_KEY
-        sync: false
-      - key: LASERSTREAM_ENDPOINT
-        value: https://laserstream-mainnet-ewr.helius-rpc.com
-      - key: KAMINO_API_BASE
-        value: https://api.kamino.finance
-      - key: RUST_LOG
-        value: warn,kamino_reserve_monitor=info
+projects:
+  - name: loyal-yield-laserstream-workers
+    environments:
+      - name: production
+        services:
+          - type: worker
+            name: loyal-kamino-reserve-monitor
+            runtime: image
+            region: oregon
+            plan: starter
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers@sha256:d0348c469e4b326e51db7a8444dc2654be5c815f4f1b2f75a5cba73674fe5892
+            preDeployCommand: /usr/local/bin/kamino-reserve-monitor --sync-supported-reserves
+            dockerCommand: /usr/local/bin/kamino-reserve-monitor
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: TIMESCALEDB_URL
+                sync: false
+              - key: SOLANA_RPC_URL
+                sync: false
+              - key: KAMINO_UPDATE_SOURCE
+                value: laserstream
+              - key: HELIUS_API_KEY
+                sync: false
+              - key: LASERSTREAM_ENDPOINT
+                value: https://laserstream-mainnet-ewr.helius-rpc.com
+              - key: KAMINO_API_BASE
+                value: https://api.kamino.finance
+              - key: RUST_LOG
+                value: warn,kamino_reserve_monitor=info
 
-  - type: worker
-    name: loyal-balance-sweep-ata-monitor
-    runtime: docker
-    region: oregon
-    plan: starter
-    autoDeploy: false
-    dockerfilePath: ./Dockerfile.balance-sweep-ata-monitor
-    dockerContext: .
-    preDeployCommand: /usr/local/bin/loyal-timescale-migrations --apply
-    dockerCommand: /usr/local/bin/balance-sweep-ata-monitor
-    maxShutdownDelaySeconds: 60
-    envVars:
-      - key: NEON_DATABASE_URL
-        sync: false
-      - key: TIMESCALEDB_URL
-        sync: false
-      - key: SOLANA_RPC_URL
-        sync: false
-      - key: BALANCE_SWEEP_UPDATE_SOURCE
-        value: laserstream
-      - key: BALANCE_SWEEP_TARGET_REFRESH_SECONDS
-        value: "300"
-      - key: EARN_APY_REFRESH_INTERVAL_SECONDS
-        value: "3600"
-      - key: EARN_APY_RISK_PROFILES
-        value: safe
-      - key: HELIUS_API_KEY
-        sync: false
-      - key: LASERSTREAM_ENDPOINT
-        value: https://laserstream-mainnet-ewr.helius-rpc.com
-      - key: RUST_LOG
-        value: warn,balance_sweep_ata_monitor=info
+          - type: worker
+            name: loyal-balance-sweep-ata-monitor
+            runtime: image
+            region: oregon
+            plan: starter
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers@sha256:d0348c469e4b326e51db7a8444dc2654be5c815f4f1b2f75a5cba73674fe5892
+            preDeployCommand: /usr/local/bin/loyal-timescale-migrations --apply
+            dockerCommand: /usr/local/bin/balance-sweep-ata-monitor
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: TIMESCALEDB_URL
+                sync: false
+              - key: SOLANA_RPC_URL
+                sync: false
+              - key: BALANCE_SWEEP_UPDATE_SOURCE
+                value: laserstream
+              - key: BALANCE_SWEEP_TARGET_REFRESH_SECONDS
+                value: "300"
+              - key: EARN_APY_REFRESH_INTERVAL_SECONDS
+                value: "3600"
+              - key: EARN_APY_RISK_PROFILES
+                value: safe
+              - key: HELIUS_API_KEY
+                sync: false
+              - key: LASERSTREAM_ENDPOINT
+                value: https://laserstream-mainnet-ewr.helius-rpc.com
+              - key: RUST_LOG
+                value: warn,balance_sweep_ata_monitor=info
+
+  - name: loyal-yield-light-workers
+    environments:
+      - name: production
+        services:
+          - type: worker
+            name: loyal-balance-sweep-ata-projector
+            runtime: image
+            region: oregon
+            plan: starter
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers@sha256:344f23923d75b4c3d2c590f258dfc14770ce9af8caca369e5fa7698fe586c6ee
+            dockerCommand: /usr/local/bin/balance-sweep-ata-projector
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: TIMESCALEDB_URL
+                sync: false
+              - key: RUST_LOG
+                value: warn,balance_sweep_ata_projector=info
