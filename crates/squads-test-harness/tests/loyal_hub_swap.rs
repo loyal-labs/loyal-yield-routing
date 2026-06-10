@@ -9,6 +9,7 @@ use solana_sdk::{
     signature::Keypair,
     signer::Signer,
 };
+use solana_system_interface::program as system_program;
 use squads_test_harness::{
     create_funded_squads_test_context_with_mock_programs, create_squads_smart_account_instruction,
     derive_loyal_hub_authority, derive_loyal_hub_config, derive_loyal_hub_lane_authority,
@@ -17,18 +18,18 @@ use squads_test_harness::{
     execute_squads_sync_transaction_instruction, get_spl_token_amount,
     initialize_loyal_hub_config_instruction,
     initialize_loyal_hub_config_instruction_with_rebalancer_and_lane_count, loyal_action_context,
-    loyal_hub_lane_token_account, loyal_hub_rebalance_inventory_data, loyal_hub_swap_exact_in_data,
-    loyal_hub_token_account, loyal_hub_withdraw_inventory_data,
-    mock_jupiter_stable_reserve_token_account, mock_jupiter_swap_lane,
-    rebalance_loyal_hub_inventory_instruction, seed_loyal_hub_inventory_spl_accounts,
-    seed_loyal_hub_inventory_spl_accounts_for_lane, seed_mock_jupiter_spl_accounts,
-    seed_mock_jupiter_stable_reserve_spl_accounts, seed_spl_mint_if_missing,
-    seed_spl_token_account, set_loyal_hub_max_fee_instruction, set_loyal_hub_paused_instruction,
-    try_send_instructions, withdraw_loyal_hub_inventory_instruction, HubSwapExecution,
-    JupiterSwapExecution, LoyalHubRebalanceTransfer, MockJupiterStableReserveTokenAccount,
-    MockProgram, RouteActionExt, SquadsCompiledInstruction, SquadsPool,
-    DEFAULT_LOYAL_HUB_LANE_COUNT, LAMPORTS_PER_SOL, LOYAL_HUB_SWAP_PROGRAM_ID, PYUSD_DECIMALS,
-    PYUSD_MINT, USDC_DECIMALS, USDC_MINT,
+    loyal_hub_initialize_config_data, loyal_hub_lane_token_account,
+    loyal_hub_rebalance_inventory_data, loyal_hub_swap_exact_in_data, loyal_hub_token_account,
+    loyal_hub_withdraw_inventory_data, mock_jupiter_stable_reserve_token_account,
+    mock_jupiter_swap_lane, rebalance_loyal_hub_inventory_instruction,
+    seed_loyal_hub_inventory_spl_accounts, seed_loyal_hub_inventory_spl_accounts_for_lane,
+    seed_mock_jupiter_spl_accounts, seed_mock_jupiter_stable_reserve_spl_accounts,
+    seed_spl_mint_if_missing, seed_spl_token_account, set_loyal_hub_max_fee_instruction,
+    set_loyal_hub_paused_instruction, try_send_instructions,
+    withdraw_loyal_hub_inventory_instruction, HubSwapExecution, JupiterSwapExecution,
+    LoyalHubRebalanceTransfer, MockJupiterStableReserveTokenAccount, MockProgram, RouteActionExt,
+    SquadsCompiledInstruction, SquadsPool, DEFAULT_LOYAL_HUB_LANE_COUNT, LAMPORTS_PER_SOL,
+    LOYAL_HUB_SWAP_PROGRAM_ID, PYUSD_DECIMALS, PYUSD_MINT, USDC_DECIMALS, USDC_MINT,
 };
 
 include!("loyal_hub_swap/support.rs");
@@ -36,6 +37,44 @@ include!("loyal_hub_swap/support.rs");
 #[test]
 fn loyal_hub_default_lane_count_matches_32_lane_contract() {
     assert_eq!(DEFAULT_LOYAL_HUB_LANE_COUNT, 32);
+}
+
+#[test]
+fn loyal_hub_initialization_requires_admin_payer() {
+    let Some(mut context) =
+        create_funded_squads_test_context_with_mock_programs(&[MockProgram::LoyalHubSwap])
+            .expect("create funded Squads test context")
+    else {
+        eprintln!("skipping real Loyal Hub test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+
+    let attacker_admin = Keypair::new();
+    let data = loyal_hub_initialize_config_data(
+        attacker_admin.pubkey(),
+        attacker_admin.pubkey(),
+        attacker_admin.pubkey(),
+        50,
+        false,
+        DEFAULT_LOYAL_HUB_LANE_COUNT,
+        &[USDC_MINT, PYUSD_MINT],
+    );
+    let ix = Instruction {
+        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(context.wallet_pubkey(), true),
+            AccountMeta::new(derive_loyal_hub_config(), false),
+            AccountMeta::new_readonly(system_program::ID, false),
+        ],
+        data,
+    };
+
+    let result = try_send_instructions(&mut context.svm, &[ix], &context.wallet, &[]);
+
+    assert!(
+        result.is_err(),
+        "non-admin payer must not initialize Loyal Hub config"
+    );
 }
 
 #[test]
@@ -432,6 +471,12 @@ fn loyal_hub_rebalancer_can_move_inventory_between_high_lanes() {
         &[USDC_MINT, PYUSD_MINT],
         AMOUNT_IN * 2,
         source_lane,
+    );
+    seed_loyal_hub_inventory_spl_accounts_for_lane(
+        &mut fixture.context.svm,
+        &[USDC_MINT, PYUSD_MINT],
+        0,
+        destination_lane,
     );
 
     let transfer = LoyalHubRebalanceTransfer {
