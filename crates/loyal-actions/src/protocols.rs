@@ -475,6 +475,10 @@ pub fn loyal_hub_initialize_config_instruction(
     lane_count: u8,
     allowed_mints: &[Pubkey],
 ) -> Result<Instruction> {
+    if payer != admin {
+        return Err(LoyalActionError::InvalidHubAdmin);
+    }
+
     Ok(Instruction {
         program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
         accounts: vec![
@@ -858,7 +862,7 @@ mod tests {
     #[test]
     fn loyal_hub_initialize_data_and_accounts_match_wire_abi() {
         let payer = Pubkey::new_unique();
-        let admin = Pubkey::new_unique();
+        let admin = payer;
         let hub_authorizer = Pubkey::new_unique();
         let inventory_rebalancer = Pubkey::new_unique();
         let mint_a = Pubkey::new_unique();
@@ -940,6 +944,29 @@ mod tests {
                 ..mint_offset + (2 * loyal_hub_abi::config_init::ALLOWED_MINT_ITEM_LEN)],
             mint_b.as_ref()
         );
+    }
+
+    #[test]
+    fn loyal_hub_initialize_rejects_non_admin_payer() {
+        let payer = Pubkey::new_unique();
+        let admin = Pubkey::new_unique();
+        let hub_authorizer = Pubkey::new_unique();
+        let inventory_rebalancer = Pubkey::new_unique();
+        let mint_a = Pubkey::new_unique();
+        let mint_b = Pubkey::new_unique();
+
+        let result = loyal_hub_initialize_config_instruction(
+            payer,
+            admin,
+            hub_authorizer,
+            inventory_rebalancer,
+            50,
+            true,
+            3,
+            &[mint_a, mint_b],
+        );
+
+        assert_eq!(result, Err(LoyalActionError::InvalidHubAdmin));
     }
 
     #[test]

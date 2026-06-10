@@ -74,6 +74,7 @@ fn process_initialize_config(
     let system_program = next_account_info(account_info_iter)?;
 
     require_signer(payer)?;
+    require_key(payer, &config.admin)?;
     require_key(system_program, &SYSTEM_PROGRAM_ID)?;
     require_key(config_account, &derive_config(program_id).0)?;
     if config_account.owner() != &SYSTEM_PROGRAM_ID || !config_account.data_is_empty() {

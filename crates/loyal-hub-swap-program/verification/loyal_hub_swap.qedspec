@@ -44,12 +44,12 @@ type Error
 handler initialize_config
   (max_fee_bps : U128)
   (lane_count : U64) : State.Uninitialized -> State.Active {
-  permissionless
+  auth admin
 
   accounts {
     payer                 : signer, writable
     config                : writable, pda ["config"]
-    admin                 : readonly
+    admin                 : signer
     hub_authorizer        : readonly
     inventory_rebalancer  : readonly
     allowed_mint_0        : readonly
@@ -59,6 +59,7 @@ handler initialize_config
 
   requires max_fee_bps <= 10000 else InvalidFee
   requires lane_count > 0 else InvalidLane
+  requires payer.pubkey == admin.pubkey else Unauthorized
   requires allowed_mint_0.pubkey != allowed_mint_1.pubkey else InvalidMint
 
   effect {

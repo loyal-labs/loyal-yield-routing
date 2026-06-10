@@ -18,6 +18,7 @@ pub enum LoyalActionError {
     DuplicateActionSeeds,
     PubkeyTableOverflow,
     InvalidFeeBps,
+    InvalidHubAdmin,
     InvalidAllowedMintCount,
     InvalidLaneCount,
     InvalidRebalanceTransferCount,
@@ -51,6 +52,9 @@ impl fmt::Display for LoyalActionError {
                 "fee basis points must be <= {}",
                 loyal_hub_abi::MAX_FEE_BPS
             ),
+            Self::InvalidHubAdmin => {
+                formatter.write_str("Loyal Hub config payer must be the configured admin")
+            }
             Self::InvalidAllowedMintCount => {
                 write!(
                     formatter,
