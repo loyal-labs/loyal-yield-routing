@@ -18,6 +18,47 @@ type PreparedOperation = {
   [key: string]: unknown;
 };
 
+type PreparedAutodepositPull = {
+  prepared: PreparedOperation;
+  persistence: {
+    liquidityMint: string;
+  };
+};
+
+type PreparedEarnDeposit = {
+  prepared: PreparedOperation;
+};
+
+type SmartAccountVaultsClient = {
+  prepareEarnUsdcAutodepositPull: (args: {
+    policy: PublicKey;
+    walletAddress: PublicKey;
+    feePayer: PublicKey;
+    policySigner: PublicKey;
+    recurringDelegation: PublicKey;
+    amountRaw: bigint;
+    cluster: string;
+  }) => Promise<PreparedAutodepositPull>;
+  prepareEarnUsdcDeposit: (args: {
+    amountRaw: bigint;
+    cluster: string;
+    feePayer: PublicKey;
+    initializeYieldRoutingPolicy: boolean;
+    policySigner: PublicKey;
+    settingsPda: PublicKey;
+    walletAddress: PublicKey;
+    yieldRoutingPolicy: {
+      account: PublicKey;
+      seed: bigint;
+    };
+  }) => Promise<PreparedEarnDeposit>;
+};
+
+type NeonQuery = (
+  strings: TemplateStringsArray,
+  ...values: unknown[]
+) => Promise<unknown[]>;
+
 type AppModules = {
   Keypair: typeof Keypair;
   PublicKey: typeof PublicKey;
@@ -35,7 +76,7 @@ type AppModules = {
   createSmartAccountVaultsClient: (config: {
     connection: Connection;
     programId: PublicKey;
-  }) => any;
+  }) => SmartAccountVaultsClient;
   decodeTransferCheckedInstruction: (
     instruction: TransactionInstruction,
     programId?: PublicKey
@@ -58,8 +99,14 @@ type AppModules = {
     reserve: PublicKey;
   };
   LoyalCluster: { MainnetBeta: string };
-  neon: (databaseUrl: string) => any;
+  neon: (databaseUrl: string) => NeonQuery;
   PROGRAM_ADDRESS: string;
+  SUBSCRIPTIONS_PROGRAM_ID: PublicKey;
+  SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PER_PERIOD_OFFSET: number;
+  SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PULLED_OFFSET: number;
+  SUBSCRIPTION_RECURRING_DELEGATION_DATA_LEN: number;
+  SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR: number;
+  SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR_OFFSET: number;
   TOKEN_PROGRAM_ID: PublicKey;
 };
 
@@ -67,11 +114,24 @@ export type SweepAmountInput = {
   walletBalanceRaw: bigint;
   walletBalanceFloorRaw: bigint;
   maxAmountPerPeriodRaw: bigint | null;
+  remainingAllowanceRaw?: bigint | null;
 };
 
 export type SweepAmountDecision =
   | { kind: "no_excess"; excessRaw: bigint }
-  | { kind: "sweep"; amountRaw: bigint; excessRaw: bigint; capped: boolean };
+  | {
+      kind: "allowance_exhausted";
+      excessRaw: bigint;
+      remainingAllowanceRaw: bigint;
+    }
+  | {
+      kind: "sweep";
+      amountRaw: bigint;
+      excessRaw: bigint;
+      capped: boolean;
+      cappedByMaxPerPeriod: boolean;
+      cappedByRemainingAllowance: boolean;
+    };
 
 type CliOptions = {
   execute: boolean;
@@ -92,12 +152,23 @@ type EligibleTarget = {
   recurringDelegation: string;
   walletBalanceFloorRaw: bigint;
   maxAmountPerPeriodRaw: bigint | null;
+  periodLengthSeconds: bigint | null;
+  startTimestamp: bigint | null;
 };
 
 type SimulationSummary = {
   err: unknown;
   logs: string[];
   unitsConsumed: number | null;
+};
+
+type RecurringDelegationAllowance = {
+  amountPerPeriodRaw: bigint;
+  amountPulledInPeriodRaw: bigint;
+  remainingAmountInPeriodRaw: bigint;
+  periodLengthSeconds: bigint | null;
+  startTimestamp: bigint | null;
+  nextResetAt: string | null;
 };
 
 const DEFAULT_COMMITMENT = "confirmed";
@@ -146,6 +217,17 @@ async function loadAppModules(): Promise<AppModules> {
     LoyalCluster: loyalActionsModule.LoyalCluster,
     neon: neonModule.neon,
     PROGRAM_ADDRESS: smartAccountsModule.PROGRAM_ADDRESS,
+    SUBSCRIPTIONS_PROGRAM_ID: loyalActionsModule.SUBSCRIPTIONS_PROGRAM_ID,
+    SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PER_PERIOD_OFFSET:
+      loyalActionsModule.SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PER_PERIOD_OFFSET,
+    SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PULLED_OFFSET:
+      loyalActionsModule.SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PULLED_OFFSET,
+    SUBSCRIPTION_RECURRING_DELEGATION_DATA_LEN:
+      loyalActionsModule.SUBSCRIPTION_RECURRING_DELEGATION_DATA_LEN,
+    SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR:
+      loyalActionsModule.SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR,
+    SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR_OFFSET:
+      loyalActionsModule.SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR_OFFSET,
     TOKEN_PROGRAM_ID: splTokenModule.TOKEN_PROGRAM_ID,
   };
 }
@@ -172,20 +254,41 @@ export function computeSweepAmount(
     return { kind: "no_excess", excessRaw };
   }
 
+  let amountRaw = excessRaw;
+  let cappedByMaxPerPeriod = false;
+  let cappedByRemainingAllowance = false;
+
   if (
     input.maxAmountPerPeriodRaw !== null &&
     input.maxAmountPerPeriodRaw > BigInt(0) &&
-    excessRaw > input.maxAmountPerPeriodRaw
+    amountRaw > input.maxAmountPerPeriodRaw
   ) {
-    return {
-      kind: "sweep",
-      amountRaw: input.maxAmountPerPeriodRaw,
-      excessRaw,
-      capped: true,
-    };
+    amountRaw = input.maxAmountPerPeriodRaw;
+    cappedByMaxPerPeriod = true;
   }
 
-  return { kind: "sweep", amountRaw: excessRaw, excessRaw, capped: false };
+  if (input.remainingAllowanceRaw !== null && input.remainingAllowanceRaw !== undefined) {
+    if (input.remainingAllowanceRaw <= BigInt(0)) {
+      return {
+        kind: "allowance_exhausted",
+        excessRaw,
+        remainingAllowanceRaw: input.remainingAllowanceRaw,
+      };
+    }
+    if (amountRaw > input.remainingAllowanceRaw) {
+      amountRaw = input.remainingAllowanceRaw;
+      cappedByRemainingAllowance = true;
+    }
+  }
+
+  return {
+    kind: "sweep",
+    amountRaw,
+    excessRaw,
+    capped: cappedByMaxPerPeriod || cappedByRemainingAllowance,
+    cappedByMaxPerPeriod,
+    cappedByRemainingAllowance,
+  };
 }
 
 export function parseKeypairSecret(value: string): Keypair {
@@ -297,6 +400,8 @@ async function loadEligibleTarget(
       t.recurring_delegation,
       t.wallet_balance_floor_raw,
       t.max_amount_per_period,
+      t.period_length_seconds,
+      t.start_timestamp,
       rp.policy_account AS route_policy_account,
       rp.policy_seed AS route_policy_seed
     FROM loyal_yield.balance_sweep_targets t
@@ -356,6 +461,12 @@ async function loadEligibleTarget(
     maxAmountPerPeriodRaw: row.max_amount_per_period
       ? BigInt(readRequiredString(row.max_amount_per_period, "max_amount_per_period"))
       : null,
+    periodLengthSeconds: row.period_length_seconds
+      ? BigInt(readRequiredString(row.period_length_seconds, "period_length_seconds"))
+      : null,
+    startTimestamp: row.start_timestamp
+      ? BigInt(readRequiredString(row.start_timestamp, "start_timestamp"))
+      : null,
   };
 }
 
@@ -393,6 +504,126 @@ async function getTokenBalanceRaw(
     }
     throw error;
   }
+}
+
+async function loadRecurringDelegationAllowance(args: {
+  appModules: AppModules;
+  connection: Connection;
+  recurringDelegation: PublicKey;
+  periodLengthSeconds: bigint | null;
+  startTimestamp: bigint | null;
+}): Promise<RecurringDelegationAllowance> {
+  const account = await args.connection.getAccountInfo(
+    args.recurringDelegation,
+    DEFAULT_COMMITMENT
+  );
+  if (!account) {
+    throw new Error(
+      `Recurring delegation account ${args.recurringDelegation.toBase58()} was not found.`
+    );
+  }
+  if (!account.owner.equals(args.appModules.SUBSCRIPTIONS_PROGRAM_ID)) {
+    throw new Error(
+      `Recurring delegation account ${args.recurringDelegation.toBase58()} is not owned by the Subscriptions program.`
+    );
+  }
+  if (
+    account.data.length <
+    args.appModules.SUBSCRIPTION_RECURRING_DELEGATION_DATA_LEN
+  ) {
+    throw new Error(
+      `Recurring delegation account ${args.recurringDelegation.toBase58()} has unexpected data length ${account.data.length}.`
+    );
+  }
+  const discriminator =
+    account.data[
+      args.appModules.SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR_OFFSET
+    ];
+  if (
+    discriminator !==
+    args.appModules.SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR
+  ) {
+    throw new Error(
+      `Recurring delegation account ${args.recurringDelegation.toBase58()} has unexpected discriminator ${discriminator}.`
+    );
+  }
+
+  const amountPerPeriodRaw = readU64Le(
+    account.data,
+    args.appModules.SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PER_PERIOD_OFFSET,
+    "amount_per_period"
+  );
+  const amountPulledInPeriodRaw = readU64Le(
+    account.data,
+    args.appModules.SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PULLED_OFFSET,
+    "amount_pulled_in_period"
+  );
+  const remainingAmountInPeriodRaw =
+    amountPerPeriodRaw > amountPulledInPeriodRaw
+      ? amountPerPeriodRaw - amountPulledInPeriodRaw
+      : BigInt(0);
+
+  return {
+    amountPerPeriodRaw,
+    amountPulledInPeriodRaw,
+    remainingAmountInPeriodRaw,
+    periodLengthSeconds: args.periodLengthSeconds,
+    startTimestamp: args.startTimestamp,
+    nextResetAt: estimateNextResetAt(
+      args.startTimestamp,
+      args.periodLengthSeconds
+    ),
+  };
+}
+
+function readU64Le(data: Uint8Array, offset: number, label: string): bigint {
+  if (offset < 0 || offset + 8 > data.length) {
+    throw new Error(`Recurring delegation account is missing ${label}.`);
+  }
+  return new DataView(
+    data.buffer,
+    data.byteOffset + offset,
+    8
+  ).getBigUint64(0, true);
+}
+
+function estimateNextResetAt(
+  startTimestamp: bigint | null,
+  periodLengthSeconds: bigint | null
+): string | null {
+  if (
+    startTimestamp === null ||
+    periodLengthSeconds === null ||
+    periodLengthSeconds <= BigInt(0)
+  ) {
+    return null;
+  }
+  const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
+  const nextResetSeconds =
+    nowSeconds < startTimestamp
+      ? startTimestamp
+      : startTimestamp +
+        ((nowSeconds - startTimestamp) / periodLengthSeconds + BigInt(1)) *
+          periodLengthSeconds;
+  return new Date(Number(nextResetSeconds) * 1000).toISOString();
+}
+
+function summarizeAllowance(allowance: RecurringDelegationAllowance) {
+  return {
+    amountPerPeriodRaw: allowance.amountPerPeriodRaw.toString(),
+    amountPulledInPeriodRaw: allowance.amountPulledInPeriodRaw.toString(),
+    remainingAmountInPeriodRaw:
+      allowance.remainingAmountInPeriodRaw.toString(),
+    amountPerPeriodUi:
+      Number(allowance.amountPerPeriodRaw) / 10 ** USDC_DECIMALS,
+    amountPulledInPeriodUi:
+      Number(allowance.amountPulledInPeriodRaw) / 10 ** USDC_DECIMALS,
+    remainingAmountInPeriodUi:
+      Number(allowance.remainingAmountInPeriodRaw) / 10 ** USDC_DECIMALS,
+    periodLengthSeconds: allowance.periodLengthSeconds?.toString() ?? null,
+    startTimestamp: allowance.startTimestamp?.toString() ?? null,
+    nextResetAt: allowance.nextResetAt,
+  };
 }
 
 async function simulatePreparedOperation(args: {
@@ -905,26 +1136,41 @@ async function main() {
   const vaultUsdcAta = new PublicKeyCtor(target.vaultUsdcAta);
   const walletBalanceRaw = await getTokenBalanceRaw(connection, walletUsdcAta);
   const vaultPreBalanceRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
+  const allowance = await loadRecurringDelegationAllowance({
+    appModules,
+    connection,
+    recurringDelegation: new PublicKeyCtor(target.recurringDelegation),
+    periodLengthSeconds: target.periodLengthSeconds,
+    startTimestamp: target.startTimestamp,
+  });
   const effectiveFloorRaw =
     options.overrideFloorRaw ?? target.walletBalanceFloorRaw;
   const sweepDecision = computeSweepAmount({
     walletBalanceRaw,
     walletBalanceFloorRaw: effectiveFloorRaw,
     maxAmountPerPeriodRaw: target.maxAmountPerPeriodRaw,
+    remainingAllowanceRaw: allowance.remainingAmountInPeriodRaw,
   });
 
-  if (sweepDecision.kind === "no_excess") {
+  if (
+    sweepDecision.kind === "no_excess" ||
+    sweepDecision.kind === "allowance_exhausted"
+  ) {
     console.log(
       JSON.stringify(
         {
           status: "noop",
-          reason: "wallet_balance_not_above_floor",
+          reason:
+            sweepDecision.kind === "no_excess"
+              ? "wallet_balance_not_above_floor"
+              : "subscription_allowance_exhausted",
           targetId: target.id.toString(),
           walletBalanceRaw: walletBalanceRaw.toString(),
           walletBalanceFloorRaw: effectiveFloorRaw.toString(),
           persistedWalletBalanceFloorRaw: target.walletBalanceFloorRaw.toString(),
           overrideFloorRaw: options.overrideFloorRaw?.toString() ?? null,
           excessRaw: sweepDecision.excessRaw.toString(),
+          subscriptionAllowance: summarizeAllowance(allowance),
         },
         null,
         2
@@ -1015,7 +1261,9 @@ async function main() {
     excessRaw: sweepDecision.excessRaw.toString(),
     amountRaw: sweepDecision.amountRaw.toString(),
     amountUi: Number(sweepDecision.amountRaw) / 10 ** USDC_DECIMALS,
-    cappedByMaxPerPeriod: sweepDecision.capped,
+    cappedByMaxPerPeriod: sweepDecision.cappedByMaxPerPeriod,
+    cappedByRemainingAllowance: sweepDecision.cappedByRemainingAllowance,
+    subscriptionAllowance: summarizeAllowance(allowance),
     transactionOrder: [
       "subscription_pull_wallet_to_earn_vault",
       "kamino_main_usdc_deposit_from_earn_vault",
