@@ -20,6 +20,14 @@ op run --env-file=.env.1password -- sh -c '<command>'
 
 Keep shell variable expansion inside the `sh -c` subprocess so `op run` injects values before the command reads them.
 
+## Worker Deploys
+
+The Render background workers use prebuilt GHCR images instead of Render Docker builds. Keep them pinned. Build and push worker images with the `worker-images` GitHub Actions workflow, which publishes immutable `sha-<commit>` tags under `ghcr.io/loyal-labs/loyal-yield-routing`.
+
+LaserStream-heavy monitors share `Dockerfile.laserstream-workers` / `laserstream-workers`: `loyal-kamino-reserve-monitor` and `loyal-balance-sweep-ata-monitor` stay separate Render services with separate commands. Lightweight SQL/background workers use `Dockerfile.light-workers` / `light-workers`, including `loyal-balance-sweep-ata-projector`.
+
+Render pulls the private GHCR images with the `loyal-ghcr` registry credential configured in Render. Do not switch these workers back to `runtime: docker` or add worker `dockerfilePath` deploys for normal releases. See `docs/render-worker-images.md` for the live project/environment IDs and the current private-image Blueprint validation caveat.
+
 ## Architecture
 
 This project should follow Loyal's vertical-slice architecture style as it grows.
