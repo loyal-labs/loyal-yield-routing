@@ -5,7 +5,7 @@ The worker deployment boundary is intentionally split into two Render projects/e
 | Purpose | Render project/environment | Services | Image |
 | --- | --- | --- | --- |
 | LaserStream-heavy monitors | `loyal-yield-laserstream-workers` / `production` | `loyal-kamino-reserve-monitor`, `loyal-balance-sweep-ata-monitor` | `ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-<commit>` |
-| Lightweight SQL/background workers | `loyal-yield-light-workers` / `production` | `loyal-balance-sweep-ata-projector` | `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-<commit>` |
+| Lightweight SQL/background workers | `loyal-yield-light-workers` / `production` | `loyal-balance-sweep-ata-projector`, `loyal-balance-sweep-autodeposit-trigger` | `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-<commit>` |
 
 Current live pre-split Render state, observed with `render services -o json` on 2026-06-10:
 
@@ -27,6 +27,8 @@ Target split IDs, once created/imported in Render, must be recorded here before 
 | Light production environment | `evm-d8kgt4r7uimc73b1ul1g` |
 
 CI builds both images in `.github/workflows/worker-images.yml` and tags them as `sha-${GITHUB_SHA}`. Render services should use those immutable SHA tags or image digests. Do not use `latest` as the only service image reference.
+
+The light worker image contains the Rust projector/trigger binaries plus Bun production dependencies and `scripts/execute-autodeposit-policy.ts`. The autodeposit trigger invokes that in-image executor through `BALANCE_SWEEP_EXECUTOR_COMMAND`; it should not depend on a sibling checkout at runtime.
 
 Render's current Blueprint validator rejects `registryCredential` on these `runtime: image` worker services. Keep the GHCR images private and attach the required private registry pull credentials in the Render Dashboard/API outside this Blueprint.
 

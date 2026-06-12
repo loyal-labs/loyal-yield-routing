@@ -84,3 +84,30 @@ projects:
                 sync: false
               - key: RUST_LOG
                 value: warn,balance_sweep_ata_projector=info
+
+          - type: worker
+            name: loyal-balance-sweep-autodeposit-trigger
+            runtime: image
+            region: oregon
+            plan: starter
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers@sha256:344f23923d75b4c3d2c590f258dfc14770ce9af8caca369e5fa7698fe586c6ee
+            preDeployCommand: /usr/local/bin/yield-migrations --apply
+            dockerCommand: /usr/local/bin/balance-sweep-autodeposit-trigger --execute-eligible
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: SOLANA_RPC_URL
+                sync: false
+              - key: POLICY_KEYPAIR
+                sync: false
+              - key: SOLANA_TESTING_PK
+                sync: false
+              - key: BALANCE_SWEEP_EXECUTOR_COMMAND
+                value: bun scripts/execute-autodeposit-policy.ts --require-lot-claim
+              - key: BALANCE_SWEEP_EXECUTE_ELIGIBLE
+                value: "true"
+              - key: RUST_LOG
+                value: warn,balance_sweep_autodeposit_trigger=info

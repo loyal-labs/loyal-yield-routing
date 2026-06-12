@@ -186,6 +186,7 @@ pub struct WalletAtaBalanceUpdateInput {
     pub observed_at: Option<DateTime<Utc>>,
     pub source: String,
     pub source_commitment: String,
+    pub txn_signature: Option<String>,
     pub account_data_hash: Option<String>,
     pub raw_evidence: Value,
 }
@@ -202,6 +203,7 @@ pub struct WalletAtaBalanceCurrent {
     pub observed_at: DateTime<Utc>,
     pub source: String,
     pub source_commitment: String,
+    pub txn_signature: Option<String>,
     pub account_data_hash: Option<String>,
     pub raw_evidence: Value,
     pub updated_at: DateTime<Utc>,

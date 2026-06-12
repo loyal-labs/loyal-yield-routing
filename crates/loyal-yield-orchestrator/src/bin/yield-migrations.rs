@@ -6,11 +6,18 @@ use sqlx::{
     PgPool,
 };
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "loyal_yield_orchestration",
-    sql: include_str!("../../migrations/0001_loyal_yield_orchestration.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "loyal_yield_orchestration",
+        sql: include_str!("../../migrations/0001_loyal_yield_orchestration.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "balance_sweep_surplus_lots",
+        sql: include_str!("../../migrations/0002_balance_sweep_surplus_lots.sql"),
+    },
+];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
 const LEDGER_TABLE: &str = "schema_migrations";
@@ -154,6 +161,11 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "projection_offsets",
         "balance_sweep_targets",
         "balance_sweep_wallet_balances_current",
+        "balance_sweep_wallet_balance_events",
+        "balance_sweep_surplus_lots",
+        "balance_sweep_lot_claims",
+        "balance_sweep_lot_claim_items",
+        "balance_sweep_execution_lots",
         "balance_sweep_executions",
     ] {
         let exists: bool = sqlx::query_scalar(

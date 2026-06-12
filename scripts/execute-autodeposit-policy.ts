@@ -1,6 +1,3 @@
-import { createRequire } from "node:module";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { resolve } from "node:path";
 import {
   Connection,
   Keypair,
@@ -134,8 +131,10 @@ export type SweepAmountDecision =
     };
 
 type CliOptions = {
+  claimToken: string | null;
   execute: boolean;
   overrideFloorRaw: bigint | null;
+  requireLotClaim: boolean;
   targetId: bigint | null;
 };
 
@@ -171,19 +170,35 @@ type RecurringDelegationAllowance = {
   nextResetAt: string | null;
 };
 
+type ClaimedLot = {
+  lotId: bigint;
+  amountRaw: bigint;
+};
+
+type LotClaimResult =
+  | {
+      status: "selected" | "executed" | "released" | "failed";
+      reason: null;
+      claimToken: string;
+      targetId: bigint;
+      amountRaw: bigint;
+      staleCheckEventId: bigint;
+      lots: ClaimedLot[];
+    }
+  | {
+      status: "noop";
+      reason: string;
+      claimToken: null;
+      targetId: bigint;
+      amountRaw: bigint;
+      staleCheckEventId: bigint;
+      lots: ClaimedLot[];
+    };
+
 const DEFAULT_COMMITMENT = "confirmed";
 const USDC_DECIMALS = 6;
 
 async function loadAppModules(): Promise<AppModules> {
-  const defaultAppsRoot = fileURLToPath(
-    new URL("../../loyal-apps/", import.meta.url)
-  );
-  const appsRoot = resolve(process.env.LOYAL_APPS_ROOT ?? defaultAppsRoot);
-  const appRequire = createRequire(resolve(appsRoot, "package.json"));
-  const resolveFromApp = (specifier: string) => appRequire.resolve(specifier);
-  const importFromApp = (specifier: string) =>
-    import(pathToFileURL(resolveFromApp(specifier)).href);
-
   const [
     neonModule,
     splTokenModule,
@@ -191,20 +206,18 @@ async function loadAppModules(): Promise<AppModules> {
     smartAccountsCoreModule,
     smartAccountsModule,
     loyalActionsModule,
-    web3Module,
   ] = await Promise.all([
-    importFromApp("@neondatabase/serverless"),
-    importFromApp("@solana/spl-token"),
-    import(pathToFileURL(resolve(appsRoot, "packages/smart-account-vaults/dist/index.js")).href),
-    import(pathToFileURL(resolve(appsRoot, "sdk/loyal-smart-accounts-core/dist/index.js")).href),
-    import(pathToFileURL(resolve(appsRoot, "sdk/loyal-smart-accounts/dist/index.js")).href),
-    import(pathToFileURL(resolve(appsRoot, "packages/loyal-actions/dist/index.js")).href),
-    importFromApp("@solana/web3.js"),
+    import("@neondatabase/serverless"),
+    import("@solana/spl-token"),
+    import("@loyal-labs/smart-account-vaults"),
+    import("@loyal-labs/loyal-smart-accounts-core"),
+    import("@loyal-labs/loyal-smart-accounts"),
+    import("@loyal/actions"),
   ]);
 
   return {
-    Keypair: web3Module.Keypair,
-    PublicKey: web3Module.PublicKey,
+    Keypair,
+    PublicKey,
     compilePreparedOperation: smartAccountsCoreModule.compilePreparedOperation,
     createAssociatedTokenAccountIdempotentInstruction:
       splTokenModule.createAssociatedTokenAccountIdempotentInstruction,
@@ -340,8 +353,10 @@ function decodeSecret(value: string): Uint8Array {
 }
 
 function parseOptions(argv: string[]): CliOptions {
+  let claimToken: string | null = null;
   let execute = false;
   let overrideFloorRaw: bigint | null = null;
+  let requireLotClaim = false;
   let targetId: bigint | null = null;
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -359,6 +374,20 @@ function parseOptions(argv: string[]): CliOptions {
       index += 1;
       continue;
     }
+    if (arg === "--claim-token") {
+      const value = argv[index + 1];
+      if (!value || value.trim().length === 0) {
+        throw new Error("--claim-token requires a non-empty value.");
+      }
+      claimToken = value;
+      requireLotClaim = true;
+      index += 1;
+      continue;
+    }
+    if (arg === "--require-lot-claim") {
+      requireLotClaim = true;
+      continue;
+    }
     if (arg === "--override-floor-raw" || arg === "--floor-raw") {
       const value = argv[index + 1];
       if (!value || !/^\d+$/.test(value)) {
@@ -371,7 +400,7 @@ function parseOptions(argv: string[]): CliOptions {
     throw new Error(`Unknown argument: ${arg}`);
   }
 
-  return { execute, overrideFloorRaw, targetId };
+  return { claimToken, execute, overrideFloorRaw, requireLotClaim, targetId };
 }
 
 function requireEnv(name: string): string {
@@ -483,6 +512,277 @@ function readNullableString(value: unknown): string | null {
   }
   const text = value.toString();
   return text.length > 0 ? text : null;
+}
+
+function parseClaimRows(
+  rows: unknown[],
+  fallbackTargetId: bigint
+): LotClaimResult {
+  const row = rows[0] as Record<string, unknown> | undefined;
+  if (!row) {
+    return {
+      status: "noop",
+      reason: "claim_query_returned_no_rows",
+      claimToken: null,
+      targetId: fallbackTargetId,
+      amountRaw: BigInt(0),
+      staleCheckEventId: BigInt(0),
+      lots: [],
+    };
+  }
+  const status = readRequiredString(row.status, "claim.status");
+  const lotsValue = row.lots;
+  const lots = Array.isArray(lotsValue)
+    ? lotsValue.map((item) => {
+        const lot = item as Record<string, unknown>;
+        return {
+          lotId: BigInt(readRequiredString(lot.lot_id, "claim.lot_id")),
+          amountRaw: BigInt(readRequiredString(lot.amount_raw, "claim.amount_raw")),
+        };
+      })
+    : [];
+  const base = {
+    targetId: BigInt(readRequiredString(row.target_id, "claim.target_id")),
+    amountRaw: BigInt(readRequiredString(row.amount_raw, "claim.amount_raw")),
+    staleCheckEventId: BigInt(
+      readRequiredString(row.stale_check_event_id, "claim.stale_check_event_id")
+    ),
+    lots,
+  };
+  if (status === "noop") {
+    return {
+      status,
+      reason: readRequiredString(row.reason, "claim.reason"),
+      claimToken: null,
+      ...base,
+    };
+  }
+  if (
+    status === "selected" ||
+    status === "executed" ||
+    status === "released" ||
+    status === "failed"
+  ) {
+    return {
+      status,
+      reason: null,
+      claimToken: readRequiredString(row.claim_token, "claim.claim_token"),
+      ...base,
+    };
+  }
+  throw new Error(`Unexpected lot claim status ${status}.`);
+}
+
+async function claimAutodepositLots(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  targetId: bigint;
+  claimToken: string;
+  walletBalanceRaw: bigint;
+  walletBalanceFloorRaw: bigint;
+  remainingAllowanceRaw: bigint | null;
+}): Promise<LotClaimResult> {
+  const sql = args.neon(args.databaseUrl);
+  const rows = await sql`
+    WITH existing_claim AS (
+      SELECT claim_token, target_id, amount_raw, status::text AS status, stale_check_event_id
+      FROM loyal_yield.balance_sweep_lot_claims
+      WHERE claim_token = ${args.claimToken}
+      FOR UPDATE
+    ),
+    target_guard AS (
+      SELECT id
+      FROM loyal_yield.balance_sweep_targets
+      WHERE id = ${args.targetId.toString()}
+        AND active
+        AND lifecycle_status = 'active'
+      FOR UPDATE
+    ),
+    stale AS (
+      SELECT COALESCE(MAX(event_id), 0)::bigint AS event_id
+      FROM loyal_yield.balance_sweep_wallet_balance_events
+      WHERE target_id = ${args.targetId.toString()}
+    ),
+    processed AS (
+      SELECT COALESCE(last_event_id, 0)::bigint AS event_id
+      FROM loyal_yield.projection_offsets
+      WHERE consumer_name = 'balance_sweep_autodeposit_trigger'
+    ),
+    locked_lots AS (
+      SELECT
+        l.id,
+        l.remaining_amount_raw,
+        l.eligible_after,
+        l.created_at
+      FROM loyal_yield.balance_sweep_surplus_lots l
+      WHERE l.target_id = ${args.targetId.toString()}
+        AND l.status = 'open'
+        AND l.remaining_amount_raw > 0
+        AND l.eligible_after <= now()
+        AND EXISTS (SELECT 1 FROM target_guard)
+        AND COALESCE((SELECT event_id FROM processed), 0) >= (SELECT event_id FROM stale)
+        AND NOT EXISTS (SELECT 1 FROM existing_claim)
+      ORDER BY l.eligible_after ASC, l.created_at ASC, l.id ASC
+      FOR UPDATE SKIP LOCKED
+    ),
+    eligible AS (
+      SELECT
+        locked_lots.id,
+        locked_lots.remaining_amount_raw,
+        COALESCE(
+          SUM(locked_lots.remaining_amount_raw) OVER (
+            ORDER BY locked_lots.eligible_after ASC, locked_lots.created_at ASC, locked_lots.id ASC
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+          ),
+          0
+        ) AS running_before
+      FROM locked_lots
+    ),
+    caps AS (
+      SELECT
+        LEAST(
+          COALESCE((SELECT SUM(remaining_amount_raw) FROM eligible), 0),
+          GREATEST(${args.walletBalanceRaw.toString()}::bigint - ${args.walletBalanceFloorRaw.toString()}::bigint, 0),
+          COALESCE(${args.remainingAllowanceRaw?.toString() ?? null}::bigint, 9223372036854775807)
+        ) AS amount_raw,
+        (SELECT event_id FROM stale) AS stale_check_event_id
+    ),
+    selected AS (
+      SELECT
+        e.id AS lot_id,
+        LEAST(e.remaining_amount_raw, (SELECT amount_raw FROM caps) - e.running_before) AS amount_raw
+      FROM eligible e
+      WHERE e.running_before < (SELECT amount_raw FROM caps)
+    ),
+    inserted_claim AS (
+      INSERT INTO loyal_yield.balance_sweep_lot_claims
+        (claim_token, target_id, amount_raw, status, stale_check_event_id)
+      SELECT
+        ${args.claimToken},
+        ${args.targetId.toString()},
+        amount_raw,
+        'selected',
+        stale_check_event_id
+      FROM caps
+      WHERE amount_raw > 0
+      ON CONFLICT (claim_token) DO NOTHING
+      RETURNING claim_token, target_id, amount_raw, status::text AS status, stale_check_event_id
+    ),
+    inserted_items AS (
+      INSERT INTO loyal_yield.balance_sweep_lot_claim_items
+        (claim_token, lot_id, amount_raw)
+      SELECT ${args.claimToken}, lot_id, amount_raw
+      FROM selected
+      WHERE EXISTS (SELECT 1 FROM inserted_claim)
+      ON CONFLICT (claim_token, lot_id) DO NOTHING
+      RETURNING lot_id, amount_raw
+    ),
+    updated_lots AS (
+      UPDATE loyal_yield.balance_sweep_surplus_lots l
+      SET
+        remaining_amount_raw = l.remaining_amount_raw - i.amount_raw,
+        status = CASE
+          WHEN l.remaining_amount_raw - i.amount_raw = 0
+          THEN 'consumed'::loyal_yield.balance_sweep_surplus_lot_status
+          ELSE 'open'::loyal_yield.balance_sweep_surplus_lot_status
+        END,
+        updated_at = now()
+      FROM inserted_items i
+      WHERE l.id = i.lot_id
+        AND l.remaining_amount_raw >= i.amount_raw
+      RETURNING l.id
+    ),
+    active_claim AS (
+      SELECT * FROM existing_claim
+      UNION ALL
+      SELECT * FROM inserted_claim
+      LIMIT 1
+    ),
+    active_items AS (
+      SELECT lot_id, amount_raw
+      FROM loyal_yield.balance_sweep_lot_claim_items
+      WHERE claim_token = (SELECT claim_token FROM active_claim)
+      ORDER BY lot_id ASC
+    ),
+    noop_reason AS (
+      SELECT CASE
+        WHEN NOT EXISTS (SELECT 1 FROM target_guard) THEN 'target_not_active'
+        WHEN COALESCE((SELECT event_id FROM processed), 0) < (SELECT event_id FROM stale) THEN 'newer_unprocessed_wallet_event'
+        WHEN ${args.walletBalanceRaw.toString()}::bigint - ${args.walletBalanceFloorRaw.toString()}::bigint <= 0 THEN 'wallet_balance_not_above_floor'
+        WHEN COALESCE(${args.remainingAllowanceRaw?.toString() ?? null}::bigint, 1) <= 0 THEN 'allowance_exhausted'
+        WHEN COALESCE((SELECT SUM(remaining_amount_raw) FROM eligible), 0) <= 0 THEN 'no_eligible_lots'
+        ELSE 'claim_not_created'
+      END AS reason
+    )
+    SELECT
+      COALESCE((SELECT status FROM active_claim), 'noop') AS status,
+      CASE WHEN EXISTS (SELECT 1 FROM active_claim) THEN NULL ELSE (SELECT reason FROM noop_reason) END AS reason,
+      (SELECT claim_token FROM active_claim) AS claim_token,
+      ${args.targetId.toString()}::bigint AS target_id,
+      COALESCE((SELECT amount_raw FROM active_claim), 0)::bigint AS amount_raw,
+      COALESCE((SELECT stale_check_event_id FROM active_claim), (SELECT event_id FROM stale), 0)::bigint AS stale_check_event_id,
+      COALESCE(
+        (SELECT jsonb_agg(jsonb_build_object('lot_id', lot_id, 'amount_raw', amount_raw) ORDER BY lot_id) FROM active_items),
+        '[]'::jsonb
+      ) AS lots
+  `;
+  return parseClaimRows(rows, args.targetId);
+}
+
+async function completeAutodepositLotClaim(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  claimToken: string;
+  executionId: string;
+}) {
+  const sql = args.neon(args.databaseUrl);
+  await sql`
+    WITH inserted AS (
+      INSERT INTO loyal_yield.balance_sweep_execution_lots
+        (execution_id, lot_id, amount_raw)
+      SELECT ${args.executionId}, lot_id, amount_raw
+      FROM loyal_yield.balance_sweep_lot_claim_items
+      WHERE claim_token = ${args.claimToken}
+      ON CONFLICT (execution_id, lot_id) DO NOTHING
+      RETURNING lot_id
+    )
+    UPDATE loyal_yield.balance_sweep_lot_claims
+    SET status = 'executed',
+        execution_id = ${args.executionId},
+        updated_at = now()
+    WHERE claim_token = ${args.claimToken}
+      AND status = 'selected'
+  `;
+}
+
+async function releaseAutodepositLotClaim(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  claimToken: string;
+}) {
+  const sql = args.neon(args.databaseUrl);
+  await sql`
+    WITH selected_claim AS (
+      SELECT claim_token
+      FROM loyal_yield.balance_sweep_lot_claims
+      WHERE claim_token = ${args.claimToken}
+        AND status = 'selected'
+    ),
+    restored AS (
+      UPDATE loyal_yield.balance_sweep_surplus_lots l
+      SET remaining_amount_raw = l.remaining_amount_raw + i.amount_raw,
+          status = 'open',
+          updated_at = now()
+      FROM loyal_yield.balance_sweep_lot_claim_items i
+      WHERE i.claim_token = (SELECT claim_token FROM selected_claim)
+        AND l.id = i.lot_id
+      RETURNING l.id
+    )
+    UPDATE loyal_yield.balance_sweep_lot_claims
+    SET status = 'released',
+        updated_at = now()
+    WHERE claim_token = (SELECT claim_token FROM selected_claim)
+  `;
 }
 
 async function getTokenBalanceRaw(
@@ -626,6 +926,21 @@ function summarizeAllowance(allowance: RecurringDelegationAllowance) {
   };
 }
 
+function summarizeLotClaim(claim: LotClaimResult) {
+  return {
+    status: claim.status,
+    reason: claim.reason,
+    claimToken: claim.claimToken,
+    targetId: claim.targetId.toString(),
+    amountRaw: claim.amountRaw.toString(),
+    staleCheckEventId: claim.staleCheckEventId.toString(),
+    lots: claim.lots.map((lot) => ({
+      lotId: lot.lotId.toString(),
+      amountRaw: lot.amountRaw.toString(),
+    })),
+  };
+}
+
 async function simulatePreparedOperation(args: {
   compilePreparedOperation: AppModules["compilePreparedOperation"];
   connection: Connection;
@@ -737,49 +1052,65 @@ async function recordPullExecution(args: {
   sourcePostBalanceRaw: bigint;
   destinationPreBalanceRaw: bigint;
   destinationPostBalanceRaw: bigint;
-}): Promise<string> {
+}): Promise<{ dedupeKey: string; executionId: string }> {
   const sql = args.neon(args.databaseUrl);
   const dedupeKey = `${args.target.id.toString()}:autodeposit-pull:${args.signature}`;
-  await sql`
-    INSERT INTO loyal_yield.balance_sweep_executions (
-      target_id,
-      signature,
-      slot,
-      source_wallet_ata,
-      destination_vault_ata,
-      amount_raw,
-      source_pre_balance_raw,
-      source_post_balance_raw,
-      destination_pre_balance_raw,
-      destination_post_balance_raw,
-      source_commitment,
-      raw_evidence,
-      decoded_evidence,
-      received_at,
-      decoded_at,
-      dedupe_key
+  const rows = await sql`
+    WITH inserted AS (
+      INSERT INTO loyal_yield.balance_sweep_executions (
+        target_id,
+        signature,
+        slot,
+        source_wallet_ata,
+        destination_vault_ata,
+        amount_raw,
+        source_pre_balance_raw,
+        source_post_balance_raw,
+        destination_pre_balance_raw,
+        destination_post_balance_raw,
+        source_commitment,
+        raw_evidence,
+        decoded_evidence,
+        received_at,
+        decoded_at,
+        dedupe_key
+      )
+      VALUES (
+        ${args.target.id.toString()},
+        ${args.signature},
+        ${args.slot.toString()},
+        ${args.target.walletUsdcAta},
+        ${args.target.vaultUsdcAta},
+        ${args.amountRaw.toString()},
+        ${args.sourcePreBalanceRaw.toString()},
+        ${args.sourcePostBalanceRaw.toString()},
+        ${args.destinationPreBalanceRaw.toString()},
+        ${args.destinationPostBalanceRaw.toString()},
+        'confirmed',
+        ${JSON.stringify({ source: "single-vault-autodeposit-executor" })}::jsonb,
+        ${JSON.stringify({ sequence: "subscription_pull_then_kamino_deposit" })}::jsonb,
+        now(),
+        now(),
+        ${dedupeKey}
+      )
+      ON CONFLICT (dedupe_key) DO NOTHING
+      RETURNING id
+    ),
+    existing AS (
+      SELECT id
+      FROM loyal_yield.balance_sweep_executions
+      WHERE dedupe_key = ${dedupeKey}
     )
-    VALUES (
-      ${args.target.id.toString()},
-      ${args.signature},
-      ${args.slot.toString()},
-      ${args.target.walletUsdcAta},
-      ${args.target.vaultUsdcAta},
-      ${args.amountRaw.toString()},
-      ${args.sourcePreBalanceRaw.toString()},
-      ${args.sourcePostBalanceRaw.toString()},
-      ${args.destinationPreBalanceRaw.toString()},
-      ${args.destinationPostBalanceRaw.toString()},
-      'confirmed',
-      ${JSON.stringify({ source: "single-vault-autodeposit-executor" })}::jsonb,
-      ${JSON.stringify({ sequence: "subscription_pull_then_kamino_deposit" })}::jsonb,
-      now(),
-      now(),
-      ${dedupeKey}
-    )
-    ON CONFLICT (dedupe_key) DO NOTHING
+    SELECT id FROM inserted
+    UNION ALL
+    SELECT id FROM existing
+    LIMIT 1
   `;
-  return dedupeKey;
+  const row = rows[0] as Record<string, unknown> | undefined;
+  return {
+    dedupeKey,
+    executionId: readRequiredString(row?.id, "balance_sweep_execution.id"),
+  };
 }
 
 async function updateExecutionEvidence(args: {
@@ -1179,6 +1510,54 @@ async function main() {
     return;
   }
 
+  let lotClaim: LotClaimResult | null = null;
+  let executionAmountRaw = sweepDecision.amountRaw;
+  if (options.requireLotClaim) {
+    if (!options.execute) {
+      lotClaim = {
+        status: "noop",
+        reason: "lot_claim_skipped_for_dry_run",
+        claimToken: null,
+        targetId: target.id,
+        amountRaw: BigInt(0),
+        staleCheckEventId: BigInt(0),
+        lots: [],
+      };
+    } else {
+      if (!options.claimToken) {
+        throw new Error("--claim-token is required when executing with lot claims.");
+      }
+      lotClaim = await claimAutodepositLots({
+        neon: appModules.neon,
+        databaseUrl,
+        targetId: target.id,
+        claimToken: options.claimToken,
+        walletBalanceRaw,
+        walletBalanceFloorRaw: effectiveFloorRaw,
+        remainingAllowanceRaw: allowance.remainingAmountInPeriodRaw,
+      });
+      if (lotClaim.status !== "selected" && lotClaim.status !== "executed") {
+        console.log(
+          JSON.stringify(
+            {
+              status: "noop",
+              reason: `lot_claim_${lotClaim.reason ?? lotClaim.status}`,
+              targetId: target.id.toString(),
+              lotClaim: summarizeLotClaim(lotClaim),
+              walletBalanceRaw: walletBalanceRaw.toString(),
+              walletBalanceFloorRaw: effectiveFloorRaw.toString(),
+              subscriptionAllowance: summarizeAllowance(allowance),
+            },
+            null,
+            2
+          )
+        );
+        return;
+      }
+      executionAmountRaw = lotClaim.amountRaw;
+    }
+  }
+
   const client = appModules.createSmartAccountVaultsClient({
     connection: createPrepareConnection(connection),
     programId,
@@ -1189,13 +1568,13 @@ async function main() {
     feePayer: policyKeypair.publicKey,
     policySigner: policyKeypair.publicKey,
     recurringDelegation: new PublicKeyCtor(target.recurringDelegation),
-    amountRaw: sweepDecision.amountRaw,
+    amountRaw: executionAmountRaw,
     cluster: appModules.LoyalCluster.MainnetBeta,
   });
   const usdcMint = new PublicKeyCtor(pull.persistence.liquidityMint);
 
   const depositDraft = await client.prepareEarnUsdcDeposit({
-    amountRaw: sweepDecision.amountRaw,
+    amountRaw: executionAmountRaw,
     cluster: appModules.LoyalCluster.MainnetBeta,
     feePayer: legacyKaminoKeypair.publicKey,
     initializeYieldRoutingPolicy: false,
@@ -1259,8 +1638,8 @@ async function main() {
     overrideFloorRaw: options.overrideFloorRaw?.toString() ?? null,
     vaultPreBalanceRaw: vaultPreBalanceRaw.toString(),
     excessRaw: sweepDecision.excessRaw.toString(),
-    amountRaw: sweepDecision.amountRaw.toString(),
-    amountUi: Number(sweepDecision.amountRaw) / 10 ** USDC_DECIMALS,
+    amountRaw: executionAmountRaw.toString(),
+    amountUi: Number(executionAmountRaw) / 10 ** USDC_DECIMALS,
     cappedByMaxPerPeriod: sweepDecision.cappedByMaxPerPeriod,
     cappedByRemainingAllowance: sweepDecision.cappedByRemainingAllowance,
     subscriptionAllowance: summarizeAllowance(allowance),
@@ -1284,6 +1663,7 @@ async function main() {
       kaminoDepositRequiresPostPullResimulation:
         isKnownPrefundDepositFailure(depositSimulation),
     },
+    lotClaim: lotClaim ? summarizeLotClaim(lotClaim) : null,
     sendsTransactions: options.execute,
   };
 
@@ -1292,7 +1672,18 @@ async function main() {
     return;
   }
 
-  assertExecutablePreflight({ depositSimulation, pullSimulation });
+  try {
+    assertExecutablePreflight({ depositSimulation, pullSimulation });
+  } catch (error) {
+    if (lotClaim?.status === "selected" && lotClaim.claimToken) {
+      await releaseAutodepositLotClaim({
+        neon: appModules.neon,
+        databaseUrl,
+        claimToken: lotClaim.claimToken,
+      });
+    }
+    throw error;
+  }
 
   const pullSend = await sendPreparedOperation({
     compilePreparedOperation: appModules.compilePreparedOperation,
@@ -1302,18 +1693,26 @@ async function main() {
   });
   const walletPostPullRaw = await getTokenBalanceRaw(connection, walletUsdcAta);
   const vaultPostPullRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
-  const executionDedupeKey = await recordPullExecution({
+  const executionRecord = await recordPullExecution({
     neon: appModules.neon,
     databaseUrl,
     target,
     signature: pullSend.signature,
     slot: pullSend.slot,
-    amountRaw: sweepDecision.amountRaw,
+    amountRaw: executionAmountRaw,
     sourcePreBalanceRaw: walletBalanceRaw,
     sourcePostBalanceRaw: walletPostPullRaw,
     destinationPreBalanceRaw: vaultPreBalanceRaw,
     destinationPostBalanceRaw: vaultPostPullRaw,
   });
+  if (lotClaim?.status === "selected" && lotClaim.claimToken) {
+    await completeAutodepositLotClaim({
+      neon: appModules.neon,
+      databaseUrl,
+      claimToken: lotClaim.claimToken,
+      executionId: executionRecord.executionId,
+    });
+  }
 
   const depositPostPullSimulation = await simulatePreparedOperation({
     compilePreparedOperation: appModules.compilePreparedOperation,
@@ -1325,7 +1724,7 @@ async function main() {
     await updateExecutionEvidence({
       neon: appModules.neon,
       databaseUrl,
-      dedupeKey: executionDedupeKey,
+      dedupeKey: executionRecord.dedupeKey,
       decodedEvidence: {
         status: "partial_executed_pull_deposit_blocked",
         kaminoDepositPostPullSimulation: summarizeSimulation(
@@ -1367,7 +1766,7 @@ async function main() {
   });
   const vaultPostDepositRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
   const yieldDepositRecord = await recordAutodepositYieldDeposit({
-    amountRaw: sweepDecision.amountRaw,
+    amountRaw: executionAmountRaw,
     appModules,
     databaseUrl,
     depositSignature: depositSend.signature,
@@ -1378,7 +1777,7 @@ async function main() {
   await updateExecutionEvidence({
     neon: appModules.neon,
     databaseUrl,
-    dedupeKey: executionDedupeKey,
+    dedupeKey: executionRecord.dedupeKey,
     decodedEvidence: {
       status: "executed",
       kaminoDepositSignature: depositSend.signature,
