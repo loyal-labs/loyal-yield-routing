@@ -10,7 +10,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers@sha256:d0348c469e4b326e51db7a8444dc2654be5c815f4f1b2f75a5cba73674fe5892
+              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-03355bbc219623487062b02aee5f51968824fff2
             preDeployCommand: /usr/local/bin/kamino-reserve-monitor --sync-supported-reserves
             dockerCommand: /usr/local/bin/kamino-reserve-monitor
             maxShutdownDelaySeconds: 60
@@ -37,7 +37,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers@sha256:d0348c469e4b326e51db7a8444dc2654be5c815f4f1b2f75a5cba73674fe5892
+              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-03355bbc219623487062b02aee5f51968824fff2
             preDeployCommand: /usr/local/bin/loyal-timescale-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-ata-monitor
             maxShutdownDelaySeconds: 60
@@ -74,7 +74,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers@sha256:344f23923d75b4c3d2c590f258dfc14770ce9af8caca369e5fa7698fe586c6ee
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-03355bbc219623487062b02aee5f51968824fff2
             dockerCommand: /usr/local/bin/balance-sweep-ata-projector
             maxShutdownDelaySeconds: 60
             envVars:
@@ -92,7 +92,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers@sha256:344f23923d75b4c3d2c590f258dfc14770ce9af8caca369e5fa7698fe586c6ee
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-03355bbc219623487062b02aee5f51968824fff2
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-autodeposit-trigger --execute-eligible
             maxShutdownDelaySeconds: 60

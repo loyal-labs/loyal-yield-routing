@@ -120,7 +120,10 @@ describe("runtime dependency boundary", () => {
     expect(renderYaml).toContain("loyal-balance-sweep-autodeposit-trigger");
     expect(renderYaml).toContain("runtime: image");
     expect(renderYaml).toContain(
-      "ghcr.io/loyal-labs/loyal-yield-routing/light-workers@sha256:"
+      "ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-"
+    );
+    expect(renderYaml).toContain(
+      "ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-"
     );
     expect(renderYaml).toContain(
       "BALANCE_SWEEP_EXECUTOR_COMMAND"
@@ -128,6 +131,7 @@ describe("runtime dependency boundary", () => {
     expect(renderYaml).toContain(
       "bun scripts/execute-autodeposit-policy.ts --require-lot-claim"
     );
+    expect(renderYaml).not.toContain(":latest");
     expect(renderYaml).not.toContain("dockerfilePath: Dockerfile.light-workers");
   });
 });
