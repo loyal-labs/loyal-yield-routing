@@ -25,6 +25,7 @@ Target split IDs, once created/imported in Render, must be recorded here before 
 | Heavy production environment | `evm-d8kgt3a8qa3s7382glc0` |
 | Light Render project | `prj-d8kgt4r7uimc73b1ul0g` |
 | Light production environment | `evm-d8kgt4r7uimc73b1ul1g` |
+| Light `loyal-balance-sweep-autodeposit-trigger` service | `srv-d8lplql7vvec73f1it6g` |
 
 CI builds both images in `.github/workflows/worker-images.yml` and tags them as `sha-${GITHUB_SHA}`. Render services should use those immutable SHA tags or image digests. Do not use `latest` as the only service image reference.
 
