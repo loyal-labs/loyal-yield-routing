@@ -10,6 +10,7 @@ use std::future::Future;
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_loyal_yield_orchestration.sql");
 const MIGRATION_0002: &str = include_str!("../migrations/0002_balance_sweep_surplus_lots.sql");
+const MIGRATION_0003: &str = include_str!("../migrations/0003_balance_sweep_initial_surplus.sql");
 
 #[derive(Clone)]
 pub struct NeonSqlClient {
@@ -133,6 +134,7 @@ impl NeonSqlClient {
     pub async fn apply_migrations(&self) -> Result<(), OrchestratorError> {
         sqlx::raw_sql(MIGRATION_0001).execute(&self.pool).await?;
         sqlx::raw_sql(MIGRATION_0002).execute(&self.pool).await?;
+        sqlx::raw_sql(MIGRATION_0003).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -377,6 +379,46 @@ impl NeonSqlClient {
         input: WalletAtaBalanceUpdateInput,
     ) -> Result<WalletAtaBalanceCurrent, OrchestratorError> {
         record_wallet_ata_balance_update_in_tx(connection, input).await
+    }
+
+    pub async fn pending_balance_sweep_surplus_lots(
+        &self,
+        target_id: BalanceSweepTargetId,
+    ) -> Result<Vec<PendingBalanceSweepSurplusLot>, OrchestratorError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id, target_id, source_event_id, source_signature, classification,
+                original_amount_raw, remaining_amount_raw, eligible_after, status,
+                confidence, reason, created_at, updated_at
+            FROM loyal_yield.pending_balance_sweep_surplus_lots
+            WHERE target_id = $1
+            ORDER BY eligible_after ASC, created_at ASC, id ASC
+            "#,
+        )
+        .bind(target_id.as_i64())
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                Ok(PendingBalanceSweepSurplusLot {
+                    id: row.try_get("id")?,
+                    target_id: BalanceSweepTargetId(row.try_get("target_id")?),
+                    source_event_id: row.try_get("source_event_id")?,
+                    source_signature: row.try_get("source_signature")?,
+                    classification: row.try_get("classification")?,
+                    original_amount_raw: row.try_get("original_amount_raw")?,
+                    remaining_amount_raw: row.try_get("remaining_amount_raw")?,
+                    eligible_after: row.try_get("eligible_after")?,
+                    status: row.try_get("status")?,
+                    confidence: row.try_get("confidence")?,
+                    reason: row.try_get("reason")?,
+                    created_at: row.try_get("created_at")?,
+                    updated_at: row.try_get("updated_at")?,
+                })
+            })
+            .collect()
     }
 
     pub async fn record_balance_sweep_execution(
@@ -2063,4 +2105,39 @@ fn to_i64_policy_seed(policy_seed: u64) -> Result<i64, OrchestratorError> {
 
 fn optional_to_i64_amount(amount: Option<u64>) -> Result<Option<i64>, OrchestratorError> {
     amount.map(to_i64_amount).transpose()
+}
+
+#[cfg(test)]
+mod tests {
+    const STORE_SOURCE: &str = include_str!("store.rs");
+    const INITIAL_SURPLUS_MIGRATION: &str =
+        include_str!("../migrations/0003_balance_sweep_initial_surplus.sql");
+
+    #[test]
+    fn store_applies_initial_surplus_migration() {
+        assert!(STORE_SOURCE.contains("MIGRATION_0003"));
+        assert!(STORE_SOURCE.contains("0003_balance_sweep_initial_surplus.sql"));
+        assert!(STORE_SOURCE.contains("sqlx::raw_sql(MIGRATION_0003)"));
+    }
+
+    #[test]
+    fn pending_lot_read_surface_exposes_only_open_remaining_lots() {
+        assert!(INITIAL_SURPLUS_MIGRATION
+            .contains("CREATE OR REPLACE VIEW loyal_yield.pending_balance_sweep_surplus_lots"));
+        assert!(INITIAL_SURPLUS_MIGRATION.contains("WHERE status = 'open'"));
+        assert!(INITIAL_SURPLUS_MIGRATION.contains("remaining_amount_raw > 0"));
+        for field in [
+            "target_id",
+            "classification",
+            "original_amount_raw",
+            "remaining_amount_raw",
+            "eligible_after",
+            "status",
+            "confidence",
+            "reason",
+        ] {
+            assert!(INITIAL_SURPLUS_MIGRATION.contains(field), "missing {field}");
+            assert!(STORE_SOURCE.contains(field), "read surface missing {field}");
+        }
+    }
 }

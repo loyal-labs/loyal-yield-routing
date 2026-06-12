@@ -223,6 +223,23 @@ pub struct ProjectionBatchOutcome {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingBalanceSweepSurplusLot {
+    pub id: i64,
+    pub target_id: BalanceSweepTargetId,
+    pub source_event_id: i64,
+    pub source_signature: Option<String>,
+    pub classification: String,
+    pub original_amount_raw: i64,
+    pub remaining_amount_raw: i64,
+    pub eligible_after: DateTime<Utc>,
+    pub status: String,
+    pub confidence: String,
+    pub reason: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BalanceSweepExecutionInput {
     pub target_id: BalanceSweepTargetId,
     pub signature: String,

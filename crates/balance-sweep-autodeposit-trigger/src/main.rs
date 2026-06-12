@@ -2,7 +2,8 @@ use std::{process::Command, str::FromStr, time::Duration};
 
 use anyhow::{Context, Result};
 use balance_sweep_autodeposit_trigger::{
-    classify_from_evidence, compute_sweep_amount, eligible_after, SweepAmountDecision, SweepCaps,
+    classify_from_evidence, compute_sweep_amount, eligible_after, initial_surplus_amount,
+    SurplusClassification, SweepAmountDecision, SweepCaps,
 };
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -54,10 +55,13 @@ struct Args {
 struct WalletBalanceEventRow {
     event_id: i64,
     target_id: i64,
+    amount_raw: i64,
     delta_amount_raw: Option<i64>,
     observed_at: DateTime<Utc>,
     txn_signature: Option<String>,
     raw_evidence: Value,
+    target_active: bool,
+    wallet_balance_floor_raw: Option<i64>,
 }
 
 #[derive(Debug, Default)]
@@ -710,6 +714,9 @@ async fn project_surplus_lots_once(pool: &PgPool, batch_limit: i64) -> Result<Tr
     for event in events {
         outcome.last_event_id = event.event_id;
         let Some(delta_amount_raw) = event.delta_amount_raw else {
+            if insert_initial_surplus_lot_if_any(&mut tx, &event).await? {
+                outcome.lots_created += 1;
+            }
             continue;
         };
         if delta_amount_raw > 0 {
@@ -767,10 +774,21 @@ async fn fetch_events_after(
 ) -> Result<Vec<WalletBalanceEventRow>> {
     let rows = sqlx::query(
         r#"
-        SELECT event_id, target_id, delta_amount_raw, observed_at, txn_signature, raw_evidence
-        FROM loyal_yield.balance_sweep_wallet_balance_events
-        WHERE event_id > $1
-        ORDER BY event_id ASC
+        SELECT
+            event.event_id,
+            event.target_id,
+            event.amount_raw,
+            event.delta_amount_raw,
+            event.observed_at,
+            event.txn_signature,
+            event.raw_evidence,
+            target.active AND target.lifecycle_status = 'active' AS target_active,
+            target.wallet_balance_floor_raw
+        FROM loyal_yield.balance_sweep_wallet_balance_events AS event
+        JOIN loyal_yield.balance_sweep_targets AS target
+          ON target.id = event.target_id
+        WHERE event.event_id > $1
+        ORDER BY event.event_id ASC
         LIMIT $2
         "#,
     )
@@ -784,13 +802,38 @@ async fn fetch_events_after(
             Ok(WalletBalanceEventRow {
                 event_id: row.try_get("event_id")?,
                 target_id: row.try_get("target_id")?,
+                amount_raw: row.try_get("amount_raw")?,
                 delta_amount_raw: row.try_get("delta_amount_raw")?,
                 observed_at: row.try_get("observed_at")?,
                 txn_signature: row.try_get("txn_signature")?,
                 raw_evidence: row.try_get("raw_evidence")?,
+                target_active: row.try_get("target_active")?,
+                wallet_balance_floor_raw: row.try_get("wallet_balance_floor_raw")?,
             })
         })
         .collect()
+}
+
+async fn insert_initial_surplus_lot_if_any(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    event: &WalletBalanceEventRow,
+) -> Result<bool> {
+    if !event.target_active {
+        return Ok(false);
+    }
+    let Some(amount_raw) = initial_surplus_amount(event.amount_raw, event.wallet_balance_floor_raw)
+    else {
+        return Ok(false);
+    };
+    insert_classified_lot(
+        tx,
+        event,
+        amount_raw,
+        SurplusClassification::InitialSurplus,
+        "derived",
+        "initial wallet ATA balance above the configured floor",
+    )
+    .await
 }
 
 async fn insert_positive_delta_lot(
@@ -800,6 +843,25 @@ async fn insert_positive_delta_lot(
 ) -> Result<bool> {
     let (classification, confidence, reason) =
         classify_from_evidence(event.txn_signature.as_deref(), &event.raw_evidence);
+    insert_classified_lot(
+        tx,
+        event,
+        amount_raw,
+        classification,
+        confidence,
+        reason.as_str(),
+    )
+    .await
+}
+
+async fn insert_classified_lot(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    event: &WalletBalanceEventRow,
+    amount_raw: i64,
+    classification: SurplusClassification,
+    confidence: &str,
+    reason: &str,
+) -> Result<bool> {
     let eligible_after = eligible_after(classification, event.observed_at);
     let row = sqlx::query(
         r#"
@@ -943,5 +1005,21 @@ mod tests {
         assert!(SOURCE.contains("WHERE claim_token = $1"));
         assert!(SOURCE.contains("FOR UPDATE SKIP LOCKED"));
         assert!(SOURCE.contains("remaining_amount_raw >= $2"));
+    }
+
+    #[test]
+    fn first_wallet_event_can_create_initial_surplus_from_floor() {
+        assert!(SOURCE.contains("let Some(delta_amount_raw) = event.delta_amount_raw else"));
+        assert!(SOURCE.contains("insert_initial_surplus_lot_if_any"));
+        assert!(SOURCE
+            .contains("initial_surplus_amount(event.amount_raw, event.wallet_balance_floor_raw)"));
+        assert!(SOURCE.contains("SurplusClassification::InitialSurplus"));
+        assert!(SOURCE
+            .contains("target.active AND target.lifecycle_status = 'active' AS target_active"));
+    }
+
+    #[test]
+    fn initial_surplus_creation_is_source_event_id_idempotent() {
+        assert!(SOURCE.contains("ON CONFLICT (source_event_id) DO NOTHING"));
     }
 }

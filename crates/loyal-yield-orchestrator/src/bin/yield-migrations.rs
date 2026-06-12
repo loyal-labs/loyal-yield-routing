@@ -17,6 +17,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "balance_sweep_surplus_lots",
         sql: include_str!("../../migrations/0002_balance_sweep_surplus_lots.sql"),
     },
+    Migration {
+        version: 3,
+        name: "balance_sweep_initial_surplus",
+        sql: include_str!("../../migrations/0003_balance_sweep_initial_surplus.sql"),
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -167,6 +172,7 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "balance_sweep_lot_claim_items",
         "balance_sweep_execution_lots",
         "balance_sweep_executions",
+        "pending_balance_sweep_surplus_lots",
     ] {
         let exists: bool = sqlx::query_scalar(
             r#"
@@ -185,6 +191,26 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         if !exists {
             return Err(format!("missing loyal_yield.{relation}").into());
         }
+    }
+    let has_initial_surplus: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_enum e
+            JOIN pg_type t ON t.oid = e.enumtypid
+            JOIN pg_namespace n ON n.oid = t.typnamespace
+            WHERE n.nspname = 'loyal_yield'
+              AND t.typname = 'balance_sweep_surplus_classification'
+              AND e.enumlabel = 'initial_surplus'
+        )
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if !has_initial_surplus {
+        return Err(
+            "missing loyal_yield.balance_sweep_surplus_classification initial_surplus value".into(),
+        );
     }
     Ok(())
 }

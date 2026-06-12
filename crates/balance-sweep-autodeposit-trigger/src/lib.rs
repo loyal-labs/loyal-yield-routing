@@ -6,6 +6,7 @@ use thiserror::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SurplusClassification {
+    InitialSurplus,
     EarnWithdrawal,
     SimpleInbound,
     ComplexDefi,
@@ -16,6 +17,7 @@ pub enum SurplusClassification {
 impl SurplusClassification {
     pub fn as_db_str(self) -> &'static str {
         match self {
+            SurplusClassification::InitialSurplus => "initial_surplus",
             SurplusClassification::EarnWithdrawal => "earn_withdrawal",
             SurplusClassification::SimpleInbound => "simple_inbound",
             SurplusClassification::ComplexDefi => "complex_defi",
@@ -118,6 +120,7 @@ pub fn eligible_after(
 ) -> DateTime<Utc> {
     observed_at
         + match classification {
+            SurplusClassification::InitialSurplus => Duration::hours(1),
             SurplusClassification::EarnWithdrawal => Duration::hours(24),
             SurplusClassification::SimpleInbound => Duration::minutes(2),
             SurplusClassification::ComplexDefi => Duration::hours(1),
@@ -137,6 +140,11 @@ pub fn classify_from_evidence(
         .and_then(Value::as_str);
 
     match source {
+        Some("initial_surplus") | Some("onboarding_surplus") => (
+            SurplusClassification::InitialSurplus,
+            "explicit",
+            "raw evidence marked the source as initial onboarding surplus".to_owned(),
+        ),
         Some("earn_withdrawal") => (
             SurplusClassification::EarnWithdrawal,
             "explicit",
@@ -173,6 +181,15 @@ pub fn classify_from_evidence(
             "transaction signature is present but no classifier has labeled it yet".to_owned(),
         ),
     }
+}
+
+pub fn initial_surplus_amount(
+    amount_raw: i64,
+    wallet_balance_floor_raw: Option<i64>,
+) -> Option<i64> {
+    let floor = wallet_balance_floor_raw?;
+    let surplus = amount_raw - floor;
+    (surplus > 0).then_some(surplus)
 }
 
 pub fn positive_delta_to_lot(
@@ -411,6 +428,10 @@ mod tests {
     fn classification_windows_match_product_rules() {
         let observed_at = at(1_000);
         assert_eq!(
+            eligible_after(SurplusClassification::InitialSurplus, observed_at),
+            observed_at + Duration::hours(1)
+        );
+        assert_eq!(
             eligible_after(SurplusClassification::EarnWithdrawal, observed_at),
             observed_at + Duration::hours(24)
         );
@@ -459,6 +480,33 @@ mod tests {
     }
 
     #[test]
+    fn explicit_evidence_selects_initial_surplus_window() {
+        let lot = positive_delta_to_lot(
+            1,
+            10,
+            None,
+            5_000_000,
+            at(1_000),
+            &serde_json::json!({"classification": "initial_surplus"}),
+        )
+        .unwrap();
+
+        assert_eq!(lot.classification, SurplusClassification::InitialSurplus);
+        assert_eq!(lot.eligible_after, at(1_000) + Duration::hours(1));
+    }
+
+    #[test]
+    fn initial_surplus_amount_uses_floor_as_baseline() {
+        assert_eq!(
+            initial_surplus_amount(10_000_000, Some(5_000_000)),
+            Some(5_000_000)
+        );
+        assert_eq!(initial_surplus_amount(5_000_000, Some(5_000_000)), None);
+        assert_eq!(initial_surplus_amount(4_000_000, Some(5_000_000)), None);
+        assert_eq!(initial_surplus_amount(10_000_000, None), None);
+    }
+
+    #[test]
     fn mixed_defi_and_inbound_sweeps_only_the_eligible_inbound_lot() {
         let start = at(1_000);
         let lots = vec![
@@ -490,10 +538,10 @@ mod tests {
     }
 
     #[test]
-    fn later_simple_inbound_can_sweep_before_older_defi_matures() {
+    fn later_simple_inbound_can_sweep_before_initial_surplus_matures() {
         let start = at(1_000);
         let lots = vec![
-            lot(1, 5_000_000, SurplusClassification::ComplexDefi, start),
+            lot(1, 5_000_000, SurplusClassification::InitialSurplus, start),
             lot(
                 2,
                 5_000_000,
@@ -512,6 +560,72 @@ mod tests {
         .unwrap();
 
         assert_eq!(selection.unwrap().lots[0].lot_id, 2);
+    }
+
+    #[test]
+    fn initial_surplus_lot_matures_after_one_hour() {
+        let start = at(1_000);
+        let lots = vec![lot(
+            1,
+            5_000_000,
+            SurplusClassification::InitialSurplus,
+            start,
+        )];
+
+        let (_, early_selection) = select_eligible_lots(
+            &lots,
+            start + Duration::minutes(59),
+            10_000_000,
+            5_000_000,
+            None,
+        )
+        .unwrap();
+        assert!(early_selection.is_none());
+
+        let (_, mature_selection) = select_eligible_lots(
+            &lots,
+            start + Duration::hours(1),
+            10_000_000,
+            5_000_000,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            mature_selection.unwrap().lots,
+            vec![SelectedLot {
+                lot_id: 1,
+                amount_raw: 5_000_000,
+            }]
+        );
+    }
+
+    #[test]
+    fn initial_surplus_outflow_depletion_leaves_only_remaining_amount_later() {
+        let start = at(1_000);
+        let mut lots = vec![lot(
+            1,
+            5_000_000,
+            SurplusClassification::InitialSurplus,
+            start,
+        )];
+        apply_external_outflow_newest_first(&mut lots, 2_000_000).unwrap();
+
+        let (_, selection) = select_eligible_lots(
+            &lots,
+            start + Duration::hours(1),
+            8_000_000,
+            5_000_000,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            selection.unwrap().lots,
+            vec![SelectedLot {
+                lot_id: 1,
+                amount_raw: 3_000_000,
+            }]
+        );
     }
 
     #[test]
