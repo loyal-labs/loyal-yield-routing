@@ -6,6 +6,8 @@ pub(crate) const SQUADS_SEED_PREFIX: &[u8] = b"smart_account";
 pub(crate) const SQUADS_SEED_POLICY: &[u8] = b"policy";
 pub(crate) const SQUADS_FULL_PERMISSIONS_MASK: u8 = 7;
 pub(crate) const SQUADS_SYNC_SIGNER_COUNT: u8 = 1;
+pub(crate) const SQUADS_EXECUTE_TRANSACTION_SYNC_V2_DISCRIMINATOR: [u8; 8] =
+    [90, 81, 187, 81, 39, 70, 128, 78];
 
 pub const JUPITER_V6_PROGRAM_ID: Pubkey = pubkey!("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4");
 pub const JUPITER_SWAP_DISCRIMINATOR: [u8; 8] = [187, 100, 250, 204, 49, 196, 175, 20];
@@ -55,7 +57,7 @@ pub const SUBSCRIPTION_RECURRING_DELEGATION_AUTHORITY_OFFSET: u64 = 107;
 pub const SUBSCRIPTION_RECURRING_DELEGATION_MINT_OFFSET: u64 = 139;
 pub const SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PER_PERIOD_OFFSET: u64 = 195;
 pub const SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PULLED_OFFSET: u64 = 203;
-pub const KAMINO_LEND_PROGRAM_ID: Pubkey = pubkey!("KvauGMspG5k6rtzrqqn7WNn3oZdyKqLKwK2XWQ8FLjd");
+pub const KAMINO_LEND_PROGRAM_ID: Pubkey = pubkey!("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD");
 pub const KAMINO_MAIN_MARKET: Pubkey = pubkey!("7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF");
 pub const KAMINO_FIGURE_MARKET: Pubkey = pubkey!("CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA");
 pub const KAMINO_MAPLE_MARKET: Pubkey = pubkey!("6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y");
@@ -71,10 +73,19 @@ pub const KAMINO_XSTOCKS_MARKET: Pubkey = pubkey!("5wJeMrUYECGq41fxRESKALVcHnNX2
 pub const KAMINO_ALTCOINS_MARKET: Pubkey = pubkey!("ByYiZxp8QrdN9qbdtaAiePN8AAr3qvTPppNJDpf5DVJ5");
 pub const KAMINO_MAIN_USDC_RESERVE: Pubkey =
     pubkey!("D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59");
+pub const KAMINO_PRIME_USDC_RESERVE: Pubkey =
+    pubkey!("9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu");
 pub const KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR: [u8; 8] =
-    [242, 35, 198, 137, 82, 225, 242, 182];
+    [216, 224, 191, 27, 204, 151, 102, 175];
 pub const KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR: [u8; 8] =
     [235, 52, 119, 152, 149, 197, 20, 7];
+pub const KAMINO_INIT_OBLIGATION_DISCRIMINATOR: [u8; 8] = [251, 10, 231, 76, 27, 11, 159, 96];
+pub const KAMINO_REFRESH_OBLIGATION_DISCRIMINATOR: [u8; 8] = [33, 132, 147, 228, 151, 192, 72, 89];
+pub const KAMINO_INIT_OBLIGATION_TAG_OFFSET: u64 = 8;
+pub const KAMINO_INIT_OBLIGATION_ID_OFFSET: u64 = 9;
+pub const KAMINO_VANILLA_OBLIGATION_TAG: u8 = 0;
+pub const KAMINO_VANILLA_OBLIGATION_ID: u8 = 0;
+pub const KAMINO_USER_METADATA_SEED: &[u8] = b"user_meta";
 
 pub const USDC_MINT: Pubkey = pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 pub const USDT_MINT: Pubkey = pubkey!("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB");

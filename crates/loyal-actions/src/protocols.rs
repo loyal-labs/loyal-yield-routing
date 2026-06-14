@@ -32,10 +32,27 @@ pub(crate) fn kamino_redeem_reserve_collateral_constraint(
         program_id: KAMINO_LEND_PROGRAM_ID,
         account_constraints: vec![
             pubkey_constraint(0, vec![vault], None),
-            pubkey_constraint(1, unique_pubkeys(markets), None),
-            pubkey_constraint(4, unique_pubkeys(liquidity_mints), Some(spl_token::id())),
-            spl_token_authority_constraint(8, vault),
-            pubkey_constraint(10, vec![spl_token::id()], None),
+            pubkey_constraint(2, unique_pubkeys(markets), None),
+            pubkey_constraint(5, unique_pubkeys(liquidity_mints), Some(spl_token::id())),
+            spl_token_authority_constraint(9, vault),
+            pubkey_constraint(11, vec![spl_token::id()], None),
+            pubkey_constraint(12, vec![spl_token::id()], None),
+        ],
+        data_constraints: discriminator_constraint(KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR),
+    }
+}
+
+pub(crate) fn kamino_redeem_reserve_collateral_market_mint_constraint(
+    vault: Pubkey,
+    markets: Vec<Pubkey>,
+    liquidity_mints: Vec<Pubkey>,
+) -> SquadsInstructionConstraint {
+    SquadsInstructionConstraint {
+        program_id: KAMINO_LEND_PROGRAM_ID,
+        account_constraints: vec![
+            pubkey_constraint(0, vec![vault], None),
+            pubkey_constraint(2, unique_pubkeys(markets), None),
+            pubkey_constraint(5, unique_pubkeys(liquidity_mints), None),
         ],
         data_constraints: discriminator_constraint(KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR),
     }
@@ -51,11 +68,82 @@ pub(crate) fn kamino_deposit_reserve_liquidity_constraint(
         account_constraints: vec![
             pubkey_constraint(0, vec![vault], None),
             pubkey_constraint(2, unique_pubkeys(markets), None),
-            pubkey_constraint(4, unique_pubkeys(liquidity_mints), Some(spl_token::id())),
-            spl_token_authority_constraint(8, vault),
-            pubkey_constraint(10, vec![spl_token::id()], None),
+            pubkey_constraint(5, unique_pubkeys(liquidity_mints), Some(spl_token::id())),
+            spl_token_authority_constraint(9, vault),
+            pubkey_constraint(11, vec![spl_token::id()], None),
+            pubkey_constraint(12, vec![spl_token::id()], None),
         ],
         data_constraints: discriminator_constraint(KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR),
+    }
+}
+
+pub(crate) fn kamino_deposit_reserve_liquidity_market_mint_constraint(
+    vault: Pubkey,
+    markets: Vec<Pubkey>,
+    liquidity_mints: Vec<Pubkey>,
+) -> SquadsInstructionConstraint {
+    SquadsInstructionConstraint {
+        program_id: KAMINO_LEND_PROGRAM_ID,
+        account_constraints: vec![
+            pubkey_constraint(0, vec![vault], None),
+            pubkey_constraint(2, unique_pubkeys(markets), None),
+            pubkey_constraint(5, unique_pubkeys(liquidity_mints), None),
+        ],
+        data_constraints: discriminator_constraint(KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR),
+    }
+}
+
+pub(crate) fn kamino_init_obligation_constraint(
+    vault: Pubkey,
+    markets: Vec<Pubkey>,
+) -> SquadsInstructionConstraint {
+    let markets = unique_pubkeys(markets);
+    let obligations = markets
+        .iter()
+        .map(|market| derive_kamino_vanilla_obligation(vault, *market))
+        .collect();
+    let mut init_obligation_data_prefix = KAMINO_INIT_OBLIGATION_DISCRIMINATOR.to_vec();
+    init_obligation_data_prefix.push(KAMINO_VANILLA_OBLIGATION_TAG);
+    init_obligation_data_prefix.push(KAMINO_VANILLA_OBLIGATION_ID);
+
+    SquadsInstructionConstraint {
+        program_id: KAMINO_LEND_PROGRAM_ID,
+        account_constraints: vec![
+            pubkey_constraint(0, vec![vault], None),
+            pubkey_constraint(1, vec![vault], None),
+            pubkey_constraint(2, obligations, None),
+            pubkey_constraint(3, markets, None),
+            pubkey_constraint(4, vec![Pubkey::default()], None),
+            pubkey_constraint(5, vec![Pubkey::default()], None),
+            pubkey_constraint(6, vec![derive_kamino_user_metadata(vault)], None),
+            pubkey_constraint(7, vec![solana_sdk::sysvar::rent::id()], None),
+            pubkey_constraint(8, vec![solana_sdk::system_program::ID], None),
+        ],
+        data_constraints: vec![SquadsDataConstraint {
+            data_offset: 0,
+            data_value: SquadsDataValue::U8Slice(init_obligation_data_prefix),
+            operator: SquadsDataOperator::Equals,
+        }],
+    }
+}
+
+pub(crate) fn kamino_refresh_obligation_constraint(
+    vault: Pubkey,
+    markets: Vec<Pubkey>,
+) -> SquadsInstructionConstraint {
+    let markets = unique_pubkeys(markets);
+    let obligations = markets
+        .iter()
+        .map(|market| derive_kamino_vanilla_obligation(vault, *market))
+        .collect();
+
+    SquadsInstructionConstraint {
+        program_id: KAMINO_LEND_PROGRAM_ID,
+        account_constraints: vec![
+            pubkey_constraint(0, markets, None),
+            pubkey_constraint(1, obligations, None),
+        ],
+        data_constraints: discriminator_constraint(KAMINO_REFRESH_OBLIGATION_DISCRIMINATOR),
     }
 }
 
@@ -266,6 +354,47 @@ pub fn derive_loyal_hub_config() -> Pubkey {
 
 pub fn derive_loyal_hub_authority() -> Pubkey {
     derive_loyal_hub_lane_authority(0)
+}
+
+pub fn derive_kamino_vanilla_obligation(vault: Pubkey, lending_market: Pubkey) -> Pubkey {
+    derive_kamino_obligation(
+        vault,
+        lending_market,
+        KAMINO_VANILLA_OBLIGATION_TAG,
+        KAMINO_VANILLA_OBLIGATION_ID,
+        Pubkey::default(),
+        Pubkey::default(),
+    )
+}
+
+pub fn derive_kamino_obligation(
+    vault: Pubkey,
+    lending_market: Pubkey,
+    tag: u8,
+    id: u8,
+    seed1: Pubkey,
+    seed2: Pubkey,
+) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            &[tag],
+            &[id],
+            vault.as_ref(),
+            lending_market.as_ref(),
+            seed1.as_ref(),
+            seed2.as_ref(),
+        ],
+        &KAMINO_LEND_PROGRAM_ID,
+    )
+    .0
+}
+
+pub fn derive_kamino_user_metadata(vault: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[KAMINO_USER_METADATA_SEED, vault.as_ref()],
+        &KAMINO_LEND_PROGRAM_ID,
+    )
+    .0
 }
 
 pub fn derive_subscription_authority(user: Pubkey, mint: Pubkey) -> Pubkey {
@@ -1136,17 +1265,23 @@ mod tests {
             kamino_redeem_reserve_collateral_constraint(vault, vec![market], vec![liquidity_mint]);
         assert_eq!(withdraw.program_id, KAMINO_LEND_PROGRAM_ID);
         assert!(has_pubkey_constraint(&withdraw, 0, &[vault], None));
-        assert!(has_pubkey_constraint(&withdraw, 1, &[market], None));
+        assert!(has_pubkey_constraint(&withdraw, 2, &[market], None));
         assert!(has_pubkey_constraint(
             &withdraw,
-            4,
+            5,
             &[liquidity_mint],
             Some(spl_token::id()),
         ));
-        assert!(has_token_authority_constraint(&withdraw, 8, vault));
+        assert!(has_token_authority_constraint(&withdraw, 9, vault));
         assert!(has_pubkey_constraint(
             &withdraw,
-            10,
+            11,
+            &[spl_token::id()],
+            None
+        ));
+        assert!(has_pubkey_constraint(
+            &withdraw,
+            12,
             &[spl_token::id()],
             None
         ));
@@ -1164,14 +1299,20 @@ mod tests {
         assert!(has_pubkey_constraint(&deposit, 2, &[market], None));
         assert!(has_pubkey_constraint(
             &deposit,
-            4,
+            5,
             &[liquidity_mint],
             Some(spl_token::id()),
         ));
-        assert!(has_token_authority_constraint(&deposit, 8, vault));
+        assert!(has_token_authority_constraint(&deposit, 9, vault));
         assert!(has_pubkey_constraint(
             &deposit,
-            10,
+            11,
+            &[spl_token::id()],
+            None
+        ));
+        assert!(has_pubkey_constraint(
+            &deposit,
+            12,
             &[spl_token::id()],
             None
         ));
@@ -1179,6 +1320,110 @@ mod tests {
             &deposit.data_constraints,
             0,
             &KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR,
+            SquadsDataOperator::Equals,
+        ));
+    }
+
+    #[test]
+    fn kamino_same_mint_constraints_keep_market_and_mint_scope() {
+        let vault = Pubkey::new_unique();
+        let market = Pubkey::new_unique();
+        let other_market = Pubkey::new_unique();
+        let mint = Pubkey::new_unique();
+        let markets = vec![market, other_market];
+        let mints = vec![mint];
+
+        let withdraw = kamino_redeem_reserve_collateral_market_mint_constraint(
+            vault,
+            markets.clone(),
+            mints.clone(),
+        );
+        assert_eq!(withdraw.program_id, KAMINO_LEND_PROGRAM_ID);
+        assert!(has_pubkey_constraint(&withdraw, 0, &[vault], None));
+        assert!(has_pubkey_constraint(&withdraw, 2, &markets, None));
+        assert!(has_pubkey_constraint(&withdraw, 5, &mints, None));
+        assert!(has_u8_slice_data_constraint(
+            &withdraw.data_constraints,
+            0,
+            &KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR,
+            SquadsDataOperator::Equals,
+        ));
+
+        let deposit = kamino_deposit_reserve_liquidity_market_mint_constraint(
+            vault,
+            markets.clone(),
+            mints.clone(),
+        );
+        assert_eq!(deposit.program_id, KAMINO_LEND_PROGRAM_ID);
+        assert!(has_pubkey_constraint(&deposit, 0, &[vault], None));
+        assert!(has_pubkey_constraint(&deposit, 2, &markets, None));
+        assert!(has_pubkey_constraint(&deposit, 5, &mints, None));
+        assert!(has_u8_slice_data_constraint(
+            &deposit.data_constraints,
+            0,
+            &KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR,
+            SquadsDataOperator::Equals,
+        ));
+    }
+
+    #[test]
+    fn kamino_init_obligation_constraint_anchors_vault_market_pdas_and_seeds() {
+        let vault = Pubkey::new_unique();
+        let market = Pubkey::new_unique();
+        let other_market = Pubkey::new_unique();
+        let constraint = kamino_init_obligation_constraint(vault, vec![market, other_market]);
+        let obligations = vec![
+            derive_kamino_vanilla_obligation(vault, market),
+            derive_kamino_vanilla_obligation(vault, other_market),
+        ];
+
+        assert_eq!(constraint.program_id, KAMINO_LEND_PROGRAM_ID);
+        assert!(has_pubkey_constraint(&constraint, 0, &[vault], None));
+        assert!(has_pubkey_constraint(&constraint, 1, &[vault], None));
+        assert!(has_pubkey_constraint(&constraint, 2, &obligations, None));
+        assert!(has_pubkey_constraint(
+            &constraint,
+            3,
+            &[market, other_market],
+            None,
+        ));
+        assert!(has_pubkey_constraint(
+            &constraint,
+            4,
+            &[Pubkey::default()],
+            None,
+        ));
+        assert!(has_pubkey_constraint(
+            &constraint,
+            5,
+            &[Pubkey::default()],
+            None,
+        ));
+        assert!(has_pubkey_constraint(
+            &constraint,
+            6,
+            &[derive_kamino_user_metadata(vault)],
+            None,
+        ));
+        assert!(has_pubkey_constraint(
+            &constraint,
+            7,
+            &[solana_sdk::sysvar::rent::id()],
+            None,
+        ));
+        assert!(has_pubkey_constraint(
+            &constraint,
+            8,
+            &[solana_sdk::system_program::ID],
+            None,
+        ));
+        let mut expected_data_prefix = KAMINO_INIT_OBLIGATION_DISCRIMINATOR.to_vec();
+        expected_data_prefix.push(KAMINO_VANILLA_OBLIGATION_TAG);
+        expected_data_prefix.push(KAMINO_VANILLA_OBLIGATION_ID);
+        assert!(has_u8_slice_data_constraint(
+            &constraint.data_constraints,
+            0,
+            &expected_data_prefix,
             SquadsDataOperator::Equals,
         ));
     }

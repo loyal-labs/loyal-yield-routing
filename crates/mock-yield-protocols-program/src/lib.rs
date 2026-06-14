@@ -15,7 +15,7 @@ pub const JUPITER_V6_PROGRAM_ID: Pubkey = pubkey!("JUP6LkbZbjS1jKKwapdHNy74zcZ3t
 pub const USDC_MINT: Pubkey = pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 pub const PYUSD_MINT: Pubkey = pubkey!("2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo");
 pub const WRAPPED_SOL_MINT: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
-pub const KAMINO_LEND_PROGRAM_ID: Pubkey = pubkey!("KvauGMspG5k6rtzrqqn7WNn3oZdyKqLKwK2XWQ8FLjd");
+pub const KAMINO_LEND_PROGRAM_ID: Pubkey = pubkey!("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD");
 pub const KAMINO_MAIN_MARKET: Pubkey = pubkey!("7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF");
 pub const KAMINO_MAIN_USDC_RESERVE: Pubkey =
     pubkey!("D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59");
@@ -32,7 +32,7 @@ pub const PYUSD_DECIMALS: u8 = 6;
 pub const KAMINO_COLLATERAL_DECIMALS: u8 = 6;
 pub const JUPITER_ROUTER_USDC_PYUSD_DISCRIMINATOR: [u8; 8] = [187, 100, 250, 204, 49, 196, 175, 20];
 pub const KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR: [u8; 8] =
-    [242, 35, 198, 137, 82, 225, 242, 182];
+    [216, 224, 191, 27, 204, 151, 102, 175];
 pub const KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR: [u8; 8] =
     [235, 52, 119, 152, 149, 197, 20, 7];
 pub const JUPITER_SWAP_AUTHORITY_SEED: &[u8] = b"jupiter-swap-authority";
@@ -402,21 +402,37 @@ fn parse_kamino_deposit_accounts<'a, 'info>(
     accounts: &'a [AccountInfo<'info>],
 ) -> Result<KaminoDepositAccounts<'a, 'info>, ProgramError> {
     let account_info_iter = &mut accounts.iter();
+    let owner = next_account_info(account_info_iter)?;
+    let _obligation = next_account_info(account_info_iter)?;
+    let lending_market = next_account_info(account_info_iter)?;
+    let lending_market_authority = next_account_info(account_info_iter)?;
+    let reserve = next_account_info(account_info_iter)?;
+    let reserve_liquidity_mint = next_account_info(account_info_iter)?;
+    let reserve_liquidity_supply = next_account_info(account_info_iter)?;
+    let reserve_collateral_mint = next_account_info(account_info_iter)?;
+    let user_destination_collateral = next_account_info(account_info_iter)?;
+    let user_source_liquidity = next_account_info(account_info_iter)?;
+    let _placeholder_user_destination_collateral = next_account_info(account_info_iter)?;
+    let collateral_token_program = next_account_info(account_info_iter)?;
+    let liquidity_token_program = next_account_info(account_info_iter)?;
+    let _instruction_sysvar_account = next_account_info(account_info_iter)?;
+    let _obligation_farm_user_state = next_account_info(account_info_iter)?;
+    let _reserve_farm_state = next_account_info(account_info_iter)?;
+    let _farms_program = next_account_info(account_info_iter)?;
     let mut kamino = KaminoDepositAccounts {
-        owner: next_account_info(account_info_iter)?,
-        reserve: next_account_info(account_info_iter)?,
-        lending_market: next_account_info(account_info_iter)?,
-        lending_market_authority: next_account_info(account_info_iter)?,
-        reserve_liquidity_mint: next_account_info(account_info_iter)?,
-        reserve_liquidity_supply: next_account_info(account_info_iter)?,
-        reserve_collateral_mint: next_account_info(account_info_iter)?,
-        user_source_liquidity: next_account_info(account_info_iter)?,
-        user_destination_collateral: next_account_info(account_info_iter)?,
-        collateral_token_program: next_account_info(account_info_iter)?,
-        liquidity_token_program: next_account_info(account_info_iter)?,
+        owner,
+        reserve,
+        lending_market,
+        lending_market_authority,
+        reserve_liquidity_mint,
+        reserve_liquidity_supply,
+        reserve_collateral_mint,
+        user_source_liquidity,
+        user_destination_collateral,
+        collateral_token_program,
+        liquidity_token_program,
         liquidity_decimals: 0,
     };
-    let _instruction_sysvar_account = next_account_info(account_info_iter)?;
 
     require_common_kamino_accounts(
         program_id,
@@ -444,21 +460,37 @@ fn parse_kamino_redeem_accounts<'a, 'info>(
     accounts: &'a [AccountInfo<'info>],
 ) -> Result<KaminoRedeemAccounts<'a, 'info>, ProgramError> {
     let account_info_iter = &mut accounts.iter();
+    let owner = next_account_info(account_info_iter)?;
+    let _obligation = next_account_info(account_info_iter)?;
+    let lending_market = next_account_info(account_info_iter)?;
+    let lending_market_authority = next_account_info(account_info_iter)?;
+    let reserve = next_account_info(account_info_iter)?;
+    let reserve_liquidity_mint = next_account_info(account_info_iter)?;
+    let user_source_collateral = next_account_info(account_info_iter)?;
+    let reserve_collateral_mint = next_account_info(account_info_iter)?;
+    let reserve_liquidity_supply = next_account_info(account_info_iter)?;
+    let user_destination_liquidity = next_account_info(account_info_iter)?;
+    let _placeholder_user_destination_collateral = next_account_info(account_info_iter)?;
+    let collateral_token_program = next_account_info(account_info_iter)?;
+    let liquidity_token_program = next_account_info(account_info_iter)?;
+    let _instruction_sysvar_account = next_account_info(account_info_iter)?;
+    let _obligation_farm_user_state = next_account_info(account_info_iter)?;
+    let _reserve_farm_state = next_account_info(account_info_iter)?;
+    let _farms_program = next_account_info(account_info_iter)?;
     let mut kamino = KaminoRedeemAccounts {
-        owner: next_account_info(account_info_iter)?,
-        lending_market: next_account_info(account_info_iter)?,
-        reserve: next_account_info(account_info_iter)?,
-        lending_market_authority: next_account_info(account_info_iter)?,
-        reserve_liquidity_mint: next_account_info(account_info_iter)?,
-        reserve_collateral_mint: next_account_info(account_info_iter)?,
-        reserve_liquidity_supply: next_account_info(account_info_iter)?,
-        user_source_collateral: next_account_info(account_info_iter)?,
-        user_destination_liquidity: next_account_info(account_info_iter)?,
-        collateral_token_program: next_account_info(account_info_iter)?,
-        liquidity_token_program: next_account_info(account_info_iter)?,
+        owner,
+        lending_market,
+        reserve,
+        lending_market_authority,
+        reserve_liquidity_mint,
+        reserve_collateral_mint,
+        reserve_liquidity_supply,
+        user_source_collateral,
+        user_destination_liquidity,
+        collateral_token_program,
+        liquidity_token_program,
         liquidity_decimals: 0,
     };
-    let _instruction_sysvar_account = next_account_info(account_info_iter)?;
 
     require_common_kamino_accounts(
         program_id,

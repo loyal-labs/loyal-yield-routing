@@ -14,6 +14,7 @@
     "lint": "eslint",
     "autodeposit:execute": "bun scripts/execute-autodeposit-policy.ts",
     "autodeposit:test": "bun test scripts/execute-autodeposit-policy.test.ts",
+    "same-mint:swap": "cargo run -p loyal-yield-orchestrator --bin same-mint-reserve-swap --",
     "balance-sweep:trigger": "cargo run -p balance-sweep-autodeposit-trigger",
     "balance-sweep:project": "cargo run -p balance-sweep-ata-projector",
     "loyal-actions:build": "bun run --cwd packages/loyal-actions build",

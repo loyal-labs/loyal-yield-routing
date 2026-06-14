@@ -1,7 +1,10 @@
 use crate::{
     derive_action_account, derive_loyal_hub_config, detect_yield_route_universe_preset,
     ids::*,
-    protocols::{derive_subscription_authority, derive_subscription_event_authority},
+    protocols::{
+        derive_kamino_user_metadata, derive_kamino_vanilla_obligation,
+        derive_subscription_authority, derive_subscription_event_authority,
+    },
     JupiterSwapContract, YieldRouteUniversePreset,
 };
 use solana_sdk::{hash::hashv, instruction::Instruction, pubkey::Pubkey};
@@ -209,6 +212,26 @@ pub fn decode_squads_policy_create_actions_from_parts(
                     payload,
                 });
             }
+            8 => {
+                let policy_account = cursor.read_pubkey()?;
+                let delegated_signers = read_signers(&mut cursor)?;
+                let threshold = cursor.read_u16()?;
+                cursor.read_u32()?;
+                let Some(payload) = read_policy_payload(&mut cursor)? else {
+                    skip_policy_expiration_args(&mut cursor)?;
+                    continue;
+                };
+                skip_policy_expiration_args(&mut cursor)?;
+                actions.push(SquadsSettingsActionView {
+                    settings,
+                    authority,
+                    policy_seed: 0,
+                    policy_account,
+                    delegated_signers,
+                    threshold,
+                    payload,
+                });
+            }
             tag => skip_settings_action(tag, &mut cursor)?,
         }
     }
@@ -224,14 +247,44 @@ pub fn detect_yield_route_policy_create(
         return None;
     }
 
-    let withdraw = classify_kamino_withdraw(constraints.first()?)?;
-    let deposit = classify_kamino_deposit(constraints.last()?, withdraw.vault)?;
+    let mut withdraw = None;
+    let mut deposit = None;
+    let mut init_markets = Vec::new();
+    let mut refresh_markets = Vec::new();
     let mut stable_mints = Vec::new();
     let mut swap_lanes = Vec::new();
     let mut has_jupiter = false;
     let mut has_hub = false;
 
-    for constraint in &constraints[1..constraints.len() - 1] {
+    for constraint in constraints {
+        if withdraw.is_none() {
+            if let Some(kamino_withdraw) = classify_kamino_withdraw(constraint) {
+                withdraw = Some(kamino_withdraw);
+                continue;
+            }
+        }
+    }
+    let withdraw = withdraw?;
+
+    for constraint in constraints {
+        if let Some(kamino_deposit) = classify_kamino_deposit(constraint, withdraw.vault) {
+            if deposit.is_some() {
+                return None;
+            }
+            deposit = Some(kamino_deposit);
+            continue;
+        }
+        if classify_kamino_withdraw(constraint).is_some() {
+            continue;
+        }
+        if let Some(markets) = classify_kamino_init_obligation(constraint, withdraw.vault) {
+            init_markets.extend(markets);
+            continue;
+        }
+        if let Some(markets) = classify_kamino_refresh_obligation(constraint, withdraw.vault) {
+            refresh_markets.extend(markets);
+            continue;
+        }
         if let Some(jupiter) = classify_jupiter_swap(constraint, withdraw.vault) {
             stable_mints.extend(jupiter.stable_mints);
             swap_lanes.push(DetectedSwapLane::Jupiter(jupiter.contract));
@@ -249,10 +302,7 @@ pub fn detect_yield_route_policy_create(
         }
         return None;
     }
-
-    if swap_lanes.is_empty() {
-        return None;
-    }
+    let deposit = deposit?;
 
     let mut route_modes = vec![DetectedYieldRouteMode::SameMint];
     if has_jupiter {
@@ -265,8 +315,22 @@ pub fn detect_yield_route_policy_create(
     let mut kamino_markets = withdraw.markets;
     kamino_markets.extend(deposit.markets);
     let kamino_markets = unique_pubkeys(kamino_markets);
+    let init_markets = unique_pubkeys(init_markets);
+    if !init_markets.is_empty() && !same_pubkey_set(&init_markets, &kamino_markets) {
+        return None;
+    }
+    let refresh_markets = unique_pubkeys(refresh_markets);
+    if !refresh_markets.is_empty() && !same_pubkey_set(&refresh_markets, &kamino_markets) {
+        return None;
+    }
     let mut kamino_liquidity_mints = withdraw.liquidity_mints;
     kamino_liquidity_mints.extend(deposit.liquidity_mints);
+    let kamino_liquidity_mints = unique_pubkeys(kamino_liquidity_mints);
+    let stable_mints = if stable_mints.is_empty() {
+        kamino_liquidity_mints.clone()
+    } else {
+        unique_pubkeys(stable_mints)
+    };
     let universe_preset = detect_yield_route_universe_preset(&kamino_markets);
 
     Some(DetectedYieldRoutePolicy {
@@ -278,9 +342,9 @@ pub fn detect_yield_route_policy_create(
         delegated_signers: unique_pubkeys(delegated_signers_as_pubkeys(&action.delegated_signers)),
         threshold: action.threshold,
         route_modes,
-        stable_mints: unique_pubkeys(stable_mints),
+        stable_mints,
         kamino_markets,
-        kamino_liquidity_mints: unique_pubkeys(kamino_liquidity_mints),
+        kamino_liquidity_mints,
         universe_preset,
         swap_lanes,
     })
@@ -355,13 +419,53 @@ fn classify_kamino_withdraw(constraint: &SquadsInstructionConstraintView) -> Opt
     }
     let accounts = accounts_by_index(constraint);
     let vault = single_pubkey(accounts.get(&0)?, None)?;
-    has_token_authority(accounts.get(&8)?, vault)?;
-    single_pubkey(accounts.get(&10)?, None).filter(|key| *key == spl_token::id())?;
+    if let Some(leg) = classify_full_kamino_leg(&accounts, vault) {
+        return Some(leg);
+    }
+    classify_compact_same_mint_kamino_leg(&accounts, vault)
+}
+
+fn classify_full_kamino_leg(
+    accounts: &BTreeMap<u8, &SquadsAccountConstraintView>,
+    vault: Pubkey,
+) -> Option<KaminoLeg> {
+    has_token_authority(accounts.get(&9)?, vault)?;
+    single_pubkey(accounts.get(&11)?, None).filter(|key| *key == spl_token::id())?;
+    single_pubkey(accounts.get(&12)?, None).filter(|key| *key == spl_token::id())?;
     Some(KaminoLeg {
         vault,
-        markets: pubkeys(accounts.get(&1)?, None)?,
-        liquidity_mints: pubkeys(accounts.get(&4)?, Some(spl_token::id()))?,
+        markets: pubkeys(accounts.get(&2)?, None)?,
+        liquidity_mints: pubkeys(accounts.get(&5)?, Some(spl_token::id()))?,
     })
+}
+
+fn classify_compact_same_mint_kamino_leg(
+    accounts: &BTreeMap<u8, &SquadsAccountConstraintView>,
+    vault: Pubkey,
+) -> Option<KaminoLeg> {
+    let markets = unique_pubkeys(pubkeys(accounts.get(&2)?, None)?);
+    let liquidity_mints = unique_pubkeys(pubkeys(accounts.get(&5)?, None)?);
+    if !same_mint_usdc_markets_are_supported(&markets) || liquidity_mints != vec![USDC_MINT] {
+        return None;
+    }
+    Some(KaminoLeg {
+        vault,
+        markets,
+        liquidity_mints,
+    })
+}
+
+fn same_mint_usdc_markets_are_supported(markets: &[Pubkey]) -> bool {
+    if markets.is_empty() {
+        return false;
+    }
+    for market in markets {
+        match *market {
+            KAMINO_MAIN_MARKET | KAMINO_FIGURE_MARKET => {}
+            _ => return false,
+        }
+    }
+    true
 }
 
 fn classify_kamino_deposit(
@@ -379,13 +483,84 @@ fn classify_kamino_deposit(
     }
     let accounts = accounts_by_index(constraint);
     single_pubkey(accounts.get(&0)?, None).filter(|key| *key == vault)?;
-    has_token_authority(accounts.get(&8)?, vault)?;
-    single_pubkey(accounts.get(&10)?, None).filter(|key| *key == spl_token::id())?;
-    Some(KaminoLeg {
-        vault,
-        markets: pubkeys(accounts.get(&2)?, None)?,
-        liquidity_mints: pubkeys(accounts.get(&4)?, Some(spl_token::id()))?,
-    })
+    classify_full_kamino_leg(&accounts, vault)
+        .or_else(|| classify_compact_same_mint_kamino_leg(&accounts, vault))
+}
+
+fn classify_kamino_init_obligation(
+    constraint: &SquadsInstructionConstraintView,
+    vault: Pubkey,
+) -> Option<Vec<Pubkey>> {
+    if constraint.program_id != KAMINO_LEND_PROGRAM_ID
+        || !has_data_bytes_equals(
+            &constraint.data_constraints,
+            0,
+            &KAMINO_INIT_OBLIGATION_DISCRIMINATOR,
+        )
+        || !has_data_u8_or_slice_equals(
+            &constraint.data_constraints,
+            KAMINO_INIT_OBLIGATION_TAG_OFFSET,
+            KAMINO_VANILLA_OBLIGATION_TAG,
+        )
+        || !has_data_u8_or_slice_equals(
+            &constraint.data_constraints,
+            KAMINO_INIT_OBLIGATION_ID_OFFSET,
+            KAMINO_VANILLA_OBLIGATION_ID,
+        )
+    {
+        return None;
+    }
+    let accounts = accounts_by_index(constraint);
+    single_pubkey(accounts.get(&0)?, None).filter(|key| *key == vault)?;
+    single_pubkey(accounts.get(&1)?, None).filter(|key| *key == vault)?;
+    let markets = unique_pubkeys(pubkeys(accounts.get(&3)?, None)?);
+    let obligations = unique_pubkeys(pubkeys(accounts.get(&2)?, None)?);
+    if obligations.len() != markets.len() {
+        return None;
+    }
+    let expected_obligations = markets
+        .iter()
+        .map(|market| derive_kamino_vanilla_obligation(vault, *market))
+        .collect::<Vec<_>>();
+    if !same_pubkey_set(&obligations, &expected_obligations) {
+        return None;
+    }
+    single_pubkey(accounts.get(&4)?, None).filter(|key| *key == Pubkey::default())?;
+    single_pubkey(accounts.get(&5)?, None).filter(|key| *key == Pubkey::default())?;
+    single_pubkey(accounts.get(&6)?, None)
+        .filter(|key| *key == derive_kamino_user_metadata(vault))?;
+    single_pubkey(accounts.get(&7)?, None).filter(|key| *key == solana_sdk::sysvar::rent::id())?;
+    single_pubkey(accounts.get(&8)?, None).filter(|key| *key == solana_sdk::system_program::ID)?;
+    Some(markets)
+}
+
+fn classify_kamino_refresh_obligation(
+    constraint: &SquadsInstructionConstraintView,
+    vault: Pubkey,
+) -> Option<Vec<Pubkey>> {
+    if constraint.program_id != KAMINO_LEND_PROGRAM_ID
+        || !has_data_slice_equals(
+            &constraint.data_constraints,
+            0,
+            &KAMINO_REFRESH_OBLIGATION_DISCRIMINATOR,
+        )
+    {
+        return None;
+    }
+    let accounts = accounts_by_index(constraint);
+    let markets = unique_pubkeys(pubkeys(accounts.get(&0)?, None)?);
+    let obligations = unique_pubkeys(pubkeys(accounts.get(&1)?, None)?);
+    if obligations.len() != markets.len() {
+        return None;
+    }
+    let expected_obligations = markets
+        .iter()
+        .map(|market| derive_kamino_vanilla_obligation(vault, *market))
+        .collect::<Vec<_>>();
+    if !same_pubkey_set(&obligations, &expected_obligations) {
+        return None;
+    }
+    Some(markets)
 }
 
 fn classify_jupiter_swap(
@@ -676,12 +851,43 @@ fn has_data_slice_equals(
     })
 }
 
+fn has_data_bytes_equals(
+    constraints: &[SquadsDataConstraintView],
+    offset: u64,
+    expected: &[u8],
+) -> bool {
+    constraints.iter().any(|constraint| {
+        if constraint.operator != SquadsDataOperatorView::Equals {
+            return false;
+        }
+        let SquadsDataValueView::U8Slice(bytes) = &constraint.data_value else {
+            return false;
+        };
+        let Some(relative_offset) = offset.checked_sub(constraint.data_offset) else {
+            return false;
+        };
+        let relative_offset = relative_offset as usize;
+        bytes
+            .get(relative_offset..relative_offset + expected.len())
+            .is_some_and(|actual| actual == expected)
+    })
+}
+
 fn has_data_u8_equals(constraints: &[SquadsDataConstraintView], offset: u64, expected: u8) -> bool {
     constraints.iter().any(|constraint| {
         constraint.data_offset == offset
             && constraint.operator == SquadsDataOperatorView::Equals
             && constraint.data_value == SquadsDataValueView::U8(expected)
     })
+}
+
+fn has_data_u8_or_slice_equals(
+    constraints: &[SquadsDataConstraintView],
+    offset: u64,
+    expected: u8,
+) -> bool {
+    has_data_u8_equals(constraints, offset, expected)
+        || has_data_bytes_equals(constraints, offset, &[expected])
 }
 
 fn data_u16_lte(constraints: &[SquadsDataConstraintView], offset: u64) -> Option<u16> {
@@ -701,6 +907,18 @@ fn read_policy_payload(
     cursor: &mut Cursor<'_>,
 ) -> Result<Option<SquadsProgramInteractionPolicyView>, PolicyDetectionError> {
     match cursor.read_u8()? {
+        3 => {
+            let vault_index = cursor.read_u8()?;
+            let constraints = cursor.read_vec(read_raw_instruction_constraint)?;
+            skip_raw_hook(cursor)?;
+            skip_raw_hook(cursor)?;
+            skip_raw_spending_limits(cursor)?;
+            Ok(Some(SquadsProgramInteractionPolicyView {
+                vault_index,
+                pubkey_table: vec![],
+                constraints,
+            }))
+        }
         4 => {
             let vault_index = cursor.read_u8()?;
             let pubkey_table = cursor.read_small_pubkey_vec()?;
@@ -720,6 +938,40 @@ fn read_policy_payload(
             Ok(None)
         }
     }
+}
+
+fn read_raw_instruction_constraint(
+    cursor: &mut Cursor<'_>,
+) -> Result<SquadsInstructionConstraintView, PolicyDetectionError> {
+    let program_id = cursor.read_pubkey()?;
+    let account_constraints = cursor.read_vec(read_raw_account_constraint)?;
+    let data_constraints = cursor.read_vec(read_data_constraint)?;
+    Ok(SquadsInstructionConstraintView {
+        program_id,
+        account_constraints,
+        data_constraints,
+    })
+}
+
+fn read_raw_account_constraint(
+    cursor: &mut Cursor<'_>,
+) -> Result<SquadsAccountConstraintView, PolicyDetectionError> {
+    let account_index = cursor.read_u8()?;
+    let kind = match cursor.read_u8()? {
+        0 => SquadsAccountConstraintKindView::Pubkey(cursor.read_pubkey_vec()?),
+        1 => SquadsAccountConstraintKindView::AccountData(cursor.read_vec(read_data_constraint)?),
+        _ => {
+            return Err(PolicyDetectionError::InvalidInstructionData(
+                "unknown account constraint kind",
+            ))
+        }
+    };
+    let owner = read_option(cursor, |cursor| cursor.read_pubkey())?;
+    Ok(SquadsAccountConstraintView {
+        account_index,
+        kind,
+        owner,
+    })
 }
 
 fn read_instruction_constraint(
@@ -859,18 +1111,62 @@ fn skip_policy_create_tail(cursor: &mut Cursor<'_>) -> Result<(), PolicyDetectio
 
 fn skip_policy_payload_body(tag: u8, cursor: &mut Cursor<'_>) -> Result<(), PolicyDetectionError> {
     match tag {
-        0 | 2 | 3 => {
+        0 | 2 => {
             let len = cursor.read_u32()? as usize;
             cursor.skip(len)
         }
         1 => skip_spending_limit_policy_payload(cursor),
-        4 => Err(PolicyDetectionError::InvalidInstructionData(
-            "unexpected ProgramInteraction skip path",
-        )),
+        3 => skip_raw_program_interaction_policy_payload(cursor),
+        4 => skip_compiled_program_interaction_policy_payload(cursor),
         _ => Err(PolicyDetectionError::InvalidInstructionData(
             "unknown policy payload",
         )),
     }
+}
+
+fn skip_raw_program_interaction_policy_payload(
+    cursor: &mut Cursor<'_>,
+) -> Result<(), PolicyDetectionError> {
+    cursor.read_u8()?;
+    cursor.read_vec(read_raw_instruction_constraint)?;
+    skip_raw_hook(cursor)?;
+    skip_raw_hook(cursor)?;
+    skip_raw_spending_limits(cursor)
+}
+
+fn skip_compiled_program_interaction_policy_payload(
+    cursor: &mut Cursor<'_>,
+) -> Result<(), PolicyDetectionError> {
+    cursor.read_u8()?;
+    let pubkey_table = cursor.read_small_pubkey_vec()?;
+    cursor.read_small_vec(|cursor| read_instruction_constraint(cursor, &pubkey_table))?;
+    skip_compiled_hook(cursor)?;
+    skip_compiled_hook(cursor)?;
+    skip_small_vec(cursor, skip_compiled_spending_limit)
+}
+
+fn skip_raw_hook(cursor: &mut Cursor<'_>) -> Result<(), PolicyDetectionError> {
+    read_option(cursor, |cursor| {
+        cursor.read_u8()?;
+        cursor.read_vec(read_raw_account_constraint)?;
+        cursor.read_vec_u8()?;
+        cursor.skip(32)?;
+        cursor.read_u8()?;
+        Ok(())
+    })
+    .map(|_| ())
+}
+
+fn skip_raw_spending_limits(cursor: &mut Cursor<'_>) -> Result<(), PolicyDetectionError> {
+    cursor
+        .read_vec(|cursor| {
+            cursor.skip(32)?;
+            cursor.skip(8)?;
+            skip_option_i64(cursor)?;
+            skip_period_v2(cursor)?;
+            cursor.skip(8)
+        })
+        .map(|_| ())
 }
 
 fn skip_compiled_hook(cursor: &mut Cursor<'_>) -> Result<(), PolicyDetectionError> {
@@ -1001,6 +1297,10 @@ fn unique_pubkeys(pubkeys: Vec<Pubkey>) -> Vec<Pubkey> {
     unique
 }
 
+fn same_pubkey_set(left: &[Pubkey], right: &[Pubkey]) -> bool {
+    left.len() == right.len() && left.iter().all(|pubkey| right.contains(pubkey))
+}
+
 fn anchor_instruction_discriminator(name: &str) -> [u8; 8] {
     let preimage = format!("global:{name}");
     let hash = hashv(&[preimage.as_bytes()]).to_bytes();
@@ -1064,6 +1364,11 @@ impl<'a> Cursor<'a> {
         Ok(Pubkey::new_from_array(self.read_array()?))
     }
 
+    fn read_pubkey_vec(&mut self) -> Result<Vec<Pubkey>, PolicyDetectionError> {
+        let len = self.read_u32()? as usize;
+        (0..len).map(|_| self.read_pubkey()).collect()
+    }
+
     fn read_vec_u8(&mut self) -> Result<Vec<u8>, PolicyDetectionError> {
         let len = self.read_u32()? as usize;
         Ok(self.take(len)?.to_vec())
@@ -1084,6 +1389,18 @@ impl<'a> Cursor<'a> {
         mut read_item: impl FnMut(&mut Cursor<'a>) -> Result<T, PolicyDetectionError>,
     ) -> Result<Vec<T>, PolicyDetectionError> {
         let len = self.read_u8()? as usize;
+        let mut items = Vec::with_capacity(len);
+        for _ in 0..len {
+            items.push(read_item(self)?);
+        }
+        Ok(items)
+    }
+
+    fn read_vec<T>(
+        &mut self,
+        mut read_item: impl FnMut(&mut Cursor<'a>) -> Result<T, PolicyDetectionError>,
+    ) -> Result<Vec<T>, PolicyDetectionError> {
+        let len = self.read_u32()? as usize;
         let mut items = Vec::with_capacity(len);
         for _ in 0..len {
             items.push(read_item(self)?);
@@ -1139,6 +1456,54 @@ mod tests {
         decode_squads_policy_create_actions(&setup.instructions[0])
             .unwrap()
             .remove(0)
+    }
+
+    fn detected_action_with_init_constraint() -> SquadsSettingsActionView {
+        let context = context();
+        let universe = universe();
+        let setup = create_all_in_one_market_mint_yield_route_action(
+            context,
+            universe.clone(),
+            vec![jupiter_lane()],
+        )
+        .unwrap();
+        let mut action = decode_squads_policy_create_actions(&setup.instructions[0])
+            .unwrap()
+            .remove(0);
+        let vault = classify_kamino_withdraw(&action.payload.constraints[0])
+            .expect("fixture has withdraw")
+            .vault;
+        let three_step = create_three_step_yield_route_actions(
+            context,
+            universe,
+            vec![jupiter_lane()],
+            YieldRouteActionSeeds::default(),
+        )
+        .unwrap();
+        let mut init_constraint = None;
+        for instruction in &three_step.instructions {
+            for decoded_action in decode_squads_policy_create_actions(instruction).unwrap() {
+                init_constraint =
+                    decoded_action
+                        .payload
+                        .constraints
+                        .into_iter()
+                        .find(|constraint| {
+                            classify_kamino_init_obligation(constraint, vault).is_some()
+                        });
+                if init_constraint.is_some() {
+                    break;
+                }
+            }
+            if init_constraint.is_some() {
+                break;
+            }
+        }
+        action
+            .payload
+            .constraints
+            .push(init_constraint.expect("three-step fixture has init obligation constraint"));
+        action
     }
 
     fn balance_sweep_action() -> SquadsSettingsActionView {
@@ -1263,6 +1628,34 @@ mod tests {
         }
     }
 
+    fn init_constraint_mut(
+        action: &mut SquadsSettingsActionView,
+    ) -> &mut SquadsInstructionConstraintView {
+        let vault = classify_kamino_withdraw(&action.payload.constraints[0])
+            .expect("fixture has withdraw")
+            .vault;
+        action
+            .payload
+            .constraints
+            .iter_mut()
+            .find(|constraint| classify_kamino_init_obligation(constraint, vault).is_some())
+            .expect("fixture has init obligation constraint")
+    }
+
+    fn refresh_constraint_mut(
+        action: &mut SquadsSettingsActionView,
+    ) -> &mut SquadsInstructionConstraintView {
+        let vault = classify_kamino_withdraw(&action.payload.constraints[0])
+            .expect("fixture has withdraw")
+            .vault;
+        action
+            .payload
+            .constraints
+            .iter_mut()
+            .find(|constraint| classify_kamino_refresh_obligation(constraint, vault).is_some())
+            .expect("fixture has refresh obligation constraint")
+    }
+
     #[test]
     fn detects_balance_sweep_policy() {
         let action = balance_sweep_action();
@@ -1354,6 +1747,33 @@ mod tests {
     }
 
     #[test]
+    fn detects_compact_same_mint_usdc_market_mint_policy() {
+        let context = context();
+        let setup = create_all_in_one_market_mint_yield_route_action(
+            context,
+            YieldRouteUniverse::new(
+                vec![USDC_MINT],
+                vec![KAMINO_MAIN_MARKET, KAMINO_FIGURE_MARKET],
+                vec![USDC_MINT],
+            ),
+            vec![],
+        )
+        .unwrap();
+
+        let actions = decode_squads_policy_create_actions(&setup.instructions[0]).unwrap();
+        let detected = detect_yield_route_policy_create(&actions[0]).unwrap();
+
+        assert_eq!(detected.route_modes, vec![DetectedYieldRouteMode::SameMint]);
+        assert_eq!(
+            detected.kamino_markets,
+            vec![KAMINO_MAIN_MARKET, KAMINO_FIGURE_MARKET]
+        );
+        assert_eq!(detected.kamino_liquidity_mints, vec![USDC_MINT]);
+        assert_eq!(detected.stable_mints, vec![USDC_MINT]);
+        assert_eq!(detected.universe_preset, None);
+    }
+
+    #[test]
     fn detects_preset_all_in_one_policy() {
         let setup = create_preset_all_in_one_yield_route_action(
             context(),
@@ -1412,7 +1832,12 @@ mod tests {
         assert!(detect_yield_route_policy_create(&missing_withdraw).is_none());
 
         let mut missing_deposit = detected_action();
-        missing_deposit.payload.constraints.pop();
+        let withdraw = classify_kamino_withdraw(&missing_deposit.payload.constraints[0])
+            .expect("fixture has withdraw");
+        missing_deposit
+            .payload
+            .constraints
+            .retain(|constraint| classify_kamino_deposit(constraint, withdraw.vault).is_none());
         assert!(detect_yield_route_policy_create(&missing_deposit).is_none());
     }
 
@@ -1423,7 +1848,7 @@ mod tests {
         let source_liquidity = withdraw
             .account_constraints
             .iter_mut()
-            .find(|constraint| constraint.account_index == 8)
+            .find(|constraint| constraint.account_index == 5)
             .unwrap();
         source_liquidity.owner = None;
 
@@ -1442,6 +1867,152 @@ mod tests {
         discriminator.data_value = SquadsDataValueView::U8Slice(vec![0; 8]);
 
         assert!(detect_yield_route_policy_create(&action).is_none());
+    }
+
+    #[test]
+    fn rejects_loose_init_obligation_policy_constraints() {
+        let mut unsupported_market = detected_action_with_init_constraint();
+        let vault = classify_kamino_withdraw(&unsupported_market.payload.constraints[0])
+            .expect("fixture has withdraw")
+            .vault;
+        let market = Pubkey::new_unique();
+        let obligation = derive_kamino_vanilla_obligation(vault, market);
+        let init = init_constraint_mut(&mut unsupported_market);
+        let markets = init
+            .account_constraints
+            .iter_mut()
+            .find(|constraint| constraint.account_index == 3)
+            .unwrap();
+        let SquadsAccountConstraintKindView::Pubkey(pubkeys) = &mut markets.kind else {
+            panic!("init lending market should use pubkey constraints");
+        };
+        pubkeys.push(market);
+        let obligations = init
+            .account_constraints
+            .iter_mut()
+            .find(|constraint| constraint.account_index == 2)
+            .unwrap();
+        let SquadsAccountConstraintKindView::Pubkey(pubkeys) = &mut obligations.kind else {
+            panic!("init obligation account should use pubkey constraints");
+        };
+        pubkeys.push(obligation);
+        assert!(detect_yield_route_policy_create(&unsupported_market).is_none());
+
+        let mut wrong_owner = detected_action_with_init_constraint();
+        let init = init_constraint_mut(&mut wrong_owner);
+        let owner = init
+            .account_constraints
+            .iter_mut()
+            .find(|constraint| constraint.account_index == 0)
+            .unwrap();
+        owner.kind = SquadsAccountConstraintKindView::Pubkey(vec![Pubkey::new_unique()]);
+        assert!(detect_yield_route_policy_create(&wrong_owner).is_none());
+
+        let mut wrong_fee_payer = detected_action_with_init_constraint();
+        let init = init_constraint_mut(&mut wrong_fee_payer);
+        let fee_payer = init
+            .account_constraints
+            .iter_mut()
+            .find(|constraint| constraint.account_index == 1)
+            .unwrap();
+        fee_payer.kind = SquadsAccountConstraintKindView::Pubkey(vec![Pubkey::new_unique()]);
+        assert!(detect_yield_route_policy_create(&wrong_fee_payer).is_none());
+
+        let mut extra_obligation = detected_action_with_init_constraint();
+        let init = init_constraint_mut(&mut extra_obligation);
+        let obligations = init
+            .account_constraints
+            .iter_mut()
+            .find(|constraint| constraint.account_index == 2)
+            .unwrap();
+        let SquadsAccountConstraintKindView::Pubkey(pubkeys) = &mut obligations.kind else {
+            panic!("init obligation account should use pubkey constraints");
+        };
+        pubkeys.push(Pubkey::new_unique());
+        assert!(detect_yield_route_policy_create(&extra_obligation).is_none());
+
+        let mut wrong_obligation = detected_action_with_init_constraint();
+        let init = init_constraint_mut(&mut wrong_obligation);
+        let obligations = init
+            .account_constraints
+            .iter_mut()
+            .find(|constraint| constraint.account_index == 2)
+            .unwrap();
+        let SquadsAccountConstraintKindView::Pubkey(pubkeys) = &mut obligations.kind else {
+            panic!("init obligation account should use pubkey constraints");
+        };
+        pubkeys[0] = Pubkey::new_unique();
+        assert!(detect_yield_route_policy_create(&wrong_obligation).is_none());
+
+        let mut wrong_seed_account = detected_action_with_init_constraint();
+        let init = init_constraint_mut(&mut wrong_seed_account);
+        let seed = init
+            .account_constraints
+            .iter_mut()
+            .find(|constraint| constraint.account_index == 4)
+            .unwrap();
+        seed.kind = SquadsAccountConstraintKindView::Pubkey(vec![Pubkey::new_unique()]);
+        assert!(detect_yield_route_policy_create(&wrong_seed_account).is_none());
+
+        let mut wrong_user_metadata = detected_action_with_init_constraint();
+        let init = init_constraint_mut(&mut wrong_user_metadata);
+        let user_metadata = init
+            .account_constraints
+            .iter_mut()
+            .find(|constraint| constraint.account_index == 6)
+            .unwrap();
+        user_metadata.kind = SquadsAccountConstraintKindView::Pubkey(vec![Pubkey::new_unique()]);
+        assert!(detect_yield_route_policy_create(&wrong_user_metadata).is_none());
+    }
+
+    #[test]
+    fn rejects_loose_refresh_obligation_policy_constraints() {
+        let mut route_without_refresh = detected_action();
+        let vault = classify_kamino_withdraw(&route_without_refresh.payload.constraints[0])
+            .expect("fixture has withdraw")
+            .vault;
+        route_without_refresh
+            .payload
+            .constraints
+            .retain(|constraint| classify_kamino_refresh_obligation(constraint, vault).is_none());
+        assert!(detect_yield_route_policy_create(&route_without_refresh).is_some());
+
+        let mut unsupported_market = detected_action();
+        let market = Pubkey::new_unique();
+        let obligation = derive_kamino_vanilla_obligation(vault, market);
+        let refresh = refresh_constraint_mut(&mut unsupported_market);
+        let markets = refresh
+            .account_constraints
+            .iter_mut()
+            .find(|constraint| constraint.account_index == 0)
+            .unwrap();
+        let SquadsAccountConstraintKindView::Pubkey(pubkeys) = &mut markets.kind else {
+            panic!("refresh lending market should use pubkey constraints");
+        };
+        pubkeys.push(market);
+        let obligations = refresh
+            .account_constraints
+            .iter_mut()
+            .find(|constraint| constraint.account_index == 1)
+            .unwrap();
+        let SquadsAccountConstraintKindView::Pubkey(pubkeys) = &mut obligations.kind else {
+            panic!("refresh obligation account should use pubkey constraints");
+        };
+        pubkeys.push(obligation);
+        assert!(detect_yield_route_policy_create(&unsupported_market).is_none());
+
+        let mut wrong_obligation = detected_action();
+        let refresh = refresh_constraint_mut(&mut wrong_obligation);
+        let obligations = refresh
+            .account_constraints
+            .iter_mut()
+            .find(|constraint| constraint.account_index == 1)
+            .unwrap();
+        let SquadsAccountConstraintKindView::Pubkey(pubkeys) = &mut obligations.kind else {
+            panic!("refresh obligation account should use pubkey constraints");
+        };
+        pubkeys[0] = Pubkey::new_unique();
+        assert!(detect_yield_route_policy_create(&wrong_obligation).is_none());
     }
 
     #[test]

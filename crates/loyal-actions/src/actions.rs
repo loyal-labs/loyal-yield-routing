@@ -1,10 +1,14 @@
 use crate::ids::*;
 use crate::protocols::{
     jupiter_constraint, kamino_deposit_reserve_liquidity_constraint,
-    kamino_redeem_reserve_collateral_constraint, loyal_hub_constraint, unique_pubkeys,
+    kamino_deposit_reserve_liquidity_market_mint_constraint, kamino_init_obligation_constraint,
+    kamino_redeem_reserve_collateral_constraint,
+    kamino_redeem_reserve_collateral_market_mint_constraint, kamino_refresh_obligation_constraint,
+    loyal_hub_constraint, unique_pubkeys,
 };
 use crate::squads::{
-    create_program_interaction_action_instruction, derive_action_account, LoyalActionError, Result,
+    create_program_interaction_action_instruction, derive_action_account,
+    update_program_interaction_action_instruction, LoyalActionError, Result,
     SquadsInstructionConstraint,
 };
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
@@ -363,6 +367,85 @@ pub fn create_preset_all_in_one_yield_route_action(
     )
 }
 
+pub fn update_all_in_one_market_mint_yield_route_action(
+    context: LoyalActionContext,
+    universe: YieldRouteUniverse,
+    swap_lanes: Vec<SwapLane>,
+    policy: Pubkey,
+    account_index: u8,
+) -> Result<YieldRouteActionSetup> {
+    validate_stable_mints(&universe.stable_mints)?;
+    validate_kamino_universe(&universe)?;
+    validate_swap_lane_values(&swap_lanes)?;
+
+    let constraints = all_in_one_constraints(context.vault, &universe, &swap_lanes)?;
+    let instruction = update_program_interaction_action_instruction(
+        context.settings,
+        context.authority,
+        policy,
+        context.delegated_signer,
+        account_index,
+        constraints.clone(),
+    )?;
+    let accounts = YieldRouteActionAccounts {
+        withdraw: policy,
+        swap: policy,
+        deposit: policy,
+    };
+    let steps = YieldRouteSteps {
+        withdraw: Some(LoyalActionStep::new(policy, 0)),
+        deposit: Some(LoyalActionStep::new(policy, 1 + swap_lanes.len() as u8)),
+        ..swap_steps(policy, &swap_lanes, 1)
+    };
+
+    setup_from_parts(
+        RouteTopology::AllInOne,
+        universe,
+        swap_lanes,
+        accounts,
+        vec![instruction],
+        steps,
+        constraints.len(),
+    )
+}
+
+pub fn update_init_obligation_yield_route_action(
+    context: LoyalActionContext,
+    universe: YieldRouteUniverse,
+    policy: Pubkey,
+    account_index: u8,
+) -> Result<YieldRouteActionSetup> {
+    validate_kamino_universe(&universe)?;
+
+    let constraints = vec![kamino_init_obligation_constraint(
+        context.vault,
+        universe.kamino_markets.clone(),
+    )];
+    let instruction = update_program_interaction_action_instruction(
+        context.settings,
+        context.authority,
+        policy,
+        context.delegated_signer,
+        account_index,
+        constraints.clone(),
+    )?;
+    let accounts = YieldRouteActionAccounts {
+        withdraw: policy,
+        swap: policy,
+        deposit: policy,
+    };
+
+    setup_from_parts(
+        RouteTopology::AllInOne,
+        universe,
+        Vec::new(),
+        accounts,
+        vec![instruction],
+        YieldRouteSteps::default(),
+        constraints.len(),
+    )
+}
+
 pub fn detect_yield_route_universe_preset(
     kamino_markets: &[Pubkey],
 ) -> Option<YieldRouteUniversePreset> {
@@ -520,6 +603,10 @@ fn build_three_step(plan: YieldRouteActionPlan) -> Result<YieldRouteActionSetup>
         plan.universe.kamino_markets.clone(),
         plan.universe.kamino_liquidity_mints.clone(),
     )];
+    let setup_constraints = vec![kamino_init_obligation_constraint(
+        plan.context.vault,
+        plan.universe.kamino_markets.clone(),
+    )];
     let instructions = vec![
         action_instruction(
             plan.context,
@@ -530,7 +617,7 @@ fn build_three_step(plan: YieldRouteActionPlan) -> Result<YieldRouteActionSetup>
         action_instruction(
             plan.context,
             plan.seeds.deposit,
-            deposit_constraints.clone(),
+            [deposit_constraints.clone(), setup_constraints.clone()].concat(),
         )?,
     ];
     let steps = YieldRouteSteps {
@@ -544,7 +631,7 @@ fn build_three_step(plan: YieldRouteActionPlan) -> Result<YieldRouteActionSetup>
         accounts,
         instructions,
         steps,
-        2 + swap_constraints.len(),
+        2 + swap_constraints.len() + setup_constraints.len(),
     )
 }
 
@@ -567,6 +654,7 @@ fn build_combined_kamino(plan: YieldRouteActionPlan) -> Result<YieldRouteActionS
             plan.universe.kamino_markets.clone(),
             plan.universe.kamino_liquidity_mints.clone(),
         ),
+        kamino_init_obligation_constraint(plan.context.vault, plan.universe.kamino_markets.clone()),
     ];
     let swap_constraints = stable_swap_constraints(
         plan.context.vault,
@@ -592,7 +680,7 @@ fn build_combined_kamino(plan: YieldRouteActionPlan) -> Result<YieldRouteActionS
         accounts,
         instructions,
         steps,
-        2 + swap_constraints.len(),
+        2 + swap_constraints.len() + 1,
     )
 }
 
@@ -603,22 +691,7 @@ fn build_all_in_one(plan: YieldRouteActionPlan) -> Result<YieldRouteActionSetup>
         swap: action,
         deposit: action,
     };
-    let mut constraints = Vec::with_capacity(2 + plan.swap_lanes.len());
-    constraints.push(kamino_redeem_reserve_collateral_constraint(
-        plan.context.vault,
-        plan.universe.kamino_markets.clone(),
-        plan.universe.kamino_liquidity_mints.clone(),
-    ));
-    constraints.extend(stable_swap_constraints(
-        plan.context.vault,
-        plan.universe.stable_mints.clone(),
-        &plan.swap_lanes,
-    )?);
-    constraints.push(kamino_deposit_reserve_liquidity_constraint(
-        plan.context.vault,
-        plan.universe.kamino_markets.clone(),
-        plan.universe.kamino_liquidity_mints.clone(),
-    ));
+    let constraints = all_in_one_constraints(plan.context.vault, &plan.universe, &plan.swap_lanes)?;
     let instruction = action_instruction(plan.context, plan.seeds.withdraw, constraints.clone())?;
     let steps = YieldRouteSteps {
         withdraw: Some(LoyalActionStep::new(action, 0)),
@@ -632,8 +705,103 @@ fn build_all_in_one(plan: YieldRouteActionPlan) -> Result<YieldRouteActionSetup>
     setup(plan, accounts, vec![instruction], steps, constraints.len())
 }
 
+fn all_in_one_constraints(
+    vault: Pubkey,
+    universe: &YieldRouteUniverse,
+    swap_lanes: &[SwapLane],
+) -> Result<Vec<SquadsInstructionConstraint>> {
+    let compact_same_mint_usdc = is_compact_same_mint_usdc_policy(universe, swap_lanes);
+    let mut constraints = Vec::with_capacity(if compact_same_mint_usdc {
+        2 + swap_lanes.len()
+    } else {
+        3 + swap_lanes.len()
+    });
+    if compact_same_mint_usdc {
+        constraints.push(kamino_redeem_reserve_collateral_market_mint_constraint(
+            vault,
+            universe.kamino_markets.clone(),
+            universe.kamino_liquidity_mints.clone(),
+        ));
+    } else {
+        constraints.push(kamino_redeem_reserve_collateral_constraint(
+            vault,
+            universe.kamino_markets.clone(),
+            universe.kamino_liquidity_mints.clone(),
+        ));
+    }
+    constraints.extend(stable_swap_constraints(
+        vault,
+        universe.stable_mints.clone(),
+        swap_lanes,
+    )?);
+    if compact_same_mint_usdc {
+        constraints.push(kamino_deposit_reserve_liquidity_market_mint_constraint(
+            vault,
+            universe.kamino_markets.clone(),
+            universe.kamino_liquidity_mints.clone(),
+        ));
+    } else {
+        constraints.push(kamino_deposit_reserve_liquidity_constraint(
+            vault,
+            universe.kamino_markets.clone(),
+            universe.kamino_liquidity_mints.clone(),
+        ));
+    }
+    if !compact_same_mint_usdc {
+        constraints.push(kamino_refresh_obligation_constraint(
+            vault,
+            universe.kamino_markets.clone(),
+        ));
+    }
+    Ok(constraints)
+}
+
+fn is_compact_same_mint_usdc_policy(
+    universe: &YieldRouteUniverse,
+    swap_lanes: &[SwapLane],
+) -> bool {
+    if !swap_lanes.is_empty()
+        || unique_pubkeys(universe.stable_mints.clone()) != vec![USDC_MINT]
+        || unique_pubkeys(universe.kamino_liquidity_mints.clone()) != vec![USDC_MINT]
+    {
+        return false;
+    }
+
+    let markets = unique_pubkeys(universe.kamino_markets.clone());
+    if markets.is_empty() {
+        return false;
+    }
+    for market in markets {
+        match market {
+            KAMINO_MAIN_MARKET | KAMINO_FIGURE_MARKET => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
 fn setup(
     plan: YieldRouteActionPlan,
+    accounts: YieldRouteActionAccounts,
+    instructions: Vec<Instruction>,
+    steps: YieldRouteSteps,
+    constraint_count: usize,
+) -> Result<YieldRouteActionSetup> {
+    setup_from_parts(
+        plan.topology,
+        plan.universe,
+        plan.swap_lanes,
+        accounts,
+        instructions,
+        steps,
+        constraint_count,
+    )
+}
+
+fn setup_from_parts(
+    topology: RouteTopology,
+    universe: YieldRouteUniverse,
+    swap_lanes: Vec<SwapLane>,
     accounts: YieldRouteActionAccounts,
     instructions: Vec<Instruction>,
     steps: YieldRouteSteps,
@@ -642,9 +810,9 @@ fn setup(
     Ok(YieldRouteActionSetup {
         accounts,
         spec: YieldRouteActionSpec {
-            topology: plan.topology,
-            universe: plan.universe,
-            swap_lanes: plan.swap_lanes,
+            topology,
+            universe,
+            swap_lanes,
             accounts,
             instruction_count: instructions.len(),
             constraint_count,
@@ -700,7 +868,7 @@ fn stable_swap_constraints(
     swap_lanes: &[SwapLane],
 ) -> Result<Vec<SquadsInstructionConstraint>> {
     validate_stable_mints(&allowed_mints)?;
-    validate_swap_lanes(swap_lanes)?;
+    validate_swap_lane_values(swap_lanes)?;
 
     let allowed_mints = unique_pubkeys(allowed_mints);
     let mut constraints = Vec::with_capacity(swap_lanes.len());
@@ -740,7 +908,11 @@ fn validate_plan(plan: &YieldRouteActionPlan) -> Result<()> {
     if plan.topology != RouteTopology::SwapOnly {
         validate_kamino_universe(&plan.universe)?;
     }
-    validate_swap_lanes(&plan.swap_lanes)?;
+    if plan.topology == RouteTopology::AllInOne {
+        validate_swap_lane_values(&plan.swap_lanes)?;
+    } else {
+        validate_swap_lanes(&plan.swap_lanes)?;
+    }
     validate_action_seeds(plan.topology, plan.seeds)
 }
 
@@ -765,6 +937,10 @@ fn validate_swap_lanes(swap_lanes: &[SwapLane]) -> Result<()> {
     if swap_lanes.is_empty() {
         return Err(LoyalActionError::EmptySwapLanes);
     }
+    validate_swap_lane_values(swap_lanes)
+}
+
+fn validate_swap_lane_values(swap_lanes: &[SwapLane]) -> Result<()> {
     for lane in swap_lanes {
         if let SwapLane::LoyalHub { max_fee_bps, .. } = lane {
             if *max_fee_bps > loyal_hub_abi::MAX_FEE_BPS as u16 {
@@ -838,9 +1014,79 @@ mod tests {
 
     #[test]
     fn rejects_empty_swap_lanes() {
-        let result =
-            create_all_in_one_market_mint_yield_route_action(context(), universe(), vec![]);
+        let result = create_swap_yield_route_action(context(), vec![USDC_MINT], vec![], 42);
         assert_eq!(result.unwrap_err(), LoyalActionError::EmptySwapLanes);
+    }
+
+    #[test]
+    fn all_in_one_allows_same_mint_only_policy() {
+        let context = context();
+        let setup =
+            create_all_in_one_market_mint_yield_route_action(context, universe(), vec![]).unwrap();
+
+        assert_eq!(setup.instructions.len(), 1);
+        assert_eq!(setup.spec.constraint_count, 3);
+        assert_eq!(
+            setup
+                .same_mint_route()
+                .unwrap()
+                .instruction_constraint_indexes(),
+            &[0, 1]
+        );
+        assert_eq!(
+            setup.jupiter_route().unwrap_err(),
+            LoyalActionError::MissingActionStep
+        );
+    }
+
+    #[test]
+    fn all_in_one_same_mint_usdc_policy_decodes_market_and_mint_scope() {
+        let context = context();
+        let setup = create_all_in_one_market_mint_yield_route_action(
+            context,
+            YieldRouteUniverse::new(
+                vec![USDC_MINT],
+                vec![KAMINO_MAIN_MARKET, KAMINO_FIGURE_MARKET],
+                vec![USDC_MINT],
+            ),
+            vec![],
+        )
+        .unwrap();
+
+        assert_eq!(setup.instructions.len(), 1);
+        assert_eq!(setup.spec.constraint_count, 2);
+        assert_eq!(
+            setup
+                .same_mint_route()
+                .unwrap()
+                .instruction_constraint_indexes(),
+            &[0, 1]
+        );
+
+        let decoded = decode_program_interaction_policy_create(&setup.instructions[0]);
+        assert_eq!(decoded.constraints.len(), 2);
+        let markets = [KAMINO_MAIN_MARKET, KAMINO_FIGURE_MARKET];
+        let mints = [USDC_MINT];
+
+        let withdraw_accounts = decoded.constraints[0].account_constraints_by_index();
+        assert_pubkey_constraint(&withdraw_accounts[&0], &[context.vault], None);
+        assert_pubkey_constraint(&withdraw_accounts[&2], &markets, None);
+        assert_pubkey_constraint(&withdraw_accounts[&5], &mints, None);
+        assert_data_slice_equals(
+            &decoded.constraints[0].data_constraints[0],
+            0,
+            &KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR,
+        );
+
+        let deposit_accounts = decoded.constraints[1].account_constraints_by_index();
+        assert_pubkey_constraint(&deposit_accounts[&0], &[context.vault], None);
+        assert_pubkey_constraint(&deposit_accounts[&2], &markets, None);
+        assert_pubkey_constraint(&deposit_accounts[&5], &mints, None);
+        assert_data_slice_equals(
+            &decoded.constraints[1].data_constraints[0],
+            0,
+            &KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR,
+        );
     }
 
     #[test]
@@ -878,7 +1124,7 @@ mod tests {
             setup.deposit_step().unwrap().instruction_constraint_index(),
             2
         );
-        assert_eq!(setup.spec.constraint_count, 3);
+        assert_eq!(setup.spec.constraint_count, 4);
 
         let same_mint_route = setup.same_mint_route().unwrap();
         assert_eq!(same_mint_route.action_account(), setup.accounts.withdraw);
@@ -1001,7 +1247,7 @@ mod tests {
 
         assert_eq!(setup.instructions.len(), 1);
         assert_eq!(setup.spec.topology, RouteTopology::AllInOne);
-        assert_eq!(setup.spec.constraint_count, 3);
+        assert_eq!(setup.spec.constraint_count, 4);
         assert_eq!(
             setup
                 .withdraw_step()
@@ -1214,48 +1460,30 @@ mod tests {
 
         let decoded = decode_program_interaction_policy_create(&setup.instructions[0]);
         assert_eq!(decoded.account_index, context.account_index);
-        assert_eq!(decoded.constraints.len(), 4);
-        assert_eq!(
-            decoded.pubkey(decoded.constraints[0].program_id_index),
-            KAMINO_LEND_PROGRAM_ID
-        );
-        assert_eq!(
-            decoded.pubkey(decoded.constraints[1].program_id_index),
-            JUPITER_V6_PROGRAM_ID
-        );
-        assert_eq!(
-            decoded.pubkey(decoded.constraints[2].program_id_index),
-            LOYAL_HUB_SWAP_PROGRAM_ID
-        );
-        assert_eq!(
-            decoded.pubkey(decoded.constraints[3].program_id_index),
-            KAMINO_LEND_PROGRAM_ID
-        );
+        assert_eq!(decoded.constraints.len(), 5);
+        assert_eq!(decoded.constraints[0].program_id, KAMINO_LEND_PROGRAM_ID);
+        assert_eq!(decoded.constraints[1].program_id, JUPITER_V6_PROGRAM_ID);
+        assert_eq!(decoded.constraints[2].program_id, LOYAL_HUB_SWAP_PROGRAM_ID);
+        assert_eq!(decoded.constraints[3].program_id, KAMINO_LEND_PROGRAM_ID);
+        assert_eq!(decoded.constraints[4].program_id, KAMINO_LEND_PROGRAM_ID);
+        assert_eq!(decoded.constraints[4].program_id, KAMINO_LEND_PROGRAM_ID);
 
-        assert_kamino_withdraw_constraint(&decoded, &decoded.constraints[0], context.vault);
-        assert_jupiter_constraint(&decoded, &decoded.constraints[1], context.vault);
-        assert_hub_constraint(
-            &decoded,
-            &decoded.constraints[2],
-            context.vault,
-            hub_authorizer,
-            50,
-        );
-        assert_kamino_deposit_constraint(&decoded, &decoded.constraints[3], context.vault);
+        assert_kamino_withdraw_constraint(&decoded.constraints[0], context.vault);
+        assert_jupiter_constraint(&decoded.constraints[1], context.vault);
+        assert_hub_constraint(&decoded.constraints[2], context.vault, hub_authorizer, 50);
+        assert_kamino_deposit_constraint(&decoded.constraints[3], context.vault);
+        assert_kamino_refresh_obligation_constraint(&decoded.constraints[4], context.vault);
     }
 
-    fn assert_kamino_withdraw_constraint(
-        policy: &DecodedProgramInteractionPolicy,
-        constraint: &DecodedInstructionConstraint,
-        vault: Pubkey,
-    ) {
+    fn assert_kamino_withdraw_constraint(constraint: &DecodedInstructionConstraint, vault: Pubkey) {
         let accounts = constraint.account_constraints_by_index();
-        assert_pubkey_constraint(policy, &accounts[&0], &[vault], None);
-        assert_eq!(accounts[&1].kind, DecodedAccountConstraintKind::Pubkey);
-        assert_eq!(accounts[&1].pubkey_indexes.len(), 1);
-        assert_eq!(accounts[&4].owner(policy), Some(spl_token::id()));
-        assert_token_authority_constraint(policy, &accounts[&8], vault);
-        assert_pubkey_constraint(policy, &accounts[&10], &[spl_token::id()], None);
+        assert_pubkey_constraint(&accounts[&0], &[vault], None);
+        assert_eq!(accounts[&2].kind, DecodedAccountConstraintKind::Pubkey);
+        assert_eq!(accounts[&2].pubkeys.len(), 1);
+        assert_eq!(accounts[&5].owner, Some(spl_token::id()));
+        assert_token_authority_constraint(&accounts[&9], vault);
+        assert_pubkey_constraint(&accounts[&11], &[spl_token::id()], None);
+        assert_pubkey_constraint(&accounts[&12], &[spl_token::id()], None);
         assert_data_slice_equals(
             &constraint.data_constraints[0],
             0,
@@ -1263,18 +1491,15 @@ mod tests {
         );
     }
 
-    fn assert_kamino_deposit_constraint(
-        policy: &DecodedProgramInteractionPolicy,
-        constraint: &DecodedInstructionConstraint,
-        vault: Pubkey,
-    ) {
+    fn assert_kamino_deposit_constraint(constraint: &DecodedInstructionConstraint, vault: Pubkey) {
         let accounts = constraint.account_constraints_by_index();
-        assert_pubkey_constraint(policy, &accounts[&0], &[vault], None);
+        assert_pubkey_constraint(&accounts[&0], &[vault], None);
         assert_eq!(accounts[&2].kind, DecodedAccountConstraintKind::Pubkey);
-        assert_eq!(accounts[&2].pubkey_indexes.len(), 1);
-        assert_eq!(accounts[&4].owner(policy), Some(spl_token::id()));
-        assert_token_authority_constraint(policy, &accounts[&8], vault);
-        assert_pubkey_constraint(policy, &accounts[&10], &[spl_token::id()], None);
+        assert_eq!(accounts[&2].pubkeys.len(), 1);
+        assert_eq!(accounts[&5].owner, Some(spl_token::id()));
+        assert_token_authority_constraint(&accounts[&9], vault);
+        assert_pubkey_constraint(&accounts[&11], &[spl_token::id()], None);
+        assert_pubkey_constraint(&accounts[&12], &[spl_token::id()], None);
         assert_data_slice_equals(
             &constraint.data_constraints[0],
             0,
@@ -1282,20 +1507,35 @@ mod tests {
         );
     }
 
-    fn assert_jupiter_constraint(
-        policy: &DecodedProgramInteractionPolicy,
+    fn assert_kamino_refresh_obligation_constraint(
         constraint: &DecodedInstructionConstraint,
         vault: Pubkey,
     ) {
         let accounts = constraint.account_constraints_by_index();
-        assert_pubkey_constraint(policy, &accounts[&0], &[vault], None);
-        assert_token_authority_constraint(policy, &accounts[&1], vault);
-        assert_token_authority_constraint(policy, &accounts[&2], vault);
-        assert_eq!(accounts[&3].owner(policy), Some(spl_token::id()));
-        assert_eq!(accounts[&3].pubkey_indexes.len(), 1);
-        assert_eq!(accounts[&4].owner(policy), Some(spl_token::id()));
-        assert_eq!(accounts[&4].pubkey_indexes.len(), 1);
-        assert_pubkey_constraint(policy, &accounts[&5], &[spl_token::id()], None);
+        let markets = accounts[&0].pubkeys.clone();
+        let obligations = markets
+            .iter()
+            .map(|market| crate::protocols::derive_kamino_vanilla_obligation(vault, *market))
+            .collect::<Vec<_>>();
+        assert_pubkey_constraint(&accounts[&0], &markets, None);
+        assert_pubkey_constraint(&accounts[&1], &obligations, None);
+        assert_data_slice_equals(
+            &constraint.data_constraints[0],
+            0,
+            &KAMINO_REFRESH_OBLIGATION_DISCRIMINATOR,
+        );
+    }
+
+    fn assert_jupiter_constraint(constraint: &DecodedInstructionConstraint, vault: Pubkey) {
+        let accounts = constraint.account_constraints_by_index();
+        assert_pubkey_constraint(&accounts[&0], &[vault], None);
+        assert_token_authority_constraint(&accounts[&1], vault);
+        assert_token_authority_constraint(&accounts[&2], vault);
+        assert_eq!(accounts[&3].owner, Some(spl_token::id()));
+        assert_eq!(accounts[&3].pubkeys.len(), 1);
+        assert_eq!(accounts[&4].owner, Some(spl_token::id()));
+        assert_eq!(accounts[&4].pubkeys.len(), 1);
+        assert_pubkey_constraint(&accounts[&5], &[spl_token::id()], None);
         assert_eq!(accounts.len(), 6);
         assert_data_slice_equals(
             &constraint.data_constraints[0],
@@ -1310,7 +1550,6 @@ mod tests {
     }
 
     fn assert_hub_constraint(
-        policy: &DecodedProgramInteractionPolicy,
         constraint: &DecodedInstructionConstraint,
         vault: Pubkey,
         hub_authorizer: Pubkey,
@@ -1318,51 +1557,45 @@ mod tests {
     ) {
         let accounts = constraint.account_constraints_by_index();
         assert_pubkey_constraint(
-            policy,
             &accounts[&loyal_hub_abi::swap_exact_in_accounts::CONFIG],
             &[derive_loyal_hub_config()],
             Some(LOYAL_HUB_SWAP_PROGRAM_ID),
         );
         assert_pubkey_constraint(
-            policy,
             &accounts[&loyal_hub_abi::swap_exact_in_accounts::USER_VAULT],
             &[vault],
             None,
         );
         assert_eq!(
-            accounts[&loyal_hub_abi::swap_exact_in_accounts::HUB_INPUT].owner(policy),
+            accounts[&loyal_hub_abi::swap_exact_in_accounts::HUB_INPUT].owner,
             Some(spl_token::id())
         );
         assert_eq!(
-            accounts[&loyal_hub_abi::swap_exact_in_accounts::HUB_OUTPUT].owner(policy),
+            accounts[&loyal_hub_abi::swap_exact_in_accounts::HUB_OUTPUT].owner,
             Some(spl_token::id())
         );
         assert_token_authority_constraint(
-            policy,
             &accounts[&loyal_hub_abi::swap_exact_in_accounts::USER_INPUT],
             vault,
         );
         assert_token_authority_constraint(
-            policy,
             &accounts[&loyal_hub_abi::swap_exact_in_accounts::USER_OUTPUT],
             vault,
         );
         assert_eq!(
-            accounts[&loyal_hub_abi::swap_exact_in_accounts::INPUT_MINT].owner(policy),
+            accounts[&loyal_hub_abi::swap_exact_in_accounts::INPUT_MINT].owner,
             Some(spl_token::id())
         );
         assert_eq!(
-            accounts[&loyal_hub_abi::swap_exact_in_accounts::OUTPUT_MINT].owner(policy),
+            accounts[&loyal_hub_abi::swap_exact_in_accounts::OUTPUT_MINT].owner,
             Some(spl_token::id())
         );
         assert_pubkey_constraint(
-            policy,
             &accounts[&loyal_hub_abi::swap_exact_in_accounts::HUB_AUTHORIZER],
             &[hub_authorizer],
             None,
         );
         assert_pubkey_constraint(
-            policy,
             &accounts[&loyal_hub_abi::swap_exact_in_accounts::TOKEN_PROGRAM],
             &[spl_token::id()],
             None,
@@ -1380,28 +1613,18 @@ mod tests {
     }
 
     fn assert_pubkey_constraint(
-        policy: &DecodedProgramInteractionPolicy,
         constraint: &DecodedAccountConstraint,
         expected_pubkeys: &[Pubkey],
         owner: Option<Pubkey>,
     ) {
         assert_eq!(constraint.kind, DecodedAccountConstraintKind::Pubkey);
-        let pubkeys = constraint
-            .pubkey_indexes
-            .iter()
-            .map(|index| policy.pubkey(*index))
-            .collect::<Vec<_>>();
-        assert_eq!(pubkeys, expected_pubkeys);
-        assert_eq!(constraint.owner(policy), owner);
+        assert_eq!(constraint.pubkeys, expected_pubkeys);
+        assert_eq!(constraint.owner, owner);
     }
 
-    fn assert_token_authority_constraint(
-        policy: &DecodedProgramInteractionPolicy,
-        constraint: &DecodedAccountConstraint,
-        authority: Pubkey,
-    ) {
+    fn assert_token_authority_constraint(constraint: &DecodedAccountConstraint, authority: Pubkey) {
         assert_eq!(constraint.kind, DecodedAccountConstraintKind::AccountData);
-        assert_eq!(constraint.owner(policy), Some(spl_token::id()));
+        assert_eq!(constraint.owner, Some(spl_token::id()));
         assert_data_slice_equals(&constraint.data_constraints[0], 32, authority.as_ref());
     }
 
@@ -1429,19 +1652,12 @@ mod tests {
     #[derive(Debug)]
     struct DecodedProgramInteractionPolicy {
         account_index: u8,
-        pubkey_table: Vec<Pubkey>,
         constraints: Vec<DecodedInstructionConstraint>,
-    }
-
-    impl DecodedProgramInteractionPolicy {
-        fn pubkey(&self, index: u8) -> Pubkey {
-            self.pubkey_table[index as usize]
-        }
     }
 
     #[derive(Debug)]
     struct DecodedInstructionConstraint {
-        program_id_index: u8,
+        program_id: Pubkey,
         account_constraints: Vec<DecodedAccountConstraint>,
         data_constraints: Vec<DecodedDataConstraint>,
     }
@@ -1459,15 +1675,9 @@ mod tests {
     struct DecodedAccountConstraint {
         account_index: u8,
         kind: DecodedAccountConstraintKind,
-        pubkey_indexes: Vec<u8>,
+        pubkeys: Vec<Pubkey>,
         data_constraints: Vec<DecodedDataConstraint>,
-        owner_index: Option<u8>,
-    }
-
-    impl DecodedAccountConstraint {
-        fn owner(&self, policy: &DecodedProgramInteractionPolicy) -> Option<Pubkey> {
-            self.owner_index.map(|index| policy.pubkey(index))
-        }
+        owner: Option<Pubkey>,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1559,27 +1769,25 @@ mod tests {
         assert_eq!(cursor.read_u32(), 1);
         assert_eq!(cursor.read_u8(), 7);
         cursor.read_u64();
-        assert_eq!(cursor.read_u8(), 4);
+        assert_eq!(cursor.read_u8(), 3);
 
         let account_index = cursor.read_u8();
-        let pubkey_table = read_small_pubkey_vec(&mut cursor);
-        let constraints = read_small_vec(&mut cursor, read_instruction_constraint);
+        let constraints = read_vec(&mut cursor, read_instruction_constraint);
         assert_eq!(cursor.read_u8(), 0);
         assert_eq!(cursor.read_u8(), 0);
-        assert_eq!(cursor.read_u8(), 0);
+        assert_eq!(cursor.read_u32(), 0);
 
         DecodedProgramInteractionPolicy {
             account_index,
-            pubkey_table,
             constraints,
         }
     }
 
     fn read_instruction_constraint(cursor: &mut Cursor<'_>) -> DecodedInstructionConstraint {
         DecodedInstructionConstraint {
-            program_id_index: cursor.read_u8(),
-            account_constraints: read_small_vec(cursor, read_account_constraint),
-            data_constraints: read_small_vec(cursor, read_data_constraint),
+            program_id: cursor.read_pubkey(),
+            account_constraints: read_vec(cursor, read_account_constraint),
+            data_constraints: read_vec(cursor, read_data_constraint),
         }
     }
 
@@ -1589,27 +1797,27 @@ mod tests {
         let (kind, pubkey_indexes, data_constraints) = match kind_tag {
             0 => (
                 DecodedAccountConstraintKind::Pubkey,
-                read_small_u8_vec(cursor),
+                read_pubkey_vec(cursor),
                 Vec::new(),
             ),
             1 => (
                 DecodedAccountConstraintKind::AccountData,
                 Vec::new(),
-                read_small_vec(cursor, read_data_constraint),
+                read_vec(cursor, read_data_constraint),
             ),
             _ => panic!("unexpected account constraint kind {kind_tag}"),
         };
-        let owner_index = match cursor.read_u8() {
+        let owner = match cursor.read_u8() {
             0 => None,
-            1 => Some(cursor.read_u8()),
+            1 => Some(cursor.read_pubkey()),
             tag => panic!("unexpected option tag {tag}"),
         };
         DecodedAccountConstraint {
             account_index,
             kind,
-            pubkey_indexes,
+            pubkeys: pubkey_indexes,
             data_constraints,
-            owner_index,
+            owner,
         }
     }
 
@@ -1646,18 +1854,13 @@ mod tests {
         }
     }
 
-    fn read_small_pubkey_vec(cursor: &mut Cursor<'_>) -> Vec<Pubkey> {
-        let len = cursor.read_u8() as usize;
+    fn read_pubkey_vec(cursor: &mut Cursor<'_>) -> Vec<Pubkey> {
+        let len = cursor.read_u32() as usize;
         (0..len).map(|_| cursor.read_pubkey()).collect()
     }
 
-    fn read_small_u8_vec(cursor: &mut Cursor<'_>) -> Vec<u8> {
-        let len = cursor.read_u8() as usize;
-        (0..len).map(|_| cursor.read_u8()).collect()
-    }
-
-    fn read_small_vec<T>(cursor: &mut Cursor<'_>, read_item: fn(&mut Cursor<'_>) -> T) -> Vec<T> {
-        let len = cursor.read_u8() as usize;
+    fn read_vec<T>(cursor: &mut Cursor<'_>, read_item: fn(&mut Cursor<'_>) -> T) -> Vec<T> {
+        let len = cursor.read_u32() as usize;
         (0..len).map(|_| read_item(cursor)).collect()
     }
 }

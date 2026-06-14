@@ -3121,11 +3121,17 @@ dependencies = [
 name = "loyal-yield-orchestrator"
 version = "0.1.0"
 dependencies = [
+ "bincode",
+ "bs58",
  "chrono",
+ "klend-interface",
+ "loyal-actions",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "solana-client",
  "solana-sdk",
+ "spl-token",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
