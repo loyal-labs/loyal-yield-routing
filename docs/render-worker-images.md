@@ -26,11 +26,13 @@ Target split IDs, once created/imported in Render, must be recorded here before 
 | Light Render project | `prj-d8kgt4r7uimc73b1ul0g` |
 | Light production environment | `evm-d8kgt4r7uimc73b1ul1g` |
 | Light `loyal-balance-sweep-autodeposit-trigger` service | `srv-d8lplql7vvec73f1it6g` |
-| Light `loyal-same-mint-yield-monitor` service | pending creation after the first pinned image build that includes the monitor binary |
+| Light `loyal-same-mint-yield-monitor` service | `srv-d8n7gqbbc2fs73emk610` |
 
 CI builds both images in `.github/workflows/worker-images.yml` and tags them as `sha-${GITHUB_SHA}`. Render services should use those immutable SHA tags or image digests. Do not use `latest` as the only service image reference.
 
 The light worker image contains the Rust projector/trigger binaries, same-mint monitor/executor binaries, Bun production dependencies, and `scripts/execute-autodeposit-policy.ts`. The autodeposit trigger invokes that in-image executor through `BALANCE_SWEEP_EXECUTOR_COMMAND`; it should not depend on a sibling checkout at runtime. The same-mint monitor starts in dry-run mode unless its Render command is intentionally changed to pass `--execute`.
+
+As of 2026-06-14, `loyal-same-mint-yield-monitor` is deployed in dry-run mode with explicit settings/vault flags for the verified test vault. The live service uses `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-bf9546d906c6f71a3520b40e74af4bf7a4969ffc`, Render deploy `dep-d8n7h03bf2bc73c2b0n0`, and image digest `sha256:0584af52a6c789756ac9e9fccc355dbd52c1c18557467beacb7c211f876ffc3f`.
 
 Render's current Blueprint validator rejects `registryCredential` on these `runtime: image` worker services. Keep the GHCR images private and attach the required private registry pull credentials in the Render Dashboard/API outside this Blueprint.
 
