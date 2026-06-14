@@ -3126,6 +3126,7 @@ dependencies = [
  "chrono",
  "klend-interface",
  "loyal-actions",
+ "loyal-yield-router",
  "serde",
  "serde_json",
  "sha2 0.10.9",

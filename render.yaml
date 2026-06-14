@@ -111,3 +111,28 @@ projects:
                 value: "true"
               - key: RUST_LOG
                 value: warn,balance_sweep_autodeposit_trigger=info
+
+          - type: worker
+            name: loyal-same-mint-yield-monitor
+            runtime: image
+            region: oregon
+            plan: starter
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-af0d7c2d50d471a6b11be8ea8cde49aa403fa3a9
+            preDeployCommand: /usr/local/bin/yield-migrations --apply
+            dockerCommand: /usr/local/bin/same-mint-yield-monitor --poll-interval-seconds 300
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: TIMESCALEDB_URL
+                sync: false
+              - key: SOLANA_RPC_URL
+                sync: false
+              - key: SOLANA_TESTING_PK
+                sync: false
+              - key: YIELD_ROUTER_KEYPAIR
+                sync: false
+              - key: RUST_LOG
+                value: warn,same_mint_yield_monitor=info

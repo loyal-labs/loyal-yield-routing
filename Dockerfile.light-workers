@@ -42,7 +42,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp /app/target/release/balance-sweep-ata-projector /usr/local/bin/balance-sweep-ata-projector \
     && cp /app/target/release/balance-sweep-autodeposit-trigger /usr/local/bin/balance-sweep-autodeposit-trigger \
     && cp /app/target/release/loyal-timescale-migrations /usr/local/bin/loyal-timescale-migrations \
-    && cp /app/target/release/yield-migrations /usr/local/bin/yield-migrations
+    && cp /app/target/release/yield-migrations /usr/local/bin/yield-migrations \
+    && cp /app/target/release/same-mint-reserve-swap /usr/local/bin/same-mint-reserve-swap \
+    && cp /app/target/release/same-mint-yield-monitor /usr/local/bin/same-mint-yield-monitor
 
 FROM oven/bun:1.2.17-debian AS bun-deps
 
@@ -69,5 +71,7 @@ COPY --from=builder /usr/local/bin/balance-sweep-ata-projector /usr/local/bin/ba
 COPY --from=builder /usr/local/bin/balance-sweep-autodeposit-trigger /usr/local/bin/balance-sweep-autodeposit-trigger
 COPY --from=builder /usr/local/bin/loyal-timescale-migrations /usr/local/bin/loyal-timescale-migrations
 COPY --from=builder /usr/local/bin/yield-migrations /usr/local/bin/yield-migrations
+COPY --from=builder /usr/local/bin/same-mint-reserve-swap /usr/local/bin/same-mint-reserve-swap
+COPY --from=builder /usr/local/bin/same-mint-yield-monitor /usr/local/bin/same-mint-yield-monitor
 
 CMD ["/usr/local/bin/balance-sweep-ata-projector"]

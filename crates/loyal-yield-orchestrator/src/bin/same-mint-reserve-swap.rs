@@ -151,10 +151,26 @@ struct ReserveMove {
 
 impl ReserveMove {
     fn from_options(options: &CliOptions) -> Result<Self, String> {
-        let source_reserve = options.direction.source_reserve();
-        let target_reserve = options.direction.target_reserve();
+        let (source_reserve, target_reserve) =
+            match (&options.source_reserve, &options.target_reserve) {
+                (Some(source), Some(target)) => (source.clone(), target.clone()),
+                (None, None) => (
+                    options.direction.source_reserve(),
+                    options.direction.target_reserve(),
+                ),
+                _ => {
+                    return Err(
+                        "--source-reserve and --target-reserve must be provided together"
+                            .to_owned(),
+                    )
+                }
+            };
+        Pubkey::from_str(&source_reserve)
+            .map_err(|_| "--source-reserve must be a public key".to_owned())?;
+        Pubkey::from_str(&target_reserve)
+            .map_err(|_| "--target-reserve must be a public key".to_owned())?;
         if source_reserve == target_reserve {
-            return Err("direction must produce distinct source and target reserves".to_owned());
+            return Err("source and target reserves must be distinct".to_owned());
         }
         Ok(Self {
             source_reserve,
@@ -168,6 +184,8 @@ struct CliOptions {
     settings: String,
     vault_index: i16,
     direction: Direction,
+    source_reserve: Option<String>,
+    target_reserve: Option<String>,
     update_policy: bool,
     update_active_policy: bool,
     initial_deposit_amount_raw: Option<u64>,
@@ -499,6 +517,13 @@ struct MissingObligationSetupSubmitResult {
 }
 
 #[derive(Debug)]
+struct SubmittedPolicyTransaction {
+    signature: String,
+    submitted_slot: i64,
+    confirmed_slot: i64,
+}
+
+#[derive(Debug)]
 struct InitialDepositSubmitResult {
     funding_signature: Option<String>,
     funding_submitted_slot: Option<i64>,
@@ -818,7 +843,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     let mut db_positions = load_position_summaries(&client, vault.id).await?;
     let user_position_seed = if options.seed_from_user_position {
-        load_user_position_seed_preview(&pool, &vault, &reserve_move, options.direction).await?
+        load_user_position_seed_preview(
+            &pool,
+            &vault,
+            &reserve_move,
+            chain_preview.as_ref(),
+            options.direction,
+        )
+        .await?
     } else {
         None
     };
@@ -934,6 +966,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let execution_preflight_blocker_reason = execution_preflight_blockers.first().cloned();
     let would_execute_route =
         route_execution.is_some() && execution_preflight_blocker_reason.is_none();
+    let route_lookup_table_provisioning = if !options.execute && options.provision_lookup_table {
+        Some(same_mint_route_lookup_table_provisioning_dry_run(
+            &options,
+            route_execution.as_ref(),
+        ))
+    } else {
+        None
+    };
     if options.execute {
         if let Some(reason) = &execution_preflight_blocker_reason {
             println!(
@@ -987,6 +1027,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 "sameMintInput": same_mint_input_json(&pre_reconcile_input),
                 "routeBuildError": route_build_error,
                 "routeExecution": route_execution.as_ref().map(|plan| route_execution_preview_json(&plan.preview)),
+                "lookupTableProvisioning": route_lookup_table_provisioning,
                 "targetObligationSetup": chain_preview.as_ref().and_then(|preview| target_obligation_setup_json(preview, &reserve_move, policy_preflight.as_ref())),
                 "missingObligationSetup": target_missing_obligation_setup_dry_run,
                 "executionPlan": {
@@ -1025,9 +1066,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .into());
             }
         };
-        if let Err(error) =
-            validate_execution_decision_route(&execution_decision, &reserve_move, options.direction)
-        {
+        if let Err(error) = validate_execution_decision_route(&execution_decision, &reserve_move) {
             let reason = error.to_string();
             let _ = client
                 .advance_decision(
@@ -1168,6 +1207,50 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }))?
     );
     Err("same-mint rebalance was not planned".into())
+}
+
+fn same_mint_route_lookup_table_provisioning_dry_run(
+    options: &CliOptions,
+    route_execution: Option<&RouteExecutionPlan>,
+) -> Value {
+    match build_same_mint_route_lookup_table_provisioning_dry_run(options, route_execution) {
+        Ok(value) => value,
+        Err(error) => json!({
+            "enabled": true,
+            "execute": false,
+            "error": error.to_string(),
+        }),
+    }
+}
+
+fn build_same_mint_route_lookup_table_provisioning_dry_run(
+    options: &CliOptions,
+    route_execution: Option<&RouteExecutionPlan>,
+) -> Result<Value, Box<dyn Error>> {
+    let route_execution =
+        route_execution.ok_or("route execution plan is unavailable for lookup table preview")?;
+    let rpc =
+        RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
+    let lookup_table_pubkeys = lookup_table_pubkeys_from_options(options)?;
+    let mut lookup_table_accounts =
+        load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
+    let signer = yield_router_keypair_from_env()?;
+    let fee_payer = solana_testing_keypair_from_env()?;
+    let mut transaction_instructions = route_execution.pre_instructions.clone();
+    transaction_instructions.push(route_execution.instruction.clone());
+    let required_lookup_addresses = best_case_lookup_table_addresses(
+        fee_payer.pubkey(),
+        &transaction_instructions,
+        &[fee_payer.pubkey(), signer.pubkey()],
+    );
+    prepare_policy_update_lookup_tables(
+        &rpc,
+        options,
+        fee_payer.pubkey(),
+        &fee_payer,
+        &required_lookup_addresses,
+        &mut lookup_table_accounts,
+    )
 }
 
 fn run_lifecycle_e2e_flow(options: &CliOptions, amount_raw: u64) -> Result<(), Box<dyn Error>> {
@@ -1889,13 +1972,9 @@ async fn execute_missing_obligation_setup(
             format!("init-obligation setup policy update simulation failed: {error}").into(),
         );
     }
-    let setup_policy_submitted_slot = i64::try_from(rpc.get_slot()?)?;
-    let setup_policy_signature = rpc
-        .send_and_confirm_transaction(&setup_policy_update.transaction)?
-        .to_string();
-    let setup_policy_confirmed_slot = i64::try_from(rpc.get_slot()?)?;
+    let setup_policy_submission = submit_built_policy_transaction(&rpc, &setup_policy_update)?;
 
-    let init_execution = build_init_obligation_execution_transaction(
+    let init_execution = match build_init_obligation_execution_transaction(
         &rpc,
         &lookup_table_accounts,
         policy,
@@ -1905,15 +1984,57 @@ async fn execute_missing_obligation_setup(
         &authority_signer,
         &delegated_signer,
         None,
-    )?;
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            let (_, restore_submission) = submit_route_policy_restore_after_setup(
+                &rpc,
+                &lookup_table_accounts,
+                vault,
+                policy,
+                &authority_signer,
+                &delegated_signer,
+            )?;
+            return Err(format!(
+                "init-obligation execution build failed after setup policy {}; route policy restored in tx {}: {error}",
+                setup_policy_submission.signature, restore_submission.signature
+            )
+            .into());
+        }
+    };
     if let Some(error) = &init_execution.simulation_error {
-        return Err(format!("init-obligation execution simulation failed: {error}").into());
+        let (_, restore_submission) = submit_route_policy_restore_after_setup(
+            &rpc,
+            &lookup_table_accounts,
+            vault,
+            policy,
+            &authority_signer,
+            &delegated_signer,
+        )?;
+        return Err(format!(
+            "init-obligation execution simulation failed after setup policy {}; route policy restored in tx {}: {error}",
+            setup_policy_submission.signature, restore_submission.signature
+        )
+        .into());
     }
-    let init_submitted_slot = i64::try_from(rpc.get_slot()?)?;
-    let init_signature = rpc
-        .send_and_confirm_transaction(&init_execution.transaction)?
-        .to_string();
-    let init_confirmed_slot = i64::try_from(rpc.get_slot()?)?;
+    let init_submission = match submit_built_policy_transaction(&rpc, &init_execution) {
+        Ok(submission) => submission,
+        Err(error) => {
+            let restore = submit_route_policy_restore_after_setup(
+                &rpc,
+                &lookup_table_accounts,
+                vault,
+                policy,
+                &authority_signer,
+                &delegated_signer,
+            )?;
+            return Err(format!(
+                "init-obligation execution submit failed after setup policy {}; route policy restored in tx {}: {error}",
+                setup_policy_submission.signature, restore.1.signature
+            )
+            .into());
+        }
+    };
 
     let route_policy_restore = build_route_policy_restore_transaction(
         &rpc,
@@ -1927,11 +2048,7 @@ async fn execute_missing_obligation_setup(
     if let Some(error) = &route_policy_restore.simulation_error {
         return Err(format!("route policy restore simulation failed: {error}").into());
     }
-    let route_policy_submitted_slot = i64::try_from(rpc.get_slot()?)?;
-    let route_policy_signature = rpc
-        .send_and_confirm_transaction(&route_policy_restore.transaction)?
-        .to_string();
-    let route_policy_confirmed_slot = i64::try_from(rpc.get_slot()?)?;
+    let route_policy_submission = submit_built_policy_transaction(&rpc, &route_policy_restore)?;
 
     let final_universe = same_mint_usdc_policy_universe()?;
     let final_setup = update_all_in_one_market_mint_yield_route_action(
@@ -1944,8 +2061,8 @@ async fn execute_missing_obligation_setup(
     let policy_swap_lanes = policy_swap_lanes_json(&final_setup, &[])?;
     client
         .record_policy_match(PolicyMatchInput {
-            signature: route_policy_signature.clone(),
-            slot: u64::try_from(route_policy_confirmed_slot)?,
+            signature: route_policy_submission.signature.clone(),
+            slot: u64::try_from(route_policy_submission.confirmed_slot)?,
             settings: vault.settings.clone(),
             authority: authority.to_string(),
             policy_seed,
@@ -1965,22 +2082,65 @@ async fn execute_missing_obligation_setup(
         .await?;
 
     Ok(MissingObligationSetupSubmitResult {
-        setup_policy_signature,
-        setup_policy_submitted_slot,
-        setup_policy_confirmed_slot,
+        setup_policy_signature: setup_policy_submission.signature,
+        setup_policy_submitted_slot: setup_policy_submission.submitted_slot,
+        setup_policy_confirmed_slot: setup_policy_submission.confirmed_slot,
         setup_policy_simulation_units_consumed: setup_policy_update.simulation_units_consumed,
         setup_policy_transaction_packet: setup_policy_update.transaction_packet,
-        init_signature,
-        init_submitted_slot,
-        init_confirmed_slot,
+        init_signature: init_submission.signature,
+        init_submitted_slot: init_submission.submitted_slot,
+        init_confirmed_slot: init_submission.confirmed_slot,
         init_simulation_units_consumed: init_execution.simulation_units_consumed,
         init_transaction_packet: init_execution.transaction_packet,
-        route_policy_signature,
-        route_policy_submitted_slot,
-        route_policy_confirmed_slot,
+        route_policy_signature: route_policy_submission.signature,
+        route_policy_submitted_slot: route_policy_submission.submitted_slot,
+        route_policy_confirmed_slot: route_policy_submission.confirmed_slot,
         route_policy_simulation_units_consumed: route_policy_restore.simulation_units_consumed,
         route_policy_transaction_packet: route_policy_restore.transaction_packet,
     })
+}
+
+fn submit_built_policy_transaction(
+    rpc: &RpcClient,
+    transaction: &PolicyTransactionBuild,
+) -> Result<SubmittedPolicyTransaction, Box<dyn Error>> {
+    let submitted_slot = i64::try_from(rpc.get_slot()?)?;
+    let signature = rpc
+        .send_and_confirm_transaction(&transaction.transaction)?
+        .to_string();
+    let confirmed_slot = i64::try_from(rpc.get_slot()?)?;
+    Ok(SubmittedPolicyTransaction {
+        signature,
+        submitted_slot,
+        confirmed_slot,
+    })
+}
+
+fn submit_route_policy_restore_after_setup(
+    rpc: &RpcClient,
+    lookup_table_accounts: &[AddressLookupTableAccount],
+    vault: &SelectedVault,
+    policy: Pubkey,
+    authority_signer: &dyn Signer,
+    delegated_signer: &dyn Signer,
+) -> Result<(PolicyTransactionBuild, SubmittedPolicyTransaction), Box<dyn Error>> {
+    let restore = build_route_policy_restore_transaction(
+        rpc,
+        lookup_table_accounts,
+        vault,
+        policy,
+        authority_signer,
+        delegated_signer,
+        None,
+    )?;
+    if let Some(error) = &restore.simulation_error {
+        return Err(format!(
+            "route policy restore simulation failed after init-obligation setup policy landed: {error}"
+        )
+        .into());
+    }
+    let submission = submit_built_policy_transaction(rpc, &restore)?;
+    Ok((restore, submission))
 }
 
 fn build_init_obligation_execution_transaction(
@@ -3439,21 +3599,18 @@ fn require_plan_i64(
 fn validate_execution_decision_route(
     decision: &PreparedSameMintDecision,
     reserve_move: &ReserveMove,
-    direction: Direction,
 ) -> Result<(), Box<dyn Error>> {
     if decision.source_reserve != reserve_move.source_reserve {
         return Err(format!(
-            "persisted decision source reserve {} does not match requested direction {}",
-            decision.source_reserve,
-            direction.as_str()
+            "persisted decision source reserve {} does not match requested source reserve {}",
+            decision.source_reserve, reserve_move.source_reserve
         )
         .into());
     }
     if decision.target_reserve != reserve_move.target_reserve {
         return Err(format!(
-            "persisted decision target reserve {} does not match requested direction {}",
-            decision.target_reserve,
-            direction.as_str()
+            "persisted decision target reserve {} does not match requested target reserve {}",
+            decision.target_reserve, reserve_move.target_reserve
         )
         .into());
     }
@@ -3489,6 +3646,7 @@ async fn load_user_position_seed_preview(
     pool: &PgPool,
     vault: &SelectedVault,
     reserve_move: &ReserveMove,
+    chain_preview: Option<&ChainReconcilePreview>,
     direction: Direction,
 ) -> Result<Option<UserPositionSeedPreview>, Box<dyn Error>> {
     let rows = loyal_yield_orchestrator::sqlx::query(
@@ -3549,15 +3707,27 @@ async fn load_user_position_seed_preview(
         }));
     }
     let source_row = source_row.expect("checked some");
-    if source_row.current_market != direction.source_market() {
-        return Err(format!(
-            "user_yield_positions row {} has market {}, expected {} for reserve {}",
-            source_row.id,
-            source_row.current_market,
-            direction.source_market(),
-            source_row.current_reserve
-        )
-        .into());
+    let expected_source_market = chain_preview
+        .and_then(|preview| chain_position_for_reserve(preview, &reserve_move.source_reserve).ok())
+        .map(|position| position.market.clone())
+        .or_else(|| {
+            if reserve_move.source_reserve == direction.source_reserve() {
+                Some(direction.source_market().to_owned())
+            } else {
+                None
+            }
+        });
+    if let Some(expected_source_market) = expected_source_market {
+        if source_row.current_market != expected_source_market {
+            return Err(format!(
+                "user_yield_positions row {} has market {}, expected {} for reserve {}",
+                source_row.id,
+                source_row.current_market,
+                expected_source_market,
+                source_row.current_reserve
+            )
+            .into());
+        }
     }
 
     let target_amount = rows
@@ -5932,6 +6102,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     let mut settings = None;
     let mut vault_index = None;
     let mut direction = Direction::MainToPrime;
+    let mut source_reserve = None;
+    let mut target_reserve = None;
     let mut update_policy = false;
     let mut update_active_policy = false;
     let mut initial_deposit_amount_raw = None;
@@ -5964,6 +6136,18 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
                 let raw = iter.next().ok_or("--direction requires a value")?;
                 direction = Direction::parse(&raw)
                     .ok_or("--direction must be main-to-prime or prime-to-main")?;
+            }
+            "--source-reserve" => {
+                source_reserve = Some(
+                    iter.next()
+                        .ok_or("--source-reserve requires a public key")?,
+                );
+            }
+            "--target-reserve" => {
+                target_reserve = Some(
+                    iter.next()
+                        .ok_or("--target-reserve requires a public key")?,
+                );
             }
             "--update-policy" => update_policy = true,
             "--update-active-policy" => update_active_policy = true,
@@ -6027,13 +6211,20 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     if update_active_policy && !update_policy {
         return Err("--update-active-policy requires --update-policy".to_owned());
     }
-    if provision_lookup_table && !update_policy {
-        return Err("--provision-lookup-table requires --update-policy".to_owned());
+    if provision_lookup_table && !update_policy && selected_special_modes != 0 {
+        return Err(
+            "--provision-lookup-table requires --update-policy or same-mint route mode".to_owned(),
+        );
+    }
+    if source_reserve.is_some() != target_reserve.is_some() {
+        return Err("--source-reserve and --target-reserve must be provided together".to_owned());
     }
     Ok(CliOptions {
         settings: settings.ok_or("--settings is required")?,
         vault_index: vault_index.ok_or("--vault-index is required")?,
         direction,
+        source_reserve,
+        target_reserve,
         update_policy,
         update_active_policy,
         initial_deposit_amount_raw,
@@ -6704,8 +6895,8 @@ fn same_mint_input_json(input: &SameMintRebalanceInput) -> Value {
 
 fn print_help() {
     println!(
-         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--provision-lookup-table] [--deposit-main-usdc <AMOUNT_RAW>] [--full-withdraw-main-usdc] [--direction main-to-prime|prime-to-main] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--lookup-table <PUBKEY>...] [--execute]\n\n\
-         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and YIELD_ROUTER_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --provision-lookup-table with --update-policy to create, extend, warm up, and use a fresh ALT under --execute. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and YIELD_ROUTER_KEYPAIR for the policy deposit. Full withdraw mode uses YIELD_ROUTER_KEYPAIR for the policy withdraw and reports obligation rent cleanup proof. Run through:\n\
+         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--provision-lookup-table] [--deposit-main-usdc <AMOUNT_RAW>] [--full-withdraw-main-usdc] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--lookup-table <PUBKEY>...] [--execute]\n\n\
+         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and YIELD_ROUTER_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --provision-lookup-table with --update-policy or same-mint --execute to create, extend, warm up, and use a fresh ALT. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and YIELD_ROUTER_KEYPAIR for the policy deposit. Full withdraw mode uses YIELD_ROUTER_KEYPAIR for the policy withdraw and reports obligation rent cleanup proof. Run through:\n\
          op run --env-file=.env.1password -- bun run same-mint:swap -- --settings <PUBKEY> --vault-index 1 --reconcile-from-chain --seed-from-user-position"
     );
 }
@@ -6737,6 +6928,8 @@ mod tests {
             settings: "settings".to_owned(),
             vault_index: 1,
             direction: Direction::MainToPrime,
+            source_reserve: None,
+            target_reserve: None,
             update_policy: false,
             update_active_policy: false,
             initial_deposit_amount_raw: None,
@@ -6914,6 +7107,8 @@ mod tests {
                 settings: "settings".to_owned(),
                 vault_index: 1,
                 direction: Direction::MainToPrime,
+                source_reserve: None,
+                target_reserve: None,
                 update_policy: false,
                 update_active_policy: false,
                 initial_deposit_amount_raw: None,
@@ -6970,16 +7165,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_provision_lookup_table_requires_policy_update() {
-        let error = parse_args([
+    fn parse_provision_lookup_table_allows_same_mint_route_preview() {
+        let options = parse_args([
             "--settings".to_owned(),
             "settings".to_owned(),
             "--vault-index".to_owned(),
             "1".to_owned(),
             "--provision-lookup-table".to_owned(),
         ])
-        .expect_err("provisioning is scoped to policy update");
-        assert!(error.contains("--provision-lookup-table"));
+        .expect("same-mint route dry-run may preview lookup table provisioning");
+        assert!(options.provision_lookup_table);
 
         let options = parse_args([
             "--settings".to_owned(),
@@ -6991,6 +7186,29 @@ mod tests {
         ])
         .expect("parse options");
         assert!(options.provision_lookup_table);
+
+        let options = parse_args([
+            "--settings".to_owned(),
+            "settings".to_owned(),
+            "--vault-index".to_owned(),
+            "1".to_owned(),
+            "--execute".to_owned(),
+            "--provision-lookup-table".to_owned(),
+        ])
+        .expect("same-mint route execution may provision a lookup table");
+        assert!(options.provision_lookup_table);
+
+        let error = parse_args([
+            "--settings".to_owned(),
+            "settings".to_owned(),
+            "--vault-index".to_owned(),
+            "1".to_owned(),
+            "--deposit-main-usdc".to_owned(),
+            "1".to_owned(),
+            "--provision-lookup-table".to_owned(),
+        ])
+        .expect_err("provisioning is not scoped to deposit mode");
+        assert!(error.contains("--provision-lookup-table"));
     }
 
     #[test]
@@ -7112,18 +7330,39 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_target_reserve_override() {
+    fn parse_accepts_explicit_source_and_target_reserves() {
+        let source = Pubkey::new_unique();
+        let target = Pubkey::new_unique();
+        let options = parse_args([
+            "--settings".to_owned(),
+            "settings".to_owned(),
+            "--vault-index".to_owned(),
+            "1".to_owned(),
+            "--source-reserve".to_owned(),
+            source.to_string(),
+            "--target-reserve".to_owned(),
+            target.to_string(),
+        ])
+        .expect("explicit reserves are allowed for monitor-selected routes");
+
+        let reserve_move = ReserveMove::from_options(&options).expect("explicit route");
+        assert_eq!(reserve_move.source_reserve, source.to_string());
+        assert_eq!(reserve_move.target_reserve, target.to_string());
+    }
+
+    #[test]
+    fn parse_requires_explicit_reserves_as_a_pair() {
         let error = parse_args([
             "--settings".to_owned(),
             "settings".to_owned(),
             "--vault-index".to_owned(),
             "1".to_owned(),
             "--target-reserve".to_owned(),
-            "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo".to_owned(),
+            Pubkey::new_unique().to_string(),
         ])
-        .expect_err("target override is outside this proof script scope");
+        .expect_err("target alone is ambiguous");
 
-        assert!(error.contains("unknown argument: --target-reserve"));
+        assert!(error.contains("--source-reserve and --target-reserve"));
     }
 
     #[test]
@@ -7354,20 +7593,19 @@ mod tests {
     }
 
     #[test]
-    fn persisted_decision_direction_must_match_request() {
+    fn persisted_decision_route_must_match_request() {
         let decision = prepared_decision();
 
         let opposite_move = ReserveMove {
             source_reserve: KAMINO_PRIME_USDC_RESERVE.to_owned(),
             target_reserve: KAMINO_MAIN_USDC_RESERVE.to_string(),
         };
-        let error =
-            validate_execution_decision_route(&decision, &opposite_move, Direction::PrimeToMain)
-                .expect_err("opposite direction rejects persisted decision");
+        let error = validate_execution_decision_route(&decision, &opposite_move)
+            .expect_err("opposite route rejects persisted decision");
 
         assert!(error
             .to_string()
-            .contains("does not match requested direction prime-to-main"));
+            .contains("does not match requested source reserve"));
     }
 
     #[test]
