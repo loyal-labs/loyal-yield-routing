@@ -18,10 +18,14 @@ use crate::{
         parse_instruction, AllowedMint, HubInstruction, InventoryAccount, RebalanceInventoryArgs,
         SwapExactInArgs,
     },
-    state::{derive_config, derive_hub_authority, derive_inventory_account, HubConfig},
+    state::{
+        derive_config, derive_hub_authority, derive_inventory_account,
+        derive_inventory_account_for_token_program, HubConfig,
+    },
     token::{
-        read_mint_decimals, require_matching_token_mint, require_token_account, transfer_checked,
-        transfer_checked_signed,
+        read_mint_decimals, read_mint_decimals_for_program, require_matching_token_mint,
+        require_token_account, require_token_account_for_program, token_program_for_mint,
+        transfer_checked, transfer_checked_signed,
     },
     validation::{
         require_admin, require_distinct_key, require_distinct_keys, require_distinct_pubkeys,
@@ -55,6 +59,14 @@ pub fn process_instruction(
         HubInstruction::SetMaxFee { max_fee_bps } => {
             process_set_max_fee(program_id, accounts, max_fee_bps)
         }
+        HubInstruction::SetAdmin => process_set_admin(program_id, accounts),
+        HubInstruction::SetHubAuthorizer => process_set_hub_authorizer(program_id, accounts),
+        HubInstruction::SetInventoryRebalancer => {
+            process_set_inventory_rebalancer(program_id, accounts)
+        }
+        HubInstruction::SetLaneCount { lane_count } => {
+            process_set_lane_count(program_id, accounts, lane_count)
+        }
         HubInstruction::RebalanceInventory(args) => {
             process_rebalance_inventory(program_id, accounts, args)
         }
@@ -74,6 +86,7 @@ fn process_initialize_config(
     let system_program = next_account_info(account_info_iter)?;
 
     require_signer(payer)?;
+    require_key(payer, &config.admin)?;
     require_key(system_program, &SYSTEM_PROGRAM_ID)?;
     require_key(config_account, &derive_config(program_id).0)?;
     if config_account.owner() != &SYSTEM_PROGRAM_ID || !config_account.data_is_empty() {
@@ -179,6 +192,65 @@ fn process_set_paused(
     config.write_account(config_account)
 }
 
+fn process_set_admin(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
+    let account_info_iter = &mut accounts.iter();
+    let config_account = next_account_info(account_info_iter)?;
+    let admin = next_account_info(account_info_iter)?;
+    let new_admin = next_account_info(account_info_iter)?;
+
+    let mut config = HubConfig::read_account(program_id, config_account)?;
+    require_admin(admin, &config)?;
+    require_signer(new_admin)?;
+    config.admin = *new_admin.key();
+    config.write_account(config_account)
+}
+
+fn process_set_hub_authorizer(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
+    let account_info_iter = &mut accounts.iter();
+    let config_account = next_account_info(account_info_iter)?;
+    let admin = next_account_info(account_info_iter)?;
+    let new_hub_authorizer = next_account_info(account_info_iter)?;
+
+    let mut config = HubConfig::read_account(program_id, config_account)?;
+    require_admin(admin, &config)?;
+    config.hub_authorizer = *new_hub_authorizer.key();
+    config.write_account(config_account)
+}
+
+fn process_set_inventory_rebalancer(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+) -> ProgramResult {
+    let account_info_iter = &mut accounts.iter();
+    let config_account = next_account_info(account_info_iter)?;
+    let admin = next_account_info(account_info_iter)?;
+    let new_inventory_rebalancer = next_account_info(account_info_iter)?;
+
+    let mut config = HubConfig::read_account(program_id, config_account)?;
+    require_admin(admin, &config)?;
+    config.inventory_rebalancer = *new_inventory_rebalancer.key();
+    config.write_account(config_account)
+}
+
+fn process_set_lane_count(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    lane_count: u8,
+) -> ProgramResult {
+    if lane_count == 0 {
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    let account_info_iter = &mut accounts.iter();
+    let config_account = next_account_info(account_info_iter)?;
+    let admin = next_account_info(account_info_iter)?;
+
+    let mut config = HubConfig::read_account(program_id, config_account)?;
+    require_admin(admin, &config)?;
+    config.lane_count = lane_count;
+    config.write_account(config_account)
+}
+
 fn process_swap_exact_in(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -210,6 +282,7 @@ fn process_swap_exact_in(
     let hub_authority = next_account_info(account_info_iter)?;
     let hub_authorizer = next_account_info(account_info_iter)?;
     let token_program = next_account_info(account_info_iter)?;
+    let token_2022_program = account_info_iter.next();
 
     let config = HubConfig::read_account(program_id, config_account)?;
     require_readonly(config_account)?;
@@ -221,6 +294,10 @@ fn process_swap_exact_in(
     require_signer(hub_authorizer)?;
     require_key(hub_authorizer, &config.hub_authorizer)?;
     require_key(token_program, &SPL_TOKEN_ID)?;
+    let input_token_program =
+        token_program_for_mint(input_mint, token_program, token_2022_program)?;
+    let output_token_program =
+        token_program_for_mint(output_mint, token_program, token_2022_program)?;
     require_key(
         hub_authority,
         &derive_hub_authority(program_id, lane_id.0).0,
@@ -239,23 +316,25 @@ fn process_swap_exact_in(
     require_distinct_keys(&[user_input, user_output, hub_input, hub_output])?;
     require_key(
         hub_input,
-        &derive_inventory_account(
+        &derive_inventory_account_for_token_program(
             program_id,
             &input_inventory.mint.0,
             input_inventory.lane_id.0,
+            input_token_program.key(),
         ),
     )?;
     require_key(
         hub_output,
-        &derive_inventory_account(
+        &derive_inventory_account_for_token_program(
             program_id,
             &output_inventory.mint.0,
             output_inventory.lane_id.0,
+            output_token_program.key(),
         ),
     )?;
 
-    let input_decimals = read_mint_decimals(input_mint)?;
-    let output_decimals = read_mint_decimals(output_mint)?;
+    let input_decimals = read_mint_decimals_for_program(input_mint, input_token_program.key())?;
+    let output_decimals = read_mint_decimals_for_program(output_mint, output_token_program.key())?;
     require_fee_cap(
         amount_in,
         amount_out,
@@ -263,17 +342,37 @@ fn process_swap_exact_in(
         output_decimals,
         max_fee_bps,
     )?;
-    require_token_account(user_input, input_mint.key(), user_vault.key())?;
-    require_token_account(user_output, output_mint.key(), user_vault.key())?;
-    require_token_account(hub_input, input_mint.key(), hub_authority.key())?;
-    require_token_account(hub_output, output_mint.key(), hub_authority.key())?;
+    require_token_account_for_program(
+        user_input,
+        input_mint.key(),
+        user_vault.key(),
+        input_token_program.key(),
+    )?;
+    require_token_account_for_program(
+        user_output,
+        output_mint.key(),
+        user_vault.key(),
+        output_token_program.key(),
+    )?;
+    require_token_account_for_program(
+        hub_input,
+        input_mint.key(),
+        hub_authority.key(),
+        input_token_program.key(),
+    )?;
+    require_token_account_for_program(
+        hub_output,
+        output_mint.key(),
+        hub_authority.key(),
+        output_token_program.key(),
+    )?;
 
     transfer_checked(
         user_input,
         input_mint,
         hub_input,
         user_vault,
-        token_program,
+        input_token_program,
         amount_in,
         input_decimals,
     )?;
@@ -283,7 +382,7 @@ fn process_swap_exact_in(
         output_mint,
         user_output,
         hub_authority,
-        token_program,
+        output_token_program,
         amount_out,
         output_decimals,
         lane_id.0,

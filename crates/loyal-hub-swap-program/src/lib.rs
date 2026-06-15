@@ -12,9 +12,14 @@ mod validation;
 use pinocchio::entrypoint;
 
 pub use constants::*;
-pub use pinocchio_tkn::TOKEN_PROGRAM_ID as SPL_TOKEN_ID;
+pub use pinocchio_tkn::{
+    TOKEN_2022_PROGRAM_ID as SPL_TOKEN_2022_ID, TOKEN_PROGRAM_ID as SPL_TOKEN_ID,
+};
 pub use processor::process_instruction;
-pub use state::{derive_config, derive_hub_authority, derive_inventory_account, HubConfig};
+pub use state::{
+    derive_config, derive_hub_authority, derive_inventory_account,
+    derive_inventory_account_for_token_program, HubConfig,
+};
 
 #[cfg(kani)]
 extern crate kani;

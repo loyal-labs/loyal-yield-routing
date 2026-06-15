@@ -44,12 +44,12 @@ type Error
 handler initialize_config
   (max_fee_bps : U128)
   (lane_count : U64) : State.Uninitialized -> State.Active {
-  permissionless
+  auth admin
 
   accounts {
     payer                 : signer, writable
     config                : writable, pda ["config"]
-    admin                 : readonly
+    admin                 : signer
     hub_authorizer        : readonly
     inventory_rebalancer  : readonly
     allowed_mint_0        : readonly
@@ -59,6 +59,7 @@ handler initialize_config
 
   requires max_fee_bps <= 10000 else InvalidFee
   requires lane_count > 0 else InvalidLane
+  requires payer.pubkey == admin.pubkey else Unauthorized
   requires allowed_mint_0.pubkey != allowed_mint_1.pubkey else InvalidMint
 
   effect {
@@ -107,6 +108,75 @@ handler set_paused (paused_value : U64) : State.Active -> State.Active {
   }
 }
 
+handler set_admin : State.Active -> State.Active {
+  auth admin
+  auth new_admin
+
+  accounts {
+    config    : writable, pda ["config"]
+    admin     : signer
+    new_admin : signer
+  }
+
+  requires admin.pubkey == state.admin_key else Unauthorized
+
+  modifies [admin_key]
+  effect {
+    admin_key := new_admin.pubkey
+  }
+}
+
+handler set_hub_authorizer : State.Active -> State.Active {
+  auth admin
+
+  accounts {
+    config             : writable, pda ["config"]
+    admin              : signer
+    new_hub_authorizer : readonly
+  }
+
+  requires admin.pubkey == state.admin_key else Unauthorized
+
+  modifies [hub_authorizer_key]
+  effect {
+    hub_authorizer_key := new_hub_authorizer.pubkey
+  }
+}
+
+handler set_inventory_rebalancer : State.Active -> State.Active {
+  auth admin
+
+  accounts {
+    config                   : writable, pda ["config"]
+    admin                    : signer
+    new_inventory_rebalancer : readonly
+  }
+
+  requires admin.pubkey == state.admin_key else Unauthorized
+
+  modifies [inventory_rebalancer_key]
+  effect {
+    inventory_rebalancer_key := new_inventory_rebalancer.pubkey
+  }
+}
+
+handler set_lane_count (lane_count : U64) : State.Active -> State.Active {
+  auth admin
+
+  accounts {
+    config : writable, pda ["config"]
+    admin  : signer
+  }
+
+  requires admin.pubkey == state.admin_key else Unauthorized
+  requires lane_count > 0 else InvalidLane
+
+  modifies [lane_count]
+  effect {
+    lane_count := lane_count
+  }
+}
+
 handler swap_exact_in
   (amount_in : U64)
   (amount_out : U64)
@@ -132,6 +202,7 @@ handler swap_exact_in
     hub_authority  : readonly, pda ["hub-authority", lane_id]
     hub_authorizer : signer
     token_program  : program, type token
+    token_2022_program : program, type token # optional
   }
 
   requires amount_in > 0 else InvalidAmount
@@ -3081,9 +3152,9 @@ handler rebalance_inventory_16
 
 property config_domain_preserved :
   state.max_fee_bps <= 10000 and state.lane_count > 0 and state.paused <= 1
-  preserved_by [initialize_config, set_max_fee, set_paused, swap_exact_in, withdraw_inventory, rebalance_inventory, rebalance_inventory_2, rebalance_inventory_3, rebalance_inventory_4, rebalance_inventory_5, rebalance_inventory_6, rebalance_inventory_7, rebalance_inventory_8, rebalance_inventory_9, rebalance_inventory_10, rebalance_inventory_11, rebalance_inventory_12, rebalance_inventory_13, rebalance_inventory_14, rebalance_inventory_15, rebalance_inventory_16]
+  preserved_by [initialize_config, set_max_fee, set_paused, set_admin, set_hub_authorizer, set_inventory_rebalancer, set_lane_count, swap_exact_in, withdraw_inventory, rebalance_inventory, rebalance_inventory_2, rebalance_inventory_3, rebalance_inventory_4, rebalance_inventory_5, rebalance_inventory_6, rebalance_inventory_7, rebalance_inventory_8, rebalance_inventory_9, rebalance_inventory_10, rebalance_inventory_11, rebalance_inventory_12, rebalance_inventory_13, rebalance_inventory_14, rebalance_inventory_15, rebalance_inventory_16]
 
 cover successful_swap [initialize_config, swap_exact_in]
-cover treasury_lifecycle [initialize_config, set_max_fee, set_paused, withdraw_inventory]
+cover treasury_lifecycle [initialize_config, set_max_fee, set_paused, set_admin, set_hub_authorizer, set_inventory_rebalancer, set_lane_count, withdraw_inventory]
 cover lane_rebalance [initialize_config, rebalance_inventory]
 cover lane_rebalance_max_batch [initialize_config, rebalance_inventory_16]

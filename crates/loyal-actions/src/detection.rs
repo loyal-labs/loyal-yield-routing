@@ -620,21 +620,18 @@ fn classify_loyal_hub_swap(
         None,
     )
     .filter(|key| *key == vault)?;
-    has_token_authority(
+    has_hub_token_authority(
         accounts.get(&loyal_hub_abi::swap_exact_in_accounts::USER_INPUT)?,
         vault,
     )?;
-    has_token_authority(
+    has_hub_token_authority(
         accounts.get(&loyal_hub_abi::swap_exact_in_accounts::USER_OUTPUT)?,
         vault,
     )?;
-    let mut stable_mints = pubkeys(
-        accounts.get(&loyal_hub_abi::swap_exact_in_accounts::INPUT_MINT)?,
-        Some(spl_token::id()),
-    )?;
-    stable_mints.extend(pubkeys(
+    let mut stable_mints =
+        hub_token_pubkeys(accounts.get(&loyal_hub_abi::swap_exact_in_accounts::INPUT_MINT)?)?;
+    stable_mints.extend(hub_token_pubkeys(
         accounts.get(&loyal_hub_abi::swap_exact_in_accounts::OUTPUT_MINT)?,
-        Some(spl_token::id()),
     )?);
     let hub_authorizer = single_pubkey(
         accounts.get(&loyal_hub_abi::swap_exact_in_accounts::HUB_AUTHORIZER)?,
@@ -838,6 +835,33 @@ fn has_token_authority(constraint: &SquadsAccountConstraintView, authority: Pubk
         return None;
     };
     has_data_slice_equals(data_constraints, 32, authority.as_ref()).then_some(())
+}
+
+fn hub_token_pubkeys(constraint: &SquadsAccountConstraintView) -> Option<Vec<Pubkey>> {
+    if !is_supported_hub_token_constraint_owner(constraint.owner) {
+        return None;
+    }
+    match &constraint.kind {
+        SquadsAccountConstraintKindView::Pubkey(pubkeys) => Some(pubkeys.clone()),
+        SquadsAccountConstraintKindView::AccountData(_) => None,
+    }
+}
+
+fn has_hub_token_authority(
+    constraint: &SquadsAccountConstraintView,
+    authority: Pubkey,
+) -> Option<()> {
+    if !is_supported_hub_token_constraint_owner(constraint.owner) {
+        return None;
+    }
+    let SquadsAccountConstraintKindView::AccountData(data_constraints) = &constraint.kind else {
+        return None;
+    };
+    has_data_slice_equals(data_constraints, 32, authority.as_ref()).then_some(())
+}
+
+fn is_supported_hub_token_constraint_owner(owner: Option<Pubkey>) -> bool {
+    matches!(owner, None) || owner == Some(spl_token::id()) || owner == Some(TOKEN_2022_PROGRAM_ID)
 }
 
 fn has_data_slice_equals(

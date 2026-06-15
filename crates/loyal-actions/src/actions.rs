@@ -1479,7 +1479,6 @@ mod tests {
         assert_eq!(decoded.constraints[2].program_id, LOYAL_HUB_SWAP_PROGRAM_ID);
         assert_eq!(decoded.constraints[3].program_id, KAMINO_LEND_PROGRAM_ID);
         assert_eq!(decoded.constraints[4].program_id, KAMINO_LEND_PROGRAM_ID);
-        assert_eq!(decoded.constraints[4].program_id, KAMINO_LEND_PROGRAM_ID);
 
         assert_kamino_withdraw_constraint(&decoded.constraints[0], context.vault);
         assert_jupiter_constraint(&decoded.constraints[1], context.vault);
@@ -1581,27 +1580,29 @@ mod tests {
         );
         assert_eq!(
             accounts[&loyal_hub_abi::swap_exact_in_accounts::HUB_INPUT].owner,
-            Some(spl_token::id())
+            None
         );
         assert_eq!(
             accounts[&loyal_hub_abi::swap_exact_in_accounts::HUB_OUTPUT].owner,
-            Some(spl_token::id())
+            None
         );
-        assert_token_authority_constraint(
+        assert_token_authority_constraint_with_owner(
             &accounts[&loyal_hub_abi::swap_exact_in_accounts::USER_INPUT],
             vault,
+            None,
         );
-        assert_token_authority_constraint(
+        assert_token_authority_constraint_with_owner(
             &accounts[&loyal_hub_abi::swap_exact_in_accounts::USER_OUTPUT],
             vault,
+            None,
         );
         assert_eq!(
             accounts[&loyal_hub_abi::swap_exact_in_accounts::INPUT_MINT].owner,
-            Some(spl_token::id())
+            None
         );
         assert_eq!(
             accounts[&loyal_hub_abi::swap_exact_in_accounts::OUTPUT_MINT].owner,
-            Some(spl_token::id())
+            None
         );
         assert_pubkey_constraint(
             &accounts[&loyal_hub_abi::swap_exact_in_accounts::HUB_AUTHORIZER],
@@ -1611,6 +1612,11 @@ mod tests {
         assert_pubkey_constraint(
             &accounts[&loyal_hub_abi::swap_exact_in_accounts::TOKEN_PROGRAM],
             &[spl_token::id()],
+            None,
+        );
+        assert_pubkey_constraint(
+            &accounts[&loyal_hub_abi::swap_exact_in_accounts::TOKEN_2022_PROGRAM],
+            &[TOKEN_2022_PROGRAM_ID],
             None,
         );
         assert_data_u8_equals(
@@ -1635,9 +1641,24 @@ mod tests {
         assert_eq!(constraint.owner, owner);
     }
 
-    fn assert_token_authority_constraint(constraint: &DecodedAccountConstraint, authority: Pubkey) {
+    fn assert_token_authority_constraint(
+        constraint: &DecodedAccountConstraint,
+        authority: Pubkey,
+    ) {
+        assert_token_authority_constraint_with_owner(
+            constraint,
+            authority,
+            Some(spl_token::id()),
+        );
+    }
+
+    fn assert_token_authority_constraint_with_owner(
+        constraint: &DecodedAccountConstraint,
+        authority: Pubkey,
+        owner: Option<Pubkey>,
+    ) {
         assert_eq!(constraint.kind, DecodedAccountConstraintKind::AccountData);
-        assert_eq!(constraint.owner, Some(spl_token::id()));
+        assert_eq!(constraint.owner, owner);
         assert_data_slice_equals(&constraint.data_constraints[0], 32, authority.as_ref());
     }
 

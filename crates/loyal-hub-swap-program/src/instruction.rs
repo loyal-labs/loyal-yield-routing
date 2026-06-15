@@ -4,14 +4,15 @@ use pinocchio::pubkey::Pubkey;
 use crate::{
     codec::{read_u16_at, read_u64_at, read_u8_at},
     constants::{
-        INITIALIZE_CONFIG, MAX_REBALANCE_TRANSFERS, REBALANCE_INVENTORY, SET_MAX_FEE, SET_PAUSED,
+        INITIALIZE_CONFIG, MAX_REBALANCE_TRANSFERS, REBALANCE_INVENTORY, SET_ADMIN,
+        SET_HUB_AUTHORIZER, SET_INVENTORY_REBALANCER, SET_LANE_COUNT, SET_MAX_FEE, SET_PAUSED,
         SWAP_EXACT_IN, WITHDRAW_INVENTORY,
     },
     state::HubConfig,
 };
 use loyal_hub_abi::{
-    rebalance_inventory_args, rebalance_transfer, set_max_fee_args, swap_exact_in_args,
-    withdraw_inventory_args,
+    rebalance_inventory_args, rebalance_transfer, set_lane_count_args, set_max_fee_args,
+    swap_exact_in_args, withdraw_inventory_args,
 };
 
 pub enum HubInstruction {
@@ -20,6 +21,10 @@ pub enum HubInstruction {
     WithdrawInventory(WithdrawInventoryArgs),
     SetPaused { paused: bool },
     SetMaxFee { max_fee_bps: u16 },
+    SetAdmin,
+    SetHubAuthorizer,
+    SetInventoryRebalancer,
+    SetLaneCount { lane_count: u8 },
     RebalanceInventory(RebalanceInventoryArgs),
 }
 
@@ -76,6 +81,21 @@ pub fn parse_instruction(data: &[u8]) -> Result<HubInstruction, ProgramError> {
         SET_MAX_FEE => Ok(HubInstruction::SetMaxFee {
             max_fee_bps: parse_max_fee(rest)?,
         }),
+        SET_ADMIN => {
+            parse_set_admin(rest)?;
+            Ok(HubInstruction::SetAdmin)
+        }
+        SET_HUB_AUTHORIZER => {
+            parse_set_hub_authorizer(rest)?;
+            Ok(HubInstruction::SetHubAuthorizer)
+        }
+        SET_INVENTORY_REBALANCER => {
+            parse_set_inventory_rebalancer(rest)?;
+            Ok(HubInstruction::SetInventoryRebalancer)
+        }
+        SET_LANE_COUNT => Ok(HubInstruction::SetLaneCount {
+            lane_count: parse_lane_count(rest)?,
+        }),
         REBALANCE_INVENTORY => Ok(HubInstruction::RebalanceInventory(parse_rebalance_args(
             rest,
         )?)),
@@ -106,6 +126,32 @@ pub fn parse_instruction(data: &[u8]) -> Result<HubInstruction, ProgramError> {
             }
             Ok(HubInstruction::SetPaused {
                 paused: data[1 + loyal_hub_abi::set_paused_args::PAUSED_OFFSET] != 0,
+            })
+        }
+        SET_ADMIN => {
+            if data.len() != 1 + loyal_hub_abi::SET_ADMIN_ARGS_LEN {
+                return Err(ProgramError::InvalidInstructionData);
+            }
+            Ok(HubInstruction::SetAdmin)
+        }
+        SET_HUB_AUTHORIZER => {
+            if data.len() != 1 + loyal_hub_abi::SET_HUB_AUTHORIZER_ARGS_LEN {
+                return Err(ProgramError::InvalidInstructionData);
+            }
+            Ok(HubInstruction::SetHubAuthorizer)
+        }
+        SET_INVENTORY_REBALANCER => {
+            if data.len() != 1 + loyal_hub_abi::SET_INVENTORY_REBALANCER_ARGS_LEN {
+                return Err(ProgramError::InvalidInstructionData);
+            }
+            Ok(HubInstruction::SetInventoryRebalancer)
+        }
+        SET_LANE_COUNT => {
+            if data.len() != 1 + loyal_hub_abi::SET_LANE_COUNT_ARGS_LEN {
+                return Err(ProgramError::InvalidInstructionData);
+            }
+            Ok(HubInstruction::SetLaneCount {
+                lane_count: data[1 + set_lane_count_args::LANE_COUNT_OFFSET],
             })
         }
         SWAP_EXACT_IN => {
@@ -228,6 +274,34 @@ fn parse_max_fee(data: &[u8]) -> Result<u16, ProgramError> {
         return Err(ProgramError::InvalidInstructionData);
     }
     read_u16_at(data, set_max_fee_args::MAX_FEE_BPS_OFFSET)
+}
+
+fn parse_set_admin(data: &[u8]) -> Result<(), ProgramError> {
+    if data.len() != loyal_hub_abi::SET_ADMIN_ARGS_LEN {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    Ok(())
+}
+
+fn parse_set_hub_authorizer(data: &[u8]) -> Result<(), ProgramError> {
+    if data.len() != loyal_hub_abi::SET_HUB_AUTHORIZER_ARGS_LEN {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    Ok(())
+}
+
+fn parse_set_inventory_rebalancer(data: &[u8]) -> Result<(), ProgramError> {
+    if data.len() != loyal_hub_abi::SET_INVENTORY_REBALANCER_ARGS_LEN {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    Ok(())
+}
+
+fn parse_lane_count(data: &[u8]) -> Result<u8, ProgramError> {
+    if data.len() != loyal_hub_abi::SET_LANE_COUNT_ARGS_LEN {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    read_u8_at(data, set_lane_count_args::LANE_COUNT_OFFSET)
 }
 
 fn parse_rebalance_args(data: &[u8]) -> Result<RebalanceInventoryArgs, ProgramError> {

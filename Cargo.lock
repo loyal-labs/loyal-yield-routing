@@ -3079,6 +3079,23 @@ name = "loyal-hub-abi"
 version = "0.1.0"
 
 [[package]]
+name = "loyal-hub-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "loyal-actions",
+ "loyal-hub-abi",
+ "serde",
+ "serde_json",
+ "solana-account-decoder 2.3.13",
+ "solana-client",
+ "solana-program",
+ "solana-sdk",
+ "spl-token",
+]
+
+[[package]]
 name = "loyal-hub-swap-program"
 version = "0.1.0"
 dependencies = [

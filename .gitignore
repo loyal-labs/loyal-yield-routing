@@ -30,6 +30,7 @@
 # misc
 .DS_Store
 *.pem
+ADDR_*.json
 
 # debug
 npm-debug.log*

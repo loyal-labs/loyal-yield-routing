@@ -608,6 +608,29 @@ pub fn set_loyal_hub_max_fee_instruction(admin: Pubkey, max_fee_bps: u16) -> Ins
         .expect("valid Loyal Hub set max fee instruction")
 }
 
+pub fn set_loyal_hub_admin_instruction(admin: Pubkey, new_admin: Pubkey) -> Instruction {
+    loyal_actions::loyal_hub_set_admin_instruction(admin, new_admin)
+}
+
+pub fn set_loyal_hub_authorizer_instruction(
+    admin: Pubkey,
+    new_hub_authorizer: Pubkey,
+) -> Instruction {
+    loyal_actions::loyal_hub_set_hub_authorizer_instruction(admin, new_hub_authorizer)
+}
+
+pub fn set_loyal_hub_inventory_rebalancer_instruction(
+    admin: Pubkey,
+    new_inventory_rebalancer: Pubkey,
+) -> Instruction {
+    loyal_actions::loyal_hub_set_inventory_rebalancer_instruction(admin, new_inventory_rebalancer)
+}
+
+pub fn set_loyal_hub_lane_count_instruction(admin: Pubkey, lane_count: u8) -> Instruction {
+    loyal_actions::loyal_hub_set_lane_count_instruction(admin, lane_count)
+        .expect("valid Loyal Hub set lane count instruction")
+}
+
 pub fn withdraw_loyal_hub_inventory_instruction(
     admin: Pubkey,
     hub_source: Pubkey,
@@ -694,6 +717,8 @@ pub fn execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_ind
     );
     let mut transaction_accounts = hub_swap_ix.accounts;
     transaction_accounts[1].is_signer = false;
+    let hub_swap_program_index = transaction_accounts.len();
+    let hub_swap_accounts = (0..hub_swap_program_index).collect();
     transaction_accounts.push(AccountMeta::new_readonly(LOYAL_HUB_SWAP_PROGRAM_ID, false));
 
     execute_squads_program_interaction_instruction(
@@ -701,8 +726,8 @@ pub fn execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_ind
         signer,
         account_index,
         vec![SquadsCompiledInstruction {
-            program_id_index: 11,
-            accounts: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            program_id_index: hub_swap_program_index,
+            accounts: hub_swap_accounts,
             data: hub_swap_ix.data,
         }],
         vec![instruction_constraint_index],

@@ -7,7 +7,7 @@ Squads smart account remains protected by a narrow Loyal Action.
 The program is intentionally small. It does not quote prices, choose routes, or
 own strategy logic. The caller supplies an exact-in swap amount, an exact output
 amount, a user minimum, and a fee cap. The program validates the accounts and
-then performs two SPL Token `transfer_checked` calls:
+then performs two token-program `transfer_checked` calls:
 
 1. Move the input token from the user vault into the hub inventory account.
 2. Move the output token from the hub inventory account back to the user vault.
@@ -47,10 +47,13 @@ another. The user and hub token accounts must be distinct mutable accounts. Each
 token account is unpacked and checked against the expected mint and owner before
 any CPI runs.
 
-The token program must be SPL Token. The hub authority must be the
-program-derived `hub-authority(lane_id)` PDA. The hub input and output accounts
-must be the canonical lane inventory accounts for their mints. The user vault
-and hub authorizer must both sign the transaction.
+Each transfer uses the token program that owns the corresponding mint: legacy
+SPL Token for legacy mints, or the optional Token-2022 program account for
+Token-2022 mints. Any other mint owner is rejected. The hub authority must be
+the program-derived `hub-authority(lane_id)` PDA. The hub input and output
+accounts must be the canonical lane inventory accounts for their mints and
+selected token programs. The user vault and hub authorizer must both sign the
+transaction.
 
 The fee check normalizes both token amounts to 18 decimals before comparing the
 output against the input less `max_fee_bps`. This keeps the check stable across

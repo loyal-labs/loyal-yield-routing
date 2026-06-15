@@ -21,6 +21,53 @@ struct TreasurySquads {
     pyusd: Pubkey,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct HubConfigSnapshot {
+    admin: Pubkey,
+    hub_authorizer: Pubkey,
+    inventory_rebalancer: Pubkey,
+    max_fee_bps: u16,
+    paused: bool,
+    lane_count: u8,
+}
+
+fn hub_config_snapshot(context: &squads_test_harness::FundedSquadsTestContext) -> HubConfigSnapshot {
+    let account = context
+        .svm
+        .get_account(&derive_loyal_hub_config())
+        .expect("Loyal Hub config account exists");
+    let data = account.data;
+
+    HubConfigSnapshot {
+        admin: read_config_pubkey(&data, loyal_actions::hub_abi::config_account::ADMIN_OFFSET),
+        hub_authorizer: read_config_pubkey(
+            &data,
+            loyal_actions::hub_abi::config_account::HUB_AUTHORIZER_OFFSET,
+        ),
+        inventory_rebalancer: read_config_pubkey(
+            &data,
+            loyal_actions::hub_abi::config_account::INVENTORY_REBALANCER_OFFSET,
+        ),
+        max_fee_bps: u16::from_le_bytes(
+            data[loyal_actions::hub_abi::config_account::MAX_FEE_BPS_OFFSET
+                ..loyal_actions::hub_abi::config_account::MAX_FEE_BPS_OFFSET
+                    + loyal_actions::hub_abi::config_account::MAX_FEE_BPS_LEN]
+                .try_into()
+                .expect("max fee slice has u16 length"),
+        ),
+        paused: data[loyal_actions::hub_abi::config_account::PAUSED_OFFSET] != 0,
+        lane_count: data[loyal_actions::hub_abi::config_account::LANE_COUNT_OFFSET],
+    }
+}
+
+fn read_config_pubkey(data: &[u8], offset: usize) -> Pubkey {
+    Pubkey::new_from_array(
+        data[offset..offset + loyal_actions::hub_abi::config_account::ADMIN_LEN]
+            .try_into()
+            .expect("pubkey slice has 32 bytes"),
+    )
+}
+
 fn setup_fixture(with_jupiter: bool) -> Option<HubSwapFixture> {
     let mock_programs = if with_jupiter {
         vec![MockProgram::LoyalHubSwap, MockProgram::Jupiter]

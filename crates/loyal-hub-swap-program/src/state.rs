@@ -367,11 +367,21 @@ pub fn derive_hub_authority(program_id: &Pubkey, lane_id: u8) -> (Pubkey, u8) {
 
 #[cfg(not(kani))]
 pub fn derive_inventory_account(program_id: &Pubkey, mint: &Pubkey, lane_id: u8) -> Pubkey {
+    derive_inventory_account_for_token_program(program_id, mint, lane_id, &crate::SPL_TOKEN_ID)
+}
+
+#[cfg(not(kani))]
+pub fn derive_inventory_account_for_token_program(
+    program_id: &Pubkey,
+    mint: &Pubkey,
+    lane_id: u8,
+    token_program_id: &Pubkey,
+) -> Pubkey {
     let hub_authority = derive_hub_authority(program_id, lane_id).0;
     pinocchio::pubkey::find_program_address(
         &[
             hub_authority.as_ref(),
-            crate::SPL_TOKEN_ID.as_ref(),
+            token_program_id.as_ref(),
             mint.as_ref(),
         ],
         &ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -381,11 +391,21 @@ pub fn derive_inventory_account(program_id: &Pubkey, mint: &Pubkey, lane_id: u8)
 
 #[cfg(kani)]
 pub fn derive_inventory_account(program_id: &Pubkey, mint: &Pubkey, lane_id: u8) -> Pubkey {
+    derive_inventory_account_for_token_program(program_id, mint, lane_id, &crate::SPL_TOKEN_ID)
+}
+
+#[cfg(kani)]
+pub fn derive_inventory_account_for_token_program(
+    program_id: &Pubkey,
+    mint: &Pubkey,
+    lane_id: u8,
+    token_program_id: &Pubkey,
+) -> Pubkey {
     let mut key = *mint;
     key[0] = 0xb0;
     key[1] = lane_id;
     key[2] = program_id[0];
-    key[3] = crate::SPL_TOKEN_ID[0];
+    key[3] = token_program_id[0];
     key[4] = ASSOCIATED_TOKEN_PROGRAM_ID[0];
     key
 }
