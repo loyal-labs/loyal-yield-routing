@@ -39,7 +39,7 @@ Live execution is blocked until the dry-run proves the required chain state.
 - Source reserve has a non-zero chain `amountRaw` with `amountSemantics = kamino_obligation_collateral_deposited_amount`.
 - `obligationExists` is true for the source market obligation.
 - `vaultLiquidityTokenAccountExists` is true for the vault USDC ATA.
-- The destination obligation already exists, or the script can temporarily update the policy to a market-scoped KLend `init_obligation` setup policy, execute init with the vault as owner/payer, and restore the route policy before value movement.
+- The destination obligation already exists. In `--optimization-cycle` mode, a missing destination obligation returns `blocked_missing_obligation_setup` before policy mutation, decision writes, or route submission. Use setup/admin flows to pre-initialize obligations before enabling live optimization.
 - KLend reserve and obligation refreshes are emitted as public pre-instructions. They are not part of the protected route policy.
 
 The dry-run must also show the required policy state:
@@ -47,7 +47,7 @@ The dry-run must also show the required policy state:
 - `policyPreflight.neonAllowsRequiredMarkets` is true.
 - `policyPreflight.policyAccountDecode.decodedAllowsRequiredMarkets` is true.
 - `policyPreflight.policyAccountDecode.decodedAllowsRequiredRouteSteps` is true.
-- `policyPreflight.policyAccountDecode.decodedAllowsInitObligation` is false for the normal route policy. Missing-obligation setup uses a temporary init-only policy, then restores the route policy.
+- `policyPreflight.policyAccountDecode.decodedAllowsInitObligation` is false for the normal route policy. Missing-obligation setup is setup/admin work, not optimizer work.
 - `policyPreflight.policyAccountDecode.decodedAllowsRefreshObligation` is false for the normal route policy.
 - `routeExecution.policyConstraintValidation.matches` is true.
 
@@ -84,7 +84,7 @@ That active-policy path is useful for narrowing an already live policy without c
 
 Policy update and route execution compile v0 transactions, matching the sibling Earn verifier's `compilePreparedOperation(...)` pattern. Pass one or more lookup tables with `--lookup-table <PUBKEY>` or set `YIELD_ROUTE_LOOKUP_TABLES` to a comma/whitespace separated list. The dry-run reports `transaction.packetSizeBytes`, `transaction.packetDataSizeBytes`, lookup-table counts, static key counts, and `instructionDataBytes` before simulation. If the serialized packet is already over Solana's 1232-byte limit, simulation is skipped and the JSON reports the packet blocker.
 
-`--provision-lookup-table` is supported in policy update mode, same-mint route execution, and the top-level lifecycle command. In dry-run it reports `lookupTableProvisioning.requiredAddresses`, the missing addresses from any supplied lookup tables, and the lookup table address it would derive from the current slot. With `--execute`, it creates a fresh lookup table using `SOLANA_TESTING_PK`, extends it with the missing transaction account keys, waits until the table is warm for lookup use, reloads the table, and then builds the policy or route transaction with that table.
+`--provision-lookup-table` is supported in policy update mode, same-mint route execution, and the top-level lifecycle command. In dry-run it reports `lookupTableProvisioning.requiredAddresses`, the missing addresses from any supplied lookup tables, and the lookup table address it would derive from the current slot. With `--execute`, policy/admin modes create a fresh lookup table using `SOLANA_TESTING_PK`. In `--optimization-cycle` route execution, the lookup table authority and payer are `YIELD_ROUTER_KEYPAIR`. The script extends the table with missing transaction account keys, waits until the table is warm for lookup use, reloads the table, and then builds the policy or route transaction with that table.
 
 Initial Main USDC deposit dry-run:
 
@@ -114,15 +114,16 @@ Execute command shape, after explicit approval:
 op run --env-file=.env.1password -- bun run same-mint:swap -- \
   --settings <SQUADS_SETTINGS> \
   --vault-index <VAULT_INDEX> \
-  --direction main-to-prime \
+  --source-reserve <SOURCE_RESERVE> \
+  --target-reserve <TARGET_RESERVE> \
+  --optimization-cycle \
   --reconcile-from-chain \
-  --seed-from-user-position \
   --execute
 ```
 
 Current implementation note: the script reuses `loyal-yield-orchestrator` same-mint input validation and reads current positions from Neon. It can preview the chain state needed for current-position reconciliation and can seed current-position rows from `user_yield_positions` through the existing snapshot store when `--execute --seed-from-user-position` is approved.
 
-`--execute` first requires a chain preflight with a non-zero source collateral account. The decoded Squads route policy-account state must include `YIELD_ROUTER_KEYPAIR` as a delegated signer, both required markets, and the required live KLend same-mint withdraw/deposit route steps. If the destination obligation is absent, the script temporarily switches to an init-only policy, executes KLend `init_obligation`, restores the route policy, and then runs public refresh pre-instructions plus the protected withdraw/deposit pair. Route execution indexes are selected from the decoded Squads ProgramInteraction policy account when chain preflight is available, instead of trusting stale route metadata.
+`--optimization-cycle --execute` first requires a chain preflight with a non-zero source collateral account and an existing destination obligation. The decoded Squads route policy-account state must include `YIELD_ROUTER_KEYPAIR` as a delegated signer, both required markets, and the required live KLend same-mint withdraw/deposit route steps. The route transaction and any route ALT provisioning use `YIELD_ROUTER_KEYPAIR` as the fee payer and only optimization signer. Route execution indexes are selected from the decoded Squads ProgramInteraction policy account when chain preflight is available, instead of trusting stale route metadata.
 
 If the execution preflight fails, the script returns before writing a `rebalance_decisions` row. After that preflight passes, it calls `prepare_same_mint_rebalance`, reloads the persisted `loyal_yield.rebalance_decisions` row by decision id, verifies its `same_mint` execution plan fields and idempotency key, simulates the Squads ProgramInteraction route built from that row, submits the transaction, waits for confirmation, and calls `confirm_same_mint_rebalance` to finalize the decision and current-position snapshot. If any adapter step fails after the decision is created, the script marks the decision failed instead of leaving it active.
 

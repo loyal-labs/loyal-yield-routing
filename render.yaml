@@ -130,8 +130,6 @@ projects:
                 sync: false
               - key: SOLANA_RPC_URL
                 sync: false
-              - key: SOLANA_TESTING_PK
-                sync: false
               - key: YIELD_ROUTER_KEYPAIR
                 sync: false
               - key: RUST_LOG

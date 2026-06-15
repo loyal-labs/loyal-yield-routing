@@ -192,6 +192,7 @@ struct CliOptions {
     full_withdraw_main_usdc: bool,
     e2e_deposit_amount_raw: Option<u64>,
     execute: bool,
+    optimization_cycle: bool,
     reconcile_from_chain: bool,
     seed_from_user_position: bool,
     provision_lookup_table: bool,
@@ -450,6 +451,7 @@ impl PolicyDataOperator {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RouteExecutionPreview {
     policy_account: String,
+    fee_payer: String,
     signer: String,
     account_index: u8,
     instruction_constraint_indexes: Vec<u8>,
@@ -617,6 +619,8 @@ struct PolicyTransactionBuild {
 #[derive(Debug)]
 struct TransactionPacketSummary {
     version: &'static str,
+    fee_payer: String,
+    signer_pubkeys: Vec<String>,
     packet_size_bytes: usize,
     packet_data_size_bytes: usize,
     fits_packet_data_size: bool,
@@ -790,6 +794,38 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if let Some(preview) = chain_preview.as_ref() {
             let target = chain_position_for_reserve(preview, &reserve_move.target_reserve)?.clone();
             if !target.obligation_exists {
+                if options.optimization_cycle {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "status": "blocked_missing_obligation_setup",
+                            "reason": format!(
+                                "target obligation account {} does not exist; pre-initialize this obligation before enabling optimization execution",
+                                target.obligation
+                            ),
+                            "optimizationCycle": true,
+                            "writesDecision": false,
+                            "writesCurrentPositions": false,
+                            "picksUpExecution": false,
+                            "sendsTransactions": false,
+                            "direction": options.direction.as_str(),
+                            "vault": vault_json(&vault),
+                            "requiredReserves": required_reserves_json(&reserve_move),
+                            "chainReconcile": chain_preview.as_ref().map(chain_reconcile_preview_json),
+                            "policyPreflight": policy_route_preflight_json(&vault, &reserve_move, policy_preflight.as_ref()),
+                            "targetObligationSetup": target_obligation_setup_json(preview, &reserve_move, policy_preflight.as_ref()),
+                            "missingObligationSetup": {
+                                "status": "setup_required",
+                                "targetObligation": target.obligation,
+                                "targetReserve": target.reserve,
+                                "targetMarket": target.market,
+                            },
+                        }))?
+                    );
+                    return Err(
+                        "optimization cycle blocked by missing target obligation setup".into(),
+                    );
+                }
                 let setup_result =
                     execute_missing_obligation_setup(&options, &client, &vault, &target).await?;
                 target_missing_obligation_setup_result = Some(
@@ -938,6 +974,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             return Ok(());
         }
     };
+    let route_fee_payer = if chain_preview.is_some() {
+        Some(same_mint_route_fee_payer_pubkey(&options)?)
+    } else {
+        None
+    };
     let (route_execution, route_build_error) = if let Some(preview) = &chain_preview {
         match build_route_execution_plan(
             &vault,
@@ -945,6 +986,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &reserve_move,
             &pre_reconcile_input,
             policy_preflight.as_ref(),
+            route_fee_payer.expect("chain preview implies route fee payer"),
         ) {
             Ok(plan) => (Some(plan), None),
             Err(error) if !options.execute => (None, Some(error.to_string())),
@@ -1092,6 +1134,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &reserve_move,
             &execution_input,
             policy_preflight.as_ref(),
+            same_mint_route_fee_payer_pubkey(&options)?,
         ) {
             Ok(value) => value,
             Err(error) => {
@@ -1235,19 +1278,28 @@ fn build_same_mint_route_lookup_table_provisioning_dry_run(
     let mut lookup_table_accounts =
         load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
     let signer = yield_router_keypair_from_env()?;
-    let fee_payer = solana_testing_keypair_from_env()?;
+    let admin_fee_payer = if options.optimization_cycle {
+        None
+    } else {
+        Some(solana_testing_keypair_from_env()?)
+    };
+    let fee_payer: &dyn Signer = admin_fee_payer
+        .as_ref()
+        .map(|keypair| keypair as &dyn Signer)
+        .unwrap_or(&signer);
     let mut transaction_instructions = route_execution.pre_instructions.clone();
     transaction_instructions.push(route_execution.instruction.clone());
+    let signer_pubkeys = same_mint_route_signer_pubkeys(fee_payer.pubkey(), signer.pubkey());
     let required_lookup_addresses = best_case_lookup_table_addresses(
         fee_payer.pubkey(),
         &transaction_instructions,
-        &[fee_payer.pubkey(), signer.pubkey()],
+        &signer_pubkeys,
     );
     prepare_policy_update_lookup_tables(
         &rpc,
         options,
         fee_payer.pubkey(),
-        &fee_payer,
+        fee_payer,
         &required_lookup_addresses,
         &mut lookup_table_accounts,
     )
@@ -3312,8 +3364,20 @@ fn transaction_packet_summary(
     let VersionedMessage::V0(message) = &transaction.message else {
         return Err("expected v0 transaction message".into());
     };
+    let signer_count = usize::from(message.header.num_required_signatures);
     Ok(TransactionPacketSummary {
         version: "v0",
+        fee_payer: message
+            .account_keys
+            .first()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
+        signer_pubkeys: message
+            .account_keys
+            .iter()
+            .take(signer_count)
+            .map(ToString::to_string)
+            .collect(),
         packet_size_bytes,
         packet_data_size_bytes: PACKET_DATA_SIZE,
         fits_packet_data_size: packet_size_bytes <= PACKET_DATA_SIZE,
@@ -3364,6 +3428,8 @@ fn policy_transaction_packet_json(transaction: &PolicyTransactionBuild) -> Value
 fn transaction_packet_json(summary: &TransactionPacketSummary) -> Value {
     json!({
         "version": summary.version,
+        "feePayer": summary.fee_payer,
+        "signerPubkeys": summary.signer_pubkeys,
         "packetSizeBytes": summary.packet_size_bytes,
         "packetDataSizeBytes": summary.packet_data_size_bytes,
         "fitsPacketDataSize": summary.fits_packet_data_size,
@@ -4673,12 +4739,39 @@ fn execution_preflight_blockers(
     blockers
 }
 
+fn same_mint_route_fee_payer_pubkey(options: &CliOptions) -> Result<Pubkey, Box<dyn Error>> {
+    if options.optimization_cycle {
+        Ok(yield_router_keypair_from_env()?.pubkey())
+    } else {
+        Ok(solana_testing_keypair_from_env()?.pubkey())
+    }
+}
+
+fn same_mint_route_signer_pubkeys(fee_payer: Pubkey, delegated_signer: Pubkey) -> Vec<Pubkey> {
+    let mut signer_pubkeys = vec![fee_payer, delegated_signer];
+    signer_pubkeys.sort();
+    signer_pubkeys.dedup();
+    signer_pubkeys
+}
+
+fn same_mint_route_signers<'a>(
+    fee_payer: &'a dyn Signer,
+    delegated_signer: &'a dyn Signer,
+) -> Vec<&'a dyn Signer> {
+    if fee_payer.pubkey() == delegated_signer.pubkey() {
+        vec![fee_payer]
+    } else {
+        vec![fee_payer, delegated_signer]
+    }
+}
+
 fn build_route_execution_plan(
     vault: &SelectedVault,
     preview: &ChainReconcilePreview,
     reserve_move: &ReserveMove,
     input: &SameMintRebalanceInput,
     policy_preflight: Option<&PolicyAccountPreflight>,
+    fee_payer: Pubkey,
 ) -> Result<RouteExecutionPlan, Box<dyn Error>> {
     let policy_account = Pubkey::from_str(&vault.policy_account)?;
     let signer_pubkey = yield_router_keypair_from_env()?.pubkey();
@@ -4718,7 +4811,6 @@ fn build_route_execution_plan(
 
     let source_reserve_refresh_instruction = kamino_refresh_reserve_instruction(source)?;
     let target_reserve_refresh_instruction = kamino_refresh_reserve_instruction(target)?;
-    let fee_payer = solana_testing_keypair_from_env()?.pubkey();
     let source_farm_init_instruction =
         kamino_init_obligation_collateral_farm_instruction(fee_payer, vault_pubkey, source)?;
     let target_farm_init_instruction =
@@ -4780,6 +4872,7 @@ fn build_route_execution_plan(
         instruction: outer_instruction.clone(),
         preview: RouteExecutionPreview {
             policy_account: policy_account.to_string(),
+            fee_payer: fee_payer.to_string(),
             signer: signer_pubkey.to_string(),
             account_index,
             instruction_constraint_indexes,
@@ -4993,7 +5086,15 @@ async fn execute_prepared_same_mint_route(
     let mut lookup_table_accounts =
         load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
     let signer = yield_router_keypair_from_env()?;
-    let fee_payer = solana_testing_keypair_from_env()?;
+    let admin_fee_payer = if options.optimization_cycle {
+        None
+    } else {
+        Some(solana_testing_keypair_from_env()?)
+    };
+    let fee_payer: &dyn Signer = admin_fee_payer
+        .as_ref()
+        .map(|keypair| keypair as &dyn Signer)
+        .unwrap_or(&signer);
     let expected_signer = Pubkey::from_str(&route_execution.preview.signer)?;
     if signer.pubkey() != expected_signer {
         return Err(format!(
@@ -5003,22 +5104,33 @@ async fn execute_prepared_same_mint_route(
         )
         .into());
     }
+    let expected_fee_payer = Pubkey::from_str(&route_execution.preview.fee_payer)?;
+    if fee_payer.pubkey() != expected_fee_payer {
+        return Err(format!(
+            "route fee payer {} does not match prepared route fee payer {}",
+            fee_payer.pubkey(),
+            expected_fee_payer
+        )
+        .into());
+    }
 
     let mut transaction_instructions = route_execution.pre_instructions.clone();
     transaction_instructions.push(route_execution.instruction.clone());
+    let signer_pubkeys = same_mint_route_signer_pubkeys(fee_payer.pubkey(), signer.pubkey());
     let required_lookup_addresses = best_case_lookup_table_addresses(
         fee_payer.pubkey(),
         &transaction_instructions,
-        &[fee_payer.pubkey(), signer.pubkey()],
+        &signer_pubkeys,
     );
     let lookup_table_provisioning = prepare_policy_update_lookup_tables(
         &rpc,
         options,
         fee_payer.pubkey(),
-        &fee_payer,
+        fee_payer,
         &required_lookup_addresses,
         &mut lookup_table_accounts,
     )?;
+    let transaction_signers = same_mint_route_signers(fee_payer, &signer);
 
     let blockhash = rpc.get_latest_blockhash()?;
     let transaction = compile_versioned_transaction(
@@ -5026,7 +5138,7 @@ async fn execute_prepared_same_mint_route(
         &transaction_instructions,
         &lookup_table_accounts,
         blockhash,
-        &[&fee_payer, &signer],
+        &transaction_signers,
     )?;
     let transaction_packet = transaction_packet_summary(&transaction, &lookup_table_accounts)?;
     if !transaction_packet.fits_packet_data_size {
@@ -6110,6 +6222,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     let mut full_withdraw_main_usdc = false;
     let mut e2e_deposit_amount_raw = None;
     let mut execute = false;
+    let mut optimization_cycle = false;
     let mut reconcile_from_chain = false;
     let mut seed_from_user_position = false;
     let mut provision_lookup_table = false;
@@ -6177,6 +6290,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
                 initial_deposit_amount_raw = Some(amount);
             }
             "--execute" => execute = true,
+            "--optimization-cycle" => optimization_cycle = true,
             "--reconcile-from-chain" => reconcile_from_chain = true,
             "--seed-from-user-position" => seed_from_user_position = true,
             "--provision-lookup-table" => provision_lookup_table = true,
@@ -6219,6 +6333,28 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     if source_reserve.is_some() != target_reserve.is_some() {
         return Err("--source-reserve and --target-reserve must be provided together".to_owned());
     }
+    if optimization_cycle {
+        if !execute {
+            return Err("--optimization-cycle requires --execute".to_owned());
+        }
+        if !reconcile_from_chain {
+            return Err("--optimization-cycle requires --reconcile-from-chain".to_owned());
+        }
+        if source_reserve.is_none() || target_reserve.is_none() {
+            return Err(
+                "--optimization-cycle requires explicit --source-reserve and --target-reserve"
+                    .to_owned(),
+            );
+        }
+        if selected_special_modes != 0 || update_active_policy {
+            return Err(
+                "--optimization-cycle cannot be combined with setup/admin modes".to_owned(),
+            );
+        }
+        if seed_from_user_position {
+            return Err("--optimization-cycle cannot use --seed-from-user-position".to_owned());
+        }
+    }
     Ok(CliOptions {
         settings: settings.ok_or("--settings is required")?,
         vault_index: vault_index.ok_or("--vault-index is required")?,
@@ -6231,6 +6367,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
         full_withdraw_main_usdc,
         e2e_deposit_amount_raw,
         execute,
+        optimization_cycle,
         reconcile_from_chain,
         seed_from_user_position,
         provision_lookup_table,
@@ -6557,6 +6694,7 @@ fn route_execution_preview_json(preview: &RouteExecutionPreview) -> Value {
     json!({
         "kind": "squads_program_interaction_same_mint",
         "policyAccount": preview.policy_account,
+        "feePayer": preview.fee_payer,
         "signer": preview.signer,
         "accountIndex": preview.account_index,
         "instructionConstraintIndexes": preview.instruction_constraint_indexes,
@@ -6895,8 +7033,8 @@ fn same_mint_input_json(input: &SameMintRebalanceInput) -> Value {
 
 fn print_help() {
     println!(
-         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--provision-lookup-table] [--deposit-main-usdc <AMOUNT_RAW>] [--full-withdraw-main-usdc] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--lookup-table <PUBKEY>...] [--execute]\n\n\
-         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and YIELD_ROUTER_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --provision-lookup-table with --update-policy or same-mint --execute to create, extend, warm up, and use a fresh ALT. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and YIELD_ROUTER_KEYPAIR for the policy deposit. Full withdraw mode uses YIELD_ROUTER_KEYPAIR for the policy withdraw and reports obligation rent cleanup proof. Run through:\n\
+         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--provision-lookup-table] [--deposit-main-usdc <AMOUNT_RAW>] [--full-withdraw-main-usdc] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--lookup-table <PUBKEY>...] [--execute]\n\n\
+         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and YIELD_ROUTER_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --optimization-cycle to live same-mint route execution after setup is complete; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses YIELD_ROUTER_KEYPAIR as fee payer and delegated signer, and blocks missing-obligation setup. Add --provision-lookup-table with --update-policy or same-mint --execute to create, extend, warm up, and use a fresh ALT. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and YIELD_ROUTER_KEYPAIR for the policy deposit. Full withdraw mode uses YIELD_ROUTER_KEYPAIR for the policy withdraw and reports obligation rent cleanup proof. Run through:\n\
          op run --env-file=.env.1password -- bun run same-mint:swap -- --settings <PUBKEY> --vault-index 1 --reconcile-from-chain --seed-from-user-position"
     );
 }
@@ -6936,6 +7074,7 @@ mod tests {
             full_withdraw_main_usdc: false,
             e2e_deposit_amount_raw: None,
             execute: false,
+            optimization_cycle: false,
             reconcile_from_chain: false,
             seed_from_user_position: false,
             provision_lookup_table: false,
@@ -7115,6 +7254,7 @@ mod tests {
                 full_withdraw_main_usdc: false,
                 e2e_deposit_amount_raw: None,
                 execute: false,
+                optimization_cycle: false,
                 reconcile_from_chain: false,
                 seed_from_user_position: false,
                 provision_lookup_table: false,
@@ -7363,6 +7503,95 @@ mod tests {
         .expect_err("target alone is ambiguous");
 
         assert!(error.contains("--source-reserve and --target-reserve"));
+    }
+
+    #[test]
+    fn parse_optimization_cycle_requires_live_explicit_route_mode() {
+        let source = Pubkey::new_unique();
+        let target = Pubkey::new_unique();
+        let options = parse_args([
+            "--settings".to_owned(),
+            "settings".to_owned(),
+            "--vault-index".to_owned(),
+            "1".to_owned(),
+            "--source-reserve".to_owned(),
+            source.to_string(),
+            "--target-reserve".to_owned(),
+            target.to_string(),
+            "--optimization-cycle".to_owned(),
+            "--reconcile-from-chain".to_owned(),
+            "--execute".to_owned(),
+        ])
+        .expect("optimization cycle route mode parses");
+
+        assert!(options.optimization_cycle);
+        assert!(options.execute);
+        assert!(options.reconcile_from_chain);
+
+        let missing_execute = parse_args([
+            "--settings".to_owned(),
+            "settings".to_owned(),
+            "--vault-index".to_owned(),
+            "1".to_owned(),
+            "--source-reserve".to_owned(),
+            source.to_string(),
+            "--target-reserve".to_owned(),
+            target.to_string(),
+            "--optimization-cycle".to_owned(),
+            "--reconcile-from-chain".to_owned(),
+        ])
+        .expect_err("optimization cycle must be live execution");
+        assert!(missing_execute.contains("--optimization-cycle requires --execute"));
+
+        let setup_mode = parse_args([
+            "--settings".to_owned(),
+            "settings".to_owned(),
+            "--vault-index".to_owned(),
+            "1".to_owned(),
+            "--source-reserve".to_owned(),
+            source.to_string(),
+            "--target-reserve".to_owned(),
+            target.to_string(),
+            "--optimization-cycle".to_owned(),
+            "--reconcile-from-chain".to_owned(),
+            "--execute".to_owned(),
+            "--update-policy".to_owned(),
+        ])
+        .expect_err("optimization cycle must reject setup modes");
+        assert!(setup_mode.contains("setup/admin"));
+    }
+
+    #[test]
+    fn optimization_cycle_route_signers_deduplicate_router_payer() {
+        let admin = Pubkey::new_from_array([1; 32]);
+        let router = Pubkey::new_from_array([2; 32]);
+
+        assert_eq!(same_mint_route_signer_pubkeys(router, router), vec![router]);
+        assert_eq!(
+            same_mint_route_signer_pubkeys(admin, router),
+            vec![admin, router]
+        );
+    }
+
+    #[test]
+    fn transaction_packet_summary_reports_fee_payer_and_signer_set() {
+        let router = solana_sdk::signature::Keypair::new_from_array([42u8; 32]);
+        let transaction = compile_versioned_transaction(
+            router.pubkey(),
+            &[],
+            &[],
+            Hash::new_unique(),
+            &[&router],
+        )
+        .expect("compile transaction");
+
+        let summary = transaction_packet_summary(&transaction, &[]).expect("packet summary");
+        assert_eq!(summary.fee_payer, router.pubkey().to_string());
+        assert_eq!(summary.signer_pubkeys, vec![router.pubkey().to_string()]);
+
+        let json = transaction_packet_json(&summary);
+        assert_eq!(json["feePayer"], router.pubkey().to_string());
+        assert_eq!(json["signerPubkeys"], json!([router.pubkey().to_string()]));
     }
 
     #[test]
@@ -7640,17 +7869,20 @@ mod tests {
             target_market: KAMINO_PRIME_MARKET.to_owned(),
             decoded,
         };
+        let fee_payer = Pubkey::new_unique();
         let plan = build_route_execution_plan(
             &vault,
             &preview,
             &default_reserve_move(),
             &same_mint_input(),
             Some(&policy_preflight),
+            fee_payer,
         )
         .expect("build route plan");
 
         assert_eq!(plan.instruction.program_id, SQUADS_SMART_ACCOUNT_PROGRAM_ID);
         assert_eq!(plan.preview.policy_account, policy_account);
+        assert_eq!(plan.preview.fee_payer, fee_payer.to_string());
         assert_eq!(plan.preview.account_index, 1);
         assert_eq!(plan.preview.instruction_constraint_indexes, vec![0, 1]);
         assert_eq!(
@@ -7731,6 +7963,7 @@ mod tests {
             &default_reserve_move(),
             &same_mint_input(),
             Some(&policy_preflight),
+            Pubkey::new_unique(),
         )
         .expect_err("route policy no longer carries init_obligation");
         assert!(error
@@ -7841,6 +8074,7 @@ mod tests {
             &default_reserve_move(),
             &same_mint_input(),
             Some(&policy_preflight),
+            Pubkey::new_unique(),
         )
         .expect("build route plan");
 
@@ -8018,6 +8252,7 @@ mod tests {
             &default_reserve_move(),
             &same_mint_input(),
             Some(&policy_preflight),
+            Pubkey::new_unique(),
         )
         .expect("build route plan");
 
@@ -8081,6 +8316,7 @@ mod tests {
             &default_reserve_move(),
             &same_mint_input(),
             Some(&policy_preflight),
+            Pubkey::new_unique(),
         )
         .expect_err("missing target obligation requires separate setup");
 

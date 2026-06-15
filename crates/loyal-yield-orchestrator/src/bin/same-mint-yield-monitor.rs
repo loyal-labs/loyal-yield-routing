@@ -5,7 +5,7 @@ use loyal_actions::USDC_MINT;
 use loyal_yield_orchestrator::sqlx::Row;
 use loyal_yield_orchestrator::{
     solana_testing_keypair_from_env, CurrentReservePosition, ManagedVault, NeonSqlClient,
-    NeonSqlConfig, PolicyId, RoutePolicy, VaultId, ACTIVE_DECISION_STATUSES,
+    NeonSqlConfig, PolicyId, RoutePolicy, VaultId, ACTIVE_DECISION_STATUSES, SOLANA_TESTING_PK_ENV,
 };
 use loyal_yield_router::timescale::{
     SupportedReserveLatestQuery, SupportedReserveLatestRow, TimescaleRouterClient,
@@ -68,7 +68,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .map_err(|_| "NEON_DATABASE_URL is required")?;
     let timescale_url = env::var("TIMESCALEDB_URL").map_err(|_| "TIMESCALEDB_URL is required")?;
 
-    let authority = solana_testing_keypair_from_env()?.pubkey();
+    let authority = authority_for_options(&options)?;
     let neon = NeonSqlClient::connect(
         NeonSqlConfig::new(neon_url)
             .with_max_connections(2)
@@ -96,7 +96,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 async fn run_once(
     options: &Options,
-    authority: Pubkey,
+    authority: Option<Pubkey>,
     neon: &NeonSqlClient,
     timescale: &TimescaleRouterClient,
 ) -> Result<Value, Box<dyn Error>> {
@@ -207,6 +207,7 @@ fn execute_planned_move(
         .arg(&planned_move.source.reserve)
         .arg("--target-reserve")
         .arg(&planned_move.target.reserve)
+        .arg("--optimization-cycle")
         .arg("--reconcile-from-chain")
         .arg("--provision-lookup-table")
         .arg("--execute")
@@ -351,7 +352,7 @@ fn monitor_status_and_skip_reason<'a>(
 
 async fn resolve_vault(
     neon: &NeonSqlClient,
-    authority: Pubkey,
+    authority: Option<Pubkey>,
     options: &Options,
 ) -> Result<ResolvedVault, Box<dyn Error>> {
     match vault_resolution_mode(options)? {
@@ -365,9 +366,28 @@ async fn resolve_vault(
             exactly_one(rows, "explicit settings/vault-index")
         }
         VaultResolutionMode::Authority => {
+            let authority = authority.ok_or("SOLANA_TESTING_PK authority was not loaded")?;
             let rows = fetch_vaults_by_authority(neon, &authority.to_string()).await?;
             exactly_one(rows, "SOLANA_TESTING_PK authority")
         }
+    }
+}
+
+fn authority_for_options(options: &Options) -> Result<Option<Pubkey>, Box<dyn Error>> {
+    match authority_env_for_options(options)? {
+        Some(_) => Ok(Some(solana_testing_keypair_from_env()?.pubkey())),
+        None => Ok(None),
+    }
+}
+
+fn authority_env_for_options(options: &Options) -> Result<Option<&'static str>, Box<dyn Error>> {
+    match vault_resolution_mode(options)? {
+        VaultResolutionMode::Explicit => Ok(None),
+        VaultResolutionMode::Authority if options.execute => Err(
+            "--execute requires explicit --settings and --vault-index; SOLANA_TESTING_PK authority discovery is setup/admin only"
+                .into(),
+        ),
+        VaultResolutionMode::Authority => Ok(Some(SOLANA_TESTING_PK_ENV)),
     }
 }
 
@@ -704,7 +724,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
 }
 
 fn usage() -> &'static str {
-    "Usage: same-mint-yield-monitor [--once] [--execute] [--settings <PUBKEY> --vault-index <N>] [--poll-interval-seconds <SECONDS>] [--max-candidate-age-seconds <SECONDS>] [--min-edge-bps <BPS>]\n\nDry-run is the default. Reads NEON_DATABASE_URL, TIMESCALEDB_URL, SOLANA_TESTING_PK, and eventually YIELD_ROUTER_KEYPAIR for live execution."
+    "Usage: same-mint-yield-monitor [--once] [--execute] [--settings <PUBKEY> --vault-index <N>] [--poll-interval-seconds <SECONDS>] [--max-candidate-age-seconds <SECONDS>] [--min-edge-bps <BPS>]\n\nDry-run is the default. Explicit --settings/--vault-index mode does not read SOLANA_TESTING_PK. Authority discovery mode is dry-run only and reads SOLANA_TESTING_PK. Live execution reads YIELD_ROUTER_KEYPAIR through same-mint-reserve-swap --optimization-cycle."
 }
 
 #[cfg(test)]
@@ -840,6 +860,10 @@ mod tests {
             vault_resolution_mode(&options).expect("resolution mode"),
             VaultResolutionMode::Authority
         );
+        assert_eq!(
+            authority_env_for_options(&options).expect("authority env"),
+            Some(SOLANA_TESTING_PK_ENV)
+        );
 
         let explicit = parse_args([
             "--settings".to_owned(),
@@ -852,10 +876,37 @@ mod tests {
             vault_resolution_mode(&explicit).expect("resolution mode"),
             VaultResolutionMode::Explicit
         );
+        assert_eq!(
+            authority_env_for_options(&explicit).expect("explicit mode does not load authority"),
+            None
+        );
 
         let missing_index = parse_args(["--settings".to_owned(), "settings".to_owned()])
             .expect("parse partial options");
         assert!(vault_resolution_mode(&missing_index).is_err());
+    }
+
+    #[test]
+    fn execute_requires_explicit_vault_resolution_without_solana_testing_pk() {
+        let authority_discovery =
+            parse_args(["--execute".to_owned()]).expect("parse execute authority mode");
+        let error = authority_env_for_options(&authority_discovery)
+            .expect_err("execute must not use authority discovery");
+        assert!(error.to_string().contains("--execute requires explicit"));
+
+        let explicit = parse_args([
+            "--execute".to_owned(),
+            "--settings".to_owned(),
+            "settings".to_owned(),
+            "--vault-index".to_owned(),
+            "1".to_owned(),
+        ])
+        .expect("parse explicit execute");
+        assert_eq!(
+            authority_env_for_options(&explicit)
+                .expect("explicit execute does not need SOLANA_TESTING_PK"),
+            None
+        );
     }
 
     #[test]
