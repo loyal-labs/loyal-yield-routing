@@ -261,11 +261,19 @@ pub(crate) fn discriminator_constraint(discriminator: [u8; 8]) -> Vec<SquadsData
 }
 
 pub fn derive_loyal_hub_config() -> Pubkey {
-    Pubkey::find_program_address(&[LOYAL_HUB_CONFIG_SEED], &LOYAL_HUB_SWAP_PROGRAM_ID).0
+    derive_loyal_hub_config_for_program(LOYAL_HUB_SWAP_PROGRAM_ID)
+}
+
+pub fn derive_loyal_hub_config_for_program(program_id: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[LOYAL_HUB_CONFIG_SEED], &program_id).0
 }
 
 pub fn derive_loyal_hub_authority() -> Pubkey {
     derive_loyal_hub_lane_authority(0)
+}
+
+pub fn derive_loyal_hub_authority_for_program(program_id: Pubkey) -> Pubkey {
+    derive_loyal_hub_lane_authority_for_program(program_id, 0)
 }
 
 pub fn derive_subscription_authority(user: Pubkey, mint: Pubkey) -> Pubkey {
@@ -344,19 +352,31 @@ pub fn subscription_revoke_delegation_data() -> Vec<u8> {
 }
 
 pub fn derive_loyal_hub_lane_authority(lane_id: u8) -> Pubkey {
-    Pubkey::find_program_address(
-        &[LOYAL_HUB_AUTHORITY_SEED, &[lane_id]],
-        &LOYAL_HUB_SWAP_PROGRAM_ID,
-    )
-    .0
+    derive_loyal_hub_lane_authority_for_program(LOYAL_HUB_SWAP_PROGRAM_ID, lane_id)
+}
+
+pub fn derive_loyal_hub_lane_authority_for_program(program_id: Pubkey, lane_id: u8) -> Pubkey {
+    Pubkey::find_program_address(&[LOYAL_HUB_AUTHORITY_SEED, &[lane_id]], &program_id).0
 }
 
 pub fn derive_loyal_hub_inventory_account(mint: Pubkey) -> Pubkey {
     derive_loyal_hub_lane_inventory_account(mint, 0)
 }
 
+pub fn derive_loyal_hub_inventory_account_for_program(program_id: Pubkey, mint: Pubkey) -> Pubkey {
+    derive_loyal_hub_lane_inventory_account_for_program(program_id, mint, 0)
+}
+
 pub fn derive_loyal_hub_lane_inventory_account(mint: Pubkey, lane_id: u8) -> Pubkey {
-    let hub_authority = derive_loyal_hub_lane_authority(lane_id);
+    derive_loyal_hub_lane_inventory_account_for_program(LOYAL_HUB_SWAP_PROGRAM_ID, mint, lane_id)
+}
+
+pub fn derive_loyal_hub_lane_inventory_account_for_program(
+    program_id: Pubkey,
+    mint: Pubkey,
+    lane_id: u8,
+) -> Pubkey {
+    let hub_authority = derive_loyal_hub_lane_authority_for_program(program_id, lane_id);
     Pubkey::find_program_address(
         &[
             hub_authority.as_ref(),
@@ -475,15 +495,39 @@ pub fn loyal_hub_initialize_config_instruction(
     lane_count: u8,
     allowed_mints: &[Pubkey],
 ) -> Result<Instruction> {
+    loyal_hub_initialize_config_instruction_for_program(
+        LOYAL_HUB_SWAP_PROGRAM_ID,
+        payer,
+        admin,
+        hub_authorizer,
+        inventory_rebalancer,
+        max_fee_bps,
+        paused,
+        lane_count,
+        allowed_mints,
+    )
+}
+
+pub fn loyal_hub_initialize_config_instruction_for_program(
+    program_id: Pubkey,
+    payer: Pubkey,
+    admin: Pubkey,
+    hub_authorizer: Pubkey,
+    inventory_rebalancer: Pubkey,
+    max_fee_bps: u16,
+    paused: bool,
+    lane_count: u8,
+    allowed_mints: &[Pubkey],
+) -> Result<Instruction> {
     if payer != admin {
         return Err(LoyalActionError::InvalidHubAdmin);
     }
 
     Ok(Instruction {
-        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        program_id,
         accounts: vec![
             AccountMeta::new(payer, true),
-            AccountMeta::new(derive_loyal_hub_config(), false),
+            AccountMeta::new(derive_loyal_hub_config_for_program(program_id), false),
             AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
         ],
         data: loyal_hub_initialize_config_data(
@@ -511,10 +555,18 @@ pub fn loyal_hub_set_max_fee_data(max_fee_bps: u16) -> Result<Vec<u8>> {
 }
 
 pub fn loyal_hub_set_max_fee_instruction(admin: Pubkey, max_fee_bps: u16) -> Result<Instruction> {
+    loyal_hub_set_max_fee_instruction_for_program(LOYAL_HUB_SWAP_PROGRAM_ID, admin, max_fee_bps)
+}
+
+pub fn loyal_hub_set_max_fee_instruction_for_program(
+    program_id: Pubkey,
+    admin: Pubkey,
+    max_fee_bps: u16,
+) -> Result<Instruction> {
     Ok(Instruction {
-        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        program_id,
         accounts: vec![
-            AccountMeta::new(derive_loyal_hub_config(), false),
+            AccountMeta::new(derive_loyal_hub_config_for_program(program_id), false),
             AccountMeta::new_readonly(admin, true),
         ],
         data: loyal_hub_set_max_fee_data(max_fee_bps)?,
@@ -529,10 +581,18 @@ pub fn loyal_hub_set_paused_data(paused: bool) -> Vec<u8> {
 }
 
 pub fn loyal_hub_set_paused_instruction(admin: Pubkey, paused: bool) -> Instruction {
+    loyal_hub_set_paused_instruction_for_program(LOYAL_HUB_SWAP_PROGRAM_ID, admin, paused)
+}
+
+pub fn loyal_hub_set_paused_instruction_for_program(
+    program_id: Pubkey,
+    admin: Pubkey,
+    paused: bool,
+) -> Instruction {
     Instruction {
-        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        program_id,
         accounts: vec![
-            AccountMeta::new(derive_loyal_hub_config(), false),
+            AccountMeta::new(derive_loyal_hub_config_for_program(program_id), false),
             AccountMeta::new_readonly(admin, true),
         ],
         data: loyal_hub_set_paused_data(paused),
@@ -558,14 +618,60 @@ pub fn loyal_hub_withdraw_inventory_instruction(
     amount: u64,
     lane_id: u8,
 ) -> Instruction {
-    loyal_hub_withdraw_inventory_instruction_with_source(
+    loyal_hub_withdraw_inventory_instruction_for_program(
+        LOYAL_HUB_SWAP_PROGRAM_ID,
         admin,
-        derive_loyal_hub_lane_inventory_account(mint, lane_id),
         destination,
         mint,
         amount,
         lane_id,
     )
+}
+
+pub fn loyal_hub_withdraw_inventory_instruction_for_program(
+    program_id: Pubkey,
+    admin: Pubkey,
+    destination: Pubkey,
+    mint: Pubkey,
+    amount: u64,
+    lane_id: u8,
+) -> Instruction {
+    loyal_hub_withdraw_inventory_instruction_with_source_for_program(
+        program_id,
+        admin,
+        derive_loyal_hub_lane_inventory_account_for_program(program_id, mint, lane_id),
+        destination,
+        mint,
+        amount,
+        lane_id,
+    )
+}
+
+pub fn loyal_hub_withdraw_inventory_instruction_with_source_for_program(
+    program_id: Pubkey,
+    admin: Pubkey,
+    hub_source: Pubkey,
+    destination: Pubkey,
+    mint: Pubkey,
+    amount: u64,
+    lane_id: u8,
+) -> Instruction {
+    Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(derive_loyal_hub_config_for_program(program_id), false),
+            AccountMeta::new_readonly(admin, true),
+            AccountMeta::new(hub_source, false),
+            AccountMeta::new(destination, false),
+            AccountMeta::new_readonly(mint, false),
+            AccountMeta::new_readonly(
+                derive_loyal_hub_lane_authority_for_program(program_id, lane_id),
+                false,
+            ),
+            AccountMeta::new_readonly(spl_token::id(), false),
+        ],
+        data: loyal_hub_withdraw_inventory_data(amount, lane_id),
+    }
 }
 
 pub fn loyal_hub_withdraw_inventory_instruction_with_source(
@@ -576,19 +682,15 @@ pub fn loyal_hub_withdraw_inventory_instruction_with_source(
     amount: u64,
     lane_id: u8,
 ) -> Instruction {
-    Instruction {
-        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
-        accounts: vec![
-            AccountMeta::new(derive_loyal_hub_config(), false),
-            AccountMeta::new_readonly(admin, true),
-            AccountMeta::new(hub_source, false),
-            AccountMeta::new(destination, false),
-            AccountMeta::new_readonly(mint, false),
-            AccountMeta::new_readonly(derive_loyal_hub_lane_authority(lane_id), false),
-            AccountMeta::new_readonly(spl_token::id(), false),
-        ],
-        data: loyal_hub_withdraw_inventory_data(amount, lane_id),
-    }
+    loyal_hub_withdraw_inventory_instruction_with_source_for_program(
+        LOYAL_HUB_SWAP_PROGRAM_ID,
+        admin,
+        hub_source,
+        destination,
+        mint,
+        amount,
+        lane_id,
+    )
 }
 
 pub fn loyal_hub_swap_exact_in_data(args: LoyalHubSwapExactIn) -> Vec<u8> {
@@ -627,24 +729,57 @@ pub fn loyal_hub_swap_exact_in_instruction(
     hub_authorizer: Pubkey,
     args: LoyalHubSwapExactIn,
 ) -> Instruction {
+    loyal_hub_swap_exact_in_instruction_for_program(
+        LOYAL_HUB_SWAP_PROGRAM_ID,
+        user_vault,
+        user_input,
+        user_output,
+        input_mint,
+        output_mint,
+        hub_authorizer,
+        args,
+    )
+}
+
+pub fn loyal_hub_swap_exact_in_instruction_for_program(
+    program_id: Pubkey,
+    user_vault: Pubkey,
+    user_input: Pubkey,
+    user_output: Pubkey,
+    input_mint: Pubkey,
+    output_mint: Pubkey,
+    hub_authorizer: Pubkey,
+    args: LoyalHubSwapExactIn,
+) -> Instruction {
     Instruction {
-        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        program_id,
         accounts: vec![
-            AccountMeta::new_readonly(derive_loyal_hub_config(), false),
+            AccountMeta::new_readonly(derive_loyal_hub_config_for_program(program_id), false),
             AccountMeta::new_readonly(user_vault, true),
             AccountMeta::new(user_input, false),
             AccountMeta::new(user_output, false),
             AccountMeta::new(
-                derive_loyal_hub_lane_inventory_account(input_mint, args.lane_id),
+                derive_loyal_hub_lane_inventory_account_for_program(
+                    program_id,
+                    input_mint,
+                    args.lane_id,
+                ),
                 false,
             ),
             AccountMeta::new(
-                derive_loyal_hub_lane_inventory_account(output_mint, args.lane_id),
+                derive_loyal_hub_lane_inventory_account_for_program(
+                    program_id,
+                    output_mint,
+                    args.lane_id,
+                ),
                 false,
             ),
             AccountMeta::new_readonly(input_mint, false),
             AccountMeta::new_readonly(output_mint, false),
-            AccountMeta::new_readonly(derive_loyal_hub_lane_authority(args.lane_id), false),
+            AccountMeta::new_readonly(
+                derive_loyal_hub_lane_authority_for_program(program_id, args.lane_id),
+                false,
+            ),
             AccountMeta::new_readonly(hub_authorizer, true),
             AccountMeta::new_readonly(spl_token::id(), false),
         ],
@@ -693,10 +828,20 @@ impl LoyalHubRebalanceBuilder {
         inventory_rebalancer: Pubkey,
         transfers: impl IntoIterator<Item = LoyalHubRebalanceTransfer>,
     ) -> Result<Vec<Instruction>> {
+        self.instructions_for_program(LOYAL_HUB_SWAP_PROGRAM_ID, inventory_rebalancer, transfers)
+    }
+
+    pub fn instructions_for_program(
+        self,
+        program_id: Pubkey,
+        inventory_rebalancer: Pubkey,
+        transfers: impl IntoIterator<Item = LoyalHubRebalanceTransfer>,
+    ) -> Result<Vec<Instruction>> {
         group_loyal_hub_rebalance_transfers(transfers)?
             .into_iter()
             .map(|batch| {
-                loyal_hub_rebalance_inventory_instruction(
+                loyal_hub_rebalance_inventory_instruction_for_program(
+                    program_id,
                     inventory_rebalancer,
                     batch.mint,
                     &batch.transfers,
@@ -746,29 +891,51 @@ pub fn loyal_hub_rebalance_inventory_instruction(
     mint: Pubkey,
     transfers: &[LoyalHubLaneRebalanceTransfer],
 ) -> Result<Instruction> {
+    loyal_hub_rebalance_inventory_instruction_for_program(
+        LOYAL_HUB_SWAP_PROGRAM_ID,
+        inventory_rebalancer,
+        mint,
+        transfers,
+    )
+}
+
+pub fn loyal_hub_rebalance_inventory_instruction_for_program(
+    program_id: Pubkey,
+    inventory_rebalancer: Pubkey,
+    mint: Pubkey,
+    transfers: &[LoyalHubLaneRebalanceTransfer],
+) -> Result<Instruction> {
     let mut accounts = vec![
-        AccountMeta::new_readonly(derive_loyal_hub_config(), false),
+        AccountMeta::new_readonly(derive_loyal_hub_config_for_program(program_id), false),
         AccountMeta::new_readonly(inventory_rebalancer, true),
         AccountMeta::new_readonly(spl_token::id(), false),
         AccountMeta::new_readonly(mint, false),
     ];
     for transfer in transfers {
         accounts.push(AccountMeta::new_readonly(
-            derive_loyal_hub_lane_authority(transfer.from_lane_id),
+            derive_loyal_hub_lane_authority_for_program(program_id, transfer.from_lane_id),
             false,
         ));
         accounts.push(AccountMeta::new(
-            derive_loyal_hub_lane_inventory_account(mint, transfer.from_lane_id),
+            derive_loyal_hub_lane_inventory_account_for_program(
+                program_id,
+                mint,
+                transfer.from_lane_id,
+            ),
             false,
         ));
         accounts.push(AccountMeta::new(
-            derive_loyal_hub_lane_inventory_account(mint, transfer.to_lane_id),
+            derive_loyal_hub_lane_inventory_account_for_program(
+                program_id,
+                mint,
+                transfer.to_lane_id,
+            ),
             false,
         ));
     }
 
     Ok(Instruction {
-        program_id: LOYAL_HUB_SWAP_PROGRAM_ID,
+        program_id,
         accounts,
         data: loyal_hub_rebalance_inventory_data(transfers)?,
     })
