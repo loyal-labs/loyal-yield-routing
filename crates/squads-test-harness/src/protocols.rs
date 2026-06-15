@@ -98,6 +98,23 @@ pub fn loyal_hub_set_max_fee_data(max_fee_bps: u16) -> Vec<u8> {
     loyal_actions::loyal_hub_set_max_fee_data(max_fee_bps).expect("valid Loyal Hub max fee data")
 }
 
+pub fn loyal_hub_set_admin_data() -> Vec<u8> {
+    loyal_actions::loyal_hub_set_admin_data()
+}
+
+pub fn loyal_hub_set_hub_authorizer_data() -> Vec<u8> {
+    loyal_actions::loyal_hub_set_hub_authorizer_data()
+}
+
+pub fn loyal_hub_set_inventory_rebalancer_data() -> Vec<u8> {
+    loyal_actions::loyal_hub_set_inventory_rebalancer_data()
+}
+
+pub fn loyal_hub_set_lane_count_data(lane_count: u8) -> Vec<u8> {
+    loyal_actions::loyal_hub_set_lane_count_data(lane_count)
+        .expect("valid Loyal Hub lane count data")
+}
+
 pub fn loyal_hub_swap_exact_in_data(
     amount_in: u64,
     amount_out: u64,

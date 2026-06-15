@@ -20,6 +20,10 @@ pub const LOYAL_HUB_WITHDRAW_INVENTORY: u8 = loyal_hub_abi::WITHDRAW_INVENTORY;
 pub const LOYAL_HUB_SET_PAUSED: u8 = loyal_hub_abi::SET_PAUSED;
 pub const LOYAL_HUB_SET_MAX_FEE: u8 = loyal_hub_abi::SET_MAX_FEE;
 pub const LOYAL_HUB_REBALANCE_INVENTORY: u8 = loyal_hub_abi::REBALANCE_INVENTORY;
+pub const LOYAL_HUB_SET_ADMIN: u8 = loyal_hub_abi::SET_ADMIN;
+pub const LOYAL_HUB_SET_HUB_AUTHORIZER: u8 = loyal_hub_abi::SET_HUB_AUTHORIZER;
+pub const LOYAL_HUB_SET_INVENTORY_REBALANCER: u8 = loyal_hub_abi::SET_INVENTORY_REBALANCER;
+pub const LOYAL_HUB_SET_LANE_COUNT: u8 = loyal_hub_abi::SET_LANE_COUNT;
 pub const LOYAL_HUB_MAX_ALLOWED_MINTS: usize = loyal_hub_abi::MAX_ALLOWED_MINTS;
 pub const LOYAL_HUB_MAX_REBALANCE_TRANSFERS: usize = loyal_hub_abi::MAX_REBALANCE_TRANSFERS;
 pub const LOYAL_HUB_SWAP_TAG_OFFSET: u64 = loyal_hub_abi::SWAP_EXACT_IN_TAG_OFFSET;
@@ -30,6 +34,11 @@ pub const LOYAL_HUB_INITIALIZE_CONFIG_DATA_LEN: usize = loyal_hub_abi::INITIALIZ
 pub const LOYAL_HUB_WITHDRAW_INVENTORY_DATA_LEN: usize = loyal_hub_abi::WITHDRAW_INVENTORY_DATA_LEN;
 pub const LOYAL_HUB_SET_PAUSED_DATA_LEN: usize = loyal_hub_abi::SET_PAUSED_DATA_LEN;
 pub const LOYAL_HUB_SET_MAX_FEE_DATA_LEN: usize = loyal_hub_abi::SET_MAX_FEE_DATA_LEN;
+pub const LOYAL_HUB_SET_ADMIN_DATA_LEN: usize = loyal_hub_abi::SET_ADMIN_DATA_LEN;
+pub const LOYAL_HUB_SET_HUB_AUTHORIZER_DATA_LEN: usize = loyal_hub_abi::SET_HUB_AUTHORIZER_DATA_LEN;
+pub const LOYAL_HUB_SET_INVENTORY_REBALANCER_DATA_LEN: usize =
+    loyal_hub_abi::SET_INVENTORY_REBALANCER_DATA_LEN;
+pub const LOYAL_HUB_SET_LANE_COUNT_DATA_LEN: usize = loyal_hub_abi::SET_LANE_COUNT_DATA_LEN;
 pub const LOYAL_HUB_REBALANCE_INVENTORY_ARGS_OFFSET: usize =
     loyal_hub_abi::REBALANCE_INVENTORY_ARGS_OFFSET;
 pub const LOYAL_HUB_CONFIG_SEED: &[u8] = loyal_hub_abi::CONFIG_SEED;

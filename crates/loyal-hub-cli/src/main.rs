@@ -10,6 +10,10 @@ use loyal_actions::{
     derive_loyal_hub_config_for_program, derive_loyal_hub_lane_authority_for_program,
     derive_loyal_hub_lane_inventory_account_for_program, hub_rebalance,
     loyal_hub_initialize_config_instruction_for_program,
+    loyal_hub_set_admin_instruction_for_program,
+    loyal_hub_set_hub_authorizer_instruction_for_program,
+    loyal_hub_set_inventory_rebalancer_instruction_for_program,
+    loyal_hub_set_lane_count_instruction_for_program,
     loyal_hub_set_max_fee_instruction_for_program, loyal_hub_set_paused_instruction_for_program,
     loyal_hub_swap_exact_in_instruction_for_program,
     loyal_hub_withdraw_inventory_instruction_for_program, LoyalHubRebalanceTransfer,
@@ -155,6 +159,41 @@ enum Command {
         paused: bool,
         #[arg(long, help = "Hub admin signer. Defaults to the fee-payer pubkey")]
         admin: Option<Pubkey>,
+    },
+
+    #[command(about = "Transfer hub admin authority")]
+    SetAdmin {
+        #[arg(
+            long,
+            help = "Current hub admin signer. Defaults to the fee-payer pubkey"
+        )]
+        admin: Option<Pubkey>,
+        #[arg(long, help = "New hub admin signer")]
+        new_admin: Pubkey,
+    },
+
+    #[command(about = "Set the hub swap authorizer")]
+    SetHubAuthorizer {
+        #[arg(long, help = "Hub admin signer. Defaults to the fee-payer pubkey")]
+        admin: Option<Pubkey>,
+        #[arg(long)]
+        new_hub_authorizer: Pubkey,
+    },
+
+    #[command(about = "Set the hub inventory rebalancer")]
+    SetInventoryRebalancer {
+        #[arg(long, help = "Hub admin signer. Defaults to the fee-payer pubkey")]
+        admin: Option<Pubkey>,
+        #[arg(long)]
+        new_inventory_rebalancer: Pubkey,
+    },
+
+    #[command(about = "Set the hub lane count")]
+    SetLaneCount {
+        #[arg(long, help = "Hub admin signer. Defaults to the fee-payer pubkey")]
+        admin: Option<Pubkey>,
+        #[arg(long)]
+        lane_count: u8,
     },
 
     #[command(about = "Withdraw inventory from a hub lane")]
@@ -463,6 +502,36 @@ fn build_instructions(
             admin.unwrap_or(fee_payer),
             *paused,
         )],
+        Command::SetAdmin { admin, new_admin } => {
+            vec![loyal_hub_set_admin_instruction_for_program(
+                program_id,
+                admin.unwrap_or(fee_payer),
+                *new_admin,
+            )]
+        }
+        Command::SetHubAuthorizer {
+            admin,
+            new_hub_authorizer,
+        } => vec![loyal_hub_set_hub_authorizer_instruction_for_program(
+            program_id,
+            admin.unwrap_or(fee_payer),
+            *new_hub_authorizer,
+        )],
+        Command::SetInventoryRebalancer {
+            admin,
+            new_inventory_rebalancer,
+        } => vec![loyal_hub_set_inventory_rebalancer_instruction_for_program(
+            program_id,
+            admin.unwrap_or(fee_payer),
+            *new_inventory_rebalancer,
+        )],
+        Command::SetLaneCount { admin, lane_count } => {
+            vec![loyal_hub_set_lane_count_instruction_for_program(
+                program_id,
+                admin.unwrap_or(fee_payer),
+                *lane_count,
+            )?]
+        }
         Command::WithdrawInventory {
             admin,
             destination_token_account,

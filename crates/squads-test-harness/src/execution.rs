@@ -608,6 +608,29 @@ pub fn set_loyal_hub_max_fee_instruction(admin: Pubkey, max_fee_bps: u16) -> Ins
         .expect("valid Loyal Hub set max fee instruction")
 }
 
+pub fn set_loyal_hub_admin_instruction(admin: Pubkey, new_admin: Pubkey) -> Instruction {
+    loyal_actions::loyal_hub_set_admin_instruction(admin, new_admin)
+}
+
+pub fn set_loyal_hub_authorizer_instruction(
+    admin: Pubkey,
+    new_hub_authorizer: Pubkey,
+) -> Instruction {
+    loyal_actions::loyal_hub_set_hub_authorizer_instruction(admin, new_hub_authorizer)
+}
+
+pub fn set_loyal_hub_inventory_rebalancer_instruction(
+    admin: Pubkey,
+    new_inventory_rebalancer: Pubkey,
+) -> Instruction {
+    loyal_actions::loyal_hub_set_inventory_rebalancer_instruction(admin, new_inventory_rebalancer)
+}
+
+pub fn set_loyal_hub_lane_count_instruction(admin: Pubkey, lane_count: u8) -> Instruction {
+    loyal_actions::loyal_hub_set_lane_count_instruction(admin, lane_count)
+        .expect("valid Loyal Hub set lane count instruction")
+}
+
 pub fn withdraw_loyal_hub_inventory_instruction(
     admin: Pubkey,
     hub_source: Pubkey,

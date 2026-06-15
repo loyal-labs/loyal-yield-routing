@@ -59,6 +59,14 @@ pub fn process_instruction(
         HubInstruction::SetMaxFee { max_fee_bps } => {
             process_set_max_fee(program_id, accounts, max_fee_bps)
         }
+        HubInstruction::SetAdmin => process_set_admin(program_id, accounts),
+        HubInstruction::SetHubAuthorizer => process_set_hub_authorizer(program_id, accounts),
+        HubInstruction::SetInventoryRebalancer => {
+            process_set_inventory_rebalancer(program_id, accounts)
+        }
+        HubInstruction::SetLaneCount { lane_count } => {
+            process_set_lane_count(program_id, accounts, lane_count)
+        }
         HubInstruction::RebalanceInventory(args) => {
             process_rebalance_inventory(program_id, accounts, args)
         }
@@ -181,6 +189,65 @@ fn process_set_paused(
     let mut config = HubConfig::read_account(program_id, config_account)?;
     require_admin(admin, &config)?;
     config.paused = paused;
+    config.write_account(config_account)
+}
+
+fn process_set_admin(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
+    let account_info_iter = &mut accounts.iter();
+    let config_account = next_account_info(account_info_iter)?;
+    let admin = next_account_info(account_info_iter)?;
+    let new_admin = next_account_info(account_info_iter)?;
+
+    let mut config = HubConfig::read_account(program_id, config_account)?;
+    require_admin(admin, &config)?;
+    require_signer(new_admin)?;
+    config.admin = *new_admin.key();
+    config.write_account(config_account)
+}
+
+fn process_set_hub_authorizer(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
+    let account_info_iter = &mut accounts.iter();
+    let config_account = next_account_info(account_info_iter)?;
+    let admin = next_account_info(account_info_iter)?;
+    let new_hub_authorizer = next_account_info(account_info_iter)?;
+
+    let mut config = HubConfig::read_account(program_id, config_account)?;
+    require_admin(admin, &config)?;
+    config.hub_authorizer = *new_hub_authorizer.key();
+    config.write_account(config_account)
+}
+
+fn process_set_inventory_rebalancer(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+) -> ProgramResult {
+    let account_info_iter = &mut accounts.iter();
+    let config_account = next_account_info(account_info_iter)?;
+    let admin = next_account_info(account_info_iter)?;
+    let new_inventory_rebalancer = next_account_info(account_info_iter)?;
+
+    let mut config = HubConfig::read_account(program_id, config_account)?;
+    require_admin(admin, &config)?;
+    config.inventory_rebalancer = *new_inventory_rebalancer.key();
+    config.write_account(config_account)
+}
+
+fn process_set_lane_count(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    lane_count: u8,
+) -> ProgramResult {
+    if lane_count == 0 {
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    let account_info_iter = &mut accounts.iter();
+    let config_account = next_account_info(account_info_iter)?;
+    let admin = next_account_info(account_info_iter)?;
+
+    let mut config = HubConfig::read_account(program_id, config_account)?;
+    require_admin(admin, &config)?;
+    config.lane_count = lane_count;
     config.write_account(config_account)
 }
 

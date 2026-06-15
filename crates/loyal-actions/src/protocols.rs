@@ -17,6 +17,13 @@ fn validate_fee_bps(fee_bps: u16) -> Result<()> {
     Ok(())
 }
 
+fn validate_lane_count(lane_count: u8) -> Result<()> {
+    if lane_count == 0 {
+        return Err(LoyalActionError::InvalidLaneCount);
+    }
+    Ok(())
+}
+
 fn write_bytes(data: &mut [u8], offset: usize, bytes: &[u8]) {
     data[offset..offset + bytes.len()].copy_from_slice(bytes);
 }
@@ -567,9 +574,7 @@ pub fn loyal_hub_config_data(
     allowed_mints: &[Pubkey],
 ) -> Result<Vec<u8>> {
     validate_fee_bps(max_fee_bps)?;
-    if lane_count == 0 {
-        return Err(LoyalActionError::InvalidLaneCount);
-    }
+    validate_lane_count(lane_count)?;
     if allowed_mints.is_empty() {
         return Err(LoyalActionError::EmptyAllowedMints);
     }
@@ -757,6 +762,126 @@ pub fn loyal_hub_set_paused_instruction_for_program(
         ],
         data: loyal_hub_set_paused_data(paused),
     }
+}
+
+pub fn loyal_hub_set_admin_data() -> Vec<u8> {
+    let mut data = vec![0; LOYAL_HUB_SET_ADMIN_DATA_LEN];
+    data[loyal_hub_abi::SET_ADMIN_TAG_OFFSET as usize] = LOYAL_HUB_SET_ADMIN;
+    data
+}
+
+pub fn loyal_hub_set_admin_instruction(admin: Pubkey, new_admin: Pubkey) -> Instruction {
+    loyal_hub_set_admin_instruction_for_program(LOYAL_HUB_SWAP_PROGRAM_ID, admin, new_admin)
+}
+
+pub fn loyal_hub_set_admin_instruction_for_program(
+    program_id: Pubkey,
+    admin: Pubkey,
+    new_admin: Pubkey,
+) -> Instruction {
+    Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(derive_loyal_hub_config_for_program(program_id), false),
+            AccountMeta::new_readonly(admin, true),
+            AccountMeta::new_readonly(new_admin, true),
+        ],
+        data: loyal_hub_set_admin_data(),
+    }
+}
+
+pub fn loyal_hub_set_hub_authorizer_data() -> Vec<u8> {
+    let mut data = vec![0; LOYAL_HUB_SET_HUB_AUTHORIZER_DATA_LEN];
+    data[loyal_hub_abi::SET_HUB_AUTHORIZER_TAG_OFFSET as usize] = LOYAL_HUB_SET_HUB_AUTHORIZER;
+    data
+}
+
+pub fn loyal_hub_set_hub_authorizer_instruction(
+    admin: Pubkey,
+    new_hub_authorizer: Pubkey,
+) -> Instruction {
+    loyal_hub_set_hub_authorizer_instruction_for_program(
+        LOYAL_HUB_SWAP_PROGRAM_ID,
+        admin,
+        new_hub_authorizer,
+    )
+}
+
+pub fn loyal_hub_set_hub_authorizer_instruction_for_program(
+    program_id: Pubkey,
+    admin: Pubkey,
+    new_hub_authorizer: Pubkey,
+) -> Instruction {
+    Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(derive_loyal_hub_config_for_program(program_id), false),
+            AccountMeta::new_readonly(admin, true),
+            AccountMeta::new_readonly(new_hub_authorizer, false),
+        ],
+        data: loyal_hub_set_hub_authorizer_data(),
+    }
+}
+
+pub fn loyal_hub_set_inventory_rebalancer_data() -> Vec<u8> {
+    let mut data = vec![0; LOYAL_HUB_SET_INVENTORY_REBALANCER_DATA_LEN];
+    data[loyal_hub_abi::SET_INVENTORY_REBALANCER_TAG_OFFSET as usize] =
+        LOYAL_HUB_SET_INVENTORY_REBALANCER;
+    data
+}
+
+pub fn loyal_hub_set_inventory_rebalancer_instruction(
+    admin: Pubkey,
+    new_inventory_rebalancer: Pubkey,
+) -> Instruction {
+    loyal_hub_set_inventory_rebalancer_instruction_for_program(
+        LOYAL_HUB_SWAP_PROGRAM_ID,
+        admin,
+        new_inventory_rebalancer,
+    )
+}
+
+pub fn loyal_hub_set_inventory_rebalancer_instruction_for_program(
+    program_id: Pubkey,
+    admin: Pubkey,
+    new_inventory_rebalancer: Pubkey,
+) -> Instruction {
+    Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(derive_loyal_hub_config_for_program(program_id), false),
+            AccountMeta::new_readonly(admin, true),
+            AccountMeta::new_readonly(new_inventory_rebalancer, false),
+        ],
+        data: loyal_hub_set_inventory_rebalancer_data(),
+    }
+}
+
+pub fn loyal_hub_set_lane_count_data(lane_count: u8) -> Result<Vec<u8>> {
+    validate_lane_count(lane_count)?;
+    let mut data = vec![0; LOYAL_HUB_SET_LANE_COUNT_DATA_LEN];
+    data[loyal_hub_abi::SET_LANE_COUNT_TAG_OFFSET as usize] = LOYAL_HUB_SET_LANE_COUNT;
+    data[loyal_hub_abi::SET_LANE_COUNT_LANE_COUNT_DATA_OFFSET as usize] = lane_count;
+    Ok(data)
+}
+
+pub fn loyal_hub_set_lane_count_instruction(admin: Pubkey, lane_count: u8) -> Result<Instruction> {
+    loyal_hub_set_lane_count_instruction_for_program(LOYAL_HUB_SWAP_PROGRAM_ID, admin, lane_count)
+}
+
+pub fn loyal_hub_set_lane_count_instruction_for_program(
+    program_id: Pubkey,
+    admin: Pubkey,
+    lane_count: u8,
+) -> Result<Instruction> {
+    Ok(Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(derive_loyal_hub_config_for_program(program_id), false),
+            AccountMeta::new_readonly(admin, true),
+        ],
+        data: loyal_hub_set_lane_count_data(lane_count)?,
+    })
 }
 
 pub fn loyal_hub_withdraw_inventory_data(amount: u64, lane_id: u8) -> Vec<u8> {
@@ -1493,6 +1618,9 @@ mod tests {
     #[test]
     fn loyal_hub_admin_and_rebalance_builders_match_account_order() {
         let admin = Pubkey::new_unique();
+        let new_admin = Pubkey::new_unique();
+        let new_hub_authorizer = Pubkey::new_unique();
+        let new_rebalancer = Pubkey::new_unique();
         let destination = Pubkey::new_unique();
         let mint = Pubkey::new_unique();
         let rebalancer = Pubkey::new_unique();
@@ -1507,6 +1635,49 @@ mod tests {
             AccountMeta::new_readonly(admin, true)
         );
         assert_eq!(set_fee.data, vec![LOYAL_HUB_SET_MAX_FEE, 25, 0]);
+
+        let set_admin = loyal_hub_set_admin_instruction(admin, new_admin);
+        assert_eq!(
+            set_admin.accounts[loyal_hub_abi::set_admin_accounts::CONFIG as usize],
+            AccountMeta::new(derive_loyal_hub_config(), false)
+        );
+        assert_eq!(
+            set_admin.accounts[loyal_hub_abi::set_admin_accounts::ADMIN as usize],
+            AccountMeta::new_readonly(admin, true)
+        );
+        assert_eq!(
+            set_admin.accounts[loyal_hub_abi::set_admin_accounts::NEW_ADMIN as usize],
+            AccountMeta::new_readonly(new_admin, true)
+        );
+        assert_eq!(set_admin.data, vec![LOYAL_HUB_SET_ADMIN]);
+
+        let set_hub_authorizer =
+            loyal_hub_set_hub_authorizer_instruction(admin, new_hub_authorizer);
+        assert_eq!(
+            set_hub_authorizer.accounts
+                [loyal_hub_abi::set_hub_authorizer_accounts::NEW_HUB_AUTHORIZER as usize],
+            AccountMeta::new_readonly(new_hub_authorizer, false)
+        );
+        assert_eq!(set_hub_authorizer.data, vec![LOYAL_HUB_SET_HUB_AUTHORIZER]);
+
+        let set_rebalancer = loyal_hub_set_inventory_rebalancer_instruction(admin, new_rebalancer);
+        assert_eq!(
+            set_rebalancer.accounts
+                [loyal_hub_abi::set_inventory_rebalancer_accounts::NEW_INVENTORY_REBALANCER
+                    as usize],
+            AccountMeta::new_readonly(new_rebalancer, false)
+        );
+        assert_eq!(
+            set_rebalancer.data,
+            vec![LOYAL_HUB_SET_INVENTORY_REBALANCER]
+        );
+
+        let set_lane_count = loyal_hub_set_lane_count_instruction(admin, 8).unwrap();
+        assert_eq!(
+            set_lane_count.accounts[loyal_hub_abi::set_lane_count_accounts::ADMIN as usize],
+            AccountMeta::new_readonly(admin, true)
+        );
+        assert_eq!(set_lane_count.data, vec![LOYAL_HUB_SET_LANE_COUNT, 8]);
 
         let withdraw = loyal_hub_withdraw_inventory_instruction(admin, destination, mint, 42, 1);
         assert_eq!(withdraw.accounts.len(), 7);

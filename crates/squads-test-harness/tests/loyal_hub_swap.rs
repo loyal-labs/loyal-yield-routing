@@ -24,7 +24,9 @@ use squads_test_harness::{
     mock_jupiter_swap_lane, rebalance_loyal_hub_inventory_instruction,
     seed_loyal_hub_inventory_spl_accounts, seed_loyal_hub_inventory_spl_accounts_for_lane,
     seed_mock_jupiter_spl_accounts, seed_mock_jupiter_stable_reserve_spl_accounts,
-    seed_spl_mint_if_missing, seed_spl_token_account, set_loyal_hub_max_fee_instruction,
+    seed_spl_mint_if_missing, seed_spl_token_account, set_loyal_hub_admin_instruction,
+    set_loyal_hub_authorizer_instruction, set_loyal_hub_inventory_rebalancer_instruction,
+    set_loyal_hub_lane_count_instruction, set_loyal_hub_max_fee_instruction,
     set_loyal_hub_paused_instruction, try_send_instructions,
     withdraw_loyal_hub_inventory_instruction, HubSwapExecution, JupiterSwapExecution,
     LoyalHubRebalanceTransfer, MockJupiterStableReserveTokenAccount, MockProgram, RouteActionExt,
@@ -1562,6 +1564,85 @@ fn loyal_hub_admin_can_update_max_fee() {
     )
     .expect_err("hub rejects swaps above the updated max fee");
     assert!(error.contains("InvalidArgument"), "{error}");
+}
+
+#[test]
+fn loyal_hub_admin_can_update_config_authorities_and_lane_count() {
+    let Some(mut fixture) = setup_fixture(false) else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+
+    let old_admin = fixture.context.wallet_pubkey();
+    let new_admin = Keypair::new();
+    let new_hub_authorizer = Keypair::new();
+    let new_inventory_rebalancer = Keypair::new();
+    for signer in [&new_admin, &new_hub_authorizer, &new_inventory_rebalancer] {
+        fixture
+            .context
+            .svm
+            .airdrop(&signer.pubkey(), LAMPORTS_PER_SOL / 10)
+            .expect("airdrop new config authority signer");
+    }
+
+    let mut missing_new_admin_sig_ix =
+        set_loyal_hub_admin_instruction(old_admin, new_admin.pubkey());
+    missing_new_admin_sig_ix.accounts
+        [loyal_actions::hub_abi::set_admin_accounts::NEW_ADMIN as usize]
+        .is_signer = false;
+    let error = try_send_instructions(
+        &mut fixture.context.svm,
+        &[missing_new_admin_sig_ix],
+        &fixture.context.wallet,
+        &[],
+    )
+    .expect_err("new admin signature is required");
+    assert!(error.contains("MissingRequiredSignature"), "{error}");
+
+    let set_admin_ix = set_loyal_hub_admin_instruction(old_admin, new_admin.pubkey());
+    try_send_instructions(
+        &mut fixture.context.svm,
+        &[set_admin_ix],
+        &fixture.context.wallet,
+        &[&new_admin],
+    )
+    .expect("old and new admins rotate hub admin authority");
+
+    let old_admin_set_fee_ix = set_loyal_hub_max_fee_instruction(old_admin, 5);
+    let error = try_send_instructions(
+        &mut fixture.context.svm,
+        &[old_admin_set_fee_ix],
+        &fixture.context.wallet,
+        &[],
+    )
+    .expect_err("old admin no longer controls the hub config");
+    assert!(error.contains("InvalidArgument"), "{error}");
+
+    let set_authorizer_ix =
+        set_loyal_hub_authorizer_instruction(new_admin.pubkey(), new_hub_authorizer.pubkey());
+    let set_rebalancer_ix = set_loyal_hub_inventory_rebalancer_instruction(
+        new_admin.pubkey(),
+        new_inventory_rebalancer.pubkey(),
+    );
+    let set_lane_count_ix = set_loyal_hub_lane_count_instruction(new_admin.pubkey(), 2);
+    try_send_instructions(
+        &mut fixture.context.svm,
+        &[set_authorizer_ix, set_rebalancer_ix, set_lane_count_ix],
+        &new_admin,
+        &[],
+    )
+    .expect("new admin updates hub config authorities and lane count");
+
+    let snapshot = hub_config_snapshot(&fixture.context);
+    assert_eq!(snapshot.admin, new_admin.pubkey());
+    assert_eq!(snapshot.hub_authorizer, new_hub_authorizer.pubkey());
+    assert_eq!(
+        snapshot.inventory_rebalancer,
+        new_inventory_rebalancer.pubkey()
+    );
+    assert_eq!(snapshot.max_fee_bps, 50);
+    assert!(!snapshot.paused);
+    assert_eq!(snapshot.lane_count, 2);
 }
 
 #[test]
