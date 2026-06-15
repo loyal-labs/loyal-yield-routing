@@ -25,6 +25,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
     cargo chef cook --release \
         -p balance-sweep-ata-projector \
+        -p balance-sweep-autodeposit-trigger \
         -p loyal-timescale-migrations \
         -p loyal-yield-orchestrator \
         --recipe-path recipe.json
@@ -35,11 +36,24 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
     cargo build --release \
         -p balance-sweep-ata-projector \
+        -p balance-sweep-autodeposit-trigger \
         -p loyal-timescale-migrations \
         -p loyal-yield-orchestrator \
     && cp /app/target/release/balance-sweep-ata-projector /usr/local/bin/balance-sweep-ata-projector \
+    && cp /app/target/release/balance-sweep-autodeposit-trigger /usr/local/bin/balance-sweep-autodeposit-trigger \
     && cp /app/target/release/loyal-timescale-migrations /usr/local/bin/loyal-timescale-migrations \
-    && cp /app/target/release/yield-migrations /usr/local/bin/yield-migrations
+    && cp /app/target/release/yield-migrations /usr/local/bin/yield-migrations \
+    && cp /app/target/release/same-mint-reserve-swap /usr/local/bin/same-mint-reserve-swap \
+    && cp /app/target/release/same-mint-yield-monitor /usr/local/bin/same-mint-yield-monitor \
+    && cp /app/target/release/same-mint-monitor-e2e /usr/local/bin/same-mint-monitor-e2e
+
+FROM oven/bun:1.2.17-debian AS bun-deps
+
+WORKDIR /app
+COPY package.json bun.lock ./
+COPY packages/loyal-actions/package.json packages/loyal-actions/package.json
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --production --frozen-lockfile
 
 FROM debian:bookworm-slim AS runtime
 
@@ -47,9 +61,19 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+WORKDIR /app
+
+COPY --from=bun-deps /usr/local/bin/bun /usr/local/bin/bun
+COPY --from=bun-deps /app/package.json /app/bun.lock ./
+COPY --from=bun-deps /app/node_modules ./node_modules
+COPY packages/loyal-actions packages/loyal-actions
+COPY scripts/execute-autodeposit-policy.ts scripts/execute-autodeposit-policy.ts
 COPY --from=builder /usr/local/bin/balance-sweep-ata-projector /usr/local/bin/balance-sweep-ata-projector
+COPY --from=builder /usr/local/bin/balance-sweep-autodeposit-trigger /usr/local/bin/balance-sweep-autodeposit-trigger
 COPY --from=builder /usr/local/bin/loyal-timescale-migrations /usr/local/bin/loyal-timescale-migrations
 COPY --from=builder /usr/local/bin/yield-migrations /usr/local/bin/yield-migrations
+COPY --from=builder /usr/local/bin/same-mint-reserve-swap /usr/local/bin/same-mint-reserve-swap
+COPY --from=builder /usr/local/bin/same-mint-yield-monitor /usr/local/bin/same-mint-yield-monitor
+COPY --from=builder /usr/local/bin/same-mint-monitor-e2e /usr/local/bin/same-mint-monitor-e2e
 
 CMD ["/usr/local/bin/balance-sweep-ata-projector"]
-

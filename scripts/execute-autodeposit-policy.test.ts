@@ -43,6 +43,8 @@ describe("computeSweepAmount", () => {
       amountRaw: BigInt(150),
       excessRaw: BigInt(150),
       capped: false,
+      cappedByMaxPerPeriod: false,
+      cappedByRemainingAllowance: false,
     });
   });
 
@@ -58,7 +60,79 @@ describe("computeSweepAmount", () => {
       amountRaw: BigInt(80),
       excessRaw: BigInt(150),
       capped: true,
+      cappedByMaxPerPeriod: true,
+      cappedByRemainingAllowance: false,
     });
+  });
+
+  test("caps the sweep by remaining subscription allowance", () => {
+    expect(
+      computeSweepAmount({
+        walletBalanceRaw: BigInt(350),
+        walletBalanceFloorRaw: BigInt(200),
+        maxAmountPerPeriodRaw: BigInt(200),
+        remainingAllowanceRaw: BigInt(60),
+      })
+    ).toEqual({
+      kind: "sweep",
+      amountRaw: BigInt(60),
+      excessRaw: BigInt(150),
+      capped: true,
+      cappedByMaxPerPeriod: false,
+      cappedByRemainingAllowance: true,
+    });
+  });
+
+  test("no-ops when subscription allowance is exhausted", () => {
+    expect(
+      computeSweepAmount({
+        walletBalanceRaw: BigInt(350),
+        walletBalanceFloorRaw: BigInt(200),
+        maxAmountPerPeriodRaw: BigInt(200),
+        remainingAllowanceRaw: BigInt(0),
+      })
+    ).toEqual({
+      kind: "allowance_exhausted",
+      excessRaw: BigInt(150),
+      remainingAllowanceRaw: BigInt(0),
+    });
+  });
+});
+
+describe("runtime dependency boundary", () => {
+  test("executor imports packages instead of sibling loyal-apps paths", async () => {
+    const source = await Bun.file(
+      new URL("./execute-autodeposit-policy.ts", import.meta.url)
+    ).text();
+
+    expect(source).not.toContain("loyal-apps");
+    expect(source).not.toContain("LOYAL_APPS_ROOT");
+    expect(source).toContain('import("@loyal-labs/smart-account-vaults")');
+    expect(source).toContain('import("@loyal-labs/loyal-smart-accounts-core")');
+    expect(source).toContain('import("@loyal/actions")');
+  });
+
+  test("render light worker keeps pinned image executor boundary", async () => {
+    const renderYaml = await Bun.file(
+      new URL("../render.yaml", import.meta.url)
+    ).text();
+
+    expect(renderYaml).toContain("loyal-balance-sweep-autodeposit-trigger");
+    expect(renderYaml).toContain("runtime: image");
+    expect(renderYaml).toContain(
+      "ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-"
+    );
+    expect(renderYaml).toContain(
+      "ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-"
+    );
+    expect(renderYaml).toContain(
+      "BALANCE_SWEEP_EXECUTOR_COMMAND"
+    );
+    expect(renderYaml).toContain(
+      "bun scripts/execute-autodeposit-policy.ts --require-lot-claim"
+    );
+    expect(renderYaml).not.toContain(":latest");
+    expect(renderYaml).not.toContain("dockerfilePath: Dockerfile.light-workers");
   });
 });
 

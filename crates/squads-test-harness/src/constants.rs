@@ -54,7 +54,7 @@ pub const MOCK_JUPITER_USDC_RESERVE_TOKEN_ACCOUNT_SEED: &[u8] =
 pub const MOCK_JUPITER_PYUSD_RESERVE_TOKEN_ACCOUNT_SEED: &[u8] =
     b"mock-jupiter-pyusd-reserve-token-account";
 pub const MOCK_JUPITER_STABLE_RESERVE_TOKEN_ACCOUNT_SEED: &[u8] = b"mock-jupiter-stable-reserve";
-pub const KAMINO_LEND_PROGRAM_ID: Pubkey = pubkey!("KvauGMspG5k6rtzrqqn7WNn3oZdyKqLKwK2XWQ8FLjd");
+pub const KAMINO_LEND_PROGRAM_ID: Pubkey = pubkey!("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD");
 pub const KAMINO_MAIN_MARKET: Pubkey = pubkey!("7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF");
 pub const KAMINO_MAIN_USDC_RESERVE: Pubkey =
     pubkey!("D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59");
@@ -64,7 +64,7 @@ pub const KAMINO_PRIME_MARKET: Pubkey = pubkey!("CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR
 pub const KAMINO_PRIME_USDC_RESERVE: Pubkey =
     pubkey!("9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu");
 pub const KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR: [u8; 8] =
-    [242, 35, 198, 137, 82, 225, 242, 182];
+    [216, 224, 191, 27, 204, 151, 102, 175];
 pub const KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR: [u8; 8] =
     [235, 52, 119, 152, 149, 197, 20, 7];
 pub const KAMINO_COLLATERAL_DECIMALS: u8 = 6;

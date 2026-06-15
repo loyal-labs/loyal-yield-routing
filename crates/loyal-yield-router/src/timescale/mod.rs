@@ -11,6 +11,7 @@ const DEFAULT_SCHEMA: &str = "kamino";
 const DEFAULT_NOTIFY_CHANNEL: &str = "kamino_reserve_updates";
 const RESERVE_UPDATES_TABLE: &str = "reserve_updates";
 const LATEST_RESERVE_UPDATES_VIEW: &str = "latest_reserve_updates";
+const SUPPORTED_RESERVES_TABLE: &str = "supported_reserves";
 const RESERVE_UPDATE_ROW_COLUMNS: &str = "event_id, observed_at, slot, source, source_commitment, reserve, market, market_name, symbol, liquidity_mint, supply_apy, borrow_apy, utilization, total_supply_usd_estimate, total_borrow_usd_estimate, reserve_last_update_stale, diff_changed, changed_fields, diff_summary";
 const RESERVE_WINDOW_STATS_COLUMNS: &str = "reserve, market, symbol, COUNT(*)::BIGINT AS update_count, AVG(supply_apy) AS avg_supply_apy, MIN(supply_apy) AS min_supply_apy, MAX(supply_apy) AS max_supply_apy, AVG(borrow_apy) AS avg_borrow_apy, AVG(utilization) AS avg_utilization, AVG(total_supply_usd_estimate) AS avg_supply_usd, AVG(total_borrow_usd_estimate) AS avg_borrow_usd, MAX(slot) AS max_slot, MAX(observed_at) AS last_observed_at";
 
@@ -96,6 +97,78 @@ impl TimescaleRouterClient {
         push_update_filters(&mut builder, &filter);
         builder.push(" ORDER BY supply_apy DESC, observed_at DESC, slot DESC, reserve ASC");
         fetch_update_rows(builder, &self.pool).await
+    }
+
+    pub async fn latest_supported_reserves(
+        &self,
+        query: SupportedReserveLatestQuery,
+    ) -> sqlx::Result<Vec<SupportedReserveLatestRow>> {
+        let mut builder = QueryBuilder::<Postgres>::new(format!(
+            "SELECT l.observed_at, l.slot, l.reserve, l.market, l.market_name, \
+             l.liquidity_mint, l.symbol, l.supply_apy, l.borrow_apy, \
+             l.total_supply_usd_estimate, l.reserve_last_update_stale \
+             FROM {} sr \
+             JOIN {} l ON l.reserve = sr.reserve \
+                AND l.market = sr.market \
+                AND l.liquidity_mint = sr.liquidity_mint \
+             WHERE sr.active = true",
+            self.qualified(SUPPORTED_RESERVES_TABLE),
+            self.qualified(LATEST_RESERVE_UPDATES_VIEW)
+        ));
+
+        if !query.risk_baskets.is_empty() {
+            builder.push(" AND (");
+            for (index, risk_basket) in query.risk_baskets.iter().enumerate() {
+                if index > 0 {
+                    builder.push(" OR ");
+                }
+                builder
+                    .push_bind(risk_basket)
+                    .push(" = ANY(sr.risk_baskets)");
+            }
+            builder.push(")");
+        }
+        if let Some(liquidity_mint) = query.liquidity_mint {
+            builder
+                .push(" AND sr.liquidity_mint = ")
+                .push_bind(liquidity_mint);
+        }
+        if !query.markets.is_empty() {
+            builder
+                .push(" AND sr.market = ANY(")
+                .push_bind(query.markets);
+            builder.push(")");
+        }
+        if let Some(stale) = query.stale {
+            builder
+                .push(" AND l.reserve_last_update_stale = ")
+                .push_bind(stale);
+        }
+        if let Some(min_supply_usd) = query.min_supply_usd {
+            builder
+                .push(" AND l.total_supply_usd_estimate > ")
+                .push_bind(min_supply_usd);
+        }
+        if let Some(min_supply_apy) = query.min_supply_apy {
+            builder
+                .push(" AND l.supply_apy >= ")
+                .push_bind(min_supply_apy);
+        }
+        if let Some(max_supply_apy) = query.max_supply_apy {
+            builder
+                .push(" AND l.supply_apy < ")
+                .push_bind(max_supply_apy);
+        }
+
+        builder.push(" ORDER BY l.supply_apy DESC, l.observed_at DESC, l.reserve ASC");
+        if let Some(limit) = query.limit {
+            builder.push(" LIMIT ").push_bind(limit_i64(limit));
+        }
+
+        builder
+            .build_query_as::<SupportedReserveLatestRow>()
+            .fetch_all(&self.pool)
+            .await
     }
 
     pub async fn reserve_history(
@@ -254,6 +327,32 @@ impl TimescaleRouterClient {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SupportedReserveLatestQuery {
+    pub risk_baskets: Vec<String>,
+    pub liquidity_mint: Option<String>,
+    pub markets: Vec<String>,
+    pub min_supply_usd: Option<f64>,
+    pub min_supply_apy: Option<f64>,
+    pub max_supply_apy: Option<f64>,
+    pub stale: Option<bool>,
+    pub limit: Option<usize>,
+}
+
+impl SupportedReserveLatestQuery {
+    pub fn safe_usdc(liquidity_mint: impl Into<String>) -> Self {
+        Self {
+            risk_baskets: vec!["safe".to_owned()],
+            liquidity_mint: Some(liquidity_mint.into()),
+            min_supply_usd: Some(100_000.0),
+            min_supply_apy: Some(0.0),
+            max_supply_apy: Some(0.5),
+            stale: Some(false),
+            ..Self::default()
+        }
+    }
+}
+
 pub struct ReserveUpdateStream {
     client: TimescaleRouterClient,
     listener: PgListener,
@@ -262,6 +361,39 @@ pub struct ReserveUpdateStream {
     legacy_last_cursor: Option<ReserveUpdateCursor>,
     pending: VecDeque<ReserveUpdateRow>,
     catch_up_limit: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SupportedReserveLatestRow {
+    pub observed_at: DateTime<Utc>,
+    pub slot: i64,
+    pub reserve: String,
+    pub market: Option<String>,
+    pub market_name: Option<String>,
+    pub liquidity_mint: String,
+    pub symbol: Option<String>,
+    pub supply_apy: f64,
+    pub borrow_apy: f64,
+    pub total_supply_usd_estimate: f64,
+    pub reserve_last_update_stale: bool,
+}
+
+impl<'r> FromRow<'r, PgRow> for SupportedReserveLatestRow {
+    fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            observed_at: row.try_get("observed_at")?,
+            slot: row.try_get("slot")?,
+            reserve: row.try_get("reserve")?,
+            market: row.try_get("market")?,
+            market_name: row.try_get("market_name")?,
+            liquidity_mint: row.try_get("liquidity_mint")?,
+            symbol: row.try_get("symbol")?,
+            supply_apy: row.try_get("supply_apy")?,
+            borrow_apy: row.try_get("borrow_apy")?,
+            total_supply_usd_estimate: row.try_get("total_supply_usd_estimate")?,
+            reserve_last_update_stale: row.try_get("reserve_last_update_stale")?,
+        })
+    }
 }
 
 impl ReserveUpdateStream {

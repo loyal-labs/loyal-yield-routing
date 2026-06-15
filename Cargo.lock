@@ -677,6 +677,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "balance-sweep-autodeposit-trigger"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "base64"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3122,11 +3138,18 @@ dependencies = [
 name = "loyal-yield-orchestrator"
 version = "0.1.0"
 dependencies = [
+ "bincode",
+ "bs58",
  "chrono",
+ "klend-interface",
+ "loyal-actions",
+ "loyal-yield-router",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "solana-client",
  "solana-sdk",
+ "spl-token",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",

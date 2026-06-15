@@ -44,6 +44,7 @@ pub struct BalanceSweepAtaObservation {
     pub observed_at: DateTime<Utc>,
     pub source: String,
     pub source_commitment: String,
+    pub txn_signature: Option<String>,
     pub account_data_hash: String,
     pub raw_account_data_base64: String,
     pub raw_evidence: serde_json::Value,
@@ -98,7 +99,7 @@ impl TimescaleAtaObservationSink {
             SELECT
                 event_id, target_id, cluster, wallet, wallet_usdc_ata, vault_pubkey, vault_usdc_ata,
                 amount_raw, owner, mint, slot, observed_at, source, source_commitment,
-                account_data_hash, raw_account_data_base64, raw_evidence, received_at
+                txn_signature, account_data_hash, raw_account_data_base64, raw_evidence, received_at
             FROM loyal.latest_balance_sweep_wallet_ata_observations
             ORDER BY event_id
             LIMIT $1
@@ -123,7 +124,7 @@ impl TimescaleAtaObservationSink {
             SELECT
                 event_id, target_id, cluster, wallet, wallet_usdc_ata, vault_pubkey, vault_usdc_ata,
                 amount_raw, owner, mint, slot, observed_at, source, source_commitment,
-                account_data_hash, raw_account_data_base64, raw_evidence, received_at
+                txn_signature, account_data_hash, raw_account_data_base64, raw_evidence, received_at
             FROM loyal.balance_sweep_wallet_ata_observations
             WHERE event_id > $1
             ORDER BY event_id ASC
@@ -181,6 +182,7 @@ pub fn observation_to_wallet_balance_update(
         observed_at: Some(observation.observed_at),
         source: observation.source,
         source_commitment: observation.source_commitment,
+        txn_signature: observation.txn_signature,
         account_data_hash: Some(observation.account_data_hash),
         raw_evidence,
     }
@@ -229,8 +231,8 @@ async fn insert_observation(
             INSERT INTO loyal.balance_sweep_wallet_ata_observations
                 (event_id, cluster, target_id, wallet, wallet_usdc_ata, vault_pubkey, vault_usdc_ata,
                  amount_raw, owner, mint, slot, observed_at, source, source_commitment,
-                 account_data_hash, raw_account_data_base64, raw_evidence, received_at)
-            SELECT claimed.event_id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+                 txn_signature, account_data_hash, raw_account_data_base64, raw_evidence, received_at)
+            SELECT claimed.event_id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $19, $15, $16, $17, $18
             FROM claimed
             RETURNING event_id
         )
@@ -261,6 +263,7 @@ async fn insert_observation(
     .bind(&observation.raw_account_data_base64)
     .bind(&observation.raw_evidence)
     .bind(observation.received_at)
+    .bind(observation.txn_signature.as_deref())
     .fetch_one(pool)
     .await?;
 
@@ -295,6 +298,7 @@ fn balance_sweep_observation_event_from_row(
             observed_at: row.try_get("observed_at")?,
             source: row.try_get("source")?,
             source_commitment: row.try_get("source_commitment")?,
+            txn_signature: row.try_get("txn_signature")?,
             account_data_hash: row.try_get("account_data_hash")?,
             raw_account_data_base64: row.try_get("raw_account_data_base64")?,
             raw_evidence: row.try_get("raw_evidence")?,
@@ -323,6 +327,7 @@ mod tests {
             observed_at: Utc::now(),
             source: "laserstream_grpc".to_owned(),
             source_commitment: "confirmed".to_owned(),
+            txn_signature: Some("sig".to_owned()),
             account_data_hash: "a".repeat(64),
             raw_account_data_base64: "first-raw".to_owned(),
             raw_evidence: json!({}),
@@ -361,6 +366,7 @@ mod tests {
             observed_at: Utc::now(),
             source: "laserstream_grpc".to_owned(),
             source_commitment: "confirmed".to_owned(),
+            txn_signature: Some("sig".to_owned()),
             account_data_hash: "b".repeat(64),
             raw_account_data_base64: "raw-token-account".to_owned(),
             raw_evidence: json!({"raw": true}),
@@ -374,6 +380,10 @@ mod tests {
         assert_eq!(
             update.account_data_hash.as_deref(),
             Some(observation.account_data_hash.as_str())
+        );
+        assert_eq!(
+            update.txn_signature.as_deref(),
+            observation.txn_signature.as_deref()
         );
         assert_eq!(
             update.raw_evidence["raw_account_data_base64"],

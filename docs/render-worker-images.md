@@ -5,7 +5,7 @@ The worker deployment boundary is intentionally split into two Render projects/e
 | Purpose | Render project/environment | Services | Image |
 | --- | --- | --- | --- |
 | LaserStream-heavy monitors | `loyal-yield-laserstream-workers` / `production` | `loyal-kamino-reserve-monitor`, `loyal-balance-sweep-ata-monitor` | `ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-<commit>` |
-| Lightweight SQL/background workers | `loyal-yield-light-workers` / `production` | `loyal-balance-sweep-ata-projector` | `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-<commit>` |
+| Lightweight SQL/background workers | `loyal-yield-light-workers` / `production` | `loyal-balance-sweep-ata-projector`, `loyal-balance-sweep-autodeposit-trigger`, `loyal-same-mint-yield-monitor` | `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-<commit>` |
 
 Current live pre-split Render state, observed with `render services -o json` on 2026-06-10:
 
@@ -25,8 +25,14 @@ Target split IDs, once created/imported in Render, must be recorded here before 
 | Heavy production environment | `evm-d8kgt3a8qa3s7382glc0` |
 | Light Render project | `prj-d8kgt4r7uimc73b1ul0g` |
 | Light production environment | `evm-d8kgt4r7uimc73b1ul1g` |
+| Light `loyal-balance-sweep-autodeposit-trigger` service | `srv-d8lplql7vvec73f1it6g` |
+| Light `loyal-same-mint-yield-monitor` service | `srv-d8n7gqbbc2fs73emk610` |
 
 CI builds both images in `.github/workflows/worker-images.yml` and tags them as `sha-${GITHUB_SHA}`. Render services should use those immutable SHA tags or image digests. Do not use `latest` as the only service image reference.
+
+The light worker image contains the Rust projector/trigger binaries, same-mint monitor/executor binaries, Bun production dependencies, and `scripts/execute-autodeposit-policy.ts`. The autodeposit trigger invokes that in-image executor through `BALANCE_SWEEP_EXECUTOR_COMMAND`; it should not depend on a sibling checkout at runtime. The same-mint monitor starts in dry-run mode unless its Render command is intentionally changed to pass `--execute`. The same-mint monitor command is fleet dry-run mode: `/usr/local/bin/same-mint-yield-monitor --all-active-vaults --poll-interval-seconds 300`. That service does not include `SOLANA_TESTING_PK`; live optimization execution uses `YIELD_ROUTER_KEYPAIR` as the route payer and delegated signer.
+
+As of 2026-06-15, `loyal-same-mint-yield-monitor` is deployed in fleet dry-run mode on `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-d3497113aed8fedb83dbaa3ea398f40ac58aab37`. Render deploy `dep-d8nom81kh4rs73fe3td0` is live with image digest `sha256:b34feb49ef99616b91570f248fde65cc257523b45c8a3f606c3249c908adfa5b`. The service env-var names are `NEON_DATABASE_URL`, `TIMESCALEDB_URL`, `SOLANA_RPC_URL`, `YIELD_ROUTER_KEYPAIR`, and `RUST_LOG`; `SOLANA_TESTING_PK` is absent. The first post-deploy dry-run log at `2026-06-15T05:20:03Z` reported `status: fleet_poll`, `execute: false`, `allActiveVaults: true`, `candidateCount: 4`, and `discoveredVaultCount: 0`, which matches the verified post-withdraw cleanup state.
 
 Render's current Blueprint validator rejects `registryCredential` on these `runtime: image` worker services. Keep the GHCR images private and attach the required private registry pull credentials in the Render Dashboard/API outside this Blueprint.
 

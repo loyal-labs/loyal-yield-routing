@@ -2,6 +2,7 @@ use solana_sdk::signature::Keypair;
 use std::env;
 use thiserror::Error;
 
+pub const SOLANA_TESTING_PK_ENV: &str = "SOLANA_TESTING_PK";
 pub const YIELD_ROUTER_KEYPAIR_ENV: &str = "YIELD_ROUTER_KEYPAIR";
 const SOLANA_SECRET_KEY_LENGTH: usize = 32;
 const SOLANA_KEYPAIR_LENGTH: usize = 64;
@@ -10,23 +11,55 @@ const SOLANA_KEYPAIR_LENGTH: usize = 64;
 pub enum PolicySignerError {
     #[error("{name} is not set")]
     MissingEnv { name: &'static str },
-    #[error("yield router keypair must be hex encoded")]
+    #[error("Solana keypair must be hex encoded")]
     InvalidHex,
-    #[error("yield router keypair must decode to 32 or 64 bytes, got {length}")]
+    #[error("Solana keypair must be base58 encoded")]
+    InvalidBase58,
+    #[error("Solana keypair JSON must be a byte array")]
+    InvalidJson,
+    #[error("Solana keypair must decode to 32 or 64 bytes, got {length}")]
     InvalidLength { length: usize },
-    #[error("yield router keypair bytes do not describe a valid Solana keypair")]
+    #[error("Solana keypair bytes do not describe a valid Solana keypair")]
     InvalidKeypair,
 }
 
+pub fn solana_testing_keypair_from_env() -> Result<Keypair, PolicySignerError> {
+    keypair_from_env(SOLANA_TESTING_PK_ENV)
+}
+
 pub fn yield_router_keypair_from_env() -> Result<Keypair, PolicySignerError> {
-    let value = env::var(YIELD_ROUTER_KEYPAIR_ENV).map_err(|_| PolicySignerError::MissingEnv {
-        name: YIELD_ROUTER_KEYPAIR_ENV,
-    })?;
-    keypair_from_hex(&value)
+    keypair_from_env(YIELD_ROUTER_KEYPAIR_ENV)
+}
+
+pub fn keypair_from_env(name: &'static str) -> Result<Keypair, PolicySignerError> {
+    let value = env::var(name).map_err(|_| PolicySignerError::MissingEnv { name })?;
+    keypair_from_string(&value)
+}
+
+pub fn keypair_from_string(value: &str) -> Result<Keypair, PolicySignerError> {
+    let value = value.trim();
+    if value.starts_with('[') {
+        let bytes: Vec<u8> =
+            serde_json::from_str(value).map_err(|_| PolicySignerError::InvalidJson)?;
+        return keypair_from_bytes(&bytes);
+    }
+
+    if is_hex_string(value) {
+        return keypair_from_hex(value);
+    }
+
+    let bytes = bs58::decode(value)
+        .into_vec()
+        .map_err(|_| PolicySignerError::InvalidBase58)?;
+    keypair_from_bytes(&bytes)
 }
 
 pub fn keypair_from_hex(value: &str) -> Result<Keypair, PolicySignerError> {
     let bytes = decode_hex(value)?;
+    keypair_from_bytes(&bytes)
+}
+
+fn keypair_from_bytes(bytes: &[u8]) -> Result<Keypair, PolicySignerError> {
     match bytes.len() {
         SOLANA_SECRET_KEY_LENGTH => {
             let mut seed = [0u8; SOLANA_SECRET_KEY_LENGTH];
@@ -34,10 +67,20 @@ pub fn keypair_from_hex(value: &str) -> Result<Keypair, PolicySignerError> {
             Ok(Keypair::new_from_array(seed))
         }
         SOLANA_KEYPAIR_LENGTH => {
-            Keypair::try_from(bytes.as_slice()).map_err(|_| PolicySignerError::InvalidKeypair)
+            Keypair::try_from(bytes).map_err(|_| PolicySignerError::InvalidKeypair)
         }
         length => Err(PolicySignerError::InvalidLength { length }),
     }
+}
+
+fn is_hex_string(value: &str) -> bool {
+    let value = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .unwrap_or(value);
+    !value.is_empty()
+        && value.len() % 2 == 0
+        && value.as_bytes().iter().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, PolicySignerError> {
@@ -106,6 +149,26 @@ mod tests {
         let parsed = keypair_from_hex(&encoded).unwrap();
 
         assert_eq!(parsed.pubkey(), expected.pubkey());
+    }
+
+    #[test]
+    fn parses_solana_keypair_json_array() {
+        let keypair = Keypair::new();
+        let encoded = serde_json::to_string(&keypair.to_bytes().to_vec()).unwrap();
+
+        let parsed = keypair_from_string(&encoded).unwrap();
+
+        assert_eq!(parsed.pubkey(), keypair.pubkey());
+    }
+
+    #[test]
+    fn parses_solana_keypair_base58() {
+        let keypair = Keypair::new();
+        let encoded = bs58::encode(keypair.to_bytes()).into_string();
+
+        let parsed = keypair_from_string(&encoded).unwrap();
+
+        assert_eq!(parsed.pubkey(), keypair.pubkey());
     }
 
     #[test]

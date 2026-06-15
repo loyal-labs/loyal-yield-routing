@@ -1,5 +1,5 @@
 {
-  "name": "@loyal/actions",
+  "name": "@loyal/yield-routing-actions",
   "version": "0.1.0",
   "type": "module",
   "description": "Unsigned Loyal yield-route action instruction builders.",

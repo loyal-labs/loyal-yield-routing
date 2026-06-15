@@ -17,6 +17,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "loyal_balance_sweep_ata_observations",
         sql: include_str!("../migrations/0002_loyal_balance_sweep_ata_observations.sql"),
     },
+    Migration {
+        version: 3,
+        name: "balance_sweep_ata_txn_signature",
+        sql: include_str!("../migrations/0003_balance_sweep_ata_txn_signature.sql"),
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal";
@@ -208,13 +213,14 @@ async fn validate_loyal_ata_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> 
         "source_commitment",
         "account_data_hash",
         "raw_account_data_base64",
+        "txn_signature",
         "raw_evidence",
         "received_at",
         "inserted_at",
     ])
     .fetch_one(pool)
     .await?;
-    if observation_columns != 19 {
+    if observation_columns != 20 {
         return Err("loyal ATA observations table is missing required columns".into());
     }
 

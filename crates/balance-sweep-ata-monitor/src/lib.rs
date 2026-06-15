@@ -30,7 +30,7 @@ use solana_account_decoder::{UiAccount, UiAccountData, UiAccountEncoding};
 use solana_client::{rpc_client::RpcClient, rpc_config::RpcAccountInfoConfig};
 use solana_program::program_pack::Pack;
 use solana_pubsub_client::nonblocking::pubsub_client::PubsubClient;
-use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
+use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
 use tokio::{
     sync::mpsc,
     task::{JoinHandle, JoinSet},
@@ -99,11 +99,13 @@ pub enum AtaUpdateEvent {
     },
     AccountUpdate {
         account: Pubkey,
+        lamports: u64,
         slot: u64,
         owner: Pubkey,
         data: Vec<u8>,
         source: &'static str,
         source_commitment: &'static str,
+        txn_signature: Option<String>,
         received_at: DateTime<Utc>,
     },
     Heartbeat {
@@ -257,6 +259,7 @@ pub async fn seed_current_balances(
                 account.data,
                 RPC_SEED_SOURCE,
                 CONFIRMED_COMMITMENT,
+                None,
                 Utc::now(),
                 sink,
             )
@@ -275,6 +278,7 @@ pub async fn process_account_update(
     data: Vec<u8>,
     source: &str,
     source_commitment: &str,
+    txn_signature: Option<String>,
     received_at: DateTime<Utc>,
     sink: &impl AtaObservationSink,
 ) -> Result<ObservationInsertOutcome> {
@@ -314,11 +318,13 @@ pub async fn process_account_update(
         observed_at: received_at,
         source: source.to_owned(),
         source_commitment: source_commitment.to_owned(),
+        txn_signature: txn_signature.clone(),
         account_data_hash: hash.clone(),
         raw_account_data_base64: raw_account_data_base64.clone(),
         raw_evidence: json!({
             "lamports": lamports,
             "account_data_hash": hash,
+            "txn_signature": txn_signature,
             "raw_account_data_base64": raw_account_data_base64,
             "source": source,
             "wallet": target.wallet,
@@ -343,11 +349,13 @@ pub async fn run_event_loop(
         };
         if let AtaUpdateEvent::AccountUpdate {
             account,
+            lamports,
             slot,
             owner,
             data,
             source,
             source_commitment,
+            txn_signature,
             received_at,
         } = event
         {
@@ -364,12 +372,13 @@ pub async fn run_event_loop(
             );
             process_account_update(
                 target,
-                0,
+                lamports,
                 slot,
                 owner,
                 data,
                 source,
                 source_commitment,
+                txn_signature,
                 received_at,
                 &sink,
             )
@@ -390,7 +399,7 @@ pub fn build_laserstream_subscribe_request(
                 account: accounts.iter().map(ToString::to_string).collect(),
                 owner: Vec::new(),
                 filters: Vec::new(),
-                nonempty_txn_signature: None,
+                nonempty_txn_signature: Some(true),
             },
         )]),
         commitment: Some(CommitmentLevel::Confirmed as i32),
@@ -517,16 +526,28 @@ fn forward_laserstream_update(
         .context("LaserStream account update was missing account payload")?;
     let pubkey = pubkey_from_laserstream_bytes(&account.pubkey, "account pubkey")?;
     let owner = pubkey_from_laserstream_bytes(&account.owner, "account owner")?;
+    let txn_signature = account
+        .txn_signature
+        .as_deref()
+        .map(signature_from_laserstream_bytes)
+        .transpose()?;
     let _ = tx.send(AtaUpdateEvent::AccountUpdate {
         account: pubkey,
+        lamports: account.lamports,
         slot: account_update.slot,
         owner,
         data: account.data,
         source: LASERSTREAM_SOURCE,
         source_commitment: CONFIRMED_COMMITMENT,
+        txn_signature,
         received_at: Utc::now(),
     });
     Ok(())
+}
+
+fn signature_from_laserstream_bytes(bytes: &[u8]) -> Result<String> {
+    let signature = Signature::try_from(bytes).context("LaserStream txn signature bytes")?;
+    Ok(signature.to_string())
 }
 
 fn pubkey_from_laserstream_bytes(bytes: &[u8], label: &str) -> Result<Pubkey> {
@@ -611,11 +632,13 @@ fn forward_websocket_update(
     let owner = notification.value.owner.parse()?;
     let _ = tx.send(AtaUpdateEvent::AccountUpdate {
         account,
+        lamports: notification.value.lamports,
         slot: notification.context.slot,
         owner,
         data,
         source: WEBSOCKET_SOURCE,
         source_commitment: CONFIRMED_COMMITMENT,
+        txn_signature: None,
         received_at: Utc::now(),
     });
     Ok(())
@@ -713,6 +736,7 @@ mod tests {
             token_account_data(wallet, 456),
             LASERSTREAM_SOURCE,
             CONFIRMED_COMMITMENT,
+            Some("test-signature".to_owned()),
             Utc::now(),
             &sink,
         )
@@ -722,6 +746,10 @@ mod tests {
         assert_eq!(observations.len(), 1);
         assert_eq!(observations[0].amount_raw, 456);
         assert_eq!(observations[0].target_id, BalanceSweepTargetId(7));
+        assert_eq!(
+            observations[0].txn_signature.as_deref(),
+            Some("test-signature")
+        );
         assert_eq!(observations[0].account_data_hash.len(), 64);
         let decoded = {
             use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};

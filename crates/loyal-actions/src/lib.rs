@@ -14,6 +14,7 @@ pub use detection::*;
 pub use ids::*;
 pub use loyal_hub_abi as hub_abi;
 pub use protocols::{
+    derive_kamino_obligation, derive_kamino_user_metadata, derive_kamino_vanilla_obligation,
     derive_loyal_hub_authority, derive_loyal_hub_authority_for_program, derive_loyal_hub_config,
     derive_loyal_hub_config_for_program, derive_loyal_hub_inventory_account,
     derive_loyal_hub_inventory_account_for_program,
@@ -41,4 +42,8 @@ pub use protocols::{
     LoyalHubLaneRebalanceTransfer, LoyalHubMintRebalanceBatch, LoyalHubRebalanceBuilder,
     LoyalHubRebalanceTransfer, LoyalHubSwapExactIn,
 };
-pub use squads::{derive_action_account, LoyalActionError, Result};
+pub use squads::{
+    compile_squads_inner_instruction, derive_action_account,
+    execute_program_interaction_policy_instruction, execute_sync_transaction_instruction,
+    remove_policy_instruction, LoyalActionError, Result, SquadsCompiledInstruction,
+};

@@ -5,7 +5,9 @@ mod types;
 
 pub use domain::state_transition;
 pub use signer::{
-    keypair_from_hex, yield_router_keypair_from_env, PolicySignerError, YIELD_ROUTER_KEYPAIR_ENV,
+    keypair_from_env, keypair_from_hex, keypair_from_string, solana_testing_keypair_from_env,
+    yield_router_keypair_from_env, PolicySignerError, SOLANA_TESTING_PK_ENV,
+    YIELD_ROUTER_KEYPAIR_ENV,
 };
 pub use store::{NeonSqlClient, OrchestratorStore};
 pub use types::*;

@@ -9,6 +9,8 @@ use sqlx::{PgConnection, PgPool, Row};
 use std::future::Future;
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_loyal_yield_orchestration.sql");
+const MIGRATION_0002: &str = include_str!("../migrations/0002_balance_sweep_surplus_lots.sql");
+const MIGRATION_0003: &str = include_str!("../migrations/0003_balance_sweep_initial_surplus.sql");
 
 #[derive(Clone)]
 pub struct NeonSqlClient {
@@ -131,6 +133,8 @@ impl NeonSqlClient {
 
     pub async fn apply_migrations(&self) -> Result<(), OrchestratorError> {
         sqlx::raw_sql(MIGRATION_0001).execute(&self.pool).await?;
+        sqlx::raw_sql(MIGRATION_0002).execute(&self.pool).await?;
+        sqlx::raw_sql(MIGRATION_0003).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -263,6 +267,7 @@ impl NeonSqlClient {
                 max_amount_per_period, active, first_seen_at, last_seen_at, last_seen_slot, last_seen_signature
             FROM loyal_yield.balance_sweep_targets
             WHERE active
+              AND lifecycle_status = 'active'
             ORDER BY id
             "#,
         )
@@ -300,7 +305,12 @@ impl NeonSqlClient {
             if projected.event_id <= last_event_id {
                 continue;
             }
-            record_wallet_ata_balance_update_in_tx(&mut *tx, projected.update).await?;
+            record_projected_wallet_ata_balance_update_in_tx(
+                &mut *tx,
+                projected.event_id,
+                projected.update,
+            )
+            .await?;
             next_event_id = projected.event_id;
             projected_count += 1;
         }
@@ -369,6 +379,46 @@ impl NeonSqlClient {
         input: WalletAtaBalanceUpdateInput,
     ) -> Result<WalletAtaBalanceCurrent, OrchestratorError> {
         record_wallet_ata_balance_update_in_tx(connection, input).await
+    }
+
+    pub async fn pending_balance_sweep_surplus_lots(
+        &self,
+        target_id: BalanceSweepTargetId,
+    ) -> Result<Vec<PendingBalanceSweepSurplusLot>, OrchestratorError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id, target_id, source_event_id, source_signature, classification,
+                original_amount_raw, remaining_amount_raw, eligible_after, status,
+                confidence, reason, created_at, updated_at
+            FROM loyal_yield.pending_balance_sweep_surplus_lots
+            WHERE target_id = $1
+            ORDER BY eligible_after ASC, created_at ASC, id ASC
+            "#,
+        )
+        .bind(target_id.as_i64())
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                Ok(PendingBalanceSweepSurplusLot {
+                    id: row.try_get("id")?,
+                    target_id: BalanceSweepTargetId(row.try_get("target_id")?),
+                    source_event_id: row.try_get("source_event_id")?,
+                    source_signature: row.try_get("source_signature")?,
+                    classification: row.try_get("classification")?,
+                    original_amount_raw: row.try_get("original_amount_raw")?,
+                    remaining_amount_raw: row.try_get("remaining_amount_raw")?,
+                    eligible_after: row.try_get("eligible_after")?,
+                    status: row.try_get("status")?,
+                    confidence: row.try_get("confidence")?,
+                    reason: row.try_get("reason")?,
+                    created_at: row.try_get("created_at")?,
+                    updated_at: row.try_get("updated_at")?,
+                })
+            })
+            .collect()
     }
 
     pub async fn record_balance_sweep_execution(
@@ -1029,12 +1079,12 @@ async fn upsert_policy(
             policy_account,
             vault_index,
             vault_pubkey,
-            delegated_signers AS "delegated_signers!",
+            delegated_signers,
             threshold,
-            route_modes AS "route_modes!",
-            stable_mints AS "stable_mints!",
-            kamino_markets AS "kamino_markets!",
-            kamino_liquidity_mints AS "kamino_liquidity_mints!",
+            route_modes,
+            stable_mints,
+            kamino_markets,
+            kamino_liquidity_mints,
             universe_preset,
             risk_profile,
             swap_lanes,
@@ -1661,8 +1711,8 @@ async fn record_wallet_ata_balance_update_in_tx(
         r#"
         INSERT INTO loyal_yield.balance_sweep_wallet_balances_current
             (target_id, wallet, wallet_usdc_ata, amount_raw, owner, mint,
-             observed_slot, observed_at, source, source_commitment, account_data_hash, raw_evidence)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, now()), $9, $10, $11, $12)
+             observed_slot, observed_at, source, source_commitment, txn_signature, account_data_hash, raw_evidence)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, now()), $9, $10, $11, $12, $13)
         ON CONFLICT (target_id) DO UPDATE SET
             wallet = CASE
                 WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
@@ -1705,6 +1755,11 @@ async fn record_wallet_ata_balance_update_in_tx(
                 THEN EXCLUDED.source_commitment
                 ELSE loyal_yield.balance_sweep_wallet_balances_current.source_commitment
             END,
+            txn_signature = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                THEN EXCLUDED.txn_signature
+                ELSE loyal_yield.balance_sweep_wallet_balances_current.txn_signature
+            END,
             account_data_hash = CASE
                 WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
                 THEN EXCLUDED.account_data_hash
@@ -1722,7 +1777,7 @@ async fn record_wallet_ata_balance_update_in_tx(
             END
         RETURNING
             target_id, wallet, wallet_usdc_ata, amount_raw, owner, mint,
-            observed_slot, observed_at, source, source_commitment, account_data_hash,
+            observed_slot, observed_at, source, source_commitment, txn_signature, account_data_hash,
             raw_evidence, updated_at
         "#,
     )
@@ -1736,12 +1791,63 @@ async fn record_wallet_ata_balance_update_in_tx(
     .bind(input.observed_at)
     .bind(&input.source)
     .bind(&input.source_commitment)
+    .bind(input.txn_signature.as_deref())
     .bind(input.account_data_hash.as_deref())
     .bind(&input.raw_evidence)
     .fetch_one(&mut *connection)
     .await?;
 
     wallet_ata_balance_from_row(&row)
+}
+
+async fn record_projected_wallet_ata_balance_update_in_tx(
+    connection: &mut PgConnection,
+    event_id: i64,
+    input: WalletAtaBalanceUpdateInput,
+) -> Result<WalletAtaBalanceCurrent, OrchestratorError> {
+    let amount_raw = to_i64_amount(input.amount_raw)?;
+    let observed_slot = to_i64_slot(input.observed_slot)?;
+    let previous_amount_raw: Option<i64> = sqlx::query_scalar(
+        r#"
+        SELECT amount_raw
+        FROM loyal_yield.balance_sweep_wallet_balances_current
+        WHERE target_id = $1
+        FOR UPDATE
+        "#,
+    )
+    .bind(input.target_id.as_i64())
+    .fetch_optional(&mut *connection)
+    .await?;
+    let delta_amount_raw = previous_amount_raw.map(|previous| amount_raw - previous);
+
+    sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.balance_sweep_wallet_balance_events
+            (event_id, target_id, wallet, wallet_usdc_ata, previous_amount_raw, amount_raw,
+             delta_amount_raw, observed_slot, observed_at, source, source_commitment,
+             txn_signature, account_data_hash, raw_evidence)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, now()), $10, $11, $12, $13, $14)
+        ON CONFLICT (event_id) DO NOTHING
+        "#,
+    )
+    .bind(event_id)
+    .bind(input.target_id.as_i64())
+    .bind(&input.wallet)
+    .bind(&input.wallet_usdc_ata)
+    .bind(previous_amount_raw)
+    .bind(amount_raw)
+    .bind(delta_amount_raw)
+    .bind(observed_slot)
+    .bind(input.observed_at)
+    .bind(&input.source)
+    .bind(&input.source_commitment)
+    .bind(input.txn_signature.as_deref())
+    .bind(input.account_data_hash.as_deref())
+    .bind(&input.raw_evidence)
+    .execute(&mut *connection)
+    .await?;
+
+    record_wallet_ata_balance_update_in_tx(connection, input).await
 }
 
 fn required_decision_field<'a>(
@@ -1831,6 +1937,7 @@ fn wallet_ata_balance_from_row(
         observed_at: row.try_get("observed_at")?,
         source: row.try_get("source")?,
         source_commitment: row.try_get("source_commitment")?,
+        txn_signature: row.try_get("txn_signature")?,
         account_data_hash: row.try_get("account_data_hash")?,
         raw_evidence: row.try_get("raw_evidence")?,
         updated_at: row.try_get("updated_at")?,
@@ -1998,4 +2105,39 @@ fn to_i64_policy_seed(policy_seed: u64) -> Result<i64, OrchestratorError> {
 
 fn optional_to_i64_amount(amount: Option<u64>) -> Result<Option<i64>, OrchestratorError> {
     amount.map(to_i64_amount).transpose()
+}
+
+#[cfg(test)]
+mod tests {
+    const STORE_SOURCE: &str = include_str!("store.rs");
+    const INITIAL_SURPLUS_MIGRATION: &str =
+        include_str!("../migrations/0003_balance_sweep_initial_surplus.sql");
+
+    #[test]
+    fn store_applies_initial_surplus_migration() {
+        assert!(STORE_SOURCE.contains("MIGRATION_0003"));
+        assert!(STORE_SOURCE.contains("0003_balance_sweep_initial_surplus.sql"));
+        assert!(STORE_SOURCE.contains("sqlx::raw_sql(MIGRATION_0003)"));
+    }
+
+    #[test]
+    fn pending_lot_read_surface_exposes_only_open_remaining_lots() {
+        assert!(INITIAL_SURPLUS_MIGRATION
+            .contains("CREATE OR REPLACE VIEW loyal_yield.pending_balance_sweep_surplus_lots"));
+        assert!(INITIAL_SURPLUS_MIGRATION.contains("WHERE status = 'open'"));
+        assert!(INITIAL_SURPLUS_MIGRATION.contains("remaining_amount_raw > 0"));
+        for field in [
+            "target_id",
+            "classification",
+            "original_amount_raw",
+            "remaining_amount_raw",
+            "eligible_after",
+            "status",
+            "confidence",
+            "reason",
+        ] {
+            assert!(INITIAL_SURPLUS_MIGRATION.contains(field), "missing {field}");
+            assert!(STORE_SOURCE.contains(field), "read surface missing {field}");
+        }
+    }
 }
