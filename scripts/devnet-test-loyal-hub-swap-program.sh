@@ -6,7 +6,7 @@ cd "$ROOT_DIR"
 
 show_help() {
   cat <<'EOF'
-Smoke-test a deployed Loyal Hub swap program on devnet.
+Smoke-test a deployed Loyal Hub swap program on devnet or mainnet.
 
 Defaults match the current devnet deployment:
   PROGRAM_ID=LHUB3MMwYEwXqbfMdr1AQ8vkrJoubH37qoBxiy38smH
@@ -17,7 +17,15 @@ Defaults match the current devnet deployment:
 
 The script creates or reuses ./ADDR_1.json through ./ADDR_5.json, funds
 those users, funds each configured lane, simulates and executes swaps and
-rebalances, then withdraws remaining lane inventory back to the faucet ATA.
+rebalances, then withdraws smoke-test inventory back to the faucet ATA.
+
+Set CLUSTER=m and MAINNET_PROGRAM_ID or PROGRAM_ID to run against mainnet.
+Mainnet runs require CONFIRM_MAINNET=1, default to mainnet USDC/PYUSD mints,
+and use the Jupiter rebalance-through-Hub shape because Jupiter is mainnet-only.
+Set JUPITER_API_KEY in the environment if your Jupiter API plan requires it.
+For custom mainnet RPC URLs that are not auto-detected, set PROGRAM_ID,
+mainnet mints, JUPITER_REBALANCE_MODE=jupiter, ALLOW_JUPITER_CUSTOM_RPC=1,
+and CONFIRM_MAINNET=1.
 
 Run:
   bun run hub:devnet-smoke
@@ -29,17 +37,62 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
+is_mainnet_cluster() {
+  case "$CLUSTER" in
+    m | mainnet | mainnet-beta | *mainnet*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 CLUSTER="${CLUSTER:-d}"
-PROGRAM_ID="${PROGRAM_ID:-LHUB3MMwYEwXqbfMdr1AQ8vkrJoubH37qoBxiy38smH}"
-FAUCET_ADDRESS="${FAUCET_ADDRESS:-GTpqQfB9wgXWqdhkEmSWsnHVvxaPbJs1qWsomh1MjQ5N}"
+DEVNET_PROGRAM_ID="${DEVNET_PROGRAM_ID:-LHUB3MMwYEwXqbfMdr1AQ8vkrJoubH37qoBxiy38smH}"
+DEVNET_FAUCET_ADDRESS="${DEVNET_FAUCET_ADDRESS:-GTpqQfB9wgXWqdhkEmSWsnHVvxaPbJs1qWsomh1MjQ5N}"
+DEVNET_USDC_MINT="${DEVNET_USDC_MINT:-4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU}"
+DEVNET_PYUSD_MINT="${DEVNET_PYUSD_MINT:-CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM}"
+MAINNET_USDC_MINT="${MAINNET_USDC_MINT:-EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v}"
+MAINNET_PYUSD_MINT="${MAINNET_PYUSD_MINT:-2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo}"
+MAINNET_PROGRAM_ID="${MAINNET_PROGRAM_ID:-}"
+
+if is_mainnet_cluster; then
+  DEFAULT_PROGRAM_ID="$MAINNET_PROGRAM_ID"
+  DEFAULT_FAUCET_ADDRESS=""
+  DEFAULT_USDC_MINT="$MAINNET_USDC_MINT"
+  DEFAULT_PYUSD_MINT="$MAINNET_PYUSD_MINT"
+  DEFAULT_REBALANCE_MODE="jupiter"
+  DEFAULT_CLEANUP_MODE="excess"
+else
+  DEFAULT_PROGRAM_ID="$DEVNET_PROGRAM_ID"
+  DEFAULT_FAUCET_ADDRESS="$DEVNET_FAUCET_ADDRESS"
+  DEFAULT_USDC_MINT="$DEVNET_USDC_MINT"
+  DEFAULT_PYUSD_MINT="$DEVNET_PYUSD_MINT"
+  DEFAULT_REBALANCE_MODE="native"
+  DEFAULT_CLEANUP_MODE="all"
+fi
+
+PROGRAM_ID="${PROGRAM_ID:-$DEFAULT_PROGRAM_ID}"
+FAUCET_ADDRESS="${FAUCET_ADDRESS:-$DEFAULT_FAUCET_ADDRESS}"
 FAUCET_KEYPAIR="${FAUCET_KEYPAIR:-$HOME/.config/solana/id.json}"
-USDC_MINT="${USDC_MINT:-4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU}"
-PYUSD_MINT="${PYUSD_MINT:-CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM}"
+USDC_MINT="${USDC_MINT:-$DEFAULT_USDC_MINT}"
+PYUSD_MINT="${PYUSD_MINT:-$DEFAULT_PYUSD_MINT}"
 USER_COUNT="${USER_COUNT:-5}"
 ADDR_PREFIX="${ADDR_PREFIX:-ADDR_}"
 USER_FUND_UI="${USER_FUND_UI:-0.1}"
 LANE_FUND_UI="${LANE_FUND_UI:-1}"
 SWAP_MAX_FEE_BPS="${SWAP_MAX_FEE_BPS:-}"
+JUPITER_REBALANCE_MODE="${JUPITER_REBALANCE_MODE:-auto}"
+if [[ "$JUPITER_REBALANCE_MODE" == "auto" ]]; then
+  ACTIVE_REBALANCE_MODE="$DEFAULT_REBALANCE_MODE"
+else
+  ACTIVE_REBALANCE_MODE="$JUPITER_REBALANCE_MODE"
+fi
+CLEANUP_MODE="${CLEANUP_MODE:-$DEFAULT_CLEANUP_MODE}"
+JUPITER_SLIPPAGE_BPS="${JUPITER_SLIPPAGE_BPS:-50}"
+JUPITER_QUOTE_API="${JUPITER_QUOTE_API:-https://api.jup.ag/swap/v1/quote}"
+JUPITER_SWAP_INSTRUCTIONS_API="${JUPITER_SWAP_INSTRUCTIONS_API:-https://api.jup.ag/swap/v1/swap-instructions}"
 
 HUB_CLI=(cargo run -q -p loyal-hub-cli -- -u "$CLUSTER" -k "$FAUCET_KEYPAIR" --program-id "$PROGRAM_ID")
 
@@ -73,6 +126,10 @@ refresh_state() {
 
 jq_state() {
   jq -r "$@" <<<"$STATE_JSON"
+}
+
+jq_initial_state() {
+  jq -r "$@" <<<"$INITIAL_STATE_JSON"
 }
 
 fund_recipient() {
@@ -188,6 +245,74 @@ rebalance_inventory() {
   run_hub_step "$label" rebalance-inventory "$@"
 }
 
+jupiter_rebalance_inventory() {
+  local label="$1"
+  local lane_id="$2"
+  local input_mint="$3"
+  local output_mint="$4"
+  local input_amount="$5"
+  local output_top_up_amount="$6"
+  local common_args=(
+    --cluster "$CLUSTER"
+    --keypair "$FAUCET_KEYPAIR"
+    --program-id "$PROGRAM_ID"
+    --lane-id "$lane_id"
+    --input-mint "$input_mint"
+    --output-mint "$output_mint"
+    --hub-input-amount "$input_amount"
+    --hub-output-top-up-amount "$output_top_up_amount"
+    --slippage-bps "$JUPITER_SLIPPAGE_BPS"
+    --quote-api "$JUPITER_QUOTE_API"
+    --swap-instructions-api "$JUPITER_SWAP_INSTRUCTIONS_API"
+  )
+
+  log "Simulating $label through Jupiter"
+  bun scripts/jupiter-hub-rebalance.mjs "${common_args[@]}" --simulate-only
+
+  log "Executing $label through Jupiter"
+  bun scripts/jupiter-hub-rebalance.mjs "${common_args[@]}"
+}
+
+rebalance_after_first_swaps() {
+  case "$ACTIVE_REBALANCE_MODE" in
+    native)
+      rebalance_inventory "rebalance after first swaps" \
+        --transfer mint:"$USDC_MINT" from_lane_id:0 to_lane_id:1 raw_token_amount:20000 \
+        --transfer mint:"$PYUSD_MINT" from_lane_id:1 to_lane_id:0 raw_token_amount:20000
+      ;;
+    jupiter)
+      jupiter_rebalance_inventory "rebalance lane 0 USDC to pyUSD after user 1" \
+        0 "$USDC_MINT" "$PYUSD_MINT" 20000 "$(raw_out_for_fee 20000)"
+      jupiter_rebalance_inventory "rebalance lane 1 pyUSD to USDC after user 2" \
+        1 "$PYUSD_MINT" "$USDC_MINT" 20000 "$(raw_out_for_fee 20000)"
+      jupiter_rebalance_inventory "rebalance lane 0 USDC to pyUSD after user 3" \
+        0 "$USDC_MINT" "$PYUSD_MINT" 30000 "$(raw_out_for_fee 30000)"
+      ;;
+    skip)
+      log "Skipping first rebalance batch"
+      ;;
+  esac
+}
+
+rebalance_after_final_swaps() {
+  case "$ACTIVE_REBALANCE_MODE" in
+    native)
+      rebalance_inventory "rebalance after final swaps" \
+        --transfer mint:"$USDC_MINT" from_lane_id:0 to_lane_id:1 raw_token_amount:5000 \
+        --transfer mint:"$PYUSD_MINT" from_lane_id:1 to_lane_id:0 raw_token_amount:5000
+      ;;
+    jupiter)
+      jupiter_rebalance_inventory "rebalance lane 1 USDC to pyUSD after user 4" \
+        1 "$USDC_MINT" "$PYUSD_MINT" 10000 "$(raw_out_for_fee 10000)"
+      jupiter_rebalance_inventory "rebalance lane 0 pyUSD to USDC after user 5" \
+        0 "$PYUSD_MINT" "$USDC_MINT" 15000 "$(raw_out_for_fee 15000)"
+      ;;
+    skip)
+      log "Skipping final rebalance batch"
+      ;;
+  esac
+}
+
 withdraw_inventory() {
   local lane_id="$1"
   local mint="$2"
@@ -202,19 +327,71 @@ withdraw_inventory() {
     --lane-id "$lane_id"
 }
 
+cleanup_amount_for() {
+  local lane_id="$1"
+  local mint="$2"
+  local current_amount="$3"
+  local initial_amount
+
+  case "$CLEANUP_MODE" in
+    all)
+      printf '%s\n' "$current_amount"
+      ;;
+    excess)
+      initial_amount="$(jq_initial_state --argjson lane "$lane_id" --arg mint "$mint" '[.lanes[]? | select(.lane_id == $lane) | .inventory[]? | select(.mint == $mint) | (.amount // 0)] | first // 0')"
+      if [[ "$current_amount" -gt "$initial_amount" ]]; then
+        echo $((current_amount - initial_amount))
+      else
+        printf '0\n'
+      fi
+      ;;
+    none)
+      printf '0\n'
+      ;;
+    *)
+      die "unsupported CLEANUP_MODE=$CLEANUP_MODE; expected all, excess, or none"
+      ;;
+  esac
+}
+
 require_command cargo
 require_command jq
 require_command solana-keygen
 require_command spl-token
 require_command awk
+if [[ "$ACTIVE_REBALANCE_MODE" == "jupiter" ]]; then
+  require_command bun
+fi
+
+case "$ACTIVE_REBALANCE_MODE" in
+  native | jupiter | skip) ;;
+  *) die "unsupported JUPITER_REBALANCE_MODE=$JUPITER_REBALANCE_MODE; expected auto, native, jupiter, or skip" ;;
+esac
+
+case "$CLEANUP_MODE" in
+  all | excess | none) ;;
+  *) die "unsupported CLEANUP_MODE=$CLEANUP_MODE; expected all, excess, or none" ;;
+esac
+
+if [[ "$ACTIVE_REBALANCE_MODE" == "jupiter" ]] && ! is_mainnet_cluster && [[ "${ALLOW_JUPITER_CUSTOM_RPC:-}" != "1" ]]; then
+  die "Jupiter rebalance is mainnet-only; use CLUSTER=m/mainnet-beta, set ALLOW_JUPITER_CUSTOM_RPC=1 for a custom mainnet RPC URL, or choose JUPITER_REBALANCE_MODE=native/skip"
+fi
 
 [[ "$USER_COUNT" -ge 5 ]] || die "USER_COUNT must be at least 5 for the five-swap smoke flow"
+[[ -n "$PROGRAM_ID" ]] || die "PROGRAM_ID or MAINNET_PROGRAM_ID is required for CLUSTER=$CLUSTER"
 [[ -f "$FAUCET_KEYPAIR" ]] || die "faucet keypair not found: $FAUCET_KEYPAIR"
 ACTUAL_FAUCET_ADDRESS="$(solana-keygen pubkey "$FAUCET_KEYPAIR")"
+if [[ -z "$FAUCET_ADDRESS" ]]; then
+  FAUCET_ADDRESS="$ACTUAL_FAUCET_ADDRESS"
+fi
 [[ "$ACTUAL_FAUCET_ADDRESS" == "$FAUCET_ADDRESS" ]] || die "faucet keypair pubkey $ACTUAL_FAUCET_ADDRESS does not match FAUCET_ADDRESS $FAUCET_ADDRESS"
+if { is_mainnet_cluster || [[ "$ACTIVE_REBALANCE_MODE" == "jupiter" ]]; } && [[ "${CONFIRM_MAINNET:-}" != "1" ]]; then
+  die "mainnet smoke tests move real funds; set CONFIRM_MAINNET=1 to continue"
+fi
 
 log "Reading deployed hub state"
 refresh_state
+INITIAL_STATE_JSON="$STATE_JSON"
 [[ "$(jq_state '.initialized')" == "true" ]] || die "hub config is not initialized for $PROGRAM_ID on cluster $CLUSTER"
 
 LANE_COUNT="$(jq_state '.lane_count // 0')"
@@ -277,27 +454,24 @@ swap_exact_in "swap user 1 lane 0 USDC to pyUSD" 0 0 "$USDC_MINT" "$PYUSD_MINT" 
 swap_exact_in "swap user 2 lane 1 pyUSD to USDC" 1 1 "$PYUSD_MINT" "$USDC_MINT" "${USER_PYUSD_ATAS[1]}" "${USER_USDC_ATAS[1]}" 20000
 swap_exact_in "swap user 3 lane 0 USDC to pyUSD" 2 0 "$USDC_MINT" "$PYUSD_MINT" "${USER_USDC_ATAS[2]}" "${USER_PYUSD_ATAS[2]}" 30000
 
-rebalance_inventory "rebalance after first swaps" \
-  --transfer mint:"$USDC_MINT" from_lane_id:0 to_lane_id:1 raw_token_amount:20000 \
-  --transfer mint:"$PYUSD_MINT" from_lane_id:1 to_lane_id:0 raw_token_amount:20000
+rebalance_after_first_swaps
 
 swap_exact_in "swap user 4 lane 1 USDC to pyUSD" 3 1 "$USDC_MINT" "$PYUSD_MINT" "${USER_USDC_ATAS[3]}" "${USER_PYUSD_ATAS[3]}" 10000
 swap_exact_in "swap user 5 lane 0 pyUSD to USDC" 4 0 "$PYUSD_MINT" "$USDC_MINT" "${USER_PYUSD_ATAS[4]}" "${USER_USDC_ATAS[4]}" 15000
 
-rebalance_inventory "rebalance after final swaps" \
-  --transfer mint:"$USDC_MINT" from_lane_id:0 to_lane_id:1 raw_token_amount:5000 \
-  --transfer mint:"$PYUSD_MINT" from_lane_id:1 to_lane_id:0 raw_token_amount:5000
+rebalance_after_final_swaps
 
 log "Withdrawing remaining lane inventory back to the faucet"
 refresh_state
 for ((lane_id = 0; lane_id < LANE_COUNT; lane_id += 1)); do
   for mint in "$USDC_MINT" "$PYUSD_MINT"; do
-    amount="$(jq_state --argjson lane "$lane_id" --arg mint "$mint" '.lanes[] | select(.lane_id == $lane) | .inventory[] | select(.mint == $mint) | (.amount // 0)')"
+    current_amount="$(jq_state --argjson lane "$lane_id" --arg mint "$mint" '[.lanes[]? | select(.lane_id == $lane) | .inventory[]? | select(.mint == $mint) | (.amount // 0)] | first // 0')"
+    amount="$(cleanup_amount_for "$lane_id" "$mint" "$current_amount")"
     if [[ "$amount" -gt 0 ]]; then
       destination="$(token_account_for_owner "$FAUCET_ADDRESS" "$mint")"
       withdraw_inventory "$lane_id" "$mint" "$amount" "$destination"
     else
-      printf 'lane %s mint %s has no inventory to withdraw\n' "$lane_id" "$mint"
+      printf 'lane %s mint %s has no cleanup inventory to withdraw under CLEANUP_MODE=%s\n' "$lane_id" "$mint" "$CLEANUP_MODE"
     fi
   done
 done
