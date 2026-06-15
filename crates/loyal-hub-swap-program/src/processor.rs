@@ -19,12 +19,11 @@ use crate::{
         SwapExactInArgs,
     },
     state::{
-        derive_config, derive_hub_authority, derive_inventory_account,
-        derive_inventory_account_for_token_program, HubConfig,
+        derive_config, derive_hub_authority, derive_inventory_account_for_token_program, HubConfig,
     },
     token::{
-        read_mint_decimals, read_mint_decimals_for_program, require_matching_token_mint,
-        require_token_account, require_token_account_for_program, token_program_for_mint,
+        read_mint_decimals_for_program, require_matching_token_mint_for_program,
+        require_supported_token_program, require_token_account_for_program, token_program_for_mint,
         transfer_checked, transfer_checked_signed,
     },
     validation::{
@@ -411,11 +410,12 @@ fn process_withdraw_inventory(
     let config = HubConfig::read_account(program_id, config_account)?;
     require_admin(admin, &config)?;
     config.require_lane(lane_id.0)?;
-    require_key(token_program, &SPL_TOKEN_ID)?;
+    require_supported_token_program(token_program)?;
     require_key(
         hub_authority,
         &derive_hub_authority(program_id, lane_id.0).0,
     )?;
+    let token_program_id = token_program.key();
     require_distinct_key(hub_source, destination)?;
     let inventory_account = InventoryAccount {
         lane_id,
@@ -423,17 +423,23 @@ fn process_withdraw_inventory(
     };
     require_key(
         hub_source,
-        &derive_inventory_account(
+        &derive_inventory_account_for_token_program(
             program_id,
             &inventory_account.mint.0,
             inventory_account.lane_id.0,
+            token_program_id,
         ),
     )?;
     config.require_allowed_mint(&inventory_account.mint.0)?;
-    require_token_account(hub_source, mint.key(), hub_authority.key())?;
-    require_matching_token_mint(destination, mint.key())?;
+    require_token_account_for_program(
+        hub_source,
+        mint.key(),
+        hub_authority.key(),
+        token_program_id,
+    )?;
+    require_matching_token_mint_for_program(destination, mint.key(), token_program_id)?;
 
-    let decimals = read_mint_decimals(mint)?;
+    let decimals = read_mint_decimals_for_program(mint, token_program_id)?;
     transfer_checked_signed(
         program_id,
         hub_source,
@@ -460,10 +466,11 @@ fn process_rebalance_inventory(
 
     let config = HubConfig::read_account(program_id, config_account)?;
     require_inventory_rebalancer(inventory_rebalancer, &config)?;
-    require_key(token_program, &SPL_TOKEN_ID)?;
+    require_supported_token_program(token_program)?;
+    let token_program_id = token_program.key();
     let rebalance_mint = AllowedMint(*mint.key());
     config.require_allowed_mint(&rebalance_mint.0)?;
-    let decimals = read_mint_decimals(mint)?;
+    let decimals = read_mint_decimals_for_program(mint, token_program_id)?;
 
     for transfer in args.transfers {
         if transfer.from_lane_id.0 == transfer.to_lane_id.0 {
@@ -481,18 +488,34 @@ fn process_rebalance_inventory(
         require_key(source_authority, &source_authority_key)?;
         require_key(
             source_inventory,
-            &derive_inventory_account(program_id, &rebalance_mint.0, transfer.from_lane_id.0),
+            &derive_inventory_account_for_token_program(
+                program_id,
+                &rebalance_mint.0,
+                transfer.from_lane_id.0,
+                token_program_id,
+            ),
         )?;
         require_key(
             destination_inventory,
-            &derive_inventory_account(program_id, &rebalance_mint.0, transfer.to_lane_id.0),
+            &derive_inventory_account_for_token_program(
+                program_id,
+                &rebalance_mint.0,
+                transfer.to_lane_id.0,
+                token_program_id,
+            ),
         )?;
         require_distinct_key(source_inventory, destination_inventory)?;
-        require_token_account(source_inventory, mint.key(), &source_authority_key)?;
-        require_token_account(
+        require_token_account_for_program(
+            source_inventory,
+            mint.key(),
+            &source_authority_key,
+            token_program_id,
+        )?;
+        require_token_account_for_program(
             destination_inventory,
             mint.key(),
             &destination_authority_key,
+            token_program_id,
         )?;
 
         transfer_checked_signed(

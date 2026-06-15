@@ -12,14 +12,6 @@ use pinocchio_tkn::state::TokenAccount;
 #[cfg(not(kani))]
 use crate::{constants::HUB_AUTHORITY_SEED, state::derive_hub_authority};
 
-pub fn require_token_account(
-    account: &AccountInfo,
-    mint: &Pubkey,
-    owner: &Pubkey,
-) -> ProgramResult {
-    require_token_account_for_program(account, mint, owner, &pinocchio_tkn::TOKEN_PROGRAM_ID)
-}
-
 pub fn require_token_account_for_program(
     account: &AccountInfo,
     mint: &Pubkey,
@@ -46,10 +38,16 @@ pub fn require_token_account_for_program(
     }
 }
 
-pub fn require_matching_token_mint(account: &AccountInfo, mint: &Pubkey) -> ProgramResult {
+pub fn require_matching_token_mint_for_program(
+    account: &AccountInfo,
+    mint: &Pubkey,
+    token_program_id: &Pubkey,
+) -> ProgramResult {
     #[cfg(kani)]
     {
-        if !token_account_mint_matches_kani(account, mint) {
+        if !pubkey_eq_kani(account.owner(), token_program_id)
+            || !token_account_mint_matches_kani(account, mint)
+        {
             return Err(ProgramError::InvalidAccountData);
         }
         return Ok(());
@@ -57,7 +55,7 @@ pub fn require_matching_token_mint(account: &AccountInfo, mint: &Pubkey) -> Prog
 
     #[cfg(not(kani))]
     {
-        let token = read_legacy_token_account(account)?;
+        let token = read_token_account_for_program(account, token_program_id)?;
         if token.mint() != mint {
             return Err(ProgramError::InvalidAccountData);
         }
@@ -65,8 +63,11 @@ pub fn require_matching_token_mint(account: &AccountInfo, mint: &Pubkey) -> Prog
     }
 }
 
-pub fn read_mint_decimals(mint: &AccountInfo) -> Result<u8, ProgramError> {
-    read_mint_decimals_for_program(mint, &pinocchio_tkn::TOKEN_PROGRAM_ID)
+pub fn require_supported_token_program(token_program: &AccountInfo) -> ProgramResult {
+    if !is_supported_token_program_id(token_program.key()) {
+        return Err(ProgramError::InvalidArgument);
+    }
+    Ok(())
 }
 
 pub fn read_mint_decimals_for_program(
@@ -287,10 +288,6 @@ fn invoke_token_transfer_checked(
     write_token_amount_bounded_kani(source, new_source_amount);
     write_token_amount_bounded_kani(destination, new_destination_amount);
     Ok(())
-}
-
-fn read_legacy_token_account(account: &AccountInfo) -> Result<&TokenAccount, ProgramError> {
-    read_token_account_for_program(account, &pinocchio_tkn::TOKEN_PROGRAM_ID)
 }
 
 fn read_token_account_for_program<'a>(
