@@ -81,6 +81,11 @@ fund_recipient() {
   local recipient="$3"
   shift 3
 
+  if token_balance_for_owner_at_least "$recipient" "$mint" "$amount"; then
+    printf 'Skipping funding %s for %s; existing balance is at least %s\n' "$mint" "$recipient" "$amount"
+    return
+  fi
+
   spl-token transfer \
     -u "$CLUSTER" \
     --fee-payer "$FAUCET_KEYPAIR" \
@@ -93,14 +98,53 @@ fund_recipient() {
     "$@"
 }
 
+token_account_for_owner_optional() {
+  local owner="$1"
+  local mint="$2"
+  local account
+
+  account="$(spl-token accounts -u "$CLUSTER" --owner "$owner" --addresses-only "$mint" 2>/dev/null | awk 'NF {print; exit}' || true)"
+  printf '%s\n' "$account"
+}
+
 token_account_for_owner() {
   local owner="$1"
   local mint="$2"
   local account
 
-  account="$(spl-token accounts -u "$CLUSTER" --owner "$owner" --addresses-only "$mint" | awk 'NF {print; exit}')"
+  account="$(token_account_for_owner_optional "$owner" "$mint")"
   [[ -n "$account" ]] || die "missing token account for owner $owner mint $mint"
   printf '%s\n' "$account"
+}
+
+token_balance_for_owner() {
+  local owner="$1"
+  local mint="$2"
+  local account
+  local balance
+
+  account="$(token_account_for_owner_optional "$owner" "$mint")"
+  if [[ -z "$account" ]]; then
+    printf '0\n'
+    return
+  fi
+
+  balance="$(spl-token balance -u "$CLUSTER" --address "$account" 2>/dev/null | awk 'NF {print; exit}' || true)"
+  if [[ -z "$balance" ]]; then
+    printf '0\n'
+  else
+    printf '%s\n' "$balance"
+  fi
+}
+
+token_balance_for_owner_at_least() {
+  local owner="$1"
+  local mint="$2"
+  local amount="$3"
+  local balance
+
+  balance="$(token_balance_for_owner "$owner" "$mint")"
+  awk -v balance="$balance" -v amount="$amount" 'BEGIN { exit !((balance + 0) >= (amount + 0)) }'
 }
 
 raw_out_for_fee() {

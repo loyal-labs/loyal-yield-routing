@@ -8,16 +8,18 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use loyal_actions::{
     derive_loyal_hub_config_for_program, derive_loyal_hub_lane_authority_for_program,
-    derive_loyal_hub_lane_inventory_account_for_program, hub_rebalance,
+    derive_loyal_hub_lane_inventory_account_for_token_program, group_loyal_hub_rebalance_transfers,
     loyal_hub_initialize_config_instruction_for_program,
+    loyal_hub_rebalance_inventory_instruction_for_program_with_token_program,
     loyal_hub_set_admin_instruction_for_program,
     loyal_hub_set_hub_authorizer_instruction_for_program,
     loyal_hub_set_inventory_rebalancer_instruction_for_program,
     loyal_hub_set_lane_count_instruction_for_program,
     loyal_hub_set_max_fee_instruction_for_program, loyal_hub_set_paused_instruction_for_program,
-    loyal_hub_swap_exact_in_instruction_for_program,
-    loyal_hub_withdraw_inventory_instruction_for_program, LoyalHubRebalanceTransfer,
-    LoyalHubSwapExactIn, LOYAL_HUB_SWAP_PROGRAM_ID,
+    loyal_hub_swap_exact_in_instruction_for_program_with_token_programs,
+    loyal_hub_withdraw_inventory_instruction_for_program_with_token_program,
+    LoyalHubRebalanceTransfer, LoyalHubSwapExactIn, LOYAL_HUB_SWAP_PROGRAM_ID,
+    TOKEN_2022_PROGRAM_ID,
 };
 use serde::Serialize;
 use solana_account_decoder::UiAccount;
@@ -34,7 +36,7 @@ use solana_sdk::{
     signature::{read_keypair_file, Keypair, Signer},
     transaction::Transaction,
 };
-use spl_token::state::{Account as SplTokenAccount, Mint};
+use spl_token::state::Mint;
 
 const MAINNET_RPC_URL: &str = "https://api.mainnet-beta.solana.com";
 const DEVNET_RPC_URL: &str = "https://api.devnet.solana.com";
@@ -332,11 +334,18 @@ struct LaneStateReport {
 #[derive(Debug, Serialize)]
 struct InventoryStateReport {
     mint: String,
+    token_program: String,
     account: String,
     exists: bool,
     amount: Option<u64>,
     decimals: Option<u8>,
     ui_amount: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MintInfo {
+    token_program: Pubkey,
+    decimals: u8,
 }
 
 #[derive(Debug, Serialize)]
@@ -386,7 +395,7 @@ fn main() -> Result<()> {
         command => {
             let signers = load_signers(&cli)?;
             let fee_payer = signers.fee_payer();
-            let instructions = build_instructions(command, cli.program_id, fee_payer)?;
+            let instructions = build_instructions(&rpc, command, cli.program_id, fee_payer)?;
             require_signers(&instructions, fee_payer, &signers)?;
             let report = execute_or_simulate(
                 &rpc,
@@ -465,6 +474,7 @@ fn expand_tilde(path: &Path) -> PathBuf {
 }
 
 fn build_instructions(
+    rpc: &RpcClient,
     command: &Command,
     program_id: Pubkey,
     fee_payer: Pubkey,
@@ -538,14 +548,20 @@ fn build_instructions(
             mint,
             amount,
             lane_id,
-        } => vec![loyal_hub_withdraw_inventory_instruction_for_program(
-            program_id,
-            admin.unwrap_or(fee_payer),
-            *destination_token_account,
-            *mint,
-            *amount,
-            *lane_id,
-        )],
+        } => {
+            let token_program = fetch_mint_token_program(rpc, mint)?;
+            vec![
+                loyal_hub_withdraw_inventory_instruction_for_program_with_token_program(
+                    program_id,
+                    admin.unwrap_or(fee_payer),
+                    *destination_token_account,
+                    *mint,
+                    token_program,
+                    *amount,
+                    *lane_id,
+                ),
+            ]
+        }
         Command::SwapExactIn {
             user_vault,
             user_input_token_account,
@@ -558,33 +574,51 @@ fn build_instructions(
             min_out,
             max_fee_bps,
             lane_id,
-        } => vec![loyal_hub_swap_exact_in_instruction_for_program(
-            program_id,
-            user_vault.unwrap_or(fee_payer),
-            *user_input_token_account,
-            *user_output_token_account,
-            *input_mint,
-            *output_mint,
-            hub_authorizer.unwrap_or(fee_payer),
-            LoyalHubSwapExactIn {
-                amount_in: *amount_in,
-                amount_out: *amount_out,
-                min_out: *min_out,
-                max_fee_bps: *max_fee_bps,
-                lane_id: *lane_id,
-            },
-        )],
+        } => {
+            let input_token_program = fetch_mint_token_program(rpc, input_mint)?;
+            let output_token_program = fetch_mint_token_program(rpc, output_mint)?;
+            vec![
+                loyal_hub_swap_exact_in_instruction_for_program_with_token_programs(
+                    program_id,
+                    user_vault.unwrap_or(fee_payer),
+                    *user_input_token_account,
+                    *user_output_token_account,
+                    *input_mint,
+                    *output_mint,
+                    hub_authorizer.unwrap_or(fee_payer),
+                    input_token_program,
+                    output_token_program,
+                    LoyalHubSwapExactIn {
+                        amount_in: *amount_in,
+                        amount_out: *amount_out,
+                        min_out: *min_out,
+                        max_fee_bps: *max_fee_bps,
+                        lane_id: *lane_id,
+                    },
+                ),
+            ]
+        }
         Command::RebalanceInventory {
             inventory_rebalancer,
             mint,
             transfers,
         } => {
             let transfers = parse_rebalance_transfers(transfers, *mint)?;
-            hub_rebalance().instructions_for_program(
-                program_id,
-                inventory_rebalancer.unwrap_or(fee_payer),
-                transfers,
-            )?
+            group_loyal_hub_rebalance_transfers(transfers)?
+                .into_iter()
+                .map(|batch| {
+                    let token_program = fetch_mint_token_program(rpc, &batch.mint)?;
+                    Ok(
+                        loyal_hub_rebalance_inventory_instruction_for_program_with_token_program(
+                            program_id,
+                            inventory_rebalancer.unwrap_or(fee_payer),
+                            batch.mint,
+                            token_program,
+                            &batch.transfers,
+                        )?,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?
         }
     };
 
@@ -948,13 +982,16 @@ fn fetch_hub_state(rpc: &RpcClient, rpc_url: &str, program_id: Pubkey) -> Result
         );
     }
     let config = decode_hub_config(&account.data)?;
-    let mint_decimals = fetch_mint_decimals(rpc, &config.allowed_mints)?;
+    let mint_infos = fetch_mint_infos(rpc, &config.allowed_mints)?;
 
     let mut inventory_pubkeys = Vec::new();
     for lane_id in 0..config.lane_count {
-        for mint in &config.allowed_mints {
-            inventory_pubkeys.push(derive_loyal_hub_lane_inventory_account_for_program(
-                program_id, *mint, lane_id,
+        for (mint_index, mint) in config.allowed_mints.iter().enumerate() {
+            inventory_pubkeys.push(derive_loyal_hub_lane_inventory_account_for_token_program(
+                program_id,
+                *mint,
+                lane_id,
+                mint_infos[mint_index].token_program,
             ));
         }
     }
@@ -972,11 +1009,15 @@ fn fetch_hub_state(rpc: &RpcClient, rpc_url: &str, program_id: Pubkey) -> Result
                 .get(account_index)
                 .and_then(Option::as_ref);
             let amount = account
-                .and_then(|account| SplTokenAccount::unpack(&account.data).ok())
+                .and_then(|account| {
+                    decode_token_snapshot_from_account(&account.owner, &account.data)
+                })
                 .map(|account| account.amount);
-            let decimals = mint_decimals[mint_index];
+            let mint_info = mint_infos[mint_index];
+            let decimals = Some(mint_info.decimals);
             inventory.push(InventoryStateReport {
                 mint: mint.to_string(),
+                token_program: mint_info.token_program.to_string(),
                 account: inventory_account.to_string(),
                 exists: account.is_some(),
                 amount,
@@ -1032,19 +1073,58 @@ fn require_hub_program_account(
     Ok(())
 }
 
-fn fetch_mint_decimals(rpc: &RpcClient, mints: &[Pubkey]) -> Result<Vec<Option<u8>>> {
+fn fetch_mint_infos(rpc: &RpcClient, mints: &[Pubkey]) -> Result<Vec<MintInfo>> {
     let accounts = rpc
         .get_multiple_accounts(mints)
         .context("fetch mint accounts")?;
-    Ok(accounts
+    accounts
         .iter()
-        .map(|account| {
-            account
+        .zip(mints)
+        .map(|(account, mint)| {
+            let account = account
                 .as_ref()
-                .and_then(|account| Mint::unpack(&account.data).ok())
-                .map(|mint| mint.decimals)
+                .with_context(|| format!("mint account {mint} does not exist"))?;
+            decode_mint_info(mint, account)
         })
-        .collect())
+        .collect()
+}
+
+fn fetch_mint_token_program(rpc: &RpcClient, mint: &Pubkey) -> Result<Pubkey> {
+    let account = rpc
+        .get_account(mint)
+        .with_context(|| format!("fetch mint account {mint}"))?;
+    Ok(decode_mint_info(mint, &account)?.token_program)
+}
+
+fn decode_mint_info(mint: &Pubkey, account: &Account) -> Result<MintInfo> {
+    let token_program = supported_token_program_id(&account.owner).with_context(|| {
+        format!(
+            "mint {mint} is owned by unsupported token program {}",
+            account.owner
+        )
+    })?;
+    if account.data.len() < Mint::LEN {
+        bail!(
+            "mint {mint} data is too short: got {}, expected at least {}",
+            account.data.len(),
+            Mint::LEN
+        );
+    }
+    if account.data[45] == 0 {
+        bail!("mint {mint} is not initialized");
+    }
+    Ok(MintInfo {
+        token_program,
+        decimals: account.data[44],
+    })
+}
+
+fn supported_token_program_id(owner: &Pubkey) -> Option<Pubkey> {
+    if owner == &spl_token::id() || owner == &TOKEN_2022_PROGRAM_ID {
+        Some(*owner)
+    } else {
+        None
+    }
 }
 
 fn decode_hub_config(data: &[u8]) -> Result<DecodedHubConfig> {
@@ -1117,16 +1197,29 @@ fn read_u8_at(data: &[u8], offset: usize) -> Result<u8> {
 }
 
 fn decode_token_snapshot(account: &AccountSnapshot) -> Option<TokenSnapshot> {
-    if account.owner != spl_token::id() {
+    decode_token_snapshot_from_account(&account.owner, &account.data)
+}
+
+fn decode_token_snapshot_from_account(owner: &Pubkey, data: &[u8]) -> Option<TokenSnapshot> {
+    supported_token_program_id(owner)?;
+    if data.len() < spl_token::state::Account::LEN {
         return None;
     }
-    SplTokenAccount::unpack(&account.data)
-        .ok()
-        .map(|token_account| TokenSnapshot {
-            mint: token_account.mint,
-            owner: token_account.owner,
-            amount: token_account.amount,
-        })
+    let mint = read_pubkey_from_data(data, 0)?;
+    let owner = read_pubkey_from_data(data, 32)?;
+    let amount = u64::from_le_bytes(data.get(64..72)?.try_into().ok()?);
+    Some(TokenSnapshot {
+        mint,
+        owner,
+        amount,
+    })
+}
+
+fn read_pubkey_from_data(data: &[u8], offset: usize) -> Option<Pubkey> {
+    let bytes = data.get(offset..offset + 32)?;
+    let mut pubkey = [0_u8; 32];
+    pubkey.copy_from_slice(bytes);
+    Some(Pubkey::new_from_array(pubkey))
 }
 
 fn format_token_amount(amount: u64, decimals: u8) -> String {
@@ -1190,8 +1283,8 @@ fn output_state(report: &HubStateReport, json: bool) -> Result<()> {
                     .unwrap_or_else(|| "missing".to_owned());
                 let ui_amount = inventory.ui_amount.as_deref().unwrap_or("-");
                 println!(
-                    "    mint {} account {} amount {} ui {}",
-                    inventory.mint, inventory.account, amount, ui_amount
+                    "    mint {} token program {} account {} amount {} ui {}",
+                    inventory.mint, inventory.token_program, inventory.account, amount, ui_amount
                 );
             }
         }
@@ -1432,7 +1525,7 @@ mod tests {
         let program_id = Pubkey::new_unique();
         let input_mint = Pubkey::new_unique();
         let output_mint = Pubkey::new_unique();
-        let ix = loyal_hub_swap_exact_in_instruction_for_program(
+        let ix = loyal_actions::loyal_hub_swap_exact_in_instruction_for_program(
             program_id,
             Pubkey::new_unique(),
             Pubkey::new_unique(),
@@ -1456,7 +1549,9 @@ mod tests {
         );
         assert_eq!(
             ix.accounts[4].pubkey,
-            derive_loyal_hub_lane_inventory_account_for_program(program_id, input_mint, 4)
+            loyal_actions::derive_loyal_hub_lane_inventory_account_for_program(
+                program_id, input_mint, 4
+            )
         );
         assert_eq!(
             ix.accounts[8].pubkey,

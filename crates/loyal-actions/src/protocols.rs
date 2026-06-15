@@ -921,12 +921,57 @@ pub fn loyal_hub_withdraw_inventory_instruction_for_program(
     amount: u64,
     lane_id: u8,
 ) -> Instruction {
-    loyal_hub_withdraw_inventory_instruction_with_source_for_program(
+    loyal_hub_withdraw_inventory_instruction_for_program_with_token_program(
         program_id,
         admin,
-        derive_loyal_hub_lane_inventory_account_for_program(program_id, mint, lane_id),
         destination,
         mint,
+        spl_token::id(),
+        amount,
+        lane_id,
+    )
+}
+
+pub fn loyal_hub_withdraw_inventory_instruction_with_token_program(
+    admin: Pubkey,
+    destination: Pubkey,
+    mint: Pubkey,
+    token_program: Pubkey,
+    amount: u64,
+    lane_id: u8,
+) -> Instruction {
+    loyal_hub_withdraw_inventory_instruction_for_program_with_token_program(
+        LOYAL_HUB_SWAP_PROGRAM_ID,
+        admin,
+        destination,
+        mint,
+        token_program,
+        amount,
+        lane_id,
+    )
+}
+
+pub fn loyal_hub_withdraw_inventory_instruction_for_program_with_token_program(
+    program_id: Pubkey,
+    admin: Pubkey,
+    destination: Pubkey,
+    mint: Pubkey,
+    token_program: Pubkey,
+    amount: u64,
+    lane_id: u8,
+) -> Instruction {
+    loyal_hub_withdraw_inventory_instruction_with_source_for_program_with_token_program(
+        program_id,
+        admin,
+        derive_loyal_hub_lane_inventory_account_for_token_program(
+            program_id,
+            mint,
+            lane_id,
+            token_program,
+        ),
+        destination,
+        mint,
+        token_program,
         amount,
         lane_id,
     )
@@ -938,6 +983,28 @@ pub fn loyal_hub_withdraw_inventory_instruction_with_source_for_program(
     hub_source: Pubkey,
     destination: Pubkey,
     mint: Pubkey,
+    amount: u64,
+    lane_id: u8,
+) -> Instruction {
+    loyal_hub_withdraw_inventory_instruction_with_source_for_program_with_token_program(
+        program_id,
+        admin,
+        hub_source,
+        destination,
+        mint,
+        spl_token::id(),
+        amount,
+        lane_id,
+    )
+}
+
+pub fn loyal_hub_withdraw_inventory_instruction_with_source_for_program_with_token_program(
+    program_id: Pubkey,
+    admin: Pubkey,
+    hub_source: Pubkey,
+    destination: Pubkey,
+    mint: Pubkey,
+    token_program: Pubkey,
     amount: u64,
     lane_id: u8,
 ) -> Instruction {
@@ -953,7 +1020,7 @@ pub fn loyal_hub_withdraw_inventory_instruction_with_source_for_program(
                 derive_loyal_hub_lane_authority_for_program(program_id, lane_id),
                 false,
             ),
-            AccountMeta::new_readonly(spl_token::id(), false),
+            AccountMeta::new_readonly(token_program, false),
         ],
         data: loyal_hub_withdraw_inventory_data(amount, lane_id),
     }
@@ -973,6 +1040,27 @@ pub fn loyal_hub_withdraw_inventory_instruction_with_source(
         hub_source,
         destination,
         mint,
+        amount,
+        lane_id,
+    )
+}
+
+pub fn loyal_hub_withdraw_inventory_instruction_with_source_with_token_program(
+    admin: Pubkey,
+    hub_source: Pubkey,
+    destination: Pubkey,
+    mint: Pubkey,
+    token_program: Pubkey,
+    amount: u64,
+    lane_id: u8,
+) -> Instruction {
+    loyal_hub_withdraw_inventory_instruction_with_source_for_program_with_token_program(
+        LOYAL_HUB_SWAP_PROGRAM_ID,
+        admin,
+        hub_source,
+        destination,
+        mint,
+        token_program,
         amount,
         lane_id,
     )
@@ -1245,10 +1333,41 @@ pub fn loyal_hub_rebalance_inventory_instruction_for_program(
     mint: Pubkey,
     transfers: &[LoyalHubLaneRebalanceTransfer],
 ) -> Result<Instruction> {
+    loyal_hub_rebalance_inventory_instruction_for_program_with_token_program(
+        program_id,
+        inventory_rebalancer,
+        mint,
+        spl_token::id(),
+        transfers,
+    )
+}
+
+pub fn loyal_hub_rebalance_inventory_instruction_with_token_program(
+    inventory_rebalancer: Pubkey,
+    mint: Pubkey,
+    token_program: Pubkey,
+    transfers: &[LoyalHubLaneRebalanceTransfer],
+) -> Result<Instruction> {
+    loyal_hub_rebalance_inventory_instruction_for_program_with_token_program(
+        LOYAL_HUB_SWAP_PROGRAM_ID,
+        inventory_rebalancer,
+        mint,
+        token_program,
+        transfers,
+    )
+}
+
+pub fn loyal_hub_rebalance_inventory_instruction_for_program_with_token_program(
+    program_id: Pubkey,
+    inventory_rebalancer: Pubkey,
+    mint: Pubkey,
+    token_program: Pubkey,
+    transfers: &[LoyalHubLaneRebalanceTransfer],
+) -> Result<Instruction> {
     let mut accounts = vec![
         AccountMeta::new_readonly(derive_loyal_hub_config_for_program(program_id), false),
         AccountMeta::new_readonly(inventory_rebalancer, true),
-        AccountMeta::new_readonly(spl_token::id(), false),
+        AccountMeta::new_readonly(token_program, false),
         AccountMeta::new_readonly(mint, false),
     ];
     for transfer in transfers {
@@ -1257,18 +1376,20 @@ pub fn loyal_hub_rebalance_inventory_instruction_for_program(
             false,
         ));
         accounts.push(AccountMeta::new(
-            derive_loyal_hub_lane_inventory_account_for_program(
+            derive_loyal_hub_lane_inventory_account_for_token_program(
                 program_id,
                 mint,
                 transfer.from_lane_id,
+                token_program,
             ),
             false,
         ));
         accounts.push(AccountMeta::new(
-            derive_loyal_hub_lane_inventory_account_for_program(
+            derive_loyal_hub_lane_inventory_account_for_token_program(
                 program_id,
                 mint,
                 transfer.to_lane_id,
+                token_program,
             ),
             false,
         ));
@@ -1693,6 +1814,32 @@ mod tests {
             withdraw.data[loyal_hub_abi::WITHDRAW_INVENTORY_TAG_OFFSET as usize],
             LOYAL_HUB_WITHDRAW_INVENTORY
         );
+        let token_2022_withdraw = loyal_hub_withdraw_inventory_instruction_with_token_program(
+            admin,
+            destination,
+            mint,
+            TOKEN_2022_PROGRAM_ID,
+            42,
+            1,
+        );
+        assert_eq!(
+            token_2022_withdraw.accounts
+                [loyal_hub_abi::withdraw_inventory_accounts::HUB_SOURCE as usize],
+            AccountMeta::new(
+                derive_loyal_hub_lane_inventory_account_for_token_program(
+                    LOYAL_HUB_SWAP_PROGRAM_ID,
+                    mint,
+                    1,
+                    TOKEN_2022_PROGRAM_ID,
+                ),
+                false,
+            )
+        );
+        assert_eq!(
+            token_2022_withdraw.accounts
+                [loyal_hub_abi::withdraw_inventory_accounts::TOKEN_PROGRAM as usize],
+            AccountMeta::new_readonly(TOKEN_2022_PROGRAM_ID, false)
+        );
 
         let rebalance = loyal_hub_rebalance_inventory_instruction(
             rebalancer,
@@ -1731,6 +1878,49 @@ mod tests {
                 + loyal_hub_abi::rebalance_inventory_accounts::DESTINATION_INVENTORY_RELATIVE
                     as usize],
             AccountMeta::new(derive_loyal_hub_lane_inventory_account(mint, 2), false)
+        );
+        let token_2022_rebalance = loyal_hub_rebalance_inventory_instruction_with_token_program(
+            rebalancer,
+            mint,
+            TOKEN_2022_PROGRAM_ID,
+            &[LoyalHubLaneRebalanceTransfer {
+                from_lane_id: 1,
+                to_lane_id: 2,
+                amount: 55,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            token_2022_rebalance.accounts
+                [loyal_hub_abi::rebalance_inventory_accounts::TOKEN_PROGRAM as usize],
+            AccountMeta::new_readonly(TOKEN_2022_PROGRAM_ID, false)
+        );
+        assert_eq!(
+            token_2022_rebalance.accounts[transfer_start
+                + loyal_hub_abi::rebalance_inventory_accounts::SOURCE_INVENTORY_RELATIVE as usize],
+            AccountMeta::new(
+                derive_loyal_hub_lane_inventory_account_for_token_program(
+                    LOYAL_HUB_SWAP_PROGRAM_ID,
+                    mint,
+                    1,
+                    TOKEN_2022_PROGRAM_ID,
+                ),
+                false,
+            )
+        );
+        assert_eq!(
+            token_2022_rebalance.accounts[transfer_start
+                + loyal_hub_abi::rebalance_inventory_accounts::DESTINATION_INVENTORY_RELATIVE
+                    as usize],
+            AccountMeta::new(
+                derive_loyal_hub_lane_inventory_account_for_token_program(
+                    LOYAL_HUB_SWAP_PROGRAM_ID,
+                    mint,
+                    2,
+                    TOKEN_2022_PROGRAM_ID,
+                ),
+                false,
+            )
         );
     }
 
