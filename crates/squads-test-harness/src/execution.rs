@@ -694,6 +694,8 @@ pub fn execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_ind
     );
     let mut transaction_accounts = hub_swap_ix.accounts;
     transaction_accounts[1].is_signer = false;
+    let hub_swap_program_index = transaction_accounts.len();
+    let hub_swap_accounts = (0..hub_swap_program_index).collect();
     transaction_accounts.push(AccountMeta::new_readonly(LOYAL_HUB_SWAP_PROGRAM_ID, false));
 
     execute_squads_program_interaction_instruction(
@@ -701,8 +703,8 @@ pub fn execute_squads_yield_route_loyal_hub_swap_instruction_with_constraint_ind
         signer,
         account_index,
         vec![SquadsCompiledInstruction {
-            program_id_index: 11,
-            accounts: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            program_id_index: hub_swap_program_index,
+            accounts: hub_swap_accounts,
             data: hub_swap_ix.data,
         }],
         vec![instruction_constraint_index],

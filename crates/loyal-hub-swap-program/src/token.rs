@@ -17,9 +17,20 @@ pub fn require_token_account(
     mint: &Pubkey,
     owner: &Pubkey,
 ) -> ProgramResult {
+    require_token_account_for_program(account, mint, owner, &pinocchio_tkn::TOKEN_PROGRAM_ID)
+}
+
+pub fn require_token_account_for_program(
+    account: &AccountInfo,
+    mint: &Pubkey,
+    owner: &Pubkey,
+    token_program_id: &Pubkey,
+) -> ProgramResult {
     #[cfg(kani)]
     {
-        if !token_account_matches_kani(account, mint, owner) {
+        if !pubkey_eq_kani(account.owner(), token_program_id)
+            || !token_account_matches_kani(account, mint, owner)
+        {
             return Err(ProgramError::InvalidAccountData);
         }
         return Ok(());
@@ -27,7 +38,7 @@ pub fn require_token_account(
 
     #[cfg(not(kani))]
     {
-        let token = read_legacy_token_account(account)?;
+        let token = read_token_account_for_program(account, token_program_id)?;
         if token.mint() != mint || token.owner() != owner {
             return Err(ProgramError::InvalidAccountData);
         }
@@ -55,9 +66,18 @@ pub fn require_matching_token_mint(account: &AccountInfo, mint: &Pubkey) -> Prog
 }
 
 pub fn read_mint_decimals(mint: &AccountInfo) -> Result<u8, ProgramError> {
+    read_mint_decimals_for_program(mint, &pinocchio_tkn::TOKEN_PROGRAM_ID)
+}
+
+pub fn read_mint_decimals_for_program(
+    mint: &AccountInfo,
+    token_program_id: &Pubkey,
+) -> Result<u8, ProgramError> {
     #[cfg(kani)]
     {
-        if !pubkey_eq_kani(mint.owner(), &pinocchio_tkn::TOKEN_PROGRAM_ID) {
+        if !is_supported_token_program_id(token_program_id)
+            || !pubkey_eq_kani(mint.owner(), token_program_id)
+        {
             return Err(ProgramError::InvalidAccountData);
         }
         let data = unsafe { mint.borrow_data_unchecked() };
@@ -69,11 +89,34 @@ pub fn read_mint_decimals(mint: &AccountInfo) -> Result<u8, ProgramError> {
 
     #[cfg(not(kani))]
     {
-        if mint.owner() != &pinocchio_tkn::TOKEN_PROGRAM_ID {
+        if !is_supported_token_program_id(token_program_id) || mint.owner() != token_program_id {
             return Err(ProgramError::InvalidAccountData);
         }
         Ok(Mint::from_account_info(mint)?.decimals())
     }
+}
+
+pub fn token_program_for_mint<'a>(
+    mint: &AccountInfo,
+    legacy_token_program: &'a AccountInfo,
+    token_2022_program: Option<&'a AccountInfo>,
+) -> Result<&'a AccountInfo, ProgramError> {
+    if mint.owner() == legacy_token_program.key() {
+        if legacy_token_program.key() != &pinocchio_tkn::TOKEN_PROGRAM_ID {
+            return Err(ProgramError::InvalidArgument);
+        }
+        return Ok(legacy_token_program);
+    }
+
+    if mint.owner() == &pinocchio_tkn::TOKEN_2022_PROGRAM_ID {
+        let token_2022_program = token_2022_program.ok_or(ProgramError::NotEnoughAccountKeys)?;
+        if token_2022_program.key() != &pinocchio_tkn::TOKEN_2022_PROGRAM_ID {
+            return Err(ProgramError::InvalidArgument);
+        }
+        return Ok(token_2022_program);
+    }
+
+    Err(ProgramError::InvalidAccountData)
 }
 
 #[cfg(not(kani))]
@@ -189,7 +232,7 @@ fn invoke_token_transfer_checked(
     decimals: u8,
     signers: &[Signer],
 ) -> ProgramResult {
-    if token_program.key() != &pinocchio_tkn::TOKEN_PROGRAM_ID {
+    if !is_supported_token_program_id(token_program.key()) || mint.owner() != token_program.key() {
         return Err(ProgramError::InvalidArgument);
     }
     TransferChecked {
@@ -214,7 +257,9 @@ fn invoke_token_transfer_checked(
     amount: u64,
     decimals: u8,
 ) -> ProgramResult {
-    if !pubkey_eq_kani(token_program.key(), &pinocchio_tkn::TOKEN_PROGRAM_ID) {
+    if !is_supported_token_program_id(token_program.key())
+        || !pubkey_eq_kani(mint.owner(), token_program.key())
+    {
         return Err(ProgramError::InvalidArgument);
     }
     if read_mint_decimals_unchecked_kani(mint) != decimals {
@@ -245,10 +290,22 @@ fn invoke_token_transfer_checked(
 }
 
 fn read_legacy_token_account(account: &AccountInfo) -> Result<&TokenAccount, ProgramError> {
-    if account.owner() != &pinocchio_tkn::TOKEN_PROGRAM_ID {
+    read_token_account_for_program(account, &pinocchio_tkn::TOKEN_PROGRAM_ID)
+}
+
+fn read_token_account_for_program<'a>(
+    account: &'a AccountInfo,
+    token_program_id: &Pubkey,
+) -> Result<&'a TokenAccount, ProgramError> {
+    if !is_supported_token_program_id(token_program_id) || account.owner() != token_program_id {
         return Err(ProgramError::InvalidAccountData);
     }
     TokenAccount::from_account_info(account)
+}
+
+fn is_supported_token_program_id(token_program_id: &Pubkey) -> bool {
+    token_program_id == &pinocchio_tkn::TOKEN_PROGRAM_ID
+        || token_program_id == &pinocchio_tkn::TOKEN_2022_PROGRAM_ID
 }
 
 #[cfg(kani)]

@@ -1331,29 +1331,31 @@ mod tests {
         );
         assert_eq!(
             accounts[&loyal_hub_abi::swap_exact_in_accounts::HUB_INPUT].owner(policy),
-            Some(spl_token::id())
+            None
         );
         assert_eq!(
             accounts[&loyal_hub_abi::swap_exact_in_accounts::HUB_OUTPUT].owner(policy),
-            Some(spl_token::id())
+            None
         );
-        assert_token_authority_constraint(
+        assert_token_authority_constraint_with_owner(
             policy,
             &accounts[&loyal_hub_abi::swap_exact_in_accounts::USER_INPUT],
             vault,
+            None,
         );
-        assert_token_authority_constraint(
+        assert_token_authority_constraint_with_owner(
             policy,
             &accounts[&loyal_hub_abi::swap_exact_in_accounts::USER_OUTPUT],
             vault,
+            None,
         );
         assert_eq!(
             accounts[&loyal_hub_abi::swap_exact_in_accounts::INPUT_MINT].owner(policy),
-            Some(spl_token::id())
+            None
         );
         assert_eq!(
             accounts[&loyal_hub_abi::swap_exact_in_accounts::OUTPUT_MINT].owner(policy),
-            Some(spl_token::id())
+            None
         );
         assert_pubkey_constraint(
             policy,
@@ -1365,6 +1367,12 @@ mod tests {
             policy,
             &accounts[&loyal_hub_abi::swap_exact_in_accounts::TOKEN_PROGRAM],
             &[spl_token::id()],
+            None,
+        );
+        assert_pubkey_constraint(
+            policy,
+            &accounts[&loyal_hub_abi::swap_exact_in_accounts::TOKEN_2022_PROGRAM],
+            &[TOKEN_2022_PROGRAM_ID],
             None,
         );
         assert_data_u8_equals(
@@ -1400,8 +1408,22 @@ mod tests {
         constraint: &DecodedAccountConstraint,
         authority: Pubkey,
     ) {
+        assert_token_authority_constraint_with_owner(
+            policy,
+            constraint,
+            authority,
+            Some(spl_token::id()),
+        );
+    }
+
+    fn assert_token_authority_constraint_with_owner(
+        policy: &DecodedProgramInteractionPolicy,
+        constraint: &DecodedAccountConstraint,
+        authority: Pubkey,
+        owner: Option<Pubkey>,
+    ) {
         assert_eq!(constraint.kind, DecodedAccountConstraintKind::AccountData);
-        assert_eq!(constraint.owner(policy), Some(spl_token::id()));
+        assert_eq!(constraint.owner(policy), owner);
         assert_data_slice_equals(&constraint.data_constraints[0], 32, authority.as_ref());
     }
 

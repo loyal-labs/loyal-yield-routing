@@ -113,31 +113,27 @@ pub(crate) fn loyal_hub_constraint(
                 vec![vault],
                 None,
             ),
-            account_data_constraint(
-                loyal_hub_abi::swap_exact_in_accounts::HUB_INPUT,
-                Some(spl_token::id()),
-            ),
-            account_data_constraint(
-                loyal_hub_abi::swap_exact_in_accounts::HUB_OUTPUT,
-                Some(spl_token::id()),
-            ),
-            spl_token_authority_constraint(
+            account_data_constraint(loyal_hub_abi::swap_exact_in_accounts::HUB_INPUT, None),
+            account_data_constraint(loyal_hub_abi::swap_exact_in_accounts::HUB_OUTPUT, None),
+            token_authority_constraint(
                 loyal_hub_abi::swap_exact_in_accounts::USER_INPUT,
                 vault,
+                None,
             ),
-            spl_token_authority_constraint(
+            token_authority_constraint(
                 loyal_hub_abi::swap_exact_in_accounts::USER_OUTPUT,
                 vault,
+                None,
             ),
             pubkey_constraint(
                 loyal_hub_abi::swap_exact_in_accounts::INPUT_MINT,
                 allowed_mints.clone(),
-                Some(spl_token::id()),
+                None,
             ),
             pubkey_constraint(
                 loyal_hub_abi::swap_exact_in_accounts::OUTPUT_MINT,
                 allowed_mints,
-                Some(spl_token::id()),
+                None,
             ),
             pubkey_constraint(
                 loyal_hub_abi::swap_exact_in_accounts::HUB_AUTHORIZER,
@@ -147,6 +143,11 @@ pub(crate) fn loyal_hub_constraint(
             pubkey_constraint(
                 loyal_hub_abi::swap_exact_in_accounts::TOKEN_PROGRAM,
                 vec![spl_token::id()],
+                None,
+            ),
+            pubkey_constraint(
+                loyal_hub_abi::swap_exact_in_accounts::TOKEN_2022_PROGRAM,
+                vec![TOKEN_2022_PROGRAM_ID],
                 None,
             ),
         ],
@@ -241,6 +242,14 @@ pub(crate) fn spl_token_authority_constraint(
     account_index: u8,
     authority: Pubkey,
 ) -> SquadsAccountConstraint {
+    token_authority_constraint(account_index, authority, Some(spl_token::id()))
+}
+
+pub(crate) fn token_authority_constraint(
+    account_index: u8,
+    authority: Pubkey,
+    owner: Option<Pubkey>,
+) -> SquadsAccountConstraint {
     SquadsAccountConstraint {
         account_index,
         account_constraint: SquadsAccountConstraintType::AccountData(vec![SquadsDataConstraint {
@@ -248,7 +257,7 @@ pub(crate) fn spl_token_authority_constraint(
             data_value: SquadsDataValue::U8Slice(authority.to_bytes().to_vec()),
             operator: SquadsDataOperator::Equals,
         }]),
-        owner: Some(spl_token::id()),
+        owner,
     }
 }
 
@@ -367,6 +376,14 @@ pub fn derive_loyal_hub_inventory_account_for_program(program_id: Pubkey, mint: 
     derive_loyal_hub_lane_inventory_account_for_program(program_id, mint, 0)
 }
 
+pub fn derive_loyal_hub_inventory_account_for_token_program(
+    program_id: Pubkey,
+    mint: Pubkey,
+    token_program_id: Pubkey,
+) -> Pubkey {
+    derive_loyal_hub_lane_inventory_account_for_token_program(program_id, mint, 0, token_program_id)
+}
+
 pub fn derive_loyal_hub_lane_inventory_account(mint: Pubkey, lane_id: u8) -> Pubkey {
     derive_loyal_hub_lane_inventory_account_for_program(LOYAL_HUB_SWAP_PROGRAM_ID, mint, lane_id)
 }
@@ -376,11 +393,25 @@ pub fn derive_loyal_hub_lane_inventory_account_for_program(
     mint: Pubkey,
     lane_id: u8,
 ) -> Pubkey {
+    derive_loyal_hub_lane_inventory_account_for_token_program(
+        program_id,
+        mint,
+        lane_id,
+        spl_token::id(),
+    )
+}
+
+pub fn derive_loyal_hub_lane_inventory_account_for_token_program(
+    program_id: Pubkey,
+    mint: Pubkey,
+    lane_id: u8,
+    token_program_id: Pubkey,
+) -> Pubkey {
     let hub_authority = derive_loyal_hub_lane_authority_for_program(program_id, lane_id);
     Pubkey::find_program_address(
         &[
             hub_authority.as_ref(),
-            spl_token::id().as_ref(),
+            token_program_id.as_ref(),
             mint.as_ref(),
         ],
         &ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -729,7 +760,31 @@ pub fn loyal_hub_swap_exact_in_instruction(
     hub_authorizer: Pubkey,
     args: LoyalHubSwapExactIn,
 ) -> Instruction {
-    loyal_hub_swap_exact_in_instruction_for_program(
+    loyal_hub_swap_exact_in_instruction_with_token_programs(
+        user_vault,
+        user_input,
+        user_output,
+        input_mint,
+        output_mint,
+        hub_authorizer,
+        spl_token::id(),
+        spl_token::id(),
+        args,
+    )
+}
+
+pub fn loyal_hub_swap_exact_in_instruction_with_token_programs(
+    user_vault: Pubkey,
+    user_input: Pubkey,
+    user_output: Pubkey,
+    input_mint: Pubkey,
+    output_mint: Pubkey,
+    hub_authorizer: Pubkey,
+    input_token_program: Pubkey,
+    output_token_program: Pubkey,
+    args: LoyalHubSwapExactIn,
+) -> Instruction {
+    loyal_hub_swap_exact_in_instruction_for_program_with_token_programs(
         LOYAL_HUB_SWAP_PROGRAM_ID,
         user_vault,
         user_input,
@@ -737,6 +792,8 @@ pub fn loyal_hub_swap_exact_in_instruction(
         input_mint,
         output_mint,
         hub_authorizer,
+        input_token_program,
+        output_token_program,
         args,
     )
 }
@@ -751,6 +808,32 @@ pub fn loyal_hub_swap_exact_in_instruction_for_program(
     hub_authorizer: Pubkey,
     args: LoyalHubSwapExactIn,
 ) -> Instruction {
+    loyal_hub_swap_exact_in_instruction_for_program_with_token_programs(
+        program_id,
+        user_vault,
+        user_input,
+        user_output,
+        input_mint,
+        output_mint,
+        hub_authorizer,
+        spl_token::id(),
+        spl_token::id(),
+        args,
+    )
+}
+
+pub fn loyal_hub_swap_exact_in_instruction_for_program_with_token_programs(
+    program_id: Pubkey,
+    user_vault: Pubkey,
+    user_input: Pubkey,
+    user_output: Pubkey,
+    input_mint: Pubkey,
+    output_mint: Pubkey,
+    hub_authorizer: Pubkey,
+    input_token_program: Pubkey,
+    output_token_program: Pubkey,
+    args: LoyalHubSwapExactIn,
+) -> Instruction {
     Instruction {
         program_id,
         accounts: vec![
@@ -759,18 +842,20 @@ pub fn loyal_hub_swap_exact_in_instruction_for_program(
             AccountMeta::new(user_input, false),
             AccountMeta::new(user_output, false),
             AccountMeta::new(
-                derive_loyal_hub_lane_inventory_account_for_program(
+                derive_loyal_hub_lane_inventory_account_for_token_program(
                     program_id,
                     input_mint,
                     args.lane_id,
+                    input_token_program,
                 ),
                 false,
             ),
             AccountMeta::new(
-                derive_loyal_hub_lane_inventory_account_for_program(
+                derive_loyal_hub_lane_inventory_account_for_token_program(
                     program_id,
                     output_mint,
                     args.lane_id,
+                    output_token_program,
                 ),
                 false,
             ),
@@ -782,6 +867,7 @@ pub fn loyal_hub_swap_exact_in_instruction_for_program(
             ),
             AccountMeta::new_readonly(hub_authorizer, true),
             AccountMeta::new_readonly(spl_token::id(), false),
+            AccountMeta::new_readonly(TOKEN_2022_PROGRAM_ID, false),
         ],
         data: loyal_hub_swap_exact_in_data(args),
     }
@@ -1163,7 +1249,7 @@ mod tests {
         );
 
         assert_eq!(ix.program_id, LOYAL_HUB_SWAP_PROGRAM_ID);
-        assert_eq!(ix.accounts.len(), 11);
+        assert_eq!(ix.accounts.len(), 12);
         assert_eq!(
             ix.accounts[loyal_hub_abi::swap_exact_in_accounts::CONFIG as usize],
             AccountMeta::new_readonly(derive_loyal_hub_config(), false)
@@ -1206,6 +1292,10 @@ mod tests {
             ix.accounts[loyal_hub_abi::swap_exact_in_accounts::TOKEN_PROGRAM as usize],
             AccountMeta::new_readonly(spl_token::id(), false)
         );
+        assert_eq!(
+            ix.accounts[loyal_hub_abi::swap_exact_in_accounts::TOKEN_2022_PROGRAM as usize],
+            AccountMeta::new_readonly(TOKEN_2022_PROGRAM_ID, false)
+        );
         assert_eq!(ix.data.len(), LOYAL_HUB_SWAP_EXACT_IN_DATA_LEN);
         assert_eq!(
             ix.data[LOYAL_HUB_SWAP_TAG_OFFSET as usize],
@@ -1215,6 +1305,59 @@ mod tests {
             &ix.data[LOYAL_HUB_SWAP_MAX_FEE_BPS_OFFSET as usize
                 ..LOYAL_HUB_SWAP_MAX_FEE_BPS_OFFSET as usize + 2],
             &50u16.to_le_bytes()
+        );
+    }
+
+    #[test]
+    fn loyal_hub_swap_instruction_can_derive_token_2022_inventory_accounts() {
+        let user_vault = Pubkey::new_unique();
+        let user_input = Pubkey::new_unique();
+        let user_output = Pubkey::new_unique();
+        let input_mint = Pubkey::new_unique();
+        let output_mint = Pubkey::new_unique();
+        let hub_authorizer = Pubkey::new_unique();
+        let args = LoyalHubSwapExactIn {
+            amount_in: 10,
+            amount_out: 9,
+            min_out: 8,
+            max_fee_bps: 50,
+            lane_id: 2,
+        };
+
+        let ix = loyal_hub_swap_exact_in_instruction_with_token_programs(
+            user_vault,
+            user_input,
+            user_output,
+            input_mint,
+            output_mint,
+            hub_authorizer,
+            TOKEN_2022_PROGRAM_ID,
+            spl_token::id(),
+            args,
+        );
+
+        assert_eq!(
+            ix.accounts[loyal_hub_abi::swap_exact_in_accounts::HUB_INPUT as usize],
+            AccountMeta::new(
+                derive_loyal_hub_lane_inventory_account_for_token_program(
+                    LOYAL_HUB_SWAP_PROGRAM_ID,
+                    input_mint,
+                    2,
+                    TOKEN_2022_PROGRAM_ID,
+                ),
+                false,
+            )
+        );
+        assert_eq!(
+            ix.accounts[loyal_hub_abi::swap_exact_in_accounts::HUB_OUTPUT as usize],
+            AccountMeta::new(
+                derive_loyal_hub_lane_inventory_account(output_mint, 2),
+                false,
+            )
+        );
+        assert_eq!(
+            ix.accounts[loyal_hub_abi::swap_exact_in_accounts::TOKEN_2022_PROGRAM as usize],
+            AccountMeta::new_readonly(TOKEN_2022_PROGRAM_ID, false)
         );
     }
 
@@ -1454,34 +1597,36 @@ mod tests {
         assert!(has_account_data_constraint(
             &constraint,
             loyal_hub_abi::swap_exact_in_accounts::HUB_INPUT,
-            Some(spl_token::id()),
+            None,
         ));
         assert!(has_account_data_constraint(
             &constraint,
             loyal_hub_abi::swap_exact_in_accounts::HUB_OUTPUT,
-            Some(spl_token::id()),
+            None,
         ));
-        assert!(has_token_authority_constraint(
+        assert!(has_token_authority_constraint_with_owner(
             &constraint,
             loyal_hub_abi::swap_exact_in_accounts::USER_INPUT,
             vault,
+            None,
         ));
-        assert!(has_token_authority_constraint(
+        assert!(has_token_authority_constraint_with_owner(
             &constraint,
             loyal_hub_abi::swap_exact_in_accounts::USER_OUTPUT,
             vault,
+            None,
         ));
         assert!(has_pubkey_constraint(
             &constraint,
             loyal_hub_abi::swap_exact_in_accounts::INPUT_MINT,
             &[usdc, pyusd],
-            Some(spl_token::id()),
+            None,
         ));
         assert!(has_pubkey_constraint(
             &constraint,
             loyal_hub_abi::swap_exact_in_accounts::OUTPUT_MINT,
             &[usdc, pyusd],
-            Some(spl_token::id()),
+            None,
         ));
         assert!(has_pubkey_constraint(
             &constraint,
@@ -1493,6 +1638,12 @@ mod tests {
             &constraint,
             loyal_hub_abi::swap_exact_in_accounts::TOKEN_PROGRAM,
             &[spl_token::id()],
+            None,
+        ));
+        assert!(has_pubkey_constraint(
+            &constraint,
+            loyal_hub_abi::swap_exact_in_accounts::TOKEN_2022_PROGRAM,
+            &[TOKEN_2022_PROGRAM_ID],
             None,
         ));
         assert!(has_u8_data_constraint(
@@ -1514,9 +1665,23 @@ mod tests {
         account_index: u8,
         authority: Pubkey,
     ) -> bool {
+        has_token_authority_constraint_with_owner(
+            constraint,
+            account_index,
+            authority,
+            Some(spl_token::id()),
+        )
+    }
+
+    fn has_token_authority_constraint_with_owner(
+        constraint: &SquadsInstructionConstraint,
+        account_index: u8,
+        authority: Pubkey,
+        expected_owner: Option<Pubkey>,
+    ) -> bool {
         constraint.account_constraints.iter().any(|account| {
             account.account_index == account_index
-                && account.owner == Some(spl_token::id())
+                && account.owner == expected_owner
                 && matches!(
                     &account.account_constraint,
                     SquadsAccountConstraintType::AccountData(data_constraints)

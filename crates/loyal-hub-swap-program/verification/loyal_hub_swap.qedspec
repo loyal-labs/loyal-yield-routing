@@ -133,6 +133,7 @@ handler swap_exact_in
     hub_authority  : readonly, pda ["hub-authority", lane_id]
     hub_authorizer : signer
     token_program  : program, type token
+    token_2022_program : program, type token # optional
   }
 
   requires amount_in > 0 else InvalidAmount

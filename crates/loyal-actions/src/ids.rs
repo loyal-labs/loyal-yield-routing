@@ -34,6 +34,7 @@ pub const LOYAL_HUB_CONFIG_SEED: &[u8] = loyal_hub_abi::CONFIG_SEED;
 pub const LOYAL_HUB_AUTHORITY_SEED: &[u8] = loyal_hub_abi::HUB_AUTHORITY_SEED;
 pub const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
     pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+pub const TOKEN_2022_PROGRAM_ID: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 pub const SUBSCRIPTIONS_PROGRAM_ID: Pubkey =
     pubkey!("De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44");
 pub const SUBSCRIPTIONS_INIT_AUTHORITY: u8 = 0;

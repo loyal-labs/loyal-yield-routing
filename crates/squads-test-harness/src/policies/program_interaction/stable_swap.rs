@@ -464,32 +464,32 @@ pub(super) fn loyal_hub_route_stable_swap_instruction_constraint(
             SquadsAccountConstraint {
                 account_index: loyal_actions::hub_abi::swap_exact_in_accounts::HUB_INPUT,
                 account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
-                owner: Some(spl_token::id()),
+                owner: None,
             },
             SquadsAccountConstraint {
                 account_index: loyal_actions::hub_abi::swap_exact_in_accounts::HUB_OUTPUT,
                 account_constraint: SquadsAccountConstraintType::AccountData(vec![]),
-                owner: Some(spl_token::id()),
+                owner: None,
             },
             SquadsAccountConstraint {
                 account_index: loyal_actions::hub_abi::swap_exact_in_accounts::USER_INPUT,
                 account_constraint: token_authority_account_data(vault),
-                owner: Some(spl_token::id()),
+                owner: None,
             },
             SquadsAccountConstraint {
                 account_index: loyal_actions::hub_abi::swap_exact_in_accounts::USER_OUTPUT,
                 account_constraint: token_authority_account_data(vault),
-                owner: Some(spl_token::id()),
+                owner: None,
             },
             SquadsAccountConstraint {
                 account_index: loyal_actions::hub_abi::swap_exact_in_accounts::INPUT_MINT,
                 account_constraint: SquadsAccountConstraintType::Pubkey(allowed_mints.clone()),
-                owner: Some(spl_token::id()),
+                owner: None,
             },
             SquadsAccountConstraint {
                 account_index: loyal_actions::hub_abi::swap_exact_in_accounts::OUTPUT_MINT,
                 account_constraint: SquadsAccountConstraintType::Pubkey(allowed_mints),
-                owner: Some(spl_token::id()),
+                owner: None,
             },
             SquadsAccountConstraint {
                 account_index: loyal_actions::hub_abi::swap_exact_in_accounts::HUB_AUTHORIZER,
@@ -499,6 +499,13 @@ pub(super) fn loyal_hub_route_stable_swap_instruction_constraint(
             SquadsAccountConstraint {
                 account_index: loyal_actions::hub_abi::swap_exact_in_accounts::TOKEN_PROGRAM,
                 account_constraint: SquadsAccountConstraintType::Pubkey(vec![spl_token::id()]),
+                owner: None,
+            },
+            SquadsAccountConstraint {
+                account_index: loyal_actions::hub_abi::swap_exact_in_accounts::TOKEN_2022_PROGRAM,
+                account_constraint: SquadsAccountConstraintType::Pubkey(vec![
+                    loyal_actions::TOKEN_2022_PROGRAM_ID,
+                ]),
                 owner: None,
             },
         ],
