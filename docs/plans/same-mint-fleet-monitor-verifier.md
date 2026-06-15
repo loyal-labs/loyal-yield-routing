@@ -267,9 +267,8 @@ yet proven`.
 ## Current Verification Record
 
 Recorded on June 15, 2026. The evidence below supports implementation, dry-run,
-cleanup, blocker checks, and one successful local live E2E. Overall PASS still
-requires Render dry-run logs if the Render rollout section remains a required
-gate.
+cleanup, blocker checks, one successful local live E2E, and the Render dry-run
+rollout of the fleet worker.
 
 - Local checks before live attempt: PASS for `NO_DNA=1 cargo fmt --check`,
   `NO_DNA=1 cargo check -p loyal-yield-orchestrator --bin
@@ -465,17 +464,27 @@ gate.
   --all-active-vaults`. It returned `status: fleet_poll`, `execute: false`,
   `candidateCount: 4`, `discoveredVaultCount: 0`, and `results: []`, proving
   the inactive vault/policy rows are no longer monitored.
-- Render service readback: FAIL for the rollout gate. The live
-  `loyal-same-mint-yield-monitor` service `srv-d8n7gqbbc2fs73emk610` still
-  points at light-worker image
-  `sha-70c0636129ccfe62c7f35f2c64c344b770221453` and still runs
-  `/usr/local/bin/same-mint-yield-monitor --settings
-  6jgkucnbz1RuHq6NULqACQY3r2XegHaWhgPpaCEGPCA3 --vault-index 1
-  --poll-interval-seconds 300`. The required live command is
+- Render rollout: PASS for dry-run fleet mode. The `worker-images` GitHub
+  Actions run `27525329003` built and pushed the light-worker image for commit
+  `d3497113aed8fedb83dbaa3ea398f40ac58aab37`; the light-worker matrix job
+  completed successfully at `2026-06-15T05:15:33Z`. Render deploy
+  `dep-d8nom81kh4rs73fe3td0` is live on
+  `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-d3497113aed8fedb83dbaa3ea398f40ac58aab37`
+  with image digest
+  `sha256:b34feb49ef99616b91570f248fde65cc257523b45c8a3f606c3249c908adfa5b`.
+  Service readback for `srv-d8n7gqbbc2fs73emk610` shows the command
   `/usr/local/bin/same-mint-yield-monitor --all-active-vaults
-  --poll-interval-seconds 300` with the current light-worker image and no
-  `SOLANA_TESTING_PK`. Render logs are not recorded here because the log query
-  was interrupted before completion.
+  --poll-interval-seconds 300`. The service env-var names are
+  `NEON_DATABASE_URL`, `TIMESCALEDB_URL`, `SOLANA_RPC_URL`,
+  `YIELD_ROUTER_KEYPAIR`, and `RUST_LOG`; `SOLANA_TESTING_PK` is absent.
+- Render dry-run log: PASS. The first post-deploy worker poll at
+  `2026-06-15T05:20:03Z` reported `status: fleet_poll`, `execute: false`,
+  `allActiveVaults: true`, `candidateCount: 4`, `discoveredVaultCount: 0`,
+  `pollIntervalSeconds: 300`, and `results: []`. There were no per-vault
+  Render results because the verified E2E full withdrawal had already marked the
+  selected vault and policy inactive. The local live E2E above proves the
+  per-vault pickup/execution path; this Render dry-run proves the deployed
+  worker is now in fleet mode and will ignore the cleaned-up vault.
 - Current Verdict:
   Fleet Discovery: PASS - live fleet discovered the active policy/vault during
   the E2E and returned no rows after cleanup.
@@ -492,13 +501,10 @@ gate.
   rows.
   Live Full-Flow E2E: PASS - real deposit, monitor pickup, best-reserve move,
   and full withdrawal completed.
-  Render Rollout Shape: FAIL - repo config has the expected pinned image shape,
-  but the deployed service still uses the old explicit settings/vault command
-  and an older light-worker image. Dry-run Render logs have not been recorded.
-  Local Checks: PASS - see local command results above; rerun after final doc
-  edits before closing this verifier.
+  Render Rollout Shape: PASS - deployed dry-run worker uses the pinned
+  light-worker image, fleet command, `YIELD_ROUTER_KEYPAIR`, and no
+  `SOLANA_TESTING_PK`.
+  Local Checks: PASS - see local command results above.
   Required Live Evidence: PASS - command output, direct DB readback, and Solana
   RPC confirmation summaries recorded above.
-  Overall Verdict: FAIL - the remaining gate is Render rollout: deploy the
-  current light-worker image, switch the service to fleet mode, confirm no
-  `SOLANA_TESTING_PK`, and record dry-run logs.
+  Overall Verdict: PASS
