@@ -461,7 +461,8 @@ fn same_mint_usdc_markets_are_supported(markets: &[Pubkey]) -> bool {
     }
     for market in markets {
         match *market {
-            KAMINO_MAIN_MARKET | KAMINO_FIGURE_MARKET => {}
+            KAMINO_MAIN_MARKET | KAMINO_FIGURE_MARKET | KAMINO_MAPLE_MARKET
+            | KAMINO_ONRE_MARKET | KAMINO_ETHENA_MARKET => {}
             _ => return false,
         }
     }
@@ -1753,7 +1754,13 @@ mod tests {
             context,
             YieldRouteUniverse::new(
                 vec![USDC_MINT],
-                vec![KAMINO_MAIN_MARKET, KAMINO_FIGURE_MARKET],
+                vec![
+                    KAMINO_MAIN_MARKET,
+                    KAMINO_FIGURE_MARKET,
+                    KAMINO_MAPLE_MARKET,
+                    KAMINO_ONRE_MARKET,
+                    KAMINO_ETHENA_MARKET,
+                ],
                 vec![USDC_MINT],
             ),
             vec![],
@@ -1766,11 +1773,22 @@ mod tests {
         assert_eq!(detected.route_modes, vec![DetectedYieldRouteMode::SameMint]);
         assert_eq!(
             detected.kamino_markets,
-            vec![KAMINO_MAIN_MARKET, KAMINO_FIGURE_MARKET]
+            vec![
+                KAMINO_MAIN_MARKET,
+                KAMINO_FIGURE_MARKET,
+                KAMINO_MAPLE_MARKET,
+                KAMINO_ONRE_MARKET,
+                KAMINO_ETHENA_MARKET,
+            ]
         );
         assert_eq!(detected.kamino_liquidity_mints, vec![USDC_MINT]);
         assert_eq!(detected.stable_mints, vec![USDC_MINT]);
-        assert_eq!(detected.universe_preset, None);
+        assert_eq!(
+            detected.universe_preset,
+            Some(YieldRouteUniversePreset::KaminoStable(
+                KaminoStableRiskProfile::Safe
+            ))
+        );
     }
 
     #[test]

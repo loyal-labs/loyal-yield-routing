@@ -156,6 +156,54 @@ pub fn execute_program_interaction_policy_instruction(
     }
 }
 
+pub fn execute_sync_transaction_instruction(
+    settings: Pubkey,
+    signer: Pubkey,
+    account_index: u8,
+    compiled_instructions: Vec<SquadsCompiledInstruction>,
+    mut transaction_accounts: Vec<AccountMeta>,
+) -> Instruction {
+    for account in &mut transaction_accounts {
+        account.is_signer = false;
+    }
+    let mut accounts = vec![
+        AccountMeta::new(settings, false),
+        AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+        AccountMeta::new_readonly(signer, true),
+    ];
+    accounts.append(&mut transaction_accounts);
+
+    Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts,
+        data: serialize_squads_sync_transaction_args(
+            account_index,
+            squads_compiled_instruction_payload(&compiled_instructions),
+        ),
+    }
+}
+
+pub fn remove_policy_instruction(
+    settings: Pubkey,
+    authority: Pubkey,
+    policy: Pubkey,
+) -> Instruction {
+    let action = SquadsSettingsAction::PolicyRemove { policy };
+
+    Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(settings, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(policy, false),
+        ],
+        data: serialize_settings_actions(vec![action]),
+    }
+}
+
 fn push_or_update_account_meta(accounts: &mut Vec<AccountMeta>, meta: AccountMeta) -> u8 {
     if let Some(index) = accounts
         .iter()
@@ -210,6 +258,18 @@ fn serialize_squads_sync_policy_payload_args(
         account_index,
         num_signers: SQUADS_SYNC_SIGNER_COUNT,
         payload: SquadsSyncPayload::Policy(policy_payload),
+    }
+    .serialize(&mut data)
+    .unwrap();
+    data
+}
+
+fn serialize_squads_sync_transaction_args(account_index: u8, payload: Vec<u8>) -> Vec<u8> {
+    let mut data = Vec::from(SQUADS_EXECUTE_TRANSACTION_SYNC_V2_DISCRIMINATOR);
+    SquadsSyncTransactionArgs {
+        account_index,
+        num_signers: SQUADS_SYNC_SIGNER_COUNT,
+        payload: SquadsSyncPayload::Transaction(payload),
     }
     .serialize(&mut data)
     .unwrap();

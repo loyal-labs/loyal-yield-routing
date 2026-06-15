@@ -1,17 +1,32 @@
 # Same-Mint Reserve Swap Script
 
-This is the first local proof script for moving a vault's USDC position between Kamino USDC reserves with Neon as the control plane.
+This is the local proof script for moving a vault's USDC position between Kamino
+USDC reserves with Neon as the control plane.
 
-The script is intentionally scoped to Main USDC <-> Prime USDC. Use `--direction main-to-prime` or `--direction prime-to-main`; `main-to-prime` is the default.
+The legacy lifecycle helpers are scoped to Main USDC <-> Prime USDC. Use
+`--direction main-to-prime` or `--direction prime-to-main`; `main-to-prime` is
+the default for those helpers. The fleet monitor is broader: it loads every
+fresh Safe-basket USDC reserve from Timescale, reconciles all of those reserves
+from chain into Neon, and routes to the highest-APY USDC reserve when there is a
+positive edge. The route execution preflight then fails closed if the on-chain
+policy does not allow the selected market.
 
 - Main USDC reserve: `D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59`
 - Prime USDC reserve: `9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu`
 - Liquidity mint: `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`
 
+The examples below use these shell aliases:
+
+```sh
+SWAP='op run --env-file=.env.1password -- bun run same-mint:swap --'
+MONITOR='op run --env-file=.env.1password -- bun run same-mint:monitor --'
+MONITOR_E2E='op run --env-file=.env.1password -- bun run same-mint:monitor-e2e --'
+```
+
 Run the full lifecycle dry-run through 1Password:
 
 ```sh
-op run --env-file=.env.1password -- bun run same-mint:swap -- \
+$SWAP \
   --settings <SQUADS_SETTINGS> \
   --vault-index <VAULT_INDEX> \
   --e2e-main-prime-main <AMOUNT_RAW>
@@ -22,7 +37,7 @@ op run --env-file=.env.1password -- bun run same-mint:swap -- \
 Run only the route dry-run through 1Password:
 
 ```sh
-op run --env-file=.env.1password -- bun run same-mint:swap -- \
+$SWAP \
   --settings <SQUADS_SETTINGS> \
   --vault-index <VAULT_INDEX> \
   --direction main-to-prime \
@@ -47,9 +62,11 @@ The dry-run must also show the required policy state:
 - `policyPreflight.neonAllowsRequiredMarkets` is true.
 - `policyPreflight.policyAccountDecode.decodedAllowsRequiredMarkets` is true.
 - `policyPreflight.policyAccountDecode.decodedAllowsRequiredRouteSteps` is true.
-- `policyPreflight.policyAccountDecode.decodedAllowsInitObligation` is false for the normal route policy. Missing-obligation setup is setup/admin work, not optimizer work.
+- `policyPreflight.policyAccountDecode.decodedAllowsInitObligation` is false for the normal route policy. Missing-obligation setup belongs to setup/admin flows, so the optimizer must fail closed instead of running it.
 - `policyPreflight.policyAccountDecode.decodedAllowsRefreshObligation` is false for the normal route policy.
-- `routeExecution.policyConstraintValidation.matches` is true.
+
+The route execution check must also report
+`routeExecution.policyConstraintValidation.matches = true`.
 
 The decision state must be clear:
 
@@ -61,7 +78,7 @@ The decision state must be clear:
 Policy create/update dry-run:
 
 ```sh
-op run --env-file=.env.1password -- bun run same-mint:swap -- \
+$SWAP \
   --settings <SQUADS_SETTINGS> \
   --vault-index <VAULT_INDEX> \
   --update-policy \
@@ -73,7 +90,7 @@ Policy update mode uses `SOLANA_TESTING_PK` as the Squads settings authority and
 By default, `--update-policy` targets the next derived policy seed, which is useful for proving fresh policy creation. Add `--update-active-policy` to intentionally update the currently active DB policy in place:
 
 ```sh
-op run --env-file=.env.1password -- bun run same-mint:swap -- \
+$SWAP \
   --settings <SQUADS_SETTINGS> \
   --vault-index <VAULT_INDEX> \
   --update-policy \
@@ -89,7 +106,7 @@ Policy update and route execution compile v0 transactions, matching the sibling 
 Initial Main USDC deposit dry-run:
 
 ```sh
-op run --env-file=.env.1password -- bun run same-mint:swap -- \
+$SWAP \
   --settings <SQUADS_SETTINGS> \
   --vault-index <VAULT_INDEX> \
   --deposit-main-usdc <AMOUNT_RAW>
@@ -97,21 +114,87 @@ op run --env-file=.env.1password -- bun run same-mint:swap -- \
 
 Initial deposit mode uses `SOLANA_TESTING_PK` as the funding wallet. If the Main obligation is missing, execute mode first runs the same temporary init-only policy setup/restore sequence used by route execution. It then builds a user-signed funding transaction that creates the vault USDC ATA idempotently and transfers USDC into it, followed by a `YIELD_ROUTER_KEYPAIR`-signed ProgramInteraction execution that deposits into Kamino Main USDC. The KLend obligation refresh is a public pre-instruction before the protected deposit. In dry-run, the funding transaction is simulated, while the policy deposit transaction reports a packet summary and skips simulation when the funding transaction has not landed yet. `--execute` submits funding first, reloads chain state, simulates the policy deposit, submits it, and reconciles `vault_reserve_positions_current` only after confirmation.
 
-Full Main USDC withdraw dry-run, after the position has been moved back to Main:
+Setup-only obligation initialization for a policy-eligible Safe USDC reserve:
 
 ```sh
-op run --env-file=.env.1password -- bun run same-mint:swap -- \
+$SWAP \
   --settings <SQUADS_SETTINGS> \
   --vault-index <VAULT_INDEX> \
-  --full-withdraw-main-usdc
+  --setup-obligation-reserve <RESERVE>
 ```
 
-Full withdraw mode uses `YIELD_ROUTER_KEYPAIR` to execute one policy-mediated KLend `withdraw_obligation_collateral_and_redeem_reserve_collateral_v2` instruction against the Main USDC obligation. KLend reserve and obligation refreshes are public pre-instructions. Dry-run reports the decoded policy withdraw constraint index, packet/simulation status when a non-zero Main obligation exists, the Main obligation account proof, and the vault lamport proof before execution. `--execute` submits only after simulation passes, reloads chain state, reconciles `vault_reserve_positions_current` only after confirmation, and reports whether all tracked Main/Prime positions are zero, whether the Main obligation closed, and whether the vault lamports increased by at least the closed obligation lamports.
+With `--execute`, this setup/admin mode uses `SOLANA_TESTING_PK` to temporarily
+narrow the route policy to `kamino_init_obligation`, uses `YIELD_ROUTER_KEYPAIR`
+to execute the protected init instruction, then restores the same-mint route
+policy and records the restored policy/vault rows in Neon. Fleet optimization
+does not run this setup path; it returns `blocked_missing_obligation_setup` if a
+selected target obligation is missing.
+
+Full reserve withdraw dry-run, after the position has been moved to any Safe
+USDC reserve:
+
+```sh
+$SWAP \
+  --settings <SQUADS_SETTINGS> \
+  --vault-index <VAULT_INDEX> \
+  --full-withdraw-reserve <CURRENT_RESERVE>
+```
+
+`--full-withdraw-main-usdc` remains as a compatibility alias for Main USDC.
+Full withdraw mode uses `YIELD_ROUTER_KEYPAIR` to execute one policy-mediated
+KLend `withdraw_obligation_collateral_and_redeem_reserve_collateral_v2`
+instruction against the selected reserve's obligation. KLend reserve and
+obligation refreshes are public pre-instructions. Dry-run reports the decoded
+policy withdraw constraint index, packet/simulation status when a non-zero
+obligation exists, the obligation account proof, the vault/wallet USDC proofs,
+the policy account proof, and the rent cleanup preview. `--execute` submits only
+after simulation passes, then uses the settings authority from
+`SOLANA_TESTING_PK` to recover the vault USDC into the authority wallet, close
+the vault USDC ATA, remove the route policy account, reload chain state,
+reconcile `vault_reserve_positions_current` after confirmation, and mark the
+selected route policy and managed vault inactive so fleet monitoring stops for
+that vault. The output separates `policyWithdraw`, `walletRecovery`, and
+`policyClose` signatures so verifier runs can check signer boundaries and close
+evidence directly.
+
+Fleet monitor dry-run:
+
+```sh
+$MONITOR \
+  --once \
+  --all-active-vaults
+```
+
+Render runs the same monitor in fleet dry-run mode:
+
+```sh
+/usr/local/bin/same-mint-yield-monitor --all-active-vaults --poll-interval-seconds 300
+```
+
+Fleet execution adds `--execute` after the verifier records a local E2E PASS and
+dry-run logs show candidate selection plus per-vault skip/plan results. Fleet
+mode uses `YIELD_ROUTER_KEYPAIR` for active-policy discovery and route execution;
+it does not use `SOLANA_TESTING_PK`.
+
+Monitor E2E dry-run:
+
+```sh
+$MONITOR_E2E \
+  --settings <SQUADS_SETTINGS> \
+  --vault-index <VAULT_INDEX> \
+  --amount-raw <AMOUNT_RAW>
+```
+
+The E2E command requires Main USDC to have a real positive APY edge to another
+eligible Safe USDC reserve before setup. With `--execute`, it creates or updates
+the policy, pre-initializes the best target obligation when needed, deposits
+into Main USDC, reads Neon after each phase, runs the fleet monitor until this
+vault is executed, then withdraws from the reserve where the monitor landed.
 
 Execute command shape, after explicit approval:
 
 ```sh
-op run --env-file=.env.1password -- bun run same-mint:swap -- \
+$SWAP \
   --settings <SQUADS_SETTINGS> \
   --vault-index <VAULT_INDEX> \
   --source-reserve <SOURCE_RESERVE> \
@@ -138,18 +221,22 @@ Live E2E evidence for settings `6jgk...`, vault index `1`:
 - Final readback showed Main and Prime positions at `0`, both tracked obligations closed, vault USDC ATA at `997` raw, and snapshot `217`.
 - Full-withdraw rent proof reported `closedObligationLamports = 24165120`, `rentRefundLamports = 24165120`, and `refundAtLeastClosedObligationLamports = true`.
 
-The active route policy was later narrowed in place after moving KLend refresh out of policy execution. Active policy `77DRX1HR3WdTTsTLaHowiEnCpm3hHCXVXgwxxboUhaKQ` now decodes as:
-
-- `instructionCount = 2`
-- `decodedAllowsInitObligation = false`
-- `decodedAllowsRefreshObligation = false`
-- `decodedAllowsRequiredMarkets = true`
-- `decodedAllowsRequiredRouteSteps = true`
-- route steps: KLend withdraw and KLend deposit only
-- live update signature: `RfV9gXFJM7nxM5vtQHG6iJ7EqYt1N5B49CEAYAtgRjftkzC9cW4G69STweadr3tav4JCvNEEKdCXqQ64w2ezRDR`
+The active route policy was later narrowed in place after moving KLend refresh
+out of policy execution. Active policy
+`77DRX1HR3WdTTsTLaHowiEnCpm3hHCXVXgwxxboUhaKQ` now decodes with
+`instructionCount = 2`, `decodedAllowsInitObligation = false`,
+`decodedAllowsRefreshObligation = false`, `decodedAllowsRequiredMarkets = true`,
+and `decodedAllowsRequiredRouteSteps = true`. Its route steps are KLend withdraw
+and KLend deposit only. The live update signature was
+`RfV9gXFJM7nxM5vtQHG6iJ7EqYt1N5B49CEAYAtgRjftkzC9cW4G69STweadr3tav4JCvNEEKdCXqQ64w2ezRDR`.
 
 The normal route readback after that update confirms the DB active policy and on-chain policy account agree. Route execution is currently blocked only because the source reserve has no value after the successful full withdrawal.
 
 Operational note: a fresh next-seed bootstrap policy account `HPhDWjk7VDZefbcZfxSbmGYDFYmzwW5pwSx5C8UxfP4N` was created while proving the fresh-policy path, but its finalize update was not sent because simulation failed with `InsufficientFundsForRent`. The settings authority had only about `0.0018 SOL`, while resizing a smaller bootstrap policy to the final policy size needed more rent. The DB active policy remains `77DR...`.
 
-Implementation note: the Squads harness has a newer pubkey-table ProgramInteraction representation, but the sibling generated SDK for the deployed Squads program uses the raw ProgramInteraction payload. A brief dry-run against the deployed program confirmed the pubkey-table tag is rejected with `InstructionDidNotDeserialize`, so this script stays on the live-compatible raw payload.
+Implementation note: the Squads test crate has a newer pubkey-table
+ProgramInteraction representation, but the sibling generated SDK for the
+deployed Squads program uses the raw ProgramInteraction payload. A brief dry-run
+against the deployed program confirmed the pubkey-table tag is rejected with
+`InstructionDidNotDeserialize`, so this script stays on the live-compatible raw
+payload.

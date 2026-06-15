@@ -16,6 +16,7 @@
     "autodeposit:test": "bun test scripts/execute-autodeposit-policy.test.ts",
     "same-mint:swap": "cargo run -p loyal-yield-orchestrator --bin same-mint-reserve-swap --",
     "same-mint:monitor": "cargo run -p loyal-yield-orchestrator --bin same-mint-yield-monitor --",
+    "same-mint:monitor-e2e": "cargo run -p loyal-yield-orchestrator --bin same-mint-monitor-e2e --",
     "balance-sweep:trigger": "cargo run -p balance-sweep-autodeposit-trigger",
     "balance-sweep:project": "cargo run -p balance-sweep-ata-projector",
     "loyal-actions:build": "bun run --cwd packages/loyal-actions build",

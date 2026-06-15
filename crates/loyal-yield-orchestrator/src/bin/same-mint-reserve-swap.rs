@@ -35,12 +35,12 @@ use klend_interface::{
 };
 use loyal_actions::{
     compile_squads_inner_instruction, derive_action_account,
-    execute_program_interaction_policy_instruction,
-    update_all_in_one_market_mint_yield_route_action, update_init_obligation_yield_route_action,
-    LoyalActionContext, RouteTopology, SwapLane, YieldRouteActionBuilder, YieldRouteActionSeeds,
-    YieldRouteActionSetup, YieldRouteUniverse, ASSOCIATED_TOKEN_PROGRAM_ID,
-    KAMINO_MAIN_USDC_RESERVE, SQUADS_SMART_ACCOUNT_PROGRAM_ID, USDC_MINT,
-    YIELD_ROUTE_WITHDRAW_ACTION_SEED,
+    execute_program_interaction_policy_instruction, execute_sync_transaction_instruction,
+    remove_policy_instruction, update_all_in_one_market_mint_yield_route_action,
+    update_init_obligation_yield_route_action, LoyalActionContext, RouteTopology, SwapLane,
+    YieldRouteActionBuilder, YieldRouteActionSeeds, YieldRouteActionSetup, YieldRouteUniverse,
+    ASSOCIATED_TOKEN_PROGRAM_ID, KAMINO_MAIN_USDC_RESERVE, SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+    USDC_MINT, YIELD_ROUTE_WITHDRAW_ACTION_SEED,
 };
 use loyal_yield_orchestrator::sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -75,6 +75,9 @@ use solana_sdk::{
 const KAMINO_PRIME_USDC_RESERVE: &str = "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu";
 const KAMINO_MAIN_MARKET: &str = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF";
 const KAMINO_PRIME_MARKET: &str = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA";
+const KAMINO_MAPLE_MARKET: &str = "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y";
+const KAMINO_ONRE_MARKET: &str = "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8";
+const KAMINO_ETHENA_MARKET: &str = "BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF";
 const SAME_MINT_ROUTE_MODE: &str = "same_mint_kamino";
 const DEFAULT_SOLANA_RPC_URL: &str = "https://api.mainnet-beta.solana.com";
 const PUBKEY_LEN: usize = 32;
@@ -88,6 +91,8 @@ const KAMINO_DEPOSIT_ROUTE_STEP: &str =
 const KAMINO_INIT_OBLIGATION_ROUTE_STEP: &str = "kamino_init_obligation";
 const KAMINO_REFRESH_OBLIGATION_ROUTE_STEP: &str = "kamino_refresh_obligation";
 const KAMINO_COLLATERAL_FARM_MODE: u8 = 0;
+const KAMINO_STABLE_UNIVERSE_PRESET: &str = "kamino_stable";
+const SAFE_RISK_PROFILE: &str = "safe";
 const LOOKUP_TABLE_EXTEND_CHUNK_SIZE: usize = 20;
 const LOOKUP_TABLE_WARMUP_MAX_POLLS: usize = 40;
 const LOOKUP_TABLE_WARMUP_POLL_MS: u64 = 500;
@@ -179,6 +184,42 @@ impl ReserveMove {
     }
 }
 
+fn reconcile_reserves_for_move(options: &CliOptions, reserve_move: &ReserveMove) -> Vec<String> {
+    let mut reserves = vec![
+        reserve_move.source_reserve.clone(),
+        reserve_move.target_reserve.clone(),
+    ];
+    if options.full_withdraw_main_usdc {
+        let main = KAMINO_MAIN_USDC_RESERVE.to_string();
+        if !reserves.iter().any(|existing| existing == &main) {
+            reserves.push(main);
+        }
+    }
+    if let Some(reserve) = &options.full_withdraw_reserve {
+        if !reserves.iter().any(|existing| existing == reserve) {
+            reserves.push(reserve.clone());
+        }
+    }
+    if let Some(reserve) = &options.setup_obligation_reserve {
+        if !reserves.iter().any(|existing| existing == reserve) {
+            reserves.push(reserve.clone());
+        }
+    }
+    for reserve in &options.reconcile_reserves {
+        if !reserves.iter().any(|existing| existing == reserve) {
+            reserves.push(reserve.clone());
+        }
+    }
+    reserves
+}
+
+fn full_withdraw_reserve(options: &CliOptions) -> String {
+    options
+        .full_withdraw_reserve
+        .clone()
+        .unwrap_or_else(|| KAMINO_MAIN_USDC_RESERVE.to_string())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CliOptions {
     settings: String,
@@ -190,10 +231,14 @@ struct CliOptions {
     update_active_policy: bool,
     initial_deposit_amount_raw: Option<u64>,
     full_withdraw_main_usdc: bool,
+    full_withdraw_reserve: Option<String>,
+    setup_obligation_reserve: Option<String>,
     e2e_deposit_amount_raw: Option<u64>,
     execute: bool,
     optimization_cycle: bool,
     reconcile_from_chain: bool,
+    reconcile_current_positions: bool,
+    reconcile_reserves: Vec<String>,
     seed_from_user_position: bool,
     provision_lookup_table: bool,
     rpc_url: String,
@@ -717,15 +762,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?
         .ok_or("no active managed vault found for settings and vault index")?;
     validate_vault_policy(&vault)?;
+    let reconcile_reserves = reconcile_reserves_for_move(&options, &reserve_move);
 
     let requires_chain_preview = options.reconcile_from_chain
         || options.initial_deposit_amount_raw.is_some()
-        || options.full_withdraw_main_usdc;
+        || options.full_withdraw_main_usdc
+        || options.full_withdraw_reserve.is_some()
+        || options.setup_obligation_reserve.is_some()
+        || options.reconcile_current_positions;
     let mut chain_preview = if requires_chain_preview {
         Some(load_chain_reconcile_preview(
             &options.rpc_url,
             &vault,
-            &reserve_move,
+            &reconcile_reserves,
         )?)
     } else {
         None
@@ -740,6 +789,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     } else {
         None
     };
+    if options.reconcile_current_positions {
+        run_reconcile_current_positions_flow(
+            &options,
+            &client,
+            &vault,
+            chain_preview
+                .as_ref()
+                .ok_or("reconcile current positions requires chain preview")?,
+        )
+        .await?;
+        return Ok(());
+    }
     if let Some(amount_raw) = options.initial_deposit_amount_raw {
         run_initial_main_usdc_deposit_flow(
             &options,
@@ -754,15 +815,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
         return Ok(());
     }
-    if options.full_withdraw_main_usdc {
-        run_full_main_usdc_withdraw_flow(
+    if let Some(setup_reserve) = &options.setup_obligation_reserve {
+        run_setup_obligation_flow(
             &options,
             &client,
             &vault,
             chain_preview
                 .as_ref()
-                .ok_or("full Main USDC withdraw requires chain preview")?,
+                .ok_or("setup obligation requires chain preview")?,
+            setup_reserve,
+        )
+        .await?;
+        return Ok(());
+    }
+    if options.full_withdraw_main_usdc || options.full_withdraw_reserve.is_some() {
+        let withdraw_reserve = full_withdraw_reserve(&options);
+        run_full_reserve_withdraw_flow(
+            &options,
+            &client,
+            &vault,
+            chain_preview
+                .as_ref()
+                .ok_or("full reserve withdraw requires chain preview")?,
             policy_preflight.as_ref(),
+            &withdraw_reserve,
         )
         .await?;
         return Ok(());
@@ -834,7 +910,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 chain_preview = Some(load_chain_reconcile_preview(
                     &options.rpc_url,
                     &vault,
-                    &reserve_move,
+                    &reconcile_reserves,
                 )?);
                 policy_preflight = if let Some(preview) = &chain_preview {
                     Some(load_policy_account_preflight(
@@ -1846,8 +1922,8 @@ async fn run_policy_update_flow(
             stable_mints: pubkeys_json(&final_universe.stable_mints),
             kamino_markets: pubkeys_json(&final_universe.kamino_markets),
             kamino_liquidity_mints: pubkeys_json(&final_universe.kamino_liquidity_mints),
-            universe_preset: None,
-            risk_profile: None,
+            universe_preset: Some(KAMINO_STABLE_UNIVERSE_PRESET.to_owned()),
+            risk_profile: Some(SAFE_RISK_PROFILE.to_owned()),
             swap_lanes: policy_swap_lanes.clone(),
         })
         .await?;
@@ -2127,8 +2203,8 @@ async fn execute_missing_obligation_setup(
             stable_mints: pubkeys_json(&final_universe.stable_mints),
             kamino_markets: pubkeys_json(&final_universe.kamino_markets),
             kamino_liquidity_mints: pubkeys_json(&final_universe.kamino_liquidity_mints),
-            universe_preset: None,
-            risk_profile: None,
+            universe_preset: Some(KAMINO_STABLE_UNIVERSE_PRESET.to_owned()),
+            risk_profile: Some(SAFE_RISK_PROFILE.to_owned()),
             swap_lanes: policy_swap_lanes,
         })
         .await?;
@@ -2150,6 +2226,96 @@ async fn execute_missing_obligation_setup(
         route_policy_simulation_units_consumed: route_policy_restore.simulation_units_consumed,
         route_policy_transaction_packet: route_policy_restore.transaction_packet,
     })
+}
+
+async fn run_setup_obligation_flow(
+    options: &CliOptions,
+    client: &NeonSqlClient,
+    vault: &SelectedVault,
+    preview: &ChainReconcilePreview,
+    setup_reserve: &str,
+) -> Result<(), Box<dyn Error>> {
+    let target = chain_position_for_reserve(preview, setup_reserve)?;
+    if target.obligation_exists {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "status": "setup_obligation_reserve_skipped_existing",
+                "writesDecision": false,
+                "writesCurrentPositions": false,
+                "sendsTransactions": false,
+                "execute": options.execute,
+                "vault": vault_json(vault),
+                "target": {
+                    "reserve": target.reserve,
+                    "market": target.market,
+                    "liquidityMint": target.liquidity_mint,
+                    "obligation": target.obligation,
+                    "obligationExists": true,
+                },
+                "chainReconcile": chain_reconcile_preview_json(preview),
+            }))?
+        );
+        return Ok(());
+    }
+
+    if !options.execute {
+        let dry_run = build_missing_obligation_setup_dry_run(options, vault, target)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "status": "setup_obligation_reserve_dry_run",
+                "writesDecision": false,
+                "writesCurrentPositions": false,
+                "sendsTransactions": false,
+                "execute": false,
+                "vault": vault_json(vault),
+                "target": {
+                    "reserve": target.reserve,
+                    "market": target.market,
+                    "liquidityMint": target.liquidity_mint,
+                    "obligation": target.obligation,
+                    "obligationExists": false,
+                },
+                "chainReconcile": chain_reconcile_preview_json(preview),
+                "missingObligationSetup": missing_obligation_setup_dry_run_json(target, &dry_run),
+            }))?
+        );
+        return Ok(());
+    }
+
+    let result = execute_missing_obligation_setup(options, client, vault, target).await?;
+    let post_preview = load_chain_reconcile_preview(
+        &options.rpc_url,
+        vault,
+        &preview
+            .positions
+            .iter()
+            .map(|position| position.reserve.clone())
+            .collect::<Vec<_>>(),
+    )?;
+    let post_target = chain_position_for_reserve(&post_preview, setup_reserve)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "status": "setup_obligation_reserve_executed",
+            "writesDecision": false,
+            "writesCurrentPositions": false,
+            "sendsTransactions": true,
+            "execute": true,
+            "vault": vault_json(vault),
+            "target": {
+                "reserve": post_target.reserve,
+                "market": post_target.market,
+                "liquidityMint": post_target.liquidity_mint,
+                "obligation": post_target.obligation,
+                "obligationExists": post_target.obligation_exists,
+            },
+            "setup": missing_obligation_setup_submit_result_json(target, &result),
+            "postChainReconcile": chain_reconcile_preview_json(&post_preview),
+        }))?
+    );
+    Ok(())
 }
 
 fn submit_built_policy_transaction(
@@ -2360,10 +2526,10 @@ async fn run_initial_main_usdc_deposit_flow(
         active_preview = load_chain_reconcile_preview(
             &options.rpc_url,
             vault,
-            &ReserveMove {
-                source_reserve: KAMINO_MAIN_USDC_RESERVE.to_string(),
-                target_reserve: KAMINO_PRIME_USDC_RESERVE.to_owned(),
-            },
+            &[
+                KAMINO_MAIN_USDC_RESERVE.to_string(),
+                KAMINO_PRIME_USDC_RESERVE.to_owned(),
+            ],
         )?;
         reloaded_policy_preflight = Some(load_policy_account_preflight(
             &options.rpc_url,
@@ -2523,10 +2689,10 @@ async fn run_initial_main_usdc_deposit_flow(
     let funded_preview = load_chain_reconcile_preview(
         &options.rpc_url,
         vault,
-        &ReserveMove {
-            source_reserve: KAMINO_MAIN_USDC_RESERVE.to_string(),
-            target_reserve: KAMINO_PRIME_USDC_RESERVE.to_owned(),
-        },
+        &[
+            KAMINO_MAIN_USDC_RESERVE.to_string(),
+            KAMINO_PRIME_USDC_RESERVE.to_owned(),
+        ],
     )?;
     let funded_main_position =
         chain_position_for_reserve(&funded_preview, &KAMINO_MAIN_USDC_RESERVE.to_string())?;
@@ -2573,10 +2739,10 @@ async fn run_initial_main_usdc_deposit_flow(
     let post_preview = load_chain_reconcile_preview(
         &options.rpc_url,
         vault,
-        &ReserveMove {
-            source_reserve: KAMINO_MAIN_USDC_RESERVE.to_string(),
-            target_reserve: KAMINO_PRIME_USDC_RESERVE.to_owned(),
-        },
+        &[
+            KAMINO_MAIN_USDC_RESERVE.to_string(),
+            KAMINO_PRIME_USDC_RESERVE.to_owned(),
+        ],
     )?;
     let snapshot = client
         .reconcile_vault(vault.id, chain_preview_reconciled_state(&post_preview)?)
@@ -2639,19 +2805,95 @@ async fn run_initial_main_usdc_deposit_flow(
     Ok(())
 }
 
-async fn run_full_main_usdc_withdraw_flow(
+async fn deactivate_vault_policy_after_full_withdraw(
+    client: &NeonSqlClient,
+    vault: &SelectedVault,
+) -> Result<Value, Box<dyn Error>> {
+    let mut tx = client.pool().begin().await?;
+    let policy_row = loyal_yield_orchestrator::sqlx::query(
+        r#"
+        UPDATE loyal_yield.route_policies
+        SET active = false, last_seen_at = now()
+        WHERE policy_account = $1
+        RETURNING id, active
+        "#,
+    )
+    .bind(&vault.policy_account)
+    .fetch_one(&mut *tx)
+    .await?;
+    let vault_row = loyal_yield_orchestrator::sqlx::query(
+        r#"
+        UPDATE loyal_yield.managed_vaults
+        SET active = false, last_seen_at = now()
+        WHERE id = $1
+        RETURNING id, active
+        "#,
+    )
+    .bind(vault.id.as_i64())
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    Ok(json!({
+        "policyId": policy_row.try_get::<i64, _>("id")?,
+        "policyActive": policy_row.try_get::<bool, _>("active")?,
+        "vaultId": vault_row.try_get::<i64, _>("id")?,
+        "vaultActive": vault_row.try_get::<bool, _>("active")?,
+    }))
+}
+
+async fn run_reconcile_current_positions_flow(
+    options: &CliOptions,
+    client: &NeonSqlClient,
+    vault: &SelectedVault,
+    preview: &ChainReconcilePreview,
+) -> Result<(), Box<dyn Error>> {
+    let snapshot = client
+        .reconcile_vault(vault.id, chain_preview_reconciled_state(preview)?)
+        .await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "status": "current_positions_reconciled",
+            "writesDecision": false,
+            "writesCurrentPositions": true,
+            "sendsTransactions": false,
+            "execute": options.execute,
+            "vault": vault_json(vault),
+            "requestedReserves": options.reconcile_reserves,
+            "reconciledReserveCount": preview.positions.len(),
+            "reconciledSnapshotId": snapshot.id.as_i64(),
+            "chainReconcile": chain_reconcile_preview_json(preview),
+        }))?
+    );
+    Ok(())
+}
+
+async fn run_full_reserve_withdraw_flow(
     options: &CliOptions,
     client: &NeonSqlClient,
     vault: &SelectedVault,
     preview: &ChainReconcilePreview,
     policy_preflight: Option<&PolicyAccountPreflight>,
+    withdraw_reserve: &str,
 ) -> Result<(), Box<dyn Error>> {
     let rpc =
         RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
     let lookup_table_pubkeys = lookup_table_pubkeys_from_options(options)?;
     let lookup_table_accounts = load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
     let signer = yield_router_keypair_from_env()?;
-    let fee_payer = solana_testing_keypair_from_env()?;
+    let authority_signer = solana_testing_keypair_from_env()?;
+    let authority_pubkey = Pubkey::from_str(&vault.authority)?;
+    if authority_signer.pubkey() != authority_pubkey {
+        return Err(format!(
+            "SOLANA_TESTING_PK pubkey {} does not match policy authority {}",
+            authority_signer.pubkey(),
+            authority_pubkey
+        )
+        .into());
+    }
+    let settings_pubkey = Pubkey::from_str(&vault.settings)?;
+    let policy_account_pubkey = Pubkey::from_str(&vault.policy_account)?;
     let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
     let account_index = u8::try_from(vault.vault_index).map_err(|_| {
         format!(
@@ -2659,36 +2901,50 @@ async fn run_full_main_usdc_withdraw_flow(
             vault.vault_index
         )
     })?;
-    let main = chain_position_for_reserve(preview, &KAMINO_MAIN_USDC_RESERVE.to_string())?;
-    let main_obligation_pubkey = Pubkey::from_str(&main.obligation)?;
-    let main_reserve_pubkey = Pubkey::from_str(&main.reserve)?;
-    let main_market_pubkey = Pubkey::from_str(&main.market)?;
+    let withdraw = chain_position_for_reserve(preview, withdraw_reserve)?;
+    let withdraw_obligation_pubkey = Pubkey::from_str(&withdraw.obligation)?;
+    let withdraw_reserve_pubkey = Pubkey::from_str(&withdraw.reserve)?;
+    let withdraw_market_pubkey = Pubkey::from_str(&withdraw.market)?;
+    let wallet_usdc_ata =
+        derive_associated_token_address(&authority_signer.pubkey(), &USDC_MINT, &spl_token::ID);
+    let vault_usdc_ata = derive_associated_token_address(&vault_pubkey, &USDC_MINT, &spl_token::ID);
+    let authority_account_before = load_account_proof(&rpc, &authority_signer.pubkey())?;
+    let (wallet_usdc_before_raw, wallet_usdc_before_exists) =
+        load_spl_token_account_amount(&rpc, &wallet_usdc_ata, &USDC_MINT)?;
+    let vault_usdc_ata_before = load_account_proof(&rpc, &vault_usdc_ata)?;
+    let policy_account_before = load_account_proof(&rpc, &policy_account_pubkey)?;
     let vault_account_before = load_account_proof(&rpc, &vault_pubkey)?;
     let obligation_before = load_obligation_account_proof(
         &rpc,
-        &main_obligation_pubkey,
+        &withdraw_obligation_pubkey,
         &vault_pubkey,
-        &main_market_pubkey,
-        &main_reserve_pubkey,
+        &withdraw_market_pubkey,
+        &withdraw_reserve_pubkey,
     )?;
 
     let mut blockers = Vec::new();
-    if !main.obligation_exists {
+    if !withdraw.obligation_exists {
         blockers.push(format!(
-            "Main obligation account {} does not exist",
-            main.obligation
+            "withdraw obligation account {} does not exist for reserve {}",
+            withdraw.obligation, withdraw.reserve
         ));
     }
-    if main.amount_raw == 0 {
+    if withdraw.amount_raw == 0 {
         blockers.push(format!(
-            "Main obligation account {} has zero deposited amount for reserve {}",
-            main.obligation, main.reserve
+            "withdraw obligation account {} has zero deposited amount for reserve {}",
+            withdraw.obligation, withdraw.reserve
         ));
     }
-    if !main.vault_liquidity_token_account_exists {
+    if !withdraw.vault_liquidity_token_account_exists {
         blockers.push(format!(
             "vault USDC ATA {} does not exist",
-            main.vault_liquidity_ata
+            withdraw.vault_liquidity_ata
+        ));
+    }
+    if !policy_account_before.exists {
+        blockers.push(format!(
+            "policy account {} does not exist",
+            vault.policy_account
         ));
     }
 
@@ -2698,6 +2954,7 @@ async fn run_full_main_usdc_withdraw_flow(
         policy_preflight,
         signer.pubkey(),
         account_index,
+        withdraw_reserve,
     ) {
         Ok(plan) => Some(plan),
         Err(error) => {
@@ -2710,11 +2967,11 @@ async fn run_full_main_usdc_withdraw_flow(
         instructions.push(plan.instruction.clone());
         Some(build_signed_transaction(
             &rpc,
-            fee_payer.pubkey(),
+            signer.pubkey(),
             &instructions,
             &lookup_table_accounts,
-            &[&fee_payer, &signer],
-            "full Main USDC policy withdraw",
+            &[&signer],
+            "full reserve USDC policy withdraw",
             if blockers.is_empty() {
                 None
             } else {
@@ -2724,21 +2981,51 @@ async fn run_full_main_usdc_withdraw_flow(
     } else {
         None
     };
+    let wallet_recovery_transaction = Some(build_vault_usdc_recovery_transaction(
+        &rpc,
+        &lookup_table_accounts,
+        settings_pubkey,
+        &authority_signer,
+        vault_pubkey,
+        account_index,
+        wallet_usdc_ata,
+        vault_usdc_ata,
+        withdraw.amount_raw,
+        Some("wallet recovery simulation requires the Kamino withdraw to land first".to_owned()),
+    )?);
+    let policy_close_instruction = remove_policy_instruction(
+        settings_pubkey,
+        authority_signer.pubkey(),
+        policy_account_pubkey,
+    );
+    let policy_close_transaction = Some(build_policy_transaction(
+        &rpc,
+        authority_signer.pubkey(),
+        policy_close_instruction,
+        &lookup_table_accounts,
+        &authority_signer,
+        "full withdraw policy close",
+        if blockers.is_empty() {
+            None
+        } else {
+            Some("policy close simulation skipped because preflight blockers exist".to_owned())
+        },
+    )?);
     dedup_strings_in_place(&mut blockers);
 
     if !options.execute {
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
-                "status": "full_withdraw_main_usdc_dry_run",
+                "status": "full_withdraw_reserve_dry_run",
                 "writesDecision": false,
                 "writesCurrentPositions": false,
                 "sendsTransactions": false,
                 "withdraw": {
-                    "reserve": KAMINO_MAIN_USDC_RESERVE.to_string(),
-                    "market": KAMINO_MAIN_MARKET,
+                    "reserve": withdraw.reserve,
+                    "market": withdraw.market,
                     "liquidityMint": USDC_MINT.to_string(),
-                    "amountRaw": main.amount_raw.to_string(),
+                    "amountRaw": withdraw.amount_raw.to_string(),
                     "amountSemantics": "kamino_obligation_collateral_deposited_amount",
                 },
                 "vault": vault_json(vault),
@@ -2750,12 +3037,31 @@ async fn run_full_main_usdc_withdraw_flow(
                 "preflightBlockers": blockers,
                 "rentCleanupProof": {
                     "vaultBefore": account_proof_json(&vault_account_before),
-                    "mainObligationBefore": obligation_account_proof_json(&obligation_before),
+                    "authorityBefore": account_proof_json(&authority_account_before),
+                    "vaultUsdcAtaBefore": account_proof_json(&vault_usdc_ata_before),
+                    "policyBefore": account_proof_json(&policy_account_before),
+                    "withdrawObligationBefore": obligation_account_proof_json(&obligation_before),
                     "afterAvailable": false,
                     "expectedRefundRecipient": vault.vault_pubkey,
                 },
+                "walletRecovery": {
+                    "wallet": authority_signer.pubkey().to_string(),
+                    "walletUsdcAta": wallet_usdc_ata.to_string(),
+                        "walletUsdcBeforeRaw": wallet_usdc_before_raw.to_string(),
+                        "walletUsdcBeforeExists": wallet_usdc_before_exists,
+                        "estimatedTransferAmountRaw": withdraw.amount_raw.to_string(),
+                        "cleanupSigner": authority_signer.pubkey().to_string(),
+                    },
                 "policyWithdraw": policy_plan.as_ref().map(|plan| full_withdraw_policy_preview_json(&plan.preview)),
                 "policyWithdrawTransaction": withdraw_transaction.as_ref().map(policy_transaction_json),
+                "walletRecoveryTransaction": wallet_recovery_transaction.as_ref().map(policy_transaction_json),
+                "policyClose": {
+                        "policyAccount": vault.policy_account,
+                        "settings": vault.settings,
+                        "authority": authority_signer.pubkey().to_string(),
+                        "kind": "squads_execute_settings_transaction_sync_policy_remove",
+                    },
+                "policyCloseTransaction": policy_close_transaction.as_ref().map(policy_transaction_json),
             }))?
         );
         return Ok(());
@@ -2765,54 +3071,122 @@ async fn run_full_main_usdc_withdraw_flow(
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
-                "status": "full_withdraw_main_usdc_preflight_blocked",
+                "status": "full_withdraw_reserve_preflight_blocked",
                 "writesDecision": false,
                 "writesCurrentPositions": false,
                 "sendsTransactions": false,
                 "preflightBlockers": blockers,
                 "rentCleanupProof": {
                     "vaultBefore": account_proof_json(&vault_account_before),
-                    "mainObligationBefore": obligation_account_proof_json(&obligation_before),
+                    "authorityBefore": account_proof_json(&authority_account_before),
+                    "vaultUsdcAtaBefore": account_proof_json(&vault_usdc_ata_before),
+                    "policyBefore": account_proof_json(&policy_account_before),
+                    "withdrawObligationBefore": obligation_account_proof_json(&obligation_before),
                 },
                 "policyWithdraw": policy_plan.as_ref().map(|plan| full_withdraw_policy_preview_json(&plan.preview)),
                 "policyWithdrawTransaction": withdraw_transaction.as_ref().map(policy_transaction_json),
+                "walletRecoveryTransaction": wallet_recovery_transaction.as_ref().map(policy_transaction_json),
+                "policyCloseTransaction": policy_close_transaction.as_ref().map(policy_transaction_json),
             }))?
         );
-        return Err("full Main USDC withdraw preflight blocked before live submit".into());
+        return Err("full reserve withdraw preflight blocked before live submit".into());
     }
     let policy_plan = policy_plan.ok_or("full withdraw plan was not built")?;
     let withdraw_transaction =
         withdraw_transaction.ok_or("full withdraw transaction was not built")?;
     if let Some(error) = &withdraw_transaction.simulation_error {
-        return Err(format!("full Main USDC withdraw simulation failed: {error}").into());
+        return Err(format!("full reserve withdraw simulation failed: {error}").into());
     }
 
     let submitted_slot = i64::try_from(rpc.get_slot()?)?;
     let signature = rpc.send_and_confirm_transaction(&withdraw_transaction.transaction)?;
     let confirmed_slot = i64::try_from(rpc.get_slot()?)?;
+    let (vault_usdc_after_withdraw_raw, vault_usdc_after_withdraw_exists) =
+        load_spl_token_account_amount(&rpc, &vault_usdc_ata, &USDC_MINT)?;
+    if !vault_usdc_after_withdraw_exists {
+        return Err(format!(
+            "vault USDC ATA {} is missing after Kamino withdraw",
+            vault_usdc_ata
+        )
+        .into());
+    }
+    let wallet_recovery_transaction = build_vault_usdc_recovery_transaction(
+        &rpc,
+        &lookup_table_accounts,
+        settings_pubkey,
+        &authority_signer,
+        vault_pubkey,
+        account_index,
+        wallet_usdc_ata,
+        vault_usdc_ata,
+        vault_usdc_after_withdraw_raw,
+        None,
+    )?;
+    if let Some(error) = &wallet_recovery_transaction.simulation_error {
+        return Err(format!("full withdraw wallet recovery simulation failed: {error}").into());
+    }
+    let wallet_recovery_submitted_slot = i64::try_from(rpc.get_slot()?)?;
+    let wallet_recovery_signature =
+        rpc.send_and_confirm_transaction(&wallet_recovery_transaction.transaction)?;
+    let wallet_recovery_confirmed_slot = i64::try_from(rpc.get_slot()?)?;
+
+    let policy_close_instruction = remove_policy_instruction(
+        settings_pubkey,
+        authority_signer.pubkey(),
+        policy_account_pubkey,
+    );
+    let policy_close_transaction = build_policy_transaction(
+        &rpc,
+        authority_signer.pubkey(),
+        policy_close_instruction,
+        &lookup_table_accounts,
+        &authority_signer,
+        "full withdraw policy close",
+        None,
+    )?;
+    if let Some(error) = &policy_close_transaction.simulation_error {
+        return Err(format!("full withdraw policy close simulation failed: {error}").into());
+    }
+    let policy_close_submitted_slot = i64::try_from(rpc.get_slot()?)?;
+    let policy_close_signature =
+        rpc.send_and_confirm_transaction(&policy_close_transaction.transaction)?;
+    let policy_close_confirmed_slot = i64::try_from(rpc.get_slot()?)?;
+
     let post_preview = load_chain_reconcile_preview(
         &options.rpc_url,
         vault,
-        &ReserveMove {
-            source_reserve: KAMINO_MAIN_USDC_RESERVE.to_string(),
-            target_reserve: KAMINO_PRIME_USDC_RESERVE.to_owned(),
-        },
+        &preview
+            .positions
+            .iter()
+            .map(|position| position.reserve.clone())
+            .collect::<Vec<_>>(),
     )?;
     let vault_account_after = load_account_proof(&rpc, &vault_pubkey)?;
     let obligation_after = load_obligation_account_proof(
         &rpc,
-        &main_obligation_pubkey,
+        &withdraw_obligation_pubkey,
         &vault_pubkey,
-        &main_market_pubkey,
-        &main_reserve_pubkey,
+        &withdraw_market_pubkey,
+        &withdraw_reserve_pubkey,
     )?;
+    let authority_account_after = load_account_proof(&rpc, &authority_signer.pubkey())?;
+    let (wallet_usdc_after_raw, wallet_usdc_after_exists) =
+        load_spl_token_account_amount(&rpc, &wallet_usdc_ata, &USDC_MINT)?;
+    let vault_usdc_ata_after = load_account_proof(&rpc, &vault_usdc_ata)?;
+    let policy_account_after = load_account_proof(&rpc, &policy_account_pubkey)?;
     let snapshot = client
         .reconcile_vault(vault.id, chain_preview_reconciled_state(&post_preview)?)
         .await?;
+    let inactive = deactivate_vault_policy_after_full_withdraw(client, vault).await?;
 
     let rent_refund_lamports =
         i128::from(vault_account_after.lamports) - i128::from(vault_account_before.lamports);
+    let authority_lamports_delta = i128::from(authority_account_after.lamports)
+        - i128::from(authority_account_before.lamports);
     let closed_obligation_lamports = i128::from(obligation_before.account.lamports);
+    let closed_policy_lamports = i128::from(policy_account_before.lamports);
+    let closed_vault_usdc_ata_lamports = i128::from(vault_usdc_ata_before.lamports);
+    let wallet_usdc_delta = i128::from(wallet_usdc_after_raw) - i128::from(wallet_usdc_before_raw);
     let all_tracked_positions_zero = post_preview
         .positions
         .iter()
@@ -2825,15 +3199,15 @@ async fn run_full_main_usdc_withdraw_flow(
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
-            "status": "full_withdraw_main_usdc_executed",
+            "status": "full_withdraw_reserve_executed",
             "writesDecision": false,
             "writesCurrentPositions": true,
             "sendsTransactions": true,
             "withdraw": {
-                "reserve": KAMINO_MAIN_USDC_RESERVE.to_string(),
-                "market": KAMINO_MAIN_MARKET,
+                "reserve": withdraw.reserve,
+                "market": withdraw.market,
                 "liquidityMint": USDC_MINT.to_string(),
-                "amountRaw": main.amount_raw.to_string(),
+                "amountRaw": withdraw.amount_raw.to_string(),
                 "amountSemantics": "kamino_obligation_collateral_deposited_amount",
             },
             "vault": vault_json(vault),
@@ -2845,20 +3219,64 @@ async fn run_full_main_usdc_withdraw_flow(
                 "simulationUnitsConsumed": withdraw_transaction.simulation_units_consumed,
                 "transaction": transaction_packet_json(&withdraw_transaction.transaction_packet),
             },
+            "walletRecovery": {
+                "wallet": authority_signer.pubkey().to_string(),
+                "cleanupSigner": authority_signer.pubkey().to_string(),
+                "walletUsdcAta": wallet_usdc_ata.to_string(),
+                "walletUsdcBeforeRaw": wallet_usdc_before_raw.to_string(),
+                "walletUsdcBeforeExists": wallet_usdc_before_exists,
+                "walletUsdcAfterRaw": wallet_usdc_after_raw.to_string(),
+                "walletUsdcAfterExists": wallet_usdc_after_exists,
+                "walletUsdcDeltaRaw": wallet_usdc_delta.to_string(),
+                "vaultUsdcAfterWithdrawRaw": vault_usdc_after_withdraw_raw.to_string(),
+                "vaultUsdcAtaClosed": vault_usdc_ata_before.exists && !vault_usdc_ata_after.exists,
+            },
+            "walletRecoveryTransaction": {
+                "signature": wallet_recovery_signature.to_string(),
+                "submittedSlot": wallet_recovery_submitted_slot,
+                "confirmedSlot": wallet_recovery_confirmed_slot,
+                "simulationUnitsConsumed": wallet_recovery_transaction.simulation_units_consumed,
+                "transaction": transaction_packet_json(&wallet_recovery_transaction.transaction_packet),
+            },
+            "policyClose": {
+                "policyAccount": vault.policy_account,
+                "settings": vault.settings,
+                "authority": authority_signer.pubkey().to_string(),
+                "kind": "squads_execute_settings_transaction_sync_policy_remove",
+                "policyClosed": policy_account_before.exists && !policy_account_after.exists,
+            },
+            "policyCloseTransaction": {
+                "signature": policy_close_signature.to_string(),
+                "submittedSlot": policy_close_submitted_slot,
+                "confirmedSlot": policy_close_confirmed_slot,
+                "simulationUnitsConsumed": policy_close_transaction.simulation_units_consumed,
+                "transaction": transaction_packet_json(&policy_close_transaction.transaction_packet),
+            },
             "reconciledSnapshotId": snapshot.id.as_i64(),
             "postChainReconcile": chain_reconcile_preview_json(&post_preview),
             "positionCleanupProof": {
                 "allTrackedPositionsZero": all_tracked_positions_zero,
                 "allTrackedObligationsClosed": all_tracked_obligations_closed,
+                "inactiveRows": inactive,
             },
             "rentCleanupProof": {
                 "vaultBefore": account_proof_json(&vault_account_before),
                 "vaultAfter": account_proof_json(&vault_account_after),
-                "mainObligationBefore": obligation_account_proof_json(&obligation_before),
-                "mainObligationAfter": obligation_account_proof_json(&obligation_after),
-                "mainObligationClosed": obligation_before.account.exists && !obligation_after.account.exists,
+                "authorityBefore": account_proof_json(&authority_account_before),
+                "authorityAfter": account_proof_json(&authority_account_after),
+                "authorityLamportsDelta": authority_lamports_delta.to_string(),
+                "vaultUsdcAtaBefore": account_proof_json(&vault_usdc_ata_before),
+                "vaultUsdcAtaAfter": account_proof_json(&vault_usdc_ata_after),
+                "policyBefore": account_proof_json(&policy_account_before),
+                "policyAfter": account_proof_json(&policy_account_after),
+                "policyClosed": policy_account_before.exists && !policy_account_after.exists,
+                "withdrawObligationBefore": obligation_account_proof_json(&obligation_before),
+                "withdrawObligationAfter": obligation_account_proof_json(&obligation_after),
+                "withdrawObligationClosed": obligation_before.account.exists && !obligation_after.account.exists,
                 "rentRefundLamports": rent_refund_lamports.to_string(),
                 "closedObligationLamports": closed_obligation_lamports.to_string(),
+                "closedPolicyLamports": closed_policy_lamports.to_string(),
+                "closedVaultUsdcAtaLamports": closed_vault_usdc_ata_lamports.to_string(),
                 "refundRecipient": vault.vault_pubkey,
                 "refundAtLeastClosedObligationLamports": rent_refund_lamports >= closed_obligation_lamports,
             },
@@ -2866,6 +3284,72 @@ async fn run_full_main_usdc_withdraw_flow(
     );
 
     Ok(())
+}
+
+fn build_vault_usdc_recovery_transaction(
+    rpc: &RpcClient,
+    lookup_table_accounts: &[AddressLookupTableAccount],
+    settings: Pubkey,
+    authority_signer: &dyn Signer,
+    vault_pubkey: Pubkey,
+    account_index: u8,
+    wallet_usdc_ata: Pubkey,
+    vault_usdc_ata: Pubkey,
+    amount_raw: u64,
+    simulation_skip_reason: Option<String>,
+) -> Result<PolicyTransactionBuild, Box<dyn Error>> {
+    let mut inner_instructions = Vec::new();
+    if amount_raw > 0 {
+        inner_instructions.push(spl_token::instruction::transfer_checked(
+            &spl_token::ID,
+            &vault_usdc_ata,
+            &USDC_MINT,
+            &wallet_usdc_ata,
+            &vault_pubkey,
+            &[],
+            amount_raw,
+            6,
+        )?);
+    }
+    inner_instructions.push(spl_token::instruction::close_account(
+        &spl_token::ID,
+        &vault_usdc_ata,
+        &authority_signer.pubkey(),
+        &vault_pubkey,
+        &[],
+    )?);
+
+    let mut transaction_accounts = Vec::new();
+    let compiled_instructions = inner_instructions
+        .into_iter()
+        .map(|instruction| compile_squads_inner_instruction(&mut transaction_accounts, instruction))
+        .collect::<Vec<_>>();
+    let recovery_instruction = execute_sync_transaction_instruction(
+        settings,
+        authority_signer.pubkey(),
+        account_index,
+        compiled_instructions,
+        transaction_accounts,
+    );
+    let instructions = vec![
+        create_associated_token_account_idempotent_instruction(
+            authority_signer.pubkey(),
+            authority_signer.pubkey(),
+            USDC_MINT,
+            spl_token::ID,
+        ),
+        recovery_instruction,
+    ];
+
+    build_signed_transaction(
+        rpc,
+        authority_signer.pubkey(),
+        &instructions,
+        lookup_table_accounts,
+        &[authority_signer],
+        "full withdraw vault USDC recovery",
+        simulation_skip_reason,
+    )
 }
 
 fn build_policy_transaction(
@@ -3971,7 +4455,7 @@ fn amount_i64_to_u64(amount: i64, field: &str) -> Result<u64, Box<dyn Error>> {
 fn load_chain_reconcile_preview(
     rpc_url: &str,
     vault: &SelectedVault,
-    reserve_move: &ReserveMove,
+    reserves: &[String],
 ) -> Result<ChainReconcilePreview, Box<dyn Error>> {
     let rpc = RpcClient::new_with_commitment(rpc_url.to_owned(), CommitmentConfig::confirmed());
     let observed_slot = i64::try_from(rpc.get_slot()?)?;
@@ -3983,10 +4467,14 @@ fn load_chain_reconcile_preview(
         derive_associated_token_address(&vault_pubkey, &USDC_MINT, &spl_token::ID);
     let (vault_liquidity_amount_raw, vault_liquidity_token_account_exists) =
         load_spl_token_account_amount(&rpc, &vault_liquidity_ata, &USDC_MINT)?;
-    let reserve_pubkeys = [
-        Pubkey::from_str(&reserve_move.source_reserve)?,
-        Pubkey::from_str(&reserve_move.target_reserve)?,
-    ];
+    let mut reserve_pubkeys = Vec::with_capacity(reserves.len());
+    for reserve in reserves {
+        let pubkey = Pubkey::from_str(reserve)
+            .map_err(|_| format!("reconcile reserve {reserve} must be a public key"))?;
+        if !reserve_pubkeys.iter().any(|existing| existing == &pubkey) {
+            reserve_pubkeys.push(pubkey);
+        }
+    }
     let mut positions = Vec::with_capacity(reserve_pubkeys.len());
 
     for reserve in reserve_pubkeys {
@@ -4990,6 +5478,7 @@ fn build_full_main_usdc_withdraw_policy_plan(
     policy_preflight: Option<&PolicyAccountPreflight>,
     signer_pubkey: Pubkey,
     account_index: u8,
+    withdraw_reserve: &str,
 ) -> Result<FullWithdrawPolicyPlan, Box<dyn Error>> {
     let policy_account = Pubkey::from_str(&vault.policy_account)?;
     if let Some(policy_preflight) = policy_preflight {
@@ -5007,20 +5496,24 @@ fn build_full_main_usdc_withdraw_policy_plan(
         }
     }
     let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
-    let main = chain_position_for_reserve(preview, &KAMINO_MAIN_USDC_RESERVE.to_string())?;
-    if main.amount_raw == 0 {
+    let withdraw = chain_position_for_reserve(preview, withdraw_reserve)?;
+    if withdraw.amount_raw == 0 {
         return Err(format!(
-            "Main obligation account {} has zero deposited amount for reserve {}",
-            main.obligation, main.reserve
+            "withdraw obligation account {} has zero deposited amount for reserve {}",
+            withdraw.obligation, withdraw.reserve
         )
         .into());
     }
     let vault_liquidity_ata =
         derive_associated_token_address(&vault_pubkey, &USDC_MINT, &spl_token::ID);
-    let reserve_refresh_instruction = kamino_refresh_reserve_instruction(main)?;
-    let refresh_instruction = kamino_refresh_obligation_instruction(main)?;
-    let withdraw_instruction =
-        kamino_withdraw_instruction(vault_pubkey, main, vault_liquidity_ata, main.amount_raw)?;
+    let reserve_refresh_instruction = kamino_refresh_reserve_instruction(withdraw)?;
+    let refresh_instruction = kamino_refresh_obligation_instruction(withdraw)?;
+    let withdraw_instruction = kamino_withdraw_instruction(
+        vault_pubkey,
+        withdraw,
+        vault_liquidity_ata,
+        withdraw.amount_raw,
+    )?;
     let instruction_constraint_indexes =
         full_withdraw_instruction_constraint_indexes(policy_preflight)?;
     let policy_constraint_validation = policy_preflight.map(|policy_preflight| {
@@ -5033,7 +5526,7 @@ fn build_full_main_usdc_withdraw_policy_plan(
     if let Some(validation) = policy_constraint_validation.as_ref() {
         if !validation.matches {
             return Err(format!(
-                "decoded policy account constraints do not match built full Main USDC withdraw: {}",
+                "decoded policy account constraints do not match built full reserve withdraw: {}",
                 validation.failures.join("; ")
             )
             .into());
@@ -6220,10 +6713,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     let mut update_active_policy = false;
     let mut initial_deposit_amount_raw = None;
     let mut full_withdraw_main_usdc = false;
+    let mut full_withdraw_reserve = None;
+    let mut setup_obligation_reserve = None;
     let mut e2e_deposit_amount_raw = None;
     let mut execute = false;
     let mut optimization_cycle = false;
     let mut reconcile_from_chain = false;
+    let mut reconcile_current_positions = false;
+    let mut reconcile_reserves = Vec::new();
     let mut seed_from_user_position = false;
     let mut provision_lookup_table = false;
     let mut rpc_url = env::var("SOLANA_RPC_URL").unwrap_or_else(|_| DEFAULT_SOLANA_RPC_URL.into());
@@ -6265,6 +6762,22 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
             "--update-policy" => update_policy = true,
             "--update-active-policy" => update_active_policy = true,
             "--full-withdraw-main-usdc" => full_withdraw_main_usdc = true,
+            "--full-withdraw-reserve" => {
+                let raw = iter
+                    .next()
+                    .ok_or("--full-withdraw-reserve requires a reserve public key")?;
+                Pubkey::from_str(&raw)
+                    .map_err(|_| "--full-withdraw-reserve must be a public key")?;
+                full_withdraw_reserve = Some(raw);
+            }
+            "--setup-obligation-reserve" => {
+                let raw = iter
+                    .next()
+                    .ok_or("--setup-obligation-reserve requires a reserve public key")?;
+                Pubkey::from_str(&raw)
+                    .map_err(|_| "--setup-obligation-reserve must be a public key")?;
+                setup_obligation_reserve = Some(raw);
+            }
             "--e2e-main-prime-main" => {
                 let raw = iter
                     .next()
@@ -6292,6 +6805,16 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
             "--execute" => execute = true,
             "--optimization-cycle" => optimization_cycle = true,
             "--reconcile-from-chain" => reconcile_from_chain = true,
+            "--reconcile-current-positions" => reconcile_current_positions = true,
+            "--reconcile-reserve" => {
+                let raw = iter
+                    .next()
+                    .ok_or("--reconcile-reserve requires a reserve public key")?;
+                Pubkey::from_str(&raw).map_err(|_| "--reconcile-reserve must be a public key")?;
+                if !reconcile_reserves.iter().any(|reserve| reserve == &raw) {
+                    reconcile_reserves.push(raw);
+                }
+            }
             "--seed-from-user-position" => seed_from_user_position = true,
             "--provision-lookup-table" => provision_lookup_table = true,
             "--rpc-url" => {
@@ -6307,10 +6830,19 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
             _ => return Err(format!("unknown argument: {arg}")),
         }
     }
+    if full_withdraw_main_usdc && full_withdraw_reserve.is_some() {
+        return Err(
+            "--full-withdraw-main-usdc and --full-withdraw-reserve are aliases; choose one"
+                .to_owned(),
+        );
+    }
+    let full_withdraw_requested = full_withdraw_main_usdc || full_withdraw_reserve.is_some();
     let selected_special_modes = [
         update_policy,
         initial_deposit_amount_raw.is_some(),
-        full_withdraw_main_usdc,
+        full_withdraw_requested,
+        setup_obligation_reserve.is_some(),
+        reconcile_current_positions,
         e2e_deposit_amount_raw.is_some(),
     ]
     .into_iter()
@@ -6318,7 +6850,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     .count();
     if selected_special_modes > 1 {
         return Err(
-            "--update-policy, --deposit-main-usdc, --full-withdraw-main-usdc, and --e2e-main-prime-main are mutually exclusive"
+            "--update-policy, --deposit-main-usdc, --setup-obligation-reserve, --full-withdraw-reserve, --reconcile-current-positions, and --e2e-main-prime-main are mutually exclusive"
                 .to_owned(),
         );
     }
@@ -6332,6 +6864,17 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     }
     if source_reserve.is_some() != target_reserve.is_some() {
         return Err("--source-reserve and --target-reserve must be provided together".to_owned());
+    }
+    if reconcile_current_positions && !reconcile_from_chain {
+        return Err("--reconcile-current-positions requires --reconcile-from-chain".to_owned());
+    }
+    if reconcile_current_positions && reconcile_reserves.is_empty() {
+        return Err(
+            "--reconcile-current-positions requires at least one --reconcile-reserve".to_owned(),
+        );
+    }
+    if reconcile_current_positions && (execute || seed_from_user_position) {
+        return Err("--reconcile-current-positions cannot be combined with --execute or --seed-from-user-position".to_owned());
     }
     if optimization_cycle {
         if !execute {
@@ -6365,10 +6908,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
         update_active_policy,
         initial_deposit_amount_raw,
         full_withdraw_main_usdc,
+        full_withdraw_reserve,
+        setup_obligation_reserve,
         e2e_deposit_amount_raw,
         execute,
         optimization_cycle,
         reconcile_from_chain,
+        reconcile_current_positions,
+        reconcile_reserves,
         seed_from_user_position,
         provision_lookup_table,
         rpc_url,
@@ -6733,7 +7280,7 @@ fn initial_deposit_policy_preview_json(preview: &InitialDepositPolicyPreview) ->
 
 fn full_withdraw_policy_preview_json(preview: &FullWithdrawPolicyPreview) -> Value {
     json!({
-        "kind": "squads_program_interaction_full_main_usdc_withdraw",
+        "kind": "squads_program_interaction_full_reserve_withdraw",
         "policyAccount": preview.policy_account,
         "signer": preview.signer,
         "accountIndex": preview.account_index,
@@ -6895,6 +7442,9 @@ fn same_mint_usdc_policy_universe() -> Result<YieldRouteUniverse, Box<dyn Error>
         vec![
             Pubkey::from_str(KAMINO_MAIN_MARKET)?,
             Pubkey::from_str(KAMINO_PRIME_MARKET)?,
+            Pubkey::from_str(KAMINO_MAPLE_MARKET)?,
+            Pubkey::from_str(KAMINO_ONRE_MARKET)?,
+            Pubkey::from_str(KAMINO_ETHENA_MARKET)?,
         ],
         vec![USDC_MINT],
     ))
@@ -7033,8 +7583,8 @@ fn same_mint_input_json(input: &SameMintRebalanceInput) -> Value {
 
 fn print_help() {
     println!(
-         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--provision-lookup-table] [--deposit-main-usdc <AMOUNT_RAW>] [--full-withdraw-main-usdc] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--lookup-table <PUBKEY>...] [--execute]\n\n\
-         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and YIELD_ROUTER_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --optimization-cycle to live same-mint route execution after setup is complete; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses YIELD_ROUTER_KEYPAIR as fee payer and delegated signer, and blocks missing-obligation setup. Add --provision-lookup-table with --update-policy or same-mint --execute to create, extend, warm up, and use a fresh ALT. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and YIELD_ROUTER_KEYPAIR for the policy deposit. Full withdraw mode uses YIELD_ROUTER_KEYPAIR for the policy withdraw and reports obligation rent cleanup proof. Run through:\n\
+         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--provision-lookup-table] [--deposit-main-usdc <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--lookup-table <PUBKEY>...] [--execute]\n\n\
+         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and YIELD_ROUTER_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to pre-initialize a Kamino obligation by temporarily narrowing the policy and restoring the route policy. Add --optimization-cycle to live same-mint route execution after setup is complete; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses YIELD_ROUTER_KEYPAIR as fee payer and delegated signer, and blocks missing-obligation setup. Add --provision-lookup-table with --update-policy or same-mint --execute to create, extend, warm up, and use a fresh ALT. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and YIELD_ROUTER_KEYPAIR for the policy deposit. Full withdraw mode uses YIELD_ROUTER_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy, and report rent cleanup proof. Run through:\n\
          op run --env-file=.env.1password -- bun run same-mint:swap -- --settings <PUBKEY> --vault-index 1 --reconcile-from-chain --seed-from-user-position"
     );
 }
@@ -7072,10 +7622,14 @@ mod tests {
             update_active_policy: false,
             initial_deposit_amount_raw: None,
             full_withdraw_main_usdc: false,
+            full_withdraw_reserve: None,
+            setup_obligation_reserve: None,
             e2e_deposit_amount_raw: None,
             execute: false,
             optimization_cycle: false,
             reconcile_from_chain: false,
+            reconcile_current_positions: false,
+            reconcile_reserves: Vec::new(),
             seed_from_user_position: false,
             provision_lookup_table: false,
             rpc_url: DEFAULT_SOLANA_RPC_URL.to_owned(),
@@ -7252,10 +7806,14 @@ mod tests {
                 update_active_policy: false,
                 initial_deposit_amount_raw: None,
                 full_withdraw_main_usdc: false,
+                full_withdraw_reserve: None,
+                setup_obligation_reserve: None,
                 e2e_deposit_amount_raw: None,
                 execute: false,
                 optimization_cycle: false,
                 reconcile_from_chain: false,
+                reconcile_current_positions: false,
+                reconcile_reserves: Vec::new(),
                 seed_from_user_position: false,
                 provision_lookup_table: false,
                 rpc_url: "http://localhost:8899".to_owned(),
@@ -7454,6 +8012,76 @@ mod tests {
     }
 
     #[test]
+    fn parse_full_withdraw_reserve_flag() {
+        let reserve = Pubkey::new_unique().to_string();
+        let options = parse_args([
+            "--settings".to_owned(),
+            "settings".to_owned(),
+            "--vault-index".to_owned(),
+            "1".to_owned(),
+            "--full-withdraw-reserve".to_owned(),
+            reserve.clone(),
+        ])
+        .expect("parse generic full withdraw");
+
+        assert_eq!(options.full_withdraw_reserve, Some(reserve));
+        assert!(!options.full_withdraw_main_usdc);
+    }
+
+    #[test]
+    fn parse_setup_obligation_reserve_flag() {
+        let reserve = Pubkey::new_unique().to_string();
+        let options = parse_args([
+            "--settings".to_owned(),
+            "settings".to_owned(),
+            "--vault-index".to_owned(),
+            "1".to_owned(),
+            "--setup-obligation-reserve".to_owned(),
+            reserve.clone(),
+        ])
+        .expect("parse setup obligation mode");
+
+        assert_eq!(options.setup_obligation_reserve, Some(reserve));
+    }
+
+    #[test]
+    fn parse_reconcile_current_positions_requires_reserves() {
+        let error = parse_args([
+            "--settings".to_owned(),
+            "settings".to_owned(),
+            "--vault-index".to_owned(),
+            "1".to_owned(),
+            "--source-reserve".to_owned(),
+            Pubkey::new_unique().to_string(),
+            "--target-reserve".to_owned(),
+            Pubkey::new_unique().to_string(),
+            "--reconcile-from-chain".to_owned(),
+            "--reconcile-current-positions".to_owned(),
+        ])
+        .expect_err("reconcile mode needs explicit reserve list");
+        assert!(error.contains("--reconcile-reserve"));
+
+        let reserve = Pubkey::new_unique().to_string();
+        let options = parse_args([
+            "--settings".to_owned(),
+            "settings".to_owned(),
+            "--vault-index".to_owned(),
+            "1".to_owned(),
+            "--source-reserve".to_owned(),
+            Pubkey::new_unique().to_string(),
+            "--target-reserve".to_owned(),
+            Pubkey::new_unique().to_string(),
+            "--reconcile-from-chain".to_owned(),
+            "--reconcile-current-positions".to_owned(),
+            "--reconcile-reserve".to_owned(),
+            reserve.clone(),
+        ])
+        .expect("parse reconcile mode");
+        assert!(options.reconcile_current_positions);
+        assert_eq!(options.reconcile_reserves, vec![reserve]);
+    }
+
+    #[test]
     fn parse_rejects_multiple_lifecycle_modes() {
         let error = parse_args([
             "--settings".to_owned(),
@@ -7630,6 +8258,24 @@ mod tests {
         assert_eq!(
             decoded.instructions[2].route_step,
             Some(KAMINO_REFRESH_OBLIGATION_ROUTE_STEP)
+        );
+    }
+
+    #[test]
+    fn same_mint_policy_universe_is_safe_market_usdc_only() {
+        let universe = same_mint_usdc_policy_universe().expect("same-mint USDC universe");
+
+        assert_eq!(universe.stable_mints, vec![USDC_MINT]);
+        assert_eq!(universe.kamino_liquidity_mints, vec![USDC_MINT]);
+        assert_eq!(
+            pubkeys_json(&universe.kamino_markets),
+            vec![
+                KAMINO_MAIN_MARKET.to_owned(),
+                KAMINO_PRIME_MARKET.to_owned(),
+                KAMINO_MAPLE_MARKET.to_owned(),
+                KAMINO_ONRE_MARKET.to_owned(),
+                KAMINO_ETHENA_MARKET.to_owned(),
+            ]
         );
     }
 
@@ -8018,6 +8664,7 @@ mod tests {
             Some(&policy_preflight),
             signer,
             1,
+            &KAMINO_MAIN_USDC_RESERVE.to_string(),
         )
         .expect("build full withdraw plan");
 

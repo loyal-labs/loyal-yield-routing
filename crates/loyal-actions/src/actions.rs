@@ -773,7 +773,8 @@ fn is_compact_same_mint_usdc_policy(
     }
     for market in markets {
         match market {
-            KAMINO_MAIN_MARKET | KAMINO_FIGURE_MARKET => {}
+            KAMINO_MAIN_MARKET | KAMINO_FIGURE_MARKET | KAMINO_MAPLE_MARKET
+            | KAMINO_ONRE_MARKET | KAMINO_ETHENA_MARKET => {}
             _ => return false,
         }
     }
@@ -1046,7 +1047,13 @@ mod tests {
             context,
             YieldRouteUniverse::new(
                 vec![USDC_MINT],
-                vec![KAMINO_MAIN_MARKET, KAMINO_FIGURE_MARKET],
+                vec![
+                    KAMINO_MAIN_MARKET,
+                    KAMINO_FIGURE_MARKET,
+                    KAMINO_MAPLE_MARKET,
+                    KAMINO_ONRE_MARKET,
+                    KAMINO_ETHENA_MARKET,
+                ],
                 vec![USDC_MINT],
             ),
             vec![],
@@ -1065,7 +1072,13 @@ mod tests {
 
         let decoded = decode_program_interaction_policy_create(&setup.instructions[0]);
         assert_eq!(decoded.constraints.len(), 2);
-        let markets = [KAMINO_MAIN_MARKET, KAMINO_FIGURE_MARKET];
+        let markets = [
+            KAMINO_MAIN_MARKET,
+            KAMINO_FIGURE_MARKET,
+            KAMINO_MAPLE_MARKET,
+            KAMINO_ONRE_MARKET,
+            KAMINO_ETHENA_MARKET,
+        ];
         let mints = [USDC_MINT];
 
         let withdraw_accounts = decoded.constraints[0].account_constraints_by_index();

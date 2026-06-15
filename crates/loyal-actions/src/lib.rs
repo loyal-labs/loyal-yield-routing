@@ -33,6 +33,6 @@ pub use protocols::{
 };
 pub use squads::{
     compile_squads_inner_instruction, derive_action_account,
-    execute_program_interaction_policy_instruction, LoyalActionError, Result,
-    SquadsCompiledInstruction,
+    execute_program_interaction_policy_instruction, execute_sync_transaction_instruction,
+    remove_policy_instruction, LoyalActionError, Result, SquadsCompiledInstruction,
 };

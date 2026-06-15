@@ -1,11 +1,15 @@
-use std::{env, error::Error, path::PathBuf, process::Command, time::Duration as StdDuration};
+use std::{
+    cmp::Ordering, collections::BTreeSet, env, error::Error, path::PathBuf, process::Command,
+    time::Duration as StdDuration,
+};
 
 use chrono::{Duration, Utc};
 use loyal_actions::USDC_MINT;
 use loyal_yield_orchestrator::sqlx::Row;
 use loyal_yield_orchestrator::{
-    solana_testing_keypair_from_env, CurrentReservePosition, ManagedVault, NeonSqlClient,
-    NeonSqlConfig, PolicyId, RoutePolicy, VaultId, ACTIVE_DECISION_STATUSES, SOLANA_TESTING_PK_ENV,
+    solana_testing_keypair_from_env, yield_router_keypair_from_env, CurrentReservePosition,
+    ManagedVault, NeonSqlClient, NeonSqlConfig, PolicyId, RoutePolicy, VaultId,
+    ACTIVE_DECISION_STATUSES, SOLANA_TESTING_PK_ENV,
 };
 use loyal_yield_router::timescale::{
     SupportedReserveLatestQuery, SupportedReserveLatestRow, TimescaleRouterClient,
@@ -18,11 +22,13 @@ use tokio::time::{sleep, Duration as TokioDuration};
 const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 300;
 const DEFAULT_MAX_CANDIDATE_AGE_SECONDS: i64 = 6 * 60 * 60;
 const DEFAULT_MIN_EDGE_BPS: i64 = 1;
+const SAME_MINT_ROUTE_MODE: &str = "same_mint_kamino";
 
 #[derive(Debug, Clone)]
 struct Options {
     once: bool,
     execute: bool,
+    all_active_vaults: bool,
     settings: Option<String>,
     vault_index: Option<i16>,
     poll_interval_seconds: u64,
@@ -54,10 +60,20 @@ struct RouteExecutionOutput {
     stderr_text: String,
 }
 
+#[derive(Debug)]
+struct ReconcileOutput {
+    success: bool,
+    status_code: Option<i32>,
+    stdout_json: Option<Value>,
+    stdout_text: Option<String>,
+    stderr_text: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VaultResolutionMode {
     Explicit,
     Authority,
+    Fleet,
 }
 
 #[tokio::main]
@@ -69,6 +85,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let timescale_url = env::var("TIMESCALEDB_URL").map_err(|_| "TIMESCALEDB_URL is required")?;
 
     let authority = authority_for_options(&options)?;
+    let optimizer_signer = optimizer_signer_for_options(&options)?;
     let neon = NeonSqlClient::connect(
         NeonSqlConfig::new(neon_url)
             .with_max_connections(2)
@@ -83,7 +100,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     .await?;
 
     loop {
-        let outcome = run_once(&options, authority, &neon, &timescale).await?;
+        let outcome = run_once(&options, authority, optimizer_signer, &neon, &timescale).await?;
         println!("{}", serde_json::to_string_pretty(&outcome)?);
         if options.once {
             break;
@@ -97,14 +114,66 @@ async fn main() -> Result<(), Box<dyn Error>> {
 async fn run_once(
     options: &Options,
     authority: Option<Pubkey>,
+    optimizer_signer: Option<Pubkey>,
     neon: &NeonSqlClient,
     timescale: &TimescaleRouterClient,
 ) -> Result<Value, Box<dyn Error>> {
-    let vault = resolve_vault(neon, authority, options).await?;
-    let positions = neon.current_positions(vault.vault.id).await?;
-    let active_decisions = active_decision_count(neon, vault.vault.id).await?;
     let candidates = load_safe_usdc_candidates(timescale).await?;
-    let policy_candidates = policy_eligible_candidates(&vault.policy, &candidates);
+    if options.all_active_vaults {
+        let optimizer_signer =
+            optimizer_signer.ok_or("YIELD_ROUTER_KEYPAIR signer was not loaded")?;
+        let vaults = fetch_all_active_vaults(neon, &optimizer_signer.to_string()).await?;
+        let mut results = Vec::with_capacity(vaults.len());
+        for vault in vaults {
+            let vault_identity = vault_json(&vault);
+            match run_vault_once(options, vault, neon, &candidates).await {
+                Ok(result) => results.push(result),
+                Err(error) => results.push(json!({
+                    "status": "vault_error",
+                    "execute": options.execute,
+                    "vault": vault_identity,
+                    "error": error.to_string(),
+                })),
+            }
+        }
+        return Ok(json!({
+            "status": "fleet_poll",
+            "execute": options.execute,
+            "allActiveVaults": true,
+            "discoveredVaultCount": results.len(),
+            "candidateCount": candidates.len(),
+            "pollIntervalSeconds": options.poll_interval_seconds,
+            "maxCandidateAgeSeconds": options.max_candidate_age_seconds,
+            "minEdgeBps": options.min_edge_bps,
+            "results": results,
+        }));
+    }
+
+    let vault = resolve_vault(neon, authority, options).await?;
+    run_vault_once(options, vault, neon, &candidates).await
+}
+
+async fn run_vault_once(
+    options: &Options,
+    vault: ResolvedVault,
+    neon: &NeonSqlClient,
+    candidates: &[SupportedReserveLatestRow],
+) -> Result<Value, Box<dyn Error>> {
+    let policy_candidates = policy_eligible_candidates(&vault.policy, candidates);
+    let reconcile = reconcile_current_positions_for_vault(&vault, candidates)?;
+    if !reconcile.success {
+        return Ok(json!({
+            "status": "reconcile_failed",
+            "execute": options.execute,
+            "vault": vault_json(&vault),
+            "chainReconcile": reconcile_output_json(&reconcile),
+            "candidates": candidates_json(candidates),
+            "policyEligibleCandidates": candidates_json(&policy_candidates),
+        }));
+    }
+    let positions = neon.current_positions(vault.vault.id).await?;
+    let policy_positions = policy_eligible_positions(&positions, &policy_candidates);
+    let active_decisions = active_decision_count(neon, vault.vault.id).await?;
     let freshest_cutoff = Utc::now() - Duration::seconds(options.max_candidate_age_seconds);
     let (fresh_candidates, stale_candidate_count) =
         split_fresh_candidates(&policy_candidates, freshest_cutoff);
@@ -112,7 +181,7 @@ async fn run_once(
     let plan = if fresh_candidates.is_empty() {
         Err("no_eligible_fresh_candidate_data".to_owned())
     } else {
-        plan_move(&positions, &fresh_candidates, options.min_edge_bps)
+        plan_move(&policy_positions, &fresh_candidates, options.min_edge_bps)
     };
     let (status, skip_reason) =
         monitor_status_and_skip_reason(&plan, active_decisions, options.execute);
@@ -128,14 +197,16 @@ async fn run_once(
         let positions_after = neon.current_positions(vault.vault.id).await?;
         if !execution.success {
             return Ok(json!({
-                "status": "execution_failed",
+                "status": route_execution_status(&execution),
                 "execute": true,
                 "vault": vault_json(&vault),
                 "activeDecisionCount": active_decisions,
                 "activeDecisionCountAfter": active_decision_count_after,
                 "currentPositions": positions_json(&positions),
+                "policyEligibleCurrentPositions": positions_json(&policy_positions),
                 "currentPositionsAfter": positions_json(&positions_after),
-                "candidates": candidates_json(&candidates),
+                "chainReconcile": reconcile_output_json(&reconcile),
+                "candidates": candidates_json(candidates),
                 "policyEligibleCandidates": candidates_json(&policy_candidates),
                 "freshCandidateCount": fresh_candidates.len(),
                 "staleCandidateCount": stale_candidate_count,
@@ -150,8 +221,10 @@ async fn run_once(
             "activeDecisionCount": active_decisions,
             "activeDecisionCountAfter": active_decision_count_after,
             "currentPositions": positions_json(&positions),
+            "policyEligibleCurrentPositions": positions_json(&policy_positions),
             "currentPositionsAfter": positions_json(&positions_after),
-            "candidates": candidates_json(&candidates),
+            "chainReconcile": reconcile_output_json(&reconcile),
+            "candidates": candidates_json(candidates),
             "policyEligibleCandidates": candidates_json(&policy_candidates),
             "freshCandidateCount": fresh_candidates.len(),
             "staleCandidateCount": stale_candidate_count,
@@ -167,7 +240,9 @@ async fn run_once(
         "vault": vault_json(&vault),
         "activeDecisionCount": active_decisions,
         "currentPositions": positions_json(&positions),
-        "candidates": candidates_json(&candidates),
+        "policyEligibleCurrentPositions": positions_json(&policy_positions),
+        "chainReconcile": reconcile_output_json(&reconcile),
+        "candidates": candidates_json(candidates),
         "policyEligibleCandidates": candidates_json(&policy_candidates),
         "freshCandidateCount": fresh_candidates.len(),
         "staleCandidateCount": stale_candidate_count,
@@ -239,6 +314,79 @@ fn same_mint_reserve_swap_binary() -> Result<PathBuf, Box<dyn Error>> {
     Ok(dir.join("same-mint-reserve-swap"))
 }
 
+fn reconcile_current_positions_for_vault(
+    vault: &ResolvedVault,
+    policy_candidates: &[SupportedReserveLatestRow],
+) -> Result<ReconcileOutput, Box<dyn Error>> {
+    let reserves = reconcile_reserves_for_candidates(policy_candidates);
+    if reserves.len() < 2 {
+        return Err(
+            "chain reconciliation requires at least two policy-eligible USDC reserves".into(),
+        );
+    }
+
+    let binary = same_mint_reserve_swap_binary()?;
+    let current_exe = env::current_exe()?;
+    let is_local_debug = current_exe.to_string_lossy().contains("/target/debug/");
+    let mut command = if binary.exists() && !is_local_debug {
+        Command::new(binary)
+    } else {
+        let mut fallback = Command::new("cargo");
+        fallback.args([
+            "run",
+            "-p",
+            "loyal-yield-orchestrator",
+            "--bin",
+            "same-mint-reserve-swap",
+            "--",
+        ]);
+        fallback
+    };
+    command
+        .arg("--settings")
+        .arg(&vault.vault.settings)
+        .arg("--vault-index")
+        .arg(vault.vault.vault_index.to_string())
+        .arg("--source-reserve")
+        .arg(&reserves[0])
+        .arg("--target-reserve")
+        .arg(&reserves[1])
+        .arg("--reconcile-from-chain")
+        .arg("--reconcile-current-positions");
+    for reserve in &reserves {
+        command.arg("--reconcile-reserve").arg(reserve);
+    }
+
+    let output = command.output()?;
+    let stdout_text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let stdout_json = if stdout_text.is_empty() {
+        None
+    } else {
+        serde_json::from_str::<Value>(&stdout_text).ok()
+    };
+    Ok(ReconcileOutput {
+        success: output.status.success(),
+        status_code: output.status.code(),
+        stdout_json,
+        stdout_text: if stdout_text.is_empty() {
+            None
+        } else {
+            Some(stdout_text)
+        },
+        stderr_text: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    })
+}
+
+fn reconcile_reserves_for_candidates(candidates: &[SupportedReserveLatestRow]) -> Vec<String> {
+    let mut reserves = Vec::new();
+    for candidate in candidates {
+        if !reserves.iter().any(|reserve| reserve == &candidate.reserve) {
+            reserves.push(candidate.reserve.clone());
+        }
+    }
+    reserves
+}
+
 async fn load_safe_usdc_candidates(
     timescale: &TimescaleRouterClient,
 ) -> Result<Vec<SupportedReserveLatestRow>, Box<dyn Error>> {
@@ -258,17 +406,33 @@ fn policy_eligible_candidates(
         .iter()
         .filter(|candidate| {
             candidate.liquidity_mint == usdc
-                && policy
-                    .kamino_liquidity_mints
-                    .iter()
-                    .any(|mint| mint == &candidate.liquidity_mint)
                 && candidate.market.as_ref().is_some_and(|market| {
                     policy
                         .kamino_markets
                         .iter()
-                        .any(|allowed| allowed == market)
+                        .any(|allowed_market| allowed_market == market)
                 })
+                && policy.stable_mints.iter().any(|mint| mint == &usdc)
+                && policy
+                    .kamino_liquidity_mints
+                    .iter()
+                    .any(|mint| mint == &candidate.liquidity_mint)
         })
+        .cloned()
+        .collect()
+}
+
+fn policy_eligible_positions(
+    positions: &[CurrentReservePosition],
+    policy_candidates: &[SupportedReserveLatestRow],
+) -> Vec<CurrentReservePosition> {
+    let eligible_reserves = policy_candidates
+        .iter()
+        .map(|candidate| candidate.reserve.as_str())
+        .collect::<BTreeSet<_>>();
+    positions
+        .iter()
+        .filter(|position| eligible_reserves.contains(position.reserve.as_str()))
         .cloned()
         .collect()
 }
@@ -290,7 +454,8 @@ fn plan_move(
         .ok_or_else(|| "no_value_source".to_owned())?;
     let target = candidates
         .iter()
-        .find(|candidate| candidate.liquidity_mint == USDC_MINT.to_string())
+        .filter(|candidate| candidate.liquidity_mint == USDC_MINT.to_string())
+        .max_by(|left, right| compare_candidate_preference(left, right))
         .cloned()
         .ok_or_else(|| "no_eligible_fresh_candidate_data".to_owned())?;
     if source.reserve == target.reserve {
@@ -370,6 +535,7 @@ async fn resolve_vault(
             let rows = fetch_vaults_by_authority(neon, &authority.to_string()).await?;
             exactly_one(rows, "SOLANA_TESTING_PK authority")
         }
+        VaultResolutionMode::Fleet => Err("--all-active-vaults resolves multiple vaults".into()),
     }
 }
 
@@ -380,9 +546,18 @@ fn authority_for_options(options: &Options) -> Result<Option<Pubkey>, Box<dyn Er
     }
 }
 
+fn optimizer_signer_for_options(options: &Options) -> Result<Option<Pubkey>, Box<dyn Error>> {
+    if options.all_active_vaults {
+        Ok(Some(yield_router_keypair_from_env()?.pubkey()))
+    } else {
+        Ok(None)
+    }
+}
+
 fn authority_env_for_options(options: &Options) -> Result<Option<&'static str>, Box<dyn Error>> {
     match vault_resolution_mode(options)? {
         VaultResolutionMode::Explicit => Ok(None),
+        VaultResolutionMode::Fleet => Ok(None),
         VaultResolutionMode::Authority if options.execute => Err(
             "--execute requires explicit --settings and --vault-index; SOLANA_TESTING_PK authority discovery is setup/admin only"
                 .into(),
@@ -392,11 +567,72 @@ fn authority_env_for_options(options: &Options) -> Result<Option<&'static str>, 
 }
 
 fn vault_resolution_mode(options: &Options) -> Result<VaultResolutionMode, Box<dyn Error>> {
+    if options.all_active_vaults {
+        if options.settings.is_some() || options.vault_index.is_some() {
+            return Err(
+                "--all-active-vaults is mutually exclusive with --settings/--vault-index".into(),
+            );
+        }
+        return Ok(VaultResolutionMode::Fleet);
+    }
     match (&options.settings, options.vault_index) {
         (Some(_), Some(_)) => Ok(VaultResolutionMode::Explicit),
         (None, None) => Ok(VaultResolutionMode::Authority),
         _ => Err("--settings and --vault-index must be provided together".into()),
     }
+}
+
+async fn fetch_all_active_vaults(
+    neon: &NeonSqlClient,
+    delegated_signer: &str,
+) -> Result<Vec<ResolvedVault>, Box<dyn Error>> {
+    let rows = loyal_yield_orchestrator::sqlx::query(
+        r#"
+        SELECT
+            v.id AS vault_id,
+            v.settings,
+            v.vault_index,
+            v.vault_pubkey,
+            v.active_policy_id,
+            v.active AS vault_active,
+            v.first_seen_at AS vault_first_seen_at,
+            v.last_seen_at AS vault_last_seen_at,
+            p.id AS policy_id,
+            p.authority,
+            p.policy_seed,
+            p.policy_account,
+            p.delegated_signers,
+            p.threshold,
+            p.route_modes,
+            p.stable_mints,
+            p.kamino_markets,
+            p.kamino_liquidity_mints,
+            p.universe_preset,
+            p.risk_profile,
+            p.swap_lanes,
+            p.active AS policy_active,
+            p.first_seen_at AS policy_first_seen_at,
+            p.last_seen_at AS policy_last_seen_at,
+            p.last_seen_slot,
+            p.last_seen_signature
+        FROM loyal_yield.managed_vaults v
+        JOIN loyal_yield.route_policies p ON p.id = v.active_policy_id
+        WHERE v.active = true
+          AND p.active = true
+          AND $1 = ANY(p.delegated_signers)
+          AND $2 = ANY(p.route_modes)
+          AND $3 = ANY(p.stable_mints)
+          AND $3 = ANY(p.kamino_liquidity_mints)
+          AND cardinality(p.kamino_markets) > 0
+        ORDER BY v.last_seen_at DESC, v.id DESC
+        "#,
+    )
+    .bind(delegated_signer)
+    .bind(SAME_MINT_ROUTE_MODE)
+    .bind(USDC_MINT.to_string())
+    .fetch_all(neon.pool())
+    .await?;
+    rows.into_iter().map(resolved_vault_from_row).collect()
 }
 
 async fn fetch_vaults_by_settings_index(
@@ -584,6 +820,17 @@ fn vault_json(resolved: &ResolvedVault) -> Value {
     })
 }
 
+fn compare_candidate_preference(
+    left: &SupportedReserveLatestRow,
+    right: &SupportedReserveLatestRow,
+) -> Ordering {
+    apy_to_bps(left.supply_apy)
+        .cmp(&apy_to_bps(right.supply_apy))
+        .then_with(|| left.observed_at.cmp(&right.observed_at))
+        .then_with(|| left.slot.cmp(&right.slot))
+        .then_with(|| right.reserve.cmp(&left.reserve))
+}
+
 fn positions_json(positions: &[CurrentReservePosition]) -> Vec<Value> {
     positions
         .iter()
@@ -659,6 +906,34 @@ fn route_execution_output_json(execution: &RouteExecutionOutput) -> Value {
     })
 }
 
+fn route_execution_status(execution: &RouteExecutionOutput) -> String {
+    execution
+        .stdout_json
+        .as_ref()
+        .and_then(|stdout| stdout.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("execution_failed")
+        .to_owned()
+}
+
+fn reconcile_output_json(reconcile: &ReconcileOutput) -> Value {
+    json!({
+        "success": reconcile.success,
+        "statusCode": reconcile.status_code,
+        "stdout": reconcile.stdout_json.as_ref().unwrap_or(&Value::Null),
+        "stdoutText": if reconcile.stdout_json.is_some() {
+            None
+        } else {
+            reconcile.stdout_text.as_deref()
+        },
+        "stderrText": if reconcile.stderr_text.is_empty() {
+            None
+        } else {
+            Some(reconcile.stderr_text.as_str())
+        },
+    })
+}
+
 fn apy_to_bps(apy: f64) -> i64 {
     (apy * 10_000.0).round() as i64
 }
@@ -667,6 +942,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
     let mut options = Options {
         once: false,
         execute: false,
+        all_active_vaults: false,
         settings: None,
         vault_index: None,
         poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
@@ -678,6 +954,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
         match arg.as_str() {
             "--once" => options.once = true,
             "--execute" => options.execute = true,
+            "--all-active-vaults" => options.all_active_vaults = true,
             "--settings" => {
                 options.settings = Some(iter.next().ok_or("--settings requires a pubkey")?);
             }
@@ -724,7 +1001,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
 }
 
 fn usage() -> &'static str {
-    "Usage: same-mint-yield-monitor [--once] [--execute] [--settings <PUBKEY> --vault-index <N>] [--poll-interval-seconds <SECONDS>] [--max-candidate-age-seconds <SECONDS>] [--min-edge-bps <BPS>]\n\nDry-run is the default. Explicit --settings/--vault-index mode does not read SOLANA_TESTING_PK. Authority discovery mode is dry-run only and reads SOLANA_TESTING_PK. Live execution reads YIELD_ROUTER_KEYPAIR through same-mint-reserve-swap --optimization-cycle."
+    "Usage: same-mint-yield-monitor [--once] [--execute] [--all-active-vaults | --settings <PUBKEY> --vault-index <N>] [--poll-interval-seconds <SECONDS>] [--max-candidate-age-seconds <SECONDS>] [--min-edge-bps <BPS>]\n\nDry-run is the default. Fleet mode reads YIELD_ROUTER_KEYPAIR for DB discovery and never reads SOLANA_TESTING_PK. Explicit --settings/--vault-index mode does not read SOLANA_TESTING_PK. No-arg authority discovery mode is local dry-run/setup only and reads SOLANA_TESTING_PK. Live execution reads YIELD_ROUTER_KEYPAIR through same-mint-reserve-swap --optimization-cycle."
 }
 
 #[cfg(test)]
@@ -796,7 +1073,11 @@ mod tests {
     #[test]
     fn plans_highest_safe_usdc_candidate_with_positive_edge() {
         let positions = vec![position("main", 1_000, 300)];
-        let candidates = vec![candidate("prime", 0.05), candidate("main", 0.03)];
+        let candidates = vec![
+            candidate("main", 0.03),
+            candidate("other", 0.04),
+            candidate("prime", 0.05),
+        ];
 
         let plan = plan_move(&positions, &candidates, 1).unwrap().unwrap();
 
@@ -822,18 +1103,37 @@ mod tests {
     }
 
     #[test]
-    fn filters_policy_eligible_candidates_by_market_and_mint() {
+    fn filters_policy_eligible_candidates_by_usdc_mint_and_authorized_market() {
         let policy = route_policy(vec!["market".to_owned()], vec![USDC_MINT.to_string()]);
         let eligible = candidate("prime", 0.05);
         let mut off_market = candidate("off-market", 0.06);
         off_market.market = Some("other-market".to_owned());
+        let mut missing_market = candidate("missing-market", 0.055);
+        missing_market.market = None;
         let mut wrong_mint = candidate("wrong-mint", 0.07);
         wrong_mint.liquidity_mint = Pubkey::new_unique().to_string();
 
-        let candidates = policy_eligible_candidates(&policy, &[eligible, off_market, wrong_mint]);
+        let candidates = policy_eligible_candidates(
+            &policy,
+            &[eligible, off_market, missing_market, wrong_mint],
+        );
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].reserve, "prime");
+    }
+
+    #[test]
+    fn filters_policy_eligible_positions_by_policy_candidate_reserves() {
+        let positions = vec![
+            position("authorized", 1_000, 400),
+            position("off-policy", 2_000, 500),
+        ];
+        let candidates = vec![candidate("authorized", 0.04)];
+
+        let eligible = policy_eligible_positions(&positions, &candidates);
+
+        assert_eq!(eligible.len(), 1);
+        assert_eq!(eligible[0].reserve, "authorized");
     }
 
     #[test]
@@ -851,6 +1151,21 @@ mod tests {
         assert_eq!(fresh_candidates.len(), 1);
         assert_eq!(fresh_candidates[0].reserve, "fresh");
         assert_eq!(stale_count, 1);
+    }
+
+    #[test]
+    fn reconcile_reserves_preserves_candidate_order_without_hardcoded_fallbacks() {
+        let candidates = vec![
+            candidate("best", 0.07),
+            candidate("second", 0.06),
+            candidate("best", 0.05),
+            candidate("third", 0.04),
+        ];
+
+        assert_eq!(
+            reconcile_reserves_for_candidates(&candidates),
+            vec!["best".to_owned(), "second".to_owned(), "third".to_owned()]
+        );
     }
 
     #[test]
@@ -884,6 +1199,29 @@ mod tests {
         let missing_index = parse_args(["--settings".to_owned(), "settings".to_owned()])
             .expect("parse partial options");
         assert!(vault_resolution_mode(&missing_index).is_err());
+    }
+
+    #[test]
+    fn all_active_vaults_mode_is_explicit_fleet_mode() {
+        let options = parse_args(["--all-active-vaults".to_owned()]).expect("parse fleet options");
+        assert_eq!(
+            vault_resolution_mode(&options).expect("resolution mode"),
+            VaultResolutionMode::Fleet
+        );
+        assert_eq!(
+            authority_env_for_options(&options).expect("fleet does not load setup authority"),
+            None
+        );
+
+        let conflict = parse_args([
+            "--all-active-vaults".to_owned(),
+            "--settings".to_owned(),
+            "settings".to_owned(),
+            "--vault-index".to_owned(),
+            "1".to_owned(),
+        ])
+        .expect("parse conflict");
+        assert!(vault_resolution_mode(&conflict).is_err());
     }
 
     #[test]
