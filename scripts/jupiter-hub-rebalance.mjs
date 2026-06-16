@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import {
   AddressLookupTableAccount,
+  ComputeBudgetProgram,
   Connection,
   Keypair,
   PublicKey,
@@ -44,12 +45,18 @@ const quoteApi = args["quote-api"] ?? DEFAULT_QUOTE_API;
 const swapInstructionsApi =
   args["swap-instructions-api"] ?? DEFAULT_SWAP_INSTRUCTIONS_API;
 const jupiterHeaders = jupiterApiHeaders();
+const allowTreasuryOutputBuffer =
+  args["allow-treasury-output-buffer"] === "1";
+const computeUnitLimit = Number(args["compute-unit-limit"] ?? "600000");
 
 if (!Number.isInteger(laneId) || laneId < 0 || laneId > 255) {
   throw new Error(`lane-id must fit in u8, got ${args["lane-id"]}`);
 }
 if (hubInputAmount <= 0n || hubOutputTopUpAmount <= 0n) {
   throw new Error("hub input and output top-up amounts must be positive");
+}
+if (!Number.isInteger(computeUnitLimit) || computeUnitLimit <= 0) {
+  throw new Error(`compute-unit-limit must be a positive integer, got ${args["compute-unit-limit"]}`);
 }
 
 const inputMintInfo = await fetchMintInfo(inputMint);
@@ -94,7 +101,7 @@ const swap = await fetchJupiterSwapInstructions({
 });
 const jupiterOutputAmount = quoteAmount(quote, "outAmount");
 const jupiterMinimumOutputAmount = quoteAmount(quote, "otherAmountThreshold");
-if (jupiterMinimumOutputAmount < hubOutputTopUpAmount) {
+if (!allowTreasuryOutputBuffer && jupiterMinimumOutputAmount < hubOutputTopUpAmount) {
   throw new Error(
     `Jupiter guaranteed output ${jupiterMinimumOutputAmount} is below Hub top-up ${hubOutputTopUpAmount}; refusing to rely on treasury output balance to cover swap slippage.`,
   );
@@ -145,7 +152,8 @@ const setupAtaInstructions = [
 ];
 
 const instructions = [
-  ...jupiterInstructions(swap.computeBudgetInstructions),
+  ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnitLimit }),
+  ...jupiterComputeBudgetInstructions(swap.computeBudgetInstructions),
   ...setupAtaInstructions,
   withdrawInstruction,
   ...jupiterInstructions(swap.setupInstructions),
@@ -345,18 +353,37 @@ async function fetchJupiterSwapInstructions({
       quoteResponse: quote,
       userPublicKey: userPublicKey.toBase58(),
       wrapAndUnwrapSol: false,
-      dynamicComputeUnitLimit: true,
+      dynamicComputeUnitLimit: false,
     }),
   });
 }
 
 async function fetchJson(url, init) {
-  const response = await fetch(url, init);
-  const text = await response.text();
-  if (!response.ok) {
+  const maxAttempts = 5;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const response = await fetch(url, init);
+    const text = await response.text();
+    if (response.ok) {
+      return JSON.parse(text);
+    }
+    if (
+      attempt + 1 < maxAttempts &&
+      (response.status === 429 || response.status >= 500)
+    ) {
+      const delayMs = 500 * 2 ** attempt;
+      console.warn(
+        `${url} failed with ${response.status}; retrying after ${delayMs}ms`,
+      );
+      await sleep(delayMs);
+      continue;
+    }
     throw new Error(`${url} failed with ${response.status}: ${text}`);
   }
-  return JSON.parse(text);
+  throw new Error(`${url} failed after ${maxAttempts} attempts`);
+}
+
+function sleep(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 function jupiterApiHeaders() {
@@ -368,6 +395,14 @@ function jupiterApiHeaders() {
 
 function jupiterInstructions(values = []) {
   return values.map(jupiterInstruction);
+}
+
+function jupiterComputeBudgetInstructions(values = []) {
+  return jupiterInstructions(values).filter(
+    (instruction) =>
+      !instruction.programId.equals(ComputeBudgetProgram.programId) ||
+      instruction.data[0] !== 2,
+  );
 }
 
 function jupiterInstruction(value) {

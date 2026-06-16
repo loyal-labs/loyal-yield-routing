@@ -18,11 +18,15 @@ Defaults match the current devnet deployment:
 The script creates or reuses ./ADDR_1.json through ./ADDR_5.json, funds
 those users, funds each configured lane, simulates and executes swaps and
 rebalances, then withdraws smoke-test inventory back to the faucet ATA.
+Set SMOKE_LANE_COUNT=2 to fund and clean up only lanes 0 and 1 when the
+deployed config has more lanes than the smoke should exercise.
 
 Set CLUSTER=m and MAINNET_PROGRAM_ID or PROGRAM_ID to run against mainnet.
 Mainnet runs require CONFIRM_MAINNET=1, default to mainnet USDC/PYUSD mints,
 and use the Jupiter rebalance-through-Hub shape because Jupiter is mainnet-only.
 Set JUPITER_API_KEY in the environment if your Jupiter API plan requires it.
+Set SMOKE_RESUME_AFTER_SWAP4=1 to resume a partial smoke run after the first
+three swaps, first Jupiter rebalance batch, and fourth swap have already landed.
 For custom mainnet RPC URLs that are not auto-detected, set PROGRAM_ID,
 mainnet mints, JUPITER_REBALANCE_MODE=jupiter, ALLOW_JUPITER_CUSTOM_RPC=1,
 and CONFIRM_MAINNET=1.
@@ -82,6 +86,10 @@ USER_COUNT="${USER_COUNT:-5}"
 ADDR_PREFIX="${ADDR_PREFIX:-ADDR_}"
 USER_FUND_UI="${USER_FUND_UI:-0.1}"
 LANE_FUND_UI="${LANE_FUND_UI:-1}"
+SMOKE_LANE_COUNT="${SMOKE_LANE_COUNT:-}"
+SMOKE_RESUME_AFTER_FIRST_SWAPS="${SMOKE_RESUME_AFTER_FIRST_SWAPS:-0}"
+SMOKE_RESUME_AFTER_FIRST_REBALANCE="${SMOKE_RESUME_AFTER_FIRST_REBALANCE:-0}"
+SMOKE_RESUME_AFTER_SWAP4="${SMOKE_RESUME_AFTER_SWAP4:-0}"
 SWAP_MAX_FEE_BPS="${SWAP_MAX_FEE_BPS:-}"
 JUPITER_REBALANCE_MODE="${JUPITER_REBALANCE_MODE:-auto}"
 if [[ "$JUPITER_REBALANCE_MODE" == "auto" ]]; then
@@ -93,6 +101,11 @@ CLEANUP_MODE="${CLEANUP_MODE:-$DEFAULT_CLEANUP_MODE}"
 JUPITER_SLIPPAGE_BPS="${JUPITER_SLIPPAGE_BPS:-50}"
 JUPITER_QUOTE_API="${JUPITER_QUOTE_API:-https://api.jup.ag/swap/v1/quote}"
 JUPITER_SWAP_INSTRUCTIONS_API="${JUPITER_SWAP_INSTRUCTIONS_API:-https://api.jup.ag/swap/v1/swap-instructions}"
+JUPITER_ALLOW_TREASURY_OUTPUT_BUFFER="${JUPITER_ALLOW_TREASURY_OUTPUT_BUFFER:-0}"
+
+if [[ "$SMOKE_RESUME_AFTER_SWAP4" == "1" ]]; then
+  SMOKE_RESUME_AFTER_FIRST_SWAPS=1
+fi
 
 HUB_CLI=(cargo run -q -p loyal-hub-cli -- -u "$CLUSTER" -k "$FAUCET_KEYPAIR" --program-id "$PROGRAM_ID")
 
@@ -136,9 +149,13 @@ fund_recipient() {
   local mint="$1"
   local amount="$2"
   local recipient="$3"
+  local balance
+  local transfer_amount
   shift 3
 
-  if token_balance_for_owner_at_least "$recipient" "$mint" "$amount"; then
+  balance="$(token_balance_for_owner "$recipient" "$mint")"
+  transfer_amount="$(awk -v balance="$balance" -v amount="$amount" 'BEGIN { deficit = amount - balance; if (deficit < 0) deficit = 0; printf "%.6f", deficit }')"
+  if awk -v transfer_amount="$transfer_amount" 'BEGIN { exit !((transfer_amount + 0) <= 0) }'; then
     printf 'Skipping funding %s for %s; existing balance is at least %s\n' "$mint" "$recipient" "$amount"
     return
   fi
@@ -148,7 +165,7 @@ fund_recipient() {
     --fee-payer "$FAUCET_KEYPAIR" \
     --owner "$FAUCET_KEYPAIR" \
     "$mint" \
-    "$amount" \
+    "$transfer_amount" \
     "$recipient" \
     --allow-unfunded-recipient \
     --fund-recipient \
@@ -206,7 +223,7 @@ token_balance_for_owner_at_least() {
 
 raw_out_for_fee() {
   local amount_in="$1"
-  echo $((amount_in * (10000 - SWAP_MAX_FEE_BPS) / 10000))
+  echo $(((amount_in * (10000 - SWAP_MAX_FEE_BPS) + 9999) / 10000))
 }
 
 swap_exact_in() {
@@ -265,6 +282,9 @@ jupiter_rebalance_inventory() {
     --quote-api "$JUPITER_QUOTE_API"
     --swap-instructions-api "$JUPITER_SWAP_INSTRUCTIONS_API"
   )
+  if [[ "$JUPITER_ALLOW_TREASURY_OUTPUT_BUFFER" == "1" ]]; then
+    common_args+=(--allow-treasury-output-buffer)
+  fi
 
   log "Simulating $label through Jupiter"
   bun scripts/jupiter-hub-rebalance.mjs "${common_args[@]}" --simulate-only
@@ -274,6 +294,11 @@ jupiter_rebalance_inventory() {
 }
 
 rebalance_after_first_swaps() {
+  if [[ "$SMOKE_RESUME_AFTER_SWAP4" == "1" ]]; then
+    log "Skipping first rebalance batch for resume after swap 4"
+    return
+  fi
+
   case "$ACTIVE_REBALANCE_MODE" in
     native)
       rebalance_inventory "rebalance after first swaps" \
@@ -281,8 +306,12 @@ rebalance_after_first_swaps() {
         --transfer mint:"$PYUSD_MINT" from_lane_id:1 to_lane_id:0 raw_token_amount:20000
       ;;
     jupiter)
-      jupiter_rebalance_inventory "rebalance lane 0 USDC to pyUSD after user 1" \
-        0 "$USDC_MINT" "$PYUSD_MINT" 20000 "$(raw_out_for_fee 20000)"
+      if [[ "$SMOKE_RESUME_AFTER_FIRST_REBALANCE" == "1" ]]; then
+        log "Skipping first Jupiter rebalance for resume"
+      else
+        jupiter_rebalance_inventory "rebalance lane 0 USDC to pyUSD after user 1" \
+          0 "$USDC_MINT" "$PYUSD_MINT" 20000 "$(raw_out_for_fee 20000)"
+      fi
       jupiter_rebalance_inventory "rebalance lane 1 pyUSD to USDC after user 2" \
         1 "$PYUSD_MINT" "$USDC_MINT" 20000 "$(raw_out_for_fee 20000)"
       jupiter_rebalance_inventory "rebalance lane 0 USDC to pyUSD after user 3" \
@@ -396,6 +425,12 @@ INITIAL_STATE_JSON="$STATE_JSON"
 
 LANE_COUNT="$(jq_state '.lane_count // 0')"
 [[ "$LANE_COUNT" -ge 2 ]] || die "expected at least 2 configured lanes, got $LANE_COUNT"
+if [[ -z "$SMOKE_LANE_COUNT" ]]; then
+  SMOKE_LANE_COUNT="$LANE_COUNT"
+fi
+[[ "$SMOKE_LANE_COUNT" =~ ^[0-9]+$ ]] || die "SMOKE_LANE_COUNT must be an integer"
+[[ "$SMOKE_LANE_COUNT" -ge 2 ]] || die "SMOKE_LANE_COUNT must be at least 2"
+[[ "$SMOKE_LANE_COUNT" -le "$LANE_COUNT" ]] || die "SMOKE_LANE_COUNT=$SMOKE_LANE_COUNT exceeds configured lane_count=$LANE_COUNT"
 
 CONFIG_MAX_FEE_BPS="$(jq_state '.max_fee_bps // empty')"
 [[ -n "$CONFIG_MAX_FEE_BPS" ]] || die "hub state did not include max_fee_bps"
@@ -426,11 +461,15 @@ for ((i = 1; i <= USER_COUNT; i += 1)); do
   printf 'ADDR_%s %s\n' "$i" "$pubkey"
 done
 
-log "Funding users with $USER_FUND_UI USDC and $USER_FUND_UI pyUSD each"
-for pubkey in "${USER_PUBKEYS[@]}"; do
-  fund_recipient "$USDC_MINT" "$USER_FUND_UI" "$pubkey"
-  fund_recipient "$PYUSD_MINT" "$USER_FUND_UI" "$pubkey"
-done
+if [[ "$SMOKE_RESUME_AFTER_FIRST_SWAPS" == "1" ]]; then
+  log "Skipping user funding for resume after first swaps"
+else
+  log "Funding users with $USER_FUND_UI USDC and $USER_FUND_UI pyUSD each"
+  for pubkey in "${USER_PUBKEYS[@]}"; do
+    fund_recipient "$USDC_MINT" "$USER_FUND_UI" "$pubkey"
+    fund_recipient "$PYUSD_MINT" "$USER_FUND_UI" "$pubkey"
+  done
+fi
 
 log "Resolving user token accounts"
 for pubkey in "${USER_PUBKEYS[@]}"; do
@@ -438,25 +477,37 @@ for pubkey in "${USER_PUBKEYS[@]}"; do
   USER_PYUSD_ATAS+=("$(token_account_for_owner "$pubkey" "$PYUSD_MINT")")
 done
 
-log "Funding each configured lane with $LANE_FUND_UI USDC and $LANE_FUND_UI pyUSD"
-for ((lane_id = 0; lane_id < LANE_COUNT; lane_id += 1)); do
-  lane_authority="$(jq_state --argjson lane "$lane_id" '.lanes[] | select(.lane_id == $lane) | .authority')"
-  [[ -n "$lane_authority" && "$lane_authority" != "null" ]] || die "missing lane authority for lane $lane_id"
+if [[ "$SMOKE_RESUME_AFTER_FIRST_SWAPS" == "1" ]]; then
+  log "Skipping lane funding for resume after first swaps"
+else
+  log "Funding first $SMOKE_LANE_COUNT lanes with $LANE_FUND_UI USDC and $LANE_FUND_UI pyUSD"
+  for ((lane_id = 0; lane_id < SMOKE_LANE_COUNT; lane_id += 1)); do
+    lane_authority="$(jq_state --argjson lane "$lane_id" '.lanes[] | select(.lane_id == $lane) | .authority')"
+    [[ -n "$lane_authority" && "$lane_authority" != "null" ]] || die "missing lane authority for lane $lane_id"
 
-  fund_recipient "$USDC_MINT" "$LANE_FUND_UI" "$lane_authority" --allow-non-system-account-recipient
-  fund_recipient "$PYUSD_MINT" "$LANE_FUND_UI" "$lane_authority" --allow-non-system-account-recipient
-done
+    fund_recipient "$USDC_MINT" "$LANE_FUND_UI" "$lane_authority" --allow-non-system-account-recipient
+    fund_recipient "$PYUSD_MINT" "$LANE_FUND_UI" "$lane_authority" --allow-non-system-account-recipient
+  done
+fi
 
 log "Hub state after funding"
 "${HUB_CLI[@]}" state
 
-swap_exact_in "swap user 1 lane 0 USDC to pyUSD" 0 0 "$USDC_MINT" "$PYUSD_MINT" "${USER_USDC_ATAS[0]}" "${USER_PYUSD_ATAS[0]}" 20000
-swap_exact_in "swap user 2 lane 1 pyUSD to USDC" 1 1 "$PYUSD_MINT" "$USDC_MINT" "${USER_PYUSD_ATAS[1]}" "${USER_USDC_ATAS[1]}" 20000
-swap_exact_in "swap user 3 lane 0 USDC to pyUSD" 2 0 "$USDC_MINT" "$PYUSD_MINT" "${USER_USDC_ATAS[2]}" "${USER_PYUSD_ATAS[2]}" 30000
+if [[ "$SMOKE_RESUME_AFTER_FIRST_SWAPS" == "1" ]]; then
+  log "Resuming after first three swaps"
+else
+  swap_exact_in "swap user 1 lane 0 USDC to pyUSD" 0 0 "$USDC_MINT" "$PYUSD_MINT" "${USER_USDC_ATAS[0]}" "${USER_PYUSD_ATAS[0]}" 20000
+  swap_exact_in "swap user 2 lane 1 pyUSD to USDC" 1 1 "$PYUSD_MINT" "$USDC_MINT" "${USER_PYUSD_ATAS[1]}" "${USER_USDC_ATAS[1]}" 20000
+  swap_exact_in "swap user 3 lane 0 USDC to pyUSD" 2 0 "$USDC_MINT" "$PYUSD_MINT" "${USER_USDC_ATAS[2]}" "${USER_PYUSD_ATAS[2]}" 30000
+fi
 
 rebalance_after_first_swaps
 
-swap_exact_in "swap user 4 lane 1 USDC to pyUSD" 3 1 "$USDC_MINT" "$PYUSD_MINT" "${USER_USDC_ATAS[3]}" "${USER_PYUSD_ATAS[3]}" 10000
+if [[ "$SMOKE_RESUME_AFTER_SWAP4" == "1" ]]; then
+  log "Skipping swap user 4 for resume after swap 4"
+else
+  swap_exact_in "swap user 4 lane 1 USDC to pyUSD" 3 1 "$USDC_MINT" "$PYUSD_MINT" "${USER_USDC_ATAS[3]}" "${USER_PYUSD_ATAS[3]}" 10000
+fi
 swap_exact_in "swap user 5 lane 0 pyUSD to USDC" 4 0 "$PYUSD_MINT" "$USDC_MINT" "${USER_PYUSD_ATAS[4]}" "${USER_USDC_ATAS[4]}" 15000
 
 rebalance_after_final_swaps
@@ -464,6 +515,10 @@ rebalance_after_final_swaps
 log "Withdrawing remaining lane inventory back to the faucet"
 refresh_state
 for ((lane_id = 0; lane_id < LANE_COUNT; lane_id += 1)); do
+  if [[ "$lane_id" -ge "$SMOKE_LANE_COUNT" ]]; then
+    continue
+  fi
+
   for mint in "$USDC_MINT" "$PYUSD_MINT"; do
     current_amount="$(jq_state --argjson lane "$lane_id" --arg mint "$mint" '[.lanes[]? | select(.lane_id == $lane) | .inventory[]? | select(.mint == $mint) | (.amount // 0)] | first // 0')"
     amount="$(cleanup_amount_for "$lane_id" "$mint" "$current_amount")"
