@@ -432,6 +432,7 @@ pub enum MockProgram {
     Jupiter,
     KaminoLend,
     LoyalHubSwap,
+    AdversarialLoyalHubSwap,
 }
 
 impl FundedSquadsTestContext {

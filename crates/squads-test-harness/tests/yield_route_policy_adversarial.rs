@@ -30,6 +30,7 @@ use squads_test_harness::{
 
 const AMOUNT: u64 = 1_000_000;
 const HUB_OUT: u64 = 995_000;
+const ADVERSARIAL_HUB_DUST_OUT: u64 = 1;
 const MAX_FEE_BPS: u16 = 50;
 
 struct AdversarialRouteFixture {
@@ -87,10 +88,18 @@ struct MutationCase {
 
 impl AdversarialRouteFixture {
     fn setup() -> Option<Self> {
+        Self::setup_with_hub_program(MockProgram::LoyalHubSwap)
+    }
+
+    fn setup_with_adversarial_hub_program() -> Option<Self> {
+        Self::setup_with_hub_program(MockProgram::AdversarialLoyalHubSwap)
+    }
+
+    fn setup_with_hub_program(hub_program: MockProgram) -> Option<Self> {
         let mut context = create_funded_squads_test_context_with_mock_programs(&[
             MockProgram::Jupiter,
             MockProgram::KaminoLend,
-            MockProgram::LoyalHubSwap,
+            hub_program,
         ])
         .expect("create funded Squads test context")?;
 
@@ -218,16 +227,36 @@ impl AdversarialRouteFixture {
             seed_spl_token_account(&mut context.svm, account, mint, owner, amount);
         }
 
-        let init_hub_ix = initialize_loyal_hub_config_instruction(
-            hub_authorizer.pubkey(),
-            hub_authorizer.pubkey(),
-            hub_authorizer.pubkey(),
-            MAX_FEE_BPS,
-            false,
-            &[USDC_MINT, PYUSD_MINT],
-        );
-        try_send_instructions(&mut context.svm, &[init_hub_ix], &hub_authorizer, &[])
-            .expect("hub authorizer initializes Loyal Hub config");
+        match hub_program {
+            MockProgram::LoyalHubSwap => {
+                let init_hub_ix = initialize_loyal_hub_config_instruction(
+                    hub_authorizer.pubkey(),
+                    hub_authorizer.pubkey(),
+                    hub_authorizer.pubkey(),
+                    MAX_FEE_BPS,
+                    false,
+                    &[USDC_MINT, PYUSD_MINT],
+                );
+                try_send_instructions(&mut context.svm, &[init_hub_ix], &hub_authorizer, &[])
+                    .expect("hub authorizer initializes Loyal Hub config");
+            }
+            MockProgram::AdversarialLoyalHubSwap => {
+                context
+                    .svm
+                    .set_account(
+                        loyal_actions::derive_loyal_hub_config(),
+                        Account {
+                            lamports: LAMPORTS_PER_SOL,
+                            data: vec![0; loyal_actions::hub_abi::config_account::MAX_LEN],
+                            owner: LOYAL_HUB_SWAP_PROGRAM_ID,
+                            executable: false,
+                            rent_epoch: 0,
+                        },
+                    )
+                    .expect("seed adversarial Hub config account");
+            }
+            MockProgram::Jupiter | MockProgram::KaminoLend => unreachable!(),
+        }
 
         let route_action = create_all_in_one_market_mint_yield_route_action(
             loyal_action_context(&context, wallet_b.pubkey()),
@@ -696,6 +725,67 @@ fn raw_route_builders_match_sdk_semantics_before_mutation() {
     assert_eq!(
         get_spl_token_amount(&hub.context.svm, hub.vault_pyusd_collateral),
         HUB_OUT
+    );
+}
+
+#[test]
+fn adversarial_loyal_hub_program_can_drain_route_value_past_all_in_one_policy() {
+    let Some(mut fixture) = AdversarialRouteFixture::setup_with_adversarial_hub_program() else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+
+    let (withdraw_instructions, withdraw_accounts) = fixture.main_withdraw();
+    let (deposit_instructions, deposit_accounts) = fixture.pyusd_deposit(ADVERSARIAL_HUB_DUST_OUT);
+    let route_ix = fixture
+        .route_action
+        .loyal_hub_route_action()
+        .expect("Loyal Hub route")
+        .build(HubRouteExecution {
+            withdraw_instructions,
+            withdraw_accounts,
+            swap: HubSwapExecution {
+                amount_out: ADVERSARIAL_HUB_DUST_OUT,
+                min_out: ADVERSARIAL_HUB_DUST_OUT,
+                ..hub_swap(
+                    &fixture,
+                    fixture.vault_usdc,
+                    fixture.vault_pyusd,
+                    USDC_MINT,
+                    PYUSD_MINT,
+                )
+            },
+            deposit_instructions,
+            deposit_accounts,
+        });
+
+    try_send_instructions_with_heap_frame(
+        &mut fixture.context.svm,
+        &[route_ix],
+        &fixture.wallet_b,
+        &[&fixture.hub_authorizer],
+    )
+    .expect("all-in-one policy accepts a policy-shaped adversarial Hub route");
+
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, fixture.vault_main_usdc_collateral),
+        0
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, fixture.vault_usdc),
+        0
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, fixture.vault_pyusd),
+        0
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, fixture.vault_pyusd_collateral),
+        ADVERSARIAL_HUB_DUST_OUT
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, loyal_hub_token_account(USDC_MINT)),
+        AMOUNT
     );
 }
 

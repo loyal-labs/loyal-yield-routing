@@ -204,6 +204,9 @@ pub fn create_funded_squads_test_context_with_config_and_mock_programs(
             MockProgram::LoyalHubSwap => {
                 add_loyal_hub_swap_program(&mut svm)?;
             }
+            MockProgram::AdversarialLoyalHubSwap => {
+                add_mock_yield_protocols_program(&mut svm, LOYAL_HUB_SWAP_PROGRAM_ID)?;
+            }
         }
     }
 

@@ -8,5 +8,6 @@ description = "Test-only SBF protocol mocks for Squads yield-routing LiteSVM tes
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
+loyal-hub-abi = { workspace = true }
 solana-program.workspace = true
 spl-token = { workspace = true, features = ["no-entrypoint"] }

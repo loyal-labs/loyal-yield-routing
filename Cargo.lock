@@ -3276,6 +3276,7 @@ dependencies = [
 name = "mock-yield-protocols-program"
 version = "0.1.0"
 dependencies = [
+ "loyal-hub-abi",
  "solana-program",
  "spl-token",
 ]

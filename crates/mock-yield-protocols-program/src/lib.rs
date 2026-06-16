@@ -12,6 +12,7 @@ use solana_program::{
 use spl_token::solana_program::program_pack::Pack;
 
 pub const JUPITER_V6_PROGRAM_ID: Pubkey = pubkey!("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4");
+pub const LOYAL_HUB_SWAP_PROGRAM_ID: Pubkey = Pubkey::new_from_array([42; 32]);
 pub const USDC_MINT: Pubkey = pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 pub const PYUSD_MINT: Pubkey = pubkey!("2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo");
 pub const WRAPPED_SOL_MINT: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
@@ -77,7 +78,67 @@ pub fn process_instruction(
         return process_kamino(program_id, accounts, data);
     }
 
+    if program_id == &LOYAL_HUB_SWAP_PROGRAM_ID {
+        return process_adversarial_loyal_hub_swap(program_id, accounts, data);
+    }
+
     Err(ProgramError::IncorrectProgramId)
+}
+
+fn process_adversarial_loyal_hub_swap(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &[u8],
+) -> ProgramResult {
+    if data.len() != loyal_hub_abi::SWAP_EXACT_IN_DATA_LEN
+        || data[loyal_hub_abi::SWAP_EXACT_IN_TAG_OFFSET as usize] != loyal_hub_abi::SWAP_EXACT_IN
+    {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+
+    let amount_in = read_u64_at(data, loyal_hub_abi::SWAP_EXACT_IN_AMOUNT_IN_DATA_OFFSET)?;
+    let amount_out = read_u64_at(data, loyal_hub_abi::SWAP_EXACT_IN_AMOUNT_OUT_DATA_OFFSET)?;
+    let lane_id = data[loyal_hub_abi::SWAP_EXACT_IN_LANE_ID_DATA_OFFSET as usize];
+
+    let account_info_iter = &mut accounts.iter();
+    let _config = next_account_info(account_info_iter)?;
+    let user_vault = next_account_info(account_info_iter)?;
+    let user_input = next_account_info(account_info_iter)?;
+    let user_output = next_account_info(account_info_iter)?;
+    let hub_input = next_account_info(account_info_iter)?;
+    let hub_output = next_account_info(account_info_iter)?;
+    let input_mint = next_account_info(account_info_iter)?;
+    let output_mint = next_account_info(account_info_iter)?;
+    let hub_authority = next_account_info(account_info_iter)?;
+    let _hub_authorizer = next_account_info(account_info_iter)?;
+    let token_program = next_account_info(account_info_iter)?;
+
+    require_signer(user_vault)?;
+    require_key(token_program, &spl_token::id())?;
+
+    let input_decimals = spl_token::state::Mint::unpack(&input_mint.data.borrow())?.decimals;
+    let output_decimals = spl_token::state::Mint::unpack(&output_mint.data.borrow())?.decimals;
+
+    transfer_checked(
+        user_input,
+        input_mint,
+        hub_input,
+        user_vault,
+        token_program,
+        amount_in,
+        input_decimals,
+    )?;
+    transfer_checked_signed(
+        program_id,
+        hub_output,
+        output_mint,
+        user_output,
+        hub_authority,
+        token_program,
+        amount_out,
+        output_decimals,
+        &[loyal_hub_abi::HUB_AUTHORITY_SEED, &[lane_id]],
+    )
 }
 
 fn process_jupiter(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
@@ -696,6 +757,11 @@ fn read_u64(data: &[u8]) -> Result<u64, ProgramError> {
         data.try_into()
             .map_err(|_| ProgramError::InvalidInstructionData)?,
     ))
+}
+
+fn read_u64_at(data: &[u8], offset: u64) -> Result<u64, ProgramError> {
+    let offset = offset as usize;
+    read_u64(&data[offset..offset + 8])
 }
 
 fn read_pubkey(data: &[u8]) -> Result<[u8; 32], ProgramError> {
