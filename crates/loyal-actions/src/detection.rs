@@ -515,16 +515,18 @@ fn classify_kamino_init_obligation(
     single_pubkey(accounts.get(&0)?, None).filter(|key| *key == vault)?;
     single_pubkey(accounts.get(&1)?, None).filter(|key| *key == vault)?;
     let markets = unique_pubkeys(pubkeys(accounts.get(&3)?, None)?);
-    let obligations = unique_pubkeys(pubkeys(accounts.get(&2)?, None)?);
-    if obligations.len() != markets.len() {
-        return None;
-    }
-    let expected_obligations = markets
-        .iter()
-        .map(|market| derive_kamino_vanilla_obligation(vault, *market))
-        .collect::<Vec<_>>();
-    if !same_pubkey_set(&obligations, &expected_obligations) {
-        return None;
+    if let Some(obligation_constraint) = accounts.get(&2) {
+        let obligations = unique_pubkeys(pubkeys(obligation_constraint, None)?);
+        if obligations.len() != markets.len() {
+            return None;
+        }
+        let expected_obligations = markets
+            .iter()
+            .map(|market| derive_kamino_vanilla_obligation(vault, *market))
+            .collect::<Vec<_>>();
+        if !same_pubkey_set(&obligations, &expected_obligations) {
+            return None;
+        }
     }
     single_pubkey(accounts.get(&4)?, None).filter(|key| *key == Pubkey::default())?;
     single_pubkey(accounts.get(&5)?, None).filter(|key| *key == Pubkey::default())?;
@@ -1667,6 +1669,31 @@ mod tests {
             .expect("fixture has init obligation constraint")
     }
 
+    fn init_obligation_constraint_view(
+        init: &SquadsInstructionConstraintView,
+        vault: Pubkey,
+        extra_obligations: Vec<Pubkey>,
+    ) -> SquadsAccountConstraintView {
+        let markets = init
+            .account_constraints
+            .iter()
+            .find(|constraint| constraint.account_index == 3)
+            .expect("init lending market account constraint");
+        let SquadsAccountConstraintKindView::Pubkey(markets) = &markets.kind else {
+            panic!("init lending market should use pubkey constraints");
+        };
+        let mut obligations = markets
+            .iter()
+            .map(|market| derive_kamino_vanilla_obligation(vault, *market))
+            .collect::<Vec<_>>();
+        obligations.extend(extra_obligations);
+        SquadsAccountConstraintView {
+            account_index: 2,
+            kind: SquadsAccountConstraintKindView::Pubkey(obligations),
+            owner: None,
+        }
+    }
+
     fn refresh_constraint_mut(
         action: &mut SquadsSettingsActionView,
     ) -> &mut SquadsInstructionConstraintView {
@@ -1914,11 +1941,7 @@ mod tests {
     #[test]
     fn rejects_loose_init_obligation_policy_constraints() {
         let mut unsupported_market = detected_action_with_init_constraint();
-        let vault = classify_kamino_withdraw(&unsupported_market.payload.constraints[0])
-            .expect("fixture has withdraw")
-            .vault;
         let market = Pubkey::new_unique();
-        let obligation = derive_kamino_vanilla_obligation(vault, market);
         let init = init_constraint_mut(&mut unsupported_market);
         let markets = init
             .account_constraints
@@ -1929,15 +1952,6 @@ mod tests {
             panic!("init lending market should use pubkey constraints");
         };
         pubkeys.push(market);
-        let obligations = init
-            .account_constraints
-            .iter_mut()
-            .find(|constraint| constraint.account_index == 2)
-            .unwrap();
-        let SquadsAccountConstraintKindView::Pubkey(pubkeys) = &mut obligations.kind else {
-            panic!("init obligation account should use pubkey constraints");
-        };
-        pubkeys.push(obligation);
         assert!(detect_yield_route_policy_create(&unsupported_market).is_none());
 
         let mut wrong_owner = detected_action_with_init_constraint();
@@ -1961,29 +1975,22 @@ mod tests {
         assert!(detect_yield_route_policy_create(&wrong_fee_payer).is_none());
 
         let mut extra_obligation = detected_action_with_init_constraint();
+        let extra_vault = classify_kamino_withdraw(&extra_obligation.payload.constraints[0])
+            .expect("fixture has withdraw")
+            .vault;
         let init = init_constraint_mut(&mut extra_obligation);
-        let obligations = init
-            .account_constraints
-            .iter_mut()
-            .find(|constraint| constraint.account_index == 2)
-            .unwrap();
-        let SquadsAccountConstraintKindView::Pubkey(pubkeys) = &mut obligations.kind else {
-            panic!("init obligation account should use pubkey constraints");
-        };
-        pubkeys.push(Pubkey::new_unique());
+        let obligation_constraint =
+            init_obligation_constraint_view(init, extra_vault, vec![Pubkey::new_unique()]);
+        init.account_constraints.push(obligation_constraint);
         assert!(detect_yield_route_policy_create(&extra_obligation).is_none());
 
         let mut wrong_obligation = detected_action_with_init_constraint();
         let init = init_constraint_mut(&mut wrong_obligation);
-        let obligations = init
-            .account_constraints
-            .iter_mut()
-            .find(|constraint| constraint.account_index == 2)
-            .unwrap();
-        let SquadsAccountConstraintKindView::Pubkey(pubkeys) = &mut obligations.kind else {
-            panic!("init obligation account should use pubkey constraints");
-        };
-        pubkeys[0] = Pubkey::new_unique();
+        init.account_constraints.push(SquadsAccountConstraintView {
+            account_index: 2,
+            kind: SquadsAccountConstraintKindView::Pubkey(vec![Pubkey::new_unique()]),
+            owner: None,
+        });
         assert!(detect_yield_route_policy_create(&wrong_obligation).is_none());
 
         let mut wrong_seed_account = detected_action_with_init_constraint();

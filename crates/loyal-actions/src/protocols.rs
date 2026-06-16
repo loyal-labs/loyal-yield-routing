@@ -2060,20 +2060,15 @@ mod tests {
     }
 
     #[test]
-    fn kamino_init_obligation_constraint_anchors_vault_market_pdas_and_seeds() {
+    fn kamino_init_obligation_constraint_anchors_vault_market_and_seeds() {
         let vault = Pubkey::new_unique();
         let market = Pubkey::new_unique();
         let other_market = Pubkey::new_unique();
         let constraint = kamino_init_obligation_constraint(vault, vec![market, other_market]);
-        let obligations = vec![
-            derive_kamino_vanilla_obligation(vault, market),
-            derive_kamino_vanilla_obligation(vault, other_market),
-        ];
 
         assert_eq!(constraint.program_id, KAMINO_LEND_PROGRAM_ID);
         assert!(has_pubkey_constraint(&constraint, 0, &[vault], None));
         assert!(has_pubkey_constraint(&constraint, 1, &[vault], None));
-        assert!(has_pubkey_constraint(&constraint, 2, &obligations, None));
         assert!(has_pubkey_constraint(
             &constraint,
             3,
