@@ -187,6 +187,18 @@ async fn run_laserstream_subscription(
                 if !running.load(Ordering::Relaxed) {
                     break;
                 }
+                if error.is_laserstream_replay_expired() {
+                    fail_batch_immediately(
+                        &reserves,
+                        attempt,
+                        format!(
+                            "{}; failing worker so Render restarts with a fresh seed slot",
+                            error.message
+                        ),
+                        &tx,
+                    );
+                    break;
+                }
                 if error.reached_connected {
                     reconnect_attempts = 0;
                 }
@@ -383,6 +395,13 @@ impl SubscriptionAttemptError {
             message: message.into(),
             reached_connected: true,
         }
+    }
+
+    fn is_laserstream_replay_expired(&self) -> bool {
+        self.message.contains("Requested slot")
+            && self
+                .message
+                .contains("older than the oldest available slot")
     }
 }
 
@@ -603,6 +622,24 @@ async fn schedule_batch_reconnect_or_fail(
     true
 }
 
+fn fail_batch_immediately(
+    reserves: &[Pubkey],
+    attempts: usize,
+    error: String,
+    tx: &mpsc::UnboundedSender<AccountUpdateEvent>,
+) {
+    for reserve in reserves {
+        let _ = send_event(
+            tx,
+            AccountUpdateEvent::Failed {
+                reserve: *reserve,
+                attempts,
+                error: error.clone(),
+            },
+        );
+    }
+}
+
 fn reconnect_backoff(attempts: usize, config: SubscriptionConfig) -> Duration {
     let shift = attempts.saturating_sub(1).min(16) as u32;
     let multiplier = 1_u32 << shift;
@@ -631,5 +668,29 @@ fn decode_ui_account_data(account: &UiAccount) -> Result<Vec<u8>> {
             .decode(encoded)
             .context("decode base64 account data"),
         UiAccountData::Json(_) => bail!("expected base64 account data, got JSON encoding"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_laserstream_replay_retention_error() {
+        let error = SubscriptionAttemptError::after_connected(
+            "gRPC status error: code: 'Operation was attempted past the valid range', message: \
+             \"Requested slot 425513755 is older than the oldest available slot 426585224. \
+             Please request a more recent slot.\"",
+        );
+
+        assert!(error.is_laserstream_replay_expired());
+    }
+
+    #[test]
+    fn does_not_treat_generic_stream_errors_as_replay_expiry() {
+        let error =
+            SubscriptionAttemptError::after_connected("gRPC status error: transport closed");
+
+        assert!(!error.is_laserstream_replay_expired());
     }
 }
