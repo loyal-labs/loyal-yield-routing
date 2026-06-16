@@ -9484,11 +9484,9 @@ mod tests {
                 chain_position_for_vault(KAMINO_PRIME_USDC_RESERVE, 0, false, vault_pubkey),
             ],
         };
-        let mut decoded = decode_squads_policy_account(&program_interaction_policy_account_data(
-            KAMINO_MAIN_MARKET,
-            KAMINO_PRIME_MARKET,
-            vault_pubkey,
-        ))
+        let mut decoded = decode_squads_policy_account(
+            &program_interaction_route_only_policy_data(KAMINO_MAIN_MARKET, KAMINO_PRIME_MARKET),
+        )
         .expect("decode route-only policy");
         decoded.kamino_markets = vec![
             KAMINO_MAIN_MARKET.to_owned(),
@@ -9594,6 +9592,69 @@ mod tests {
     }
 
     #[test]
+    fn target_obligation_setup_preview_reports_setup_policy_fallback() {
+        let setup_policy_account = Pubkey::new_unique();
+        let mut vault = selected_vault_with_policy(Pubkey::new_unique().to_string());
+        vault.setup_policy_account = Some(setup_policy_account.to_string());
+        vault.setup_policy_seed = Some(48);
+        let preview = ChainReconcilePreview {
+            observed_slot: 1,
+            vault_user_metadata: Pubkey::new_unique().to_string(),
+            vault_user_metadata_exists: true,
+            positions: vec![
+                chain_position(&KAMINO_MAIN_USDC_RESERVE.to_string(), 500_000, true),
+                chain_position(KAMINO_PRIME_USDC_RESERVE, 0, false),
+            ],
+        };
+        let decoded = decode_squads_policy_account(&program_interaction_route_only_policy_data(
+            KAMINO_MAIN_MARKET,
+            KAMINO_PRIME_MARKET,
+        ))
+        .expect("decode route-only policy");
+        let policy_preflight = PolicyAccountPreflight {
+            policy_account: vault.policy_account.clone(),
+            source_market: KAMINO_MAIN_MARKET.to_owned(),
+            target_market: KAMINO_PRIME_MARKET.to_owned(),
+            decoded,
+        };
+
+        let setup = target_obligation_setup_json(
+            &preview,
+            &default_reserve_move(),
+            &vault,
+            Some(&policy_preflight),
+        )
+        .expect("setup preview");
+
+        assert_eq!(setup["needed"], true);
+        assert_eq!(
+            setup["policyShape"],
+            "route_policy_plus_setup_policy_market_scoped_init_obligation"
+        );
+        assert_eq!(setup["initPolicySource"], "setup_policy");
+        assert_eq!(setup["initPolicyAccount"], setup_policy_account.to_string());
+        assert_eq!(
+            setup["setupPolicyAccount"],
+            setup_policy_account.to_string()
+        );
+        assert_eq!(setup["setupPolicySeed"], 48);
+        assert_eq!(setup["decodedRoutePolicyAllowsInitObligation"], false);
+        assert_eq!(
+            setup["initObligationInstructionConstraintIndex"],
+            Value::Null
+        );
+        assert_eq!(setup["decodedRoutePolicyAllowsRefreshObligation"], false);
+        assert_eq!(
+            setup["requiredBeforeSameMintExecution"],
+            json!([
+                "execute route-policy withdraw in the same transaction",
+                "execute the target-market init_obligation constraint from the setup policy in the same transaction",
+                "refresh the newly initialized target obligation before the protected deposit instruction",
+            ])
+        );
+    }
+
+    #[test]
     fn klend_obligation_stale_simulation_is_classified_as_refresh_requirement() {
         let logs = json!([
             "Program log: Instruction: DepositReserveLiquidityAndObligationCollateralV2",
@@ -9655,6 +9716,28 @@ mod tests {
             &mut data,
             vault,
             &Pubkey::from_str(deposit_market).unwrap(),
+        );
+        data
+    }
+
+    fn program_interaction_route_only_policy_data(
+        withdraw_market: &str,
+        deposit_market: &str,
+    ) -> Vec<u8> {
+        let mut data = program_interaction_policy_account_header(2);
+        push_program_interaction_kamino_constraint(
+            &mut data,
+            &WITHDRAW_OBLIGATION_COLLATERAL_AND_REDEEM_RESERVE_COLLATERAL_V2,
+            2,
+            5,
+            withdraw_market,
+        );
+        push_program_interaction_kamino_constraint(
+            &mut data,
+            &DEPOSIT_RESERVE_LIQUIDITY_AND_OBLIGATION_COLLATERAL_V2,
+            2,
+            5,
+            deposit_market,
         );
         data
     }
