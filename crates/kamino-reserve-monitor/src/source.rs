@@ -633,30 +633,3 @@ fn decode_ui_account_data(account: &UiAccount) -> Result<Vec<u8>> {
         UiAccountData::Json(_) => bail!("expected base64 account data, got JSON encoding"),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn laserstream_request_filters_exact_reserve_accounts_with_overlap_slot() {
-        let reserves = vec![Pubkey::new_unique(), Pubkey::new_unique()];
-        let request = build_laserstream_subscribe_request(&reserves, 123_424);
-
-        assert_eq!(request.commitment, Some(CommitmentLevel::Confirmed as i32));
-        assert_eq!(request.from_slot, Some(123_424));
-        assert!(request.accounts_data_slice.is_empty());
-        assert!(request.transactions.is_empty());
-
-        let account_filter = request
-            .accounts
-            .get("kamino_reserves")
-            .expect("Kamino reserve account filter");
-        assert_eq!(
-            account_filter.account,
-            reserves.iter().map(ToString::to_string).collect::<Vec<_>>()
-        );
-        assert!(account_filter.owner.is_empty());
-        assert!(account_filter.filters.is_empty());
-    }
-}

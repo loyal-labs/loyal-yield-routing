@@ -67,6 +67,12 @@ Examples of code that may belong in `src/lib/` after reuse is proven include fra
 
 Use `bun run test:squads` for the lean Rust test crate around Squads smart-account flows. Use `bun run test:squads:e2e` for the heavier ignored historical Kamino replay when changes touch route policy composition, heap/compute assumptions, or replay-sensitive behavior.
 
+## Rust Test Policy
+
+Default to no new Rust tests outside the smart-account proof surface. The proof surface is `crates/squads-test-harness`, `crates/loyal-hub-swap-program`, `crates/loyal-hub-abi`, and the smallest necessary `crates/loyal-actions` tests that protect route action construction, policy bytes, account planning, and ABI/spec compatibility.
+
+Outside that surface, prefer `cargo check`, targeted dry runs, live read-only verification, or existing E2E flows. Add or keep a Rust test only when it protects an external contract that would compile while broken: Render CLI/env behavior, DB migration or query shape, signer/secret parsing, ABI/spec drift, or live-gated integration checks. Do not add tests that only restate struct fields, defaults, builder output, source substrings, or mocked JSON shapes.
+
 For Loyal Hub verification work, treat `crates/loyal-hub-swap-program/verification/loyal_hub_swap.qedspec` as the behavioral source of truth. Treat `crates/loyal-hub-abi/schema/loyal_hub_abi.schema` as the byte-layout source of truth for instruction tags, account positions, data offsets, PDA seed bytes, max-count limits, and byte record lengths. Run `bun run verify:hub-abi-spec-drift` whenever the ABI schema or QEDGen spec changes so overlapping handler accounts and arguments stay aligned. Run `bun run verify:qedgen:check` for spec coverage, `bun run verify:qedgen:proptest` for generated property tests, and `bun run verify:qedgen:probe` for the Pinocchio probe pass. `bun run verify:qedgen` runs the ABI/spec drift gate plus those active QEDGen gates.
 
 For Loyal Hub `cargo kani` proof loops, use bounded solver runs. Use 5-minute per-harness timeouts for normal iteration/probe runs; if a proof times out at 5 minutes, treat that as a signal to improve the model, witness, or proof decomposition instead of waiting longer. Use 20-minute per-harness timeouts only for final confirmation runs after the 5-minute probe is promising. Do not run open-ended Kani proof loops for Loyal Hub.

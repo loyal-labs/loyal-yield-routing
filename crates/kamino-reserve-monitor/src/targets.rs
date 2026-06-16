@@ -586,38 +586,3 @@ where
         None => Ok(None),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn loyal_allowlist_is_safe_stable_and_anchors_main_usdc() {
-        assert_eq!(
-            KAMINO_MAIN_USDC_RESERVE.to_string(),
-            "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
-        );
-        assert_eq!(loyal_safe_markets().len(), 5);
-        assert_eq!(loyal_monitor_stable_mints().len(), 14);
-        assert!(loyal_monitor_stable_mints().contains(&USDC_MINT));
-    }
-
-    #[test]
-    fn policy_supported_markets_match_risk_basket_allowlist() {
-        assert_eq!(policy_supported_markets().len(), 12);
-        assert_eq!(
-            policy_supported_markets()
-                .iter()
-                .filter(|market| market.risk_baskets.contains(&"safe"))
-                .count(),
-            5
-        );
-        assert!(policy_supported_market_pubkeys().contains(&KAMINO_ALTCOINS_MARKET));
-    }
-
-    #[test]
-    fn policy_supported_mints_match_mainnet_stablecoin_allowlist() {
-        assert_eq!(policy_supported_mints().len(), 14);
-        assert!(policy_supported_mint_pubkeys().contains(&USCC_MINT));
-    }
-}
