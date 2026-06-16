@@ -10,6 +10,8 @@ use loyal_actions::{
     YIELD_ROUTE_STANDALONE_ACTION_SEED,
 };
 use solana_sdk::{
+    address_lookup_table::AddressLookupTableAccount,
+    compute_budget::ComputeBudgetInstruction,
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
     signature::Keypair,
@@ -31,11 +33,12 @@ use squads_test_harness::{
     JupiterRouteExecution, JupiterSwapExecution, MockJupiterStableReserveTokenAccount, MockProgram,
     RouteActionExt, JUPITER_V6_PROGRAM_ID, KAMINO_MAIN_MARKET, KAMINO_MAIN_PYUSD_RESERVE,
     KAMINO_MAIN_USDC_RESERVE, KAMINO_PRIME_MARKET, KAMINO_PRIME_USDC_RESERVE, LAMPORTS_PER_SOL,
-    MOCK_JUPITER_SOL_TO_USDC, PYUSD_DECIMALS, PYUSD_MINT, USDC_DECIMALS, USDC_MINT,
-    WRAPPED_SOL_MINT,
+    MOCK_JUPITER_SOL_TO_USDC, PYUSD_DECIMALS, PYUSD_MINT, SQUADS_EXTENDED_HEAP_FRAME_BYTES,
+    USDC_DECIMALS, USDC_MINT, WRAPPED_SOL_MINT,
 };
 
 const PACKET_DATA_SIZE: usize = solana_sdk::packet::PACKET_DATA_SIZE as usize;
+const MAX_POLICY_ACCOUNT_DATA_BYTES_WITHOUT_FALLBACK: usize = 10 * 1024;
 
 #[test]
 fn wallet_b_can_execute_bundled_kamino_yield_route_switches() {
@@ -1989,6 +1992,121 @@ fn wallet_a_can_pack_vault_usdc_deposit_policy_creation_and_reserve_deposit() {
 }
 
 #[test]
+fn same_mint_obligation_ready_policy_shape_fits_single_policy_packet_and_account() {
+    let mut context =
+        create_funded_squads_test_context_with_mock_programs(&[MockProgram::KaminoLend])
+            .expect("create funded Squads test context");
+    let Some(context) = context.as_mut() else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+
+    let wallet_b = Keypair::new();
+    context
+        .svm
+        .airdrop(&wallet_b.pubkey(), LAMPORTS_PER_SOL / 10)
+        .expect("airdrop wallet B");
+
+    let vault_usdc = Keypair::new().pubkey();
+    let vault_main_usdc_collateral = Keypair::new().pubkey();
+    let vault_prime_usdc_collateral = Keypair::new().pubkey();
+    let main_usdc_reserve_liquidity_supply = Keypair::new().pubkey();
+    let prime_usdc_reserve_liquidity_supply = Keypair::new().pubkey();
+
+    let main_usdc_reserve_accounts = seed_mock_kamino_reserve_spl_accounts(
+        &mut context.svm,
+        KAMINO_MAIN_USDC_RESERVE,
+        KAMINO_MAIN_MARKET,
+        context.vault,
+        vault_usdc,
+        vault_main_usdc_collateral,
+        main_usdc_reserve_liquidity_supply,
+    );
+    let prime_usdc_reserve_accounts = seed_mock_kamino_reserve_spl_accounts(
+        &mut context.svm,
+        KAMINO_PRIME_USDC_RESERVE,
+        KAMINO_PRIME_MARKET,
+        context.vault,
+        vault_usdc,
+        vault_prime_usdc_collateral,
+        prime_usdc_reserve_liquidity_supply,
+    );
+
+    let route_action_setup = create_all_in_one_market_mint_yield_route_action(
+        loyal_action_context(context, wallet_b.pubkey()),
+        yield_route_universe_from_mock_reserves(
+            vec![USDC_MINT],
+            vec![main_usdc_reserve_accounts, prime_usdc_reserve_accounts],
+        ),
+        vec![],
+    )
+    .expect("build same-mint obligation-ready policy");
+    let same_mint_route = route_action_setup
+        .same_mint_route()
+        .expect("same-mint route metadata");
+
+    assert_eq!(route_action_setup.instructions.len(), 1);
+    assert_eq!(route_action_setup.spec.constraint_count, 3);
+    assert_eq!(same_mint_route.instruction_constraint_indexes(), &[0, 1]);
+    assert_eq!(
+        route_action_setup.accounts.withdraw,
+        route_action_setup.accounts.deposit
+    );
+
+    let policy_create_packet_bytes =
+        packet_bytes_for_instructions(&route_action_setup.instructions, &context.wallet)
+            .expect("measure raw policy create transaction packet");
+    let policy_create_lookup_table =
+        best_case_lookup_table_for_instructions(&route_action_setup.instructions, &context.wallet);
+    let policy_create_packet_bytes_with_alt = packet_bytes_for_instructions_with_lookup_tables(
+        &route_action_setup.instructions,
+        &context.wallet,
+        &[policy_create_lookup_table.clone()],
+    )
+    .expect("measure ALT-backed policy create transaction packet");
+    let harness_policy_create_packet_bytes_with_alt =
+        packet_bytes_for_instructions_with_heap_frame_and_lookup_tables(
+            &route_action_setup.instructions,
+            &context.wallet,
+            &[policy_create_lookup_table.clone()],
+        )
+        .expect("measure ALT-backed policy create transaction packet");
+    assert!(
+        policy_create_packet_bytes_with_alt <= PACKET_DATA_SIZE,
+        "same-mint policy create packet must fit Solana packet limit with ALT: {policy_create_packet_bytes_with_alt} > {PACKET_DATA_SIZE}"
+    );
+
+    try_send_instructions_with_heap_frame(
+        &mut context.svm,
+        &route_action_setup.instructions,
+        &context.wallet,
+        &[],
+    )
+    .expect("wallet A creates one same-mint obligation-ready policy");
+    let policy_account = context
+        .svm
+        .get_account(&route_action_setup.accounts.withdraw)
+        .expect("policy account exists after create");
+    assert!(
+        policy_account.data.len() <= MAX_POLICY_ACCOUNT_DATA_BYTES_WITHOUT_FALLBACK,
+        "same-mint policy account should fit without setup-policy fallback: {} > {}",
+        policy_account.data.len(),
+        MAX_POLICY_ACCOUNT_DATA_BYTES_WITHOUT_FALLBACK
+    );
+
+    eprintln!(
+        "same_mint_obligation_ready_policy_measurement raw_policy_create_packet_bytes={} alt_policy_create_packet_bytes={} heap_alt_policy_create_packet_bytes={} packet_limit={} lookup_table_address_count={} policy_account_data_bytes={} constraint_count={}",
+        policy_create_packet_bytes,
+        policy_create_packet_bytes_with_alt,
+        harness_policy_create_packet_bytes_with_alt,
+        PACKET_DATA_SIZE,
+        policy_create_lookup_table.addresses.len(),
+        policy_account.data.len(),
+        route_action_setup.spec.constraint_count,
+    );
+}
+
+#[test]
 fn same_mint_route_execution_pack_size_is_packet_bound_by_measurement() {
     let amount = 1_000_000;
 
@@ -2214,10 +2332,43 @@ fn packet_bytes_for_repeated_route_executions(
     let repeated_route_executions = (0..route_count)
         .map(|_| route_execution_instruction.clone())
         .collect::<Vec<_>>();
+    packet_bytes_for_instructions(&repeated_route_executions, fee_payer)
+}
+
+fn packet_bytes_for_instructions_with_heap_frame_and_lookup_tables(
+    instructions: &[Instruction],
+    fee_payer: &Keypair,
+    lookup_table_accounts: &[AddressLookupTableAccount],
+) -> Option<usize> {
+    let mut instructions_with_heap_frame = Vec::with_capacity(instructions.len() + 1);
+    instructions_with_heap_frame.push(ComputeBudgetInstruction::request_heap_frame(
+        SQUADS_EXTENDED_HEAP_FRAME_BYTES,
+    ));
+    instructions_with_heap_frame.extend_from_slice(instructions);
+
+    packet_bytes_for_instructions_with_lookup_tables(
+        &instructions_with_heap_frame,
+        fee_payer,
+        lookup_table_accounts,
+    )
+}
+
+fn packet_bytes_for_instructions(
+    instructions: &[Instruction],
+    fee_payer: &Keypair,
+) -> Option<usize> {
+    packet_bytes_for_instructions_with_lookup_tables(instructions, fee_payer, &[])
+}
+
+fn packet_bytes_for_instructions_with_lookup_tables(
+    instructions: &[Instruction],
+    fee_payer: &Keypair,
+    lookup_table_accounts: &[AddressLookupTableAccount],
+) -> Option<usize> {
     let versioned_message = match solana_sdk::message::v0::Message::try_compile(
         &fee_payer.pubkey(),
-        &repeated_route_executions,
-        &[],
+        instructions,
+        lookup_table_accounts,
         solana_sdk::hash::Hash::new_unique(),
     ) {
         Ok(message) => solana_sdk::message::VersionedMessage::V0(message),
@@ -2233,6 +2384,31 @@ fn packet_bytes_for_repeated_route_executions(
     bincode::serialize(&transaction)
         .ok()
         .map(|serialized| serialized.len())
+}
+
+fn best_case_lookup_table_for_instructions(
+    instructions: &[Instruction],
+    fee_payer: &Keypair,
+) -> AddressLookupTableAccount {
+    let mut addresses = Vec::new();
+    for instruction in instructions {
+        for account in &instruction.accounts {
+            if !account.is_signer {
+                push_lookup_candidate(&mut addresses, account.pubkey, fee_payer);
+            }
+        }
+    }
+
+    AddressLookupTableAccount {
+        key: Pubkey::new_unique(),
+        addresses,
+    }
+}
+
+fn push_lookup_candidate(addresses: &mut Vec<Pubkey>, pubkey: Pubkey, fee_payer: &Keypair) {
+    if pubkey != fee_payer.pubkey() && !addresses.contains(&pubkey) {
+        addresses.push(pubkey);
+    }
 }
 
 fn max_packable_route_executions(

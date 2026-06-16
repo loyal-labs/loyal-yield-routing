@@ -112,12 +112,14 @@ execution must use `YIELD_ROUTER_KEYPAIR` as delegated signer and fee payer.
 
 Setup/admin commands may use `SOLANA_TESTING_PK`; fleet optimization may not.
 
-### 5. Fail-Closed Missing Obligation
+### 5. Obligation-Ready Missing Target
 
 PASS only if a fleet optimization targeting a reserve whose destination
-obligation is missing returns `blocked_missing_obligation_setup` for that vault
-and proves no setup/admin transaction was sent, no route policy was mutated, and
-no rebalance decision/current-position write was made by the optimizer.
+obligation is missing first executes an authorized target-market
+`init_obligation` path from the decoded route policy, confirms it, reloads chain
+state, and only then submits the same-mint route. If the decoded policy lacks
+that init path, the vault must fail before any rebalance decision,
+current-position write, source withdrawal, or policy mutation.
 
 ### 6. Generic Full Withdrawal
 
@@ -189,11 +191,11 @@ PASS only if Render keeps the pinned light-worker image workflow and the monitor
 command is:
 
 ```sh
-/usr/local/bin/same-mint-yield-monitor --all-active-vaults --poll-interval-seconds 300
+/usr/local/bin/same-mint-yield-monitor --all-active-vaults --execute --poll-interval-seconds 300
 ```
 
-The Render worker must not include `SOLANA_TESTING_PK`. Continuous execution can
-be enabled only after this verifier records:
+The Render worker must not include `SOLANA_TESTING_PK`. Continuous execution is
+enabled only after this verifier records:
 
 - local live E2E PASS from `same-mint-monitor-e2e --execute`;
 - dry-run Render logs showing fleet candidate selection plus per-vault
@@ -472,7 +474,7 @@ rollout of the fleet worker.
   `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-d3497113aed8fedb83dbaa3ea398f40ac58aab37`
   with image digest
   `sha256:b34feb49ef99616b91570f248fde65cc257523b45c8a3f606c3249c908adfa5b`.
-  Service readback for `srv-d8n7gqbbc2fs73emk610` shows the command
+  Initial service readback for `srv-d8n7gqbbc2fs73emk610` showed the command
   `/usr/local/bin/same-mint-yield-monitor --all-active-vaults
   --poll-interval-seconds 300`. The service env-var names are
   `NEON_DATABASE_URL`, `TIMESCALEDB_URL`, `SOLANA_RPC_URL`,
@@ -485,6 +487,21 @@ rollout of the fleet worker.
   selected vault and policy inactive. The local live E2E above proves the
   per-vault pickup/execution path; this Render dry-run proves the deployed
   worker is now in fleet mode and will ignore the cleaned-up vault.
+- Post-E2E Render command update: PASS for desired configuration. After the
+  same-mint frontend/SDK E2E completed, `render.yaml` moved
+  `loyal-same-mint-yield-monitor` from dry-run fleet mode to real-funds
+  execution mode with `/usr/local/bin/same-mint-yield-monitor
+  --all-active-vaults --execute --poll-interval-seconds 300`. The service still
+  uses `YIELD_ROUTER_KEYPAIR` and no `SOLANA_TESTING_PK`.
+- Post-E2E Render live rollout: PASS. On 2026-06-15, Render service
+  `srv-d8n7gqbbc2fs73emk610` was patched to the fleet execution command and
+  redeployed as `dep-d8nsdfpkh4rs73fhlc90` on the same pinned image
+  `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-d3497113aed8fedb83dbaa3ea398f40ac58aab37`
+  with digest `sha256:b34feb49ef99616b91570f248fde65cc257523b45c8a3f606c3249c908adfa5b`.
+  Service readback shows the `--execute` command, and fresh instance
+  `srv-d8n7gqbbc2fs73emk610-k6wfp` logged `execute: true`,
+  `allActiveVaults: true`, `candidateCount: 4`, `discoveredVaultCount: 0`, and
+  `pollIntervalSeconds: 300` at `2026-06-15T09:33:28Z`.
 - Current Verdict:
   Fleet Discovery: PASS - live fleet discovered the active policy/vault during
   the E2E and returned no rows after cleanup.
@@ -501,9 +518,9 @@ rollout of the fleet worker.
   rows.
   Live Full-Flow E2E: PASS - real deposit, monitor pickup, best-reserve move,
   and full withdrawal completed.
-  Render Rollout Shape: PASS - deployed dry-run worker uses the pinned
-  light-worker image, fleet command, `YIELD_ROUTER_KEYPAIR`, and no
-  `SOLANA_TESTING_PK`.
+  Render Rollout Shape: PASS - live Render now uses the pinned light-worker
+  image, fleet execution command, `YIELD_ROUTER_KEYPAIR`, and no
+  `SOLANA_TESTING_PK`; runtime logs confirm `execute: true`.
   Local Checks: PASS - see local command results above.
   Required Live Evidence: PASS - command output, direct DB readback, and Solana
   RPC confirmation summaries recorded above.

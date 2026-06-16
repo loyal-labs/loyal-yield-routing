@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { PublicKey } from "@solana/web3.js";
+import { PublicKey, SystemProgram } from "@solana/web3.js";
 import {
   DEFAULT_MAX_FEE_BPS,
   KAMINO_ALTCOINS_MARKET,
   KAMINO_BITCOIN_MARKET,
   KAMINO_HUMA_MARKET,
   KAMINO_JLP_MARKET,
+  KAMINO_MAIN_MARKET,
   KAMINO_SOLSTICE_MARKET,
   KAMINO_SUPERSTATE_OPENING_BELL_MARKET,
   KAMINO_XSTOCKS_MARKET,
@@ -18,6 +19,16 @@ import {
   SwapLane,
   createLoyalActionsSdk,
 } from "../src/index.js";
+import {
+  deriveKaminoUserMetadata,
+  deriveKaminoVanillaObligation,
+  kaminoInitObligationConstraint,
+} from "../src/internal/protocols.js";
+import {
+  KAMINO_INIT_OBLIGATION_DISCRIMINATOR,
+  KAMINO_VANILLA_OBLIGATION_ID,
+  KAMINO_VANILLA_OBLIGATION_TAG,
+} from "../src/constants.js";
 
 const settings = new PublicKey("11111111111111111111111111111112");
 const authority = new PublicKey("11111111111111111111111111111113");
@@ -81,6 +92,53 @@ describe("initYieldRoutePolicy", () => {
     expect(both.spec.maxFeeBps).toBe(MaxFeeBps.Bps150);
   });
 
+  test("builds same-mint-only route indexes without swap lanes", () => {
+    const sdk = createLoyalActionsSdk({ cluster: LoyalCluster.MainnetBeta });
+    const policy = sdk.initYieldRoutePolicy({
+      risk: RiskBasket.Safe,
+      swapLanes: [] as const,
+      squads,
+    });
+
+    expect(policy.instructions).toHaveLength(1);
+    expect(policy.routes.sameMint.instructionConstraintIndexes).toEqual([0, 1]);
+    expect(policy.routes.jupiter).toBeUndefined();
+    expect(policy.routes.loyal).toBeUndefined();
+    expect(policy.spec.swapLanes).toEqual([]);
+  });
+
+  test("builds market-scoped init obligation constraint with KLend vanilla seeds", () => {
+    const constraint = kaminoInitObligationConstraint(vault, [KAMINO_MAIN_MARKET]);
+    const pubkeyAt = (index: number) => {
+      const accountConstraint = constraint.accountConstraints.find((account) => account.accountIndex === index);
+      expect(accountConstraint?.kind.type).toBe("pubkey");
+      if (accountConstraint?.kind.type !== "pubkey") {
+        throw new Error(`account ${index} is not a pubkey constraint`);
+      }
+      return accountConstraint.kind.pubkeys.map((pubkey) => pubkey.toBase58());
+    };
+
+    expect(pubkeyAt(0)).toEqual([vault.toBase58()]);
+    expect(pubkeyAt(1)).toEqual([vault.toBase58()]);
+    expect(pubkeyAt(2)).toEqual([deriveKaminoVanillaObligation(vault, KAMINO_MAIN_MARKET).toBase58()]);
+    expect(pubkeyAt(3)).toEqual([KAMINO_MAIN_MARKET.toBase58()]);
+    expect(pubkeyAt(4)).toEqual([PublicKey.default.toBase58()]);
+    expect(pubkeyAt(5)).toEqual([PublicKey.default.toBase58()]);
+    expect(pubkeyAt(6)).toEqual([deriveKaminoUserMetadata(vault).toBase58()]);
+    expect(pubkeyAt(7)).toEqual(["SysvarRent111111111111111111111111111111111"]);
+    expect(pubkeyAt(8)).toEqual([SystemProgram.programId.toBase58()]);
+    expect(constraint.dataConstraints).toEqual([
+      {
+        dataOffset: 0n,
+        dataValue: {
+          type: "u8Slice",
+          value: [...KAMINO_INIT_OBLIGATION_DISCRIMINATOR, KAMINO_VANILLA_OBLIGATION_TAG, KAMINO_VANILLA_OBLIGATION_ID],
+        },
+        operator: "equals",
+      },
+    ]);
+  });
+
   test("derives stable exposure internally from the approved seven symbols", () => {
     const sdk = createLoyalActionsSdk({ cluster: LoyalCluster.MainnetBeta });
     const policy = sdk.initYieldRoutePolicy({
@@ -127,10 +185,10 @@ describe("initYieldRoutePolicy", () => {
     expect(() =>
       sdk.initYieldRoutePolicy({
         risk: RiskBasket.Safe,
-        swapLanes: [],
+        swapLanes: "jupiter" as unknown as SwapLane[],
         squads,
       }),
-    ).toThrow("at least one swap lane is required");
+    ).toThrow("swapLanes must be an array");
     expect(() =>
       sdk.initYieldRoutePolicy({
         risk: RiskBasket.Safe,

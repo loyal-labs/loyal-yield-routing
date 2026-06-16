@@ -1,7 +1,14 @@
 import { PublicKey } from "@solana/web3.js";
 import { DEFAULT_MAX_FEE_BPS, RISK_BASKET_MARKETS, STABLECOIN_MINTS, STABLECOINS } from "./constants.js";
 import { clusterConfigFor } from "./cluster.js";
-import { kaminoDepositConstraint, kaminoWithdrawConstraint, jupiterConstraint, loyalHubConstraint, uniquePubkeys } from "./internal/protocols.js";
+import {
+  kaminoDepositConstraint,
+  kaminoInitObligationConstraint,
+  kaminoWithdrawConstraint,
+  jupiterConstraint,
+  loyalHubConstraint,
+  uniquePubkeys,
+} from "./internal/protocols.js";
 import { createProgramInteractionPolicyInstruction, deriveActionAccount } from "./internal/squads.js";
 import { LoyalCluster, MaxFeeBps, RiskBasket, SwapLane } from "./types.js";
 import type { InitYieldRoutePolicyInput, InitYieldRoutePolicyResult, LoyalActionsSdk, LoyalActionRoute3 } from "./types.js";
@@ -39,6 +46,7 @@ export function createLoyalActionsSdk(config: { cluster: LoyalCluster }): LoyalA
             : loyalHubConstraint(clusterConfig, input.squads.vault, stableMints, maxFeeBps),
         ),
         kaminoDepositConstraint(clusterConfig, input.squads.vault, kaminoMarkets, kaminoLiquidityMints),
+        kaminoInitObligationConstraint(input.squads.vault, kaminoMarkets),
       ];
 
       const instruction = createProgramInteractionPolicyInstruction(clusterConfig, input.squads, constraints);
@@ -84,8 +92,8 @@ function validateInput(input: InitYieldRoutePolicyInput): void {
   if (!Object.values(RiskBasket).includes(input.risk)) {
     throw new Error(`unsupported risk basket: ${String(input.risk)}`);
   }
-  if (!Array.isArray(input.swapLanes) || input.swapLanes.length === 0) {
-    throw new Error("at least one swap lane is required");
+  if (!Array.isArray(input.swapLanes)) {
+    throw new Error("swapLanes must be an array");
   }
   const seen = new Set<SwapLane>();
   for (const lane of input.swapLanes) {

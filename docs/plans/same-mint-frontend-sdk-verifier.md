@@ -299,8 +299,10 @@ The verifier must include explicit negative evidence for these cases:
   or DB mutation;
 - no positive APY edge from Main USDC: exit before setup, policy creation,
   deposit, or DB mutation;
-- missing destination obligation: block before optimizer execution, policy
-  mutation, decision write, or route submission;
+- missing destination obligation: initialize through the authorized policy path
+  before optimizer route execution; block before policy mutation, decision
+  write, or route submission if no valid init path exists or init confirmation
+  cannot be proven;
 - stale DB/chain disagreement: block prepare or confirm before send/finalize;
 - oversized packet without ALT coverage: report packet blocker and send no
   transaction;

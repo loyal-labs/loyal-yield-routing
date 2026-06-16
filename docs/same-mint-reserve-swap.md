@@ -54,7 +54,7 @@ Live execution is blocked until the dry-run proves the required chain state.
 - Source reserve has a non-zero chain `amountRaw` with `amountSemantics = kamino_obligation_collateral_deposited_amount`.
 - `obligationExists` is true for the source market obligation.
 - `vaultLiquidityTokenAccountExists` is true for the vault USDC ATA.
-- The destination obligation already exists. In `--optimization-cycle` mode, a missing destination obligation returns `blocked_missing_obligation_setup` before policy mutation, decision writes, or route submission. Use setup/admin flows to pre-initialize obligations before enabling live optimization.
+- If the destination obligation is missing, the decoded route policy must expose a target-market `init_obligation` constraint. In `--optimization-cycle --execute`, the script executes that init constraint first, confirms it, reloads chain state, and only then builds the same-mint route. No rebalance decision or source withdrawal is sent before the destination obligation exists.
 - KLend reserve and obligation refreshes are emitted as public pre-instructions. They are not part of the protected route policy.
 
 The dry-run must also show the required policy state:
@@ -62,7 +62,7 @@ The dry-run must also show the required policy state:
 - `policyPreflight.neonAllowsRequiredMarkets` is true.
 - `policyPreflight.policyAccountDecode.decodedAllowsRequiredMarkets` is true.
 - `policyPreflight.policyAccountDecode.decodedAllowsRequiredRouteSteps` is true.
-- `policyPreflight.policyAccountDecode.decodedAllowsInitObligation` is false for the normal route policy. Missing-obligation setup belongs to setup/admin flows, so the optimizer must fail closed instead of running it.
+- `policyPreflight.policyAccountDecode.decodedAllowsInitObligation` is true for the normal route policy, and `targetObligationSetup.initObligationInstructionConstraintIndex` points at the target-market init constraint when setup is needed.
 - `policyPreflight.policyAccountDecode.decodedAllowsRefreshObligation` is false for the normal route policy.
 
 The route execution check must also report
@@ -112,7 +112,7 @@ $SWAP \
   --deposit-main-usdc <AMOUNT_RAW>
 ```
 
-Initial deposit mode uses `SOLANA_TESTING_PK` as the funding wallet. If the Main obligation is missing, execute mode first runs the same temporary init-only policy setup/restore sequence used by route execution. It then builds a user-signed funding transaction that creates the vault USDC ATA idempotently and transfers USDC into it, followed by a `YIELD_ROUTER_KEYPAIR`-signed ProgramInteraction execution that deposits into Kamino Main USDC. The KLend obligation refresh is a public pre-instruction before the protected deposit. In dry-run, the funding transaction is simulated, while the policy deposit transaction reports a packet summary and skips simulation when the funding transaction has not landed yet. `--execute` submits funding first, reloads chain state, simulates the policy deposit, submits it, and reconciles `vault_reserve_positions_current` only after confirmation.
+Initial deposit mode uses `SOLANA_TESTING_PK` as the funding wallet. If the Main obligation is missing, execute mode first executes the Main-market `init_obligation` constraint already present in the route policy, confirms it, and reloads chain state. It then builds a user-signed funding transaction that creates the vault USDC ATA idempotently and transfers USDC into it, followed by a `YIELD_ROUTER_KEYPAIR`-signed ProgramInteraction execution that deposits into Kamino Main USDC. The KLend obligation refresh is a public pre-instruction before the protected deposit. In dry-run, the funding transaction is simulated, while the policy deposit transaction reports a packet summary and skips simulation when the funding transaction has not landed yet. `--execute` submits funding first, reloads chain state, simulates the policy deposit, submits it, and reconciles `vault_reserve_positions_current` only after confirmation.
 
 Setup-only obligation initialization for a policy-eligible Safe USDC reserve:
 
@@ -123,12 +123,13 @@ $SWAP \
   --setup-obligation-reserve <RESERVE>
 ```
 
-With `--execute`, this setup/admin mode uses `SOLANA_TESTING_PK` to temporarily
-narrow the route policy to `kamino_init_obligation`, uses `YIELD_ROUTER_KEYPAIR`
-to execute the protected init instruction, then restores the same-mint route
-policy and records the restored policy/vault rows in Neon. Fleet optimization
-does not run this setup path; it returns `blocked_missing_obligation_setup` if a
-selected target obligation is missing.
+With `--execute`, this setup/admin mode executes the target-market
+`init_obligation` constraint already present in the route policy. In admin mode
+`SOLANA_TESTING_PK` may pay the outer transaction, while `YIELD_ROUTER_KEYPAIR`
+remains the delegated policy signer. Fleet optimization uses
+`YIELD_ROUTER_KEYPAIR` as both outer payer and delegated signer, initializes a
+missing target obligation the same way, reloads chain state, and only then sends
+the same-mint route.
 
 Full reserve withdraw dry-run, after the position has been moved to any Safe
 USDC reserve:
@@ -165,16 +166,15 @@ $MONITOR \
   --all-active-vaults
 ```
 
-Render runs the same monitor in fleet dry-run mode:
+After the same-mint frontend/SDK E2E passed, Render runs the same monitor in
+fleet execution mode:
 
 ```sh
-/usr/local/bin/same-mint-yield-monitor --all-active-vaults --poll-interval-seconds 300
+/usr/local/bin/same-mint-yield-monitor --all-active-vaults --execute --poll-interval-seconds 300
 ```
 
-Fleet execution adds `--execute` after the verifier records a local E2E PASS and
-dry-run logs show candidate selection plus per-vault skip/plan results. Fleet
-mode uses `YIELD_ROUTER_KEYPAIR` for active-policy discovery and route execution;
-it does not use `SOLANA_TESTING_PK`.
+Fleet mode uses `YIELD_ROUTER_KEYPAIR` for active-policy discovery and route
+execution; it does not use `SOLANA_TESTING_PK`.
 
 Monitor E2E dry-run:
 
@@ -206,7 +206,7 @@ $SWAP \
 
 Current implementation note: the script reuses `loyal-yield-orchestrator` same-mint input validation and reads current positions from Neon. It can preview the chain state needed for current-position reconciliation and can seed current-position rows from `user_yield_positions` through the existing snapshot store when `--execute --seed-from-user-position` is approved.
 
-`--optimization-cycle --execute` first requires a chain preflight with a non-zero source collateral account and an existing destination obligation. The decoded Squads route policy-account state must include `YIELD_ROUTER_KEYPAIR` as a delegated signer, both required markets, and the required live KLend same-mint withdraw/deposit route steps. The route transaction and any route ALT provisioning use `YIELD_ROUTER_KEYPAIR` as the fee payer and only optimization signer. Route execution indexes are selected from the decoded Squads ProgramInteraction policy account when chain preflight is available, instead of trusting stale route metadata.
+`--optimization-cycle --execute` first requires a chain preflight with a non-zero source collateral account. If the destination obligation is missing, the decoded Squads route policy-account state must include a target-market `init_obligation` constraint; the script executes that setup transaction with `YIELD_ROUTER_KEYPAIR`, confirms it, and reloads chain state before route planning continues. The decoded policy must also include `YIELD_ROUTER_KEYPAIR` as a delegated signer, both required markets, and the required live KLend same-mint withdraw/deposit route steps. The route transaction and any route ALT provisioning use `YIELD_ROUTER_KEYPAIR` as the fee payer and only optimization signer. Route execution indexes are selected from the decoded Squads ProgramInteraction policy account when chain preflight is available, instead of trusting stale route metadata.
 
 If the execution preflight fails, the script returns before writing a `rebalance_decisions` row. After that preflight passes, it calls `prepare_same_mint_rebalance`, reloads the persisted `loyal_yield.rebalance_decisions` row by decision id, verifies its `same_mint` execution plan fields and idempotency key, simulates the Squads ProgramInteraction route built from that row, submits the transaction, waits for confirmation, and calls `confirm_same_mint_rebalance` to finalize the decision and current-position snapshot. If any adapter step fails after the decision is created, the script marks the decision failed instead of leaving it active.
 
@@ -222,13 +222,10 @@ Live E2E evidence for settings `6jgk...`, vault index `1`:
 - Full-withdraw rent proof reported `closedObligationLamports = 24165120`, `rentRefundLamports = 24165120`, and `refundAtLeastClosedObligationLamports = true`.
 
 The active route policy was later narrowed in place after moving KLend refresh
-out of policy execution. Active policy
-`77DRX1HR3WdTTsTLaHowiEnCpm3hHCXVXgwxxboUhaKQ` now decodes with
-`instructionCount = 2`, `decodedAllowsInitObligation = false`,
-`decodedAllowsRefreshObligation = false`, `decodedAllowsRequiredMarkets = true`,
-and `decodedAllowsRequiredRouteSteps = true`. Its route steps are KLend withdraw
-and KLend deposit only. The live update signature was
-`RfV9gXFJM7nxM5vtQHG6iJ7EqYt1N5B49CEAYAtgRjftkzC9cW4G69STweadr3tav4JCvNEEKdCXqQ64w2ezRDR`.
+out of policy execution. That historical proof predates the obligation-ready
+policy shape. The next live policy update must decode with KLend withdraw,
+KLend deposit, and market-scoped `init_obligation`, while
+`decodedAllowsRefreshObligation` remains false.
 
 The normal route readback after that update confirms the DB active policy and on-chain policy account agree. Route execution is currently blocked only because the source reserve has no value after the successful full withdrawal.
 

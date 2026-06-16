@@ -67,6 +67,10 @@ export const RISK_BASKET_MARKETS: Record<RiskBasket, readonly Address[]> = {
 export const KAMINO_LEND_PROGRAM_ID = new PublicKey("KvauGMspG5k6rtzrqqn7WNn3oZdyKqLKwK2XWQ8FLjd");
 export const KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR = [242, 35, 198, 137, 82, 225, 242, 182] as const;
 export const KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR = [235, 52, 119, 152, 149, 197, 20, 7] as const;
+export const KAMINO_INIT_OBLIGATION_DISCRIMINATOR = [251, 10, 231, 76, 27, 11, 159, 96] as const;
+export const KAMINO_VANILLA_OBLIGATION_TAG = 0;
+export const KAMINO_VANILLA_OBLIGATION_ID = 0;
+export const KAMINO_USER_METADATA_SEED = new TextEncoder().encode("user_meta");
 
 export const JUPITER_SWAP_DISCRIMINATOR = [187, 100, 250, 204, 49, 196, 175, 20] as const;
 export const JUPITER_SWAP_SLIPPAGE_BPS_OFFSET = 24;

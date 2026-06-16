@@ -1,9 +1,13 @@
-import { PublicKey } from "@solana/web3.js";
+import { PublicKey, SystemProgram } from "@solana/web3.js";
 import {
   JUPITER_SWAP_DISCRIMINATOR,
   JUPITER_SWAP_SLIPPAGE_BPS_OFFSET,
   KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR,
+  KAMINO_INIT_OBLIGATION_DISCRIMINATOR,
   KAMINO_LEND_PROGRAM_ID,
+  KAMINO_USER_METADATA_SEED,
+  KAMINO_VANILLA_OBLIGATION_ID,
+  KAMINO_VANILLA_OBLIGATION_TAG,
   KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR,
 } from "../constants.js";
 import { CONFIG_SEED, SWAP_EXACT_IN, SWAP_EXACT_IN_MAX_FEE_BPS_DATA_OFFSET, SWAP_EXACT_IN_TAG_OFFSET, swapExactInAccounts } from "../generated/loyal-hub-abi.js";
@@ -11,6 +15,8 @@ import type { LoyalClusterConfig } from "../cluster.js";
 import type { DataConstraint, InstructionConstraint } from "./squads.js";
 
 const SPL_TOKEN_ACCOUNT_AUTHORITY_OFFSET = 32n;
+const SYSVAR_RENT_PUBKEY = new PublicKey("SysvarRent111111111111111111111111111111111");
+const DEFAULT_PUBKEY = PublicKey.default;
 
 export function kaminoWithdrawConstraint(
   config: LoyalClusterConfig,
@@ -47,6 +53,35 @@ export function kaminoDepositConstraint(
       pubkeyConstraint(10, [config.tokenProgramId]),
     ],
     dataConstraints: discriminatorConstraint(KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR),
+  };
+}
+
+export function kaminoInitObligationConstraint(
+  vault: PublicKey,
+  markets: readonly PublicKey[],
+): InstructionConstraint {
+  const marketList = uniquePubkeys(markets);
+  const obligations = marketList.map((market) => deriveKaminoVanillaObligation(vault, market));
+  const dataPrefix = [
+    ...KAMINO_INIT_OBLIGATION_DISCRIMINATOR,
+    KAMINO_VANILLA_OBLIGATION_TAG,
+    KAMINO_VANILLA_OBLIGATION_ID,
+  ];
+
+  return {
+    programId: KAMINO_LEND_PROGRAM_ID,
+    accountConstraints: [
+      pubkeyConstraint(0, [vault]),
+      pubkeyConstraint(1, [vault]),
+      pubkeyConstraint(2, obligations),
+      pubkeyConstraint(3, marketList),
+      pubkeyConstraint(4, [DEFAULT_PUBKEY]),
+      pubkeyConstraint(5, [DEFAULT_PUBKEY]),
+      pubkeyConstraint(6, [deriveKaminoUserMetadata(vault)]),
+      pubkeyConstraint(7, [SYSVAR_RENT_PUBKEY]),
+      pubkeyConstraint(8, [SystemProgram.programId]),
+    ],
+    dataConstraints: [dataSliceEquals(0n, dataPrefix)],
   };
 }
 
@@ -108,6 +143,24 @@ export function loyalHubConstraint(
 
 export function deriveLoyalHubConfig(loyalHubProgramId: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync([CONFIG_SEED], loyalHubProgramId)[0];
+}
+
+export function deriveKaminoVanillaObligation(vault: PublicKey, lendingMarket: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [
+      Uint8Array.of(KAMINO_VANILLA_OBLIGATION_TAG),
+      Uint8Array.of(KAMINO_VANILLA_OBLIGATION_ID),
+      vault.toBytes(),
+      lendingMarket.toBytes(),
+      DEFAULT_PUBKEY.toBytes(),
+      DEFAULT_PUBKEY.toBytes(),
+    ],
+    KAMINO_LEND_PROGRAM_ID,
+  )[0];
+}
+
+export function deriveKaminoUserMetadata(vault: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync([KAMINO_USER_METADATA_SEED, vault.toBytes()], KAMINO_LEND_PROGRAM_ID)[0];
 }
 
 function pubkeyConstraint(accountIndex: number, pubkeys: readonly PublicKey[], owner?: PublicKey) {
