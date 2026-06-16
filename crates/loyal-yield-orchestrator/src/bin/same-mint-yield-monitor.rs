@@ -3,7 +3,7 @@ use std::{
     time::Duration as StdDuration,
 };
 
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use loyal_actions::USDC_MINT;
 use loyal_yield_orchestrator::sqlx::Row;
 use loyal_yield_orchestrator::{
@@ -20,6 +20,7 @@ use solana_sdk::{pubkey::Pubkey, signature::Signer};
 use tokio::time::{sleep, Duration as TokioDuration};
 
 const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 300;
+const DEFAULT_REBALANCE_COOLDOWN_SECONDS: u64 = 300;
 const DEFAULT_MAX_CANDIDATE_AGE_SECONDS: i64 = 6 * 60 * 60;
 const DEFAULT_MIN_EDGE_BPS: i64 = 1;
 const SAME_MINT_ROUTE_MODE: &str = "same_mint_kamino";
@@ -32,6 +33,7 @@ struct Options {
     settings: Option<String>,
     vault_index: Option<i16>,
     poll_interval_seconds: u64,
+    rebalance_cooldown_seconds: u64,
     max_candidate_age_seconds: i64,
     min_edge_bps: i64,
 }
@@ -67,6 +69,15 @@ struct ReconcileOutput {
     stdout_json: Option<Value>,
     stdout_text: Option<String>,
     stderr_text: String,
+}
+
+#[derive(Debug, Clone)]
+struct RecentConfirmedRebalance {
+    id: i64,
+    updated_at: DateTime<Utc>,
+    source_reserve: Option<String>,
+    target_reserve: Option<String>,
+    signature: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +154,7 @@ async fn run_once(
             "discoveredVaultCount": results.len(),
             "candidateCount": candidates.len(),
             "pollIntervalSeconds": options.poll_interval_seconds,
+            "rebalanceCooldownSeconds": options.rebalance_cooldown_seconds,
             "maxCandidateAgeSeconds": options.max_candidate_age_seconds,
             "minEdgeBps": options.min_edge_bps,
             "results": results,
@@ -160,6 +172,43 @@ async fn run_vault_once(
     candidates: &[SupportedReserveLatestRow],
 ) -> Result<Value, Box<dyn Error>> {
     let policy_candidates = policy_eligible_candidates(&vault.policy, candidates);
+    let active_decisions = active_decision_count(neon, vault.vault.id).await?;
+    if active_decisions > 0 {
+        return Ok(json!({
+            "status": "skipped_active_decision",
+            "execute": options.execute,
+            "skipReason": "active_decision",
+            "vault": vault_json(&vault),
+            "activeDecisionCount": active_decisions,
+            "candidates": candidates_json(candidates),
+            "policyEligibleCandidates": candidates_json(&policy_candidates),
+            "rebalanceCooldownSeconds": options.rebalance_cooldown_seconds,
+        }));
+    }
+
+    let recent_rebalance =
+        recent_confirmed_rebalance(neon, vault.vault.id, options.rebalance_cooldown_seconds)
+            .await?;
+    if let Some(recent_rebalance) = recent_rebalance {
+        let cooldown_remaining_seconds = cooldown_remaining_seconds(
+            recent_rebalance.updated_at,
+            options.rebalance_cooldown_seconds,
+        );
+        return Ok(json!({
+            "status": "skipped_recent_rebalance",
+            "execute": options.execute,
+            "skipReason": "recent_rebalance_cooldown",
+            "vault": vault_json(&vault),
+            "activeDecisionCount": active_decisions,
+            "lastConfirmedRebalance": recent_confirmed_rebalance_json(&recent_rebalance),
+            "lastConfirmedRebalanceAt": recent_rebalance.updated_at,
+            "rebalanceCooldownSeconds": options.rebalance_cooldown_seconds,
+            "cooldownRemainingSeconds": cooldown_remaining_seconds,
+            "candidates": candidates_json(candidates),
+            "policyEligibleCandidates": candidates_json(&policy_candidates),
+        }));
+    }
+
     let reconcile = reconcile_current_positions_for_vault(&vault, candidates)?;
     if !reconcile.success {
         return Ok(json!({
@@ -173,7 +222,6 @@ async fn run_vault_once(
     }
     let positions = neon.current_positions(vault.vault.id).await?;
     let policy_positions = policy_eligible_positions(&positions, &policy_candidates);
-    let active_decisions = active_decision_count(neon, vault.vault.id).await?;
     let freshest_cutoff = Utc::now() - Duration::seconds(options.max_candidate_age_seconds);
     let (fresh_candidates, stale_candidate_count) =
         split_fresh_candidates(&policy_candidates, freshest_cutoff);
@@ -247,6 +295,7 @@ async fn run_vault_once(
         "freshCandidateCount": fresh_candidates.len(),
         "staleCandidateCount": stale_candidate_count,
         "maxCandidateAgeSeconds": options.max_candidate_age_seconds,
+        "rebalanceCooldownSeconds": options.rebalance_cooldown_seconds,
         "minEdgeBps": options.min_edge_bps,
         "plannedMove": planned_move_json(plan.as_ref().ok().and_then(Option::as_ref)),
     }))
@@ -804,6 +853,53 @@ async fn active_decision_count(
     Ok(count)
 }
 
+async fn recent_confirmed_rebalance(
+    neon: &NeonSqlClient,
+    vault_id: VaultId,
+    cooldown_seconds: u64,
+) -> Result<Option<RecentConfirmedRebalance>, Box<dyn Error>> {
+    if cooldown_seconds == 0 {
+        return Ok(None);
+    }
+    let cooldown_seconds =
+        i64::try_from(cooldown_seconds).map_err(|_| "--rebalance-cooldown-seconds is too large")?;
+    let row = loyal_yield_orchestrator::sqlx::query(
+        r#"
+        SELECT id, updated_at, source_reserve, target_reserve, signature
+        FROM loyal_yield.rebalance_decisions
+        WHERE vault_id = $1
+          AND status::text = 'confirmed'
+          AND updated_at > now() - ($2::BIGINT * interval '1 second')
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(vault_id.as_i64())
+    .bind(cooldown_seconds)
+    .fetch_optional(neon.pool())
+    .await?;
+
+    row.map(|row| {
+        Ok::<_, loyal_yield_orchestrator::sqlx::Error>(RecentConfirmedRebalance {
+            id: row.try_get("id")?,
+            updated_at: row.try_get("updated_at")?,
+            source_reserve: row.try_get("source_reserve")?,
+            target_reserve: row.try_get("target_reserve")?,
+            signature: row.try_get("signature")?,
+        })
+    })
+    .transpose()
+    .map_err(Into::into)
+}
+
+fn cooldown_remaining_seconds(last_confirmed_at: DateTime<Utc>, cooldown_seconds: u64) -> u64 {
+    let elapsed_seconds = Utc::now()
+        .signed_duration_since(last_confirmed_at)
+        .num_seconds()
+        .max(0) as u64;
+    cooldown_seconds.saturating_sub(elapsed_seconds)
+}
+
 fn vault_json(resolved: &ResolvedVault) -> Value {
     json!({
         "vaultId": resolved.vault.id.as_i64(),
@@ -888,6 +984,16 @@ fn planned_move_json(plan: Option<&PlannedMonitorMove>) -> Value {
     }
 }
 
+fn recent_confirmed_rebalance_json(rebalance: &RecentConfirmedRebalance) -> Value {
+    json!({
+        "id": rebalance.id,
+        "updatedAt": rebalance.updated_at,
+        "sourceReserve": rebalance.source_reserve,
+        "targetReserve": rebalance.target_reserve,
+        "signature": rebalance.signature,
+    })
+}
+
 fn route_execution_output_json(execution: &RouteExecutionOutput) -> Value {
     json!({
         "success": execution.success,
@@ -946,6 +1052,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
         settings: None,
         vault_index: None,
         poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
+        rebalance_cooldown_seconds: DEFAULT_REBALANCE_COOLDOWN_SECONDS,
         max_candidate_age_seconds: DEFAULT_MAX_CANDIDATE_AGE_SECONDS,
         min_edge_bps: DEFAULT_MIN_EDGE_BPS,
     };
@@ -972,6 +1079,13 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
                     .ok_or("--poll-interval-seconds requires a value")?
                     .parse()
                     .map_err(|_| "--poll-interval-seconds must be an integer")?;
+            }
+            "--rebalance-cooldown-seconds" => {
+                options.rebalance_cooldown_seconds = iter
+                    .next()
+                    .ok_or("--rebalance-cooldown-seconds requires a value")?
+                    .parse()
+                    .map_err(|_| "--rebalance-cooldown-seconds must be an integer")?;
             }
             "--max-candidate-age-seconds" => {
                 options.max_candidate_age_seconds = iter
@@ -1001,5 +1115,5 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
 }
 
 fn usage() -> &'static str {
-    "Usage: same-mint-yield-monitor [--once] [--execute] [--all-active-vaults | --settings <PUBKEY> --vault-index <N>] [--poll-interval-seconds <SECONDS>] [--max-candidate-age-seconds <SECONDS>] [--min-edge-bps <BPS>]\n\nDry-run is the default. Fleet mode reads YIELD_ROUTER_KEYPAIR for DB discovery and never reads SOLANA_TESTING_PK. Explicit --settings/--vault-index mode does not read SOLANA_TESTING_PK. No-arg authority discovery mode is local dry-run/setup only and reads SOLANA_TESTING_PK. Live execution reads YIELD_ROUTER_KEYPAIR through same-mint-reserve-swap --optimization-cycle."
+    "Usage: same-mint-yield-monitor [--once] [--execute] [--all-active-vaults | --settings <PUBKEY> --vault-index <N>] [--poll-interval-seconds <SECONDS>] [--rebalance-cooldown-seconds <SECONDS>] [--max-candidate-age-seconds <SECONDS>] [--min-edge-bps <BPS>]\n\nDry-run is the default. Fleet mode reads YIELD_ROUTER_KEYPAIR for DB discovery and never reads SOLANA_TESTING_PK. Explicit --settings/--vault-index mode does not read SOLANA_TESTING_PK. No-arg authority discovery mode is local dry-run/setup only and reads SOLANA_TESTING_PK. Live execution reads YIELD_ROUTER_KEYPAIR through same-mint-reserve-swap --optimization-cycle. The same-vault rebalance cooldown defaults to 300 seconds; pass --rebalance-cooldown-seconds 0 only for local/test disable."
 }

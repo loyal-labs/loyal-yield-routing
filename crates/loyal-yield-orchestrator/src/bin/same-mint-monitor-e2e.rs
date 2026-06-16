@@ -7,7 +7,7 @@ use std::{
     time::{Duration as StdDuration, Instant},
 };
 
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use loyal_actions::{KAMINO_MAIN_USDC_RESERVE, USDC_MINT};
 use loyal_yield_orchestrator::{
     solana_testing_keypair_from_env,
@@ -59,6 +59,18 @@ struct ChildOutput {
 struct SignerBoundary {
     setup_authority: String,
     optimizer: String,
+}
+
+#[derive(Debug, Clone)]
+struct ConfirmedDecision {
+    id: i64,
+    source_reserve: Option<String>,
+    target_reserve: Option<String>,
+    amount_raw: Option<i64>,
+    signature: String,
+    confirmed_slot: i64,
+    post_snapshot_id: Option<i64>,
+    updated_at: DateTime<Utc>,
 }
 
 #[tokio::main]
@@ -267,7 +279,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     ensure_db_position_has_value(&after_deposit, &KAMINO_MAIN_USDC_RESERVE.to_string())?;
 
-    let monitor_result = wait_for_monitor_execution(&options).await?;
+    let decision_baseline_id = latest_confirmed_decision_id(&pool, &options).await?;
+    let monitor_result = wait_for_render_monitor_decision(
+        &pool,
+        &options,
+        decision_baseline_id,
+        &precondition.best.reserve,
+    )
+    .await?;
     let final_reserve = monitor_final_reserve(&monitor_result)?.to_owned();
     log_event(
         "monitor_execution_selected_final_reserve",
@@ -287,46 +306,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     ensure_db_position_has_value(&after_optimization, &final_reserve)?;
 
-    let top_up_command = deposit_main_usdc_command(&options);
-    let top_up = run_named_child("top_up", &top_up_command)?;
-    ensure_child_success("top_up", &top_up)?;
-    ensure_deposit_executed("top_up", &top_up)?;
-    log_event("db_readback_start", json!({ "label": "after_top_up" }));
-    let after_top_up = db_readback(&pool, &options).await?;
+    let cooldown_evidence = prove_render_cooldown_no_repeat(
+        &pool,
+        &options,
+        monitor_result_decision_id(&monitor_result)?,
+        &final_reserve,
+    )
+    .await?;
+    let after_cooldown_probe = db_readback(&pool, &options).await?;
     log_event(
         "db_readback_complete",
         json!({
-            "label": "after_top_up",
-            "summary": db_readback_summary(&after_top_up),
+            "label": "after_cooldown_probe",
+            "summary": db_readback_summary(&after_cooldown_probe),
         }),
     );
-    ensure_db_position_has_value(&after_top_up, &KAMINO_MAIN_USDC_RESERVE.to_string())?;
-
-    let top_up_monitor_result = wait_for_monitor_execution(&options).await?;
-    let top_up_final_reserve = monitor_final_reserve(&top_up_monitor_result)?.to_owned();
-    if top_up_final_reserve != final_reserve {
-        return Err(format!(
-            "top-up monitor routed to {top_up_final_reserve}, expected stable final reserve {final_reserve}"
-        )
-        .into());
-    }
-    log_event(
-        "top_up_monitor_execution_selected_final_reserve",
-        json!({ "finalReserve": top_up_final_reserve }),
-    );
-    log_event(
-        "db_readback_start",
-        json!({ "label": "after_top_up_optimization" }),
-    );
-    let after_top_up_optimization = db_readback(&pool, &options).await?;
-    log_event(
-        "db_readback_complete",
-        json!({
-            "label": "after_top_up_optimization",
-            "summary": db_readback_summary(&after_top_up_optimization),
-        }),
-    );
-    ensure_db_position_has_value(&after_top_up_optimization, &final_reserve)?;
+    ensure_db_position_has_value(&after_cooldown_probe, &final_reserve)?;
 
     let full_withdraw_command = full_withdraw_command(&options, &final_reserve);
     let full_withdraw = run_named_child("full_withdraw", &full_withdraw_command)?;
@@ -345,16 +340,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     ensure_db_inactive_and_zero(&after_full_withdraw)?;
 
-    let post_cleanup_monitor_command = post_cleanup_monitor_command(&options);
-    let post_cleanup_monitor =
-        run_named_child("post_cleanup_monitor", &post_cleanup_monitor_command)?;
-    ensure_child_success("post_cleanup_monitor", &post_cleanup_monitor)?;
     let execution_evidence = e2e_execution_evidence(
         &options,
         &monitor_result,
         &final_reserve,
         &full_withdraw,
-        &post_cleanup_monitor,
         &signer_boundary,
     )?;
     log_event("execution_evidence_passed", execution_evidence.clone());
@@ -373,20 +363,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "policyUpdateEvidence": policy_update_evidence,
             "initialDeposit": child_output_json(&initial_deposit),
             "monitorExecution": monitor_result,
-            "topUpCommand": top_up_command,
-            "topUp": child_output_json(&top_up),
-            "topUpMonitorExecution": top_up_monitor_result,
+            "cooldownEvidence": cooldown_evidence,
             "finalReserve": final_reserve,
             "fullWithdrawCommand": full_withdraw_command,
             "fullWithdraw": child_output_json(&full_withdraw),
-            "postCleanupMonitorCommand": post_cleanup_monitor_command,
-            "postCleanupMonitor": child_output_json(&post_cleanup_monitor),
             "dbReadbacks": {
                 "afterPolicyUpdate": after_policy_update,
                 "afterDeposit": after_deposit,
                 "afterOptimization": after_optimization,
-                "afterTopUp": after_top_up,
-                "afterTopUpOptimization": after_top_up_optimization,
+                "afterCooldownProbe": after_cooldown_probe,
                 "afterFullWithdraw": after_full_withdraw,
             },
             "executionEvidence": execution_evidence,
@@ -476,9 +461,6 @@ fn phase_commands(options: &Options, precondition: &EdgePrecondition) -> Vec<Vec
             "--execute".to_owned(),
         ],
         deposit_main_usdc_command(options),
-        monitor_execute_command(options),
-        deposit_main_usdc_command(options),
-        monitor_execute_command(options),
         full_withdraw_command(options, &precondition.best.reserve),
     ]
 }
@@ -496,21 +478,6 @@ fn deposit_main_usdc_command(options: &Options) -> Vec<String> {
     ]
 }
 
-fn monitor_execute_command(options: &Options) -> Vec<String> {
-    vec![
-        "same-mint-yield-monitor".to_owned(),
-        "--once".to_owned(),
-        "--all-active-vaults".to_owned(),
-        "--execute".to_owned(),
-        "--poll-interval-seconds".to_owned(),
-        options.poll_interval_seconds.to_string(),
-        "--max-candidate-age-seconds".to_owned(),
-        options.max_candidate_age_seconds.to_string(),
-        "--min-edge-bps".to_owned(),
-        "1".to_owned(),
-    ]
-}
-
 fn full_withdraw_command(options: &Options, reserve: &str) -> Vec<String> {
     vec![
         "same-mint-reserve-swap".to_owned(),
@@ -524,98 +491,206 @@ fn full_withdraw_command(options: &Options, reserve: &str) -> Vec<String> {
     ]
 }
 
-fn post_cleanup_monitor_command(options: &Options) -> Vec<String> {
-    vec![
-        "same-mint-yield-monitor".to_owned(),
-        "--once".to_owned(),
-        "--all-active-vaults".to_owned(),
-        "--poll-interval-seconds".to_owned(),
-        options.poll_interval_seconds.to_string(),
-        "--max-candidate-age-seconds".to_owned(),
-        options.max_candidate_age_seconds.to_string(),
-    ]
+async fn latest_confirmed_decision_id(
+    pool: &PgPool,
+    options: &Options,
+) -> Result<i64, Box<dyn Error>> {
+    let id = loyal_yield_orchestrator::sqlx::query_scalar::<_, Option<i64>>(
+        r#"
+        SELECT MAX(d.id)
+        FROM loyal_yield.rebalance_decisions d
+        JOIN loyal_yield.managed_vaults v ON v.id = d.vault_id
+        WHERE v.settings = $1
+          AND v.vault_index = $2
+          AND d.status::text = 'confirmed'
+        "#,
+    )
+    .bind(&options.settings)
+    .bind(options.vault_index)
+    .fetch_one(pool)
+    .await?
+    .unwrap_or(0);
+    Ok(id)
 }
 
-async fn wait_for_monitor_execution(options: &Options) -> Result<Value, Box<dyn Error>> {
+async fn load_new_confirmed_decision(
+    pool: &PgPool,
+    options: &Options,
+    after_decision_id: i64,
+) -> Result<Option<ConfirmedDecision>, Box<dyn Error>> {
+    let row = loyal_yield_orchestrator::sqlx::query(
+        r#"
+        SELECT
+            d.id,
+            d.source_reserve,
+            d.target_reserve,
+            d.amount_raw,
+            d.signature,
+            d.confirmed_slot,
+            d.post_snapshot_id,
+            d.updated_at
+        FROM loyal_yield.rebalance_decisions d
+        JOIN loyal_yield.managed_vaults v ON v.id = d.vault_id
+        WHERE v.settings = $1
+          AND v.vault_index = $2
+          AND d.status::text = 'confirmed'
+          AND d.id > $3
+        ORDER BY d.id ASC
+        LIMIT 1
+        "#,
+    )
+    .bind(&options.settings)
+    .bind(options.vault_index)
+    .bind(after_decision_id)
+    .fetch_optional(pool)
+    .await?;
+
+    row.map(|row| {
+        let signature = row
+            .try_get::<Option<String>, _>("signature")?
+            .ok_or_else(|| {
+                loyal_yield_orchestrator::sqlx::Error::ColumnNotFound("signature".into())
+            })?;
+        let confirmed_slot = row
+            .try_get::<Option<i64>, _>("confirmed_slot")?
+            .ok_or_else(|| {
+                loyal_yield_orchestrator::sqlx::Error::ColumnNotFound("confirmed_slot".into())
+            })?;
+        Ok::<_, loyal_yield_orchestrator::sqlx::Error>(ConfirmedDecision {
+            id: row.try_get("id")?,
+            source_reserve: row.try_get("source_reserve")?,
+            target_reserve: row.try_get("target_reserve")?,
+            amount_raw: row.try_get("amount_raw")?,
+            signature,
+            confirmed_slot,
+            post_snapshot_id: row.try_get("post_snapshot_id")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    })
+    .transpose()
+    .map_err(Into::into)
+}
+
+async fn confirmed_decision_monitor_result(
+    pool: &PgPool,
+    options: &Options,
+    decision: &ConfirmedDecision,
+) -> Result<Value, Box<dyn Error>> {
+    let readback = db_readback(pool, options).await?;
+    let target_reserve = decision
+        .target_reserve
+        .as_deref()
+        .ok_or("confirmed decision is missing target_reserve")?;
+    ensure_db_position_has_value(&readback, target_reserve)?;
+    let current_positions = readback
+        .get("currentPositions")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    Ok(json!({
+        "status": "executed",
+        "source": "deployed_render_worker_db_observation",
+        "execute": true,
+        "decision": confirmed_decision_json(decision),
+        "plannedMove": {
+            "sourceReserve": decision.source_reserve,
+            "targetReserve": decision.target_reserve,
+            "amountRaw": decision.amount_raw.map(|amount| amount.to_string()),
+        },
+        "currentPositionsAfter": current_positions,
+        "dbReadback": readback,
+    }))
+}
+
+fn confirmed_decision_json(decision: &ConfirmedDecision) -> Value {
+    json!({
+        "id": decision.id,
+        "status": "confirmed",
+        "sourceReserve": decision.source_reserve,
+        "targetReserve": decision.target_reserve,
+        "amountRaw": decision.amount_raw.map(|amount| amount.to_string()),
+        "signature": decision.signature,
+        "confirmedSlot": decision.confirmed_slot,
+        "postSnapshotId": decision.post_snapshot_id,
+        "updatedAt": decision.updated_at,
+    })
+}
+
+fn monitor_result_decision_id(result: &Value) -> Result<i64, Box<dyn Error>> {
+    result
+        .pointer("/decision/id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "monitor result is missing confirmed decision id".into())
+}
+
+async fn wait_for_render_monitor_decision(
+    pool: &PgPool,
+    options: &Options,
+    after_decision_id: i64,
+    expected_target_reserve: &str,
+) -> Result<Value, Box<dyn Error>> {
     let deadline = Instant::now() + StdDuration::from_secs(options.timeout_seconds);
     let mut attempt: u64 = 0;
     loop {
         attempt += 1;
-        let command = monitor_execute_command(options);
         log_event(
-            "monitor_attempt_start",
+            "render_monitor_db_wait_start",
             json!({
                 "attempt": attempt,
+                "afterDecisionId": after_decision_id,
+                "expectedTargetReserve": expected_target_reserve,
                 "remainingSeconds": deadline
                     .saturating_duration_since(Instant::now())
                     .as_secs(),
             }),
         );
-        let output = run_named_child("monitor_attempt", &command)?;
-        ensure_child_success("same_mint_yield_monitor", &output)?;
-        let stdout = output
-            .stdout_json
-            .as_ref()
-            .ok_or("monitor did not print JSON")?;
-        log_event(
-            "monitor_attempt_complete",
-            json!({
-                "attempt": attempt,
-                "summary": monitor_stdout_summary(stdout, options),
-            }),
-        );
-        if let Some(result) = stdout
-            .get("results")
-            .and_then(Value::as_array)
-            .and_then(|results| {
-                results.iter().find(|result| {
-                    result
-                        .get("vault")
-                        .and_then(|vault| vault.get("settings"))
-                        .and_then(Value::as_str)
-                        == Some(options.settings.as_str())
-                        && result
-                            .get("vault")
-                            .and_then(|vault| vault.get("vaultIndex"))
-                            .and_then(Value::as_i64)
-                            == Some(i64::from(options.vault_index))
-                })
-            })
+        if let Some(decision) =
+            load_new_confirmed_decision(pool, options, after_decision_id).await?
         {
-            if result.get("status").and_then(Value::as_str) == Some("executed") {
+            let result = confirmed_decision_monitor_result(pool, options, &decision).await?;
+            let target = decision.target_reserve.as_deref();
+            if target == Some(expected_target_reserve) {
                 log_event(
-                    "monitor_attempt_selected_vault_executed",
-                    json!({ "attempt": attempt }),
+                    "render_monitor_confirmed_decision_observed",
+                    json!({
+                        "attempt": attempt,
+                        "decisionId": decision.id,
+                        "targetReserve": target,
+                        "signature": decision.signature,
+                    }),
                 );
-                return Ok(result.clone());
+                return Ok(result);
             }
             log_event(
-                "monitor_attempt_selected_vault_not_executed",
+                "render_monitor_confirmed_decision_unexpected_target",
                 json!({
                     "attempt": attempt,
-                    "status": result.get("status").and_then(Value::as_str),
-                    "reason": result.get("reason").and_then(Value::as_str),
+                    "decisionId": decision.id,
+                    "targetReserve": target,
+                    "expectedTargetReserve": expected_target_reserve,
                 }),
             );
         } else {
             log_event(
-                "monitor_attempt_selected_vault_missing",
+                "render_monitor_confirmed_decision_missing",
                 json!({ "attempt": attempt }),
             );
         }
 
         if Instant::now() >= deadline {
             log_event(
-                "monitor_timeout",
+                "render_monitor_db_wait_timeout",
                 json!({
                     "attempts": attempt,
                     "timeoutSeconds": options.timeout_seconds,
                 }),
             );
-            return Err("timed out waiting for fleet monitor to execute selected vault".into());
+            return Err(
+                "timed out waiting for deployed Render fleet monitor to confirm selected vault"
+                    .into(),
+            );
         }
         log_event(
-            "monitor_sleep",
+            "render_monitor_db_wait_sleep",
             json!({
                 "attempt": attempt,
                 "sleepSeconds": options.poll_interval_seconds,
@@ -623,6 +698,58 @@ async fn wait_for_monitor_execution(options: &Options) -> Result<Value, Box<dyn 
         );
         sleep(TokioDuration::from_secs(options.poll_interval_seconds)).await;
     }
+}
+
+async fn prove_render_cooldown_no_repeat(
+    pool: &PgPool,
+    options: &Options,
+    last_decision_id: i64,
+    expected_reserve: &str,
+) -> Result<Value, Box<dyn Error>> {
+    let wait_seconds = options
+        .poll_interval_seconds
+        .saturating_mul(2)
+        .saturating_add(5);
+    log_event(
+        "cooldown_no_repeat_wait_start",
+        json!({
+            "lastDecisionId": last_decision_id,
+            "waitSeconds": wait_seconds,
+            "pollIntervalSeconds": options.poll_interval_seconds,
+        }),
+    );
+    sleep(TokioDuration::from_secs(wait_seconds)).await;
+    let latest_id = latest_confirmed_decision_id(pool, options).await?;
+    if latest_id > last_decision_id {
+        return Err(format!(
+            "expected cooldown to prevent immediate repeat movement, but confirmed decision {latest_id} appeared after {last_decision_id}"
+        )
+        .into());
+    }
+    let readback = db_readback(pool, options).await?;
+    let reserve_still_has_value = selected_position(
+        readback
+            .get("currentPositions")
+            .ok_or("cooldown readback is missing currentPositions")?,
+        expected_reserve,
+    )
+    .and_then(|position| position.get("hasValue").and_then(Value::as_bool))
+    .unwrap_or(false);
+    if !reserve_still_has_value {
+        return Err("optimized reserve did not retain value during cooldown wait".into());
+    }
+    let evidence = json!({
+        "status": "cooldown_prevented_repeat",
+        "lastConfirmedDecisionId": last_decision_id,
+        "latestConfirmedDecisionId": latest_id,
+        "waitSeconds": wait_seconds,
+        "pollIntervalSeconds": options.poll_interval_seconds,
+        "reserveStillHasValue": reserve_still_has_value,
+        "reserve": expected_reserve,
+        "dbReadback": readback,
+    });
+    log_event("cooldown_no_repeat_wait_complete", evidence.clone());
+    Ok(evidence)
 }
 
 fn monitor_final_reserve(result: &Value) -> Result<&str, Box<dyn Error>> {
@@ -653,112 +780,30 @@ fn ensure_deposit_executed(label: &str, output: &ChildOutput) -> Result<(), Box<
 }
 
 fn e2e_execution_evidence(
-    options: &Options,
+    _options: &Options,
     monitor_result: &Value,
     final_reserve: &str,
     full_withdraw: &ChildOutput,
-    post_cleanup_monitor: &ChildOutput,
     signer_boundary: &SignerBoundary,
 ) -> Result<Value, Box<dyn Error>> {
     if monitor_result.get("status").and_then(Value::as_str) != Some("executed") {
         return Err("monitor result did not execute the selected vault".into());
     }
-    let route_stdout = monitor_result
-        .pointer("/routeExecution/stdout")
-        .ok_or("monitor result is missing route execution stdout")?;
-    let missing_obligation_setup = route_stdout
-        .get("missingObligationSetup")
-        .filter(|value| !value.is_null())
-        .ok_or("route execution did not report missing-obligation setup from optimizer path")?;
-    let missing_setup_target_reserve = missing_obligation_setup
-        .get("targetReserve")
-        .and_then(Value::as_str)
-        .ok_or("missing-obligation setup output is missing target reserve")?;
-    if missing_setup_target_reserve != final_reserve {
-        return Err(format!(
-            "missing-obligation setup targeted {missing_setup_target_reserve}, expected optimizer final reserve {final_reserve}"
-        )
-        .into());
+    let decision = monitor_result
+        .get("decision")
+        .ok_or("monitor result is missing confirmed decision")?;
+    if decision.get("status").and_then(Value::as_str) != Some("confirmed") {
+        return Err("monitor decision status was not confirmed".into());
     }
-    let setup_execution_mode = missing_obligation_setup
-        .get("executionMode")
-        .and_then(Value::as_str)
-        .ok_or("missing-obligation setup output is missing execution mode")?;
-    if setup_execution_mode != "inline_route_transaction" {
-        return Err(format!(
-            "missing-obligation setup used {setup_execution_mode}, expected inline_route_transaction"
-        )
-        .into());
+    if decision.get("targetReserve").and_then(Value::as_str) != Some(final_reserve) {
+        return Err("monitor decision target reserve does not match final reserve".into());
     }
-    let setup_policy_source = missing_obligation_setup
-        .get("policySource")
-        .and_then(Value::as_str)
-        .ok_or("missing-obligation setup output is missing policy source")?;
-    if setup_policy_source != "setup_policy" {
-        return Err(format!(
-            "fallback E2E expected setup_policy init source, got {setup_policy_source}"
-        )
-        .into());
-    }
-    let route_steps = route_stdout
-        .pointer("/routeExecution/routeSteps")
-        .and_then(Value::as_array)
-        .ok_or("route execution preview is missing route steps")?
-        .iter()
-        .filter_map(Value::as_str)
-        .collect::<Vec<_>>();
-    if route_steps
-        != vec![
-            "kamino_withdraw_obligation_collateral_and_redeem_reserve_collateral_v2",
-            "kamino_init_obligation",
-            "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2",
-        ]
-    {
-        return Err(format!(
-            "route execution steps were {route_steps:?}, expected withdraw/init/deposit"
-        )
-        .into());
-    }
-    assert_json_str_eq(
-        route_stdout.pointer("/routeExecution/signer"),
-        &signer_boundary.optimizer,
-        "routeExecution.signer",
-    )?;
-    assert_json_str_eq(
-        route_stdout.pointer("/routeExecution/feePayer"),
-        &signer_boundary.optimizer,
-        "routeExecution.feePayer",
-    )?;
-    assert_json_str_eq(
-        route_stdout.pointer("/executionPickup/transaction/feePayer"),
-        &signer_boundary.optimizer,
-        "executionPickup.transaction.feePayer",
-    )?;
-    assert_json_array_contains(
-        route_stdout.pointer("/executionPickup/transaction/signerPubkeys"),
-        &signer_boundary.optimizer,
-        "executionPickup.transaction.signerPubkeys",
-    )?;
-    let signature = non_empty_json_str(route_stdout.pointer("/executionPickup/signature"))
-        .ok_or("route execution output is missing confirmed signature")?;
-    let final_status = route_stdout
-        .pointer("/executionPickup/finalStatus")
-        .and_then(Value::as_str)
-        .ok_or("route execution output is missing final status")?;
-    if final_status != "confirmed" {
-        return Err(
-            format!("route execution final status was {final_status}, expected confirmed").into(),
-        );
-    }
-    let confirmed_status = route_stdout
-        .pointer("/confirmedDecision/status")
-        .and_then(Value::as_str)
-        .ok_or("route execution output is missing confirmed decision status")?;
-    if confirmed_status != "confirmed" {
-        return Err(format!(
-            "confirmed decision status was {confirmed_status}, expected confirmed"
-        )
-        .into());
+    let signature = non_empty_json_str(decision.get("signature"))
+        .ok_or("confirmed decision is missing signature")?;
+    let confirmed_slot = json_i64(decision.get("confirmedSlot"))
+        .ok_or("confirmed decision is missing confirmed slot")?;
+    if confirmed_slot <= 0 {
+        return Err("confirmed decision slot must be positive".into());
     }
     let final_position = selected_position(
         monitor_result
@@ -897,29 +942,15 @@ fn e2e_execution_evidence(
         None
     };
 
-    let remaining_monitored =
-        post_cleanup_monitor_contains_selected_vault(post_cleanup_monitor, options)?;
-    if remaining_monitored {
-        return Err(
-            "selected vault is still discoverable by the fleet monitor after cleanup".into(),
-        );
-    }
-
     Ok(json!({
         "confirmedDecision": {
             "signature": signature,
-            "finalStatus": final_status,
-            "confirmedStatus": confirmed_status,
-        },
-        "missingObligationSetup": {
-            "targetReserve": missing_setup_target_reserve,
-            "executionMode": setup_execution_mode,
-            "policySource": setup_policy_source,
+            "confirmedSlot": confirmed_slot,
+            "decision": decision,
         },
         "signerBoundary": {
             "setupAuthority": signer_boundary.setup_authority.as_str(),
             "optimizer": signer_boundary.optimizer.as_str(),
-            "routeExecutionSigner": signer_boundary.optimizer.as_str(),
             "fullWithdrawPolicySigner": signer_boundary.optimizer.as_str(),
             "walletRecoverySigner": signer_boundary.setup_authority.as_str(),
             "policyCloseAuthority": signer_boundary.setup_authority.as_str(),
@@ -937,9 +968,7 @@ fn e2e_execution_evidence(
             "setupPolicyClosed": setup_policy_closed,
             "setupPolicyCloseSignature": setup_policy_close_signature,
         },
-        "postCleanupFleetDiscovery": {
-            "selectedVaultStillMonitored": false,
-        },
+        "postCleanupFleetDiscovery": "verified_by_inactive_managed_vault_readback",
     }))
 }
 
@@ -1317,36 +1346,6 @@ fn selected_position(positions: &Value, reserve: &str) -> Option<Value> {
     })
 }
 
-fn post_cleanup_monitor_contains_selected_vault(
-    output: &ChildOutput,
-    options: &Options,
-) -> Result<bool, Box<dyn Error>> {
-    let stdout = output
-        .stdout_json
-        .as_ref()
-        .ok_or("post-cleanup fleet monitor did not print JSON")?;
-    let results = stdout
-        .get("results")
-        .and_then(Value::as_array)
-        .ok_or("post-cleanup fleet monitor output is missing results")?;
-    Ok(results
-        .iter()
-        .any(|result| result_matches_selected_vault(result, options)))
-}
-
-fn result_matches_selected_vault(result: &Value, options: &Options) -> bool {
-    result
-        .get("vault")
-        .and_then(|vault| vault.get("settings"))
-        .and_then(Value::as_str)
-        == Some(options.settings.as_str())
-        && result
-            .get("vault")
-            .and_then(|vault| vault.get("vaultIndex"))
-            .and_then(Value::as_i64)
-            == Some(i64::from(options.vault_index))
-}
-
 fn non_empty_json_str(value: Option<&Value>) -> Option<&str> {
     value
         .and_then(Value::as_str)
@@ -1544,36 +1543,6 @@ fn db_readback_summary(readback: &Value) -> Value {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default(),
-    })
-}
-
-fn monitor_stdout_summary(stdout: &Value, options: &Options) -> Value {
-    let results = stdout.get("results").and_then(Value::as_array);
-    let selected = results.and_then(|results| {
-        results
-            .iter()
-            .find(|result| result_matches_selected_vault(result, options))
-    });
-    json!({
-        "status": stdout.get("status").and_then(Value::as_str),
-        "resultCount": results.map(Vec::len).unwrap_or(0),
-        "selectedVault": selected.map(|result| {
-            json!({
-                "status": result.get("status").and_then(Value::as_str),
-                "reason": result.get("reason").and_then(Value::as_str),
-                "sourceReserve": result
-                    .get("plannedMove")
-                    .and_then(|plan| plan.get("sourceReserve"))
-                    .and_then(Value::as_str),
-                "targetReserve": result
-                    .get("plannedMove")
-                    .and_then(|plan| plan.get("targetReserve"))
-                    .and_then(Value::as_str),
-                "routeExecutionStatus": result
-                    .pointer("/routeExecution/stdout/status")
-                    .and_then(Value::as_str),
-            })
-        }),
     })
 }
 

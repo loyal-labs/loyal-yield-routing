@@ -170,11 +170,13 @@ After the same-mint frontend/SDK E2E passed, Render runs the same monitor in
 fleet execution mode:
 
 ```sh
-/usr/local/bin/same-mint-yield-monitor --all-active-vaults --execute --poll-interval-seconds 300
+/usr/local/bin/same-mint-yield-monitor --all-active-vaults --execute --poll-interval-seconds 15 --rebalance-cooldown-seconds 300
 ```
 
 Fleet mode uses `YIELD_ROUTER_KEYPAIR` for active-policy discovery and route
-execution; it does not use `SOLANA_TESTING_PK`.
+execution; it does not use `SOLANA_TESTING_PK`. A confirmed same-mint rebalance
+for a vault suppresses another same-vault execution for 300 seconds; user
+deposits do not start that cooldown.
 
 Monitor E2E dry-run:
 
