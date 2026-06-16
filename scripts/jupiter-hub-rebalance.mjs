@@ -92,10 +92,11 @@ const swap = await fetchJupiterSwapInstructions({
   quote,
   userPublicKey: payer.publicKey,
 });
-const jupiterOutputAmount = BigInt(quote.outAmount ?? "0");
-if (jupiterOutputAmount < hubOutputTopUpAmount) {
-  console.warn(
-    `Jupiter quote outAmount ${jupiterOutputAmount} is below Hub top-up ${hubOutputTopUpAmount}; treasury output balance must cover the difference.`,
+const jupiterOutputAmount = quoteAmount(quote, "outAmount");
+const jupiterMinimumOutputAmount = quoteAmount(quote, "otherAmountThreshold");
+if (jupiterMinimumOutputAmount < hubOutputTopUpAmount) {
+  throw new Error(
+    `Jupiter guaranteed output ${jupiterMinimumOutputAmount} is below Hub top-up ${hubOutputTopUpAmount}; refusing to rely on treasury output balance to cover swap slippage.`,
   );
 }
 
@@ -171,7 +172,7 @@ if (simulation.value.err) {
   throw new Error(`Jupiter Hub rebalance simulation failed`);
 }
 console.log(
-  `Simulation ok: units=${simulation.value.unitsConsumed ?? "unknown"} input=${hubInputAmount} quoteOut=${jupiterOutputAmount} topUp=${hubOutputTopUpAmount}`,
+  `Simulation ok: units=${simulation.value.unitsConsumed ?? "unknown"} input=${hubInputAmount} quoteOut=${jupiterOutputAmount} quoteMinOut=${jupiterMinimumOutputAmount} topUp=${hubOutputTopUpAmount}`,
 );
 
 if (args["simulate-only"] === "1") {
@@ -224,6 +225,14 @@ function requiredArg(parsed, name) {
     throw new Error(`missing --${name}`);
   }
   return value;
+}
+
+function quoteAmount(quote, name) {
+  const value = quote[name];
+  if (typeof value !== "string" || !/^\d+$/.test(value)) {
+    throw new Error(`Jupiter quote missing valid ${name}`);
+  }
+  return BigInt(value);
 }
 
 function resolveRpcUrl(value) {
