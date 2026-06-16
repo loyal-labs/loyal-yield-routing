@@ -7,6 +7,7 @@ export type LoyalClusterConfig = {
   loyalHubSwapProgramId: PublicKey;
   loyalHubAuthorizer: PublicKey;
   tokenProgramId: PublicKey;
+  token2022ProgramId: PublicKey;
   associatedTokenProgramId: PublicKey;
 };
 
@@ -16,6 +17,7 @@ const sharedConfig: LoyalClusterConfig = {
   loyalHubSwapProgramId: new PublicKey("3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh"),
   loyalHubAuthorizer: new PublicKey("3uWi9x2SRpmjztkpkr2WWeBoVq3exjXG2YfDWLvm8KsQ"),
   tokenProgramId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+  token2022ProgramId: new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"),
   associatedTokenProgramId: new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"),
 };
 

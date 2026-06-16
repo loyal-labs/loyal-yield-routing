@@ -22,4 +22,5 @@ export const swapExactInAccounts = {
   HUB_AUTHORITY: 8,
   HUB_AUTHORIZER: 9,
   TOKEN_PROGRAM: 10,
+  TOKEN_2022_PROGRAM: 11,
 } as const;

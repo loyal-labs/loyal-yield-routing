@@ -4,9 +4,14 @@ import type { LoyalClusterConfig } from "../cluster.js";
 import { BytesEncoder } from "./bytes.js";
 
 const SQUADS_SEED_PREFIX = new TextEncoder().encode("smart_account");
+const SQUADS_SEED_SETTINGS = new TextEncoder().encode("settings");
+const SQUADS_SEED_SMART_ACCOUNT = new TextEncoder().encode("smart_account");
 const SQUADS_SEED_POLICY = new TextEncoder().encode("policy");
+const SQUADS_PROGRAM_CONFIG_SEED = new TextEncoder().encode("program_config");
 const SQUADS_FULL_PERMISSIONS_MASK = 7;
 const SQUADS_SYNC_SIGNER_COUNT = 1;
+const CREATE_SMART_ACCOUNT_DISCRIMINATOR = [197, 102, 253, 231, 77, 84, 50, 17] as const;
+const EXECUTE_TRANSACTION_SYNC_V2_DISCRIMINATOR = [90, 81, 187, 81, 39, 70, 128, 78] as const;
 const EXECUTE_SETTINGS_TRANSACTION_SYNC_DISCRIMINATOR = [138, 209, 64, 163, 79, 67, 233, 76] as const;
 
 export type DataConstraint = {
@@ -47,15 +52,124 @@ export type SquadsContext = {
   delegatedSigner: PublicKey;
   accountIndex: number;
   vault: PublicKey;
+  policySeed?: bigint;
 };
 
-export function deriveActionAccount(config: LoyalClusterConfig, settings: PublicKey): PublicKey {
+export type SquadsPda = {
+  address: PublicKey;
+  bump: number;
+};
+
+export type CreateSquadsSmartAccountInput = {
+  payer: PublicKey;
+  verifier: PublicKey;
+  seed: bigint;
+  treasury: PublicKey;
+  programConfig?: PublicKey;
+};
+
+export type CompiledSquadsInstruction = {
+  programIdIndex: number;
+  accounts: number[];
+  data: Uint8Array;
+};
+
+export type CompiledSquadsTransaction = {
+  compiledInstructions: CompiledSquadsInstruction[];
+  transactionAccounts: TransactionInstruction["keys"];
+};
+
+export type SquadsSyncTransactionInput = {
+  settings: PublicKey;
+  signer: PublicKey;
+  accountIndex: number;
+  instructions: readonly TransactionInstruction[];
+  extraAccounts?: TransactionInstruction["keys"];
+};
+
+export type SquadsProgramInteractionExecutionInput = {
+  policy: PublicKey;
+  signer: PublicKey;
+  accountIndex: number;
+  instructions: readonly TransactionInstruction[];
+  instructionConstraintIndexes: readonly number[];
+  extraAccounts?: TransactionInstruction["keys"];
+};
+
+export type PlannedLaneRebalance = {
+  fromLaneId: number;
+  toLaneId: number;
+};
+
+export function deriveSquadsSettings(config: LoyalClusterConfig, seed: bigint): SquadsPda {
+  assertU128(seed, "seed");
+  const seedBytes = new Uint8Array(16);
+  new DataView(seedBytes.buffer).setBigUint64(0, seed & 0xffffffffffffffffn, true);
+  new DataView(seedBytes.buffer).setBigUint64(8, seed >> 64n, true);
+  const [address, bump] = PublicKey.findProgramAddressSync(
+    [SQUADS_SEED_PREFIX, SQUADS_SEED_SETTINGS, seedBytes],
+    config.squadsSmartAccountProgramId,
+  );
+  return { address, bump };
+}
+
+export function deriveSquadsVault(config: LoyalClusterConfig, settings: PublicKey, vaultIndex: number): SquadsPda {
+  assertU8(vaultIndex, "vaultIndex");
+  const [address, bump] = PublicKey.findProgramAddressSync(
+    [SQUADS_SEED_PREFIX, settings.toBytes(), SQUADS_SEED_SMART_ACCOUNT, Uint8Array.of(vaultIndex)],
+    config.squadsSmartAccountProgramId,
+  );
+  return { address, bump };
+}
+
+export function deriveSquadsPolicy(config: LoyalClusterConfig, settings: PublicKey, policySeed: bigint): SquadsPda {
+  assertU64(policySeed, "policySeed");
   const seedBytes = new Uint8Array(8);
-  new DataView(seedBytes.buffer).setBigUint64(0, YIELD_ROUTE_STANDALONE_ACTION_SEED, true);
-  return PublicKey.findProgramAddressSync(
+  new DataView(seedBytes.buffer).setBigUint64(0, policySeed, true);
+  const [address, bump] = PublicKey.findProgramAddressSync(
     [SQUADS_SEED_PREFIX, SQUADS_SEED_POLICY, settings.toBytes(), seedBytes],
     config.squadsSmartAccountProgramId,
+  );
+  return { address, bump };
+}
+
+export function deriveActionAccount(
+  config: LoyalClusterConfig,
+  settings: PublicKey,
+  policySeed = YIELD_ROUTE_STANDALONE_ACTION_SEED,
+): PublicKey {
+  return deriveSquadsPolicy(config, settings, policySeed).address;
+}
+
+export function deriveSquadsProgramConfig(config: LoyalClusterConfig): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [SQUADS_SEED_PREFIX, SQUADS_PROGRAM_CONFIG_SEED],
+    config.squadsSmartAccountProgramId,
   )[0];
+}
+
+export function createSquadsSmartAccountInstruction(
+  config: LoyalClusterConfig,
+  input: CreateSquadsSmartAccountInput,
+): TransactionInstruction {
+  if (input.seed <= 0n) {
+    throw new Error("Squads smart-account seed starts at 1");
+  }
+  const settings = deriveSquadsSettings(config, input.seed).address;
+  const programConfig = input.programConfig ?? deriveSquadsProgramConfig(config);
+
+  return new TransactionInstruction({
+    programId: config.squadsSmartAccountProgramId,
+    keys: [
+      { pubkey: programConfig, isSigner: false, isWritable: true },
+      { pubkey: input.treasury, isSigner: false, isWritable: true },
+      { pubkey: input.payer, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: config.squadsSmartAccountProgramId, isSigner: false, isWritable: false },
+      { pubkey: settings, isSigner: false, isWritable: true },
+    ],
+    data: Buffer.from(serializeCreateSmartAccountArgs(input.verifier)),
+  });
 }
 
 export function createProgramInteractionPolicyInstruction(
@@ -63,10 +177,11 @@ export function createProgramInteractionPolicyInstruction(
   context: SquadsContext,
   constraints: readonly InstructionConstraint[],
 ): TransactionInstruction {
-  const actionAccount = deriveActionAccount(config, context.settings);
+  const policySeed = context.policySeed ?? YIELD_ROUTE_STANDALONE_ACTION_SEED;
+  const actionAccount = deriveActionAccount(config, context.settings, policySeed);
   const data = serializeSettingsActions(
     context.delegatedSigner,
-    BigInt(YIELD_ROUTE_STANDALONE_ACTION_SEED),
+    policySeed,
     compileProgramInteractionPayload(context.accountIndex, constraints),
   );
 
@@ -82,6 +197,130 @@ export function createProgramInteractionPolicyInstruction(
     ],
     data: Buffer.from(data),
   });
+}
+
+export function compileSquadsTransactionInstructions(
+  instructions: readonly TransactionInstruction[],
+  extraAccounts: TransactionInstruction["keys"] = [],
+): CompiledSquadsTransaction {
+  if (instructions.length > 255) {
+    throw new Error("Squads sync payload supports up to 255 instructions");
+  }
+  const transactionAccounts: TransactionInstruction["keys"] = [];
+  for (const account of extraAccounts) {
+    pushOrUpdateAccountMeta(transactionAccounts, account);
+  }
+
+  const compiledInstructions = instructions.map((instruction) => {
+    const accountIndexes = instruction.keys.map((account) => pushOrUpdateAccountMeta(transactionAccounts, account));
+    const programIdIndex = pushOrUpdateAccountMeta(transactionAccounts, {
+      pubkey: instruction.programId,
+      isSigner: false,
+      isWritable: false,
+    });
+    return {
+      programIdIndex,
+      accounts: accountIndexes,
+      data: new Uint8Array(instruction.data),
+    };
+  });
+
+  return { compiledInstructions, transactionAccounts };
+}
+
+export function createSquadsSyncTransactionInstruction(
+  config: LoyalClusterConfig,
+  input: SquadsSyncTransactionInput,
+): TransactionInstruction {
+  const compiled = compileSquadsTransactionInstructions(input.instructions, input.extraAccounts);
+  return createSquadsSyncTransactionInstructionFromCompiled(config, {
+    settings: input.settings,
+    signer: input.signer,
+    accountIndex: input.accountIndex,
+    ...compiled,
+  });
+}
+
+export function createSquadsSyncTransactionInstructionFromCompiled(
+  config: LoyalClusterConfig,
+  input: {
+    settings: PublicKey;
+    signer: PublicKey;
+    accountIndex: number;
+    compiledInstructions: readonly CompiledSquadsInstruction[];
+    transactionAccounts: TransactionInstruction["keys"];
+  },
+): TransactionInstruction {
+  const data = serializeSyncTransactionArgs(
+    input.accountIndex,
+    squadsCompiledInstructionPayload(input.compiledInstructions),
+  );
+  return new TransactionInstruction({
+    programId: config.squadsSmartAccountProgramId,
+    keys: [
+      { pubkey: input.settings, isSigner: false, isWritable: true },
+      { pubkey: config.squadsSmartAccountProgramId, isSigner: false, isWritable: false },
+      { pubkey: input.signer, isSigner: true, isWritable: false },
+      ...input.transactionAccounts,
+    ],
+    data: Buffer.from(data),
+  });
+}
+
+export function createSquadsProgramInteractionExecutionInstruction(
+  config: LoyalClusterConfig,
+  input: SquadsProgramInteractionExecutionInput,
+): TransactionInstruction {
+  const compiled = compileSquadsTransactionInstructions(input.instructions, input.extraAccounts);
+  return createSquadsProgramInteractionExecutionInstructionFromCompiled(config, {
+    policy: input.policy,
+    signer: input.signer,
+    accountIndex: input.accountIndex,
+    instructionConstraintIndexes: input.instructionConstraintIndexes,
+    ...compiled,
+  });
+}
+
+export function createSquadsProgramInteractionExecutionInstructionFromCompiled(
+  config: LoyalClusterConfig,
+  input: {
+    policy: PublicKey;
+    signer: PublicKey;
+    accountIndex: number;
+    compiledInstructions: readonly CompiledSquadsInstruction[];
+    instructionConstraintIndexes: readonly number[];
+    transactionAccounts: TransactionInstruction["keys"];
+  },
+): TransactionInstruction {
+  const data = serializeProgramInteractionExecutionArgs(
+    input.accountIndex,
+    input.instructionConstraintIndexes,
+    squadsCompiledInstructionPayload(input.compiledInstructions),
+  );
+  return new TransactionInstruction({
+    programId: config.squadsSmartAccountProgramId,
+    keys: [
+      { pubkey: input.policy, isSigner: false, isWritable: true },
+      { pubkey: config.squadsSmartAccountProgramId, isSigner: false, isWritable: false },
+      { pubkey: input.signer, isSigner: true, isWritable: false },
+      ...input.transactionAccounts,
+    ],
+    data: Buffer.from(data),
+  });
+}
+
+export function assertRebalanceAvoidsActiveLanes(
+  activeLanes: readonly number[],
+  transfers: readonly PlannedLaneRebalance[],
+): void {
+  const active = new Set(activeLanes.map((lane) => normalizeLaneId(lane, "active lane")));
+  for (const transfer of transfers) {
+    const fromLaneId = normalizeLaneId(transfer.fromLaneId, "fromLaneId");
+    const toLaneId = normalizeLaneId(transfer.toLaneId, "toLaneId");
+    if (active.has(fromLaneId) || active.has(toLaneId)) {
+      throw new Error(`rebalance touches active lane ${fromLaneId} -> ${toLaneId}`);
+    }
+  }
 }
 
 type CompiledPayload = {
@@ -174,6 +413,59 @@ function serializeSettingsActions(
   return encoder.finish();
 }
 
+function serializeCreateSmartAccountArgs(verifier: PublicKey): Uint8Array {
+  const encoder = new BytesEncoder();
+  encoder.pushBytes(CREATE_SMART_ACCOUNT_DISCRIMINATOR);
+  encoder.pushOption<PublicKey>(undefined, (pubkey) => encoder.pushPubkey(pubkey));
+  encoder.pushU16(1);
+  encoder.pushU32(1);
+  encoder.pushPubkey(verifier);
+  encoder.pushU8(SQUADS_FULL_PERMISSIONS_MASK);
+  encoder.pushU32(0);
+  encoder.pushOption<PublicKey>(undefined, (pubkey) => encoder.pushPubkey(pubkey));
+  encoder.pushOption<string>(undefined, (memo) => {
+    const bytes = new TextEncoder().encode(memo);
+    encoder.pushU32(bytes.length);
+    encoder.pushBytes(bytes);
+  });
+  return encoder.finish();
+}
+
+function serializeSyncTransactionArgs(accountIndex: number, payload: Uint8Array): Uint8Array {
+  assertU8(accountIndex, "accountIndex");
+  const encoder = new BytesEncoder();
+  encoder.pushBytes(EXECUTE_TRANSACTION_SYNC_V2_DISCRIMINATOR);
+  encoder.pushU8(accountIndex);
+  encoder.pushU8(SQUADS_SYNC_SIGNER_COUNT);
+  encoder.pushU8(0);
+  encoder.pushVec([...payload], (byte) => encoder.pushU8(byte));
+  return encoder.finish();
+}
+
+function serializeProgramInteractionExecutionArgs(
+  accountIndex: number,
+  instructionConstraintIndexes: readonly number[],
+  instructionsPayload: Uint8Array,
+): Uint8Array {
+  assertU8(accountIndex, "accountIndex");
+  const encoder = new BytesEncoder();
+  encoder.pushBytes(EXECUTE_TRANSACTION_SYNC_V2_DISCRIMINATOR);
+  encoder.pushU8(accountIndex);
+  encoder.pushU8(SQUADS_SYNC_SIGNER_COUNT);
+  encoder.pushU8(1);
+  encoder.pushU8(1);
+  encoder.pushOption(instructionConstraintIndexes, (indexes) =>
+    encoder.pushVec(indexes, (index) => {
+      assertU8(index, "instructionConstraintIndex");
+      encoder.pushU8(index);
+    }),
+  );
+  encoder.pushU8(1);
+  encoder.pushU8(accountIndex);
+  encoder.pushVec([...instructionsPayload], (byte) => encoder.pushU8(byte));
+  return encoder.finish();
+}
+
 function encodePolicyCreateAction(
   encoder: BytesEncoder,
   delegatedSigner: PublicKey,
@@ -249,6 +541,69 @@ function encodeDataConstraint(encoder: BytesEncoder, constraint: DataConstraint)
       break;
   }
   encoder.pushU8(operatorTag(constraint.operator));
+}
+
+function squadsCompiledInstructionPayload(instructions: readonly CompiledSquadsInstruction[]): Uint8Array {
+  if (instructions.length > 255) {
+    throw new Error("Squads sync payload supports up to 255 instructions");
+  }
+  const encoder = new BytesEncoder();
+  encoder.pushU8(instructions.length);
+  for (const instruction of instructions) {
+    assertU8(instruction.programIdIndex, "programIdIndex");
+    encoder.pushU8(instruction.programIdIndex);
+    encoder.pushSmallVec(instruction.accounts, (accountIndex) => {
+      assertU8(accountIndex, "accountIndex");
+      encoder.pushU8(accountIndex);
+    });
+    if (instruction.data.length > 65535) {
+      throw new Error("Squads compiled instruction data overflow");
+    }
+    encoder.pushU16(instruction.data.length);
+    encoder.pushBytes(instruction.data);
+  }
+  return encoder.finish();
+}
+
+function pushOrUpdateAccountMeta(accounts: TransactionInstruction["keys"], meta: TransactionInstruction["keys"][number]): number {
+  const existingIndex = accounts.findIndex((existing) => existing.pubkey.equals(meta.pubkey));
+  if (existingIndex !== -1) {
+    const existing = accounts[existingIndex];
+    accounts[existingIndex] = {
+      pubkey: existing.pubkey,
+      isSigner: existing.isSigner || meta.isSigner,
+      isWritable: existing.isWritable || meta.isWritable,
+    };
+    return existingIndex;
+  }
+  if (accounts.length >= 256) {
+    throw new Error("Squads transaction account table overflow");
+  }
+  accounts.push({ ...meta });
+  return accounts.length - 1;
+}
+
+function normalizeLaneId(value: number, field: string): number {
+  assertU8(value, field);
+  return value;
+}
+
+function assertU8(value: number, field: string): void {
+  if (!Number.isInteger(value) || value < 0 || value > 255) {
+    throw new Error(`${field} must be a u8`);
+  }
+}
+
+function assertU64(value: bigint, field: string): void {
+  if (value < 0n || value > 0xffffffffffffffffn) {
+    throw new Error(`${field} must be a u64`);
+  }
+}
+
+function assertU128(value: bigint, field: string): void {
+  if (value < 0n || value > 0xffffffffffffffffffffffffffffffffn) {
+    throw new Error(`${field} must be a u128`);
+  }
 }
 
 function operatorTag(operator: DataConstraint["operator"]): number {

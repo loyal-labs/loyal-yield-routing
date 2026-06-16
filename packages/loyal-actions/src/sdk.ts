@@ -116,6 +116,12 @@ function validateInput(input: InitYieldRoutePolicyInput): void {
     if (name === "accountIndex") {
       continue;
     }
+    if (name === "policySeed") {
+      if (value !== undefined && (typeof value !== "bigint" || value < 0n || value > 0xffffffffffffffffn)) {
+        throw new Error("squads.policySeed must be a u64 bigint");
+      }
+      continue;
+    }
     if (!(value instanceof PublicKey)) {
       throw new Error(`squads.${name} must be a PublicKey`);
     }

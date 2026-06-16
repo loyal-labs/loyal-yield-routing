@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { PublicKey, SystemProgram } from "@solana/web3.js";
+import { PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 import {
   DEFAULT_MAX_FEE_BPS,
   KAMINO_ALTCOINS_MARKET,
@@ -10,6 +10,7 @@ import {
   KAMINO_SOLSTICE_MARKET,
   KAMINO_SUPERSTATE_OPENING_BELL_MARKET,
   KAMINO_XSTOCKS_MARKET,
+  LOYAL_CLUSTER_CONFIGS,
   LoyalCluster,
   MaxFeeBps,
   RISK_BASKET_MARKETS,
@@ -17,13 +18,24 @@ import {
   STABLECOIN_MINTS,
   Stablecoin,
   SwapLane,
+  assertRebalanceAvoidsActiveLanes,
+  compileSquadsTransactionInstructions,
   createLoyalActionsSdk,
+  createSquadsProgramInteractionExecutionInstruction,
+  createSquadsSmartAccountInstruction,
+  createSquadsSyncTransactionInstruction,
+  deriveSquadsPolicy,
+  deriveSquadsProgramConfig,
+  deriveSquadsSettings,
+  deriveSquadsVault,
 } from "../src/index.js";
 import {
   deriveKaminoUserMetadata,
   deriveKaminoVanillaObligation,
   kaminoInitObligationConstraint,
+  loyalHubConstraint,
 } from "../src/internal/protocols.js";
+import { swapExactInAccounts } from "../src/generated/loyal-hub-abi.js";
 import {
   KAMINO_INIT_OBLIGATION_DISCRIMINATOR,
   KAMINO_VANILLA_OBLIGATION_ID,
@@ -139,6 +151,34 @@ describe("initYieldRoutePolicy", () => {
     ]);
   });
 
+  test("keeps Loyal Hub policy constraints compatible with Token-2022 swap accounts", () => {
+    const config = LOYAL_CLUSTER_CONFIGS[LoyalCluster.MainnetBeta];
+    const constraint = loyalHubConstraint(
+      config,
+      vault,
+      [STABLECOIN_MINTS[Stablecoin.USDC], STABLECOIN_MINTS[Stablecoin.PYUSD]],
+      DEFAULT_MAX_FEE_BPS,
+    );
+    const accountAt = (index: number) => {
+      const accountConstraint = constraint.accountConstraints.find((account) => account.accountIndex === index);
+      expect(accountConstraint).toBeDefined();
+      return accountConstraint;
+    };
+
+    expect(accountAt(swapExactInAccounts.INPUT_MINT)?.owner).toBeUndefined();
+    expect(accountAt(swapExactInAccounts.OUTPUT_MINT)?.owner).toBeUndefined();
+    expect(accountAt(swapExactInAccounts.USER_INPUT)?.owner).toBeUndefined();
+    expect(accountAt(swapExactInAccounts.USER_OUTPUT)?.owner).toBeUndefined();
+    const token2022 = accountAt(swapExactInAccounts.TOKEN_2022_PROGRAM);
+    expect(token2022?.kind.type).toBe("pubkey");
+    if (token2022?.kind.type !== "pubkey") {
+      throw new Error("TOKEN_2022_PROGRAM should be a pubkey constraint");
+    }
+    expect(token2022.kind.pubkeys.map((pubkey) => pubkey.toBase58())).toEqual([
+      config.token2022ProgramId.toBase58(),
+    ]);
+  });
+
   test("derives stable exposure internally from the approved seven symbols", () => {
     const sdk = createLoyalActionsSdk({ cluster: LoyalCluster.MainnetBeta });
     const policy = sdk.initYieldRoutePolicy({
@@ -205,5 +245,131 @@ describe("initYieldRoutePolicy", () => {
       }),
     ).toThrow("unsupported maxFeeBps");
     expect(() => createLoyalActionsSdk({ cluster: "localnet" as LoyalCluster })).toThrow("unsupported Loyal cluster");
+  });
+});
+
+describe("Squads operational helpers", () => {
+  const config = LOYAL_CLUSTER_CONFIGS[LoyalCluster.MainnetBeta];
+
+  test("derives settings, vault, policy, and program config PDAs", () => {
+    const settingsPda = deriveSquadsSettings(config, 1n);
+    const vaultPda = deriveSquadsVault(config, settingsPda.address, 0);
+    const policyPda = deriveSquadsPolicy(config, settingsPda.address, 1n);
+    const programConfig = deriveSquadsProgramConfig(config);
+
+    expect(settingsPda.address.toBase58()).toBe("41gqrPgijYycTaCCzKyLfvqikMEH9fzGCwZYAKQHvMbd");
+    expect(vaultPda.address.toBase58()).toBe("EdMSvMoHfsemd2s7eHCrRnuM1dzPu2CpUrHJN98XYC9y");
+    expect(policyPda.address.toBase58()).toBe("622E3Qc1AU49sDhtPaYmSZeBN3dwBKGU8RmnvCp2rR3i");
+    expect(programConfig.toBase58()).toBe("GmY9kVi3FhrCUn2MJkzzpE6C5618YoHuGsgqHU78cKus");
+  });
+
+  test("builds a live Squads smart-account creation instruction with caller-supplied treasury", () => {
+    const payer = new PublicKey("11111111111111111111111111111116");
+    const verifier = new PublicKey("11111111111111111111111111111117");
+    const treasury = new PublicKey("11111111111111111111111111111118");
+    const instruction = createSquadsSmartAccountInstruction(config, {
+      payer,
+      verifier,
+      seed: 1n,
+      treasury,
+    });
+    const settingsPda = deriveSquadsSettings(config, 1n);
+
+    expect(instruction.programId.toBase58()).toBe(config.squadsSmartAccountProgramId.toBase58());
+    expect(instruction.keys.map((key) => [key.pubkey.toBase58(), key.isSigner, key.isWritable])).toEqual([
+      [deriveSquadsProgramConfig(config).toBase58(), false, true],
+      [treasury.toBase58(), false, true],
+      [payer.toBase58(), true, true],
+      [SystemProgram.programId.toBase58(), false, false],
+      [config.squadsSmartAccountProgramId.toBase58(), false, false],
+      [settingsPda.address.toBase58(), false, true],
+    ]);
+    expect(instruction.data.subarray(0, 8).toJSON().data).toEqual([197, 102, 253, 231, 77, 84, 50, 17]);
+    expect(instruction.data.subarray(8, 13).toJSON().data).toEqual([0, 1, 0, 1, 0]);
+  });
+
+  test("compiles arbitrary inner instructions for Squads sync execution", () => {
+    const program = new PublicKey("11111111111111111111111111111119");
+    const writable = new PublicKey("1111111111111111111111111111111A");
+    const signerAccount = new PublicKey("1111111111111111111111111111111B");
+    const instruction = new TransactionInstruction({
+      programId: program,
+      keys: [
+        { pubkey: writable, isSigner: false, isWritable: true },
+        { pubkey: signerAccount, isSigner: true, isWritable: false },
+      ],
+      data: Buffer.from([1, 2, 3]),
+    });
+
+    const compiled = compileSquadsTransactionInstructions([instruction]);
+    expect(compiled.transactionAccounts.map((account) => [account.pubkey.toBase58(), account.isSigner, account.isWritable])).toEqual([
+      [writable.toBase58(), false, true],
+      [signerAccount.toBase58(), true, false],
+      [program.toBase58(), false, false],
+    ]);
+    expect(compiled.compiledInstructions).toEqual([
+      {
+        programIdIndex: 2,
+        accounts: [0, 1],
+        data: new Uint8Array([1, 2, 3]),
+      },
+    ]);
+  });
+
+  test("builds Squads sync and ProgramInteraction execution wrappers", () => {
+    const program = new PublicKey("11111111111111111111111111111119");
+    const signerAccount = new PublicKey("1111111111111111111111111111111B");
+    const inner = new TransactionInstruction({
+      programId: program,
+      keys: [{ pubkey: signerAccount, isSigner: true, isWritable: false }],
+      data: Buffer.from([9]),
+    });
+
+    const sync = createSquadsSyncTransactionInstruction(config, {
+      settings,
+      signer: delegatedSigner,
+      accountIndex: 0,
+      instructions: [inner],
+    });
+    const policyExecution = createSquadsProgramInteractionExecutionInstruction(config, {
+      policy: deriveSquadsPolicy(config, settings, 1n).address,
+      signer: delegatedSigner,
+      accountIndex: 0,
+      instructions: [inner],
+      instructionConstraintIndexes: [0, 2, 3],
+    });
+
+    expect(sync.keys.slice(0, 3).map((key) => [key.pubkey.toBase58(), key.isSigner, key.isWritable])).toEqual([
+      [settings.toBase58(), false, true],
+      [config.squadsSmartAccountProgramId.toBase58(), false, false],
+      [delegatedSigner.toBase58(), true, false],
+    ]);
+    expect(sync.data.subarray(0, 11).toJSON().data).toEqual([90, 81, 187, 81, 39, 70, 128, 78, 0, 1, 0]);
+    expect(policyExecution.keys.slice(0, 3).map((key) => [key.pubkey.toBase58(), key.isSigner, key.isWritable])).toEqual([
+      [deriveSquadsPolicy(config, settings, 1n).address.toBase58(), false, true],
+      [config.squadsSmartAccountProgramId.toBase58(), false, false],
+      [delegatedSigner.toBase58(), true, false],
+    ]);
+    expect(policyExecution.data.subarray(0, 12).toJSON().data).toEqual([90, 81, 187, 81, 39, 70, 128, 78, 0, 1, 1, 1]);
+  });
+
+  test("rejects planned rebalances that touch active lanes", () => {
+    expect(() =>
+      assertRebalanceAvoidsActiveLanes([1, 3], [
+        {
+          fromLaneId: 0,
+          toLaneId: 3,
+        },
+      ]),
+    ).toThrow("active lane");
+
+    expect(() =>
+      assertRebalanceAvoidsActiveLanes([1, 3], [
+        {
+          fromLaneId: 0,
+          toLaneId: 2,
+        },
+      ]),
+    ).not.toThrow();
   });
 });

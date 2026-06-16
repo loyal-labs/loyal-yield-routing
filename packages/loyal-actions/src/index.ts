@@ -18,6 +18,20 @@ export {
 export { LOYAL_CLUSTER_CONFIGS } from "./cluster.js";
 export { createLoyalActionsSdk } from "./sdk.js";
 export {
+  assertRebalanceAvoidsActiveLanes,
+  compileSquadsTransactionInstructions,
+  createSquadsProgramInteractionExecutionInstruction,
+  createSquadsProgramInteractionExecutionInstructionFromCompiled,
+  createSquadsSmartAccountInstruction,
+  createSquadsSyncTransactionInstruction,
+  createSquadsSyncTransactionInstructionFromCompiled,
+  deriveActionAccount,
+  deriveSquadsPolicy,
+  deriveSquadsProgramConfig,
+  deriveSquadsSettings,
+  deriveSquadsVault,
+} from "./squads.js";
+export {
   LoyalCluster,
   MaxFeeBps,
   RiskBasket,
@@ -33,3 +47,12 @@ export type {
   LoyalActionRoute3,
   LoyalActionsSdk,
 } from "./types.js";
+export type {
+  CompiledSquadsInstruction,
+  CompiledSquadsTransaction,
+  CreateSquadsSmartAccountInput,
+  PlannedLaneRebalance,
+  SquadsPda,
+  SquadsProgramInteractionExecutionInput,
+  SquadsSyncTransactionInput,
+} from "./squads.js";

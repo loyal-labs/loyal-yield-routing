@@ -125,14 +125,15 @@ export function loyalHubConstraint(
         config.loyalHubSwapProgramId,
       ),
       pubkeyConstraint(swapExactInAccounts.USER_VAULT, [vault]),
-      accountDataConstraint(swapExactInAccounts.HUB_INPUT, config.tokenProgramId),
-      accountDataConstraint(swapExactInAccounts.HUB_OUTPUT, config.tokenProgramId),
-      splTokenAuthorityConstraint(swapExactInAccounts.USER_INPUT, vault, config.tokenProgramId),
-      splTokenAuthorityConstraint(swapExactInAccounts.USER_OUTPUT, vault, config.tokenProgramId),
-      pubkeyConstraint(swapExactInAccounts.INPUT_MINT, mints, config.tokenProgramId),
-      pubkeyConstraint(swapExactInAccounts.OUTPUT_MINT, mints, config.tokenProgramId),
+      accountDataConstraint(swapExactInAccounts.HUB_INPUT),
+      accountDataConstraint(swapExactInAccounts.HUB_OUTPUT),
+      tokenAuthorityConstraint(swapExactInAccounts.USER_INPUT, vault),
+      tokenAuthorityConstraint(swapExactInAccounts.USER_OUTPUT, vault),
+      pubkeyConstraint(swapExactInAccounts.INPUT_MINT, mints),
+      pubkeyConstraint(swapExactInAccounts.OUTPUT_MINT, mints),
       pubkeyConstraint(swapExactInAccounts.HUB_AUTHORIZER, [config.loyalHubAuthorizer]),
       pubkeyConstraint(swapExactInAccounts.TOKEN_PROGRAM, [config.tokenProgramId]),
+      pubkeyConstraint(swapExactInAccounts.TOKEN_2022_PROGRAM, [config.token2022ProgramId]),
     ],
     dataConstraints: [
       dataU8Equals(BigInt(SWAP_EXACT_IN_TAG_OFFSET), SWAP_EXACT_IN),
@@ -180,13 +181,17 @@ function accountDataConstraint(accountIndex: number, owner?: PublicKey) {
 }
 
 function splTokenAuthorityConstraint(accountIndex: number, authority: PublicKey, tokenProgramId: PublicKey) {
+  return tokenAuthorityConstraint(accountIndex, authority, tokenProgramId);
+}
+
+function tokenAuthorityConstraint(accountIndex: number, authority: PublicKey, owner?: PublicKey) {
   return {
     accountIndex,
     kind: {
       type: "accountData" as const,
       dataConstraints: [dataSliceEquals(SPL_TOKEN_ACCOUNT_AUTHORITY_OFFSET, [...authority.toBytes()])],
     },
-    owner: tokenProgramId,
+    owner,
   };
 }
 
