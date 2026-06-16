@@ -34,13 +34,15 @@ use klend_interface::{
     FARMS_PROGRAM_ID, KLEND_PROGRAM_ID,
 };
 use loyal_actions::{
-    compile_squads_inner_instruction, derive_action_account,
+    compile_squads_inner_instruction, create_init_obligation_yield_route_action,
+    create_same_mint_market_mint_yield_route_action, derive_action_account,
     execute_program_interaction_policy_instruction, execute_sync_transaction_instruction,
     remove_policy_instruction, update_all_in_one_market_mint_yield_route_action,
-    update_init_obligation_yield_route_action, LoyalActionContext, RouteTopology, SwapLane,
-    YieldRouteActionBuilder, YieldRouteActionSeeds, YieldRouteActionSetup, YieldRouteUniverse,
-    ASSOCIATED_TOKEN_PROGRAM_ID, KAMINO_MAIN_USDC_RESERVE, SQUADS_SMART_ACCOUNT_PROGRAM_ID,
-    USDC_MINT, YIELD_ROUTE_WITHDRAW_ACTION_SEED,
+    update_init_obligation_yield_route_action, update_same_mint_market_mint_yield_route_action,
+    LoyalActionContext, RouteTopology, SwapLane, YieldRouteActionBuilder, YieldRouteActionSeeds,
+    YieldRouteActionSetup, YieldRouteUniverse, ASSOCIATED_TOKEN_PROGRAM_ID,
+    KAMINO_MAIN_USDC_RESERVE, SQUADS_SMART_ACCOUNT_PROGRAM_ID, USDC_MINT,
+    YIELD_ROUTE_WITHDRAW_ACTION_SEED,
 };
 use loyal_yield_orchestrator::sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -254,6 +256,8 @@ struct SelectedVault {
     vault_index: i16,
     vault_pubkey: String,
     policy_account: String,
+    setup_policy_account: Option<String>,
+    setup_policy_seed: Option<i64>,
     delegated_signers: Vec<String>,
     threshold: i32,
     route_modes: Vec<String>,
@@ -373,7 +377,7 @@ impl PolicyAccountPreflight {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct DecodedPolicyAccount {
     layout: PolicyAccountLayout,
     delegated_signers: Vec<String>,
@@ -399,7 +403,7 @@ impl PolicyAccountLayout {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct DecodedPolicyInstructionSummary {
     program_id: String,
     route_step: Option<&'static str>,
@@ -409,7 +413,7 @@ struct DecodedPolicyInstructionSummary {
     account_constraints: Vec<DecodedPolicyAccountConstraintSummary>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct DecodedPolicyAccountConstraintSummary {
     account_index: u8,
     kind: &'static str,
@@ -418,7 +422,7 @@ struct DecodedPolicyAccountConstraintSummary {
     data_constraints: Vec<DecodedPolicyDataConstraintSummary>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct DecodedPolicyDataConstraintSummary {
     data_offset: u64,
     operator: &'static str,
@@ -494,13 +498,26 @@ impl PolicyDataOperator {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct InlineMissingObligationSetupPreview {
+    target_obligation: String,
+    target_reserve: String,
+    target_market: String,
+    policy_account: String,
+    policy_source: &'static str,
+    instruction_constraint_index: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct RouteExecutionPreview {
     policy_account: String,
+    setup_policy_account: Option<String>,
     fee_payer: String,
     signer: String,
     account_index: u8,
     instruction_constraint_indexes: Vec<u8>,
+    init_instruction_constraint_index: Option<u8>,
     policy_constraint_validation: Option<PolicyConstraintValidation>,
+    missing_obligation_setup: Option<InlineMissingObligationSetupPreview>,
     setup_instruction_program: Option<String>,
     setup_instruction_discriminator: Option<Vec<u8>>,
     route_steps: Vec<&'static str>,
@@ -522,7 +539,7 @@ struct PolicyConstraintValidation {
 #[derive(Clone, Debug)]
 struct RouteExecutionPlan {
     pre_instructions: Vec<Instruction>,
-    instruction: Instruction,
+    instructions: Vec<Instruction>,
     preview: RouteExecutionPreview,
 }
 
@@ -539,28 +556,22 @@ struct RouteExecutionSubmitResult {
 
 #[derive(Debug)]
 struct MissingObligationSetupDryRun {
-    setup_policy_update: PolicyTransactionBuild,
+    policy_account: String,
+    policy_source: &'static str,
+    instruction_constraint_index: u8,
     init_execution: PolicyTransactionBuild,
-    route_policy_restore: PolicyTransactionBuild,
 }
 
 #[derive(Debug)]
 struct MissingObligationSetupSubmitResult {
-    setup_policy_signature: String,
-    setup_policy_submitted_slot: i64,
-    setup_policy_confirmed_slot: i64,
-    setup_policy_simulation_units_consumed: Option<u64>,
-    setup_policy_transaction_packet: TransactionPacketSummary,
+    policy_account: String,
+    policy_source: &'static str,
+    instruction_constraint_index: u8,
     init_signature: String,
     init_submitted_slot: i64,
     init_confirmed_slot: i64,
     init_simulation_units_consumed: Option<u64>,
     init_transaction_packet: TransactionPacketSummary,
-    route_policy_signature: String,
-    route_policy_submitted_slot: i64,
-    route_policy_confirmed_slot: i64,
-    route_policy_simulation_units_consumed: Option<u64>,
-    route_policy_transaction_packet: TransactionPacketSummary,
 }
 
 #[derive(Debug)]
@@ -729,6 +740,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .map_err(|_| "NEON_DATABASE_URL must be set")?;
     let pool = connect(&database_url).await?;
     let client = NeonSqlClient::from_pool(pool.clone());
+    client.apply_migrations().await?;
 
     if let Some(amount_raw) = options.e2e_deposit_amount_raw {
         run_lifecycle_e2e_flow(&options, amount_raw)?;
@@ -739,9 +751,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let default_authority = solana_testing_keypair_from_env()?.pubkey();
         let default_delegated_signer = yield_router_keypair_from_env()?.pubkey();
         let vault = if options.update_active_policy {
-            load_active_vault(&pool, &options.settings, options.vault_index)
+            match load_active_vault(&pool, &options.settings, options.vault_index).await? {
+                Some(vault) => vault,
+                None => load_policy_target_vault(
+                    &pool,
+                    &options.settings,
+                    options.vault_index,
+                    default_authority,
+                    default_delegated_signer,
+                )
                 .await?
-                .ok_or("no active managed vault found for settings and vault index")?
+                .ok_or("no managed vault found for settings and vault index")?,
+            }
         } else {
             load_policy_target_vault(
                 &pool,
@@ -770,7 +791,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         || options.full_withdraw_reserve.is_some()
         || options.setup_obligation_reserve.is_some()
         || options.reconcile_current_positions;
-    let mut chain_preview = if requires_chain_preview {
+    let chain_preview = if requires_chain_preview {
         Some(load_chain_reconcile_preview(
             &options.rpc_url,
             &vault,
@@ -779,7 +800,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     } else {
         None
     };
-    let mut policy_preflight = if let Some(preview) = &chain_preview {
+    let policy_preflight = if let Some(preview) = &chain_preview {
         Some(load_policy_account_preflight(
             &options.rpc_url,
             &vault,
@@ -818,12 +839,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Some(setup_reserve) = &options.setup_obligation_reserve {
         run_setup_obligation_flow(
             &options,
-            &client,
             &vault,
             chain_preview
                 .as_ref()
                 .ok_or("setup obligation requires chain preview")?,
             setup_reserve,
+            policy_preflight.as_ref(),
         )
         .await?;
         return Ok(());
@@ -842,88 +863,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
         .await?;
         return Ok(());
-    }
-    let mut target_missing_obligation_setup_result: Option<Value> = None;
-    let target_missing_obligation_setup_dry_run = if !options.execute {
-        chain_preview
-            .as_ref()
-            .and_then(|preview| {
-                chain_position_for_reserve(preview, &reserve_move.target_reserve).ok()
-            })
-            .filter(|target| !target.obligation_exists)
-            .map(|target| {
-                build_missing_obligation_setup_dry_run(&options, &vault, target)
-                    .map(|dry_run| missing_obligation_setup_dry_run_json(target, &dry_run))
-                    .unwrap_or_else(|error| {
-                        json!({
-                            "targetObligation": target.obligation,
-                            "targetReserve": target.reserve,
-                            "targetMarket": target.market,
-                            "error": error.to_string(),
-                        })
-                    })
-            })
-    } else {
-        None
-    };
-    if options.execute {
-        if let Some(preview) = chain_preview.as_ref() {
-            let target = chain_position_for_reserve(preview, &reserve_move.target_reserve)?.clone();
-            if !target.obligation_exists {
-                if options.optimization_cycle {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&json!({
-                            "status": "blocked_missing_obligation_setup",
-                            "reason": format!(
-                                "target obligation account {} does not exist; pre-initialize this obligation before enabling optimization execution",
-                                target.obligation
-                            ),
-                            "optimizationCycle": true,
-                            "writesDecision": false,
-                            "writesCurrentPositions": false,
-                            "picksUpExecution": false,
-                            "sendsTransactions": false,
-                            "direction": options.direction.as_str(),
-                            "vault": vault_json(&vault),
-                            "requiredReserves": required_reserves_json(&reserve_move),
-                            "chainReconcile": chain_preview.as_ref().map(chain_reconcile_preview_json),
-                            "policyPreflight": policy_route_preflight_json(&vault, &reserve_move, policy_preflight.as_ref()),
-                            "targetObligationSetup": target_obligation_setup_json(preview, &reserve_move, policy_preflight.as_ref()),
-                            "missingObligationSetup": {
-                                "status": "setup_required",
-                                "targetObligation": target.obligation,
-                                "targetReserve": target.reserve,
-                                "targetMarket": target.market,
-                            },
-                        }))?
-                    );
-                    return Err(
-                        "optimization cycle blocked by missing target obligation setup".into(),
-                    );
-                }
-                let setup_result =
-                    execute_missing_obligation_setup(&options, &client, &vault, &target).await?;
-                target_missing_obligation_setup_result = Some(
-                    missing_obligation_setup_submit_result_json(&target, &setup_result),
-                );
-                chain_preview = Some(load_chain_reconcile_preview(
-                    &options.rpc_url,
-                    &vault,
-                    &reconcile_reserves,
-                )?);
-                policy_preflight = if let Some(preview) = &chain_preview {
-                    Some(load_policy_account_preflight(
-                        &options.rpc_url,
-                        &vault,
-                        preview,
-                        &reserve_move,
-                    )?)
-                } else {
-                    None
-                };
-            }
-        }
     }
     if options.execute {
         if let Some(reason) = execution_preflight_blocker(
@@ -946,8 +885,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     "requiredReserves": required_reserves_json(&reserve_move),
                     "chainReconcile": chain_preview.as_ref().map(chain_reconcile_preview_json),
                     "policyPreflight": policy_route_preflight_json(&vault, &reserve_move, policy_preflight.as_ref()),
-                    "targetObligationSetup": chain_preview.as_ref().and_then(|preview| target_obligation_setup_json(preview, &reserve_move, policy_preflight.as_ref())),
-                    "missingObligationSetup": target_missing_obligation_setup_result.clone(),
+                    "targetObligationSetup": chain_preview.as_ref().and_then(|preview| target_obligation_setup_json(preview, &reserve_move, &vault, policy_preflight.as_ref())),
+                    "missingObligationSetup": Value::Null,
                 }))?
             );
             return Err("same-mint execution preflight blocked before DB writes".into());
@@ -1056,7 +995,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         None
     };
     let (route_execution, route_build_error) = if let Some(preview) = &chain_preview {
+        let route_rpc = RpcClient::new_with_commitment(
+            options.rpc_url.to_owned(),
+            CommitmentConfig::confirmed(),
+        );
         match build_route_execution_plan(
+            Some(&route_rpc),
             &vault,
             preview,
             &reserve_move,
@@ -1071,6 +1015,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     } else {
         (None, None)
     };
+    let inline_missing_obligation_setup = route_execution
+        .as_ref()
+        .and_then(|plan| plan.preview.missing_obligation_setup.as_ref())
+        .map(inline_missing_obligation_setup_json);
     let mut execution_preflight_blockers = execution_preflight_blockers(
         chain_preview.as_ref(),
         policy_preflight.as_ref(),
@@ -1112,8 +1060,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     "policyPreflight": policy_route_preflight_json(&vault, &reserve_move, policy_preflight.as_ref()),
                     "sameMintInput": same_mint_input_json(&pre_reconcile_input),
                     "routeExecution": route_execution.as_ref().map(|plan| route_execution_preview_json(&plan.preview)),
-                    "targetObligationSetup": chain_preview.as_ref().and_then(|preview| target_obligation_setup_json(preview, &reserve_move, policy_preflight.as_ref())),
-                    "missingObligationSetup": target_missing_obligation_setup_result.clone(),
+                    "targetObligationSetup": chain_preview.as_ref().and_then(|preview| target_obligation_setup_json(preview, &reserve_move, &vault, policy_preflight.as_ref())),
+                    "missingObligationSetup": inline_missing_obligation_setup.clone(),
                 }))?
             );
             return Err("same-mint execution preflight blocked before decision write".into());
@@ -1146,12 +1094,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 "routeBuildError": route_build_error,
                 "routeExecution": route_execution.as_ref().map(|plan| route_execution_preview_json(&plan.preview)),
                 "lookupTableProvisioning": route_lookup_table_provisioning,
-                "targetObligationSetup": chain_preview.as_ref().and_then(|preview| target_obligation_setup_json(preview, &reserve_move, policy_preflight.as_ref())),
-                "missingObligationSetup": target_missing_obligation_setup_dry_run,
+                "targetObligationSetup": chain_preview.as_ref().and_then(|preview| target_obligation_setup_json(preview, &reserve_move, &vault, policy_preflight.as_ref())),
+                "missingObligationSetup": inline_missing_obligation_setup.clone(),
                 "executionPlan": {
                     "kind": "same_mint",
-                    "routeSteps": [KAMINO_WITHDRAW_ROUTE_STEP, KAMINO_DEPOSIT_ROUTE_STEP],
-                    "policyExecutions": 1
+                    "routeSteps": route_execution.as_ref().map(|plan| plan.preview.route_steps.clone()).unwrap_or_else(|| vec![KAMINO_WITHDRAW_ROUTE_STEP, KAMINO_DEPOSIT_ROUTE_STEP]),
+                    "policyExecutions": route_execution.as_ref().map(|plan| plan.preview.route_steps.len()).unwrap_or(1)
                 }
             }))?
         );
@@ -1204,7 +1152,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let chain_reconcile = chain_preview
             .as_ref()
             .ok_or("--execute requires --reconcile-from-chain route execution plan")?;
+        let route_rpc = RpcClient::new_with_commitment(
+            options.rpc_url.to_owned(),
+            CommitmentConfig::confirmed(),
+        );
         let route_execution = match build_route_execution_plan(
+            Some(&route_rpc),
             &vault,
             chain_reconcile,
             &reserve_move,
@@ -1278,7 +1231,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 "preparedDecision": same_mint_result_json(&prepared),
                 "executionDecision": prepared_same_mint_decision_json(&execution_decision),
                 "routeExecution": route_execution_preview_json(&route_execution.preview),
-                "missingObligationSetup": target_missing_obligation_setup_result.clone(),
+                "missingObligationSetup": route_execution.preview.missing_obligation_setup.as_ref().map(inline_missing_obligation_setup_json),
                 "executionPickup": {
                     "decisionId": decision_id.as_i64(),
                     "source": "loyal_yield.rebalance_decisions",
@@ -1293,8 +1246,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 "confirmedDecision": same_mint_result_json(&execution.confirmed),
                 "executionPlan": {
                     "kind": "same_mint",
-                    "routeSteps": [KAMINO_WITHDRAW_ROUTE_STEP, KAMINO_DEPOSIT_ROUTE_STEP],
-                    "policyExecutions": 1
+                    "routeSteps": route_execution.preview.route_steps.clone(),
+                    "policyExecutions": route_execution.preview.route_steps.len()
                 }
             }))?
         );
@@ -1322,7 +1275,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "sameMintInput": same_mint_input_json(&pre_reconcile_input),
             "preparedDecision": same_mint_result_json(&prepared),
             "routeExecution": route_execution.as_ref().map(|plan| route_execution_preview_json(&plan.preview)),
-            "missingObligationSetup": target_missing_obligation_setup_result.clone(),
+            "missingObligationSetup": inline_missing_obligation_setup.clone(),
         }))?
     );
     Err("same-mint rebalance was not planned".into())
@@ -1364,7 +1317,7 @@ fn build_same_mint_route_lookup_table_provisioning_dry_run(
         .map(|keypair| keypair as &dyn Signer)
         .unwrap_or(&signer);
     let mut transaction_instructions = route_execution.pre_instructions.clone();
-    transaction_instructions.push(route_execution.instruction.clone());
+    transaction_instructions.extend(route_execution.instructions.iter().cloned());
     let signer_pubkeys = same_mint_route_signer_pubkeys(fee_payer.pubkey(), signer.pubkey());
     let required_lookup_addresses = best_case_lookup_table_addresses(
         fee_payer.pubkey(),
@@ -1617,8 +1570,6 @@ async fn run_policy_update_flow(
         .any(|signer| signer == &delegated_signer.pubkey().to_string());
 
     let final_universe = same_mint_usdc_policy_universe()?;
-    let bootstrap_universe =
-        same_mint_bootstrap_usdc_policy_universe(options.direction.source_market())?;
     let swap_lanes = Vec::new();
     let context = LoyalActionContext {
         settings,
@@ -1643,10 +1594,16 @@ async fn run_policy_update_flow(
         false
     };
 
-    let create_setup = if policy_exists {
-        None
+    let all_in_one_setup = if policy_exists {
+        update_all_in_one_market_mint_yield_route_action(
+            context,
+            final_universe.clone(),
+            swap_lanes.clone(),
+            policy,
+            account_index,
+        )?
     } else {
-        let setup = YieldRouteActionBuilder::new(context, bootstrap_universe.clone())
+        let setup = YieldRouteActionBuilder::new(context, final_universe.clone())
             .topology(RouteTopology::AllInOne)
             .swap_lanes(swap_lanes.clone())
             .seeds(YieldRouteActionSeeds {
@@ -1661,27 +1618,313 @@ async fn run_policy_update_flow(
             )
             .into());
         }
-        Some(setup)
+        setup
     };
-    let final_setup = update_all_in_one_market_mint_yield_route_action(
-        context,
-        final_universe.clone(),
-        swap_lanes.clone(),
-        policy,
-        account_index,
-    )?;
     let existing_decoded = existing_policy_account
         .value
         .as_ref()
         .and_then(|account| decode_squads_policy_account(&account.data).ok());
-    let final_update_instruction = final_setup
+    let all_in_one_instruction = all_in_one_setup
         .instructions
         .first()
-        .ok_or("final policy update did not produce an instruction")?
+        .ok_or(if policy_exists {
+            "policy update did not produce an instruction"
+        } else {
+            "policy create did not produce an instruction"
+        })?
+        .clone();
+    let all_in_one_transaction = build_policy_transaction(
+        &rpc,
+        authority_signer.pubkey(),
+        all_in_one_instruction.clone(),
+        &lookup_table_accounts,
+        &authority_signer,
+        if policy_exists {
+            "policy all-in-one update measurement"
+        } else {
+            "policy all-in-one create measurement"
+        },
+        None,
+    )?;
+    let all_in_one_preview = policy_operation_preview_json(
+        if policy_exists {
+            "all_in_one_update_attempt"
+        } else {
+            "all_in_one_create_attempt"
+        },
+        vault,
+        settings,
+        policy,
+        vault_pubkey,
+        authority_signer.pubkey(),
+        delegated_signer.pubkey(),
+        db_delegated_signer_matches,
+        &final_universe,
+        &swap_lanes,
+        &all_in_one_setup,
+        &all_in_one_transaction,
+        existing_decoded.as_ref(),
+    )?;
+    let all_in_one_best_case_fits = all_in_one_transaction
+        .best_case_single_lookup_table_packet
+        .as_ref()
+        .map(|packet| packet.fits_packet_data_size)
+        .unwrap_or(
+            all_in_one_transaction
+                .transaction_packet
+                .fits_packet_data_size,
+        );
+
+    if all_in_one_best_case_fits {
+        let required_lookup_addresses = best_case_lookup_table_addresses(
+            authority_signer.pubkey(),
+            &[all_in_one_instruction.clone()],
+            &[authority_signer.pubkey()],
+        );
+        let lookup_table_provisioning = prepare_policy_update_lookup_tables(
+            &rpc,
+            options,
+            authority_signer.pubkey(),
+            &authority_signer,
+            &required_lookup_addresses,
+            &mut lookup_table_accounts,
+        )?;
+        let policy_transaction = build_policy_transaction(
+            &rpc,
+            authority_signer.pubkey(),
+            all_in_one_instruction,
+            &lookup_table_accounts,
+            &authority_signer,
+            if policy_exists {
+                "policy update"
+            } else {
+                "policy create"
+            },
+            None,
+        )?;
+        let policy_preview = policy_operation_preview_json(
+            if policy_exists { "update" } else { "create" },
+            vault,
+            settings,
+            policy,
+            vault_pubkey,
+            authority_signer.pubkey(),
+            delegated_signer.pubkey(),
+            db_delegated_signer_matches,
+            &final_universe,
+            &swap_lanes,
+            &all_in_one_setup,
+            &policy_transaction,
+            existing_decoded.as_ref(),
+        )?;
+
+        if !options.execute {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "status": "policy_update_dry_run",
+                    "writesDecision": false,
+                    "sendsTransactions": false,
+                    "fallbackRequired": false,
+                    "lookupTableProvisioning": lookup_table_provisioning.clone(),
+                    "policyAllInOneAttempt": all_in_one_preview,
+                    "policyCreate": if policy_exists { None } else { Some(policy_preview.clone()) },
+                    "policyUpdate": if policy_exists { Some(policy_preview.clone()) } else { None },
+                    "policyFinalizeUpdate": Value::Null,
+                }))?
+            );
+            return Ok(());
+        }
+
+        if let Some(error) = policy_transaction.simulation_error.clone() {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "status": "policy_update_simulation_failed",
+                    "writesDecision": false,
+                    "sendsTransactions": false,
+                    "fallbackRequired": false,
+                    "lookupTableProvisioning": lookup_table_provisioning.clone(),
+                    "policyAllInOneAttempt": all_in_one_preview,
+                    "policyCreate": if policy_exists { None } else { Some(policy_preview.clone()) },
+                    "policyUpdate": if policy_exists { Some(policy_preview.clone()) } else { None },
+                    "policyFinalizeUpdate": Value::Null,
+                }))?
+            );
+            return Err(format!(
+                "policy {} simulation failed: {error}",
+                if policy_exists { "update" } else { "create" }
+            )
+            .into());
+        }
+
+        let submitted_slot = rpc.get_slot()?;
+        let signature = rpc
+            .send_and_confirm_transaction(&policy_transaction.transaction)?
+            .to_string();
+        let confirmed_slot = rpc.get_slot()?;
+        let create_signature = if policy_exists {
+            None
+        } else {
+            Some(signature.clone())
+        };
+        let create_submitted_slot = if policy_exists {
+            None
+        } else {
+            Some(i64::try_from(submitted_slot)?)
+        };
+        let create_confirmed_slot = if policy_exists {
+            None
+        } else {
+            Some(i64::try_from(confirmed_slot)?)
+        };
+        let policy_swap_lanes = policy_swap_lanes_json(&all_in_one_setup, &swap_lanes)?;
+        let stored = client
+            .record_policy_match(PolicyMatchInput {
+                signature: signature.clone(),
+                slot: confirmed_slot,
+                settings: settings.to_string(),
+                authority: authority.to_string(),
+                policy_seed,
+                policy_account: policy.to_string(),
+                vault_index: account_index,
+                vault_pubkey: vault_pubkey.to_string(),
+                delegated_signers: vec![delegated_signer.pubkey().to_string()],
+                threshold: 1,
+                route_modes: vec![SAME_MINT_ROUTE_MODE.to_owned()],
+                stable_mints: pubkeys_json(&final_universe.stable_mints),
+                kamino_markets: pubkeys_json(&final_universe.kamino_markets),
+                kamino_liquidity_mints: pubkeys_json(&final_universe.kamino_liquidity_mints),
+                universe_preset: Some(KAMINO_STABLE_UNIVERSE_PRESET.to_owned()),
+                risk_profile: Some(SAFE_RISK_PROFILE.to_owned()),
+                swap_lanes: policy_swap_lanes.clone(),
+            })
+            .await?;
+        let updated_account = rpc.get_account(&policy)?;
+        let updated_decoded =
+            decode_squads_policy_account(&updated_account.data).map_err(|error| {
+                format!("failed to decode updated Squads policy account {policy}: {error}")
+            })?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "status": if policy_exists { "policy_updated" } else { "policy_created" },
+                "writesDecision": false,
+                "sendsTransactions": true,
+                "fallbackRequired": false,
+                "lookupTableProvisioning": lookup_table_provisioning,
+                "signature": signature,
+                "submittedSlot": i64::try_from(submitted_slot)?,
+                "confirmedSlot": i64::try_from(confirmed_slot)?,
+                "createSignature": create_signature,
+                "createSubmittedSlot": create_submitted_slot,
+                "createConfirmedSlot": create_confirmed_slot,
+                "policyAllInOneAttempt": all_in_one_preview,
+                "policyCreate": if policy_exists { None } else { Some(policy_preview.clone()) },
+                "policyUpdate": if policy_exists { Some(policy_preview.clone()) } else { None },
+                "policyFinalizeUpdate": Value::Null,
+                "storedPolicyMatch": {
+                    "policyId": stored.policy.id.as_i64(),
+                    "vaultId": stored.vault.id.as_i64(),
+                    "vaultActive": stored.vault.active,
+                    "activePolicyId": stored.vault.active_policy_id.as_i64(),
+                    "setupPolicyId": Value::Null,
+                    "policyActive": stored.policy.active,
+                },
+                "updatedPolicyDecoded": decoded_policy_account_json(&updated_decoded),
+                "decodedAllowsInitObligation": updated_decoded.instructions.iter().any(|instruction| instruction.route_step == Some(KAMINO_INIT_OBLIGATION_ROUTE_STEP)),
+                "decodedAllowsRefreshObligation": updated_decoded.instructions.iter().any(|instruction| instruction.route_step == Some(KAMINO_REFRESH_OBLIGATION_ROUTE_STEP)),
+            }))?
+        );
+        return Ok(());
+    }
+
+    let setup_policy_seed = vault
+        .setup_policy_seed
+        .unwrap_or_else(|| vault.policy_seed.saturating_add(1));
+    let setup_policy_seed_u64 =
+        u64::try_from(setup_policy_seed).map_err(|_| "setup_policy_seed must be >= 0")?;
+    let setup_policy = vault
+        .setup_policy_account
+        .as_deref()
+        .map(Pubkey::from_str)
+        .transpose()?
+        .unwrap_or_else(|| derive_action_account(&settings, setup_policy_seed_u64).0);
+    let route_setup = if policy_exists {
+        update_same_mint_market_mint_yield_route_action(
+            context,
+            final_universe.clone(),
+            policy,
+            account_index,
+        )?
+    } else {
+        let setup = create_same_mint_market_mint_yield_route_action(
+            context,
+            final_universe.clone(),
+            policy_seed,
+        )?;
+        if setup.accounts.withdraw != policy {
+            return Err(format!(
+                "route policy seed {} derives {}, but DB policy_account is {}",
+                policy_seed, setup.accounts.withdraw, policy
+            )
+            .into());
+        }
+        setup
+    };
+    let setup_existing_account =
+        rpc.get_account_with_commitment(&setup_policy, CommitmentConfig::confirmed())?;
+    let setup_policy_exists = if let Some(account) = setup_existing_account.value.as_ref() {
+        if account.owner != SQUADS_SMART_ACCOUNT_PROGRAM_ID {
+            return Err(format!(
+                "setup policy account {} is owned by {}, expected {}",
+                setup_policy, account.owner, SQUADS_SMART_ACCOUNT_PROGRAM_ID
+            )
+            .into());
+        }
+        true
+    } else {
+        false
+    };
+    let setup_existing_decoded = setup_existing_account
+        .value
+        .as_ref()
+        .and_then(|account| decode_squads_policy_account(&account.data).ok());
+    let setup_policy_setup = if setup_policy_exists {
+        update_init_obligation_yield_route_action(
+            context,
+            final_universe.clone(),
+            setup_policy,
+            account_index,
+        )?
+    } else {
+        let setup = create_init_obligation_yield_route_action(
+            context,
+            final_universe.clone(),
+            setup_policy_seed_u64,
+        )?;
+        if setup.accounts.withdraw != setup_policy {
+            return Err(format!(
+                "setup policy seed {} derives {}, but expected setup policy {}",
+                setup_policy_seed, setup.accounts.withdraw, setup_policy
+            )
+            .into());
+        }
+        setup
+    };
+    let route_instruction = route_setup
+        .instructions
+        .first()
+        .ok_or("fallback route policy instruction was not built")?
+        .clone();
+    let setup_instruction = setup_policy_setup
+        .instructions
+        .first()
+        .ok_or("fallback setup policy instruction was not built")?
         .clone();
     let required_lookup_addresses = best_case_lookup_table_addresses(
         authority_signer.pubkey(),
-        &[final_update_instruction.clone()],
+        &[route_instruction.clone(), setup_instruction.clone()],
         &[authority_signer.pubkey()],
     );
     let lookup_table_provisioning = prepare_policy_update_lookup_tables(
@@ -1692,94 +1935,70 @@ async fn run_policy_update_flow(
         &required_lookup_addresses,
         &mut lookup_table_accounts,
     )?;
-
-    let mut create_transaction = if let Some(setup) = create_setup.as_ref() {
-        let instruction = setup
-            .instructions
-            .first()
-            .ok_or("bootstrap policy create did not produce an instruction")?
-            .clone();
-        Some(build_policy_transaction(
-            &rpc,
-            authority_signer.pubkey(),
-            instruction,
-            &lookup_table_accounts,
-            &authority_signer,
-            "policy bootstrap create",
-            None,
-        )?)
-    } else {
-        None
-    };
-    let mut final_update_transaction = if policy_exists || !options.execute {
-        let simulation_skip_reason = if policy_exists {
-            None
+    let setup_policy_requires_landed_route_create = !policy_exists && !setup_policy_exists;
+    let setup_policy_simulation_skip_reason = setup_policy_requires_landed_route_create.then(|| {
+        "setup policy create uses the next Squads policy seed and must be simulated after the route policy create lands".to_owned()
+    });
+    let route_policy_transaction = build_policy_transaction(
+        &rpc,
+        authority_signer.pubkey(),
+        route_instruction,
+        &lookup_table_accounts,
+        &authority_signer,
+        if policy_exists {
+            "route policy fallback update"
         } else {
-            Some(
-                "final policy update simulation requires the bootstrap policy create transaction to land first"
-                    .to_owned(),
-            )
-        };
-        Some(build_policy_transaction(
-            &rpc,
-            authority_signer.pubkey(),
-            final_update_instruction.clone(),
-            &lookup_table_accounts,
-            &authority_signer,
-            if policy_exists {
-                "policy update"
-            } else {
-                "policy finalize update"
-            },
-            simulation_skip_reason,
-        )?)
-    } else {
-        None
-    };
-    let create_preview = if let (Some(setup), Some(transaction)) =
-        (create_setup.as_ref(), create_transaction.as_ref())
-    {
-        Some(policy_operation_preview_json(
-            "create_bootstrap",
-            vault,
-            settings,
-            policy,
-            vault_pubkey,
-            authority_signer.pubkey(),
-            delegated_signer.pubkey(),
-            db_delegated_signer_matches,
-            &bootstrap_universe,
-            &swap_lanes,
-            setup,
-            transaction,
-            existing_decoded.as_ref(),
-        )?)
-    } else {
-        None
-    };
-    let mut final_update_preview = if let Some(transaction) = final_update_transaction.as_ref() {
-        Some(policy_operation_preview_json(
-            if policy_exists {
-                "update"
-            } else {
-                "finalize_update"
-            },
-            vault,
-            settings,
-            policy,
-            vault_pubkey,
-            authority_signer.pubkey(),
-            delegated_signer.pubkey(),
-            db_delegated_signer_matches,
-            &final_universe,
-            &swap_lanes,
-            &final_setup,
-            transaction,
-            existing_decoded.as_ref(),
-        )?)
-    } else {
-        None
-    };
+            "route policy fallback create"
+        },
+        None,
+    )?;
+    let mut setup_policy_transaction = build_policy_transaction(
+        &rpc,
+        authority_signer.pubkey(),
+        setup_instruction.clone(),
+        &lookup_table_accounts,
+        &authority_signer,
+        if setup_policy_exists {
+            "setup policy fallback update"
+        } else {
+            "setup policy fallback create"
+        },
+        setup_policy_simulation_skip_reason,
+    )?;
+    let route_policy_preview = policy_operation_preview_json(
+        if policy_exists { "update" } else { "create" },
+        vault,
+        settings,
+        policy,
+        vault_pubkey,
+        authority_signer.pubkey(),
+        delegated_signer.pubkey(),
+        db_delegated_signer_matches,
+        &final_universe,
+        &swap_lanes,
+        &route_setup,
+        &route_policy_transaction,
+        existing_decoded.as_ref(),
+    )?;
+    let mut setup_policy_preview = setup_policy_operation_preview_json(
+        if setup_policy_exists {
+            "update"
+        } else {
+            "create"
+        },
+        vault,
+        settings,
+        setup_policy,
+        setup_policy_seed,
+        vault_pubkey,
+        authority_signer.pubkey(),
+        delegated_signer.pubkey(),
+        db_delegated_signer_matches,
+        &final_universe,
+        &setup_policy_setup,
+        &setup_policy_transaction,
+        setup_existing_decoded.as_ref(),
+    )?;
 
     if !options.execute {
         println!(
@@ -1788,247 +2007,286 @@ async fn run_policy_update_flow(
                 "status": "policy_update_dry_run",
                 "writesDecision": false,
                 "sendsTransactions": false,
+                "fallbackRequired": true,
+                "fallbackReason": "all_safe_one_policy_exceeds_packet_limit",
                 "lookupTableProvisioning": lookup_table_provisioning.clone(),
-                "policyCreate": create_preview,
-                "policyUpdate": if policy_exists { final_update_preview.clone() } else { None },
-                "policyFinalizeUpdate": if policy_exists { None } else { final_update_preview.clone() },
+                "policyAllInOneAttempt": all_in_one_preview,
+                "policyCreate": if policy_exists { None } else { Some(route_policy_preview.clone()) },
+                "policyUpdate": if policy_exists { Some(route_policy_preview.clone()) } else { None },
+                "setupPolicyCreate": if setup_policy_exists { None } else { Some(setup_policy_preview.clone()) },
+                "setupPolicyUpdate": if setup_policy_exists { Some(setup_policy_preview.clone()) } else { None },
+                "policyFinalizeUpdate": Value::Null,
             }))?
         );
         return Ok(());
     }
 
-    if let Some(error) = create_transaction
-        .as_ref()
-        .and_then(|transaction| transaction.simulation_error.clone())
-    {
+    if let Some(error) = route_policy_transaction.simulation_error.clone() {
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
                 "status": "policy_update_simulation_failed",
                 "writesDecision": false,
                 "sendsTransactions": false,
+                "fallbackRequired": true,
                 "lookupTableProvisioning": lookup_table_provisioning.clone(),
-                "policyCreate": create_preview,
-                "policyUpdate": if policy_exists { final_update_preview.clone() } else { None },
-                "policyFinalizeUpdate": if policy_exists { None } else { final_update_preview.clone() },
+                "policyAllInOneAttempt": all_in_one_preview,
+                "policyCreate": if policy_exists { None } else { Some(route_policy_preview.clone()) },
+                "policyUpdate": if policy_exists { Some(route_policy_preview.clone()) } else { None },
+                "setupPolicyCreate": if setup_policy_exists { None } else { Some(setup_policy_preview.clone()) },
+                "setupPolicyUpdate": if setup_policy_exists { Some(setup_policy_preview.clone()) } else { None },
+                "policyFinalizeUpdate": Value::Null,
             }))?
         );
-        return Err(format!("policy bootstrap create simulation failed: {error}").into());
+        return Err(format!("fallback route policy simulation failed: {error}").into());
     }
-    if let Some(error) = final_update_transaction
-        .as_ref()
-        .and_then(|transaction| transaction.simulation_error.clone())
-    {
+    if let Some(error) = setup_policy_transaction.simulation_error.clone() {
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
                 "status": "policy_update_simulation_failed",
                 "writesDecision": false,
                 "sendsTransactions": false,
+                "fallbackRequired": true,
                 "lookupTableProvisioning": lookup_table_provisioning.clone(),
-                "policyCreate": create_preview,
-                "policyUpdate": if policy_exists { final_update_preview.clone() } else { None },
-                "policyFinalizeUpdate": if policy_exists { None } else { final_update_preview.clone() },
+                "policyAllInOneAttempt": all_in_one_preview,
+                "policyCreate": if policy_exists { None } else { Some(route_policy_preview.clone()) },
+                "policyUpdate": if policy_exists { Some(route_policy_preview.clone()) } else { None },
+                "setupPolicyCreate": if setup_policy_exists { None } else { Some(setup_policy_preview.clone()) },
+                "setupPolicyUpdate": if setup_policy_exists { Some(setup_policy_preview.clone()) } else { None },
+                "policyFinalizeUpdate": Value::Null,
             }))?
         );
-        return Err(format!("policy update simulation failed: {error}").into());
+        return Err(format!("fallback setup policy simulation failed: {error}").into());
     }
 
-    let mut create_signature = None;
-    let mut create_submitted_slot = None;
-    let mut create_confirmed_slot = None;
-    if let Some(transaction) = create_transaction.take() {
-        let submitted_slot = rpc.get_slot()?;
-        let signature = rpc
-            .send_and_confirm_transaction(&transaction.transaction)?
-            .to_string();
-        let confirmed_slot = rpc.get_slot()?;
-        create_signature = Some(signature);
-        create_submitted_slot = Some(i64::try_from(submitted_slot)?);
-        create_confirmed_slot = Some(i64::try_from(confirmed_slot)?);
-
-        final_update_transaction = Some(build_policy_transaction(
+    let route_submitted_slot = rpc.get_slot()?;
+    let route_signature = rpc
+        .send_and_confirm_transaction(&route_policy_transaction.transaction)?
+        .to_string();
+    let route_confirmed_slot = rpc.get_slot()?;
+    if setup_policy_requires_landed_route_create {
+        setup_policy_transaction = build_policy_transaction(
             &rpc,
             authority_signer.pubkey(),
-            final_update_instruction.clone(),
+            setup_instruction,
             &lookup_table_accounts,
             &authority_signer,
-            "policy finalize update",
+            "setup policy fallback create",
             None,
-        )?);
-        final_update_preview = if let Some(transaction) = final_update_transaction.as_ref() {
-            Some(policy_operation_preview_json(
-                "finalize_update",
-                vault,
-                settings,
-                policy,
-                vault_pubkey,
-                authority_signer.pubkey(),
-                delegated_signer.pubkey(),
-                db_delegated_signer_matches,
-                &final_universe,
-                &swap_lanes,
-                &final_setup,
-                transaction,
-                existing_decoded.as_ref(),
-            )?)
-        } else {
-            None
-        };
-
-        if let Some(error) = final_update_transaction
-            .as_ref()
-            .and_then(|transaction| transaction.simulation_error.clone())
-        {
+        )?;
+        setup_policy_preview = setup_policy_operation_preview_json(
+            "create",
+            vault,
+            settings,
+            setup_policy,
+            setup_policy_seed,
+            vault_pubkey,
+            authority_signer.pubkey(),
+            delegated_signer.pubkey(),
+            db_delegated_signer_matches,
+            &final_universe,
+            &setup_policy_setup,
+            &setup_policy_transaction,
+            setup_existing_decoded.as_ref(),
+        )?;
+        if let Some(error) = setup_policy_transaction.simulation_error.clone() {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
                     "status": "policy_update_simulation_failed",
                     "writesDecision": false,
                     "sendsTransactions": true,
+                    "fallbackRequired": true,
                     "lookupTableProvisioning": lookup_table_provisioning.clone(),
-                    "policyCreate": create_preview,
-                    "policyFinalizeUpdate": final_update_preview.clone(),
-                    "createSignature": create_signature,
-                    "createSubmittedSlot": create_submitted_slot,
-                    "createConfirmedSlot": create_confirmed_slot,
+                    "routeSignature": route_signature,
+                    "routeSubmittedSlot": i64::try_from(route_submitted_slot)?,
+                    "routeConfirmedSlot": i64::try_from(route_confirmed_slot)?,
+                    "policyAllInOneAttempt": all_in_one_preview,
+                    "policyCreate": Some(route_policy_preview.clone()),
+                    "policyUpdate": Value::Null,
+                    "setupPolicyCreate": Some(setup_policy_preview.clone()),
+                    "setupPolicyUpdate": Value::Null,
+                    "policyFinalizeUpdate": Value::Null,
                 }))?
             );
-            return Err(format!("policy finalize update simulation failed: {error}").into());
+            return Err(format!(
+                "fallback setup policy simulation failed after route policy create landed: {error}"
+            )
+            .into());
         }
     }
-
-    let final_update_transaction =
-        final_update_transaction.ok_or("policy update transaction was not prepared")?;
-    let submitted_slot = rpc.get_slot()?;
-    let signature = rpc
-        .send_and_confirm_transaction(&final_update_transaction.transaction)?
+    let setup_submitted_slot = rpc.get_slot()?;
+    let setup_signature = rpc
+        .send_and_confirm_transaction(&setup_policy_transaction.transaction)?
         .to_string();
-    let confirmed_slot = rpc.get_slot()?;
-    let policy_swap_lanes = policy_swap_lanes_json(&final_setup, &swap_lanes)?;
-    let stored = client
-        .record_policy_match(PolicyMatchInput {
-            signature: signature.clone(),
-            slot: confirmed_slot,
-            settings: settings.to_string(),
-            authority: authority.to_string(),
-            policy_seed,
-            policy_account: policy.to_string(),
-            vault_index: account_index,
-            vault_pubkey: vault_pubkey.to_string(),
-            delegated_signers: vec![delegated_signer.pubkey().to_string()],
-            threshold: 1,
-            route_modes: vec![SAME_MINT_ROUTE_MODE.to_owned()],
-            stable_mints: pubkeys_json(&final_universe.stable_mints),
-            kamino_markets: pubkeys_json(&final_universe.kamino_markets),
-            kamino_liquidity_mints: pubkeys_json(&final_universe.kamino_liquidity_mints),
-            universe_preset: Some(KAMINO_STABLE_UNIVERSE_PRESET.to_owned()),
-            risk_profile: Some(SAFE_RISK_PROFILE.to_owned()),
-            swap_lanes: policy_swap_lanes.clone(),
-        })
+    let setup_confirmed_slot = rpc.get_slot()?;
+    let create_signature = if policy_exists {
+        None
+    } else {
+        Some(route_signature.clone())
+    };
+    let create_submitted_slot = if policy_exists {
+        None
+    } else {
+        Some(i64::try_from(route_submitted_slot)?)
+    };
+    let create_confirmed_slot = if policy_exists {
+        None
+    } else {
+        Some(i64::try_from(route_confirmed_slot)?)
+    };
+    let setup_create_signature = if setup_policy_exists {
+        None
+    } else {
+        Some(setup_signature.clone())
+    };
+    let setup_create_submitted_slot = if setup_policy_exists {
+        None
+    } else {
+        Some(i64::try_from(setup_submitted_slot)?)
+    };
+    let setup_create_confirmed_slot = if setup_policy_exists {
+        None
+    } else {
+        Some(i64::try_from(setup_confirmed_slot)?)
+    };
+    let policy_swap_lanes = policy_swap_lanes_json(&route_setup, &swap_lanes)?;
+    let (stored, stored_setup_policy) = client
+        .record_route_and_setup_policy_match(
+            PolicyMatchInput {
+                signature: route_signature.clone(),
+                slot: route_confirmed_slot,
+                settings: settings.to_string(),
+                authority: authority.to_string(),
+                policy_seed,
+                policy_account: policy.to_string(),
+                vault_index: account_index,
+                vault_pubkey: vault_pubkey.to_string(),
+                delegated_signers: vec![delegated_signer.pubkey().to_string()],
+                threshold: 1,
+                route_modes: vec![SAME_MINT_ROUTE_MODE.to_owned()],
+                stable_mints: pubkeys_json(&final_universe.stable_mints),
+                kamino_markets: pubkeys_json(&final_universe.kamino_markets),
+                kamino_liquidity_mints: pubkeys_json(&final_universe.kamino_liquidity_mints),
+                universe_preset: Some(KAMINO_STABLE_UNIVERSE_PRESET.to_owned()),
+                risk_profile: Some(SAFE_RISK_PROFILE.to_owned()),
+                swap_lanes: policy_swap_lanes.clone(),
+            },
+            PolicyMatchInput {
+                signature: setup_signature.clone(),
+                slot: setup_confirmed_slot,
+                settings: settings.to_string(),
+                authority: authority.to_string(),
+                policy_seed: setup_policy_seed_u64,
+                policy_account: setup_policy.to_string(),
+                vault_index: account_index,
+                vault_pubkey: vault_pubkey.to_string(),
+                delegated_signers: vec![delegated_signer.pubkey().to_string()],
+                threshold: 1,
+                route_modes: vec![format!("{SAME_MINT_ROUTE_MODE}_setup")],
+                stable_mints: pubkeys_json(&final_universe.stable_mints),
+                kamino_markets: pubkeys_json(&final_universe.kamino_markets),
+                kamino_liquidity_mints: pubkeys_json(&final_universe.kamino_liquidity_mints),
+                universe_preset: Some(KAMINO_STABLE_UNIVERSE_PRESET.to_owned()),
+                risk_profile: Some(SAFE_RISK_PROFILE.to_owned()),
+                swap_lanes: Value::Array(vec![]),
+            },
+        )
         .await?;
-    let updated_account = rpc.get_account(&policy)?;
-    let updated_decoded = decode_squads_policy_account(&updated_account.data).map_err(|error| {
-        format!("failed to decode updated Squads policy account {policy}: {error}")
-    })?;
+    let updated_route_account = rpc.get_account(&policy)?;
+    let updated_route_decoded =
+        decode_squads_policy_account(&updated_route_account.data).map_err(|error| {
+            format!("failed to decode updated route policy account {policy}: {error}")
+        })?;
+    let updated_setup_account = rpc.get_account(&setup_policy)?;
+    let updated_setup_decoded =
+        decode_squads_policy_account(&updated_setup_account.data).map_err(|error| {
+            format!("failed to decode updated setup policy account {setup_policy}: {error}")
+        })?;
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
-            "status": if policy_exists { "policy_updated" } else { "policy_created_and_updated" },
+            "status": if policy_exists || setup_policy_exists { "policy_fallback_updated" } else { "policy_fallback_created" },
             "writesDecision": false,
             "sendsTransactions": true,
+            "fallbackRequired": true,
+            "fallbackReason": "all_safe_one_policy_exceeds_packet_limit",
             "lookupTableProvisioning": lookup_table_provisioning,
-            "signature": signature,
-            "submittedSlot": i64::try_from(submitted_slot)?,
-            "confirmedSlot": i64::try_from(confirmed_slot)?,
+            "signature": route_signature,
+            "submittedSlot": i64::try_from(route_submitted_slot)?,
+            "confirmedSlot": i64::try_from(route_confirmed_slot)?,
             "createSignature": create_signature,
             "createSubmittedSlot": create_submitted_slot,
             "createConfirmedSlot": create_confirmed_slot,
-            "policyCreate": create_preview,
-            "policyUpdate": if policy_exists { final_update_preview.clone() } else { None },
-            "policyFinalizeUpdate": if policy_exists { None } else { final_update_preview.clone() },
+            "setupSignature": setup_signature,
+            "setupSubmittedSlot": i64::try_from(setup_submitted_slot)?,
+            "setupConfirmedSlot": i64::try_from(setup_confirmed_slot)?,
+            "setupCreateSignature": setup_create_signature,
+            "setupCreateSubmittedSlot": setup_create_submitted_slot,
+            "setupCreateConfirmedSlot": setup_create_confirmed_slot,
+            "policyAllInOneAttempt": all_in_one_preview,
+            "policyCreate": if policy_exists { None } else { Some(route_policy_preview.clone()) },
+            "policyUpdate": if policy_exists { Some(route_policy_preview.clone()) } else { None },
+            "setupPolicyCreate": if setup_policy_exists { None } else { Some(setup_policy_preview.clone()) },
+            "setupPolicyUpdate": if setup_policy_exists { Some(setup_policy_preview.clone()) } else { None },
+            "policyFinalizeUpdate": Value::Null,
             "storedPolicyMatch": {
                 "policyId": stored.policy.id.as_i64(),
+                "setupPolicyId": stored_setup_policy.id.as_i64(),
                 "vaultId": stored.vault.id.as_i64(),
                 "vaultActive": stored.vault.active,
                 "activePolicyId": stored.vault.active_policy_id.as_i64(),
+                "activePolicyRemainsRoutePolicy": stored.vault.active_policy_id == stored.policy.id,
                 "policyActive": stored.policy.active,
+                "setupPolicyActive": stored_setup_policy.active,
             },
-            "updatedPolicyDecoded": decoded_policy_account_json(&updated_decoded),
-            "decodedAllowsInitObligation": updated_decoded.instructions.iter().any(|instruction| instruction.route_step == Some(KAMINO_INIT_OBLIGATION_ROUTE_STEP)),
-            "decodedAllowsRefreshObligation": updated_decoded.instructions.iter().any(|instruction| instruction.route_step == Some(KAMINO_REFRESH_OBLIGATION_ROUTE_STEP)),
+            "updatedPolicyDecoded": decoded_policy_account_json(&updated_route_decoded),
+            "updatedSetupPolicyDecoded": decoded_policy_account_json(&updated_setup_decoded),
+            "decodedAllowsInitObligation": updated_setup_decoded.instructions.iter().any(|instruction| instruction.route_step == Some(KAMINO_INIT_OBLIGATION_ROUTE_STEP)),
+            "decodedRouteAllowsInitObligation": updated_route_decoded.instructions.iter().any(|instruction| instruction.route_step == Some(KAMINO_INIT_OBLIGATION_ROUTE_STEP)),
+            "decodedAllowsRefreshObligation": updated_route_decoded.instructions.iter().any(|instruction| instruction.route_step == Some(KAMINO_REFRESH_OBLIGATION_ROUTE_STEP))
+                || updated_setup_decoded.instructions.iter().any(|instruction| instruction.route_step == Some(KAMINO_REFRESH_OBLIGATION_ROUTE_STEP)),
         }))?
     );
     Ok(())
-}
-
-fn policy_context_for_vault(
-    vault: &SelectedVault,
-    authority_signer: Pubkey,
-    delegated_signer: Pubkey,
-) -> Result<(Pubkey, Pubkey, u64, u8, LoyalActionContext), Box<dyn Error>> {
-    let settings = Pubkey::from_str(&vault.settings)?;
-    let authority = Pubkey::from_str(&vault.authority)?;
-    if authority_signer != authority {
-        return Err(format!(
-            "SOLANA_TESTING_PK pubkey {} does not match policy authority {}",
-            authority_signer, authority
-        )
-        .into());
-    }
-    let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
-    let policy_seed = u64::try_from(vault.policy_seed).map_err(|_| "policy_seed must be >= 0")?;
-    let account_index = u8::try_from(vault.vault_index).map_err(|_| {
-        format!(
-            "vault_index {} must fit u8 for Squads account index",
-            vault.vault_index
-        )
-    })?;
-    let context = LoyalActionContext {
-        settings,
-        authority,
-        delegated_signer,
-        account_index,
-        vault: vault_pubkey,
-    };
-    Ok((authority, vault_pubkey, policy_seed, account_index, context))
 }
 
 fn build_missing_obligation_setup_dry_run(
     options: &CliOptions,
     vault: &SelectedVault,
     target: &ChainPositionSummary,
+    policy_preflight: Option<&PolicyAccountPreflight>,
 ) -> Result<MissingObligationSetupDryRun, Box<dyn Error>> {
     let rpc =
         RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
     let lookup_table_pubkeys = lookup_table_pubkeys_from_options(options)?;
     let lookup_table_accounts = load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
-    let authority_signer = solana_testing_keypair_from_env()?;
     let delegated_signer = yield_router_keypair_from_env()?;
-    let policy = Pubkey::from_str(&vault.policy_account)?;
-    let (_, vault_pubkey, _, account_index, context) =
-        policy_context_for_vault(vault, authority_signer.pubkey(), delegated_signer.pubkey())?;
-    let setup_universe = YieldRouteUniverse::new(
-        vec![USDC_MINT],
-        vec![Pubkey::from_str(&target.market)?],
-        vec![USDC_MINT],
-    );
-    let setup_policy =
-        update_init_obligation_yield_route_action(context, setup_universe, policy, account_index)?;
-    let setup_policy_instruction = setup_policy
-        .instructions
-        .first()
-        .ok_or("init-obligation setup policy update did not produce an instruction")?
-        .clone();
-    let setup_policy_update = build_policy_transaction(
-        &rpc,
-        authority_signer.pubkey(),
-        setup_policy_instruction,
-        &lookup_table_accounts,
-        &authority_signer,
-        "init-obligation setup policy update",
-        None,
-    )?;
+    let admin_fee_payer = if options.optimization_cycle {
+        None
+    } else {
+        Some(solana_testing_keypair_from_env()?)
+    };
+    let fee_payer: &dyn Signer = admin_fee_payer
+        .as_ref()
+        .map(|keypair| keypair as &dyn Signer)
+        .unwrap_or(&delegated_signer);
+    let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
+    let account_index = u8::try_from(vault.vault_index).map_err(|_| {
+        format!(
+            "vault_index {} must fit u8 for Squads account index",
+            vault.vault_index
+        )
+    })?;
+    let (policy, instruction_constraint_index) =
+        resolve_init_obligation_policy(Some(&rpc), vault, target, policy_preflight)?;
+    let route_policy = Pubkey::from_str(&vault.policy_account)?;
+    let policy_source = if policy == route_policy {
+        "route_policy"
+    } else {
+        "setup_policy"
+    };
 
     let init_execution = build_init_obligation_execution_transaction(
         &rpc,
@@ -2037,203 +2295,90 @@ fn build_missing_obligation_setup_dry_run(
         account_index,
         vault_pubkey,
         target,
-        &authority_signer,
-        &delegated_signer,
-        Some("init execution simulation requires setup policy update to land first".to_owned()),
-    )?;
-
-    let route_policy_restore = build_route_policy_restore_transaction(
-        &rpc,
-        &lookup_table_accounts,
-        vault,
-        policy,
-        &authority_signer,
+        instruction_constraint_index,
+        fee_payer,
         &delegated_signer,
         None,
     )?;
 
     Ok(MissingObligationSetupDryRun {
-        setup_policy_update,
+        policy_account: policy.to_string(),
+        policy_source,
+        instruction_constraint_index,
         init_execution,
-        route_policy_restore,
     })
 }
 
 async fn execute_missing_obligation_setup(
     options: &CliOptions,
-    client: &NeonSqlClient,
     vault: &SelectedVault,
     target: &ChainPositionSummary,
+    policy_preflight: Option<&PolicyAccountPreflight>,
 ) -> Result<MissingObligationSetupSubmitResult, Box<dyn Error>> {
     let rpc =
         RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
     let lookup_table_pubkeys = lookup_table_pubkeys_from_options(options)?;
     let lookup_table_accounts = load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
-    let authority_signer = solana_testing_keypair_from_env()?;
     let delegated_signer = yield_router_keypair_from_env()?;
-    let policy = Pubkey::from_str(&vault.policy_account)?;
-    let (authority, vault_pubkey, policy_seed, account_index, context) =
-        policy_context_for_vault(vault, authority_signer.pubkey(), delegated_signer.pubkey())?;
-    let setup_universe = YieldRouteUniverse::new(
-        vec![USDC_MINT],
-        vec![Pubkey::from_str(&target.market)?],
-        vec![USDC_MINT],
-    );
-    let setup_policy =
-        update_init_obligation_yield_route_action(context, setup_universe, policy, account_index)?;
-    let setup_policy_instruction = setup_policy
-        .instructions
-        .first()
-        .ok_or("init-obligation setup policy update did not produce an instruction")?
-        .clone();
-    let setup_policy_update = build_policy_transaction(
-        &rpc,
-        authority_signer.pubkey(),
-        setup_policy_instruction,
-        &lookup_table_accounts,
-        &authority_signer,
-        "init-obligation setup policy update",
-        None,
-    )?;
-    if let Some(error) = &setup_policy_update.simulation_error {
-        return Err(
-            format!("init-obligation setup policy update simulation failed: {error}").into(),
-        );
-    }
-    let setup_policy_submission = submit_built_policy_transaction(&rpc, &setup_policy_update)?;
-
-    let init_execution = match build_init_obligation_execution_transaction(
+    let admin_fee_payer = if options.optimization_cycle {
+        None
+    } else {
+        Some(solana_testing_keypair_from_env()?)
+    };
+    let fee_payer: &dyn Signer = admin_fee_payer
+        .as_ref()
+        .map(|keypair| keypair as &dyn Signer)
+        .unwrap_or(&delegated_signer);
+    let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
+    let account_index = u8::try_from(vault.vault_index).map_err(|_| {
+        format!(
+            "vault_index {} must fit u8 for Squads account index",
+            vault.vault_index
+        )
+    })?;
+    let (policy, instruction_constraint_index) =
+        resolve_init_obligation_policy(Some(&rpc), vault, target, policy_preflight)?;
+    let route_policy = Pubkey::from_str(&vault.policy_account)?;
+    let policy_source = if policy == route_policy {
+        "route_policy"
+    } else {
+        "setup_policy"
+    };
+    let init_execution = build_init_obligation_execution_transaction(
         &rpc,
         &lookup_table_accounts,
         policy,
         account_index,
         vault_pubkey,
         target,
-        &authority_signer,
+        instruction_constraint_index,
+        fee_payer,
         &delegated_signer,
         None,
-    ) {
-        Ok(value) => value,
-        Err(error) => {
-            let (_, restore_submission) = submit_route_policy_restore_after_setup(
-                &rpc,
-                &lookup_table_accounts,
-                vault,
-                policy,
-                &authority_signer,
-                &delegated_signer,
-            )?;
-            return Err(format!(
-                "init-obligation execution build failed after setup policy {}; route policy restored in tx {}: {error}",
-                setup_policy_submission.signature, restore_submission.signature
-            )
-            .into());
-        }
-    };
+    )?;
     if let Some(error) = &init_execution.simulation_error {
-        let (_, restore_submission) = submit_route_policy_restore_after_setup(
-            &rpc,
-            &lookup_table_accounts,
-            vault,
-            policy,
-            &authority_signer,
-            &delegated_signer,
-        )?;
-        return Err(format!(
-            "init-obligation execution simulation failed after setup policy {}; route policy restored in tx {}: {error}",
-            setup_policy_submission.signature, restore_submission.signature
-        )
-        .into());
+        return Err(format!("init-obligation execution simulation failed: {error}").into());
     }
-    let init_submission = match submit_built_policy_transaction(&rpc, &init_execution) {
-        Ok(submission) => submission,
-        Err(error) => {
-            let restore = submit_route_policy_restore_after_setup(
-                &rpc,
-                &lookup_table_accounts,
-                vault,
-                policy,
-                &authority_signer,
-                &delegated_signer,
-            )?;
-            return Err(format!(
-                "init-obligation execution submit failed after setup policy {}; route policy restored in tx {}: {error}",
-                setup_policy_submission.signature, restore.1.signature
-            )
-            .into());
-        }
-    };
-
-    let route_policy_restore = build_route_policy_restore_transaction(
-        &rpc,
-        &lookup_table_accounts,
-        vault,
-        policy,
-        &authority_signer,
-        &delegated_signer,
-        None,
-    )?;
-    if let Some(error) = &route_policy_restore.simulation_error {
-        return Err(format!("route policy restore simulation failed: {error}").into());
-    }
-    let route_policy_submission = submit_built_policy_transaction(&rpc, &route_policy_restore)?;
-
-    let final_universe = same_mint_usdc_policy_universe()?;
-    let final_setup = update_all_in_one_market_mint_yield_route_action(
-        context,
-        final_universe.clone(),
-        Vec::new(),
-        policy,
-        account_index,
-    )?;
-    let policy_swap_lanes = policy_swap_lanes_json(&final_setup, &[])?;
-    client
-        .record_policy_match(PolicyMatchInput {
-            signature: route_policy_submission.signature.clone(),
-            slot: u64::try_from(route_policy_submission.confirmed_slot)?,
-            settings: vault.settings.clone(),
-            authority: authority.to_string(),
-            policy_seed,
-            policy_account: policy.to_string(),
-            vault_index: account_index,
-            vault_pubkey: vault_pubkey.to_string(),
-            delegated_signers: vec![delegated_signer.pubkey().to_string()],
-            threshold: 1,
-            route_modes: vec![SAME_MINT_ROUTE_MODE.to_owned()],
-            stable_mints: pubkeys_json(&final_universe.stable_mints),
-            kamino_markets: pubkeys_json(&final_universe.kamino_markets),
-            kamino_liquidity_mints: pubkeys_json(&final_universe.kamino_liquidity_mints),
-            universe_preset: Some(KAMINO_STABLE_UNIVERSE_PRESET.to_owned()),
-            risk_profile: Some(SAFE_RISK_PROFILE.to_owned()),
-            swap_lanes: policy_swap_lanes,
-        })
-        .await?;
+    let init_submission = submit_built_policy_transaction(&rpc, &init_execution)?;
 
     Ok(MissingObligationSetupSubmitResult {
-        setup_policy_signature: setup_policy_submission.signature,
-        setup_policy_submitted_slot: setup_policy_submission.submitted_slot,
-        setup_policy_confirmed_slot: setup_policy_submission.confirmed_slot,
-        setup_policy_simulation_units_consumed: setup_policy_update.simulation_units_consumed,
-        setup_policy_transaction_packet: setup_policy_update.transaction_packet,
+        policy_account: policy.to_string(),
+        policy_source,
+        instruction_constraint_index,
         init_signature: init_submission.signature,
         init_submitted_slot: init_submission.submitted_slot,
         init_confirmed_slot: init_submission.confirmed_slot,
         init_simulation_units_consumed: init_execution.simulation_units_consumed,
         init_transaction_packet: init_execution.transaction_packet,
-        route_policy_signature: route_policy_submission.signature,
-        route_policy_submitted_slot: route_policy_submission.submitted_slot,
-        route_policy_confirmed_slot: route_policy_submission.confirmed_slot,
-        route_policy_simulation_units_consumed: route_policy_restore.simulation_units_consumed,
-        route_policy_transaction_packet: route_policy_restore.transaction_packet,
     })
 }
 
 async fn run_setup_obligation_flow(
     options: &CliOptions,
-    client: &NeonSqlClient,
     vault: &SelectedVault,
     preview: &ChainReconcilePreview,
     setup_reserve: &str,
+    policy_preflight: Option<&PolicyAccountPreflight>,
 ) -> Result<(), Box<dyn Error>> {
     let target = chain_position_for_reserve(preview, setup_reserve)?;
     if target.obligation_exists {
@@ -2260,7 +2405,8 @@ async fn run_setup_obligation_flow(
     }
 
     if !options.execute {
-        let dry_run = build_missing_obligation_setup_dry_run(options, vault, target)?;
+        let dry_run =
+            build_missing_obligation_setup_dry_run(options, vault, target, policy_preflight)?;
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
@@ -2284,7 +2430,7 @@ async fn run_setup_obligation_flow(
         return Ok(());
     }
 
-    let result = execute_missing_obligation_setup(options, client, vault, target).await?;
+    let result = execute_missing_obligation_setup(options, vault, target, policy_preflight).await?;
     let post_preview = load_chain_reconcile_preview(
         &options.rpc_url,
         vault,
@@ -2334,33 +2480,6 @@ fn submit_built_policy_transaction(
     })
 }
 
-fn submit_route_policy_restore_after_setup(
-    rpc: &RpcClient,
-    lookup_table_accounts: &[AddressLookupTableAccount],
-    vault: &SelectedVault,
-    policy: Pubkey,
-    authority_signer: &dyn Signer,
-    delegated_signer: &dyn Signer,
-) -> Result<(PolicyTransactionBuild, SubmittedPolicyTransaction), Box<dyn Error>> {
-    let restore = build_route_policy_restore_transaction(
-        rpc,
-        lookup_table_accounts,
-        vault,
-        policy,
-        authority_signer,
-        delegated_signer,
-        None,
-    )?;
-    if let Some(error) = &restore.simulation_error {
-        return Err(format!(
-            "route policy restore simulation failed after init-obligation setup policy landed: {error}"
-        )
-        .into());
-    }
-    let submission = submit_built_policy_transaction(rpc, &restore)?;
-    Ok((restore, submission))
-}
-
 fn build_init_obligation_execution_transaction(
     rpc: &RpcClient,
     lookup_table_accounts: &[AddressLookupTableAccount],
@@ -2368,6 +2487,7 @@ fn build_init_obligation_execution_transaction(
     account_index: u8,
     vault_pubkey: Pubkey,
     target: &ChainPositionSummary,
+    instruction_constraint_index: u8,
     fee_payer: &dyn Signer,
     delegated_signer: &dyn Signer,
     simulation_skip_reason: Option<String>,
@@ -2381,51 +2501,17 @@ fn build_init_obligation_execution_transaction(
         delegated_signer.pubkey(),
         account_index,
         vec![init_compiled],
-        vec![0],
+        vec![instruction_constraint_index],
         transaction_accounts,
     );
+    let transaction_signers = same_mint_route_signers(fee_payer, delegated_signer);
     build_signed_transaction(
         rpc,
         fee_payer.pubkey(),
         &[outer_instruction],
         lookup_table_accounts,
-        &[fee_payer, delegated_signer],
+        &transaction_signers,
         "init-obligation setup execution",
-        simulation_skip_reason,
-    )
-}
-
-fn build_route_policy_restore_transaction(
-    rpc: &RpcClient,
-    lookup_table_accounts: &[AddressLookupTableAccount],
-    vault: &SelectedVault,
-    policy: Pubkey,
-    authority_signer: &dyn Signer,
-    delegated_signer: &dyn Signer,
-    simulation_skip_reason: Option<String>,
-) -> Result<PolicyTransactionBuild, Box<dyn Error>> {
-    let (_, _, _, account_index, context) =
-        policy_context_for_vault(vault, authority_signer.pubkey(), delegated_signer.pubkey())?;
-    let final_universe = same_mint_usdc_policy_universe()?;
-    let final_setup = update_all_in_one_market_mint_yield_route_action(
-        context,
-        final_universe,
-        Vec::new(),
-        policy,
-        account_index,
-    )?;
-    let instruction = final_setup
-        .instructions
-        .first()
-        .ok_or("route policy restore did not produce an instruction")?
-        .clone();
-    build_policy_transaction(
-        rpc,
-        authority_signer.pubkey(),
-        instruction,
-        lookup_table_accounts,
-        authority_signer,
-        "route policy restore",
         simulation_skip_reason,
     )
 }
@@ -2462,7 +2548,7 @@ async fn run_initial_main_usdc_deposit_flow(
     let mut missing_obligation_setup_result: Option<Value> = None;
     let missing_obligation_setup_dry_run = if !options.execute && !main_position.obligation_exists {
         Some(
-            build_missing_obligation_setup_dry_run(options, vault, main_position)
+            build_missing_obligation_setup_dry_run(options, vault, main_position, policy_preflight)
                 .map(|dry_run| missing_obligation_setup_dry_run_json(main_position, &dry_run))
                 .unwrap_or_else(|error| {
                     json!({
@@ -2518,7 +2604,8 @@ async fn run_initial_main_usdc_deposit_flow(
     }
     if options.execute && !main_position.obligation_exists {
         let setup_result =
-            execute_missing_obligation_setup(options, client, vault, main_position).await?;
+            execute_missing_obligation_setup(options, vault, main_position, policy_preflight)
+                .await?;
         missing_obligation_setup_result = Some(missing_obligation_setup_submit_result_json(
             main_position,
             &setup_result,
@@ -2821,6 +2908,23 @@ async fn deactivate_vault_policy_after_full_withdraw(
     .bind(&vault.policy_account)
     .fetch_one(&mut *tx)
     .await?;
+    let setup_policy_row = if let Some(setup_policy_account) = vault.setup_policy_account.as_ref() {
+        Some(
+            loyal_yield_orchestrator::sqlx::query(
+                r#"
+                UPDATE loyal_yield.route_policies
+                SET active = false, last_seen_at = now()
+                WHERE policy_account = $1
+                RETURNING id, active
+                "#,
+            )
+            .bind(setup_policy_account)
+            .fetch_one(&mut *tx)
+            .await?,
+        )
+    } else {
+        None
+    };
     let vault_row = loyal_yield_orchestrator::sqlx::query(
         r#"
         UPDATE loyal_yield.managed_vaults
@@ -2837,6 +2941,14 @@ async fn deactivate_vault_policy_after_full_withdraw(
     Ok(json!({
         "policyId": policy_row.try_get::<i64, _>("id")?,
         "policyActive": policy_row.try_get::<bool, _>("active")?,
+        "setupPolicyId": match setup_policy_row.as_ref() {
+            Some(row) => Value::from(row.try_get::<i64, _>("id")?),
+            None => Value::Null,
+        },
+        "setupPolicyActive": match setup_policy_row.as_ref() {
+            Some(row) => Value::from(row.try_get::<bool, _>("active")?),
+            None => Value::Null,
+        },
         "vaultId": vault_row.try_get::<i64, _>("id")?,
         "vaultActive": vault_row.try_get::<bool, _>("active")?,
     }))
@@ -2894,6 +3006,11 @@ async fn run_full_reserve_withdraw_flow(
     }
     let settings_pubkey = Pubkey::from_str(&vault.settings)?;
     let policy_account_pubkey = Pubkey::from_str(&vault.policy_account)?;
+    let setup_policy_account_pubkey = vault
+        .setup_policy_account
+        .as_deref()
+        .map(Pubkey::from_str)
+        .transpose()?;
     let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
     let account_index = u8::try_from(vault.vault_index).map_err(|_| {
         format!(
@@ -2913,6 +3030,10 @@ async fn run_full_reserve_withdraw_flow(
         load_spl_token_account_amount(&rpc, &wallet_usdc_ata, &USDC_MINT)?;
     let vault_usdc_ata_before = load_account_proof(&rpc, &vault_usdc_ata)?;
     let policy_account_before = load_account_proof(&rpc, &policy_account_pubkey)?;
+    let setup_policy_account_before = setup_policy_account_pubkey
+        .as_ref()
+        .map(|pubkey| load_account_proof(&rpc, pubkey))
+        .transpose()?;
     let vault_account_before = load_account_proof(&rpc, &vault_pubkey)?;
     let obligation_before = load_obligation_account_proof(
         &rpc,
@@ -3011,6 +3132,42 @@ async fn run_full_reserve_withdraw_flow(
             Some("policy close simulation skipped because preflight blockers exist".to_owned())
         },
     )?);
+    let setup_policy_close_transaction =
+        if let (Some(setup_policy_pubkey), Some(setup_policy_before)) = (
+            setup_policy_account_pubkey.as_ref(),
+            setup_policy_account_before.as_ref(),
+        ) {
+            if setup_policy_before.exists {
+                let setup_policy_close_instruction = remove_policy_instruction(
+                    settings_pubkey,
+                    authority_signer.pubkey(),
+                    *setup_policy_pubkey,
+                );
+                Some(build_policy_transaction(
+                    &rpc,
+                    authority_signer.pubkey(),
+                    setup_policy_close_instruction,
+                    &lookup_table_accounts,
+                    &authority_signer,
+                    "full withdraw setup policy close",
+                    if blockers.is_empty() {
+                        Some(
+                            "setup policy close simulation waits until the route policy close lands"
+                                .to_owned(),
+                        )
+                    } else {
+                        Some(
+                            "setup policy close simulation skipped because preflight blockers exist"
+                                .to_owned(),
+                        )
+                    },
+                )?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
     dedup_strings_in_place(&mut blockers);
 
     if !options.execute {
@@ -3040,6 +3197,7 @@ async fn run_full_reserve_withdraw_flow(
                     "authorityBefore": account_proof_json(&authority_account_before),
                     "vaultUsdcAtaBefore": account_proof_json(&vault_usdc_ata_before),
                     "policyBefore": account_proof_json(&policy_account_before),
+                    "setupPolicyBefore": setup_policy_account_before.as_ref().map(account_proof_json),
                     "withdrawObligationBefore": obligation_account_proof_json(&obligation_before),
                     "afterAvailable": false,
                     "expectedRefundRecipient": vault.vault_pubkey,
@@ -3062,6 +3220,14 @@ async fn run_full_reserve_withdraw_flow(
                         "kind": "squads_execute_settings_transaction_sync_policy_remove",
                     },
                 "policyCloseTransaction": policy_close_transaction.as_ref().map(policy_transaction_json),
+                "setupPolicyClose": setup_policy_account_before.as_ref().map(|account| json!({
+                    "policyAccount": vault.setup_policy_account,
+                    "settings": vault.settings,
+                    "authority": authority_signer.pubkey().to_string(),
+                    "kind": "squads_execute_settings_transaction_sync_policy_remove",
+                    "policyExists": account.exists,
+                })),
+                "setupPolicyCloseTransaction": setup_policy_close_transaction.as_ref().map(policy_transaction_json),
             }))?
         );
         return Ok(());
@@ -3081,12 +3247,14 @@ async fn run_full_reserve_withdraw_flow(
                     "authorityBefore": account_proof_json(&authority_account_before),
                     "vaultUsdcAtaBefore": account_proof_json(&vault_usdc_ata_before),
                     "policyBefore": account_proof_json(&policy_account_before),
+                    "setupPolicyBefore": setup_policy_account_before.as_ref().map(account_proof_json),
                     "withdrawObligationBefore": obligation_account_proof_json(&obligation_before),
                 },
                 "policyWithdraw": policy_plan.as_ref().map(|plan| full_withdraw_policy_preview_json(&plan.preview)),
                 "policyWithdrawTransaction": withdraw_transaction.as_ref().map(policy_transaction_json),
                 "walletRecoveryTransaction": wallet_recovery_transaction.as_ref().map(policy_transaction_json),
                 "policyCloseTransaction": policy_close_transaction.as_ref().map(policy_transaction_json),
+                "setupPolicyCloseTransaction": setup_policy_close_transaction.as_ref().map(policy_transaction_json),
             }))?
         );
         return Err("full reserve withdraw preflight blocked before live submit".into());
@@ -3151,6 +3319,46 @@ async fn run_full_reserve_withdraw_flow(
     let policy_close_signature =
         rpc.send_and_confirm_transaction(&policy_close_transaction.transaction)?;
     let policy_close_confirmed_slot = i64::try_from(rpc.get_slot()?)?;
+    let setup_policy_close_result = if let (Some(setup_policy_pubkey), Some(setup_policy_before)) = (
+        setup_policy_account_pubkey.as_ref(),
+        setup_policy_account_before.as_ref(),
+    ) {
+        if setup_policy_before.exists {
+            let setup_policy_close_instruction = remove_policy_instruction(
+                settings_pubkey,
+                authority_signer.pubkey(),
+                *setup_policy_pubkey,
+            );
+            let setup_policy_close_transaction = build_policy_transaction(
+                &rpc,
+                authority_signer.pubkey(),
+                setup_policy_close_instruction,
+                &lookup_table_accounts,
+                &authority_signer,
+                "full withdraw setup policy close",
+                None,
+            )?;
+            if let Some(error) = &setup_policy_close_transaction.simulation_error {
+                return Err(
+                    format!("full withdraw setup policy close simulation failed: {error}").into(),
+                );
+            }
+            let submitted_slot = i64::try_from(rpc.get_slot()?)?;
+            let signature =
+                rpc.send_and_confirm_transaction(&setup_policy_close_transaction.transaction)?;
+            let confirmed_slot = i64::try_from(rpc.get_slot()?)?;
+            Some((
+                signature,
+                submitted_slot,
+                confirmed_slot,
+                setup_policy_close_transaction,
+            ))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     let post_preview = load_chain_reconcile_preview(
         &options.rpc_url,
@@ -3174,6 +3382,10 @@ async fn run_full_reserve_withdraw_flow(
         load_spl_token_account_amount(&rpc, &wallet_usdc_ata, &USDC_MINT)?;
     let vault_usdc_ata_after = load_account_proof(&rpc, &vault_usdc_ata)?;
     let policy_account_after = load_account_proof(&rpc, &policy_account_pubkey)?;
+    let setup_policy_account_after = setup_policy_account_pubkey
+        .as_ref()
+        .map(|pubkey| load_account_proof(&rpc, pubkey))
+        .transpose()?;
     let snapshot = client
         .reconcile_vault(vault.id, chain_preview_reconciled_state(&post_preview)?)
         .await?;
@@ -3185,6 +3397,10 @@ async fn run_full_reserve_withdraw_flow(
         - i128::from(authority_account_before.lamports);
     let closed_obligation_lamports = i128::from(obligation_before.account.lamports);
     let closed_policy_lamports = i128::from(policy_account_before.lamports);
+    let closed_setup_policy_lamports = setup_policy_account_before
+        .as_ref()
+        .map(|account| i128::from(account.lamports))
+        .unwrap_or(0);
     let closed_vault_usdc_ata_lamports = i128::from(vault_usdc_ata_before.lamports);
     let wallet_usdc_delta = i128::from(wallet_usdc_after_raw) - i128::from(wallet_usdc_before_raw);
     let all_tracked_positions_zero = post_preview
@@ -3195,6 +3411,102 @@ async fn run_full_reserve_withdraw_flow(
         .positions
         .iter()
         .all(|position| !position.obligation_exists);
+    let policy_withdraw_transaction_json = json!({
+        "signature": signature.to_string(),
+        "submittedSlot": submitted_slot,
+        "confirmedSlot": confirmed_slot,
+        "simulationUnitsConsumed": withdraw_transaction.simulation_units_consumed,
+        "transaction": transaction_packet_json(&withdraw_transaction.transaction_packet),
+    });
+    let wallet_recovery_json = json!({
+        "wallet": authority_signer.pubkey().to_string(),
+        "cleanupSigner": authority_signer.pubkey().to_string(),
+        "walletUsdcAta": wallet_usdc_ata.to_string(),
+        "walletUsdcBeforeRaw": wallet_usdc_before_raw.to_string(),
+        "walletUsdcBeforeExists": wallet_usdc_before_exists,
+        "walletUsdcAfterRaw": wallet_usdc_after_raw.to_string(),
+        "walletUsdcAfterExists": wallet_usdc_after_exists,
+        "walletUsdcDeltaRaw": wallet_usdc_delta.to_string(),
+        "vaultUsdcAfterWithdrawRaw": vault_usdc_after_withdraw_raw.to_string(),
+        "vaultUsdcAtaClosed": vault_usdc_ata_before.exists && !vault_usdc_ata_after.exists,
+    });
+    let wallet_recovery_transaction_json = json!({
+        "signature": wallet_recovery_signature.to_string(),
+        "submittedSlot": wallet_recovery_submitted_slot,
+        "confirmedSlot": wallet_recovery_confirmed_slot,
+        "simulationUnitsConsumed": wallet_recovery_transaction.simulation_units_consumed,
+        "transaction": transaction_packet_json(&wallet_recovery_transaction.transaction_packet),
+    });
+    let policy_close_json = json!({
+        "policyAccount": vault.policy_account,
+        "settings": vault.settings,
+        "authority": authority_signer.pubkey().to_string(),
+        "kind": "squads_execute_settings_transaction_sync_policy_remove",
+        "policyClosed": policy_account_before.exists && !policy_account_after.exists,
+    });
+    let policy_close_transaction_json = json!({
+        "signature": policy_close_signature.to_string(),
+        "submittedSlot": policy_close_submitted_slot,
+        "confirmedSlot": policy_close_confirmed_slot,
+        "simulationUnitsConsumed": policy_close_transaction.simulation_units_consumed,
+        "transaction": transaction_packet_json(&policy_close_transaction.transaction_packet),
+    });
+    let setup_policy_close_json = match setup_policy_account_before.as_ref() {
+        Some(before) => json!({
+            "policyAccount": vault.setup_policy_account,
+            "settings": vault.settings,
+            "authority": authority_signer.pubkey().to_string(),
+            "kind": "squads_execute_settings_transaction_sync_policy_remove",
+            "policyClosed": setup_policy_account_after
+                .as_ref()
+                .map(|after| before.exists && !after.exists)
+                .unwrap_or(false),
+        }),
+        None => Value::Null,
+    };
+    let setup_policy_close_transaction_json = match setup_policy_close_result.as_ref() {
+        Some((signature, submitted_slot, confirmed_slot, transaction)) => json!({
+            "signature": signature.to_string(),
+            "submittedSlot": submitted_slot,
+            "confirmedSlot": confirmed_slot,
+            "simulationUnitsConsumed": transaction.simulation_units_consumed,
+            "transaction": transaction_packet_json(&transaction.transaction_packet),
+        }),
+        None => Value::Null,
+    };
+    let position_cleanup_proof_json = json!({
+        "allTrackedPositionsZero": all_tracked_positions_zero,
+        "allTrackedObligationsClosed": all_tracked_obligations_closed,
+        "inactiveRows": inactive,
+    });
+    let rent_cleanup_proof_json = json!({
+        "vaultBefore": account_proof_json(&vault_account_before),
+        "vaultAfter": account_proof_json(&vault_account_after),
+        "authorityBefore": account_proof_json(&authority_account_before),
+        "authorityAfter": account_proof_json(&authority_account_after),
+        "authorityLamportsDelta": authority_lamports_delta.to_string(),
+        "vaultUsdcAtaBefore": account_proof_json(&vault_usdc_ata_before),
+        "vaultUsdcAtaAfter": account_proof_json(&vault_usdc_ata_after),
+        "policyBefore": account_proof_json(&policy_account_before),
+        "policyAfter": account_proof_json(&policy_account_after),
+        "policyClosed": policy_account_before.exists && !policy_account_after.exists,
+        "setupPolicyBefore": setup_policy_account_before.as_ref().map(account_proof_json),
+        "setupPolicyAfter": setup_policy_account_after.as_ref().map(account_proof_json),
+        "setupPolicyClosed": setup_policy_account_before
+            .as_ref()
+            .zip(setup_policy_account_after.as_ref())
+            .map(|(before, after)| before.exists && !after.exists),
+        "withdrawObligationBefore": obligation_account_proof_json(&obligation_before),
+        "withdrawObligationAfter": obligation_account_proof_json(&obligation_after),
+        "withdrawObligationClosed": obligation_before.account.exists && !obligation_after.account.exists,
+        "rentRefundLamports": rent_refund_lamports.to_string(),
+        "closedObligationLamports": closed_obligation_lamports.to_string(),
+        "closedPolicyLamports": closed_policy_lamports.to_string(),
+        "closedSetupPolicyLamports": closed_setup_policy_lamports.to_string(),
+        "closedVaultUsdcAtaLamports": closed_vault_usdc_ata_lamports.to_string(),
+        "refundRecipient": vault.vault_pubkey,
+        "refundAtLeastClosedObligationLamports": rent_refund_lamports >= closed_obligation_lamports,
+    });
 
     println!(
         "{}",
@@ -3212,74 +3524,17 @@ async fn run_full_reserve_withdraw_flow(
             },
             "vault": vault_json(vault),
             "policyWithdraw": full_withdraw_policy_preview_json(&policy_plan.preview),
-            "policyWithdrawTransaction": {
-                "signature": signature.to_string(),
-                "submittedSlot": submitted_slot,
-                "confirmedSlot": confirmed_slot,
-                "simulationUnitsConsumed": withdraw_transaction.simulation_units_consumed,
-                "transaction": transaction_packet_json(&withdraw_transaction.transaction_packet),
-            },
-            "walletRecovery": {
-                "wallet": authority_signer.pubkey().to_string(),
-                "cleanupSigner": authority_signer.pubkey().to_string(),
-                "walletUsdcAta": wallet_usdc_ata.to_string(),
-                "walletUsdcBeforeRaw": wallet_usdc_before_raw.to_string(),
-                "walletUsdcBeforeExists": wallet_usdc_before_exists,
-                "walletUsdcAfterRaw": wallet_usdc_after_raw.to_string(),
-                "walletUsdcAfterExists": wallet_usdc_after_exists,
-                "walletUsdcDeltaRaw": wallet_usdc_delta.to_string(),
-                "vaultUsdcAfterWithdrawRaw": vault_usdc_after_withdraw_raw.to_string(),
-                "vaultUsdcAtaClosed": vault_usdc_ata_before.exists && !vault_usdc_ata_after.exists,
-            },
-            "walletRecoveryTransaction": {
-                "signature": wallet_recovery_signature.to_string(),
-                "submittedSlot": wallet_recovery_submitted_slot,
-                "confirmedSlot": wallet_recovery_confirmed_slot,
-                "simulationUnitsConsumed": wallet_recovery_transaction.simulation_units_consumed,
-                "transaction": transaction_packet_json(&wallet_recovery_transaction.transaction_packet),
-            },
-            "policyClose": {
-                "policyAccount": vault.policy_account,
-                "settings": vault.settings,
-                "authority": authority_signer.pubkey().to_string(),
-                "kind": "squads_execute_settings_transaction_sync_policy_remove",
-                "policyClosed": policy_account_before.exists && !policy_account_after.exists,
-            },
-            "policyCloseTransaction": {
-                "signature": policy_close_signature.to_string(),
-                "submittedSlot": policy_close_submitted_slot,
-                "confirmedSlot": policy_close_confirmed_slot,
-                "simulationUnitsConsumed": policy_close_transaction.simulation_units_consumed,
-                "transaction": transaction_packet_json(&policy_close_transaction.transaction_packet),
-            },
+            "policyWithdrawTransaction": policy_withdraw_transaction_json,
+            "walletRecovery": wallet_recovery_json,
+            "walletRecoveryTransaction": wallet_recovery_transaction_json,
+            "policyClose": policy_close_json,
+            "policyCloseTransaction": policy_close_transaction_json,
+            "setupPolicyClose": setup_policy_close_json,
+            "setupPolicyCloseTransaction": setup_policy_close_transaction_json,
             "reconciledSnapshotId": snapshot.id.as_i64(),
             "postChainReconcile": chain_reconcile_preview_json(&post_preview),
-            "positionCleanupProof": {
-                "allTrackedPositionsZero": all_tracked_positions_zero,
-                "allTrackedObligationsClosed": all_tracked_obligations_closed,
-                "inactiveRows": inactive,
-            },
-            "rentCleanupProof": {
-                "vaultBefore": account_proof_json(&vault_account_before),
-                "vaultAfter": account_proof_json(&vault_account_after),
-                "authorityBefore": account_proof_json(&authority_account_before),
-                "authorityAfter": account_proof_json(&authority_account_after),
-                "authorityLamportsDelta": authority_lamports_delta.to_string(),
-                "vaultUsdcAtaBefore": account_proof_json(&vault_usdc_ata_before),
-                "vaultUsdcAtaAfter": account_proof_json(&vault_usdc_ata_after),
-                "policyBefore": account_proof_json(&policy_account_before),
-                "policyAfter": account_proof_json(&policy_account_after),
-                "policyClosed": policy_account_before.exists && !policy_account_after.exists,
-                "withdrawObligationBefore": obligation_account_proof_json(&obligation_before),
-                "withdrawObligationAfter": obligation_account_proof_json(&obligation_after),
-                "withdrawObligationClosed": obligation_before.account.exists && !obligation_after.account.exists,
-                "rentRefundLamports": rent_refund_lamports.to_string(),
-                "closedObligationLamports": closed_obligation_lamports.to_string(),
-                "closedPolicyLamports": closed_policy_lamports.to_string(),
-                "closedVaultUsdcAtaLamports": closed_vault_usdc_ata_lamports.to_string(),
-                "refundRecipient": vault.vault_pubkey,
-                "refundAtLeastClosedObligationLamports": rent_refund_lamports >= closed_obligation_lamports,
-            },
+            "positionCleanupProof": position_cleanup_proof_json,
+            "rentCleanupProof": rent_cleanup_proof_json,
         }))?
     );
 
@@ -3488,6 +3743,51 @@ fn policy_operation_preview_json(
         "sameMintConstraintIndexes": same_mint_route.instruction_constraint_indexes(),
         "jupiterConstraintIndexes": jupiter_route.as_ref().map(|route| route.instruction_constraint_indexes().to_vec()),
         "loyalHubConstraintIndexes": loyal_hub_route.as_ref().map(|route| route.instruction_constraint_indexes().to_vec()),
+        "existingPolicyDecoded": existing_decoded.map(decoded_policy_account_json),
+        "simulationError": transaction.simulation_error.clone(),
+        "simulationLogs": transaction.simulation_logs.clone(),
+        "simulationUnitsConsumed": transaction.simulation_units_consumed,
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn setup_policy_operation_preview_json(
+    operation: &str,
+    vault: &SelectedVault,
+    settings: Pubkey,
+    policy: Pubkey,
+    policy_seed: i64,
+    vault_pubkey: Pubkey,
+    authority_signer: Pubkey,
+    delegated_signer: Pubkey,
+    db_delegated_signer_matches: bool,
+    universe: &YieldRouteUniverse,
+    setup: &YieldRouteActionSetup,
+    transaction: &PolicyTransactionBuild,
+    existing_decoded: Option<&DecodedPolicyAccount>,
+) -> Result<Value, Box<dyn Error>> {
+    Ok(json!({
+        "operation": operation,
+        "policyAccount": policy.to_string(),
+        "policySeed": policy_seed,
+        "settings": settings.to_string(),
+        "vaultIndex": vault.vault_index,
+        "vaultPubkey": vault_pubkey.to_string(),
+        "authoritySigner": authority_signer.to_string(),
+        "delegatedSigner": delegated_signer.to_string(),
+        "dbDelegatedSignerMatches": db_delegated_signer_matches,
+        "dbDelegatedSigners": vault.delegated_signers.clone(),
+        "transaction": policy_transaction_packet_json(transaction),
+        "simulationSkippedReason": transaction.simulation_skipped_reason.clone(),
+        "constraintCount": setup.spec.constraint_count,
+        "instructionCount": setup.spec.instruction_count,
+        "stableMints": pubkeys_json(&universe.stable_mints),
+        "kaminoMarkets": pubkeys_json(&universe.kamino_markets),
+        "kaminoLiquidityMints": pubkeys_json(&universe.kamino_liquidity_mints),
+        "templateStableMints": vault.stable_mints.clone(),
+        "templateKaminoMarkets": vault.kamino_markets.clone(),
+        "templateKaminoLiquidityMints": vault.kamino_liquidity_mints.clone(),
+        "initObligationConstraintIndex": setup.spec.constraint_count.saturating_sub(1),
         "existingPolicyDecoded": existing_decoded.map(decoded_policy_account_json),
         "simulationError": transaction.simulation_error.clone(),
         "simulationLogs": transaction.simulation_logs.clone(),
@@ -5188,10 +5488,14 @@ fn execution_preflight_blockers(
     match chain_position_for_reserve(chain_preview, &reserve_move.target_reserve) {
         Ok(target) => {
             if !target.obligation_exists {
-                blockers.push(format!(
-                    "target obligation account {} does not exist; run the missing-obligation setup transaction before same-mint execution",
-                    target.obligation
-                ));
+                match route_execution {
+                    Some(plan) if plan.preview.missing_obligation_setup.is_some() => {}
+                    Some(_) => blockers.push(format!(
+                        "target obligation account {} does not exist and no inline init_obligation route step is planned before same-mint deposit",
+                        target.obligation
+                    )),
+                    None => {}
+                }
             }
         }
         Err(error) => blockers.push(error.to_string()),
@@ -5253,7 +5557,34 @@ fn same_mint_route_signers<'a>(
     }
 }
 
+fn build_program_interaction_policy_execution_instruction(
+    policy: Pubkey,
+    signer_pubkey: Pubkey,
+    account_index: u8,
+    instruction: Instruction,
+    instruction_constraint_index: u8,
+) -> (Instruction, usize, usize, usize) {
+    let mut transaction_accounts = Vec::new();
+    let compiled_instruction =
+        compile_squads_inner_instruction(&mut transaction_accounts, instruction);
+    let outer_instruction = execute_program_interaction_policy_instruction(
+        policy,
+        signer_pubkey,
+        account_index,
+        vec![compiled_instruction],
+        vec![instruction_constraint_index],
+        transaction_accounts.clone(),
+    );
+    (
+        outer_instruction.clone(),
+        1,
+        transaction_accounts.len(),
+        outer_instruction.accounts.len(),
+    )
+}
+
 fn build_route_execution_plan(
+    rpc: Option<&RpcClient>,
     vault: &SelectedVault,
     preview: &ChainReconcilePreview,
     reserve_move: &ReserveMove,
@@ -5287,13 +5618,6 @@ fn build_route_execution_plan(
     let amount = amount_i64_to_u64(input.amount_raw, "route amount")?;
     let source = chain_position_for_reserve(preview, &reserve_move.source_reserve)?;
     let target = chain_position_for_reserve(preview, &reserve_move.target_reserve)?;
-    if !target.obligation_exists {
-        return Err(format!(
-            "target obligation account {} does not exist; run the missing-obligation setup transaction before building the same-mint route",
-            target.obligation
-        )
-        .into());
-    }
     let vault_liquidity_ata =
         derive_associated_token_address(&vault_pubkey, &USDC_MINT, &spl_token::ID);
 
@@ -5319,6 +5643,14 @@ fn build_route_execution_plan(
     let target_instruction_discriminator = target_instruction.data[..8].to_vec();
     let instruction_constraint_indexes =
         route_instruction_constraint_indexes(vault, policy_preflight)?;
+    let withdraw_instruction_constraint_index = instruction_constraint_indexes
+        .first()
+        .copied()
+        .ok_or("route policy is missing withdraw instruction constraint index")?;
+    let deposit_instruction_constraint_index = instruction_constraint_indexes
+        .get(1)
+        .copied()
+        .ok_or("route policy is missing deposit instruction constraint index")?;
     let policy_constraint_validation = policy_preflight.map(|policy_preflight| {
         let route = [
             (KAMINO_WITHDRAW_ROUTE_STEP, &source_instruction),
@@ -5331,19 +5663,29 @@ fn build_route_execution_plan(
         )
     });
 
-    let mut transaction_accounts = Vec::new();
-    let source_compiled =
-        compile_squads_inner_instruction(&mut transaction_accounts, source_instruction);
-    let target_compiled =
-        compile_squads_inner_instruction(&mut transaction_accounts, target_instruction);
-    let compiled_instructions = vec![source_compiled, target_compiled];
-    let outer_instruction = execute_program_interaction_policy_instruction(
+    let (
+        withdraw_outer_instruction,
+        withdraw_inner_count,
+        withdraw_transaction_account_count,
+        withdraw_outer_account_count,
+    ) = build_program_interaction_policy_execution_instruction(
         policy_account,
         signer_pubkey,
         account_index,
-        compiled_instructions.clone(),
-        instruction_constraint_indexes.clone(),
-        transaction_accounts.clone(),
+        source_instruction,
+        withdraw_instruction_constraint_index,
+    );
+    let (
+        deposit_outer_instruction,
+        deposit_inner_count,
+        deposit_transaction_account_count,
+        deposit_outer_account_count,
+    ) = build_program_interaction_policy_execution_instruction(
+        policy_account,
+        signer_pubkey,
+        account_index,
+        target_instruction,
+        deposit_instruction_constraint_index,
     );
 
     let mut pre_instructions = vec![
@@ -5351,26 +5693,92 @@ fn build_route_execution_plan(
         target_reserve_refresh_instruction,
     ];
     pre_instructions.extend(source_farm_init_instruction);
-    pre_instructions.extend(target_farm_init_instruction);
-    pre_instructions.push(target_refresh_instruction);
     pre_instructions.push(source_refresh_instruction);
+
+    let mut protected_and_public_instructions = vec![withdraw_outer_instruction];
+    let mut route_steps = vec![KAMINO_WITHDRAW_ROUTE_STEP];
+    let mut inner_instruction_count = withdraw_inner_count;
+    let mut transaction_account_count = withdraw_transaction_account_count;
+    let mut outer_account_count = withdraw_outer_account_count;
+    let mut missing_obligation_setup = None;
+    let mut setup_policy_account = None;
+    let mut init_instruction_constraint_index = None;
+    let mut setup_instruction_program = None;
+    let mut setup_instruction_discriminator = None;
+
+    if target.obligation_exists {
+        pre_instructions.extend(target_farm_init_instruction);
+        pre_instructions.push(target_refresh_instruction);
+    } else {
+        let (init_policy, init_index) =
+            resolve_init_obligation_policy(rpc, vault, target, policy_preflight)?;
+        let route_policy = Pubkey::from_str(&vault.policy_account)?;
+        let policy_source = if init_policy == route_policy {
+            "route_policy"
+        } else {
+            "setup_policy"
+        };
+        let init_instruction = kamino_init_obligation_instruction(vault_pubkey, target)?;
+        setup_instruction_program = Some(init_instruction.program_id.to_string());
+        setup_instruction_discriminator = Some(init_instruction.data[..8].to_vec());
+        let (
+            init_outer_instruction,
+            init_inner_count,
+            init_transaction_account_count,
+            init_outer_account_count,
+        ) = build_program_interaction_policy_execution_instruction(
+            init_policy,
+            signer_pubkey,
+            account_index,
+            init_instruction,
+            init_index,
+        );
+        protected_and_public_instructions.push(init_outer_instruction);
+        protected_and_public_instructions.extend(target_farm_init_instruction);
+        protected_and_public_instructions.push(target_refresh_instruction);
+        route_steps.push(KAMINO_INIT_OBLIGATION_ROUTE_STEP);
+        inner_instruction_count += init_inner_count;
+        transaction_account_count += init_transaction_account_count;
+        outer_account_count += init_outer_account_count;
+        if policy_source == "setup_policy" {
+            setup_policy_account = Some(init_policy.to_string());
+        }
+        init_instruction_constraint_index = Some(init_index);
+        missing_obligation_setup = Some(InlineMissingObligationSetupPreview {
+            target_obligation: target.obligation.clone(),
+            target_reserve: target.reserve.clone(),
+            target_market: target.market.clone(),
+            policy_account: init_policy.to_string(),
+            policy_source,
+            instruction_constraint_index: init_index,
+        });
+    }
+
+    protected_and_public_instructions.push(deposit_outer_instruction);
+    route_steps.push(KAMINO_DEPOSIT_ROUTE_STEP);
+    inner_instruction_count += deposit_inner_count;
+    transaction_account_count += deposit_transaction_account_count;
+    outer_account_count += deposit_outer_account_count;
 
     Ok(RouteExecutionPlan {
         pre_instructions,
-        instruction: outer_instruction.clone(),
+        instructions: protected_and_public_instructions,
         preview: RouteExecutionPreview {
             policy_account: policy_account.to_string(),
+            setup_policy_account,
             fee_payer: fee_payer.to_string(),
             signer: signer_pubkey.to_string(),
             account_index,
             instruction_constraint_indexes,
+            init_instruction_constraint_index,
             policy_constraint_validation,
-            setup_instruction_program: None,
-            setup_instruction_discriminator: None,
-            route_steps: vec![KAMINO_WITHDRAW_ROUTE_STEP, KAMINO_DEPOSIT_ROUTE_STEP],
-            inner_instruction_count: compiled_instructions.len(),
-            transaction_account_count: transaction_accounts.len(),
-            outer_account_count: outer_instruction.accounts.len(),
+            missing_obligation_setup,
+            setup_instruction_program,
+            setup_instruction_discriminator,
+            route_steps,
+            inner_instruction_count,
+            transaction_account_count,
+            outer_account_count,
             source_instruction_program,
             target_instruction_program,
             source_instruction_discriminator,
@@ -5608,7 +6016,7 @@ async fn execute_prepared_same_mint_route(
     }
 
     let mut transaction_instructions = route_execution.pre_instructions.clone();
-    transaction_instructions.push(route_execution.instruction.clone());
+    transaction_instructions.extend(route_execution.instructions.iter().cloned());
     let signer_pubkeys = same_mint_route_signer_pubkeys(fee_payer.pubkey(), signer.pubkey());
     let required_lookup_addresses = best_case_lookup_table_addresses(
         fee_payer.pubkey(),
@@ -6106,6 +6514,76 @@ fn decoded_route_instruction_constraint_indexes(
     Ok(indexes)
 }
 
+fn resolve_init_obligation_policy(
+    rpc: Option<&RpcClient>,
+    vault: &SelectedVault,
+    target: &ChainPositionSummary,
+    route_policy_preflight: Option<&PolicyAccountPreflight>,
+) -> Result<(Pubkey, u8), Box<dyn Error>> {
+    if let Some(preflight) = route_policy_preflight {
+        if let Ok(index) = init_obligation_instruction_constraint_index(Some(preflight), target) {
+            return Ok((Pubkey::from_str(&preflight.policy_account)?, index));
+        }
+    }
+
+    let setup_policy_account = vault.setup_policy_account.as_deref().ok_or_else(|| {
+        format!(
+            "target obligation {} is missing, active policy {} has no authorized init_obligation path for target market {}, and no setup_policy_id is recorded for vault {}",
+            target.obligation, vault.policy_account, target.market, vault.id
+        )
+    })?;
+    let rpc = rpc.ok_or(
+        "setup policy account decode requires an RPC client when target init is not in route policy",
+    )?;
+    let setup_policy = Pubkey::from_str(setup_policy_account)?;
+    let account = rpc.get_account(&setup_policy)?;
+    let decoded = decode_squads_policy_account(&account.data).map_err(|error| {
+        format!("failed to decode setup policy account {setup_policy}: {error}")
+    })?;
+    let setup_preflight = PolicyAccountPreflight {
+        policy_account: setup_policy_account.to_owned(),
+        source_market: target.market.clone(),
+        target_market: target.market.clone(),
+        decoded,
+    };
+    let index = init_obligation_instruction_constraint_index(Some(&setup_preflight), target)?;
+    Ok((setup_policy, index))
+}
+
+fn init_obligation_instruction_constraint_index(
+    policy_preflight: Option<&PolicyAccountPreflight>,
+    target: &ChainPositionSummary,
+) -> Result<u8, Box<dyn Error>> {
+    let Some(policy_preflight) = policy_preflight else {
+        return Err("init obligation setup requires decoded policy account indexes".into());
+    };
+    let index = policy_preflight
+        .decoded
+        .instructions
+        .iter()
+        .position(|instruction| {
+            instruction.route_step == Some(KAMINO_INIT_OBLIGATION_ROUTE_STEP)
+                && instruction
+                    .markets
+                    .iter()
+                    .any(|market| market == &target.market)
+        })
+        .ok_or_else(|| {
+            format!(
+                "decoded policy account has no market-scoped init_obligation constraint for target market {}",
+                target.market
+            )
+        })?;
+    if index >= policy_preflight.decoded.instruction_count {
+        return Err(format!(
+            "decoded init_obligation index {index} exceeds policy instruction count {}",
+            policy_preflight.decoded.instruction_count
+        )
+        .into());
+    }
+    Ok(u8::try_from(index)?)
+}
+
 fn initial_deposit_instruction_constraint_indexes(
     policy_preflight: Option<&PolicyAccountPreflight>,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -6532,6 +7010,8 @@ async fn load_active_vault(
             v.vault_index,
             v.vault_pubkey,
             p.policy_account,
+            sp.policy_account AS setup_policy_account,
+            sp.policy_seed AS setup_policy_seed,
             p.delegated_signers,
             p.threshold,
             p.route_modes,
@@ -6541,6 +7021,8 @@ async fn load_active_vault(
             p.swap_lanes
         FROM loyal_yield.managed_vaults v
         JOIN loyal_yield.route_policies p ON p.id = v.active_policy_id
+        LEFT JOIN loyal_yield.route_policies sp ON sp.id = v.setup_policy_id
+          AND sp.active = true
         WHERE v.settings = $1
           AND v.vault_index = $2
           AND v.active = true
@@ -6561,6 +7043,8 @@ async fn load_active_vault(
             vault_index: row.try_get("vault_index")?,
             vault_pubkey: row.try_get("vault_pubkey")?,
             policy_account: row.try_get("policy_account")?,
+            setup_policy_account: row.try_get("setup_policy_account")?,
+            setup_policy_seed: row.try_get("setup_policy_seed")?,
             delegated_signers: row.try_get("delegated_signers")?,
             threshold: row.try_get("threshold")?,
             route_modes: row.try_get("route_modes")?,
@@ -6587,20 +7071,25 @@ async fn load_policy_target_vault(
             v.settings,
             v.vault_index,
             v.vault_pubkey,
-            p.authority,
-            p.policy_seed AS template_policy_seed,
-            p.delegated_signers,
-            p.threshold,
-            p.route_modes,
-            p.stable_mints,
-            p.kamino_markets,
-            p.kamino_liquidity_mints,
-            p.swap_lanes
+            seed_cursor.max_policy_seed,
+            route_template.authority,
+            route_template.delegated_signers,
+            route_template.threshold,
+            route_template.route_modes,
+            route_template.stable_mints,
+            route_template.kamino_markets,
+            route_template.kamino_liquidity_mints,
+            route_template.swap_lanes
         FROM loyal_yield.managed_vaults v
+        LEFT JOIN LATERAL (
+            SELECT max(policy_seed) AS max_policy_seed
+            FROM loyal_yield.route_policies
+            WHERE settings = v.settings
+              AND vault_index = v.vault_index
+        ) seed_cursor ON TRUE
         LEFT JOIN LATERAL (
             SELECT
                 authority,
-                policy_seed,
                 delegated_signers,
                 threshold,
                 route_modes,
@@ -6611,15 +7100,17 @@ async fn load_policy_target_vault(
             FROM loyal_yield.route_policies
             WHERE settings = v.settings
               AND vault_index = v.vault_index
-            ORDER BY policy_seed DESC, id DESC
+              AND $3 = ANY(route_modes)
+            ORDER BY active DESC, last_seen_slot DESC, policy_seed DESC, id DESC
             LIMIT 1
-        ) p ON TRUE
+        ) route_template ON TRUE
         WHERE v.settings = $1
           AND v.vault_index = $2
         "#,
     )
     .bind(settings)
     .bind(vault_index)
+    .bind(SAME_MINT_ROUTE_MODE)
     .fetch_optional(pool)
     .await?;
 
@@ -6629,8 +7120,8 @@ async fn load_policy_target_vault(
 
     let settings: String = row.try_get("settings")?;
     let settings_pubkey = Pubkey::from_str(&settings)?;
-    let template_policy_seed: Option<i64> = row.try_get("template_policy_seed")?;
-    let policy_seed = template_policy_seed
+    let max_policy_seed: Option<i64> = row.try_get("max_policy_seed")?;
+    let policy_seed = max_policy_seed
         .map(|seed| seed.saturating_add(1))
         .unwrap_or(i64::try_from(YIELD_ROUTE_WITHDRAW_ACTION_SEED)?);
     let policy_account = derive_action_account(&settings_pubkey, u64::try_from(policy_seed)?).0;
@@ -6670,6 +7161,8 @@ async fn load_policy_target_vault(
         vault_index: row.try_get("vault_index")?,
         vault_pubkey: row.try_get("vault_pubkey")?,
         policy_account: policy_account.to_string(),
+        setup_policy_account: None,
+        setup_policy_seed: None,
         delegated_signers,
         threshold,
         route_modes,
@@ -7079,6 +7572,8 @@ fn vault_json(vault: &SelectedVault) -> Value {
         "vaultIndex": vault.vault_index,
         "vaultPubkey": vault.vault_pubkey,
         "policyAccount": vault.policy_account,
+        "setupPolicyAccount": vault.setup_policy_account,
+        "setupPolicySeed": vault.setup_policy_seed,
         "delegatedSigners": vault.delegated_signers,
         "routeModes": vault.route_modes,
         "kaminoMarkets": vault.kamino_markets,
@@ -7162,13 +7657,56 @@ fn chain_reconcile_preview_json(preview: &ChainReconcilePreview) -> Value {
 fn target_obligation_setup_json(
     preview: &ChainReconcilePreview,
     reserve_move: &ReserveMove,
+    vault: &SelectedVault,
     policy_preflight: Option<&PolicyAccountPreflight>,
 ) -> Option<Value> {
     let target = chain_position_for_reserve(preview, &reserve_move.target_reserve).ok()?;
     let needed = !target.obligation_exists;
+    let init_constraint_index = policy_preflight.and_then(|preflight| {
+        init_obligation_instruction_constraint_index(Some(preflight), target).ok()
+    });
+    let decoded_route_policy_allows_init = init_constraint_index.is_some();
     let decoded_route_policy_allows_refresh = policy_preflight
         .map(PolicyAccountPreflight::allows_refresh_obligation)
         .unwrap_or(false);
+    let setup_policy_available = vault.setup_policy_account.is_some();
+    let (policy_shape, init_policy_source, init_policy_account) =
+        if decoded_route_policy_allows_init {
+            (
+                "route_policy_with_market_scoped_init_obligation",
+                Some("route_policy"),
+                Some(vault.policy_account.as_str()),
+            )
+        } else if setup_policy_available {
+            (
+                "route_policy_plus_setup_policy_market_scoped_init_obligation",
+                Some("setup_policy"),
+                vault.setup_policy_account.as_deref(),
+            )
+        } else {
+            (
+                "route_policy_without_authorized_init_obligation",
+                None,
+                None,
+            )
+        };
+    let required_before_same_mint_execution = if !needed {
+        Vec::<&str>::new()
+    } else if decoded_route_policy_allows_init {
+        vec![
+            "execute route-policy withdraw in the same transaction",
+            "execute the target-market init_obligation constraint from the route policy in the same transaction",
+            "refresh the newly initialized target obligation before the protected deposit instruction",
+        ]
+    } else if setup_policy_available {
+        vec![
+            "execute route-policy withdraw in the same transaction",
+            "execute the target-market init_obligation constraint from the setup policy in the same transaction",
+            "refresh the newly initialized target obligation before the protected deposit instruction",
+        ]
+    } else {
+        vec!["block execution because no authorized init_obligation policy path is recorded"]
+    };
 
     Some(json!({
         "needed": needed,
@@ -7177,17 +7715,15 @@ fn target_obligation_setup_json(
         "targetMarket": target.market,
         "vaultUserMetadata": preview.vault_user_metadata,
         "vaultUserMetadataExists": preview.vault_user_metadata_exists,
-        "policyShape": "temporary_init_obligation_policy_then_restore_route_policy",
+        "policyShape": policy_shape,
+        "initPolicySource": init_policy_source,
+        "initPolicyAccount": init_policy_account,
+        "setupPolicyAccount": vault.setup_policy_account,
+        "setupPolicySeed": vault.setup_policy_seed,
+        "decodedRoutePolicyAllowsInitObligation": decoded_route_policy_allows_init,
+        "initObligationInstructionConstraintIndex": init_constraint_index,
         "decodedRoutePolicyAllowsRefreshObligation": decoded_route_policy_allows_refresh,
-        "requiredBeforeSameMintExecution": if needed {
-            vec![
-                "temporarily update the Squads policy to the market-scoped KLend init_obligation constraint",
-                "execute init_obligation through ProgramInteraction with the vault as KLend obligation owner and fee payer",
-                "restore the same-mint route policy before refresh + withdraw + deposit execution",
-            ]
-        } else {
-            Vec::<&str>::new()
-        },
+        "requiredBeforeSameMintExecution": required_before_same_mint_execution,
     }))
 }
 
@@ -7199,9 +7735,10 @@ fn missing_obligation_setup_dry_run_json(
         "targetObligation": target.obligation,
         "targetReserve": target.reserve,
         "targetMarket": target.market,
-        "setupPolicyUpdate": policy_transaction_json(&dry_run.setup_policy_update),
+        "policyAccount": dry_run.policy_account,
+        "policySource": dry_run.policy_source,
+        "instructionConstraintIndex": dry_run.instruction_constraint_index,
         "initExecution": policy_transaction_json(&dry_run.init_execution),
-        "routePolicyRestore": policy_transaction_json(&dry_run.route_policy_restore),
     })
 }
 
@@ -7213,13 +7750,9 @@ fn missing_obligation_setup_submit_result_json(
         "targetObligation": target.obligation,
         "targetReserve": target.reserve,
         "targetMarket": target.market,
-        "setupPolicyUpdate": {
-            "signature": result.setup_policy_signature,
-            "submittedSlot": result.setup_policy_submitted_slot,
-            "confirmedSlot": result.setup_policy_confirmed_slot,
-            "simulationUnitsConsumed": result.setup_policy_simulation_units_consumed,
-            "transaction": transaction_packet_json(&result.setup_policy_transaction_packet),
-        },
+        "policyAccount": result.policy_account,
+        "policySource": result.policy_source,
+        "instructionConstraintIndex": result.instruction_constraint_index,
         "initExecution": {
             "signature": result.init_signature,
             "submittedSlot": result.init_submitted_slot,
@@ -7227,13 +7760,23 @@ fn missing_obligation_setup_submit_result_json(
             "simulationUnitsConsumed": result.init_simulation_units_consumed,
             "transaction": transaction_packet_json(&result.init_transaction_packet),
         },
-        "routePolicyRestore": {
-            "signature": result.route_policy_signature,
-            "submittedSlot": result.route_policy_submitted_slot,
-            "confirmedSlot": result.route_policy_confirmed_slot,
-            "simulationUnitsConsumed": result.route_policy_simulation_units_consumed,
-            "transaction": transaction_packet_json(&result.route_policy_transaction_packet),
-        },
+    })
+}
+
+fn inline_missing_obligation_setup_json(setup: &InlineMissingObligationSetupPreview) -> Value {
+    json!({
+        "executionMode": "inline_route_transaction",
+        "targetObligation": setup.target_obligation,
+        "targetReserve": setup.target_reserve,
+        "targetMarket": setup.target_market,
+        "policyAccount": setup.policy_account,
+        "policySource": setup.policy_source,
+        "instructionConstraintIndex": setup.instruction_constraint_index,
+        "routeOrder": [
+            KAMINO_WITHDRAW_ROUTE_STEP,
+            KAMINO_INIT_OBLIGATION_ROUTE_STEP,
+            KAMINO_DEPOSIT_ROUTE_STEP,
+        ],
     })
 }
 
@@ -7241,11 +7784,14 @@ fn route_execution_preview_json(preview: &RouteExecutionPreview) -> Value {
     json!({
         "kind": "squads_program_interaction_same_mint",
         "policyAccount": preview.policy_account,
+        "setupPolicyAccount": preview.setup_policy_account,
         "feePayer": preview.fee_payer,
         "signer": preview.signer,
         "accountIndex": preview.account_index,
         "instructionConstraintIndexes": preview.instruction_constraint_indexes,
+        "initInstructionConstraintIndex": preview.init_instruction_constraint_index,
         "policyConstraintValidation": preview.policy_constraint_validation.as_ref().map(policy_constraint_validation_json),
+        "missingObligationSetup": preview.missing_obligation_setup.as_ref().map(inline_missing_obligation_setup_json),
         "innerInstructionCount": preview.inner_instruction_count,
         "transactionAccountCount": preview.transaction_account_count,
         "outerAccountCount": preview.outer_account_count,
@@ -7450,16 +7996,6 @@ fn same_mint_usdc_policy_universe() -> Result<YieldRouteUniverse, Box<dyn Error>
     ))
 }
 
-fn same_mint_bootstrap_usdc_policy_universe(
-    market: &str,
-) -> Result<YieldRouteUniverse, Box<dyn Error>> {
-    Ok(YieldRouteUniverse::new(
-        vec![USDC_MINT],
-        vec![Pubkey::from_str(market)?],
-        vec![USDC_MINT],
-    ))
-}
-
 fn pubkeys_json(pubkeys: &[Pubkey]) -> Vec<String> {
     pubkeys.iter().map(Pubkey::to_string).collect()
 }
@@ -7584,7 +8120,7 @@ fn same_mint_input_json(input: &SameMintRebalanceInput) -> Value {
 fn print_help() {
     println!(
          "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--provision-lookup-table] [--deposit-main-usdc <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--lookup-table <PUBKEY>...] [--execute]\n\n\
-         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and YIELD_ROUTER_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to pre-initialize a Kamino obligation by temporarily narrowing the policy and restoring the route policy. Add --optimization-cycle to live same-mint route execution after setup is complete; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses YIELD_ROUTER_KEYPAIR as fee payer and delegated signer, and blocks missing-obligation setup. Add --provision-lookup-table with --update-policy or same-mint --execute to create, extend, warm up, and use a fresh ALT. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and YIELD_ROUTER_KEYPAIR for the policy deposit. Full withdraw mode uses YIELD_ROUTER_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy, and report rent cleanup proof. Run through:\n\
+         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and YIELD_ROUTER_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for live same-mint route execution; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses YIELD_ROUTER_KEYPAIR as fee payer and delegated signer, and when the target obligation is missing builds one atomic transaction ordered as route-policy withdraw, authorized init_obligation, refresh/farm setup, and route-policy deposit. Add --provision-lookup-table with --update-policy or same-mint --execute to create, extend, warm up, and use a fresh ALT. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and YIELD_ROUTER_KEYPAIR for the policy deposit. Full withdraw mode uses YIELD_ROUTER_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
          op run --env-file=.env.1password -- bun run same-mint:swap -- --settings <PUBKEY> --vault-index 1 --reconcile-from-chain --seed-from-user-position"
     );
 }
@@ -7710,6 +8246,8 @@ mod tests {
             vault_index: 1,
             vault_pubkey: Pubkey::new_unique().to_string(),
             policy_account: policy_account.clone(),
+            setup_policy_account: None,
+            setup_policy_seed: None,
             delegated_signers: vec![delegated_signer.to_string()],
             threshold: 1,
             route_modes: vec![SAME_MINT_ROUTE_MODE.to_owned(), "jupiter".to_owned()],
@@ -7775,8 +8313,9 @@ mod tests {
                 "target_reserve": KAMINO_PRIME_USDC_RESERVE,
                 "liquidity_mint": USDC_MINT.to_string(),
                 "amount_raw": 500_000,
-                "policy_executions": 1,
-                "route_steps": ["kamino_withdraw", "kamino_deposit"]
+                "policy_executions": 3,
+                "init_obligation": "inline_if_missing",
+                "route_steps": ["kamino_withdraw", "kamino_init_obligation_if_missing", "kamino_deposit"]
             }),
             idempotency_key: "same-mint-test-key".to_owned(),
         }
@@ -8257,7 +8796,11 @@ mod tests {
         );
         assert_eq!(
             decoded.instructions[2].route_step,
-            Some(KAMINO_REFRESH_OBLIGATION_ROUTE_STEP)
+            Some(KAMINO_INIT_OBLIGATION_ROUTE_STEP)
+        );
+        assert_eq!(
+            decoded.instructions[2].markets,
+            vec![KAMINO_PRIME_MARKET.to_owned()]
         );
     }
 
@@ -8291,7 +8834,7 @@ mod tests {
         let decoded =
             decode_squads_policy_account(&data).expect("decode program interaction policy");
 
-        assert_eq!(decoded.instruction_count, 4);
+        assert_eq!(decoded.instruction_count, 3);
         assert_eq!(
             decoded.instructions[2].route_step,
             Some(KAMINO_INIT_OBLIGATION_ROUTE_STEP)
@@ -8299,17 +8842,6 @@ mod tests {
         assert_eq!(
             decoded.instructions[2].markets,
             vec![KAMINO_PRIME_MARKET.to_owned()]
-        );
-        assert_eq!(
-            decoded.instructions[3].route_step,
-            Some(KAMINO_REFRESH_OBLIGATION_ROUTE_STEP)
-        );
-        assert_eq!(
-            decoded.instructions[3].markets,
-            vec![
-                KAMINO_MAIN_MARKET.to_owned(),
-                KAMINO_PRIME_MARKET.to_owned()
-            ]
         );
         assert_eq!(decoded.kamino_liquidity_mints, vec![USDC_MINT.to_string()]);
     }
@@ -8517,6 +9049,7 @@ mod tests {
         };
         let fee_payer = Pubkey::new_unique();
         let plan = build_route_execution_plan(
+            None,
             &vault,
             &preview,
             &default_reserve_move(),
@@ -8526,7 +9059,11 @@ mod tests {
         )
         .expect("build route plan");
 
-        assert_eq!(plan.instruction.program_id, SQUADS_SMART_ACCOUNT_PROGRAM_ID);
+        assert_eq!(plan.instructions.len(), 2);
+        assert!(plan
+            .instructions
+            .iter()
+            .all(|instruction| instruction.program_id == SQUADS_SMART_ACCOUNT_PROGRAM_ID));
         assert_eq!(plan.preview.policy_account, policy_account);
         assert_eq!(plan.preview.fee_payer, fee_payer.to_string());
         assert_eq!(plan.preview.account_index, 1);
@@ -8558,7 +9095,7 @@ mod tests {
     }
 
     #[test]
-    fn route_execution_plan_requires_missing_target_obligation_setup_first() {
+    fn route_execution_plan_inlines_missing_target_obligation_setup() {
         let policy_account = Pubkey::new_unique().to_string();
         let vault = selected_vault_with_policy(policy_account.clone());
         let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey).unwrap();
@@ -8593,17 +9130,8 @@ mod tests {
             target_market: KAMINO_PRIME_MARKET.to_owned(),
             decoded,
         };
-        let blockers = execution_preflight_blockers(
-            Some(&preview),
-            Some(&policy_preflight),
-            &default_reserve_move(),
+        let plan = build_route_execution_plan(
             None,
-        );
-        assert!(blockers
-            .iter()
-            .any(|blocker| blocker.contains("run the missing-obligation setup transaction")));
-
-        let error = build_route_execution_plan(
             &vault,
             &preview,
             &default_reserve_move(),
@@ -8611,10 +9139,29 @@ mod tests {
             Some(&policy_preflight),
             Pubkey::new_unique(),
         )
-        .expect_err("route policy no longer carries init_obligation");
-        assert!(error
-            .to_string()
-            .contains("run the missing-obligation setup transaction"));
+        .expect("route can inline target init before deposit");
+        assert_eq!(
+            plan.preview.route_steps,
+            vec![
+                KAMINO_WITHDRAW_ROUTE_STEP,
+                KAMINO_INIT_OBLIGATION_ROUTE_STEP,
+                KAMINO_DEPOSIT_ROUTE_STEP,
+            ]
+        );
+        assert_eq!(
+            plan.preview
+                .missing_obligation_setup
+                .as_ref()
+                .map(|setup| setup.policy_source),
+            Some("route_policy")
+        );
+        assert!(execution_preflight_blockers(
+            Some(&preview),
+            Some(&policy_preflight),
+            &default_reserve_move(),
+            Some(&plan),
+        )
+        .is_empty());
     }
 
     #[test]
@@ -8716,6 +9263,7 @@ mod tests {
             decoded,
         };
         let plan = build_route_execution_plan(
+            None,
             &vault,
             &preview,
             &default_reserve_move(),
@@ -8894,6 +9442,7 @@ mod tests {
             decoded,
         };
         let plan = build_route_execution_plan(
+            None,
             &vault,
             &preview,
             &default_reserve_move(),
@@ -8915,7 +9464,7 @@ mod tests {
     }
 
     #[test]
-    fn execution_preflight_blocks_missing_target_until_setup_lands_even_if_init_policy_exists() {
+    fn route_execution_blocks_missing_target_without_authorized_inline_init() {
         let policy_account = Pubkey::new_unique().to_string();
         let vault = selected_vault_with_policy(policy_account.clone());
         let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey).unwrap();
@@ -8935,18 +9484,12 @@ mod tests {
                 chain_position_for_vault(KAMINO_PRIME_USDC_RESERVE, 0, false, vault_pubkey),
             ],
         };
-        let mut decoded = decode_squads_policy_account(
-            &program_interaction_policy_account_data_with_indexes_and_init_obligation(
-                KAMINO_MAIN_MARKET,
-                1,
-                4,
-                KAMINO_PRIME_MARKET,
-                2,
-                4,
-                vault_pubkey,
-            ),
-        )
-        .expect("decode mismatched policy");
+        let mut decoded = decode_squads_policy_account(&program_interaction_policy_account_data(
+            KAMINO_MAIN_MARKET,
+            KAMINO_PRIME_MARKET,
+            vault_pubkey,
+        ))
+        .expect("decode route-only policy");
         decoded.kamino_markets = vec![
             KAMINO_MAIN_MARKET.to_owned(),
             KAMINO_PRIME_MARKET.to_owned(),
@@ -8958,6 +9501,7 @@ mod tests {
             decoded,
         };
         let error = build_route_execution_plan(
+            None,
             &vault,
             &preview,
             &default_reserve_move(),
@@ -8965,21 +9509,40 @@ mod tests {
             Some(&policy_preflight),
             Pubkey::new_unique(),
         )
-        .expect_err("missing target obligation requires separate setup");
-
-        let blockers = execution_preflight_blockers(
-            Some(&preview),
-            Some(&policy_preflight),
-            &default_reserve_move(),
-            None,
-        );
+        .expect_err("missing target obligation requires authorized inline init");
 
         assert!(error
             .to_string()
-            .contains("run the missing-obligation setup transaction"));
-        assert!(blockers
-            .iter()
-            .any(|blocker| blocker.contains("run the missing-obligation setup transaction")));
+            .contains("no authorized init_obligation path"));
+    }
+
+    #[test]
+    fn init_obligation_setup_uses_decoded_target_market_index() {
+        let vault_pubkey = Pubkey::new_unique();
+        let decoded = decode_squads_policy_account(
+            &program_interaction_policy_account_data_with_indexes_and_init_obligation(
+                KAMINO_MAIN_MARKET,
+                2,
+                5,
+                KAMINO_PRIME_MARKET,
+                2,
+                5,
+                vault_pubkey,
+            ),
+        )
+        .expect("decode init-capable policy");
+        let policy_preflight = PolicyAccountPreflight {
+            policy_account: Pubkey::new_unique().to_string(),
+            source_market: KAMINO_MAIN_MARKET.to_owned(),
+            target_market: KAMINO_PRIME_MARKET.to_owned(),
+            decoded,
+        };
+        let target = chain_position_for_vault(KAMINO_PRIME_USDC_RESERVE, 0, false, vault_pubkey);
+
+        let index = init_obligation_instruction_constraint_index(Some(&policy_preflight), &target)
+            .expect("target-market init constraint index");
+
+        assert_eq!(index, 2);
     }
 
     #[test]
@@ -9005,10 +9568,12 @@ mod tests {
             target_market: KAMINO_PRIME_MARKET.to_owned(),
             decoded,
         };
+        let vault = selected_vault_with_policy(policy_preflight.policy_account.clone());
 
         let setup = target_obligation_setup_json(
             &preview,
             &default_reserve_move(),
+            &vault,
             Some(&policy_preflight),
         )
         .expect("setup preview");
@@ -9017,9 +9582,11 @@ mod tests {
         assert_eq!(setup["vaultUserMetadataExists"], false);
         assert_eq!(
             setup["policyShape"],
-            "temporary_init_obligation_policy_then_restore_route_policy"
+            "route_policy_with_market_scoped_init_obligation"
         );
-        assert_eq!(setup["decodedRoutePolicyAllowsRefreshObligation"], true);
+        assert_eq!(setup["decodedRoutePolicyAllowsInitObligation"], true);
+        assert_eq!(setup["initObligationInstructionConstraintIndex"], json!(2));
+        assert_eq!(setup["decodedRoutePolicyAllowsRefreshObligation"], false);
         assert_eq!(
             setup["targetReserve"],
             json!(KAMINO_PRIME_USDC_RESERVE.to_owned())
@@ -9053,7 +9620,7 @@ mod tests {
         deposit_market: &str,
         vault: Pubkey,
     ) -> Vec<u8> {
-        program_interaction_policy_account_data_with_indexes(
+        program_interaction_policy_account_data_with_indexes_and_init_obligation(
             withdraw_market,
             2,
             5,
@@ -9069,7 +9636,7 @@ mod tests {
         deposit_market: &str,
         vault: Pubkey,
     ) -> Vec<u8> {
-        let mut data = program_interaction_policy_account_header(4);
+        let mut data = program_interaction_policy_account_header(3);
         push_program_interaction_kamino_constraint(
             &mut data,
             &WITHDRAW_OBLIGATION_COLLATERAL_AND_REDEEM_RESERVE_COLLATERAL_V2,
@@ -9088,14 +9655,6 @@ mod tests {
             &mut data,
             vault,
             &Pubkey::from_str(deposit_market).unwrap(),
-        );
-        push_program_interaction_refresh_obligation_constraint(
-            &mut data,
-            vault,
-            &[
-                Pubkey::from_str(withdraw_market).unwrap(),
-                Pubkey::from_str(deposit_market).unwrap(),
-            ],
         );
         data
     }
@@ -9144,7 +9703,7 @@ mod tests {
         deposit_mint_account_index: u8,
         vault: Pubkey,
     ) -> Vec<u8> {
-        let mut data = program_interaction_policy_account_header(4);
+        let mut data = program_interaction_policy_account_header(3);
         push_program_interaction_kamino_constraint(
             &mut data,
             &WITHDRAW_OBLIGATION_COLLATERAL_AND_REDEEM_RESERVE_COLLATERAL_V2,
@@ -9163,14 +9722,6 @@ mod tests {
             &mut data,
             vault,
             &Pubkey::from_str(deposit_market).unwrap(),
-        );
-        push_program_interaction_refresh_obligation_constraint(
-            &mut data,
-            vault,
-            &[
-                Pubkey::from_str(withdraw_market).unwrap(),
-                Pubkey::from_str(deposit_market).unwrap(),
-            ],
         );
         data
     }

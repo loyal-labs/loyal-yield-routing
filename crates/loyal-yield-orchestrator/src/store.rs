@@ -11,6 +11,7 @@ use std::future::Future;
 const MIGRATION_0001: &str = include_str!("../migrations/0001_loyal_yield_orchestration.sql");
 const MIGRATION_0002: &str = include_str!("../migrations/0002_balance_sweep_surplus_lots.sql");
 const MIGRATION_0003: &str = include_str!("../migrations/0003_balance_sweep_initial_surplus.sql");
+const MIGRATION_0004: &str = include_str!("../migrations/0004_managed_vault_setup_policy.sql");
 
 #[derive(Clone)]
 pub struct NeonSqlClient {
@@ -135,6 +136,7 @@ impl NeonSqlClient {
         sqlx::raw_sql(MIGRATION_0001).execute(&self.pool).await?;
         sqlx::raw_sql(MIGRATION_0002).execute(&self.pool).await?;
         sqlx::raw_sql(MIGRATION_0003).execute(&self.pool).await?;
+        sqlx::raw_sql(MIGRATION_0004).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -147,6 +149,27 @@ impl NeonSqlClient {
         let vault = upsert_vault(&mut *tx, policy.id, &event).await?;
         tx.commit().await?;
         Ok(StoredPolicyMatch { policy, vault })
+    }
+
+    pub async fn record_route_and_setup_policy_match(
+        &self,
+        route_event: PolicyMatchInput,
+        setup_event: PolicyMatchInput,
+    ) -> Result<(StoredPolicyMatch, RoutePolicy), OrchestratorError> {
+        let mut tx = self.pool.begin().await?;
+        let route_policy = upsert_policy(&mut *tx, &route_event).await?;
+        let setup_policy = upsert_policy(&mut *tx, &setup_event).await?;
+        let vault =
+            upsert_vault_with_setup(&mut *tx, route_policy.id, setup_policy.id, &route_event)
+                .await?;
+        tx.commit().await?;
+        Ok((
+            StoredPolicyMatch {
+                policy: route_policy,
+                vault,
+            },
+            setup_policy,
+        ))
     }
 
     pub async fn record_balance_sweep_policy_match(
@@ -1181,6 +1204,36 @@ async fn upsert_vault(
     Ok(managed_vault_from_row(row))
 }
 
+async fn upsert_vault_with_setup(
+    conn: &mut PgConnection,
+    route_policy_id: PolicyId,
+    setup_policy_id: PolicyId,
+    event: &PolicyMatchInput,
+) -> Result<ManagedVault, OrchestratorError> {
+    let row = sqlx::query_as::<_, ManagedVaultRow>(
+        r#"
+        INSERT INTO loyal_yield.managed_vaults
+            (settings, vault_index, vault_pubkey, active_policy_id, setup_policy_id, active)
+        VALUES ($1, $2, $3, $4, $5, TRUE)
+        ON CONFLICT (settings, vault_index, vault_pubkey) DO UPDATE SET
+            active_policy_id = EXCLUDED.active_policy_id,
+            setup_policy_id = EXCLUDED.setup_policy_id,
+            active = TRUE,
+            last_seen_at = now()
+        RETURNING id, settings, vault_index, vault_pubkey, active_policy_id, active, first_seen_at, last_seen_at
+        "#,
+    )
+    .bind(&event.settings)
+    .bind(i16::from(event.vault_index))
+    .bind(&event.vault_pubkey)
+    .bind(route_policy_id.as_i64())
+    .bind(setup_policy_id.as_i64())
+    .fetch_one(conn)
+    .await?;
+
+    Ok(managed_vault_from_row(row))
+}
+
 async fn fetch_managed_vault_for_update(
     conn: &mut PgConnection,
     vault_id: VaultId,
@@ -1550,8 +1603,9 @@ fn same_mint_execution_plan(input: &SameMintRebalanceInput) -> Value {
         "target_reserve": input.target_reserve,
         "liquidity_mint": input.liquidity_mint,
         "amount_raw": input.amount_raw,
-        "policy_executions": 1,
-        "route_steps": ["kamino_withdraw", "kamino_deposit"],
+        "policy_executions": 3,
+        "init_obligation": "inline_if_missing",
+        "route_steps": ["kamino_withdraw", "kamino_init_obligation_if_missing", "kamino_deposit"],
     })
 }
 
@@ -1562,8 +1616,12 @@ fn same_mint_execution_preview(planned: &PlannedDecision) -> SameMintExecutionPr
         target_reserve: planned.target_reserve.clone(),
         liquidity_mint: planned.source_liquidity_mint.clone(),
         amount_raw: planned.amount_raw,
-        policy_executions: 1,
-        route_steps: vec!["kamino_withdraw".to_owned(), "kamino_deposit".to_owned()],
+        policy_executions: 3,
+        route_steps: vec![
+            "kamino_withdraw".to_owned(),
+            "kamino_init_obligation_if_missing".to_owned(),
+            "kamino_deposit".to_owned(),
+        ],
     }
 }
 
@@ -2118,6 +2176,9 @@ mod tests {
         assert!(STORE_SOURCE.contains("MIGRATION_0003"));
         assert!(STORE_SOURCE.contains("0003_balance_sweep_initial_surplus.sql"));
         assert!(STORE_SOURCE.contains("sqlx::raw_sql(MIGRATION_0003)"));
+        assert!(STORE_SOURCE.contains("MIGRATION_0004"));
+        assert!(STORE_SOURCE.contains("0004_managed_vault_setup_policy.sql"));
+        assert!(STORE_SOURCE.contains("sqlx::raw_sql(MIGRATION_0004)"));
     }
 
     #[test]

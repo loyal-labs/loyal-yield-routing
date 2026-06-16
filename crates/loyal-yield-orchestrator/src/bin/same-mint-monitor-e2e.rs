@@ -12,7 +12,7 @@ use loyal_actions::{KAMINO_MAIN_USDC_RESERVE, USDC_MINT};
 use loyal_yield_orchestrator::{
     solana_testing_keypair_from_env,
     sqlx::{postgres::PgPoolOptions, PgPool, Row},
-    yield_router_keypair_from_env,
+    yield_router_keypair_from_env, NeonSqlClient,
 };
 use loyal_yield_router::timescale::{
     SupportedReserveLatestQuery, SupportedReserveLatestRow, TimescaleRouterClient,
@@ -26,6 +26,7 @@ const DEFAULT_VAULT_INDEX: i16 = 1;
 const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 15;
 const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
 const DEFAULT_MAX_CANDIDATE_AGE_SECONDS: i64 = 6 * 60 * 60;
+const MIN_E2E_AMOUNT_RAW: u64 = 1_000_000;
 
 #[derive(Debug, Clone)]
 struct Options {
@@ -195,6 +196,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .max_connections(1)
         .connect(&neon_url)
         .await?;
+    NeonSqlClient::from_pool(pool.clone())
+        .apply_migrations()
+        .await?;
     log_event("db_readback_start", json!({ "label": "before_setup" }));
     let before_setup = db_readback(&pool, &options).await?;
     log_event(
@@ -228,6 +232,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let policy_update = run_named_child("policy_update", &phases[0])?;
     ensure_child_success("policy_update", &policy_update)?;
+    let signer_boundary = signer_boundary_from_env()?;
+    let policy_update_evidence = policy_update_evidence(&policy_update, &signer_boundary)?;
+    log_event(
+        "policy_update_evidence_passed",
+        policy_update_evidence.clone(),
+    );
     log_event(
         "db_readback_start",
         json!({ "label": "after_policy_update" }),
@@ -241,25 +251,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }),
     );
     ensure_db_active_policy(&after_policy_update)?;
+    ensure_db_setup_policy(&after_policy_update)?;
 
-    let setup_obligation = run_named_child("setup_obligation", &phases[1])?;
-    ensure_child_success("setup_obligation", &setup_obligation)?;
-    log_event(
-        "db_readback_start",
-        json!({ "label": "after_setup_obligation" }),
-    );
-    let after_setup_obligation = db_readback(&pool, &options).await?;
-    log_event(
-        "db_readback_complete",
-        json!({
-            "label": "after_setup_obligation",
-            "summary": db_readback_summary(&after_setup_obligation),
-        }),
-    );
-    ensure_db_active_policy(&after_setup_obligation)?;
-
-    let initial_deposit = run_named_child("initial_deposit", &phases[2])?;
+    let initial_deposit = run_named_child("initial_deposit", &phases[1])?;
     ensure_child_success("initial_deposit", &initial_deposit)?;
+    ensure_deposit_executed("initial_deposit", &initial_deposit)?;
     log_event("db_readback_start", json!({ "label": "after_deposit" }));
     let after_deposit = db_readback(&pool, &options).await?;
     log_event(
@@ -272,20 +268,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     ensure_db_position_has_value(&after_deposit, &KAMINO_MAIN_USDC_RESERVE.to_string())?;
 
     let monitor_result = wait_for_monitor_execution(&options).await?;
-    let final_reserve = monitor_result
-        .get("plannedMove")
-        .and_then(|plan| plan.get("targetReserve"))
-        .and_then(Value::as_str)
-        .or_else(|| {
-            monitor_result
-                .get("routeExecution")
-                .and_then(|execution| execution.get("stdout"))
-                .and_then(|stdout| stdout.get("preparedDecision"))
-                .and_then(|decision| decision.get("targetReserve"))
-                .and_then(Value::as_str)
-        })
-        .ok_or("monitor executed without a target reserve in its JSON output")?
-        .to_owned();
+    let final_reserve = monitor_final_reserve(&monitor_result)?.to_owned();
     log_event(
         "monitor_execution_selected_final_reserve",
         json!({ "finalReserve": final_reserve }),
@@ -303,6 +286,47 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }),
     );
     ensure_db_position_has_value(&after_optimization, &final_reserve)?;
+
+    let top_up_command = deposit_main_usdc_command(&options);
+    let top_up = run_named_child("top_up", &top_up_command)?;
+    ensure_child_success("top_up", &top_up)?;
+    ensure_deposit_executed("top_up", &top_up)?;
+    log_event("db_readback_start", json!({ "label": "after_top_up" }));
+    let after_top_up = db_readback(&pool, &options).await?;
+    log_event(
+        "db_readback_complete",
+        json!({
+            "label": "after_top_up",
+            "summary": db_readback_summary(&after_top_up),
+        }),
+    );
+    ensure_db_position_has_value(&after_top_up, &KAMINO_MAIN_USDC_RESERVE.to_string())?;
+
+    let top_up_monitor_result = wait_for_monitor_execution(&options).await?;
+    let top_up_final_reserve = monitor_final_reserve(&top_up_monitor_result)?.to_owned();
+    if top_up_final_reserve != final_reserve {
+        return Err(format!(
+            "top-up monitor routed to {top_up_final_reserve}, expected stable final reserve {final_reserve}"
+        )
+        .into());
+    }
+    log_event(
+        "top_up_monitor_execution_selected_final_reserve",
+        json!({ "finalReserve": top_up_final_reserve }),
+    );
+    log_event(
+        "db_readback_start",
+        json!({ "label": "after_top_up_optimization" }),
+    );
+    let after_top_up_optimization = db_readback(&pool, &options).await?;
+    log_event(
+        "db_readback_complete",
+        json!({
+            "label": "after_top_up_optimization",
+            "summary": db_readback_summary(&after_top_up_optimization),
+        }),
+    );
+    ensure_db_position_has_value(&after_top_up_optimization, &final_reserve)?;
 
     let full_withdraw_command = full_withdraw_command(&options, &final_reserve);
     let full_withdraw = run_named_child("full_withdraw", &full_withdraw_command)?;
@@ -325,7 +349,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let post_cleanup_monitor =
         run_named_child("post_cleanup_monitor", &post_cleanup_monitor_command)?;
     ensure_child_success("post_cleanup_monitor", &post_cleanup_monitor)?;
-    let signer_boundary = signer_boundary_from_env()?;
     let execution_evidence = e2e_execution_evidence(
         &options,
         &monitor_result,
@@ -347,9 +370,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "maxCandidateAgeSeconds": options.max_candidate_age_seconds,
             "precondition": edge_precondition_json(&precondition),
             "policyUpdate": child_output_json(&policy_update),
-            "setupObligation": child_output_json(&setup_obligation),
+            "policyUpdateEvidence": policy_update_evidence,
             "initialDeposit": child_output_json(&initial_deposit),
             "monitorExecution": monitor_result,
+            "topUpCommand": top_up_command,
+            "topUp": child_output_json(&top_up),
+            "topUpMonitorExecution": top_up_monitor_result,
             "finalReserve": final_reserve,
             "fullWithdrawCommand": full_withdraw_command,
             "fullWithdraw": child_output_json(&full_withdraw),
@@ -357,9 +383,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "postCleanupMonitor": child_output_json(&post_cleanup_monitor),
             "dbReadbacks": {
                 "afterPolicyUpdate": after_policy_update,
-                "afterSetupObligation": after_setup_obligation,
                 "afterDeposit": after_deposit,
                 "afterOptimization": after_optimization,
+                "afterTopUp": after_top_up,
+                "afterTopUpOptimization": after_top_up_optimization,
                 "afterFullWithdraw": after_full_withdraw,
             },
             "executionEvidence": execution_evidence,
@@ -444,46 +471,43 @@ fn phase_commands(options: &Options, precondition: &EdgePrecondition) -> Vec<Vec
             "--vault-index".to_owned(),
             options.vault_index.to_string(),
             "--update-policy".to_owned(),
+            "--update-active-policy".to_owned(),
             "--provision-lookup-table".to_owned(),
             "--execute".to_owned(),
         ],
-        setup_obligation_command(options, &precondition.best.reserve),
-        vec![
-            "same-mint-reserve-swap".to_owned(),
-            "--settings".to_owned(),
-            options.settings.clone(),
-            "--vault-index".to_owned(),
-            options.vault_index.to_string(),
-            "--deposit-main-usdc".to_owned(),
-            options.amount_raw.to_string(),
-            "--execute".to_owned(),
-        ],
-        vec![
-            "same-mint-yield-monitor".to_owned(),
-            "--once".to_owned(),
-            "--all-active-vaults".to_owned(),
-            "--execute".to_owned(),
-            "--poll-interval-seconds".to_owned(),
-            options.poll_interval_seconds.to_string(),
-            "--max-candidate-age-seconds".to_owned(),
-            options.max_candidate_age_seconds.to_string(),
-            "--min-edge-bps".to_owned(),
-            "1".to_owned(),
-        ],
+        deposit_main_usdc_command(options),
+        monitor_execute_command(options),
+        deposit_main_usdc_command(options),
+        monitor_execute_command(options),
         full_withdraw_command(options, &precondition.best.reserve),
     ]
 }
 
-fn setup_obligation_command(options: &Options, reserve: &str) -> Vec<String> {
+fn deposit_main_usdc_command(options: &Options) -> Vec<String> {
     vec![
         "same-mint-reserve-swap".to_owned(),
         "--settings".to_owned(),
         options.settings.clone(),
         "--vault-index".to_owned(),
         options.vault_index.to_string(),
-        "--setup-obligation-reserve".to_owned(),
-        reserve.to_owned(),
+        "--deposit-main-usdc".to_owned(),
+        options.amount_raw.to_string(),
         "--execute".to_owned(),
+    ]
+}
+
+fn monitor_execute_command(options: &Options) -> Vec<String> {
+    vec![
+        "same-mint-yield-monitor".to_owned(),
+        "--once".to_owned(),
+        "--all-active-vaults".to_owned(),
+        "--execute".to_owned(),
+        "--poll-interval-seconds".to_owned(),
+        options.poll_interval_seconds.to_string(),
+        "--max-candidate-age-seconds".to_owned(),
+        options.max_candidate_age_seconds.to_string(),
+        "--min-edge-bps".to_owned(),
+        "1".to_owned(),
     ]
 }
 
@@ -517,16 +541,7 @@ async fn wait_for_monitor_execution(options: &Options) -> Result<Value, Box<dyn 
     let mut attempt: u64 = 0;
     loop {
         attempt += 1;
-        let command = vec![
-            "same-mint-yield-monitor".to_owned(),
-            "--once".to_owned(),
-            "--all-active-vaults".to_owned(),
-            "--execute".to_owned(),
-            "--poll-interval-seconds".to_owned(),
-            options.poll_interval_seconds.to_string(),
-            "--max-candidate-age-seconds".to_owned(),
-            options.max_candidate_age_seconds.to_string(),
-        ];
+        let command = monitor_execute_command(options);
         log_event(
             "monitor_attempt_start",
             json!({
@@ -610,6 +625,33 @@ async fn wait_for_monitor_execution(options: &Options) -> Result<Value, Box<dyn 
     }
 }
 
+fn monitor_final_reserve(result: &Value) -> Result<&str, Box<dyn Error>> {
+    result
+        .get("plannedMove")
+        .and_then(|plan| plan.get("targetReserve"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            result
+                .get("routeExecution")
+                .and_then(|execution| execution.get("stdout"))
+                .and_then(|stdout| stdout.get("preparedDecision"))
+                .and_then(|decision| decision.get("targetReserve"))
+                .and_then(Value::as_str)
+        })
+        .ok_or_else(|| "monitor executed without a target reserve in its JSON output".into())
+}
+
+fn ensure_deposit_executed(label: &str, output: &ChildOutput) -> Result<(), Box<dyn Error>> {
+    let stdout = output
+        .stdout_json
+        .as_ref()
+        .ok_or_else(|| format!("{label} did not print JSON"))?;
+    if stdout.get("status").and_then(Value::as_str) != Some("initial_deposit_executed") {
+        return Err(format!("{label} did not execute the Main USDC deposit").into());
+    }
+    Ok(())
+}
+
 fn e2e_execution_evidence(
     options: &Options,
     monitor_result: &Value,
@@ -624,6 +666,59 @@ fn e2e_execution_evidence(
     let route_stdout = monitor_result
         .pointer("/routeExecution/stdout")
         .ok_or("monitor result is missing route execution stdout")?;
+    let missing_obligation_setup = route_stdout
+        .get("missingObligationSetup")
+        .filter(|value| !value.is_null())
+        .ok_or("route execution did not report missing-obligation setup from optimizer path")?;
+    let missing_setup_target_reserve = missing_obligation_setup
+        .get("targetReserve")
+        .and_then(Value::as_str)
+        .ok_or("missing-obligation setup output is missing target reserve")?;
+    if missing_setup_target_reserve != final_reserve {
+        return Err(format!(
+            "missing-obligation setup targeted {missing_setup_target_reserve}, expected optimizer final reserve {final_reserve}"
+        )
+        .into());
+    }
+    let setup_execution_mode = missing_obligation_setup
+        .get("executionMode")
+        .and_then(Value::as_str)
+        .ok_or("missing-obligation setup output is missing execution mode")?;
+    if setup_execution_mode != "inline_route_transaction" {
+        return Err(format!(
+            "missing-obligation setup used {setup_execution_mode}, expected inline_route_transaction"
+        )
+        .into());
+    }
+    let setup_policy_source = missing_obligation_setup
+        .get("policySource")
+        .and_then(Value::as_str)
+        .ok_or("missing-obligation setup output is missing policy source")?;
+    if setup_policy_source != "setup_policy" {
+        return Err(format!(
+            "fallback E2E expected setup_policy init source, got {setup_policy_source}"
+        )
+        .into());
+    }
+    let route_steps = route_stdout
+        .pointer("/routeExecution/routeSteps")
+        .and_then(Value::as_array)
+        .ok_or("route execution preview is missing route steps")?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    if route_steps
+        != vec![
+            "kamino_withdraw_obligation_collateral_and_redeem_reserve_collateral_v2",
+            "kamino_init_obligation",
+            "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2",
+        ]
+    {
+        return Err(format!(
+            "route execution steps were {route_steps:?}, expected withdraw/init/deposit"
+        )
+        .into());
+    }
     assert_json_str_eq(
         route_stdout.pointer("/routeExecution/signer"),
         &signer_boundary.optimizer,
@@ -764,6 +859,12 @@ fn e2e_execution_evidence(
     if policy_active || vault_active {
         return Err("full withdraw did not mark policy and vault inactive".into());
     }
+    let setup_policy_active = full_stdout
+        .pointer("/positionCleanupProof/inactiveRows/setupPolicyActive")
+        .and_then(Value::as_bool);
+    if setup_policy_active == Some(true) {
+        return Err("full withdraw did not mark setup policy inactive".into());
+    }
     let wallet_usdc_delta = json_i64(full_stdout.pointer("/walletRecovery/walletUsdcDeltaRaw"))
         .ok_or("full withdraw output is missing wallet USDC delta evidence")?;
     if wallet_usdc_delta <= 0 {
@@ -779,6 +880,22 @@ fn e2e_execution_evidence(
     let policy_close_signature =
         non_empty_json_str(full_stdout.pointer("/policyCloseTransaction/signature"))
             .ok_or("full withdraw output is missing policy close signature")?;
+    let setup_policy_closed = full_stdout
+        .get("setupPolicyClose")
+        .filter(|value| !value.is_null())
+        .and_then(|value| value.get("policyClosed"))
+        .and_then(Value::as_bool);
+    if setup_policy_active.is_some() && setup_policy_closed != Some(true) {
+        return Err("full withdraw did not close the setup policy account".into());
+    }
+    let setup_policy_close_signature = if setup_policy_closed == Some(true) {
+        Some(
+            non_empty_json_str(full_stdout.pointer("/setupPolicyCloseTransaction/signature"))
+                .ok_or("full withdraw output is missing setup policy close signature")?,
+        )
+    } else {
+        None
+    };
 
     let remaining_monitored =
         post_cleanup_monitor_contains_selected_vault(post_cleanup_monitor, options)?;
@@ -794,6 +911,11 @@ fn e2e_execution_evidence(
             "finalStatus": final_status,
             "confirmedStatus": confirmed_status,
         },
+        "missingObligationSetup": {
+            "targetReserve": missing_setup_target_reserve,
+            "executionMode": setup_execution_mode,
+            "policySource": setup_policy_source,
+        },
         "signerBoundary": {
             "setupAuthority": signer_boundary.setup_authority.as_str(),
             "optimizer": signer_boundary.optimizer.as_str(),
@@ -807,14 +929,111 @@ fn e2e_execution_evidence(
             "reserve": final_reserve,
             "allTrackedPositionsZero": all_tracked_positions_zero,
             "policyActive": policy_active,
+            "setupPolicyActive": setup_policy_active,
             "vaultActive": vault_active,
             "walletUsdcDeltaRaw": wallet_usdc_delta.to_string(),
             "policyClosed": policy_closed,
             "policyCloseSignature": policy_close_signature,
+            "setupPolicyClosed": setup_policy_closed,
+            "setupPolicyCloseSignature": setup_policy_close_signature,
         },
         "postCleanupFleetDiscovery": {
             "selectedVaultStillMonitored": false,
         },
+    }))
+}
+
+fn policy_update_evidence(
+    output: &ChildOutput,
+    signer_boundary: &SignerBoundary,
+) -> Result<Value, Box<dyn Error>> {
+    let stdout = output
+        .stdout_json
+        .as_ref()
+        .ok_or("policy update did not print JSON")?;
+    if stdout.get("fallbackRequired").and_then(Value::as_bool) != Some(true) {
+        return Err("policy update did not use the setup-policy fallback path".into());
+    }
+    let route_policy = stdout
+        .get("policyCreate")
+        .filter(|value| !value.is_null())
+        .or_else(|| stdout.get("policyUpdate").filter(|value| !value.is_null()))
+        .ok_or("policy update output is missing route policy evidence")?;
+    let setup_policy = stdout
+        .get("setupPolicyCreate")
+        .filter(|value| !value.is_null())
+        .or_else(|| {
+            stdout
+                .get("setupPolicyUpdate")
+                .filter(|value| !value.is_null())
+        })
+        .ok_or("policy update output is missing setup policy evidence")?;
+    assert_json_str_eq(
+        route_policy.get("authoritySigner"),
+        &signer_boundary.setup_authority,
+        "policyUpdate.route.authoritySigner",
+    )?;
+    assert_json_str_eq(
+        setup_policy.get("authoritySigner"),
+        &signer_boundary.setup_authority,
+        "policyUpdate.setup.authoritySigner",
+    )?;
+    assert_json_str_eq(
+        route_policy.pointer("/transaction/feePayer"),
+        &signer_boundary.setup_authority,
+        "policyUpdate.route.transaction.feePayer",
+    )?;
+    assert_json_str_eq(
+        setup_policy.pointer("/transaction/feePayer"),
+        &signer_boundary.setup_authority,
+        "policyUpdate.setup.transaction.feePayer",
+    )?;
+    let stored = stdout
+        .get("storedPolicyMatch")
+        .ok_or("policy update output is missing storedPolicyMatch")?;
+    if stored
+        .get("activePolicyRemainsRoutePolicy")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err("policy update replaced active_policy_id with the setup policy".into());
+    }
+    let setup_policy_id = json_i64(stored.get("setupPolicyId"))
+        .ok_or("policy update output is missing stored setup policy id")?;
+    if setup_policy_id <= 0 {
+        return Err("policy update stored setup policy id must be positive".into());
+    }
+    if stdout
+        .get("decodedAllowsInitObligation")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err("setup policy decode does not allow init_obligation".into());
+    }
+    if stdout
+        .get("decodedRouteAllowsInitObligation")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err("route policy unexpectedly allows init_obligation".into());
+    }
+    if stdout
+        .get("decodedAllowsRefreshObligation")
+        .and_then(Value::as_bool)
+        != Some(false)
+    {
+        return Err("policy decode unexpectedly allows refresh_obligation".into());
+    }
+
+    Ok(json!({
+        "fallbackRequired": true,
+        "routePolicyAccount": route_policy.get("policyAccount").and_then(Value::as_str),
+        "setupPolicyAccount": setup_policy.get("policyAccount").and_then(Value::as_str),
+        "setupPolicyId": setup_policy_id,
+        "activePolicyRemainsRoutePolicy": true,
+        "setupAllowsInitObligation": true,
+        "routeAllowsInitObligation": false,
+        "allowsRefreshObligation": false,
     }))
 }
 
@@ -860,13 +1079,19 @@ async fn db_readback(pool: &PgPool, options: &Options) -> Result<Value, Box<dyn 
             v.id AS vault_id,
             v.active AS vault_active,
             v.active_policy_id,
+            v.setup_policy_id,
             p.id AS policy_id,
             p.active AS policy_active,
             p.policy_account,
             p.delegated_signers,
-            p.route_modes
+            p.route_modes,
+            sp.id AS setup_policy_row_id,
+            sp.active AS setup_policy_active,
+            sp.policy_account AS setup_policy_account,
+            sp.route_modes AS setup_route_modes
         FROM loyal_yield.managed_vaults v
         JOIN loyal_yield.route_policies p ON p.id = v.active_policy_id
+        LEFT JOIN loyal_yield.route_policies sp ON sp.id = v.setup_policy_id
         WHERE v.settings = $1
           AND v.vault_index = $2
         ORDER BY v.id DESC
@@ -916,6 +1141,7 @@ async fn db_readback(pool: &PgPool, options: &Options) -> Result<Value, Box<dyn 
             "id": vault_id,
             "active": vault_row.try_get::<bool, _>("vault_active")?,
             "activePolicyId": vault_row.try_get::<i64, _>("active_policy_id")?,
+            "setupPolicyId": vault_row.try_get::<Option<i64>, _>("setup_policy_id")?,
         },
         "policy": {
             "id": vault_row.try_get::<i64, _>("policy_id")?,
@@ -923,6 +1149,15 @@ async fn db_readback(pool: &PgPool, options: &Options) -> Result<Value, Box<dyn 
             "policyAccount": vault_row.try_get::<String, _>("policy_account")?,
             "delegatedSigners": vault_row.try_get::<Vec<String>, _>("delegated_signers")?,
             "routeModes": vault_row.try_get::<Vec<String>, _>("route_modes")?,
+        },
+        "setupPolicy": match vault_row.try_get::<Option<i64>, _>("setup_policy_row_id")? {
+            Some(id) => json!({
+                "id": id,
+                "active": vault_row.try_get::<Option<bool>, _>("setup_policy_active")?,
+                "policyAccount": vault_row.try_get::<Option<String>, _>("setup_policy_account")?,
+                "routeModes": vault_row.try_get::<Option<Vec<String>>, _>("setup_route_modes")?,
+            }),
+            None => Value::Null,
         },
         "currentPositions": position_rows
             .iter()
@@ -963,6 +1198,43 @@ fn ensure_db_active_policy(readback: &Value) -> Result<(), Box<dyn Error>> {
         || readback.pointer("/policy/active").and_then(Value::as_bool) != Some(true)
     {
         return Err("DB readback expected active managed_vault and route_policy".into());
+    }
+    if readback
+        .pointer("/vault/activePolicyId")
+        .and_then(Value::as_i64)
+        != readback.pointer("/policy/id").and_then(Value::as_i64)
+    {
+        return Err("DB readback active_policy_id does not point at route policy".into());
+    }
+    Ok(())
+}
+
+fn ensure_db_setup_policy(readback: &Value) -> Result<(), Box<dyn Error>> {
+    let setup_policy_id = readback
+        .pointer("/vault/setupPolicyId")
+        .and_then(Value::as_i64)
+        .ok_or("DB readback expected setup_policy_id after fallback policy update")?;
+    let setup_policy = readback
+        .get("setupPolicy")
+        .filter(|value| !value.is_null())
+        .ok_or("DB readback expected setup policy row after fallback policy update")?;
+    if setup_policy.get("id").and_then(Value::as_i64) != Some(setup_policy_id) {
+        return Err("DB readback setup_policy_id does not point at setup policy row".into());
+    }
+    if setup_policy.get("active").and_then(Value::as_bool) != Some(true) {
+        return Err("DB readback expected active setup policy after fallback policy update".into());
+    }
+    if setup_policy
+        .get("routeModes")
+        .and_then(Value::as_array)
+        .map(|modes| {
+            modes
+                .iter()
+                .any(|mode| mode.as_str() == Some("same_mint_kamino_setup"))
+        })
+        != Some(true)
+    {
+        return Err("DB readback setup policy is missing setup route mode".into());
     }
     Ok(())
 }
@@ -1017,6 +1289,14 @@ fn ensure_db_inactive_and_zero(readback: &Value) -> Result<(), Box<dyn Error>> {
         || readback.pointer("/policy/active").and_then(Value::as_bool) != Some(false)
     {
         return Err("DB readback expected inactive managed_vault and route_policy".into());
+    }
+    if let Some(active) = readback
+        .pointer("/setupPolicy/active")
+        .and_then(Value::as_bool)
+    {
+        if active {
+            return Err("DB readback expected inactive setup policy after full withdraw".into());
+        }
     }
     let positions = readback
         .get("currentPositions")
@@ -1237,7 +1517,10 @@ fn db_readback_summary(readback: &Value) -> Value {
     json!({
         "found": readback.get("found").and_then(Value::as_bool),
         "vaultActive": readback.pointer("/vault/active").and_then(Value::as_bool),
+        "activePolicyId": readback.pointer("/vault/activePolicyId").and_then(Value::as_i64),
+        "setupPolicyId": readback.pointer("/vault/setupPolicyId").and_then(Value::as_i64),
         "policyActive": readback.pointer("/policy/active").and_then(Value::as_bool),
+        "setupPolicyActive": readback.pointer("/setupPolicy/active").and_then(Value::as_bool),
         "positionCount": positions.map(Vec::len).unwrap_or(0),
         "nonzeroPositions": nonzero_positions,
         "recentDecisionStatuses": readback
@@ -1405,8 +1688,11 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
         }
     }
     let amount_raw = amount_raw.ok_or("--amount-raw is required")?;
-    if amount_raw == 0 {
-        return Err("--amount-raw must be greater than 0".into());
+    if amount_raw < MIN_E2E_AMOUNT_RAW {
+        return Err(format!(
+            "--amount-raw must be at least {MIN_E2E_AMOUNT_RAW} for live KLend E2E; smaller USDC dust can mint zero collateral"
+        )
+        .into());
     }
     if poll_interval_seconds == 0 || timeout_seconds == 0 {
         return Err("--poll-interval-seconds and --timeout-seconds must be greater than 0".into());
@@ -1475,16 +1761,28 @@ mod tests {
             "--settings".to_owned(),
             "settings".to_owned(),
             "--amount-raw".to_owned(),
-            "100".to_owned(),
+            "1000000".to_owned(),
         ])
         .expect("parse options");
         assert_eq!(options.vault_index, 1);
-        assert_eq!(options.amount_raw, 100);
+        assert_eq!(options.amount_raw, MIN_E2E_AMOUNT_RAW);
         assert_eq!(
             options.max_candidate_age_seconds,
             DEFAULT_MAX_CANDIDATE_AGE_SECONDS
         );
         assert!(!options.execute);
+    }
+
+    #[test]
+    fn parse_rejects_dust_amounts_that_mint_zero_collateral() {
+        let error = parse_args([
+            "--settings".to_owned(),
+            "settings".to_owned(),
+            "--amount-raw".to_owned(),
+            "1".to_owned(),
+        ])
+        .expect_err("dust amount should be rejected");
+        assert!(error.to_string().contains("mint zero collateral"));
     }
 
     #[test]
@@ -1523,11 +1821,19 @@ mod tests {
         let phases = phase_commands(&options, &edge);
         assert!(phases[0].contains(&"--update-policy".to_owned()));
         assert!(phases[0].contains(&"--provision-lookup-table".to_owned()));
-        assert!(!phases[0].contains(&"--update-active-policy".to_owned()));
-        assert!(phases[1].contains(&"--setup-obligation-reserve".to_owned()));
-        assert!(phases[1].contains(&edge.best.reserve));
-        assert!(phases[3].contains(&"--max-candidate-age-seconds".to_owned()));
-        assert!(phases[3].contains(&DEFAULT_MAX_CANDIDATE_AGE_SECONDS.to_string()));
+        assert!(phases[0].contains(&"--update-active-policy".to_owned()));
+        assert_eq!(phases.len(), 6);
+        assert!(phases
+            .iter()
+            .all(|phase| !phase.contains(&"--setup-obligation-reserve".to_owned())));
+        assert!(phases[1].contains(&"--deposit-main-usdc".to_owned()));
+        assert!(phases[2].contains(&"--max-candidate-age-seconds".to_owned()));
+        assert!(phases[2].contains(&DEFAULT_MAX_CANDIDATE_AGE_SECONDS.to_string()));
+        assert!(phases[3].contains(&"--deposit-main-usdc".to_owned()));
+        assert!(phases[4].contains(&"--max-candidate-age-seconds".to_owned()));
+        assert!(phases[4].contains(&DEFAULT_MAX_CANDIDATE_AGE_SECONDS.to_string()));
+        assert!(phases[5].contains(&"--full-withdraw-reserve".to_owned()));
+        assert!(phases[5].contains(&edge.best.reserve));
     }
 
     #[test]
@@ -1580,9 +1886,19 @@ mod tests {
             "status": "executed",
             "routeExecution": {
                 "stdout": {
+                    "missingObligationSetup": {
+                        "targetReserve": final_reserve,
+                        "executionMode": "inline_route_transaction",
+                        "policySource": "setup_policy"
+                    },
                     "routeExecution": {
                         "signer": "optimizer-signer",
-                        "feePayer": "optimizer-signer"
+                        "feePayer": "optimizer-signer",
+                        "routeSteps": [
+                            "kamino_withdraw_obligation_collateral_and_redeem_reserve_collateral_v2",
+                            "kamino_init_obligation",
+                            "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2"
+                        ]
                     },
                     "executionPickup": {
                         "signature": "5sig",
@@ -1683,6 +1999,10 @@ mod tests {
         )
         .expect("evidence passes");
         assert_eq!(evidence["confirmedDecision"]["signature"], json!("5sig"));
+        assert_eq!(
+            evidence["missingObligationSetup"]["executionMode"],
+            json!("inline_route_transaction")
+        );
         assert_eq!(
             evidence["postCleanupFleetDiscovery"]["selectedVaultStillMonitored"],
             json!(false)

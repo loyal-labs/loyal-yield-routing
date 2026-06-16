@@ -105,10 +105,6 @@ pub(crate) fn kamino_init_obligation_constraint(
     markets: Vec<Pubkey>,
 ) -> SquadsInstructionConstraint {
     let markets = unique_pubkeys(markets);
-    let obligations = markets
-        .iter()
-        .map(|market| derive_kamino_vanilla_obligation(vault, *market))
-        .collect();
     let mut init_obligation_data_prefix = KAMINO_INIT_OBLIGATION_DISCRIMINATOR.to_vec();
     init_obligation_data_prefix.push(KAMINO_VANILLA_OBLIGATION_TAG);
     init_obligation_data_prefix.push(KAMINO_VANILLA_OBLIGATION_ID);
@@ -118,7 +114,6 @@ pub(crate) fn kamino_init_obligation_constraint(
         account_constraints: vec![
             pubkey_constraint(0, vec![vault], None),
             pubkey_constraint(1, vec![vault], None),
-            pubkey_constraint(2, obligations, None),
             pubkey_constraint(3, markets, None),
             pubkey_constraint(4, vec![Pubkey::default()], None),
             pubkey_constraint(5, vec![Pubkey::default()], None),
