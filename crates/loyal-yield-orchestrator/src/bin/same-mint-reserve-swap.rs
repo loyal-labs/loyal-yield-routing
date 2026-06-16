@@ -202,6 +202,11 @@ fn reconcile_reserves_for_move(options: &CliOptions, reserve_move: &ReserveMove)
             reserves.push(reserve.clone());
         }
     }
+    if let Some(reserve) = &options.initial_deposit_reserve {
+        if !reserves.iter().any(|existing| existing == reserve) {
+            reserves.push(reserve.clone());
+        }
+    }
     if let Some(reserve) = &options.setup_obligation_reserve {
         if !reserves.iter().any(|existing| existing == reserve) {
             reserves.push(reserve.clone());
@@ -231,6 +236,7 @@ struct CliOptions {
     target_reserve: Option<String>,
     update_policy: bool,
     update_active_policy: bool,
+    initial_deposit_reserve: Option<String>,
     initial_deposit_amount_raw: Option<u64>,
     full_withdraw_main_usdc: bool,
     full_withdraw_reserve: Option<String>,
@@ -823,7 +829,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     if let Some(amount_raw) = options.initial_deposit_amount_raw {
-        run_initial_main_usdc_deposit_flow(
+        let deposit_reserve = options
+            .initial_deposit_reserve
+            .clone()
+            .unwrap_or_else(|| KAMINO_MAIN_USDC_RESERVE.to_string());
+        run_initial_reserve_deposit_flow(
             &options,
             &client,
             &vault,
@@ -831,6 +841,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .as_ref()
                 .ok_or("initial deposit requires chain preview")?,
             policy_preflight.as_ref(),
+            &deposit_reserve,
             amount_raw,
         )
         .await?;
@@ -2516,16 +2527,17 @@ fn build_init_obligation_execution_transaction(
     )
 }
 
-async fn run_initial_main_usdc_deposit_flow(
+async fn run_initial_reserve_deposit_flow(
     options: &CliOptions,
     client: &NeonSqlClient,
     vault: &SelectedVault,
     initial_preview: &ChainReconcilePreview,
     policy_preflight: Option<&PolicyAccountPreflight>,
+    deposit_reserve: &str,
     amount_raw: u64,
 ) -> Result<(), Box<dyn Error>> {
     if amount_raw == 0 {
-        return Err("--deposit-main-usdc amount must be greater than 0".into());
+        return Err("initial deposit amount must be greater than 0".into());
     }
 
     let rpc =
@@ -2541,33 +2553,38 @@ async fn run_initial_main_usdc_deposit_flow(
             vault.vault_index
         )
     })?;
-    let main_position =
-        chain_position_for_reserve(initial_preview, &KAMINO_MAIN_USDC_RESERVE.to_string())?;
+    let deposit_position = chain_position_for_reserve(initial_preview, deposit_reserve)?;
     let mut active_preview = initial_preview.clone();
     let mut reloaded_policy_preflight: Option<PolicyAccountPreflight> = None;
     let mut missing_obligation_setup_result: Option<Value> = None;
-    let missing_obligation_setup_dry_run = if !options.execute && !main_position.obligation_exists {
-        Some(
-            build_missing_obligation_setup_dry_run(options, vault, main_position, policy_preflight)
-                .map(|dry_run| missing_obligation_setup_dry_run_json(main_position, &dry_run))
+    let missing_obligation_setup_dry_run =
+        if !options.execute && !deposit_position.obligation_exists {
+            Some(
+                build_missing_obligation_setup_dry_run(
+                    options,
+                    vault,
+                    deposit_position,
+                    policy_preflight,
+                )
+                .map(|dry_run| missing_obligation_setup_dry_run_json(deposit_position, &dry_run))
                 .unwrap_or_else(|error| {
                     json!({
-                        "targetObligation": main_position.obligation,
-                        "targetReserve": main_position.reserve,
-                        "targetMarket": main_position.market,
+                        "targetObligation": deposit_position.obligation,
+                        "targetReserve": deposit_position.reserve,
+                        "targetMarket": deposit_position.market,
                         "error": error.to_string(),
                     })
                 }),
-        )
-    } else {
-        None
-    };
+            )
+        } else {
+            None
+        };
     let wallet_usdc_ata =
         derive_associated_token_address(&wallet_signer.pubkey(), &USDC_MINT, &spl_token::ID);
     let vault_usdc_ata = derive_associated_token_address(&vault_pubkey, &USDC_MINT, &spl_token::ID);
     let (wallet_usdc_amount_raw, wallet_usdc_account_exists) =
         load_spl_token_account_amount(&rpc, &wallet_usdc_ata, &USDC_MINT)?;
-    let funding_needed_raw = amount_raw.saturating_sub(main_position.vault_liquidity_amount_raw);
+    let funding_needed_raw = amount_raw.saturating_sub(deposit_position.vault_liquidity_amount_raw);
     let mut blockers = Vec::new();
     if !wallet_usdc_account_exists {
         blockers.push(format!(
@@ -2582,10 +2599,10 @@ async fn run_initial_main_usdc_deposit_flow(
             wallet_usdc_amount_raw, funding_needed_raw
         ));
     }
-    if !main_position.obligation_exists && !options.execute {
+    if !deposit_position.obligation_exists && !options.execute {
         blockers.push(format!(
-            "Main obligation {} is missing; run missing-obligation setup before policy deposit",
-            main_position.obligation
+            "deposit obligation {} is missing for reserve {}; run missing-obligation setup before policy deposit",
+            deposit_position.obligation, deposit_position.reserve
         ));
     }
     if options.execute && blockers.iter().any(|reason| reason.contains("wallet USDC")) {
@@ -2600,39 +2617,32 @@ async fn run_initial_main_usdc_deposit_flow(
                 "missingObligationSetup": Value::Null,
             }))?
         );
-        return Err("initial Main USDC deposit preflight blocked before setup".into());
+        return Err("initial reserve deposit preflight blocked before setup".into());
     }
-    if options.execute && !main_position.obligation_exists {
+    if options.execute && !deposit_position.obligation_exists {
         let setup_result =
-            execute_missing_obligation_setup(options, vault, main_position, policy_preflight)
+            execute_missing_obligation_setup(options, vault, deposit_position, policy_preflight)
                 .await?;
         missing_obligation_setup_result = Some(missing_obligation_setup_submit_result_json(
-            main_position,
+            deposit_position,
             &setup_result,
         ));
-        active_preview = load_chain_reconcile_preview(
-            &options.rpc_url,
-            vault,
-            &[
-                KAMINO_MAIN_USDC_RESERVE.to_string(),
-                KAMINO_PRIME_USDC_RESERVE.to_owned(),
-            ],
-        )?;
+        active_preview =
+            load_chain_reconcile_preview(&options.rpc_url, vault, &[deposit_reserve.to_owned()])?;
         reloaded_policy_preflight = Some(load_policy_account_preflight(
             &options.rpc_url,
             vault,
             &active_preview,
             &ReserveMove {
-                source_reserve: KAMINO_MAIN_USDC_RESERVE.to_string(),
-                target_reserve: KAMINO_PRIME_USDC_RESERVE.to_owned(),
+                source_reserve: deposit_reserve.to_owned(),
+                target_reserve: deposit_reserve.to_owned(),
             },
         )?);
-        let active_main =
-            chain_position_for_reserve(&active_preview, &KAMINO_MAIN_USDC_RESERVE.to_string())?;
-        if !active_main.obligation_exists {
+        let active_deposit = chain_position_for_reserve(&active_preview, deposit_reserve)?;
+        if !active_deposit.obligation_exists {
             return Err(format!(
-                "Main obligation {} is still missing after setup execution",
-                active_main.obligation
+                "deposit obligation {} is still missing after setup execution",
+                active_deposit.obligation
             )
             .into());
         }
@@ -2668,14 +2678,15 @@ async fn run_initial_main_usdc_deposit_flow(
         &funding_instructions,
         &lookup_table_accounts,
         &[&wallet_signer],
-        "initial Main USDC funding",
+        "initial reserve funding",
         funding_skip_reason,
     )?;
 
-    let policy_plan = match build_initial_main_usdc_deposit_policy_plan(
+    let policy_plan = match build_initial_reserve_deposit_policy_plan(
         vault,
         &active_preview,
         active_policy_preflight,
+        deposit_reserve,
         amount_raw,
         delegated_signer.pubkey(),
         account_index,
@@ -2688,7 +2699,7 @@ async fn run_initial_main_usdc_deposit_flow(
     };
     let dry_run_policy_transaction = if let Some(plan) = policy_plan.as_ref() {
         let policy_simulation_skip_reason =
-            if main_position.vault_liquidity_amount_raw >= amount_raw {
+            if deposit_position.vault_liquidity_amount_raw >= amount_raw {
                 None
             } else {
                 Some(
@@ -2704,7 +2715,7 @@ async fn run_initial_main_usdc_deposit_flow(
             &policy_instructions,
             &lookup_table_accounts,
             &[&wallet_signer, &delegated_signer],
-            "initial Main USDC policy deposit",
+            "initial reserve policy deposit",
             policy_simulation_skip_reason,
         )?)
     } else {
@@ -2720,8 +2731,8 @@ async fn run_initial_main_usdc_deposit_flow(
                 "writesCurrentPositions": false,
                 "sendsTransactions": false,
                 "deposit": {
-                    "reserve": KAMINO_MAIN_USDC_RESERVE.to_string(),
-                    "market": KAMINO_MAIN_MARKET,
+                    "reserve": &deposit_position.reserve,
+                    "market": &deposit_position.market,
                     "liquidityMint": USDC_MINT.to_string(),
                     "amountRaw": amount_raw.to_string(),
                 },
@@ -2736,8 +2747,8 @@ async fn run_initial_main_usdc_deposit_flow(
                 "chainReconcile": chain_reconcile_preview_json(initial_preview),
                 "activeChainReconcile": chain_reconcile_preview_json(&active_preview),
                 "policyPreflight": policy_route_preflight_json(vault, &ReserveMove {
-                    source_reserve: KAMINO_MAIN_USDC_RESERVE.to_string(),
-                    target_reserve: KAMINO_PRIME_USDC_RESERVE.to_owned(),
+                    source_reserve: deposit_reserve.to_owned(),
+                    target_reserve: deposit_reserve.to_owned(),
                 }, active_policy_preflight),
                 "preflightBlockers": blockers,
                 "missingObligationSetup": missing_obligation_setup_dry_run,
@@ -2763,40 +2774,34 @@ async fn run_initial_main_usdc_deposit_flow(
                 "policyDeposit": policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
             }))?
         );
-        return Err("initial Main USDC deposit preflight blocked before live submit".into());
+        return Err("initial reserve deposit preflight blocked before live submit".into());
     }
     if let Some(error) = &funding_transaction.simulation_error {
-        return Err(format!("initial Main USDC funding simulation failed: {error}").into());
+        return Err(format!("initial reserve funding simulation failed: {error}").into());
     }
 
     let funding_submitted_slot = i64::try_from(rpc.get_slot()?)?;
     let funding_signature = rpc.send_and_confirm_transaction(&funding_transaction.transaction)?;
     let funding_confirmed_slot = i64::try_from(rpc.get_slot()?)?;
 
-    let funded_preview = load_chain_reconcile_preview(
-        &options.rpc_url,
-        vault,
-        &[
-            KAMINO_MAIN_USDC_RESERVE.to_string(),
-            KAMINO_PRIME_USDC_RESERVE.to_owned(),
-        ],
-    )?;
-    let funded_main_position =
-        chain_position_for_reserve(&funded_preview, &KAMINO_MAIN_USDC_RESERVE.to_string())?;
-    if funded_main_position.vault_liquidity_amount_raw < amount_raw {
+    let funded_preview =
+        load_chain_reconcile_preview(&options.rpc_url, vault, &[deposit_reserve.to_owned()])?;
+    let funded_deposit_position = chain_position_for_reserve(&funded_preview, deposit_reserve)?;
+    if funded_deposit_position.vault_liquidity_amount_raw < amount_raw {
         return Err(format!(
             "vault USDC ATA {} has {} after funding, below requested deposit {}",
-            funded_main_position.vault_liquidity_ata,
-            funded_main_position.vault_liquidity_amount_raw,
+            funded_deposit_position.vault_liquidity_ata,
+            funded_deposit_position.vault_liquidity_amount_raw,
             amount_raw
         )
         .into());
     }
 
-    let policy_plan = build_initial_main_usdc_deposit_policy_plan(
+    let policy_plan = build_initial_reserve_deposit_policy_plan(
         vault,
         &funded_preview,
         active_policy_preflight,
+        deposit_reserve,
         amount_raw,
         delegated_signer.pubkey(),
         account_index,
@@ -2809,12 +2814,12 @@ async fn run_initial_main_usdc_deposit_flow(
         &policy_instructions,
         &lookup_table_accounts,
         &[&wallet_signer, &delegated_signer],
-        "initial Main USDC policy deposit",
+        "initial reserve policy deposit",
         None,
     )?;
     if let Some(error) = &policy_transaction.simulation_error {
         return Err(format!(
-            "initial Main USDC policy deposit simulation failed after funding tx {}: {error}",
+            "initial reserve policy deposit simulation failed after funding tx {}: {error}",
             funding_signature
         )
         .into());
@@ -2823,14 +2828,8 @@ async fn run_initial_main_usdc_deposit_flow(
     let policy_submitted_slot = i64::try_from(rpc.get_slot()?)?;
     let policy_signature = rpc.send_and_confirm_transaction(&policy_transaction.transaction)?;
     let policy_confirmed_slot = i64::try_from(rpc.get_slot()?)?;
-    let post_preview = load_chain_reconcile_preview(
-        &options.rpc_url,
-        vault,
-        &[
-            KAMINO_MAIN_USDC_RESERVE.to_string(),
-            KAMINO_PRIME_USDC_RESERVE.to_owned(),
-        ],
-    )?;
+    let post_preview =
+        load_chain_reconcile_preview(&options.rpc_url, vault, &[deposit_reserve.to_owned()])?;
     let snapshot = client
         .reconcile_vault(vault.id, chain_preview_reconciled_state(&post_preview)?)
         .await?;
@@ -2857,8 +2856,8 @@ async fn run_initial_main_usdc_deposit_flow(
             "writesCurrentPositions": true,
             "sendsTransactions": true,
             "deposit": {
-                "reserve": KAMINO_MAIN_USDC_RESERVE.to_string(),
-                "market": KAMINO_MAIN_MARKET,
+                "reserve": deposit_reserve,
+                "market": &funded_deposit_position.market,
                 "liquidityMint": USDC_MINT.to_string(),
                 "amountRaw": amount_raw.to_string(),
             },
@@ -5787,10 +5786,11 @@ fn build_route_execution_plan(
     })
 }
 
-fn build_initial_main_usdc_deposit_policy_plan(
+fn build_initial_reserve_deposit_policy_plan(
     vault: &SelectedVault,
     preview: &ChainReconcilePreview,
     policy_preflight: Option<&PolicyAccountPreflight>,
+    deposit_reserve: &str,
     amount: u64,
     signer_pubkey: Pubkey,
     account_index: u8,
@@ -5811,19 +5811,23 @@ fn build_initial_main_usdc_deposit_policy_plan(
         }
     }
     let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
-    let main = chain_position_for_reserve(preview, &KAMINO_MAIN_USDC_RESERVE.to_string())?;
-    if !main.obligation_exists {
+    let deposit = chain_position_for_reserve(preview, deposit_reserve)?;
+    if !deposit.obligation_exists {
         return Err(format!(
-            "Main obligation {} is missing; run the missing-obligation setup transaction before policy deposit",
-            main.obligation
+            "deposit obligation {} is missing for reserve {}; run the missing-obligation setup transaction before policy deposit",
+            deposit.obligation, deposit.reserve
         )
         .into());
     }
     let vault_liquidity_ata =
         derive_associated_token_address(&vault_pubkey, &USDC_MINT, &spl_token::ID);
-    let refresh_instruction = kamino_refresh_obligation_instruction(main)?;
-    let deposit_instruction =
-        kamino_deposit_to_obligation_instruction(vault_pubkey, main, vault_liquidity_ata, amount)?;
+    let refresh_instruction = kamino_refresh_obligation_instruction(deposit)?;
+    let deposit_instruction = kamino_deposit_to_obligation_instruction(
+        vault_pubkey,
+        deposit,
+        vault_liquidity_ata,
+        amount,
+    )?;
     let instruction_constraint_indexes =
         initial_deposit_instruction_constraint_indexes(policy_preflight)?;
     let policy_constraint_validation = policy_preflight.map(|policy_preflight| {
@@ -5837,7 +5841,7 @@ fn build_initial_main_usdc_deposit_policy_plan(
     if let Some(validation) = policy_constraint_validation.as_ref() {
         if !validation.matches {
             return Err(format!(
-                "decoded policy account constraints do not match built initial Main USDC deposit: {}",
+                "decoded policy account constraints do not match built initial reserve deposit: {}",
                 validation.failures.join("; ")
             )
             .into());
@@ -7204,6 +7208,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     let mut target_reserve = None;
     let mut update_policy = false;
     let mut update_active_policy = false;
+    let mut initial_deposit_reserve = None;
     let mut initial_deposit_amount_raw = None;
     let mut full_withdraw_main_usdc = false;
     let mut full_withdraw_reserve = None;
@@ -7284,6 +7289,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
                 e2e_deposit_amount_raw = Some(amount);
             }
             "--deposit-main-usdc" => {
+                if initial_deposit_amount_raw.is_some() {
+                    return Err("choose only one initial deposit mode".to_owned());
+                }
                 let raw = iter
                     .next()
                     .ok_or("--deposit-main-usdc requires an amount in raw USDC units")?;
@@ -7293,6 +7301,28 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
                 if amount == 0 {
                     return Err("--deposit-main-usdc amount must be greater than 0".to_owned());
                 }
+                initial_deposit_reserve = Some(KAMINO_MAIN_USDC_RESERVE.to_string());
+                initial_deposit_amount_raw = Some(amount);
+            }
+            "--deposit-reserve" => {
+                if initial_deposit_amount_raw.is_some() {
+                    return Err("choose only one initial deposit mode".to_owned());
+                }
+                let reserve = iter
+                    .next()
+                    .ok_or("--deposit-reserve requires a reserve public key")?;
+                Pubkey::from_str(&reserve)
+                    .map_err(|_| "--deposit-reserve reserve must be a public key")?;
+                let raw = iter
+                    .next()
+                    .ok_or("--deposit-reserve requires an amount in raw USDC units")?;
+                let amount = raw
+                    .parse::<u64>()
+                    .map_err(|_| "--deposit-reserve amount must be a u64")?;
+                if amount == 0 {
+                    return Err("--deposit-reserve amount must be greater than 0".to_owned());
+                }
+                initial_deposit_reserve = Some(reserve);
                 initial_deposit_amount_raw = Some(amount);
             }
             "--execute" => execute = true,
@@ -7343,7 +7373,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     .count();
     if selected_special_modes > 1 {
         return Err(
-            "--update-policy, --deposit-main-usdc, --setup-obligation-reserve, --full-withdraw-reserve, --reconcile-current-positions, and --e2e-main-prime-main are mutually exclusive"
+            "--update-policy, --deposit-main-usdc/--deposit-reserve, --setup-obligation-reserve, --full-withdraw-reserve, --reconcile-current-positions, and --e2e-main-prime-main are mutually exclusive"
                 .to_owned(),
         );
     }
@@ -7399,6 +7429,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
         target_reserve,
         update_policy,
         update_active_policy,
+        initial_deposit_reserve,
         initial_deposit_amount_raw,
         full_withdraw_main_usdc,
         full_withdraw_reserve,
@@ -8119,8 +8150,8 @@ fn same_mint_input_json(input: &SameMintRebalanceInput) -> Value {
 
 fn print_help() {
     println!(
-         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--provision-lookup-table] [--deposit-main-usdc <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--lookup-table <PUBKEY>...] [--execute]\n\n\
-         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and YIELD_ROUTER_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for live same-mint route execution; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses YIELD_ROUTER_KEYPAIR as fee payer and delegated signer, and when the target obligation is missing builds one atomic transaction ordered as route-policy withdraw, authorized init_obligation, refresh/farm setup, and route-policy deposit. Add --provision-lookup-table with --update-policy or same-mint --execute to create, extend, warm up, and use a fresh ALT. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and YIELD_ROUTER_KEYPAIR for the policy deposit. Full withdraw mode uses YIELD_ROUTER_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
+         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--provision-lookup-table] [--deposit-main-usdc <AMOUNT_RAW> | --deposit-reserve <RESERVE> <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--lookup-table <PUBKEY>...] [--execute]\n\n\
+         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and YIELD_ROUTER_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for live same-mint route execution; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses YIELD_ROUTER_KEYPAIR as fee payer and delegated signer, and when the target obligation is missing builds one atomic transaction ordered as route-policy withdraw, authorized init_obligation, refresh/farm setup, and route-policy deposit. Add --provision-lookup-table with --update-policy or same-mint --execute to create, extend, warm up, and use a fresh ALT. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and YIELD_ROUTER_KEYPAIR for the policy deposit; --deposit-reserve allows choosing a non-Main Safe USDC reserve when Main is already the APY winner. Full withdraw mode uses YIELD_ROUTER_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
          op run --env-file=.env.1password -- bun run same-mint:swap -- --settings <PUBKEY> --vault-index 1 --reconcile-from-chain --seed-from-user-position"
     );
 }

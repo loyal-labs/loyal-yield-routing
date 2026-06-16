@@ -41,9 +41,10 @@ struct Options {
 
 #[derive(Debug, Clone)]
 struct EdgePrecondition {
-    main: SupportedReserveLatestRow,
+    source: SupportedReserveLatestRow,
     best: SupportedReserveLatestRow,
     edge_bps: i64,
+    source_selection: &'static str,
 }
 
 #[derive(Debug)]
@@ -148,7 +149,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         );
         return Err("blocked_no_fresh_candidate_precondition".into());
     }
-    let precondition = match positive_main_to_best_edge(&fresh_candidates) {
+    let precondition = match positive_source_to_best_edge(&fresh_candidates) {
         Ok(edge) => edge,
         Err(report) => {
             log_event(
@@ -277,7 +278,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "summary": db_readback_summary(&after_deposit),
         }),
     );
-    ensure_db_position_has_value(&after_deposit, &KAMINO_MAIN_USDC_RESERVE.to_string())?;
+    ensure_db_position_has_value(&after_deposit, &precondition.source.reserve)?;
 
     let decision_baseline_id = latest_confirmed_decision_id(&pool, &options).await?;
     let monitor_result = wait_for_render_monitor_decision(
@@ -381,7 +382,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn positive_main_to_best_edge(
+fn positive_source_to_best_edge(
     candidates: &[SupportedReserveLatestRow],
 ) -> Result<EdgePrecondition, Value> {
     let Some(main) = candidates
@@ -405,12 +406,33 @@ fn positive_main_to_best_edge(
             "candidateCount": 0,
         }));
     };
-    let edge_bps = apy_to_bps(best.supply_apy) - apy_to_bps(main.supply_apy);
-    if best.reserve == main.reserve || edge_bps <= 0 {
+    let (source, source_selection) = if best.reserve == main.reserve {
+        let Some(source) = candidates
+            .iter()
+            .filter(|candidate| candidate.reserve != best.reserve)
+            .min_by(|left, right| compare_candidate_preference(left, right))
+            .cloned()
+        else {
+            return Err(json!({
+                "reason": "no_non_winning_safe_usdc_source_candidate",
+                "bestReserve": best.reserve,
+                "bestApyBps": apy_to_bps(best.supply_apy),
+                "candidates": candidates_json(candidates),
+            }));
+        };
+        (source, "fallback_non_winning_safe_usdc")
+    } else {
+        (main.clone(), "main_usdc")
+    };
+    let edge_bps = apy_to_bps(best.supply_apy) - apy_to_bps(source.supply_apy);
+    if best.reserve == source.reserve || edge_bps <= 0 {
         return Err(json!({
-            "reason": "main_usdc_is_not_beaten",
+            "reason": "no_positive_source_to_best_edge",
             "mainReserve": main.reserve,
             "mainApyBps": apy_to_bps(main.supply_apy),
+            "sourceReserve": source.reserve,
+            "sourceApyBps": apy_to_bps(source.supply_apy),
+            "sourceSelection": source_selection,
             "bestReserve": best.reserve,
             "bestApyBps": apy_to_bps(best.supply_apy),
             "edgeBps": edge_bps,
@@ -418,9 +440,10 @@ fn positive_main_to_best_edge(
         }));
     }
     Ok(EdgePrecondition {
-        main,
+        source,
         best,
         edge_bps,
+        source_selection,
     })
 }
 
@@ -460,19 +483,20 @@ fn phase_commands(options: &Options, precondition: &EdgePrecondition) -> Vec<Vec
             "--provision-lookup-table".to_owned(),
             "--execute".to_owned(),
         ],
-        deposit_main_usdc_command(options),
+        deposit_reserve_command(options, &precondition.source.reserve),
         full_withdraw_command(options, &precondition.best.reserve),
     ]
 }
 
-fn deposit_main_usdc_command(options: &Options) -> Vec<String> {
+fn deposit_reserve_command(options: &Options, reserve: &str) -> Vec<String> {
     vec![
         "same-mint-reserve-swap".to_owned(),
         "--settings".to_owned(),
         options.settings.clone(),
         "--vault-index".to_owned(),
         options.vault_index.to_string(),
-        "--deposit-main-usdc".to_owned(),
+        "--deposit-reserve".to_owned(),
+        reserve.to_owned(),
         options.amount_raw.to_string(),
         "--execute".to_owned(),
     ]
@@ -774,7 +798,7 @@ fn ensure_deposit_executed(label: &str, output: &ChildOutput) -> Result<(), Box<
         .as_ref()
         .ok_or_else(|| format!("{label} did not print JSON"))?;
     if stdout.get("status").and_then(Value::as_str) != Some("initial_deposit_executed") {
-        return Err(format!("{label} did not execute the Main USDC deposit").into());
+        return Err(format!("{label} did not execute the initial reserve deposit").into());
     }
     Ok(())
 }
@@ -1554,8 +1578,10 @@ fn text_tail(value: &str, max_chars: usize) -> String {
 
 fn edge_precondition_json(edge: &EdgePrecondition) -> Value {
     json!({
-        "mainReserve": edge.main.reserve,
-        "mainApyBps": apy_to_bps(edge.main.supply_apy),
+        "sourceReserve": edge.source.reserve,
+        "sourceMarket": edge.source.market,
+        "sourceApyBps": apy_to_bps(edge.source.supply_apy),
+        "sourceSelection": edge.source_selection,
         "bestReserve": edge.best.reserve,
         "bestMarket": edge.best.market,
         "bestApyBps": apy_to_bps(edge.best.supply_apy),
