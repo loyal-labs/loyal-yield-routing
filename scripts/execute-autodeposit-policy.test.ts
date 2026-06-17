@@ -112,6 +112,20 @@ describe("runtime dependency boundary", () => {
     expect(source).toContain('import("@loyal/actions")');
   });
 
+  test("smart-account-vaults package exposes autodeposit pull helper", async () => {
+    const { PublicKey } = await import("@solana/web3.js");
+    const { createSmartAccountVaultsClient } = await import(
+      "@loyal-labs/smart-account-vaults"
+    );
+
+    const client = createSmartAccountVaultsClient({
+      connection: {} as never,
+      programId: PublicKey.default,
+    });
+
+    expect(typeof client.prepareEarnUsdcAutodepositPull).toBe("function");
+  });
+
   test("render light worker keeps pinned image executor boundary", async () => {
     const renderYaml = await Bun.file(
       new URL("../render.yaml", import.meta.url)

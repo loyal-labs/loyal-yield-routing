@@ -3,13 +3,16 @@ import {
   Keypair,
   PublicKey,
   VersionedTransaction,
+  type AddressLookupTableAccount,
   type TransactionInstruction,
 } from "@solana/web3.js";
 import bs58 from "bs58";
 
 type PreparedOperation = {
-  instructions: TransactionInstruction[];
-  lookupTableAccounts?: unknown[];
+  operation: string;
+  payer: PublicKey;
+  instructions: readonly TransactionInstruction[];
+  lookupTableAccounts: readonly AddressLookupTableAccount[];
   programId: PublicKey;
   requiresConfirmation: boolean;
   [key: string]: unknown;
@@ -27,7 +30,7 @@ type PreparedEarnDeposit = {
 };
 
 type SmartAccountVaultsClient = {
-  prepareEarnUsdcAutodepositPull: (args: {
+  prepareEarnUsdcAutodepositPull?: (args: {
     policy: PublicKey;
     walletAddress: PublicKey;
     feePayer: PublicKey;
@@ -222,11 +225,11 @@ async function loadAppModules(): Promise<AppModules> {
     createAssociatedTokenAccountIdempotentInstruction:
       splTokenModule.createAssociatedTokenAccountIdempotentInstruction,
     createSmartAccountVaultsClient:
-      smartAccountVaultsModule.createSmartAccountVaultsClient,
+      smartAccountVaultsModule.createSmartAccountVaultsClient as unknown as AppModules["createSmartAccountVaultsClient"],
     decodeTransferCheckedInstruction: splTokenModule.decodeTransferCheckedInstruction,
     getAssociatedTokenAddressSync: splTokenModule.getAssociatedTokenAddressSync,
     getKaminoUsdcEarnTargetForCluster:
-      loyalActionsModule.getKaminoUsdcEarnTargetForCluster,
+      loyalActionsModule.getKaminoUsdcEarnTargetForCluster as AppModules["getKaminoUsdcEarnTargetForCluster"],
     LoyalCluster: loyalActionsModule.LoyalCluster,
     neon: neonModule.neon,
     PROGRAM_ADDRESS: smartAccountsModule.PROGRAM_ADDRESS,
@@ -257,6 +260,20 @@ function createPrepareConnection(connection: Connection): Connection {
       return typeof value === "function" ? value.bind(target) : value;
     },
   }) as Connection;
+}
+
+function assertAutodepositPullSupport(
+  client: SmartAccountVaultsClient
+): asserts client is SmartAccountVaultsClient & {
+  prepareEarnUsdcAutodepositPull: NonNullable<
+    SmartAccountVaultsClient["prepareEarnUsdcAutodepositPull"]
+  >;
+} {
+  if (typeof client.prepareEarnUsdcAutodepositPull !== "function") {
+    throw new Error(
+      "@loyal-labs/smart-account-vaults does not expose prepareEarnUsdcAutodepositPull; deploy a package/image with autodeposit pull support before claiming lots."
+    );
+  }
 }
 
 export function computeSweepAmount(
@@ -1008,7 +1025,7 @@ async function sendPreparedOperation(args: {
 function removeWalletToVaultTransfer(args: {
   decodeTransferCheckedInstruction: AppModules["decodeTransferCheckedInstruction"];
   getAssociatedTokenAddressSync: AppModules["getAssociatedTokenAddressSync"];
-  instructions: TransactionInstruction[];
+  instructions: readonly TransactionInstruction[];
   signer: PublicKey;
   tokenProgramId: PublicKey;
   usdcMint: PublicKey;
@@ -1333,7 +1350,10 @@ async function recordAutodepositYieldDeposit(args: {
       )
       RETURNING id
     `;
-    positionId = readRequiredString(positionRows[0]?.id, "position.id");
+    positionId = readRequiredString(
+      (positionRows[0] as Record<string, unknown> | undefined)?.id,
+      "position.id"
+    );
   }
 
   const eventRows = await sql`
@@ -1369,7 +1389,10 @@ async function recordAutodepositYieldDeposit(args: {
     )
     RETURNING id
   `;
-  const eventId = readRequiredString(eventRows[0]?.id, "holding_event.id");
+  const eventId = readRequiredString(
+    (eventRows[0] as Record<string, unknown> | undefined)?.id,
+    "holding_event.id"
+  );
 
   await sql`
     UPDATE loyal_yield.user_yield_positions
@@ -1510,6 +1533,12 @@ async function main() {
     return;
   }
 
+  const client = appModules.createSmartAccountVaultsClient({
+    connection: createPrepareConnection(connection),
+    programId,
+  });
+  assertAutodepositPullSupport(client);
+
   let lotClaim: LotClaimResult | null = null;
   let executionAmountRaw = sweepDecision.amountRaw;
   if (options.requireLotClaim) {
@@ -1558,124 +1587,252 @@ async function main() {
     }
   }
 
-  const client = appModules.createSmartAccountVaultsClient({
-    connection: createPrepareConnection(connection),
-    programId,
-  });
-  const pull = await client.prepareEarnUsdcAutodepositPull({
-    policy: new PublicKeyCtor(target.sweepPolicyAccount),
-    walletAddress: new PublicKeyCtor(target.wallet),
-    feePayer: policyKeypair.publicKey,
-    policySigner: policyKeypair.publicKey,
-    recurringDelegation: new PublicKeyCtor(target.recurringDelegation),
-    amountRaw: executionAmountRaw,
-    cluster: appModules.LoyalCluster.MainnetBeta,
-  });
-  const usdcMint = new PublicKeyCtor(pull.persistence.liquidityMint);
-
-  const depositDraft = await client.prepareEarnUsdcDeposit({
-    amountRaw: executionAmountRaw,
-    cluster: appModules.LoyalCluster.MainnetBeta,
-    feePayer: legacyKaminoKeypair.publicKey,
-    initializeYieldRoutingPolicy: false,
-    policySigner: legacyKaminoKeypair.publicKey,
-    settingsPda: new PublicKeyCtor(target.settings),
-    walletAddress: legacyKaminoKeypair.publicKey,
-    yieldRoutingPolicy: {
-      account: new PublicKeyCtor(target.routePolicyAccount),
-      seed: target.routePolicySeed,
-    },
-  });
-  const depositOnlyInstructions = removeWalletToVaultTransfer({
-    decodeTransferCheckedInstruction: appModules.decodeTransferCheckedInstruction,
-    getAssociatedTokenAddressSync: appModules.getAssociatedTokenAddressSync,
-    instructions: depositDraft.prepared.instructions,
-    signer: legacyKaminoKeypair.publicKey,
-    tokenProgramId: appModules.TOKEN_PROGRAM_ID,
-    usdcMint,
-    vaultUsdcAta,
-  });
-  const depositPrepared = {
-    ...depositDraft.prepared,
-    instructions: [
-      appModules.createAssociatedTokenAccountIdempotentInstruction(
-        legacyKaminoKeypair.publicKey,
-        vaultUsdcAta,
-        new PublicKeyCtor(target.vaultPubkey),
-        usdcMint,
-        appModules.TOKEN_PROGRAM_ID
-      ),
-      ...depositOnlyInstructions.filter(
-        (instruction) =>
-          !instruction.keys.some((key) => key.pubkey.equals(walletUsdcAta))
-      ),
-    ],
-  };
-
-  const pullSimulation = await simulatePreparedOperation({
-    compilePreparedOperation: appModules.compilePreparedOperation,
-    connection,
-    prepared: pull.prepared,
-    signers: [policyKeypair],
-  });
-  const depositSimulation = await simulatePreparedOperation({
-    compilePreparedOperation: appModules.compilePreparedOperation,
-    connection,
-    prepared: depositPrepared,
-    signers: [legacyKaminoKeypair],
-  });
-
-  const plan = {
-    status: options.execute ? "execute_requested" : "dry_run",
-    targetId: target.id.toString(),
-    wallet: target.wallet,
-    vault: target.vaultPubkey,
-    walletUsdcAta: target.walletUsdcAta,
-    vaultUsdcAta: target.vaultUsdcAta,
-    walletBalanceRaw: walletBalanceRaw.toString(),
-    walletBalanceFloorRaw: effectiveFloorRaw.toString(),
-    persistedWalletBalanceFloorRaw: target.walletBalanceFloorRaw.toString(),
-    overrideFloorRaw: options.overrideFloorRaw?.toString() ?? null,
-    vaultPreBalanceRaw: vaultPreBalanceRaw.toString(),
-    excessRaw: sweepDecision.excessRaw.toString(),
-    amountRaw: executionAmountRaw.toString(),
-    amountUi: Number(executionAmountRaw) / 10 ** USDC_DECIMALS,
-    cappedByMaxPerPeriod: sweepDecision.cappedByMaxPerPeriod,
-    cappedByRemainingAllowance: sweepDecision.cappedByRemainingAllowance,
-    subscriptionAllowance: summarizeAllowance(allowance),
-    transactionOrder: [
-      "subscription_pull_wallet_to_earn_vault",
-      "kamino_main_usdc_deposit_from_earn_vault",
-    ],
-    signers: {
-      pull: policyKeypair.publicKey.toBase58(),
-      kaminoDeposit: legacyKaminoKeypair.publicKey.toBase58(),
-    },
-    policies: {
-      sweep: target.sweepPolicyAccount,
-      kaminoDeposit: target.routePolicyAccount,
-    },
-    simulations: {
-      pull: summarizeSimulation(pullSimulation),
-      kaminoDeposit: summarizeSimulation(depositSimulation),
-    },
-    simulationNotes: {
-      kaminoDepositRequiresPostPullResimulation:
-        isKnownPrefundDepositFailure(depositSimulation),
-    },
-    lotClaim: lotClaim ? summarizeLotClaim(lotClaim) : null,
-    sendsTransactions: options.execute,
-  };
-
-  if (!options.execute) {
-    console.log(JSON.stringify(plan, null, 2));
-    return;
-  }
-
+  let pullSent = false;
   try {
+    const pull = await client.prepareEarnUsdcAutodepositPull({
+      policy: new PublicKeyCtor(target.sweepPolicyAccount),
+      walletAddress: new PublicKeyCtor(target.wallet),
+      feePayer: policyKeypair.publicKey,
+      policySigner: policyKeypair.publicKey,
+      recurringDelegation: new PublicKeyCtor(target.recurringDelegation),
+      amountRaw: executionAmountRaw,
+      cluster: appModules.LoyalCluster.MainnetBeta,
+    });
+    const usdcMint = new PublicKeyCtor(pull.persistence.liquidityMint);
+
+    const depositDraft = await client.prepareEarnUsdcDeposit({
+      amountRaw: executionAmountRaw,
+      cluster: appModules.LoyalCluster.MainnetBeta,
+      feePayer: legacyKaminoKeypair.publicKey,
+      initializeYieldRoutingPolicy: false,
+      policySigner: legacyKaminoKeypair.publicKey,
+      settingsPda: new PublicKeyCtor(target.settings),
+      walletAddress: legacyKaminoKeypair.publicKey,
+      yieldRoutingPolicy: {
+        account: new PublicKeyCtor(target.routePolicyAccount),
+        seed: target.routePolicySeed,
+      },
+    });
+    const depositOnlyInstructions = removeWalletToVaultTransfer({
+      decodeTransferCheckedInstruction: appModules.decodeTransferCheckedInstruction,
+      getAssociatedTokenAddressSync: appModules.getAssociatedTokenAddressSync,
+      instructions: depositDraft.prepared.instructions,
+      signer: legacyKaminoKeypair.publicKey,
+      tokenProgramId: appModules.TOKEN_PROGRAM_ID,
+      usdcMint,
+      vaultUsdcAta,
+    });
+    const depositPrepared = {
+      ...depositDraft.prepared,
+      instructions: [
+        appModules.createAssociatedTokenAccountIdempotentInstruction(
+          legacyKaminoKeypair.publicKey,
+          vaultUsdcAta,
+          new PublicKeyCtor(target.vaultPubkey),
+          usdcMint,
+          appModules.TOKEN_PROGRAM_ID
+        ),
+        ...depositOnlyInstructions.filter(
+          (instruction) =>
+            !instruction.keys.some((key) => key.pubkey.equals(walletUsdcAta))
+        ),
+      ],
+    };
+
+    const pullSimulation = await simulatePreparedOperation({
+      compilePreparedOperation: appModules.compilePreparedOperation,
+      connection,
+      prepared: pull.prepared,
+      signers: [policyKeypair],
+    });
+    const depositSimulation = await simulatePreparedOperation({
+      compilePreparedOperation: appModules.compilePreparedOperation,
+      connection,
+      prepared: depositPrepared,
+      signers: [legacyKaminoKeypair],
+    });
+
+    const plan = {
+      status: options.execute ? "execute_requested" : "dry_run",
+      targetId: target.id.toString(),
+      wallet: target.wallet,
+      vault: target.vaultPubkey,
+      walletUsdcAta: target.walletUsdcAta,
+      vaultUsdcAta: target.vaultUsdcAta,
+      walletBalanceRaw: walletBalanceRaw.toString(),
+      walletBalanceFloorRaw: effectiveFloorRaw.toString(),
+      persistedWalletBalanceFloorRaw: target.walletBalanceFloorRaw.toString(),
+      overrideFloorRaw: options.overrideFloorRaw?.toString() ?? null,
+      vaultPreBalanceRaw: vaultPreBalanceRaw.toString(),
+      excessRaw: sweepDecision.excessRaw.toString(),
+      amountRaw: executionAmountRaw.toString(),
+      amountUi: Number(executionAmountRaw) / 10 ** USDC_DECIMALS,
+      cappedByMaxPerPeriod: sweepDecision.cappedByMaxPerPeriod,
+      cappedByRemainingAllowance: sweepDecision.cappedByRemainingAllowance,
+      subscriptionAllowance: summarizeAllowance(allowance),
+      transactionOrder: [
+        "subscription_pull_wallet_to_earn_vault",
+        "kamino_main_usdc_deposit_from_earn_vault",
+      ],
+      signers: {
+        pull: policyKeypair.publicKey.toBase58(),
+        kaminoDeposit: legacyKaminoKeypair.publicKey.toBase58(),
+      },
+      policies: {
+        sweep: target.sweepPolicyAccount,
+        kaminoDeposit: target.routePolicyAccount,
+      },
+      simulations: {
+        pull: summarizeSimulation(pullSimulation),
+        kaminoDeposit: summarizeSimulation(depositSimulation),
+      },
+      simulationNotes: {
+        kaminoDepositRequiresPostPullResimulation:
+          isKnownPrefundDepositFailure(depositSimulation),
+      },
+      lotClaim: lotClaim ? summarizeLotClaim(lotClaim) : null,
+      sendsTransactions: options.execute,
+    };
+
+    if (!options.execute) {
+      console.log(JSON.stringify(plan, null, 2));
+      return;
+    }
+
     assertExecutablePreflight({ depositSimulation, pullSimulation });
-  } catch (error) {
+
+    const pullSend = await sendPreparedOperation({
+      compilePreparedOperation: appModules.compilePreparedOperation,
+      connection,
+      prepared: pull.prepared,
+      signers: [policyKeypair],
+    });
+    pullSent = true;
+    const walletPostPullRaw = await getTokenBalanceRaw(connection, walletUsdcAta);
+    const vaultPostPullRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
+    const executionRecord = await recordPullExecution({
+      neon: appModules.neon,
+      databaseUrl,
+      target,
+      signature: pullSend.signature,
+      slot: pullSend.slot,
+      amountRaw: executionAmountRaw,
+      sourcePreBalanceRaw: walletBalanceRaw,
+      sourcePostBalanceRaw: walletPostPullRaw,
+      destinationPreBalanceRaw: vaultPreBalanceRaw,
+      destinationPostBalanceRaw: vaultPostPullRaw,
+    });
     if (lotClaim?.status === "selected" && lotClaim.claimToken) {
+      await completeAutodepositLotClaim({
+        neon: appModules.neon,
+        databaseUrl,
+        claimToken: lotClaim.claimToken,
+        executionId: executionRecord.executionId,
+      });
+    }
+
+    const depositPostPullSimulation = await simulatePreparedOperation({
+      compilePreparedOperation: appModules.compilePreparedOperation,
+      connection,
+      prepared: depositPrepared,
+      signers: [legacyKaminoKeypair],
+    });
+    if (depositPostPullSimulation.err) {
+      await updateExecutionEvidence({
+        neon: appModules.neon,
+        databaseUrl,
+        dedupeKey: executionRecord.dedupeKey,
+        decodedEvidence: {
+          status: "partial_executed_pull_deposit_blocked",
+          kaminoDepositPostPullSimulation: summarizeSimulation(
+            depositPostPullSimulation
+          ),
+          vaultPostPullRaw: vaultPostPullRaw.toString(),
+        },
+      });
+      console.log(
+        JSON.stringify(
+          {
+            ...plan,
+            status: "partial_executed_pull_deposit_blocked",
+            signatures: {
+              pull: pullSend.signature,
+            },
+            confirmedSlots: {
+              pull: pullSend.slot.toString(),
+            },
+            walletPostPullRaw: walletPostPullRaw.toString(),
+            vaultPostPullRaw: vaultPostPullRaw.toString(),
+            postPullSimulations: {
+              kaminoDeposit: summarizeSimulation(depositPostPullSimulation),
+            },
+          },
+          null,
+          2
+        )
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    const depositSend = await sendPreparedOperation({
+      compilePreparedOperation: appModules.compilePreparedOperation,
+      connection,
+      prepared: depositPrepared,
+      signers: [legacyKaminoKeypair],
+    });
+    const vaultPostDepositRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
+    const yieldDepositRecord = await recordAutodepositYieldDeposit({
+      amountRaw: executionAmountRaw,
+      appModules,
+      databaseUrl,
+      depositSignature: depositSend.signature,
+      depositSlot: depositSend.slot,
+      policySignature: depositSend.signature,
+      target,
+    });
+    await updateExecutionEvidence({
+      neon: appModules.neon,
+      databaseUrl,
+      dedupeKey: executionRecord.dedupeKey,
+      decodedEvidence: {
+        status: "executed",
+        kaminoDepositSignature: depositSend.signature,
+        kaminoDepositSlot: depositSend.slot.toString(),
+        kaminoDepositPostPullSimulation:
+          summarizeSimulation(depositPostPullSimulation),
+        vaultPostDepositRaw: vaultPostDepositRaw.toString(),
+        yieldDepositRecord,
+      },
+    });
+
+    console.log(
+      JSON.stringify(
+        {
+          ...plan,
+          status: "executed",
+          signatures: {
+            pull: pullSend.signature,
+            kaminoDeposit: depositSend.signature,
+          },
+          confirmedSlots: {
+            pull: pullSend.slot.toString(),
+            kaminoDeposit: depositSend.slot.toString(),
+          },
+          walletPostPullRaw: walletPostPullRaw.toString(),
+          vaultPostPullRaw: vaultPostPullRaw.toString(),
+          vaultPostDepositRaw: vaultPostDepositRaw.toString(),
+          postPullSimulations: {
+            kaminoDeposit: summarizeSimulation(depositPostPullSimulation),
+          },
+          yieldDepositRecord,
+        },
+        null,
+        2
+      )
+    );
+  } catch (error) {
+    if (!pullSent && lotClaim?.status === "selected" && lotClaim.claimToken) {
       await releaseAutodepositLotClaim({
         neon: appModules.neon,
         databaseUrl,
@@ -1684,136 +1841,6 @@ async function main() {
     }
     throw error;
   }
-
-  const pullSend = await sendPreparedOperation({
-    compilePreparedOperation: appModules.compilePreparedOperation,
-    connection,
-    prepared: pull.prepared,
-    signers: [policyKeypair],
-  });
-  const walletPostPullRaw = await getTokenBalanceRaw(connection, walletUsdcAta);
-  const vaultPostPullRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
-  const executionRecord = await recordPullExecution({
-    neon: appModules.neon,
-    databaseUrl,
-    target,
-    signature: pullSend.signature,
-    slot: pullSend.slot,
-    amountRaw: executionAmountRaw,
-    sourcePreBalanceRaw: walletBalanceRaw,
-    sourcePostBalanceRaw: walletPostPullRaw,
-    destinationPreBalanceRaw: vaultPreBalanceRaw,
-    destinationPostBalanceRaw: vaultPostPullRaw,
-  });
-  if (lotClaim?.status === "selected" && lotClaim.claimToken) {
-    await completeAutodepositLotClaim({
-      neon: appModules.neon,
-      databaseUrl,
-      claimToken: lotClaim.claimToken,
-      executionId: executionRecord.executionId,
-    });
-  }
-
-  const depositPostPullSimulation = await simulatePreparedOperation({
-    compilePreparedOperation: appModules.compilePreparedOperation,
-    connection,
-    prepared: depositPrepared,
-    signers: [legacyKaminoKeypair],
-  });
-  if (depositPostPullSimulation.err) {
-    await updateExecutionEvidence({
-      neon: appModules.neon,
-      databaseUrl,
-      dedupeKey: executionRecord.dedupeKey,
-      decodedEvidence: {
-        status: "partial_executed_pull_deposit_blocked",
-        kaminoDepositPostPullSimulation: summarizeSimulation(
-          depositPostPullSimulation
-        ),
-        vaultPostPullRaw: vaultPostPullRaw.toString(),
-      },
-    });
-    console.log(
-      JSON.stringify(
-        {
-          ...plan,
-          status: "partial_executed_pull_deposit_blocked",
-          signatures: {
-            pull: pullSend.signature,
-          },
-          confirmedSlots: {
-            pull: pullSend.slot.toString(),
-          },
-          walletPostPullRaw: walletPostPullRaw.toString(),
-          vaultPostPullRaw: vaultPostPullRaw.toString(),
-          postPullSimulations: {
-            kaminoDeposit: summarizeSimulation(depositPostPullSimulation),
-          },
-        },
-        null,
-        2
-      )
-    );
-    process.exitCode = 1;
-    return;
-  }
-
-  const depositSend = await sendPreparedOperation({
-    compilePreparedOperation: appModules.compilePreparedOperation,
-    connection,
-    prepared: depositPrepared,
-    signers: [legacyKaminoKeypair],
-  });
-  const vaultPostDepositRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
-  const yieldDepositRecord = await recordAutodepositYieldDeposit({
-    amountRaw: executionAmountRaw,
-    appModules,
-    databaseUrl,
-    depositSignature: depositSend.signature,
-    depositSlot: depositSend.slot,
-    policySignature: depositSend.signature,
-    target,
-  });
-  await updateExecutionEvidence({
-    neon: appModules.neon,
-    databaseUrl,
-    dedupeKey: executionRecord.dedupeKey,
-    decodedEvidence: {
-      status: "executed",
-      kaminoDepositSignature: depositSend.signature,
-      kaminoDepositSlot: depositSend.slot.toString(),
-      kaminoDepositPostPullSimulation:
-        summarizeSimulation(depositPostPullSimulation),
-      vaultPostDepositRaw: vaultPostDepositRaw.toString(),
-      yieldDepositRecord,
-    },
-  });
-
-  console.log(
-    JSON.stringify(
-      {
-        ...plan,
-        status: "executed",
-        signatures: {
-          pull: pullSend.signature,
-          kaminoDeposit: depositSend.signature,
-        },
-        confirmedSlots: {
-          pull: pullSend.slot.toString(),
-          kaminoDeposit: depositSend.slot.toString(),
-        },
-        walletPostPullRaw: walletPostPullRaw.toString(),
-        vaultPostPullRaw: vaultPostPullRaw.toString(),
-        vaultPostDepositRaw: vaultPostDepositRaw.toString(),
-        postPullSimulations: {
-          kaminoDeposit: summarizeSimulation(depositPostPullSimulation),
-        },
-        yieldDepositRecord,
-      },
-      null,
-      2
-    )
-  );
 }
 
 if (import.meta.main) {

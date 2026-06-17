@@ -1,14 +1,13 @@
 {
   "lockfileVersion": 1,
-  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "loyal-yield-routing",
       "dependencies": {
         "@loyal-labs/loyal-smart-accounts": "0.1.1",
         "@loyal-labs/loyal-smart-accounts-core": "0.1.1",
-        "@loyal-labs/smart-account-vaults": "0.1.1",
-        "@loyal/actions": "npm:@loyal-labs/actions@0.1.0",
+        "@loyal-labs/smart-account-vaults": "0.1.2",
+        "@loyal/actions": "npm:@loyal-labs/actions@0.1.1",
         "@neondatabase/serverless": "^1.1.0",
         "@solana/spl-token": "^0.4.14",
         "@solana/web3.js": "^1.98.4",
@@ -175,13 +174,15 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
+    "@loyal-labs/actions": ["@loyal-labs/actions@0.1.1", "", { "dependencies": { "@loyal-labs/solana-rpc": "^0.1.1", "@solana/web3.js": "^1.98.4" } }, "sha512-9QyZ4rGPKt06Vi+IW0j9RlntR3tWeC25HbTWjuR993D8wVvjt/7He7G5bbmRB9EG9oQWCZ/wD0oF4ePfiitoWA=="],
+
     "@loyal-labs/loyal-smart-accounts": ["@loyal-labs/loyal-smart-accounts@0.1.1", "", { "dependencies": { "@loyal-labs/loyal-smart-accounts-core": "^0.1.1" }, "peerDependencies": { "@solana/web3.js": "^1.98.0" } }, "sha512-nW069IrowZKZiozsebBkH7tS9qTD29fX8Gh7ISYf0hYJU0mAc42KS7vL+rqCt2xOGotWgE0qiICJec7WI4xxrg=="],
 
     "@loyal-labs/loyal-smart-accounts-core": ["@loyal-labs/loyal-smart-accounts-core@0.1.1", "", { "dependencies": { "@loyal-labs/solana-rpc": "^0.1.1", "@metaplex-foundation/beet": "0.7.1", "@metaplex-foundation/beet-solana": "0.4.0", "@metaplex-foundation/cusper": "^0.0.2", "@solana/spl-token": "^0.4.13", "assert": "^2.1.0", "bn.js": "^5.2.2", "buffer": "^6.0.3", "invariant": "^2.2.4" }, "peerDependencies": { "@solana/web3.js": "^1.98.0" } }, "sha512-c4NOM2zayph/pe4wBGUXG9UehQVyOgAecZzrBqUjmnK3cS0tkxYJ6CY05uHV4tg9J56/rQ6QiZHUHa4G8Tfquw=="],
 
     "@loyal-labs/shared": ["@loyal-labs/shared@0.1.1", "", { "dependencies": { "mixpanel": "^0.20.0", "mixpanel-browser": "^2.74.0" } }, "sha512-xA8S0IYnGzmLJZUY+3PZQqpuHLulZ9OnOnAMx62GxoN3rUH+R4L3bFKjmsmUs19liCowoWpEaB7W54oGAeEqLg=="],
 
-    "@loyal-labs/smart-account-vaults": ["@loyal-labs/smart-account-vaults@0.1.1", "", { "dependencies": { "@loyal-labs/loyal-smart-accounts": "^0.1.1", "@loyal-labs/loyal-smart-accounts-core": "^0.1.1", "@loyal-labs/solana-instruction-decoder": "^0.1.1", "@loyal-labs/solana-wallet": "^0.1.1", "@solana/spl-token": "^0.4.13", "@solana/web3.js": "^1.98.0", "bn.js": "^5.2.2", "bs58": "^6.0.0" } }, "sha512-h4t5OwytYGpj8+Vl2yAAjBCUDy6Js7QmFzIvzJBkteMm1KlXi6DKmoQRi4h01NHEFpequtyTaSkvbiaUlMalMA=="],
+    "@loyal-labs/smart-account-vaults": ["@loyal-labs/smart-account-vaults@0.1.2", "", { "dependencies": { "@loyal-labs/actions": "^0.1.1", "@loyal-labs/loyal-smart-accounts": "^0.1.1", "@loyal-labs/loyal-smart-accounts-core": "^0.1.1", "@loyal-labs/solana-instruction-decoder": "^0.1.1", "@loyal-labs/solana-wallet": "^0.1.1", "@solana/spl-token": "^0.4.13", "@solana/web3.js": "^1.98.0", "bn.js": "^5.2.2", "bs58": "^6.0.0" } }, "sha512-x3SGdIGxHBJAKkrVP82GJzVqPuDjEjtaCe/1UZuXZ8udj5XOgjQrnTUbe92jQeckSmECwrPNN2S6A4bJs4nDkA=="],
 
     "@loyal-labs/solana-instruction-decoder": ["@loyal-labs/solana-instruction-decoder@0.1.1", "", { "dependencies": { "@solana/spl-token": "^0.4.13", "@solana/web3.js": "^1.98.0", "buffer": "^6.0.3" } }, "sha512-8c85ex+gtN0gRibLz2j0/wEmgErCtyaVr9NwLloSm4agkI1t5LQfwMc3a49elRMpozaYfom7o2IKMrLSMijI/Q=="],
 
@@ -189,7 +190,7 @@
 
     "@loyal-labs/solana-wallet": ["@loyal-labs/solana-wallet@0.1.1", "", { "dependencies": { "@loyal-labs/shared": "^0.1.1", "@loyal-labs/solana-rpc": "^0.1.1", "@solana/web3.js": "^1.98.0", "bs58": "^6.0.0" } }, "sha512-H2NnCGw4SahMOGRBA47twAC605eyyRrKMf1cVR3qSac2zcEJwfRr2F13Kf3lWR7VcLaeSemcZsACt2inxi4Q0A=="],
 
-    "@loyal/actions": ["@loyal-labs/actions@0.1.0", "", { "dependencies": { "@loyal-labs/solana-rpc": "^0.1.1", "@solana/web3.js": "^1.98.4" } }, "sha512-1pSLoq1lPw9uUsrRN9i6BSGFhsDb3LdjgohTj2/apeKRCTYKch42nkZvVcf2zu9btZXvlYz5UW7F5JuOFmdAPw=="],
+    "@loyal/actions": ["@loyal-labs/actions@0.1.1", "", { "dependencies": { "@loyal-labs/solana-rpc": "^0.1.1", "@solana/web3.js": "^1.98.4" } }, "sha512-9QyZ4rGPKt06Vi+IW0j9RlntR3tWeC25HbTWjuR993D8wVvjt/7He7G5bbmRB9EG9oQWCZ/wD0oF4ePfiitoWA=="],
 
     "@loyal/yield-routing-actions": ["@loyal/yield-routing-actions@workspace:packages/loyal-actions"],
 
