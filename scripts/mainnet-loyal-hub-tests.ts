@@ -63,6 +63,7 @@ const HUB_AUTHORITY_SEED = Buffer.from("hub-authority");
 const PENDING_ADMIN_SEED = Buffer.from("pending-admin");
 
 const SET_INVENTORY_REBALANCER_TAG = 8;
+const SET_HUB_AUTHORIZER_TAG = 7;
 const REQUEST_ADMIN_TRANSFER_TAG = 10;
 const ACCEPT_ADMIN_TRANSFER_TAG = 11;
 const SWAP_EXACT_IN_TAG = 1;
@@ -142,6 +143,7 @@ type TestState = {
   system: string;
   original?: {
     admin?: string;
+    hubAuthorizer?: string;
     inventoryRebalancer?: string;
   };
   initialHubBalances?: Record<string, string>;
@@ -683,6 +685,7 @@ function routeProgramConstraint(programId: PublicKey): InstructionConstraint {
 }
 
 function routeHubConstraint(vault: PublicKey, stableMints: PublicKey[], maxFeeBps: number): InstructionConstraint {
+  const hubAuthorizer = policyHubAuthorizer(vault);
   return {
     programId: hubProgram,
     accountConstraints: [
@@ -690,13 +693,17 @@ function routeHubConstraint(vault: PublicKey, stableMints: PublicKey[], maxFeeBp
       routePubkeyConstraint(1, [vault]),
       routePubkeyConstraint(6, stableMints),
       routePubkeyConstraint(7, stableMints),
-      routePubkeyConstraint(9, [clusterConfig.loyalHubAuthorizer]),
+      routePubkeyConstraint(9, [hubAuthorizer]),
     ],
     dataConstraints: [
       routeDataU8Equals(0n, SWAP_EXACT_IN_TAG),
       routeDataU16LeLessThanOrEqualTo(25n, maxFeeBps),
     ],
   };
+}
+
+function policyHubAuthorizer(vault: PublicKey): PublicKey {
+  return hasFlag(args, "allow-authority-handoff") ? vault : clusterConfig.loyalHubAuthorizer;
 }
 
 function routePubkeyConstraint(accountIndex: number, pubkeys: PublicKey[]): AccountConstraint {
@@ -939,7 +946,30 @@ async function runPolicyRoute(): Promise<void> {
     }
   };
 
-  await executePendingLegs();
+  if (stepDone("policy-route-hub-swap")) {
+    await executePendingLegs();
+  } else {
+    await withPolicyHubAuthorizer(vault, executePendingLegs);
+  }
+}
+
+async function withPolicyHubAuthorizer(vault: PublicKey, action: () => Promise<void>): Promise<void> {
+  const hubAuthorizer = policyHubAuthorizer(vault);
+  if (hubAuthorizer.equals(clusterConfig.loyalHubAuthorizer)) {
+    await action();
+    return;
+  }
+  if (!hasFlag(args, "allow-authority-handoff")) {
+    throw new Error("policy Hub authorizer handoff requires --allow-authority-handoff");
+  }
+  await setHubAuthorizer(hubAuthorizer, "handoff-hub-authorizer");
+  try {
+    await action();
+  } finally {
+    if (!hasFlag(args, "skip-authority-restore")) {
+      await restoreHubAuthorities();
+    }
+  }
 }
 
 async function withTreasuryInventoryRebalancer(action: () => Promise<void>): Promise<void> {
@@ -1123,13 +1153,18 @@ async function cleanup(label: string): Promise<void> {
 
 async function restoreHubAuthorities(): Promise<void> {
   const originalAdmin = state.original?.admin ? new PublicKey(state.original.admin) : system;
+  const originalHubAuthorizer = state.original?.hubAuthorizer ? new PublicKey(state.original.hubAuthorizer) : system;
   const originalRebalancer = state.original?.inventoryRebalancer ? new PublicKey(state.original.inventoryRebalancer) : system;
   const current = await fetchHubState();
   if (state.treasury && current.admin === state.treasury.vault && current.admin !== originalAdmin.toBase58()) {
     await transferHubAdminFromTreasuryToSystem(new PublicKey(state.treasury.vault), originalAdmin, "restore-admin");
   }
   const afterAdmin = await fetchHubState();
-  if (afterAdmin.inventory_rebalancer !== originalRebalancer.toBase58()) {
+  if (afterAdmin.hub_authorizer !== originalHubAuthorizer.toBase58()) {
+    await setHubAuthorizer(originalHubAuthorizer, "restore-hub-authorizer");
+  }
+  const afterAuthorizer = await fetchHubState();
+  if (afterAuthorizer.inventory_rebalancer !== originalRebalancer.toBase58()) {
     await setInventoryRebalancer(originalRebalancer, "restore-rebalancer");
   }
 }
@@ -1213,6 +1248,17 @@ async function setInventoryRebalancer(newRebalancer: PublicKey, label: string): 
   await sendTransaction(label, [buildHubSetInventoryRebalancerInstruction(system, newRebalancer)], [systemKeypair]);
 }
 
+async function setHubAuthorizer(newHubAuthorizer: PublicKey, label: string): Promise<void> {
+  const current = await fetchHubState();
+  if (current.hub_authorizer === newHubAuthorizer.toBase58()) {
+    return;
+  }
+  if (current.admin !== system.toBase58()) {
+    throw new Error(`cannot set Hub authorizer directly while Hub admin is ${current.admin}`);
+  }
+  await sendTransaction(label, [buildHubSetHubAuthorizerInstruction(system, newHubAuthorizer)], [systemKeypair]);
+}
+
 async function transferHubAdminFromSystemToTreasury(treasuryVault: PublicKey, label: string): Promise<void> {
   const current = await fetchHubState();
   if (current.admin === treasuryVault.toBase58()) {
@@ -1282,6 +1328,7 @@ async function buildHubSwapInstruction(vault: PublicKey): Promise<TransactionIns
   const usdcInfo = await fetchMintInfo(USDC_MINT);
   const pyusdInfo = await fetchMintInfo(PYUSD_MINT);
   const hubAuthority = deriveHubAuthority(hubProgram, laneId);
+  const hubAuthorizer = policyHubAuthorizer(vault);
   return new TransactionInstruction({
     programId: hubProgram,
     keys: [
@@ -1294,7 +1341,7 @@ async function buildHubSwapInstruction(vault: PublicKey): Promise<TransactionIns
       { pubkey: USDC_MINT, isSigner: false, isWritable: false },
       { pubkey: PYUSD_MINT, isSigner: false, isWritable: false },
       { pubkey: hubAuthority, isSigner: false, isWritable: false },
-      { pubkey: system, isSigner: true, isWritable: false },
+      { pubkey: hubAuthorizer, isSigner: true, isWritable: false },
       { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
     ],
@@ -1337,6 +1384,18 @@ function buildHubSetInventoryRebalancerInstruction(admin: PublicKey, newRebalanc
       { pubkey: newRebalancer, isSigner: false, isWritable: false },
     ],
     data: Buffer.from([SET_INVENTORY_REBALANCER_TAG]),
+  });
+}
+
+function buildHubSetHubAuthorizerInstruction(admin: PublicKey, newHubAuthorizer: PublicKey): TransactionInstruction {
+  return new TransactionInstruction({
+    programId: hubProgram,
+    keys: [
+      { pubkey: deriveConfig(hubProgram), isSigner: false, isWritable: true },
+      { pubkey: admin, isSigner: true, isWritable: false },
+      { pubkey: newHubAuthorizer, isSigner: false, isWritable: false },
+    ],
+    data: Buffer.from([SET_HUB_AUTHORIZER_TAG]),
   });
 }
 
@@ -1683,6 +1742,7 @@ function hubBalanceKey(lane: number, mint: PublicKey): string {
 function rememberOriginalHubAuthorities(hubState: HubState): void {
   state.original ??= {};
   state.original.admin ??= hubState.admin;
+  state.original.hubAuthorizer ??= hubState.hub_authorizer;
   state.original.inventoryRebalancer ??= hubState.inventory_rebalancer;
 }
 
