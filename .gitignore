@@ -31,6 +31,8 @@
 .DS_Store
 *.pem
 ADDR_*.json
+.agents/
+skills-lock.json
 
 # debug
 npm-debug.log*
