@@ -19,6 +19,13 @@ import {
   getAssociatedTokenAddressSync,
   getMint,
 } from "@solana/spl-token";
+import {
+  ProgramConfig,
+  getProgramConfigPda,
+  getSettingsPda,
+  getSmartAccountPda,
+} from "@loyal-labs/loyal-smart-accounts-core";
+import { createSmartAccount } from "@loyal-labs/loyal-smart-accounts-core/internal";
 import { readFileSync } from "node:fs";
 
 import {
@@ -30,9 +37,7 @@ import {
   assertRebalanceAvoidsActiveLanes,
   createLoyalActionsSdk,
   createSquadsProgramInteractionExecutionInstruction,
-  createSquadsSmartAccountInstruction,
   createSquadsSyncTransactionInstruction,
-  deriveSquadsSettings,
   deriveSquadsVault,
 } from "../packages/loyal-actions/src/index.js";
 
@@ -180,18 +185,39 @@ async function main(): Promise<void> {
 async function createVault(flags: Map<string, string[]>): Promise<void> {
   const { cluster, config, connection } = connectionContext(flags);
   const payer = loadKeypair(requiredFlag(flags, "keypair"));
-  const seed = parseU128(requiredFlag(flags, "seed"), "seed");
+  const settingsSeed = await resolveSquadsSettingsSeed({
+    connection,
+    programId: config.squadsSmartAccountProgramId,
+    flags,
+  });
   const vaultIndex = parseU8(flag(flags, "vault-index") ?? "0", "vault-index");
   const verifier = parsePubkey(flag(flags, "verifier") ?? payer.publicKey.toBase58(), "verifier");
   const treasury = parsePubkey(requiredFlag(flags, "squads-treasury"), "squads-treasury");
-  const settings = deriveSquadsSettings(config, seed).address;
-  const vault = deriveSquadsVault(config, settings, vaultIndex).address;
+  const settings = getSettingsPda({
+    accountIndex: settingsSeed,
+    programId: config.squadsSmartAccountProgramId,
+  })[0];
+  const vault = getSmartAccountPda({
+    settingsPda: settings,
+    accountIndex: vaultIndex,
+    programId: config.squadsSmartAccountProgramId,
+  })[0];
   const instructions = [
-    createSquadsSmartAccountInstruction(config, {
-      payer: payer.publicKey,
-      verifier,
-      seed,
+    createSmartAccount({
       treasury,
+      creator: payer.publicKey,
+      settings,
+      settingsAuthority: null,
+      threshold: 1,
+      signers: [
+        {
+          key: verifier,
+          permissions: { mask: 7 },
+        },
+      ],
+      timeLock: 0,
+      rentCollector: null,
+      programId: config.squadsSmartAccountProgramId,
     }),
   ];
 
@@ -217,12 +243,41 @@ async function createVault(flags: Map<string, string[]>): Promise<void> {
   });
   output(flags, {
     command: "create-vault",
+    settingsSeed: settingsSeed.toString(),
     settings,
     vault,
     vaultIndex,
     signer: verifier,
     transaction: run,
   });
+}
+
+async function resolveSquadsSettingsSeed(args: {
+  connection: Connection;
+  programId: PublicKey;
+  flags: Map<string, string[]>;
+}): Promise<bigint> {
+  const programConfig = getProgramConfigPda({ programId: args.programId })[0];
+  const config = await ProgramConfig.fromAccountAddress(args.connection, programConfig, DEFAULT_COMMITMENT);
+  const canonicalSeed = toBigInt(config.smartAccountIndex, "smartAccountIndex") + 1n;
+  const explicitSeed = flag(args.flags, "seed") ? parseU128(requiredFlag(args.flags, "seed"), "seed") : undefined;
+
+  if (explicitSeed !== undefined && explicitSeed !== canonicalSeed && !boolFlag(args.flags, "allow-noncanonical-seed")) {
+    throw new Error(
+      `--seed ${explicitSeed} does not match next Squads settings seed ${canonicalSeed}; ` +
+        "omit --seed or pass --allow-noncanonical-seed only for non-mainnet debugging",
+    );
+  }
+
+  const expectedSeed = flag(args.flags, "expected-account-index")
+    ? parseU128(requiredFlag(args.flags, "expected-account-index"), "expected-account-index")
+    : undefined;
+  const selectedSeed = explicitSeed ?? canonicalSeed;
+  if (expectedSeed !== undefined && selectedSeed !== expectedSeed) {
+    throw new Error(`expected Squads settings seed ${expectedSeed}, got ${selectedSeed}`);
+  }
+
+  return selectedSeed;
 }
 
 async function createAllInOnePolicy(flags: Map<string, string[]>): Promise<void> {
@@ -1238,6 +1293,25 @@ function parseU64(value: string, field: string): bigint {
     throw new Error(`${field} must fit in u64`);
   }
   return parsed;
+}
+
+function toBigInt(value: unknown, field: string): bigint {
+  if (typeof value === "bigint") {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`${field} must be a safe unsigned integer`);
+    }
+    return BigInt(value);
+  }
+  if (typeof value === "string") {
+    return parseU128(value, field);
+  }
+  if (value && typeof value === "object" && "toString" in value && typeof value.toString === "function") {
+    return parseU128(value.toString(), field);
+  }
+  throw new Error(`${field} must be an unsigned integer`);
 }
 
 function parseI64(value: string, field: string): bigint {
