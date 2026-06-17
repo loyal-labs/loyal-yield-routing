@@ -5,6 +5,7 @@ use crate::squads::{
 use crate::{ids::*, LoyalActionError, Result};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
+    pubkey,
     pubkey::Pubkey,
 };
 
@@ -365,6 +366,14 @@ pub fn derive_loyal_hub_config() -> Pubkey {
 
 pub fn derive_loyal_hub_config_for_program(program_id: Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[LOYAL_HUB_CONFIG_SEED], &program_id).0
+}
+
+pub fn derive_loyal_hub_pending_admin_for_program(program_id: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[LOYAL_HUB_PENDING_ADMIN_SEED], &program_id).0
+}
+
+pub fn derive_loyal_hub_pending_admin() -> Pubkey {
+    derive_loyal_hub_pending_admin_for_program(LOYAL_HUB_SWAP_PROGRAM_ID)
 }
 
 pub fn derive_loyal_hub_authority() -> Pubkey {
@@ -782,6 +791,74 @@ pub fn loyal_hub_set_admin_instruction_for_program(
             AccountMeta::new_readonly(new_admin, true),
         ],
         data: loyal_hub_set_admin_data(),
+    }
+}
+
+pub fn loyal_hub_request_admin_transfer_data() -> Vec<u8> {
+    let mut data = vec![0; LOYAL_HUB_REQUEST_ADMIN_TRANSFER_DATA_LEN];
+    data[loyal_hub_abi::REQUEST_ADMIN_TRANSFER_TAG_OFFSET as usize] =
+        LOYAL_HUB_REQUEST_ADMIN_TRANSFER;
+    data
+}
+
+pub fn loyal_hub_request_admin_transfer_instruction(
+    admin: Pubkey,
+    new_admin: Pubkey,
+) -> Instruction {
+    loyal_hub_request_admin_transfer_instruction_for_program(
+        LOYAL_HUB_SWAP_PROGRAM_ID,
+        admin,
+        new_admin,
+    )
+}
+
+pub fn loyal_hub_request_admin_transfer_instruction_for_program(
+    program_id: Pubkey,
+    admin: Pubkey,
+    new_admin: Pubkey,
+) -> Instruction {
+    Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(derive_loyal_hub_config_for_program(program_id), false),
+            AccountMeta::new_readonly(admin, true),
+            AccountMeta::new(
+                derive_loyal_hub_pending_admin_for_program(program_id),
+                false,
+            ),
+            AccountMeta::new_readonly(new_admin, false),
+            AccountMeta::new_readonly(pubkey!("11111111111111111111111111111111"), false),
+        ],
+        data: loyal_hub_request_admin_transfer_data(),
+    }
+}
+
+pub fn loyal_hub_accept_admin_transfer_data() -> Vec<u8> {
+    let mut data = vec![0; LOYAL_HUB_ACCEPT_ADMIN_TRANSFER_DATA_LEN];
+    data[loyal_hub_abi::ACCEPT_ADMIN_TRANSFER_TAG_OFFSET as usize] =
+        LOYAL_HUB_ACCEPT_ADMIN_TRANSFER;
+    data
+}
+
+pub fn loyal_hub_accept_admin_transfer_instruction(new_admin: Pubkey) -> Instruction {
+    loyal_hub_accept_admin_transfer_instruction_for_program(LOYAL_HUB_SWAP_PROGRAM_ID, new_admin)
+}
+
+pub fn loyal_hub_accept_admin_transfer_instruction_for_program(
+    program_id: Pubkey,
+    new_admin: Pubkey,
+) -> Instruction {
+    Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(derive_loyal_hub_config_for_program(program_id), false),
+            AccountMeta::new_readonly(
+                derive_loyal_hub_pending_admin_for_program(program_id),
+                false,
+            ),
+            AccountMeta::new_readonly(new_admin, true),
+        ],
+        data: loyal_hub_accept_admin_transfer_data(),
     }
 }
 

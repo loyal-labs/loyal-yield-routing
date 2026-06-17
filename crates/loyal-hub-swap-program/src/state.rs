@@ -4,11 +4,12 @@ use crate::{
     codec::{read_pubkey_at, read_u16_at, read_u8_at, write_bytes_at},
     constants::{
         ASSOCIATED_TOKEN_PROGRAM_ID, CONFIG_MAGIC, CONFIG_SEED, HUB_AUTHORITY_SEED,
-        HUB_CONFIG_SPACE, MAX_ALLOWED_MINTS,
+        HUB_CONFIG_SPACE, MAX_ALLOWED_MINTS, PENDING_ADMIN_MAGIC, PENDING_ADMIN_SEED,
+        PENDING_ADMIN_SPACE,
     },
     validation::require_key,
 };
-use loyal_hub_abi::{config_account, config_init};
+use loyal_hub_abi::{config_account, config_init, pending_admin_account};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HubConfig {
@@ -338,6 +339,80 @@ impl HubConfig {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingAdminTransfer {
+    pub new_admin: Pubkey,
+}
+
+impl PendingAdminTransfer {
+    pub fn read_account(
+        program_id: &Pubkey,
+        pending_admin_account_info: &AccountInfo,
+    ) -> Result<Self, ProgramError> {
+        require_key(
+            pending_admin_account_info,
+            &derive_pending_admin(program_id).0,
+        )?;
+        if pending_admin_account_info.owner() != program_id {
+            return Err(ProgramError::IncorrectProgramId);
+        }
+
+        #[cfg(not(kani))]
+        let data = pending_admin_account_info.try_borrow_data()?;
+        #[cfg(kani)]
+        let data = unsafe { pending_admin_account_info.borrow_data_unchecked() };
+
+        if data.len() != PENDING_ADMIN_SPACE
+            || data.get(
+                pending_admin_account::MAGIC_OFFSET
+                    ..pending_admin_account::MAGIC_OFFSET + pending_admin_account::MAGIC_LEN,
+            ) != Some(PENDING_ADMIN_MAGIC.as_slice())
+        {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        Ok(Self {
+            new_admin: read_pubkey_at(&data, pending_admin_account::NEW_ADMIN_OFFSET)
+                .map_err(|_| ProgramError::InvalidAccountData)?,
+        })
+    }
+
+    #[cfg(not(kani))]
+    pub fn write_account(
+        &self,
+        pending_admin_account_info: &AccountInfo,
+    ) -> Result<(), ProgramError> {
+        let mut data = pending_admin_account_info.try_borrow_mut_data()?;
+        self.write_account_fields(&mut data)
+    }
+
+    #[cfg(kani)]
+    pub fn write_account(
+        &self,
+        pending_admin_account_info: &AccountInfo,
+    ) -> Result<(), ProgramError> {
+        let data = unsafe { pending_admin_account_info.borrow_mut_data_unchecked() };
+        self.write_account_fields(data)
+    }
+
+    fn write_account_fields(&self, data: &mut [u8]) -> Result<(), ProgramError> {
+        if data.len() != PENDING_ADMIN_SPACE {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        data.fill(0);
+        write_bytes_at(
+            data,
+            pending_admin_account::MAGIC_OFFSET,
+            PENDING_ADMIN_MAGIC,
+        )?;
+        write_bytes_at(
+            data,
+            pending_admin_account::NEW_ADMIN_OFFSET,
+            self.new_admin.as_ref(),
+        )?;
+        Ok(())
+    }
+}
+
 #[cfg(not(kani))]
 pub fn derive_config(program_id: &Pubkey) -> (Pubkey, u8) {
     pinocchio::pubkey::find_program_address(&[CONFIG_SEED], program_id)
@@ -349,6 +424,19 @@ pub fn derive_config(program_id: &Pubkey) -> (Pubkey, u8) {
     key[1] = program_id[0];
     key[2] = CONFIG_SEED[0];
     (key, 255)
+}
+
+#[cfg(not(kani))]
+pub fn derive_pending_admin(program_id: &Pubkey) -> (Pubkey, u8) {
+    pinocchio::pubkey::find_program_address(&[PENDING_ADMIN_SEED], program_id)
+}
+
+#[cfg(kani)]
+pub fn derive_pending_admin(program_id: &Pubkey) -> (Pubkey, u8) {
+    let mut key = [0xd0u8; 32];
+    key[1] = program_id[0];
+    key[2] = PENDING_ADMIN_SEED[0];
+    (key, 253)
 }
 
 #[cfg(not(kani))]

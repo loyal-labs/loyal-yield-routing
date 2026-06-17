@@ -13,13 +13,14 @@ use pinocchio::{
 #[cfg(not(kani))]
 use crate::codec::write_bytes_at;
 use crate::{
-    constants::{HUB_CONFIG_SPACE, SYSTEM_PROGRAM_ID},
+    constants::{HUB_CONFIG_SPACE, PENDING_ADMIN_SPACE, SYSTEM_PROGRAM_ID},
     instruction::{
         parse_instruction, AllowedMint, HubInstruction, InventoryAccount, RebalanceInventoryArgs,
         SwapExactInArgs,
     },
     state::{
-        derive_config, derive_hub_authority, derive_inventory_account_for_token_program, HubConfig,
+        derive_config, derive_hub_authority, derive_inventory_account_for_token_program,
+        derive_pending_admin, HubConfig, PendingAdminTransfer,
     },
     token::{
         read_mint_decimals_for_program, require_matching_token_mint_for_program,
@@ -59,6 +60,10 @@ pub fn process_instruction(
             process_set_max_fee(program_id, accounts, max_fee_bps)
         }
         HubInstruction::SetAdmin => process_set_admin(program_id, accounts),
+        HubInstruction::RequestAdminTransfer => {
+            process_request_admin_transfer(program_id, accounts)
+        }
+        HubInstruction::AcceptAdminTransfer => process_accept_admin_transfer(program_id, accounts),
         HubInstruction::SetHubAuthorizer => process_set_hub_authorizer(program_id, accounts),
         HubInstruction::SetInventoryRebalancer => {
             process_set_inventory_rebalancer(program_id, accounts)
@@ -200,6 +205,63 @@ fn process_set_admin(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramRe
     let mut config = HubConfig::read_account(program_id, config_account)?;
     require_admin(admin, &config)?;
     require_signer(new_admin)?;
+    config.admin = *new_admin.key();
+    config.write_account(config_account)
+}
+
+fn process_request_admin_transfer(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
+    let account_info_iter = &mut accounts.iter();
+    let config_account = next_account_info(account_info_iter)?;
+    let admin = next_account_info(account_info_iter)?;
+    let pending_admin_account = next_account_info(account_info_iter)?;
+    let new_admin = next_account_info(account_info_iter)?;
+    let system_program = next_account_info(account_info_iter)?;
+
+    let config = HubConfig::read_account(program_id, config_account)?;
+    require_admin(admin, &config)?;
+    require_key(pending_admin_account, &derive_pending_admin(program_id).0)?;
+    require_key(system_program, &SYSTEM_PROGRAM_ID)?;
+
+    if pending_admin_account.owner() == &SYSTEM_PROGRAM_ID && pending_admin_account.data_is_empty()
+    {
+        let lamports = Rent::get()?.minimum_balance(PENDING_ADMIN_SPACE);
+        let (_, bump) = derive_pending_admin(program_id);
+        let bump_seed = [bump];
+        let seeds = [
+            Seed::from(crate::PENDING_ADMIN_SEED),
+            Seed::from(&bump_seed),
+        ];
+        let signer = Signer::from(&seeds);
+        invoke_create_account(
+            admin,
+            pending_admin_account,
+            system_program,
+            lamports,
+            PENDING_ADMIN_SPACE as u64,
+            program_id,
+            &[signer],
+        )?;
+    } else if pending_admin_account.owner() != program_id {
+        return Err(ProgramError::IncorrectProgramId);
+    }
+
+    PendingAdminTransfer {
+        new_admin: *new_admin.key(),
+    }
+    .write_account(pending_admin_account)
+}
+
+fn process_accept_admin_transfer(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
+    let account_info_iter = &mut accounts.iter();
+    let config_account = next_account_info(account_info_iter)?;
+    let pending_admin_account = next_account_info(account_info_iter)?;
+    let new_admin = next_account_info(account_info_iter)?;
+
+    require_signer(new_admin)?;
+    let pending = PendingAdminTransfer::read_account(program_id, pending_admin_account)?;
+    require_key(new_admin, &pending.new_admin)?;
+
+    let mut config = HubConfig::read_account(program_id, config_account)?;
     config.admin = *new_admin.key();
     config.write_account(config_account)
 }

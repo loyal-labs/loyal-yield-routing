@@ -22,6 +22,8 @@ pub const LOYAL_HUB_SET_PAUSED: u8 = loyal_hub_abi::SET_PAUSED;
 pub const LOYAL_HUB_SET_MAX_FEE: u8 = loyal_hub_abi::SET_MAX_FEE;
 pub const LOYAL_HUB_REBALANCE_INVENTORY: u8 = loyal_hub_abi::REBALANCE_INVENTORY;
 pub const LOYAL_HUB_SET_ADMIN: u8 = loyal_hub_abi::SET_ADMIN;
+pub const LOYAL_HUB_REQUEST_ADMIN_TRANSFER: u8 = loyal_hub_abi::REQUEST_ADMIN_TRANSFER;
+pub const LOYAL_HUB_ACCEPT_ADMIN_TRANSFER: u8 = loyal_hub_abi::ACCEPT_ADMIN_TRANSFER;
 pub const LOYAL_HUB_SET_HUB_AUTHORIZER: u8 = loyal_hub_abi::SET_HUB_AUTHORIZER;
 pub const LOYAL_HUB_SET_INVENTORY_REBALANCER: u8 = loyal_hub_abi::SET_INVENTORY_REBALANCER;
 pub const LOYAL_HUB_SET_LANE_COUNT: u8 = loyal_hub_abi::SET_LANE_COUNT;
@@ -36,6 +38,10 @@ pub const LOYAL_HUB_WITHDRAW_INVENTORY_DATA_LEN: usize = loyal_hub_abi::WITHDRAW
 pub const LOYAL_HUB_SET_PAUSED_DATA_LEN: usize = loyal_hub_abi::SET_PAUSED_DATA_LEN;
 pub const LOYAL_HUB_SET_MAX_FEE_DATA_LEN: usize = loyal_hub_abi::SET_MAX_FEE_DATA_LEN;
 pub const LOYAL_HUB_SET_ADMIN_DATA_LEN: usize = loyal_hub_abi::SET_ADMIN_DATA_LEN;
+pub const LOYAL_HUB_REQUEST_ADMIN_TRANSFER_DATA_LEN: usize =
+    loyal_hub_abi::REQUEST_ADMIN_TRANSFER_DATA_LEN;
+pub const LOYAL_HUB_ACCEPT_ADMIN_TRANSFER_DATA_LEN: usize =
+    loyal_hub_abi::ACCEPT_ADMIN_TRANSFER_DATA_LEN;
 pub const LOYAL_HUB_SET_HUB_AUTHORIZER_DATA_LEN: usize = loyal_hub_abi::SET_HUB_AUTHORIZER_DATA_LEN;
 pub const LOYAL_HUB_SET_INVENTORY_REBALANCER_DATA_LEN: usize =
     loyal_hub_abi::SET_INVENTORY_REBALANCER_DATA_LEN;
@@ -44,6 +50,7 @@ pub const LOYAL_HUB_REBALANCE_INVENTORY_ARGS_OFFSET: usize =
     loyal_hub_abi::REBALANCE_INVENTORY_ARGS_OFFSET;
 pub const LOYAL_HUB_CONFIG_SEED: &[u8] = loyal_hub_abi::CONFIG_SEED;
 pub const LOYAL_HUB_AUTHORITY_SEED: &[u8] = loyal_hub_abi::HUB_AUTHORITY_SEED;
+pub const LOYAL_HUB_PENDING_ADMIN_SEED: &[u8] = loyal_hub_abi::PENDING_ADMIN_SEED;
 pub const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
     pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 pub const TOKEN_2022_PROGRAM_ID: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");

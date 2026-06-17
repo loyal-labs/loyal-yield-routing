@@ -4,9 +4,9 @@ use pinocchio::pubkey::Pubkey;
 use crate::{
     codec::{read_u16_at, read_u64_at, read_u8_at},
     constants::{
-        INITIALIZE_CONFIG, MAX_REBALANCE_TRANSFERS, REBALANCE_INVENTORY, SET_ADMIN,
-        SET_HUB_AUTHORIZER, SET_INVENTORY_REBALANCER, SET_LANE_COUNT, SET_MAX_FEE, SET_PAUSED,
-        SWAP_EXACT_IN, WITHDRAW_INVENTORY,
+        ACCEPT_ADMIN_TRANSFER, INITIALIZE_CONFIG, MAX_REBALANCE_TRANSFERS, REBALANCE_INVENTORY,
+        REQUEST_ADMIN_TRANSFER, SET_ADMIN, SET_HUB_AUTHORIZER, SET_INVENTORY_REBALANCER,
+        SET_LANE_COUNT, SET_MAX_FEE, SET_PAUSED, SWAP_EXACT_IN, WITHDRAW_INVENTORY,
     },
     state::HubConfig,
 };
@@ -22,6 +22,8 @@ pub enum HubInstruction {
     SetPaused { paused: bool },
     SetMaxFee { max_fee_bps: u16 },
     SetAdmin,
+    RequestAdminTransfer,
+    AcceptAdminTransfer,
     SetHubAuthorizer,
     SetInventoryRebalancer,
     SetLaneCount { lane_count: u8 },
@@ -85,6 +87,14 @@ pub fn parse_instruction(data: &[u8]) -> Result<HubInstruction, ProgramError> {
             parse_set_admin(rest)?;
             Ok(HubInstruction::SetAdmin)
         }
+        REQUEST_ADMIN_TRANSFER => {
+            parse_request_admin_transfer(rest)?;
+            Ok(HubInstruction::RequestAdminTransfer)
+        }
+        ACCEPT_ADMIN_TRANSFER => {
+            parse_accept_admin_transfer(rest)?;
+            Ok(HubInstruction::AcceptAdminTransfer)
+        }
         SET_HUB_AUTHORIZER => {
             parse_set_hub_authorizer(rest)?;
             Ok(HubInstruction::SetHubAuthorizer)
@@ -133,6 +143,18 @@ pub fn parse_instruction(data: &[u8]) -> Result<HubInstruction, ProgramError> {
                 return Err(ProgramError::InvalidInstructionData);
             }
             Ok(HubInstruction::SetAdmin)
+        }
+        REQUEST_ADMIN_TRANSFER => {
+            if data.len() != 1 + loyal_hub_abi::REQUEST_ADMIN_TRANSFER_ARGS_LEN {
+                return Err(ProgramError::InvalidInstructionData);
+            }
+            Ok(HubInstruction::RequestAdminTransfer)
+        }
+        ACCEPT_ADMIN_TRANSFER => {
+            if data.len() != 1 + loyal_hub_abi::ACCEPT_ADMIN_TRANSFER_ARGS_LEN {
+                return Err(ProgramError::InvalidInstructionData);
+            }
+            Ok(HubInstruction::AcceptAdminTransfer)
         }
         SET_HUB_AUTHORIZER => {
             if data.len() != 1 + loyal_hub_abi::SET_HUB_AUTHORIZER_ARGS_LEN {
@@ -278,6 +300,20 @@ fn parse_max_fee(data: &[u8]) -> Result<u16, ProgramError> {
 
 fn parse_set_admin(data: &[u8]) -> Result<(), ProgramError> {
     if data.len() != loyal_hub_abi::SET_ADMIN_ARGS_LEN {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    Ok(())
+}
+
+fn parse_request_admin_transfer(data: &[u8]) -> Result<(), ProgramError> {
+    if data.len() != loyal_hub_abi::REQUEST_ADMIN_TRANSFER_ARGS_LEN {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    Ok(())
+}
+
+fn parse_accept_admin_transfer(data: &[u8]) -> Result<(), ProgramError> {
+    if data.len() != loyal_hub_abi::ACCEPT_ADMIN_TRANSFER_ARGS_LEN {
         return Err(ProgramError::InvalidInstructionData);
     }
     Ok(())
