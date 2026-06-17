@@ -7,6 +7,7 @@ import {
   type TransactionInstruction,
 } from "@solana/web3.js";
 import bs58 from "bs58";
+import { existsSync } from "node:fs";
 
 type PreparedOperation = {
   operation: string;
@@ -25,10 +26,6 @@ type PreparedAutodepositPull = {
   };
 };
 
-type PreparedEarnDeposit = {
-  prepared: PreparedOperation;
-};
-
 type SmartAccountVaultsClient = {
   prepareEarnUsdcAutodepositPull?: (args: {
     policy: PublicKey;
@@ -39,19 +36,6 @@ type SmartAccountVaultsClient = {
     amountRaw: bigint;
     cluster: string;
   }) => Promise<PreparedAutodepositPull>;
-  prepareEarnUsdcDeposit: (args: {
-    amountRaw: bigint;
-    cluster: string;
-    feePayer: PublicKey;
-    initializeYieldRoutingPolicy: boolean;
-    policySigner: PublicKey;
-    settingsPda: PublicKey;
-    walletAddress: PublicKey;
-    yieldRoutingPolicy: {
-      account: PublicKey;
-      seed: bigint;
-    };
-  }) => Promise<PreparedEarnDeposit>;
 };
 
 type NeonQuery = (
@@ -66,33 +50,10 @@ type AppModules = {
     prepared: PreparedOperation;
     blockhash: string;
   }) => VersionedTransaction;
-  createAssociatedTokenAccountIdempotentInstruction: (
-    payer: PublicKey,
-    associatedToken: PublicKey,
-    owner: PublicKey,
-    mint: PublicKey,
-    programId?: PublicKey
-  ) => TransactionInstruction;
   createSmartAccountVaultsClient: (config: {
     connection: Connection;
     programId: PublicKey;
   }) => SmartAccountVaultsClient;
-  decodeTransferCheckedInstruction: (
-    instruction: TransactionInstruction,
-    programId?: PublicKey
-  ) => {
-    keys: {
-      source: { pubkey: PublicKey };
-      destination: { pubkey: PublicKey };
-      owner: { pubkey: PublicKey };
-    };
-  };
-  getAssociatedTokenAddressSync: (
-    mint: PublicKey,
-    owner: PublicKey,
-    allowOwnerOffCurve?: boolean,
-    programId?: PublicKey
-  ) => PublicKey;
   getKaminoUsdcEarnTargetForCluster: (cluster: string) => {
     liquidityMint: PublicKey;
     market: PublicKey;
@@ -107,7 +68,6 @@ type AppModules = {
   SUBSCRIPTION_RECURRING_DELEGATION_DATA_LEN: number;
   SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR: number;
   SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR_OFFSET: number;
-  TOKEN_PROGRAM_ID: PublicKey;
 };
 
 export type SweepAmountInput = {
@@ -144,6 +104,7 @@ type CliOptions = {
 type EligibleTarget = {
   id: bigint;
   settings: string;
+  vaultIndex: number;
   wallet: string;
   walletUsdcAta: string;
   vaultPubkey: string;
@@ -151,11 +112,15 @@ type EligibleTarget = {
   sweepPolicyAccount: string;
   routePolicyAccount: string;
   routePolicySeed: bigint;
+  routeModes: string[];
   recurringDelegation: string;
   walletBalanceFloorRaw: bigint;
   maxAmountPerPeriodRaw: bigint | null;
   periodLengthSeconds: bigint | null;
   startTimestamp: bigint | null;
+  currentReserve: string | null;
+  currentMarket: string | null;
+  currentLiquidityMint: string | null;
 };
 
 type SimulationSummary = {
@@ -199,20 +164,20 @@ type LotClaimResult =
     };
 
 const DEFAULT_COMMITMENT = "confirmed";
+const DEFAULT_LOCAL_SAME_MINT_COMMAND = ["bun", "run", "same-mint:swap", "--"] as const;
+const SAME_MINT_ROUTE_MODE = "same_mint_kamino";
 const USDC_DECIMALS = 6;
 const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
 
 async function loadAppModules(): Promise<AppModules> {
   const [
     neonModule,
-    splTokenModule,
     smartAccountVaultsModule,
     smartAccountsCoreModule,
     smartAccountsModule,
     loyalActionsModule,
   ] = await Promise.all([
     import("@neondatabase/serverless"),
-    import("@solana/spl-token"),
     import("@loyal-labs/smart-account-vaults"),
     import("@loyal-labs/loyal-smart-accounts-core"),
     import("@loyal-labs/loyal-smart-accounts"),
@@ -223,12 +188,8 @@ async function loadAppModules(): Promise<AppModules> {
     Keypair,
     PublicKey,
     compilePreparedOperation: smartAccountsCoreModule.compilePreparedOperation,
-    createAssociatedTokenAccountIdempotentInstruction:
-      splTokenModule.createAssociatedTokenAccountIdempotentInstruction,
     createSmartAccountVaultsClient:
       smartAccountVaultsModule.createSmartAccountVaultsClient as unknown as AppModules["createSmartAccountVaultsClient"],
-    decodeTransferCheckedInstruction: splTokenModule.decodeTransferCheckedInstruction,
-    getAssociatedTokenAddressSync: splTokenModule.getAssociatedTokenAddressSync,
     getKaminoUsdcEarnTargetForCluster:
       loyalActionsModule.getKaminoUsdcEarnTargetForCluster as AppModules["getKaminoUsdcEarnTargetForCluster"],
     LoyalCluster: loyalActionsModule.LoyalCluster,
@@ -245,7 +206,6 @@ async function loadAppModules(): Promise<AppModules> {
       loyalActionsModule.SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR,
     SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR_OFFSET:
       loyalActionsModule.SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR_OFFSET,
-    TOKEN_PROGRAM_ID: splTokenModule.TOKEN_PROGRAM_ID,
   };
 }
 
@@ -439,6 +399,7 @@ async function loadEligibleTarget(
     SELECT
       t.id,
       t.settings,
+      t.vault_index,
       t.wallet,
       t.wallet_usdc_ata,
       t.vault_pubkey,
@@ -450,17 +411,41 @@ async function loadEligibleTarget(
       t.period_length_seconds,
       t.start_timestamp,
       rp.policy_account AS route_policy_account,
-      rp.policy_seed AS route_policy_seed
+      rp.policy_seed AS route_policy_seed,
+      rp.route_modes AS route_modes,
+      yp.current_reserve,
+      yp.current_market,
+      yp.current_liquidity_mint
     FROM loyal_yield.balance_sweep_targets t
     LEFT JOIN LATERAL (
-      SELECT policy_account, policy_seed
+      SELECT policy_account, policy_seed, route_modes
       FROM loyal_yield.route_policies rp
+      LEFT JOIN loyal_yield.managed_vaults mv
+        ON mv.settings = rp.settings
+        AND mv.vault_index = rp.vault_index
+        AND mv.vault_pubkey = rp.vault_pubkey
+        AND mv.active_policy_id = rp.id
+        AND mv.active
       WHERE rp.settings = t.settings
         AND rp.vault_index = t.vault_index
         AND rp.active
-      ORDER BY rp.last_seen_slot DESC, rp.id DESC
+        AND ${SAME_MINT_ROUTE_MODE} = ANY(rp.route_modes)
+      ORDER BY
+        CASE WHEN mv.id IS NULL THEN 1 ELSE 0 END,
+        rp.last_seen_slot DESC,
+        rp.id DESC
       LIMIT 1
     ) rp ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT current_reserve, current_market, current_liquidity_mint
+      FROM loyal_yield.user_yield_positions yp
+      WHERE yp.settings = t.settings
+        AND yp.vault_index = t.vault_index
+        AND yp.wallet_address = t.wallet
+        AND yp.status = 'active'
+      ORDER BY yp.updated_at DESC, yp.id DESC
+      LIMIT 1
+    ) yp ON TRUE
     WHERE t.active
       AND t.lifecycle_status = 'active'
       AND t.wallet_balance_floor_raw IS NOT NULL
@@ -488,6 +473,7 @@ async function loadEligibleTarget(
   return {
     id: BigInt(readRequiredString(row.id, "id")),
     settings: readRequiredString(row.settings, "settings"),
+    vaultIndex: Number(readRequiredString(row.vault_index, "vault_index")),
     wallet: readRequiredString(row.wallet, "wallet"),
     walletUsdcAta: readRequiredString(row.wallet_usdc_ata, "wallet_usdc_ata"),
     vaultPubkey: readRequiredString(row.vault_pubkey, "vault_pubkey"),
@@ -498,6 +484,7 @@ async function loadEligibleTarget(
     ),
     routePolicyAccount,
     routePolicySeed: BigInt(readRequiredString(row.route_policy_seed, "route_policy_seed")),
+    routeModes: readStringArray(row.route_modes, "route_modes"),
     recurringDelegation: readRequiredString(
       row.recurring_delegation,
       "recurring_delegation"
@@ -514,7 +501,17 @@ async function loadEligibleTarget(
     startTimestamp: row.start_timestamp
       ? BigInt(readRequiredString(row.start_timestamp, "start_timestamp"))
       : null,
+    currentReserve: readNullableString(row.current_reserve),
+    currentMarket: readNullableString(row.current_market),
+    currentLiquidityMint: readNullableString(row.current_liquidity_mint),
   };
+}
+
+function readStringArray(value: unknown, label: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`Missing ${label}.`);
+  }
+  return value.map((item) => item.toString());
 }
 
 function readRequiredString(value: unknown, label: string): string {
@@ -1024,40 +1021,184 @@ async function sendPreparedOperation(args: {
   return { signature, slot: BigInt(parsed?.slot ?? 0) };
 }
 
-function removeWalletToVaultTransfer(args: {
-  decodeTransferCheckedInstruction: AppModules["decodeTransferCheckedInstruction"];
-  getAssociatedTokenAddressSync: AppModules["getAssociatedTokenAddressSync"];
-  instructions: readonly TransactionInstruction[];
-  signer: PublicKey;
-  tokenProgramId: PublicKey;
-  usdcMint: PublicKey;
-  vaultUsdcAta: PublicKey;
-}): TransactionInstruction[] {
-  const signerUsdcAta = args.getAssociatedTokenAddressSync(
-    args.usdcMint,
-    args.signer,
-    false,
-    args.tokenProgramId
-  );
+type SameMintTopUpResult = {
+  command: string[];
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  json: Record<string, unknown> | null;
+};
 
-  return args.instructions.filter((instruction) => {
-    if (!instruction.programId.equals(args.tokenProgramId)) {
-      return true;
-    }
-    try {
-      const decoded = args.decodeTransferCheckedInstruction(
-        instruction,
-        args.tokenProgramId
-      );
-      return !(
-        decoded.keys.source.pubkey.equals(signerUsdcAta) &&
-        decoded.keys.destination.pubkey.equals(args.vaultUsdcAta) &&
-        decoded.keys.owner.pubkey.equals(args.signer)
-      );
-    } catch {
-      return true;
-    }
+function sameMintReserveSwapCommand(): string[] {
+  const configured = process.env.SAME_MINT_RESERVE_SWAP_COMMAND;
+  if (configured && configured.trim().length > 0) {
+    return splitSimpleCommand(configured);
+  }
+  if (existsSync("/usr/local/bin/same-mint-reserve-swap")) {
+    return ["/usr/local/bin/same-mint-reserve-swap"];
+  }
+  return [...DEFAULT_LOCAL_SAME_MINT_COMMAND];
+}
+
+function splitSimpleCommand(command: string): string[] {
+  const parts = command.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
+  return parts.map((part) => part.replace(/^"|"$/g, ""));
+}
+
+async function runSameMintReserveTopUp(args: {
+  amountRaw: bigint;
+  execute: boolean;
+  reserve: string;
+  rpcUrl: string;
+  target: EligibleTarget;
+}): Promise<SameMintTopUpResult> {
+  const command = [
+    ...sameMintReserveSwapCommand(),
+    "--settings",
+    args.target.settings,
+    "--vault-index",
+    args.target.vaultIndex.toString(),
+    "--deposit-reserve",
+    args.reserve,
+    args.amountRaw.toString(),
+    "--rpc-url",
+    args.rpcUrl,
+  ];
+  if (args.execute) {
+    command.push("--execute");
+  }
+
+  const subprocess = Bun.spawn(command, {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: {
+      ...process.env,
+      YIELD_ROUTER_KEYPAIR:
+        process.env.POLICY_KEYPAIR ?? process.env.YIELD_ROUTER_KEYPAIR,
+    },
   });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(subprocess.stdout).text(),
+    new Response(subprocess.stderr).text(),
+    subprocess.exited,
+  ]);
+  const json = extractJsonObject(stdout);
+  const result = { command, exitCode, stdout, stderr, json };
+
+  if (exitCode !== 0) {
+    throw new Error(
+      `same-mint Kamino top-up command failed with exit code ${exitCode}: ${JSON.stringify(
+        summarizeTopUpResult(result)
+      )}`
+    );
+  }
+  return result;
+}
+
+function extractJsonObject(text: string): Record<string, unknown> | null {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end < start) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(text.slice(start, end + 1));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function summarizeTopUpResult(result: SameMintTopUpResult) {
+  const policyDepositTransaction = readRecord(
+    result.json?.policyDepositTransaction
+  );
+  const fundingTransaction = readRecord(result.json?.fundingTransaction);
+  return {
+    command: result.command.map(redactSensitiveText).join(" "),
+    exitCode: result.exitCode,
+    status: result.json?.status?.toString() ?? null,
+    preflightBlockers: result.json?.preflightBlockers ?? null,
+    missingObligationSetup: result.json?.missingObligationSetup ?? null,
+    fundingSimulationError:
+      fundingTransaction?.simulationError?.toString() ?? null,
+    policyDepositSimulationError:
+      policyDepositTransaction?.simulationError?.toString() ?? null,
+    policyDepositSimulationSkippedReason:
+      policyDepositTransaction?.simulationSkippedReason?.toString() ?? null,
+    stdoutTail: tailLines(result.stdout, 16).map(redactSensitiveText),
+    stderrTail: tailLines(result.stderr, 16).map(redactSensitiveText),
+  };
+}
+
+function redactSensitiveText(value: string): string {
+  let redacted = value;
+  const rpcUrl = process.env.SOLANA_RPC_URL;
+  if (rpcUrl) {
+    redacted = redacted.split(rpcUrl).join("[redacted SOLANA_RPC_URL]");
+  }
+  return redacted.replace(/api-key=[^'"\s]+/gi, "api-key=[redacted]");
+}
+
+function requireTopUpExecution(result: SameMintTopUpResult): {
+  signature: string;
+  confirmedSlot: bigint;
+} {
+  if (result.json?.status !== "initial_deposit_executed") {
+    throw new Error(
+      `same-mint Kamino top-up did not report execution: ${JSON.stringify(
+        summarizeTopUpResult(result)
+      )}`
+    );
+  }
+  const policyDepositTransaction = readRecord(
+    result.json?.policyDepositTransaction
+  );
+  const signature = policyDepositTransaction?.signature?.toString();
+  const confirmedSlot = policyDepositTransaction?.confirmedSlot?.toString();
+  if (!signature || !confirmedSlot) {
+    throw new Error(
+      `same-mint Kamino top-up result is missing policy deposit signature/slot: ${JSON.stringify(
+        summarizeTopUpResult(result)
+      )}`
+    );
+  }
+  return { signature, confirmedSlot: BigInt(confirmedSlot) };
+}
+
+function readTopUpObservedPosition(
+  result: SameMintTopUpResult,
+  reserve: string
+): { amountRaw: bigint; observedSlot: bigint | null } | null {
+  const reconcile = readRecord(result.json?.postChainReconcile);
+  const positions = reconcile?.positions;
+  if (!Array.isArray(positions)) {
+    return null;
+  }
+  const position = positions
+    .map((item) => readRecord(item))
+    .find((item) => item?.reserve?.toString() === reserve);
+  const amountRaw = position?.amountRaw?.toString();
+  if (!amountRaw) {
+    return null;
+  }
+  const observedSlot = reconcile?.observedSlot?.toString();
+  return {
+    amountRaw: BigInt(amountRaw),
+    observedSlot: observedSlot ? BigInt(observedSlot) : null,
+  };
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function tailLines(value: string, count: number): string[] {
+  return value.trim().split(/\r?\n/).filter(Boolean).slice(-count);
 }
 
 async function recordPullExecution(args: {
@@ -1155,17 +1296,16 @@ async function recordAutodepositYieldDeposit(args: {
   databaseUrl: string;
   depositSignature: string;
   depositSlot: bigint;
+  liquidityMint: string;
+  market: string;
+  observedCurrentAmountRaw: bigint | null;
+  observedSlot: bigint | null;
   policySignature: string;
   target: EligibleTarget;
+  targetReserve: string;
 }): Promise<{ status: "duplicate" | "inserted"; positionId: string | null }> {
   const sql = args.appModules.neon(args.databaseUrl);
-  const earnTarget = args.appModules.getKaminoUsdcEarnTargetForCluster(
-    args.appModules.LoyalCluster.MainnetBeta
-  );
   const now = new Date();
-  const targetReserve = earnTarget.reserve.toBase58();
-  const market = earnTarget.market.toBase58();
-  const liquidityMint = earnTarget.liquidityMint.toBase58();
   const depositRows = await sql`
     INSERT INTO loyal_yield.user_yield_position_deposits (
       deposit_signature,
@@ -1195,16 +1335,16 @@ async function recordAutodepositYieldDeposit(args: {
       ${args.target.wallet},
       ${args.target.vaultPubkey},
       ${args.target.settings},
-      1,
+      ${args.target.vaultIndex},
       ${args.target.vaultPubkey},
       ${args.target.routePolicySeed.toString()},
       ${args.target.routePolicyAccount},
       ${args.target.routePolicySeed.toString()},
-      ${targetReserve},
-      ${market},
-      ${liquidityMint},
+      ${args.targetReserve},
+      ${args.market},
+      ${args.liquidityMint},
       ${null},
-      ${liquidityMint},
+      ${args.liquidityMint},
       ${args.amountRaw.toString()},
       ${now},
       ${now}
@@ -1233,8 +1373,10 @@ async function recordAutodepositYieldDeposit(args: {
     SELECT *
     FROM loyal_yield.user_yield_positions
     WHERE settings = ${args.target.settings}
-      AND vault_index = 1
-      AND initial_reserve = ${targetReserve}
+      AND vault_index = ${args.target.vaultIndex}
+      AND wallet_address = ${args.target.wallet}
+      AND status = 'active'
+    ORDER BY updated_at DESC, id DESC
     LIMIT 1
   `;
   const existing = existingRows[0] as Record<string, unknown> | undefined;
@@ -1257,24 +1399,27 @@ async function recordAutodepositYieldDeposit(args: {
     );
     const sameCurrentHolding =
       readRequiredString(existing.current_reserve, "current_reserve") ===
-        targetReserve &&
+        args.targetReserve &&
       readRequiredString(
         existing.current_liquidity_mint,
         "current_liquidity_mint"
-      ) === liquidityMint;
+      ) === args.liquidityMint;
     eventType = "deposit_top_up";
-    nextAmountRaw = sameCurrentHolding
-      ? currentAmountRaw + args.amountRaw
-      : currentAmountRaw;
+    nextAmountRaw =
+      sameCurrentHolding && args.observedCurrentAmountRaw !== null
+        ? args.observedCurrentAmountRaw
+        : sameCurrentHolding
+          ? currentAmountRaw + args.amountRaw
+          : currentAmountRaw;
     nextPrincipalRaw = principalAmountRaw + args.amountRaw;
-    holdingDeltaRaw = sameCurrentHolding ? args.amountRaw : null;
+    holdingDeltaRaw = sameCurrentHolding ? nextAmountRaw - currentAmountRaw : null;
 
     await sql`
       UPDATE loyal_yield.user_yield_positions
       SET
-        deposit_mint = ${liquidityMint},
-        initial_liquidity_mint = ${liquidityMint},
-        initial_market = ${market},
+        deposit_mint = ${args.liquidityMint},
+        initial_liquidity_mint = ${args.liquidityMint},
+        initial_market = ${args.market},
         last_confirmed_slot = ${args.depositSlot.toString()},
         last_deposit_signature = ${args.depositSignature},
         policy_account = ${args.target.routePolicyAccount},
@@ -1290,7 +1435,7 @@ async function recordAutodepositYieldDeposit(args: {
     `;
   } else {
     eventType = "deposit_initialized";
-    nextAmountRaw = args.amountRaw;
+    nextAmountRaw = args.observedCurrentAmountRaw ?? args.amountRaw;
     nextPrincipalRaw = args.amountRaw;
     holdingDeltaRaw = args.amountRaw;
     const positionRows = await sql`
@@ -1326,20 +1471,20 @@ async function recordAutodepositYieldDeposit(args: {
         ${args.target.wallet},
         ${args.target.vaultPubkey},
         ${args.target.settings},
-        1,
+        ${args.target.vaultIndex},
         ${args.target.vaultPubkey},
         ${args.target.routePolicySeed.toString()},
         ${args.target.routePolicyAccount},
         ${args.target.routePolicySeed.toString()},
-        ${targetReserve},
-        ${market},
-        ${liquidityMint},
+        ${args.targetReserve},
+        ${args.market},
+        ${args.liquidityMint},
         ${null},
-        ${liquidityMint},
+        ${args.liquidityMint},
         ${args.amountRaw.toString()},
-        ${targetReserve},
-        ${market},
-        ${liquidityMint},
+        ${args.targetReserve},
+        ${args.market},
+        ${args.liquidityMint},
         ${args.amountRaw.toString()},
         ${args.depositSlot.toString()},
         ${now},
@@ -1377,13 +1522,13 @@ async function recordAutodepositYieldDeposit(args: {
     VALUES (
       ${positionId},
       ${eventType},
-      ${targetReserve},
-      ${market},
-      ${liquidityMint},
+      ${args.targetReserve},
+      ${args.market},
+      ${args.liquidityMint},
       ${nextAmountRaw.toString()},
       ${args.amountRaw.toString()},
       ${holdingDeltaRaw?.toString() ?? null},
-      ${args.depositSlot.toString()},
+      ${(args.observedSlot ?? args.depositSlot).toString()},
       ${now},
       ${args.depositSignature},
       ${readRequiredString(insertedDeposit.id, "deposit.id")},
@@ -1400,11 +1545,11 @@ async function recordAutodepositYieldDeposit(args: {
     UPDATE loyal_yield.user_yield_positions
     SET
       current_amount_raw = ${nextAmountRaw.toString()},
-      current_liquidity_mint = ${liquidityMint},
-      current_market = ${market},
+      current_liquidity_mint = ${args.liquidityMint},
+      current_market = ${args.market},
       current_observed_at = ${now},
-      current_observed_slot = ${args.depositSlot.toString()},
-      current_reserve = ${targetReserve},
+      current_observed_slot = ${(args.observedSlot ?? args.depositSlot).toString()},
+      current_reserve = ${args.targetReserve},
       last_holding_event_id = ${eventId},
       last_confirmed_slot = ${args.depositSlot.toString()},
       last_deposit_signature = ${args.depositSignature},
@@ -1430,19 +1575,14 @@ function summarizeSimulationFailure(summary: SimulationSummary): string {
   return JSON.stringify(summarizeSimulation(summary));
 }
 
-function isKnownPrefundDepositFailure(summary: SimulationSummary): boolean {
-  return (
-    summary.err !== null &&
-    summary.logs.some((log) => log.includes("Error: insufficient funds")) &&
-    summary.logs.some((log) =>
-      log.includes("DepositReserveLiquidityAndObligationCollateral")
-    )
-  );
+function topUpPolicySimulationError(result: SameMintTopUpResult): string | null {
+  const policyDepositTransaction = readRecord(result.json?.policyDepositTransaction);
+  return policyDepositTransaction?.simulationError?.toString() ?? null;
 }
 
 function assertExecutablePreflight(args: {
-  depositSimulation: SimulationSummary;
   pullSimulation: SimulationSummary;
+  topUpDryRun: SameMintTopUpResult;
 }) {
   if (args.pullSimulation.err) {
     throw new Error(
@@ -1451,13 +1591,11 @@ function assertExecutablePreflight(args: {
       )}`
     );
   }
-  if (
-    args.depositSimulation.err &&
-    !isKnownPrefundDepositFailure(args.depositSimulation)
-  ) {
+  const topUpError = topUpPolicySimulationError(args.topUpDryRun);
+  if (topUpError) {
     throw new Error(
-      `Kamino deposit simulation failed for an unexpected reason; refusing to execute. simulation=${summarizeSimulationFailure(
-        args.depositSimulation
+      `Kamino route-policy top-up dry-run simulation failed; refusing to execute. topUp=${JSON.stringify(
+        summarizeTopUpResult(args.topUpDryRun)
       )}`
     );
   }
@@ -1472,10 +1610,6 @@ async function main() {
   const policyKeypair = parseKeypairSecretWith(
     appModules.Keypair,
     requireEnv("POLICY_KEYPAIR")
-  );
-  const legacyKaminoKeypair = parseKeypairSecretWith(
-    appModules.Keypair,
-    requireEnv("SOLANA_TESTING_PK")
   );
   const programId = new PublicKeyCtor(
     process.env.LOYAL_SMART_ACCOUNTS_PROGRAM_ID ?? appModules.PROGRAM_ADDRESS
@@ -1610,46 +1744,20 @@ async function main() {
       amountRaw: executionAmountRaw,
       cluster: appModules.LoyalCluster.MainnetBeta,
     });
-    const usdcMint = new PublicKeyCtor(pull.persistence.liquidityMint);
-
-    const depositDraft = await client.prepareEarnUsdcDeposit({
-      amountRaw: executionAmountRaw,
-      cluster: appModules.LoyalCluster.MainnetBeta,
-      feePayer: legacyKaminoKeypair.publicKey,
-      initializeYieldRoutingPolicy: false,
-      policySigner: legacyKaminoKeypair.publicKey,
-      settingsPda: new PublicKeyCtor(target.settings),
-      walletAddress: legacyKaminoKeypair.publicKey,
-      yieldRoutingPolicy: {
-        account: new PublicKeyCtor(target.routePolicyAccount),
-        seed: target.routePolicySeed,
-      },
-    });
-    const depositOnlyInstructions = removeWalletToVaultTransfer({
-      decodeTransferCheckedInstruction: appModules.decodeTransferCheckedInstruction,
-      getAssociatedTokenAddressSync: appModules.getAssociatedTokenAddressSync,
-      instructions: depositDraft.prepared.instructions,
-      signer: legacyKaminoKeypair.publicKey,
-      tokenProgramId: appModules.TOKEN_PROGRAM_ID,
-      usdcMint,
-      vaultUsdcAta,
-    });
-    const depositPrepared = {
-      ...depositDraft.prepared,
-      instructions: [
-        appModules.createAssociatedTokenAccountIdempotentInstruction(
-          legacyKaminoKeypair.publicKey,
-          vaultUsdcAta,
-          new PublicKeyCtor(target.vaultPubkey),
-          usdcMint,
-          appModules.TOKEN_PROGRAM_ID
-        ),
-        ...depositOnlyInstructions.filter(
-          (instruction) =>
-            !instruction.keys.some((key) => key.pubkey.equals(walletUsdcAta))
-        ),
-      ],
-    };
+    const defaultEarnTarget = appModules.getKaminoUsdcEarnTargetForCluster(
+      appModules.LoyalCluster.MainnetBeta
+    );
+    const topUpReserve =
+      target.currentReserve ?? defaultEarnTarget.reserve.toBase58();
+    const topUpMarket =
+      target.currentMarket ?? defaultEarnTarget.market.toBase58();
+    const topUpLiquidityMint =
+      target.currentLiquidityMint ?? pull.persistence.liquidityMint;
+    if (topUpLiquidityMint !== pull.persistence.liquidityMint) {
+      throw new Error(
+        `Autodeposit top-up liquidity mint ${topUpLiquidityMint} does not match pulled mint ${pull.persistence.liquidityMint}.`
+      );
+    }
 
     const pullSimulation = await simulatePreparedOperation({
       compilePreparedOperation: appModules.compilePreparedOperation,
@@ -1657,11 +1765,12 @@ async function main() {
       prepared: pull.prepared,
       signers: [policyKeypair],
     });
-    const depositSimulation = await simulatePreparedOperation({
-      compilePreparedOperation: appModules.compilePreparedOperation,
-      connection,
-      prepared: depositPrepared,
-      signers: [legacyKaminoKeypair],
+    const topUpDryRun = await runSameMintReserveTopUp({
+      amountRaw: executionAmountRaw,
+      execute: false,
+      reserve: topUpReserve,
+      rpcUrl,
+      target,
     });
 
     const plan = {
@@ -1676,6 +1785,12 @@ async function main() {
       persistedWalletBalanceFloorRaw: target.walletBalanceFloorRaw.toString(),
       overrideFloorRaw: options.overrideFloorRaw?.toString() ?? null,
       vaultPreBalanceRaw: vaultPreBalanceRaw.toString(),
+      topUpTarget: {
+        reserve: topUpReserve,
+        market: topUpMarket,
+        liquidityMint: topUpLiquidityMint,
+        source: target.currentReserve ? "active_yield_position" : "default_earn_target",
+      },
       excessRaw: sweepDecision.excessRaw.toString(),
       amountRaw: executionAmountRaw.toString(),
       amountUi: Number(executionAmountRaw) / 10 ** USDC_DECIMALS,
@@ -1684,23 +1799,23 @@ async function main() {
       subscriptionAllowance: summarizeAllowance(allowance),
       transactionOrder: [
         "subscription_pull_wallet_to_earn_vault",
-        "kamino_main_usdc_deposit_from_earn_vault",
+        "kamino_route_policy_top_up_from_earn_vault",
       ],
       signers: {
         pull: policyKeypair.publicKey.toBase58(),
-        kaminoDeposit: legacyKaminoKeypair.publicKey.toBase58(),
+        kaminoTopUp:
+          readRecord(topUpDryRun.json?.policyDeposit)?.signer?.toString() ??
+          null,
       },
       policies: {
         sweep: target.sweepPolicyAccount,
-        kaminoDeposit: target.routePolicyAccount,
+        kaminoTopUp: target.routePolicyAccount,
+        kaminoTopUpSeed: target.routePolicySeed.toString(),
+        kaminoTopUpRouteModes: target.routeModes,
       },
       simulations: {
         pull: summarizeSimulation(pullSimulation),
-        kaminoDeposit: summarizeSimulation(depositSimulation),
-      },
-      simulationNotes: {
-        kaminoDepositRequiresPostPullResimulation:
-          isKnownPrefundDepositFailure(depositSimulation),
+        kaminoTopUp: summarizeTopUpResult(topUpDryRun),
       },
       lotClaim: lotClaim ? summarizeLotClaim(lotClaim) : null,
       sendsTransactions: options.execute,
@@ -1711,7 +1826,7 @@ async function main() {
       return;
     }
 
-    assertExecutablePreflight({ depositSimulation, pullSimulation });
+    assertExecutablePreflight({ pullSimulation, topUpDryRun });
 
     const pullSend = await sendPreparedOperation({
       compilePreparedOperation: appModules.compilePreparedOperation,
@@ -1743,22 +1858,27 @@ async function main() {
       });
     }
 
-    const depositPostPullSimulation = await simulatePreparedOperation({
-      compilePreparedOperation: appModules.compilePreparedOperation,
-      connection,
-      prepared: depositPrepared,
-      signers: [legacyKaminoKeypair],
-    });
-    if (depositPostPullSimulation.err) {
+    let topUpExecute: SameMintTopUpResult;
+    let topUpExecution: { signature: string; confirmedSlot: bigint };
+    try {
+      topUpExecute = await runSameMintReserveTopUp({
+        amountRaw: executionAmountRaw,
+        execute: true,
+        reserve: topUpReserve,
+        rpcUrl,
+        target,
+      });
+      topUpExecution = requireTopUpExecution(topUpExecute);
+    } catch (error) {
       await updateExecutionEvidence({
         neon: appModules.neon,
         databaseUrl,
         dedupeKey: executionRecord.dedupeKey,
         decodedEvidence: {
-          status: "partial_executed_pull_deposit_blocked",
-          kaminoDepositPostPullSimulation: summarizeSimulation(
-            depositPostPullSimulation
-          ),
+          status: "partial_executed_pull_top_up_blocked",
+          kaminoTopUpError:
+            error instanceof Error ? error.message : String(error),
+          kaminoTopUpDryRun: summarizeTopUpResult(topUpDryRun),
           vaultPostPullRaw: vaultPostPullRaw.toString(),
         },
       });
@@ -1766,7 +1886,7 @@ async function main() {
         JSON.stringify(
           {
             ...plan,
-            status: "partial_executed_pull_deposit_blocked",
+            status: "partial_executed_pull_top_up_blocked",
             signatures: {
               pull: pullSend.signature,
             },
@@ -1775,9 +1895,8 @@ async function main() {
             },
             walletPostPullRaw: walletPostPullRaw.toString(),
             vaultPostPullRaw: vaultPostPullRaw.toString(),
-            postPullSimulations: {
-              kaminoDeposit: summarizeSimulation(depositPostPullSimulation),
-            },
+            kaminoTopUpError:
+              error instanceof Error ? error.message : String(error),
           },
           null,
           2
@@ -1787,21 +1906,24 @@ async function main() {
       return;
     }
 
-    const depositSend = await sendPreparedOperation({
-      compilePreparedOperation: appModules.compilePreparedOperation,
-      connection,
-      prepared: depositPrepared,
-      signers: [legacyKaminoKeypair],
-    });
+    const topUpObservedPosition = readTopUpObservedPosition(
+      topUpExecute,
+      topUpReserve
+    );
     const vaultPostDepositRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
     const yieldDepositRecord = await recordAutodepositYieldDeposit({
       amountRaw: executionAmountRaw,
       appModules,
       databaseUrl,
-      depositSignature: depositSend.signature,
-      depositSlot: depositSend.slot,
-      policySignature: depositSend.signature,
+      depositSignature: topUpExecution.signature,
+      depositSlot: topUpExecution.confirmedSlot,
+      liquidityMint: topUpLiquidityMint,
+      market: topUpMarket,
+      observedCurrentAmountRaw: topUpObservedPosition?.amountRaw ?? null,
+      observedSlot: topUpObservedPosition?.observedSlot ?? null,
+      policySignature: topUpExecution.signature,
       target,
+      targetReserve: topUpReserve,
     });
     await updateExecutionEvidence({
       neon: appModules.neon,
@@ -1809,10 +1931,16 @@ async function main() {
       dedupeKey: executionRecord.dedupeKey,
       decodedEvidence: {
         status: "executed",
-        kaminoDepositSignature: depositSend.signature,
-        kaminoDepositSlot: depositSend.slot.toString(),
-        kaminoDepositPostPullSimulation:
-          summarizeSimulation(depositPostPullSimulation),
+        kaminoDepositSignature: topUpExecution.signature,
+        kaminoDepositSlot: topUpExecution.confirmedSlot.toString(),
+        kaminoTopUp: summarizeTopUpResult(topUpExecute),
+        kaminoTopUpObservedPosition: topUpObservedPosition
+          ? {
+              amountRaw: topUpObservedPosition.amountRaw.toString(),
+              observedSlot:
+                topUpObservedPosition.observedSlot?.toString() ?? null,
+            }
+          : null,
         vaultPostDepositRaw: vaultPostDepositRaw.toString(),
         yieldDepositRecord,
       },
@@ -1825,18 +1953,16 @@ async function main() {
           status: "executed",
           signatures: {
             pull: pullSend.signature,
-            kaminoDeposit: depositSend.signature,
+            kaminoDeposit: topUpExecution.signature,
           },
           confirmedSlots: {
             pull: pullSend.slot.toString(),
-            kaminoDeposit: depositSend.slot.toString(),
+            kaminoDeposit: topUpExecution.confirmedSlot.toString(),
           },
           walletPostPullRaw: walletPostPullRaw.toString(),
           vaultPostPullRaw: vaultPostPullRaw.toString(),
           vaultPostDepositRaw: vaultPostDepositRaw.toString(),
-          postPullSimulations: {
-            kaminoDeposit: summarizeSimulation(depositPostPullSimulation),
-          },
+          kaminoTopUpExecution: summarizeTopUpResult(topUpExecute),
           yieldDepositRecord,
         },
         null,

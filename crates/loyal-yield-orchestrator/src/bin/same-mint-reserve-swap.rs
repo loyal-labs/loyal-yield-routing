@@ -5821,6 +5821,7 @@ fn build_initial_reserve_deposit_policy_plan(
     }
     let vault_liquidity_ata =
         derive_associated_token_address(&vault_pubkey, &USDC_MINT, &spl_token::ID);
+    let reserve_refresh_instruction = kamino_refresh_reserve_instruction(deposit)?;
     let refresh_instruction = kamino_refresh_obligation_instruction(deposit)?;
     let deposit_instruction = kamino_deposit_to_obligation_instruction(
         vault_pubkey,
@@ -5864,7 +5865,7 @@ fn build_initial_reserve_deposit_policy_plan(
     );
 
     Ok(InitialDepositPolicyPlan {
-        pre_instructions: vec![refresh_instruction],
+        pre_instructions: vec![reserve_refresh_instruction, refresh_instruction],
         instruction: outer_instruction.clone(),
         preview: InitialDepositPolicyPreview {
             policy_account: policy_account.to_string(),

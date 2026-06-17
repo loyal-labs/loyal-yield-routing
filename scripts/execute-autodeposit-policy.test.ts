@@ -112,6 +112,28 @@ describe("runtime dependency boundary", () => {
     expect(source).toContain('import("@loyal/actions")');
   });
 
+  test("selects the same-mint Kamino route policy instead of newest active policy", async () => {
+    const source = await Bun.file(
+      new URL("./execute-autodeposit-policy.ts", import.meta.url)
+    ).text();
+
+    expect(source).toContain('const SAME_MINT_ROUTE_MODE = "same_mint_kamino"');
+    expect(source).toContain("= ANY(rp.route_modes)");
+    expect(source).toContain("mv.active_policy_id = rp.id");
+    expect(source).not.toContain("ORDER BY rp.last_seen_slot DESC, rp.id DESC\n      LIMIT 1");
+  });
+
+  test("uses same-mint reserve-swap for Kamino top-up instead of Earn deposit prep", async () => {
+    const source = await Bun.file(
+      new URL("./execute-autodeposit-policy.ts", import.meta.url)
+    ).text();
+
+    expect(source).toContain("runSameMintReserveTopUp");
+    expect(source).toContain('"--deposit-reserve"');
+    expect(source).toContain("same-mint:swap");
+    expect(source).not.toContain("prepareEarnUsdcDeposit");
+  });
+
   test("smart-account-vaults package exposes autodeposit pull helper", async () => {
     const { PublicKey } = await import("@solana/web3.js");
     const { createSmartAccountVaultsClient } = await import(
