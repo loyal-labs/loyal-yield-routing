@@ -1,30 +1,12 @@
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SurplusClassification {
-    InitialSurplus,
-    EarnWithdrawal,
-    SimpleInbound,
-    ComplexDefi,
-    Unknown,
-    ExplicitRedeposit,
-}
+const AUTODEPOSIT_SCHEDULE_DELAY: Duration = Duration::hours(1);
+const LEGACY_SURPLUS_CLASSIFICATION_DB_VALUE: &str = "unknown";
 
-impl SurplusClassification {
-    pub fn as_db_str(self) -> &'static str {
-        match self {
-            SurplusClassification::InitialSurplus => "initial_surplus",
-            SurplusClassification::EarnWithdrawal => "earn_withdrawal",
-            SurplusClassification::SimpleInbound => "simple_inbound",
-            SurplusClassification::ComplexDefi => "complex_defi",
-            SurplusClassification::Unknown => "unknown",
-            SurplusClassification::ExplicitRedeposit => "explicit_redeposit",
-        }
-    }
+pub fn surplus_lot_classification_db_value() -> &'static str {
+    LEGACY_SURPLUS_CLASSIFICATION_DB_VALUE
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,7 +26,6 @@ pub struct SurplusLot {
     pub source_signature: Option<String>,
     pub original_amount_raw: i64,
     pub remaining_amount_raw: i64,
-    pub classification: SurplusClassification,
     pub eligible_after: DateTime<Utc>,
     pub status: LotStatus,
     pub confidence: String,
@@ -53,11 +34,10 @@ pub struct SurplusLot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClassifiedPositiveDelta {
+pub struct PositiveDelta {
     pub source_event_id: i64,
     pub source_signature: Option<String>,
     pub amount_raw: i64,
-    pub classification: SurplusClassification,
     pub observed_at: DateTime<Utc>,
     pub confidence: String,
     pub reason: String,
@@ -114,73 +94,8 @@ pub enum LotError {
     },
 }
 
-pub fn eligible_after(
-    classification: SurplusClassification,
-    observed_at: DateTime<Utc>,
-) -> DateTime<Utc> {
-    observed_at
-        + match classification {
-            SurplusClassification::InitialSurplus => Duration::hours(1),
-            SurplusClassification::EarnWithdrawal => Duration::hours(24),
-            SurplusClassification::SimpleInbound => Duration::minutes(2),
-            SurplusClassification::ComplexDefi => Duration::hours(1),
-            SurplusClassification::Unknown => Duration::minutes(30),
-            SurplusClassification::ExplicitRedeposit => Duration::zero(),
-        }
-}
-
-pub fn classify_from_evidence(
-    txn_signature: Option<&str>,
-    raw_evidence: &Value,
-) -> (SurplusClassification, &'static str, String) {
-    let source = raw_evidence
-        .get("autodeposit_source_classification")
-        .or_else(|| raw_evidence.get("source_classification"))
-        .or_else(|| raw_evidence.get("classification"))
-        .and_then(Value::as_str);
-
-    match source {
-        Some("initial_surplus") | Some("onboarding_surplus") => (
-            SurplusClassification::InitialSurplus,
-            "explicit",
-            "raw evidence marked the source as initial onboarding surplus".to_owned(),
-        ),
-        Some("earn_withdrawal") => (
-            SurplusClassification::EarnWithdrawal,
-            "explicit",
-            "raw evidence marked the source as an Earn withdrawal".to_owned(),
-        ),
-        Some("simple_inbound") => (
-            SurplusClassification::SimpleInbound,
-            "explicit",
-            "raw evidence marked the source as a simple inbound transfer".to_owned(),
-        ),
-        Some("complex_defi") => (
-            SurplusClassification::ComplexDefi,
-            "explicit",
-            "raw evidence marked the source as complex DeFi activity".to_owned(),
-        ),
-        Some("explicit_redeposit") => (
-            SurplusClassification::ExplicitRedeposit,
-            "explicit",
-            "raw evidence marked the source as an explicit redeposit".to_owned(),
-        ),
-        Some(other) => (
-            SurplusClassification::Unknown,
-            "unknown",
-            format!("raw evidence carried an unrecognized classification {other}"),
-        ),
-        None if txn_signature.is_none() => (
-            SurplusClassification::Unknown,
-            "unknown",
-            "no transaction signature was available for source classification".to_owned(),
-        ),
-        None => (
-            SurplusClassification::Unknown,
-            "unknown",
-            "transaction signature is present but no classifier has labeled it yet".to_owned(),
-        ),
-    }
+pub fn scheduled_eligible_after(observed_at: DateTime<Utc>) -> DateTime<Utc> {
+    observed_at + AUTODEPOSIT_SCHEDULE_DELAY
 }
 
 pub fn initial_surplus_amount(
@@ -198,27 +113,23 @@ pub fn positive_delta_to_lot(
     source_signature: Option<String>,
     amount_raw: i64,
     observed_at: DateTime<Utc>,
-    raw_evidence: &Value,
 ) -> Result<SurplusLot, LotError> {
-    let (classification, confidence, reason) =
-        classify_from_evidence(source_signature.as_deref(), raw_evidence);
     lot_from_positive_delta(
         next_lot_id,
-        ClassifiedPositiveDelta {
+        PositiveDelta {
             source_event_id,
             source_signature,
             amount_raw,
-            classification,
             observed_at,
-            confidence: confidence.to_owned(),
-            reason,
+            confidence: "derived".to_owned(),
+            reason: "wallet balance increase scheduled for autodeposit after one hour".to_owned(),
         },
     )
 }
 
 pub fn lot_from_positive_delta(
     next_lot_id: i64,
-    delta: ClassifiedPositiveDelta,
+    delta: PositiveDelta,
 ) -> Result<SurplusLot, LotError> {
     if delta.amount_raw <= 0 {
         return Err(LotError::NonPositiveDelta);
@@ -229,8 +140,7 @@ pub fn lot_from_positive_delta(
         source_signature: delta.source_signature,
         original_amount_raw: delta.amount_raw,
         remaining_amount_raw: delta.amount_raw,
-        classification: delta.classification,
-        eligible_after: eligible_after(delta.classification, delta.observed_at),
+        eligible_after: scheduled_eligible_after(delta.observed_at),
         status: LotStatus::Open,
         confidence: delta.confidence,
         reason: delta.reason,
@@ -393,4 +303,44 @@ pub fn apply_autodeposit_consumption(
         };
     }
     Ok(consumed_total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn observed_at() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 6, 16, 12, 30, 0)
+            .single()
+            .expect("valid test timestamp")
+    }
+
+    #[test]
+    fn scheduled_eligible_after_always_waits_one_hour() {
+        assert_eq!(
+            scheduled_eligible_after(observed_at()),
+            observed_at() + Duration::hours(1)
+        );
+    }
+
+    #[test]
+    fn positive_delta_lot_uses_fixed_one_hour_delay() {
+        let lot = positive_delta_to_lot(
+            7,
+            42,
+            Some("txn-signature".to_owned()),
+            1_000_000,
+            observed_at(),
+        )
+        .expect("positive delta creates lot");
+
+        assert_eq!(lot.eligible_after, observed_at() + Duration::hours(1));
+        assert_eq!(lot.remaining_amount_raw, 1_000_000);
+    }
+
+    #[test]
+    fn legacy_db_classification_is_not_scheduler_behavior() {
+        assert_eq!(surplus_lot_classification_db_value(), "unknown");
+    }
 }

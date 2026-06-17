@@ -2,7 +2,7 @@
 name = "balance-sweep-autodeposit-trigger"
 version = "0.1.0"
 edition = "2021"
-description = "Source-aware surplus lot selection for Loyal autodeposit triggers"
+description = "Surplus lot scheduling for Loyal autodeposit triggers"
 
 [dependencies]
 anyhow = "1"

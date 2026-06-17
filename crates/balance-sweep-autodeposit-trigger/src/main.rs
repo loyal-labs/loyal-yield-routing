@@ -2,12 +2,11 @@ use std::{process::Command, str::FromStr, time::Duration};
 
 use anyhow::{Context, Result};
 use balance_sweep_autodeposit_trigger::{
-    classify_from_evidence, compute_sweep_amount, eligible_after, initial_surplus_amount,
-    SurplusClassification, SweepAmountDecision, SweepCaps,
+    compute_sweep_amount, initial_surplus_amount, scheduled_eligible_after,
+    surplus_lot_classification_db_value, SweepAmountDecision, SweepCaps,
 };
 use chrono::{DateTime, Utc};
 use clap::Parser;
-use serde_json::Value;
 use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
     PgPool, Row,
@@ -17,7 +16,7 @@ use tokio::time;
 const CONSUMER_NAME: &str = "balance_sweep_autodeposit_trigger";
 
 #[derive(Debug, Parser)]
-#[command(about = "Project source-aware surplus lots from Loyal wallet balance events")]
+#[command(about = "Project autodeposit surplus lots from Loyal wallet balance events")]
 struct Args {
     #[arg(long, env = "NEON_DATABASE_URL")]
     postgres_url: String,
@@ -59,7 +58,6 @@ struct WalletBalanceEventRow {
     delta_amount_raw: Option<i64>,
     observed_at: DateTime<Utc>,
     txn_signature: Option<String>,
-    raw_evidence: Value,
     target_active: bool,
     wallet_balance_floor_raw: Option<i64>,
 }
@@ -162,7 +160,7 @@ async fn main() -> Result<()> {
             lots_created = outcome.lots_created,
             outflow_amount_raw = outcome.outflow_amount_raw,
             lot_amount_depleted_raw = outcome.lot_amount_depleted_raw,
-            "projected source-aware autodeposit surplus lots"
+            "projected autodeposit surplus lots"
         );
         if args.execute_eligible {
             let executor_command = args.executor_command.as_deref().context(
@@ -781,7 +779,6 @@ async fn fetch_events_after(
             event.delta_amount_raw,
             event.observed_at,
             event.txn_signature,
-            event.raw_evidence,
             target.active AND target.lifecycle_status = 'active' AS target_active,
             target.wallet_balance_floor_raw
         FROM loyal_yield.balance_sweep_wallet_balance_events AS event
@@ -806,7 +803,6 @@ async fn fetch_events_after(
                 delta_amount_raw: row.try_get("delta_amount_raw")?,
                 observed_at: row.try_get("observed_at")?,
                 txn_signature: row.try_get("txn_signature")?,
-                raw_evidence: row.try_get("raw_evidence")?,
                 target_active: row.try_get("target_active")?,
                 wallet_balance_floor_raw: row.try_get("wallet_balance_floor_raw")?,
             })
@@ -825,13 +821,12 @@ async fn insert_initial_surplus_lot_if_any(
     else {
         return Ok(false);
     };
-    insert_classified_lot(
+    insert_scheduled_lot(
         tx,
         event,
         amount_raw,
-        SurplusClassification::InitialSurplus,
         "derived",
-        "initial wallet ATA balance above the configured floor",
+        "initial wallet ATA balance above the configured floor scheduled for autodeposit after one hour",
     )
     .await
 }
@@ -841,28 +836,24 @@ async fn insert_positive_delta_lot(
     event: &WalletBalanceEventRow,
     amount_raw: i64,
 ) -> Result<bool> {
-    let (classification, confidence, reason) =
-        classify_from_evidence(event.txn_signature.as_deref(), &event.raw_evidence);
-    insert_classified_lot(
+    insert_scheduled_lot(
         tx,
         event,
         amount_raw,
-        classification,
-        confidence,
-        reason.as_str(),
+        "derived",
+        "wallet balance increase scheduled for autodeposit after one hour",
     )
     .await
 }
 
-async fn insert_classified_lot(
+async fn insert_scheduled_lot(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     event: &WalletBalanceEventRow,
     amount_raw: i64,
-    classification: SurplusClassification,
     confidence: &str,
     reason: &str,
 ) -> Result<bool> {
-    let eligible_after = eligible_after(classification, event.observed_at);
+    let eligible_after = scheduled_eligible_after(event.observed_at);
     let row = sqlx::query(
         r#"
         INSERT INTO loyal_yield.balance_sweep_surplus_lots
@@ -878,7 +869,7 @@ async fn insert_classified_lot(
     .bind(event.event_id)
     .bind(event.txn_signature.as_deref())
     .bind(amount_raw)
-    .bind(classification.as_db_str())
+    .bind(surplus_lot_classification_db_value())
     .bind(eligible_after)
     .bind(confidence)
     .bind(reason)
