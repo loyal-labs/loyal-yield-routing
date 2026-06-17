@@ -1,4 +1,7 @@
-use crate::domain::{draft_same_mint_decision, state_transition, PlannedDecision};
+use crate::domain::{
+    draft_same_mint_decision, route_amount_evidence, state_transition, PlannedDecision,
+    ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+};
 use crate::types::*;
 use crate::{OrchestratorError, ACTIVE_DECISION_STATUSES};
 use chrono::{DateTime, Utc};
@@ -728,6 +731,7 @@ impl NeonSqlClient {
             ));
         }
 
+        validate_planned_decision_input(&input)?;
         let liquidity_mint = if input.source_liquidity_mint == input.target_liquidity_mint {
             Some(input.source_liquidity_mint.clone())
         } else {
@@ -744,6 +748,29 @@ impl NeonSqlClient {
             source_apy_bps: input.source_apy_bps,
             target_apy_bps: input.target_apy_bps,
             estimated_edge_bps: input.estimated_edge_bps,
+            route_amount_semantics: input
+                .execution_plan
+                .get("route_amount_semantics")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            source_amount_semantics: input
+                .execution_plan
+                .get("source_amount_semantics")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            source_collateral_amount_raw: json_i64(
+                &input.execution_plan,
+                "source_collateral_amount_raw",
+            ),
+            redeemable_source_liquidity_amount_raw: json_i64(
+                &input.execution_plan,
+                "redeemable_source_liquidity_amount_raw",
+            ),
+            idle_vault_liquidity_amount_raw: json_i64(
+                &input.execution_plan,
+                "idle_vault_liquidity_amount_raw",
+            ),
             execution_plan: input.execution_plan,
         };
 
@@ -794,6 +821,11 @@ impl NeonSqlClient {
             source_apy_bps: input.source_apy_bps,
             target_apy_bps: input.target_apy_bps,
             estimated_edge_bps: input.estimated_edge_bps,
+            route_amount_semantics: input.route_amount_semantics.clone(),
+            source_amount_semantics: input.source_amount_semantics.clone(),
+            source_collateral_amount_raw: input.source_collateral_amount_raw,
+            redeemable_source_liquidity_amount_raw: input.redeemable_source_liquidity_amount_raw,
+            idle_vault_liquidity_amount_raw: input.idle_vault_liquidity_amount_raw,
             execution_plan: same_mint_execution_plan(&input),
         };
         let row =
@@ -833,6 +865,7 @@ impl NeonSqlClient {
             return Ok(same_mint_result_from_confirmed_decision(decision));
         }
         ensure_confirmable_same_mint_decision(&decision)?;
+        ensure_same_mint_route_amount_semantics(&decision)?;
         let vault = fetch_managed_vault_for_update(&mut *tx, decision.vault_id).await?;
         let current = current_positions_for_update(&mut *tx, decision.vault_id).await?;
         let source_reserve = required_decision_field(&decision.source_reserve, "source_reserve")?;
@@ -850,10 +883,14 @@ impl NeonSqlClient {
                 saw_source = true;
                 position.amount_raw = 0;
                 position.has_value = false;
+                position.planning_metadata =
+                    same_mint_projection_metadata(&decision, "source_after_confirm", 0);
             } else if position.reserve == target_reserve {
                 saw_target = true;
                 position.amount_raw = amount_raw;
                 position.has_value = amount_raw > 0;
+                position.planning_metadata =
+                    same_mint_projection_metadata(&decision, "target_after_confirm", amount_raw);
             }
             next_positions.push(position);
         }
@@ -1584,8 +1621,46 @@ fn validate_same_mint_input(
     if source.amount_raw <= 0 || !source.has_value {
         return Err("source reserve has no value".to_owned());
     }
-    if input.amount_raw != source.amount_raw {
-        return Err("amount_raw must equal source position amount for same-mint v1".to_owned());
+    if input.route_amount_semantics != ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY {
+        return Err(format!(
+            "unsupported_amount_semantics: route_amount_semantics must be {ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY}"
+        ));
+    }
+    let evidence = route_amount_evidence(source).ok_or_else(|| {
+        format!(
+            "unsupported_amount_semantics: source reserve amount_semantics {:?} cannot route as USDC liquidity",
+            source
+                .planning_metadata
+                .get("amount_semantics")
+                .and_then(Value::as_str)
+        )
+    })?;
+    if input.amount_raw != evidence.amount_raw {
+        return Err(format!(
+            "amount_raw {} does not match routeable source liquidity amount {}",
+            input.amount_raw, evidence.amount_raw
+        ));
+    }
+    if input.source_amount_semantics != evidence.source_amount_semantics {
+        return Err("source_amount_semantics does not match current source metadata".to_owned());
+    }
+    if input.source_collateral_amount_raw != evidence.source_collateral_amount_raw {
+        return Err(
+            "source_collateral_amount_raw does not match current source metadata".to_owned(),
+        );
+    }
+    if input.redeemable_source_liquidity_amount_raw
+        != evidence.redeemable_source_liquidity_amount_raw
+    {
+        return Err(
+            "redeemable_source_liquidity_amount_raw does not match current source metadata"
+                .to_owned(),
+        );
+    }
+    if input.idle_vault_liquidity_amount_raw != evidence.idle_vault_liquidity_amount_raw {
+        return Err(
+            "idle_vault_liquidity_amount_raw does not match current source metadata".to_owned(),
+        );
     }
     if source.liquidity_mint != input.liquidity_mint {
         return Err("source liquidity mint does not match input mint".to_owned());
@@ -1596,6 +1671,43 @@ fn validate_same_mint_input(
     Ok(())
 }
 
+fn validate_planned_decision_input(
+    input: &PlannedRebalanceDecisionInput,
+) -> Result<(), OrchestratorError> {
+    if input.source_liquidity_mint != input.target_liquidity_mint {
+        return Ok(());
+    }
+    let route_semantics = input
+        .execution_plan
+        .get("route_amount_semantics")
+        .and_then(Value::as_str);
+    if route_semantics != Some(ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY) {
+        return Err(OrchestratorError::SameMintRebalanceValidation(
+            "same-mint planned decision requires redeemable_liquidity_amount route semantics"
+                .to_owned(),
+        ));
+    }
+    if json_i64(
+        &input.execution_plan,
+        "redeemable_source_liquidity_amount_raw",
+    ) != Some(input.amount_raw)
+    {
+        return Err(OrchestratorError::SameMintRebalanceValidation(
+            "same-mint planned decision routeable liquidity amount must match amount_raw"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn json_i64(value: &Value, field: &str) -> Option<i64> {
+    let value = value.get(field)?;
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|amount| i64::try_from(amount).ok()))
+        .or_else(|| value.as_str().and_then(|amount| amount.parse::<i64>().ok()))
+}
+
 fn same_mint_execution_plan(input: &SameMintRebalanceInput) -> Value {
     json!({
         "kind": "same_mint",
@@ -1603,6 +1715,11 @@ fn same_mint_execution_plan(input: &SameMintRebalanceInput) -> Value {
         "target_reserve": input.target_reserve,
         "liquidity_mint": input.liquidity_mint,
         "amount_raw": input.amount_raw,
+        "route_amount_semantics": input.route_amount_semantics,
+        "source_amount_semantics": input.source_amount_semantics,
+        "source_collateral_amount_raw": input.source_collateral_amount_raw,
+        "redeemable_source_liquidity_amount_raw": input.redeemable_source_liquidity_amount_raw,
+        "idle_vault_liquidity_amount_raw": input.idle_vault_liquidity_amount_raw,
         "policy_executions": 3,
         "init_obligation": "inline_if_missing",
         "route_steps": ["kamino_withdraw", "kamino_init_obligation_if_missing", "kamino_deposit"],
@@ -1616,6 +1733,11 @@ fn same_mint_execution_preview(planned: &PlannedDecision) -> SameMintExecutionPr
         target_reserve: planned.target_reserve.clone(),
         liquidity_mint: planned.source_liquidity_mint.clone(),
         amount_raw: planned.amount_raw,
+        route_amount_semantics: planned.route_amount_semantics.clone(),
+        source_amount_semantics: planned.source_amount_semantics.clone(),
+        source_collateral_amount_raw: planned.source_collateral_amount_raw,
+        redeemable_source_liquidity_amount_raw: planned.redeemable_source_liquidity_amount_raw,
+        idle_vault_liquidity_amount_raw: planned.idle_vault_liquidity_amount_raw,
         policy_executions: 3,
         route_steps: vec![
             "kamino_withdraw".to_owned(),
@@ -1687,6 +1809,53 @@ fn ensure_confirmable_same_mint_decision(
     Ok(())
 }
 
+fn ensure_same_mint_route_amount_semantics(
+    decision: &RebalanceDecision,
+) -> Result<(), OrchestratorError> {
+    let route_semantics = decision
+        .execution_plan
+        .get("route_amount_semantics")
+        .and_then(Value::as_str);
+    if route_semantics != Some(ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY) {
+        return Err(OrchestratorError::SameMintRebalanceValidation(
+            "decision execution_plan.route_amount_semantics is not redeemable_liquidity_amount"
+                .to_owned(),
+        ));
+    }
+    if json_i64(
+        &decision.execution_plan,
+        "redeemable_source_liquidity_amount_raw",
+    ) != decision.amount_raw
+    {
+        return Err(OrchestratorError::SameMintRebalanceValidation(
+            "decision execution_plan.redeemable_source_liquidity_amount_raw must match amount_raw"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn same_mint_projection_metadata(
+    decision: &RebalanceDecision,
+    projection_role: &str,
+    projected_amount_raw: i64,
+) -> Value {
+    json!({
+        "source": "same_mint_confirmation_projection",
+        "projection_role": projection_role,
+        "decision_id": decision.id.as_i64(),
+        "route_amount_semantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+        "amount_semantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+        "projected_amount_raw": projected_amount_raw,
+        "source_reserve": decision.source_reserve,
+        "target_reserve": decision.target_reserve,
+        "source_amount_semantics": decision.execution_plan.get("source_amount_semantics").cloned().unwrap_or(Value::Null),
+        "source_collateral_amount_raw": json_i64(&decision.execution_plan, "source_collateral_amount_raw"),
+        "redeemable_source_liquidity_amount_raw": json_i64(&decision.execution_plan, "redeemable_source_liquidity_amount_raw"),
+        "idle_vault_liquidity_amount_raw": json_i64(&decision.execution_plan, "idle_vault_liquidity_amount_raw"),
+    })
+}
+
 fn ensure_same_mint_confirm_repeat_matches(
     decision: &RebalanceDecision,
     input: &ConfirmSameMintRebalanceInput,
@@ -1723,6 +1892,96 @@ fn same_mint_result_from_confirmed_decision(
         error_reason: None,
         dry_run: false,
         execution_preview: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED;
+
+    fn same_mint_decision(execution_plan: Value, amount_raw: Option<i64>) -> RebalanceDecision {
+        RebalanceDecision {
+            id: DecisionId(229),
+            vault_id: VaultId(419),
+            source_snapshot_id: Some(SnapshotId(947)),
+            status: DecisionStatus::Confirming,
+            source_reserve: Some("source".to_owned()),
+            target_reserve: Some("target".to_owned()),
+            liquidity_mint: Some("USDC".to_owned()),
+            source_liquidity_mint: Some("USDC".to_owned()),
+            target_liquidity_mint: Some("USDC".to_owned()),
+            amount_raw,
+            source_apy_bps: Some(100),
+            target_apy_bps: Some(200),
+            estimated_edge_bps: Some(100),
+            estimated_cost_lamports: 0,
+            decision_reason: DecisionReason::TargetSupplyApyExceedsSource,
+            execution_plan,
+            abandon_reason: None,
+            signature: None,
+            submitted_slot: None,
+            confirmed_slot: None,
+            preflight_chain_slot: None,
+            post_snapshot_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn confirmation_rejects_missing_route_amount_semantics() {
+        let decision = same_mint_decision(
+            json!({
+                "kind": "same_mint",
+                "amount_raw": 404_323_479,
+            }),
+            Some(404_323_479),
+        );
+
+        let error = ensure_same_mint_route_amount_semantics(&decision).unwrap_err();
+
+        assert!(matches!(
+            error,
+            OrchestratorError::SameMintRebalanceValidation(_)
+        ));
+    }
+
+    #[test]
+    fn confirmation_projection_metadata_preserves_routeable_units() {
+        let decision = same_mint_decision(
+            json!({
+                "kind": "same_mint",
+                "amount_raw": 480_000_000,
+                "route_amount_semantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+                "source_amount_semantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
+                "source_collateral_amount_raw": 404_323_479,
+                "redeemable_source_liquidity_amount_raw": 480_000_000,
+                "idle_vault_liquidity_amount_raw": 75_676_540,
+            }),
+            Some(480_000_000),
+        );
+
+        ensure_same_mint_route_amount_semantics(&decision).expect("routeable plan is confirmable");
+        let metadata =
+            same_mint_projection_metadata(&decision, "target_after_confirm", 480_000_000);
+
+        assert_eq!(
+            metadata.get("amount_semantics").and_then(Value::as_str),
+            Some(ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY)
+        );
+        assert_eq!(
+            metadata
+                .get("source_collateral_amount_raw")
+                .and_then(Value::as_i64),
+            Some(404_323_479)
+        );
+        assert_eq!(
+            metadata
+                .get("redeemable_source_liquidity_amount_raw")
+                .and_then(Value::as_i64),
+            Some(480_000_000)
+        );
     }
 }
 

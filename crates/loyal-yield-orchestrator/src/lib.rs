@@ -3,7 +3,10 @@ mod signer;
 mod store;
 mod types;
 
-pub use domain::state_transition;
+pub use domain::{
+    route_amount_evidence_from_metadata, state_transition,
+    AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+};
 pub use signer::{
     keypair_from_env, keypair_from_hex, keypair_from_string, solana_testing_keypair_from_env,
     yield_router_keypair_from_env, PolicySignerError, SOLANA_TESTING_PK_ENV,

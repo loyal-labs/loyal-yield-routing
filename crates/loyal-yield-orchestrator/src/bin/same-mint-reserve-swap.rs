@@ -49,10 +49,11 @@ use loyal_yield_orchestrator::sqlx::{
     PgPool, Row,
 };
 use loyal_yield_orchestrator::{
-    solana_testing_keypair_from_env, yield_router_keypair_from_env, ConfirmSameMintRebalanceInput,
-    DecisionAdvance, DecisionId, DecisionStatus, NeonSqlClient, PolicyMatchInput,
-    ReconciledReservePosition, ReconciledVaultState, SameMintRebalanceInput,
-    SameMintRebalanceResult, SnapshotId, VaultId,
+    route_amount_evidence_from_metadata, solana_testing_keypair_from_env,
+    yield_router_keypair_from_env, ConfirmSameMintRebalanceInput, DecisionAdvance, DecisionId,
+    DecisionStatus, NeonSqlClient, PolicyMatchInput, ReconciledReservePosition,
+    ReconciledVaultState, SameMintRebalanceInput, SameMintRebalanceResult, SnapshotId, VaultId,
+    AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
 use serde_json::{json, Value};
 use solana_client::rpc_client::RpcClient;
@@ -281,6 +282,7 @@ struct PositionSummary {
     has_value: bool,
     snapshot_id: SnapshotId,
     supply_apy_bps: Option<i64>,
+    planning_metadata: Value,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -727,7 +729,14 @@ enum PlanBlocker {
     SourceHasNoValue,
     SourceMintMismatch(String),
     TargetMintMismatch(String),
-    ActiveDecision { decision_id: i64, status: String },
+    UnsupportedAmountSemantics {
+        reserve: String,
+        amount_semantics: Option<String>,
+    },
+    ActiveDecision {
+        decision_id: i64,
+        status: String,
+    },
 }
 
 #[tokio::main]
@@ -4294,6 +4303,7 @@ async fn load_position_summaries(
             has_value: position.has_value,
             snapshot_id: position.snapshot_id,
             supply_apy_bps: position.supply_apy_bps,
+            planning_metadata: position.planning_metadata,
         })
         .collect())
 }
@@ -4391,6 +4401,16 @@ fn validate_prepared_decision_plan_fields(
     require_plan_string(decision, "target_reserve", &decision.target_reserve)?;
     require_plan_string(decision, "liquidity_mint", &decision.liquidity_mint)?;
     require_plan_i64(decision, "amount_raw", decision.amount_raw)?;
+    require_plan_string(
+        decision,
+        "route_amount_semantics",
+        ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+    )?;
+    require_plan_i64(
+        decision,
+        "redeemable_source_liquidity_amount_raw",
+        decision.amount_raw,
+    )?;
     if decision.source_snapshot_id.as_i64() <= 0 {
         return Err(format!(
             "decision {} source_snapshot_id {} is not a persisted snapshot",
@@ -4445,6 +4465,14 @@ fn require_plan_i64(
     Ok(())
 }
 
+fn plan_i64(plan: &Value, field: &'static str) -> Option<i64> {
+    let value = plan.get(field)?;
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|amount| i64::try_from(amount).ok()))
+        .or_else(|| value.as_str().and_then(|amount| amount.parse::<i64>().ok()))
+}
+
 fn validate_execution_decision_route(
     decision: &PreparedSameMintDecision,
     reserve_move: &ReserveMove,
@@ -4482,6 +4510,24 @@ fn same_mint_input_from_decision(decision: &PreparedSameMintDecision) -> SameMin
         target_reserve: decision.target_reserve.clone(),
         liquidity_mint: decision.liquidity_mint.clone(),
         amount_raw: decision.amount_raw,
+        route_amount_semantics: ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY.to_owned(),
+        source_amount_semantics: decision
+            .execution_plan
+            .get("source_amount_semantics")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        source_collateral_amount_raw: plan_i64(
+            &decision.execution_plan,
+            "source_collateral_amount_raw",
+        ),
+        redeemable_source_liquidity_amount_raw: plan_i64(
+            &decision.execution_plan,
+            "redeemable_source_liquidity_amount_raw",
+        ),
+        idle_vault_liquidity_amount_raw: plan_i64(
+            &decision.execution_plan,
+            "idle_vault_liquidity_amount_raw",
+        ),
         expected_source_snapshot_id: decision.source_snapshot_id,
         source_apy_bps: decision.source_apy_bps,
         target_apy_bps: decision.target_apy_bps,
@@ -4592,6 +4638,11 @@ async fn load_user_position_seed_preview(
             has_value: source_row.current_amount_raw > 0,
             snapshot_id: SnapshotId(0),
             supply_apy_bps: None,
+            planning_metadata: json!({
+                "source": "user_yield_positions",
+                "amount_semantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+                "redeemable_source_liquidity_amount_raw": source_row.current_amount_raw.to_string(),
+            }),
         },
         PositionSummary {
             reserve: target_reserve,
@@ -4600,6 +4651,11 @@ async fn load_user_position_seed_preview(
             has_value: target_amount > 0,
             snapshot_id: SnapshotId(0),
             supply_apy_bps: None,
+            planning_metadata: json!({
+                "source": "user_yield_positions",
+                "amount_semantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+                "redeemable_source_liquidity_amount_raw": target_amount.to_string(),
+            }),
         },
     ];
 
@@ -4660,6 +4716,8 @@ fn user_position_seed_reconciled_state(
                     "source": seed.source,
                     "user_yield_position_id": source_row.id,
                     "seed_role": "source",
+                    "amount_semantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+                    "redeemable_source_liquidity_amount_raw": source_amount.to_string(),
                 }),
             },
             ReconciledReservePosition {
@@ -4673,6 +4731,8 @@ fn user_position_seed_reconciled_state(
                     "source": seed.source,
                     "user_yield_position_id": target_row.map(|row| row.id),
                     "seed_role": "target",
+                    "amount_semantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+                    "redeemable_source_liquidity_amount_raw": target_amount.to_string(),
                 }),
             },
         ],
@@ -4689,7 +4749,7 @@ fn chain_preview_reconciled_state(
         lock_attempt_id: None,
         context: json!({
             "kind": "same_mint_chain_reconcile_preview",
-            "amount_semantics": "kamino_obligation_collateral_deposited_amount",
+            "amount_semantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
         }),
         positions: preview
             .positions
@@ -4703,11 +4763,13 @@ fn chain_preview_reconciled_state(
                 borrow_apy_bps: None,
                 planning_metadata: json!({
                     "source": "chain_reconcile_preview",
-                    "amount_semantics": "kamino_obligation_collateral_deposited_amount",
+                    "amount_semantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
                     "obligation": position.obligation,
                     "obligation_exists": position.obligation_exists,
                     "vault_liquidity_ata": position.vault_liquidity_ata,
                     "vault_liquidity_token_account_exists": position.vault_liquidity_token_account_exists,
+                    "idle_vault_liquidity_amount_raw": position.vault_liquidity_amount_raw.to_string(),
+                    "vault_liquidity_amount_raw": position.vault_liquidity_amount_raw.to_string(),
                 }),
             })
             .collect(),
@@ -6644,6 +6706,16 @@ fn preview_position_summaries(preview: &ChainReconcilePreview) -> Vec<PositionSu
             has_value: position.amount_raw > 0,
             snapshot_id: SnapshotId(0),
             supply_apy_bps: None,
+            planning_metadata: json!({
+                "source": "chain_reconcile_preview",
+                "amount_semantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
+                "obligation": position.obligation,
+                "obligation_exists": position.obligation_exists,
+                "vault_liquidity_ata": position.vault_liquidity_ata,
+                "vault_liquidity_token_account_exists": position.vault_liquidity_token_account_exists,
+                "idle_vault_liquidity_amount_raw": position.vault_liquidity_amount_raw.to_string(),
+                "vault_liquidity_amount_raw": position.vault_liquidity_amount_raw.to_string(),
+            }),
         })
         .collect()
 }
@@ -7516,6 +7588,16 @@ fn build_same_mint_input(
     if source.amount_raw <= 0 || !source.has_value {
         return Err(PlanBlocker::SourceHasNoValue);
     }
+    let evidence =
+        route_amount_evidence_from_metadata(source.amount_raw, &source.planning_metadata)
+            .ok_or_else(|| PlanBlocker::UnsupportedAmountSemantics {
+                reserve: source.reserve.clone(),
+                amount_semantics: source
+                    .planning_metadata
+                    .get("amount_semantics")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+            })?;
 
     let source_apy_bps = source.supply_apy_bps.unwrap_or_default();
     let target_apy_bps = target.supply_apy_bps.unwrap_or_default();
@@ -7526,7 +7608,12 @@ fn build_same_mint_input(
         source_reserve,
         target_reserve,
         liquidity_mint: usdc_mint,
-        amount_raw: source.amount_raw,
+        amount_raw: evidence.amount_raw,
+        route_amount_semantics: evidence.route_amount_semantics,
+        source_amount_semantics: evidence.source_amount_semantics,
+        source_collateral_amount_raw: evidence.source_collateral_amount_raw,
+        redeemable_source_liquidity_amount_raw: evidence.redeemable_source_liquidity_amount_raw,
+        idle_vault_liquidity_amount_raw: evidence.idle_vault_liquidity_amount_raw,
         expected_source_snapshot_id: source.snapshot_id,
         source_apy_bps,
         target_apy_bps,
@@ -7586,6 +7673,15 @@ fn blocker_reason(blocker: &PlanBlocker) -> Value {
             "actual": mint,
             "expected": USDC_MINT.to_string(),
         }),
+        PlanBlocker::UnsupportedAmountSemantics {
+            reserve,
+            amount_semantics,
+        } => json!({
+            "kind": "unsupported_amount_semantics",
+            "reserve": reserve,
+            "amountSemantics": amount_semantics,
+            "expectedRouteAmountSemantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+        }),
         PlanBlocker::ActiveDecision {
             decision_id,
             status,
@@ -7629,6 +7725,7 @@ fn position_json(position: &PositionSummary) -> Value {
         "hasValue": position.has_value,
         "snapshotId": position.snapshot_id.as_i64(),
         "supplyApyBps": position.supply_apy_bps,
+        "planningMetadata": position.planning_metadata,
     })
 }
 
@@ -7652,6 +7749,11 @@ fn same_mint_result_json(result: &SameMintRebalanceResult) -> Value {
             "targetReserve": preview.target_reserve,
             "liquidityMint": preview.liquidity_mint,
             "amountRaw": preview.amount_raw.to_string(),
+            "routeAmountSemantics": preview.route_amount_semantics,
+            "sourceAmountSemantics": preview.source_amount_semantics,
+            "sourceCollateralAmountRaw": preview.source_collateral_amount_raw.map(|amount| amount.to_string()),
+            "redeemableSourceLiquidityAmountRaw": preview.redeemable_source_liquidity_amount_raw.map(|amount| amount.to_string()),
+            "idleVaultLiquidityAmountRaw": preview.idle_vault_liquidity_amount_raw.map(|amount| amount.to_string()),
             "policyExecutions": preview.policy_executions,
             "routeSteps": preview.route_steps,
         })),
@@ -7668,6 +7770,11 @@ fn prepared_same_mint_decision_json(decision: &PreparedSameMintDecision) -> Valu
         "targetReserve": decision.target_reserve,
         "liquidityMint": decision.liquidity_mint,
         "amountRaw": decision.amount_raw.to_string(),
+        "routeAmountSemantics": decision.execution_plan.get("route_amount_semantics").and_then(Value::as_str),
+        "sourceAmountSemantics": decision.execution_plan.get("source_amount_semantics").and_then(Value::as_str),
+        "sourceCollateralAmountRaw": plan_i64(&decision.execution_plan, "source_collateral_amount_raw").map(|amount| amount.to_string()),
+        "redeemableSourceLiquidityAmountRaw": plan_i64(&decision.execution_plan, "redeemable_source_liquidity_amount_raw").map(|amount| amount.to_string()),
+        "idleVaultLiquidityAmountRaw": plan_i64(&decision.execution_plan, "idle_vault_liquidity_amount_raw").map(|amount| amount.to_string()),
         "sourceApyBps": decision.source_apy_bps,
         "targetApyBps": decision.target_apy_bps,
         "estimatedEdgeBps": decision.estimated_edge_bps,
@@ -7925,7 +8032,7 @@ fn chain_position_json(position: &ChainPositionSummary) -> Value {
         "vaultLiquidityAta": position.vault_liquidity_ata,
         "vaultLiquidityTokenAccountExists": position.vault_liquidity_token_account_exists,
         "vaultLiquidityAmountRaw": position.vault_liquidity_amount_raw.to_string(),
-        "amountSemantics": "kamino_obligation_collateral_deposited_amount",
+        "amountSemantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
     })
 }
 
@@ -7934,7 +8041,7 @@ fn user_position_seed_preview_json(preview: &UserPositionSeedPreview) -> Value {
         "source": preview.source,
         "rows": preview.rows.iter().map(user_position_seed_row_json).collect::<Vec<_>>(),
         "positions": preview.positions.iter().map(position_json).collect::<Vec<_>>(),
-        "amountSemantics": "user_yield_positions.current_amount_raw",
+        "amountSemantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
         "dryRunOnly": true,
     })
 }
@@ -8141,6 +8248,11 @@ fn same_mint_input_json(input: &SameMintRebalanceInput) -> Value {
         "targetReserve": input.target_reserve,
         "liquidityMint": input.liquidity_mint,
         "amountRaw": input.amount_raw.to_string(),
+        "routeAmountSemantics": input.route_amount_semantics,
+        "sourceAmountSemantics": input.source_amount_semantics,
+        "sourceCollateralAmountRaw": input.source_collateral_amount_raw.map(|amount| amount.to_string()),
+        "redeemableSourceLiquidityAmountRaw": input.redeemable_source_liquidity_amount_raw.map(|amount| amount.to_string()),
+        "idleVaultLiquidityAmountRaw": input.idle_vault_liquidity_amount_raw.map(|amount| amount.to_string()),
         "sourceSnapshotId": input.expected_source_snapshot_id.as_i64(),
         "sourceApyBps": input.source_apy_bps,
         "targetApyBps": input.target_apy_bps,

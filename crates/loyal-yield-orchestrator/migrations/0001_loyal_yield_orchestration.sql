@@ -39,7 +39,8 @@ BEGIN
         'active_decision',
         'no_value_source',
         'cross_mint_only',
-        'no_same_mint_edge'
+        'no_same_mint_edge',
+        'unsupported_amount_semantics'
     );
 EXCEPTION
     WHEN duplicate_object THEN NULL;
@@ -49,6 +50,7 @@ ALTER TYPE loyal_yield.decision_reason ADD VALUE IF NOT EXISTS 'active_decision'
 ALTER TYPE loyal_yield.decision_reason ADD VALUE IF NOT EXISTS 'no_value_source';
 ALTER TYPE loyal_yield.decision_reason ADD VALUE IF NOT EXISTS 'cross_mint_only';
 ALTER TYPE loyal_yield.decision_reason ADD VALUE IF NOT EXISTS 'no_same_mint_edge';
+ALTER TYPE loyal_yield.decision_reason ADD VALUE IF NOT EXISTS 'unsupported_amount_semantics';
 
 CREATE TABLE IF NOT EXISTS loyal_yield.route_policies (
     id BIGSERIAL PRIMARY KEY,

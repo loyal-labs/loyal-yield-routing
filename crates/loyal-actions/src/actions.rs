@@ -1790,15 +1790,8 @@ mod tests {
         assert_eq!(constraint.owner, owner);
     }
 
-    fn assert_token_authority_constraint(
-        constraint: &DecodedAccountConstraint,
-        authority: Pubkey,
-    ) {
-        assert_token_authority_constraint_with_owner(
-            constraint,
-            authority,
-            Some(spl_token::id()),
-        );
+    fn assert_token_authority_constraint(constraint: &DecodedAccountConstraint, authority: Pubkey) {
+        assert_token_authority_constraint_with_owner(constraint, authority, Some(spl_token::id()));
     }
 
     fn assert_token_authority_constraint_with_owner(

@@ -439,6 +439,7 @@ pub enum DecisionReason {
     NoValueSource,
     CrossMintOnly,
     NoSameMintEdge,
+    UnsupportedAmountSemantics,
 }
 
 impl DecisionReason {
@@ -449,6 +450,7 @@ impl DecisionReason {
             Self::NoValueSource => "no_value_source",
             Self::CrossMintOnly => "cross_mint_only",
             Self::NoSameMintEdge => "no_same_mint_edge",
+            Self::UnsupportedAmountSemantics => "unsupported_amount_semantics",
         }
     }
 
@@ -459,6 +461,7 @@ impl DecisionReason {
             "no_value_source" => Some(Self::NoValueSource),
             "cross_mint_only" => Some(Self::CrossMintOnly),
             "no_same_mint_edge" => Some(Self::NoSameMintEdge),
+            "unsupported_amount_semantics" => Some(Self::UnsupportedAmountSemantics),
             _ => None,
         }
     }
@@ -518,19 +521,32 @@ impl PlannedRebalanceDecisionInput {
         target_apy_bps: i64,
         estimated_edge_bps: i64,
     ) -> Self {
+        let source_reserve = source_reserve.into();
+        let target_reserve = target_reserve.into();
         let liquidity_mint = liquidity_mint.into();
         Self {
             source_snapshot_id,
-            source_reserve: source_reserve.into(),
-            target_reserve: target_reserve.into(),
+            source_reserve: source_reserve.clone(),
+            target_reserve: target_reserve.clone(),
             source_liquidity_mint: liquidity_mint.clone(),
-            target_liquidity_mint: liquidity_mint,
+            target_liquidity_mint: liquidity_mint.clone(),
             amount_raw,
             source_apy_bps,
             target_apy_bps,
             estimated_edge_bps,
             estimated_cost_lamports: 0,
-            execution_plan: Value::Object(Default::default()),
+            execution_plan: serde_json::json!({
+                "kind": "same_mint",
+                "source_reserve": source_reserve,
+                "target_reserve": target_reserve,
+                "liquidity_mint": liquidity_mint,
+                "amount_raw": amount_raw,
+                "route_amount_semantics": "redeemable_liquidity_amount",
+                "source_amount_semantics": "redeemable_liquidity_amount",
+                "redeemable_source_liquidity_amount_raw": amount_raw,
+                "source_collateral_amount_raw": Value::Null,
+                "idle_vault_liquidity_amount_raw": Value::Null,
+            }),
         }
     }
 }
@@ -544,6 +560,11 @@ pub struct SameMintRebalanceInput {
     pub target_reserve: String,
     pub liquidity_mint: String,
     pub amount_raw: i64,
+    pub route_amount_semantics: String,
+    pub source_amount_semantics: Option<String>,
+    pub source_collateral_amount_raw: Option<i64>,
+    pub redeemable_source_liquidity_amount_raw: Option<i64>,
+    pub idle_vault_liquidity_amount_raw: Option<i64>,
     pub expected_source_snapshot_id: SnapshotId,
     pub source_apy_bps: i64,
     pub target_apy_bps: i64,
@@ -559,6 +580,11 @@ pub struct SameMintExecutionPreview {
     pub target_reserve: String,
     pub liquidity_mint: String,
     pub amount_raw: i64,
+    pub route_amount_semantics: String,
+    pub source_amount_semantics: Option<String>,
+    pub source_collateral_amount_raw: Option<i64>,
+    pub redeemable_source_liquidity_amount_raw: Option<i64>,
+    pub idle_vault_liquidity_amount_raw: Option<i64>,
     pub policy_executions: u8,
     pub route_steps: Vec<String>,
 }
@@ -595,6 +621,7 @@ pub enum SkipReason {
     NoValueSource,
     CrossMintOnly,
     NoSameMintEdge,
+    UnsupportedAmountSemantics,
 }
 
 impl SkipReason {
@@ -604,6 +631,7 @@ impl SkipReason {
             Self::NoValueSource => DecisionReason::NoValueSource,
             Self::CrossMintOnly => DecisionReason::CrossMintOnly,
             Self::NoSameMintEdge => DecisionReason::NoSameMintEdge,
+            Self::UnsupportedAmountSemantics => DecisionReason::UnsupportedAmountSemantics,
         }
     }
 }
