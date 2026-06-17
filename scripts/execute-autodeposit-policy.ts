@@ -200,6 +200,7 @@ type LotClaimResult =
 
 const DEFAULT_COMMITMENT = "confirmed";
 const USDC_DECIMALS = 6;
+const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
 
 async function loadAppModules(): Promise<AppModules> {
   const [
@@ -789,6 +790,7 @@ async function releaseAutodepositLotClaim(args: {
       UPDATE loyal_yield.balance_sweep_surplus_lots l
       SET remaining_amount_raw = l.remaining_amount_raw + i.amount_raw,
           status = 'open',
+          eligible_after = now() + (${PRE_SEND_FAILURE_RETRY_DELAY_SECONDS} * interval '1 second'),
           updated_at = now()
       FROM loyal_yield.balance_sweep_lot_claim_items i
       WHERE i.claim_token = (SELECT claim_token FROM selected_claim)
@@ -1424,6 +1426,10 @@ function summarizeSimulation(summary: SimulationSummary) {
   };
 }
 
+function summarizeSimulationFailure(summary: SimulationSummary): string {
+  return JSON.stringify(summarizeSimulation(summary));
+}
+
 function isKnownPrefundDepositFailure(summary: SimulationSummary): boolean {
   return (
     summary.err !== null &&
@@ -1439,14 +1445,20 @@ function assertExecutablePreflight(args: {
   pullSimulation: SimulationSummary;
 }) {
   if (args.pullSimulation.err) {
-    throw new Error("Autodeposit pull simulation failed; refusing to execute.");
+    throw new Error(
+      `Autodeposit pull simulation failed; refusing to execute. simulation=${summarizeSimulationFailure(
+        args.pullSimulation
+      )}`
+    );
   }
   if (
     args.depositSimulation.err &&
     !isKnownPrefundDepositFailure(args.depositSimulation)
   ) {
     throw new Error(
-      "Kamino deposit simulation failed for an unexpected reason; refusing to execute."
+      `Kamino deposit simulation failed for an unexpected reason; refusing to execute. simulation=${summarizeSimulationFailure(
+        args.depositSimulation
+      )}`
     );
   }
 }
