@@ -35,13 +35,16 @@ import {
   LOYAL_CLUSTER_CONFIGS,
   LoyalCluster,
   MaxFeeBps,
-  RiskBasket,
-  SwapLane,
   assertRebalanceAvoidsActiveLanes,
-  createLoyalActionsSdk,
+  deriveActionAccount,
   createSquadsProgramInteractionExecutionInstruction,
   createSquadsSyncTransactionInstruction,
 } from "../packages/loyal-actions/src/index.js";
+import {
+  uniquePubkeys,
+} from "../packages/loyal-actions/src/internal/protocols.js";
+import { BytesEncoder } from "../packages/loyal-actions/src/internal/bytes.js";
+import type { AccountConstraint, DataConstraint, InstructionConstraint } from "../packages/loyal-actions/src/internal/squads.js";
 
 const DEFAULT_CLUSTER = "mainnet-beta";
 const DEFAULT_STATE_FILE = ".agents/loyal-hub-mainnet-test-state.json";
@@ -66,6 +69,10 @@ const SWAP_EXACT_IN_TAG = 1;
 const WITHDRAW_INVENTORY_TAG = 2;
 const REBALANCE_INVENTORY_TAG = 5;
 const MAX_REBALANCE_TRANSFERS = 16;
+const DEFAULT_YIELD_ROUTE_POLICY_SEED = 1n;
+const SQUADS_FULL_PERMISSIONS_MASK = 7;
+const SQUADS_SYNC_SIGNER_COUNT = 1;
+const EXECUTE_SETTINGS_TRANSACTION_SYNC_DISCRIMINATOR = [138, 209, 64, 163, 79, 67, 233, 76] as const;
 
 type ParsedArgs = Record<string, string[]>;
 
@@ -214,10 +221,10 @@ async function main(): Promise<void> {
 
   if (!hasFlag(args, "skip-policy")) {
     state.user = await ensureVault("user", state.user);
+    await ensureMainnetKaminoRouteFiles(usesDefaultRouteFiles() || hasFlag(args, "refresh-route-files"));
     await ensureAllInOnePolicy();
     await fundUserVaultForPolicy();
     await ensureUserVaultTokenAccounts();
-    await ensureMainnetKaminoRouteFiles(false);
     await runPolicySetup();
     await ensureMainnetKaminoRouteFiles(usesDefaultRouteFiles() || hasFlag(args, "refresh-route-files"));
     await runPolicyRoute();
@@ -359,36 +366,376 @@ async function ensureVault(kind: "user" | "treasury", existing: StoredVault | un
 
 async function ensureAllInOnePolicy(): Promise<void> {
   const user = requireUser();
-  if (user.policy && (await accountExists(new PublicKey(user.policy))) && !forceRerun) {
+  const settings = new PublicKey(user.settings);
+  const vault = new PublicKey(user.vault);
+  const policySeed = yieldRoutePolicySeed();
+  const actionAccount = deriveActionAccount(clusterConfig, settings, policySeed);
+  if (user.policy && user.policy !== actionAccount.toBase58()) {
+    console.log(`switching policy seed to ${policySeed}: ${actionAccount.toBase58()}`);
+  }
+  const existingPolicy = await accountExists(actionAccount);
+
+  const policyUniverse = routePolicyUniverseFromFiles();
+  const kaminoRoutePrograms = uniquePubkeys([
+    ...policyUniverse.withdrawInstructions,
+    ...policyUniverse.depositInstructions,
+  ].map((instruction) => instruction.programId));
+  if (kaminoRoutePrograms.length === 0) {
+    throw new Error("route policy requires at least one Kamino route instruction");
+  }
+  const constraints = [
+    ...kaminoRoutePrograms.map(routeProgramConstraint),
+    routeHubConstraint(vault, policyUniverse.stableMints, MaxFeeBps.Bps50),
+  ];
+  const hubIndex = kaminoRoutePrograms.length;
+  const kaminoConstraintIndex = (instruction: TransactionInstruction): number => {
+    const index = kaminoRoutePrograms.findIndex((programId) => programId.equals(instruction.programId));
+    if (index < 0) {
+      throw new Error(`missing Kamino route constraint for program ${instruction.programId.toBase58()}`);
+    }
+    return index;
+  };
+  const withdrawIndexes = policyUniverse.withdrawInstructions.map(kaminoConstraintIndex);
+  const depositIndexes = policyUniverse.depositInstructions.map(kaminoConstraintIndex);
+  const routeIndexes = {
+    loyal: [...withdrawIndexes, hubIndex, ...depositIndexes],
+    jupiter: [],
+    sameMint: [...withdrawIndexes, ...depositIndexes],
+  };
+
+  if (existingPolicy && !hasFlag(args, "update-policy")) {
+    user.policy = actionAccount.toBase58();
+    user.routeIndexes = routeIndexes;
+    saveState();
     console.log(`policy exists: ${user.policy}`);
     return;
   }
 
-  const sdk = createLoyalActionsSdk({ cluster: loyalCluster });
-  const policy = sdk.initYieldRoutePolicy({
-    risk: RiskBasket.Safe,
-    swapLanes: [SwapLane.Loyal, SwapLane.Jupiter],
-    maxFeeBps: MaxFeeBps.Bps50,
-    squads: {
-      settings: new PublicKey(user.settings),
-      authority: system,
-      delegatedSigner: system,
-      accountIndex: 0,
-      vault: new PublicKey(user.vault),
-    },
+  const instruction = createRoutePolicyInstruction({
+    settings,
+    authority: system,
+    delegatedSigner: system,
+    accountIndex: 0,
+    vault,
+    policySeed,
+    actionAccount,
+    constraints,
+  });
+  const updateInstruction = createRoutePolicyUpdateInstruction({
+    settings,
+    authority: system,
+    delegatedSigner: system,
+    accountIndex: 0,
+    policy: actionAccount,
+    constraints,
   });
 
-  const run = await sendTransaction("create-all-in-one-policy", policy.instructions, [systemKeypair]);
-  user.policy = policy.actionAccount.toBase58();
-  user.routeIndexes = {
-    loyal: [...policy.routes.loyal.instructionConstraintIndexes],
-    jupiter: [...policy.routes.jupiter.instructionConstraintIndexes],
-    sameMint: [...policy.routes.sameMint.instructionConstraintIndexes],
-  };
+  const run = existingPolicy
+    ? await sendTransaction("update-route-policy", [updateInstruction], [systemKeypair])
+    : await sendTransaction("create-route-policy", [instruction], [systemKeypair]);
+  user.policy = actionAccount.toBase58();
+  user.routeIndexes = routeIndexes;
   if (run.mode === "execute") {
     saveState();
   }
   console.log(`policy=${user.policy} loyalRoute=${(user.routeIndexes?.loyal ?? []).join(",")}`);
+}
+
+function yieldRoutePolicySeed(): bigint {
+  return u64(value(args, "policy-seed") ?? DEFAULT_YIELD_ROUTE_POLICY_SEED.toString(), "policy-seed");
+}
+
+function routePolicyUniverseFromFiles(): {
+  withdrawInstructions: TransactionInstruction[];
+  depositInstructions: TransactionInstruction[];
+  kaminoMarkets: PublicKey[];
+  liquidityMints: PublicKey[];
+  stableMints: PublicKey[];
+} {
+  const withdrawInstructions = loadWireInstructions(required(args, "route-withdraw-file"));
+  const depositInstructions = loadWireInstructions(required(args, "route-deposit-file"));
+  const withdraw = lastWireInstruction(withdrawInstructions, "route withdraw");
+  const deposit = lastWireInstruction(depositInstructions, "route deposit");
+  const withdrawMarket = instructionKey(withdraw, 2, "withdraw market");
+  const withdrawMint = instructionKey(withdraw, 5, "withdraw liquidity mint");
+  const depositMarket = instructionKey(deposit, 2, "deposit market");
+  const depositMint = instructionKey(deposit, 5, "deposit liquidity mint");
+  const kaminoMarkets = uniquePubkeys([withdrawMarket, depositMarket]);
+  const liquidityMints = uniquePubkeys([withdrawMint, depositMint]);
+  console.log(
+    `policy scope markets=${kaminoMarkets.map((key) => key.toBase58()).join(",")} mints=${liquidityMints.map((key) => key.toBase58()).join(",")}`,
+  );
+  return {
+    withdrawInstructions,
+    depositInstructions,
+    kaminoMarkets,
+    liquidityMints,
+    stableMints: liquidityMints,
+  };
+}
+
+function createRoutePolicyInstruction(input: {
+  settings: PublicKey;
+  authority: PublicKey;
+  delegatedSigner: PublicKey;
+  accountIndex: number;
+  vault: PublicKey;
+  policySeed: bigint;
+  actionAccount: PublicKey;
+  constraints: InstructionConstraint[];
+}): TransactionInstruction {
+  const data = serializeRawPolicyCreateAction(
+    input.delegatedSigner,
+    input.policySeed,
+    input.accountIndex,
+    input.constraints,
+  );
+  return new TransactionInstruction({
+    programId: clusterConfig.squadsSmartAccountProgramId,
+    keys: [
+      { pubkey: input.settings, isSigner: false, isWritable: true },
+      { pubkey: input.authority, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: clusterConfig.squadsSmartAccountProgramId, isSigner: false, isWritable: false },
+      { pubkey: input.authority, isSigner: true, isWritable: false },
+      { pubkey: input.actionAccount, isSigner: false, isWritable: true },
+    ],
+    data: Buffer.from(data),
+  });
+}
+
+function createRoutePolicyUpdateInstruction(input: {
+  settings: PublicKey;
+  authority: PublicKey;
+  delegatedSigner: PublicKey;
+  accountIndex: number;
+  policy: PublicKey;
+  constraints: InstructionConstraint[];
+}): TransactionInstruction {
+  const data = serializeRawPolicyUpdateAction(
+    input.policy,
+    input.delegatedSigner,
+    input.accountIndex,
+    input.constraints,
+  );
+  return new TransactionInstruction({
+    programId: clusterConfig.squadsSmartAccountProgramId,
+    keys: [
+      { pubkey: input.settings, isSigner: false, isWritable: true },
+      { pubkey: input.authority, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: clusterConfig.squadsSmartAccountProgramId, isSigner: false, isWritable: false },
+      { pubkey: input.authority, isSigner: true, isWritable: false },
+      { pubkey: input.policy, isSigner: false, isWritable: true },
+    ],
+    data: Buffer.from(data),
+  });
+}
+
+function serializeRawPolicyCreateAction(
+  delegatedSigner: PublicKey,
+  seed: bigint,
+  accountIndex: number,
+  constraints: InstructionConstraint[],
+): Uint8Array {
+  const encoder = new BytesEncoder();
+  encoder.pushBytes(EXECUTE_SETTINGS_TRANSACTION_SYNC_DISCRIMINATOR);
+  encoder.pushU8(SQUADS_SYNC_SIGNER_COUNT);
+  encoder.pushVec([undefined], () => {
+    encoder.pushU8(7);
+    encoder.pushU64(seed);
+    encoder.pushU8(3);
+    encodeRawProgramInteractionPayload(encoder, accountIndex, constraints);
+    encoder.pushVec([delegatedSigner], (signer) => {
+      encoder.pushPubkey(signer);
+      encoder.pushU8(SQUADS_FULL_PERMISSIONS_MASK);
+    });
+    encoder.pushU16(1);
+    encoder.pushU32(0);
+    encoder.pushOption<bigint>(undefined, (timestamp) => encoder.pushU64(timestamp));
+    encoder.pushOption<never>(undefined, () => undefined);
+  });
+  encoder.pushOption<string>(undefined, (memo) => {
+    const bytes = new TextEncoder().encode(memo);
+    encoder.pushU32(bytes.length);
+    encoder.pushBytes(bytes);
+  });
+  return encoder.finish();
+}
+
+function serializeRawPolicyUpdateAction(
+  policy: PublicKey,
+  delegatedSigner: PublicKey,
+  accountIndex: number,
+  constraints: InstructionConstraint[],
+): Uint8Array {
+  const encoder = new BytesEncoder();
+  encoder.pushBytes(EXECUTE_SETTINGS_TRANSACTION_SYNC_DISCRIMINATOR);
+  encoder.pushU8(SQUADS_SYNC_SIGNER_COUNT);
+  encoder.pushVec([undefined], () => {
+    encoder.pushU8(8);
+    encoder.pushPubkey(policy);
+    encoder.pushVec([delegatedSigner], (signer) => {
+      encoder.pushPubkey(signer);
+      encoder.pushU8(SQUADS_FULL_PERMISSIONS_MASK);
+    });
+    encoder.pushU16(1);
+    encoder.pushU32(0);
+    encoder.pushU8(3);
+    encodeRawProgramInteractionPayload(encoder, accountIndex, constraints);
+    encoder.pushOption<never>(undefined, () => undefined);
+  });
+  encoder.pushOption<string>(undefined, (memo) => {
+    const bytes = new TextEncoder().encode(memo);
+    encoder.pushU32(bytes.length);
+    encoder.pushBytes(bytes);
+  });
+  return encoder.finish();
+}
+
+function encodeRawProgramInteractionPayload(
+  encoder: BytesEncoder,
+  accountIndex: number,
+  constraints: InstructionConstraint[],
+): void {
+  encoder.pushU8(accountIndex);
+  encoder.pushVec(constraints, (constraint) => encodeRawInstructionConstraint(encoder, constraint));
+  encoder.pushOption<never>(undefined, () => undefined);
+  encoder.pushOption<never>(undefined, () => undefined);
+  encoder.pushVec([], () => undefined);
+}
+
+function encodeRawInstructionConstraint(encoder: BytesEncoder, constraint: InstructionConstraint): void {
+  encoder.pushPubkey(constraint.programId);
+  encoder.pushVec(constraint.accountConstraints, (accountConstraint) => {
+    encodeRawAccountConstraint(encoder, accountConstraint);
+  });
+  encoder.pushVec(constraint.dataConstraints, (dataConstraint) => encodeRawDataConstraint(encoder, dataConstraint));
+}
+
+function encodeRawAccountConstraint(encoder: BytesEncoder, constraint: AccountConstraint): void {
+  encoder.pushU8(constraint.accountIndex);
+  if (constraint.kind.type === "pubkey") {
+    encoder.pushU8(0);
+    encoder.pushVec(constraint.kind.pubkeys, (pubkey) => encoder.pushPubkey(pubkey));
+  } else {
+    encoder.pushU8(1);
+    encoder.pushVec(constraint.kind.dataConstraints, (dataConstraint) => encodeRawDataConstraint(encoder, dataConstraint));
+  }
+  encoder.pushOption(constraint.owner, (owner) => encoder.pushPubkey(owner));
+}
+
+function encodeRawDataConstraint(encoder: BytesEncoder, constraint: DataConstraint): void {
+  encoder.pushU64(constraint.dataOffset);
+  switch (constraint.dataValue.type) {
+    case "u8":
+      encoder.pushU8(0);
+      encoder.pushU8(constraint.dataValue.value);
+      break;
+    case "u16Le":
+      encoder.pushU8(1);
+      encoder.pushU16(constraint.dataValue.value);
+      break;
+    case "u32Le":
+      encoder.pushU8(2);
+      encoder.pushU32(constraint.dataValue.value);
+      break;
+    case "u64Le":
+      encoder.pushU8(3);
+      encoder.pushU64(constraint.dataValue.value);
+      break;
+    case "u128Le":
+      encoder.pushU8(4);
+      encoder.pushU64(constraint.dataValue.value & 0xffffffffffffffffn);
+      encoder.pushU64(constraint.dataValue.value >> 64n);
+      break;
+    case "u8Slice":
+      encoder.pushU8(5);
+      encoder.pushVec(constraint.dataValue.value, (byte) => encoder.pushU8(byte));
+      break;
+  }
+  encoder.pushU8(routeOperatorTag(constraint.operator));
+}
+
+function routeOperatorTag(operator: DataConstraint["operator"]): number {
+  switch (operator) {
+    case "equals":
+      return 0;
+    case "notEquals":
+      return 1;
+    case "greaterThan":
+      return 2;
+    case "greaterThanOrEqualTo":
+      return 3;
+    case "lessThan":
+      return 4;
+    case "lessThanOrEqualTo":
+      return 5;
+  }
+}
+
+function routeProgramConstraint(programId: PublicKey): InstructionConstraint {
+  return {
+    programId,
+    accountConstraints: [],
+    dataConstraints: [],
+  };
+}
+
+function routeHubConstraint(vault: PublicKey, stableMints: PublicKey[], maxFeeBps: number): InstructionConstraint {
+  return {
+    programId: hubProgram,
+    accountConstraints: [
+      routePubkeyConstraint(0, [deriveConfig(hubProgram)]),
+      routePubkeyConstraint(1, [vault]),
+      routePubkeyConstraint(6, stableMints),
+      routePubkeyConstraint(7, stableMints),
+      routePubkeyConstraint(9, [clusterConfig.loyalHubAuthorizer]),
+    ],
+    dataConstraints: [
+      routeDataU8Equals(0n, SWAP_EXACT_IN_TAG),
+      routeDataU16LeLessThanOrEqualTo(25n, maxFeeBps),
+    ],
+  };
+}
+
+function routePubkeyConstraint(accountIndex: number, pubkeys: PublicKey[]): AccountConstraint {
+  return {
+    accountIndex,
+    kind: { type: "pubkey" as const, pubkeys },
+  };
+}
+
+function routeDataU8Equals(offset: bigint, value: number): DataConstraint {
+  return {
+    dataOffset: offset,
+    dataValue: { type: "u8", value },
+    operator: "equals",
+  };
+}
+
+function routeDataU16LeLessThanOrEqualTo(offset: bigint, value: number): DataConstraint {
+  return {
+    dataOffset: offset,
+    dataValue: { type: "u16Le", value },
+    operator: "lessThanOrEqualTo",
+  };
+}
+
+function lastWireInstruction(instructions: TransactionInstruction[], label: string): TransactionInstruction {
+  const instruction = instructions[instructions.length - 1];
+  if (!instruction) {
+    throw new Error(`${label} file contains no instructions`);
+  }
+  return instruction;
+}
+
+function instructionKey(instruction: TransactionInstruction, index: number, label: string): PublicKey {
+  const key = instruction.keys[index]?.pubkey;
+  if (!key) {
+    throw new Error(`missing ${label} account at index ${index}`);
+  }
+  return key;
 }
 
 async function fundUserVaultForPolicy(): Promise<void> {
@@ -537,26 +884,62 @@ async function runPolicyRoute(): Promise<void> {
   if (!user.policy) {
     throw new Error("missing user policy");
   }
+  const policy = new PublicKey(user.policy);
   const vault = new PublicKey(user.vault);
   const hubSwap = await buildHubSwapInstruction(vault);
-  const routeInstructions = [
-    ...loadWireInstructions(required(args, "route-withdraw-file")),
-    hubSwap,
-    ...loadWireInstructions(required(args, "route-deposit-file")),
-  ].map((instruction) => clearSignerForPubkey(instruction, vault));
+  const withdrawInstructions = loadWireInstructions(required(args, "route-withdraw-file"));
+  const depositInstructions = loadWireInstructions(required(args, "route-deposit-file"));
   const routeIndexes = values(args, "constraint-indexes").length > 0
     ? parseU8List(required(args, "constraint-indexes"), "constraint-indexes")
-    : user.routeIndexes?.loyal ?? [0, 1, 3];
+    : user.routeIndexes?.loyal ?? [];
+  const expectedIndexCount = withdrawInstructions.length + 1 + depositInstructions.length;
+  if (routeIndexes.length !== expectedIndexCount) {
+    throw new Error(`split policy route requires ${expectedIndexCount} constraint indexes, got ${routeIndexes.join(",")}`);
+  }
+  const withdrawIndexes = routeIndexes.slice(0, withdrawInstructions.length);
+  const hubIndexes = routeIndexes.slice(withdrawInstructions.length, withdrawInstructions.length + 1);
+  const depositIndexes = routeIndexes.slice(withdrawInstructions.length + 1);
 
-  const instruction = createSquadsProgramInteractionExecutionInstruction(clusterConfig, {
-    policy: new PublicKey(user.policy),
-    signer: system,
-    accountIndex: 0,
-    instructions: routeInstructions,
-    instructionConstraintIndexes: routeIndexes,
-  });
-  const run = await sendTransaction("policy-route", [instruction], [systemKeypair], routeLookupTables());
-  markStep("policy-route", run);
+  const legs = [
+    {
+      step: "policy-route-withdraw",
+      instructions: withdrawInstructions,
+      constraintIndexes: withdrawIndexes,
+    },
+    {
+      step: "policy-route-hub-swap",
+      instructions: [hubSwap],
+      constraintIndexes: hubIndexes,
+    },
+    {
+      step: "policy-route-deposit",
+      instructions: depositInstructions,
+      constraintIndexes: depositIndexes,
+    },
+  ];
+
+  const executePendingLegs = async (): Promise<void> => {
+    let finalRun: TransactionRun | null = null;
+    for (const leg of legs) {
+      if (stepDone(leg.step)) {
+        continue;
+      }
+      const instruction = createSquadsProgramInteractionExecutionInstruction(clusterConfig, {
+        policy,
+        signer: system,
+        accountIndex: 0,
+        instructions: leg.instructions.map((inner) => clearSignerForPubkey(inner, vault)),
+        instructionConstraintIndexes: leg.constraintIndexes,
+      });
+      finalRun = await sendTransaction(leg.step, [instruction], [systemKeypair], routeLookupTables());
+      markStep(leg.step, finalRun);
+    }
+    if (finalRun) {
+      markStep("policy-route", finalRun);
+    }
+  };
+
+  await executePendingLegs();
 }
 
 async function withTreasuryInventoryRebalancer(action: () => Promise<void>): Promise<void> {
@@ -1601,6 +1984,8 @@ Policy route inputs:
   --route-deposit-file <json>      Wire instruction JSON for Kamino PYUSD deposit. Default: ${DEFAULT_ROUTE_DEPOSIT_FILE}
   --policy-setup-file <json>       Wire instruction JSON run once through user Squads before route. Default: ${DEFAULT_POLICY_SETUP_FILE}
   --refresh-route-files            Regenerate the route/setup JSON files even when they already exist.
+  --policy-seed <n>                Squads policy seed for the user route policy. Default: ${DEFAULT_YIELD_ROUTE_POLICY_SEED}
+  --update-policy                  Update an existing policy at --policy-seed instead of reusing it as-is.
   --kamino-source-reserve <pubkey> Override the default Main USDC source reserve.
   --kamino-target-reserve <pubkey> Override the default Main PYUSD target reserve.
 
