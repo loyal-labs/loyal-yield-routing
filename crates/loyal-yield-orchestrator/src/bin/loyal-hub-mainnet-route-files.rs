@@ -8,6 +8,8 @@ use klend_interface::{
             DepositReserveLiquidityAndObligationCollateralV2Accounts,
         },
         obligation::{init_obligation, InitObligationAccounts},
+        obligation::{init_obligation_farms_for_reserve, InitObligationFarmsForReserveAccounts},
+        referrer::{init_user_metadata, InitUserMetadataAccounts},
         refresh::{
             refresh_obligation, refresh_reserve, RefreshObligationAccounts, RefreshReserveAccounts,
         },
@@ -19,7 +21,7 @@ use klend_interface::{
     pda::{farms_user_state, lending_market_authority, obligation, user_metadata},
     state::{Obligation, Reserve},
     types::InitObligationArgs,
-    KLEND_PROGRAM_ID,
+    FARMS_PROGRAM_ID, KLEND_PROGRAM_ID,
 };
 use loyal_actions::{ASSOCIATED_TOKEN_PROGRAM_ID, KAMINO_MAIN_USDC_RESERVE, PYUSD_MINT, USDC_MINT};
 use serde_json::{json, Value};
@@ -35,10 +37,12 @@ const DEFAULT_WITHDRAW_FILE: &str = "tmp/withdraw-usdc-kamino.json";
 const DEFAULT_DEPOSIT_FILE: &str = "tmp/deposit-pyusd-kamino.json";
 const DEFAULT_POLICY_SETUP_FILE: &str = "tmp/policy-setup-kamino-usdc.json";
 const KAMINO_MAIN_PYUSD_RESERVE: &str = "2gc9Dm1eB6UgVYFBUN9bWks6Kes9PbWSaPaa9DqyvEiN";
+const KAMINO_COLLATERAL_FARM_MODE: u8 = 0;
 
 #[derive(Debug)]
 struct Options {
     vault: Pubkey,
+    setup_fee_payer: Pubkey,
     rpc_url: String,
     source_reserve: Pubkey,
     target_reserve: Pubkey,
@@ -106,6 +110,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         &source.market,
         &source.reserve,
     )?;
+    let (vault_user_metadata, _) = user_metadata(&KLEND_PROGRAM_ID, &options.vault);
+    let user_metadata_exists =
+        account_exists_with_owner(&rpc, &vault_user_metadata, &KLEND_PROGRAM_ID)?;
+    let source_farm_user_state = source
+        .collateral_farm
+        .map(|farm| farms_user_state(&farm, &obligation).0);
+    let source_farm_user_state_exists = source_farm_user_state
+        .map(|account| account_exists_with_owner(&rpc, &account, &FARMS_PROGRAM_ID))
+        .transpose()?
+        .unwrap_or(true);
+    let target_farm_user_state = target
+        .collateral_farm
+        .map(|farm| farms_user_state(&farm, &obligation).0);
+    let target_farm_user_state_exists = target_farm_user_state
+        .map(|account| account_exists_with_owner(&rpc, &account, &FARMS_PROGRAM_ID))
+        .transpose()?
+        .unwrap_or(true);
     let withdraw_amount = options
         .route_withdraw_amount_raw
         .or_else(|| {
@@ -118,22 +139,44 @@ fn main() -> Result<(), Box<dyn Error>> {
         options.vault,
         &source,
         &obligation_summary,
+        user_metadata_exists,
+        source_farm_user_state_exists,
+        options.setup_fee_payer,
         options.setup_amount_raw,
     )?;
-    let withdraw_instruction = build_withdraw_instruction(options.vault, &source, withdraw_amount)?;
-    let deposit_instruction =
-        build_deposit_instruction(options.vault, &target, options.route_deposit_amount_raw)?;
+    let route_withdraw_instructions = build_route_withdraw_instructions(
+        options.vault,
+        &source,
+        &obligation_summary,
+        withdraw_amount,
+    )?;
+    let route_deposit_instructions =
+        build_route_deposit_instructions(
+            options.vault,
+            options.setup_fee_payer,
+            &target,
+            &obligation_summary,
+            target_farm_user_state_exists,
+            options.route_deposit_amount_raw,
+        )?;
 
     write_wire_instructions(&options.policy_setup_file, &setup_instructions)?;
-    write_wire_instructions(&options.route_withdraw_file, &[withdraw_instruction])?;
-    write_wire_instructions(&options.route_deposit_file, &[deposit_instruction])?;
+    write_wire_instructions(&options.route_withdraw_file, &route_withdraw_instructions)?;
+    write_wire_instructions(&options.route_deposit_file, &route_deposit_instructions)?;
 
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
             "status": "generated",
             "vault": options.vault.to_string(),
+            "setupFeePayer": options.setup_fee_payer.to_string(),
             "obligation": obligation.to_string(),
+            "userMetadata": vault_user_metadata.to_string(),
+            "userMetadataExisted": user_metadata_exists,
+            "sourceFarmUserState": source_farm_user_state.map(|account| account.to_string()),
+            "sourceFarmUserStateExisted": source_farm_user_state_exists,
+            "targetFarmUserState": target_farm_user_state.map(|account| account.to_string()),
+            "targetFarmUserStateExisted": target_farm_user_state_exists,
             "sourceReserve": source.reserve.to_string(),
             "targetReserve": target.reserve.to_string(),
             "setupAmountRaw": options.setup_amount_raw.to_string(),
@@ -151,34 +194,118 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn build_policy_setup_instructions(
+fn build_route_withdraw_instructions(
     vault: Pubkey,
     source: &ReserveSummary,
     obligation_summary: &ObligationSummary,
     amount: u64,
 ) -> Result<Vec<Instruction>, Box<dyn Error>> {
-    let mut instructions = Vec::new();
-    if !obligation_summary.exists {
-        instructions.push(build_init_obligation_instruction(vault, source.market));
-    }
-    instructions.push(build_refresh_reserve_instruction(source));
-    if obligation_summary.exists {
-        instructions.push(build_refresh_obligation_instruction(
+    Ok(vec![
+        build_refresh_reserve_instruction(source),
+        build_refresh_obligation_instruction(
             source.market,
             &derive_obligation(vault, source.market),
             obligation_summary,
+        ),
+        build_withdraw_instruction(vault, source, amount)?,
+    ])
+}
+
+fn build_route_deposit_instructions(
+    vault: Pubkey,
+    setup_fee_payer: Pubkey,
+    target: &ReserveSummary,
+    obligation_summary: &ObligationSummary,
+    target_farm_user_state_exists: bool,
+    amount: u64,
+) -> Result<Vec<Instruction>, Box<dyn Error>> {
+    let mut instructions = Vec::new();
+    if !obligation_summary.exists {
+        instructions.push(build_init_obligation_instruction(
+            vault,
+            setup_fee_payer,
+            target.market,
         ));
     }
+    if !target_farm_user_state_exists {
+        if let Some(collateral_farm) = target.collateral_farm {
+            instructions.push(build_init_obligation_farm_instruction(
+                vault,
+                setup_fee_payer,
+                target,
+                collateral_farm,
+            ));
+        }
+    }
+    instructions.push(build_refresh_reserve_instruction(target));
+    instructions.push(build_refresh_obligation_instruction(
+        target.market,
+        &derive_obligation(vault, target.market),
+        obligation_summary,
+    ));
+    instructions.push(build_deposit_instruction(vault, target, amount)?);
+    Ok(instructions)
+}
+
+fn build_policy_setup_instructions(
+    vault: Pubkey,
+    source: &ReserveSummary,
+    obligation_summary: &ObligationSummary,
+    user_metadata_exists: bool,
+    source_farm_user_state_exists: bool,
+    setup_fee_payer: Pubkey,
+    amount: u64,
+) -> Result<Vec<Instruction>, Box<dyn Error>> {
+    let mut instructions = Vec::new();
+    if !user_metadata_exists {
+        instructions.push(build_init_user_metadata_instruction(vault, setup_fee_payer));
+    }
+    if !obligation_summary.exists {
+        instructions.push(build_init_obligation_instruction(
+            vault,
+            setup_fee_payer,
+            source.market,
+        ));
+    }
+    if !source_farm_user_state_exists {
+        if let Some(collateral_farm) = source.collateral_farm {
+            instructions.push(build_init_obligation_farm_instruction(
+                vault,
+                setup_fee_payer,
+                source,
+                collateral_farm,
+            ));
+        }
+    }
+    instructions.push(build_refresh_reserve_instruction(source));
+    instructions.push(build_refresh_obligation_instruction(
+        source.market,
+        &derive_obligation(vault, source.market),
+        obligation_summary,
+    ));
     instructions.push(build_deposit_instruction(vault, source, amount)?);
     Ok(instructions)
 }
 
-fn build_init_obligation_instruction(vault: Pubkey, market: Pubkey) -> Instruction {
+fn build_init_user_metadata_instruction(vault: Pubkey, fee_payer: Pubkey) -> Instruction {
+    let (user_metadata_account, _) = user_metadata(&KLEND_PROGRAM_ID, &vault);
+    init_user_metadata(
+        InitUserMetadataAccounts {
+            owner: vault,
+            fee_payer,
+            user_metadata: user_metadata_account,
+            referrer_user_metadata: None,
+        },
+        Pubkey::default(),
+    )
+}
+
+fn build_init_obligation_instruction(vault: Pubkey, fee_payer: Pubkey, market: Pubkey) -> Instruction {
     let (owner_user_metadata, _) = user_metadata(&KLEND_PROGRAM_ID, &vault);
     init_obligation(
         InitObligationAccounts {
             obligation_owner: vault,
-            fee_payer: vault,
+            fee_payer,
             obligation: derive_obligation(vault, market),
             lending_market: market,
             seed1_account: Pubkey::default(),
@@ -186,6 +313,30 @@ fn build_init_obligation_instruction(vault: Pubkey, market: Pubkey) -> Instructi
             owner_user_metadata,
         },
         InitObligationArgs { tag: 0, id: 0 },
+    )
+}
+
+fn build_init_obligation_farm_instruction(
+    vault: Pubkey,
+    payer: Pubkey,
+    source: &ReserveSummary,
+    reserve_farm_state: Pubkey,
+) -> Instruction {
+    let obligation = derive_obligation(vault, source.market);
+    let (lending_market_authority, _) = lending_market_authority(&KLEND_PROGRAM_ID, &source.market);
+    let (obligation_farm, _) = farms_user_state(&reserve_farm_state, &obligation);
+    init_obligation_farms_for_reserve(
+        InitObligationFarmsForReserveAccounts {
+            payer,
+            owner: vault,
+            obligation,
+            lending_market_authority,
+            reserve: source.reserve,
+            reserve_farm_state,
+            obligation_farm,
+            lending_market: source.market,
+        },
+        KAMINO_COLLATERAL_FARM_MODE,
     )
 }
 
@@ -335,6 +486,18 @@ fn load_reserve_summary(
                 .price_feed,
         ),
     })
+}
+
+fn account_exists_with_owner(
+    rpc: &RpcClient,
+    account: &Pubkey,
+    owner: &Pubkey,
+) -> Result<bool, Box<dyn Error>> {
+    let response = rpc.get_account_with_commitment(account, CommitmentConfig::confirmed())?;
+    Ok(response
+        .value
+        .map(|account| account.owner == *owner)
+        .unwrap_or(false))
 }
 
 fn load_obligation_summary(
@@ -488,6 +651,7 @@ fn wire_account_json(account: &AccountMeta) -> Value {
 
 fn parse_args(values: impl IntoIterator<Item = String>) -> Result<Options, String> {
     let mut vault = None;
+    let mut setup_fee_payer = None;
     let mut rpc_url = DEFAULT_RPC_URL.to_owned();
     let mut source_reserve = KAMINO_MAIN_USDC_RESERVE;
     let mut target_reserve =
@@ -506,6 +670,12 @@ fn parse_args(values: impl IntoIterator<Item = String>) -> Result<Options, Strin
                 vault = Some(parse_pubkey(
                     &iter.next().ok_or("--vault requires a value")?,
                     "vault",
+                )?);
+            }
+            "--setup-fee-payer" => {
+                setup_fee_payer = Some(parse_pubkey(
+                    &iter.next().ok_or("--setup-fee-payer requires a value")?,
+                    "setup-fee-payer",
                 )?);
             }
             "--rpc-url" => rpc_url = iter.next().ok_or("--rpc-url requires a value")?,
@@ -562,8 +732,10 @@ fn parse_args(values: impl IntoIterator<Item = String>) -> Result<Options, Strin
         }
     }
 
+    let vault = vault.ok_or("--vault is required")?;
     Ok(Options {
-        vault: vault.ok_or("--vault is required")?,
+        vault,
+        setup_fee_payer: setup_fee_payer.unwrap_or(vault),
         rpc_url,
         source_reserve,
         target_reserve,
@@ -588,7 +760,7 @@ fn parse_u64(value: &str, label: &str) -> Result<u64, String> {
 
 fn print_help() {
     println!(
-        "Usage: loyal-hub-mainnet-route-files --vault <PUBKEY> [--rpc-url <URL>] [--setup-amount-raw <N>] [--route-deposit-amount-raw <N>]\n\n\
+        "Usage: loyal-hub-mainnet-route-files --vault <PUBKEY> [--setup-fee-payer <PUBKEY>] [--rpc-url <URL>] [--setup-amount-raw <N>] [--route-deposit-amount-raw <N>]\n\n\
          Generates tmp/withdraw-usdc-kamino.json, tmp/deposit-pyusd-kamino.json, and tmp/policy-setup-kamino-usdc.json for the Loyal Hub mainnet runner."
     );
 }
