@@ -21,6 +21,7 @@
     "balance-sweep:project": "cargo run -p balance-sweep-ata-projector",
     "hub:cli": "cargo run -p loyal-hub-cli --",
     "hub:squads-ops": "bun scripts/loyal-hub-squads-ops.ts",
+    "hub:mainnet-test": "bun scripts/mainnet-loyal-hub-tests.ts",
     "hub:mainnet-route-files": "cargo run -p loyal-yield-orchestrator --bin loyal-hub-mainnet-route-files --",
     "hub:devnet-smoke": "bash scripts/devnet-test-loyal-hub-swap-program.sh",
     "jupiter:swap": "bun scripts/jupiter-wallet-swap.mjs",
