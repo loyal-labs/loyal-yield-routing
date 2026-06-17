@@ -227,6 +227,7 @@ async function main(): Promise<void> {
     await ensureAllInOnePolicy();
     await fundUserVaultForPolicy();
     await ensureUserVaultTokenAccounts();
+    await ensureUserVaultLamportsForPolicySetup();
     await runPolicySetup();
     await ensureMainnetKaminoRouteFiles(usesDefaultRouteFiles() || hasFlag(args, "refresh-route-files"));
     await runPolicyRoute();
@@ -746,6 +747,9 @@ function instructionKey(instruction: TransactionInstruction, index: number, labe
 }
 
 async function fundUserVaultForPolicy(): Promise<void> {
+  if (stepDone("policy-setup")) {
+    return;
+  }
   const raw = u64(value(args, "user-vault-usdc-fund-raw") ?? value(args, "policy-amount-in-raw") ?? "1000000", "user-vault-usdc-fund-raw");
   if (raw === 0n) {
     return;
@@ -807,6 +811,30 @@ async function ensureUserVaultTokenAccounts(): Promise<void> {
   if (instructions.length > 0) {
     await sendTransaction("ensure-user-vault-token-accounts", instructions, [systemKeypair]);
   }
+}
+
+async function ensureUserVaultLamportsForPolicySetup(): Promise<void> {
+  if (stepDone("policy-setup")) {
+    return;
+  }
+  const target = u64(value(args, "user-vault-setup-lamports") ?? "45000000", "user-vault-setup-lamports");
+  if (target === 0n) {
+    return;
+  }
+  const user = requireUser();
+  const vault = new PublicKey(user.vault);
+  const current = BigInt(await connection.getBalance(vault, DEFAULT_COMMITMENT));
+  if (current >= target) {
+    console.log(`user vault SOL setup balance ok: ${current}`);
+    return;
+  }
+  await sendTransaction("fund-user-vault-sol", [
+    SystemProgram.transfer({
+      fromPubkey: system,
+      toPubkey: vault,
+      lamports: Number(target - current),
+    }),
+  ], [systemKeypair]);
 }
 
 async function ensureMainnetKaminoRouteFiles(force: boolean): Promise<void> {
@@ -1490,10 +1518,11 @@ async function sendTransaction(
 ): Promise<TransactionRun> {
   const latest = await connection.getLatestBlockhash(DEFAULT_COMMITMENT);
   const lookupTables = await fetchLookupTables(lookupTableAddresses);
+  const transactionInstructions = withComputeBudget(label, instructions);
   const message = new TransactionMessage({
     payerKey: system,
     recentBlockhash: latest.blockhash,
-    instructions,
+    instructions: transactionInstructions,
   }).compileToV0Message(lookupTables);
   const tx = new VersionedTransaction(message);
   tx.sign(uniqueSigners([systemKeypair, ...signers]));
@@ -1539,13 +1568,30 @@ async function sendTransaction(
   };
 }
 
+function withComputeBudget(label: string, instructions: TransactionInstruction[]): TransactionInstruction[] {
+  if (!needsComputeBudget(label) || instructions.some((instruction) => instruction.programId.equals(ComputeBudgetProgram.programId))) {
+    return instructions;
+  }
+  return [
+    ComputeBudgetProgram.setComputeUnitLimit({ units: numberValue(args, "compute-unit-limit", 800000) }),
+    ...instructions,
+  ];
+}
+
+function needsComputeBudget(label: string): boolean {
+  return label === "policy-setup"
+    || label.startsWith("policy-route")
+    || label === "treasury-jupiter-rebalance"
+    || label === "lane-rebalance";
+}
+
 async function fetchHubState(): Promise<HubState> {
   const result = spawnSync("bun", [
     "run",
     "hub:cli",
     "--",
     "-u",
-    cluster,
+    resolveRpcUrl(cluster),
     "--program-id",
     hubProgram.toBase58(),
     "--json",
@@ -1908,6 +1954,9 @@ function parseLoyalCluster(item: string): LoyalCluster {
 }
 
 function resolveRpcUrl(item: string): string {
+  if ((item === "m" || item === "mainnet" || item === "mainnet-beta") && process.env.SOLANA_RPC_URL) {
+    return process.env.SOLANA_RPC_URL;
+  }
   switch (item) {
     case "m":
     case "mainnet":
