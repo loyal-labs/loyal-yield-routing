@@ -15,6 +15,8 @@ const MIGRATION_0001: &str = include_str!("../migrations/0001_loyal_yield_orches
 const MIGRATION_0002: &str = include_str!("../migrations/0002_balance_sweep_surplus_lots.sql");
 const MIGRATION_0003: &str = include_str!("../migrations/0003_balance_sweep_initial_surplus.sql");
 const MIGRATION_0004: &str = include_str!("../migrations/0004_managed_vault_setup_policy.sql");
+const MIGRATION_0005: &str =
+    include_str!("../migrations/0005_add_unsupported_amount_semantics.sql");
 
 #[derive(Clone)]
 pub struct NeonSqlClient {
@@ -140,6 +142,7 @@ impl NeonSqlClient {
         sqlx::raw_sql(MIGRATION_0002).execute(&self.pool).await?;
         sqlx::raw_sql(MIGRATION_0003).execute(&self.pool).await?;
         sqlx::raw_sql(MIGRATION_0004).execute(&self.pool).await?;
+        sqlx::raw_sql(MIGRATION_0005).execute(&self.pool).await?;
         Ok(())
     }
 

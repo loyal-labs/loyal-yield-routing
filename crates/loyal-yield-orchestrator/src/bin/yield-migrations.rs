@@ -22,6 +22,16 @@ const MIGRATIONS: &[Migration] = &[
         name: "balance_sweep_initial_surplus",
         sql: include_str!("../../migrations/0003_balance_sweep_initial_surplus.sql"),
     },
+    Migration {
+        version: 4,
+        name: "managed_vault_setup_policy",
+        sql: include_str!("../../migrations/0004_managed_vault_setup_policy.sql"),
+    },
+    Migration {
+        version: 5,
+        name: "add_unsupported_amount_semantics",
+        sql: include_str!("../../migrations/0005_add_unsupported_amount_semantics.sql"),
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
