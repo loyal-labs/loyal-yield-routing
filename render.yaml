@@ -92,7 +92,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-bf9546d906c6f71a3520b40e74af4bf7a4969ffc
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-65a2fcc9eab5869d4cd0a4dd6cb48db7178a5bf3
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-autodeposit-trigger --execute-eligible
             maxShutdownDelaySeconds: 60
