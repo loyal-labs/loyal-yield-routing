@@ -13,7 +13,8 @@ pub const JUPITER_V6_PROGRAM_ID: Pubkey = pubkey!("JUP6LkbZbjS1jKKwapdHNy74zcZ3t
 pub const JUPITER_SWAP_DISCRIMINATOR: [u8; 8] = [187, 100, 250, 204, 49, 196, 175, 20];
 pub const JUPITER_SWAP_SLIPPAGE_BPS_OFFSET: u64 = 24;
 pub const JUPITER_DEFAULT_MAX_SLIPPAGE_BPS: u16 = 100;
-pub const LOYAL_HUB_SWAP_PROGRAM_ID: Pubkey = Pubkey::new_from_array([42; 32]);
+pub const LOYAL_HUB_SWAP_PROGRAM_ID: Pubkey =
+    pubkey!("LHUB3MMwYEwXqbfMdr1AQ8vkrJoubH37qoBxiy38smH");
 pub const LOYAL_HUB_INITIALIZE_CONFIG: u8 = loyal_hub_abi::INITIALIZE_CONFIG;
 pub const LOYAL_HUB_SWAP_EXACT_IN: u8 = loyal_hub_abi::SWAP_EXACT_IN;
 pub const LOYAL_HUB_WITHDRAW_INVENTORY: u8 = loyal_hub_abi::WITHDRAW_INVENTORY;

@@ -14,8 +14,8 @@ export type LoyalClusterConfig = {
 const sharedConfig: LoyalClusterConfig = {
   squadsSmartAccountProgramId: new PublicKey("SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"),
   jupiterV6ProgramId: new PublicKey("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"),
-  loyalHubSwapProgramId: new PublicKey("3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh"),
-  loyalHubAuthorizer: new PublicKey("3uWi9x2SRpmjztkpkr2WWeBoVq3exjXG2YfDWLvm8KsQ"),
+  loyalHubSwapProgramId: new PublicKey("LHUB3MMwYEwXqbfMdr1AQ8vkrJoubH37qoBxiy38smH"),
+  loyalHubAuthorizer: new PublicKey("GTpqQfB9wgXWqdhkEmSWsnHVvxaPbJs1qWsomh1MjQ5N"),
   tokenProgramId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
   token2022ProgramId: new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"),
   associatedTokenProgramId: new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"),

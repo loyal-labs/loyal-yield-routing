@@ -7,7 +7,7 @@
 
 spec LoyalHubSwap
 
-program_id "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh"
+program_id "LHUB3MMwYEwXqbfMdr1AQ8vkrJoubH37qoBxiy38smH"
 
 import Token from "spl"
 
