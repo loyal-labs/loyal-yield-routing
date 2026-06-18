@@ -57,9 +57,13 @@ because it writes shared `kamino.*` market data only.
 After re-authenticating the 1Password MCP path against account
 `V7U7OAXJBVEP5LQLVFNOKQ2GUE`, both target environments are visible and list no
 local env mounts. The local mount retry still fails with the per-device local
-`.env` file limit `max: 10`, and the `op` CLI still cannot connect to the
-1Password desktop app on this machine. Free local env-file slots or use another
-approved secret-safe mounting path before relying on
+`.env` file limit `max: 10`. The `op` CLI can reach the 1Password desktop app
+when run outside this sandbox, and `op run --env-file=.env.1password` has a
+passing secret-safe health check there; sandboxed CLI calls cannot reach the
+desktop app IPC. MCP-visible local mounts account for five active env files
+across the visible environments, so the slots to free may be hidden, disabled,
+or associated with another configured account. Free local env-file slots or use
+another approved secret-safe mounting path before relying on
 `.env.1password.production` and `.env.1password.staging` locally.
 
 Both new environments currently have the same non-secret variable names:

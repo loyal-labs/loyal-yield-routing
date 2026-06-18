@@ -36,10 +36,15 @@ Verifier: `docs/plans/prod-staging-service-split-verifier.md`.
   have the same non-secret variable names.
 - 1Password auth was retried after correcting the selected account. The MCP
   path authenticated as account `V7U7OAXJBVEP5LQLVFNOKQ2GUE` and listed the
-  target production/staging environments successfully. The `op` CLI path still
-  cannot connect to the 1Password desktop app, and creating
+  target production/staging environments successfully. A sandboxed `op` CLI
+  call still cannot connect to the 1Password desktop app, but the same CLI
+  account check and a secret-safe `op run --env-file=.env.1password` health
+  check succeed when run outside the sandbox. Creating
   `.env.1password.production` still fails with the per-device local `.env` file
   limit `max: 10`; both target environments still list no local env mounts.
+  MCP-visible local mounts account for five active env files across the visible
+  environments, so the remaining slots to free may be hidden, disabled, or
+  associated with another configured account.
 - Render staging environments were created:
   `evm-d8plqfrtqb8s738actsg` for `loyal-yield-laserstream-workers` and
   `evm-d8plqhgjs32c738s1n70` for `loyal-yield-light-workers`.
@@ -71,6 +76,10 @@ Verifier: `docs/plans/prod-staging-service-split-verifier.md`.
   `NEON_DATABASE_URL` to Vercel production was not performed because the
   approvals reviewer requires explicit user approval for that sensitive
   production config write.
+- A later read-only `vercel env ls` refresh still showed no
+  `NEON_DATABASE_URL` entry for `loyal-apps`; the existing main product
+  `DATABASE_URL` and `DATABASE_URL_UNPOOLED` bindings remain present, including
+  Production and Preview branch `staging`.
 - Post-deploy Render log checks from the split-image deploy window returned no
   `error` logs for production/shared services and no `error` logs for staging
   services. A production log search for `staging-probe-20260618-prod-split`
@@ -156,8 +165,9 @@ staging 1Password Environments have matching non-secret variable names and
 environment-specific metadata, but still need environment-specific secret values
 populated or mounted through a durable operator path. A retry after correcting
 the 1Password account proved MCP auth works for the target account, but the
-local `.env` mounts remain blocked by the per-device mount limit and the `op`
-CLI still cannot connect to the desktop app.
+local `.env` mounts remain blocked by the per-device mount limit. The `op` CLI
+works outside the sandbox for `op run --env-file=.env.1password`, but sandboxed
+CLI calls cannot reach the desktop app IPC.
 
 Shared Timescale DB, Separate ATA Streams: PASS - migration 4 applied and
 readback confirmed `loyal_prod` and `loyal_staging` observation tables, dedupe
