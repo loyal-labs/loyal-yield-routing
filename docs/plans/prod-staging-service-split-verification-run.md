@@ -34,6 +34,12 @@ Verifier: `docs/plans/prod-staging-service-split-verifier.md`.
   `loyal-yield-routing-production` is `2e463mizwetw6sbv3tiw7loxi4` and
   `loyal-yield-routing-staging` is `zspmwsfuhomrlffpqp6wk7fbdu`; both currently
   have the same non-secret variable names.
+- 1Password auth was retried after correcting the selected account. The MCP
+  path authenticated as account `V7U7OAXJBVEP5LQLVFNOKQ2GUE` and listed the
+  target production/staging environments successfully. The `op` CLI path still
+  cannot connect to the 1Password desktop app, and creating
+  `.env.1password.production` still fails with the per-device local `.env` file
+  limit `max: 10`; both target environments still list no local env mounts.
 - Render staging environments were created:
   `evm-d8plqfrtqb8s738actsg` for `loyal-yield-laserstream-workers` and
   `evm-d8plqhgjs32c738s1n70` for `loyal-yield-light-workers`.
@@ -148,7 +154,10 @@ production/staging `NEON_DATABASE_URL` fingerprints, production/staging ATA
 stream selectors, and staging execution-disabled posture. Fresh production and
 staging 1Password Environments have matching non-secret variable names and
 environment-specific metadata, but still need environment-specific secret values
-populated or mounted through a durable operator path.
+populated or mounted through a durable operator path. A retry after correcting
+the 1Password account proved MCP auth works for the target account, but the
+local `.env` mounts remain blocked by the per-device mount limit and the `op`
+CLI still cannot connect to the desktop app.
 
 Shared Timescale DB, Separate ATA Streams: PASS - migration 4 applied and
 readback confirmed `loyal_prod` and `loyal_staging` observation tables, dedupe
@@ -194,7 +203,8 @@ Overall Verdict: FAIL
 1. Populate both 1Password Environments with the remaining secret variable names
    and environment-specific values through a secret-safe operator path.
 2. Free at least two local 1Password env mounts or use another safe mounting
-   path for `.env.1password.production` and `.env.1password.staging`.
+   path for `.env.1password.production` and `.env.1password.staging`; the latest
+   retry still failed with the local `.env` file limit `max: 10`.
 3. Bind `loyal-apps` production/staging `NEON_DATABASE_URL` to the matching
    Yield Neon branches while leaving the main product `DATABASE_URL` shared.
    This is blocked on explicit approval for the Vercel production config write.

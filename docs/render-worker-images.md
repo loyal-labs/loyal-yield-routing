@@ -54,6 +54,14 @@ because it writes shared `kamino.*` market data only.
 | `loyal-yield-routing-production` | `2e463mizwetw6sbv3tiw7loxi4` | pending; 1Password local .env file limit was reached |
 | `loyal-yield-routing-staging` | `zspmwsfuhomrlffpqp6wk7fbdu` | pending; 1Password local .env file limit was reached |
 
+After re-authenticating the 1Password MCP path against account
+`V7U7OAXJBVEP5LQLVFNOKQ2GUE`, both target environments are visible and list no
+local env mounts. The local mount retry still fails with the per-device local
+`.env` file limit `max: 10`, and the `op` CLI still cannot connect to the
+1Password desktop app on this machine. Free local env-file slots or use another
+approved secret-safe mounting path before relying on
+`.env.1password.production` and `.env.1password.staging` locally.
+
 Both new environments currently have the same non-secret variable names:
 `BALANCE_SWEEP_ATA_STREAM`, `BALANCE_SWEEP_EXECUTE_ELIGIBLE`,
 `BALANCE_SWEEP_UPDATE_SOURCE`, `BALANCE_SWEEP_TARGET_REFRESH_SECONDS`,
