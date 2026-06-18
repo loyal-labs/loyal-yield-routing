@@ -57,6 +57,14 @@ Verifier: `docs/plans/prod-staging-service-split-verifier.md`.
   `BALANCE_SWEEP_ATA_STREAM=staging`, production autodeposit uses
   `BALANCE_SWEEP_EXECUTE_ELIGIBLE=true`, and staging autodeposit uses
   `BALANCE_SWEEP_EXECUTE_ELIGIBLE=false`.
+- `loyal-apps/app` Vercel project readback used project
+  `prj_DMp23ZuBz7apUcQbBRjwJyCSFTVq` / org
+  `team_CWDtWDIyqqcfgsOfzt4AWU5w`. `vercel env ls` showed existing
+  `DATABASE_URL` and `DATABASE_URL_UNPOOLED` entries for Production and Preview
+  branch `staging`, but no `NEON_DATABASE_URL` entry. Adding
+  `NEON_DATABASE_URL` to Vercel production was not performed because the
+  approvals reviewer requires explicit user approval for that sensitive
+  production config write.
 - Production Render service readback showed `loyal-kamino-reserve-monitor`,
   `loyal-balance-sweep-ata-monitor`, `loyal-balance-sweep-ata-projector`,
   `loyal-balance-sweep-autodeposit-trigger`, and
@@ -128,7 +136,9 @@ execution-disabled posture. This section still fails until post-live worker logs
 and DB readbacks prove staging activity is absent from production state/logs.
 
 Loyal Apps Binding: FAIL - no production/staging `loyal-apps` deployment
-readback has been captured in this run.
+readback has been captured in this run. Vercel env-name readback shows
+`DATABASE_URL` is already scoped for Production and Preview branch `staging`,
+but `NEON_DATABASE_URL` is absent and still requires explicit approval to add.
 
 Staging Mutation Does Not Affect Production: FAIL - the staging-only schema
 probe and inactive policy/target marker were created in staging and read back as
@@ -159,6 +169,7 @@ Overall Verdict: FAIL
    path for `.env.1password.production` and `.env.1password.staging`.
 3. Bind `loyal-apps` production/staging `NEON_DATABASE_URL` to the matching
    Yield Neon branches while leaving the main product `DATABASE_URL` shared.
+   This is blocked on explicit approval for the Vercel production config write.
 4. Run staging-only policy/target and ATA stream probes, then production readbacks/log
    checks proving staging state does not appear in production.
 5. Verify production worker logs/freshness after the split-image deploys.
