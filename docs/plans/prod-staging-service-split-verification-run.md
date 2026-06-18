@@ -80,6 +80,17 @@ Verifier: `docs/plans/prod-staging-service-split-verifier.md`.
   `NEON_DATABASE_URL` entry for `loyal-apps`; the existing main product
   `DATABASE_URL` and `DATABASE_URL_UNPOOLED` bindings remain present, including
   Production and Preview branch `staging`.
+- After explicit user approval, a production `NEON_DATABASE_URL` write was
+  attempted with `neonctl connection-string ... | vercel env add ... --sensitive
+  --force`. Vercel CLI 41.3.2 accepted the value, but echoed the typed stdin
+  value to the terminal while prompting. Treat that production Neon credential
+  as exposed: rotate/reset the production Neon role password, then overwrite
+  Vercel Production `NEON_DATABASE_URL` through the Vercel UI or another
+  non-echoing secret path. The staging Vercel `NEON_DATABASE_URL` write was not
+  attempted after this echo behavior was observed.
+- A read-only `vercel env ls` after the incident shows `NEON_DATABASE_URL`
+  exists for Production, while no `NEON_DATABASE_URL` entry exists for Preview
+  branch `staging`.
 - Post-deploy Render log checks from the split-image deploy window returned no
   `error` logs for production/shared services and no `error` logs for staging
   services. A production log search for `staging-probe-20260618-prod-split`
@@ -183,7 +194,11 @@ same-mint is dry-run.
 Loyal Apps Binding: FAIL - no production/staging `loyal-apps` deployment
 readback has been captured in this run. Vercel env-name readback shows
 `DATABASE_URL` is already scoped for Production and Preview branch `staging`,
-but `NEON_DATABASE_URL` is absent and still requires explicit approval to add.
+but `NEON_DATABASE_URL` is not yet cleanly bound for both environments.
+Production was partially written after approval, but the Vercel CLI echoed the
+secret while accepting stdin, so the production Neon credential must be rotated
+and the value overwritten through a non-echoing secret path. Staging still needs
+its `NEON_DATABASE_URL` binding for Preview branch `staging`.
 
 Staging Mutation Does Not Affect Production: PASS - the staging-only schema
 probe, inactive policy/target marker, and staging ATA verifier observation were
@@ -217,6 +232,11 @@ Overall Verdict: FAIL
    retry still failed with the local `.env` file limit `max: 10`.
 3. Bind `loyal-apps` production/staging `NEON_DATABASE_URL` to the matching
    Yield Neon branches while leaving the main product `DATABASE_URL` shared.
-   This is blocked on explicit approval for the Vercel production config write.
-4. Populate production/staging 1Password Environment secret values through a
+   Production must first rotate/reset the exposed Neon role password from the
+   Vercel CLI echo incident, then overwrite Production `NEON_DATABASE_URL`
+   through a non-echoing secret path. Add Preview branch `staging`
+   `NEON_DATABASE_URL` through the Vercel UI or another non-echoing path.
+4. Do not use `vercel env add` with piped stdin for database URLs on CLI
+   41.3.2; it echoed the value while prompting even with `--sensitive`.
+5. Populate production/staging 1Password Environment secret values through a
    secret-safe operator path instead of relying on direct Render/Vercel values.
