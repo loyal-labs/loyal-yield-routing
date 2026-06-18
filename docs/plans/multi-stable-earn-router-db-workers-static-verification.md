@@ -245,10 +245,17 @@ autodeposit retains `--execute-eligible`, and same-mint monitor commands do not
 include `--execute`.
 
 Local Static Checks: PASS - static checks above were run, plus
-`cargo fmt --all -- --check` and `cargo build --release -p
-loyal-yield-orchestrator`. Test suites, including Bun and autodeposit tests,
-were intentionally not run because the operator requested no testing for this
-pass.
+`cargo fmt --all -- --check`, `cargo build --release -p
+loyal-yield-orchestrator`, and `cargo check -p loyal-yield-orchestrator -p
+loyal-yield-router -p balance-sweep-autodeposit-trigger`. The targeted cargo
+check passed with the known dead-code warning for
+`same-mint-reserve-swap.rs`'s `SelectedVault.swap_lanes` field. Test suites,
+including Bun and autodeposit tests, were intentionally not run because the
+operator requested no testing for this pass. The narrow autodeposit replacement
+evidence is source-level readback of the explicit USDC guard and generic
+token-account SQL paths, live DB readback of USDC backfills and mint-scoped
+current-balance keys, and production autodeposit logs showing migration 6
+already applied with `executions_attempted=0` and `executions_failed=0`.
 
 Overall Verdict: PASS - database migration, worker code, immutable image build,
 staging and production deployment, service readback, and post-deploy production

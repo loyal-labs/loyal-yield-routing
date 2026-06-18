@@ -468,13 +468,25 @@ Required post-deploy log evidence:
 ### 10. Local Static Checks
 
 PASS for this working pass only if focused local static readbacks support the
-implementation shape. Build, fmt, and test commands are intentionally deferred
-because the operator explicitly requested no testing for this verifier pass.
+implementation shape and the affected Rust crates/bins pass formatting and
+compile checks. Bun/autodeposit test commands are intentionally deferred because
+the operator explicitly requested no testing for this verifier pass; this is
+acceptable only with a narrow replacement that combines source-level
+autodeposit guard readbacks, mint-scoped SQL readbacks, and live autodeposit
+worker log evidence showing USDC-only, no-failure scans.
 
 Required commands:
 
 ```sh
 git diff --check
+```
+
+```sh
+cargo fmt --all -- --check
+```
+
+```sh
+cargo check -p loyal-yield-orchestrator -p loyal-yield-router -p balance-sweep-autodeposit-trigger
 ```
 
 ```sh
@@ -485,10 +497,11 @@ rg -n "safe_usdc|load_safe_usdc|no_fresh_safe_usdc|neonAllowsUsdc|SourceMintMism
 rg -n "tokenMint|walletTokenAta|vaultTokenAta|prepareEarnUsdcAutodepositPull|expectedUsdcMint|recordPullExecution" scripts/execute-autodeposit-policy.ts
 ```
 
-Do not run cargo, Bun, or autodeposit test commands for this pass unless the
-operator explicitly allows testing again. Before deployment, either rerun this
-verifier with the original focused build checks restored or record a separate
-deployment approval that accepts static-only local evidence.
+Do not run Bun or autodeposit test commands for this pass unless the operator
+explicitly allows testing again. The replacement must be called out in the
+verifier result and must include enough evidence to prove that autodeposit still
+loads existing USDC rows, refuses non-USDC pulls, and has no schema/read errors
+after deployment.
 
 ## Verdict Format
 
