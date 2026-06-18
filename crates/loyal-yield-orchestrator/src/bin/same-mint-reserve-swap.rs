@@ -16,10 +16,7 @@ use klend_interface::{
             deposit_reserve_liquidity_and_obligation_collateral_v2,
             DepositReserveLiquidityAndObligationCollateralV2Accounts,
         },
-        obligation::{
-            init_obligation, init_obligation_farms_for_reserve, InitObligationAccounts,
-            InitObligationFarmsForReserveAccounts,
-        },
+        obligation::{init_obligation, InitObligationAccounts},
         refresh::{
             refresh_obligation, refresh_reserve, RefreshObligationAccounts, RefreshReserveAccounts,
         },
@@ -36,13 +33,14 @@ use klend_interface::{
 use loyal_actions::{
     compile_squads_inner_instruction, create_init_obligation_yield_route_action,
     create_same_mint_market_mint_yield_route_action, derive_action_account,
+    derive_kamino_obligation_farm_user_state, derive_kamino_vanilla_obligation,
     execute_program_interaction_policy_instruction, execute_sync_transaction_instruction,
-    remove_policy_instruction, update_all_in_one_market_mint_yield_route_action,
-    update_init_obligation_yield_route_action, update_same_mint_market_mint_yield_route_action,
-    LoyalActionContext, RouteTopology, SwapLane, YieldRouteActionBuilder, YieldRouteActionSeeds,
-    YieldRouteActionSetup, YieldRouteUniverse, ASSOCIATED_TOKEN_PROGRAM_ID,
-    KAMINO_MAIN_USDC_RESERVE, SQUADS_SMART_ACCOUNT_PROGRAM_ID, USDC_MINT,
-    YIELD_ROUTE_WITHDRAW_ACTION_SEED,
+    kamino_init_obligation_farm_instruction, remove_policy_instruction,
+    update_all_in_one_market_mint_yield_route_action, update_init_obligation_yield_route_action,
+    update_same_mint_market_mint_yield_route_action, KaminoInitObligationFarm, LoyalActionContext,
+    RouteTopology, SwapLane, YieldRouteActionBuilder, YieldRouteActionSeeds, YieldRouteActionSetup,
+    YieldRouteUniverse, ASSOCIATED_TOKEN_PROGRAM_ID, KAMINO_MAIN_USDC_RESERVE,
+    SQUADS_SMART_ACCOUNT_PROGRAM_ID, USDC_MINT, YIELD_ROUTE_WITHDRAW_ACTION_SEED,
 };
 use loyal_yield_orchestrator::sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -92,8 +90,8 @@ const KAMINO_WITHDRAW_ROUTE_STEP: &str =
 const KAMINO_DEPOSIT_ROUTE_STEP: &str =
     "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2";
 const KAMINO_INIT_OBLIGATION_ROUTE_STEP: &str = "kamino_init_obligation";
+const KAMINO_INIT_OBLIGATION_FARM_ROUTE_STEP: &str = "kamino_init_obligation_farms_for_reserve";
 const KAMINO_REFRESH_OBLIGATION_ROUTE_STEP: &str = "kamino_refresh_obligation";
-const KAMINO_COLLATERAL_FARM_MODE: u8 = 0;
 const KAMINO_STABLE_UNIVERSE_PRESET: &str = "kamino_stable";
 const SAFE_RISK_PROFILE: &str = "safe";
 const LOOKUP_TABLE_EXTEND_CHUNK_SIZE: usize = 20;
@@ -2703,6 +2701,7 @@ async fn run_initial_reserve_deposit_flow(
         active_policy_preflight,
         deposit_reserve,
         amount_raw,
+        wallet_signer.pubkey(),
         delegated_signer.pubkey(),
         account_index,
     ) {
@@ -2818,6 +2817,7 @@ async fn run_initial_reserve_deposit_flow(
         active_policy_preflight,
         deposit_reserve,
         amount_raw,
+        wallet_signer.pubkey(),
         delegated_signer.pubkey(),
         account_index,
     )?;
@@ -5860,6 +5860,7 @@ fn build_initial_reserve_deposit_policy_plan(
     policy_preflight: Option<&PolicyAccountPreflight>,
     deposit_reserve: &str,
     amount: u64,
+    payer_pubkey: Pubkey,
     signer_pubkey: Pubkey,
     account_index: u8,
 ) -> Result<InitialDepositPolicyPlan, Box<dyn Error>> {
@@ -5890,6 +5891,8 @@ fn build_initial_reserve_deposit_policy_plan(
     let vault_liquidity_ata =
         derive_associated_token_address(&vault_pubkey, &USDC_MINT, &spl_token::ID);
     let reserve_refresh_instruction = kamino_refresh_reserve_instruction(deposit)?;
+    let farm_init_instruction =
+        kamino_init_obligation_collateral_farm_instruction(payer_pubkey, vault_pubkey, deposit)?;
     let refresh_instruction = kamino_refresh_obligation_instruction(deposit)?;
     let deposit_instruction = kamino_deposit_to_obligation_instruction(
         vault_pubkey,
@@ -5919,6 +5922,19 @@ fn build_initial_reserve_deposit_policy_plan(
 
     let deposit_instruction_program = deposit_instruction.program_id.to_string();
     let deposit_instruction_discriminator = deposit_instruction.data[..8].to_vec();
+    let setup_instruction_program = farm_init_instruction
+        .as_ref()
+        .map(|instruction| instruction.program_id.to_string());
+    let setup_instruction_discriminator = farm_init_instruction
+        .as_ref()
+        .map(|instruction| instruction.data[..8].to_vec());
+    let has_farm_init = farm_init_instruction.is_some();
+    let mut pre_instructions = vec![reserve_refresh_instruction];
+    if let Some(farm_init_instruction) = farm_init_instruction {
+        pre_instructions.push(farm_init_instruction);
+    }
+    pre_instructions.push(refresh_instruction);
+
     let mut transaction_accounts = Vec::new();
     let deposit_compiled =
         compile_squads_inner_instruction(&mut transaction_accounts, deposit_instruction);
@@ -5933,7 +5949,7 @@ fn build_initial_reserve_deposit_policy_plan(
     );
 
     Ok(InitialDepositPolicyPlan {
-        pre_instructions: vec![reserve_refresh_instruction, refresh_instruction],
+        pre_instructions,
         instruction: outer_instruction.clone(),
         preview: InitialDepositPolicyPreview {
             policy_account: policy_account.to_string(),
@@ -5941,9 +5957,16 @@ fn build_initial_reserve_deposit_policy_plan(
             account_index,
             instruction_constraint_indexes,
             policy_constraint_validation,
-            setup_instruction_program: None,
-            setup_instruction_discriminator: None,
-            route_steps: vec![KAMINO_DEPOSIT_ROUTE_STEP],
+            setup_instruction_program,
+            setup_instruction_discriminator,
+            route_steps: if has_farm_init {
+                vec![
+                    KAMINO_INIT_OBLIGATION_FARM_ROUTE_STEP,
+                    KAMINO_DEPOSIT_ROUTE_STEP,
+                ]
+            } else {
+                vec![KAMINO_DEPOSIT_ROUTE_STEP]
+            },
             inner_instruction_count: compiled_instructions.len(),
             transaction_account_count: transaction_accounts.len(),
             outer_account_count: outer_instruction.accounts.len(),
@@ -6474,21 +6497,32 @@ fn kamino_init_obligation_collateral_farm_instruction(
         .as_deref()
         .ok_or("collateral farm state was present without a derived farm user state")?;
     let lending_market = Pubkey::from_str(&position.market)?;
-    let (lending_market_authority, _) =
-        lending_market_authority(&KLEND_PROGRAM_ID, &lending_market);
+    let reserve_farm_state = Pubkey::from_str(reserve_farm_state)?;
+    let obligation = derive_kamino_vanilla_obligation(owner, lending_market);
+    if Pubkey::from_str(&position.obligation)? != obligation {
+        return Err(format!(
+            "chain preview obligation {} does not match derived vanilla obligation {}",
+            position.obligation, obligation
+        )
+        .into());
+    }
+    let derived_obligation_farm =
+        derive_kamino_obligation_farm_user_state(reserve_farm_state, obligation);
+    if Pubkey::from_str(obligation_farm)? != derived_obligation_farm {
+        return Err(format!(
+            "chain preview collateral farm user state {obligation_farm} does not match derived farm user state {derived_obligation_farm}"
+        )
+        .into());
+    }
 
-    Ok(Some(init_obligation_farms_for_reserve(
-        InitObligationFarmsForReserveAccounts {
+    Ok(Some(kamino_init_obligation_farm_instruction(
+        KaminoInitObligationFarm {
             payer,
             owner,
-            obligation: Pubkey::from_str(&position.obligation)?,
-            lending_market_authority,
-            reserve: Pubkey::from_str(&position.reserve)?,
-            reserve_farm_state: Pubkey::from_str(reserve_farm_state)?,
-            obligation_farm: Pubkey::from_str(obligation_farm)?,
             lending_market,
+            reserve: Pubkey::from_str(&position.reserve)?,
+            reserve_farm_state,
         },
-        KAMINO_COLLATERAL_FARM_MODE,
     )))
 }
 

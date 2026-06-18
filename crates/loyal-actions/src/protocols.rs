@@ -395,6 +395,53 @@ pub fn derive_kamino_vanilla_obligation(vault: Pubkey, lending_market: Pubkey) -
     )
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KaminoInitObligationFarm {
+    pub payer: Pubkey,
+    pub owner: Pubkey,
+    pub lending_market: Pubkey,
+    pub reserve: Pubkey,
+    pub reserve_farm_state: Pubkey,
+}
+
+pub fn kamino_init_obligation_farm_instruction(accounts: KaminoInitObligationFarm) -> Instruction {
+    let obligation = derive_kamino_vanilla_obligation(accounts.owner, accounts.lending_market);
+    let lending_market_authority = derive_kamino_lending_market_authority(accounts.lending_market);
+    let obligation_farm =
+        derive_kamino_obligation_farm_user_state(accounts.reserve_farm_state, obligation);
+    let mut data = KAMINO_INIT_OBLIGATION_FARMS_FOR_RESERVE_DISCRIMINATOR.to_vec();
+    data.push(KAMINO_COLLATERAL_FARM_MODE);
+
+    Instruction {
+        program_id: KAMINO_LEND_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(accounts.payer, true),
+            AccountMeta::new_readonly(accounts.owner, false),
+            AccountMeta::new(obligation, false),
+            AccountMeta::new_readonly(lending_market_authority, false),
+            AccountMeta::new(accounts.reserve, false),
+            AccountMeta::new(accounts.reserve_farm_state, false),
+            AccountMeta::new(obligation_farm, false),
+            AccountMeta::new_readonly(accounts.lending_market, false),
+            AccountMeta::new_readonly(KAMINO_FARMS_PROGRAM_ID, false),
+            AccountMeta::new_readonly(solana_sdk::sysvar::rent::id(), false),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+        ],
+        data,
+    }
+}
+
+pub fn derive_kamino_lending_market_authority(lending_market: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            KAMINO_LENDING_MARKET_AUTHORITY_SEED,
+            lending_market.as_ref(),
+        ],
+        &KAMINO_LEND_PROGRAM_ID,
+    )
+    .0
+}
+
 pub fn derive_kamino_obligation(
     vault: Pubkey,
     lending_market: Pubkey,
@@ -413,6 +460,21 @@ pub fn derive_kamino_obligation(
             seed2.as_ref(),
         ],
         &KAMINO_LEND_PROGRAM_ID,
+    )
+    .0
+}
+
+pub fn derive_kamino_obligation_farm_user_state(
+    reserve_farm_state: Pubkey,
+    obligation: Pubkey,
+) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            KAMINO_FARM_USER_STATE_SEED,
+            reserve_farm_state.as_ref(),
+            obligation.as_ref(),
+        ],
+        &KAMINO_FARMS_PROGRAM_ID,
     )
     .0
 }
