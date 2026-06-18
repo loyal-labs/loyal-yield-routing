@@ -14,6 +14,7 @@ use sqlx::{
 use tokio::time;
 
 const CONSUMER_NAME: &str = "balance_sweep_autodeposit_trigger";
+const USDC_MINT_ADDRESS: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
 #[derive(Debug, Parser)]
 #[command(about = "Project autodeposit surplus lots from Loyal wallet balance events")]
@@ -246,14 +247,19 @@ async fn load_executable_targets(pool: &PgPool, limit: i64) -> Result<Vec<Execut
         FROM loyal_yield.balance_sweep_targets AS target
         JOIN loyal_yield.balance_sweep_wallet_balances_current AS balance
           ON balance.target_id = target.id
+         AND balance.mint = target.token_mint
         WHERE target.active = true
           AND target.lifecycle_status = 'active'
+          AND target.token_mint = $2
           AND target.wallet_balance_floor_raw IS NOT NULL
           AND balance.amount_raw > target.wallet_balance_floor_raw
           AND EXISTS (
               SELECT 1
               FROM loyal_yield.balance_sweep_surplus_lots AS lot
+              JOIN loyal_yield.balance_sweep_wallet_balance_events AS event
+                ON event.event_id = lot.source_event_id
               WHERE lot.target_id = target.id
+                AND event.mint = target.token_mint
                 AND lot.status = 'open'
                 AND lot.remaining_amount_raw > 0
                 AND lot.eligible_after <= now()
@@ -269,6 +275,7 @@ async fn load_executable_targets(pool: &PgPool, limit: i64) -> Result<Vec<Execut
         "#,
     )
     .bind(limit)
+    .bind(USDC_MINT_ADDRESS)
     .fetch_all(pool)
     .await?;
     rows.into_iter()
@@ -303,37 +310,58 @@ async fn complete_claim_once(
         outcome.reason = Some("claim_not_selected".to_owned());
         return Ok(outcome);
     }
+    if outcome.lots.is_empty() {
+        tx.commit().await?;
+        outcome.reason = Some("claim_has_no_supported_lots".to_owned());
+        return Ok(outcome);
+    }
 
-    sqlx::query(
+    let update = sqlx::query(
         r#"
-        INSERT INTO loyal_yield.balance_sweep_execution_lots
-            (execution_id, lot_id, amount_raw)
-        SELECT $2, lot_id, amount_raw
-        FROM loyal_yield.balance_sweep_lot_claim_items
-        WHERE claim_token = $1
-        ON CONFLICT (execution_id, lot_id) DO NOTHING
-        "#,
-    )
-    .bind(claim_token)
-    .bind(execution_id)
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        r#"
+        WITH matched_lots AS (
+            SELECT item.lot_id, item.amount_raw
+            FROM loyal_yield.balance_sweep_lot_claim_items AS item
+            JOIN loyal_yield.balance_sweep_surplus_lots AS lot
+              ON lot.id = item.lot_id
+            JOIN loyal_yield.balance_sweep_wallet_balance_events AS event
+              ON event.event_id = lot.source_event_id
+            JOIN loyal_yield.balance_sweep_lot_claims AS claim
+              ON claim.claim_token = item.claim_token
+            JOIN loyal_yield.balance_sweep_targets AS target
+              ON target.id = claim.target_id
+            WHERE item.claim_token = $1
+              AND lot.target_id = claim.target_id
+              AND event.mint = target.token_mint
+              AND target.token_mint = $3
+        ),
+        inserted AS (
+            INSERT INTO loyal_yield.balance_sweep_execution_lots
+                (execution_id, lot_id, amount_raw)
+            SELECT $2, lot_id, amount_raw
+            FROM matched_lots
+            ON CONFLICT (execution_id, lot_id) DO NOTHING
+            RETURNING lot_id
+        )
         UPDATE loyal_yield.balance_sweep_lot_claims
         SET status = 'executed',
             execution_id = $2,
             updated_at = now()
         WHERE claim_token = $1
+          AND status = 'selected'
+          AND EXISTS (SELECT 1 FROM matched_lots)
         "#,
     )
     .bind(claim_token)
     .bind(execution_id)
+    .bind(USDC_MINT_ADDRESS)
     .execute(&mut *tx)
     .await?;
 
     tx.commit().await?;
+    if update.rows_affected() == 0 {
+        outcome.reason = Some("claim_has_no_supported_lots".to_owned());
+        return Ok(outcome);
+    }
     outcome.status = "executed".to_owned();
     Ok(outcome)
 }
@@ -357,36 +385,57 @@ async fn release_claim_once(pool: &PgPool, claim_token: &str) -> Result<ClaimOut
         outcome.reason = Some("claim_not_selected".to_owned());
         return Ok(outcome);
     }
-
-    for item in &outcome.lots {
-        sqlx::query(
-            r#"
-            UPDATE loyal_yield.balance_sweep_surplus_lots
-            SET remaining_amount_raw = remaining_amount_raw + $2,
-                status = 'open',
-                updated_at = now()
-            WHERE id = $1
-            "#,
-        )
-        .bind(item.lot_id)
-        .bind(item.amount_raw)
-        .execute(&mut *tx)
-        .await?;
+    if outcome.lots.is_empty() {
+        tx.commit().await?;
+        outcome.reason = Some("claim_has_no_supported_lots".to_owned());
+        return Ok(outcome);
     }
 
-    sqlx::query(
+    let update = sqlx::query(
         r#"
+        WITH matched_items AS (
+            SELECT item.lot_id, item.amount_raw
+            FROM loyal_yield.balance_sweep_lot_claim_items AS item
+            JOIN loyal_yield.balance_sweep_surplus_lots AS lot
+              ON lot.id = item.lot_id
+            JOIN loyal_yield.balance_sweep_wallet_balance_events AS event
+              ON event.event_id = lot.source_event_id
+            JOIN loyal_yield.balance_sweep_lot_claims AS claim
+              ON claim.claim_token = item.claim_token
+            JOIN loyal_yield.balance_sweep_targets AS target
+              ON target.id = claim.target_id
+            WHERE item.claim_token = $1
+              AND lot.target_id = claim.target_id
+              AND event.mint = target.token_mint
+              AND target.token_mint = $2
+        ),
+        restored AS (
+            UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
+            SET remaining_amount_raw = lot.remaining_amount_raw + item.amount_raw,
+                status = 'open',
+                updated_at = now()
+            FROM matched_items AS item
+            WHERE lot.id = item.lot_id
+            RETURNING lot.id
+        )
         UPDATE loyal_yield.balance_sweep_lot_claims
         SET status = 'released',
             updated_at = now()
         WHERE claim_token = $1
+          AND status = 'selected'
+          AND EXISTS (SELECT 1 FROM restored)
         "#,
     )
     .bind(claim_token)
+    .bind(USDC_MINT_ADDRESS)
     .execute(&mut *tx)
     .await?;
 
     tx.commit().await?;
+    if update.rows_affected() == 0 {
+        outcome.reason = Some("claim_has_no_supported_lots".to_owned());
+        return Ok(outcome);
+    }
     outcome.status = "released".to_owned();
     Ok(outcome)
 }
@@ -410,10 +459,12 @@ async fn claim_eligible_lots_once(
         SELECT active AND lifecycle_status = 'active'
         FROM loyal_yield.balance_sweep_targets
         WHERE id = $1
+          AND token_mint = $2
         FOR UPDATE
         "#,
     )
     .bind(target_id)
+    .bind(USDC_MINT_ADDRESS)
     .fetch_optional(&mut *tx)
     .await?
     .unwrap_or(false);
@@ -570,17 +621,24 @@ async fn lock_eligible_lots(
 ) -> Result<Vec<OpenLotRow>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, remaining_amount_raw
-        FROM loyal_yield.balance_sweep_surplus_lots
-        WHERE target_id = $1
-          AND status = 'open'
-          AND remaining_amount_raw > 0
-          AND eligible_after <= now()
-        ORDER BY eligible_after ASC, created_at ASC, id ASC
+        SELECT lot.id, lot.remaining_amount_raw
+        FROM loyal_yield.balance_sweep_surplus_lots AS lot
+        JOIN loyal_yield.balance_sweep_wallet_balance_events AS event
+          ON event.event_id = lot.source_event_id
+        JOIN loyal_yield.balance_sweep_targets AS target
+          ON target.id = lot.target_id
+        WHERE lot.target_id = $1
+          AND event.mint = target.token_mint
+          AND target.token_mint = $2
+          AND lot.status = 'open'
+          AND lot.remaining_amount_raw > 0
+          AND lot.eligible_after <= now()
+        ORDER BY lot.eligible_after ASC, lot.created_at ASC, lot.id ASC
         FOR UPDATE SKIP LOCKED
         "#,
     )
     .bind(target_id)
+    .bind(USDC_MINT_ADDRESS)
     .fetch_all(&mut **tx)
     .await?;
     rows.into_iter()
@@ -600,11 +658,16 @@ async fn current_target_event_id(
     Ok(sqlx::query_scalar(
         r#"
         SELECT COALESCE(MAX(event_id), 0)
-        FROM loyal_yield.balance_sweep_wallet_balance_events
-        WHERE target_id = $1
+        FROM loyal_yield.balance_sweep_wallet_balance_events AS event
+        JOIN loyal_yield.balance_sweep_targets AS target
+          ON target.id = event.target_id
+        WHERE event.target_id = $1
+          AND event.mint = target.token_mint
+          AND target.token_mint = $2
         "#,
     )
     .bind(target_id)
+    .bind(USDC_MINT_ADDRESS)
     .fetch_one(&mut **tx)
     .await?)
 }
@@ -646,13 +709,17 @@ async fn load_existing_claim_by_token(
 ) -> Result<Option<ClaimOutcome>> {
     let Some(row) = sqlx::query(
         r#"
-        SELECT claim_token, target_id, amount_raw, status::text AS status, stale_check_event_id
-        FROM loyal_yield.balance_sweep_lot_claims
-        WHERE claim_token = $1
+        SELECT claim.claim_token, claim.target_id, claim.amount_raw, claim.status::text AS status, claim.stale_check_event_id
+        FROM loyal_yield.balance_sweep_lot_claims AS claim
+        JOIN loyal_yield.balance_sweep_targets AS target
+          ON target.id = claim.target_id
+        WHERE claim.claim_token = $1
+          AND target.token_mint = $2
         FOR UPDATE
         "#,
     )
     .bind(claim_token)
+    .bind(USDC_MINT_ADDRESS)
     .fetch_optional(&mut **tx)
     .await?
     else {
@@ -661,13 +728,25 @@ async fn load_existing_claim_by_token(
     let existing_target_id: i64 = row.try_get("target_id")?;
     let item_rows = sqlx::query(
         r#"
-        SELECT lot_id, amount_raw
-        FROM loyal_yield.balance_sweep_lot_claim_items
-        WHERE claim_token = $1
-        ORDER BY lot_id ASC
+        SELECT item.lot_id, item.amount_raw
+        FROM loyal_yield.balance_sweep_lot_claim_items AS item
+        JOIN loyal_yield.balance_sweep_surplus_lots AS lot
+          ON lot.id = item.lot_id
+        JOIN loyal_yield.balance_sweep_wallet_balance_events AS event
+          ON event.event_id = lot.source_event_id
+        JOIN loyal_yield.balance_sweep_lot_claims AS claim
+          ON claim.claim_token = item.claim_token
+        JOIN loyal_yield.balance_sweep_targets AS target
+          ON target.id = claim.target_id
+        WHERE item.claim_token = $1
+          AND lot.target_id = claim.target_id
+          AND event.mint = target.token_mint
+          AND target.token_mint = $2
+        ORDER BY item.lot_id ASC
         "#,
     )
     .bind(claim_token)
+    .bind(USDC_MINT_ADDRESS)
     .fetch_all(&mut **tx)
     .await?;
     let lots = item_rows
@@ -785,12 +864,15 @@ async fn fetch_events_after(
         JOIN loyal_yield.balance_sweep_targets AS target
           ON target.id = event.target_id
         WHERE event.event_id > $1
+          AND event.mint = target.token_mint
+          AND target.token_mint = $3
         ORDER BY event.event_id ASC
         LIMIT $2
         "#,
     )
     .bind(last_event_id)
     .bind(limit)
+    .bind(USDC_MINT_ADDRESS)
     .fetch_all(&mut **tx)
     .await?;
 
@@ -886,16 +968,23 @@ async fn deplete_lots_newest_first(
     let mut remaining_outflow = outflow_amount_raw;
     let rows = sqlx::query(
         r#"
-        SELECT id, remaining_amount_raw
-        FROM loyal_yield.balance_sweep_surplus_lots
-        WHERE target_id = $1
-          AND status = 'open'
-          AND remaining_amount_raw > 0
-        ORDER BY created_at DESC, id DESC
+        SELECT lot.id, lot.remaining_amount_raw
+        FROM loyal_yield.balance_sweep_surplus_lots AS lot
+        JOIN loyal_yield.balance_sweep_wallet_balance_events AS event
+          ON event.event_id = lot.source_event_id
+        JOIN loyal_yield.balance_sweep_targets AS target
+          ON target.id = lot.target_id
+        WHERE lot.target_id = $1
+          AND event.mint = target.token_mint
+          AND target.token_mint = $2
+          AND lot.status = 'open'
+          AND lot.remaining_amount_raw > 0
+        ORDER BY lot.created_at DESC, lot.id DESC
         FOR UPDATE
         "#,
     )
     .bind(target_id)
+    .bind(USDC_MINT_ADDRESS)
     .fetch_all(&mut **tx)
     .await?;
 

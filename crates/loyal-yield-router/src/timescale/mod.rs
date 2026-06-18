@@ -340,7 +340,7 @@ pub struct SupportedReserveLatestQuery {
 }
 
 impl SupportedReserveLatestQuery {
-    pub fn safe_usdc(liquidity_mint: impl Into<String>) -> Self {
+    pub fn safe_stable(liquidity_mint: impl Into<String>) -> Self {
         Self {
             risk_baskets: vec!["safe".to_owned()],
             liquidity_mint: Some(liquidity_mint.into()),

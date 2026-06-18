@@ -5,11 +5,14 @@ use crate::domain::{
 use crate::types::*;
 use crate::{OrchestratorError, ACTIVE_DECISION_STATUSES};
 use chrono::{DateTime, Utc};
+use loyal_actions::SQUADS_SMART_ACCOUNT_PROGRAM_ID;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use solana_sdk::pubkey::Pubkey;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgConnection, PgPool, Row};
 use std::future::Future;
+use std::str::FromStr;
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_loyal_yield_orchestration.sql");
 const MIGRATION_0002: &str = include_str!("../migrations/0002_balance_sweep_surplus_lots.sql");
@@ -17,6 +20,9 @@ const MIGRATION_0003: &str = include_str!("../migrations/0003_balance_sweep_init
 const MIGRATION_0004: &str = include_str!("../migrations/0004_managed_vault_setup_policy.sql");
 const MIGRATION_0005: &str =
     include_str!("../migrations/0005_add_unsupported_amount_semantics.sql");
+const MIGRATION_0006: &str =
+    include_str!("../migrations/0006_generic_balance_sweep_token_accounts.sql");
+const ROOT_SMART_ACCOUNT_VAULT_INDEX: u8 = 0;
 
 #[derive(Clone)]
 pub struct NeonSqlClient {
@@ -143,6 +149,7 @@ impl NeonSqlClient {
         sqlx::raw_sql(MIGRATION_0003).execute(&self.pool).await?;
         sqlx::raw_sql(MIGRATION_0004).execute(&self.pool).await?;
         sqlx::raw_sql(MIGRATION_0005).execute(&self.pool).await?;
+        sqlx::raw_sql(MIGRATION_0006).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -189,9 +196,10 @@ impl NeonSqlClient {
             r#"
             INSERT INTO loyal_yield.balance_sweep_targets
                 (settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
-                 wallet, wallet_usdc_ata, vault_usdc_ata, delegated_signers, threshold,
-                 max_amount_per_period, active, last_seen_slot, last_seen_signature)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, TRUE, $13, $14)
+                 wallet, wallet_usdc_ata, vault_usdc_ata, token_mint, wallet_token_ata,
+                 vault_token_ata, delegated_signers, threshold, max_amount_per_period, active,
+                 last_seen_slot, last_seen_signature)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), NULLIF($9, ''), $10, $11, $12, $13, $14, $15, TRUE, $16, $17)
             ON CONFLICT (policy_account) DO UPDATE SET
                 settings = CASE
                     WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
@@ -228,6 +236,21 @@ impl NeonSqlClient {
                     THEN EXCLUDED.vault_usdc_ata
                     ELSE loyal_yield.balance_sweep_targets.vault_usdc_ata
                 END,
+                token_mint = CASE
+                    WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
+                    THEN EXCLUDED.token_mint
+                    ELSE loyal_yield.balance_sweep_targets.token_mint
+                END,
+                wallet_token_ata = CASE
+                    WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
+                    THEN EXCLUDED.wallet_token_ata
+                    ELSE loyal_yield.balance_sweep_targets.wallet_token_ata
+                END,
+                vault_token_ata = CASE
+                    WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
+                    THEN EXCLUDED.vault_token_ata
+                    ELSE loyal_yield.balance_sweep_targets.vault_token_ata
+                END,
                 delegated_signers = CASE
                     WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
                     THEN EXCLUDED.delegated_signers
@@ -261,7 +284,10 @@ impl NeonSqlClient {
                 END
             RETURNING
                 id, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
-                wallet, wallet_usdc_ata, vault_usdc_ata, delegated_signers, threshold,
+                wallet,
+                COALESCE(wallet_usdc_ata, wallet_token_ata) AS wallet_usdc_ata,
+                COALESCE(vault_usdc_ata, vault_token_ata) AS vault_usdc_ata,
+                token_mint, wallet_token_ata, vault_token_ata, delegated_signers, threshold,
                 max_amount_per_period, active, first_seen_at, last_seen_at, last_seen_slot, last_seen_signature
             "#,
         )
@@ -274,6 +300,9 @@ impl NeonSqlClient {
         .bind(&event.wallet)
         .bind(&event.wallet_usdc_ata)
         .bind(&event.vault_usdc_ata)
+        .bind(&event.token_mint)
+        .bind(&event.wallet_token_ata)
+        .bind(&event.vault_token_ata)
         .bind(&event.delegated_signers)
         .bind(i32::from(event.threshold))
         .bind(max_amount_per_period)
@@ -292,7 +321,10 @@ impl NeonSqlClient {
             r#"
             SELECT
                 id, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
-                wallet, wallet_usdc_ata, vault_usdc_ata, delegated_signers, threshold,
+                wallet,
+                COALESCE(wallet_usdc_ata, wallet_token_ata) AS wallet_usdc_ata,
+                COALESCE(vault_usdc_ata, vault_token_ata) AS vault_usdc_ata,
+                token_mint, wallet_token_ata, vault_token_ata, delegated_signers, threshold,
                 max_amount_per_period, active, first_seen_at, last_seen_at, last_seen_slot, last_seen_signature
             FROM loyal_yield.balance_sweep_targets
             WHERE active
@@ -418,8 +450,9 @@ impl NeonSqlClient {
             r#"
             SELECT
                 id, target_id, source_event_id, source_signature, classification,
-                original_amount_raw, remaining_amount_raw, eligible_after, status,
-                confidence, reason, created_at, updated_at
+                source_mint, source_wallet_token_ata, original_amount_raw,
+                remaining_amount_raw, eligible_after, status, confidence, reason,
+                created_at, updated_at
             FROM loyal_yield.pending_balance_sweep_surplus_lots
             WHERE target_id = $1
             ORDER BY eligible_after ASC, created_at ASC, id ASC
@@ -436,6 +469,8 @@ impl NeonSqlClient {
                     target_id: BalanceSweepTargetId(row.try_get("target_id")?),
                     source_event_id: row.try_get("source_event_id")?,
                     source_signature: row.try_get("source_signature")?,
+                    source_mint: row.try_get("source_mint")?,
+                    source_wallet_token_ata: row.try_get("source_wallet_token_ata")?,
                     classification: row.try_get("classification")?,
                     original_amount_raw: row.try_get("original_amount_raw")?,
                     remaining_amount_raw: row.try_get("remaining_amount_raw")?,
@@ -466,13 +501,17 @@ impl NeonSqlClient {
             r#"
             INSERT INTO loyal_yield.balance_sweep_executions
                 (target_id, signature, slot, source_wallet_ata, destination_vault_ata,
+                 token_mint, source_token_ata, destination_token_ata,
                  amount_raw, source_pre_balance_raw, source_post_balance_raw,
                  destination_pre_balance_raw, destination_post_balance_raw, source_commitment,
                  raw_evidence, decoded_evidence, received_at, decoded_at, dedupe_key)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
             ON CONFLICT (dedupe_key) DO UPDATE SET dedupe_key = EXCLUDED.dedupe_key
             RETURNING
-                id, target_id, signature, slot, source_wallet_ata, destination_vault_ata,
+                id, target_id, signature, slot,
+                COALESCE(source_wallet_ata, source_token_ata) AS source_wallet_ata,
+                COALESCE(destination_vault_ata, destination_token_ata) AS destination_vault_ata,
+                token_mint, source_token_ata, destination_token_ata,
                 amount_raw, source_pre_balance_raw, source_post_balance_raw,
                 destination_pre_balance_raw, destination_post_balance_raw, source_commitment,
                 raw_evidence, decoded_evidence, received_at, decoded_at, inserted_at, dedupe_key
@@ -483,6 +522,9 @@ impl NeonSqlClient {
         .bind(slot)
         .bind(&input.source_wallet_ata)
         .bind(&input.destination_vault_ata)
+        .bind(&input.token_mint)
+        .bind(&input.source_token_ata)
+        .bind(&input.destination_token_ata)
         .bind(amount_raw)
         .bind(source_pre_balance_raw)
         .bind(source_post_balance_raw)
@@ -656,6 +698,15 @@ impl NeonSqlClient {
             &observed_reserves
         )
         .execute(&mut *tx)
+        .await?;
+
+        close_zero_user_yield_positions_for_vault(
+            &mut *tx,
+            &vault,
+            SnapshotId(snapshot_row.id),
+            snapshot_row.observed_slot,
+            snapshot_row.observed_at,
+        )
         .await?;
 
         tx.commit().await?;
@@ -873,7 +924,7 @@ impl NeonSqlClient {
         let current = current_positions_for_update(&mut *tx, decision.vault_id).await?;
         let source_reserve = required_decision_field(&decision.source_reserve, "source_reserve")?;
         let target_reserve = required_decision_field(&decision.target_reserve, "target_reserve")?;
-        let _ = required_decision_field(&decision.liquidity_mint, "liquidity_mint")?;
+        let liquidity_mint = required_decision_field(&decision.liquidity_mint, "liquidity_mint")?;
         let amount_raw = decision
             .amount_raw
             .ok_or_else(|| OrchestratorError::StoreInvariant("missing amount_raw".to_owned()))?;
@@ -883,12 +934,24 @@ impl NeonSqlClient {
         let mut saw_target = false;
         for mut position in current {
             if position.reserve == source_reserve {
+                if position.liquidity_mint != liquidity_mint {
+                    return Err(OrchestratorError::SameMintRebalanceValidation(format!(
+                        "source reserve liquidity mint {} does not match decision mint {}",
+                        position.liquidity_mint, liquidity_mint
+                    )));
+                }
                 saw_source = true;
                 position.amount_raw = 0;
                 position.has_value = false;
                 position.planning_metadata =
                     same_mint_projection_metadata(&decision, "source_after_confirm", 0);
             } else if position.reserve == target_reserve {
+                if position.liquidity_mint != liquidity_mint {
+                    return Err(OrchestratorError::SameMintRebalanceValidation(format!(
+                        "target reserve liquidity mint {} does not match decision mint {}",
+                        position.liquidity_mint, liquidity_mint
+                    )));
+                }
                 saw_target = true;
                 position.amount_raw = amount_raw;
                 position.has_value = amount_raw > 0;
@@ -1293,6 +1356,139 @@ async fn fetch_managed_vault_for_update(
     Ok(managed_vault_from_row(row))
 }
 
+fn derive_root_smart_account_address(settings: &str) -> Result<String, OrchestratorError> {
+    let settings = Pubkey::from_str(settings).map_err(|error| {
+        OrchestratorError::StoreInvariant(format!("invalid Squads settings pubkey: {error}"))
+    })?;
+    let (address, _) = Pubkey::find_program_address(
+        &[
+            b"smart_account",
+            settings.as_ref(),
+            b"smart_account",
+            &[ROOT_SMART_ACCOUNT_VAULT_INDEX],
+        ],
+        &SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+    );
+
+    Ok(address.to_string())
+}
+
+async fn app_position_tables_exist(conn: &mut PgConnection) -> Result<bool, OrchestratorError> {
+    let exists = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT to_regclass('loyal_yield.user_yield_positions') IS NOT NULL
+           AND to_regclass('loyal_yield.user_yield_position_holding_events') IS NOT NULL
+        "#,
+    )
+    .fetch_one(conn)
+    .await?;
+
+    Ok(exists)
+}
+
+async fn close_zero_user_yield_positions_for_vault(
+    conn: &mut PgConnection,
+    vault: &ManagedVault,
+    snapshot_id: SnapshotId,
+    observed_slot: i64,
+    observed_at: DateTime<Utc>,
+) -> Result<u64, OrchestratorError> {
+    if !app_position_tables_exist(conn).await? {
+        return Ok(0);
+    }
+
+    let total_current_amount = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COALESCE(SUM(amount_raw), 0)::bigint
+        FROM loyal_yield.vault_reserve_positions_current
+        WHERE vault_id = $1
+        "#,
+    )
+    .bind(vault.id.as_i64())
+    .fetch_one(&mut *conn)
+    .await?;
+
+    if total_current_amount > 0 {
+        return Ok(0);
+    }
+
+    let root_smart_account_address = derive_root_smart_account_address(&vault.settings)?;
+    let result = sqlx::query(
+        r#"
+        WITH active_positions AS (
+            SELECT
+                id,
+                current_reserve,
+                current_market,
+                current_liquidity_mint,
+                current_amount_raw,
+                principal_amount_raw
+            FROM loyal_yield.user_yield_positions
+            WHERE settings = $1
+              AND vault_index = $2
+              AND vault_pubkey = $3
+              AND status::text = 'active'
+              AND current_observed_slot <= $4
+            FOR UPDATE
+        ),
+        inserted_events AS (
+            INSERT INTO loyal_yield.user_yield_position_holding_events (
+                position_id,
+                event_type,
+                reserve,
+                market,
+                liquidity_mint,
+                amount_raw,
+                principal_delta_raw,
+                holding_delta_raw,
+                observed_slot,
+                observed_at,
+                source_snapshot_id,
+                created_at
+            )
+            SELECT
+                id,
+                'snapshot_reconciled'::loyal_yield.user_yield_holding_event_type,
+                current_reserve,
+                current_market,
+                current_liquidity_mint,
+                0,
+                -principal_amount_raw,
+                -current_amount_raw,
+                $4,
+                $5,
+                $6,
+                now()
+            FROM active_positions
+            RETURNING id, position_id
+        )
+        UPDATE loyal_yield.user_yield_positions p
+        SET
+            smart_account_address = $7,
+            principal_amount_raw = 0,
+            current_amount_raw = 0,
+            current_observed_slot = $4,
+            current_observed_at = $5,
+            last_holding_event_id = inserted_events.id,
+            status = 'closed'::loyal_yield.yield_position_status,
+            updated_at = now()
+        FROM inserted_events
+        WHERE p.id = inserted_events.position_id
+        "#,
+    )
+    .bind(&vault.settings)
+    .bind(vault.vault_index)
+    .bind(&vault.vault_pubkey)
+    .bind(observed_slot)
+    .bind(observed_at)
+    .bind(snapshot_id.as_i64())
+    .bind(root_smart_account_address)
+    .execute(conn)
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
 async fn fetch_rebalance_input_vault_for_update(
     conn: &mut PgConnection,
     input: &SameMintRebalanceInput,
@@ -1631,11 +1827,12 @@ fn validate_same_mint_input(
     }
     let evidence = route_amount_evidence(source).ok_or_else(|| {
         format!(
-            "unsupported_amount_semantics: source reserve amount_semantics {:?} cannot route as USDC liquidity",
+            "unsupported_amount_semantics: source reserve amount_semantics {:?} cannot route as planned liquidity mint {}",
             source
                 .planning_metadata
                 .get("amount_semantics")
-                .and_then(Value::as_str)
+                .and_then(Value::as_str),
+            input.liquidity_mint
         )
     })?;
     if input.amount_raw != evidence.amount_raw {
@@ -1678,8 +1875,25 @@ fn validate_planned_decision_input(
     input: &PlannedRebalanceDecisionInput,
 ) -> Result<(), OrchestratorError> {
     if input.source_liquidity_mint != input.target_liquidity_mint {
-        return Ok(());
+        return Err(OrchestratorError::SameMintRebalanceValidation(
+            "planned decision source and target liquidity mints must match".to_owned(),
+        ));
     }
+    require_plan_string(
+        &input.execution_plan,
+        "liquidity_mint",
+        &input.source_liquidity_mint,
+    )?;
+    require_plan_string(
+        &input.execution_plan,
+        "source_liquidity_mint",
+        &input.source_liquidity_mint,
+    )?;
+    require_plan_string(
+        &input.execution_plan,
+        "target_liquidity_mint",
+        &input.target_liquidity_mint,
+    )?;
     let route_semantics = input
         .execution_plan
         .get("route_amount_semantics")
@@ -1703,6 +1917,24 @@ fn validate_planned_decision_input(
     Ok(())
 }
 
+fn require_plan_string(
+    plan: &Value,
+    field: &'static str,
+    expected: &str,
+) -> Result<(), OrchestratorError> {
+    let actual = plan.get(field).and_then(Value::as_str).ok_or_else(|| {
+        OrchestratorError::SameMintRebalanceValidation(format!(
+            "same-mint planned decision execution_plan.{field} is missing"
+        ))
+    })?;
+    if actual != expected {
+        return Err(OrchestratorError::SameMintRebalanceValidation(format!(
+            "same-mint planned decision execution_plan.{field} {actual} does not match {expected}"
+        )));
+    }
+    Ok(())
+}
+
 fn json_i64(value: &Value, field: &str) -> Option<i64> {
     let value = value.get(field)?;
     value
@@ -1717,6 +1949,8 @@ fn same_mint_execution_plan(input: &SameMintRebalanceInput) -> Value {
         "source_reserve": input.source_reserve,
         "target_reserve": input.target_reserve,
         "liquidity_mint": input.liquidity_mint,
+        "source_liquidity_mint": input.liquidity_mint,
+        "target_liquidity_mint": input.liquidity_mint,
         "amount_raw": input.amount_raw,
         "route_amount_semantics": input.route_amount_semantics,
         "source_amount_semantics": input.source_amount_semantics,
@@ -1852,6 +2086,9 @@ fn same_mint_projection_metadata(
         "projected_amount_raw": projected_amount_raw,
         "source_reserve": decision.source_reserve,
         "target_reserve": decision.target_reserve,
+        "liquidity_mint": decision.liquidity_mint,
+        "source_liquidity_mint": decision.source_liquidity_mint,
+        "target_liquidity_mint": decision.target_liquidity_mint,
         "source_amount_semantics": decision.execution_plan.get("source_amount_semantics").cloned().unwrap_or(Value::Null),
         "source_collateral_amount_raw": json_i64(&decision.execution_plan, "source_collateral_amount_raw"),
         "redeemable_source_liquidity_amount_raw": json_i64(&decision.execution_plan, "redeemable_source_liquidity_amount_raw"),
@@ -2030,10 +2267,10 @@ async fn record_wallet_ata_balance_update_in_tx(
     let row = sqlx::query(
         r#"
         INSERT INTO loyal_yield.balance_sweep_wallet_balances_current
-            (target_id, wallet, wallet_usdc_ata, amount_raw, owner, mint,
+            (target_id, wallet, wallet_usdc_ata, wallet_token_ata, amount_raw, owner, mint,
              observed_slot, observed_at, source, source_commitment, txn_signature, account_data_hash, raw_evidence)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, now()), $9, $10, $11, $12, $13)
-        ON CONFLICT (target_id) DO UPDATE SET
+        VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, $7, $8, COALESCE($9, now()), $10, $11, $12, $13, $14)
+        ON CONFLICT (target_id, mint) DO UPDATE SET
             wallet = CASE
                 WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
                 THEN EXCLUDED.wallet
@@ -2043,6 +2280,11 @@ async fn record_wallet_ata_balance_update_in_tx(
                 WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
                 THEN EXCLUDED.wallet_usdc_ata
                 ELSE loyal_yield.balance_sweep_wallet_balances_current.wallet_usdc_ata
+            END,
+            wallet_token_ata = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
+                THEN EXCLUDED.wallet_token_ata
+                ELSE loyal_yield.balance_sweep_wallet_balances_current.wallet_token_ata
             END,
             amount_raw = CASE
                 WHEN EXCLUDED.observed_slot >= loyal_yield.balance_sweep_wallet_balances_current.observed_slot
@@ -2096,7 +2338,8 @@ async fn record_wallet_ata_balance_update_in_tx(
                 ELSE loyal_yield.balance_sweep_wallet_balances_current.updated_at
             END
         RETURNING
-            target_id, wallet, wallet_usdc_ata, amount_raw, owner, mint,
+            target_id, wallet, COALESCE(wallet_usdc_ata, wallet_token_ata) AS wallet_usdc_ata,
+            wallet_token_ata, amount_raw, owner, mint,
             observed_slot, observed_at, source, source_commitment, txn_signature, account_data_hash,
             raw_evidence, updated_at
         "#,
@@ -2104,6 +2347,7 @@ async fn record_wallet_ata_balance_update_in_tx(
     .bind(input.target_id.as_i64())
     .bind(&input.wallet)
     .bind(&input.wallet_usdc_ata)
+    .bind(&input.wallet_token_ata)
     .bind(amount_raw)
     .bind(input.owner.as_deref())
     .bind(&input.mint)
@@ -2132,10 +2376,12 @@ async fn record_projected_wallet_ata_balance_update_in_tx(
         SELECT amount_raw
         FROM loyal_yield.balance_sweep_wallet_balances_current
         WHERE target_id = $1
+          AND mint = $2
         FOR UPDATE
         "#,
     )
     .bind(input.target_id.as_i64())
+    .bind(&input.mint)
     .fetch_optional(&mut *connection)
     .await?;
     let delta_amount_raw = previous_amount_raw.map(|previous| amount_raw - previous);
@@ -2143,10 +2389,10 @@ async fn record_projected_wallet_ata_balance_update_in_tx(
     sqlx::query(
         r#"
         INSERT INTO loyal_yield.balance_sweep_wallet_balance_events
-            (event_id, target_id, wallet, wallet_usdc_ata, previous_amount_raw, amount_raw,
+            (event_id, target_id, wallet, wallet_usdc_ata, wallet_token_ata, mint, previous_amount_raw, amount_raw,
              delta_amount_raw, observed_slot, observed_at, source, source_commitment,
              txn_signature, account_data_hash, raw_evidence)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, now()), $10, $11, $12, $13, $14)
+        VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, $9, $10, COALESCE($11, now()), $12, $13, $14, $15, $16)
         ON CONFLICT (event_id) DO NOTHING
         "#,
     )
@@ -2154,6 +2400,8 @@ async fn record_projected_wallet_ata_balance_update_in_tx(
     .bind(input.target_id.as_i64())
     .bind(&input.wallet)
     .bind(&input.wallet_usdc_ata)
+    .bind(&input.wallet_token_ata)
+    .bind(&input.mint)
     .bind(previous_amount_raw)
     .bind(amount_raw)
     .bind(delta_amount_raw)
@@ -2232,6 +2480,9 @@ fn balance_sweep_target_from_row(
         wallet: row.try_get("wallet")?,
         wallet_usdc_ata: row.try_get("wallet_usdc_ata")?,
         vault_usdc_ata: row.try_get("vault_usdc_ata")?,
+        token_mint: row.try_get("token_mint")?,
+        wallet_token_ata: row.try_get("wallet_token_ata")?,
+        vault_token_ata: row.try_get("vault_token_ata")?,
         delegated_signers: row.try_get("delegated_signers")?,
         threshold: row.try_get("threshold")?,
         max_amount_per_period: row.try_get("max_amount_per_period")?,
@@ -2250,6 +2501,7 @@ fn wallet_ata_balance_from_row(
         target_id: BalanceSweepTargetId(row.try_get("target_id")?),
         wallet: row.try_get("wallet")?,
         wallet_usdc_ata: row.try_get("wallet_usdc_ata")?,
+        wallet_token_ata: row.try_get("wallet_token_ata")?,
         amount_raw: row.try_get("amount_raw")?,
         owner: row.try_get("owner")?,
         mint: row.try_get("mint")?,
@@ -2274,6 +2526,9 @@ fn balance_sweep_execution_from_row(
         slot: row.try_get("slot")?,
         source_wallet_ata: row.try_get("source_wallet_ata")?,
         destination_vault_ata: row.try_get("destination_vault_ata")?,
+        token_mint: row.try_get("token_mint")?,
+        source_token_ata: row.try_get("source_token_ata")?,
+        destination_token_ata: row.try_get("destination_token_ata")?,
         amount_raw: row.try_get("amount_raw")?,
         source_pre_balance_raw: row.try_get("source_pre_balance_raw")?,
         source_post_balance_raw: row.try_get("source_post_balance_raw")?,

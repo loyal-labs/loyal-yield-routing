@@ -32,6 +32,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "add_unsupported_amount_semantics",
         sql: include_str!("../../migrations/0005_add_unsupported_amount_semantics.sql"),
     },
+    Migration {
+        version: 6,
+        name: "generic_balance_sweep_token_accounts",
+        sql: include_str!("../../migrations/0006_generic_balance_sweep_token_accounts.sql"),
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -219,6 +224,86 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
     if !has_initial_surplus {
         return Err(
             "missing loyal_yield.balance_sweep_surplus_classification initial_surplus value".into(),
+        );
+    }
+    for (relation, column) in [
+        ("balance_sweep_targets", "wallet_token_ata"),
+        ("balance_sweep_targets", "vault_token_ata"),
+        ("balance_sweep_targets", "token_mint"),
+        ("balance_sweep_wallet_balances_current", "wallet_token_ata"),
+        ("balance_sweep_wallet_balance_events", "wallet_token_ata"),
+        ("balance_sweep_wallet_balance_events", "mint"),
+        ("balance_sweep_executions", "source_token_ata"),
+        ("balance_sweep_executions", "destination_token_ata"),
+        ("balance_sweep_executions", "token_mint"),
+        ("pending_balance_sweep_surplus_lots", "source_mint"),
+        (
+            "pending_balance_sweep_surplus_lots",
+            "source_wallet_token_ata",
+        ),
+    ] {
+        let exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'loyal_yield'
+                  AND table_name = $1
+                  AND column_name = $2
+            )
+            "#,
+        )
+        .bind(relation)
+        .bind(column)
+        .fetch_one(pool)
+        .await?;
+        if !exists {
+            return Err(format!("missing loyal_yield.{relation}.{column}").into());
+        }
+    }
+    for (relation, column) in [
+        ("balance_sweep_targets", "wallet_usdc_ata"),
+        ("balance_sweep_targets", "vault_usdc_ata"),
+        ("balance_sweep_wallet_balances_current", "wallet_usdc_ata"),
+        ("balance_sweep_wallet_balance_events", "wallet_usdc_ata"),
+        ("balance_sweep_executions", "source_wallet_ata"),
+        ("balance_sweep_executions", "destination_vault_ata"),
+    ] {
+        let is_nullable: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT is_nullable
+            FROM information_schema.columns
+            WHERE table_schema = 'loyal_yield'
+              AND table_name = $1
+              AND column_name = $2
+            "#,
+        )
+        .bind(relation)
+        .bind(column)
+        .fetch_optional(pool)
+        .await?;
+        if is_nullable.as_deref() != Some("YES") {
+            return Err(format!("loyal_yield.{relation}.{column} must be nullable").into());
+        }
+    }
+    let current_balance_pkey_columns: Option<Vec<String>> = sqlx::query_scalar(
+        r#"
+        SELECT ARRAY_AGG(a.attname ORDER BY cols.ordinality)
+        FROM pg_constraint c
+        CROSS JOIN LATERAL UNNEST(c.conkey) WITH ORDINALITY AS cols(attnum, ordinality)
+        JOIN pg_attribute a
+          ON a.attrelid = c.conrelid
+         AND a.attnum = cols.attnum
+        WHERE c.conrelid = 'loyal_yield.balance_sweep_wallet_balances_current'::regclass
+          AND c.contype = 'p'
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if current_balance_pkey_columns != Some(vec!["target_id".to_owned(), "mint".to_owned()]) {
+        return Err(
+            "loyal_yield.balance_sweep_wallet_balances_current primary key must be (target_id, mint)"
+                .into(),
         );
     }
     Ok(())

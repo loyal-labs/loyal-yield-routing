@@ -253,6 +253,7 @@ pub fn observation_to_wallet_balance_update(
     WalletAtaBalanceUpdateInput {
         target_id: observation.target_id,
         wallet: observation.wallet,
+        wallet_token_ata: observation.wallet_usdc_ata.clone(),
         wallet_usdc_ata: observation.wallet_usdc_ata,
         amount_raw: observation.amount_raw,
         owner: observation.owner,

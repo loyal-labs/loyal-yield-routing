@@ -76,53 +76,68 @@ pub fn draft_same_mint_decision(
         return Err(SkipReason::NoValueSource);
     }
 
-    let (source, evidence) = routeable_positions
-        .iter()
-        .max_by_key(|(_, evidence)| evidence.amount_raw)
-        .cloned()
-        .expect("source exists");
-    let source_apy_bps = score_for(source, &scored);
-
-    let same_mint_targets = positions
-        .iter()
-        .filter(|position| {
-            position.reserve != source.reserve && position.liquidity_mint == source.liquidity_mint
+    let same_mint_candidate_exists = routeable_positions.iter().any(|(source, _)| {
+        positions.iter().any(|target| {
+            target.reserve != source.reserve && target.liquidity_mint == source.liquidity_mint
         })
-        .collect::<Vec<_>>();
-    if same_mint_targets.is_empty() {
+    });
+    if !same_mint_candidate_exists {
         return Err(SkipReason::CrossMintOnly);
     }
 
-    let mut target: Option<&CurrentReservePosition> = None;
-    let mut best_edge = i64::MIN;
-    for candidate in same_mint_targets {
-        let candidate_apy = score_for(candidate, &scored);
-        let edge = candidate_apy - source_apy_bps;
-        if edge < config.min_edge_bps {
-            continue;
-        }
-        if edge > best_edge {
-            best_edge = edge;
-            target = Some(candidate);
+    let mut best: Option<(
+        &CurrentReservePosition,
+        RouteAmountEvidence,
+        &CurrentReservePosition,
+        i64,
+        i64,
+        i64,
+    )> = None;
+    for (source, evidence) in routeable_positions {
+        let source_apy_bps = score_for(source, &scored);
+        for target in positions.iter().filter(|target| {
+            target.reserve != source.reserve && target.liquidity_mint == source.liquidity_mint
+        }) {
+            let target_apy_bps = score_for(target, &scored);
+            let edge = target_apy_bps - source_apy_bps;
+            if edge < config.min_edge_bps {
+                continue;
+            }
+            let candidate = (
+                source,
+                evidence.clone(),
+                target,
+                source_apy_bps,
+                target_apy_bps,
+                edge,
+            );
+            if best.as_ref().is_none_or(|current| {
+                candidate.5 > current.5
+                    || (candidate.5 == current.5 && candidate.4 > current.4)
+                    || (candidate.5 == current.5
+                        && candidate.4 == current.4
+                        && candidate.1.amount_raw > current.1.amount_raw)
+            }) {
+                best = Some(candidate);
+            }
         }
     }
 
-    let Some(target) = target else {
+    let Some((source, evidence, target, source_apy_bps, target_apy_bps, edge_bps)) = best else {
         return Err(SkipReason::NoSameMintEdge);
     };
 
-    let target_apy_bps = score_for(target, &scored);
     Ok(PlannedDecision {
         source_snapshot_id: source.snapshot_id,
         source_reserve: source.reserve.clone(),
         target_reserve: target.reserve.clone(),
         liquidity_mint: Some(source.liquidity_mint.clone()),
         source_liquidity_mint: source.liquidity_mint.clone(),
-        target_liquidity_mint: source.liquidity_mint.clone(),
+        target_liquidity_mint: target.liquidity_mint.clone(),
         amount_raw: evidence.amount_raw,
         source_apy_bps,
         target_apy_bps,
-        estimated_edge_bps: target_apy_bps - source_apy_bps,
+        estimated_edge_bps: edge_bps,
         route_amount_semantics: evidence.route_amount_semantics.clone(),
         source_amount_semantics: evidence.source_amount_semantics.clone(),
         source_collateral_amount_raw: evidence.source_collateral_amount_raw,
@@ -133,6 +148,8 @@ pub fn draft_same_mint_decision(
             "source_reserve": source.reserve.clone(),
             "target_reserve": target.reserve.clone(),
             "liquidity_mint": source.liquidity_mint.clone(),
+            "source_liquidity_mint": source.liquidity_mint.clone(),
+            "target_liquidity_mint": target.liquidity_mint.clone(),
             "amount_raw": evidence.amount_raw,
             "route_amount_semantics": evidence.route_amount_semantics,
             "source_amount_semantics": evidence.source_amount_semantics,

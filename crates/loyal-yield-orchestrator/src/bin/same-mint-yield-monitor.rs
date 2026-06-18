@@ -1,10 +1,15 @@
 use std::{
-    cmp::Ordering, collections::BTreeSet, env, error::Error, path::PathBuf, process::Command,
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet},
+    env,
+    error::Error,
+    path::PathBuf,
+    process::Command,
     time::Duration as StdDuration,
 };
 
 use chrono::{DateTime, Duration, Utc};
-use loyal_actions::USDC_MINT;
+use loyal_actions::{CASH_MINT, PYUSD_MINT, USDC_MINT, USDG_MINT, USDS_MINT, USDT_MINT};
 use loyal_yield_orchestrator::sqlx::Row;
 use loyal_yield_orchestrator::{
     route_amount_evidence, solana_testing_keypair_from_env, yield_router_keypair_from_env,
@@ -24,6 +29,7 @@ const DEFAULT_REBALANCE_COOLDOWN_SECONDS: u64 = 300;
 const DEFAULT_MAX_CANDIDATE_AGE_SECONDS: i64 = 6 * 60 * 60;
 const DEFAULT_MIN_EDGE_BPS: i64 = 1;
 const SAME_MINT_ROUTE_MODE: &str = "same_mint_kamino";
+const ENABLED_STABLE_MINTS_ENV: &str = "EARN_ROUTER_ENABLED_STABLE_MINTS";
 
 #[derive(Debug, Clone)]
 struct Options {
@@ -36,6 +42,7 @@ struct Options {
     rebalance_cooldown_seconds: u64,
     max_candidate_age_seconds: i64,
     min_edge_bps: i64,
+    enabled_mints: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +90,9 @@ struct RecentConfirmedRebalance {
     updated_at: DateTime<Utc>,
     source_reserve: Option<String>,
     target_reserve: Option<String>,
+    liquidity_mint: Option<String>,
+    source_liquidity_mint: Option<String>,
+    target_liquidity_mint: Option<String>,
     signature: Option<String>,
 }
 
@@ -133,11 +143,14 @@ async fn run_once(
     neon: &NeonSqlClient,
     timescale: &TimescaleRouterClient,
 ) -> Result<Value, Box<dyn Error>> {
-    let candidates = load_safe_usdc_candidates(timescale).await?;
+    let candidates = load_safe_stable_candidates(timescale, &options.enabled_mints).await?;
+    let candidate_counts = candidate_counts_by_mint(&candidates);
     if options.all_active_vaults {
         let optimizer_signer =
             optimizer_signer.ok_or("YIELD_ROUTER_KEYPAIR signer was not loaded")?;
-        let vaults = fetch_all_active_vaults(neon, &optimizer_signer.to_string()).await?;
+        let vaults =
+            fetch_all_active_vaults(neon, &optimizer_signer.to_string(), &options.enabled_mints)
+                .await?;
         let mut results = Vec::with_capacity(vaults.len());
         for vault in vaults {
             let vault_identity = vault_json(&vault);
@@ -155,8 +168,11 @@ async fn run_once(
             "status": "fleet_poll",
             "execute": options.execute,
             "allActiveVaults": true,
+            "enabledMints": options.enabled_mints.clone(),
             "discoveredVaultCount": results.len(),
             "candidateCount": candidates.len(),
+            "candidateCountsByMint": candidate_counts,
+            "skippedMints": skipped_mints(&options.enabled_mints, &candidates),
             "pollIntervalSeconds": options.poll_interval_seconds,
             "rebalanceCooldownSeconds": options.rebalance_cooldown_seconds,
             "maxCandidateAgeSeconds": options.max_candidate_age_seconds,
@@ -175,17 +191,44 @@ async fn run_vault_once(
     neon: &NeonSqlClient,
     candidates: &[SupportedReserveLatestRow],
 ) -> Result<Value, Box<dyn Error>> {
-    let policy_candidates = policy_eligible_candidates(&vault.policy, candidates);
+    let candidate_counts = candidate_counts_by_mint(candidates);
+    let skipped_mint_list = skipped_mints(&options.enabled_mints, candidates);
+    if !vault
+        .policy
+        .route_modes
+        .iter()
+        .any(|mode| mode == SAME_MINT_ROUTE_MODE)
+    {
+        return Ok(json!({
+            "status": "skipped_policy_route_mode",
+            "execute": options.execute,
+            "skipReason": "policy_route_mode_missing",
+            "enabledMints": options.enabled_mints.clone(),
+            "vault": vault_json(&vault),
+            "candidates": candidates_json(candidates),
+            "policyEligibleCandidates": [],
+            "candidateCountsByMint": candidate_counts,
+            "policyEligibleCandidateCountsByMint": {},
+            "skippedMints": skipped_mint_list,
+            "requiredRouteMode": SAME_MINT_ROUTE_MODE,
+        }));
+    }
+    let policy_candidates =
+        policy_eligible_candidates(&vault.policy, candidates, &options.enabled_mints);
     let active_decisions = active_decision_count(neon, vault.vault.id).await?;
     if active_decisions > 0 {
         return Ok(json!({
             "status": "skipped_active_decision",
             "execute": options.execute,
             "skipReason": "active_decision",
+            "enabledMints": options.enabled_mints.clone(),
             "vault": vault_json(&vault),
             "activeDecisionCount": active_decisions,
             "candidates": candidates_json(candidates),
             "policyEligibleCandidates": candidates_json(&policy_candidates),
+            "candidateCountsByMint": candidate_counts,
+            "policyEligibleCandidateCountsByMint": candidate_counts_by_mint(&policy_candidates),
+            "skippedMints": skipped_mint_list,
             "rebalanceCooldownSeconds": options.rebalance_cooldown_seconds,
         }));
     }
@@ -202,6 +245,7 @@ async fn run_vault_once(
             "status": "skipped_recent_rebalance",
             "execute": options.execute,
             "skipReason": "recent_rebalance_cooldown",
+            "enabledMints": options.enabled_mints.clone(),
             "vault": vault_json(&vault),
             "activeDecisionCount": active_decisions,
             "lastConfirmedRebalance": recent_confirmed_rebalance_json(&recent_rebalance),
@@ -210,18 +254,25 @@ async fn run_vault_once(
             "cooldownRemainingSeconds": cooldown_remaining_seconds,
             "candidates": candidates_json(candidates),
             "policyEligibleCandidates": candidates_json(&policy_candidates),
+            "candidateCountsByMint": candidate_counts,
+            "policyEligibleCandidateCountsByMint": candidate_counts_by_mint(&policy_candidates),
+            "skippedMints": skipped_mint_list,
         }));
     }
 
-    let reconcile = reconcile_current_positions_for_vault(&vault, candidates)?;
+    let reconcile = reconcile_current_positions_for_vault(&vault, &policy_candidates)?;
     if !reconcile.success {
         return Ok(json!({
             "status": "reconcile_failed",
             "execute": options.execute,
+            "enabledMints": options.enabled_mints.clone(),
             "vault": vault_json(&vault),
             "chainReconcile": reconcile_output_json(&reconcile),
             "candidates": candidates_json(candidates),
             "policyEligibleCandidates": candidates_json(&policy_candidates),
+            "candidateCountsByMint": candidate_counts,
+            "policyEligibleCandidateCountsByMint": candidate_counts_by_mint(&policy_candidates),
+            "skippedMints": skipped_mint_list,
         }));
     }
     let positions = neon.current_positions(vault.vault.id).await?;
@@ -251,6 +302,7 @@ async fn run_vault_once(
             return Ok(json!({
                 "status": route_execution_status(&execution),
                 "execute": true,
+                "enabledMints": options.enabled_mints.clone(),
                 "vault": vault_json(&vault),
                 "activeDecisionCount": active_decisions,
                 "activeDecisionCountAfter": active_decision_count_after,
@@ -260,6 +312,10 @@ async fn run_vault_once(
                 "chainReconcile": reconcile_output_json(&reconcile),
                 "candidates": candidates_json(candidates),
                 "policyEligibleCandidates": candidates_json(&policy_candidates),
+                "candidateCountsByMint": candidate_counts,
+                "policyEligibleCandidateCountsByMint": candidate_counts_by_mint(&policy_candidates),
+                "freshCandidateCountsByMint": candidate_counts_by_mint(&fresh_candidates),
+                "skippedMints": skipped_mint_list,
                 "freshCandidateCount": fresh_candidates.len(),
                 "staleCandidateCount": stale_candidate_count,
                 "plannedMove": planned_move_json(Some(planned_move)),
@@ -269,6 +325,7 @@ async fn run_vault_once(
         return Ok(json!({
             "status": "executed",
             "execute": true,
+            "enabledMints": options.enabled_mints.clone(),
             "vault": vault_json(&vault),
             "activeDecisionCount": active_decisions,
             "activeDecisionCountAfter": active_decision_count_after,
@@ -278,6 +335,10 @@ async fn run_vault_once(
             "chainReconcile": reconcile_output_json(&reconcile),
             "candidates": candidates_json(candidates),
             "policyEligibleCandidates": candidates_json(&policy_candidates),
+            "candidateCountsByMint": candidate_counts,
+            "policyEligibleCandidateCountsByMint": candidate_counts_by_mint(&policy_candidates),
+            "freshCandidateCountsByMint": candidate_counts_by_mint(&fresh_candidates),
+            "skippedMints": skipped_mint_list,
             "freshCandidateCount": fresh_candidates.len(),
             "staleCandidateCount": stale_candidate_count,
             "plannedMove": planned_move_json(Some(planned_move)),
@@ -289,6 +350,7 @@ async fn run_vault_once(
         "status": status,
         "execute": options.execute,
         "skipReason": skip_reason,
+        "enabledMints": options.enabled_mints.clone(),
         "vault": vault_json(&vault),
         "activeDecisionCount": active_decisions,
         "currentPositions": positions_json(&positions),
@@ -296,6 +358,10 @@ async fn run_vault_once(
         "chainReconcile": reconcile_output_json(&reconcile),
         "candidates": candidates_json(candidates),
         "policyEligibleCandidates": candidates_json(&policy_candidates),
+        "candidateCountsByMint": candidate_counts,
+        "policyEligibleCandidateCountsByMint": candidate_counts_by_mint(&policy_candidates),
+        "freshCandidateCountsByMint": candidate_counts_by_mint(&fresh_candidates),
+        "skippedMints": skipped_mint_list,
         "freshCandidateCount": fresh_candidates.len(),
         "staleCandidateCount": stale_candidate_count,
         "maxCandidateAgeSeconds": options.max_candidate_age_seconds,
@@ -337,6 +403,8 @@ fn execute_planned_move(
         .arg(&planned_move.target.reserve)
         .arg("--expected-source-snapshot-id")
         .arg(planned_move.source.snapshot_id.as_i64().to_string())
+        .arg("--expected-liquidity-mint")
+        .arg(&planned_move.source.liquidity_mint)
         .arg("--expected-amount-raw")
         .arg(planned_move.amount_raw.to_string())
         .arg("--expected-route-amount-semantics")
@@ -386,7 +454,7 @@ fn reconcile_current_positions_for_vault(
     let reserves = reconcile_reserves_for_candidates(policy_candidates);
     if reserves.len() < 2 {
         return Err(
-            "chain reconciliation requires at least two policy-eligible USDC reserves".into(),
+            "chain reconciliation requires at least two policy-eligible reserves with the same liquidity mint".into(),
         );
     }
 
@@ -443,7 +511,26 @@ fn reconcile_current_positions_for_vault(
 }
 
 fn reconcile_reserves_for_candidates(candidates: &[SupportedReserveLatestRow]) -> Vec<String> {
+    let mut same_mint_pair = Vec::new();
+    'outer: for source in candidates {
+        for target in candidates {
+            if source.reserve != target.reserve && source.liquidity_mint == target.liquidity_mint {
+                same_mint_pair.push(source.reserve.clone());
+                same_mint_pair.push(target.reserve.clone());
+                break 'outer;
+            }
+        }
+    }
+    if same_mint_pair.len() < 2 {
+        return Vec::new();
+    }
+
     let mut reserves = Vec::new();
+    for reserve in same_mint_pair {
+        if !reserves.iter().any(|existing| existing == &reserve) {
+            reserves.push(reserve);
+        }
+    }
     for candidate in candidates {
         if !reserves.iter().any(|reserve| reserve == &candidate.reserve) {
             reserves.push(candidate.reserve.clone());
@@ -452,32 +539,44 @@ fn reconcile_reserves_for_candidates(candidates: &[SupportedReserveLatestRow]) -
     reserves
 }
 
-async fn load_safe_usdc_candidates(
+async fn load_safe_stable_candidates(
     timescale: &TimescaleRouterClient,
+    enabled_mints: &[String],
 ) -> Result<Vec<SupportedReserveLatestRow>, Box<dyn Error>> {
-    Ok(timescale
-        .latest_supported_reserves(SupportedReserveLatestQuery::safe_usdc(
-            USDC_MINT.to_string(),
-        ))
-        .await?)
+    let mut candidates = Vec::new();
+    for mint in enabled_mints {
+        candidates.extend(
+            timescale
+                .latest_supported_reserves(SupportedReserveLatestQuery::safe_stable(mint.clone()))
+                .await?,
+        );
+    }
+    Ok(candidates)
 }
 
 fn policy_eligible_candidates(
     policy: &RoutePolicy,
     candidates: &[SupportedReserveLatestRow],
+    enabled_mints: &[String],
 ) -> Vec<SupportedReserveLatestRow> {
-    let usdc = USDC_MINT.to_string();
+    let enabled = enabled_mints
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
     candidates
         .iter()
         .filter(|candidate| {
-            candidate.liquidity_mint == usdc
+            enabled.contains(candidate.liquidity_mint.as_str())
                 && candidate.market.as_ref().is_some_and(|market| {
                     policy
                         .kamino_markets
                         .iter()
                         .any(|allowed_market| allowed_market == market)
                 })
-                && policy.stable_mints.iter().any(|mint| mint == &usdc)
+                && policy
+                    .stable_mints
+                    .iter()
+                    .any(|mint| mint == &candidate.liquidity_mint)
                 && policy
                     .kamino_liquidity_mints
                     .iter()
@@ -507,64 +606,67 @@ fn plan_move(
     candidates: &[SupportedReserveLatestRow],
     min_edge_bps: i64,
 ) -> Result<Option<PlannedMonitorMove>, String> {
-    let source = positions
+    let valued_positions = positions
         .iter()
-        .filter(|position| {
-            position.liquidity_mint == USDC_MINT.to_string()
-                && position.has_value
-                && position.amount_raw > 0
-                && route_amount_evidence(position).is_some()
-        })
-        .max_by_key(|position| position.amount_raw)
-        .cloned()
-        .ok_or_else(|| {
-            if positions.iter().any(|position| {
-                position.liquidity_mint == USDC_MINT.to_string()
-                    && position.has_value
-                    && position.amount_raw > 0
-            }) {
-                "unsupported_amount_semantics".to_owned()
-            } else {
-                "no_value_source".to_owned()
-            }
-        })?;
-    let evidence =
-        route_amount_evidence(&source).ok_or_else(|| "unsupported_amount_semantics".to_owned())?;
-    let target = candidates
-        .iter()
-        .filter(|candidate| candidate.liquidity_mint == USDC_MINT.to_string())
-        .max_by(|left, right| compare_candidate_preference(left, right))
-        .cloned()
-        .ok_or_else(|| "no_eligible_fresh_candidate_data".to_owned())?;
-    if source.reserve == target.reserve {
-        return Ok(None);
+        .filter(|position| position.has_value && position.amount_raw > 0)
+        .collect::<Vec<_>>();
+    if valued_positions.is_empty() {
+        return Err("no_value_source".to_owned());
     }
-
-    let source_apy_bps = candidates
+    let unsupported_value_source_exists = valued_positions
         .iter()
-        .find(|candidate| candidate.reserve == source.reserve)
-        .map(|candidate| apy_to_bps(candidate.supply_apy))
-        .or(source.supply_apy_bps)
-        .unwrap_or_default();
-    let target_apy_bps = apy_to_bps(target.supply_apy);
-    let edge_bps = target_apy_bps - source_apy_bps;
-    if edge_bps < min_edge_bps {
-        return Ok(None);
+        .any(|position| route_amount_evidence(position).is_none());
+    let mut best: Option<PlannedMonitorMove> = None;
+    for source in valued_positions {
+        let Some(evidence) = route_amount_evidence(source) else {
+            continue;
+        };
+        let Some(target) = candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.liquidity_mint == source.liquidity_mint
+                    && candidate.reserve != source.reserve
+            })
+            .max_by(|left, right| compare_candidate_preference(left, right))
+            .cloned()
+        else {
+            continue;
+        };
+        let source_apy_bps = candidates
+            .iter()
+            .find(|candidate| candidate.reserve == source.reserve)
+            .map(|candidate| apy_to_bps(candidate.supply_apy))
+            .or(source.supply_apy_bps)
+            .unwrap_or_default();
+        let target_apy_bps = apy_to_bps(target.supply_apy);
+        let edge_bps = target_apy_bps - source_apy_bps;
+        if edge_bps < min_edge_bps {
+            continue;
+        }
+        let candidate = PlannedMonitorMove {
+            source: source.clone(),
+            target,
+            amount_raw: evidence.amount_raw,
+            route_amount_semantics: evidence.route_amount_semantics,
+            source_amount_semantics: evidence.source_amount_semantics,
+            source_collateral_amount_raw: evidence.source_collateral_amount_raw,
+            redeemable_source_liquidity_amount_raw: evidence.redeemable_source_liquidity_amount_raw,
+            idle_vault_liquidity_amount_raw: evidence.idle_vault_liquidity_amount_raw,
+            source_apy_bps,
+            target_apy_bps,
+            edge_bps,
+        };
+        if best
+            .as_ref()
+            .is_none_or(|current| compare_plan_preference(&candidate, current).is_gt())
+        {
+            best = Some(candidate);
+        }
     }
-
-    Ok(Some(PlannedMonitorMove {
-        source,
-        target,
-        amount_raw: evidence.amount_raw,
-        route_amount_semantics: evidence.route_amount_semantics,
-        source_amount_semantics: evidence.source_amount_semantics,
-        source_collateral_amount_raw: evidence.source_collateral_amount_raw,
-        redeemable_source_liquidity_amount_raw: evidence.redeemable_source_liquidity_amount_raw,
-        idle_vault_liquidity_amount_raw: evidence.idle_vault_liquidity_amount_raw,
-        source_apy_bps,
-        target_apy_bps,
-        edge_bps,
-    }))
+    if best.is_none() && unsupported_value_source_exists {
+        return Err("unsupported_amount_semantics".to_owned());
+    }
+    Ok(best)
 }
 
 fn split_fresh_candidates(
@@ -669,6 +771,7 @@ fn vault_resolution_mode(options: &Options) -> Result<VaultResolutionMode, Box<d
 async fn fetch_all_active_vaults(
     neon: &NeonSqlClient,
     delegated_signer: &str,
+    enabled_mints: &[String],
 ) -> Result<Vec<ResolvedVault>, Box<dyn Error>> {
     let rows = loyal_yield_orchestrator::sqlx::query(
         r#"
@@ -705,15 +808,15 @@ async fn fetch_all_active_vaults(
           AND p.active = true
           AND $1 = ANY(p.delegated_signers)
           AND $2 = ANY(p.route_modes)
-          AND $3 = ANY(p.stable_mints)
-          AND $3 = ANY(p.kamino_liquidity_mints)
+          AND p.stable_mints && $3::TEXT[]
+          AND p.kamino_liquidity_mints && $3::TEXT[]
           AND cardinality(p.kamino_markets) > 0
         ORDER BY v.last_seen_at DESC, v.id DESC
         "#,
     )
     .bind(delegated_signer)
     .bind(SAME_MINT_ROUTE_MODE)
-    .bind(USDC_MINT.to_string())
+    .bind(enabled_mints)
     .fetch_all(neon.pool())
     .await?;
     rows.into_iter().map(resolved_vault_from_row).collect()
@@ -900,7 +1003,15 @@ async fn recent_confirmed_rebalance(
         i64::try_from(cooldown_seconds).map_err(|_| "--rebalance-cooldown-seconds is too large")?;
     let row = loyal_yield_orchestrator::sqlx::query(
         r#"
-        SELECT id, updated_at, source_reserve, target_reserve, signature
+        SELECT
+            id,
+            updated_at,
+            source_reserve,
+            target_reserve,
+            liquidity_mint,
+            source_liquidity_mint,
+            target_liquidity_mint,
+            signature
         FROM loyal_yield.rebalance_decisions
         WHERE vault_id = $1
           AND status::text = 'confirmed'
@@ -920,6 +1031,9 @@ async fn recent_confirmed_rebalance(
             updated_at: row.try_get("updated_at")?,
             source_reserve: row.try_get("source_reserve")?,
             target_reserve: row.try_get("target_reserve")?,
+            liquidity_mint: row.try_get("liquidity_mint")?,
+            source_liquidity_mint: row.try_get("source_liquidity_mint")?,
+            target_liquidity_mint: row.try_get("target_liquidity_mint")?,
             signature: row.try_get("signature")?,
         })
     })
@@ -960,6 +1074,38 @@ fn compare_candidate_preference(
         .then_with(|| left.observed_at.cmp(&right.observed_at))
         .then_with(|| left.slot.cmp(&right.slot))
         .then_with(|| right.reserve.cmp(&left.reserve))
+}
+
+fn compare_plan_preference(left: &PlannedMonitorMove, right: &PlannedMonitorMove) -> Ordering {
+    left.edge_bps
+        .cmp(&right.edge_bps)
+        .then_with(|| left.target_apy_bps.cmp(&right.target_apy_bps))
+        .then_with(|| left.amount_raw.cmp(&right.amount_raw))
+        .then_with(|| left.source.liquidity_mint.cmp(&right.source.liquidity_mint))
+        .then_with(|| right.target.reserve.cmp(&left.target.reserve))
+}
+
+fn candidate_counts_by_mint(candidates: &[SupportedReserveLatestRow]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for candidate in candidates {
+        *counts.entry(candidate.liquidity_mint.clone()).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn skipped_mints(
+    enabled_mints: &[String],
+    candidates: &[SupportedReserveLatestRow],
+) -> Vec<String> {
+    let observed = candidates
+        .iter()
+        .map(|candidate| candidate.liquidity_mint.as_str())
+        .collect::<BTreeSet<_>>();
+    enabled_mints
+        .iter()
+        .filter(|mint| !observed.contains(mint.as_str()))
+        .cloned()
+        .collect()
 }
 
 fn positions_json(positions: &[CurrentReservePosition]) -> Vec<Value> {
@@ -1009,6 +1155,8 @@ fn planned_move_json(plan: Option<&PlannedMonitorMove>) -> Value {
             "targetReserve": plan.target.reserve,
             "targetMarket": plan.target.market,
             "liquidityMint": plan.source.liquidity_mint,
+            "sourceLiquidityMint": plan.source.liquidity_mint,
+            "targetLiquidityMint": plan.target.liquidity_mint,
             "amountRaw": plan.amount_raw,
             "sourceCurrentAmountRaw": plan.source.amount_raw,
             "sourceSnapshotId": plan.source.snapshot_id.as_i64(),
@@ -1031,6 +1179,9 @@ fn recent_confirmed_rebalance_json(rebalance: &RecentConfirmedRebalance) -> Valu
         "updatedAt": rebalance.updated_at,
         "sourceReserve": rebalance.source_reserve,
         "targetReserve": rebalance.target_reserve,
+        "liquidityMint": rebalance.liquidity_mint,
+        "sourceLiquidityMint": rebalance.source_liquidity_mint,
+        "targetLiquidityMint": rebalance.target_liquidity_mint,
         "signature": rebalance.signature,
     })
 }
@@ -1096,6 +1247,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
         rebalance_cooldown_seconds: DEFAULT_REBALANCE_COOLDOWN_SECONDS,
         max_candidate_age_seconds: DEFAULT_MAX_CANDIDATE_AGE_SECONDS,
         min_edge_bps: DEFAULT_MIN_EDGE_BPS,
+        enabled_mints: enabled_stable_mints_from_env()?,
     };
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
@@ -1155,6 +1307,46 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
     Ok(options)
 }
 
+fn default_enabled_stable_mints() -> Vec<String> {
+    [
+        CASH_MINT, USDG_MINT, PYUSD_MINT, USDC_MINT, USDT_MINT, USDS_MINT,
+    ]
+    .into_iter()
+    .map(|mint| mint.to_string())
+    .collect()
+}
+
+fn enabled_stable_mints_from_env() -> Result<Vec<String>, Box<dyn Error>> {
+    let default_mints = default_enabled_stable_mints();
+    let Ok(raw) = env::var(ENABLED_STABLE_MINTS_ENV) else {
+        return Ok(default_mints);
+    };
+    let supported = default_mints
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut enabled = Vec::new();
+    for mint in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|mint| !mint.is_empty())
+    {
+        if !supported.contains(mint) {
+            return Err(format!(
+                "{ENABLED_STABLE_MINTS_ENV} contains unsupported stable mint {mint}"
+            )
+            .into());
+        }
+        if !enabled.iter().any(|existing| existing == mint) {
+            enabled.push(mint.to_owned());
+        }
+    }
+    if enabled.is_empty() {
+        return Err(format!("{ENABLED_STABLE_MINTS_ENV} did not contain any mints").into());
+    }
+    Ok(enabled)
+}
+
 fn usage() -> &'static str {
-    "Usage: same-mint-yield-monitor [--once] [--execute] [--all-active-vaults | --settings <PUBKEY> --vault-index <N>] [--poll-interval-seconds <SECONDS>] [--rebalance-cooldown-seconds <SECONDS>] [--max-candidate-age-seconds <SECONDS>] [--min-edge-bps <BPS>]\n\nDry-run is the default. Fleet mode reads YIELD_ROUTER_KEYPAIR for DB discovery and never reads SOLANA_TESTING_PK. Explicit --settings/--vault-index mode does not read SOLANA_TESTING_PK. No-arg authority discovery mode is local dry-run/setup only and reads SOLANA_TESTING_PK. Live execution reads YIELD_ROUTER_KEYPAIR through same-mint-reserve-swap --optimization-cycle. The same-vault rebalance cooldown defaults to 300 seconds; pass --rebalance-cooldown-seconds 0 only for local/test disable."
+    "Usage: same-mint-yield-monitor [--once] [--execute] [--all-active-vaults | --settings <PUBKEY> --vault-index <N>] [--poll-interval-seconds <SECONDS>] [--rebalance-cooldown-seconds <SECONDS>] [--max-candidate-age-seconds <SECONDS>] [--min-edge-bps <BPS>]\n\nDry-run is the default. Fleet mode reads YIELD_ROUTER_KEYPAIR for DB discovery and never reads SOLANA_TESTING_PK. Explicit --settings/--vault-index mode does not read SOLANA_TESTING_PK. No-arg authority discovery mode is local dry-run/setup only and reads SOLANA_TESTING_PK. Live execution reads YIELD_ROUTER_KEYPAIR through same-mint-reserve-swap --optimization-cycle. Set EARN_ROUTER_ENABLED_STABLE_MINTS to a comma-separated subset of supported stable mint addresses for staged rollout. The same-vault rebalance cooldown defaults to 300 seconds; pass --rebalance-cooldown-seconds 0 only for local/test disable."
 }
