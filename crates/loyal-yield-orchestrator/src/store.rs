@@ -140,12 +140,42 @@ impl NeonSqlClient {
     }
 
     pub async fn apply_migrations(&self) -> Result<(), OrchestratorError> {
-        sqlx::raw_sql(MIGRATION_0001).execute(&self.pool).await?;
-        sqlx::raw_sql(MIGRATION_0002).execute(&self.pool).await?;
-        sqlx::raw_sql(MIGRATION_0003).execute(&self.pool).await?;
-        sqlx::raw_sql(MIGRATION_0004).execute(&self.pool).await?;
-        sqlx::raw_sql(MIGRATION_0005).execute(&self.pool).await?;
-        sqlx::raw_sql(MIGRATION_0006).execute(&self.pool).await?;
+        ensure_schema_migration_ledger(&self.pool).await?;
+
+        for migration in [
+            StoreMigration {
+                version: 1,
+                name: "loyal_yield_orchestration",
+                sql: MIGRATION_0001,
+            },
+            StoreMigration {
+                version: 2,
+                name: "balance_sweep_surplus_lots",
+                sql: MIGRATION_0002,
+            },
+            StoreMigration {
+                version: 3,
+                name: "balance_sweep_initial_surplus",
+                sql: MIGRATION_0003,
+            },
+            StoreMigration {
+                version: 4,
+                name: "managed_vault_setup_policy",
+                sql: MIGRATION_0004,
+            },
+            StoreMigration {
+                version: 5,
+                name: "add_unsupported_amount_semantics",
+                sql: MIGRATION_0005,
+            },
+            StoreMigration {
+                version: 6,
+                name: "generic_balance_sweep_token_accounts",
+                sql: MIGRATION_0006,
+            },
+        ] {
+            apply_store_migration(&self.pool, migration).await?;
+        }
         Ok(())
     }
 
@@ -1157,6 +1187,76 @@ impl NeonSqlClient {
         tx.commit().await?;
         Ok(decision)
     }
+}
+
+struct StoreMigration {
+    version: i64,
+    name: &'static str,
+    sql: &'static str,
+}
+
+async fn ensure_schema_migration_ledger(pool: &PgPool) -> Result<(), OrchestratorError> {
+    sqlx::raw_sql("CREATE SCHEMA IF NOT EXISTS loyal_yield;")
+        .execute(pool)
+        .await?;
+    sqlx::raw_sql(
+        r#"
+        CREATE TABLE IF NOT EXISTS loyal_yield.schema_migrations (
+            version BIGINT PRIMARY KEY,
+            name TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn apply_store_migration(
+    pool: &PgPool,
+    migration: StoreMigration,
+) -> Result<(), OrchestratorError> {
+    let expected_checksum = migration_checksum(migration.sql);
+    let applied_checksum = sqlx::query_scalar::<_, String>(
+        "SELECT checksum FROM loyal_yield.schema_migrations WHERE version = $1",
+    )
+    .bind(migration.version)
+    .fetch_optional(pool)
+    .await?;
+
+    match applied_checksum {
+        Some(applied) if applied == expected_checksum => return Ok(()),
+        Some(_) => {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "migration {} {} was applied with a different checksum",
+                migration.version, migration.name
+            )));
+        }
+        None => {}
+    }
+
+    sqlx::raw_sql(migration.sql).execute(pool).await?;
+    sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.schema_migrations (version, name, checksum)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (version) DO UPDATE
+        SET name = EXCLUDED.name,
+            checksum = EXCLUDED.checksum
+        "#,
+    )
+    .bind(migration.version)
+    .bind(migration.name)
+    .bind(expected_checksum)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+fn migration_checksum(sql: &str) -> String {
+    format!("{:x}", Sha256::digest(sql.as_bytes()))
 }
 
 async fn upsert_policy(
