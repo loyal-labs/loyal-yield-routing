@@ -25,6 +25,11 @@ Verifier: `docs/plans/prod-staging-service-split-verifier.md`.
 - `op run --env-file=.env.1password -- sh -c 'render blueprints validate render.yaml -o json'`
 - `.github/workflows/worker-images.yml` inspection: the workflow is manual and
   publishes `laserstream-workers` and `light-workers` as `sha-${GITHUB_SHA}`.
+- Commit `ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a` was pushed to `main`.
+  GitHub Actions workflow run `27732951674` completed successfully on
+  2026-06-18, building and pushing both
+  `laserstream-workers:sha-ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a` and
+  `light-workers:sha-ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a`.
 - 1Password fresh environment readback:
   `loyal-yield-routing-production` is `2e463mizwetw6sbv3tiw7loxi4` and
   `loyal-yield-routing-staging` is `zspmwsfuhomrlffpqp6wk7fbdu`; both currently
@@ -132,12 +137,11 @@ Overall Verdict: FAIL
    and environment-specific values through a secret-safe operator path.
 2. Free at least two local 1Password env mounts or use another safe mounting
    path for `.env.1password.production` and `.env.1password.staging`.
-3. Commit this repo change, run the `worker-images` GitHub Actions workflow for
-   that commit, and repoint production/staging Render services to the resulting
-   `sha-<commit>` GHCR images before claiming worker behavior PASS.
-4. Create/import the staging Render services from `render.yaml` only after the
-   new images exist; verify their service IDs, env-var names, pinned images, and
-   dry-run/disabled posture.
+3. Repoint production/staging Render services to
+   `sha-ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a` before claiming worker
+   behavior PASS.
+4. Create/import the staging Render services from `render.yaml`; verify their
+   service IDs, env-var names, pinned images, and dry-run/disabled posture.
 5. Bind `loyal-apps` production/staging `NEON_DATABASE_URL` to the matching
    Yield Neon branches while leaving the main product `DATABASE_URL` shared.
 6. Run staging-only policy/target and ATA stream probes, then production readbacks/log

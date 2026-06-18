@@ -117,16 +117,24 @@ verification run. Do not create or start the staging ATA monitor/projector on
 older images; older binaries do not honor `BALANCE_SWEEP_ATA_STREAM` and can use
 the legacy shared `loyal` ATA stream.
 
+The split-stream code was pushed to `main` at commit
+`ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a`. GitHub Actions workflow run
+`27732951674` completed successfully on 2026-06-18 and pushed both images:
+`ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a`
+and
+`ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a`.
+Render production and staging services should use those tags until a later
+workflow run intentionally replaces them.
+
 Safe rollout order:
 
-1. Commit this repo change.
-2. Run the `worker-images` GitHub Actions workflow for that commit.
-3. Update production image refs to the resulting `sha-<commit>` or digest.
-4. Create/import staging Render services from `render.yaml` using those same new
+1. Keep `render.yaml` pinned to the verified image tags above.
+2. Update production image refs to the resulting `sha-<commit>` or digest.
+3. Create/import staging Render services from `render.yaml` using those same new
    image refs.
-5. Populate staging secret env vars only after `NEON_DATABASE_URL` points at
+4. Populate staging secret env vars only after `NEON_DATABASE_URL` points at
    branch `br-old-wind-aq34quzh`.
-6. Verify staging services start in dry-run/disabled posture before enabling any
+5. Verify staging services start in dry-run/disabled posture before enabling any
    broad staging execution.
 
 Secret-safe Neon URL generation can be done inside a shell without printing the
