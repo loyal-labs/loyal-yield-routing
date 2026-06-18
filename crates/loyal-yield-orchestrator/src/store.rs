@@ -1,6 +1,6 @@
 use crate::domain::{
     draft_same_mint_decision, route_amount_evidence, state_transition, PlannedDecision,
-    ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+    AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
 use crate::types::*;
 use crate::{OrchestratorError, ACTIVE_DECISION_STATUSES};
@@ -19,6 +19,7 @@ const MIGRATION_0005: &str =
     include_str!("../migrations/0005_add_unsupported_amount_semantics.sql");
 const MIGRATION_0006: &str =
     include_str!("../migrations/0006_generic_balance_sweep_token_accounts.sql");
+const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
 
 #[derive(Clone)]
 pub struct NeonSqlClient {
@@ -732,6 +733,7 @@ impl NeonSqlClient {
             SnapshotId(snapshot_row.id),
             snapshot_row.observed_slot,
             snapshot_row.observed_at,
+            &snapshot_row.context,
         )
         .await?;
 
@@ -1471,7 +1473,12 @@ async fn close_zero_user_yield_positions_for_vault(
     snapshot_id: SnapshotId,
     observed_slot: i64,
     observed_at: DateTime<Utc>,
+    snapshot_context: &Value,
 ) -> Result<u64, OrchestratorError> {
+    if should_skip_zero_user_yield_position_close(snapshot_context) {
+        return Ok(0);
+    }
+
     if !app_position_tables_exist(conn).await? {
         return Ok(0);
     }
@@ -1565,6 +1572,20 @@ async fn close_zero_user_yield_positions_for_vault(
     .await?;
 
     Ok(result.rows_affected())
+}
+
+fn should_skip_zero_user_yield_position_close(snapshot_context: &Value) -> bool {
+    let kind = snapshot_context.get("kind").and_then(Value::as_str);
+    if kind == Some(SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND) {
+        return true;
+    }
+
+    // Collateral snapshots are planner input; they are not proof that app-visible
+    // Earn principal is gone.
+    let amount_semantics = snapshot_context
+        .get("amount_semantics")
+        .and_then(Value::as_str);
+    amount_semantics == Some(AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED)
 }
 
 async fn fetch_rebalance_input_vault_for_update(
@@ -2216,7 +2237,6 @@ fn same_mint_result_from_confirmed_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED;
 
     fn same_mint_decision(execution_plan: Value, amount_raw: Option<i64>) -> RebalanceDecision {
         RebalanceDecision {
@@ -2263,6 +2283,36 @@ mod tests {
             error,
             OrchestratorError::SameMintRebalanceValidation(_)
         ));
+    }
+
+    #[test]
+    fn zero_app_position_close_skips_chain_reconcile_preview() {
+        let context = json!({
+            "kind": SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND,
+            "amount_semantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
+        });
+
+        assert!(should_skip_zero_user_yield_position_close(&context));
+    }
+
+    #[test]
+    fn zero_app_position_close_skips_collateral_amount_semantics() {
+        let context = json!({
+            "source": "some_other_reconcile",
+            "amount_semantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
+        });
+
+        assert!(should_skip_zero_user_yield_position_close(&context));
+    }
+
+    #[test]
+    fn zero_app_position_close_allows_non_chain_redeemable_context() {
+        let context = json!({
+            "source": "frontend_position_reconcile",
+            "amount_semantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+        });
+
+        assert!(!should_skip_zero_user_yield_position_close(&context));
     }
 
     #[test]
