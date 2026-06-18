@@ -14,7 +14,8 @@ use balance_sweep_ata_monitor::earn_apy::{
 use balance_sweep_ata_monitor::{
     ata_target_set, diff_ata_target_sets, laserstream_replay_from_slot, run_event_loop,
     seed_current_balances, AtaTarget, AtaUpdateSource, LaserstreamAtaUpdateSource,
-    SubscriptionConfig, TimescaleAtaConfig, TimescaleAtaObservationSink, WebsocketAtaUpdateSource,
+    SubscriptionConfig, TimescaleAtaConfig, TimescaleAtaObservationSink, TimescaleAtaStream,
+    WebsocketAtaUpdateSource,
 };
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
@@ -44,6 +45,8 @@ struct Args {
     postgres_url: String,
     #[arg(long, env = "TIMESCALEDB_URL")]
     timescaledb_url: String,
+    #[arg(long, env = "BALANCE_SWEEP_ATA_STREAM", default_value = "production")]
+    ata_stream: TimescaleAtaStream,
     #[arg(long, default_value = "mainnet")]
     cluster: String,
     #[arg(
@@ -103,6 +106,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     tracing::info!(
         cluster = %args.cluster,
+        ata_stream = %args.ata_stream,
         update_source = ?args.update_source,
         target_refresh_seconds = args.target_refresh_seconds,
         once = args.once,
@@ -116,9 +120,10 @@ async fn main() -> Result<()> {
 
     let store =
         OrchestratorStore::connect(OrchestratorConfig::new(args.postgres_url.clone())).await?;
-    let observations =
-        TimescaleAtaObservationSink::connect(TimescaleAtaConfig::new(args.timescaledb_url.clone()))
-            .await?;
+    let observations = TimescaleAtaObservationSink::connect(
+        TimescaleAtaConfig::new(args.timescaledb_url.clone()).with_stream(args.ata_stream),
+    )
+    .await?;
     let config = SubscriptionConfig {
         max_reconnect_attempts: 10,
         reconnect_base_delay: Duration::from_millis(500),

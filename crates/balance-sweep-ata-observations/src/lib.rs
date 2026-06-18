@@ -1,4 +1,4 @@
-use std::{str::FromStr, time::Duration};
+use std::{error::Error, fmt, str::FromStr, time::Duration};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -17,6 +17,7 @@ pub struct TimescaleAtaConfig {
     pub url: String,
     pub max_connections: u32,
     pub acquire_timeout: Duration,
+    pub stream: TimescaleAtaStream,
 }
 
 impl TimescaleAtaConfig {
@@ -25,9 +26,71 @@ impl TimescaleAtaConfig {
             url: url.into(),
             max_connections: 5,
             acquire_timeout: Duration::from_secs(5),
+            stream: TimescaleAtaStream::Production,
+        }
+    }
+
+    pub fn with_stream(mut self, stream: TimescaleAtaStream) -> Self {
+        self.stream = stream;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TimescaleAtaStream {
+    #[default]
+    Production,
+    Staging,
+}
+
+impl TimescaleAtaStream {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::Staging => "staging",
+        }
+    }
+
+    fn schema(self) -> &'static str {
+        match self {
+            Self::Production => "loyal_prod",
+            Self::Staging => "loyal_staging",
         }
     }
 }
+
+impl fmt::Display for TimescaleAtaStream {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for TimescaleAtaStream {
+    type Err = TimescaleAtaStreamParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "production" | "prod" => Ok(Self::Production),
+            "staging" | "stage" => Ok(Self::Staging),
+            _ => Err(TimescaleAtaStreamParseError(value.to_owned())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimescaleAtaStreamParseError(String);
+
+impl fmt::Display for TimescaleAtaStreamParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "unsupported BALANCE_SWEEP_ATA_STREAM {:?}; expected production or staging",
+            self.0
+        )
+    }
+}
+
+impl Error for TimescaleAtaStreamParseError {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BalanceSweepAtaObservation {
@@ -73,6 +136,7 @@ pub trait AtaObservationSink {
 #[derive(Clone)]
 pub struct TimescaleAtaObservationSink {
     pool: PgPool,
+    stream: TimescaleAtaStream,
 }
 
 impl TimescaleAtaObservationSink {
@@ -83,31 +147,44 @@ impl TimescaleAtaObservationSink {
             .acquire_timeout(config.acquire_timeout)
             .connect_with(options)
             .await?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            stream: config.stream,
+        })
     }
 
     pub fn from_pool(pool: PgPool) -> Self {
-        Self { pool }
+        Self::from_pool_with_stream(pool, TimescaleAtaStream::Production)
+    }
+
+    pub fn from_pool_with_stream(pool: PgPool, stream: TimescaleAtaStream) -> Self {
+        Self { pool, stream }
+    }
+
+    pub fn stream(&self) -> TimescaleAtaStream {
+        self.stream
     }
 
     pub async fn latest_observations(
         &self,
         limit: i64,
     ) -> Result<Vec<BalanceSweepAtaObservationEvent>> {
-        let rows = sqlx::query(
+        let query = format!(
             r#"
             SELECT
                 event_id, target_id, cluster, wallet, wallet_usdc_ata, vault_pubkey, vault_usdc_ata,
                 amount_raw, owner, mint, slot, observed_at, source, source_commitment,
                 txn_signature, account_data_hash, raw_account_data_base64, raw_evidence, received_at
-            FROM loyal.latest_balance_sweep_wallet_ata_observations
+            FROM {}.latest_balance_sweep_wallet_ata_observations
             ORDER BY event_id
             LIMIT $1
             "#,
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+            self.stream.schema()
+        );
+        let rows = sqlx::query(&query)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
 
         rows.into_iter()
             .map(balance_sweep_observation_event_from_row)
@@ -119,22 +196,24 @@ impl TimescaleAtaObservationSink {
         last_event_id: i64,
         limit: i64,
     ) -> Result<Vec<BalanceSweepAtaObservationEvent>> {
-        let rows = sqlx::query(
+        let query = format!(
             r#"
             SELECT
                 event_id, target_id, cluster, wallet, wallet_usdc_ata, vault_pubkey, vault_usdc_ata,
                 amount_raw, owner, mint, slot, observed_at, source, source_commitment,
                 txn_signature, account_data_hash, raw_account_data_base64, raw_evidence, received_at
-            FROM loyal.balance_sweep_wallet_ata_observations
+            FROM {}.balance_sweep_wallet_ata_observations
             WHERE event_id > $1
             ORDER BY event_id ASC
             LIMIT $2
             "#,
-        )
-        .bind(last_event_id)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+            self.stream.schema()
+        );
+        let rows = sqlx::query(&query)
+            .bind(last_event_id)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
 
         rows.into_iter()
             .map(balance_sweep_observation_event_from_row)
@@ -147,7 +226,7 @@ impl AtaObservationSink for TimescaleAtaObservationSink {
         &self,
         observation: BalanceSweepAtaObservation,
     ) -> BoxFuture<'_, Result<ObservationInsertOutcome>> {
-        Box::pin(async move { insert_observation(&self.pool, observation).await })
+        Box::pin(async move { insert_observation(&self.pool, self.stream, observation).await })
     }
 }
 
@@ -209,18 +288,21 @@ fn with_raw_account_data_base64(
 
 async fn insert_observation(
     pool: &PgPool,
+    stream: TimescaleAtaStream,
     observation: BalanceSweepAtaObservation,
 ) -> Result<ObservationInsertOutcome> {
     let dedupe_key = observation_dedupe_key(&observation);
     let amount_raw = i64::try_from(observation.amount_raw).context("amount_raw exceeds i64")?;
     let slot = i64::try_from(observation.slot).context("slot exceeds i64")?;
-    let row = sqlx::query(
+    let schema = stream.schema();
+    let event_sequence = format!("{schema}.balance_sweep_wallet_ata_observation_event_id_seq");
+    let query = format!(
         r#"
         WITH candidate AS (
-            SELECT nextval('loyal.balance_sweep_wallet_ata_observation_event_id_seq') AS event_id
+            SELECT nextval('{event_sequence}'::regclass) AS event_id
         ),
         claimed AS (
-            INSERT INTO loyal.balance_sweep_wallet_ata_observation_dedupe
+            INSERT INTO {schema}.balance_sweep_wallet_ata_observation_dedupe
                 (dedupe_key, event_id, source_commitment, wallet_usdc_ata, slot, account_data_hash)
             SELECT $1, candidate.event_id, $14, $5, $11, $15
             FROM candidate
@@ -228,7 +310,7 @@ async fn insert_observation(
             RETURNING event_id
         ),
         inserted AS (
-            INSERT INTO loyal.balance_sweep_wallet_ata_observations
+            INSERT INTO {schema}.balance_sweep_wallet_ata_observations
                 (event_id, cluster, target_id, wallet, wallet_usdc_ata, vault_pubkey, vault_usdc_ata,
                  amount_raw, owner, mint, slot, observed_at, source, source_commitment,
                  txn_signature, account_data_hash, raw_account_data_base64, raw_evidence, received_at)
@@ -239,33 +321,34 @@ async fn insert_observation(
         SELECT event_id, TRUE AS inserted FROM inserted
         UNION ALL
         SELECT event_id, FALSE AS inserted
-        FROM loyal.balance_sweep_wallet_ata_observation_dedupe
+        FROM {schema}.balance_sweep_wallet_ata_observation_dedupe
         WHERE dedupe_key = $1
           AND NOT EXISTS (SELECT 1 FROM inserted)
         LIMIT 1
         "#,
-    )
-    .bind(&dedupe_key)
-    .bind(&observation.cluster)
-    .bind(observation.target_id.as_i64())
-    .bind(&observation.wallet)
-    .bind(&observation.wallet_usdc_ata)
-    .bind(&observation.vault_pubkey)
-    .bind(&observation.vault_usdc_ata)
-    .bind(amount_raw)
-    .bind(observation.owner.as_deref())
-    .bind(&observation.mint)
-    .bind(slot)
-    .bind(observation.observed_at)
-    .bind(&observation.source)
-    .bind(&observation.source_commitment)
-    .bind(&observation.account_data_hash)
-    .bind(&observation.raw_account_data_base64)
-    .bind(&observation.raw_evidence)
-    .bind(observation.received_at)
-    .bind(observation.txn_signature.as_deref())
-    .fetch_one(pool)
-    .await?;
+    );
+    let row = sqlx::query(&query)
+        .bind(&dedupe_key)
+        .bind(&observation.cluster)
+        .bind(observation.target_id.as_i64())
+        .bind(&observation.wallet)
+        .bind(&observation.wallet_usdc_ata)
+        .bind(&observation.vault_pubkey)
+        .bind(&observation.vault_usdc_ata)
+        .bind(amount_raw)
+        .bind(observation.owner.as_deref())
+        .bind(&observation.mint)
+        .bind(slot)
+        .bind(observation.observed_at)
+        .bind(&observation.source)
+        .bind(&observation.source_commitment)
+        .bind(&observation.account_data_hash)
+        .bind(&observation.raw_account_data_base64)
+        .bind(&observation.raw_evidence)
+        .bind(observation.received_at)
+        .bind(observation.txn_signature.as_deref())
+        .fetch_one(pool)
+        .await?;
 
     Ok(ObservationInsertOutcome {
         event_id: row.try_get("event_id")?,

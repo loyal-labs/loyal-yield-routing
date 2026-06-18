@@ -77,6 +77,13 @@ The runner reads `TIMESCALEDB_URL` from 1Password, applies checked-in SQL files
 under `crates/loyal-timescale-migrations/migrations`, and records applied
 versions in `loyal.timescale_schema_migrations`.
 
+Production and staging share the physical TimescaleDB for Kamino market data,
+but balance-sweep ATA telemetry is split inside that database. Set
+`BALANCE_SWEEP_ATA_STREAM=production` for production workers and
+`BALANCE_SWEEP_ATA_STREAM=staging` for staging workers. The selector is
+constrained by the Rust client and maps to the `loyal_prod` or `loyal_staging`
+ATA stream; do not replace it with arbitrary table or schema names.
+
 ## Squads Tests
 
 Run the lean Squads test suite:

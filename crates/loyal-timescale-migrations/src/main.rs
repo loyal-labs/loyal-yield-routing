@@ -22,6 +22,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "balance_sweep_ata_txn_signature",
         sql: include_str!("../migrations/0003_balance_sweep_ata_txn_signature.sql"),
     },
+    Migration {
+        version: 4,
+        name: "split_balance_sweep_ata_streams",
+        sql: include_str!("../migrations/0004_split_balance_sweep_ata_streams.sql"),
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal";
@@ -160,10 +165,17 @@ async fn record_applied(pool: &PgPool, migration: &Migration) -> Result<(), sqlx
 }
 
 async fn validate_loyal_ata_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
+    validate_ata_stream_schema(pool, "loyal").await?;
+    validate_ata_stream_schema(pool, "loyal_prod").await?;
+    validate_ata_stream_schema(pool, "loyal_staging").await?;
+    Ok(())
+}
+
+async fn validate_ata_stream_schema(pool: &PgPool, schema: &str) -> Result<(), Box<dyn Error>> {
     for (schema, relation, kind) in [
-        ("loyal", "balance_sweep_wallet_ata_observations", "r"),
-        ("loyal", "balance_sweep_wallet_ata_observation_dedupe", "r"),
-        ("loyal", "latest_balance_sweep_wallet_ata_observations", "v"),
+        (schema, "balance_sweep_wallet_ata_observations", "r"),
+        (schema, "balance_sweep_wallet_ata_observation_dedupe", "r"),
+        (schema, "latest_balance_sweep_wallet_ata_observations", "v"),
     ] {
         let exists: bool = sqlx::query_scalar(
             r#"
@@ -191,11 +203,12 @@ async fn validate_loyal_ata_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> 
         r#"
         SELECT count(*)
         FROM information_schema.columns
-        WHERE table_schema = 'loyal'
+        WHERE table_schema = $1
           AND table_name = 'balance_sweep_wallet_ata_observations'
-          AND column_name = ANY($1)
+          AND column_name = ANY($2)
         "#,
     )
+    .bind(schema)
     .bind(&[
         "event_id",
         "cluster",
@@ -221,18 +234,19 @@ async fn validate_loyal_ata_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> 
     .fetch_one(pool)
     .await?;
     if observation_columns != 20 {
-        return Err("loyal ATA observations table is missing required columns".into());
+        return Err(format!("{schema} ATA observations table is missing required columns").into());
     }
 
     let dedupe_columns: i64 = sqlx::query_scalar(
         r#"
         SELECT count(*)
         FROM information_schema.columns
-        WHERE table_schema = 'loyal'
+        WHERE table_schema = $1
           AND table_name = 'balance_sweep_wallet_ata_observation_dedupe'
-          AND column_name = ANY($1)
+          AND column_name = ANY($2)
         "#,
     )
+    .bind(schema)
     .bind(&[
         "source_commitment",
         "wallet_usdc_ata",
@@ -242,7 +256,7 @@ async fn validate_loyal_ata_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> 
     .fetch_one(pool)
     .await?;
     if dedupe_columns != 4 {
-        return Err("loyal ATA observation dedupe table is missing key columns".into());
+        return Err(format!("{schema} ATA observation dedupe table is missing key columns").into());
     }
 
     Ok(())

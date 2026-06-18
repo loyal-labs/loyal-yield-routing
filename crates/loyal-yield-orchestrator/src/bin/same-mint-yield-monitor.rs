@@ -96,9 +96,7 @@ enum VaultResolutionMode {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_args(env::args().skip(1))?;
-    let neon_url = env::var("NEON_DATABASE_URL")
-        .or_else(|_| env::var("DATABASE_URL"))
-        .map_err(|_| "NEON_DATABASE_URL is required")?;
+    let neon_url = env::var("NEON_DATABASE_URL").map_err(|_| "NEON_DATABASE_URL is required")?;
     let timescale_url = env::var("TIMESCALEDB_URL").map_err(|_| "TIMESCALEDB_URL is required")?;
 
     let authority = authority_for_options(&options)?;

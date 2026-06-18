@@ -201,9 +201,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let neon_url = env::var("NEON_DATABASE_URL")
-        .or_else(|_| env::var("DATABASE_URL"))
-        .map_err(|_| "NEON_DATABASE_URL is required")?;
+    let neon_url = env::var("NEON_DATABASE_URL").map_err(|_| "NEON_DATABASE_URL is required")?;
     log_event("neon_connect_start", json!({}));
     let pool = PgPoolOptions::new()
         .max_connections(1)

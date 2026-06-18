@@ -757,9 +757,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Err(message) => return Err(message.into()),
     };
     let reserve_move = ReserveMove::from_options(&options)?;
-    let database_url = env::var("NEON_DATABASE_URL")
-        .or_else(|_| env::var("DATABASE_URL"))
-        .map_err(|_| "NEON_DATABASE_URL must be set")?;
+    let database_url =
+        env::var("NEON_DATABASE_URL").map_err(|_| "NEON_DATABASE_URL must be set")?;
     let pool = connect(&database_url).await?;
     let client = NeonSqlClient::from_pool(pool.clone());
     client.apply_migrations().await?;

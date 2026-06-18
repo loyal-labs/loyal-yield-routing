@@ -10,7 +10,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 pub use balance_sweep_ata_observations::{
     AtaObservationSink, BalanceSweepAtaObservation, BalanceSweepAtaObservationEvent,
-    ObservationInsertOutcome, TimescaleAtaConfig, TimescaleAtaObservationSink,
+    ObservationInsertOutcome, TimescaleAtaConfig, TimescaleAtaObservationSink, TimescaleAtaStream,
 };
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;

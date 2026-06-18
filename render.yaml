@@ -10,7 +10,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-03355bbc219623487062b02aee5f51968824fff2
+              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-2b5e36635bfec65e100337c5ddfd27df4e7426e3
             preDeployCommand: /usr/local/bin/kamino-reserve-monitor --sync-supported-reserves
             dockerCommand: /usr/local/bin/kamino-reserve-monitor
             maxShutdownDelaySeconds: 60
@@ -37,7 +37,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-03355bbc219623487062b02aee5f51968824fff2
+              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers@sha256:d0348c469e4b326e51db7a8444dc2654be5c815f4f1b2f75a5cba73674fe5892
             preDeployCommand: /usr/local/bin/loyal-timescale-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-ata-monitor
             maxShutdownDelaySeconds: 60
@@ -46,6 +46,45 @@ projects:
                 sync: false
               - key: TIMESCALEDB_URL
                 sync: false
+              - key: BALANCE_SWEEP_ATA_STREAM
+                value: production
+              - key: SOLANA_RPC_URL
+                sync: false
+              - key: BALANCE_SWEEP_UPDATE_SOURCE
+                value: laserstream
+              - key: BALANCE_SWEEP_TARGET_REFRESH_SECONDS
+                value: "300"
+              - key: EARN_APY_REFRESH_INTERVAL_SECONDS
+                value: "3600"
+              - key: EARN_APY_RISK_PROFILES
+                value: safe
+              - key: HELIUS_API_KEY
+                sync: false
+              - key: LASERSTREAM_ENDPOINT
+                value: https://laserstream-mainnet-ewr.helius-rpc.com
+              - key: RUST_LOG
+                value: warn,balance_sweep_ata_monitor=info
+
+      - name: staging
+        services:
+          - type: worker
+            name: loyal-balance-sweep-ata-monitor-staging
+            runtime: image
+            region: oregon
+            plan: starter
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers@sha256:d0348c469e4b326e51db7a8444dc2654be5c815f4f1b2f75a5cba73674fe5892
+            preDeployCommand: /usr/local/bin/loyal-timescale-migrations --apply
+            dockerCommand: /usr/local/bin/balance-sweep-ata-monitor
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: TIMESCALEDB_URL
+                sync: false
+              - key: BALANCE_SWEEP_ATA_STREAM
+                value: staging
               - key: SOLANA_RPC_URL
                 sync: false
               - key: BALANCE_SWEEP_UPDATE_SOURCE
@@ -74,7 +113,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-bf9546d906c6f71a3520b40e74af4bf7a4969ffc
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-af0d7c2d50d471a6b11be8ea8cde49aa403fa3a9
             dockerCommand: /usr/local/bin/balance-sweep-ata-projector
             maxShutdownDelaySeconds: 60
             envVars:
@@ -82,6 +121,8 @@ projects:
                 sync: false
               - key: TIMESCALEDB_URL
                 sync: false
+              - key: BALANCE_SWEEP_ATA_STREAM
+                value: production
               - key: RUST_LOG
                 value: warn,balance_sweep_ata_projector=info
 
@@ -92,7 +133,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-65a2fcc9eab5869d4cd0a4dd6cb48db7178a5bf3
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3b5efb72a85ddfcdff33e981ad626b7285e09de7
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-autodeposit-trigger --execute-eligible
             maxShutdownDelaySeconds: 60
@@ -119,7 +160,77 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-d3497113aed8fedb83dbaa3ea398f40ac58aab37
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-ad9dbae5247e4bb778a32ebdeff1091a4f812b0b
+            preDeployCommand: /usr/local/bin/yield-migrations --apply
+            dockerCommand: /usr/local/bin/same-mint-yield-monitor --all-active-vaults --poll-interval-seconds 300 --rebalance-cooldown-seconds 300
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: TIMESCALEDB_URL
+                sync: false
+              - key: SOLANA_RPC_URL
+                sync: false
+              - key: YIELD_ROUTER_KEYPAIR
+                sync: false
+              - key: RUST_LOG
+                value: warn,same_mint_yield_monitor=info
+
+      - name: staging
+        services:
+          - type: worker
+            name: loyal-balance-sweep-ata-projector-staging
+            runtime: image
+            region: oregon
+            plan: starter
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-af0d7c2d50d471a6b11be8ea8cde49aa403fa3a9
+            dockerCommand: /usr/local/bin/balance-sweep-ata-projector
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: TIMESCALEDB_URL
+                sync: false
+              - key: BALANCE_SWEEP_ATA_STREAM
+                value: staging
+              - key: RUST_LOG
+                value: warn,balance_sweep_ata_projector=info
+
+          - type: worker
+            name: loyal-balance-sweep-autodeposit-trigger-staging
+            runtime: image
+            region: oregon
+            plan: starter
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3b5efb72a85ddfcdff33e981ad626b7285e09de7
+            preDeployCommand: /usr/local/bin/yield-migrations --apply
+            dockerCommand: /usr/local/bin/balance-sweep-autodeposit-trigger
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: SOLANA_RPC_URL
+                sync: false
+              - key: POLICY_KEYPAIR
+                sync: false
+              - key: SOLANA_TESTING_PK
+                sync: false
+              - key: BALANCE_SWEEP_EXECUTE_ELIGIBLE
+                value: "false"
+              - key: RUST_LOG
+                value: warn,balance_sweep_autodeposit_trigger=info
+
+          - type: worker
+            name: loyal-same-mint-yield-monitor-staging
+            runtime: image
+            region: oregon
+            plan: starter
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-ad9dbae5247e4bb778a32ebdeff1091a4f812b0b
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-yield-monitor --all-active-vaults --poll-interval-seconds 300 --rebalance-cooldown-seconds 300
             maxShutdownDelaySeconds: 60

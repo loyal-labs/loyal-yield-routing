@@ -52,7 +52,6 @@ enum Mode {
 async fn main() -> Result<(), Box<dyn Error>> {
     let mode = parse_mode()?;
     let database_url = env::var("NEON_DATABASE_URL")
-        .or_else(|_| env::var("DATABASE_URL"))
         .map_err(|_| "NEON_DATABASE_URL must be set for Yield Neon migrations")?;
     let pool = connect(&database_url).await?;
 
