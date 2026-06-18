@@ -65,6 +65,31 @@ Verifier: `docs/plans/prod-staging-service-split-verifier.md`.
   `NEON_DATABASE_URL` to Vercel production was not performed because the
   approvals reviewer requires explicit user approval for that sensitive
   production config write.
+- Post-deploy Render log checks from the split-image deploy window returned no
+  `error` logs for production/shared services and no `error` logs for staging
+  services. A production log search for `staging-probe-20260618-prod-split`
+  returned no rows.
+- Shared Timescale Kamino freshness readback after the split deploy showed
+  `kamino.reserve_updates` count `3996487`, latest `received_at`
+  `2026-06-18 03:03:28.699379+00`, latest `observed_at`
+  `2026-06-18 03:03:29.529125+00`, and `kamino.supported_reserves` count `53`
+  with latest `updated_at` `2026-06-18 02:47:54.593664+00`.
+- A staging-only ATA verifier observation was inserted into
+  `loyal_staging.balance_sweep_wallet_ata_observations` for staging target
+  `71` with event ID `3`. Readback showed production marker observations `0`
+  and staging marker observations `1`.
+- Live staging projector logs showed it projected exactly one row at
+  `2026-06-18T03:05:58Z`, moving from `previous_event_id=2` to
+  `last_event_id=3`. Yield Neon readback showed production target `71` current
+  and event rows are `0`, while staging target `71` current and event rows are
+  `1`; production `balance_sweep_ata_projector:production` cursor stayed at
+  `2`, and staging `balance_sweep_ata_projector:staging` cursor advanced to
+  `3`.
+- Production same-mint logs after deploy included `fleet_poll` and
+  `"execute": false`; staging same-mint logs also showed `"execute": false`.
+  Production autodeposit logs showed `scanned eligible autodeposit lots for
+  execution` with `targets_scanned=0` and `executions_attempted=0` in the
+  sampled post-deploy window.
 - Production Render service readback showed `loyal-kamino-reserve-monitor`,
   `loyal-balance-sweep-ata-monitor`, `loyal-balance-sweep-ata-projector`,
   `loyal-balance-sweep-autodeposit-trigger`, and
@@ -129,27 +154,30 @@ Shared Timescale DB, Separate ATA Streams: PASS - migration 4 applied and
 readback confirmed `loyal_prod` and `loyal_staging` observation tables, dedupe
 tables, and latest views exist in the shared TimescaleDB.
 
-Worker Behavior By Environment: FAIL - code, Blueprint, and live Render env
-route monitor/projector traffic by stream and branch. Local staging
-one-shots/dry-runs passed, and staging Render workers are live with dry-run or
-execution-disabled posture. This section still fails until post-live worker logs
-and DB readbacks prove staging activity is absent from production state/logs.
+Worker Behavior By Environment: PASS - code, Blueprint, live Render env, logs,
+and DB readbacks route monitor/projector traffic by stream and branch. The live
+staging ATA verifier row projected only into staging Yield rows and advanced
+only the staging projector cursor; production rows/logs remained free of the
+staging identity. Staging autodeposit is execution-disabled and staging
+same-mint is dry-run.
 
 Loyal Apps Binding: FAIL - no production/staging `loyal-apps` deployment
 readback has been captured in this run. Vercel env-name readback shows
 `DATABASE_URL` is already scoped for Production and Preview branch `staging`,
 but `NEON_DATABASE_URL` is absent and still requires explicit approval to add.
 
-Staging Mutation Does Not Affect Production: FAIL - the staging-only schema
-probe and inactive policy/target marker were created in staging and read back as
-absent from production. Local staging worker probes also completed without live
-execution. This section still fails because production worker logs have not been
-checked for the staging identity after live staging services are deployed.
+Staging Mutation Does Not Affect Production: PASS - the staging-only schema
+probe, inactive policy/target marker, and staging ATA verifier observation were
+present in staging and absent from production. Live staging projection wrote
+target `71` only to staging Yield current/event rows and advanced only the
+staging projector cursor. Production worker logs did not contain the staging
+identity.
 
-Production Still Works: FAIL - Yield and Timescale migration checks pass, and
+Production Still Works: PASS - Yield and Timescale migration checks pass,
 production services are not suspended with latest deploy status `live` on the
-split images. This section still fails because production worker logs/freshness
-were not fully verified after the live image updates.
+split images, Kamino reserve data is fresh after deploy, same-mint remains
+dry-run, and production autodeposit remains in the intended execute-eligible
+mode with zero attempted executions in the sampled post-deploy window.
 
 Documentation And Operator Handoff: FAIL - service/1Password/Timescale docs are
 updated with Neon branch IDs, staging Render service IDs, live image tags, and
@@ -170,6 +198,5 @@ Overall Verdict: FAIL
 3. Bind `loyal-apps` production/staging `NEON_DATABASE_URL` to the matching
    Yield Neon branches while leaving the main product `DATABASE_URL` shared.
    This is blocked on explicit approval for the Vercel production config write.
-4. Run staging-only policy/target and ATA stream probes, then production readbacks/log
-   checks proving staging state does not appear in production.
-5. Verify production worker logs/freshness after the split-image deploys.
+4. Populate production/staging 1Password Environment secret values through a
+   secret-safe operator path instead of relying on direct Render/Vercel values.
