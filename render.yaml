@@ -212,12 +212,6 @@ projects:
             envVars:
               - key: NEON_DATABASE_URL
                 sync: false
-              - key: SOLANA_RPC_URL
-                sync: false
-              - key: POLICY_KEYPAIR
-                sync: false
-              - key: SOLANA_TESTING_PK
-                sync: false
               - key: BALANCE_SWEEP_EXECUTE_ELIGIBLE
                 value: "false"
               - key: RUST_LOG

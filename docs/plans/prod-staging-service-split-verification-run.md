@@ -33,7 +33,30 @@ Verifier: `docs/plans/prod-staging-service-split-verifier.md`.
 - 1Password fresh environment readback:
   `loyal-yield-routing-production` is `2e463mizwetw6sbv3tiw7loxi4` and
   `loyal-yield-routing-staging` is `zspmwsfuhomrlffpqp6wk7fbdu`; both currently
-  have the same ten non-secret variable names.
+  have the same non-secret variable names.
+- Render staging environments were created:
+  `evm-d8plqfrtqb8s738actsg` for `loyal-yield-laserstream-workers` and
+  `evm-d8plqhgjs32c738s1n70` for `loyal-yield-light-workers`.
+- Render staging services were created and reached latest deploy status `live`:
+  `loyal-balance-sweep-ata-monitor-staging` / `srv-d8plrh9194ac739eulrg`,
+  `loyal-balance-sweep-ata-projector-staging` / `srv-d8plri36sc1c73cstumg`,
+  `loyal-balance-sweep-autodeposit-trigger-staging` /
+  `srv-d8plrirsq97s7387q8og`, and `loyal-same-mint-yield-monitor-staging` /
+  `srv-d8plrj8js32c738s2f80`.
+- Production/shared services were redeployed to the split images and reached
+  latest deploy status `live`: `dep-d8ploj3tqb8s738abhj0`,
+  `dep-d8plooojs32c738s09p0`, `dep-d8plooog4nts7383rtu0`,
+  `dep-d8plos8g4nts7383s26g`, and `dep-d8plop4m0tmc73b1ae0g`.
+- Render `NEON_DATABASE_URL` fingerprint readback showed production split
+  workers all share fingerprint `ce0458839b5350ae`, staging split workers all
+  share `3abff897e6f5cc84`; host-only parsing confirmed production uses
+  `ep-ancient-grass-aqb5aalu.c-8.us-east-1.aws.neon.tech`, while staging uses
+  `ep-calm-bonus-aq0yls0u.c-8.us-east-1.aws.neon.tech`.
+- Render non-secret env readback showed production ATA monitor/projector use
+  `BALANCE_SWEEP_ATA_STREAM=production`, staging ATA monitor/projector use
+  `BALANCE_SWEEP_ATA_STREAM=staging`, production autodeposit uses
+  `BALANCE_SWEEP_EXECUTE_ELIGIBLE=true`, and staging autodeposit uses
+  `BALANCE_SWEEP_EXECUTE_ELIGIBLE=false`.
 - Production Render service readback showed `loyal-kamino-reserve-monitor`,
   `loyal-balance-sweep-ata-monitor`, `loyal-balance-sweep-ata-projector`,
   `loyal-balance-sweep-autodeposit-trigger`, and
@@ -65,9 +88,9 @@ Verifier: `docs/plans/prod-staging-service-split-verifier.md`.
   empty placeholders in `.env.example`. Sequential `op run` was required for DB
   checks after a parallel `op run` attempt produced transient env parsing/URL
   shape failures.
-- `gh auth status` failed for the configured GitHub accounts, so the manual
-  `worker-images` workflow still needs a valid GitHub auth path before it can be
-  triggered from this machine.
+- `gh auth status` failed for the configured GitHub accounts, but
+  `gh workflow run worker-images.yml --ref main` and `gh run watch 27732951674`
+  succeeded through the available GitHub CLI path.
 
 ## Verdict
 
@@ -77,37 +100,32 @@ Blueprint.
 
 Neon Branch Isolation: FAIL - production and staging Neon branches exist, have
 distinct IDs, distinct secret-safe connection fingerprints, and the staging
-schema probe is absent from production. This section still fails because split
-Render services and `loyal-apps` deployments are not yet bound to branch-specific
-`NEON_DATABASE_URL` values.
+schema probe is absent from production. Render split workers are now bound to
+distinct production/staging branch endpoints. This section still fails because
+`loyal-apps` production/staging deployment bindings have not been captured.
 
-Render Service Shape: FAIL - production/shared services are live and pinned to
-private GHCR images through `loyal-ghcr`; staging services are present in
-`render.yaml` but were absent from the live Render service list. The current
-worktree is not committed, so no GHCR images exist yet for the stream-selector
-code in this verifier run. Staging Render service creation was intentionally
-deferred because creating ATA monitor/projector services on older images would
-risk using the legacy shared `loyal` ATA stream.
+Render Service Shape: PASS - production/shared services and staging split
+services are live with distinct service IDs. `loyal-kamino-reserve-monitor`
+remains single/shared. All services use pinned
+`sha-ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a` GHCR images through Render
+registry credential `loyal-ghcr`.
 
-Environment Variable Boundaries: FAIL - live production ATA monitor/projector
-now expose `BALANCE_SWEEP_ATA_STREAM`; fresh production/staging 1Password envs
-have matching non-secret variable names and environment-specific stream,
-execution, and Neon branch metadata values, but still need environment-specific
-secret values. The Yield-oriented same-mint and migration binaries no longer
-fall back from `NEON_DATABASE_URL` to `DATABASE_URL`. The old duplicate
-1Password shells were renamed with a `-superseded` suffix.
+Environment Variable Boundaries: FAIL - Render split workers now have distinct
+production/staging `NEON_DATABASE_URL` fingerprints, production/staging ATA
+stream selectors, and staging execution-disabled posture. Fresh production and
+staging 1Password Environments have matching non-secret variable names and
+environment-specific metadata, but still need environment-specific secret values
+populated or mounted through a durable operator path.
 
 Shared Timescale DB, Separate ATA Streams: PASS - migration 4 applied and
 readback confirmed `loyal_prod` and `loyal_staging` observation tables, dedupe
 tables, and latest views exist in the shared TimescaleDB.
 
-Worker Behavior By Environment: FAIL - code and Blueprint route monitor/projector
-traffic by stream and branch, and local staging one-shots/dry-runs passed for
-the projector, autodeposit trigger with execution disabled, and same-mint fleet
-monitor without `--execute`. This section still fails because staging Render
-workers are not live, and existing live production workers are still pinned to
-previously built images that must be repointed to images built from the commit
-that contains this split-stream code.
+Worker Behavior By Environment: FAIL - code, Blueprint, and live Render env
+route monitor/projector traffic by stream and branch. Local staging
+one-shots/dry-runs passed, and staging Render workers are live with dry-run or
+execution-disabled posture. This section still fails until post-live worker logs
+and DB readbacks prove staging activity is absent from production state/logs.
 
 Loyal Apps Binding: FAIL - no production/staging `loyal-apps` deployment
 readback has been captured in this run.
@@ -119,15 +137,17 @@ execution. This section still fails because production worker logs have not been
 checked for the staging identity after live staging services are deployed.
 
 Production Still Works: FAIL - Yield and Timescale migration checks pass, and
-production services are not suspended with latest deploy status `live`, but
-production worker logs/freshness were not fully verified after the live env-var
-updates and services are not yet running images built from this worktree.
+production services are not suspended with latest deploy status `live` on the
+split images. This section still fails because production worker logs/freshness
+were not fully verified after the live image updates.
 
 Documentation And Operator Handoff: FAIL - service/1Password/Timescale docs are
-updated, but Neon branch IDs, staging Render service IDs, and final live
-verification commands remain pending. Render Blueprint validation currently
-fails only on private GHCR image visibility, which matches the documented
-registry-credential caveat for these image-backed services.
+updated with Neon branch IDs, staging Render service IDs, live image tags, and
+staging execution posture. This section still fails until `loyal-apps` binding
+and final post-live mutation/log verification commands are captured. Render
+Blueprint validation currently fails only on private GHCR image visibility,
+which matches the documented registry-credential caveat for these image-backed
+services.
 
 Overall Verdict: FAIL
 
@@ -137,12 +157,8 @@ Overall Verdict: FAIL
    and environment-specific values through a secret-safe operator path.
 2. Free at least two local 1Password env mounts or use another safe mounting
    path for `.env.1password.production` and `.env.1password.staging`.
-3. Repoint production/staging Render services to
-   `sha-ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a` before claiming worker
-   behavior PASS.
-4. Create/import the staging Render services from `render.yaml`; verify their
-   service IDs, env-var names, pinned images, and dry-run/disabled posture.
-5. Bind `loyal-apps` production/staging `NEON_DATABASE_URL` to the matching
+3. Bind `loyal-apps` production/staging `NEON_DATABASE_URL` to the matching
    Yield Neon branches while leaving the main product `DATABASE_URL` shared.
-6. Run staging-only policy/target and ATA stream probes, then production readbacks/log
+4. Run staging-only policy/target and ATA stream probes, then production readbacks/log
    checks proving staging state does not appear in production.
+5. Verify production worker logs/freshness after the split-image deploys.

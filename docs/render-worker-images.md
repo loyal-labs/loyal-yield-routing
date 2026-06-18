@@ -32,12 +32,12 @@ Target split IDs, once created/imported in Render, must be recorded here before 
 | Light `loyal-balance-sweep-ata-projector` service | `srv-d8kfqpjbc2fs73chlc00` |
 | Light `loyal-balance-sweep-autodeposit-trigger` service | `srv-d8lplql7vvec73f1it6g` |
 | Light `loyal-same-mint-yield-monitor` service | `srv-d8n7gqbbc2fs73emk610` |
-| Heavy staging environment | _record after Render creation/import_ |
-| Heavy `loyal-balance-sweep-ata-monitor-staging` service | _record after Render creation/import_ |
-| Light staging environment | _record after Render creation/import_ |
-| Light `loyal-balance-sweep-ata-projector-staging` service | _record after Render creation/import_ |
-| Light `loyal-balance-sweep-autodeposit-trigger-staging` service | _record after Render creation/import_ |
-| Light `loyal-same-mint-yield-monitor-staging` service | _record after Render creation/import_ |
+| Heavy staging environment | `evm-d8plqfrtqb8s738actsg` |
+| Heavy `loyal-balance-sweep-ata-monitor-staging` service | `srv-d8plrh9194ac739eulrg` |
+| Light staging environment | `evm-d8plqhgjs32c738s1n70` |
+| Light `loyal-balance-sweep-ata-projector-staging` service | `srv-d8plri36sc1c73cstumg` |
+| Light `loyal-balance-sweep-autodeposit-trigger-staging` service | `srv-d8plrirsq97s7387q8og` |
+| Light `loyal-same-mint-yield-monitor-staging` service | `srv-d8plrj8js32c738s2f80` |
 
 Production and staging use separate 1Password Environments with matching
 variable names. The target names are `loyal-yield-routing-production` and
@@ -96,6 +96,13 @@ Secret-safe fingerprint readback on 2026-06-18 showed production
 `loyal_yield.staging_isolation_probe` exists on staging with one row and is
 absent on production.
 
+Render service env readback on 2026-06-18 showed the production split workers
+all share `NEON_DATABASE_URL` fingerprint `ce0458839b5350ae`, and the staging
+split workers all share fingerprint `3abff897e6f5cc84`. Host-only parsing
+confirmed production uses `ep-ancient-grass-aqb5aalu.c-8.us-east-1.aws.neon.tech`
+and staging uses `ep-calm-bonus-aq0yls0u.c-8.us-east-1.aws.neon.tech`; no
+connection strings or credentials were printed.
+
 The shared TimescaleDB has migration `4 split_balance_sweep_ata_streams`
 applied. Live readback on 2026-06-17 confirmed these six relations exist:
 `loyal_prod.balance_sweep_wallet_ata_observations`,
@@ -129,13 +136,9 @@ workflow run intentionally replaces them.
 Safe rollout order:
 
 1. Keep `render.yaml` pinned to the verified image tags above.
-2. Update production image refs to the resulting `sha-<commit>` or digest.
-3. Create/import staging Render services from `render.yaml` using those same new
-   image refs.
-4. Populate staging secret env vars only after `NEON_DATABASE_URL` points at
-   branch `br-old-wind-aq34quzh`.
-5. Verify staging services start in dry-run/disabled posture before enabling any
-   broad staging execution.
+2. Keep staging `NEON_DATABASE_URL` pointed at branch `br-old-wind-aq34quzh`.
+3. Verify staging services remain in dry-run/disabled posture before enabling
+   any broad staging execution.
 
 Secret-safe Neon URL generation can be done inside a shell without printing the
 URL:
@@ -154,20 +157,25 @@ Staging worker posture is fail-closed until staging proves it cannot affect
 production users or production policies:
 
 - `loyal-balance-sweep-autodeposit-trigger-staging` omits `--execute-eligible`
-  and sets `BALANCE_SWEEP_EXECUTE_ELIGIBLE=false`.
+  and sets `BALANCE_SWEEP_EXECUTE_ELIGIBLE=false`. It intentionally omits
+  transaction-signing env vars in Render while staging execution remains
+  disabled.
 - `loyal-same-mint-yield-monitor-staging` omits `--execute`; it is fleet
   dry-run only.
 - Staging ATA monitor/projector use `BALANCE_SWEEP_ATA_STREAM=staging`, which
   maps to the `loyal_staging` Timescale schema.
 
-Live production Render readback on 2026-06-17 showed the existing production
-services are `runtime: image`, use private registry credential `loyal-ghcr`,
-and are not suspended. The production ATA monitor and projector now have
-`BALANCE_SWEEP_ATA_STREAM` in their env-var names, and the production
-autodeposit trigger now has `BALANCE_SWEEP_EXECUTE_ELIGIBLE`. Staging Render
-services were not present in the live service list at that time, so the Render
-Service Shape verifier remains incomplete until the staging services are
-created/imported and their service IDs are recorded above.
+Live Render readback on 2026-06-18 showed all production/shared services and all
+four staging services are `runtime: image`, use private registry credential
+`loyal-ghcr`, and have latest deploy status `live`. Production deploy IDs for
+the image update were `dep-d8ploj3tqb8s738abhj0`
+(`loyal-kamino-reserve-monitor`), `dep-d8plooojs32c738s09p0`
+(`loyal-balance-sweep-ata-monitor`), `dep-d8plooog4nts7383rtu0`
+(`loyal-balance-sweep-ata-projector`), `dep-d8plos8g4nts7383s26g`
+(`loyal-balance-sweep-autodeposit-trigger`), and
+`dep-d8plop4m0tmc73b1ae0g` (`loyal-same-mint-yield-monitor`). Staging deploy
+IDs were `dep-d8plrhh194ac739eumb0`, `dep-d8plrib6sc1c73cstuv0`,
+`dep-d8plrj3sq97s7387q9ag`, and `dep-d8plrjgjs32c738s2fg0`.
 
 As of 2026-06-15, `loyal-same-mint-yield-monitor` previously ran in fleet dry-run mode on `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-d3497113aed8fedb83dbaa3ea398f40ac58aab37`. Render deploy `dep-d8nom81kh4rs73fe3td0` was live with image digest `sha256:b34feb49ef99616b91570f248fde65cc257523b45c8a3f606c3249c908adfa5b`. The service env-var names were `NEON_DATABASE_URL`, `TIMESCALEDB_URL`, `SOLANA_RPC_URL`, `YIELD_ROUTER_KEYPAIR`, and `RUST_LOG`; `SOLANA_TESTING_PK` was absent. The first post-deploy dry-run log at `2026-06-15T05:20:03Z` reported `status: fleet_poll`, `execute: false`, `allActiveVaults: true`, `candidateCount: 4`, and `discoveredVaultCount: 0`, which matched the verified post-withdraw cleanup state.
 
