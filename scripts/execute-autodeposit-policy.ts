@@ -46,7 +46,6 @@ type NeonQuery = (
 type AppModules = {
   Keypair: typeof Keypair;
   PublicKey: typeof PublicKey;
-  LOYAL_CLUSTER_CONFIGS: Record<string, unknown>;
   compilePreparedOperation: (args: {
     prepared: PreparedOperation;
     blockhash: string;
@@ -60,11 +59,6 @@ type AppModules = {
     market: PublicKey;
     reserve: PublicKey;
   };
-  deriveSquadsVault: (
-    config: unknown,
-    settings: PublicKey,
-    vaultIndex: number
-  ) => { address: PublicKey };
   LoyalCluster: { MainnetBeta: string };
   neon: (databaseUrl: string) => NeonQuery;
   PROGRAM_ADDRESS: string;
@@ -178,7 +172,6 @@ const SAME_MINT_ROUTE_MODE = "same_mint_kamino";
 const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDC_DECIMALS = 6;
 const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
-const ROOT_SMART_ACCOUNT_VAULT_INDEX = 0;
 
 async function loadAppModules(): Promise<AppModules> {
   const [
@@ -198,17 +191,11 @@ async function loadAppModules(): Promise<AppModules> {
   return {
     Keypair,
     PublicKey,
-    LOYAL_CLUSTER_CONFIGS: loyalActionsModule.LOYAL_CLUSTER_CONFIGS as Record<
-      string,
-      unknown
-    >,
     compilePreparedOperation: smartAccountsCoreModule.compilePreparedOperation,
     createSmartAccountVaultsClient:
       smartAccountVaultsModule.createSmartAccountVaultsClient as unknown as AppModules["createSmartAccountVaultsClient"],
     getKaminoUsdcEarnTargetForCluster:
       loyalActionsModule.getKaminoUsdcEarnTargetForCluster as AppModules["getKaminoUsdcEarnTargetForCluster"],
-    deriveSquadsVault:
-      loyalActionsModule.deriveSquadsVault as AppModules["deriveSquadsVault"],
     LoyalCluster: loyalActionsModule.LoyalCluster,
     neon: neonModule.neon,
     PROGRAM_ADDRESS: smartAccountsModule.PROGRAM_ADDRESS,
@@ -252,24 +239,6 @@ function assertAutodepositPullSupport(
       "@loyal-labs/smart-account-vaults does not expose prepareEarnUsdcAutodepositPull; deploy a package/image with autodeposit pull support before claiming lots."
     );
   }
-}
-
-function deriveRootSmartAccountAddress(args: {
-  appModules: AppModules;
-  settings: string;
-}): string {
-  const cluster = args.appModules.LoyalCluster.MainnetBeta;
-  const config = args.appModules.LOYAL_CLUSTER_CONFIGS[cluster];
-  if (!config) {
-    throw new Error(`Missing Loyal cluster config for ${cluster}.`);
-  }
-  return args.appModules
-    .deriveSquadsVault(
-      config,
-      new args.appModules.PublicKey(args.settings),
-      ROOT_SMART_ACCOUNT_VAULT_INDEX
-    )
-    .address.toBase58();
 }
 
 export function computeSweepAmount(
@@ -1399,10 +1368,6 @@ async function recordAutodepositYieldDeposit(args: {
 }): Promise<{ status: "duplicate" | "inserted"; positionId: string | null }> {
   const sql = args.appModules.neon(args.databaseUrl);
   const now = new Date();
-  const smartAccountAddress = deriveRootSmartAccountAddress({
-    appModules: args.appModules,
-    settings: args.target.settings,
-  });
   const depositRows = await sql`
     INSERT INTO loyal_yield.user_yield_position_deposits (
       deposit_signature,
@@ -1430,7 +1395,7 @@ async function recordAutodepositYieldDeposit(args: {
       ${args.policySignature},
       ${args.depositSlot.toString()},
       ${args.target.wallet},
-      ${smartAccountAddress},
+      ${args.target.vaultPubkey},
       ${args.target.settings},
       ${args.target.vaultIndex},
       ${args.target.vaultPubkey},
@@ -1523,7 +1488,7 @@ async function recordAutodepositYieldDeposit(args: {
         policy_id = ${args.target.routePolicySeed.toString()},
         policy_seed = ${args.target.routePolicySeed.toString()},
         principal_amount_raw = ${nextPrincipalRaw.toString()},
-        smart_account_address = ${smartAccountAddress},
+        smart_account_address = ${args.target.vaultPubkey},
         status = 'active',
         updated_at = ${now},
         vault_pubkey = ${args.target.vaultPubkey},
@@ -1566,7 +1531,7 @@ async function recordAutodepositYieldDeposit(args: {
       )
       VALUES (
         ${args.target.wallet},
-        ${smartAccountAddress},
+        ${args.target.vaultPubkey},
         ${args.target.settings},
         ${args.target.vaultIndex},
         ${args.target.vaultPubkey},

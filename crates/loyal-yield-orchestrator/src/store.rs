@@ -5,14 +5,11 @@ use crate::domain::{
 use crate::types::*;
 use crate::{OrchestratorError, ACTIVE_DECISION_STATUSES};
 use chrono::{DateTime, Utc};
-use loyal_actions::SQUADS_SMART_ACCOUNT_PROGRAM_ID;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use solana_sdk::pubkey::Pubkey;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgConnection, PgPool, Row};
 use std::future::Future;
-use std::str::FromStr;
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_loyal_yield_orchestration.sql");
 const MIGRATION_0002: &str = include_str!("../migrations/0002_balance_sweep_surplus_lots.sql");
@@ -22,7 +19,6 @@ const MIGRATION_0005: &str =
     include_str!("../migrations/0005_add_unsupported_amount_semantics.sql");
 const MIGRATION_0006: &str =
     include_str!("../migrations/0006_generic_balance_sweep_token_accounts.sql");
-const ROOT_SMART_ACCOUNT_VAULT_INDEX: u8 = 0;
 
 #[derive(Clone)]
 pub struct NeonSqlClient {
@@ -1356,23 +1352,6 @@ async fn fetch_managed_vault_for_update(
     Ok(managed_vault_from_row(row))
 }
 
-fn derive_root_smart_account_address(settings: &str) -> Result<String, OrchestratorError> {
-    let settings = Pubkey::from_str(settings).map_err(|error| {
-        OrchestratorError::StoreInvariant(format!("invalid Squads settings pubkey: {error}"))
-    })?;
-    let (address, _) = Pubkey::find_program_address(
-        &[
-            b"smart_account",
-            settings.as_ref(),
-            b"smart_account",
-            &[ROOT_SMART_ACCOUNT_VAULT_INDEX],
-        ],
-        &SQUADS_SMART_ACCOUNT_PROGRAM_ID,
-    );
-
-    Ok(address.to_string())
-}
-
 async fn app_position_tables_exist(conn: &mut PgConnection) -> Result<bool, OrchestratorError> {
     let exists = sqlx::query_scalar::<_, bool>(
         r#"
@@ -1412,7 +1391,6 @@ async fn close_zero_user_yield_positions_for_vault(
         return Ok(0);
     }
 
-    let root_smart_account_address = derive_root_smart_account_address(&vault.settings)?;
     let result = sqlx::query(
         r#"
         WITH active_positions AS (
@@ -1482,7 +1460,7 @@ async fn close_zero_user_yield_positions_for_vault(
     .bind(observed_slot)
     .bind(observed_at)
     .bind(snapshot_id.as_i64())
-    .bind(root_smart_account_address)
+    .bind(&vault.vault_pubkey)
     .execute(conn)
     .await?;
 
