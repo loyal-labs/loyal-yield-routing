@@ -4,7 +4,7 @@ mod store;
 mod types;
 
 pub use domain::{
-    route_amount_evidence_from_metadata, state_transition,
+    route_amount_evidence, route_amount_evidence_from_metadata, state_transition,
     AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
 pub use signer::{

@@ -250,6 +250,12 @@ struct CliOptions {
     reconcile_reserves: Vec<String>,
     seed_from_user_position: bool,
     provision_lookup_table: bool,
+    expected_source_snapshot_id: Option<i64>,
+    expected_amount_raw: Option<i64>,
+    expected_route_amount_semantics: Option<String>,
+    expected_source_apy_bps: Option<i64>,
+    expected_target_apy_bps: Option<i64>,
+    expected_edge_bps: Option<i64>,
     rpc_url: String,
     lookup_tables: Vec<Pubkey>,
 }
@@ -733,6 +739,7 @@ enum PlanBlocker {
         reserve: String,
         amount_semantics: Option<String>,
     },
+    MonitorPlanDrift(String),
     ActiveDecision {
         decision_id: i64,
         status: String,
@@ -7294,6 +7301,12 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     let mut reconcile_reserves = Vec::new();
     let mut seed_from_user_position = false;
     let mut provision_lookup_table = false;
+    let mut expected_source_snapshot_id = None;
+    let mut expected_amount_raw = None;
+    let mut expected_route_amount_semantics = None;
+    let mut expected_source_apy_bps = None;
+    let mut expected_target_apy_bps = None;
+    let mut expected_edge_bps = None;
     let mut rpc_url = env::var("SOLANA_RPC_URL").unwrap_or_else(|_| DEFAULT_SOLANA_RPC_URL.into());
     let mut lookup_tables = Vec::new();
     let mut iter = args.into_iter();
@@ -7413,6 +7426,58 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
             }
             "--seed-from-user-position" => seed_from_user_position = true,
             "--provision-lookup-table" => provision_lookup_table = true,
+            "--expected-source-snapshot-id" => {
+                let raw = iter
+                    .next()
+                    .ok_or("--expected-source-snapshot-id requires a value")?;
+                expected_source_snapshot_id = Some(
+                    raw.parse::<i64>()
+                        .map_err(|_| "--expected-source-snapshot-id must be an i64")?,
+                );
+            }
+            "--expected-amount-raw" => {
+                let raw = iter
+                    .next()
+                    .ok_or("--expected-amount-raw requires a value")?;
+                let amount = raw
+                    .parse::<i64>()
+                    .map_err(|_| "--expected-amount-raw must be an i64")?;
+                if amount <= 0 {
+                    return Err("--expected-amount-raw must be greater than 0".to_owned());
+                }
+                expected_amount_raw = Some(amount);
+            }
+            "--expected-route-amount-semantics" => {
+                expected_route_amount_semantics = Some(
+                    iter.next()
+                        .ok_or("--expected-route-amount-semantics requires a value")?,
+                );
+            }
+            "--expected-source-apy-bps" => {
+                let raw = iter
+                    .next()
+                    .ok_or("--expected-source-apy-bps requires a value")?;
+                expected_source_apy_bps = Some(
+                    raw.parse::<i64>()
+                        .map_err(|_| "--expected-source-apy-bps must be an i64")?,
+                );
+            }
+            "--expected-target-apy-bps" => {
+                let raw = iter
+                    .next()
+                    .ok_or("--expected-target-apy-bps requires a value")?;
+                expected_target_apy_bps = Some(
+                    raw.parse::<i64>()
+                        .map_err(|_| "--expected-target-apy-bps must be an i64")?,
+                );
+            }
+            "--expected-edge-bps" => {
+                let raw = iter.next().ok_or("--expected-edge-bps requires a value")?;
+                expected_edge_bps = Some(
+                    raw.parse::<i64>()
+                        .map_err(|_| "--expected-edge-bps must be an i64")?,
+                );
+            }
             "--rpc-url" => {
                 rpc_url = iter.next().ok_or("--rpc-url requires a value")?;
             }
@@ -7493,6 +7558,18 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
         if seed_from_user_position {
             return Err("--optimization-cycle cannot use --seed-from-user-position".to_owned());
         }
+        if expected_source_snapshot_id.is_none()
+            || expected_amount_raw.is_none()
+            || expected_route_amount_semantics.is_none()
+            || expected_source_apy_bps.is_none()
+            || expected_target_apy_bps.is_none()
+            || expected_edge_bps.is_none()
+        {
+            return Err(
+                "--optimization-cycle requires --expected-source-snapshot-id, --expected-amount-raw, --expected-route-amount-semantics, --expected-source-apy-bps, --expected-target-apy-bps, and --expected-edge-bps"
+                    .to_owned(),
+            );
+        }
     }
     Ok(CliOptions {
         settings: settings.ok_or("--settings is required")?,
@@ -7515,6 +7592,12 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
         reconcile_reserves,
         seed_from_user_position,
         provision_lookup_table,
+        expected_source_snapshot_id,
+        expected_amount_raw,
+        expected_route_amount_semantics,
+        expected_source_apy_bps,
+        expected_target_apy_bps,
+        expected_edge_bps,
         rpc_url,
         lookup_tables,
     })
@@ -7599,9 +7682,15 @@ fn build_same_mint_input(
                     .map(ToOwned::to_owned),
             })?;
 
-    let source_apy_bps = source.supply_apy_bps.unwrap_or_default();
-    let target_apy_bps = target.supply_apy_bps.unwrap_or_default();
-    Ok(SameMintRebalanceInput {
+    let source_apy_bps = options
+        .expected_source_apy_bps
+        .or(source.supply_apy_bps)
+        .unwrap_or_default();
+    let target_apy_bps = options
+        .expected_target_apy_bps
+        .or(target.supply_apy_bps)
+        .unwrap_or_default();
+    let input = SameMintRebalanceInput {
         vault_id: Some(vault_id),
         settings: None,
         vault_index: None,
@@ -7617,10 +7706,69 @@ fn build_same_mint_input(
         expected_source_snapshot_id: source.snapshot_id,
         source_apy_bps,
         target_apy_bps,
-        estimated_edge_bps: target_apy_bps - source_apy_bps,
+        estimated_edge_bps: options
+            .expected_edge_bps
+            .unwrap_or(target_apy_bps - source_apy_bps),
         estimated_cost_lamports: 0,
         dry_run: !options.execute,
-    })
+    };
+    validate_monitor_expectations(options, &input)?;
+    Ok(input)
+}
+
+fn validate_monitor_expectations(
+    options: &CliOptions,
+    input: &SameMintRebalanceInput,
+) -> Result<(), PlanBlocker> {
+    if let Some(expected) = options.expected_source_snapshot_id {
+        if input.expected_source_snapshot_id.as_i64() != expected {
+            return Err(PlanBlocker::MonitorPlanDrift(format!(
+                "expected source snapshot {expected}, got {}",
+                input.expected_source_snapshot_id.as_i64()
+            )));
+        }
+    }
+    if let Some(expected) = options.expected_amount_raw {
+        if input.amount_raw != expected {
+            return Err(PlanBlocker::MonitorPlanDrift(format!(
+                "expected route amount_raw {expected}, got {}",
+                input.amount_raw
+            )));
+        }
+    }
+    if let Some(expected) = &options.expected_route_amount_semantics {
+        if input.route_amount_semantics != *expected {
+            return Err(PlanBlocker::MonitorPlanDrift(format!(
+                "expected route_amount_semantics {expected}, got {}",
+                input.route_amount_semantics
+            )));
+        }
+    }
+    if let Some(expected) = options.expected_source_apy_bps {
+        if input.source_apy_bps != expected {
+            return Err(PlanBlocker::MonitorPlanDrift(format!(
+                "expected source_apy_bps {expected}, got {}",
+                input.source_apy_bps
+            )));
+        }
+    }
+    if let Some(expected) = options.expected_target_apy_bps {
+        if input.target_apy_bps != expected {
+            return Err(PlanBlocker::MonitorPlanDrift(format!(
+                "expected target_apy_bps {expected}, got {}",
+                input.target_apy_bps
+            )));
+        }
+    }
+    if let Some(expected) = options.expected_edge_bps {
+        if input.estimated_edge_bps != expected {
+            return Err(PlanBlocker::MonitorPlanDrift(format!(
+                "expected estimated_edge_bps {expected}, got {}",
+                input.estimated_edge_bps
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn blocker_report(
@@ -7681,6 +7829,10 @@ fn blocker_reason(blocker: &PlanBlocker) -> Value {
             "reserve": reserve,
             "amountSemantics": amount_semantics,
             "expectedRouteAmountSemantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+        }),
+        PlanBlocker::MonitorPlanDrift(reason) => json!({
+            "kind": "monitor_plan_drift",
+            "reason": reason,
         }),
         PlanBlocker::ActiveDecision {
             decision_id,

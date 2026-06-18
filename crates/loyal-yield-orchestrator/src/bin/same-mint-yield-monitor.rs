@@ -7,9 +7,9 @@ use chrono::{DateTime, Duration, Utc};
 use loyal_actions::USDC_MINT;
 use loyal_yield_orchestrator::sqlx::Row;
 use loyal_yield_orchestrator::{
-    solana_testing_keypair_from_env, yield_router_keypair_from_env, CurrentReservePosition,
-    ManagedVault, NeonSqlClient, NeonSqlConfig, PolicyId, RoutePolicy, VaultId,
-    ACTIVE_DECISION_STATUSES, SOLANA_TESTING_PK_ENV,
+    route_amount_evidence, solana_testing_keypair_from_env, yield_router_keypair_from_env,
+    CurrentReservePosition, ManagedVault, NeonSqlClient, NeonSqlConfig, PolicyId, RoutePolicy,
+    VaultId, ACTIVE_DECISION_STATUSES, SOLANA_TESTING_PK_ENV,
 };
 use loyal_yield_router::timescale::{
     SupportedReserveLatestQuery, SupportedReserveLatestRow, TimescaleRouterClient,
@@ -48,6 +48,12 @@ struct ResolvedVault {
 struct PlannedMonitorMove {
     source: CurrentReservePosition,
     target: SupportedReserveLatestRow,
+    amount_raw: i64,
+    route_amount_semantics: String,
+    source_amount_semantics: Option<String>,
+    source_collateral_amount_raw: Option<i64>,
+    redeemable_source_liquidity_amount_raw: Option<i64>,
+    idle_vault_liquidity_amount_raw: Option<i64>,
     source_apy_bps: i64,
     target_apy_bps: i64,
     edge_bps: i64,
@@ -331,6 +337,18 @@ fn execute_planned_move(
         .arg(&planned_move.source.reserve)
         .arg("--target-reserve")
         .arg(&planned_move.target.reserve)
+        .arg("--expected-source-snapshot-id")
+        .arg(planned_move.source.snapshot_id.as_i64().to_string())
+        .arg("--expected-amount-raw")
+        .arg(planned_move.amount_raw.to_string())
+        .arg("--expected-route-amount-semantics")
+        .arg(&planned_move.route_amount_semantics)
+        .arg("--expected-source-apy-bps")
+        .arg(planned_move.source_apy_bps.to_string())
+        .arg("--expected-target-apy-bps")
+        .arg(planned_move.target_apy_bps.to_string())
+        .arg("--expected-edge-bps")
+        .arg(planned_move.edge_bps.to_string())
         .arg("--optimization-cycle")
         .arg("--reconcile-from-chain")
         .arg("--provision-lookup-table")
@@ -497,10 +515,23 @@ fn plan_move(
             position.liquidity_mint == USDC_MINT.to_string()
                 && position.has_value
                 && position.amount_raw > 0
+                && route_amount_evidence(position).is_some()
         })
         .max_by_key(|position| position.amount_raw)
         .cloned()
-        .ok_or_else(|| "no_value_source".to_owned())?;
+        .ok_or_else(|| {
+            if positions.iter().any(|position| {
+                position.liquidity_mint == USDC_MINT.to_string()
+                    && position.has_value
+                    && position.amount_raw > 0
+            }) {
+                "unsupported_amount_semantics".to_owned()
+            } else {
+                "no_value_source".to_owned()
+            }
+        })?;
+    let evidence =
+        route_amount_evidence(&source).ok_or_else(|| "unsupported_amount_semantics".to_owned())?;
     let target = candidates
         .iter()
         .filter(|candidate| candidate.liquidity_mint == USDC_MINT.to_string())
@@ -526,6 +557,12 @@ fn plan_move(
     Ok(Some(PlannedMonitorMove {
         source,
         target,
+        amount_raw: evidence.amount_raw,
+        route_amount_semantics: evidence.route_amount_semantics,
+        source_amount_semantics: evidence.source_amount_semantics,
+        source_collateral_amount_raw: evidence.source_collateral_amount_raw,
+        redeemable_source_liquidity_amount_raw: evidence.redeemable_source_liquidity_amount_raw,
+        idle_vault_liquidity_amount_raw: evidence.idle_vault_liquidity_amount_raw,
         source_apy_bps,
         target_apy_bps,
         edge_bps,
@@ -974,8 +1011,14 @@ fn planned_move_json(plan: Option<&PlannedMonitorMove>) -> Value {
             "targetReserve": plan.target.reserve,
             "targetMarket": plan.target.market,
             "liquidityMint": plan.source.liquidity_mint,
-            "amountRaw": plan.source.amount_raw,
+            "amountRaw": plan.amount_raw,
+            "sourceCurrentAmountRaw": plan.source.amount_raw,
             "sourceSnapshotId": plan.source.snapshot_id.as_i64(),
+            "routeAmountSemantics": plan.route_amount_semantics,
+            "sourceAmountSemantics": plan.source_amount_semantics,
+            "sourceCollateralAmountRaw": plan.source_collateral_amount_raw,
+            "redeemableSourceLiquidityAmountRaw": plan.redeemable_source_liquidity_amount_raw,
+            "idleVaultLiquidityAmountRaw": plan.idle_vault_liquidity_amount_raw,
             "sourceApyBps": plan.source_apy_bps,
             "targetApyBps": plan.target_apy_bps,
             "estimatedEdgeBps": plan.edge_bps,
