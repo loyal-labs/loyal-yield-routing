@@ -5,8 +5,8 @@ Date: 2026-06-18
 This snapshot records the current verifier status for
 `multi-stable-earn-router-db-workers-verifier.md`. It includes local static
 evidence plus live staging/production database readbacks and same-mint monitor
-dry-runs. It does not claim overall PASS because image build, deploy, and
-post-deploy log evidence are not present yet.
+dry-runs, CI image build evidence, Render image deployment readbacks, and
+post-deploy worker log inspection.
 
 ## Static Evidence Commands
 
@@ -180,16 +180,16 @@ verifier. User yield position and holding-event persistence continues to use
 fail closed when the existing current liquidity mint differs from the pulled
 USDC mint.
 
-Worker Image Packaging Shape: STATIC PASS - Dockerfiles and `worker-images`
+Worker Image Packaging Shape: PASS - Dockerfiles and `worker-images`
 workflow include the affected binaries/scripts and publish immutable
 `sha-<commit>` image tags. The laserstream image also contains
 `yield-migrations`; every changed worker that reads or writes the Yield
 control-plane schema now has a Yield migration predeploy gate. The ATA monitor
 services also retain the existing Timescale migration gate before startup.
 Render config currently uses pinned image-runtime references, not Render Docker
-builds. This does not prove new images were built or deployed; that remains
-part of the external CI/deploy gates below. The verifier now includes structured
-CI image and Render service readback fields for those external gates.
+builds. The final `worker-images` GitHub Actions run `27750235851` passed for
+both `light-workers` and `laserstream-workers`, publishing immutable tag
+`sha-16e63ae5a37f7298d749ad486a7324441c9f4764`.
 
 Staging Database And Worker Verification: PASS - staging was checked before
 apply with migrations through version 5 and generic columns absent, then
@@ -206,7 +206,7 @@ same-mint monitor dry-run with `--once --all-active-vaults` returned
 mint candidate counts for CASH, USDG, PYUSD, USDC, and USDS, USDT in
 `skippedMints`, and no discovered vaults/results.
 
-Production Database And Worker Deployment: PARTIAL PASS - production was
+Production Database And Worker Deployment: PASS - production was
 checked before apply with migrations through version 5, 27 balance-sweep
 targets, and generic columns absent. Production `yield-migrations --apply`
 applied migration 6, and production `yield-migrations --check` now reports all
@@ -217,13 +217,41 @@ primary key `{target_id,mint}`, and pending surplus-lot generic source columns
 present. Production same-mint monitor dry-run with `--once --all-active-vaults`
 returned `execute: false`, all six enabled stablecoin mints, 16 total
 candidates, per-mint candidate counts for CASH, USDG, PYUSD, USDC, and USDS,
-USDT in `skippedMints`, and no discovered vaults/results. This section remains
-partial because new pinned worker images have not yet been built/deployed and
-post-deploy logs have not yet been inspected.
+USDT in `skippedMints`, and no discovered vaults/results.
 
-Local Static Checks: PASS - static checks above were run. Cargo, Bun, and
-autodeposit test commands, including the modified autodeposit test file, were
-intentionally not run because the operator requested no testing for this pass.
+Final production Render deployments used immutable image tag
+`sha-16e63ae5a37f7298d749ad486a7324441c9f4764`: ATA monitor
+`dep-d8prrn8g4nts7389c4d0`, projector `dep-d8prs13sq97s738dqghg`,
+autodeposit trigger `dep-d8prs4r6sc1c73d2s7e0`, and same-mint monitor
+`dep-d8prsm1o3t8c739af420`. Service readback confirmed these affected workers
+are still `runtime: image`, use registry credential `loyal-ghcr`, and retain the
+expected commands. Production post-deploy logs confirmed the ATA monitor ran
+Timescale predeploy, loaded two active USDC targets, seeded balances, and
+connected Laserstream; the projector repeatedly projected current observations
+without the old `wallet_token_ata` schema error; the autodeposit trigger ran
+Yield predeploy, saw migration 6 already applied, and scanned with
+`executions_attempted=0` and `executions_failed=0`; the same-mint monitor ran a
+dry-run fleet poll over the six enabled stable mints, and targeted log scans
+after the final deploy found no `error` or `reconcile_failed` entries.
 
-Overall Verdict: FAIL - image build/deploy and post-deploy log evidence remain
-required before the verifier can pass.
+Staging Worker Deployment: PASS - final staging Render deployments used
+immutable image tag `sha-16e63ae5a37f7298d749ad486a7324441c9f4764`: ATA monitor
+`dep-d8prqclckfvc73agp8a0`, projector `dep-d8prqm77f7vs73d9qg3g`,
+autodeposit trigger `dep-d8prqrbsq97s738dopjg`, and same-mint monitor
+`dep-d8prr99194ac739kofeg`. Service readback confirmed these affected workers
+are pinned to the final image tag with `runtime: image` and registry credential
+`loyal-ghcr`; staging autodeposit remains non-executing while production
+autodeposit retains `--execute-eligible`, and same-mint monitor commands do not
+include `--execute`.
+
+Local Static Checks: PASS - static checks above were run, plus
+`cargo fmt --all -- --check` and `cargo build --release -p
+loyal-yield-orchestrator`. Test suites, including Bun and autodeposit tests,
+were intentionally not run because the operator requested no testing for this
+pass.
+
+Overall Verdict: PASS - database migration, worker code, immutable image build,
+staging and production deployment, service readback, and post-deploy production
+log evidence satisfy the verifier scope for database and worker updates without
+policy updates. Deposits/autodeposits remain USDC-only while same-mint routing
+can now observe and plan across the supported stable mint set.
