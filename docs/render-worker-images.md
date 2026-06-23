@@ -167,8 +167,9 @@ CLI 41.3.2: during the approved `loyal-apps` production binding attempt, the
 CLI echoed the stdin value while prompting even with `--sensitive`. Treat that
 production Neon credential as exposed until the production Neon role password is
 rotated/reset and Vercel Production `NEON_DATABASE_URL` is overwritten through
-the Vercel UI or another non-echoing secret path. Add the Preview branch
-`staging` `NEON_DATABASE_URL` binding through the same non-echoing path.
+the Vercel UI or another non-echoing secret path. The Preview branch `staging`
+`NEON_DATABASE_URL` binding was added through the non-echoing Vercel REST API
+path and verified by env-name readback.
 
 The light worker image contains the Rust projector/trigger binaries, same-mint monitor/executor binaries, Bun production dependencies, and `scripts/execute-autodeposit-policy.ts`. The autodeposit trigger invokes that in-image executor through `BALANCE_SWEEP_EXECUTOR_COMMAND`; it should not depend on a sibling checkout at runtime. During the June 16 same-mint amount-semantics incident response, keep the same-mint monitor in fleet dry-run mode until the incident regression, DB guardrail, local checks, and explicit operator approval pass. The current safety command is `/usr/local/bin/same-mint-yield-monitor --all-active-vaults --poll-interval-seconds 300 --rebalance-cooldown-seconds 300`. That service does not include `SOLANA_TESTING_PK`; live optimization execution, when re-enabled, uses `YIELD_ROUTER_KEYPAIR` as the route payer and delegated signer. Monitor logs should report `execute: false`, `pollIntervalSeconds: 300`, and `rebalanceCooldownSeconds: 300`.
 
