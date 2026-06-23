@@ -2,8 +2,8 @@ use std::{process::Command, str::FromStr, time::Duration};
 
 use anyhow::{Context, Result};
 use balance_sweep_autodeposit_trigger::{
-    compute_sweep_amount, initial_surplus_amount, scheduled_eligible_after,
-    surplus_lot_classification_db_value, SweepAmountDecision, SweepCaps,
+    compute_sweep_amount, initial_surplus_amount, positive_delta_surplus_amount,
+    scheduled_eligible_after, surplus_lot_classification_db_value, SweepAmountDecision, SweepCaps,
 };
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -916,8 +916,18 @@ async fn insert_initial_surplus_lot_if_any(
 async fn insert_positive_delta_lot(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     event: &WalletBalanceEventRow,
-    amount_raw: i64,
+    delta_amount_raw: i64,
 ) -> Result<bool> {
+    if !event.target_active {
+        return Ok(false);
+    }
+    let Some(amount_raw) = positive_delta_surplus_amount(
+        event.amount_raw,
+        delta_amount_raw,
+        event.wallet_balance_floor_raw,
+    ) else {
+        return Ok(false);
+    };
     insert_scheduled_lot(
         tx,
         event,

@@ -107,6 +107,30 @@ pub fn initial_surplus_amount(
     (surplus > 0).then_some(surplus)
 }
 
+pub fn positive_delta_surplus_amount(
+    amount_after_raw: i64,
+    delta_amount_raw: i64,
+    wallet_balance_floor_raw: Option<i64>,
+) -> Option<i64> {
+    if delta_amount_raw <= 0 {
+        return None;
+    }
+    let floor = wallet_balance_floor_raw?;
+    let amount_before_raw = amount_after_raw.checked_sub(delta_amount_raw)?;
+    let previous_surplus_raw = surplus_above_floor(amount_before_raw, floor);
+    let current_surplus_raw = surplus_above_floor(amount_after_raw, floor);
+    let schedulable_amount_raw = current_surplus_raw.saturating_sub(previous_surplus_raw);
+    (schedulable_amount_raw > 0).then_some(schedulable_amount_raw)
+}
+
+fn surplus_above_floor(amount_raw: i64, floor_raw: i64) -> i64 {
+    if amount_raw > floor_raw {
+        amount_raw.saturating_sub(floor_raw)
+    } else {
+        0
+    }
+}
+
 pub fn positive_delta_to_lot(
     next_lot_id: i64,
     source_event_id: i64,
