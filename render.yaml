@@ -38,7 +38,7 @@ projects:
             autoDeploy: false
             image:
               url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a
-            preDeployCommand: /usr/local/bin/loyal-timescale-migrations --apply
+            preDeployCommand: /bin/sh -lc '/usr/local/bin/loyal-timescale-migrations --apply && /usr/local/bin/yield-migrations --apply'
             dockerCommand: /usr/local/bin/balance-sweep-ata-monitor
             maxShutdownDelaySeconds: 60
             envVars:
@@ -75,7 +75,7 @@ projects:
             autoDeploy: false
             image:
               url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a
-            preDeployCommand: /usr/local/bin/loyal-timescale-migrations --apply
+            preDeployCommand: /bin/sh -lc '/usr/local/bin/loyal-timescale-migrations --apply && /usr/local/bin/yield-migrations --apply'
             dockerCommand: /usr/local/bin/balance-sweep-ata-monitor
             maxShutdownDelaySeconds: 60
             envVars:
@@ -114,6 +114,7 @@ projects:
             autoDeploy: false
             image:
               url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a
+            preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-ata-projector
             maxShutdownDelaySeconds: 60
             envVars:
@@ -186,6 +187,7 @@ projects:
             autoDeploy: false
             image:
               url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a
+            preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-ata-projector
             maxShutdownDelaySeconds: 60
             envVars:

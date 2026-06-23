@@ -80,9 +80,9 @@ impl AtaTarget {
             id: value.id,
             cluster: cluster.into(),
             wallet: value.wallet.clone(),
-            wallet_usdc_ata: value.wallet_usdc_ata.parse()?,
+            wallet_usdc_ata: value.wallet_token_ata.parse()?,
             vault_pubkey: value.vault_pubkey.clone(),
-            vault_usdc_ata: value.vault_usdc_ata.parse()?,
+            vault_usdc_ata: value.vault_token_ata.parse()?,
         })
     }
 }

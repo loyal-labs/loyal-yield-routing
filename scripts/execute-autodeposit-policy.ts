@@ -107,8 +107,11 @@ type EligibleTarget = {
   vaultIndex: number;
   wallet: string;
   walletUsdcAta: string;
+  walletTokenAta: string;
   vaultPubkey: string;
   vaultUsdcAta: string;
+  vaultTokenAta: string;
+  tokenMint: string;
   sweepPolicyAccount: string;
   routePolicyAccount: string;
   routePolicySeed: bigint;
@@ -166,6 +169,7 @@ type LotClaimResult =
 const DEFAULT_COMMITMENT = "confirmed";
 const DEFAULT_LOCAL_SAME_MINT_COMMAND = ["bun", "run", "same-mint:swap", "--"] as const;
 const SAME_MINT_ROUTE_MODE = "same_mint_kamino";
+const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDC_DECIMALS = 6;
 const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
 
@@ -401,9 +405,12 @@ async function loadEligibleTarget(
       t.settings,
       t.vault_index,
       t.wallet,
-      t.wallet_usdc_ata,
+      COALESCE(t.wallet_usdc_ata, t.wallet_token_ata) AS wallet_usdc_ata,
+      t.wallet_token_ata,
       t.vault_pubkey,
-      t.vault_usdc_ata,
+      COALESCE(t.vault_usdc_ata, t.vault_token_ata) AS vault_usdc_ata,
+      t.vault_token_ata,
+      t.token_mint,
       t.policy_account AS sweep_policy_account,
       t.recurring_delegation,
       t.wallet_balance_floor_raw,
@@ -476,8 +483,11 @@ async function loadEligibleTarget(
     vaultIndex: Number(readRequiredString(row.vault_index, "vault_index")),
     wallet: readRequiredString(row.wallet, "wallet"),
     walletUsdcAta: readRequiredString(row.wallet_usdc_ata, "wallet_usdc_ata"),
+    walletTokenAta: readRequiredString(row.wallet_token_ata, "wallet_token_ata"),
     vaultPubkey: readRequiredString(row.vault_pubkey, "vault_pubkey"),
     vaultUsdcAta: readRequiredString(row.vault_usdc_ata, "vault_usdc_ata"),
+    vaultTokenAta: readRequiredString(row.vault_token_ata, "vault_token_ata"),
+    tokenMint: readRequiredString(row.token_mint, "token_mint"),
     sweepPolicyAccount: readRequiredString(
       row.sweep_policy_account,
       "sweep_policy_account"
@@ -592,6 +602,7 @@ async function claimAutodepositLots(args: {
   neon: AppModules["neon"];
   databaseUrl: string;
   targetId: bigint;
+  tokenMint: string;
   claimToken: string;
   walletBalanceRaw: bigint;
   walletBalanceFloorRaw: bigint;
@@ -600,23 +611,29 @@ async function claimAutodepositLots(args: {
   const sql = args.neon(args.databaseUrl);
   const rows = await sql`
     WITH existing_claim AS (
-      SELECT claim_token, target_id, amount_raw, status::text AS status, stale_check_event_id
-      FROM loyal_yield.balance_sweep_lot_claims
-      WHERE claim_token = ${args.claimToken}
+      SELECT c.claim_token, c.target_id, c.amount_raw, c.status::text AS status, c.stale_check_event_id
+      FROM loyal_yield.balance_sweep_lot_claims c
+      JOIN loyal_yield.balance_sweep_targets t
+        ON t.id = c.target_id
+      WHERE c.claim_token = ${args.claimToken}
+        AND c.target_id = ${args.targetId.toString()}
+        AND t.token_mint = ${args.tokenMint}
       FOR UPDATE
     ),
     target_guard AS (
-      SELECT id
+      SELECT id, token_mint
       FROM loyal_yield.balance_sweep_targets
       WHERE id = ${args.targetId.toString()}
         AND active
         AND lifecycle_status = 'active'
+        AND token_mint = ${args.tokenMint}
       FOR UPDATE
     ),
     stale AS (
       SELECT COALESCE(MAX(event_id), 0)::bigint AS event_id
       FROM loyal_yield.balance_sweep_wallet_balance_events
       WHERE target_id = ${args.targetId.toString()}
+        AND mint = (SELECT token_mint FROM target_guard)
     ),
     processed AS (
       SELECT COALESCE(last_event_id, 0)::bigint AS event_id
@@ -630,7 +647,10 @@ async function claimAutodepositLots(args: {
         l.eligible_after,
         l.created_at
       FROM loyal_yield.balance_sweep_surplus_lots l
+      JOIN loyal_yield.balance_sweep_wallet_balance_events e
+        ON e.event_id = l.source_event_id
       WHERE l.target_id = ${args.targetId.toString()}
+        AND e.mint = (SELECT token_mint FROM target_guard)
         AND l.status = 'open'
         AND l.remaining_amount_raw > 0
         AND l.eligible_after <= now()
@@ -714,10 +734,16 @@ async function claimAutodepositLots(args: {
       LIMIT 1
     ),
     active_items AS (
-      SELECT lot_id, amount_raw
-      FROM loyal_yield.balance_sweep_lot_claim_items
-      WHERE claim_token = (SELECT claim_token FROM active_claim)
-      ORDER BY lot_id ASC
+      SELECT i.lot_id, i.amount_raw
+      FROM loyal_yield.balance_sweep_lot_claim_items i
+      JOIN loyal_yield.balance_sweep_surplus_lots l
+        ON l.id = i.lot_id
+      JOIN loyal_yield.balance_sweep_wallet_balance_events e
+        ON e.event_id = l.source_event_id
+      WHERE i.claim_token = (SELECT claim_token FROM active_claim)
+        AND l.target_id = (SELECT target_id FROM active_claim)
+        AND e.mint = (SELECT token_mint FROM target_guard)
+      ORDER BY i.lot_id ASC
     ),
     noop_reason AS (
       SELECT CASE
@@ -752,12 +778,27 @@ async function completeAutodepositLotClaim(args: {
 }) {
   const sql = args.neon(args.databaseUrl);
   await sql`
-    WITH inserted AS (
+    WITH matched_lots AS (
+      SELECT i.lot_id, i.amount_raw
+      FROM loyal_yield.balance_sweep_lot_claim_items i
+      JOIN loyal_yield.balance_sweep_surplus_lots l
+        ON l.id = i.lot_id
+      JOIN loyal_yield.balance_sweep_wallet_balance_events e
+        ON e.event_id = l.source_event_id
+      JOIN loyal_yield.balance_sweep_lot_claims c
+        ON c.claim_token = i.claim_token
+      JOIN loyal_yield.balance_sweep_targets t
+        ON t.id = c.target_id
+      WHERE i.claim_token = ${args.claimToken}
+        AND l.target_id = c.target_id
+        AND e.mint = t.token_mint
+        AND t.token_mint = ${USDC_MINT_ADDRESS}
+    ),
+    inserted AS (
       INSERT INTO loyal_yield.balance_sweep_execution_lots
         (execution_id, lot_id, amount_raw)
       SELECT ${args.executionId}, lot_id, amount_raw
-      FROM loyal_yield.balance_sweep_lot_claim_items
-      WHERE claim_token = ${args.claimToken}
+      FROM matched_lots
       ON CONFLICT (execution_id, lot_id) DO NOTHING
       RETURNING lot_id
     )
@@ -767,6 +808,7 @@ async function completeAutodepositLotClaim(args: {
         updated_at = now()
     WHERE claim_token = ${args.claimToken}
       AND status = 'selected'
+      AND EXISTS (SELECT 1 FROM matched_lots)
   `;
 }
 
@@ -778,10 +820,13 @@ async function releaseAutodepositLotClaim(args: {
   const sql = args.neon(args.databaseUrl);
   await sql`
     WITH selected_claim AS (
-      SELECT claim_token
-      FROM loyal_yield.balance_sweep_lot_claims
-      WHERE claim_token = ${args.claimToken}
-        AND status = 'selected'
+      SELECT c.claim_token
+      FROM loyal_yield.balance_sweep_lot_claims c
+      JOIN loyal_yield.balance_sweep_targets t
+        ON t.id = c.target_id
+      WHERE c.claim_token = ${args.claimToken}
+        AND c.status = 'selected'
+        AND t.token_mint = ${USDC_MINT_ADDRESS}
     ),
     restored AS (
       UPDATE loyal_yield.balance_sweep_surplus_lots l
@@ -790,14 +835,25 @@ async function releaseAutodepositLotClaim(args: {
           eligible_after = now() + (${PRE_SEND_FAILURE_RETRY_DELAY_SECONDS} * interval '1 second'),
           updated_at = now()
       FROM loyal_yield.balance_sweep_lot_claim_items i
+      JOIN loyal_yield.balance_sweep_wallet_balance_events e
+        ON true
+      JOIN loyal_yield.balance_sweep_lot_claims c
+        ON c.claim_token = i.claim_token
+      JOIN loyal_yield.balance_sweep_targets t
+        ON t.id = c.target_id
       WHERE i.claim_token = (SELECT claim_token FROM selected_claim)
         AND l.id = i.lot_id
+        AND l.target_id = c.target_id
+        AND e.event_id = l.source_event_id
+        AND e.mint = t.token_mint
+        AND t.token_mint = ${USDC_MINT_ADDRESS}
       RETURNING l.id
     )
     UPDATE loyal_yield.balance_sweep_lot_claims
     SET status = 'released',
         updated_at = now()
     WHERE claim_token = (SELECT claim_token FROM selected_claim)
+      AND EXISTS (SELECT 1 FROM restored)
   `;
 }
 
@@ -1223,6 +1279,9 @@ async function recordPullExecution(args: {
         slot,
         source_wallet_ata,
         destination_vault_ata,
+        token_mint,
+        source_token_ata,
+        destination_token_ata,
         amount_raw,
         source_pre_balance_raw,
         source_post_balance_raw,
@@ -1241,6 +1300,9 @@ async function recordPullExecution(args: {
         ${args.slot.toString()},
         ${args.target.walletUsdcAta},
         ${args.target.vaultUsdcAta},
+        ${args.target.tokenMint},
+        ${args.target.walletTokenAta},
+        ${args.target.vaultTokenAta},
         ${args.amountRaw.toString()},
         ${args.sourcePreBalanceRaw.toString()},
         ${args.sourcePostBalanceRaw.toString()},
@@ -1684,6 +1746,20 @@ async function main() {
     programId,
   });
   assertAutodepositPullSupport(client);
+  const defaultEarnTarget = appModules.getKaminoUsdcEarnTargetForCluster(
+    appModules.LoyalCluster.MainnetBeta
+  );
+  const expectedUsdcMint = defaultEarnTarget.liquidityMint.toBase58();
+  if (expectedUsdcMint !== USDC_MINT_ADDRESS) {
+    throw new Error(
+      `SDK USDC mint ${expectedUsdcMint} does not match executor USDC guard ${USDC_MINT_ADDRESS}.`
+    );
+  }
+  if (target.tokenMint !== expectedUsdcMint) {
+    throw new Error(
+      `Autodeposit target mint ${target.tokenMint} is not supported; USDC-only executor expected ${expectedUsdcMint}.`
+    );
+  }
 
   let lotClaim: LotClaimResult | null = null;
   let executionAmountRaw = sweepDecision.amountRaw;
@@ -1706,6 +1782,7 @@ async function main() {
         neon: appModules.neon,
         databaseUrl,
         targetId: target.id,
+        tokenMint: target.tokenMint,
         claimToken: options.claimToken,
         walletBalanceRaw,
         walletBalanceFloorRaw: effectiveFloorRaw,
@@ -1744,9 +1821,6 @@ async function main() {
       amountRaw: executionAmountRaw,
       cluster: appModules.LoyalCluster.MainnetBeta,
     });
-    const defaultEarnTarget = appModules.getKaminoUsdcEarnTargetForCluster(
-      appModules.LoyalCluster.MainnetBeta
-    );
     const topUpReserve =
       target.currentReserve ?? defaultEarnTarget.reserve.toBase58();
     const topUpMarket =

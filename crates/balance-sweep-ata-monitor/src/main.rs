@@ -19,6 +19,7 @@ use balance_sweep_ata_monitor::{
 };
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
+use loyal_actions::USDC_MINT;
 use loyal_yield_orchestrator::{OrchestratorConfig, OrchestratorError, OrchestratorStore};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
@@ -305,11 +306,13 @@ async fn load_active_ata_targets(
     store: &OrchestratorStore,
     cluster: &str,
 ) -> Result<Vec<AtaTarget>> {
+    let usdc_mint = USDC_MINT.to_string();
     let targets = store
         .load_active_balance_sweep_targets()
         .await
         .map_err(orchestrator_error)?
         .iter()
+        .filter(|target| target.token_mint.as_str() == usdc_mint.as_str())
         .map(|target| AtaTarget::from_balance_sweep_target(target, cluster))
         .collect::<Result<Vec<_>>>()?;
     Ok(targets)

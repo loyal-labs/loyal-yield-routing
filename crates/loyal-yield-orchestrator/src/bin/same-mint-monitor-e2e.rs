@@ -102,7 +102,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         json!({ "mint": USDC_MINT.to_string() }),
     );
     let candidates = timescale
-        .latest_supported_reserves(SupportedReserveLatestQuery::safe_usdc(
+        .latest_supported_reserves(SupportedReserveLatestQuery::safe_stable(
             USDC_MINT.to_string(),
         ))
         .await?;

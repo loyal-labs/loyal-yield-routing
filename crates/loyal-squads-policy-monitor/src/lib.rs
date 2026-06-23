@@ -227,16 +227,20 @@ impl PolicyMatchSink for PostgresPolicyMatchSink {
         Box::pin(async move {
             let targets = store.load_active_balance_sweep_targets().await?;
             for target in targets {
-                if target.wallet_usdc_ata == event.source_wallet_ata
-                    && target.vault_usdc_ata == event.destination_vault_ata
+                if target.wallet_token_ata == event.source_wallet_ata
+                    && target.vault_token_ata == event.destination_vault_ata
+                    && target.token_mint == loyal_actions::USDC_MINT.to_string()
                 {
                     store
                         .record_balance_sweep_execution(BalanceSweepExecutionInput {
                             target_id: target.id,
                             signature: event.signature,
                             slot: event.slot,
+                            source_token_ata: event.source_wallet_ata.clone(),
                             source_wallet_ata: event.source_wallet_ata,
+                            destination_token_ata: event.destination_vault_ata.clone(),
                             destination_vault_ata: event.destination_vault_ata,
+                            token_mint: loyal_actions::USDC_MINT.to_string(),
                             amount_raw: event.amount_raw,
                             source_pre_balance_raw: event.source_pre_balance_raw,
                             source_post_balance_raw: event.source_post_balance_raw,
@@ -602,6 +606,8 @@ impl From<PolicyMatchEvent> for PolicyMatchInput {
 
 impl From<BalanceSweepPolicyEvent> for BalanceSweepPolicyMatchInput {
     fn from(event: BalanceSweepPolicyEvent) -> Self {
+        let wallet_usdc_ata = event.wallet_usdc_ata;
+        let vault_usdc_ata = event.vault_usdc_ata;
         Self {
             signature: event.signature,
             slot: event.slot,
@@ -612,8 +618,11 @@ impl From<BalanceSweepPolicyEvent> for BalanceSweepPolicyMatchInput {
             vault_index: event.vault_index,
             vault_pubkey: event.vault_pubkey,
             wallet: event.wallet,
-            wallet_usdc_ata: event.wallet_usdc_ata,
-            vault_usdc_ata: event.vault_usdc_ata,
+            wallet_token_ata: wallet_usdc_ata.clone(),
+            wallet_usdc_ata,
+            vault_token_ata: vault_usdc_ata.clone(),
+            vault_usdc_ata,
+            token_mint: loyal_actions::USDC_MINT.to_string(),
             delegated_signers: event.delegated_signers,
             threshold: event.threshold,
             max_amount_per_period: event.max_amount_per_period,

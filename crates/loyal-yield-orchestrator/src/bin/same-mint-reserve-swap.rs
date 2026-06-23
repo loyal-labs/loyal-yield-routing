@@ -16,10 +16,7 @@ use klend_interface::{
             deposit_reserve_liquidity_and_obligation_collateral_v2,
             DepositReserveLiquidityAndObligationCollateralV2Accounts,
         },
-        obligation::{
-            init_obligation, init_obligation_farms_for_reserve, InitObligationAccounts,
-            InitObligationFarmsForReserveAccounts,
-        },
+        obligation::{init_obligation, InitObligationAccounts},
         refresh::{
             refresh_obligation, refresh_reserve, RefreshObligationAccounts, RefreshReserveAccounts,
         },
@@ -36,13 +33,14 @@ use klend_interface::{
 use loyal_actions::{
     compile_squads_inner_instruction, create_init_obligation_yield_route_action,
     create_same_mint_market_mint_yield_route_action, derive_action_account,
+    derive_kamino_obligation_farm_user_state, derive_kamino_vanilla_obligation,
     execute_program_interaction_policy_instruction, execute_sync_transaction_instruction,
-    remove_policy_instruction, update_all_in_one_market_mint_yield_route_action,
-    update_init_obligation_yield_route_action, update_same_mint_market_mint_yield_route_action,
-    LoyalActionContext, RouteTopology, SwapLane, YieldRouteActionBuilder, YieldRouteActionSeeds,
-    YieldRouteActionSetup, YieldRouteUniverse, ASSOCIATED_TOKEN_PROGRAM_ID,
-    KAMINO_MAIN_USDC_RESERVE, SQUADS_SMART_ACCOUNT_PROGRAM_ID, USDC_MINT,
-    YIELD_ROUTE_WITHDRAW_ACTION_SEED,
+    kamino_init_obligation_farm_instruction, remove_policy_instruction,
+    update_all_in_one_market_mint_yield_route_action, update_init_obligation_yield_route_action,
+    update_same_mint_market_mint_yield_route_action, KaminoInitObligationFarm, LoyalActionContext,
+    RouteTopology, SwapLane, YieldRouteActionBuilder, YieldRouteActionSeeds, YieldRouteActionSetup,
+    YieldRouteUniverse, ASSOCIATED_TOKEN_PROGRAM_ID, KAMINO_MAIN_USDC_RESERVE,
+    SQUADS_SMART_ACCOUNT_PROGRAM_ID, USDC_MINT, YIELD_ROUTE_WITHDRAW_ACTION_SEED,
 };
 use loyal_yield_orchestrator::sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -92,8 +90,8 @@ const KAMINO_WITHDRAW_ROUTE_STEP: &str =
 const KAMINO_DEPOSIT_ROUTE_STEP: &str =
     "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2";
 const KAMINO_INIT_OBLIGATION_ROUTE_STEP: &str = "kamino_init_obligation";
+const KAMINO_INIT_OBLIGATION_FARM_ROUTE_STEP: &str = "kamino_init_obligation_farms_for_reserve";
 const KAMINO_REFRESH_OBLIGATION_ROUTE_STEP: &str = "kamino_refresh_obligation";
-const KAMINO_COLLATERAL_FARM_MODE: u8 = 0;
 const KAMINO_STABLE_UNIVERSE_PRESET: &str = "kamino_stable";
 const SAFE_RISK_PROFILE: &str = "safe";
 const LOOKUP_TABLE_EXTEND_CHUNK_SIZE: usize = 20;
@@ -251,6 +249,7 @@ struct CliOptions {
     seed_from_user_position: bool,
     provision_lookup_table: bool,
     expected_source_snapshot_id: Option<i64>,
+    expected_liquidity_mint: Option<String>,
     expected_amount_raw: Option<i64>,
     expected_route_amount_semantics: Option<String>,
     expected_source_apy_bps: Option<i64>,
@@ -718,6 +717,8 @@ struct PreparedSameMintDecision {
     source_reserve: String,
     target_reserve: String,
     liquidity_mint: String,
+    source_liquidity_mint: String,
+    target_liquidity_mint: String,
     amount_raw: i64,
     source_apy_bps: i64,
     target_apy_bps: i64,
@@ -733,8 +734,10 @@ enum PlanBlocker {
     MissingSourceReserve(String),
     MissingTargetReserve(String),
     SourceHasNoValue,
-    SourceMintMismatch(String),
-    TargetMintMismatch(String),
+    TargetMintMismatch {
+        actual: String,
+        expected: String,
+    },
     UnsupportedAmountSemantics {
         reserve: String,
         amount_semantics: Option<String>,
@@ -2703,6 +2706,7 @@ async fn run_initial_reserve_deposit_flow(
         active_policy_preflight,
         deposit_reserve,
         amount_raw,
+        wallet_signer.pubkey(),
         delegated_signer.pubkey(),
         account_index,
     ) {
@@ -2818,6 +2822,7 @@ async fn run_initial_reserve_deposit_flow(
         active_policy_preflight,
         deposit_reserve,
         amount_raw,
+        wallet_signer.pubkey(),
         delegated_signer.pubkey(),
         account_index,
     )?;
@@ -4328,6 +4333,8 @@ async fn load_prepared_same_mint_decision(
             source_reserve,
             target_reserve,
             liquidity_mint,
+            source_liquidity_mint,
+            target_liquidity_mint,
             amount_raw,
             source_apy_bps,
             target_apy_bps,
@@ -4372,6 +4379,8 @@ async fn load_prepared_same_mint_decision(
         source_reserve: required_string_column(&row, "source_reserve")?,
         target_reserve: required_string_column(&row, "target_reserve")?,
         liquidity_mint: required_string_column(&row, "liquidity_mint")?,
+        source_liquidity_mint: required_string_column(&row, "source_liquidity_mint")?,
+        target_liquidity_mint: required_string_column(&row, "target_liquidity_mint")?,
         amount_raw: required_i64_column(&row, "amount_raw")?,
         source_apy_bps: required_i64_column(&row, "source_apy_bps")?,
         target_apy_bps: required_i64_column(&row, "target_apy_bps")?,
@@ -4406,6 +4415,30 @@ fn validate_prepared_decision_plan_fields(
     require_plan_string(decision, "source_reserve", &decision.source_reserve)?;
     require_plan_string(decision, "target_reserve", &decision.target_reserve)?;
     require_plan_string(decision, "liquidity_mint", &decision.liquidity_mint)?;
+    require_optional_plan_string(
+        decision,
+        "source_liquidity_mint",
+        &decision.source_liquidity_mint,
+    )?;
+    require_optional_plan_string(
+        decision,
+        "target_liquidity_mint",
+        &decision.target_liquidity_mint,
+    )?;
+    if decision.source_liquidity_mint != decision.liquidity_mint {
+        return Err(format!(
+            "decision {} source_liquidity_mint {} does not match liquidity_mint {}",
+            decision.id, decision.source_liquidity_mint, decision.liquidity_mint
+        )
+        .into());
+    }
+    if decision.target_liquidity_mint != decision.liquidity_mint {
+        return Err(format!(
+            "decision {} target_liquidity_mint {} does not match liquidity_mint {}",
+            decision.id, decision.target_liquidity_mint, decision.liquidity_mint
+        )
+        .into());
+    }
     require_plan_i64(decision, "amount_raw", decision.amount_raw)?;
     require_plan_string(
         decision,
@@ -4441,6 +4474,24 @@ fn require_plan_string(
         .get(field)
         .and_then(Value::as_str)
         .ok_or_else(|| format!("decision {} execution_plan.{field} is missing", decision.id))?;
+    if actual != expected {
+        return Err(format!(
+            "decision {} execution_plan.{field} {actual} does not match row value {expected}",
+            decision.id
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn require_optional_plan_string(
+    decision: &PreparedSameMintDecision,
+    field: &'static str,
+    expected: &str,
+) -> Result<(), Box<dyn Error>> {
+    let Some(actual) = decision.execution_plan.get(field).and_then(Value::as_str) else {
+        return Ok(());
+    };
     if actual != expected {
         return Err(format!(
             "decision {} execution_plan.{field} {actual} does not match row value {expected}",
@@ -4494,13 +4545,6 @@ fn validate_execution_decision_route(
         return Err(format!(
             "persisted decision target reserve {} does not match requested target reserve {}",
             decision.target_reserve, reserve_move.target_reserve
-        )
-        .into());
-    }
-    if decision.liquidity_mint != USDC_MINT.to_string() {
-        return Err(format!(
-            "persisted decision liquidity mint {} is not USDC {}",
-            decision.liquidity_mint, USDC_MINT
         )
         .into());
     }
@@ -4565,14 +4609,12 @@ async fn load_user_position_seed_preview(
           AND vault_index = $2
           AND vault_pubkey = $3
           AND status::text = 'active'
-          AND current_liquidity_mint = $4
         ORDER BY current_observed_at DESC NULLS LAST, id DESC
         "#,
     )
     .bind(&vault.settings)
     .bind(vault.vault_index)
     .bind(&vault.vault_pubkey)
-    .bind(USDC_MINT.to_string())
     .fetch_all(pool)
     .await?;
 
@@ -4633,13 +4675,17 @@ async fn load_user_position_seed_preview(
 
     let target_amount = rows
         .iter()
-        .find(|row| row.current_reserve == target_reserve)
+        .find(|row| {
+            row.current_reserve == target_reserve
+                && row.current_liquidity_mint == source_row.current_liquidity_mint
+        })
         .map(|row| row.current_amount_raw)
         .unwrap_or_default();
+    let liquidity_mint = source_row.current_liquidity_mint.clone();
     let positions = vec![
         PositionSummary {
             reserve: source_reserve,
-            liquidity_mint: USDC_MINT.to_string(),
+            liquidity_mint: liquidity_mint.clone(),
             amount_raw: source_row.current_amount_raw,
             has_value: source_row.current_amount_raw > 0,
             snapshot_id: SnapshotId(0),
@@ -4652,7 +4698,7 @@ async fn load_user_position_seed_preview(
         },
         PositionSummary {
             reserve: target_reserve,
-            liquidity_mint: USDC_MINT.to_string(),
+            liquidity_mint,
             amount_raw: target_amount,
             has_value: target_amount > 0,
             snapshot_id: SnapshotId(0),
@@ -4688,10 +4734,10 @@ fn user_position_seed_reconciled_state(
         })?;
     let source_amount = amount_i64_to_u64(source_row.current_amount_raw, "source amount")?;
 
-    let target_row = seed
-        .rows
-        .iter()
-        .find(|row| row.current_reserve == target_reserve);
+    let target_row = seed.rows.iter().find(|row| {
+        row.current_reserve == target_reserve
+            && row.current_liquidity_mint == source_row.current_liquidity_mint
+    });
     let target_amount = target_row
         .map(|row| amount_i64_to_u64(row.current_amount_raw, "target amount"))
         .transpose()?
@@ -4729,7 +4775,7 @@ fn user_position_seed_reconciled_state(
             ReconciledReservePosition {
                 reserve: target_reserve,
                 market: Some(target_market.to_owned()),
-                liquidity_mint: USDC_MINT.to_string(),
+                liquidity_mint: source_row.current_liquidity_mint.clone(),
                 amount_raw: target_amount,
                 supply_apy_bps: None,
                 borrow_apy_bps: None,
@@ -4788,11 +4834,15 @@ fn target_market_for_seed(
     chain_preview: Option<&ChainReconcilePreview>,
     direction: Direction,
 ) -> Result<String, Box<dyn Error>> {
-    if let Some(row) = seed
+    let source_liquidity_mint = seed
         .rows
         .iter()
-        .find(|row| row.current_reserve == reserve_move.target_reserve)
-    {
+        .find(|row| row.current_reserve == reserve_move.source_reserve)
+        .map(|row| row.current_liquidity_mint.as_str());
+    if let Some(row) = seed.rows.iter().find(|row| {
+        row.current_reserve == reserve_move.target_reserve
+            && source_liquidity_mint.is_some_and(|mint| row.current_liquidity_mint == mint)
+    }) {
         return Ok(row.current_market.clone());
     }
     if let Some(preview) = chain_preview {
@@ -4830,10 +4880,6 @@ fn load_chain_reconcile_preview(
     let (vault_user_metadata, _) = user_metadata(&KLEND_PROGRAM_ID, &vault_pubkey);
     let vault_user_metadata_exists =
         account_exists_with_owner(&rpc, &vault_user_metadata, &KLEND_PROGRAM_ID)?;
-    let vault_liquidity_ata =
-        derive_associated_token_address(&vault_pubkey, &USDC_MINT, &spl_token::ID);
-    let (vault_liquidity_amount_raw, vault_liquidity_token_account_exists) =
-        load_spl_token_account_amount(&rpc, &vault_liquidity_ata, &USDC_MINT)?;
     let mut reserve_pubkeys = Vec::with_capacity(reserves.len());
     for reserve in reserves {
         let pubkey = Pubkey::from_str(reserve)
@@ -4846,13 +4892,17 @@ fn load_chain_reconcile_preview(
 
     for reserve in reserve_pubkeys {
         let reserve_summary = load_kamino_reserve_summary(&rpc, &reserve)?;
-        if reserve_summary.liquidity_mint != USDC_MINT {
-            return Err(format!(
-                "reserve {reserve} liquidity mint {} is not USDC {}",
-                reserve_summary.liquidity_mint, USDC_MINT
-            )
-            .into());
-        }
+        let vault_liquidity_ata = derive_associated_token_address(
+            &vault_pubkey,
+            &reserve_summary.liquidity_mint,
+            &spl_token::ID,
+        );
+        let (vault_liquidity_amount_raw, vault_liquidity_token_account_exists) =
+            load_spl_token_account_amount(
+                &rpc,
+                &vault_liquidity_ata,
+                &reserve_summary.liquidity_mint,
+            )?;
 
         let collateral_mint = reserve_summary.collateral_mint;
         let (obligation_account, _) = obligation(
@@ -5685,8 +5735,45 @@ fn build_route_execution_plan(
     let amount = amount_i64_to_u64(input.amount_raw, "route amount")?;
     let source = chain_position_for_reserve(preview, &reserve_move.source_reserve)?;
     let target = chain_position_for_reserve(preview, &reserve_move.target_reserve)?;
+    if !vault
+        .stable_mints
+        .iter()
+        .any(|mint| mint == &input.liquidity_mint)
+    {
+        return Err(format!(
+            "selected policy {} does not allow stable mint {}",
+            vault.policy_account, input.liquidity_mint
+        )
+        .into());
+    }
+    if !vault
+        .kamino_liquidity_mints
+        .iter()
+        .any(|mint| mint == &input.liquidity_mint)
+    {
+        return Err(format!(
+            "selected policy {} does not allow Kamino liquidity mint {}",
+            vault.policy_account, input.liquidity_mint
+        )
+        .into());
+    }
+    if source.liquidity_mint != input.liquidity_mint {
+        return Err(format!(
+            "source reserve {} liquidity mint {} does not match planned mint {}",
+            source.reserve, source.liquidity_mint, input.liquidity_mint
+        )
+        .into());
+    }
+    if target.liquidity_mint != input.liquidity_mint {
+        return Err(format!(
+            "target reserve {} liquidity mint {} does not match planned mint {}",
+            target.reserve, target.liquidity_mint, input.liquidity_mint
+        )
+        .into());
+    }
+    let planned_liquidity_mint = Pubkey::from_str(&input.liquidity_mint)?;
     let vault_liquidity_ata =
-        derive_associated_token_address(&vault_pubkey, &USDC_MINT, &spl_token::ID);
+        derive_associated_token_address(&vault_pubkey, &planned_liquidity_mint, &spl_token::ID);
 
     let source_reserve_refresh_instruction = kamino_refresh_reserve_instruction(source)?;
     let target_reserve_refresh_instruction = kamino_refresh_reserve_instruction(target)?;
@@ -5860,6 +5947,7 @@ fn build_initial_reserve_deposit_policy_plan(
     policy_preflight: Option<&PolicyAccountPreflight>,
     deposit_reserve: &str,
     amount: u64,
+    payer_pubkey: Pubkey,
     signer_pubkey: Pubkey,
     account_index: u8,
 ) -> Result<InitialDepositPolicyPlan, Box<dyn Error>> {
@@ -5890,6 +5978,8 @@ fn build_initial_reserve_deposit_policy_plan(
     let vault_liquidity_ata =
         derive_associated_token_address(&vault_pubkey, &USDC_MINT, &spl_token::ID);
     let reserve_refresh_instruction = kamino_refresh_reserve_instruction(deposit)?;
+    let farm_init_instruction =
+        kamino_init_obligation_collateral_farm_instruction(payer_pubkey, vault_pubkey, deposit)?;
     let refresh_instruction = kamino_refresh_obligation_instruction(deposit)?;
     let deposit_instruction = kamino_deposit_to_obligation_instruction(
         vault_pubkey,
@@ -5919,6 +6009,19 @@ fn build_initial_reserve_deposit_policy_plan(
 
     let deposit_instruction_program = deposit_instruction.program_id.to_string();
     let deposit_instruction_discriminator = deposit_instruction.data[..8].to_vec();
+    let setup_instruction_program = farm_init_instruction
+        .as_ref()
+        .map(|instruction| instruction.program_id.to_string());
+    let setup_instruction_discriminator = farm_init_instruction
+        .as_ref()
+        .map(|instruction| instruction.data[..8].to_vec());
+    let has_farm_init = farm_init_instruction.is_some();
+    let mut pre_instructions = vec![reserve_refresh_instruction];
+    if let Some(farm_init_instruction) = farm_init_instruction {
+        pre_instructions.push(farm_init_instruction);
+    }
+    pre_instructions.push(refresh_instruction);
+
     let mut transaction_accounts = Vec::new();
     let deposit_compiled =
         compile_squads_inner_instruction(&mut transaction_accounts, deposit_instruction);
@@ -5933,7 +6036,7 @@ fn build_initial_reserve_deposit_policy_plan(
     );
 
     Ok(InitialDepositPolicyPlan {
-        pre_instructions: vec![reserve_refresh_instruction, refresh_instruction],
+        pre_instructions,
         instruction: outer_instruction.clone(),
         preview: InitialDepositPolicyPreview {
             policy_account: policy_account.to_string(),
@@ -5941,9 +6044,16 @@ fn build_initial_reserve_deposit_policy_plan(
             account_index,
             instruction_constraint_indexes,
             policy_constraint_validation,
-            setup_instruction_program: None,
-            setup_instruction_discriminator: None,
-            route_steps: vec![KAMINO_DEPOSIT_ROUTE_STEP],
+            setup_instruction_program,
+            setup_instruction_discriminator,
+            route_steps: if has_farm_init {
+                vec![
+                    KAMINO_INIT_OBLIGATION_FARM_ROUTE_STEP,
+                    KAMINO_DEPOSIT_ROUTE_STEP,
+                ]
+            } else {
+                vec![KAMINO_DEPOSIT_ROUTE_STEP]
+            },
             inner_instruction_count: compiled_instructions.len(),
             transaction_account_count: transaction_accounts.len(),
             outer_account_count: outer_instruction.accounts.len(),
@@ -6474,21 +6584,32 @@ fn kamino_init_obligation_collateral_farm_instruction(
         .as_deref()
         .ok_or("collateral farm state was present without a derived farm user state")?;
     let lending_market = Pubkey::from_str(&position.market)?;
-    let (lending_market_authority, _) =
-        lending_market_authority(&KLEND_PROGRAM_ID, &lending_market);
+    let reserve_farm_state = Pubkey::from_str(reserve_farm_state)?;
+    let obligation = derive_kamino_vanilla_obligation(owner, lending_market);
+    if Pubkey::from_str(&position.obligation)? != obligation {
+        return Err(format!(
+            "chain preview obligation {} does not match derived vanilla obligation {}",
+            position.obligation, obligation
+        )
+        .into());
+    }
+    let derived_obligation_farm =
+        derive_kamino_obligation_farm_user_state(reserve_farm_state, obligation);
+    if Pubkey::from_str(obligation_farm)? != derived_obligation_farm {
+        return Err(format!(
+            "chain preview collateral farm user state {obligation_farm} does not match derived farm user state {derived_obligation_farm}"
+        )
+        .into());
+    }
 
-    Ok(Some(init_obligation_farms_for_reserve(
-        InitObligationFarmsForReserveAccounts {
+    Ok(Some(kamino_init_obligation_farm_instruction(
+        KaminoInitObligationFarm {
             payer,
             owner,
-            obligation: Pubkey::from_str(&position.obligation)?,
-            lending_market_authority,
-            reserve: Pubkey::from_str(&position.reserve)?,
-            reserve_farm_state: Pubkey::from_str(reserve_farm_state)?,
-            obligation_farm: Pubkey::from_str(obligation_farm)?,
             lending_market,
+            reserve: Pubkey::from_str(&position.reserve)?,
+            reserve_farm_state,
         },
-        KAMINO_COLLATERAL_FARM_MODE,
     )))
 }
 
@@ -7301,6 +7422,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     let mut seed_from_user_position = false;
     let mut provision_lookup_table = false;
     let mut expected_source_snapshot_id = None;
+    let mut expected_liquidity_mint = None;
     let mut expected_amount_raw = None;
     let mut expected_route_amount_semantics = None;
     let mut expected_source_apy_bps = None;
@@ -7434,6 +7556,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
                         .map_err(|_| "--expected-source-snapshot-id must be an i64")?,
                 );
             }
+            "--expected-liquidity-mint" => {
+                let raw = iter
+                    .next()
+                    .ok_or("--expected-liquidity-mint requires a mint public key")?;
+                Pubkey::from_str(&raw)
+                    .map_err(|_| "--expected-liquidity-mint must be a public key")?;
+                expected_liquidity_mint = Some(raw);
+            }
             "--expected-amount-raw" => {
                 let raw = iter
                     .next()
@@ -7558,6 +7688,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
             return Err("--optimization-cycle cannot use --seed-from-user-position".to_owned());
         }
         if expected_source_snapshot_id.is_none()
+            || expected_liquidity_mint.is_none()
             || expected_amount_raw.is_none()
             || expected_route_amount_semantics.is_none()
             || expected_source_apy_bps.is_none()
@@ -7565,7 +7696,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
             || expected_edge_bps.is_none()
         {
             return Err(
-                "--optimization-cycle requires --expected-source-snapshot-id, --expected-amount-raw, --expected-route-amount-semantics, --expected-source-apy-bps, --expected-target-apy-bps, and --expected-edge-bps"
+                "--optimization-cycle requires --expected-source-snapshot-id, --expected-liquidity-mint, --expected-amount-raw, --expected-route-amount-semantics, --expected-source-apy-bps, --expected-target-apy-bps, and --expected-edge-bps"
                     .to_owned(),
             );
         }
@@ -7592,6 +7723,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
         seed_from_user_position,
         provision_lookup_table,
         expected_source_snapshot_id,
+        expected_liquidity_mint,
         expected_amount_raw,
         expected_route_amount_semantics,
         expected_source_apy_bps,
@@ -7611,17 +7743,6 @@ fn validate_vault_policy(vault: &SelectedVault) -> Result<(), Box<dyn Error>> {
         return Err(format!(
             "selected policy {} does not allow {SAME_MINT_ROUTE_MODE}",
             vault.policy_account
-        )
-        .into());
-    }
-    if !vault
-        .kamino_liquidity_mints
-        .iter()
-        .any(|mint| mint == &USDC_MINT.to_string())
-    {
-        return Err(format!(
-            "selected policy {} does not allow USDC liquidity mint {}",
-            vault.policy_account, USDC_MINT
         )
         .into());
     }
@@ -7656,16 +7777,12 @@ fn build_same_mint_input(
         .find(|position| position.reserve == target_reserve)
         .ok_or_else(|| PlanBlocker::MissingTargetReserve(target_reserve.clone()))?;
 
-    let usdc_mint = USDC_MINT.to_string();
-    if source.liquidity_mint != usdc_mint {
-        return Err(PlanBlocker::SourceMintMismatch(
-            source.liquidity_mint.clone(),
-        ));
-    }
-    if target.liquidity_mint != usdc_mint {
-        return Err(PlanBlocker::TargetMintMismatch(
-            target.liquidity_mint.clone(),
-        ));
+    let liquidity_mint = source.liquidity_mint.clone();
+    if target.liquidity_mint != liquidity_mint {
+        return Err(PlanBlocker::TargetMintMismatch {
+            actual: target.liquidity_mint.clone(),
+            expected: liquidity_mint,
+        });
     }
     if source.amount_raw <= 0 || !source.has_value {
         return Err(PlanBlocker::SourceHasNoValue);
@@ -7695,7 +7812,7 @@ fn build_same_mint_input(
         vault_index: None,
         source_reserve,
         target_reserve,
-        liquidity_mint: usdc_mint,
+        liquidity_mint,
         amount_raw: evidence.amount_raw,
         route_amount_semantics: evidence.route_amount_semantics,
         source_amount_semantics: evidence.source_amount_semantics,
@@ -7724,6 +7841,14 @@ fn validate_monitor_expectations(
             return Err(PlanBlocker::MonitorPlanDrift(format!(
                 "expected source snapshot {expected}, got {}",
                 input.expected_source_snapshot_id.as_i64()
+            )));
+        }
+    }
+    if let Some(expected) = &options.expected_liquidity_mint {
+        if input.liquidity_mint != *expected {
+            return Err(PlanBlocker::MonitorPlanDrift(format!(
+                "expected liquidity_mint {expected}, got {}",
+                input.liquidity_mint
             )));
         }
     }
@@ -7810,15 +7935,10 @@ fn blocker_reason(blocker: &PlanBlocker) -> Value {
             "reserve": reserve,
         }),
         PlanBlocker::SourceHasNoValue => json!("source_reserve_has_no_value"),
-        PlanBlocker::SourceMintMismatch(mint) => json!({
-            "kind": "source_liquidity_mint_mismatch",
-            "actual": mint,
-            "expected": USDC_MINT.to_string(),
-        }),
-        PlanBlocker::TargetMintMismatch(mint) => json!({
+        PlanBlocker::TargetMintMismatch { actual, expected } => json!({
             "kind": "target_liquidity_mint_mismatch",
-            "actual": mint,
-            "expected": USDC_MINT.to_string(),
+            "actual": actual,
+            "expected": expected,
         }),
         PlanBlocker::UnsupportedAmountSemantics {
             reserve,
@@ -7864,7 +7984,6 @@ fn required_reserves_json(reserve_move: &ReserveMove) -> Value {
     json!({
         "sourceReserve": reserve_move.source_reserve,
         "targetReserve": reserve_move.target_reserve,
-        "liquidityMint": USDC_MINT.to_string(),
     })
 }
 
@@ -7920,6 +8039,8 @@ fn prepared_same_mint_decision_json(decision: &PreparedSameMintDecision) -> Valu
         "sourceReserve": decision.source_reserve,
         "targetReserve": decision.target_reserve,
         "liquidityMint": decision.liquidity_mint,
+        "sourceLiquidityMint": decision.source_liquidity_mint,
+        "targetLiquidityMint": decision.target_liquidity_mint,
         "amountRaw": decision.amount_raw.to_string(),
         "routeAmountSemantics": decision.execution_plan.get("route_amount_semantics").and_then(Value::as_str),
         "sourceAmountSemantics": decision.execution_plan.get("source_amount_semantics").and_then(Value::as_str),
@@ -8256,7 +8377,7 @@ fn policy_route_preflight_json(
         "sourceMarket": source_market,
         "targetMarket": target_market,
         "neonAllowsRequiredMarkets": neon_allows_required_markets,
-        "neonAllowsUsdc": vault.kamino_liquidity_mints.iter().any(|mint| mint == &USDC_MINT.to_string()),
+        "neonAllowedLiquidityMints": vault.kamino_liquidity_mints,
         "neonRouteModes": vault.route_modes,
         "policyAccountDecode": policy_account.map(policy_account_preflight_json),
     })
