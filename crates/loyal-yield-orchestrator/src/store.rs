@@ -957,6 +957,20 @@ impl NeonSqlClient {
             .amount_raw
             .ok_or_else(|| OrchestratorError::StoreInvariant("missing amount_raw".to_owned()))?;
 
+        if let Some(post_snapshot_id) = input.post_snapshot_id {
+            let decision = update_confirmed_decision(
+                &mut *tx,
+                input.decision_id,
+                &input.signature,
+                input.submitted_slot,
+                input.confirmed_slot,
+                post_snapshot_id,
+            )
+            .await?;
+            tx.commit().await?;
+            return Ok(same_mint_result_from_confirmed_decision(decision));
+        }
+
         let mut next_positions = Vec::with_capacity(current.len());
         let mut saw_source = false;
         let mut saw_target = false;
@@ -2209,6 +2223,11 @@ fn ensure_same_mint_confirm_repeat_matches(
     if decision.confirmed_slot != Some(input.confirmed_slot) {
         return Err(OrchestratorError::ConflictingTerminalRepeat {
             field: "confirmed_slot",
+        });
+    }
+    if input.post_snapshot_id.is_some() && decision.post_snapshot_id != input.post_snapshot_id {
+        return Err(OrchestratorError::ConflictingTerminalRepeat {
+            field: "post_snapshot_id",
         });
     }
     Ok(())

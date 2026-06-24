@@ -1219,6 +1219,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let execution = match execute_prepared_same_mint_route(
             &client,
             &options,
+            &vault,
             &execution_decision,
             &route_execution,
         )
@@ -4835,6 +4836,56 @@ fn chain_preview_reconciled_state(
     })
 }
 
+fn ensure_post_confirm_chain_reconcile_state(
+    decision: &PreparedSameMintDecision,
+    state: &ReconciledVaultState,
+) -> Result<(), Box<dyn Error>> {
+    let mut saw_source = false;
+    let mut saw_target = false;
+
+    for position in &state.positions {
+        if position.reserve == decision.source_reserve {
+            saw_source = true;
+            if position.liquidity_mint != decision.liquidity_mint {
+                return Err(format!(
+                    "post-confirm source reserve liquidity mint {} does not match decision mint {}",
+                    position.liquidity_mint, decision.liquidity_mint
+                )
+                .into());
+            }
+            if position.amount_raw != 0 {
+                return Err(format!(
+                    "post-confirm source reserve {} remains nonzero in chain reconcile: {}",
+                    decision.source_reserve, position.amount_raw
+                )
+                .into());
+            }
+        } else if position.reserve == decision.target_reserve {
+            saw_target = true;
+            if position.liquidity_mint != decision.liquidity_mint {
+                return Err(format!(
+                    "post-confirm target reserve liquidity mint {} does not match decision mint {}",
+                    position.liquidity_mint, decision.liquidity_mint
+                )
+                .into());
+            }
+            if position.amount_raw == 0 {
+                return Err(format!(
+                    "post-confirm target reserve {} is zero in chain reconcile",
+                    decision.target_reserve
+                )
+                .into());
+            }
+        }
+    }
+
+    if !saw_source || !saw_target {
+        return Err("post-confirm chain reconcile requires source and target positions".into());
+    }
+
+    Ok(())
+}
+
 fn target_market_for_seed(
     seed: &UserPositionSeedPreview,
     reserve_move: &ReserveMove,
@@ -6346,6 +6397,7 @@ fn build_full_main_usdc_withdraw_policy_plan(
 async fn execute_prepared_same_mint_route(
     client: &NeonSqlClient,
     options: &CliOptions,
+    vault: &SelectedVault,
     decision: &PreparedSameMintDecision,
     route_execution: &RouteExecutionPlan,
 ) -> Result<RouteExecutionSubmitResult, Box<dyn Error>> {
@@ -6449,6 +6501,17 @@ async fn execute_prepared_same_mint_route(
     client
         .advance_decision(decision.id, DecisionAdvance::StartConfirmation)
         .await?;
+    let post_reconcile_reserves = vec![
+        decision.source_reserve.clone(),
+        decision.target_reserve.clone(),
+    ];
+    let post_reconcile_preview =
+        load_chain_reconcile_preview(&options.rpc_url, vault, &post_reconcile_reserves)?;
+    let post_reconcile_state = chain_preview_reconciled_state(&post_reconcile_preview)?;
+    ensure_post_confirm_chain_reconcile_state(decision, &post_reconcile_state)?;
+    let post_snapshot = client
+        .reconcile_vault(decision.vault_id, post_reconcile_state)
+        .await?;
     let confirmed = client
         .confirm_same_mint_rebalance(ConfirmSameMintRebalanceInput {
             decision_id: decision.id,
@@ -6456,6 +6519,7 @@ async fn execute_prepared_same_mint_route(
             submitted_slot: Some(submitted_slot),
             confirmed_slot,
             observed_at: Some(Utc::now()),
+            post_snapshot_id: Some(post_snapshot.id),
         })
         .await?;
 

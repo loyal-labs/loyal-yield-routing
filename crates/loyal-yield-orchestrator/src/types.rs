@@ -631,6 +631,7 @@ pub struct ConfirmSameMintRebalanceInput {
     pub submitted_slot: Option<i64>,
     pub confirmed_slot: i64,
     pub observed_at: Option<DateTime<Utc>>,
+    pub post_snapshot_id: Option<SnapshotId>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
