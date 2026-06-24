@@ -70,7 +70,7 @@ struct ReserveSummary {
     scope_prices: Option<Pubkey>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ObligationSummary {
     exists: bool,
     reserve_deposited_amount_raw: u64,
@@ -150,11 +150,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         &obligation_summary,
         withdraw_amount,
     )?;
+    let route_deposit_obligation_summary = route_deposit_obligation_summary_after_withdraw(
+        &obligation_summary,
+        &source.reserve,
+        withdraw_amount,
+    );
     let route_deposit_instructions = build_route_deposit_instructions(
         options.vault,
         options.setup_fee_payer,
         &target,
-        &obligation_summary,
+        &route_deposit_obligation_summary,
         target_farm_user_state_exists,
         options.route_deposit_amount_raw,
     )?;
@@ -182,6 +187,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "withdrawAmountRaw": withdraw_amount.to_string(),
             "depositAmountRaw": options.route_deposit_amount_raw.to_string(),
             "obligationExisted": obligation_summary.exists,
+            "routeDepositAssumesObligationClosed": !route_deposit_obligation_summary.exists && obligation_summary.exists,
             "files": {
                 "policySetup": options.policy_setup_file,
                 "routeWithdraw": options.route_withdraw_file,
@@ -191,6 +197,38 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     Ok(())
+}
+
+fn route_deposit_obligation_summary_after_withdraw(
+    summary: &ObligationSummary,
+    source_reserve: &Pubkey,
+    withdraw_amount: u64,
+) -> ObligationSummary {
+    if withdraw_closes_only_obligation_position(summary, source_reserve, withdraw_amount) {
+        return ObligationSummary {
+            exists: false,
+            reserve_deposited_amount_raw: 0,
+            deposit_reserves: Vec::new(),
+            borrow_reserves: Vec::new(),
+        };
+    }
+    summary.clone()
+}
+
+fn withdraw_closes_only_obligation_position(
+    summary: &ObligationSummary,
+    source_reserve: &Pubkey,
+    withdraw_amount: u64,
+) -> bool {
+    summary.exists
+        && summary.reserve_deposited_amount_raw > 0
+        && withdraw_amount >= summary.reserve_deposited_amount_raw
+        && summary.borrow_reserves.is_empty()
+        && !summary.deposit_reserves.is_empty()
+        && summary
+            .deposit_reserves
+            .iter()
+            .all(|reserve| reserve == source_reserve)
 }
 
 fn build_route_withdraw_instructions(
@@ -766,4 +804,63 @@ fn print_help() {
         "Usage: loyal-hub-mainnet-route-files --vault <PUBKEY> [--setup-fee-payer <PUBKEY>] [--rpc-url <URL>] [--setup-amount-raw <N>] [--route-deposit-amount-raw <N>]\n\n\
          Generates tmp/withdraw-usdc-kamino.json, tmp/deposit-pyusd-kamino.json, and tmp/policy-setup-kamino-usdc.json for the Loyal Hub mainnet runner."
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn obligation_summary(
+        amount: u64,
+        deposit_reserves: Vec<Pubkey>,
+        borrow_reserves: Vec<Pubkey>,
+    ) -> ObligationSummary {
+        ObligationSummary {
+            exists: true,
+            reserve_deposited_amount_raw: amount,
+            deposit_reserves,
+            borrow_reserves,
+        }
+    }
+
+    #[test]
+    fn route_deposit_reinitializes_obligation_after_full_only_position_withdraw() {
+        let source_reserve = Pubkey::new_unique();
+        let summary = obligation_summary(841_542, vec![source_reserve], Vec::new());
+
+        let deposit_summary =
+            route_deposit_obligation_summary_after_withdraw(&summary, &source_reserve, 841_542);
+
+        assert!(!deposit_summary.exists);
+        assert!(deposit_summary.deposit_reserves.is_empty());
+        assert!(deposit_summary.borrow_reserves.is_empty());
+    }
+
+    #[test]
+    fn route_deposit_keeps_existing_obligation_after_partial_withdraw() {
+        let source_reserve = Pubkey::new_unique();
+        let summary = obligation_summary(841_542, vec![source_reserve], Vec::new());
+
+        let deposit_summary =
+            route_deposit_obligation_summary_after_withdraw(&summary, &source_reserve, 841_541);
+
+        assert!(deposit_summary.exists);
+        assert_eq!(deposit_summary.deposit_reserves, vec![source_reserve]);
+    }
+
+    #[test]
+    fn route_deposit_keeps_existing_obligation_with_other_positions() {
+        let source_reserve = Pubkey::new_unique();
+        let other_reserve = Pubkey::new_unique();
+        let summary = obligation_summary(841_542, vec![source_reserve, other_reserve], Vec::new());
+
+        let deposit_summary =
+            route_deposit_obligation_summary_after_withdraw(&summary, &source_reserve, 841_542);
+
+        assert!(deposit_summary.exists);
+        assert_eq!(
+            deposit_summary.deposit_reserves,
+            vec![source_reserve, other_reserve]
+        );
+    }
 }

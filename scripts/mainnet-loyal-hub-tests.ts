@@ -282,6 +282,7 @@ async function main(): Promise<void> {
     await ensureUserVaultLamportsForPolicySetup();
     await runPolicySetup();
     await ensureMainnetKaminoRouteFiles(usesDefaultRouteFiles() || hasFlag(args, "refresh-route-files"));
+    await ensureAllInOnePolicy();
     await runPolicyRoute();
   }
 
