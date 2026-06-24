@@ -35,7 +35,10 @@ import {
   LOYAL_CLUSTER_CONFIGS,
   LoyalCluster,
   MaxFeeBps,
+  TREASURY_REBALANCE_ACTION_SEED,
   assertRebalanceAvoidsActiveLanes,
+  createLoyalActionsSdk,
+  createProgramInteractionPolicyUpdateInstruction,
   deriveActionAccount,
   createSquadsProgramInteractionExecutionInstruction,
   createSquadsSyncTransactionInstruction,
@@ -71,6 +74,7 @@ const WITHDRAW_INVENTORY_TAG = 2;
 const REBALANCE_INVENTORY_TAG = 5;
 const MAX_REBALANCE_TRANSFERS = 16;
 const DEFAULT_YIELD_ROUTE_POLICY_SEED = 1n;
+const DEFAULT_TREASURY_REBALANCE_POLICY_SEED = TREASURY_REBALANCE_ACTION_SEED;
 const SQUADS_FULL_PERMISSIONS_MASK = 7;
 const SQUADS_SYNC_SIGNER_COUNT = 1;
 const EXECUTE_SETTINGS_TRANSACTION_SYNC_DISCRIMINATOR = [138, 209, 64, 163, 79, 67, 233, 76] as const;
@@ -136,6 +140,12 @@ type StoredVault = {
   settingsSeed?: string;
 };
 
+type StoredTreasuryVault = StoredVault & {
+  policy?: string;
+  rebalanceIndexes?: number[];
+  rebalancePolicySpec?: string;
+};
+
 type TestState = {
   version: 1;
   cluster: string;
@@ -155,7 +165,7 @@ type TestState = {
       sameMint?: number[];
     };
   };
-  treasury?: StoredVault;
+  treasury?: StoredTreasuryVault;
   steps?: Record<string, { signature: string | null; at: string }>;
   updatedAt?: string;
 };
@@ -234,6 +244,7 @@ async function main(): Promise<void> {
   }
 
   if (!hasFlag(args, "skip-treasury-rebalance")) {
+    await ensureTreasuryRebalancePolicy();
     await runTreasuryJupiterRebalance();
   }
 
@@ -446,6 +457,119 @@ async function ensureAllInOnePolicy(): Promise<void> {
 
 function yieldRoutePolicySeed(): bigint {
   return u64(value(args, "policy-seed") ?? DEFAULT_YIELD_ROUTE_POLICY_SEED.toString(), "policy-seed");
+}
+
+async function ensureTreasuryRebalancePolicy(): Promise<void> {
+  const treasury = requireTreasury();
+  const settings = new PublicKey(treasury.settings);
+  const vault = new PublicKey(treasury.vault);
+  const policySeed = treasuryRebalancePolicySeed();
+  const laneId = numberValue(args, "treasury-lane-id", 0);
+  const maxWithdrawAmount = u64(value(args, "treasury-rebalance-in-raw") ?? "500000", "treasury-rebalance-in-raw");
+  const maxTopUpAmount = u64(value(args, "treasury-rebalance-topup-raw") ?? "495000", "treasury-rebalance-topup-raw");
+  const maxSlippageBps = numberValue(args, "slippage-bps", 50);
+  const inputMintInfo = await fetchMintInfo(USDC_MINT);
+  const outputMintInfo = await fetchMintInfo(PYUSD_MINT);
+  const policy = createLoyalActionsSdk({ cluster: loyalCluster }).initTreasuryLoyalHubRebalancePolicy({
+    laneId,
+    inputMint: USDC_MINT,
+    outputMint: PYUSD_MINT,
+    inputTokenProgram: inputMintInfo.tokenProgram,
+    outputTokenProgram: outputMintInfo.tokenProgram,
+    outputMintDecimals: outputMintInfo.decimals,
+    maxWithdrawAmount,
+    maxTopUpAmount,
+    maxSlippageBps,
+    squads: {
+      settings,
+      authority: system,
+      delegatedSigner: system,
+      accountIndex: 0,
+      vault,
+      policySeed,
+    },
+  });
+  const actionAccount = policy.actionAccount;
+  const policySpec = treasuryRebalancePolicySpec({
+    laneId,
+    inputMintInfo,
+    outputMintInfo,
+    maxWithdrawAmount,
+    maxTopUpAmount,
+    maxSlippageBps,
+  });
+
+  if (treasury.policy && treasury.policy !== actionAccount.toBase58()) {
+    console.log(`switching treasury rebalance policy seed to ${policySeed}: ${actionAccount.toBase58()}`);
+  }
+
+  const existingPolicy = await accountExists(actionAccount);
+  const shouldUpdate = existingPolicy
+    && (hasFlag(args, "update-treasury-policy") || treasury.rebalancePolicySpec !== policySpec);
+
+  if (existingPolicy && !shouldUpdate) {
+    treasury.policy = actionAccount.toBase58();
+    treasury.rebalanceIndexes = [...policy.route.instructionConstraintIndexes];
+    treasury.rebalancePolicySpec = policySpec;
+    saveState();
+    console.log(`treasury rebalance policy exists: ${treasury.policy}`);
+    return;
+  }
+
+  const createInstruction = policy.instructions[0];
+  if (!createInstruction) {
+    throw new Error("treasury rebalance policy builder returned no setup instruction");
+  }
+  const updateInstruction = createProgramInteractionPolicyUpdateInstruction(
+    clusterConfig,
+    {
+      settings,
+      authority: system,
+      delegatedSigner: system,
+      accountIndex: 0,
+    },
+    actionAccount,
+    policy.constraints,
+  );
+  const run = existingPolicy
+    ? await sendTransaction("update-treasury-rebalance-policy", [updateInstruction], [systemKeypair])
+    : await sendTransaction("create-treasury-rebalance-policy", [createInstruction], [systemKeypair]);
+
+  treasury.policy = actionAccount.toBase58();
+  treasury.rebalanceIndexes = [...policy.route.instructionConstraintIndexes];
+  treasury.rebalancePolicySpec = policySpec;
+  if (run.mode === "execute") {
+    saveState();
+  }
+  console.log(`treasuryPolicy=${treasury.policy} rebalanceRoute=${treasury.rebalanceIndexes.join(",")}`);
+}
+
+function treasuryRebalancePolicySeed(): bigint {
+  return u64(
+    value(args, "treasury-policy-seed") ?? DEFAULT_TREASURY_REBALANCE_POLICY_SEED.toString(),
+    "treasury-policy-seed",
+  );
+}
+
+function treasuryRebalancePolicySpec(input: {
+  laneId: number;
+  inputMintInfo: MintInfo;
+  outputMintInfo: MintInfo;
+  maxWithdrawAmount: bigint;
+  maxTopUpAmount: bigint;
+  maxSlippageBps: number;
+}): string {
+  return JSON.stringify({
+    laneId: input.laneId,
+    inputMint: USDC_MINT.toBase58(),
+    outputMint: PYUSD_MINT.toBase58(),
+    inputTokenProgram: input.inputMintInfo.tokenProgram.toBase58(),
+    outputTokenProgram: input.outputMintInfo.tokenProgram.toBase58(),
+    outputMintDecimals: input.outputMintInfo.decimals,
+    maxWithdrawAmount: input.maxWithdrawAmount.toString(),
+    maxTopUpAmount: input.maxTopUpAmount.toString(),
+    maxSlippageBps: input.maxSlippageBps,
+  });
 }
 
 function routePolicyUniverseFromFiles(): {
@@ -1027,6 +1151,14 @@ async function runTreasuryJupiterRebalance(): Promise<void> {
   }
   const treasury = requireTreasury();
   const treasuryVault = new PublicKey(treasury.vault);
+  if (!treasury.policy) {
+    throw new Error("missing treasury rebalance policy");
+  }
+  const treasuryPolicy = new PublicKey(treasury.policy);
+  const rebalanceIndexes = treasury.rebalanceIndexes ?? [];
+  if (rebalanceIndexes.length !== 3) {
+    throw new Error(`treasury rebalance policy requires 3 constraint indexes, got ${rebalanceIndexes.join(",")}`);
+  }
   let handedOffAdmin = false;
   const laneId = numberValue(args, "treasury-lane-id", 0);
   const hubInputAmount = u64(value(args, "treasury-rebalance-in-raw") ?? "500000", "treasury-rebalance-in-raw");
@@ -1058,6 +1190,14 @@ async function runTreasuryJupiterRebalance(): Promise<void> {
     throw new Error(`Jupiter guaranteed output ${quoteMinOut} is below Hub top-up ${hubOutputTopUpAmount}`);
   }
   const swap = await fetchJupiterSwapInstructions(quote, treasuryVault);
+  assertSupportedJupiterSetupInstructions(
+    jupiterInstructions(swap.setupInstructions),
+    treasuryVault,
+    [treasuryInput, treasuryOutput],
+  );
+  if (swap.cleanupInstruction) {
+    throw new Error("treasury rebalance policy does not allow Jupiter cleanup instructions inside the guarded payload");
+  }
   const withdraw = clearSignerForPubkey(
     buildHubWithdrawInstruction({
       admin: hubAdmin,
@@ -1088,16 +1228,15 @@ async function runTreasuryJupiterRebalance(): Promise<void> {
   ];
   const innerInstructions = [
     withdraw,
-    ...jupiterInstructions(swap.setupInstructions).map((instruction) => clearSignerForPubkey(instruction, treasuryVault)),
     clearSignerForPubkey(jupiterInstruction(swap.swapInstruction), treasuryVault),
-    ...jupiterInstructions(swap.cleanupInstruction ? [swap.cleanupInstruction] : []).map((instruction) => clearSignerForPubkey(instruction, treasuryVault)),
     topUp,
   ];
-  const wrapper = createSquadsSyncTransactionInstruction(clusterConfig, {
-    settings: new PublicKey(treasury.settings),
+  const wrapper = createSquadsProgramInteractionExecutionInstruction(clusterConfig, {
+    policy: treasuryPolicy,
     signer: system,
     accountIndex: 0,
     instructions: innerInstructions,
+    instructionConstraintIndexes: rebalanceIndexes,
   });
   const computeBudgetInstructions = jupiterComputeBudgetInstructions(swap.computeBudgetInstructions);
   const outer = [
@@ -1698,6 +1837,30 @@ function jupiterComputeBudgetInstructions(values: readonly JupiterInstructionJso
   return jupiterInstructions(values).filter((instruction) => instruction.programId.equals(ComputeBudgetProgram.programId));
 }
 
+function assertSupportedJupiterSetupInstructions(
+  instructions: readonly TransactionInstruction[],
+  treasuryVault: PublicKey,
+  allowedAtas: readonly PublicKey[],
+): void {
+  const allowed = new Set(allowedAtas.map((pubkey) => pubkey.toBase58()));
+  for (const instruction of instructions) {
+    const ata = instruction.keys[1]?.pubkey;
+    const owner = instruction.keys[2]?.pubkey;
+    const isIdempotentAtaCreate = instruction.programId.equals(ASSOCIATED_TOKEN_PROGRAM_ID)
+      && instruction.data.length === 1
+      && instruction.data[0] === 1
+      && ata !== undefined
+      && owner !== undefined
+      && owner.equals(treasuryVault)
+      && allowed.has(ata.toBase58());
+    if (!isIdempotentAtaCreate) {
+      throw new Error(
+        `treasury rebalance policy only supports Jupiter ATA setup outside the guarded payload, got ${instruction.programId.toBase58()}`,
+      );
+    }
+  }
+}
+
 function jupiterInstruction(value: JupiterInstructionJson): TransactionInstruction {
   return new TransactionInstruction({
     programId: new PublicKey(value.programId),
@@ -2009,6 +2172,7 @@ function applyManualResumeFlags(state: TestState, args: ParsedArgs): void {
   const userVault = value(args, "user-vault");
   const treasurySettings = value(args, "treasury-settings");
   const treasuryVault = value(args, "treasury-vault");
+  const treasuryPolicy = value(args, "treasury-policy");
   const policy = value(args, "policy");
   if (userSettings || userVault || policy) {
     state.user = {
@@ -2018,11 +2182,12 @@ function applyManualResumeFlags(state: TestState, args: ParsedArgs): void {
       policy: policy ?? state.user?.policy,
     };
   }
-  if (treasurySettings || treasuryVault) {
+  if (treasurySettings || treasuryVault || treasuryPolicy) {
     state.treasury = {
       ...(state.treasury ?? {}),
       settings: treasurySettings ?? state.treasury?.settings ?? "",
       vault: treasuryVault ?? state.treasury?.vault ?? "",
+      policy: treasuryPolicy ?? state.treasury?.policy,
     };
   }
 }
@@ -2095,6 +2260,9 @@ Policy route inputs:
   --refresh-route-files            Regenerate the route/setup JSON files even when they already exist.
   --policy-seed <n>                Squads policy seed for the user route policy. Default: ${DEFAULT_YIELD_ROUTE_POLICY_SEED}
   --update-policy                  Update an existing policy at --policy-seed instead of reusing it as-is.
+  --treasury-policy <pubkey>       Resume with an existing treasury rebalance policy account.
+  --treasury-policy-seed <n>       Squads policy seed for the treasury rebalance policy. Default: ${DEFAULT_TREASURY_REBALANCE_POLICY_SEED}
+  --update-treasury-policy         Force-refresh an existing treasury rebalance policy.
   --kamino-source-reserve <pubkey> Override the default Main USDC source reserve.
   --kamino-target-reserve <pubkey> Override the default Main PYUSD target reserve.
 
