@@ -172,6 +172,9 @@ const SAME_MINT_ROUTE_MODE = "same_mint_kamino";
 const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDC_DECIMALS = 6;
 const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
+const SOLANA_WEEK_NOTIFY_ENDPOINT_ENV = "SOLANA_WEEK_NOTIFY_ENDPOINT";
+const SOLANA_WEEK_NOTIFY_SECRET_ENV = "SOLANA_WEEK_NOTIFY_SECRET";
+const SOLANA_WEEK_NOTIFY_TIMEOUT_MS = 5_000;
 
 async function loadAppModules(): Promise<AppModules> {
   const [
@@ -1085,6 +1088,11 @@ type SameMintTopUpResult = {
   json: Record<string, unknown> | null;
 };
 
+type SolanaWeekNotifyResult =
+  | { status: "skipped"; reason: "missing_endpoint" | "missing_secret" }
+  | { status: "sent"; httpStatus: number }
+  | { status: "failed"; httpStatus: number | null; error: string };
+
 function sameMintReserveSwapCommand(): string[] {
   const configured = process.env.SAME_MINT_RESERVE_SWAP_COMMAND;
   if (configured && configured.trim().length > 0) {
@@ -1196,6 +1204,85 @@ function redactSensitiveText(value: string): string {
     redacted = redacted.split(rpcUrl).join("[redacted SOLANA_RPC_URL]");
   }
   return redacted.replace(/api-key=[^'"\s]+/gi, "api-key=[redacted]");
+}
+
+function encodePublicKeyBase64(
+  PublicKeyCtor: typeof PublicKey,
+  address: string
+): string {
+  const bytes = new PublicKeyCtor(address).toBytes();
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
+async function notifySolanaWeekSweep(args: {
+  PublicKeyCtor: typeof PublicKey;
+  ownerWalletAddress: string;
+}): Promise<SolanaWeekNotifyResult> {
+  const endpoint = process.env[SOLANA_WEEK_NOTIFY_ENDPOINT_ENV]?.trim();
+  const secret = process.env[SOLANA_WEEK_NOTIFY_SECRET_ENV]?.trim();
+  if (!endpoint) {
+    return { status: "skipped", reason: "missing_endpoint" };
+  }
+  if (!secret) {
+    return { status: "skipped", reason: "missing_secret" };
+  }
+
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => {
+    abortController.abort();
+  }, SOLANA_WEEK_NOTIFY_TIMEOUT_MS);
+  const walletAddress = encodePublicKeyBase64(
+    args.PublicKeyCtor,
+    args.ownerWalletAddress
+  );
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
+      signal: abortController.signal,
+      body: JSON.stringify({ walletAddress }),
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      return {
+        status: "failed",
+        httpStatus: response.status,
+        error: body.trim().slice(0, 200) || response.statusText,
+      };
+    }
+    return { status: "sent", httpStatus: response.status };
+  } catch (error) {
+    return {
+      status: "failed",
+      httpStatus: null,
+      error: abortController.signal.aborted
+        ? `notification timed out after ${SOLANA_WEEK_NOTIFY_TIMEOUT_MS}ms`
+        : error instanceof Error
+          ? error.message
+          : String(error),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function logSolanaWeekNotifyResult(result: SolanaWeekNotifyResult) {
+  const level = result.status === "sent" ? "info" : "warn";
+  console.warn(
+    JSON.stringify({
+      event: "solana_week_sweep_notify",
+      level,
+      ...result,
+    })
+  );
 }
 
 function requireTopUpExecution(result: SameMintTopUpResult): {
@@ -2019,6 +2106,11 @@ async function main() {
         yieldDepositRecord,
       },
     });
+    const solanaWeekNotify = await notifySolanaWeekSweep({
+      PublicKeyCtor,
+      ownerWalletAddress: target.wallet,
+    });
+    logSolanaWeekNotifyResult(solanaWeekNotify);
 
     console.log(
       JSON.stringify(
@@ -2038,6 +2130,7 @@ async function main() {
           vaultPostDepositRaw: vaultPostDepositRaw.toString(),
           kaminoTopUpExecution: summarizeTopUpResult(topUpExecute),
           yieldDepositRecord,
+          solanaWeekNotify,
         },
         null,
         2

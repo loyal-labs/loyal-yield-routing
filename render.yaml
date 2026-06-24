@@ -151,6 +151,10 @@ projects:
                 value: bun scripts/execute-autodeposit-policy.ts --require-lot-claim
               - key: BALANCE_SWEEP_EXECUTE_ELIGIBLE
                 value: "true"
+              - key: SOLANA_WEEK_NOTIFY_ENDPOINT
+                value: https://askloyal.com/api/solana-week/sweep-notify
+              - key: SOLANA_WEEK_NOTIFY_SECRET
+                sync: false
               - key: RUST_LOG
                 value: warn,balance_sweep_autodeposit_trigger=info
 

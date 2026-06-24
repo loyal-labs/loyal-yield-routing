@@ -77,13 +77,15 @@ Production sets `BALANCE_SWEEP_ATA_STREAM=production`,
 and `NEON_BRANCH_NAME=production`; staging sets
 `BALANCE_SWEEP_ATA_STREAM=staging`, `BALANCE_SWEEP_EXECUTE_ELIGIBLE=false`,
 `NEON_BRANCH_ID=br-old-wind-aq34quzh`, and `NEON_BRANCH_NAME=staging`.
+The production autodeposit trigger also sets `SOLANA_WEEK_NOTIFY_ENDPOINT` for
+the post-sweep Solana Week callback.
 
 Populate the remaining environment-specific secret values from the approved
 operator source: `NEON_DATABASE_URL`, `TIMESCALEDB_URL`, `SOLANA_RPC_URL`,
 `HELIUS_API_KEY`, `YIELD_ROUTER_KEYPAIR`, `POLICY_KEYPAIR`,
-`SOLANA_TESTING_PK`, `RENDER_API_KEY`, `SF_API_TOKEN`, and `DEPLOYMENT_PK` where
-that environment actually needs them. Do not create blank placeholder secret
-values. Older duplicate shells were renamed to
+`SOLANA_TESTING_PK`, `SOLANA_WEEK_NOTIFY_SECRET`, `RENDER_API_KEY`,
+`SF_API_TOKEN`, and `DEPLOYMENT_PK` where that environment actually needs them.
+Do not create blank placeholder secret values. Older duplicate shells were renamed to
 `loyal-yield-routing-production-superseded`
 (`yz6qehsjpi4rz44wxz2xpovtay`) and
 `loyal-yield-routing-staging-superseded`
