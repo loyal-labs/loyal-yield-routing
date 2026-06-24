@@ -3144,6 +3144,8 @@ dependencies = [
  "klend-interface",
  "loyal-actions",
  "loyal-yield-router",
+ "num-bigint 0.4.6",
+ "num-traits",
  "serde",
  "serde_json",
  "sha2 0.10.9",

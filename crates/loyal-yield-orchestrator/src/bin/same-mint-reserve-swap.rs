@@ -53,6 +53,8 @@ use loyal_yield_orchestrator::{
     ReconciledVaultState, SameMintRebalanceInput, SameMintRebalanceResult, SnapshotId, VaultId,
     AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
+use num_bigint::BigUint;
+use num_traits::{ToPrimitive, Zero};
 use serde_json::{json, Value};
 use solana_client::rpc_client::RpcClient;
 #[allow(deprecated)]
@@ -311,6 +313,7 @@ struct ChainPositionSummary {
     obligation_deposit_reserves: Vec<String>,
     obligation_borrow_reserves: Vec<String>,
     amount_raw: u64,
+    redeemable_liquidity_amount_raw: u64,
     vault_liquidity_ata: String,
     vault_liquidity_token_account_exists: bool,
     vault_liquidity_amount_raw: u64,
@@ -4816,6 +4819,9 @@ fn chain_preview_reconciled_state(
                 planning_metadata: json!({
                     "source": "chain_reconcile_preview",
                     "amount_semantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
+                    "source_collateral_amount_raw": position.amount_raw.to_string(),
+                    "redeemable_source_liquidity_amount_raw": position.redeemable_liquidity_amount_raw.to_string(),
+                    "redeemable_liquidity_amount_raw": position.redeemable_liquidity_amount_raw.to_string(),
                     "obligation": position.obligation,
                     "obligation_exists": position.obligation_exists,
                     "vault_liquidity_ata": position.vault_liquidity_ata,
@@ -4930,6 +4936,12 @@ fn load_chain_reconcile_preview(
                 (None, false)
             };
 
+        let redeemable_liquidity_amount_raw = collateral_to_redeemable_liquidity_amount(
+            reserve_summary.collateral_total_supply,
+            &reserve_summary.total_liquidity_scaled,
+            obligation_summary.reserve_deposited_amount_raw,
+        )?;
+
         positions.push(ChainPositionSummary {
             reserve: reserve.to_string(),
             market: reserve_summary.market.to_string(),
@@ -4956,6 +4968,7 @@ fn load_chain_reconcile_preview(
             obligation_deposit_reserves: obligation_summary.deposit_reserves,
             obligation_borrow_reserves: obligation_summary.borrow_reserves,
             amount_raw: obligation_summary.reserve_deposited_amount_raw,
+            redeemable_liquidity_amount_raw,
             vault_liquidity_ata: vault_liquidity_ata.to_string(),
             vault_liquidity_token_account_exists,
             vault_liquidity_amount_raw,
@@ -5700,6 +5713,31 @@ fn build_program_interaction_policy_execution_instruction(
     )
 }
 
+fn planned_source_collateral_amount(
+    input: &SameMintRebalanceInput,
+    source: &ChainPositionSummary,
+) -> Result<u64, Box<dyn Error>> {
+    let Some(source_collateral_amount_raw) = input.source_collateral_amount_raw else {
+        return Err(
+            "planned same-mint route is missing source_collateral_amount_raw for Kamino withdraw"
+                .into(),
+        );
+    };
+    let source_collateral_amount =
+        amount_i64_to_u64(source_collateral_amount_raw, "source collateral amount")?;
+    if source_collateral_amount == 0 {
+        return Err("source collateral amount must be greater than 0".into());
+    }
+    if source.amount_raw != source_collateral_amount {
+        return Err(format!(
+            "chain source reserve {} collateral amount {} does not match planned source_collateral_amount_raw {}",
+            source.reserve, source.amount_raw, source_collateral_amount
+        )
+        .into());
+    }
+    Ok(source_collateral_amount)
+}
+
 fn build_route_execution_plan(
     rpc: Option<&RpcClient>,
     vault: &SelectedVault,
@@ -5732,9 +5770,24 @@ fn build_route_execution_plan(
             vault.vault_index
         )
     })?;
-    let amount = amount_i64_to_u64(input.amount_raw, "route amount")?;
+    let route_liquidity_amount = amount_i64_to_u64(input.amount_raw, "route liquidity amount")?;
     let source = chain_position_for_reserve(preview, &reserve_move.source_reserve)?;
     let target = chain_position_for_reserve(preview, &reserve_move.target_reserve)?;
+    let source_collateral_amount = planned_source_collateral_amount(input, source)?;
+    if input.redeemable_source_liquidity_amount_raw != Some(input.amount_raw) {
+        return Err(format!(
+            "planned redeemable_source_liquidity_amount_raw {:?} does not match route amount {}",
+            input.redeemable_source_liquidity_amount_raw, input.amount_raw
+        )
+        .into());
+    }
+    if source.redeemable_liquidity_amount_raw != route_liquidity_amount {
+        return Err(format!(
+            "chain source reserve {} redeemable liquidity amount {} does not match planned route amount {}",
+            source.reserve, source.redeemable_liquidity_amount_raw, route_liquidity_amount
+        )
+        .into());
+    }
     if !vault
         .stable_mints
         .iter()
@@ -5783,13 +5836,17 @@ fn build_route_execution_plan(
         kamino_init_obligation_collateral_farm_instruction(fee_payer, vault_pubkey, target)?;
     let source_refresh_instruction = kamino_refresh_obligation_instruction(source)?;
     let target_refresh_instruction = kamino_refresh_obligation_instruction(target)?;
-    let source_instruction =
-        kamino_withdraw_instruction(vault_pubkey, source, vault_liquidity_ata, amount)?;
+    let source_instruction = kamino_withdraw_instruction(
+        vault_pubkey,
+        source,
+        vault_liquidity_ata,
+        source_collateral_amount,
+    )?;
     let target_instruction = kamino_deposit_to_obligation_instruction(
         vault_pubkey,
         target,
         vault_liquidity_ata,
-        amount,
+        route_liquidity_amount,
     )?;
     let source_instruction_program = source_instruction.program_id.to_string();
     let target_instruction_program = target_instruction.program_id.to_string();
@@ -6836,6 +6893,9 @@ fn preview_position_summaries(preview: &ChainReconcilePreview) -> Vec<PositionSu
             planning_metadata: json!({
                 "source": "chain_reconcile_preview",
                 "amount_semantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
+                "source_collateral_amount_raw": position.amount_raw.to_string(),
+                "redeemable_source_liquidity_amount_raw": position.redeemable_liquidity_amount_raw.to_string(),
+                "redeemable_liquidity_amount_raw": position.redeemable_liquidity_amount_raw.to_string(),
                 "obligation": position.obligation,
                 "obligation_exists": position.obligation_exists,
                 "vault_liquidity_ata": position.vault_liquidity_ata,
@@ -6860,6 +6920,8 @@ struct KaminoReserveSummary {
     switchboard_price_oracle: Option<Pubkey>,
     switchboard_twap_oracle: Option<Pubkey>,
     scope_prices: Option<Pubkey>,
+    collateral_total_supply: u64,
+    total_liquidity_scaled: BigUint,
 }
 
 fn load_kamino_reserve_summary(
@@ -6882,6 +6944,8 @@ fn load_kamino_reserve_summary(
         liquidity_supply: reserve_state.liquidity.supply_vault,
         collateral_mint: reserve_state.collateral.mint_pubkey,
         collateral_supply: reserve_state.collateral.supply_vault,
+        collateral_total_supply: reserve_state.collateral.mint_total_supply,
+        total_liquidity_scaled: reserve_total_liquidity_scaled(&reserve_state)?,
         collateral_farm: if reserve_state.farm_collateral == Pubkey::default() {
             None
         } else {
@@ -6910,6 +6974,61 @@ fn load_kamino_reserve_summary(
                 .price_feed,
         ),
     })
+}
+
+fn reserve_total_liquidity_scaled(reserve: &Reserve) -> Result<BigUint, Box<dyn Error>> {
+    let scale = BigUint::from(1_u128 << 60);
+    let mut total = BigUint::from(reserve.liquidity.total_available_amount) * &scale;
+    total += BigUint::from(u128::from(reserve.liquidity.borrowed_amount_sf));
+    subtract_scaled_fraction(
+        &mut total,
+        u128::from(reserve.liquidity.accumulated_protocol_fees_sf),
+        "accumulated protocol fees",
+    )?;
+    subtract_scaled_fraction(
+        &mut total,
+        u128::from(reserve.liquidity.accumulated_referrer_fees_sf),
+        "accumulated referrer fees",
+    )?;
+    subtract_scaled_fraction(
+        &mut total,
+        u128::from(reserve.liquidity.pending_referrer_fees_sf),
+        "pending referrer fees",
+    )?;
+    Ok(total)
+}
+
+fn subtract_scaled_fraction(
+    total: &mut BigUint,
+    amount: u128,
+    label: &'static str,
+) -> Result<(), Box<dyn Error>> {
+    let amount = BigUint::from(amount);
+    if (&*total) < &amount {
+        return Err(format!("reserve total liquidity underflow subtracting {label}").into());
+    }
+    *total -= amount;
+    Ok(())
+}
+
+fn collateral_to_redeemable_liquidity_amount(
+    collateral_total_supply: u64,
+    total_liquidity_scaled: &BigUint,
+    collateral_amount: u64,
+) -> Result<u64, Box<dyn Error>> {
+    if collateral_amount == 0 {
+        return Ok(0);
+    }
+    if collateral_total_supply == 0 || total_liquidity_scaled.is_zero() {
+        return Ok(collateral_amount);
+    }
+
+    let scale = BigUint::from(1_u128 << 60);
+    let numerator = BigUint::from(collateral_amount) * total_liquidity_scaled;
+    let denominator = BigUint::from(collateral_total_supply) * scale;
+    (numerator / denominator)
+        .to_u64()
+        .ok_or_else(|| "redeemable liquidity amount does not fit u64".into())
 }
 
 fn non_default_pubkey(pubkey: Pubkey) -> Option<Pubkey> {
@@ -8301,6 +8420,8 @@ fn chain_position_json(position: &ChainPositionSummary) -> Value {
         "obligationBorrowReserves": position.obligation_borrow_reserves,
         "amountRaw": position.amount_raw.to_string(),
         "hasValue": position.amount_raw > 0,
+        "sourceCollateralAmountRaw": position.amount_raw.to_string(),
+        "redeemableSourceLiquidityAmountRaw": position.redeemable_liquidity_amount_raw.to_string(),
         "vaultLiquidityAta": position.vault_liquidity_ata,
         "vaultLiquidityTokenAccountExists": position.vault_liquidity_token_account_exists,
         "vaultLiquidityAmountRaw": position.vault_liquidity_amount_raw.to_string(),
@@ -8531,6 +8652,109 @@ fn same_mint_input_json(input: &SameMintRebalanceInput) -> Value {
         "estimatedEdgeBps": input.estimated_edge_bps,
         "estimatedCostLamports": input.estimated_cost_lamports,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_chain_position(
+        collateral_amount: u64,
+        redeemable_liquidity_amount: u64,
+    ) -> ChainPositionSummary {
+        ChainPositionSummary {
+            reserve: "source-reserve".to_owned(),
+            market: "market".to_owned(),
+            liquidity_mint: "mint".to_owned(),
+            liquidity_token_program: "token-program".to_owned(),
+            reserve_liquidity_supply: "liquidity-supply".to_owned(),
+            collateral_mint: "collateral-mint".to_owned(),
+            reserve_collateral_supply: "collateral-supply".to_owned(),
+            collateral_farm: None,
+            collateral_farm_user_state: None,
+            collateral_farm_user_state_exists: false,
+            pyth_oracle: None,
+            switchboard_price_oracle: None,
+            switchboard_twap_oracle: None,
+            scope_prices: None,
+            obligation: "obligation".to_owned(),
+            obligation_exists: true,
+            obligation_deposit_reserves: Vec::new(),
+            obligation_borrow_reserves: Vec::new(),
+            amount_raw: collateral_amount,
+            redeemable_liquidity_amount_raw: redeemable_liquidity_amount,
+            vault_liquidity_ata: "vault-liquidity-ata".to_owned(),
+            vault_liquidity_token_account_exists: true,
+            vault_liquidity_amount_raw: 0,
+        }
+    }
+
+    fn test_same_mint_input(
+        route_liquidity_amount: i64,
+        source_collateral_amount: Option<i64>,
+    ) -> SameMintRebalanceInput {
+        SameMintRebalanceInput {
+            vault_id: None,
+            settings: None,
+            vault_index: None,
+            source_reserve: "source-reserve".to_owned(),
+            target_reserve: "target-reserve".to_owned(),
+            liquidity_mint: "mint".to_owned(),
+            amount_raw: route_liquidity_amount,
+            route_amount_semantics: ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY.to_owned(),
+            source_amount_semantics: Some(AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED.to_owned()),
+            source_collateral_amount_raw: source_collateral_amount,
+            redeemable_source_liquidity_amount_raw: Some(route_liquidity_amount),
+            idle_vault_liquidity_amount_raw: Some(0),
+            expected_source_snapshot_id: SnapshotId(1),
+            source_apy_bps: 100,
+            target_apy_bps: 200,
+            estimated_edge_bps: 100,
+            estimated_cost_lamports: 5_000,
+            dry_run: false,
+        }
+    }
+
+    #[test]
+    fn collateral_conversion_can_produce_distinct_redeemable_liquidity() {
+        let scale = BigUint::from(1_u128 << 60);
+        let total_liquidity_scaled = BigUint::from(1_200_000_000_u64) * scale;
+
+        let redeemable = collateral_to_redeemable_liquidity_amount(
+            1_000_000_000,
+            &total_liquidity_scaled,
+            500_000_000,
+        )
+        .expect("conversion should fit");
+
+        assert_eq!(redeemable, 600_000_000);
+    }
+
+    #[test]
+    fn source_collateral_validation_rejects_route_liquidity_as_withdraw_amount() {
+        let source = test_chain_position(404_323_479, 480_000_000);
+        let input = test_same_mint_input(480_000_000, Some(480_000_000));
+
+        let error = planned_source_collateral_amount(&input, &source).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not match planned source_collateral_amount_raw"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn source_collateral_validation_accepts_distinct_collateral_and_liquidity() {
+        let source = test_chain_position(404_323_479, 480_000_000);
+        let input = test_same_mint_input(480_000_000, Some(404_323_479));
+
+        let amount = planned_source_collateral_amount(&input, &source)
+            .expect("matching source collateral should pass");
+
+        assert_eq!(amount, 404_323_479);
+    }
 }
 
 fn print_help() {

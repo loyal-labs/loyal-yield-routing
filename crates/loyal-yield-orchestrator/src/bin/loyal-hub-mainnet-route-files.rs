@@ -150,15 +150,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         &obligation_summary,
         withdraw_amount,
     )?;
-    let route_deposit_instructions =
-        build_route_deposit_instructions(
-            options.vault,
-            options.setup_fee_payer,
-            &target,
-            &obligation_summary,
-            target_farm_user_state_exists,
-            options.route_deposit_amount_raw,
-        )?;
+    let route_deposit_instructions = build_route_deposit_instructions(
+        options.vault,
+        options.setup_fee_payer,
+        &target,
+        &obligation_summary,
+        target_farm_user_state_exists,
+        options.route_deposit_amount_raw,
+    )?;
 
     write_wire_instructions(&options.policy_setup_file, &setup_instructions)?;
     write_wire_instructions(&options.route_withdraw_file, &route_withdraw_instructions)?;
@@ -300,7 +299,11 @@ fn build_init_user_metadata_instruction(vault: Pubkey, fee_payer: Pubkey) -> Ins
     )
 }
 
-fn build_init_obligation_instruction(vault: Pubkey, fee_payer: Pubkey, market: Pubkey) -> Instruction {
+fn build_init_obligation_instruction(
+    vault: Pubkey,
+    fee_payer: Pubkey,
+    market: Pubkey,
+) -> Instruction {
     let (owner_user_metadata, _) = user_metadata(&KLEND_PROGRAM_ID, &vault);
     init_obligation(
         InitObligationAccounts {
