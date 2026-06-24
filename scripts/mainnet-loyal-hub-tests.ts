@@ -23,6 +23,7 @@ import {
 } from "@solana/spl-token";
 import {
   ProgramConfig,
+  Settings,
   getProgramConfigPda,
   getSettingsPda,
   getSmartAccountPda,
@@ -37,9 +38,12 @@ import {
   LOYAL_CLUSTER_CONFIGS,
   LoyalCluster,
   MaxFeeBps,
+  TREASURY_JUPITER_SWAP_ACTION_SEED,
   TREASURY_REBALANCE_ACTION_SEED,
+  TREASURY_TOP_UP_ACTION_SEED,
   assertRebalanceAvoidsActiveLanes,
   createLoyalActionsSdk,
+  createProgramInteractionPolicyInstruction,
   createProgramInteractionPolicyUpdateInstruction,
   deriveActionAccount,
   createSquadsProgramInteractionExecutionInstruction,
@@ -78,6 +82,8 @@ const TOKEN_TRANSFER_CHECKED_TAG = 12;
 const MAX_REBALANCE_TRANSFERS = 16;
 const DEFAULT_YIELD_ROUTE_POLICY_SEED = 1n;
 const DEFAULT_TREASURY_REBALANCE_POLICY_SEED = TREASURY_REBALANCE_ACTION_SEED;
+const DEFAULT_TREASURY_JUPITER_POLICY_SEED = TREASURY_JUPITER_SWAP_ACTION_SEED;
+const DEFAULT_TREASURY_TOP_UP_POLICY_SEED = TREASURY_TOP_UP_ACTION_SEED;
 const SQUADS_FULL_PERMISSIONS_MASK = 7;
 const SQUADS_SYNC_SIGNER_COUNT = 1;
 const EXECUTE_SETTINGS_TRANSACTION_SYNC_DISCRIMINATOR = [138, 209, 64, 163, 79, 67, 233, 76] as const;
@@ -146,6 +152,14 @@ type StoredVault = {
 type StoredTreasuryVault = StoredVault & {
   policy?: string;
   rebalanceIndexes?: number[];
+  hubPolicy?: string;
+  hubRebalanceIndexes?: number[];
+  withdrawPolicy?: string;
+  withdrawRebalanceIndexes?: number[];
+  jupiterPolicy?: string;
+  jupiterRebalanceIndexes?: number[];
+  topUpPolicy?: string;
+  topUpRebalanceIndexes?: number[];
   rebalancePolicySpec?: string;
 };
 
@@ -506,7 +520,9 @@ async function ensureTreasuryRebalancePolicy(): Promise<void> {
   const treasury = requireTreasury();
   const settings = new PublicKey(treasury.settings);
   const vault = new PublicKey(treasury.vault);
-  const policySeed = treasuryRebalancePolicySeed();
+  const withdrawPolicySeed = treasuryRebalancePolicySeed();
+  const jupiterPolicySeed = treasuryJupiterPolicySeed();
+  const topUpPolicySeed = treasuryTopUpPolicySeed();
   const laneId = numberValue(args, "treasury-lane-id", 0);
   const maxWithdrawAmount = u64(value(args, "treasury-rebalance-in-raw") ?? "500000", "treasury-rebalance-in-raw");
   const maxTopUpAmount = u64(value(args, "treasury-rebalance-topup-raw") ?? "495000", "treasury-rebalance-topup-raw");
@@ -529,10 +545,11 @@ async function ensureTreasuryRebalancePolicy(): Promise<void> {
       delegatedSigner: system,
       accountIndex: 0,
       vault,
-      policySeed,
+      policySeed: withdrawPolicySeed,
+      jupiterPolicySeed,
+      topUpPolicySeed,
     },
   });
-  const actionAccount = policy.actionAccount;
   const policySpec = treasuryRebalancePolicySpec({
     laneId,
     inputMintInfo,
@@ -542,56 +559,219 @@ async function ensureTreasuryRebalancePolicy(): Promise<void> {
     maxSlippageBps,
   });
 
-  if (treasury.policy && treasury.policy !== actionAccount.toBase58()) {
-    console.log(`switching treasury rebalance policy seed to ${policySeed}: ${actionAccount.toBase58()}`);
-  }
+  const ensurePart = async (
+    kind: "withdraw" | "jupiter" | "top-up",
+    plan: typeof policy.policies.withdraw | typeof policy.policies.jupiter | typeof policy.policies.topUp,
+    storedPolicy: string | undefined,
+    requestedSeed: bigint,
+    explicitSeed: boolean,
+  ): Promise<{ policy: string; indexes: number[]; persisted: boolean }> => {
+    let actionAccount = storedPolicy ? pubkey(storedPolicy, `treasury ${kind} policy`) : plan.actionAccount;
+    let actionAccountBase58 = actionAccount.toBase58();
+    let existingPolicy = await accountExists(actionAccount);
+    let createInstruction: TransactionInstruction | undefined;
 
-  const existingPolicy = await accountExists(actionAccount);
-  const shouldUpdate = existingPolicy
-    && (hasFlag(args, "update-treasury-policy") || treasury.rebalancePolicySpec !== policySpec);
+    if (!storedPolicy && !existingPolicy) {
+      const nextSeed = await fetchNextSquadsPolicySeed(settings);
+      if (explicitSeed && requestedSeed !== nextSeed) {
+        throw new Error(
+          `treasury ${kind} policy seed ${requestedSeed} is not the live next Squads policy seed ${nextSeed}; `
+            + "create the missing prior policy first, update the flag, or resume with an existing policy account",
+        );
+      }
+      actionAccount = deriveActionAccount(clusterConfig, settings, nextSeed);
+      actionAccountBase58 = actionAccount.toBase58();
+      createInstruction = createProgramInteractionPolicyInstruction(
+        clusterConfig,
+        {
+          settings,
+          authority: system,
+          delegatedSigner: system,
+          accountIndex: 0,
+          vault,
+          policySeed: nextSeed,
+        },
+        plan.constraints,
+      );
+      console.log(`treasury ${kind} policy will use live next Squads policy seed ${nextSeed}: ${actionAccountBase58}`);
+    } else if (storedPolicy && !existingPolicy) {
+      const nextSeed = await fetchNextSquadsPolicySeed(settings);
+      actionAccount = deriveActionAccount(clusterConfig, settings, nextSeed);
+      actionAccountBase58 = actionAccount.toBase58();
+      createInstruction = createProgramInteractionPolicyInstruction(
+        clusterConfig,
+        {
+          settings,
+          authority: system,
+          delegatedSigner: system,
+          accountIndex: 0,
+          vault,
+          policySeed: nextSeed,
+        },
+        plan.constraints,
+      );
+      console.log(
+        `stored treasury ${kind} policy is missing (${storedPolicy}); creating replacement at live next Squads policy seed ${nextSeed}: ${actionAccountBase58}`,
+      );
+    }
 
-  if (existingPolicy && !shouldUpdate) {
-    treasury.policy = actionAccount.toBase58();
-    treasury.rebalanceIndexes = [...policy.route.instructionConstraintIndexes];
-    treasury.rebalancePolicySpec = policySpec;
-    saveState();
-    console.log(`treasury rebalance policy exists: ${treasury.policy}`);
-    return;
-  }
+    const shouldUpdate = existingPolicy
+      && (hasFlag(args, "update-treasury-policy") || treasury.rebalancePolicySpec !== policySpec);
 
-  const createInstruction = policy.instructions[0];
-  if (!createInstruction) {
-    throw new Error("treasury rebalance policy builder returned no setup instruction");
-  }
-  const updateInstruction = createProgramInteractionPolicyUpdateInstruction(
-    clusterConfig,
-    {
-      settings,
-      authority: system,
-      delegatedSigner: system,
-      accountIndex: 0,
-    },
-    actionAccount,
-    policy.constraints,
+    if (existingPolicy && !shouldUpdate) {
+      console.log(`treasury ${kind} policy exists: ${actionAccountBase58}`);
+      return {
+        policy: actionAccountBase58,
+        indexes: [...plan.route.instructionConstraintIndexes],
+        persisted: true,
+      };
+    }
+
+    const updateInstruction = createProgramInteractionPolicyUpdateInstruction(
+      clusterConfig,
+      {
+        settings,
+        authority: system,
+        delegatedSigner: system,
+        accountIndex: 0,
+      },
+      actionAccount,
+      plan.constraints,
+    );
+    const run = existingPolicy
+      ? await sendTransaction(
+          `update-treasury-${kind}-policy`,
+          [updateInstruction],
+          [systemKeypair],
+          [],
+          [updateInstruction],
+        )
+      : await sendTransaction(
+          `create-treasury-${kind}-policy`,
+          [createInstruction ?? plan.instructions[0] ?? failNoTreasuryPolicyInstruction(kind)],
+          [systemKeypair],
+          [],
+          [createInstruction ?? plan.instructions[0] ?? failNoTreasuryPolicyInstruction(kind)],
+        );
+
+    return {
+      policy: actionAccountBase58,
+      indexes: [...plan.route.instructionConstraintIndexes],
+      persisted: run.mode === "execute",
+    };
+  };
+
+  const withdraw = await ensurePart(
+    "withdraw",
+    policy.policies.withdraw,
+    treasury.withdrawPolicy ?? treasury.hubPolicy ?? treasury.policy,
+    withdrawPolicySeed,
+    hasTreasuryWithdrawPolicySeedArg(),
   );
-  const run = existingPolicy
-    ? await sendTransaction("update-treasury-rebalance-policy", [updateInstruction], [systemKeypair])
-    : await sendTransaction("create-treasury-rebalance-policy", [createInstruction], [systemKeypair]);
+  const jupiter = await ensurePart(
+    "jupiter",
+    policy.policies.jupiter,
+    treasury.jupiterPolicy,
+    jupiterPolicySeed,
+    hasTreasuryJupiterPolicySeedArg(),
+  );
+  const topUp = await ensurePart(
+    "top-up",
+    policy.policies.topUp,
+    treasury.topUpPolicy,
+    topUpPolicySeed,
+    hasTreasuryTopUpPolicySeedArg(),
+  );
 
-  treasury.policy = actionAccount.toBase58();
-  treasury.rebalanceIndexes = [...policy.route.instructionConstraintIndexes];
+  treasury.withdrawPolicy = withdraw.policy;
+  treasury.withdrawRebalanceIndexes = withdraw.indexes;
+  treasury.jupiterPolicy = jupiter.policy;
+  treasury.jupiterRebalanceIndexes = jupiter.indexes;
+  treasury.topUpPolicy = topUp.policy;
+  treasury.topUpRebalanceIndexes = topUp.indexes;
   treasury.rebalancePolicySpec = policySpec;
-  if (run.mode === "execute") {
+  treasury.hubPolicy = undefined;
+  treasury.hubRebalanceIndexes = undefined;
+  treasury.policy = undefined;
+  treasury.rebalanceIndexes = undefined;
+  const allPoliciesPersisted = withdraw.persisted && jupiter.persisted && topUp.persisted;
+  if (allPoliciesPersisted) {
     saveState();
   }
-  console.log(`treasuryPolicy=${treasury.policy} rebalanceRoute=${treasury.rebalanceIndexes.join(",")}`);
+  console.log(
+    `treasuryWithdrawPolicy=${treasury.withdrawPolicy} withdrawRoute=${treasury.withdrawRebalanceIndexes.join(",")} `
+      + `treasuryJupiterPolicy=${treasury.jupiterPolicy} jupiterRoute=${treasury.jupiterRebalanceIndexes.join(",")} `
+      + `treasuryTopUpPolicy=${treasury.topUpPolicy} topUpRoute=${treasury.topUpRebalanceIndexes.join(",")}`,
+  );
+  if (!allPoliciesPersisted) {
+    throw new Error("treasury policy changes were simulated but not submitted; rerun with --execute before treasury rebalance");
+  }
 }
 
 function treasuryRebalancePolicySeed(): bigint {
   return u64(
-    value(args, "treasury-policy-seed") ?? DEFAULT_TREASURY_REBALANCE_POLICY_SEED.toString(),
-    "treasury-policy-seed",
+    value(args, "treasury-withdraw-policy-seed")
+      ?? value(args, "treasury-hub-policy-seed")
+      ?? value(args, "treasury-policy-seed")
+      ?? DEFAULT_TREASURY_REBALANCE_POLICY_SEED.toString(),
+    "treasury-withdraw-policy-seed",
   );
+}
+
+function hasTreasuryWithdrawPolicySeedArg(): boolean {
+  return value(args, "treasury-withdraw-policy-seed") !== undefined
+    || value(args, "treasury-hub-policy-seed") !== undefined
+    || value(args, "treasury-policy-seed") !== undefined;
+}
+
+function treasuryJupiterPolicySeed(): bigint {
+  return u64(
+    value(args, "treasury-jupiter-policy-seed") ?? DEFAULT_TREASURY_JUPITER_POLICY_SEED.toString(),
+    "treasury-jupiter-policy-seed",
+  );
+}
+
+function hasTreasuryJupiterPolicySeedArg(): boolean {
+  return value(args, "treasury-jupiter-policy-seed") !== undefined;
+}
+
+function treasuryTopUpPolicySeed(): bigint {
+  return u64(
+    value(args, "treasury-topup-policy-seed") ?? DEFAULT_TREASURY_TOP_UP_POLICY_SEED.toString(),
+    "treasury-topup-policy-seed",
+  );
+}
+
+function hasTreasuryTopUpPolicySeedArg(): boolean {
+  return value(args, "treasury-topup-policy-seed") !== undefined;
+}
+
+async function fetchNextSquadsPolicySeed(settings: PublicKey): Promise<bigint> {
+  const settingsAccount = await Settings.fromAccountAddress(connection, settings, DEFAULT_COMMITMENT);
+  return coptionBignumToBigint(settingsAccount.policySeed) + 1n;
+}
+
+function coptionBignumToBigint(item: unknown): bigint {
+  if (item === null || item === undefined) {
+    return 0n;
+  }
+  if (typeof item === "bigint") {
+    return item;
+  }
+  if (typeof item === "number") {
+    return BigInt(item);
+  }
+  if (typeof item === "string") {
+    return BigInt(item);
+  }
+  if (typeof item === "object" && "toString" in item && typeof item.toString === "function") {
+    return BigInt(item.toString());
+  }
+  throw new Error("unable to decode Squads settings policy seed");
+}
+
+function failNoTreasuryPolicyInstruction(kind: "withdraw" | "jupiter" | "top-up"): never {
+  throw new Error(`treasury ${kind} policy builder returned no setup instruction`);
 }
 
 function treasuryRebalancePolicySpec(input: {
@@ -603,6 +783,8 @@ function treasuryRebalancePolicySpec(input: {
   maxSlippageBps: number;
 }): string {
   return JSON.stringify({
+    policyShape: "split-withdraw-jupiter-topup-v2",
+    jupiterInstruction: "shared_accounts_route_v2",
     laneId: input.laneId,
     inputMint: USDC_MINT.toBase58(),
     outputMint: PYUSD_MINT.toBase58(),
@@ -1195,13 +1377,29 @@ async function runTreasuryJupiterRebalance(): Promise<void> {
   }
   const treasury = requireTreasury();
   const treasuryVault = new PublicKey(treasury.vault);
-  if (!treasury.policy) {
-    throw new Error("missing treasury rebalance policy");
+  if (!treasury.withdrawPolicy) {
+    throw new Error("missing treasury withdraw policy");
   }
-  const treasuryPolicy = new PublicKey(treasury.policy);
-  const rebalanceIndexes = treasury.rebalanceIndexes ?? [];
-  if (rebalanceIndexes.length !== 3) {
-    throw new Error(`treasury rebalance policy requires 3 constraint indexes, got ${rebalanceIndexes.join(",")}`);
+  if (!treasury.jupiterPolicy) {
+    throw new Error("missing treasury Jupiter swap policy");
+  }
+  if (!treasury.topUpPolicy) {
+    throw new Error("missing treasury top-up policy");
+  }
+  const treasuryWithdrawPolicy = new PublicKey(treasury.withdrawPolicy);
+  const treasuryJupiterPolicy = new PublicKey(treasury.jupiterPolicy);
+  const treasuryTopUpPolicy = new PublicKey(treasury.topUpPolicy);
+  const withdrawIndexes = treasury.withdrawRebalanceIndexes ?? [];
+  const jupiterIndexes = treasury.jupiterRebalanceIndexes ?? [];
+  const topUpIndexes = treasury.topUpRebalanceIndexes ?? [];
+  if (withdrawIndexes.length !== 1) {
+    throw new Error(`treasury withdraw policy requires 1 constraint index, got ${withdrawIndexes.join(",")}`);
+  }
+  if (jupiterIndexes.length !== 1) {
+    throw new Error(`treasury Jupiter policy requires 1 constraint index, got ${jupiterIndexes.join(",")}`);
+  }
+  if (topUpIndexes.length !== 1) {
+    throw new Error(`treasury top-up policy requires 1 constraint index, got ${topUpIndexes.join(",")}`);
   }
   let handedOffAdmin = false;
   const laneId = numberValue(args, "treasury-lane-id", 0);
@@ -1270,32 +1468,69 @@ async function runTreasuryJupiterRebalance(): Promise<void> {
     createAssociatedTokenAccountIdempotentInstruction(system, treasuryInput, treasuryVault, USDC_MINT, inputMintInfo.tokenProgram, ASSOCIATED_TOKEN_PROGRAM_ID),
     createAssociatedTokenAccountIdempotentInstruction(system, treasuryOutput, treasuryVault, PYUSD_MINT, outputMintInfo.tokenProgram, ASSOCIATED_TOKEN_PROGRAM_ID),
   ];
-  const innerInstructions = [
-    withdraw,
-    clearSignerForPubkey(jupiterInstruction(swap.swapInstruction), treasuryVault),
-    topUp,
-  ];
-  const wrapper = createSquadsProgramInteractionExecutionInstruction(clusterConfig, {
-    policy: treasuryPolicy,
+  const swapInner = clearSignerForPubkey(jupiterInstruction(swap.swapInstruction), treasuryVault);
+  const withdrawWrapper = createSquadsProgramInteractionExecutionInstruction(clusterConfig, {
+    policy: treasuryWithdrawPolicy,
     signer: system,
     accountIndex: 0,
-    instructions: innerInstructions,
-    instructionConstraintIndexes: rebalanceIndexes,
+    instructions: [withdraw],
+    instructionConstraintIndexes: [withdrawIndexes[0]],
+  });
+  const swapWrapper = createSquadsProgramInteractionExecutionInstruction(clusterConfig, {
+    policy: treasuryJupiterPolicy,
+    signer: system,
+    accountIndex: 0,
+    instructions: [swapInner],
+    instructionConstraintIndexes: [jupiterIndexes[0]],
+  });
+  const topUpWrapper = createSquadsProgramInteractionExecutionInstruction(clusterConfig, {
+    policy: treasuryTopUpPolicy,
+    signer: system,
+    accountIndex: 0,
+    instructions: [topUp],
+    instructionConstraintIndexes: [topUpIndexes[0]],
   });
   const computeBudgetInstructions = jupiterComputeBudgetInstructions(swap.computeBudgetInstructions);
-  const outer = [
-    ...(computeBudgetInstructions.length > 0
-      ? computeBudgetInstructions
-      : [ComputeBudgetProgram.setComputeUnitLimit({ units: numberValue(args, "compute-unit-limit", 800000) })]),
-    ...setupAtas,
-    wrapper,
-  ];
   try {
-    const run = await sendTransaction("treasury-jupiter-rebalance", outer, [systemKeypair], [
-      ...routeLookupTables(),
-      ...(swap.addressLookupTableAddresses ?? []),
-    ], [...setupAtas, ...innerInstructions]);
-    markStep("treasury-jupiter-rebalance", run);
+    let finalRun: TransactionRun | null = null;
+    if (!stepDone("treasury-jupiter-rebalance-withdraw")) {
+      finalRun = await sendTransaction(
+        "treasury-jupiter-rebalance-withdraw",
+        [...setupAtas, withdrawWrapper],
+        [systemKeypair],
+        [],
+        [...setupAtas, withdraw],
+      );
+      markStep("treasury-jupiter-rebalance-withdraw", finalRun);
+    }
+    if (!stepDone("treasury-jupiter-rebalance-swap")) {
+      finalRun = await sendTransaction(
+        "treasury-jupiter-rebalance-swap",
+        [
+          ...(computeBudgetInstructions.length > 0
+            ? computeBudgetInstructions
+            : [ComputeBudgetProgram.setComputeUnitLimit({ units: numberValue(args, "compute-unit-limit", 800000) })]),
+          swapWrapper,
+        ],
+        [systemKeypair],
+        [...routeLookupTables(), ...(swap.addressLookupTableAddresses ?? [])],
+        [swapInner],
+      );
+      markStep("treasury-jupiter-rebalance-swap", finalRun);
+    }
+    if (!stepDone("treasury-jupiter-rebalance-top-up")) {
+      finalRun = await sendTransaction(
+        "treasury-jupiter-rebalance-top-up",
+        [topUpWrapper],
+        [systemKeypair],
+        [],
+        [topUp],
+      );
+      markStep("treasury-jupiter-rebalance-top-up", finalRun);
+    }
+    if (finalRun) {
+      markStep("treasury-jupiter-rebalance", finalRun);
+    }
   } finally {
     if (handedOffAdmin && !hasFlag(args, "skip-authority-restore")) {
       await restoreHubAuthorities();
@@ -1700,61 +1935,94 @@ async function sendTransaction(
   lookupTableAddresses: readonly string[] = [],
   diagnosticInstructions: readonly TransactionInstruction[] = instructions,
 ): Promise<TransactionRun> {
-  const latest = await connection.getLatestBlockhash(DEFAULT_COMMITMENT);
   const lookupTables = await fetchLookupTables(lookupTableAddresses);
   const transactionInstructions = withComputeBudget(label, instructions);
-  const message = new TransactionMessage({
-    payerKey: system,
-    recentBlockhash: latest.blockhash,
-    instructions: transactionInstructions,
-  }).compileToV0Message(lookupTables);
-  const tx = new VersionedTransaction(message);
-  tx.sign(uniqueSigners([systemKeypair, ...signers]));
-  const simulation = await connection.simulateTransaction(tx, {
-    commitment: DEFAULT_COMMITMENT,
-    sigVerify: true,
-  });
-  if (simulation.value.err) {
-    await printInsufficientFundsDiagnostics(label, diagnosticInstructions, simulation.value, message);
-    console.error(JSON.stringify({ label, simulation: simulation.value }, bigintJson, 2));
-    throw new Error(`${label} simulation failed`);
-  }
-  console.log(`${label} simulation ok units=${simulation.value.unitsConsumed ?? "unknown"}`);
-  if (!executeLive) {
-    if (!hasFlag(args, "simulate-all")) {
-      console.log(
-        `${label}: simulate-only stopped after first pending transaction. Re-run with --execute to submit it, or --simulate-all for a best-effort full dry run.`,
-      );
-      process.exit(0);
+  const maxAttempts = numberValue(args, "send-attempts", 3);
+  let lastUnitsConsumed: number | null = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const latest = await connection.getLatestBlockhash(DEFAULT_COMMITMENT);
+    const message = new TransactionMessage({
+      payerKey: system,
+      recentBlockhash: latest.blockhash,
+      instructions: transactionInstructions,
+    }).compileToV0Message(lookupTables);
+    const tx = new VersionedTransaction(message);
+    tx.sign(uniqueSigners([systemKeypair, ...signers]));
+    const simulation = await connection.simulateTransaction(tx, {
+      commitment: DEFAULT_COMMITMENT,
+      sigVerify: true,
+    });
+    lastUnitsConsumed = simulation.value.unitsConsumed ?? null;
+    if (simulation.value.err) {
+      await printInsufficientFundsDiagnostics(label, diagnosticInstructions, simulation.value, message);
+      console.error(JSON.stringify({ label, simulation: simulation.value }, bigintJson, 2));
+      throw new Error(`${label} simulation failed`);
     }
-    return {
-      mode: "simulate",
-      signature: null,
-      unitsConsumed: simulation.value.unitsConsumed ?? null,
-    };
+    console.log(`${label} simulation ok units=${simulation.value.unitsConsumed ?? "unknown"}`);
+    if (!executeLive) {
+      if (!hasFlag(args, "simulate-all")) {
+        console.log(
+          `${label}: simulate-only stopped after first pending transaction. Re-run with --execute to submit it, or --simulate-all for a best-effort full dry run.`,
+        );
+        process.exit(0);
+      }
+      return {
+        mode: "simulate",
+        signature: null,
+        unitsConsumed: lastUnitsConsumed,
+      };
+    }
+    const signature = await connection.sendRawTransaction(tx.serialize(), {
+      maxRetries: 3,
+      skipPreflight: false,
+    });
+    try {
+      const confirmation = await connection.confirmTransaction({
+        signature,
+        blockhash: latest.blockhash,
+        lastValidBlockHeight: latest.lastValidBlockHeight,
+      }, DEFAULT_COMMITMENT);
+      if (confirmation.value.err) {
+        await printInsufficientFundsDiagnostics(label, diagnosticInstructions, {
+          err: confirmation.value.err,
+          logs: null,
+        } as SimulatedTransactionResponse, message);
+        throw new Error(`${label} transaction ${signature} failed: ${JSON.stringify(confirmation.value.err)}`);
+      }
+      console.log(`${label} signature=${signature}`);
+      return {
+        mode: "execute",
+        signature,
+        unitsConsumed: lastUnitsConsumed,
+      };
+    } catch (error) {
+      if (!isBlockheightExceeded(error) || attempt === maxAttempts) {
+        throw error;
+      }
+      const status = await connection.getSignatureStatuses([signature], {
+        searchTransactionHistory: true,
+      });
+      if (status.value[0]?.err) {
+        throw new Error(`${label} transaction ${signature} failed: ${JSON.stringify(status.value[0]?.err)}`);
+      }
+      if (status.value[0]?.confirmationStatus) {
+        console.log(`${label} signature=${signature}`);
+        return {
+          mode: "execute",
+          signature,
+          unitsConsumed: lastUnitsConsumed,
+        };
+      }
+      console.log(`${label} signature ${signature} expired before confirmation; retrying with a fresh blockhash`);
+    }
   }
-  const signature = await connection.sendRawTransaction(tx.serialize(), {
-    maxRetries: 3,
-    skipPreflight: false,
-  });
-  const confirmation = await connection.confirmTransaction({
-    signature,
-    blockhash: latest.blockhash,
-    lastValidBlockHeight: latest.lastValidBlockHeight,
-  }, DEFAULT_COMMITMENT);
-  if (confirmation.value.err) {
-    await printInsufficientFundsDiagnostics(label, diagnosticInstructions, {
-      err: confirmation.value.err,
-      logs: null,
-    } as SimulatedTransactionResponse, message);
-    throw new Error(`${label} transaction ${signature} failed: ${JSON.stringify(confirmation.value.err)}`);
-  }
-  console.log(`${label} signature=${signature}`);
-  return {
-    mode: "execute",
-    signature,
-    unitsConsumed: simulation.value.unitsConsumed ?? null,
-  };
+  throw new Error(`${label} failed after ${maxAttempts} send attempts`);
+}
+
+function isBlockheightExceeded(error: unknown): boolean {
+  return error instanceof Error
+    && (error.name === "TransactionExpiredBlockheightExceededError"
+      || error.message.includes("block height exceeded"));
 }
 
 async function printInsufficientFundsDiagnostics(
@@ -2164,6 +2432,7 @@ async function fetchJupiterQuote(quoteArgs: {
   url.searchParams.set("amount", quoteArgs.amount.toString());
   url.searchParams.set("slippageBps", quoteArgs.slippageBps.toString());
   url.searchParams.set("restrictIntermediateTokens", "true");
+  url.searchParams.set("instructionVersion", "V2");
   return fetchJson(url.toString(), { method: "GET", headers: jupiterApiHeaders() });
 }
 
@@ -2364,7 +2633,7 @@ function requireUser(): NonNullable<TestState["user"]> {
   return state.user;
 }
 
-function requireTreasury(): StoredVault {
+function requireTreasury(): StoredTreasuryVault {
   if (!state.treasury?.settings || !state.treasury.vault) {
     throw new Error("missing treasury vault state");
   }
@@ -2549,6 +2818,10 @@ function applyManualResumeFlags(state: TestState, args: ParsedArgs): void {
   const treasurySettings = value(args, "treasury-settings");
   const treasuryVault = value(args, "treasury-vault");
   const treasuryPolicy = value(args, "treasury-policy");
+  const treasuryHubPolicy = value(args, "treasury-hub-policy");
+  const treasuryWithdrawPolicy = value(args, "treasury-withdraw-policy");
+  const treasuryJupiterPolicy = value(args, "treasury-jupiter-policy");
+  const treasuryTopUpPolicy = value(args, "treasury-topup-policy");
   const policy = value(args, "policy");
   if (userSettings || userVault || policy) {
     state.user = {
@@ -2558,12 +2831,24 @@ function applyManualResumeFlags(state: TestState, args: ParsedArgs): void {
       policy: policy ?? state.user?.policy,
     };
   }
-  if (treasurySettings || treasuryVault || treasuryPolicy) {
+  if (
+    treasurySettings
+    || treasuryVault
+    || treasuryPolicy
+    || treasuryHubPolicy
+    || treasuryWithdrawPolicy
+    || treasuryJupiterPolicy
+    || treasuryTopUpPolicy
+  ) {
     state.treasury = {
       ...(state.treasury ?? {}),
       settings: treasurySettings ?? state.treasury?.settings ?? "",
       vault: treasuryVault ?? state.treasury?.vault ?? "",
       policy: treasuryPolicy ?? state.treasury?.policy,
+      hubPolicy: treasuryHubPolicy ?? state.treasury?.hubPolicy,
+      withdrawPolicy: treasuryWithdrawPolicy ?? treasuryHubPolicy ?? treasuryPolicy ?? state.treasury?.withdrawPolicy,
+      jupiterPolicy: treasuryJupiterPolicy ?? state.treasury?.jupiterPolicy,
+      topUpPolicy: treasuryTopUpPolicy ?? state.treasury?.topUpPolicy,
     };
   }
 }
@@ -2636,8 +2921,17 @@ Policy route inputs:
   --refresh-route-files            Regenerate the route/setup JSON files even when they already exist.
   --policy-seed <n>                Squads policy seed for the user route policy. Default: ${DEFAULT_YIELD_ROUTE_POLICY_SEED}
   --update-policy                  Update an existing policy at --policy-seed instead of reusing it as-is.
-  --treasury-policy <pubkey>       Resume with an existing treasury rebalance policy account.
-  --treasury-policy-seed <n>       Squads policy seed for the treasury rebalance policy. Default: ${DEFAULT_TREASURY_REBALANCE_POLICY_SEED}
+  --treasury-policy <pubkey>       Back-compat alias for --treasury-withdraw-policy.
+  --treasury-hub-policy <pubkey>   Back-compat alias for --treasury-withdraw-policy.
+  --treasury-withdraw-policy <pubkey> Resume with an existing treasury Hub WithdrawInventory policy account.
+  --treasury-jupiter-policy <pubkey> Resume with an existing treasury Jupiter swap policy account.
+  --treasury-topup-policy <pubkey> Resume with an existing treasury PYUSD top-up policy account.
+  --treasury-policy-seed <n>       Back-compat alias for --treasury-withdraw-policy-seed.
+  --treasury-hub-policy-seed <n>   Back-compat alias for --treasury-withdraw-policy-seed.
+  --treasury-withdraw-policy-seed <n> Prefer an existing treasury Hub WithdrawInventory policy at this seed. Default probe: ${DEFAULT_TREASURY_REBALANCE_POLICY_SEED}
+  --treasury-jupiter-policy-seed <n> Prefer an existing treasury Jupiter swap policy at this seed. Default probe: ${DEFAULT_TREASURY_JUPITER_POLICY_SEED}
+  --treasury-topup-policy-seed <n> Prefer an existing treasury PYUSD top-up policy at this seed. Default probe: ${DEFAULT_TREASURY_TOP_UP_POLICY_SEED}
+                                   Missing treasury policies are created at the live next Squads policy seed.
   --update-treasury-policy         Force-refresh an existing treasury rebalance policy.
   --kamino-source-reserve <pubkey> Override the default Main USDC source reserve.
   --kamino-target-reserve <pubkey> Override the default Main PYUSD target reserve.
@@ -2656,7 +2950,7 @@ Common:
   --treasury-rebalance-in-raw <n>  Default: 500000.
   --treasury-rebalance-topup-raw <n> Default: 495000.
   --lane-rebalance-raw <n>         Default: 250000.
-  --lookup-table <address>         Repeat for policy/Kamino route lookup tables.
+  --lookup-table <address>         Repeat for Squads execution/Kamino route lookup tables. Treasury policy creation ignores lookup tables.
 
 Skips:
   --skip-policy

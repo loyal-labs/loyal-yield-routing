@@ -37,6 +37,7 @@ const swapApi = args["swap-api"] ?? DEFAULT_SWAP_API;
 const headers = jupiterApiHeaders();
 const priorityMaxLamports = args["priority-max-lamports"];
 const priorityLevel = args["priority-level"] ?? "veryHigh";
+const wrapAndUnwrapSol = args["wrap-and-unwrap-sol"] === "1";
 
 if (!Number.isInteger(slippageBps) || slippageBps < 0) {
   throw new Error(`slippage-bps must be a non-negative integer, got ${args["slippage-bps"]}`);
@@ -72,6 +73,7 @@ const swap = await fetchJupiterSwap({
   userPublicKey: wallet.publicKey,
   priorityMaxLamports,
   priorityLevel,
+  wrapAndUnwrapSol,
 });
 if (swap.simulationError) {
   throw new Error(`Jupiter swap build simulation error: ${JSON.stringify(swap.simulationError)}`);
@@ -142,6 +144,7 @@ Common options:
   --simulate-only              Quote, build, and simulate without sending.
   --priority-max-lamports <n>  Optional Jupiter priority fee max.
   --priority-level <level>     Default: veryHigh.
+  --wrap-and-unwrap-sol        Let Jupiter wrap/unwrap native SOL.
 
 Environment:
   JUPITER_API_KEY              Optional Jupiter API key.
@@ -293,11 +296,12 @@ async function fetchJupiterSwap({
   userPublicKey,
   priorityMaxLamports,
   priorityLevel,
+  wrapAndUnwrapSol,
 }) {
   const body = {
     quoteResponse: quote,
     userPublicKey: userPublicKey.toBase58(),
-    wrapAndUnwrapSol: false,
+    wrapAndUnwrapSol,
     dynamicComputeUnitLimit: true,
   };
   if (priorityMaxLamports) {
