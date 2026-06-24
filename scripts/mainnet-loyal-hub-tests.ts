@@ -5,6 +5,8 @@ import {
   Connection,
   Keypair,
   PublicKey,
+  type SimulatedTransactionResponse,
+  SystemInstruction,
   SystemProgram,
   TransactionInstruction,
   TransactionMessage,
@@ -72,6 +74,7 @@ const ACCEPT_ADMIN_TRANSFER_TAG = 11;
 const SWAP_EXACT_IN_TAG = 1;
 const WITHDRAW_INVENTORY_TAG = 2;
 const REBALANCE_INVENTORY_TAG = 5;
+const TOKEN_TRANSFER_CHECKED_TAG = 12;
 const MAX_REBALANCE_TRANSFERS = 16;
 const DEFAULT_YIELD_ROUTE_POLICY_SEED = 1n;
 const DEFAULT_TREASURY_REBALANCE_POLICY_SEED = TREASURY_REBALANCE_ACTION_SEED;
@@ -174,6 +177,45 @@ type TransactionRun = {
   mode: "simulate" | "execute";
   signature: string | null;
   unitsConsumed: number | null;
+};
+
+type TokenTransferCheckedDemand = {
+  instructionIndex: number;
+  source: PublicKey;
+  mint: PublicKey;
+  destination: PublicKey;
+  authority: PublicKey;
+  tokenProgram: PublicKey;
+  amount: bigint;
+  decimals: number;
+};
+
+type LamportDemand = {
+  instructionIndex: number | null;
+  source: PublicKey;
+  destination: PublicKey | null;
+  amount: bigint;
+  reason: string;
+};
+
+type TokenTransferFundsDeficit = {
+  source: PublicKey;
+  mint: PublicKey;
+  authority: PublicKey;
+  tokenProgram: PublicKey;
+  decimals: number;
+  required: bigint;
+  available: bigint;
+  missing: bigint;
+  firstOverdraw: TokenTransferCheckedDemand;
+};
+
+type LamportFundsDeficit = {
+  source: PublicKey;
+  required: bigint;
+  available: bigint;
+  missing: bigint;
+  firstOverdraw: LamportDemand;
 };
 
 const args = parseArgs(process.argv.slice(2));
@@ -1031,7 +1073,7 @@ async function runPolicySetup(): Promise<void> {
     accountIndex: 0,
     instructions,
   });
-  const run = await sendTransaction("policy-setup", [wrapper], [systemKeypair], routeLookupTables());
+  const run = await sendTransaction("policy-setup", [wrapper], [systemKeypair], routeLookupTables(), instructions);
   markStep("policy-setup", run);
 }
 
@@ -1083,14 +1125,15 @@ async function runPolicyRoute(): Promise<void> {
       if (stepDone(leg.step)) {
         continue;
       }
+      const innerInstructions = leg.instructions.map((inner) => clearSignerForPubkey(inner, vault));
       const instruction = createSquadsProgramInteractionExecutionInstruction(clusterConfig, {
         policy,
         signer: system,
         accountIndex: 0,
-        instructions: leg.instructions.map((inner) => clearSignerForPubkey(inner, vault)),
+        instructions: innerInstructions,
         instructionConstraintIndexes: leg.constraintIndexes,
       });
-      finalRun = await sendTransaction(leg.step, [instruction], [systemKeypair], routeLookupTables());
+      finalRun = await sendTransaction(leg.step, [instruction], [systemKeypair], routeLookupTables(), innerInstructions);
       markStep(leg.step, finalRun);
     }
     if (finalRun) {
@@ -1250,7 +1293,7 @@ async function runTreasuryJupiterRebalance(): Promise<void> {
     const run = await sendTransaction("treasury-jupiter-rebalance", outer, [systemKeypair], [
       ...routeLookupTables(),
       ...(swap.addressLookupTableAddresses ?? []),
-    ]);
+    ], [...setupAtas, ...innerInstructions]);
     markStep("treasury-jupiter-rebalance", run);
   } finally {
     if (handedOffAdmin && !hasFlag(args, "skip-authority-restore")) {
@@ -1304,7 +1347,7 @@ async function runLaneRebalance(): Promise<void> {
     accountIndex: 0,
     instructions: [inner],
   });
-  const run = await sendTransaction("lane-rebalance", [wrapper], [systemKeypair], routeLookupTables());
+  const run = await sendTransaction("lane-rebalance", [wrapper], [systemKeypair], routeLookupTables(), [inner]);
   markStep("lane-rebalance", run);
 }
 
@@ -1401,7 +1444,7 @@ async function reclaimVaultLiquidTokens(kind: "user" | "treasury", vaultState: S
     accountIndex: 0,
     instructions: inner,
   });
-  await sendTransaction(`cleanup-${kind}-vault-liquid-tokens`, [wrapper], [systemKeypair], routeLookupTables());
+  await sendTransaction(`cleanup-${kind}-vault-liquid-tokens`, [wrapper], [systemKeypair], routeLookupTables(), inner);
 }
 
 async function setInventoryRebalancer(newRebalancer: PublicKey, label: string): Promise<void> {
@@ -1466,7 +1509,7 @@ async function transferHubAdminFromTreasuryToSystem(currentAdmin: PublicKey, new
     accountIndex: 0,
     instructions: [inner],
   });
-  await sendTransaction(`${label}-request`, [wrapper], [systemKeypair], routeLookupTables());
+  await sendTransaction(`${label}-request`, [wrapper], [systemKeypair], routeLookupTables(), [inner]);
   await sendTransaction(`${label}-accept`, [
     buildHubAcceptAdminTransferInstruction(newAdmin),
   ], [systemKeypair]);
@@ -1484,7 +1527,7 @@ async function acceptHubAdminTransferThroughTreasury(treasuryVault: PublicKey, l
     accountIndex: 0,
     instructions: [inner],
   });
-  await sendTransaction(label, [wrapper], [systemKeypair], routeLookupTables());
+  await sendTransaction(label, [wrapper], [systemKeypair], routeLookupTables(), [inner]);
 }
 
 async function buildHubSwapInstruction(vault: PublicKey): Promise<TransactionInstruction> {
@@ -1654,6 +1697,7 @@ async function sendTransaction(
   instructions: TransactionInstruction[],
   signers: Keypair[],
   lookupTableAddresses: readonly string[] = [],
+  diagnosticInstructions: readonly TransactionInstruction[] = instructions,
 ): Promise<TransactionRun> {
   const latest = await connection.getLatestBlockhash(DEFAULT_COMMITMENT);
   const lookupTables = await fetchLookupTables(lookupTableAddresses);
@@ -1670,6 +1714,7 @@ async function sendTransaction(
     sigVerify: true,
   });
   if (simulation.value.err) {
+    await printInsufficientFundsDiagnostics(label, diagnosticInstructions, simulation.value, message);
     console.error(JSON.stringify({ label, simulation: simulation.value }, bigintJson, 2));
     throw new Error(`${label} simulation failed`);
   }
@@ -1697,6 +1742,10 @@ async function sendTransaction(
     lastValidBlockHeight: latest.lastValidBlockHeight,
   }, DEFAULT_COMMITMENT);
   if (confirmation.value.err) {
+    await printInsufficientFundsDiagnostics(label, diagnosticInstructions, {
+      err: confirmation.value.err,
+      logs: null,
+    } as SimulatedTransactionResponse, message);
     throw new Error(`${label} transaction ${signature} failed: ${JSON.stringify(confirmation.value.err)}`);
   }
   console.log(`${label} signature=${signature}`);
@@ -1705,6 +1754,332 @@ async function sendTransaction(
     signature,
     unitsConsumed: simulation.value.unitsConsumed ?? null,
   };
+}
+
+async function printInsufficientFundsDiagnostics(
+  label: string,
+  instructions: readonly TransactionInstruction[],
+  failure: SimulatedTransactionResponse,
+  message: Parameters<Connection["getFeeForMessage"]>[0],
+): Promise<void> {
+  const knownInsufficientFundsFailure = isInsufficientFundsFailure(failure);
+  if (!knownInsufficientFundsFailure && !failure.err) {
+    return;
+  }
+
+  let tokenDeficits: TokenTransferFundsDeficit[] = [];
+  let lamportDeficits: LamportFundsDeficit[] = [];
+
+  try {
+    tokenDeficits = await collectTokenTransferFundsDeficits(instructions);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`${label} insufficient funds token diagnostic unavailable: ${message}`);
+  }
+
+  try {
+    lamportDeficits = await collectLamportFundsDeficits(instructions, message);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`${label} insufficient funds SOL diagnostic unavailable: ${message}`);
+  }
+
+  if (tokenDeficits.length === 0 && lamportDeficits.length === 0) {
+    if (knownInsufficientFundsFailure) {
+      console.error(
+        `${label} insufficient funds diagnostic: no overdrawn top-level SPL Token transfer or System Program lamport source found; the shortage may be inside an opaque CPI or guarded payload.`,
+      );
+    }
+    return;
+  }
+
+  console.error(`${label} ${knownInsufficientFundsFailure ? "insufficient funds" : "funds"} diagnostic:`);
+  for (const deficit of tokenDeficits) {
+    const first = deficit.firstOverdraw;
+    console.error([
+      `  token source account: ${deficit.source.toBase58()}`,
+      `    mint: ${deficit.mint.toBase58()}`,
+      `    token program: ${tokenProgramLabel(deficit.tokenProgram)}`,
+      `    transfer authority: ${deficit.authority.toBase58()}`,
+      `    required total: ${formatTokenAmount(deficit.required, deficit.decimals)}`,
+      `    available: ${formatTokenAmount(deficit.available, deficit.decimals)}`,
+      `    missing: ${formatTokenAmount(deficit.missing, deficit.decimals)}`,
+      `    first overdraw: diagnostic instruction #${first.instructionIndex} TransferChecked ${formatTokenAmount(first.amount, first.decimals)} -> ${first.destination.toBase58()}`,
+    ].join("\n"));
+  }
+  for (const deficit of lamportDeficits) {
+    const first = deficit.firstOverdraw;
+    const firstTarget = first.destination ? ` -> ${first.destination.toBase58()}` : "";
+    const firstLabel = first.instructionIndex === null
+      ? first.reason
+      : `diagnostic instruction #${first.instructionIndex} ${first.reason}${firstTarget}`;
+    console.error([
+      `  SOL source account: ${deficit.source.toBase58()}`,
+      `    required total: ${formatLamports(deficit.required)}`,
+      `    available: ${formatLamports(deficit.available)}`,
+      `    missing: ${formatLamports(deficit.missing)}`,
+      `    first overdraw: ${firstLabel}`,
+    ].join("\n"));
+  }
+}
+
+function isInsufficientFundsFailure(failure: SimulatedTransactionResponse): boolean {
+  const errText = JSON.stringify(failure.err ?? "").toLowerCase();
+  const logText = (failure.logs ?? []).join("\n").toLowerCase();
+  const text = `${errText}\n${logText}`;
+  return text.includes("insufficient funds")
+    || text.includes("insufficient lamports")
+    || text.includes("insufficient balance");
+}
+
+async function collectTokenTransferFundsDeficits(
+  instructions: readonly TransactionInstruction[],
+): Promise<TokenTransferFundsDeficit[]> {
+  const groups = new Map<string, {
+    source: PublicKey;
+    mint: PublicKey;
+    authority: PublicKey;
+    tokenProgram: PublicKey;
+    decimals: number;
+    required: bigint;
+    transfers: TokenTransferCheckedDemand[];
+  }>();
+
+  for (const [instructionIndex, instruction] of instructions.entries()) {
+    const transfer = decodeTokenTransferCheckedDemand(instruction, instructionIndex);
+    if (!transfer) {
+      continue;
+    }
+    const key = transfer.source.toBase58();
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        source: transfer.source,
+        mint: transfer.mint,
+        authority: transfer.authority,
+        tokenProgram: transfer.tokenProgram,
+        decimals: transfer.decimals,
+        required: 0n,
+        transfers: [],
+      };
+      groups.set(key, group);
+    }
+    group.required += transfer.amount;
+    group.transfers.push(transfer);
+  }
+
+  const deficits: TokenTransferFundsDeficit[] = [];
+  for (const group of groups.values()) {
+    const available = await fetchTokenBalance(group.source);
+    if (available >= group.required) {
+      continue;
+    }
+    let running = 0n;
+    let firstOverdraw = group.transfers[0];
+    for (const transfer of group.transfers) {
+      running += transfer.amount;
+      if (running > available) {
+        firstOverdraw = transfer;
+        break;
+      }
+    }
+    deficits.push({
+      source: group.source,
+      mint: group.mint,
+      authority: group.authority,
+      tokenProgram: group.tokenProgram,
+      decimals: group.decimals,
+      required: group.required,
+      available,
+      missing: group.required - available,
+      firstOverdraw,
+    });
+  }
+  return deficits;
+}
+
+function decodeTokenTransferCheckedDemand(
+  instruction: TransactionInstruction,
+  instructionIndex: number,
+): TokenTransferCheckedDemand | null {
+  if (!instruction.programId.equals(TOKEN_PROGRAM_ID) && !instruction.programId.equals(TOKEN_2022_PROGRAM_ID)) {
+    return null;
+  }
+  if (instruction.data.length !== 10 || instruction.data[0] !== TOKEN_TRANSFER_CHECKED_TAG) {
+    return null;
+  }
+  const source = instruction.keys[0]?.pubkey;
+  const mint = instruction.keys[1]?.pubkey;
+  const destination = instruction.keys[2]?.pubkey;
+  const authority = instruction.keys[3]?.pubkey;
+  if (!source || !mint || !destination || !authority) {
+    return null;
+  }
+  return {
+    instructionIndex,
+    source,
+    mint,
+    destination,
+    authority,
+    tokenProgram: instruction.programId,
+    amount: instruction.data.readBigUInt64LE(1),
+    decimals: instruction.data[9],
+  };
+}
+
+async function collectLamportFundsDeficits(
+  instructions: readonly TransactionInstruction[],
+  message: Parameters<Connection["getFeeForMessage"]>[0],
+): Promise<LamportFundsDeficit[]> {
+  const demands: LamportDemand[] = [];
+  const fee = await fetchMessageFeeLamports(message);
+  if (fee !== null && fee > 0n) {
+    demands.push({
+      instructionIndex: null,
+      source: system,
+      destination: null,
+      amount: fee,
+      reason: "transaction fee",
+    });
+  }
+  demands.push(...collectLamportDemands(instructions));
+
+  const groups = new Map<string, {
+    source: PublicKey;
+    required: bigint;
+    demands: LamportDemand[];
+  }>();
+  for (const demand of demands) {
+    const key = demand.source.toBase58();
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        source: demand.source,
+        required: 0n,
+        demands: [],
+      };
+      groups.set(key, group);
+    }
+    group.required += demand.amount;
+    group.demands.push(demand);
+  }
+
+  const deficits: LamportFundsDeficit[] = [];
+  for (const group of groups.values()) {
+    const available = BigInt(await connection.getBalance(group.source, DEFAULT_COMMITMENT));
+    if (available >= group.required) {
+      continue;
+    }
+    let running = 0n;
+    let firstOverdraw = group.demands[0];
+    for (const demand of group.demands) {
+      running += demand.amount;
+      if (running > available) {
+        firstOverdraw = demand;
+        break;
+      }
+    }
+    deficits.push({
+      source: group.source,
+      required: group.required,
+      available,
+      missing: group.required - available,
+      firstOverdraw,
+    });
+  }
+  return deficits;
+}
+
+function collectLamportDemands(instructions: readonly TransactionInstruction[]): LamportDemand[] {
+  const demands: LamportDemand[] = [];
+  for (const [instructionIndex, instruction] of instructions.entries()) {
+    if (!instruction.programId.equals(SystemProgram.programId)) {
+      continue;
+    }
+    try {
+      const type = SystemInstruction.decodeInstructionType(instruction);
+      if (type === "Transfer") {
+        const decoded = SystemInstruction.decodeTransfer(instruction);
+        demands.push({
+          instructionIndex,
+          source: decoded.fromPubkey,
+          destination: decoded.toPubkey,
+          amount: decoded.lamports,
+          reason: "SystemProgram.transfer",
+        });
+      } else if (type === "TransferWithSeed") {
+        const decoded = SystemInstruction.decodeTransferWithSeed(instruction);
+        demands.push({
+          instructionIndex,
+          source: decoded.fromPubkey,
+          destination: decoded.toPubkey,
+          amount: decoded.lamports,
+          reason: "SystemProgram.transferWithSeed",
+        });
+      } else if (type === "Create") {
+        const decoded = SystemInstruction.decodeCreateAccount(instruction);
+        demands.push({
+          instructionIndex,
+          source: decoded.fromPubkey,
+          destination: decoded.newAccountPubkey,
+          amount: BigInt(decoded.lamports),
+          reason: "SystemProgram.createAccount",
+        });
+      } else if (type === "CreateWithSeed") {
+        const decoded = SystemInstruction.decodeCreateWithSeed(instruction);
+        demands.push({
+          instructionIndex,
+          source: decoded.fromPubkey,
+          destination: decoded.newAccountPubkey,
+          amount: BigInt(decoded.lamports),
+          reason: "SystemProgram.createAccountWithSeed",
+        });
+      }
+    } catch {
+      continue;
+    }
+  }
+  return demands;
+}
+
+async function fetchMessageFeeLamports(
+  message: Parameters<Connection["getFeeForMessage"]>[0],
+): Promise<bigint | null> {
+  const fee = await connection.getFeeForMessage(message, DEFAULT_COMMITMENT);
+  return fee.value === null ? null : BigInt(fee.value);
+}
+
+function tokenProgramLabel(programId: PublicKey): string {
+  if (programId.equals(TOKEN_PROGRAM_ID)) {
+    return `SPL Token (${programId.toBase58()})`;
+  }
+  if (programId.equals(TOKEN_2022_PROGRAM_ID)) {
+    return `Token-2022 (${programId.toBase58()})`;
+  }
+  return programId.toBase58();
+}
+
+function formatTokenAmount(raw: bigint, decimals: number): string {
+  return `${formatUiAmount(raw, decimals)} (${raw.toString()} raw)`;
+}
+
+function formatLamports(lamports: bigint): string {
+  return `${lamports.toString()} lamports (${formatUiAmount(lamports, 9)} SOL)`;
+}
+
+function formatUiAmount(raw: bigint, decimals: number): string {
+  const sign = raw < 0n ? "-" : "";
+  const value = raw < 0n ? -raw : raw;
+  const scale = 10n ** BigInt(decimals);
+  const whole = value / scale;
+  const fraction = value % scale;
+  if (decimals === 0) {
+    return `${sign}${whole.toString()}`;
+  }
+  const fractionText = fraction.toString().padStart(decimals, "0").replace(/0+$/, "");
+  return fractionText.length === 0
+    ? `${sign}${whole.toString()}`
+    : `${sign}${whole.toString()}.${fractionText}`;
 }
 
 function withComputeBudget(label: string, instructions: TransactionInstruction[]): TransactionInstruction[] {
