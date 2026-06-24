@@ -537,6 +537,7 @@ struct RouteExecutionPreview {
     setup_instruction_program: Option<String>,
     setup_instruction_discriminator: Option<Vec<u8>>,
     route_steps: Vec<&'static str>,
+    refresh_reserves: Vec<String>,
     inner_instruction_count: usize,
     transaction_account_count: usize,
     outer_account_count: usize,
@@ -4896,7 +4897,10 @@ fn load_chain_reconcile_preview(
     }
     let mut positions = Vec::with_capacity(reserve_pubkeys.len());
 
-    for reserve in reserve_pubkeys {
+    let mut reserve_index = 0;
+    while reserve_index < reserve_pubkeys.len() {
+        let reserve = reserve_pubkeys[reserve_index];
+        reserve_index += 1;
         let reserve_summary = load_kamino_reserve_summary(&rpc, &reserve)?;
         let vault_liquidity_ata = derive_associated_token_address(
             &vault_pubkey,
@@ -4926,6 +4930,11 @@ fn load_chain_reconcile_preview(
             &vault_pubkey,
             &reserve_summary.market,
             &reserve,
+        )?;
+        append_missing_obligation_reserve_pubkeys(
+            &mut reserve_pubkeys,
+            &obligation_summary,
+            &obligation_account,
         )?;
         let (collateral_farm_user_state, collateral_farm_user_state_exists) =
             if let Some(collateral_farm) = reserve_summary.collateral_farm {
@@ -4981,6 +4990,29 @@ fn load_chain_reconcile_preview(
         vault_user_metadata_exists,
         positions,
     })
+}
+
+fn append_missing_obligation_reserve_pubkeys(
+    reserve_pubkeys: &mut Vec<Pubkey>,
+    obligation_summary: &KaminoObligationSummary,
+    obligation_account: &Pubkey,
+) -> Result<(), Box<dyn Error>> {
+    for reserve in obligation_summary
+        .deposit_reserves
+        .iter()
+        .chain(obligation_summary.borrow_reserves.iter())
+    {
+        let pubkey = Pubkey::from_str(reserve).map_err(|error| {
+            format!(
+                "invalid reserve {reserve} referenced by obligation {obligation_account}: {error}"
+            )
+        })?;
+        if !reserve_pubkeys.iter().any(|existing| existing == &pubkey) {
+            reserve_pubkeys.push(pubkey);
+        }
+    }
+
+    Ok(())
 }
 
 fn load_policy_account_preflight(
@@ -5565,6 +5597,98 @@ fn chain_position_for_reserve<'a>(
         .ok_or_else(|| format!("chain preview missing required reserve {reserve}").into())
 }
 
+fn push_obligation_refresh_position<'a>(
+    preview: &'a ChainReconcilePreview,
+    seen: &mut BTreeSet<String>,
+    positions: &mut Vec<&'a ChainPositionSummary>,
+    reserve: &str,
+    context: &str,
+) -> Result<(), Box<dyn Error>> {
+    let reserve = Pubkey::from_str(reserve)
+        .map_err(|error| format!("invalid obligation refresh reserve {reserve}: {error}"))?
+        .to_string();
+    if !seen.insert(reserve.clone()) {
+        return Ok(());
+    }
+
+    let position = chain_position_for_reserve(preview, &reserve).map_err(|_| {
+        format!(
+            "missing_obligation_refresh_reserve_metadata reserve {reserve} referenced by {context}; chain preview lacks metadata needed to build Kamino RefreshReserve"
+        )
+    })?;
+    positions.push(position);
+    Ok(())
+}
+
+fn obligation_refresh_positions_for_route<'a>(
+    preview: &'a ChainReconcilePreview,
+    source: &'a ChainPositionSummary,
+    target: &'a ChainPositionSummary,
+) -> Result<Vec<&'a ChainPositionSummary>, Box<dyn Error>> {
+    let mut seen = BTreeSet::new();
+    let mut positions = Vec::new();
+
+    push_obligation_refresh_position(
+        preview,
+        &mut seen,
+        &mut positions,
+        &source.reserve,
+        "selected source reserve",
+    )?;
+    push_obligation_refresh_position(
+        preview,
+        &mut seen,
+        &mut positions,
+        &target.reserve,
+        "selected target reserve",
+    )?;
+
+    let source_deposit_context =
+        format!("source obligation {} deposit reserves", source.obligation);
+    for reserve in &source.obligation_deposit_reserves {
+        push_obligation_refresh_position(
+            preview,
+            &mut seen,
+            &mut positions,
+            reserve,
+            &source_deposit_context,
+        )?;
+    }
+    let source_borrow_context = format!("source obligation {} borrow reserves", source.obligation);
+    for reserve in &source.obligation_borrow_reserves {
+        push_obligation_refresh_position(
+            preview,
+            &mut seen,
+            &mut positions,
+            reserve,
+            &source_borrow_context,
+        )?;
+    }
+    let target_deposit_context =
+        format!("target obligation {} deposit reserves", target.obligation);
+    for reserve in &target.obligation_deposit_reserves {
+        push_obligation_refresh_position(
+            preview,
+            &mut seen,
+            &mut positions,
+            reserve,
+            &target_deposit_context,
+        )?;
+    }
+    let target_borrow_context = format!("target obligation {} borrow reserves", target.obligation);
+    for reserve in &target.obligation_borrow_reserves {
+        push_obligation_refresh_position(
+            preview,
+            &mut seen,
+            &mut positions,
+            reserve,
+            &target_borrow_context,
+        )?;
+    }
+
+    Ok(positions)
+}
+
 fn execution_preflight_blocker(
     chain_preview: Option<&ChainReconcilePreview>,
     policy_preflight: Option<&PolicyAccountPreflight>,
@@ -5828,8 +5952,11 @@ fn build_route_execution_plan(
     let vault_liquidity_ata =
         derive_associated_token_address(&vault_pubkey, &planned_liquidity_mint, &spl_token::ID);
 
-    let source_reserve_refresh_instruction = kamino_refresh_reserve_instruction(source)?;
-    let target_reserve_refresh_instruction = kamino_refresh_reserve_instruction(target)?;
+    let refresh_positions = obligation_refresh_positions_for_route(preview, source, target)?;
+    let refresh_reserves = refresh_positions
+        .iter()
+        .map(|position| position.reserve.clone())
+        .collect::<Vec<_>>();
     let source_farm_init_instruction =
         kamino_init_obligation_collateral_farm_instruction(fee_payer, vault_pubkey, source)?;
     let target_farm_init_instruction =
@@ -5899,10 +6026,10 @@ fn build_route_execution_plan(
         deposit_instruction_constraint_index,
     );
 
-    let mut pre_instructions = vec![
-        source_reserve_refresh_instruction,
-        target_reserve_refresh_instruction,
-    ];
+    let mut pre_instructions = refresh_positions
+        .iter()
+        .map(|position| kamino_refresh_reserve_instruction(position))
+        .collect::<Result<Vec<_>, _>>()?;
     pre_instructions.extend(source_farm_init_instruction);
     pre_instructions.push(source_refresh_instruction);
 
@@ -5987,6 +6114,7 @@ fn build_route_execution_plan(
             setup_instruction_program,
             setup_instruction_discriminator,
             route_steps,
+            refresh_reserves,
             inner_instruction_count,
             transaction_account_count,
             outer_account_count,
@@ -8335,6 +8463,7 @@ fn route_execution_preview_json(preview: &RouteExecutionPreview) -> Value {
         "sourceInstructionDiscriminator": preview.source_instruction_discriminator,
         "targetInstructionDiscriminator": preview.target_instruction_discriminator,
         "routeSteps": &preview.route_steps,
+        "refreshReserves": &preview.refresh_reserves,
     })
 }
 
