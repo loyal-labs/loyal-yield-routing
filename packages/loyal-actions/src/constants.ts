@@ -75,4 +75,6 @@ export const KAMINO_USER_METADATA_SEED = new TextEncoder().encode("user_meta");
 export const JUPITER_SWAP_DISCRIMINATOR = [187, 100, 250, 204, 49, 196, 175, 20] as const;
 export const JUPITER_SWAP_SLIPPAGE_BPS_OFFSET = 24;
 
+export const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 export const YIELD_ROUTE_STANDALONE_ACTION_SEED = 1n;
+export const TREASURY_REBALANCE_ACTION_SEED = 2n;

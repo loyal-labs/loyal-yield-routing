@@ -1,5 +1,5 @@
 import { PublicKey } from "@solana/web3.js";
-import { DEFAULT_MAX_FEE_BPS, RISK_BASKET_MARKETS, STABLECOIN_MINTS, STABLECOINS } from "./constants.js";
+import { DEFAULT_MAX_FEE_BPS, RISK_BASKET_MARKETS, STABLECOIN_MINTS, STABLECOINS, TREASURY_REBALANCE_ACTION_SEED } from "./constants.js";
 import { clusterConfigFor } from "./cluster.js";
 import {
   kaminoDepositConstraint,
@@ -7,11 +7,19 @@ import {
   kaminoWithdrawConstraint,
   jupiterConstraint,
   loyalHubConstraint,
+  treasuryLoyalHubRebalanceConstraints,
   uniquePubkeys,
 } from "./internal/protocols.js";
 import { createProgramInteractionPolicyInstruction, deriveActionAccount } from "./internal/squads.js";
 import { LoyalCluster, MaxFeeBps, RiskBasket, SwapLane } from "./types.js";
-import type { InitYieldRoutePolicyInput, InitYieldRoutePolicyResult, LoyalActionsSdk, LoyalActionRoute3 } from "./types.js";
+import type {
+  InitTreasuryLoyalHubRebalancePolicyInput,
+  InitTreasuryLoyalHubRebalancePolicyResult,
+  InitYieldRoutePolicyInput,
+  InitYieldRoutePolicyResult,
+  LoyalActionsSdk,
+  LoyalActionRoute3,
+} from "./types.js";
 
 const VALID_MAX_FEE_BPS = new Set<number>([
   MaxFeeBps.Bps50,
@@ -20,6 +28,7 @@ const VALID_MAX_FEE_BPS = new Set<number>([
   MaxFeeBps.Bps125,
   MaxFeeBps.Bps150,
 ]);
+const MAX_U64 = 0xffffffffffffffffn;
 
 export function createLoyalActionsSdk(config: { cluster: LoyalCluster }): LoyalActionsSdk {
   if (!Object.values(LoyalCluster).includes(config.cluster)) {
@@ -85,6 +94,50 @@ export function createLoyalActionsSdk(config: { cluster: LoyalCluster }): LoyalA
         },
       };
     },
+
+    initTreasuryLoyalHubRebalancePolicy(
+      input: InitTreasuryLoyalHubRebalancePolicyInput,
+    ): InitTreasuryLoyalHubRebalancePolicyResult {
+      validateTreasuryRebalanceInput(input);
+
+      const policySeed = input.squads.policySeed ?? TREASURY_REBALANCE_ACTION_SEED;
+      const squads = { ...input.squads, policySeed };
+      const actionAccount = deriveActionAccount(clusterConfig, input.squads.settings, policySeed);
+      const constraints = treasuryLoyalHubRebalanceConstraints(clusterConfig, {
+        vault: input.squads.vault,
+        laneId: input.laneId,
+        inputMint: input.inputMint,
+        outputMint: input.outputMint,
+        inputTokenProgram: input.inputTokenProgram,
+        outputTokenProgram: input.outputTokenProgram,
+        outputMintDecimals: input.outputMintDecimals,
+        maxWithdrawAmount: input.maxWithdrawAmount,
+        maxTopUpAmount: input.maxTopUpAmount,
+        maxSlippageBps: input.maxSlippageBps,
+      });
+      const instruction = createProgramInteractionPolicyInstruction(clusterConfig, squads, constraints);
+
+      return {
+        instructions: [instruction],
+        actionAccount,
+        route: {
+          actionAccount,
+          instructionConstraintIndexes: [0, 1, 2] as const,
+        },
+        constraints: [...constraints],
+        spec: {
+          laneId: input.laneId,
+          inputMint: input.inputMint,
+          outputMint: input.outputMint,
+          inputTokenProgram: input.inputTokenProgram,
+          outputTokenProgram: input.outputTokenProgram,
+          outputMintDecimals: input.outputMintDecimals,
+          maxWithdrawAmount: input.maxWithdrawAmount,
+          maxTopUpAmount: input.maxTopUpAmount,
+          maxSlippageBps: input.maxSlippageBps,
+        },
+      };
+    },
   };
 }
 
@@ -117,7 +170,7 @@ function validateInput(input: InitYieldRoutePolicyInput): void {
       continue;
     }
     if (name === "policySeed") {
-      if (value !== undefined && (typeof value !== "bigint" || value < 0n || value > 0xffffffffffffffffn)) {
+      if (value !== undefined && (typeof value !== "bigint" || value < 0n || value > MAX_U64)) {
         throw new Error("squads.policySeed must be a u64 bigint");
       }
       continue;
@@ -129,5 +182,54 @@ function validateInput(input: InitYieldRoutePolicyInput): void {
   const stableMints = STABLECOINS.map((stablecoin) => STABLECOIN_MINTS[stablecoin]);
   if (uniquePubkeys(stableMints).length !== stableMints.length) {
     throw new Error("stablecoin mint registry contains duplicates");
+  }
+}
+
+function validateTreasuryRebalanceInput(input: InitTreasuryLoyalHubRebalancePolicyInput): void {
+  validateSquadsInput(input.squads);
+  if (!Number.isInteger(input.laneId) || input.laneId < 0 || input.laneId > 255) {
+    throw new Error("laneId must be a u8");
+  }
+  if (!Number.isInteger(input.outputMintDecimals) || input.outputMintDecimals < 0 || input.outputMintDecimals > 255) {
+    throw new Error("outputMintDecimals must be a u8");
+  }
+  if (!Number.isInteger(input.maxSlippageBps) || input.maxSlippageBps < 0 || input.maxSlippageBps > 10_000) {
+    throw new Error("maxSlippageBps must be between 0 and 10000");
+  }
+  if (input.maxWithdrawAmount <= 0n || input.maxWithdrawAmount > MAX_U64) {
+    throw new Error("maxWithdrawAmount must be a positive u64");
+  }
+  if (input.maxTopUpAmount <= 0n || input.maxTopUpAmount > MAX_U64) {
+    throw new Error("maxTopUpAmount must be a positive u64");
+  }
+  for (const [name, item] of [
+    ["inputMint", input.inputMint],
+    ["outputMint", input.outputMint],
+    ["inputTokenProgram", input.inputTokenProgram],
+    ["outputTokenProgram", input.outputTokenProgram],
+  ] as const) {
+    if (!(item instanceof PublicKey)) {
+      throw new Error(`${name} must be a PublicKey`);
+    }
+  }
+}
+
+function validateSquadsInput(input: InitYieldRoutePolicyInput["squads"]): void {
+  if (!Number.isInteger(input.accountIndex) || input.accountIndex < 0 || input.accountIndex > 255) {
+    throw new Error("squads.accountIndex must be a u8");
+  }
+  for (const [name, value] of Object.entries(input)) {
+    if (name === "accountIndex") {
+      continue;
+    }
+    if (name === "policySeed") {
+      if (value !== undefined && (typeof value !== "bigint" || value < 0n || value > MAX_U64)) {
+        throw new Error("squads.policySeed must be a u64 bigint");
+      }
+      continue;
+    }
+    if (!(value instanceof PublicKey)) {
+      throw new Error(`squads.${name} must be a PublicKey`);
+    }
   }
 }

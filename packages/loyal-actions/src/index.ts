@@ -1,5 +1,6 @@
 export {
   DEFAULT_MAX_FEE_BPS,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
   KAMINO_ALTCOINS_MARKET,
   KAMINO_BITCOIN_MARKET,
   KAMINO_ETHENA_MARKET,
@@ -14,12 +15,15 @@ export {
   KAMINO_XSTOCKS_MARKET,
   RISK_BASKET_MARKETS,
   STABLECOIN_MINTS,
+  TREASURY_REBALANCE_ACTION_SEED,
 } from "./constants.js";
 export { LOYAL_CLUSTER_CONFIGS } from "./cluster.js";
 export { createLoyalActionsSdk } from "./sdk.js";
 export {
   assertRebalanceAvoidsActiveLanes,
   compileSquadsTransactionInstructions,
+  createProgramInteractionPolicyInstruction,
+  createProgramInteractionPolicyUpdateInstruction,
   createSquadsProgramInteractionExecutionInstruction,
   createSquadsProgramInteractionExecutionInstructionFromCompiled,
   createSquadsSmartAccountInstruction,
@@ -43,14 +47,20 @@ export type {
   IInstruction,
   InitYieldRoutePolicyInput,
   InitYieldRoutePolicyResult,
+  InitTreasuryLoyalHubRebalancePolicyInput,
+  InitTreasuryLoyalHubRebalancePolicyResult,
   LoyalActionRoute2,
   LoyalActionRoute3,
   LoyalActionsSdk,
+  TreasuryLoyalHubRebalanceRoute,
 } from "./types.js";
 export type {
+  AccountConstraint,
   CompiledSquadsInstruction,
   CompiledSquadsTransaction,
   CreateSquadsSmartAccountInput,
+  DataConstraint,
+  InstructionConstraint,
   PlannedLaneRebalance,
   SquadsPda,
   SquadsProgramInteractionExecutionInput,

@@ -1,5 +1,6 @@
 import { PublicKey, SystemProgram } from "@solana/web3.js";
 import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
   JUPITER_SWAP_DISCRIMINATOR,
   JUPITER_SWAP_SLIPPAGE_BPS_OFFSET,
   KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR,
@@ -10,13 +11,47 @@ import {
   KAMINO_VANILLA_OBLIGATION_TAG,
   KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR,
 } from "../constants.js";
-import { CONFIG_SEED, SWAP_EXACT_IN, SWAP_EXACT_IN_MAX_FEE_BPS_DATA_OFFSET, SWAP_EXACT_IN_TAG_OFFSET, swapExactInAccounts } from "../generated/loyal-hub-abi.js";
+import {
+  CONFIG_SEED,
+  HUB_AUTHORITY_SEED,
+  SWAP_EXACT_IN,
+  SWAP_EXACT_IN_MAX_FEE_BPS_DATA_OFFSET,
+  SWAP_EXACT_IN_TAG_OFFSET,
+  WITHDRAW_INVENTORY,
+  WITHDRAW_INVENTORY_AMOUNT_DATA_OFFSET,
+  WITHDRAW_INVENTORY_LANE_ID_DATA_OFFSET,
+  WITHDRAW_INVENTORY_TAG_OFFSET,
+  swapExactInAccounts,
+  withdrawInventoryAccounts,
+} from "../generated/loyal-hub-abi.js";
 import type { LoyalClusterConfig } from "../cluster.js";
 import type { DataConstraint, InstructionConstraint } from "./squads.js";
 
 const SPL_TOKEN_ACCOUNT_AUTHORITY_OFFSET = 32n;
+const SPL_TOKEN_TRANSFER_CHECKED = 12;
+const SPL_TOKEN_TRANSFER_CHECKED_AMOUNT_DATA_OFFSET = 1n;
+const SPL_TOKEN_TRANSFER_CHECKED_DECIMALS_DATA_OFFSET = 9n;
 const SYSVAR_RENT_PUBKEY = new PublicKey("SysvarRent111111111111111111111111111111111");
 const DEFAULT_PUBKEY = PublicKey.default;
+const TRANSFER_CHECKED_ACCOUNTS = {
+  SOURCE: 0,
+  MINT: 1,
+  DESTINATION: 2,
+  AUTHORITY: 3,
+} as const;
+
+export type TreasuryLoyalHubRebalanceConstraintInput = {
+  vault: PublicKey;
+  laneId: number;
+  inputMint: PublicKey;
+  outputMint: PublicKey;
+  inputTokenProgram: PublicKey;
+  outputTokenProgram: PublicKey;
+  outputMintDecimals: number;
+  maxWithdrawAmount: bigint;
+  maxTopUpAmount: bigint;
+  maxSlippageBps: number;
+};
 
 export function kaminoWithdrawConstraint(
   config: LoyalClusterConfig,
@@ -142,8 +177,118 @@ export function loyalHubConstraint(
   };
 }
 
+export function treasuryLoyalHubRebalanceConstraints(
+  config: LoyalClusterConfig,
+  input: TreasuryLoyalHubRebalanceConstraintInput,
+): [InstructionConstraint, InstructionConstraint, InstructionConstraint] {
+  return [
+    loyalHubWithdrawInventoryConstraint(config, input),
+    treasuryJupiterSwapConstraint(config, input),
+    treasuryTopUpTransferCheckedConstraint(config, input),
+  ];
+}
+
+export function loyalHubWithdrawInventoryConstraint(
+  config: LoyalClusterConfig,
+  input: TreasuryLoyalHubRebalanceConstraintInput,
+): InstructionConstraint {
+  const hubAuthority = deriveLoyalHubAuthority(config.loyalHubSwapProgramId, input.laneId);
+  const hubSource = deriveAssociatedTokenAddress(input.inputMint, hubAuthority, input.inputTokenProgram);
+  const treasuryInput = deriveAssociatedTokenAddress(input.inputMint, input.vault, input.inputTokenProgram);
+
+  return {
+    programId: config.loyalHubSwapProgramId,
+    accountConstraints: [
+      pubkeyConstraint(
+        withdrawInventoryAccounts.CONFIG,
+        [deriveLoyalHubConfig(config.loyalHubSwapProgramId)],
+        config.loyalHubSwapProgramId,
+      ),
+      pubkeyConstraint(withdrawInventoryAccounts.ADMIN, [input.vault]),
+      pubkeyConstraint(withdrawInventoryAccounts.HUB_SOURCE, [hubSource], input.inputTokenProgram),
+      tokenAuthorityConstraint(withdrawInventoryAccounts.HUB_SOURCE, hubAuthority, input.inputTokenProgram),
+      pubkeyConstraint(withdrawInventoryAccounts.DESTINATION, [treasuryInput], input.inputTokenProgram),
+      tokenAuthorityConstraint(withdrawInventoryAccounts.DESTINATION, input.vault, input.inputTokenProgram),
+      pubkeyConstraint(withdrawInventoryAccounts.MINT, [input.inputMint], input.inputTokenProgram),
+      pubkeyConstraint(withdrawInventoryAccounts.HUB_AUTHORITY, [hubAuthority]),
+      pubkeyConstraint(withdrawInventoryAccounts.TOKEN_PROGRAM, [input.inputTokenProgram]),
+    ],
+    dataConstraints: [
+      dataU8Equals(BigInt(WITHDRAW_INVENTORY_TAG_OFFSET), WITHDRAW_INVENTORY),
+      dataU64LeLessThanOrEqualTo(BigInt(WITHDRAW_INVENTORY_AMOUNT_DATA_OFFSET), input.maxWithdrawAmount),
+      dataU8Equals(BigInt(WITHDRAW_INVENTORY_LANE_ID_DATA_OFFSET), input.laneId),
+    ],
+  };
+}
+
+export function treasuryJupiterSwapConstraint(
+  config: LoyalClusterConfig,
+  input: TreasuryLoyalHubRebalanceConstraintInput,
+): InstructionConstraint {
+  const treasuryInput = deriveAssociatedTokenAddress(input.inputMint, input.vault, input.inputTokenProgram);
+  const treasuryOutput = deriveAssociatedTokenAddress(input.outputMint, input.vault, input.outputTokenProgram);
+
+  return {
+    programId: config.jupiterV6ProgramId,
+    accountConstraints: [
+      pubkeyConstraint(0, [input.vault]),
+      pubkeyConstraint(1, [treasuryInput], input.inputTokenProgram),
+      tokenAuthorityConstraint(1, input.vault, input.inputTokenProgram),
+      pubkeyConstraint(2, [treasuryOutput], input.outputTokenProgram),
+      tokenAuthorityConstraint(2, input.vault, input.outputTokenProgram),
+      pubkeyConstraint(3, [input.inputMint], input.inputTokenProgram),
+      pubkeyConstraint(4, [input.outputMint], input.outputTokenProgram),
+      pubkeyConstraint(5, [input.inputTokenProgram]),
+      ...(input.outputTokenProgram.equals(input.inputTokenProgram)
+        ? []
+        : [pubkeyConstraint(6, [input.outputTokenProgram])]),
+    ],
+    dataConstraints: [
+      dataSliceEquals(0n, JUPITER_SWAP_DISCRIMINATOR),
+      dataU16LeLessThanOrEqualTo(BigInt(JUPITER_SWAP_SLIPPAGE_BPS_OFFSET), input.maxSlippageBps),
+    ],
+  };
+}
+
+export function treasuryTopUpTransferCheckedConstraint(
+  config: LoyalClusterConfig,
+  input: TreasuryLoyalHubRebalanceConstraintInput,
+): InstructionConstraint {
+  const hubAuthority = deriveLoyalHubAuthority(config.loyalHubSwapProgramId, input.laneId);
+  const treasuryOutput = deriveAssociatedTokenAddress(input.outputMint, input.vault, input.outputTokenProgram);
+  const hubOutput = deriveAssociatedTokenAddress(input.outputMint, hubAuthority, input.outputTokenProgram);
+
+  return {
+    programId: input.outputTokenProgram,
+    accountConstraints: [
+      pubkeyConstraint(TRANSFER_CHECKED_ACCOUNTS.SOURCE, [treasuryOutput], input.outputTokenProgram),
+      tokenAuthorityConstraint(TRANSFER_CHECKED_ACCOUNTS.SOURCE, input.vault, input.outputTokenProgram),
+      pubkeyConstraint(TRANSFER_CHECKED_ACCOUNTS.MINT, [input.outputMint], input.outputTokenProgram),
+      pubkeyConstraint(TRANSFER_CHECKED_ACCOUNTS.DESTINATION, [hubOutput], input.outputTokenProgram),
+      tokenAuthorityConstraint(TRANSFER_CHECKED_ACCOUNTS.DESTINATION, hubAuthority, input.outputTokenProgram),
+      pubkeyConstraint(TRANSFER_CHECKED_ACCOUNTS.AUTHORITY, [input.vault]),
+    ],
+    dataConstraints: [
+      dataU8Equals(0n, SPL_TOKEN_TRANSFER_CHECKED),
+      dataU64LeLessThanOrEqualTo(SPL_TOKEN_TRANSFER_CHECKED_AMOUNT_DATA_OFFSET, input.maxTopUpAmount),
+      dataU8Equals(SPL_TOKEN_TRANSFER_CHECKED_DECIMALS_DATA_OFFSET, input.outputMintDecimals),
+    ],
+  };
+}
+
 export function deriveLoyalHubConfig(loyalHubProgramId: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync([CONFIG_SEED], loyalHubProgramId)[0];
+}
+
+export function deriveLoyalHubAuthority(loyalHubProgramId: PublicKey, laneId: number): PublicKey {
+  return PublicKey.findProgramAddressSync([HUB_AUTHORITY_SEED, Uint8Array.of(laneId)], loyalHubProgramId)[0];
+}
+
+export function deriveAssociatedTokenAddress(mint: PublicKey, owner: PublicKey, tokenProgram: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [owner.toBytes(), tokenProgram.toBytes(), mint.toBytes()],
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+  )[0];
 }
 
 export function deriveKaminoVanillaObligation(vault: PublicKey, lendingMarket: PublicKey): PublicKey {
@@ -219,6 +364,14 @@ function dataU16LeLessThanOrEqualTo(offset: bigint, value: number): DataConstrai
   return {
     dataOffset: offset,
     dataValue: { type: "u16Le", value },
+    operator: "lessThanOrEqualTo",
+  };
+}
+
+function dataU64LeLessThanOrEqualTo(offset: bigint, value: bigint): DataConstraint {
+  return {
+    dataOffset: offset,
+    dataValue: { type: "u64Le", value },
     operator: "lessThanOrEqualTo",
   };
 }

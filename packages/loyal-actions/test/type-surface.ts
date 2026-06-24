@@ -3,6 +3,9 @@ import {
   LOYAL_CLUSTER_CONFIGS,
   LoyalCluster,
   RiskBasket,
+  STABLECOIN_MINTS,
+  Stablecoin,
+  TREASURY_REBALANCE_ACTION_SEED,
   SwapLane,
   compileSquadsTransactionInstructions,
   createLoyalActionsSdk,
@@ -30,6 +33,49 @@ const policy = sdk.initYieldRoutePolicy({
 
 const jupiterIndexes = policy.routes.jupiter.instructionConstraintIndexes;
 void jupiterIndexes;
+
+const treasuryPolicy = sdk.initTreasuryLoyalHubRebalancePolicy({
+  laneId: 0,
+  inputMint: STABLECOIN_MINTS[Stablecoin.USDC],
+  outputMint: STABLECOIN_MINTS[Stablecoin.PYUSD],
+  inputTokenProgram: LOYAL_CLUSTER_CONFIGS[LoyalCluster.MainnetBeta].tokenProgramId,
+  outputTokenProgram: LOYAL_CLUSTER_CONFIGS[LoyalCluster.MainnetBeta].token2022ProgramId,
+  outputMintDecimals: 6,
+  maxWithdrawAmount: 500000n,
+  maxTopUpAmount: 495000n,
+  maxSlippageBps: 50,
+  squads: {
+    settings: key,
+    authority: key,
+    delegatedSigner: key,
+    accountIndex: 0,
+    vault: key,
+    policySeed: TREASURY_REBALANCE_ACTION_SEED,
+  },
+});
+const treasuryIndexes = treasuryPolicy.route.instructionConstraintIndexes;
+void treasuryIndexes;
+void treasuryPolicy.constraints;
+
+sdk.initTreasuryLoyalHubRebalancePolicy({
+  laneId: 0,
+  inputMint: STABLECOIN_MINTS[Stablecoin.USDC],
+  outputMint: STABLECOIN_MINTS[Stablecoin.PYUSD],
+  inputTokenProgram: LOYAL_CLUSTER_CONFIGS[LoyalCluster.MainnetBeta].tokenProgramId,
+  outputTokenProgram: LOYAL_CLUSTER_CONFIGS[LoyalCluster.MainnetBeta].token2022ProgramId,
+  outputMintDecimals: 6,
+  // @ts-expect-error Amount caps must be bigint raw amounts.
+  maxWithdrawAmount: 500000,
+  maxTopUpAmount: 495000n,
+  maxSlippageBps: 50,
+  squads: {
+    settings: key,
+    authority: key,
+    delegatedSigner: key,
+    accountIndex: 0,
+    vault: key,
+  },
+});
 
 // @ts-expect-error Loyal route metadata is absent when the Loyal lane is not enabled.
 const loyalIndexes = policy.routes.loyal.instructionConstraintIndexes;

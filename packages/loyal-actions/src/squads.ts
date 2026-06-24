@@ -3,6 +3,8 @@ export {
   compileSquadsTransactionInstructions,
   createSquadsProgramInteractionExecutionInstruction,
   createSquadsProgramInteractionExecutionInstructionFromCompiled,
+  createProgramInteractionPolicyInstruction,
+  createProgramInteractionPolicyUpdateInstruction,
   createSquadsSmartAccountInstruction,
   createSquadsSyncTransactionInstruction,
   createSquadsSyncTransactionInstructionFromCompiled,
@@ -14,9 +16,12 @@ export {
 } from "./internal/squads.js";
 
 export type {
+  AccountConstraint,
   CompiledSquadsInstruction,
   CompiledSquadsTransaction,
   CreateSquadsSmartAccountInput,
+  DataConstraint,
+  InstructionConstraint,
   PlannedLaneRebalance,
   SquadsPda,
   SquadsProgramInteractionExecutionInput,

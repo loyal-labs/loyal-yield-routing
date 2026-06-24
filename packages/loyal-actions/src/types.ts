@@ -1,4 +1,5 @@
 import type { PublicKey, TransactionInstruction } from "@solana/web3.js";
+import type { InstructionConstraint } from "./internal/squads.js";
 
 export type Address = PublicKey;
 export type IInstruction = TransactionInstruction;
@@ -63,6 +64,49 @@ export type InitYieldRoutePolicyInput<
   };
 };
 
+export type TreasuryLoyalHubRebalanceRoute = {
+  actionAccount: Address;
+  instructionConstraintIndexes: readonly [0, 1, 2];
+};
+
+export type InitTreasuryLoyalHubRebalancePolicyInput = {
+  laneId: number;
+  inputMint: Address;
+  outputMint: Address;
+  inputTokenProgram: Address;
+  outputTokenProgram: Address;
+  outputMintDecimals: number;
+  maxWithdrawAmount: bigint;
+  maxTopUpAmount: bigint;
+  maxSlippageBps: number;
+  squads: {
+    settings: Address;
+    authority: Address;
+    delegatedSigner: Address;
+    accountIndex: number;
+    vault: Address;
+    policySeed?: bigint;
+  };
+};
+
+export type InitTreasuryLoyalHubRebalancePolicyResult = {
+  instructions: IInstruction[];
+  actionAccount: Address;
+  route: TreasuryLoyalHubRebalanceRoute;
+  constraints: InstructionConstraint[];
+  spec: {
+    laneId: number;
+    inputMint: Address;
+    outputMint: Address;
+    inputTokenProgram: Address;
+    outputTokenProgram: Address;
+    outputMintDecimals: number;
+    maxWithdrawAmount: bigint;
+    maxTopUpAmount: bigint;
+    maxSlippageBps: number;
+  };
+};
+
 type JupiterRouteFor<Lanes extends readonly SwapLane[]> =
   Extract<Lanes[number], SwapLane.Jupiter> extends never
     ? { jupiter?: undefined }
@@ -97,4 +141,7 @@ export type LoyalActionsSdk = {
   initYieldRoutePolicy<const Lanes extends readonly SwapLane[]>(
     input: InitYieldRoutePolicyInput<Lanes>,
   ): InitYieldRoutePolicyResult<Lanes>;
+  initTreasuryLoyalHubRebalancePolicy(
+    input: InitTreasuryLoyalHubRebalancePolicyInput,
+  ): InitTreasuryLoyalHubRebalancePolicyResult;
 };

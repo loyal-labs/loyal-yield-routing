@@ -17,10 +17,12 @@ import {
   RiskBasket,
   STABLECOIN_MINTS,
   Stablecoin,
+  TREASURY_REBALANCE_ACTION_SEED,
   SwapLane,
   assertRebalanceAvoidsActiveLanes,
   compileSquadsTransactionInstructions,
   createLoyalActionsSdk,
+  createProgramInteractionPolicyUpdateInstruction,
   createSquadsProgramInteractionExecutionInstruction,
   createSquadsSmartAccountInstruction,
   createSquadsSyncTransactionInstruction,
@@ -29,13 +31,23 @@ import {
   deriveSquadsSettings,
   deriveSquadsVault,
 } from "../src/index.js";
+import type { AccountConstraint, DataConstraint, InstructionConstraint } from "../src/index.js";
 import {
+  deriveAssociatedTokenAddress,
+  deriveLoyalHubAuthority,
   deriveKaminoUserMetadata,
   deriveKaminoVanillaObligation,
   kaminoInitObligationConstraint,
   loyalHubConstraint,
 } from "../src/internal/protocols.js";
-import { swapExactInAccounts } from "../src/generated/loyal-hub-abi.js";
+import {
+  WITHDRAW_INVENTORY,
+  WITHDRAW_INVENTORY_AMOUNT_DATA_OFFSET,
+  WITHDRAW_INVENTORY_LANE_ID_DATA_OFFSET,
+  WITHDRAW_INVENTORY_TAG_OFFSET,
+  swapExactInAccounts,
+  withdrawInventoryAccounts,
+} from "../src/generated/loyal-hub-abi.js";
 import {
   KAMINO_INIT_OBLIGATION_DISCRIMINATOR,
   KAMINO_VANILLA_OBLIGATION_ID,
@@ -179,6 +191,101 @@ describe("initYieldRoutePolicy", () => {
     ]);
   });
 
+  test("builds a treasury Loyal Hub rebalance policy with exact Hub Jupiter and top-up constraints", () => {
+    const sdk = createLoyalActionsSdk({ cluster: LoyalCluster.MainnetBeta });
+    const config = LOYAL_CLUSTER_CONFIGS[LoyalCluster.MainnetBeta];
+    const laneId = 2;
+    const inputMint = STABLECOIN_MINTS[Stablecoin.USDC];
+    const outputMint = STABLECOIN_MINTS[Stablecoin.PYUSD];
+    const maxWithdrawAmount = 500000n;
+    const maxTopUpAmount = 495000n;
+    const policy = sdk.initTreasuryLoyalHubRebalancePolicy({
+      laneId,
+      inputMint,
+      outputMint,
+      inputTokenProgram: config.tokenProgramId,
+      outputTokenProgram: config.token2022ProgramId,
+      outputMintDecimals: 6,
+      maxWithdrawAmount,
+      maxTopUpAmount,
+      maxSlippageBps: 50,
+      squads,
+    });
+    const hubAuthority = deriveLoyalHubAuthority(config.loyalHubSwapProgramId, laneId);
+    const treasuryInput = deriveAssociatedTokenAddress(inputMint, vault, config.tokenProgramId);
+    const treasuryOutput = deriveAssociatedTokenAddress(outputMint, vault, config.token2022ProgramId);
+    const hubInput = deriveAssociatedTokenAddress(inputMint, hubAuthority, config.tokenProgramId);
+    const hubOutput = deriveAssociatedTokenAddress(outputMint, hubAuthority, config.token2022ProgramId);
+
+    expect(policy.instructions).toHaveLength(1);
+    expect(policy.instructions[0]?.data[22]).toBe(4);
+    expect(policy.actionAccount.toBase58()).toBe(
+      deriveSquadsPolicy(config, settings, TREASURY_REBALANCE_ACTION_SEED).address.toBase58(),
+    );
+    expect(policy.route.instructionConstraintIndexes).toEqual([0, 1, 2]);
+    expect(policy.constraints).toHaveLength(3);
+
+    const [withdraw, jupiter, topUp] = policy.constraints;
+    expect(withdraw?.programId.toBase58()).toBe(config.loyalHubSwapProgramId.toBase58());
+    expectPubkeyConstraint(withdraw, withdrawInventoryAccounts.ADMIN, [vault]);
+    expectPubkeyConstraint(withdraw, withdrawInventoryAccounts.HUB_SOURCE, [hubInput], config.tokenProgramId);
+    expectAuthorityConstraint(withdraw, withdrawInventoryAccounts.HUB_SOURCE, hubAuthority, config.tokenProgramId);
+    expectPubkeyConstraint(withdraw, withdrawInventoryAccounts.DESTINATION, [treasuryInput], config.tokenProgramId);
+    expectAuthorityConstraint(withdraw, withdrawInventoryAccounts.DESTINATION, vault, config.tokenProgramId);
+    expectPubkeyConstraint(withdraw, withdrawInventoryAccounts.MINT, [inputMint], config.tokenProgramId);
+    expectPubkeyConstraint(withdraw, withdrawInventoryAccounts.HUB_AUTHORITY, [hubAuthority]);
+    expectPubkeyConstraint(withdraw, withdrawInventoryAccounts.TOKEN_PROGRAM, [config.tokenProgramId]);
+    expectDataU8(withdraw?.dataConstraints, BigInt(WITHDRAW_INVENTORY_TAG_OFFSET), WITHDRAW_INVENTORY);
+    expectDataU64Lte(withdraw?.dataConstraints, BigInt(WITHDRAW_INVENTORY_AMOUNT_DATA_OFFSET), maxWithdrawAmount);
+    expectDataU8(withdraw?.dataConstraints, BigInt(WITHDRAW_INVENTORY_LANE_ID_DATA_OFFSET), laneId);
+
+    expect(jupiter?.programId.toBase58()).toBe(config.jupiterV6ProgramId.toBase58());
+    expectPubkeyConstraint(jupiter, 0, [vault]);
+    expectPubkeyConstraint(jupiter, 1, [treasuryInput], config.tokenProgramId);
+    expectAuthorityConstraint(jupiter, 1, vault, config.tokenProgramId);
+    expectPubkeyConstraint(jupiter, 2, [treasuryOutput], config.token2022ProgramId);
+    expectAuthorityConstraint(jupiter, 2, vault, config.token2022ProgramId);
+    expectPubkeyConstraint(jupiter, 3, [inputMint], config.tokenProgramId);
+    expectPubkeyConstraint(jupiter, 4, [outputMint], config.token2022ProgramId);
+    expectPubkeyConstraint(jupiter, 5, [config.tokenProgramId]);
+    expectPubkeyConstraint(jupiter, 6, [config.token2022ProgramId]);
+    expectDataU16Lte(jupiter?.dataConstraints, 24n, 50);
+
+    expect(topUp?.programId.toBase58()).toBe(config.token2022ProgramId.toBase58());
+    expectPubkeyConstraint(topUp, 0, [treasuryOutput], config.token2022ProgramId);
+    expectAuthorityConstraint(topUp, 0, vault, config.token2022ProgramId);
+    expectPubkeyConstraint(topUp, 1, [outputMint], config.token2022ProgramId);
+    expectPubkeyConstraint(topUp, 2, [hubOutput], config.token2022ProgramId);
+    expectAuthorityConstraint(topUp, 2, hubAuthority, config.token2022ProgramId);
+    expectPubkeyConstraint(topUp, 3, [vault]);
+    expectDataU8(topUp?.dataConstraints, 0n, 12);
+    expectDataU64Lte(topUp?.dataConstraints, 1n, maxTopUpAmount);
+    expectDataU8(topUp?.dataConstraints, 9n, 6);
+  });
+
+  test("rejects invalid treasury rebalance policy inputs before instruction creation", () => {
+    const sdk = createLoyalActionsSdk({ cluster: LoyalCluster.MainnetBeta });
+    const config = LOYAL_CLUSTER_CONFIGS[LoyalCluster.MainnetBeta];
+    const valid = {
+      laneId: 0,
+      inputMint: STABLECOIN_MINTS[Stablecoin.USDC],
+      outputMint: STABLECOIN_MINTS[Stablecoin.PYUSD],
+      inputTokenProgram: config.tokenProgramId,
+      outputTokenProgram: config.token2022ProgramId,
+      outputMintDecimals: 6,
+      maxWithdrawAmount: 1n,
+      maxTopUpAmount: 1n,
+      maxSlippageBps: 50,
+      squads,
+    };
+
+    expect(() => sdk.initTreasuryLoyalHubRebalancePolicy({ ...valid, laneId: 256 })).toThrow("laneId");
+    expect(() => sdk.initTreasuryLoyalHubRebalancePolicy({ ...valid, outputMintDecimals: 256 })).toThrow("outputMintDecimals");
+    expect(() => sdk.initTreasuryLoyalHubRebalancePolicy({ ...valid, maxSlippageBps: 10001 })).toThrow("maxSlippageBps");
+    expect(() => sdk.initTreasuryLoyalHubRebalancePolicy({ ...valid, maxWithdrawAmount: 0n })).toThrow("maxWithdrawAmount");
+    expect(() => sdk.initTreasuryLoyalHubRebalancePolicy({ ...valid, maxTopUpAmount: 0n })).toThrow("maxTopUpAmount");
+  });
+
   test("derives stable exposure internally from the approved seven symbols", () => {
     const sdk = createLoyalActionsSdk({ cluster: LoyalCluster.MainnetBeta });
     const policy = sdk.initYieldRoutePolicy({
@@ -247,6 +354,79 @@ describe("initYieldRoutePolicy", () => {
     expect(() => createLoyalActionsSdk({ cluster: "localnet" as LoyalCluster })).toThrow("unsupported Loyal cluster");
   });
 });
+
+function expectPubkeyConstraint(
+  constraint: InstructionConstraint | undefined,
+  accountIndex: number,
+  pubkeys: PublicKey[],
+  owner?: PublicKey,
+): void {
+  const account = findAccountConstraint(constraint, accountIndex, "pubkey", owner);
+  expect(account?.kind.type).toBe("pubkey");
+  if (account?.kind.type !== "pubkey") {
+    throw new Error(`account ${accountIndex} is not a pubkey constraint`);
+  }
+  expect(account.kind.pubkeys.map((pubkey) => pubkey.toBase58())).toEqual(pubkeys.map((pubkey) => pubkey.toBase58()));
+}
+
+function expectAuthorityConstraint(
+  constraint: InstructionConstraint | undefined,
+  accountIndex: number,
+  authority: PublicKey,
+  owner: PublicKey,
+): void {
+  const account = findAccountConstraint(constraint, accountIndex, "accountData", owner);
+  expect(account?.kind.type).toBe("accountData");
+  if (account?.kind.type !== "accountData") {
+    throw new Error(`account ${accountIndex} is not an account-data constraint`);
+  }
+  expect(account.kind.dataConstraints).toContainEqual({
+    dataOffset: 32n,
+    dataValue: { type: "u8Slice", value: [...authority.toBytes()] },
+    operator: "equals",
+  });
+}
+
+function expectDataU8(constraints: readonly DataConstraint[] | undefined, offset: bigint, value: number): void {
+  expect(constraints).toContainEqual({
+    dataOffset: offset,
+    dataValue: { type: "u8", value },
+    operator: "equals",
+  });
+}
+
+function expectDataU16Lte(constraints: readonly DataConstraint[] | undefined, offset: bigint, value: number): void {
+  expect(constraints).toContainEqual({
+    dataOffset: offset,
+    dataValue: { type: "u16Le", value },
+    operator: "lessThanOrEqualTo",
+  });
+}
+
+function expectDataU64Lte(constraints: readonly DataConstraint[] | undefined, offset: bigint, value: bigint): void {
+  expect(constraints).toContainEqual({
+    dataOffset: offset,
+    dataValue: { type: "u64Le", value },
+    operator: "lessThanOrEqualTo",
+  });
+}
+
+function findAccountConstraint(
+  constraint: InstructionConstraint | undefined,
+  accountIndex: number,
+  kind: AccountConstraint["kind"]["type"],
+  owner?: PublicKey,
+): AccountConstraint | undefined {
+  return constraint?.accountConstraints.find((account) => {
+    if (account.accountIndex !== accountIndex || account.kind.type !== kind) {
+      return false;
+    }
+    if (owner === undefined) {
+      return account.owner === undefined;
+    }
+    return account.owner?.equals(owner) ?? false;
+  });
+}
 
 describe("Squads operational helpers", () => {
   const config = LOYAL_CLUSTER_CONFIGS[LoyalCluster.MainnetBeta];
@@ -351,6 +531,37 @@ describe("Squads operational helpers", () => {
       [delegatedSigner.toBase58(), true, false],
     ]);
     expect(policyExecution.data.subarray(0, 12).toJSON().data).toEqual([90, 81, 187, 81, 39, 70, 128, 78, 0, 1, 1, 1]);
+  });
+
+  test("builds a compact ProgramInteraction policy update settings action", () => {
+    const innerConstraint = {
+      programId: delegatedSigner,
+      accountConstraints: [],
+      dataConstraints: [],
+    };
+    const policyUpdate = createProgramInteractionPolicyUpdateInstruction(
+      config,
+      {
+        settings,
+        authority,
+        delegatedSigner,
+        accountIndex: 0,
+      },
+      deriveSquadsPolicy(config, settings, TREASURY_REBALANCE_ACTION_SEED).address,
+      [innerConstraint],
+    );
+
+    expect(policyUpdate.keys.map((key) => [key.pubkey.toBase58(), key.isSigner, key.isWritable])).toEqual([
+      [settings.toBase58(), false, true],
+      [authority.toBase58(), true, true],
+      ["11111111111111111111111111111111", false, false],
+      [config.squadsSmartAccountProgramId.toBase58(), false, false],
+      [authority.toBase58(), true, false],
+      [deriveSquadsPolicy(config, settings, TREASURY_REBALANCE_ACTION_SEED).address.toBase58(), false, true],
+    ]);
+    expect(policyUpdate.data.subarray(0, 14).toJSON().data).toEqual([
+      138, 209, 64, 163, 79, 67, 233, 76, 1, 1, 0, 0, 0, 8,
+    ]);
   });
 
   test("rejects planned rebalances that touch active lanes", () => {

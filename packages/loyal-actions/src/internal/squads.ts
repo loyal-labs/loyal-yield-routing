@@ -199,6 +199,32 @@ export function createProgramInteractionPolicyInstruction(
   });
 }
 
+export function createProgramInteractionPolicyUpdateInstruction(
+  config: LoyalClusterConfig,
+  context: Omit<SquadsContext, "vault" | "policySeed">,
+  policy: PublicKey,
+  constraints: readonly InstructionConstraint[],
+): TransactionInstruction {
+  const data = serializePolicyUpdateActions(
+    policy,
+    context.delegatedSigner,
+    compileProgramInteractionPayload(context.accountIndex, constraints),
+  );
+
+  return new TransactionInstruction({
+    programId: config.squadsSmartAccountProgramId,
+    keys: [
+      { pubkey: context.settings, isSigner: false, isWritable: true },
+      { pubkey: context.authority, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: config.squadsSmartAccountProgramId, isSigner: false, isWritable: false },
+      { pubkey: context.authority, isSigner: true, isWritable: false },
+      { pubkey: policy, isSigner: false, isWritable: true },
+    ],
+    data: Buffer.from(data),
+  });
+}
+
 export function compileSquadsTransactionInstructions(
   instructions: readonly TransactionInstruction[],
   extraAccounts: TransactionInstruction["keys"] = [],
@@ -413,6 +439,23 @@ function serializeSettingsActions(
   return encoder.finish();
 }
 
+function serializePolicyUpdateActions(
+  policy: PublicKey,
+  delegatedSigner: PublicKey,
+  payload: CompiledPayload,
+): Uint8Array {
+  const encoder = new BytesEncoder();
+  encoder.pushBytes(EXECUTE_SETTINGS_TRANSACTION_SYNC_DISCRIMINATOR);
+  encoder.pushU8(SQUADS_SYNC_SIGNER_COUNT);
+  encoder.pushVec([undefined], () => encodePolicyUpdateAction(encoder, policy, delegatedSigner, payload));
+  encoder.pushOption<string>(undefined, (memo) => {
+    const bytes = new TextEncoder().encode(memo);
+    encoder.pushU32(bytes.length);
+    encoder.pushBytes(bytes);
+  });
+  return encoder.finish();
+}
+
 function serializeCreateSmartAccountArgs(verifier: PublicKey): Uint8Array {
   const encoder = new BytesEncoder();
   encoder.pushBytes(CREATE_SMART_ACCOUNT_DISCRIMINATOR);
@@ -483,6 +526,25 @@ function encodePolicyCreateAction(
   encoder.pushU16(1);
   encoder.pushU32(0);
   encoder.pushOption<bigint>(undefined, (timestamp) => encoder.pushU64(timestamp));
+  encoder.pushOption<never>(undefined, () => undefined);
+}
+
+function encodePolicyUpdateAction(
+  encoder: BytesEncoder,
+  policy: PublicKey,
+  delegatedSigner: PublicKey,
+  payload: CompiledPayload,
+): void {
+  encoder.pushU8(8);
+  encoder.pushPubkey(policy);
+  encoder.pushVec([delegatedSigner], (signer) => {
+    encoder.pushPubkey(signer);
+    encoder.pushU8(SQUADS_FULL_PERMISSIONS_MASK);
+  });
+  encoder.pushU16(1);
+  encoder.pushU32(0);
+  encoder.pushU8(4);
+  encodeProgramInteractionPayload(encoder, payload);
   encoder.pushOption<never>(undefined, () => undefined);
 }
 
