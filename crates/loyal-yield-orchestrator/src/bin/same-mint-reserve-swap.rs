@@ -7956,7 +7956,10 @@ fn validate_monitor_expectations(
     input: &SameMintRebalanceInput,
 ) -> Result<(), PlanBlocker> {
     if let Some(expected) = options.expected_source_snapshot_id {
-        if input.expected_source_snapshot_id.as_i64() != expected {
+        let actual = input.expected_source_snapshot_id.as_i64();
+        let accepted_fresh_chain_snapshot =
+            options.execute && options.reconcile_from_chain && actual > expected;
+        if actual != expected && !accepted_fresh_chain_snapshot {
             return Err(PlanBlocker::MonitorPlanDrift(format!(
                 "expected source snapshot {expected}, got {}",
                 input.expected_source_snapshot_id.as_i64()
@@ -8715,6 +8718,46 @@ mod tests {
         }
     }
 
+    fn test_cli_options(
+        execute: bool,
+        reconcile_from_chain: bool,
+        expected_source_snapshot_id: Option<i64>,
+    ) -> CliOptions {
+        CliOptions {
+            settings: "settings".to_owned(),
+            vault_index: 1,
+            direction: Direction::MainToPrime,
+            source_reserve: Some("source-reserve".to_owned()),
+            target_reserve: Some("target-reserve".to_owned()),
+            update_policy: false,
+            update_active_policy: false,
+            initial_deposit_reserve: None,
+            initial_deposit_amount_raw: None,
+            full_withdraw_main_usdc: false,
+            full_withdraw_reserve: None,
+            setup_obligation_reserve: None,
+            e2e_deposit_amount_raw: None,
+            execute,
+            optimization_cycle: true,
+            reconcile_from_chain,
+            reconcile_current_positions: false,
+            reconcile_reserves: Vec::new(),
+            seed_from_user_position: false,
+            provision_lookup_table: false,
+            expected_source_snapshot_id,
+            expected_liquidity_mint: Some("mint".to_owned()),
+            expected_amount_raw: Some(480_000_000),
+            expected_route_amount_semantics: Some(
+                ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY.to_owned(),
+            ),
+            expected_source_apy_bps: Some(100),
+            expected_target_apy_bps: Some(200),
+            expected_edge_bps: Some(100),
+            rpc_url: "http://localhost:8899".to_owned(),
+            lookup_tables: Vec::new(),
+        }
+    }
+
     #[test]
     fn collateral_conversion_can_produce_distinct_redeemable_liquidity() {
         let scale = BigUint::from(1_u128 << 60);
@@ -8754,6 +8797,33 @@ mod tests {
             .expect("matching source collateral should pass");
 
         assert_eq!(amount, 404_323_479);
+    }
+
+    #[test]
+    fn monitor_expectations_accept_newer_execute_chain_snapshot() {
+        let options = test_cli_options(true, true, Some(1));
+        let mut input = test_same_mint_input(480_000_000, Some(404_323_479));
+        input.expected_source_snapshot_id = SnapshotId(2);
+
+        validate_monitor_expectations(&options, &input)
+            .expect("execute plus chain reconcile should accept its fresh snapshot");
+    }
+
+    #[test]
+    fn monitor_expectations_reject_snapshot_drift_without_chain_reconcile() {
+        let options = test_cli_options(true, false, Some(1));
+        let mut input = test_same_mint_input(480_000_000, Some(404_323_479));
+        input.expected_source_snapshot_id = SnapshotId(2);
+
+        let error = validate_monitor_expectations(&options, &input).unwrap_err();
+
+        assert_eq!(
+            blocker_reason(&error),
+            json!({
+                "kind": "monitor_plan_drift",
+                "reason": "expected source snapshot 1, got 2",
+            })
+        );
     }
 }
 
