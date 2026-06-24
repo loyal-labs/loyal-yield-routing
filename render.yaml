@@ -161,7 +161,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-b46b17ef3fd34127351b35af4ce5c005dbc29a61
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-72660884ab5676b0ad880132f1b8e68cb75e171b
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-yield-monitor --all-active-vaults --execute --poll-interval-seconds 300 --rebalance-cooldown-seconds 300
             maxShutdownDelaySeconds: 60
