@@ -138,6 +138,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let setup_instructions = build_policy_setup_instructions(
         options.vault,
         &source,
+        &target,
         &obligation_summary,
         user_metadata_exists,
         source_farm_user_state_exists,
@@ -147,6 +148,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let route_withdraw_instructions = build_route_withdraw_instructions(
         options.vault,
         &source,
+        &target,
         &obligation_summary,
         withdraw_amount,
     )?;
@@ -158,6 +160,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let route_deposit_instructions = build_route_deposit_instructions(
         options.vault,
         options.setup_fee_payer,
+        &source,
         &target,
         &route_deposit_obligation_summary,
         target_farm_user_state_exists,
@@ -234,23 +237,24 @@ fn withdraw_closes_only_obligation_position(
 fn build_route_withdraw_instructions(
     vault: Pubkey,
     source: &ReserveSummary,
+    target: &ReserveSummary,
     obligation_summary: &ObligationSummary,
     amount: u64,
 ) -> Result<Vec<Instruction>, Box<dyn Error>> {
-    Ok(vec![
-        build_refresh_reserve_instruction(source),
-        build_refresh_obligation_instruction(
-            source.market,
-            &derive_obligation(vault, source.market),
-            obligation_summary,
-        ),
-        build_withdraw_instruction(vault, source, amount)?,
-    ])
+    let mut instructions = build_refresh_route_reserve_instructions(source, target);
+    instructions.push(build_refresh_obligation_instruction(
+        source.market,
+        &derive_obligation(vault, source.market),
+        obligation_summary,
+    ));
+    instructions.push(build_withdraw_instruction(vault, source, amount)?);
+    Ok(instructions)
 }
 
 fn build_route_deposit_instructions(
     vault: Pubkey,
     setup_fee_payer: Pubkey,
+    source: &ReserveSummary,
     target: &ReserveSummary,
     obligation_summary: &ObligationSummary,
     target_farm_user_state_exists: bool,
@@ -274,7 +278,7 @@ fn build_route_deposit_instructions(
             ));
         }
     }
-    instructions.push(build_refresh_reserve_instruction(target));
+    instructions.extend(build_refresh_route_reserve_instructions(source, target));
     instructions.push(build_refresh_obligation_instruction(
         target.market,
         &derive_obligation(vault, target.market),
@@ -287,6 +291,7 @@ fn build_route_deposit_instructions(
 fn build_policy_setup_instructions(
     vault: Pubkey,
     source: &ReserveSummary,
+    target: &ReserveSummary,
     obligation_summary: &ObligationSummary,
     user_metadata_exists: bool,
     source_farm_user_state_exists: bool,
@@ -314,7 +319,7 @@ fn build_policy_setup_instructions(
             ));
         }
     }
-    instructions.push(build_refresh_reserve_instruction(source));
+    instructions.extend(build_refresh_route_reserve_instructions(source, target));
     instructions.push(build_refresh_obligation_instruction(
         source.market,
         &derive_obligation(vault, source.market),
@@ -322,6 +327,17 @@ fn build_policy_setup_instructions(
     ));
     instructions.push(build_deposit_instruction(vault, source, amount)?);
     Ok(instructions)
+}
+
+fn build_refresh_route_reserve_instructions(
+    source: &ReserveSummary,
+    target: &ReserveSummary,
+) -> Vec<Instruction> {
+    let mut instructions = vec![build_refresh_reserve_instruction(source)];
+    if target.reserve != source.reserve {
+        instructions.push(build_refresh_reserve_instruction(target));
+    }
+    instructions
 }
 
 fn build_init_user_metadata_instruction(vault: Pubkey, fee_payer: Pubkey) -> Instruction {
