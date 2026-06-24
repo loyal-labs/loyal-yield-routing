@@ -15,7 +15,9 @@ export {
   KAMINO_XSTOCKS_MARKET,
   RISK_BASKET_MARKETS,
   STABLECOIN_MINTS,
+  TREASURY_JUPITER_SWAP_ACTION_SEED,
   TREASURY_REBALANCE_ACTION_SEED,
+  TREASURY_TOP_UP_ACTION_SEED,
 } from "./constants.js";
 export { LOYAL_CLUSTER_CONFIGS } from "./cluster.js";
 export { createLoyalActionsSdk } from "./sdk.js";
@@ -52,7 +54,10 @@ export type {
   LoyalActionRoute2,
   LoyalActionRoute3,
   LoyalActionsSdk,
-  TreasuryLoyalHubRebalanceRoute,
+  TreasuryJupiterSwapRoute,
+  TreasuryLoyalHubTopUpRoute,
+  TreasuryLoyalHubWithdrawRoute,
+  TreasuryPolicyPlan,
 } from "./types.js";
 export type {
   AccountConstraint,

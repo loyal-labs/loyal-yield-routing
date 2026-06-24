@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
+import {
+  PublicKey,
+  SystemProgram,
+  TransactionInstruction,
+  TransactionMessage,
+  VersionedTransaction,
+} from "@solana/web3.js";
 import {
   DEFAULT_MAX_FEE_BPS,
   KAMINO_ALTCOINS_MARKET,
@@ -17,7 +23,9 @@ import {
   RiskBasket,
   STABLECOIN_MINTS,
   Stablecoin,
+  TREASURY_JUPITER_SWAP_ACTION_SEED,
   TREASURY_REBALANCE_ACTION_SEED,
+  TREASURY_TOP_UP_ACTION_SEED,
   SwapLane,
   assertRebalanceAvoidsActiveLanes,
   compileSquadsTransactionInstructions,
@@ -66,6 +74,7 @@ const squads = {
   accountIndex: 0,
   vault,
 };
+const SOLANA_PACKET_DATA_SIZE = 1232;
 
 describe("initYieldRoutePolicy", () => {
   test("builds one all-in-one policy instruction and route indexes for Jupiter", () => {
@@ -217,21 +226,35 @@ describe("initYieldRoutePolicy", () => {
     const hubInput = deriveAssociatedTokenAddress(inputMint, hubAuthority, config.tokenProgramId);
     const hubOutput = deriveAssociatedTokenAddress(outputMint, hubAuthority, config.token2022ProgramId);
 
-    expect(policy.instructions).toHaveLength(1);
-    expect(policy.instructions[0]?.data[22]).toBe(4);
-    expect(policy.actionAccount.toBase58()).toBe(
+    expect(policy.instructions).toHaveLength(3);
+    expect(policy.policies.withdraw.instructions[0]?.data[22]).toBe(4);
+    expect(policy.policies.jupiter.instructions[0]?.data[22]).toBe(4);
+    expect(policy.policies.topUp.instructions[0]?.data[22]).toBe(4);
+    expect(policy.policies.withdraw.actionAccount.toBase58()).toBe(
       deriveSquadsPolicy(config, settings, TREASURY_REBALANCE_ACTION_SEED).address.toBase58(),
     );
-    expect(policy.route.instructionConstraintIndexes).toEqual([0, 1, 2]);
-    expect(policy.constraints).toHaveLength(3);
+    expect(policy.policies.jupiter.actionAccount.toBase58()).toBe(
+      deriveSquadsPolicy(config, settings, TREASURY_JUPITER_SWAP_ACTION_SEED).address.toBase58(),
+    );
+    expect(policy.policies.topUp.actionAccount.toBase58()).toBe(
+      deriveSquadsPolicy(config, settings, TREASURY_TOP_UP_ACTION_SEED).address.toBase58(),
+    );
+    expect(policy.policies.withdraw.route.instructionConstraintIndexes).toEqual([0]);
+    expect(policy.policies.jupiter.route.instructionConstraintIndexes).toEqual([0]);
+    expect(policy.policies.topUp.route.instructionConstraintIndexes).toEqual([0]);
+    expect(policy.policies.withdraw.constraints).toHaveLength(1);
+    expect(policy.policies.jupiter.constraints).toHaveLength(1);
+    expect(policy.policies.topUp.constraints).toHaveLength(1);
 
-    const [withdraw, jupiter, topUp] = policy.constraints;
+    const [withdraw] = policy.policies.withdraw.constraints;
+    const [jupiter] = policy.policies.jupiter.constraints;
+    const [topUp] = policy.policies.topUp.constraints;
     expect(withdraw?.programId.toBase58()).toBe(config.loyalHubSwapProgramId.toBase58());
     expectPubkeyConstraint(withdraw, withdrawInventoryAccounts.ADMIN, [vault]);
     expectPubkeyConstraint(withdraw, withdrawInventoryAccounts.HUB_SOURCE, [hubInput], config.tokenProgramId);
-    expectAuthorityConstraint(withdraw, withdrawInventoryAccounts.HUB_SOURCE, hubAuthority, config.tokenProgramId);
+    expectAuthorityConstraint(withdraw, withdrawInventoryAccounts.HUB_SOURCE, hubAuthority);
     expectPubkeyConstraint(withdraw, withdrawInventoryAccounts.DESTINATION, [treasuryInput], config.tokenProgramId);
-    expectAuthorityConstraint(withdraw, withdrawInventoryAccounts.DESTINATION, vault, config.tokenProgramId);
+    expectAuthorityConstraint(withdraw, withdrawInventoryAccounts.DESTINATION, vault);
     expectPubkeyConstraint(withdraw, withdrawInventoryAccounts.MINT, [inputMint], config.tokenProgramId);
     expectPubkeyConstraint(withdraw, withdrawInventoryAccounts.HUB_AUTHORITY, [hubAuthority]);
     expectPubkeyConstraint(withdraw, withdrawInventoryAccounts.TOKEN_PROGRAM, [config.tokenProgramId]);
@@ -240,27 +263,54 @@ describe("initYieldRoutePolicy", () => {
     expectDataU8(withdraw?.dataConstraints, BigInt(WITHDRAW_INVENTORY_LANE_ID_DATA_OFFSET), laneId);
 
     expect(jupiter?.programId.toBase58()).toBe(config.jupiterV6ProgramId.toBase58());
-    expectPubkeyConstraint(jupiter, 0, [vault]);
-    expectPubkeyConstraint(jupiter, 1, [treasuryInput], config.tokenProgramId);
-    expectAuthorityConstraint(jupiter, 1, vault, config.tokenProgramId);
-    expectPubkeyConstraint(jupiter, 2, [treasuryOutput], config.token2022ProgramId);
-    expectAuthorityConstraint(jupiter, 2, vault, config.token2022ProgramId);
-    expectPubkeyConstraint(jupiter, 3, [inputMint], config.tokenProgramId);
-    expectPubkeyConstraint(jupiter, 4, [outputMint], config.token2022ProgramId);
-    expectPubkeyConstraint(jupiter, 5, [config.tokenProgramId]);
-    expectPubkeyConstraint(jupiter, 6, [config.token2022ProgramId]);
-    expectDataU16Lte(jupiter?.dataConstraints, 24n, 50);
+    expectPubkeyConstraint(jupiter, 1, [vault]);
+    expectPubkeyConstraint(jupiter, 2, [treasuryInput], config.tokenProgramId);
+    expectAuthorityConstraint(jupiter, 2, vault);
+    expectPubkeyConstraint(jupiter, 5, [treasuryOutput], config.token2022ProgramId);
+    expectAuthorityConstraint(jupiter, 5, vault);
+    expectPubkeyConstraint(jupiter, 6, [inputMint], config.tokenProgramId);
+    expectPubkeyConstraint(jupiter, 7, [outputMint], config.token2022ProgramId);
+    expectPubkeyConstraint(jupiter, 8, [config.tokenProgramId]);
+    expectPubkeyConstraint(jupiter, 9, [config.token2022ProgramId]);
+    expectDataU16Lte(jupiter?.dataConstraints, 25n, 50);
 
     expect(topUp?.programId.toBase58()).toBe(config.token2022ProgramId.toBase58());
     expectPubkeyConstraint(topUp, 0, [treasuryOutput], config.token2022ProgramId);
-    expectAuthorityConstraint(topUp, 0, vault, config.token2022ProgramId);
+    expectAuthorityConstraint(topUp, 0, vault);
     expectPubkeyConstraint(topUp, 1, [outputMint], config.token2022ProgramId);
     expectPubkeyConstraint(topUp, 2, [hubOutput], config.token2022ProgramId);
-    expectAuthorityConstraint(topUp, 2, hubAuthority, config.token2022ProgramId);
+    expectAuthorityConstraint(topUp, 2, hubAuthority);
     expectPubkeyConstraint(topUp, 3, [vault]);
     expectDataU8(topUp?.dataConstraints, 0n, 12);
     expectDataU64Lte(topUp?.dataConstraints, 1n, maxTopUpAmount);
     expectDataU8(topUp?.dataConstraints, 9n, 6);
+  });
+
+  test("builds split treasury policy create transactions that fit the packet limit without lookup tables", () => {
+    const sdk = createLoyalActionsSdk({ cluster: LoyalCluster.MainnetBeta });
+    const config = LOYAL_CLUSTER_CONFIGS[LoyalCluster.MainnetBeta];
+    const policy = sdk.initTreasuryLoyalHubRebalancePolicy({
+      laneId: 0,
+      inputMint: STABLECOIN_MINTS[Stablecoin.USDC],
+      outputMint: STABLECOIN_MINTS[Stablecoin.PYUSD],
+      inputTokenProgram: config.tokenProgramId,
+      outputTokenProgram: config.token2022ProgramId,
+      outputMintDecimals: 6,
+      maxWithdrawAmount: 500000n,
+      maxTopUpAmount: 495000n,
+      maxSlippageBps: 50,
+      squads,
+    });
+
+    for (const plan of [policy.policies.withdraw, policy.policies.jupiter, policy.policies.topUp]) {
+      const message = new TransactionMessage({
+        payerKey: authority,
+        recentBlockhash: PublicKey.default.toBase58(),
+        instructions: plan.instructions,
+      }).compileToV0Message([]);
+      const transaction = new VersionedTransaction(message);
+      expect(transaction.serialize().length).toBeLessThanOrEqual(SOLANA_PACKET_DATA_SIZE);
+    }
   });
 
   test("rejects invalid treasury rebalance policy inputs before instruction creation", () => {
@@ -373,7 +423,7 @@ function expectAuthorityConstraint(
   constraint: InstructionConstraint | undefined,
   accountIndex: number,
   authority: PublicKey,
-  owner: PublicKey,
+  owner?: PublicKey,
 ): void {
   const account = findAccountConstraint(constraint, accountIndex, "accountData", owner);
   expect(account?.kind.type).toBe("accountData");

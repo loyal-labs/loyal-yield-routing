@@ -1,5 +1,13 @@
 import { PublicKey } from "@solana/web3.js";
-import { DEFAULT_MAX_FEE_BPS, RISK_BASKET_MARKETS, STABLECOIN_MINTS, STABLECOINS, TREASURY_REBALANCE_ACTION_SEED } from "./constants.js";
+import {
+  DEFAULT_MAX_FEE_BPS,
+  RISK_BASKET_MARKETS,
+  STABLECOIN_MINTS,
+  STABLECOINS,
+  TREASURY_JUPITER_SWAP_ACTION_SEED,
+  TREASURY_REBALANCE_ACTION_SEED,
+  TREASURY_TOP_UP_ACTION_SEED,
+} from "./constants.js";
 import { clusterConfigFor } from "./cluster.js";
 import {
   kaminoDepositConstraint,
@@ -100,10 +108,10 @@ export function createLoyalActionsSdk(config: { cluster: LoyalCluster }): LoyalA
     ): InitTreasuryLoyalHubRebalancePolicyResult {
       validateTreasuryRebalanceInput(input);
 
-      const policySeed = input.squads.policySeed ?? TREASURY_REBALANCE_ACTION_SEED;
-      const squads = { ...input.squads, policySeed };
-      const actionAccount = deriveActionAccount(clusterConfig, input.squads.settings, policySeed);
-      const constraints = treasuryLoyalHubRebalanceConstraints(clusterConfig, {
+      const withdrawPolicySeed = input.squads.policySeed ?? TREASURY_REBALANCE_ACTION_SEED;
+      const jupiterPolicySeed = input.squads.jupiterPolicySeed ?? TREASURY_JUPITER_SWAP_ACTION_SEED;
+      const topUpPolicySeed = input.squads.topUpPolicySeed ?? TREASURY_TOP_UP_ACTION_SEED;
+      const [withdrawConstraint, jupiterConstraint, topUpConstraint] = treasuryLoyalHubRebalanceConstraints(clusterConfig, {
         vault: input.squads.vault,
         laneId: input.laneId,
         inputMint: input.inputMint,
@@ -115,16 +123,51 @@ export function createLoyalActionsSdk(config: { cluster: LoyalCluster }): LoyalA
         maxTopUpAmount: input.maxTopUpAmount,
         maxSlippageBps: input.maxSlippageBps,
       });
-      const instruction = createProgramInteractionPolicyInstruction(clusterConfig, squads, constraints);
+
+      const withdrawSquads = { ...input.squads, policySeed: withdrawPolicySeed };
+      const jupiterSquads = { ...input.squads, policySeed: jupiterPolicySeed };
+      const topUpSquads = { ...input.squads, policySeed: topUpPolicySeed };
+      const withdrawActionAccount = deriveActionAccount(clusterConfig, input.squads.settings, withdrawPolicySeed);
+      const jupiterActionAccount = deriveActionAccount(clusterConfig, input.squads.settings, jupiterPolicySeed);
+      const topUpActionAccount = deriveActionAccount(clusterConfig, input.squads.settings, topUpPolicySeed);
+      const withdrawConstraints = [withdrawConstraint] as const;
+      const jupiterConstraints = [jupiterConstraint] as const;
+      const topUpConstraints = [topUpConstraint] as const;
+      const withdrawInstruction = createProgramInteractionPolicyInstruction(clusterConfig, withdrawSquads, withdrawConstraints);
+      const jupiterInstruction = createProgramInteractionPolicyInstruction(clusterConfig, jupiterSquads, jupiterConstraints);
+      const topUpInstruction = createProgramInteractionPolicyInstruction(clusterConfig, topUpSquads, topUpConstraints);
 
       return {
-        instructions: [instruction],
-        actionAccount,
-        route: {
-          actionAccount,
-          instructionConstraintIndexes: [0, 1, 2] as const,
+        instructions: [withdrawInstruction, jupiterInstruction, topUpInstruction],
+        policies: {
+          withdraw: {
+            instructions: [withdrawInstruction],
+            actionAccount: withdrawActionAccount,
+            route: {
+              actionAccount: withdrawActionAccount,
+              instructionConstraintIndexes: [0] as const,
+            },
+            constraints: [...withdrawConstraints],
+          },
+          jupiter: {
+            instructions: [jupiterInstruction],
+            actionAccount: jupiterActionAccount,
+            route: {
+              actionAccount: jupiterActionAccount,
+              instructionConstraintIndexes: [0] as const,
+            },
+            constraints: [...jupiterConstraints],
+          },
+          topUp: {
+            instructions: [topUpInstruction],
+            actionAccount: topUpActionAccount,
+            route: {
+              actionAccount: topUpActionAccount,
+              instructionConstraintIndexes: [0] as const,
+            },
+            constraints: [...topUpConstraints],
+          },
         },
-        constraints: [...constraints],
         spec: {
           laneId: input.laneId,
           inputMint: input.inputMint,
@@ -169,9 +212,9 @@ function validateInput(input: InitYieldRoutePolicyInput): void {
     if (name === "accountIndex") {
       continue;
     }
-    if (name === "policySeed") {
+    if (name === "policySeed" || name === "jupiterPolicySeed" || name === "topUpPolicySeed") {
       if (value !== undefined && (typeof value !== "bigint" || value < 0n || value > MAX_U64)) {
-        throw new Error("squads.policySeed must be a u64 bigint");
+        throw new Error(`squads.${name} must be a u64 bigint`);
       }
       continue;
     }
@@ -187,6 +230,12 @@ function validateInput(input: InitYieldRoutePolicyInput): void {
 
 function validateTreasuryRebalanceInput(input: InitTreasuryLoyalHubRebalancePolicyInput): void {
   validateSquadsInput(input.squads);
+  const withdrawPolicySeed = input.squads.policySeed ?? TREASURY_REBALANCE_ACTION_SEED;
+  const jupiterPolicySeed = input.squads.jupiterPolicySeed ?? TREASURY_JUPITER_SWAP_ACTION_SEED;
+  const topUpPolicySeed = input.squads.topUpPolicySeed ?? TREASURY_TOP_UP_ACTION_SEED;
+  if (new Set([withdrawPolicySeed, jupiterPolicySeed, topUpPolicySeed].map((seed) => seed.toString())).size !== 3) {
+    throw new Error("treasury withdraw, Jupiter, and top-up policy seeds must be distinct");
+  }
   if (!Number.isInteger(input.laneId) || input.laneId < 0 || input.laneId > 255) {
     throw new Error("laneId must be a u8");
   }
@@ -222,9 +271,9 @@ function validateSquadsInput(input: InitYieldRoutePolicyInput["squads"]): void {
     if (name === "accountIndex") {
       continue;
     }
-    if (name === "policySeed") {
+    if (name === "policySeed" || name === "jupiterPolicySeed" || name === "topUpPolicySeed") {
       if (value !== undefined && (typeof value !== "bigint" || value < 0n || value > MAX_U64)) {
-        throw new Error("squads.policySeed must be a u64 bigint");
+        throw new Error(`squads.${name} must be a u64 bigint`);
       }
       continue;
     }

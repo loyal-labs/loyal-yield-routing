@@ -5,7 +5,9 @@ import {
   RiskBasket,
   STABLECOIN_MINTS,
   Stablecoin,
+  TREASURY_JUPITER_SWAP_ACTION_SEED,
   TREASURY_REBALANCE_ACTION_SEED,
+  TREASURY_TOP_UP_ACTION_SEED,
   SwapLane,
   compileSquadsTransactionInstructions,
   createLoyalActionsSdk,
@@ -51,11 +53,19 @@ const treasuryPolicy = sdk.initTreasuryLoyalHubRebalancePolicy({
     accountIndex: 0,
     vault: key,
     policySeed: TREASURY_REBALANCE_ACTION_SEED,
+    jupiterPolicySeed: TREASURY_JUPITER_SWAP_ACTION_SEED,
+    topUpPolicySeed: TREASURY_TOP_UP_ACTION_SEED,
   },
 });
-const treasuryIndexes = treasuryPolicy.route.instructionConstraintIndexes;
-void treasuryIndexes;
-void treasuryPolicy.constraints;
+const treasuryWithdrawIndexes = treasuryPolicy.policies.withdraw.route.instructionConstraintIndexes;
+const treasuryJupiterIndexes = treasuryPolicy.policies.jupiter.route.instructionConstraintIndexes;
+const treasuryTopUpIndexes = treasuryPolicy.policies.topUp.route.instructionConstraintIndexes;
+void treasuryWithdrawIndexes;
+void treasuryJupiterIndexes;
+void treasuryTopUpIndexes;
+void treasuryPolicy.policies.withdraw.constraints;
+void treasuryPolicy.policies.jupiter.constraints;
+void treasuryPolicy.policies.topUp.constraints;
 
 sdk.initTreasuryLoyalHubRebalancePolicy({
   laneId: 0,

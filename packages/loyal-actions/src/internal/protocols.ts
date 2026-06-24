@@ -3,6 +3,8 @@ import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   JUPITER_SWAP_DISCRIMINATOR,
   JUPITER_SWAP_SLIPPAGE_BPS_OFFSET,
+  JUPITER_SHARED_ACCOUNTS_ROUTE_V2_DISCRIMINATOR,
+  JUPITER_SHARED_ACCOUNTS_ROUTE_V2_SLIPPAGE_BPS_OFFSET,
   KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR,
   KAMINO_INIT_OBLIGATION_DISCRIMINATOR,
   KAMINO_LEND_PROGRAM_ID,
@@ -206,9 +208,9 @@ export function loyalHubWithdrawInventoryConstraint(
       ),
       pubkeyConstraint(withdrawInventoryAccounts.ADMIN, [input.vault]),
       pubkeyConstraint(withdrawInventoryAccounts.HUB_SOURCE, [hubSource], input.inputTokenProgram),
-      tokenAuthorityConstraint(withdrawInventoryAccounts.HUB_SOURCE, hubAuthority, input.inputTokenProgram),
+      tokenAuthorityConstraint(withdrawInventoryAccounts.HUB_SOURCE, hubAuthority),
       pubkeyConstraint(withdrawInventoryAccounts.DESTINATION, [treasuryInput], input.inputTokenProgram),
-      tokenAuthorityConstraint(withdrawInventoryAccounts.DESTINATION, input.vault, input.inputTokenProgram),
+      tokenAuthorityConstraint(withdrawInventoryAccounts.DESTINATION, input.vault),
       pubkeyConstraint(withdrawInventoryAccounts.MINT, [input.inputMint], input.inputTokenProgram),
       pubkeyConstraint(withdrawInventoryAccounts.HUB_AUTHORITY, [hubAuthority]),
       pubkeyConstraint(withdrawInventoryAccounts.TOKEN_PROGRAM, [input.inputTokenProgram]),
@@ -231,21 +233,21 @@ export function treasuryJupiterSwapConstraint(
   return {
     programId: config.jupiterV6ProgramId,
     accountConstraints: [
-      pubkeyConstraint(0, [input.vault]),
-      pubkeyConstraint(1, [treasuryInput], input.inputTokenProgram),
-      tokenAuthorityConstraint(1, input.vault, input.inputTokenProgram),
-      pubkeyConstraint(2, [treasuryOutput], input.outputTokenProgram),
-      tokenAuthorityConstraint(2, input.vault, input.outputTokenProgram),
-      pubkeyConstraint(3, [input.inputMint], input.inputTokenProgram),
-      pubkeyConstraint(4, [input.outputMint], input.outputTokenProgram),
-      pubkeyConstraint(5, [input.inputTokenProgram]),
+      pubkeyConstraint(1, [input.vault]),
+      pubkeyConstraint(2, [treasuryInput], input.inputTokenProgram),
+      tokenAuthorityConstraint(2, input.vault),
+      pubkeyConstraint(5, [treasuryOutput], input.outputTokenProgram),
+      tokenAuthorityConstraint(5, input.vault),
+      pubkeyConstraint(6, [input.inputMint], input.inputTokenProgram),
+      pubkeyConstraint(7, [input.outputMint], input.outputTokenProgram),
+      pubkeyConstraint(8, [input.inputTokenProgram]),
       ...(input.outputTokenProgram.equals(input.inputTokenProgram)
         ? []
-        : [pubkeyConstraint(6, [input.outputTokenProgram])]),
+        : [pubkeyConstraint(9, [input.outputTokenProgram])]),
     ],
     dataConstraints: [
-      dataSliceEquals(0n, JUPITER_SWAP_DISCRIMINATOR),
-      dataU16LeLessThanOrEqualTo(BigInt(JUPITER_SWAP_SLIPPAGE_BPS_OFFSET), input.maxSlippageBps),
+      dataSliceEquals(0n, JUPITER_SHARED_ACCOUNTS_ROUTE_V2_DISCRIMINATOR),
+      dataU16LeLessThanOrEqualTo(BigInt(JUPITER_SHARED_ACCOUNTS_ROUTE_V2_SLIPPAGE_BPS_OFFSET), input.maxSlippageBps),
     ],
   };
 }
@@ -262,10 +264,10 @@ export function treasuryTopUpTransferCheckedConstraint(
     programId: input.outputTokenProgram,
     accountConstraints: [
       pubkeyConstraint(TRANSFER_CHECKED_ACCOUNTS.SOURCE, [treasuryOutput], input.outputTokenProgram),
-      tokenAuthorityConstraint(TRANSFER_CHECKED_ACCOUNTS.SOURCE, input.vault, input.outputTokenProgram),
+      tokenAuthorityConstraint(TRANSFER_CHECKED_ACCOUNTS.SOURCE, input.vault),
       pubkeyConstraint(TRANSFER_CHECKED_ACCOUNTS.MINT, [input.outputMint], input.outputTokenProgram),
       pubkeyConstraint(TRANSFER_CHECKED_ACCOUNTS.DESTINATION, [hubOutput], input.outputTokenProgram),
-      tokenAuthorityConstraint(TRANSFER_CHECKED_ACCOUNTS.DESTINATION, hubAuthority, input.outputTokenProgram),
+      tokenAuthorityConstraint(TRANSFER_CHECKED_ACCOUNTS.DESTINATION, hubAuthority),
       pubkeyConstraint(TRANSFER_CHECKED_ACCOUNTS.AUTHORITY, [input.vault]),
     ],
     dataConstraints: [

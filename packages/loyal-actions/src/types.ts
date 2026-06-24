@@ -64,9 +64,26 @@ export type InitYieldRoutePolicyInput<
   };
 };
 
-export type TreasuryLoyalHubRebalanceRoute = {
+export type TreasuryLoyalHubWithdrawRoute = {
   actionAccount: Address;
-  instructionConstraintIndexes: readonly [0, 1, 2];
+  instructionConstraintIndexes: readonly [0];
+};
+
+export type TreasuryLoyalHubTopUpRoute = {
+  actionAccount: Address;
+  instructionConstraintIndexes: readonly [0];
+};
+
+export type TreasuryJupiterSwapRoute = {
+  actionAccount: Address;
+  instructionConstraintIndexes: readonly [0];
+};
+
+export type TreasuryPolicyPlan<Route> = {
+  instructions: IInstruction[];
+  actionAccount: Address;
+  route: Route;
+  constraints: InstructionConstraint[];
 };
 
 export type InitTreasuryLoyalHubRebalancePolicyInput = {
@@ -86,14 +103,18 @@ export type InitTreasuryLoyalHubRebalancePolicyInput = {
     accountIndex: number;
     vault: Address;
     policySeed?: bigint;
+    jupiterPolicySeed?: bigint;
+    topUpPolicySeed?: bigint;
   };
 };
 
 export type InitTreasuryLoyalHubRebalancePolicyResult = {
   instructions: IInstruction[];
-  actionAccount: Address;
-  route: TreasuryLoyalHubRebalanceRoute;
-  constraints: InstructionConstraint[];
+  policies: {
+    withdraw: TreasuryPolicyPlan<TreasuryLoyalHubWithdrawRoute>;
+    jupiter: TreasuryPolicyPlan<TreasuryJupiterSwapRoute>;
+    topUp: TreasuryPolicyPlan<TreasuryLoyalHubTopUpRoute>;
+  };
   spec: {
     laneId: number;
     inputMint: Address;
