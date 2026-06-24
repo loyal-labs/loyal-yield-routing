@@ -23,7 +23,6 @@ FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
     cargo chef cook --release \
         -p kamino-reserve-monitor \
         -p balance-sweep-ata-monitor \
@@ -34,7 +33,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
     cargo build --release \
         -p kamino-reserve-monitor \
         -p balance-sweep-ata-monitor \
