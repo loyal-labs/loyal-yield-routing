@@ -295,6 +295,10 @@ impl EarnApySnapshotRefresher {
                 JOIN requested_reserves rr ON rr.reserve = ru.reserve
                 WHERE ru.observed_at >= $2
                   AND ru.observed_at <= $3
+                  AND ru.reserve_last_update_stale = false
+                  AND ru.total_supply_usd_estimate > $4
+                  AND ru.supply_apy >= 0
+                  AND ru.supply_apy < $5
             ),
             range_rows AS (
                 SELECT
