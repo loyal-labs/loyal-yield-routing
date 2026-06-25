@@ -170,6 +170,17 @@ describe("runtime dependency boundary", () => {
     expect(renderYaml).not.toContain(":latest");
     expect(renderYaml).not.toContain("dockerfilePath: Dockerfile.light-workers");
   });
+
+  test("sends Solana Week wallet addresses as base58 public keys", async () => {
+    const source = await Bun.file(
+      new URL("./execute-autodeposit-policy.ts", import.meta.url)
+    ).text();
+
+    expect(source).not.toContain("encodePublicKeyBase64");
+    expect(source).toContain(
+      "new args.PublicKeyCtor(\n    args.ownerWalletAddress\n  ).toBase58()"
+    );
+  });
 });
 
 describe("parseKeypairSecret", () => {
