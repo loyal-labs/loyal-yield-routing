@@ -1207,6 +1207,7 @@ function redactSensitiveText(value: string): string {
 }
 
 async function notifySolanaWeekSweep(args: {
+  PublicKeyCtor: typeof PublicKey;
   ownerWalletAddress: string;
 }): Promise<SolanaWeekNotifyResult> {
   const endpoint = process.env[SOLANA_WEEK_NOTIFY_ENDPOINT_ENV]?.trim();
@@ -1222,7 +1223,9 @@ async function notifySolanaWeekSweep(args: {
   const timeout = setTimeout(() => {
     abortController.abort();
   }, SOLANA_WEEK_NOTIFY_TIMEOUT_MS);
-  const walletAddress = args.ownerWalletAddress;
+  const walletAddress = new args.PublicKeyCtor(
+    args.ownerWalletAddress
+  ).toBase58();
 
   try {
     const response = await fetch(endpoint, {
@@ -2091,6 +2094,7 @@ async function main() {
       },
     });
     const solanaWeekNotify = await notifySolanaWeekSweep({
+      PublicKeyCtor,
       ownerWalletAddress: target.wallet,
     });
     logSolanaWeekNotifyResult(solanaWeekNotify);

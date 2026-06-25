@@ -177,8 +177,9 @@ describe("runtime dependency boundary", () => {
     ).text();
 
     expect(source).not.toContain("encodePublicKeyBase64");
-    expect(source).not.toContain("PublicKeyCtor: typeof PublicKey");
-    expect(source).toContain("const walletAddress = args.ownerWalletAddress;");
+    expect(source).toContain(
+      "new args.PublicKeyCtor(\n    args.ownerWalletAddress\n  ).toBase58()"
+    );
   });
 });
 
