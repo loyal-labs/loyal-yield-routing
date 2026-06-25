@@ -1206,18 +1206,6 @@ function redactSensitiveText(value: string): string {
   return redacted.replace(/api-key=[^'"\s]+/gi, "api-key=[redacted]");
 }
 
-function encodePublicKeyBase64(
-  PublicKeyCtor: typeof PublicKey,
-  address: string
-): string {
-  const bytes = new PublicKeyCtor(address).toBytes();
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary);
-}
-
 async function notifySolanaWeekSweep(args: {
   PublicKeyCtor: typeof PublicKey;
   ownerWalletAddress: string;
@@ -1235,10 +1223,9 @@ async function notifySolanaWeekSweep(args: {
   const timeout = setTimeout(() => {
     abortController.abort();
   }, SOLANA_WEEK_NOTIFY_TIMEOUT_MS);
-  const walletAddress = encodePublicKeyBase64(
-    args.PublicKeyCtor,
+  const walletAddress = new args.PublicKeyCtor(
     args.ownerWalletAddress
-  );
+  ).toBase58();
 
   try {
     const response = await fetch(endpoint, {
