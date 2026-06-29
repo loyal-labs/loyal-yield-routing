@@ -732,7 +732,7 @@ function assertU64(value: bigint, field: string): void {
 }
 
 function assertI64(value: bigint, field: string): void {
-  if (value < -(1n << 63n) || value > (1n << 63n) - 1n) {
+  if (value < -9223372036854775808n || value > 9223372036854775807n) {
     throw new Error(`${field} must be an i64`);
   }
 }
