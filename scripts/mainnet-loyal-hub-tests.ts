@@ -23,6 +23,7 @@ import {
 } from "@solana/spl-token";
 import {
   ProgramConfig,
+  Policy,
   Settings,
   getProgramConfigPda,
   getSettingsPda,
@@ -169,6 +170,27 @@ type StoredTreasuryVault = StoredVault & {
   rebalancePolicySpec?: string;
 };
 
+type SpendingLimitSnapshot = {
+  at: string;
+  label: string;
+  policy: string;
+  mint: string;
+  maxPerPeriodRaw: string;
+  remainingInPeriodRaw: string;
+  lastReset: string;
+};
+
+type SpendingLimitProof = {
+  status: "pending" | "passed";
+  policy: string;
+  mint: string;
+  amountInRaw: string;
+  capRaw: string;
+  before?: SpendingLimitSnapshot;
+  after?: SpendingLimitSnapshot;
+  consumedRaw?: string;
+};
+
 type TestState = {
   version: 1;
   cluster: string;
@@ -188,6 +210,7 @@ type TestState = {
       jupiter?: number[];
       sameMint?: number[];
     };
+    spendingLimitProof?: SpendingLimitProof;
   };
   treasury?: StoredTreasuryVault;
   steps?: Record<string, { signature: string | null; at: string }>;
@@ -465,7 +488,7 @@ async function ensureAllInOnePolicy(): Promise<void> {
     ...kaminoRoutePrograms.map(routeProgramConstraint),
     routeHubConstraint(vault, policyUniverse.stableMints, MaxFeeBps.Bps50),
   ];
-  const spendingLimits = userRoutePolicySpendingLimits(policyUniverse.hubInputMint);
+  const spendingLimits = userRoutePolicySpendingLimits(policyUniverse.stableMints);
   const policySpec = userRoutePolicySpec({
     kaminoRoutePrograms,
     stableMints: policyUniverse.stableMints,
@@ -850,28 +873,115 @@ function routePolicyUniverseFromFiles(): {
   };
 }
 
-function userRoutePolicySpendingLimits(inputMint: PublicKey): ProgramInteractionSpendingLimit[] {
+function userRoutePolicySpendingLimits(mints: PublicKey[]): ProgramInteractionSpendingLimit[] {
   const maxPerPeriod = policySpendingLimitHourlyRaw();
   if (maxPerPeriod === 0n) {
     return [];
   }
-  return [
-    {
-      mint: inputMint,
-      timeConstraints: {
-        start: 0n,
-        expiration: null,
-        period: { type: "custom", seconds: USER_POLICY_SPENDING_LIMIT_PERIOD_SECONDS },
-      },
-      quantityConstraints: {
-        maxPerPeriod,
-      },
+  return uniquePubkeys(mints).map((mint) => ({
+    mint,
+    timeConstraints: {
+      start: 0n,
+      expiration: null,
+      period: { type: "custom", seconds: USER_POLICY_SPENDING_LIMIT_PERIOD_SECONDS },
     },
-  ];
+    quantityConstraints: {
+      maxPerPeriod,
+    },
+  }));
 }
 
 function policySpendingLimitHourlyRaw(): bigint {
   return u64(value(args, "policy-spending-limit-hourly-raw") ?? "0", "policy-spending-limit-hourly-raw");
+}
+
+function policyAmountInRaw(): bigint {
+  return u64(value(args, "policy-amount-in-raw") ?? "1000000", "policy-amount-in-raw");
+}
+
+async function captureUserRouteSpendingLimitSnapshot(label: string): Promise<SpendingLimitSnapshot | null> {
+  const capRaw = policySpendingLimitHourlyRaw();
+  if (capRaw === 0n) {
+    return null;
+  }
+
+  const user = requireUser();
+  if (!user.policy) {
+    throw new Error("missing user route policy state");
+  }
+  const policy = new PublicKey(user.policy);
+  const account = await connection.getAccountInfo(policy, DEFAULT_COMMITMENT);
+  if (!account) {
+    if (!executeLive) {
+      console.log(`spending-limit ${label}: policy account ${policy.toBase58()} is not on-chain in simulate mode`);
+      return null;
+    }
+    throw new Error(`missing user route policy account ${policy.toBase58()}`);
+  }
+
+  const [decoded] = Policy.deserialize(Buffer.from(account.data));
+  if (decoded.policyState.__kind !== "ProgramInteraction") {
+    throw new Error(`user route policy ${policy.toBase58()} is ${decoded.policyState.__kind}, expected ProgramInteraction`);
+  }
+
+  const expectedMint = routePolicyUniverseFromFiles().hubInputMint;
+  const programInteraction = decoded.policyState.fields[0];
+  const limit = programInteraction.spendingLimits.find((item) => item.mint.equals(expectedMint));
+  if (!limit) {
+    throw new Error(`user route policy ${policy.toBase58()} has no spending limit for ${expectedMint.toBase58()}`);
+  }
+
+  const snapshot = {
+    at: new Date().toISOString(),
+    label,
+    policy: policy.toBase58(),
+    mint: limit.mint.toBase58(),
+    maxPerPeriodRaw: bignumToBigInt(limit.quantityConstraints.maxPerPeriod).toString(),
+    remainingInPeriodRaw: bignumToBigInt(limit.usage.remainingInPeriod).toString(),
+    lastReset: bignumToBigInt(limit.usage.lastReset).toString(),
+  };
+  console.log(
+    `spending-limit ${label}: mint=${snapshot.mint} max=${snapshot.maxPerPeriodRaw} remaining=${snapshot.remainingInPeriodRaw} lastReset=${snapshot.lastReset}`,
+  );
+  return snapshot;
+}
+
+function recordSpendingLimitBefore(snapshot: SpendingLimitSnapshot): void {
+  const user = requireUser();
+  user.spendingLimitProof = {
+    status: "pending",
+    policy: snapshot.policy,
+    mint: snapshot.mint,
+    amountInRaw: policyAmountInRaw().toString(),
+    capRaw: policySpendingLimitHourlyRaw().toString(),
+    before: snapshot,
+  };
+  saveState();
+}
+
+function recordSpendingLimitAfter(snapshot: SpendingLimitSnapshot): void {
+  const user = requireUser();
+  const proof = user.spendingLimitProof;
+  if (!proof?.before) {
+    throw new Error("missing spending-limit before snapshot");
+  }
+  const beforeRemaining = BigInt(proof.before.remainingInPeriodRaw);
+  const afterRemaining = BigInt(snapshot.remainingInPeriodRaw);
+  const consumed = beforeRemaining - afterRemaining;
+  const expected = policyAmountInRaw();
+  if (consumed !== expected) {
+    throw new Error(
+      `spending-limit consumption mismatch: before=${beforeRemaining.toString()} after=${afterRemaining.toString()} consumed=${consumed.toString()} expected=${expected.toString()}`,
+    );
+  }
+  user.spendingLimitProof = {
+    ...proof,
+    status: "passed",
+    after: snapshot,
+    consumedRaw: consumed.toString(),
+  };
+  saveState();
+  console.log(`spending-limit proof passed: consumed=${consumed.toString()} remaining=${snapshot.remainingInPeriodRaw}`);
 }
 
 function userRoutePolicySpec(input: {
@@ -1414,6 +1524,12 @@ async function runPolicyRoute(): Promise<void> {
       if (stepDone(leg.step)) {
         continue;
       }
+      const spendingLimitBefore = leg.step === "policy-route-hub-swap"
+        ? await captureUserRouteSpendingLimitSnapshot("before-hub-swap")
+        : null;
+      if (spendingLimitBefore) {
+        recordSpendingLimitBefore(spendingLimitBefore);
+      }
       const innerInstructions = leg.instructions.map((inner) => clearSignerForPubkey(inner, vault));
       const instruction = createSquadsProgramInteractionExecutionInstruction(clusterConfig, {
         policy,
@@ -1424,6 +1540,13 @@ async function runPolicyRoute(): Promise<void> {
       });
       finalRun = await sendTransaction(leg.step, [instruction], [systemKeypair], routeLookupTables(), innerInstructions);
       markStep(leg.step, finalRun);
+      if (leg.step === "policy-route-hub-swap" && finalRun.mode === "execute") {
+        const spendingLimitAfter = await captureUserRouteSpendingLimitSnapshot("after-hub-swap");
+        if (!spendingLimitAfter) {
+          throw new Error("missing spending-limit after snapshot");
+        }
+        recordSpendingLimitAfter(spendingLimitAfter);
+      }
     }
     if (finalRun) {
       markStep("policy-route", finalRun);
@@ -1874,7 +1997,7 @@ async function acceptHubAdminTransferThroughTreasury(treasuryVault: PublicKey, l
 
 async function buildHubSwapInstruction(vault: PublicKey): Promise<TransactionInstruction> {
   const laneId = numberValue(args, "policy-lane-id", 0);
-  const amountIn = u64(value(args, "policy-amount-in-raw") ?? "1000000", "policy-amount-in-raw");
+  const amountIn = policyAmountInRaw();
   const amountOut = u64(value(args, "policy-amount-out-raw") ?? "995000", "policy-amount-out-raw");
   const minOut = u64(value(args, "policy-min-out-raw") ?? amountOut.toString(), "policy-min-out-raw");
   const usdcInfo = await fetchMintInfo(USDC_MINT);
@@ -2080,7 +2203,7 @@ async function sendTransaction(
     }
     const signature = await connection.sendRawTransaction(tx.serialize(), {
       maxRetries: 3,
-      skipPreflight: false,
+      skipPreflight: hasFlag(args, "skip-rpc-send-preflight"),
     });
     try {
       const confirmation = await connection.confirmTransaction({
@@ -2831,6 +2954,22 @@ function u64(item: string, name: string): bigint {
   return BigInt(item);
 }
 
+function bignumToBigInt(item: unknown): bigint {
+  if (typeof item === "bigint") {
+    return item;
+  }
+  if (typeof item === "number") {
+    return BigInt(item);
+  }
+  if (typeof item === "string") {
+    return BigInt(item);
+  }
+  if (item && typeof item === "object" && "toString" in item && typeof item.toString === "function") {
+    return BigInt(item.toString());
+  }
+  throw new Error(`unsupported bignum value: ${String(item)}`);
+}
+
 function numberValue(args: ParsedArgs, name: string, defaultValue: number): number {
   const item = value(args, name);
   if (item === undefined) {
@@ -3027,7 +3166,7 @@ Policy route inputs:
   --refresh-route-files            Regenerate the route/setup JSON files even when they already exist.
   --policy-seed <n>                Squads policy seed for the user route policy. Default: ${DEFAULT_YIELD_ROUTE_POLICY_SEED}
   --update-policy                  Update an existing policy at --policy-seed instead of reusing it as-is.
-  --policy-spending-limit-hourly-raw <n> Optional hourly raw-token cap for the user route policy Hub input mint.
+  --policy-spending-limit-hourly-raw <n> Optional hourly raw-token cap for each user route stable mint.
                                    Omitted or 0 keeps the policy without an embedded spending limit; changed caps refresh existing policies.
   --treasury-policy <pubkey>       Back-compat alias for --treasury-withdraw-policy.
   --treasury-hub-policy <pubkey>   Back-compat alias for --treasury-withdraw-policy.
@@ -3048,6 +3187,7 @@ Common:
   --execute                        Submit after each successful simulation.
   --simulate-only                  Force no-submit mode; stops after the first pending transaction.
   --simulate-all                   No-submit mode that continues after simulations; only useful once setup accounts exist.
+  --skip-rpc-send-preflight        Skip the duplicate RPC send preflight after the script's signed simulation succeeds.
   --allow-authority-handoff        Allow live temporary Hub admin handoff to treasury Squads vault.
   --cleanup-only                   Only restore authorities and reclaim liquid funds.
   --force-rerun                    Rerun steps even if state file has signatures.
