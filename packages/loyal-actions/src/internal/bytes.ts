@@ -32,6 +32,10 @@ export class BytesEncoder {
     }
   }
 
+  pushI64(value: bigint): void {
+    this.pushU64(BigInt.asUintN(64, value));
+  }
+
   pushBytes(bytes: Uint8Array | readonly number[]): void {
     this.bytes.push(...bytes);
   }

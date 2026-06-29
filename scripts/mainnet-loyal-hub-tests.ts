@@ -53,7 +53,12 @@ import {
   uniquePubkeys,
 } from "../packages/loyal-actions/src/internal/protocols.js";
 import { BytesEncoder } from "../packages/loyal-actions/src/internal/bytes.js";
-import type { AccountConstraint, DataConstraint, InstructionConstraint } from "../packages/loyal-actions/src/internal/squads.js";
+import type {
+  AccountConstraint,
+  DataConstraint,
+  InstructionConstraint,
+  ProgramInteractionSpendingLimit,
+} from "../packages/loyal-actions/src/internal/squads.js";
 
 const DEFAULT_CLUSTER = "mainnet-beta";
 const DEFAULT_STATE_FILE = ".agents/loyal-hub-mainnet-test-state.json";
@@ -87,6 +92,7 @@ const DEFAULT_TREASURY_TOP_UP_POLICY_SEED = TREASURY_TOP_UP_ACTION_SEED;
 const SQUADS_FULL_PERMISSIONS_MASK = 7;
 const SQUADS_SYNC_SIGNER_COUNT = 1;
 const EXECUTE_SETTINGS_TRANSACTION_SYNC_DISCRIMINATOR = [138, 209, 64, 163, 79, 67, 233, 76] as const;
+const USER_POLICY_SPENDING_LIMIT_PERIOD_SECONDS = 3600n;
 
 type ParsedArgs = Record<string, string[]>;
 
@@ -176,6 +182,7 @@ type TestState = {
   initialHubBalances?: Record<string, string>;
   user?: StoredVault & {
     policy?: string;
+    policySpec?: string;
     routeIndexes?: {
       loyal?: number[];
       jupiter?: number[];
@@ -458,6 +465,15 @@ async function ensureAllInOnePolicy(): Promise<void> {
     ...kaminoRoutePrograms.map(routeProgramConstraint),
     routeHubConstraint(vault, policyUniverse.stableMints, MaxFeeBps.Bps50),
   ];
+  const spendingLimits = userRoutePolicySpendingLimits(policyUniverse.hubInputMint);
+  const policySpec = userRoutePolicySpec({
+    kaminoRoutePrograms,
+    stableMints: policyUniverse.stableMints,
+    hubInputMint: policyUniverse.hubInputMint,
+    maxFeeBps: MaxFeeBps.Bps50,
+    hubAuthorizer: policyHubAuthorizer(vault),
+    spendingLimits,
+  });
   const hubIndex = kaminoRoutePrograms.length;
   const kaminoConstraintIndex = (instruction: TransactionInstruction): number => {
     const index = kaminoRoutePrograms.findIndex((programId) => programId.equals(instruction.programId));
@@ -474,8 +490,11 @@ async function ensureAllInOnePolicy(): Promise<void> {
     sameMint: [...withdrawIndexes, ...depositIndexes],
   };
 
-  if (existingPolicy && !hasFlag(args, "update-policy")) {
+  const shouldUpdatePolicy = existingPolicy && (hasFlag(args, "update-policy") || user.policySpec !== policySpec);
+
+  if (existingPolicy && !shouldUpdatePolicy) {
     user.policy = actionAccount.toBase58();
+    user.policySpec = policySpec;
     user.routeIndexes = routeIndexes;
     saveState();
     console.log(`policy exists: ${user.policy}`);
@@ -491,6 +510,7 @@ async function ensureAllInOnePolicy(): Promise<void> {
     policySeed,
     actionAccount,
     constraints,
+    spendingLimits,
   });
   const updateInstruction = createRoutePolicyUpdateInstruction({
     settings,
@@ -499,12 +519,14 @@ async function ensureAllInOnePolicy(): Promise<void> {
     accountIndex: 0,
     policy: actionAccount,
     constraints,
+    spendingLimits,
   });
 
   const run = existingPolicy
     ? await sendTransaction("update-route-policy", [updateInstruction], [systemKeypair])
     : await sendTransaction("create-route-policy", [instruction], [systemKeypair]);
   user.policy = actionAccount.toBase58();
+  user.policySpec = policySpec;
   user.routeIndexes = routeIndexes;
   if (run.mode === "execute") {
     saveState();
@@ -568,7 +590,7 @@ async function ensureTreasuryRebalancePolicy(): Promise<void> {
   ): Promise<{ policy: string; indexes: number[]; persisted: boolean }> => {
     let actionAccount = storedPolicy ? pubkey(storedPolicy, `treasury ${kind} policy`) : plan.actionAccount;
     let actionAccountBase58 = actionAccount.toBase58();
-    let existingPolicy = await accountExists(actionAccount);
+    const existingPolicy = await accountExists(actionAccount);
     let createInstruction: TransactionInstruction | undefined;
 
     if (!storedPolicy && !existingPolicy) {
@@ -803,6 +825,7 @@ function routePolicyUniverseFromFiles(): {
   kaminoMarkets: PublicKey[];
   liquidityMints: PublicKey[];
   stableMints: PublicKey[];
+  hubInputMint: PublicKey;
 } {
   const withdrawInstructions = loadWireInstructions(required(args, "route-withdraw-file"));
   const depositInstructions = loadWireInstructions(required(args, "route-deposit-file"));
@@ -823,7 +846,58 @@ function routePolicyUniverseFromFiles(): {
     kaminoMarkets,
     liquidityMints,
     stableMints: liquidityMints,
+    hubInputMint: withdrawMint,
   };
+}
+
+function userRoutePolicySpendingLimits(inputMint: PublicKey): ProgramInteractionSpendingLimit[] {
+  const maxPerPeriod = policySpendingLimitHourlyRaw();
+  if (maxPerPeriod === 0n) {
+    return [];
+  }
+  return [
+    {
+      mint: inputMint,
+      timeConstraints: {
+        start: 0n,
+        expiration: null,
+        period: { type: "custom", seconds: USER_POLICY_SPENDING_LIMIT_PERIOD_SECONDS },
+      },
+      quantityConstraints: {
+        maxPerPeriod,
+      },
+    },
+  ];
+}
+
+function policySpendingLimitHourlyRaw(): bigint {
+  return u64(value(args, "policy-spending-limit-hourly-raw") ?? "0", "policy-spending-limit-hourly-raw");
+}
+
+function userRoutePolicySpec(input: {
+  kaminoRoutePrograms: PublicKey[];
+  stableMints: PublicKey[];
+  hubInputMint: PublicKey;
+  maxFeeBps: number;
+  hubAuthorizer: PublicKey;
+  spendingLimits: ProgramInteractionSpendingLimit[];
+}): string {
+  return JSON.stringify({
+    policyShape: "user-all-in-one-loyal-hub-route-v2",
+    kaminoRoutePrograms: input.kaminoRoutePrograms.map((key) => key.toBase58()),
+    stableMints: input.stableMints.map((key) => key.toBase58()),
+    hubProgram: hubProgram.toBase58(),
+    hubInputMint: input.hubInputMint.toBase58(),
+    hubAuthorizer: input.hubAuthorizer.toBase58(),
+    maxFeeBps: input.maxFeeBps,
+    spendingLimits: input.spendingLimits.map((limit) => ({
+      mint: limit.mint.toBase58(),
+      maxPerPeriod: limit.quantityConstraints.maxPerPeriod.toString(),
+      periodSeconds: limit.timeConstraints.period.seconds.toString(),
+      start: (limit.timeConstraints.start ?? 0n).toString(),
+      expiration: limit.timeConstraints.expiration?.toString() ?? null,
+    })),
+  });
 }
 
 function createRoutePolicyInstruction(input: {
@@ -835,12 +909,14 @@ function createRoutePolicyInstruction(input: {
   policySeed: bigint;
   actionAccount: PublicKey;
   constraints: InstructionConstraint[];
+  spendingLimits: ProgramInteractionSpendingLimit[];
 }): TransactionInstruction {
   const data = serializeRawPolicyCreateAction(
     input.delegatedSigner,
     input.policySeed,
     input.accountIndex,
     input.constraints,
+    input.spendingLimits,
   );
   return new TransactionInstruction({
     programId: clusterConfig.squadsSmartAccountProgramId,
@@ -863,12 +939,14 @@ function createRoutePolicyUpdateInstruction(input: {
   accountIndex: number;
   policy: PublicKey;
   constraints: InstructionConstraint[];
+  spendingLimits: ProgramInteractionSpendingLimit[];
 }): TransactionInstruction {
   const data = serializeRawPolicyUpdateAction(
     input.policy,
     input.delegatedSigner,
     input.accountIndex,
     input.constraints,
+    input.spendingLimits,
   );
   return new TransactionInstruction({
     programId: clusterConfig.squadsSmartAccountProgramId,
@@ -889,6 +967,7 @@ function serializeRawPolicyCreateAction(
   seed: bigint,
   accountIndex: number,
   constraints: InstructionConstraint[],
+  spendingLimits: ProgramInteractionSpendingLimit[],
 ): Uint8Array {
   const encoder = new BytesEncoder();
   encoder.pushBytes(EXECUTE_SETTINGS_TRANSACTION_SYNC_DISCRIMINATOR);
@@ -897,7 +976,7 @@ function serializeRawPolicyCreateAction(
     encoder.pushU8(7);
     encoder.pushU64(seed);
     encoder.pushU8(3);
-    encodeRawProgramInteractionPayload(encoder, accountIndex, constraints);
+    encodeRawProgramInteractionPayload(encoder, accountIndex, constraints, spendingLimits);
     encoder.pushVec([delegatedSigner], (signer) => {
       encoder.pushPubkey(signer);
       encoder.pushU8(SQUADS_FULL_PERMISSIONS_MASK);
@@ -920,6 +999,7 @@ function serializeRawPolicyUpdateAction(
   delegatedSigner: PublicKey,
   accountIndex: number,
   constraints: InstructionConstraint[],
+  spendingLimits: ProgramInteractionSpendingLimit[],
 ): Uint8Array {
   const encoder = new BytesEncoder();
   encoder.pushBytes(EXECUTE_SETTINGS_TRANSACTION_SYNC_DISCRIMINATOR);
@@ -934,7 +1014,7 @@ function serializeRawPolicyUpdateAction(
     encoder.pushU16(1);
     encoder.pushU32(0);
     encoder.pushU8(3);
-    encodeRawProgramInteractionPayload(encoder, accountIndex, constraints);
+    encodeRawProgramInteractionPayload(encoder, accountIndex, constraints, spendingLimits);
     encoder.pushOption<never>(undefined, () => undefined);
   });
   encoder.pushOption<string>(undefined, (memo) => {
@@ -949,12 +1029,38 @@ function encodeRawProgramInteractionPayload(
   encoder: BytesEncoder,
   accountIndex: number,
   constraints: InstructionConstraint[],
+  spendingLimits: ProgramInteractionSpendingLimit[],
 ): void {
   encoder.pushU8(accountIndex);
   encoder.pushVec(constraints, (constraint) => encodeRawInstructionConstraint(encoder, constraint));
   encoder.pushOption<never>(undefined, () => undefined);
   encoder.pushOption<never>(undefined, () => undefined);
-  encoder.pushVec([], () => undefined);
+  encoder.pushVec(spendingLimits, (limit) => encodeRawSpendingLimit(encoder, limit));
+}
+
+function encodeRawSpendingLimit(encoder: BytesEncoder, limit: ProgramInteractionSpendingLimit): void {
+  encoder.pushPubkey(limit.mint);
+  encodeRawLimitedTimeConstraints(encoder, limit.timeConstraints);
+  encoder.pushU64(limit.quantityConstraints.maxPerPeriod);
+}
+
+function encodeRawLimitedTimeConstraints(
+  encoder: BytesEncoder,
+  constraints: ProgramInteractionSpendingLimit["timeConstraints"],
+): void {
+  encoder.pushI64(constraints.start ?? 0n);
+  encoder.pushOption(constraints.expiration, (expiration) => encoder.pushI64(expiration));
+  encodeRawPeriodV2(encoder, constraints.period);
+}
+
+function encodeRawPeriodV2(
+  encoder: BytesEncoder,
+  period: ProgramInteractionSpendingLimit["timeConstraints"]["period"],
+): void {
+  if (period.type === "custom") {
+    encoder.pushU8(4);
+    encoder.pushI64(period.seconds);
+  }
 }
 
 function encodeRawInstructionConstraint(encoder: BytesEncoder, constraint: InstructionConstraint): void {
@@ -2921,6 +3027,8 @@ Policy route inputs:
   --refresh-route-files            Regenerate the route/setup JSON files even when they already exist.
   --policy-seed <n>                Squads policy seed for the user route policy. Default: ${DEFAULT_YIELD_ROUTE_POLICY_SEED}
   --update-policy                  Update an existing policy at --policy-seed instead of reusing it as-is.
+  --policy-spending-limit-hourly-raw <n> Optional hourly raw-token cap for the user route policy Hub input mint.
+                                   Omitted or 0 keeps the policy without an embedded spending limit; changed caps refresh existing policies.
   --treasury-policy <pubkey>       Back-compat alias for --treasury-withdraw-policy.
   --treasury-hub-policy <pubkey>   Back-compat alias for --treasury-withdraw-policy.
   --treasury-withdraw-policy <pubkey> Resume with an existing treasury Hub WithdrawInventory policy account.
