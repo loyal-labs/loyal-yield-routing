@@ -37,6 +37,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "generic_balance_sweep_token_accounts",
         sql: include_str!("../../migrations/0006_generic_balance_sweep_token_accounts.sql"),
     },
+    Migration {
+        version: 7,
+        name: "balance_sweep_scheduled_slots",
+        sql: include_str!("../../migrations/0007_balance_sweep_scheduled_slots.sql"),
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -186,6 +191,7 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "balance_sweep_lot_claim_items",
         "balance_sweep_execution_lots",
         "balance_sweep_executions",
+        "balance_sweep_scheduled_slots",
         "pending_balance_sweep_surplus_lots",
     ] {
         let exists: bool = sqlx::query_scalar(
@@ -236,6 +242,19 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         ("balance_sweep_executions", "source_token_ata"),
         ("balance_sweep_executions", "destination_token_ata"),
         ("balance_sweep_executions", "token_mint"),
+        ("balance_sweep_surplus_lots", "scheduled_slot_id"),
+        ("balance_sweep_scheduled_slots", "target_id"),
+        ("balance_sweep_scheduled_slots", "token_mint"),
+        ("balance_sweep_scheduled_slots", "eligible_after"),
+        ("balance_sweep_scheduled_slots", "status"),
+        ("balance_sweep_scheduled_slots", "request_source"),
+        ("balance_sweep_scheduled_slots", "requested_at"),
+        ("balance_sweep_scheduled_slots", "claim_token"),
+        ("balance_sweep_scheduled_slots", "execution_id"),
+        ("balance_sweep_scheduled_slots", "last_error"),
+        ("balance_sweep_scheduled_slots", "created_at"),
+        ("balance_sweep_scheduled_slots", "updated_at"),
+        ("pending_balance_sweep_surplus_lots", "scheduled_slot_id"),
         ("pending_balance_sweep_surplus_lots", "source_mint"),
         (
             "pending_balance_sweep_surplus_lots",

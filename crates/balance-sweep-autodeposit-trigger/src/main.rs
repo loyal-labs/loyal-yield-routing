@@ -30,6 +30,8 @@ struct Args {
     #[arg(long)]
     claim_target_id: Option<i64>,
     #[arg(long)]
+    scheduled_slot_id: Option<i64>,
+    #[arg(long)]
     claim_token: Option<String>,
     #[arg(long)]
     claim_wallet_balance_raw: Option<i64>,
@@ -37,6 +39,8 @@ struct Args {
     claim_wallet_balance_floor_raw: Option<i64>,
     #[arg(long)]
     claim_remaining_allowance_raw: Option<i64>,
+    #[arg(long)]
+    claim_max_amount_raw: Option<i64>,
     #[arg(long)]
     complete_claim_token: Option<String>,
     #[arg(long)]
@@ -49,6 +53,12 @@ struct Args {
     executor_command: Option<String>,
     #[arg(long, default_value_t = 25)]
     execute_limit: i64,
+    #[arg(
+        long,
+        env = "BALANCE_SWEEP_STALE_SELECTED_CLAIM_SECONDS",
+        default_value_t = 900
+    )]
+    stale_selected_claim_seconds: i64,
 }
 
 #[derive(Debug)]
@@ -79,11 +89,13 @@ struct ExecutorOutcome {
     executions_attempted: usize,
     executions_succeeded: usize,
     executions_failed: usize,
+    stale_claims_released: i64,
 }
 
 #[derive(Debug)]
 struct ExecutableTargetRow {
     target_id: i64,
+    scheduled_slot_id: i64,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -143,8 +155,10 @@ async fn main() -> Result<()> {
             &pool,
             target_id,
             claim_token,
+            args.scheduled_slot_id,
             wallet_balance_raw,
             wallet_balance_floor_raw,
+            args.claim_max_amount_raw,
             args.claim_remaining_allowance_raw,
         )
         .await?;
@@ -167,13 +181,19 @@ async fn main() -> Result<()> {
             let executor_command = args.executor_command.as_deref().context(
                 "--executor-command or BALANCE_SWEEP_EXECUTOR_COMMAND is required with --execute-eligible",
             )?;
-            let execution_outcome =
-                execute_eligible_targets_once(&pool, executor_command, args.execute_limit).await?;
+            let execution_outcome = execute_eligible_targets_once(
+                &pool,
+                executor_command,
+                args.execute_limit,
+                args.stale_selected_claim_seconds,
+            )
+            .await?;
             tracing::info!(
                 targets_scanned = execution_outcome.targets_scanned,
                 executions_attempted = execution_outcome.executions_attempted,
                 executions_succeeded = execution_outcome.executions_succeeded,
                 executions_failed = execution_outcome.executions_failed,
+                stale_claims_released = execution_outcome.stale_claims_released,
                 "scanned eligible autodeposit lots for execution"
             );
         }
@@ -188,17 +208,22 @@ async fn execute_eligible_targets_once(
     pool: &PgPool,
     executor_command: &str,
     limit: i64,
+    stale_selected_claim_seconds: i64,
 ) -> Result<ExecutorOutcome> {
+    let stale_claims_released =
+        release_stale_selected_claims_once(pool, stale_selected_claim_seconds, limit).await?;
     let targets = load_executable_targets(pool, limit).await?;
     let mut outcome = ExecutorOutcome {
         targets_scanned: targets.len(),
+        stale_claims_released,
         ..ExecutorOutcome::default()
     };
     for target in targets {
         outcome.executions_attempted += 1;
         let claim_token = format!(
-            "autodeposit-trigger:{}:{}",
+            "autodeposit-trigger:{}:{}:{}",
             target.target_id,
+            target.scheduled_slot_id,
             Utc::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_else(|| Utc::now().timestamp_micros())
@@ -208,6 +233,7 @@ async fn execute_eligible_targets_once(
             .arg(build_executor_shell_command(
                 executor_command,
                 target.target_id,
+                target.scheduled_slot_id,
                 &claim_token,
             ))
             .status()
@@ -220,6 +246,7 @@ async fn execute_eligible_targets_once(
             outcome.executions_failed += 1;
             tracing::warn!(
                 target_id = target.target_id,
+                scheduled_slot_id = target.scheduled_slot_id,
                 claim_token,
                 status = ?status,
                 "autodeposit executor exited unsuccessfully"
@@ -229,22 +256,117 @@ async fn execute_eligible_targets_once(
     Ok(outcome)
 }
 
+async fn release_stale_selected_claims_once(
+    pool: &PgPool,
+    stale_selected_claim_seconds: i64,
+    limit: i64,
+) -> Result<i64> {
+    if stale_selected_claim_seconds <= 0 || limit <= 0 {
+        return Ok(0);
+    }
+
+    let row = sqlx::query(
+        r#"
+        WITH stale_claims AS (
+            SELECT claim.claim_token
+            FROM loyal_yield.balance_sweep_lot_claims AS claim
+            JOIN loyal_yield.balance_sweep_targets AS target
+              ON target.id = claim.target_id
+            JOIN loyal_yield.balance_sweep_wallet_balances_current AS balance
+              ON balance.target_id = target.id
+             AND balance.mint = target.token_mint
+            WHERE claim.status = 'selected'
+              AND claim.execution_id IS NULL
+              AND target.token_mint = $3
+              AND target.wallet_balance_floor_raw IS NOT NULL
+              AND balance.amount_raw - target.wallet_balance_floor_raw >= claim.amount_raw
+              AND COALESCE((
+                  SELECT offset_row.last_event_id
+                  FROM loyal_yield.projection_offsets AS offset_row
+                  WHERE offset_row.consumer_name = $4
+              ), 0) >= (
+                  SELECT COALESCE(MAX(event.event_id), 0)
+                  FROM loyal_yield.balance_sweep_wallet_balance_events AS event
+                  WHERE event.target_id = claim.target_id
+                    AND event.mint = target.token_mint
+              )
+              AND claim.updated_at < now() - ($1::bigint * interval '1 second')
+            ORDER BY claim.updated_at ASC, claim.claim_token ASC
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+        ),
+        matched_items AS (
+            SELECT item.lot_id, item.amount_raw
+            FROM loyal_yield.balance_sweep_lot_claim_items AS item
+            JOIN stale_claims
+              ON stale_claims.claim_token = item.claim_token
+        ),
+        restored_lots AS (
+            UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
+            SET remaining_amount_raw = lot.remaining_amount_raw + item.amount_raw,
+                status = 'open',
+                eligible_after = now(),
+                updated_at = now()
+            FROM matched_items AS item
+            WHERE lot.id = item.lot_id
+            RETURNING lot.scheduled_slot_id
+        ),
+        released_claims AS (
+            UPDATE loyal_yield.balance_sweep_lot_claims AS claim
+            SET status = 'released',
+                updated_at = now()
+            WHERE claim.claim_token IN (SELECT claim_token FROM stale_claims)
+              AND EXISTS (SELECT 1 FROM restored_lots)
+            RETURNING claim.claim_token
+        ),
+        failed_slots AS (
+            UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
+            SET status = 'failed',
+                claim_token = NULL,
+                last_error = 'stale selected claim released by autodeposit worker',
+                updated_at = now()
+            WHERE slot.claim_token IN (SELECT claim_token FROM released_claims)
+               OR slot.id IN (
+                  SELECT scheduled_slot_id
+                  FROM restored_lots
+                  WHERE scheduled_slot_id IS NOT NULL
+               )
+            RETURNING slot.id
+        )
+        SELECT COALESCE((SELECT COUNT(*) FROM released_claims), 0)::bigint AS released_claim_count
+        "#,
+    )
+    .bind(stale_selected_claim_seconds)
+    .bind(limit)
+    .bind(USDC_MINT_ADDRESS)
+    .bind(CONSUMER_NAME)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(row.try_get("released_claim_count")?)
+}
+
 fn build_executor_shell_command(
     executor_command: &str,
     target_id: i64,
+    scheduled_slot_id: i64,
     claim_token: &str,
 ) -> String {
     format!(
-        "{} --execute --target-id {} --claim-token {}",
-        executor_command, target_id, claim_token
+        "{} --execute --target-id {} --scheduled-slot-id {} --claim-token {}",
+        executor_command, target_id, scheduled_slot_id, claim_token
     )
 }
 
 async fn load_executable_targets(pool: &PgPool, limit: i64) -> Result<Vec<ExecutableTargetRow>> {
     let rows = sqlx::query(
         r#"
-        SELECT target.id AS target_id
-        FROM loyal_yield.balance_sweep_targets AS target
+        SELECT
+            target.id AS target_id,
+            slot.id AS scheduled_slot_id
+        FROM loyal_yield.balance_sweep_scheduled_slots AS slot
+        JOIN loyal_yield.balance_sweep_targets AS target
+          ON target.id = slot.target_id
         JOIN loyal_yield.balance_sweep_wallet_balances_current AS balance
           ON balance.target_id = target.id
          AND balance.mint = target.token_mint
@@ -253,16 +375,19 @@ async fn load_executable_targets(pool: &PgPool, limit: i64) -> Result<Vec<Execut
           AND target.token_mint = $2
           AND target.wallet_balance_floor_raw IS NOT NULL
           AND balance.amount_raw > target.wallet_balance_floor_raw
+          AND slot.token_mint = target.token_mint
+          AND slot.status IN ('scheduled', 'requested')
+          AND slot.eligible_after <= now()
           AND EXISTS (
               SELECT 1
               FROM loyal_yield.balance_sweep_surplus_lots AS lot
               JOIN loyal_yield.balance_sweep_wallet_balance_events AS event
                 ON event.event_id = lot.source_event_id
               WHERE lot.target_id = target.id
+                AND lot.scheduled_slot_id = slot.id
                 AND event.mint = target.token_mint
                 AND lot.status = 'open'
                 AND lot.remaining_amount_raw > 0
-                AND lot.eligible_after <= now()
           )
           AND NOT EXISTS (
               SELECT 1
@@ -270,7 +395,13 @@ async fn load_executable_targets(pool: &PgPool, limit: i64) -> Result<Vec<Execut
               WHERE claim.target_id = target.id
                 AND claim.status = 'selected'
           )
-        ORDER BY balance.updated_at ASC, target.id ASC
+        ORDER BY
+            CASE WHEN slot.status = 'requested' THEN 0 ELSE 1 END,
+            slot.requested_at ASC NULLS LAST,
+            slot.eligible_after ASC,
+            balance.updated_at ASC,
+            target.id ASC,
+            slot.id ASC
         LIMIT $1
         "#,
     )
@@ -282,6 +413,7 @@ async fn load_executable_targets(pool: &PgPool, limit: i64) -> Result<Vec<Execut
         .map(|row| {
             Ok(ExecutableTargetRow {
                 target_id: row.try_get("target_id")?,
+                scheduled_slot_id: row.try_get("scheduled_slot_id")?,
             })
         })
         .collect()
@@ -356,6 +488,21 @@ async fn complete_claim_once(
     .bind(USDC_MINT_ADDRESS)
     .execute(&mut *tx)
     .await?;
+    if update.rows_affected() > 0 {
+        sqlx::query(
+            r#"
+            UPDATE loyal_yield.balance_sweep_scheduled_slots
+            SET status = 'executed',
+                execution_id = $2,
+                updated_at = now()
+            WHERE claim_token = $1
+            "#,
+        )
+        .bind(claim_token)
+        .bind(execution_id)
+        .execute(&mut *tx)
+        .await?;
+    }
 
     tx.commit().await?;
     if update.rows_affected() == 0 {
@@ -430,6 +577,21 @@ async fn release_claim_once(pool: &PgPool, claim_token: &str) -> Result<ClaimOut
     .bind(USDC_MINT_ADDRESS)
     .execute(&mut *tx)
     .await?;
+    if update.rows_affected() > 0 {
+        sqlx::query(
+            r#"
+            UPDATE loyal_yield.balance_sweep_scheduled_slots
+            SET status = 'failed',
+                claim_token = NULL,
+                last_error = 'claim released before autodeposit pull',
+                updated_at = now()
+            WHERE claim_token = $1
+            "#,
+        )
+        .bind(claim_token)
+        .execute(&mut *tx)
+        .await?;
+    }
 
     tx.commit().await?;
     if update.rows_affected() == 0 {
@@ -444,8 +606,10 @@ async fn claim_eligible_lots_once(
     pool: &PgPool,
     target_id: i64,
     claim_token: &str,
+    scheduled_slot_id: Option<i64>,
     wallet_balance_raw: i64,
     wallet_balance_floor_raw: i64,
+    max_amount_per_period_raw: Option<i64>,
     remaining_allowance_raw: Option<i64>,
 ) -> Result<ClaimOutcome> {
     let mut tx = pool.begin().await?;
@@ -488,7 +652,15 @@ async fn claim_eligible_lots_once(
         });
     }
 
-    let open_lots = lock_eligible_lots(&mut tx, target_id).await?;
+    if let Some(slot_id) = scheduled_slot_id {
+        let slot_available = lock_executable_slot(&mut tx, target_id, slot_id).await?;
+        if !slot_available {
+            tx.commit().await?;
+            return Ok(no_claim(target_id, "scheduled_slot_not_available"));
+        }
+    }
+
+    let open_lots = lock_eligible_lots(&mut tx, target_id, scheduled_slot_id).await?;
     let eligible_lot_amount_raw = open_lots
         .iter()
         .map(|lot| lot.remaining_amount_raw)
@@ -497,6 +669,7 @@ async fn claim_eligible_lots_once(
         eligible_lot_amount_raw,
         wallet_balance_raw,
         wallet_balance_floor_raw,
+        max_amount_per_period_raw,
         remaining_allowance_raw,
     });
     let SweepAmountDecision::Sweep { amount_raw, .. } = decision else {
@@ -585,6 +758,9 @@ async fn claim_eligible_lots_once(
         .await?;
     }
 
+    move_residual_open_lots_to_next_slot(&mut tx, scheduled_slot_id).await?;
+    mark_slot_selected(&mut tx, scheduled_slot_id, claim_token).await?;
+
     tx.commit().await?;
     Ok(ClaimOutcome {
         status: "selected".to_owned(),
@@ -595,6 +771,43 @@ async fn claim_eligible_lots_once(
         stale_check_event_id,
         lots: claimed,
     })
+}
+
+async fn mark_slot_selected(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    scheduled_slot_id: Option<i64>,
+    claim_token: &str,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
+        SET status = 'selected',
+            claim_token = $2,
+            last_error = NULL,
+            updated_at = now()
+        WHERE (
+              $1::bigint IS NOT NULL
+              AND slot.id = $1::bigint
+              AND slot.status IN ('scheduled', 'requested')
+        )
+           OR (
+              $1::bigint IS NULL
+              AND slot.id IN (
+                  SELECT DISTINCT lot.scheduled_slot_id
+                  FROM loyal_yield.balance_sweep_lot_claim_items AS item
+                  JOIN loyal_yield.balance_sweep_surplus_lots AS lot
+                    ON lot.id = item.lot_id
+                  WHERE item.claim_token = $2
+                    AND lot.scheduled_slot_id IS NOT NULL
+              )
+           )
+        "#,
+    )
+    .bind(scheduled_slot_id)
+    .bind(claim_token)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 fn no_claim(target_id: i64, reason: &'static str) -> ClaimOutcome {
@@ -609,6 +822,76 @@ fn no_claim(target_id: i64, reason: &'static str) -> ClaimOutcome {
     }
 }
 
+async fn lock_executable_slot(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    target_id: i64,
+    scheduled_slot_id: i64,
+) -> Result<bool> {
+    let row = sqlx::query(
+        r#"
+        SELECT id
+        FROM loyal_yield.balance_sweep_scheduled_slots
+        WHERE id = $1
+          AND target_id = $2
+          AND token_mint = $3
+          AND status IN ('scheduled', 'requested')
+          AND eligible_after <= now()
+        FOR UPDATE
+        "#,
+    )
+    .bind(scheduled_slot_id)
+    .bind(target_id)
+    .bind(USDC_MINT_ADDRESS)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.is_some())
+}
+
+async fn move_residual_open_lots_to_next_slot(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    scheduled_slot_id: Option<i64>,
+) -> Result<()> {
+    let Some(scheduled_slot_id) = scheduled_slot_id else {
+        return Ok(());
+    };
+
+    sqlx::query(
+        r#"
+        WITH residual AS (
+            SELECT
+                slot.target_id,
+                slot.token_mint,
+                MAX(lot.eligible_after) AS eligible_after
+            FROM loyal_yield.balance_sweep_scheduled_slots AS slot
+            JOIN loyal_yield.balance_sweep_surplus_lots AS lot
+              ON lot.scheduled_slot_id = slot.id
+            WHERE slot.id = $1
+              AND lot.status = 'open'
+              AND lot.remaining_amount_raw > 0
+            GROUP BY slot.target_id, slot.token_mint
+        ),
+        inserted_slot AS (
+            INSERT INTO loyal_yield.balance_sweep_scheduled_slots
+                (target_id, token_mint, eligible_after, status)
+            SELECT target_id, token_mint, eligible_after, 'scheduled'
+            FROM residual
+            RETURNING id
+        )
+        UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
+        SET scheduled_slot_id = inserted_slot.id,
+            updated_at = now()
+        FROM inserted_slot
+        WHERE lot.scheduled_slot_id = $1
+          AND lot.status = 'open'
+          AND lot.remaining_amount_raw > 0
+        "#,
+    )
+    .bind(scheduled_slot_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 #[derive(Debug)]
 struct OpenLotRow {
     id: i64,
@@ -618,6 +901,7 @@ struct OpenLotRow {
 async fn lock_eligible_lots(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     target_id: i64,
+    scheduled_slot_id: Option<i64>,
 ) -> Result<Vec<OpenLotRow>> {
     let rows = sqlx::query(
         r#"
@@ -632,13 +916,15 @@ async fn lock_eligible_lots(
           AND target.token_mint = $2
           AND lot.status = 'open'
           AND lot.remaining_amount_raw > 0
-          AND lot.eligible_after <= now()
+          AND ($3::bigint IS NOT NULL OR lot.eligible_after <= now())
+          AND ($3::bigint IS NULL OR lot.scheduled_slot_id = $3::bigint)
         ORDER BY lot.eligible_after ASC, lot.created_at ASC, lot.id ASC
         FOR UPDATE SKIP LOCKED
         "#,
     )
     .bind(target_id)
     .bind(USDC_MINT_ADDRESS)
+    .bind(scheduled_slot_id)
     .fetch_all(&mut **tx)
     .await?;
     rows.into_iter()
@@ -948,11 +1234,43 @@ async fn insert_scheduled_lot(
     let eligible_after = scheduled_eligible_after(event.observed_at);
     let row = sqlx::query(
         r#"
+        WITH current_slot AS (
+            SELECT id
+            FROM loyal_yield.balance_sweep_scheduled_slots
+            WHERE target_id = $1
+              AND token_mint = $9
+              AND status = 'scheduled'
+            ORDER BY eligible_after ASC, id ASC
+            LIMIT 1
+            FOR UPDATE
+        ),
+        updated_current_slot AS (
+            UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
+            SET eligible_after = GREATEST(slot.eligible_after, $6),
+                updated_at = now()
+            WHERE slot.id IN (SELECT id FROM current_slot)
+            RETURNING slot.id
+        ),
+        inserted_slot AS (
+            INSERT INTO loyal_yield.balance_sweep_scheduled_slots
+                (target_id, token_mint, eligible_after, status)
+            SELECT $1, $9, $6, 'scheduled'
+            WHERE NOT EXISTS (SELECT 1 FROM updated_current_slot)
+            RETURNING id
+        ),
+        selected_slot AS (
+            SELECT id FROM updated_current_slot
+            UNION ALL
+            SELECT id FROM inserted_slot
+            LIMIT 1
+        )
         INSERT INTO loyal_yield.balance_sweep_surplus_lots
             (target_id, source_event_id, source_signature, original_amount_raw,
-             remaining_amount_raw, classification, eligible_after, status, confidence, reason)
-        VALUES ($1, $2, $3, $4, $4, $5::loyal_yield.balance_sweep_surplus_classification,
-                $6, 'open', $7, $8)
+             remaining_amount_raw, classification, eligible_after, status, confidence, reason,
+             scheduled_slot_id)
+        SELECT $1, $2, $3, $4, $4, $5::loyal_yield.balance_sweep_surplus_classification,
+               $6, 'open', $7, $8, selected_slot.id
+        FROM selected_slot
         ON CONFLICT (source_event_id) DO NOTHING
         RETURNING id
         "#,
@@ -965,6 +1283,7 @@ async fn insert_scheduled_lot(
     .bind(eligible_after)
     .bind(confidence)
     .bind(reason)
+    .bind(USDC_MINT_ADDRESS)
     .fetch_optional(&mut **tx)
     .await?;
     Ok(row.is_some())

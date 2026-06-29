@@ -19,6 +19,7 @@ const MIGRATION_0005: &str =
     include_str!("../migrations/0005_add_unsupported_amount_semantics.sql");
 const MIGRATION_0006: &str =
     include_str!("../migrations/0006_generic_balance_sweep_token_accounts.sql");
+const MIGRATION_0007: &str = include_str!("../migrations/0007_balance_sweep_scheduled_slots.sql");
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
 
 #[derive(Clone)]
@@ -173,6 +174,11 @@ impl NeonSqlClient {
                 version: 6,
                 name: "generic_balance_sweep_token_accounts",
                 sql: MIGRATION_0006,
+            },
+            StoreMigration {
+                version: 7,
+                name: "balance_sweep_scheduled_slots",
+                sql: MIGRATION_0007,
             },
         ] {
             apply_store_migration(&self.pool, migration).await?;

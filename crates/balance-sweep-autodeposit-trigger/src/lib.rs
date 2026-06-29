@@ -48,6 +48,7 @@ pub struct SweepCaps {
     pub eligible_lot_amount_raw: i64,
     pub wallet_balance_raw: i64,
     pub wallet_balance_floor_raw: i64,
+    pub max_amount_per_period_raw: Option<i64>,
     pub remaining_allowance_raw: Option<i64>,
 }
 
@@ -64,6 +65,7 @@ pub enum SweepAmountDecision {
         amount_raw: i64,
         eligible_lot_amount_raw: i64,
         excess_raw: i64,
+        capped_by_max_amount_per_period: bool,
         capped_by_wallet_floor: bool,
         capped_by_remaining_allowance: bool,
     },
@@ -219,8 +221,15 @@ pub fn compute_sweep_amount(caps: SweepCaps) -> SweepAmountDecision {
     }
 
     let mut amount_raw = caps.eligible_lot_amount_raw;
+    let mut capped_by_max_amount_per_period = false;
     let mut capped_by_wallet_floor = false;
     let mut capped_by_remaining_allowance = false;
+    if let Some(max_amount) = caps.max_amount_per_period_raw {
+        if max_amount > 0 && amount_raw > max_amount {
+            amount_raw = max_amount;
+            capped_by_max_amount_per_period = true;
+        }
+    }
     if amount_raw > excess_raw {
         amount_raw = excess_raw;
         capped_by_wallet_floor = true;
@@ -236,6 +245,7 @@ pub fn compute_sweep_amount(caps: SweepCaps) -> SweepAmountDecision {
         amount_raw,
         eligible_lot_amount_raw: caps.eligible_lot_amount_raw,
         excess_raw,
+        capped_by_max_amount_per_period,
         capped_by_wallet_floor,
         capped_by_remaining_allowance,
     }
@@ -274,6 +284,7 @@ pub fn select_eligible_lots(
         eligible_lot_amount_raw,
         wallet_balance_raw,
         wallet_balance_floor_raw,
+        max_amount_per_period_raw: None,
         remaining_allowance_raw,
     });
     let SweepAmountDecision::Sweep { amount_raw, .. } = decision else {

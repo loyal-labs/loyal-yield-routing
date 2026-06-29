@@ -98,6 +98,7 @@ type CliOptions = {
   execute: boolean;
   overrideFloorRaw: bigint | null;
   requireLotClaim: boolean;
+  scheduledSlotId: bigint | null;
   targetId: bigint | null;
 };
 
@@ -342,6 +343,7 @@ function parseOptions(argv: string[]): CliOptions {
   let execute = false;
   let overrideFloorRaw: bigint | null = null;
   let requireLotClaim = false;
+  let scheduledSlotId: bigint | null = null;
   let targetId: bigint | null = null;
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -369,6 +371,15 @@ function parseOptions(argv: string[]): CliOptions {
       index += 1;
       continue;
     }
+    if (arg === "--scheduled-slot-id") {
+      const value = argv[index + 1];
+      if (!value || !/^\d+$/.test(value)) {
+        throw new Error("--scheduled-slot-id requires an unsigned integer value.");
+      }
+      scheduledSlotId = BigInt(value);
+      index += 1;
+      continue;
+    }
     if (arg === "--require-lot-claim") {
       requireLotClaim = true;
       continue;
@@ -385,7 +396,14 @@ function parseOptions(argv: string[]): CliOptions {
     throw new Error(`Unknown argument: ${arg}`);
   }
 
-  return { claimToken, execute, overrideFloorRaw, requireLotClaim, targetId };
+  return {
+    claimToken,
+    execute,
+    overrideFloorRaw,
+    requireLotClaim,
+    scheduledSlotId,
+    targetId,
+  };
 }
 
 function requireEnv(name: string): string {
@@ -607,8 +625,10 @@ async function claimAutodepositLots(args: {
   targetId: bigint;
   tokenMint: string;
   claimToken: string;
+  scheduledSlotId: bigint | null;
   walletBalanceRaw: bigint;
   walletBalanceFloorRaw: bigint;
+  maxAmountPerPeriodRaw: bigint | null;
   remainingAllowanceRaw: bigint | null;
 }): Promise<LotClaimResult> {
   const sql = args.neon(args.databaseUrl);
@@ -630,6 +650,16 @@ async function claimAutodepositLots(args: {
         AND active
         AND lifecycle_status = 'active'
         AND token_mint = ${args.tokenMint}
+      FOR UPDATE
+    ),
+    slot_guard AS (
+      SELECT id, status::text AS status
+      FROM loyal_yield.balance_sweep_scheduled_slots
+      WHERE id = ${args.scheduledSlotId?.toString() ?? null}
+        AND target_id = ${args.targetId.toString()}
+        AND token_mint = ${args.tokenMint}
+        AND status IN ('scheduled', 'requested')
+        AND eligible_after <= now()
       FOR UPDATE
     ),
     stale AS (
@@ -654,10 +684,21 @@ async function claimAutodepositLots(args: {
         ON e.event_id = l.source_event_id
       WHERE l.target_id = ${args.targetId.toString()}
         AND e.mint = (SELECT token_mint FROM target_guard)
+        AND (
+          ${args.scheduledSlotId === null}
+          OR l.scheduled_slot_id = ${args.scheduledSlotId?.toString() ?? null}
+        )
         AND l.status = 'open'
         AND l.remaining_amount_raw > 0
-        AND l.eligible_after <= now()
+        AND (
+          ${args.scheduledSlotId !== null}
+          OR l.eligible_after <= now()
+        )
         AND EXISTS (SELECT 1 FROM target_guard)
+        AND (
+          ${args.scheduledSlotId === null}
+          OR EXISTS (SELECT 1 FROM slot_guard)
+        )
         AND COALESCE((SELECT event_id FROM processed), 0) >= (SELECT event_id FROM stale)
         AND NOT EXISTS (SELECT 1 FROM existing_claim)
       ORDER BY l.eligible_after ASC, l.created_at ASC, l.id ASC
@@ -681,6 +722,11 @@ async function claimAutodepositLots(args: {
         LEAST(
           COALESCE((SELECT SUM(remaining_amount_raw) FROM eligible), 0),
           GREATEST(${args.walletBalanceRaw.toString()}::bigint - ${args.walletBalanceFloorRaw.toString()}::bigint, 0),
+          CASE
+            WHEN COALESCE(${args.maxAmountPerPeriodRaw?.toString() ?? null}::bigint, 0) > 0
+            THEN ${args.maxAmountPerPeriodRaw?.toString() ?? null}::bigint
+            ELSE 9223372036854775807
+          END,
           COALESCE(${args.remainingAllowanceRaw?.toString() ?? null}::bigint, 9223372036854775807)
         ) AS amount_raw,
         (SELECT event_id FROM stale) AS stale_check_event_id
@@ -730,6 +776,57 @@ async function claimAutodepositLots(args: {
         AND l.remaining_amount_raw >= i.amount_raw
       RETURNING l.id
     ),
+    residual_slot AS (
+      INSERT INTO loyal_yield.balance_sweep_scheduled_slots (
+        target_id,
+        token_mint,
+        eligible_after,
+        status
+      )
+      SELECT
+        ${args.targetId.toString()},
+        ${args.tokenMint},
+        MAX(l.eligible_after),
+        'scheduled'
+      FROM loyal_yield.balance_sweep_surplus_lots l
+      WHERE ${args.scheduledSlotId !== null}
+        AND l.scheduled_slot_id = ${args.scheduledSlotId?.toString() ?? null}
+        AND l.status = 'open'
+        AND l.remaining_amount_raw > 0
+        AND EXISTS (SELECT 1 FROM inserted_claim)
+      HAVING COUNT(*) > 0
+      RETURNING id
+    ),
+    moved_residual_lots AS (
+      UPDATE loyal_yield.balance_sweep_surplus_lots l
+      SET scheduled_slot_id = (SELECT id FROM residual_slot),
+          updated_at = now()
+      WHERE ${args.scheduledSlotId !== null}
+        AND l.scheduled_slot_id = ${args.scheduledSlotId?.toString() ?? null}
+        AND l.status = 'open'
+        AND l.remaining_amount_raw > 0
+        AND EXISTS (SELECT 1 FROM residual_slot)
+      RETURNING l.id
+    ),
+    updated_slot AS (
+      UPDATE loyal_yield.balance_sweep_scheduled_slots
+      SET status = 'selected',
+          claim_token = ${args.claimToken},
+          last_error = NULL,
+          updated_at = now()
+      WHERE EXISTS (SELECT 1 FROM inserted_claim)
+        AND (
+          (${args.scheduledSlotId === null} AND id IN (
+            SELECT DISTINCT l.scheduled_slot_id
+            FROM loyal_yield.balance_sweep_surplus_lots l
+            JOIN inserted_items i
+              ON i.lot_id = l.id
+            WHERE l.scheduled_slot_id IS NOT NULL
+          ))
+          OR id = ${args.scheduledSlotId?.toString() ?? null}
+        )
+      RETURNING id
+    ),
     active_claim AS (
       SELECT * FROM existing_claim
       UNION ALL
@@ -751,6 +848,7 @@ async function claimAutodepositLots(args: {
     noop_reason AS (
       SELECT CASE
         WHEN NOT EXISTS (SELECT 1 FROM target_guard) THEN 'target_not_active'
+        WHEN ${args.scheduledSlotId !== null} AND NOT EXISTS (SELECT 1 FROM slot_guard) THEN 'scheduled_slot_not_available'
         WHEN COALESCE((SELECT event_id FROM processed), 0) < (SELECT event_id FROM stale) THEN 'newer_unprocessed_wallet_event'
         WHEN ${args.walletBalanceRaw.toString()}::bigint - ${args.walletBalanceFloorRaw.toString()}::bigint <= 0 THEN 'wallet_balance_not_above_floor'
         WHEN COALESCE(${args.remainingAllowanceRaw?.toString() ?? null}::bigint, 1) <= 0 THEN 'allowance_exhausted'
@@ -804,14 +902,22 @@ async function completeAutodepositLotClaim(args: {
       FROM matched_lots
       ON CONFLICT (execution_id, lot_id) DO NOTHING
       RETURNING lot_id
+    ),
+    updated_claim AS (
+      UPDATE loyal_yield.balance_sweep_lot_claims
+      SET status = 'executed',
+          execution_id = ${args.executionId},
+          updated_at = now()
+      WHERE claim_token = ${args.claimToken}
+        AND status = 'selected'
+        AND EXISTS (SELECT 1 FROM matched_lots)
+      RETURNING claim_token
     )
-    UPDATE loyal_yield.balance_sweep_lot_claims
+    UPDATE loyal_yield.balance_sweep_scheduled_slots
     SET status = 'executed',
         execution_id = ${args.executionId},
         updated_at = now()
-    WHERE claim_token = ${args.claimToken}
-      AND status = 'selected'
-      AND EXISTS (SELECT 1 FROM matched_lots)
+    WHERE claim_token IN (SELECT claim_token FROM updated_claim)
   `;
 }
 
@@ -851,12 +957,21 @@ async function releaseAutodepositLotClaim(args: {
         AND e.mint = t.token_mint
         AND t.token_mint = ${USDC_MINT_ADDRESS}
       RETURNING l.id
+    ),
+    updated_claim AS (
+      UPDATE loyal_yield.balance_sweep_lot_claims
+      SET status = 'released',
+          updated_at = now()
+      WHERE claim_token = (SELECT claim_token FROM selected_claim)
+        AND EXISTS (SELECT 1 FROM restored)
+      RETURNING claim_token
     )
-    UPDATE loyal_yield.balance_sweep_lot_claims
-    SET status = 'released',
+    UPDATE loyal_yield.balance_sweep_scheduled_slots
+    SET status = 'failed',
+        claim_token = NULL,
+        last_error = 'claim released before autodeposit pull',
         updated_at = now()
-    WHERE claim_token = (SELECT claim_token FROM selected_claim)
-      AND EXISTS (SELECT 1 FROM restored)
+    WHERE claim_token IN (SELECT claim_token FROM updated_claim)
   `;
 }
 
@@ -1801,6 +1916,7 @@ async function main() {
               ? "wallet_balance_not_above_floor"
               : "subscription_allowance_exhausted",
           targetId: target.id.toString(),
+          scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
           walletBalanceRaw: walletBalanceRaw.toString(),
           walletBalanceFloorRaw: effectiveFloorRaw.toString(),
           persistedWalletBalanceFloorRaw: target.walletBalanceFloorRaw.toString(),
@@ -1858,17 +1974,20 @@ async function main() {
         targetId: target.id,
         tokenMint: target.tokenMint,
         claimToken: options.claimToken,
+        scheduledSlotId: options.scheduledSlotId,
         walletBalanceRaw,
         walletBalanceFloorRaw: effectiveFloorRaw,
+        maxAmountPerPeriodRaw: target.maxAmountPerPeriodRaw,
         remainingAllowanceRaw: allowance.remainingAmountInPeriodRaw,
       });
-      if (lotClaim.status !== "selected" && lotClaim.status !== "executed") {
+      if (lotClaim.status !== "selected") {
         console.log(
           JSON.stringify(
             {
               status: "noop",
               reason: `lot_claim_${lotClaim.reason ?? lotClaim.status}`,
               targetId: target.id.toString(),
+              scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
               lotClaim: summarizeLotClaim(lotClaim),
               walletBalanceRaw: walletBalanceRaw.toString(),
               walletBalanceFloorRaw: effectiveFloorRaw.toString(),
@@ -1924,6 +2043,7 @@ async function main() {
     const plan = {
       status: options.execute ? "execute_requested" : "dry_run",
       targetId: target.id.toString(),
+      scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
       wallet: target.wallet,
       vault: target.vaultPubkey,
       walletUsdcAta: target.walletUsdcAta,
