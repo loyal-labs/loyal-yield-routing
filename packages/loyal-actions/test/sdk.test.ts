@@ -66,6 +66,7 @@ const settings = new PublicKey("11111111111111111111111111111112");
 const authority = new PublicKey("11111111111111111111111111111113");
 const delegatedSigner = new PublicKey("11111111111111111111111111111114");
 const vault = new PublicKey("11111111111111111111111111111115");
+const spendingLimitMint = new PublicKey("11111111111111111111111111111116");
 
 const squads = {
   settings,
@@ -75,6 +76,22 @@ const squads = {
   vault,
 };
 const SOLANA_PACKET_DATA_SIZE = 1232;
+
+function i64Le(value: bigint): number[] {
+  const bytes: number[] = [];
+  let remaining = BigInt.asUintN(64, value);
+  for (let index = 0; index < 8; index += 1) {
+    bytes.push(Number(remaining & 0xffn));
+    remaining >>= 8n;
+  }
+  return bytes;
+}
+
+function findBytes(haystack: readonly number[], needle: readonly number[]): number {
+  return haystack.findIndex((_, index) =>
+    needle.every((byte, offset) => haystack[index + offset] === byte)
+  );
+}
 
 describe("initYieldRoutePolicy", () => {
   test("builds one all-in-one policy instruction and route indexes for Jupiter", () => {
@@ -612,6 +629,53 @@ describe("Squads operational helpers", () => {
     expect(policyUpdate.data.subarray(0, 14).toJSON().data).toEqual([
       138, 209, 64, 163, 79, 67, 233, 76, 1, 1, 0, 0, 0, 8,
     ]);
+  });
+
+  test("builds compact ProgramInteraction policy updates with an hourly spending limit", () => {
+    const innerConstraint = {
+      programId: delegatedSigner,
+      accountConstraints: [],
+      dataConstraints: [],
+    };
+    const policyUpdate = createProgramInteractionPolicyUpdateInstruction(
+      config,
+      {
+        settings,
+        authority,
+        delegatedSigner,
+        accountIndex: 0,
+        spendingLimits: [
+          {
+            mint: spendingLimitMint,
+            timeConstraints: {
+              start: 0n,
+              expiration: null,
+              period: { type: "custom", seconds: 3600n },
+            },
+            quantityConstraints: {
+              maxPerPeriod: 1_000_000n,
+            },
+          },
+        ],
+      },
+      deriveSquadsPolicy(config, settings, TREASURY_REBALANCE_ACTION_SEED).address,
+      [innerConstraint],
+    );
+
+    const bytes = Array.from(policyUpdate.data);
+    const spendingLimitBytes = [
+      1,
+      1,
+      ...i64Le(0n),
+      0,
+      4,
+      ...i64Le(3600n),
+      ...i64Le(1_000_000n),
+    ];
+    const spendingLimitOffset = findBytes(bytes, spendingLimitBytes);
+
+    expect(spendingLimitOffset).toBeGreaterThan(1);
+    expect(bytes.slice(spendingLimitOffset - 2, spendingLimitOffset)).toEqual([0, 0]);
   });
 
   test("rejects planned rebalances that touch active lanes", () => {

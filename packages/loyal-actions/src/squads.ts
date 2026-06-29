@@ -23,6 +23,7 @@ export type {
   DataConstraint,
   InstructionConstraint,
   PlannedLaneRebalance,
+  ProgramInteractionSpendingLimit,
   SquadsPda,
   SquadsProgramInteractionExecutionInput,
   SquadsSyncTransactionInput,

@@ -53,6 +53,19 @@ export type SquadsContext = {
   accountIndex: number;
   vault: PublicKey;
   policySeed?: bigint;
+  spendingLimits?: readonly ProgramInteractionSpendingLimit[];
+};
+
+export type ProgramInteractionSpendingLimit = {
+  mint: PublicKey;
+  timeConstraints: {
+    start?: bigint;
+    expiration?: bigint | null;
+    period: { type: "custom"; seconds: bigint };
+  };
+  quantityConstraints: {
+    maxPerPeriod: bigint;
+  };
 };
 
 export type SquadsPda = {
@@ -182,7 +195,7 @@ export function createProgramInteractionPolicyInstruction(
   const data = serializeSettingsActions(
     context.delegatedSigner,
     policySeed,
-    compileProgramInteractionPayload(context.accountIndex, constraints),
+    compileProgramInteractionPayload(context.accountIndex, constraints, context.spendingLimits),
   );
 
   return new TransactionInstruction({
@@ -208,7 +221,7 @@ export function createProgramInteractionPolicyUpdateInstruction(
   const data = serializePolicyUpdateActions(
     policy,
     context.delegatedSigner,
-    compileProgramInteractionPayload(context.accountIndex, constraints),
+    compileProgramInteractionPayload(context.accountIndex, constraints, context.spendingLimits),
   );
 
   return new TransactionInstruction({
@@ -353,6 +366,7 @@ type CompiledPayload = {
   accountIndex: number;
   pubkeyTable: PublicKey[];
   instructionConstraints: CompiledInstructionConstraint[];
+  spendingLimits: CompiledProgramInteractionSpendingLimit[];
 };
 
 type CompiledInstructionConstraint = {
@@ -367,15 +381,23 @@ type CompiledAccountConstraint = {
   ownerIndex?: number;
 };
 
+type CompiledProgramInteractionSpendingLimit = {
+  mintIndex: number;
+  timeConstraints: ProgramInteractionSpendingLimit["timeConstraints"];
+  quantityConstraints: ProgramInteractionSpendingLimit["quantityConstraints"];
+};
+
 function compileProgramInteractionPayload(
   accountIndex: number,
   constraints: readonly InstructionConstraint[],
+  spendingLimits: readonly ProgramInteractionSpendingLimit[] = [],
 ): CompiledPayload {
   const pubkeyTable: PublicKey[] = [];
   return {
     accountIndex,
     pubkeyTable,
     instructionConstraints: constraints.map((constraint) => compileInstructionConstraint(constraint, pubkeyTable)),
+    spendingLimits: spendingLimits.map((limit) => compileSpendingLimit(limit, pubkeyTable)),
   };
 }
 
@@ -406,6 +428,17 @@ function compileAccountConstraint(
           }
         : { type: "accountData", dataConstraints: constraint.kind.dataConstraints },
     ownerIndex: constraint.owner ? pubkeyTableIndex(pubkeyTable, constraint.owner) : undefined,
+  };
+}
+
+function compileSpendingLimit(
+  limit: ProgramInteractionSpendingLimit,
+  pubkeyTable: PublicKey[],
+): CompiledProgramInteractionSpendingLimit {
+  return {
+    mintIndex: pubkeyTableIndex(pubkeyTable, limit.mint),
+    timeConstraints: limit.timeConstraints,
+    quantityConstraints: limit.quantityConstraints,
   };
 }
 
@@ -570,7 +603,43 @@ function encodeProgramInteractionPayload(encoder: BytesEncoder, payload: Compile
   });
   encoder.pushOption<never>(undefined, () => undefined);
   encoder.pushOption<never>(undefined, () => undefined);
-  encoder.pushSmallVec([], () => undefined);
+  encoder.pushSmallVec(payload.spendingLimits, (limit) => encodeCompiledSpendingLimit(encoder, limit));
+}
+
+function encodeCompiledSpendingLimit(encoder: BytesEncoder, limit: CompiledProgramInteractionSpendingLimit): void {
+  assertU8(limit.mintIndex, "spendingLimit.mintIndex");
+  assertU64(limit.quantityConstraints.maxPerPeriod, "spendingLimit.maxPerPeriod");
+  encoder.pushU8(limit.mintIndex);
+  encodeLimitedTimeConstraints(encoder, limit.timeConstraints);
+  encoder.pushU64(limit.quantityConstraints.maxPerPeriod);
+}
+
+function encodeLimitedTimeConstraints(
+  encoder: BytesEncoder,
+  constraints: ProgramInteractionSpendingLimit["timeConstraints"],
+): void {
+  const start = constraints.start ?? 0n;
+  assertI64(start, "spendingLimit.start");
+  encoder.pushI64(start);
+  encoder.pushOption(constraints.expiration, (expiration) => {
+    assertI64(expiration, "spendingLimit.expiration");
+    encoder.pushI64(expiration);
+  });
+  encodePeriodV2(encoder, constraints.period);
+}
+
+function encodePeriodV2(
+  encoder: BytesEncoder,
+  period: ProgramInteractionSpendingLimit["timeConstraints"]["period"],
+): void {
+  if (period.type === "custom") {
+    assertI64(period.seconds, "spendingLimit.period.seconds");
+    if (period.seconds <= 0n) {
+      throw new Error("spendingLimit.period.seconds must be positive");
+    }
+    encoder.pushU8(4);
+    encoder.pushI64(period.seconds);
+  }
 }
 
 function encodeDataConstraint(encoder: BytesEncoder, constraint: DataConstraint): void {
@@ -659,6 +728,13 @@ function assertU8(value: number, field: string): void {
 function assertU64(value: bigint, field: string): void {
   if (value < 0n || value > 0xffffffffffffffffn) {
     throw new Error(`${field} must be a u64`);
+  }
+}
+
+function assertI64(value: bigint, field: string): void {
+  // i64 bounds are -(1 << 63) through (1 << 63) - 1.
+  if (value < -9223372036854775808n || value > 9223372036854775807n) {
+    throw new Error(`${field} must be an i64`);
   }
 }
 
