@@ -89,7 +89,9 @@ WHERE lot.source_event_id = event.event_id
   AND lot.remaining_amount_raw > 0
   AND lot.scheduled_slot_id IS NULL;
 
-CREATE OR REPLACE VIEW loyal_yield.pending_balance_sweep_surplus_lots AS
+DROP VIEW IF EXISTS loyal_yield.pending_balance_sweep_surplus_lots;
+
+CREATE VIEW loyal_yield.pending_balance_sweep_surplus_lots AS
 SELECT
     lot.id,
     lot.target_id,
