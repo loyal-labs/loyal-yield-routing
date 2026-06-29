@@ -2,8 +2,8 @@
 
 Date: 2026-06-29
 
-PR: https://github.com/loyal-labs/loyal-yield-routing/pull/6  
-Branch: `ASK-1556-create-spending-limit-for-loyal-hub`  
+PR: https://github.com/loyal-labs/loyal-yield-routing/pull/6
+Branch: `ASK-1556-create-spending-limit-for-loyal-hub`
 State file: `.agents/ask-1556-mainnet-e2e-state.json`
 
 ## Summary
@@ -145,4 +145,3 @@ Final Hub state:
 ## Residual Notes
 
 The unrelated treasury rebalance policy path failed at `create-treasury-withdraw-policy` with Squads `InstructionDidNotDeserialize` (`Custom: 102`). The ASK-1556 user route and spending-limit proof had already passed by then. The run skipped the remaining treasury rebalance and lane rebalance flow, then executed cleanup-only.
-
