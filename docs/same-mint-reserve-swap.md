@@ -116,7 +116,7 @@ $SWAP \
   --reconcile-from-chain
 ```
 
-Add `--execute` only after approval. This mode uses `YIELD_ROUTER_KEYPAIR` as the lookup-table authority and payer, reuses an authority-matching durable table when capacity allows, extends only missing addresses, records the durable registry row, and exits without writing a rebalance decision or sending the route transaction. It cannot be combined with `--optimization-cycle`. Normal route execution is reuse-only: if durable lookup-table coverage is incomplete, it fails closed before route simulation or send.
+Add `--execute` only after approval. This mode uses `YIELD_ROUTER_KEYPAIR` as the lookup-table authority and payer, reuses an authority-matching durable table when capacity allows, extends only missing addresses, records the durable registry row, and exits without writing a rebalance decision or sending the route transaction. It cannot be combined with `--optimization-cycle` or `--seed-from-user-position`. Normal route execution is reuse-only: if durable lookup-table coverage is incomplete, it fails closed before route simulation or send.
 
 ALT cleanup dry-run:
 

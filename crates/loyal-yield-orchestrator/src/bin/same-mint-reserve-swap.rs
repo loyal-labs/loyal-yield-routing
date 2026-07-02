@@ -980,6 +980,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     let mut reconciled_snapshot_id = None;
     let should_write_current_positions_from_chain = writes_current_positions_from_chain(&options);
+    let should_write_current_positions_from_user_seed =
+        writes_current_positions_from_user_seed(&options);
     if should_write_current_positions_from_chain {
         let preview = chain_preview
             .as_ref()
@@ -988,7 +990,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let snapshot = client.reconcile_vault(vault.id, state).await?;
         reconciled_snapshot_id = Some(snapshot.id);
         db_positions = load_position_summaries(&client, vault.id).await?;
-    } else if options.execute && options.seed_from_user_position {
+    } else if should_write_current_positions_from_user_seed {
         let seed = user_position_seed
             .as_ref()
             .ok_or("no active user_yield_positions row found for selected vault")?;
@@ -1010,7 +1012,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         !options.execute && user_position_seed.is_some() && !using_chain_preview_positions;
     let current_positions_source = if should_write_current_positions_from_chain {
         "vault_reserve_positions_current_after_chain_reconcile"
-    } else if options.execute && options.seed_from_user_position {
+    } else if should_write_current_positions_from_user_seed {
         "vault_reserve_positions_current_after_user_position_seed"
     } else if using_chain_preview_positions {
         "chain_reconcile_preview"
@@ -6292,6 +6294,10 @@ fn writes_current_positions_from_chain(options: &CliOptions) -> bool {
     options.execute && options.reconcile_from_chain && !options.provision_route_lookup_table
 }
 
+fn writes_current_positions_from_user_seed(options: &CliOptions) -> bool {
+    options.execute && options.seed_from_user_position && !options.provision_route_lookup_table
+}
+
 fn uses_chain_preview_positions(options: &CliOptions, has_chain_preview: bool) -> bool {
     has_chain_preview
         && options.reconcile_from_chain
@@ -8460,6 +8466,12 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
                     .to_owned(),
             );
         }
+        if seed_from_user_position {
+            return Err(
+                "--provision-route-lookup-table cannot be combined with --seed-from-user-position"
+                    .to_owned(),
+            );
+        }
         if provision_lookup_table {
             return Err(
                 "choose either --provision-lookup-table or --provision-route-lookup-table"
@@ -9502,20 +9514,51 @@ mod tests {
     }
 
     #[test]
+    fn rejects_route_lookup_table_provisioning_with_user_position_seed() {
+        let source_reserve = Pubkey::new_unique();
+        let target_reserve = Pubkey::new_unique();
+
+        let error = parse_args(vec![
+            "--settings".to_owned(),
+            Pubkey::new_unique().to_string(),
+            "--vault-index".to_owned(),
+            "1".to_owned(),
+            "--provision-route-lookup-table".to_owned(),
+            "--reconcile-from-chain".to_owned(),
+            "--seed-from-user-position".to_owned(),
+            "--source-reserve".to_owned(),
+            source_reserve.to_string(),
+            "--target-reserve".to_owned(),
+            target_reserve.to_string(),
+        ])
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "--provision-route-lookup-table cannot be combined with --seed-from-user-position"
+        );
+    }
+
+    #[test]
     fn route_lookup_table_provisioning_execute_does_not_write_current_positions() {
         let mut options = test_cli_options(true, true, Some(1));
         options.optimization_cycle = false;
         options.provision_route_lookup_table = true;
+        options.seed_from_user_position = true;
 
         assert!(!writes_current_positions_from_chain(&options));
+        assert!(!writes_current_positions_from_user_seed(&options));
         assert!(uses_chain_preview_positions(&options, true));
     }
 
     #[test]
     fn live_route_execution_still_writes_current_positions_from_chain() {
         let options = test_cli_options(true, true, Some(1));
+        let mut seed_options = test_cli_options(true, false, Some(1));
+        seed_options.seed_from_user_position = true;
 
         assert!(writes_current_positions_from_chain(&options));
+        assert!(writes_current_positions_from_user_seed(&seed_options));
         assert!(!uses_chain_preview_positions(&options, true));
     }
 
@@ -9730,7 +9773,7 @@ mod tests {
 fn print_help() {
     println!(
          "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--provision-lookup-table] [--provision-route-lookup-table] [--deposit-main-usdc <AMOUNT_RAW> | --deposit-reserve <RESERVE> <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--lookup-table <PUBKEY>...] [--execute]\n\n\
-         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and YIELD_ROUTER_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for live same-mint route execution; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses YIELD_ROUTER_KEYPAIR as fee payer and delegated signer, reuses durable lookup-table coverage, and fails before route send if coverage is missing. Add --provision-lookup-table only with --update-policy for durable policy lookup-table setup. Add --provision-route-lookup-table with explicit source/target reserves plus --reconcile-from-chain for route lookup-table setup; it cannot be combined with --optimization-cycle. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and YIELD_ROUTER_KEYPAIR for the policy deposit; --deposit-reserve allows choosing a non-Main Safe USDC reserve when Main is already the APY winner. Full withdraw mode uses YIELD_ROUTER_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
+         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and YIELD_ROUTER_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for live same-mint route execution; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses YIELD_ROUTER_KEYPAIR as fee payer and delegated signer, reuses durable lookup-table coverage, and fails before route send if coverage is missing. Add --provision-lookup-table only with --update-policy for durable policy lookup-table setup. Add --provision-route-lookup-table with explicit source/target reserves plus --reconcile-from-chain for route lookup-table setup; it cannot be combined with --optimization-cycle or --seed-from-user-position. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and YIELD_ROUTER_KEYPAIR for the policy deposit; --deposit-reserve allows choosing a non-Main Safe USDC reserve when Main is already the APY winner. Full withdraw mode uses YIELD_ROUTER_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
          op run --env-file=.env.1password -- bun run same-mint:swap -- --settings <PUBKEY> --vault-index 1 --reconcile-from-chain --seed-from-user-position"
     );
 }
