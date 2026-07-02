@@ -42,6 +42,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "balance_sweep_scheduled_slots",
         sql: include_str!("../../migrations/0007_balance_sweep_scheduled_slots.sql"),
     },
+    Migration {
+        version: 8,
+        name: "route_lookup_tables",
+        sql: include_str!("../../migrations/0008_route_lookup_tables.sql"),
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -193,6 +198,7 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "balance_sweep_executions",
         "balance_sweep_scheduled_slots",
         "pending_balance_sweep_surplus_lots",
+        "route_lookup_tables",
     ] {
         let exists: bool = sqlx::query_scalar(
             r#"

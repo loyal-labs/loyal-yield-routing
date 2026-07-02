@@ -12,7 +12,7 @@ pub use signer::{
     yield_router_keypair_from_env, PolicySignerError, SOLANA_TESTING_PK_ENV,
     YIELD_ROUTER_KEYPAIR_ENV,
 };
-pub use store::{NeonSqlClient, OrchestratorStore};
+pub use store::{NeonSqlClient, OrchestratorStore, RouteLookupTableProvisioningLock};
 pub use types::*;
 
 pub use sqlx;

@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{PgConnection, PgPool, Row};
+use sqlx::{PgConnection, PgPool, Postgres, Row, Transaction};
 use std::future::Future;
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_loyal_yield_orchestration.sql");
@@ -20,6 +20,7 @@ const MIGRATION_0005: &str =
 const MIGRATION_0006: &str =
     include_str!("../migrations/0006_generic_balance_sweep_token_accounts.sql");
 const MIGRATION_0007: &str = include_str!("../migrations/0007_balance_sweep_scheduled_slots.sql");
+const MIGRATION_0008: &str = include_str!("../migrations/0008_route_lookup_tables.sql");
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
 
 #[derive(Clone)]
@@ -28,6 +29,24 @@ pub struct NeonSqlClient {
 }
 
 pub type OrchestratorStore = NeonSqlClient;
+
+pub struct RouteLookupTableProvisioningLock {
+    tx: Option<Transaction<'static, Postgres>>,
+    key: String,
+}
+
+impl RouteLookupTableProvisioningLock {
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub async fn release(mut self) -> Result<(), OrchestratorError> {
+        if let Some(tx) = self.tx.take() {
+            tx.commit().await?;
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, sqlx::FromRow)]
 struct RoutePolicyRow {
@@ -141,6 +160,21 @@ impl NeonSqlClient {
         &self.pool
     }
 
+    pub async fn acquire_route_lookup_table_provisioning_lock(
+        &self,
+        cluster: &str,
+        scope: &str,
+        authority: &str,
+    ) -> Result<RouteLookupTableProvisioningLock, OrchestratorError> {
+        let key = route_lookup_table_lock_key(cluster, scope, authority);
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0::bigint))")
+            .bind(&key)
+            .execute(&mut *tx)
+            .await?;
+        Ok(RouteLookupTableProvisioningLock { tx: Some(tx), key })
+    }
+
     pub async fn apply_migrations(&self) -> Result<(), OrchestratorError> {
         ensure_schema_migration_ledger(&self.pool).await?;
 
@@ -180,10 +214,182 @@ impl NeonSqlClient {
                 name: "balance_sweep_scheduled_slots",
                 sql: MIGRATION_0007,
             },
+            StoreMigration {
+                version: 8,
+                name: "route_lookup_tables",
+                sql: MIGRATION_0008,
+            },
         ] {
             apply_store_migration(&self.pool, migration).await?;
         }
         Ok(())
+    }
+
+    pub async fn durable_route_lookup_tables(
+        &self,
+        cluster: &str,
+        scope: &str,
+        authority: &str,
+    ) -> Result<Vec<RouteLookupTable>, OrchestratorError> {
+        if !route_lookup_tables_relation_exists(&self.pool).await? {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"
+            SELECT id, cluster, scope, table_address, authority, payer, status, durable,
+                   address_count, address_hash, addresses, create_signature, extend_signatures,
+                   last_extended_slot, warmup_slot, deactivated_slot, deactivate_signature,
+                   closed_signature, close_recipient, reclaimed_lamports, notes,
+                   created_at, updated_at
+            FROM loyal_yield.route_lookup_tables
+            WHERE cluster = $1
+              AND scope = $2
+              AND authority = $3
+              AND durable = TRUE
+              AND status IN ('active', 'warming', 'usable')
+            ORDER BY updated_at DESC, id DESC
+            "#,
+        )
+        .bind(cluster)
+        .bind(scope)
+        .bind(authority)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(route_lookup_table_from_row).collect())
+    }
+
+    pub async fn protected_route_lookup_table_addresses(
+        &self,
+    ) -> Result<Vec<String>, OrchestratorError> {
+        if !route_lookup_tables_relation_exists(&self.pool).await? {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT table_address
+            FROM loyal_yield.route_lookup_tables
+            WHERE durable = TRUE
+              AND status NOT IN ('closed')
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn upsert_route_lookup_table(
+        &self,
+        input: RouteLookupTableUpsert,
+    ) -> Result<RouteLookupTable, OrchestratorError> {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.route_lookup_tables
+                (cluster, scope, table_address, authority, payer, status, durable,
+                 address_count, address_hash, addresses, create_signature,
+                 extend_signatures, last_extended_slot, warmup_slot, notes)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            ON CONFLICT (table_address) DO UPDATE SET
+                cluster = EXCLUDED.cluster,
+                scope = EXCLUDED.scope,
+                authority = EXCLUDED.authority,
+                payer = EXCLUDED.payer,
+                status = EXCLUDED.status,
+                durable = EXCLUDED.durable,
+                address_count = EXCLUDED.address_count,
+                address_hash = EXCLUDED.address_hash,
+                addresses = EXCLUDED.addresses,
+                create_signature = COALESCE(loyal_yield.route_lookup_tables.create_signature, EXCLUDED.create_signature),
+                extend_signatures = COALESCE(loyal_yield.route_lookup_tables.extend_signatures, '[]'::jsonb) || EXCLUDED.extend_signatures,
+                last_extended_slot = EXCLUDED.last_extended_slot,
+                warmup_slot = EXCLUDED.warmup_slot,
+                notes = EXCLUDED.notes,
+                updated_at = now()
+            RETURNING id, cluster, scope, table_address, authority, payer, status, durable,
+                      address_count, address_hash, addresses, create_signature,
+                      extend_signatures, last_extended_slot, warmup_slot,
+                      deactivated_slot, deactivate_signature, closed_signature,
+                      close_recipient, reclaimed_lamports, notes, created_at, updated_at
+            "#
+        )
+        .bind(input.cluster)
+        .bind(input.scope)
+        .bind(input.table_address)
+        .bind(input.authority)
+        .bind(input.payer)
+        .bind(input.status)
+        .bind(input.durable)
+        .bind(input.address_count)
+        .bind(input.address_hash)
+        .bind(input.addresses)
+        .bind(input.create_signature)
+        .bind(input.extend_signatures)
+        .bind(input.last_extended_slot)
+        .bind(input.warmup_slot)
+        .bind(input.notes)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(route_lookup_table_from_row(row))
+    }
+
+    pub async fn mark_route_lookup_table_deactivated(
+        &self,
+        table_address: &str,
+        deactivated_slot: i64,
+        signature: &str,
+    ) -> Result<RouteLookupTable, OrchestratorError> {
+        let row = sqlx::query(
+            r#"
+            UPDATE loyal_yield.route_lookup_tables
+            SET status = 'deactivated',
+                deactivated_slot = $2,
+                deactivate_signature = $3,
+                updated_at = now()
+            WHERE table_address = $1
+            RETURNING id, cluster, scope, table_address, authority, payer, status, durable,
+                      address_count, address_hash, addresses, create_signature,
+                      extend_signatures, last_extended_slot, warmup_slot,
+                      deactivated_slot, deactivate_signature, closed_signature,
+                      close_recipient, reclaimed_lamports, notes, created_at, updated_at
+            "#,
+        )
+        .bind(table_address)
+        .bind(deactivated_slot)
+        .bind(signature)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(route_lookup_table_from_row(row))
+    }
+
+    pub async fn mark_route_lookup_table_closed(
+        &self,
+        table_address: &str,
+        signature: &str,
+        recipient: &str,
+        reclaimed_lamports: i64,
+    ) -> Result<RouteLookupTable, OrchestratorError> {
+        let row = sqlx::query(
+            r#"
+            UPDATE loyal_yield.route_lookup_tables
+            SET status = 'closed',
+                closed_signature = $2,
+                close_recipient = $3,
+                reclaimed_lamports = $4,
+                updated_at = now()
+            WHERE table_address = $1
+            RETURNING id, cluster, scope, table_address, authority, payer, status, durable,
+                      address_count, address_hash, addresses, create_signature,
+                      extend_signatures, last_extended_slot, warmup_slot,
+                      deactivated_slot, deactivate_signature, closed_signature,
+                      close_recipient, reclaimed_lamports, notes, created_at, updated_at
+            "#,
+        )
+        .bind(table_address)
+        .bind(signature)
+        .bind(recipient)
+        .bind(reclaimed_lamports)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(route_lookup_table_from_row(row))
     }
 
     pub async fn record_policy_match(
@@ -2714,6 +2920,46 @@ fn current_position_from_row(
         observed_at: row.observed_at,
         planning_metadata: row.planning_metadata,
     })
+}
+
+async fn route_lookup_tables_relation_exists(pool: &PgPool) -> Result<bool, sqlx::Error> {
+    let exists: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('loyal_yield.route_lookup_tables')::text")
+            .fetch_one(pool)
+            .await?;
+    Ok(exists.is_some())
+}
+
+fn route_lookup_table_from_row(row: sqlx::postgres::PgRow) -> RouteLookupTable {
+    RouteLookupTable {
+        id: row.get("id"),
+        cluster: row.get("cluster"),
+        scope: row.get("scope"),
+        table_address: row.get("table_address"),
+        authority: row.get("authority"),
+        payer: row.get("payer"),
+        status: row.get("status"),
+        durable: row.get("durable"),
+        address_count: row.get("address_count"),
+        address_hash: row.get("address_hash"),
+        addresses: row.get("addresses"),
+        create_signature: row.get("create_signature"),
+        extend_signatures: row.get("extend_signatures"),
+        last_extended_slot: row.get("last_extended_slot"),
+        warmup_slot: row.get("warmup_slot"),
+        deactivated_slot: row.get("deactivated_slot"),
+        deactivate_signature: row.get("deactivate_signature"),
+        closed_signature: row.get("closed_signature"),
+        close_recipient: row.get("close_recipient"),
+        reclaimed_lamports: row.get("reclaimed_lamports"),
+        notes: row.get("notes"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn route_lookup_table_lock_key(cluster: &str, scope: &str, authority: &str) -> String {
+    format!("route_lookup_table:{cluster}:{scope}:{authority}")
 }
 
 fn ensure_terminal_repeat_matches(
