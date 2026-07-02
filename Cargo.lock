@@ -3138,6 +3138,7 @@ dependencies = [
 name = "loyal-yield-orchestrator"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bincode",
  "bs58",
  "chrono",
@@ -3146,6 +3147,7 @@ dependencies = [
  "loyal-yield-router",
  "num-bigint 0.4.6",
  "num-traits",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.10.9",
