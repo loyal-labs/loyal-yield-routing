@@ -979,7 +979,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         None
     };
     let mut reconciled_snapshot_id = None;
-    if options.execute && options.reconcile_from_chain {
+    let should_write_current_positions_from_chain = writes_current_positions_from_chain(&options);
+    if should_write_current_positions_from_chain {
         let preview = chain_preview
             .as_ref()
             .ok_or("--execute requires --reconcile-from-chain")?;
@@ -1004,10 +1005,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let using_chain_preview_positions =
-        !options.execute && options.reconcile_from_chain && chain_preview.is_some();
+        uses_chain_preview_positions(&options, chain_preview.is_some());
     let using_seed_preview_positions =
         !options.execute && user_position_seed.is_some() && !using_chain_preview_positions;
-    let current_positions_source = if options.execute && options.reconcile_from_chain {
+    let current_positions_source = if should_write_current_positions_from_chain {
         "vault_reserve_positions_current_after_chain_reconcile"
     } else if options.execute && options.seed_from_user_position {
         "vault_reserve_positions_current_after_user_position_seed"
@@ -1104,6 +1105,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     let mut route_lookup_table_provisioning: Option<Value> = None;
     if let Some(route_execution) = &route_execution {
+        let mut transaction_instructions = route_execution.pre_instructions.clone();
+        transaction_instructions.extend(route_execution.instructions.iter().cloned());
+        if let Err(error) = guard_lookup_table_mutations(
+            &transaction_instructions,
+            AltInstructionMode::RejectProvisioning,
+            "route execution",
+        ) {
+            execution_preflight_blockers.push(error.to_string());
+        }
         let fee_payer = Pubkey::from_str(&route_execution.preview.fee_payer)?;
         let delegated_signer = Pubkey::from_str(&route_execution.preview.signer)?;
         let lookup_table_scope = same_mint_route_lookup_table_scope(&vault, &reserve_move);
@@ -6278,6 +6288,16 @@ fn execution_preflight_blockers(
     blockers
 }
 
+fn writes_current_positions_from_chain(options: &CliOptions) -> bool {
+    options.execute && options.reconcile_from_chain && !options.provision_route_lookup_table
+}
+
+fn uses_chain_preview_positions(options: &CliOptions, has_chain_preview: bool) -> bool {
+    has_chain_preview
+        && options.reconcile_from_chain
+        && (!options.execute || options.provision_route_lookup_table)
+}
+
 fn same_mint_route_fee_payer_pubkey(options: &CliOptions) -> Result<Pubkey, Box<dyn Error>> {
     if options.optimization_cycle || options.provision_route_lookup_table {
         Ok(yield_router_keypair_from_env()?.pubkey())
@@ -6897,6 +6917,11 @@ async fn execute_prepared_same_mint_route(
     let lookup_table_accounts = lookup_table_coverage.lookup_table_accounts;
     let mut transaction_instructions = route_execution.pre_instructions.clone();
     transaction_instructions.extend(route_execution.instructions.iter().cloned());
+    guard_lookup_table_mutations(
+        &transaction_instructions,
+        AltInstructionMode::RejectProvisioning,
+        "route execution",
+    )?;
     let transaction_signers = same_mint_route_signers(fee_payer, &signer);
 
     let blockhash = rpc.get_latest_blockhash()?;
@@ -9474,6 +9499,24 @@ mod tests {
         assert!(!options.optimization_cycle);
         assert_eq!(options.source_reserve, Some(source_reserve.to_string()));
         assert_eq!(options.target_reserve, Some(target_reserve.to_string()));
+    }
+
+    #[test]
+    fn route_lookup_table_provisioning_execute_does_not_write_current_positions() {
+        let mut options = test_cli_options(true, true, Some(1));
+        options.optimization_cycle = false;
+        options.provision_route_lookup_table = true;
+
+        assert!(!writes_current_positions_from_chain(&options));
+        assert!(uses_chain_preview_positions(&options, true));
+    }
+
+    #[test]
+    fn live_route_execution_still_writes_current_positions_from_chain() {
+        let options = test_cli_options(true, true, Some(1));
+
+        assert!(writes_current_positions_from_chain(&options));
+        assert!(!uses_chain_preview_positions(&options, true));
     }
 
     #[test]
