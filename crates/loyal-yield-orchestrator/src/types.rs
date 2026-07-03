@@ -32,6 +32,52 @@ impl NeonSqlConfig {
 
 pub type OrchestratorConfig = NeonSqlConfig;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RouteLookupTable {
+    pub id: i64,
+    pub cluster: String,
+    pub scope: String,
+    pub table_address: String,
+    pub authority: String,
+    pub payer: String,
+    pub status: String,
+    pub durable: bool,
+    pub address_count: i32,
+    pub address_hash: String,
+    pub addresses: Value,
+    pub create_signature: Option<String>,
+    pub extend_signatures: Value,
+    pub last_extended_slot: Option<i64>,
+    pub warmup_slot: Option<i64>,
+    pub deactivated_slot: Option<i64>,
+    pub deactivate_signature: Option<String>,
+    pub closed_signature: Option<String>,
+    pub close_recipient: Option<String>,
+    pub reclaimed_lamports: Option<i64>,
+    pub notes: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RouteLookupTableUpsert {
+    pub cluster: String,
+    pub scope: String,
+    pub table_address: String,
+    pub authority: String,
+    pub payer: String,
+    pub status: String,
+    pub durable: bool,
+    pub address_count: i32,
+    pub address_hash: String,
+    pub addresses: Value,
+    pub create_signature: Option<String>,
+    pub extend_signatures: Value,
+    pub last_extended_slot: Option<i64>,
+    pub warmup_slot: Option<i64>,
+    pub notes: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub struct VaultId(pub i64);
 

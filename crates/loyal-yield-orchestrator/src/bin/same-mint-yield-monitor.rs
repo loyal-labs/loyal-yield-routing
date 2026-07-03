@@ -417,7 +417,6 @@ fn execute_planned_move(
         .arg(planned_move.edge_bps.to_string())
         .arg("--optimization-cycle")
         .arg("--reconcile-from-chain")
-        .arg("--provision-lookup-table")
         .arg("--execute")
         .output()?;
     let stdout_text = String::from_utf8_lossy(&output.stdout).trim().to_owned();

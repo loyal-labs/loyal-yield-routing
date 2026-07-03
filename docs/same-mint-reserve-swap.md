@@ -21,6 +21,7 @@ The examples below use these shell aliases:
 SWAP='op run --env-file=.env.1password -- bun run same-mint:swap --'
 MONITOR='op run --env-file=.env.1password -- bun run same-mint:monitor --'
 MONITOR_E2E='op run --env-file=.env.1password -- bun run same-mint:monitor-e2e --'
+CLEANUP='op run --env-file=.env.1password -- bun run same-mint:alt-cleanup --'
 ```
 
 Run the full lifecycle dry-run through 1Password:
@@ -32,7 +33,7 @@ $SWAP \
   --e2e-main-prime-main <AMOUNT_RAW>
 ```
 
-`--e2e-main-prime-main` is the verifier-facing command. It defaults to dry-run and expands into five child invocations of this same binary: policy create/update with lookup-table provisioning, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main USDC withdrawal. Add `--execute` only after explicit approval; then each child phase keeps its own simulation-before-send guard and exits on the first failed phase.
+`--e2e-main-prime-main` is the verifier-facing command. It defaults to dry-run and expands into five child invocations of this same binary: policy create/update with durable policy lookup-table provisioning, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main USDC withdrawal. Add `--execute` only after explicit approval; then each child phase keeps its own simulation-before-send guard and exits on the first failed phase.
 
 Run only the route dry-run through 1Password:
 
@@ -99,9 +100,35 @@ $SWAP \
 
 That active-policy path is useful for narrowing an already live policy without creating another policy account.
 
-Policy update and route execution compile v0 transactions, matching the sibling Earn verifier's `compilePreparedOperation(...)` pattern. Pass one or more lookup tables with `--lookup-table <PUBKEY>` or set `YIELD_ROUTE_LOOKUP_TABLES` to a comma/whitespace separated list. The dry-run reports `transaction.packetSizeBytes`, `transaction.packetDataSizeBytes`, lookup-table counts, static key counts, and `instructionDataBytes` before simulation. If the serialized packet is already over Solana's 1232-byte limit, simulation is skipped and the JSON reports the packet blocker.
+Policy update and route execution compile v0 transactions, matching the sibling Earn verifier's `compilePreparedOperation(...)` pattern. Pass one or more lookup tables with `--lookup-table <PUBKEY>` or set `YIELD_ROUTE_LOOKUP_TABLES` to a comma/whitespace separated list. Route execution also loads durable lookup tables from the Neon `loyal_yield.route_lookup_tables` registry for the cluster/scope/authority. The dry-run reports `transaction.packetSizeBytes`, `transaction.packetDataSizeBytes`, lookup-table counts, static key counts, and `instructionDataBytes` before simulation. If the serialized packet is already over Solana's 1232-byte limit, simulation is skipped and the JSON reports the packet blocker.
 
-`--provision-lookup-table` is supported in policy update mode, same-mint route execution, and the top-level lifecycle command. In dry-run it reports `lookupTableProvisioning.requiredAddresses`, the missing addresses from any supplied lookup tables, and the lookup table address it would derive from the current slot. With `--execute`, policy/admin modes create a fresh lookup table using `SOLANA_TESTING_PK`. In `--optimization-cycle` route execution, the lookup table authority and payer are `YIELD_ROUTER_KEYPAIR`. The script extends the table with missing transaction account keys, waits until the table is warm for lookup use, reloads the table, and then builds the policy or route transaction with that table.
+`--provision-lookup-table` is policy-update/admin-only and must be combined with `--update-policy`. In dry-run it reports `lookupTableProvisioning.requiredAddresses` and the missing addresses from supplied or registry lookup tables. With `--execute`, it creates or extends a durable table only when needed, waits until the table is warm for lookup use, reloads it, and records the table plus create/extend signatures in the registry. It cannot be combined with `--optimization-cycle`.
+
+Route ALT setup is a separate explicit provisioning mode:
+
+```sh
+$SWAP \
+  --settings <SQUADS_SETTINGS> \
+  --vault-index <VAULT_INDEX> \
+  --source-reserve <SOURCE_RESERVE> \
+  --target-reserve <TARGET_RESERVE> \
+  --provision-route-lookup-table \
+  --reconcile-from-chain
+```
+
+Add `--execute` only after approval. This mode uses `YIELD_ROUTER_KEYPAIR` as the lookup-table authority and payer, reuses an authority-matching durable table when capacity allows, extends only missing addresses, records the durable registry row, and exits without writing a rebalance decision or sending the route transaction. It cannot be combined with `--optimization-cycle` or `--seed-from-user-position`. Normal route execution is reuse-only: if durable lookup-table coverage is incomplete, it fails closed before route simulation or send.
+
+ALT cleanup dry-run:
+
+```sh
+$CLEANUP \
+  --include-env-authorities \
+  --authority 62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5 \
+  --scan-program-accounts \
+  --scan-history
+```
+
+The cleanup command protects registry tables, `YIELD_ROUTE_LOOKUP_TABLES`, and explicit `--allowlist` tables. `--include-env-authorities` derives audited public keys from present `YIELD_ROUTER_KEYPAIR`, `POLICY_KEYPAIR`, `DEPLOYMENT_PK`, and `SOLANA_TESTING_PK` values without printing secrets. `--scan-program-accounts` discovers currently reclaimable ALT accounts by authority, with paginated `getProgramAccountsV2` fallback on Helius. `--scan-history` adds recent create/extend/deactivate/close evidence from audited signer history; use `--history-limit <N>` to widen the search and `--min-slot <SLOT>` for post-deploy audits. Add `--execute` only after approval; active orphan tables are deactivated first, and closeable deactivated tables are closed after the ALT cooldown.
 
 Initial Main USDC deposit dry-run:
 
@@ -170,13 +197,13 @@ After the same-mint frontend/SDK E2E passed, Render runs the same monitor in
 fleet execution mode:
 
 ```sh
-/usr/local/bin/same-mint-yield-monitor --all-active-vaults --execute --poll-interval-seconds 15 --rebalance-cooldown-seconds 300
+/usr/local/bin/same-mint-yield-monitor --all-active-vaults --execute --poll-interval-seconds 300 --rebalance-cooldown-seconds 300
 ```
 
 Fleet mode uses `YIELD_ROUTER_KEYPAIR` for active-policy discovery and route
-execution; it does not use `SOLANA_TESTING_PK`. A confirmed same-mint rebalance
-for a vault suppresses another same-vault execution for 300 seconds; user
-deposits do not start that cooldown.
+execution; it does not use `SOLANA_TESTING_PK` and it does not provision ALTs.
+A confirmed same-mint rebalance for a vault suppresses another same-vault
+execution for 300 seconds; user deposits do not start that cooldown.
 
 Monitor E2E dry-run:
 
@@ -208,7 +235,7 @@ $SWAP \
 
 Current implementation note: the script reuses `loyal-yield-orchestrator` same-mint input validation and reads current positions from Neon. It can preview the chain state needed for current-position reconciliation and can seed current-position rows from `user_yield_positions` through the existing snapshot store when `--execute --seed-from-user-position` is approved.
 
-`--optimization-cycle --execute` first requires a chain preflight with a non-zero source collateral account. If the destination obligation is missing, the decoded Squads route policy-account state must include a target-market `init_obligation` constraint; the script executes that setup transaction with `YIELD_ROUTER_KEYPAIR`, confirms it, and reloads chain state before route planning continues. The decoded policy must also include `YIELD_ROUTER_KEYPAIR` as a delegated signer, both required markets, and the required live KLend same-mint withdraw/deposit route steps. The route transaction and any route ALT provisioning use `YIELD_ROUTER_KEYPAIR` as the fee payer and only optimization signer. Route execution indexes are selected from the decoded Squads ProgramInteraction policy account when chain preflight is available, instead of trusting stale route metadata.
+`--optimization-cycle --execute` first requires a chain preflight with a non-zero source collateral account. If the destination obligation is missing, the decoded Squads route policy-account state must include a target-market `init_obligation` constraint; the script executes that setup transaction with `YIELD_ROUTER_KEYPAIR`, confirms it, and reloads chain state before route planning continues. The decoded policy must also include `YIELD_ROUTER_KEYPAIR` as a delegated signer, both required markets, and the required live KLend same-mint withdraw/deposit route steps. The route transaction uses `YIELD_ROUTER_KEYPAIR` as the fee payer and only optimization signer, and can only reuse durable lookup-table coverage loaded from the registry, CLI, or environment. Route execution indexes are selected from the decoded Squads ProgramInteraction policy account when chain preflight is available, instead of trusting stale route metadata.
 
 If the execution preflight fails, the script returns before writing a `rebalance_decisions` row. After that preflight passes, it calls `prepare_same_mint_rebalance`, reloads the persisted `loyal_yield.rebalance_decisions` row by decision id, verifies its `same_mint` execution plan fields and idempotency key, simulates the Squads ProgramInteraction route built from that row, submits the transaction, waits for confirmation, and calls `confirm_same_mint_rebalance` to finalize the decision and current-position snapshot. If any adapter step fails after the decision is created, the script marks the decision failed instead of leaving it active.
 
