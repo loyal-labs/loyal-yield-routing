@@ -1,19 +1,25 @@
-use std::{collections::BTreeSet, env, error::Error, str::FromStr};
+use std::{
+    collections::BTreeSet,
+    env,
+    error::Error,
+    str::FromStr,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use loyal_yield_orchestrator::{
     keypair_from_string, NeonSqlClient, NeonSqlConfig, YIELD_ROUTER_KEYPAIR_ENV,
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::address_lookup_table::{
     instruction as address_lookup_table_instruction, program as address_lookup_table_program,
     state::{estimate_last_valid_slot, AddressLookupTable},
 };
 use solana_sdk::{
-    commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signer,
-    transaction::Transaction,
+    account::Account, commitment_config::CommitmentConfig, instruction::Instruction,
+    packet::PACKET_DATA_SIZE, pubkey::Pubkey, signature::Signer, transaction::Transaction,
 };
 
 const DEFAULT_SOLANA_RPC_URL: &str = "https://api.mainnet-beta.solana.com";
@@ -40,6 +46,9 @@ struct Options {
     history_limit: usize,
     min_slot: Option<u64>,
     authority_key_env: Option<String>,
+    simulate_before_submit: bool,
+    bundle_size: usize,
+    trace_timing: bool,
 }
 
 #[derive(Debug)]
@@ -63,6 +72,29 @@ struct HistoryEvent {
     authority: Option<Pubkey>,
     payer_or_recipient: Option<Pubkey>,
     new_address_count: Option<usize>,
+}
+
+#[derive(Debug)]
+struct PlannedCleanup {
+    row_index: usize,
+    table_address: Pubkey,
+    kind: &'static str,
+    instruction: Instruction,
+    recipient: Option<Pubkey>,
+    reclaimed_lamports: u64,
+}
+
+#[derive(Debug)]
+struct CleanupTransactionResult {
+    signature: String,
+    simulation: Option<Value>,
+    transaction_packet: CleanupTransactionPacket,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CleanupTransactionPacket {
+    packet_size_bytes: usize,
+    packet_data_size_bytes: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,43 +139,170 @@ struct ProgramAccountsV2Error {
     message: String,
 }
 
+#[derive(Debug)]
+struct TraceLog {
+    enabled: bool,
+    started_at: Instant,
+}
+
+impl TraceLog {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            started_at: Instant::now(),
+        }
+    }
+
+    fn event(&self, event: &str, fields: Value) {
+        if !self.enabled {
+            return;
+        }
+        let mut payload = match fields {
+            Value::Object(map) => map,
+            _ => Map::new(),
+        };
+        payload.insert("event".to_owned(), json!(event));
+        payload.insert("timestampMs".to_owned(), json!(unix_timestamp_ms()));
+        payload.insert(
+            "elapsedMs".to_owned(),
+            json!(duration_ms(self.started_at.elapsed())),
+        );
+        eprintln!("{}", Value::Object(payload));
+    }
+
+    fn finish(&self, event: &str, started_at: Instant, fields: Value) {
+        if !self.enabled {
+            return;
+        }
+        let mut payload = match fields {
+            Value::Object(map) => map,
+            _ => Map::new(),
+        };
+        payload.insert(
+            "durationMs".to_owned(),
+            json!(duration_ms(started_at.elapsed())),
+        );
+        self.event(event, Value::Object(payload));
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_args(env::args().skip(1))?;
+    let trace = TraceLog::new(options.trace_timing);
+    trace.event(
+        "cleanup.start",
+        json!({
+            "execute": options.execute,
+            "scanProgramAccounts": options.scan_program_accounts,
+            "scanHistory": options.scan_history,
+            "limit": options.limit,
+            "historyLimit": options.history_limit,
+            "bundleSize": options.bundle_size,
+        }),
+    );
     let rpc =
         RpcClient::new_with_commitment(options.rpc_url.clone(), CommitmentConfig::confirmed());
+    let phase_started = Instant::now();
     let protected = protected_tables().await?;
+    trace.finish(
+        "cleanup.protected_tables",
+        phase_started,
+        json!({ "count": protected.len() }),
+    );
+    let phase_started = Instant::now();
     let env_tables = route_lookup_tables_from_env()?;
     let manual_allowlist = options.allowlist.iter().copied().collect::<BTreeSet<_>>();
     let mut protected_all = protected;
     protected_all.extend(env_tables.iter().copied());
     protected_all.extend(manual_allowlist.iter().copied());
+    trace.finish(
+        "cleanup.allowlist",
+        phase_started,
+        json!({
+            "envTableCount": env_tables.len(),
+            "manualAllowlistCount": manual_allowlist.len(),
+            "protectedTableCount": protected_all.len(),
+        }),
+    );
 
     let mut table_addresses = options.tables.clone();
-    let history_events = if options.scan_history {
-        discover_tables_by_history(&options.rpc_url, &options.authorities, &options).await?
+    normalize_table_addresses(&mut table_addresses, options.limit);
+    let history_events = if options.scan_history
+        && remaining_table_limit(options.limit, table_addresses.len()) != Some(0)
+    {
+        let phase_started = Instant::now();
+        let table_limit = remaining_table_limit(options.limit, table_addresses.len());
+        let events = discover_tables_by_history(
+            &options.rpc_url,
+            &options.authorities,
+            &options,
+            table_limit,
+            &trace,
+        )
+        .await?;
+        trace.finish(
+            "cleanup.scan_history",
+            phase_started,
+            json!({
+                "eventCount": events.len(),
+                "tableLimit": table_limit,
+            }),
+        );
+        add_table_addresses(
+            &mut table_addresses,
+            events.iter().map(|event| event.table_address),
+            options.limit,
+        );
+        events
     } else {
+        if options.scan_history {
+            trace.event(
+                "cleanup.scan_history.skip",
+                json!({ "reason": "candidate_limit_already_reached" }),
+            );
+        }
         Vec::new()
     };
-    table_addresses.extend(history_events.iter().map(|event| event.table_address));
     if options.scan_program_accounts {
-        table_addresses.extend(
-            discover_tables_by_program_scan(
-                &rpc,
-                &options.rpc_url,
-                &options.authorities,
-                options.limit,
-            )
-            .await?,
-        );
+        match remaining_table_limit(options.limit, table_addresses.len()) {
+            Some(0) => trace.event(
+                "cleanup.scan_program_accounts.skip",
+                json!({ "reason": "candidate_limit_already_reached" }),
+            ),
+            remaining => {
+                let phase_started = Instant::now();
+                let discovered = discover_tables_by_program_scan(
+                    &rpc,
+                    &options.rpc_url,
+                    &options.authorities,
+                    remaining.unwrap_or(options.limit),
+                )
+                .await?;
+                trace.finish(
+                    "cleanup.scan_program_accounts",
+                    phase_started,
+                    json!({
+                        "discoveredCount": discovered.len(),
+                        "remainingLimit": remaining,
+                    }),
+                );
+                add_table_addresses(&mut table_addresses, discovered, options.limit);
+            }
+        }
     }
-    table_addresses.sort();
-    table_addresses.dedup();
-    if options.limit > 0 && table_addresses.len() > options.limit {
-        table_addresses.truncate(options.limit);
-    }
+    trace.event(
+        "cleanup.discovery.complete",
+        json!({ "candidateAddressCount": table_addresses.len() }),
+    );
 
+    let phase_started = Instant::now();
     let current_slot = rpc.get_slot()?;
+    trace.finish(
+        "cleanup.current_slot",
+        phase_started,
+        json!({ "currentSlot": current_slot }),
+    );
     let signer = if options.execute {
         Some(load_authority_signer(&options)?)
     } else {
@@ -153,11 +312,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .recipient
         .or_else(|| signer.as_ref().map(|signer| signer.pubkey()));
     let mut rows = Vec::new();
+    let mut planned_cleanups = Vec::new();
     let mut total_reclaimable = 0_u64;
     let mut total_reclaimed = 0_u64;
 
-    for table_address in table_addresses {
-        let candidate = match load_candidate(&rpc, table_address) {
+    let phase_started = Instant::now();
+    let loaded_candidates = load_candidates(&rpc, &table_addresses, &trace)?;
+    trace.finish(
+        "cleanup.candidate_accounts",
+        phase_started,
+        json!({ "accountCount": loaded_candidates.len() }),
+    );
+    let phase_started = Instant::now();
+    for (table_address, loaded_candidate) in loaded_candidates {
+        let candidate = match loaded_candidate {
             Ok(candidate) => candidate,
             Err(error) => {
                 rows.push(json!({
@@ -191,8 +359,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .map(|event| history_event_json(event, &protected_all))
             .collect::<Vec<_>>();
 
-        let mut execution = Value::Null;
+        let execution = Value::Null;
         if options.execute && matches!(action, "deactivate" | "close") {
+            let row_index = rows.len();
             let signer = signer
                 .as_ref()
                 .ok_or("--execute requires an authority signer")?;
@@ -213,12 +382,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     candidate.table_address,
                     signer.pubkey(),
                 );
-                let signature = send_single_instruction(&rpc, signer.as_ref(), instruction)?;
-                execution = json!({
-                    "signature": signature,
-                    "kind": "deactivate_lookup_table",
+                planned_cleanups.push(PlannedCleanup {
+                    row_index,
+                    table_address: candidate.table_address,
+                    kind: "deactivate_lookup_table",
+                    instruction,
+                    recipient: None,
+                    reclaimed_lamports: 0,
                 });
-                record_deactivated(&candidate.table_address, current_slot, &signature).await?;
             } else {
                 let recipient = recipient.ok_or("--recipient is required for close execution")?;
                 let instruction = address_lookup_table_instruction::close_lookup_table(
@@ -226,21 +397,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     signer.pubkey(),
                     recipient,
                 );
-                let signature = send_single_instruction(&rpc, signer.as_ref(), instruction)?;
-                total_reclaimed = total_reclaimed.saturating_add(candidate.lamports);
-                execution = json!({
-                    "signature": signature,
-                    "kind": "close_lookup_table",
-                    "recipient": recipient.to_string(),
-                    "reclaimedLamports": candidate.lamports.to_string(),
+                planned_cleanups.push(PlannedCleanup {
+                    row_index,
+                    table_address: candidate.table_address,
+                    kind: "close_lookup_table",
+                    instruction,
+                    recipient: Some(recipient),
+                    reclaimed_lamports: candidate.lamports,
                 });
-                record_closed(
-                    &candidate.table_address,
-                    &signature,
-                    &recipient,
-                    candidate.lamports,
-                )
-                .await?;
             }
         }
 
@@ -259,12 +423,45 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "execution": execution,
         }));
     }
+    trace.finish(
+        "cleanup.candidates",
+        phase_started,
+        json!({
+            "rowCount": rows.len(),
+            "plannedExecutionCount": planned_cleanups.len(),
+        }),
+    );
 
+    if options.execute && !planned_cleanups.is_empty() {
+        let phase_started = Instant::now();
+        let signer = signer
+            .as_ref()
+            .ok_or("--execute requires an authority signer")?;
+        total_reclaimed = execute_planned_cleanups(
+            &rpc,
+            &options,
+            signer.as_ref(),
+            &planned_cleanups,
+            &mut rows,
+            current_slot,
+        )
+        .await?;
+        trace.finish(
+            "cleanup.execute",
+            phase_started,
+            json!({ "plannedExecutionCount": planned_cleanups.len() }),
+        );
+    }
+
+    let phase_started = Instant::now();
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
             "status": if options.execute { "lookup_table_cleanup_execute" } else { "lookup_table_cleanup_dry_run" },
             "execute": options.execute,
+            "simulateBeforeSubmit": options.simulate_before_submit,
+            "bundleSize": options.bundle_size,
+            "traceTiming": options.trace_timing,
             "rpcUrl": redacted_rpc_url(&options.rpc_url),
             "authorities": options.authorities.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "includeEnvAuthorities": options.include_env_authorities,
@@ -279,11 +476,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "currentSlot": current_slot,
             "totalReclaimableLamports": total_reclaimable.to_string(),
             "totalReclaimedLamports": total_reclaimed.to_string(),
+            "plannedExecutionCount": planned_cleanups.len(),
             "historyEventCount": history_events.len(),
             "historyEvents": history_events.iter().map(|event| history_event_json(event, &protected_all)).collect::<Vec<_>>(),
             "candidates": rows,
         }))?
     );
+    trace.finish("cleanup.output", phase_started, json!({}));
+    trace.event("cleanup.done", json!({}));
     Ok(())
 }
 
@@ -301,6 +501,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
     let mut history_limit = 100_usize;
     let mut min_slot = None;
     let mut authority_key_env = None;
+    let mut simulate_before_submit = false;
+    let mut bundle_size = 1_usize;
+    let mut trace_timing = false;
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -314,6 +517,18 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
             }
             "--execute" => execute = true,
             "--dry-run" => execute = false,
+            "--simulate-before-submit" => simulate_before_submit = true,
+            "--trace-timing" => trace_timing = true,
+            "--bundle-size" => {
+                bundle_size = iter
+                    .next()
+                    .ok_or("--bundle-size requires a value")?
+                    .parse()
+                    .map_err(|_| "--bundle-size must be a usize")?;
+                if bundle_size == 0 {
+                    return Err("--bundle-size must be at least 1".into());
+                }
+            }
             "--scan-program-accounts" => scan_program_accounts = true,
             "--scan-history" => scan_history = true,
             "--include-env-authorities" => include_env_authorities = true,
@@ -341,7 +556,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: route-lookup-table-cleanup [--authority <PUBKEY>...] [--include-env-authorities] [--table <PUBKEY>...] [--allowlist <PUBKEY>...] [--recipient <PUBKEY>] [--authority-key-env <ENV>] [--scan-program-accounts] [--scan-history] [--history-limit <N>] [--min-slot <SLOT>] [--execute]\n\nDry-run is the default. Reads SOLANA_RPC_URL, optional NEON_DATABASE_URL, optional YIELD_ROUTE_LOOKUP_TABLES, and by default YIELD_ROUTER_KEYPAIR for execute. --include-env-authorities derives public keys from present YIELD_ROUTER_KEYPAIR, POLICY_KEYPAIR, DEPLOYMENT_PK, and SOLANA_TESTING_PK values without printing secrets."
+                    "Usage: route-lookup-table-cleanup [--authority <PUBKEY>...] [--include-env-authorities] [--table <PUBKEY>...] [--allowlist <PUBKEY>...] [--recipient <PUBKEY>] [--authority-key-env <ENV>] [--scan-program-accounts] [--scan-history] [--history-limit <N>] [--min-slot <SLOT>] [--simulate-before-submit] [--bundle-size <N>] [--trace-timing] [--execute]\n\nDry-run is the default. Reads SOLANA_RPC_URL, optional NEON_DATABASE_URL, optional YIELD_ROUTE_LOOKUP_TABLES, and by default YIELD_ROUTER_KEYPAIR for execute. --simulate-before-submit simulates each signed cleanup transaction immediately before submit. --bundle-size groups up to N close/deactivate lookup-table instructions that use the same authority signer into one transaction. --trace-timing emits timestamped phase duration logs to stderr. --include-env-authorities derives public keys from present YIELD_ROUTER_KEYPAIR, POLICY_KEYPAIR, DEPLOYMENT_PK, and SOLANA_TESTING_PK values without printing secrets."
                 );
                 std::process::exit(0);
             }
@@ -367,6 +582,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
         history_limit,
         min_slot,
         authority_key_env,
+        simulate_before_submit,
+        bundle_size,
+        trace_timing,
     })
 }
 
@@ -391,6 +609,49 @@ fn env_authority_pubkeys() -> Result<Vec<Pubkey>, Box<dyn Error>> {
 fn parse_pubkey_arg(flag: &str, value: Option<String>) -> Result<Pubkey, Box<dyn Error>> {
     let raw = value.ok_or_else(|| format!("{flag} requires a public key"))?;
     Pubkey::from_str(&raw).map_err(|_| format!("{flag} value {raw:?} is not a public key").into())
+}
+
+fn normalize_table_addresses(table_addresses: &mut Vec<Pubkey>, limit: usize) {
+    let mut seen = BTreeSet::new();
+    table_addresses.retain(|address| seen.insert(*address));
+    if limit > 0 && table_addresses.len() > limit {
+        table_addresses.truncate(limit);
+    }
+}
+
+fn add_table_addresses(
+    table_addresses: &mut Vec<Pubkey>,
+    addresses: impl IntoIterator<Item = Pubkey>,
+    limit: usize,
+) {
+    let mut seen = table_addresses.iter().copied().collect::<BTreeSet<_>>();
+    for address in addresses {
+        if seen.insert(address) {
+            table_addresses.push(address);
+            if limit > 0 && table_addresses.len() >= limit {
+                break;
+            }
+        }
+    }
+}
+
+fn remaining_table_limit(limit: usize, current_count: usize) -> Option<usize> {
+    if limit == 0 {
+        None
+    } else {
+        Some(limit.saturating_sub(current_count))
+    }
+}
+
+fn duration_ms(duration: Duration) -> u128 {
+    duration.as_millis()
+}
+
+fn unix_timestamp_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(duration_ms)
+        .unwrap_or_default()
 }
 
 async fn protected_tables() -> Result<BTreeSet<Pubkey>, Box<dyn Error>> {
@@ -554,10 +815,17 @@ async fn discover_tables_by_history(
     rpc_url: &str,
     authorities: &[Pubkey],
     options: &Options,
+    table_limit: Option<usize>,
+    trace: &TraceLog,
 ) -> Result<Vec<HistoryEvent>, Box<dyn Error>> {
     let http = reqwest::Client::new();
     let mut events = Vec::new();
+    let mut seen_tables = BTreeSet::new();
+    if table_limit == Some(0) || options.history_limit == 0 {
+        return Ok(events);
+    }
     for authority in authorities {
+        let phase_started = Instant::now();
         let signatures = rpc_call(
             &http,
             rpc_url,
@@ -573,7 +841,23 @@ async fn discover_tables_by_history(
         let Some(signatures) = signatures.as_array() else {
             continue;
         };
+        trace.finish(
+            "cleanup.scan_history.signatures",
+            phase_started,
+            json!({
+                "authority": authority.to_string(),
+                "signatureCount": signatures.len(),
+                "requestedLimit": options.history_limit,
+            }),
+        );
         for entry in signatures {
+            if table_limit.is_some_and(|limit| seen_tables.len() >= limit) {
+                trace.event(
+                    "cleanup.scan_history.limit_reached",
+                    json!({ "uniqueTableCount": seen_tables.len() }),
+                );
+                break;
+            }
             let Some(signature) = entry.get("signature").and_then(Value::as_str) else {
                 continue;
             };
@@ -584,6 +868,7 @@ async fn discover_tables_by_history(
                 continue;
             }
             let block_time = entry.get("blockTime").and_then(Value::as_i64);
+            let phase_started = Instant::now();
             let transaction = rpc_call(
                 &http,
                 rpc_url,
@@ -597,13 +882,27 @@ async fn discover_tables_by_history(
                 ]),
             )
             .await?;
-            events.extend(lookup_table_events_from_transaction(
+            let parsed_events = lookup_table_events_from_transaction(
                 signature,
                 slot,
                 block_time,
                 &transaction,
                 authorities,
-            )?);
+            )?;
+            for event in parsed_events {
+                seen_tables.insert(event.table_address);
+                events.push(event);
+            }
+            trace.finish(
+                "cleanup.scan_history.transaction",
+                phase_started,
+                json!({
+                    "signature": signature,
+                    "slot": slot,
+                    "eventCount": events.len(),
+                    "uniqueTableCount": seen_tables.len(),
+                }),
+            );
         }
     }
     events.sort_by(|left, right| {
@@ -815,8 +1114,50 @@ fn history_event_classification(
     }
 }
 
+fn load_candidates(
+    rpc: &RpcClient,
+    table_addresses: &[Pubkey],
+    trace: &TraceLog,
+) -> Result<Vec<(Pubkey, Result<Candidate, String>)>, Box<dyn Error>> {
+    let mut out = Vec::new();
+    for chunk in table_addresses.chunks(100) {
+        match rpc.get_multiple_accounts(chunk) {
+            Ok(accounts) => {
+                for (table_address, account) in chunk.iter().copied().zip(accounts) {
+                    let candidate = match account {
+                        Some(account) => candidate_from_account(table_address, &account),
+                        None => Err(format!("AccountNotFound: pubkey={table_address}")),
+                    };
+                    out.push((table_address, candidate));
+                }
+            }
+            Err(error) => {
+                trace.event(
+                    "cleanup.candidate_accounts.batch_fallback",
+                    json!({
+                        "batchSize": chunk.len(),
+                        "error": error.to_string(),
+                        "mode": "get_account_per_table",
+                    }),
+                );
+                for table_address in chunk {
+                    out.push((
+                        *table_address,
+                        load_candidate(rpc, *table_address).map_err(|error| error.to_string()),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn load_candidate(rpc: &RpcClient, table_address: Pubkey) -> Result<Candidate, Box<dyn Error>> {
     let account = rpc.get_account(&table_address)?;
+    candidate_from_account(table_address, &account).map_err(Into::into)
+}
+
+fn candidate_from_account(table_address: Pubkey, account: &Account) -> Result<Candidate, String> {
     let table = AddressLookupTable::deserialize(&account.data).map_err(|error| {
         format!("failed to deserialize address lookup table {table_address}: {error:?}")
     })?;
@@ -889,38 +1230,210 @@ fn load_authority_signer(options: &Options) -> Result<Box<dyn Signer>, Box<dyn E
     Ok(Box::new(keypair_from_string(&value)?))
 }
 
-fn send_single_instruction(
+async fn execute_planned_cleanups(
+    rpc: &RpcClient,
+    options: &Options,
+    signer: &dyn Signer,
+    planned_cleanups: &[PlannedCleanup],
+    rows: &mut [Value],
+    current_slot: u64,
+) -> Result<u64, Box<dyn Error>> {
+    let mut total_reclaimed = 0_u64;
+    preflight_cleanup_batches_fit_packet(rpc, signer, planned_cleanups, options.bundle_size)?;
+    for (batch_index, batch) in planned_cleanups.chunks(options.bundle_size).enumerate() {
+        let instructions = batch
+            .iter()
+            .map(|cleanup| cleanup.instruction.clone())
+            .collect::<Vec<_>>();
+        let result = send_cleanup_instruction_batch(
+            rpc,
+            signer,
+            &instructions,
+            options.simulate_before_submit,
+        )?;
+        for (batch_instruction_index, cleanup) in batch.iter().enumerate() {
+            let mut execution = json!({
+                "signature": result.signature.clone(),
+                "kind": cleanup.kind,
+                "batchIndex": batch_index,
+                "batchInstructionIndex": batch_instruction_index,
+                "batchSize": batch.len(),
+                "transaction": cleanup_transaction_packet_json(&result.transaction_packet),
+            });
+            if let Some(simulation) = result.simulation.as_ref() {
+                execution["simulation"] = simulation.clone();
+            }
+            if let Some(recipient) = cleanup.recipient {
+                total_reclaimed = total_reclaimed.saturating_add(cleanup.reclaimed_lamports);
+                execution["recipient"] = json!(recipient.to_string());
+                execution["reclaimedLamports"] = json!(cleanup.reclaimed_lamports.to_string());
+                execution["databaseRecord"] = record_closed(
+                    &cleanup.table_address,
+                    &result.signature,
+                    &recipient,
+                    cleanup.reclaimed_lamports,
+                )
+                .await;
+            } else {
+                execution["databaseRecord"] =
+                    record_deactivated(&cleanup.table_address, current_slot, &result.signature)
+                        .await;
+            }
+            set_candidate_execution(rows, cleanup.row_index, execution)?;
+        }
+    }
+    Ok(total_reclaimed)
+}
+
+fn preflight_cleanup_batches_fit_packet(
     rpc: &RpcClient,
     signer: &dyn Signer,
-    instruction: solana_sdk::instruction::Instruction,
-) -> Result<String, Box<dyn Error>> {
+    planned_cleanups: &[PlannedCleanup],
+    bundle_size: usize,
+) -> Result<(), Box<dyn Error>> {
+    let blockhash = rpc.get_latest_blockhash()?;
+    for (batch_index, batch) in planned_cleanups.chunks(bundle_size).enumerate() {
+        let instructions = batch
+            .iter()
+            .map(|cleanup| cleanup.instruction.clone())
+            .collect::<Vec<_>>();
+        let transaction = Transaction::new_signed_with_payer(
+            &instructions,
+            Some(&signer.pubkey()),
+            &[signer],
+            blockhash,
+        );
+        ensure_cleanup_transaction_fits_packet(&transaction).map_err(|error| {
+            format!(
+                "cleanup batch {batch_index} with {} instruction(s) is too large: {error}",
+                instructions.len()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn set_candidate_execution(
+    rows: &mut [Value],
+    row_index: usize,
+    execution: Value,
+) -> Result<(), Box<dyn Error>> {
+    let row = rows
+        .get_mut(row_index)
+        .ok_or_else(|| format!("cleanup row index {row_index} was not found"))?;
+    let row = row
+        .as_object_mut()
+        .ok_or_else(|| format!("cleanup row index {row_index} was not a JSON object"))?;
+    row.insert("execution".to_owned(), execution);
+    Ok(())
+}
+
+fn send_cleanup_instruction_batch(
+    rpc: &RpcClient,
+    signer: &dyn Signer,
+    instructions: &[Instruction],
+    simulate_before_submit: bool,
+) -> Result<CleanupTransactionResult, Box<dyn Error>> {
     let blockhash = rpc.get_latest_blockhash()?;
     let transaction = Transaction::new_signed_with_payer(
-        &[instruction],
+        instructions,
         Some(&signer.pubkey()),
         &[signer],
         blockhash,
     );
-    Ok(rpc.send_and_confirm_transaction(&transaction)?.to_string())
+    let transaction_packet = ensure_cleanup_transaction_fits_packet(&transaction)?;
+    let simulation = if simulate_before_submit {
+        Some(simulate_cleanup_transaction(rpc, &transaction)?)
+    } else {
+        None
+    };
+    let signature = rpc.send_and_confirm_transaction(&transaction)?.to_string();
+    Ok(CleanupTransactionResult {
+        signature,
+        simulation,
+        transaction_packet,
+    })
 }
 
-async fn record_deactivated(
-    table_address: &Pubkey,
-    slot: u64,
-    signature: &str,
-) -> Result<(), Box<dyn Error>> {
-    let Ok(database_url) = env::var("NEON_DATABASE_URL") else {
-        return Ok(());
+fn ensure_cleanup_transaction_fits_packet(
+    transaction: &Transaction,
+) -> Result<CleanupTransactionPacket, Box<dyn Error>> {
+    let packet_size_bytes = bincode::serialize(transaction)?.len();
+    let packet = CleanupTransactionPacket {
+        packet_size_bytes,
+        packet_data_size_bytes: PACKET_DATA_SIZE,
     };
-    let client = NeonSqlClient::connect(NeonSqlConfig::new(database_url)).await?;
-    let _ = client
-        .mark_route_lookup_table_deactivated(
-            &table_address.to_string(),
-            i64::try_from(slot)?,
-            signature,
+    if packet_size_bytes > PACKET_DATA_SIZE {
+        return Err(format!(
+            "serialized cleanup transaction is {packet_size_bytes} bytes; Solana packet limit is {PACKET_DATA_SIZE} bytes"
         )
-        .await;
-    Ok(())
+        .into());
+    }
+    Ok(packet)
+}
+
+fn cleanup_transaction_packet_json(packet: &CleanupTransactionPacket) -> Value {
+    json!({
+        "packetSizeBytes": packet.packet_size_bytes,
+        "packetDataSizeBytes": packet.packet_data_size_bytes,
+        "fitsPacketDataSize": packet.packet_size_bytes <= packet.packet_data_size_bytes,
+    })
+}
+
+fn simulate_cleanup_transaction(
+    rpc: &RpcClient,
+    transaction: &Transaction,
+) -> Result<Value, Box<dyn Error>> {
+    let simulation = rpc.simulate_transaction(transaction)?;
+    let logs = simulation.value.logs.clone().unwrap_or_default();
+    if let Some(error) = simulation.value.err.as_ref() {
+        return Err(format!(
+            "cleanup transaction simulation failed: {error:?}; logs: {}",
+            logs.join(" | ")
+        )
+        .into());
+    }
+    Ok(json!({
+        "err": simulation.value.err.as_ref().map(|error| format!("{error:?}")),
+        "logs": logs,
+    }))
+}
+
+async fn record_deactivated(table_address: &Pubkey, slot: u64, signature: &str) -> Value {
+    let Ok(database_url) = env::var("NEON_DATABASE_URL") else {
+        return json!({
+            "status": "skipped",
+            "reason": "NEON_DATABASE_URL unset",
+        });
+    };
+    let client = match NeonSqlClient::connect(NeonSqlConfig::new(database_url)).await {
+        Ok(client) => client,
+        Err(error) => {
+            return json!({
+                "status": "failed",
+                "error": error.to_string(),
+            });
+        }
+    };
+    let slot = match i64::try_from(slot) {
+        Ok(slot) => slot,
+        Err(error) => {
+            return json!({
+                "status": "failed",
+                "error": error.to_string(),
+            });
+        }
+    };
+    match client
+        .mark_route_lookup_table_deactivated(&table_address.to_string(), slot, signature)
+        .await
+    {
+        Ok(_) => json!({ "status": "recorded" }),
+        Err(error) => json!({
+            "status": "failed",
+            "error": error.to_string(),
+        }),
+    }
 }
 
 async fn record_closed(
@@ -928,20 +1441,46 @@ async fn record_closed(
     signature: &str,
     recipient: &Pubkey,
     reclaimed_lamports: u64,
-) -> Result<(), Box<dyn Error>> {
+) -> Value {
     let Ok(database_url) = env::var("NEON_DATABASE_URL") else {
-        return Ok(());
+        return json!({
+            "status": "skipped",
+            "reason": "NEON_DATABASE_URL unset",
+        });
     };
-    let client = NeonSqlClient::connect(NeonSqlConfig::new(database_url)).await?;
-    let _ = client
+    let client = match NeonSqlClient::connect(NeonSqlConfig::new(database_url)).await {
+        Ok(client) => client,
+        Err(error) => {
+            return json!({
+                "status": "failed",
+                "error": error.to_string(),
+            });
+        }
+    };
+    let reclaimed_lamports = match i64::try_from(reclaimed_lamports) {
+        Ok(reclaimed_lamports) => reclaimed_lamports,
+        Err(error) => {
+            return json!({
+                "status": "failed",
+                "error": error.to_string(),
+            });
+        }
+    };
+    match client
         .mark_route_lookup_table_closed(
             &table_address.to_string(),
             signature,
             &recipient.to_string(),
-            i64::try_from(reclaimed_lamports)?,
+            reclaimed_lamports,
         )
-        .await;
-    Ok(())
+        .await
+    {
+        Ok(_) => json!({ "status": "recorded" }),
+        Err(error) => json!({
+            "status": "failed",
+            "error": error.to_string(),
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -1039,6 +1578,64 @@ mod tests {
             redacted_rpc_url("http://localhost:8899"),
             "http://localhost:8899"
         );
+    }
+
+    #[test]
+    fn alt_cleanup_parses_execute_safety_options() {
+        let options = parse_args(vec![
+            "--execute".to_owned(),
+            "--simulate-before-submit".to_owned(),
+            "--bundle-size".to_owned(),
+            "4".to_owned(),
+            "--trace-timing".to_owned(),
+        ])
+        .expect("cleanup safety options should parse");
+
+        assert!(options.execute);
+        assert!(options.simulate_before_submit);
+        assert_eq!(options.bundle_size, 4);
+        assert!(options.trace_timing);
+    }
+
+    #[test]
+    fn alt_cleanup_disables_trace_timing_by_default() {
+        let options = parse_args(Vec::<String>::new()).expect("default cleanup options parse");
+
+        assert!(!options.trace_timing);
+    }
+
+    #[test]
+    fn alt_cleanup_rejects_zero_bundle_size() {
+        let error = parse_args(vec!["--bundle-size".to_owned(), "0".to_owned()])
+            .expect_err("zero bundle size should be rejected");
+
+        assert_eq!(error.to_string(), "--bundle-size must be at least 1");
+    }
+
+    #[test]
+    fn alt_cleanup_packet_guard_rejects_oversized_batch() {
+        let authority = solana_sdk::signature::Keypair::new();
+        let recipient = Pubkey::new_unique();
+        let instructions = (0..128)
+            .map(|_| {
+                address_lookup_table_instruction::close_lookup_table(
+                    Pubkey::new_unique(),
+                    authority.pubkey(),
+                    recipient,
+                )
+            })
+            .collect::<Vec<_>>();
+        let transaction = Transaction::new_signed_with_payer(
+            &instructions,
+            Some(&authority.pubkey()),
+            &[&authority],
+            solana_sdk::hash::Hash::new_unique(),
+        );
+
+        let error = ensure_cleanup_transaction_fits_packet(&transaction)
+            .expect_err("oversized cleanup transaction should be rejected");
+
+        assert!(error.to_string().contains("Solana packet limit"));
     }
 
     #[test]
