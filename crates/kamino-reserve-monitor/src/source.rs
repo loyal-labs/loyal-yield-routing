@@ -79,6 +79,7 @@ pub enum AccountUpdateEvent {
         attempt: usize,
         backoff: Duration,
         error: String,
+        replay_cursor: Option<LaserstreamReplayCursorSnapshot>,
     },
     Failed {
         reserve: Pubkey,
@@ -123,6 +124,7 @@ pub struct LaserstreamAccountUpdateSource {
     pub endpoint: String,
     pub api_key: String,
     pub from_slot: u64,
+    pub replay_overlap_slots: u64,
     pub config: SubscriptionConfig,
 }
 
@@ -160,6 +162,57 @@ pub fn build_laserstream_subscribe_request(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LaserstreamReplayCursorSnapshot {
+    pub initial_from_slot: u64,
+    pub replay_overlap_slots: u64,
+    pub last_seen_slot: Option<u64>,
+    pub next_from_slot: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LaserstreamReplayCursor {
+    initial_from_slot: u64,
+    replay_overlap_slots: u64,
+    last_seen_slot: Option<u64>,
+}
+
+impl LaserstreamReplayCursor {
+    fn new(initial_from_slot: u64, replay_overlap_slots: u64) -> Self {
+        Self {
+            initial_from_slot,
+            replay_overlap_slots,
+            last_seen_slot: None,
+        }
+    }
+
+    fn observe_slot(&mut self, slot: u64) {
+        self.last_seen_slot = Some(
+            self.last_seen_slot
+                .map_or(slot, |last_seen| last_seen.max(slot)),
+        );
+    }
+
+    fn next_from_slot(&self) -> u64 {
+        self.last_seen_slot
+            .map(|last_seen| {
+                last_seen
+                    .saturating_sub(self.replay_overlap_slots)
+                    .max(self.initial_from_slot)
+            })
+            .unwrap_or(self.initial_from_slot)
+    }
+
+    fn snapshot(&self) -> LaserstreamReplayCursorSnapshot {
+        LaserstreamReplayCursorSnapshot {
+            initial_from_slot: self.initial_from_slot,
+            replay_overlap_slots: self.replay_overlap_slots,
+            last_seen_slot: self.last_seen_slot,
+            next_from_slot: self.next_from_slot(),
+        }
+    }
+}
+
 async fn run_laserstream_subscription(
     source: LaserstreamAccountUpdateSource,
     reserves: Vec<Pubkey>,
@@ -167,6 +220,8 @@ async fn run_laserstream_subscription(
     running: Arc<AtomicBool>,
 ) {
     let mut reconnect_attempts = 0usize;
+    let mut replay_cursor =
+        LaserstreamReplayCursor::new(source.from_slot, source.replay_overlap_slots);
     while running.load(Ordering::Relaxed) {
         let attempt = reconnect_attempts + 1;
         for reserve in &reserves {
@@ -181,7 +236,16 @@ async fn run_laserstream_subscription(
             }
         }
 
-        match run_laserstream_attempt(&source, &reserves, attempt, &tx, &running).await {
+        match run_laserstream_attempt(
+            &source,
+            &reserves,
+            attempt,
+            &tx,
+            &running,
+            &mut replay_cursor,
+        )
+        .await
+        {
             Ok(()) => break,
             Err(error) => {
                 if !running.load(Ordering::Relaxed) {
@@ -203,11 +267,13 @@ async fn run_laserstream_subscription(
                     reconnect_attempts = 0;
                 }
                 reconnect_attempts += 1;
+                let replay_cursor = Some(replay_cursor.snapshot());
                 if !schedule_batch_reconnect_or_fail(
                     &reserves,
                     reconnect_attempts,
                     error.message,
                     source.config,
+                    replay_cursor,
                     &tx,
                     &running,
                 )
@@ -230,8 +296,19 @@ async fn run_laserstream_attempt(
     attempt: usize,
     tx: &mpsc::UnboundedSender<AccountUpdateEvent>,
     running: &Arc<AtomicBool>,
+    replay_cursor: &mut LaserstreamReplayCursor,
 ) -> std::result::Result<(), SubscriptionAttemptError> {
-    let request = build_laserstream_subscribe_request(reserves, source.from_slot);
+    let cursor_snapshot = replay_cursor.snapshot();
+    tracing::info!(
+        attempt,
+        from_slot = cursor_snapshot.next_from_slot,
+        last_seen_slot = ?cursor_snapshot.last_seen_slot,
+        initial_from_slot = cursor_snapshot.initial_from_slot,
+        replay_overlap_slots = cursor_snapshot.replay_overlap_slots,
+        reserve_count = reserves.len(),
+        "starting LaserStream subscription"
+    );
+    let request = build_laserstream_subscribe_request(reserves, cursor_snapshot.next_from_slot);
     let config = LaserstreamConfig::new(source.endpoint.clone(), source.api_key.clone())
         .with_max_reconnect_attempts(source.config.max_reconnect_attempts as u32)
         .with_replay(true);
@@ -258,8 +335,12 @@ async fn run_laserstream_attempt(
             update = stream.next() => {
                 match update {
                     Some(Ok(update)) => {
-                        if let Err(err) = forward_laserstream_update(update, tx) {
-                            return Err(SubscriptionAttemptError::after_connected(format!("{err:#}")));
+                        match forward_laserstream_update(update, tx) {
+                            Ok(Some(slot)) => replay_cursor.observe_slot(slot),
+                            Ok(None) => {}
+                            Err(err) => {
+                                return Err(SubscriptionAttemptError::after_connected(format!("{err:#}")));
+                            }
                         }
                     }
                     Some(Err(err)) => {
@@ -286,17 +367,18 @@ async fn run_laserstream_attempt(
 fn forward_laserstream_update(
     update: SubscribeUpdate,
     tx: &mpsc::UnboundedSender<AccountUpdateEvent>,
-) -> Result<()> {
+) -> Result<Option<u64>> {
     let Some(UpdateOneof::Account(account_update)) = update.update_oneof else {
-        return Ok(());
+        return Ok(None);
     };
     let account = account_update
         .account
         .context("LaserStream account update was missing account payload")?;
     let reserve = pubkey_from_laserstream_bytes(&account.pubkey, "account pubkey")?;
     let owner = pubkey_from_laserstream_bytes(&account.owner, "account owner")?;
+    let slot = account_update.slot;
     let received_at = Utc::now();
-    send_event(
+    let sent = send_event(
         tx,
         AccountUpdateEvent::AccountUpdate {
             metadata: UpdateSourceMetadata {
@@ -304,14 +386,14 @@ fn forward_laserstream_update(
                 source_commitment: CONFIRMED_COMMITMENT,
             },
             reserve,
-            slot: account_update.slot,
+            slot,
             owner: owner.to_string(),
             data: account.data,
             received_at,
             received_instant: Instant::now(),
         },
     );
-    Ok(())
+    Ok(sent.then_some(slot))
 }
 
 fn pubkey_from_laserstream_bytes(bytes: &[u8], label: &str) -> Result<Pubkey> {
@@ -364,6 +446,7 @@ async fn subscription_batch_loop(
                     reconnect_attempts,
                     error.message,
                     config,
+                    None,
                     &tx,
                     &running,
                 )
@@ -579,6 +662,7 @@ async fn schedule_batch_reconnect_or_fail(
     attempts: usize,
     error: String,
     config: SubscriptionConfig,
+    replay_cursor: Option<LaserstreamReplayCursorSnapshot>,
     tx: &mpsc::UnboundedSender<AccountUpdateEvent>,
     running: &Arc<AtomicBool>,
 ) -> bool {
@@ -605,6 +689,7 @@ async fn schedule_batch_reconnect_or_fail(
                 attempt: attempts,
                 backoff,
                 error: error.clone(),
+                replay_cursor,
             },
         ) {
             return false;
@@ -674,6 +759,74 @@ fn decode_ui_account_data(account: &UiAccount) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn laserstream_reconnect_cursor_uses_highest_seen_slot_with_overlap() {
+        let mut cursor = LaserstreamReplayCursor::new(1_000, 32);
+
+        cursor.observe_slot(1_100);
+        cursor.observe_slot(1_150);
+        cursor.observe_slot(1_120);
+
+        assert_eq!(
+            cursor.snapshot(),
+            LaserstreamReplayCursorSnapshot {
+                initial_from_slot: 1_000,
+                replay_overlap_slots: 32,
+                last_seen_slot: Some(1_150),
+                next_from_slot: 1_118,
+            }
+        );
+    }
+
+    #[test]
+    fn laserstream_reconnect_cursor_keeps_initial_slot_without_updates() {
+        let cursor = LaserstreamReplayCursor::new(1_000, 32);
+
+        assert_eq!(
+            cursor.snapshot(),
+            LaserstreamReplayCursorSnapshot {
+                initial_from_slot: 1_000,
+                replay_overlap_slots: 32,
+                last_seen_slot: None,
+                next_from_slot: 1_000,
+            }
+        );
+    }
+
+    #[test]
+    fn laserstream_reconnect_cursor_does_not_replay_before_initial_slot() {
+        let mut cursor = LaserstreamReplayCursor::new(100, 32);
+
+        cursor.observe_slot(120);
+
+        assert_eq!(
+            cursor.snapshot(),
+            LaserstreamReplayCursorSnapshot {
+                initial_from_slot: 100,
+                replay_overlap_slots: 32,
+                last_seen_slot: Some(120),
+                next_from_slot: 100,
+            }
+        );
+    }
+
+    #[test]
+    fn laserstream_reconnect_cursor_saturates_overlap_near_zero() {
+        let mut cursor = LaserstreamReplayCursor::new(0, 32);
+
+        cursor.observe_slot(7);
+
+        assert_eq!(
+            cursor.snapshot(),
+            LaserstreamReplayCursorSnapshot {
+                initial_from_slot: 0,
+                replay_overlap_slots: 32,
+                last_seen_slot: Some(7),
+                next_from_slot: 0,
+            }
+        );
+    }
 
     #[test]
     fn detects_laserstream_replay_retention_error() {

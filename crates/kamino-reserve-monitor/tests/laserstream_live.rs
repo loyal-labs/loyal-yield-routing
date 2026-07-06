@@ -56,6 +56,7 @@ async fn live_laserstream_account_update_inserts_confirmed_event() -> Result<()>
         endpoint,
         api_key,
         from_slot: seed_slot.saturating_sub(32),
+        replay_overlap_slots: 32,
         config: SubscriptionConfig {
             max_reconnect_attempts: 3,
             reconnect_base_delay: Duration::from_millis(500),
