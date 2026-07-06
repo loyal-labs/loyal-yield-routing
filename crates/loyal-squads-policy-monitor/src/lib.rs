@@ -9,7 +9,8 @@ use loyal_actions::{
 };
 use loyal_yield_orchestrator::{
     BalanceSweepExecutionInput, BalanceSweepPolicyMatchInput, OrchestratorConfig,
-    OrchestratorError, OrchestratorStore, PolicyMatchInput,
+    OrchestratorError, OrchestratorStore, PolicyMatchInput, ROUTE_MODE_CROSS_MINT_LOYAL_HUB,
+    ROUTE_MODE_SAME_MINT_KAMINO,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -336,10 +337,14 @@ pub enum SwapLaneEvent {
     Jupiter {
         program_id: String,
         exact_in_discriminator: Vec<u8>,
+        action_account: String,
+        instruction_constraint_indexes: [u8; 3],
     },
     LoyalHub {
         hub_authorizer: String,
         max_fee_bps: u16,
+        action_account: String,
+        instruction_constraint_indexes: [u8; 3],
     },
 }
 
@@ -544,11 +549,7 @@ impl PolicyMatchEvent {
             kamino_liquidity_mints: pubkeys_to_strings(policy.kamino_liquidity_mints),
             universe_preset: policy.universe_preset.map(universe_preset_name),
             risk_profile: policy.universe_preset.and_then(preset_risk_profile_name),
-            swap_lanes: policy
-                .swap_lanes
-                .into_iter()
-                .map(SwapLaneEvent::from)
-                .collect(),
+            swap_lanes: policy_swap_lanes(policy.policy_account, policy.swap_lanes),
         }
     }
 }
@@ -643,22 +644,37 @@ fn derive_squads_vault(settings: &Pubkey, vault_index: u8) -> Pubkey {
     .0
 }
 
-impl From<DetectedSwapLane> for SwapLaneEvent {
-    fn from(value: DetectedSwapLane) -> Self {
-        match value {
-            DetectedSwapLane::Jupiter(contract) => Self::Jupiter {
-                program_id: contract.program_id.to_string(),
-                exact_in_discriminator: contract.exact_in_discriminator.to_vec(),
-            },
-            DetectedSwapLane::LoyalHub {
-                hub_authorizer,
-                max_fee_bps,
-            } => Self::LoyalHub {
-                hub_authorizer: hub_authorizer.to_string(),
-                max_fee_bps,
-            },
-        }
-    }
+fn policy_swap_lanes(
+    policy_account: Pubkey,
+    swap_lanes: Vec<DetectedSwapLane>,
+) -> Vec<SwapLaneEvent> {
+    let action_account = policy_account.to_string();
+    let deposit_index = u8::try_from(1 + swap_lanes.len()).unwrap_or(u8::MAX);
+    swap_lanes
+        .into_iter()
+        .enumerate()
+        .map(|(offset, lane)| {
+            let swap_index = u8::try_from(1 + offset).unwrap_or(u8::MAX);
+            let instruction_constraint_indexes = [0, swap_index, deposit_index];
+            match lane {
+                DetectedSwapLane::Jupiter(contract) => SwapLaneEvent::Jupiter {
+                    program_id: contract.program_id.to_string(),
+                    exact_in_discriminator: contract.exact_in_discriminator.to_vec(),
+                    action_account: action_account.clone(),
+                    instruction_constraint_indexes,
+                },
+                DetectedSwapLane::LoyalHub {
+                    hub_authorizer,
+                    max_fee_bps,
+                } => SwapLaneEvent::LoyalHub {
+                    hub_authorizer: hub_authorizer.to_string(),
+                    max_fee_bps,
+                    action_account: action_account.clone(),
+                    instruction_constraint_indexes,
+                },
+            }
+        })
+        .collect()
 }
 
 fn pubkeys_to_strings(pubkeys: Vec<Pubkey>) -> Vec<String> {
@@ -670,9 +686,9 @@ fn pubkeys_to_strings(pubkeys: Vec<Pubkey>) -> Vec<String> {
 
 fn route_mode_name(value: DetectedYieldRouteMode) -> String {
     match value {
-        DetectedYieldRouteMode::SameMint => "same_mint",
+        DetectedYieldRouteMode::SameMint => ROUTE_MODE_SAME_MINT_KAMINO,
         DetectedYieldRouteMode::CrossMintJupiter => "cross_mint_jupiter",
-        DetectedYieldRouteMode::CrossMintLoyalHub => "cross_mint_loyal_hub",
+        DetectedYieldRouteMode::CrossMintLoyalHub => ROUTE_MODE_CROSS_MINT_LOYAL_HUB,
     }
     .to_owned()
 }
@@ -699,6 +715,57 @@ fn kamino_stable_profile_name(value: KaminoStableRiskProfile) -> String {
         KaminoStableRiskProfile::Aggressive => "aggressive",
     }
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn policy_event_persists_hub_lane_route_metadata() {
+        let policy_account = Pubkey::new_unique();
+        let hub_authorizer = Pubkey::new_unique();
+        let policy = DetectedYieldRoutePolicy {
+            settings: Pubkey::new_unique(),
+            authority: Pubkey::new_unique(),
+            policy_seed: 42,
+            policy_account,
+            vault_index: 1,
+            delegated_signers: vec![Pubkey::new_unique()],
+            threshold: 1,
+            route_modes: vec![
+                DetectedYieldRouteMode::SameMint,
+                DetectedYieldRouteMode::CrossMintLoyalHub,
+            ],
+            stable_mints: vec![Pubkey::new_unique(), Pubkey::new_unique()],
+            kamino_markets: vec![Pubkey::new_unique()],
+            kamino_liquidity_mints: vec![Pubkey::new_unique()],
+            universe_preset: None,
+            swap_lanes: vec![DetectedSwapLane::LoyalHub {
+                hub_authorizer,
+                max_fee_bps: 50,
+            }],
+        };
+
+        let event = PolicyMatchEvent::from_policy("sig", 99, Cluster::Mainnet, policy);
+
+        assert_eq!(
+            event.route_modes,
+            vec![
+                ROUTE_MODE_SAME_MINT_KAMINO.to_owned(),
+                ROUTE_MODE_CROSS_MINT_LOYAL_HUB.to_owned()
+            ]
+        );
+        assert_eq!(
+            event.swap_lanes,
+            vec![SwapLaneEvent::LoyalHub {
+                hub_authorizer: hub_authorizer.to_string(),
+                max_fee_bps: 50,
+                action_account: policy_account.to_string(),
+                instruction_constraint_indexes: [0, 1, 2],
+            }]
+        );
+    }
 }
 
 struct HeliusNotification<'a> {

@@ -47,12 +47,13 @@ use loyal_yield_orchestrator::sqlx::{
     PgPool, Row,
 };
 use loyal_yield_orchestrator::{
-    route_amount_evidence_from_metadata, solana_testing_keypair_from_env,
-    yield_router_keypair_from_env, ConfirmSameMintRebalanceInput, DecisionAdvance, DecisionId,
-    DecisionStatus, NeonSqlClient, PolicyMatchInput, ReconciledReservePosition,
-    ReconciledVaultState, RouteLookupTableUpsert, SameMintRebalanceInput, SameMintRebalanceResult,
-    SnapshotId, VaultId, AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
-    ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+    route_amount_evidence_from_metadata, route_mode_matches, same_mint_route_mode_aliases,
+    solana_testing_keypair_from_env, yield_router_keypair_from_env, ConfirmSameMintRebalanceInput,
+    DecisionAdvance, DecisionId, DecisionStatus, NeonSqlClient, PolicyMatchInput,
+    ReconciledReservePosition, ReconciledVaultState, RouteLookupTableUpsert,
+    SameMintRebalanceInput, SameMintRebalanceResult, SnapshotId, VaultId,
+    AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+    ROUTE_MODE_SAME_MINT_KAMINO,
 };
 use num_bigint::BigUint;
 use num_traits::{ToPrimitive, Zero};
@@ -83,7 +84,7 @@ const KAMINO_PRIME_MARKET: &str = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"
 const KAMINO_MAPLE_MARKET: &str = "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y";
 const KAMINO_ONRE_MARKET: &str = "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8";
 const KAMINO_ETHENA_MARKET: &str = "BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF";
-const SAME_MINT_ROUTE_MODE: &str = "same_mint_kamino";
+const SAME_MINT_ROUTE_MODE: &str = ROUTE_MODE_SAME_MINT_KAMINO;
 const DEFAULT_SOLANA_RPC_URL: &str = "https://api.mainnet-beta.solana.com";
 const PUBKEY_LEN: usize = 32;
 const SQUADS_POLICY_ACCOUNT_DISCRIMINATOR: [u8; 8] = [222, 135, 7, 163, 235, 177, 33, 68];
@@ -8056,6 +8057,7 @@ async fn load_policy_target_vault(
     default_authority: Pubkey,
     default_delegated_signer: Pubkey,
 ) -> Result<Option<SelectedVault>, Box<dyn Error>> {
+    let route_mode_aliases = same_mint_route_mode_aliases();
     let row = loyal_yield_orchestrator::sqlx::query(
         r#"
         SELECT
@@ -8092,7 +8094,7 @@ async fn load_policy_target_vault(
             FROM loyal_yield.route_policies
             WHERE settings = v.settings
               AND vault_index = v.vault_index
-              AND $3 = ANY(route_modes)
+              AND route_modes && $3::TEXT[]
             ORDER BY active DESC, last_seen_slot DESC, policy_seed DESC, id DESC
             LIMIT 1
         ) route_template ON TRUE
@@ -8102,7 +8104,7 @@ async fn load_policy_target_vault(
     )
     .bind(settings)
     .bind(vault_index)
-    .bind(SAME_MINT_ROUTE_MODE)
+    .bind(&route_mode_aliases)
     .fetch_optional(pool)
     .await?;
 
@@ -8566,7 +8568,7 @@ fn validate_vault_policy(vault: &SelectedVault) -> Result<(), Box<dyn Error>> {
     if !vault
         .route_modes
         .iter()
-        .any(|mode| mode == SAME_MINT_ROUTE_MODE)
+        .any(|mode| route_mode_matches(mode, SAME_MINT_ROUTE_MODE))
     {
         return Err(format!(
             "selected policy {} does not allow {SAME_MINT_ROUTE_MODE}",

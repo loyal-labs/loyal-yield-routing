@@ -1495,6 +1495,7 @@ async fn upsert_policy(
         i64::try_from(event.slot).map_err(|_| OrchestratorError::SlotOutOfRange(event.slot))?;
     let policy_seed = i64::try_from(event.policy_seed)
         .map_err(|_| OrchestratorError::PolicySeedOutOfRange(event.policy_seed))?;
+    let route_modes = normalize_route_modes(&event.route_modes);
     let row = sqlx::query_as::<_, RoutePolicyRow>(
         r#"
         INSERT INTO loyal_yield.route_policies
@@ -1553,7 +1554,7 @@ async fn upsert_policy(
     .bind(&event.vault_pubkey)
     .bind(&event.delegated_signers)
     .bind(i32::from(event.threshold))
-    .bind(&event.route_modes)
+    .bind(&route_modes)
     .bind(&event.stable_mints)
     .bind(&event.kamino_markets)
     .bind(&event.kamino_liquidity_mints)

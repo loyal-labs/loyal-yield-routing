@@ -32,6 +32,39 @@ impl NeonSqlConfig {
 
 pub type OrchestratorConfig = NeonSqlConfig;
 
+pub const ROUTE_MODE_SAME_MINT_KAMINO: &str = "same_mint_kamino";
+pub const ROUTE_MODE_SAME_MINT_LEGACY: &str = "same_mint";
+pub const ROUTE_MODE_CROSS_MINT_LOYAL_HUB: &str = "cross_mint_loyal_hub";
+
+pub fn canonical_route_mode(mode: &str) -> &str {
+    match mode {
+        ROUTE_MODE_SAME_MINT_LEGACY | ROUTE_MODE_SAME_MINT_KAMINO => ROUTE_MODE_SAME_MINT_KAMINO,
+        _ => mode,
+    }
+}
+
+pub fn normalize_route_modes(modes: &[String]) -> Vec<String> {
+    let mut normalized = Vec::with_capacity(modes.len());
+    for mode in modes {
+        let canonical = canonical_route_mode(mode).to_owned();
+        if !normalized.contains(&canonical) {
+            normalized.push(canonical);
+        }
+    }
+    normalized
+}
+
+pub fn route_mode_matches(stored: &str, required: &str) -> bool {
+    canonical_route_mode(stored) == canonical_route_mode(required)
+}
+
+pub fn same_mint_route_mode_aliases() -> Vec<String> {
+    vec![
+        ROUTE_MODE_SAME_MINT_KAMINO.to_owned(),
+        ROUTE_MODE_SAME_MINT_LEGACY.to_owned(),
+    ]
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteLookupTable {
     pub id: i64,
@@ -366,6 +399,107 @@ pub struct RoutePolicy {
     pub last_seen_at: DateTime<Utc>,
     pub last_seen_slot: i64,
     pub last_seen_signature: String,
+}
+
+impl RoutePolicy {
+    pub fn normalized_route_modes(&self) -> Vec<String> {
+        normalize_route_modes(&self.route_modes)
+    }
+
+    pub fn supports_route_mode(&self, required: &str) -> bool {
+        self.route_modes
+            .iter()
+            .any(|mode| route_mode_matches(mode, required))
+    }
+
+    pub fn loyal_hub_swap_lanes(&self) -> Vec<RoutePolicyHubSwapLane> {
+        route_policy_hub_swap_lanes(&self.swap_lanes)
+    }
+
+    pub fn loyal_hub_readiness(&self) -> RoutePolicyHubReadiness {
+        let route_mode_supported = self.supports_route_mode(ROUTE_MODE_CROSS_MINT_LOYAL_HUB);
+        let swap_lanes = self.loyal_hub_swap_lanes();
+        let has_complete_route_metadata = swap_lanes.iter().any(|lane| {
+            lane.action_account.is_some() && lane.instruction_constraint_indexes.is_some()
+        });
+        RoutePolicyHubReadiness {
+            route_mode_supported,
+            hub_swap_lane_count: swap_lanes.len(),
+            has_complete_route_metadata,
+            ready: route_mode_supported && has_complete_route_metadata,
+            swap_lanes,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoutePolicyHubSwapLane {
+    pub hub_authorizer: String,
+    pub max_fee_bps: u16,
+    pub action_account: Option<String>,
+    pub instruction_constraint_indexes: Option<[u8; 3]>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoutePolicyHubReadiness {
+    pub route_mode_supported: bool,
+    pub hub_swap_lane_count: usize,
+    pub has_complete_route_metadata: bool,
+    pub ready: bool,
+    pub swap_lanes: Vec<RoutePolicyHubSwapLane>,
+}
+
+pub fn route_policy_hub_swap_lanes(swap_lanes: &Value) -> Vec<RoutePolicyHubSwapLane> {
+    let Some(lanes) = swap_lanes.as_array() else {
+        return Vec::new();
+    };
+    lanes
+        .iter()
+        .filter_map(|lane| {
+            let kind = lane
+                .get("kind")
+                .or_else(|| lane.get("lane"))
+                .and_then(Value::as_str)?;
+            if kind != "loyal_hub" {
+                return None;
+            }
+            Some(RoutePolicyHubSwapLane {
+                hub_authorizer: lane_string(lane, "hubAuthorizer", "hub_authorizer")?,
+                max_fee_bps: lane_u16(lane, "maxFeeBps", "max_fee_bps")?,
+                action_account: lane_string(lane, "actionAccount", "action_account"),
+                instruction_constraint_indexes: lane_indexes(
+                    lane,
+                    "instructionConstraintIndexes",
+                    "instruction_constraint_indexes",
+                ),
+            })
+        })
+        .collect()
+}
+
+fn lane_string(value: &Value, camel: &str, snake: &str) -> Option<String> {
+    value
+        .get(camel)
+        .or_else(|| value.get(snake))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
+fn lane_u16(value: &Value, camel: &str, snake: &str) -> Option<u16> {
+    let raw = value.get(camel).or_else(|| value.get(snake))?.as_u64()?;
+    u16::try_from(raw).ok()
+}
+
+fn lane_indexes(value: &Value, camel: &str, snake: &str) -> Option<[u8; 3]> {
+    let indexes = value.get(camel).or_else(|| value.get(snake))?.as_array()?;
+    let [first, second, third] = indexes.as_slice() else {
+        return None;
+    };
+    Some([
+        u8::try_from(first.as_u64()?).ok()?,
+        u8::try_from(second.as_u64()?).ok()?,
+        u8::try_from(third.as_u64()?).ok()?,
+    ])
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -817,3 +951,64 @@ pub const ACTIVE_DECISION_STATUSES: [&str; 5] = [
     DecisionStatus::Submitted.as_str(),
     DecisionStatus::Confirming.as_str(),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn route_mode_normalization_preserves_hub_and_canonicalizes_same_mint() {
+        let modes = normalize_route_modes(&[
+            ROUTE_MODE_SAME_MINT_LEGACY.to_owned(),
+            ROUTE_MODE_SAME_MINT_KAMINO.to_owned(),
+            ROUTE_MODE_CROSS_MINT_LOYAL_HUB.to_owned(),
+        ]);
+
+        assert_eq!(
+            modes,
+            vec![
+                ROUTE_MODE_SAME_MINT_KAMINO.to_owned(),
+                ROUTE_MODE_CROSS_MINT_LOYAL_HUB.to_owned()
+            ]
+        );
+        assert!(route_mode_matches(
+            ROUTE_MODE_SAME_MINT_LEGACY,
+            ROUTE_MODE_SAME_MINT_KAMINO
+        ));
+    }
+
+    #[test]
+    fn hub_readiness_parses_enriched_and_legacy_lane_shapes() {
+        let lanes = json!([
+            {
+                "kind": "loyal_hub",
+                "hub_authorizer": "authorizer-from-monitor",
+                "max_fee_bps": 50,
+                "action_account": "policy-account",
+                "instruction_constraint_indexes": [0, 2, 3]
+            },
+            {
+                "lane": "loyal_hub",
+                "hubAuthorizer": "authorizer-from-setup",
+                "maxFeeBps": 25,
+                "actionAccount": "setup-policy-account",
+                "instructionConstraintIndexes": [0, 1, 2]
+            }
+        ]);
+
+        let parsed = route_policy_hub_swap_lanes(&lanes);
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(
+            parsed[0],
+            RoutePolicyHubSwapLane {
+                hub_authorizer: "authorizer-from-monitor".to_owned(),
+                max_fee_bps: 50,
+                action_account: Some("policy-account".to_owned()),
+                instruction_constraint_indexes: Some([0, 2, 3]),
+            }
+        );
+        assert_eq!(parsed[1].instruction_constraint_indexes, Some([0, 1, 2]));
+    }
+}
