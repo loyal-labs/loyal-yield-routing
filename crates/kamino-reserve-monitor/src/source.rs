@@ -250,7 +250,7 @@ async fn run_laserstream_subscription(
                 if !running.load(Ordering::Relaxed) {
                     break;
                 }
-                if error.is_laserstream_replay_expired() {
+                if error.requires_fresh_laserstream_seed() {
                     fail_batch_immediately(
                         &reserves,
                         attempt,
@@ -323,6 +323,7 @@ async fn run_laserstream_attempt(
         .with_replay(true);
     let (stream, _handle) = subscribe(config, request);
     futures_util::pin_mut!(stream);
+    let mut forwarded_account_update = false;
 
     for reserve in reserves {
         if !send_event(
@@ -345,7 +346,10 @@ async fn run_laserstream_attempt(
                 match update {
                     Some(Ok(update)) => {
                         match forward_laserstream_update(update, tx) {
-                            Ok(Some(slot)) => replay_cursor.observe_slot(slot),
+                            Ok(Some(slot)) => {
+                                replay_cursor.observe_slot(slot);
+                                forwarded_account_update = true;
+                            }
                             Ok(None) => {}
                             Err(err) => {
                                 return Err(SubscriptionAttemptError::after_connected(format!("{err:#}")));
@@ -353,7 +357,10 @@ async fn run_laserstream_attempt(
                         }
                     }
                     Some(Err(err)) => {
-                        return Err(SubscriptionAttemptError::after_connected(err.to_string()));
+                        return Err(classify_laserstream_stream_error(
+                            err.to_string(),
+                            forwarded_account_update,
+                        ));
                     }
                     None => {
                         return Err(SubscriptionAttemptError::after_connected("LaserStream stream ended"));
@@ -471,6 +478,7 @@ async fn subscription_batch_loop(
 struct SubscriptionAttemptError {
     message: String,
     reached_connected: bool,
+    requires_fresh_laserstream_seed: bool,
 }
 
 impl SubscriptionAttemptError {
@@ -478,6 +486,7 @@ impl SubscriptionAttemptError {
         Self {
             message: message.into(),
             reached_connected: false,
+            requires_fresh_laserstream_seed: false,
         }
     }
 
@@ -485,15 +494,44 @@ impl SubscriptionAttemptError {
         Self {
             message: message.into(),
             reached_connected: true,
+            requires_fresh_laserstream_seed: false,
         }
     }
 
-    fn is_laserstream_replay_expired(&self) -> bool {
-        self.message.contains("Requested slot")
-            && self
-                .message
-                .contains("older than the oldest available slot")
+    fn laserstream_setup_exhausted_without_updates(message: impl Into<String>) -> Self {
+        Self {
+            message: format!(
+                "LaserStream setup exhausted before forwarding any account updates: {}",
+                message.into()
+            ),
+            reached_connected: false,
+            requires_fresh_laserstream_seed: true,
+        }
     }
+
+    fn requires_fresh_laserstream_seed(&self) -> bool {
+        self.requires_fresh_laserstream_seed
+            || (self.message.contains("Requested slot")
+                && self
+                    .message
+                    .contains("older than the oldest available slot"))
+    }
+}
+
+fn classify_laserstream_stream_error(
+    message: impl Into<String>,
+    forwarded_account_update: bool,
+) -> SubscriptionAttemptError {
+    let message = message.into();
+    if !forwarded_account_update && is_laserstream_setup_reconnect_exhausted(&message) {
+        return SubscriptionAttemptError::laserstream_setup_exhausted_without_updates(message);
+    }
+    SubscriptionAttemptError::after_connected(message)
+}
+
+fn is_laserstream_setup_reconnect_exhausted(message: &str) -> bool {
+    message.contains("Maximum reconnection attempts reached")
+        && message.contains("Connection failed after")
 }
 
 async fn run_subscription_batch(
@@ -548,6 +586,7 @@ async fn run_subscription_batch(
                 batch_result = Err(SubscriptionAttemptError {
                     message: format!("reserve {reserve}: {}", err.message),
                     reached_connected: err.reached_connected,
+                    requires_fresh_laserstream_seed: false,
                 });
                 break;
             }
@@ -842,7 +881,7 @@ mod tests {
              Please request a more recent slot.\"",
         );
 
-        assert!(error.is_laserstream_replay_expired());
+        assert!(error.requires_fresh_laserstream_seed());
     }
 
     #[test]
@@ -850,6 +889,33 @@ mod tests {
         let error =
             SubscriptionAttemptError::after_connected("gRPC status error: transport closed");
 
-        assert!(!error.is_laserstream_replay_expired());
+        assert!(!error.requires_fresh_laserstream_seed());
+    }
+
+    #[test]
+    fn laserstream_setup_reconnect_exhaustion_without_updates_requires_fresh_seed() {
+        let error = classify_laserstream_stream_error(
+            "Maximum reconnection attempts reached: status: Cancelled, message: \
+             \"Connection failed after 3 attempts\"",
+            false,
+        );
+
+        assert!(error.requires_fresh_laserstream_seed());
+        assert!(!error.reached_connected);
+        assert!(error
+            .message
+            .contains("before forwarding any account updates"));
+    }
+
+    #[test]
+    fn laserstream_setup_reconnect_exhaustion_after_update_remains_retryable() {
+        let error = classify_laserstream_stream_error(
+            "Maximum reconnection attempts reached: status: Cancelled, message: \
+             \"Connection failed after 3 attempts\"",
+            true,
+        );
+
+        assert!(!error.requires_fresh_laserstream_seed());
+        assert!(error.reached_connected);
     }
 }
