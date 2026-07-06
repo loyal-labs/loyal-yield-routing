@@ -50,12 +50,14 @@ async fn live_laserstream_account_update_inserts_confirmed_event() -> Result<()>
 
     let rpc = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
     let seed_slot = rpc.get_slot().context("fetch confirmed seed slot")?;
+    let replay_overlap_slots = 32;
     let running = Arc::new(AtomicBool::new(true));
     let (tx, mut rx) = mpsc::unbounded_channel();
     let source = LaserstreamAccountUpdateSource {
         endpoint,
         api_key,
-        from_slot: seed_slot.saturating_sub(32),
+        initial_from_slot: seed_slot.saturating_sub(replay_overlap_slots),
+        replay_overlap_slots,
         config: SubscriptionConfig {
             max_reconnect_attempts: 3,
             reconnect_base_delay: Duration::from_millis(500),

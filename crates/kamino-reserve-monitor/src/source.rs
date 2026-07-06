@@ -78,6 +78,8 @@ pub enum AccountUpdateEvent {
         reserve: Pubkey,
         attempt: usize,
         backoff: Duration,
+        from_slot: Option<u64>,
+        last_seen_slot: Option<u64>,
         error: String,
     },
     Failed {
@@ -122,7 +124,8 @@ impl AccountUpdateSource for RpcWebsocketAccountUpdateSource {
 pub struct LaserstreamAccountUpdateSource {
     pub endpoint: String,
     pub api_key: String,
-    pub from_slot: u64,
+    pub initial_from_slot: u64,
+    pub replay_overlap_slots: u64,
     pub config: SubscriptionConfig,
 }
 
@@ -167,8 +170,14 @@ async fn run_laserstream_subscription(
     running: Arc<AtomicBool>,
 ) {
     let mut reconnect_attempts = 0usize;
+    let mut last_seen_slot = None;
     while running.load(Ordering::Relaxed) {
         let attempt = reconnect_attempts + 1;
+        let from_slot = laserstream_reconnect_from_slot(
+            source.initial_from_slot,
+            source.replay_overlap_slots,
+            last_seen_slot,
+        );
         for reserve in &reserves {
             if !send_event(
                 &tx,
@@ -181,7 +190,17 @@ async fn run_laserstream_subscription(
             }
         }
 
-        match run_laserstream_attempt(&source, &reserves, attempt, &tx, &running).await {
+        match run_laserstream_attempt(
+            &source,
+            &reserves,
+            attempt,
+            from_slot,
+            &mut last_seen_slot,
+            &tx,
+            &running,
+        )
+        .await
+        {
             Ok(()) => break,
             Err(error) => {
                 if !running.load(Ordering::Relaxed) {
@@ -203,11 +222,17 @@ async fn run_laserstream_subscription(
                     reconnect_attempts = 0;
                 }
                 reconnect_attempts += 1;
+                let next_from_slot = laserstream_reconnect_from_slot(
+                    source.initial_from_slot,
+                    source.replay_overlap_slots,
+                    last_seen_slot,
+                );
                 if !schedule_batch_reconnect_or_fail(
                     &reserves,
                     reconnect_attempts,
                     error.message,
                     source.config,
+                    Some((next_from_slot, last_seen_slot)),
                     &tx,
                     &running,
                 )
@@ -228,10 +253,12 @@ async fn run_laserstream_attempt(
     source: &LaserstreamAccountUpdateSource,
     reserves: &[Pubkey],
     attempt: usize,
+    from_slot: u64,
+    last_seen_slot: &mut Option<u64>,
     tx: &mpsc::UnboundedSender<AccountUpdateEvent>,
     running: &Arc<AtomicBool>,
 ) -> std::result::Result<(), SubscriptionAttemptError> {
-    let request = build_laserstream_subscribe_request(reserves, source.from_slot);
+    let request = build_laserstream_subscribe_request(reserves, from_slot);
     let config = LaserstreamConfig::new(source.endpoint.clone(), source.api_key.clone())
         .with_max_reconnect_attempts(source.config.max_reconnect_attempts as u32)
         .with_replay(true);
@@ -258,8 +285,12 @@ async fn run_laserstream_attempt(
             update = stream.next() => {
                 match update {
                     Some(Ok(update)) => {
-                        if let Err(err) = forward_laserstream_update(update, tx) {
-                            return Err(SubscriptionAttemptError::after_connected(format!("{err:#}")));
+                        match forward_laserstream_update(update, tx) {
+                            Ok(Some(slot)) => record_laserstream_slot(last_seen_slot, slot),
+                            Ok(None) => {}
+                            Err(err) => {
+                                return Err(SubscriptionAttemptError::after_connected(format!("{err:#}")));
+                            }
                         }
                     }
                     Some(Err(err)) => {
@@ -283,12 +314,29 @@ async fn run_laserstream_attempt(
     Ok(())
 }
 
+fn laserstream_reconnect_from_slot(
+    initial_from_slot: u64,
+    replay_overlap_slots: u64,
+    last_seen_slot: Option<u64>,
+) -> u64 {
+    last_seen_slot
+        .map(|slot| {
+            slot.saturating_sub(replay_overlap_slots)
+                .max(initial_from_slot)
+        })
+        .unwrap_or(initial_from_slot)
+}
+
+fn record_laserstream_slot(last_seen_slot: &mut Option<u64>, slot: u64) {
+    *last_seen_slot = Some(last_seen_slot.map_or(slot, |last_seen| last_seen.max(slot)));
+}
+
 fn forward_laserstream_update(
     update: SubscribeUpdate,
     tx: &mpsc::UnboundedSender<AccountUpdateEvent>,
-) -> Result<()> {
+) -> Result<Option<u64>> {
     let Some(UpdateOneof::Account(account_update)) = update.update_oneof else {
-        return Ok(());
+        return Ok(None);
     };
     let account = account_update
         .account
@@ -311,7 +359,7 @@ fn forward_laserstream_update(
             received_instant: Instant::now(),
         },
     );
-    Ok(())
+    Ok(Some(account_update.slot))
 }
 
 fn pubkey_from_laserstream_bytes(bytes: &[u8], label: &str) -> Result<Pubkey> {
@@ -364,6 +412,7 @@ async fn subscription_batch_loop(
                     reconnect_attempts,
                     error.message,
                     config,
+                    None,
                     &tx,
                     &running,
                 )
@@ -579,6 +628,7 @@ async fn schedule_batch_reconnect_or_fail(
     attempts: usize,
     error: String,
     config: SubscriptionConfig,
+    laserstream_cursor: Option<(u64, Option<u64>)>,
     tx: &mpsc::UnboundedSender<AccountUpdateEvent>,
     running: &Arc<AtomicBool>,
 ) -> bool {
@@ -604,6 +654,8 @@ async fn schedule_batch_reconnect_or_fail(
                 reserve: *reserve,
                 attempt: attempts,
                 backoff,
+                from_slot: laserstream_cursor.map(|(from_slot, _)| from_slot),
+                last_seen_slot: laserstream_cursor.and_then(|(_, last_seen_slot)| last_seen_slot),
                 error: error.clone(),
             },
         ) {
@@ -674,6 +726,86 @@ fn decode_ui_account_data(account: &UiAccount) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use helius_laserstream::grpc::{SubscribeUpdateAccount, SubscribeUpdateAccountInfo};
+
+    #[test]
+    fn laserstream_reconnect_from_slot_keeps_initial_before_updates() {
+        assert_eq!(laserstream_reconnect_from_slot(968, 32, None), 968);
+    }
+
+    #[test]
+    fn laserstream_reconnect_from_slot_advances_with_overlap() {
+        assert_eq!(laserstream_reconnect_from_slot(968, 32, Some(1_050)), 1_018);
+    }
+
+    #[test]
+    fn laserstream_reconnect_from_slot_saturates_near_zero() {
+        assert_eq!(laserstream_reconnect_from_slot(0, 32, Some(10)), 0);
+    }
+
+    #[test]
+    fn laserstream_reconnect_from_slot_stays_above_initial_floor() {
+        assert_eq!(laserstream_reconnect_from_slot(968, 32, Some(990)), 968);
+    }
+
+    #[test]
+    fn records_highest_laserstream_account_update_slot() {
+        let mut last_seen_slot = None;
+
+        record_laserstream_slot(&mut last_seen_slot, 50);
+        record_laserstream_slot(&mut last_seen_slot, 42);
+        record_laserstream_slot(&mut last_seen_slot, 64);
+
+        assert_eq!(last_seen_slot, Some(64));
+    }
+
+    #[test]
+    fn forward_laserstream_update_returns_observed_account_slot() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let reserve = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        let slot = 42;
+        let data = vec![1, 2, 3];
+        let update = SubscribeUpdate {
+            filters: Vec::new(),
+            created_at: None,
+            update_oneof: Some(UpdateOneof::Account(SubscribeUpdateAccount {
+                account: Some(SubscribeUpdateAccountInfo {
+                    pubkey: reserve.to_bytes().to_vec(),
+                    lamports: 0,
+                    owner: owner.to_bytes().to_vec(),
+                    executable: false,
+                    rent_epoch: 0,
+                    data: data.clone(),
+                    write_version: 0,
+                    txn_signature: None,
+                }),
+                slot,
+                is_startup: false,
+            })),
+        };
+
+        let observed_slot = forward_laserstream_update(update, &tx).unwrap();
+
+        assert_eq!(observed_slot, Some(slot));
+        match rx.try_recv().unwrap() {
+            AccountUpdateEvent::AccountUpdate {
+                metadata,
+                reserve: event_reserve,
+                slot: event_slot,
+                owner: event_owner,
+                data: event_data,
+                ..
+            } => {
+                assert_eq!(metadata.source, LASERSTREAM_SOURCE);
+                assert_eq!(event_reserve, reserve);
+                assert_eq!(event_slot, slot);
+                assert_eq!(event_owner, owner.to_string());
+                assert_eq!(event_data, data);
+            }
+            event => panic!("unexpected event: {event:?}"),
+        }
+    }
 
     #[test]
     fn detects_laserstream_replay_retention_error() {

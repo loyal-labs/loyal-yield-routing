@@ -198,7 +198,8 @@ async fn run() -> Result<()> {
                     .helius_api_key
                     .clone()
                     .expect("validated Helius API key"),
-                from_slot: seed_slot.saturating_sub(args.laserstream_replay_overlap_slots),
+                initial_from_slot: seed_slot.saturating_sub(args.laserstream_replay_overlap_slots),
+                replay_overlap_slots: args.laserstream_replay_overlap_slots,
                 config: subscription_config,
             };
             source.spawn(
@@ -382,9 +383,28 @@ async fn run_event_loop(
                     AccountUpdateEvent::Heartbeat { reserve } => {
                         subscription_states.insert(reserve, SubscriptionRuntimeState::Active);
                     }
-                    AccountUpdateEvent::Reconnecting { reserve, attempt, backoff, error } => {
+                    AccountUpdateEvent::Reconnecting {
+                        reserve,
+                        attempt,
+                        backoff,
+                        from_slot,
+                        last_seen_slot,
+                        error,
+                    } => {
                         subscription_states.insert(reserve, SubscriptionRuntimeState::Reconnecting);
-                        tracing::warn!(%reserve, attempt, backoff_ms = backoff.as_millis(), %error, "subscription reconnect scheduled");
+                        if let Some(from_slot) = from_slot {
+                            tracing::warn!(
+                                %reserve,
+                                attempt,
+                                backoff_ms = backoff.as_millis(),
+                                from_slot,
+                                ?last_seen_slot,
+                                %error,
+                                "subscription reconnect scheduled"
+                            );
+                        } else {
+                            tracing::warn!(%reserve, attempt, backoff_ms = backoff.as_millis(), %error, "subscription reconnect scheduled");
+                        }
                     }
                     AccountUpdateEvent::Failed { reserve, attempts, error } => {
                         subscription_states.insert(reserve, SubscriptionRuntimeState::Failed);
