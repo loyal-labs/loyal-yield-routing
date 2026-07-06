@@ -383,23 +383,14 @@ async fn run_event_loop(
                     AccountUpdateEvent::Heartbeat { reserve } => {
                         subscription_states.insert(reserve, SubscriptionRuntimeState::Active);
                     }
-                    AccountUpdateEvent::Reconnecting { reserve, attempt, backoff, error, replay_cursor } => {
+                    AccountUpdateEvent::Reconnecting {
+                        reserve,
+                        attempt,
+                        backoff,
+                        error,
+                    } => {
                         subscription_states.insert(reserve, SubscriptionRuntimeState::Reconnecting);
-                        if let Some(cursor) = replay_cursor {
-                            tracing::warn!(
-                                %reserve,
-                                attempt,
-                                backoff_ms = backoff.as_millis(),
-                                %error,
-                                from_slot = cursor.next_from_slot,
-                                last_seen_slot = ?cursor.last_seen_slot,
-                                initial_from_slot = cursor.initial_from_slot,
-                                replay_overlap_slots = cursor.replay_overlap_slots,
-                                "subscription reconnect scheduled"
-                            );
-                        } else {
-                            tracing::warn!(%reserve, attempt, backoff_ms = backoff.as_millis(), %error, "subscription reconnect scheduled");
-                        }
+                        tracing::warn!(%reserve, attempt, backoff_ms = backoff.as_millis(), %error, "subscription reconnect scheduled");
                     }
                     AccountUpdateEvent::Failed { reserve, attempts, error } => {
                         subscription_states.insert(reserve, SubscriptionRuntimeState::Failed);

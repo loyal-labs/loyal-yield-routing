@@ -79,7 +79,6 @@ pub enum AccountUpdateEvent {
         attempt: usize,
         backoff: Duration,
         error: String,
-        replay_cursor: Option<LaserstreamReplayCursorSnapshot>,
     },
     Failed {
         reserve: Pubkey,
@@ -163,7 +162,7 @@ pub fn build_laserstream_subscribe_request(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LaserstreamReplayCursorSnapshot {
+struct LaserstreamReplayCursorSnapshot {
     pub initial_from_slot: u64,
     pub replay_overlap_slots: u64,
     pub last_seen_slot: Option<u64>,
@@ -267,13 +266,23 @@ async fn run_laserstream_subscription(
                     reconnect_attempts = 0;
                 }
                 reconnect_attempts += 1;
-                let replay_cursor = Some(replay_cursor.snapshot());
+                let replay_cursor = replay_cursor.snapshot();
+                tracing::warn!(
+                    attempt = reconnect_attempts,
+                    backoff_ms = reconnect_backoff(reconnect_attempts, source.config).as_millis(),
+                    error = %error.message,
+                    from_slot = replay_cursor.next_from_slot,
+                    last_seen_slot = ?replay_cursor.last_seen_slot,
+                    initial_from_slot = replay_cursor.initial_from_slot,
+                    replay_overlap_slots = replay_cursor.replay_overlap_slots,
+                    reserve_count = reserves.len(),
+                    "LaserStream subscription reconnect scheduled"
+                );
                 if !schedule_batch_reconnect_or_fail(
                     &reserves,
                     reconnect_attempts,
                     error.message,
                     source.config,
-                    replay_cursor,
                     &tx,
                     &running,
                 )
@@ -446,7 +455,6 @@ async fn subscription_batch_loop(
                     reconnect_attempts,
                     error.message,
                     config,
-                    None,
                     &tx,
                     &running,
                 )
@@ -662,7 +670,6 @@ async fn schedule_batch_reconnect_or_fail(
     attempts: usize,
     error: String,
     config: SubscriptionConfig,
-    replay_cursor: Option<LaserstreamReplayCursorSnapshot>,
     tx: &mpsc::UnboundedSender<AccountUpdateEvent>,
     running: &Arc<AtomicBool>,
 ) -> bool {
@@ -689,7 +696,6 @@ async fn schedule_batch_reconnect_or_fail(
                 attempt: attempts,
                 backoff,
                 error: error.clone(),
-                replay_cursor,
             },
         ) {
             return false;
