@@ -12,9 +12,10 @@ use chrono::{DateTime, Duration, Utc};
 use loyal_actions::{CASH_MINT, PYUSD_MINT, USDC_MINT, USDG_MINT, USDS_MINT, USDT_MINT};
 use loyal_yield_orchestrator::sqlx::Row;
 use loyal_yield_orchestrator::{
-    route_amount_evidence, solana_testing_keypair_from_env, yield_router_keypair_from_env,
-    CurrentReservePosition, ManagedVault, NeonSqlClient, NeonSqlConfig, PolicyId, RoutePolicy,
-    VaultId, ACTIVE_DECISION_STATUSES, SOLANA_TESTING_PK_ENV,
+    route_amount_evidence, same_mint_route_mode_aliases, solana_testing_keypair_from_env,
+    yield_router_keypair_from_env, CurrentReservePosition, ManagedVault, NeonSqlClient,
+    NeonSqlConfig, PolicyId, RoutePolicy, VaultId, ACTIVE_DECISION_STATUSES,
+    ROUTE_MODE_SAME_MINT_KAMINO, SOLANA_TESTING_PK_ENV,
 };
 use loyal_yield_router::timescale::{
     SupportedReserveLatestQuery, SupportedReserveLatestRow, TimescaleRouterClient,
@@ -28,7 +29,7 @@ const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 300;
 const DEFAULT_REBALANCE_COOLDOWN_SECONDS: u64 = 300;
 const DEFAULT_MAX_CANDIDATE_AGE_SECONDS: i64 = 6 * 60 * 60;
 const DEFAULT_MIN_EDGE_BPS: i64 = 1;
-const SAME_MINT_ROUTE_MODE: &str = "same_mint_kamino";
+const SAME_MINT_ROUTE_MODE: &str = ROUTE_MODE_SAME_MINT_KAMINO;
 const ENABLED_STABLE_MINTS_ENV: &str = "EARN_ROUTER_ENABLED_STABLE_MINTS";
 
 #[derive(Debug, Clone)]
@@ -193,12 +194,7 @@ async fn run_vault_once(
 ) -> Result<Value, Box<dyn Error>> {
     let candidate_counts = candidate_counts_by_mint(candidates);
     let skipped_mint_list = skipped_mints(&options.enabled_mints, candidates);
-    if !vault
-        .policy
-        .route_modes
-        .iter()
-        .any(|mode| mode == SAME_MINT_ROUTE_MODE)
-    {
+    if !vault.policy.supports_route_mode(SAME_MINT_ROUTE_MODE) {
         return Ok(json!({
             "status": "skipped_policy_route_mode",
             "execute": options.execute,
@@ -772,6 +768,7 @@ async fn fetch_all_active_vaults(
     delegated_signer: &str,
     enabled_mints: &[String],
 ) -> Result<Vec<ResolvedVault>, Box<dyn Error>> {
+    let route_mode_aliases = same_mint_route_mode_aliases();
     let rows = loyal_yield_orchestrator::sqlx::query(
         r#"
         SELECT
@@ -806,7 +803,7 @@ async fn fetch_all_active_vaults(
         WHERE v.active = true
           AND p.active = true
           AND $1 = ANY(p.delegated_signers)
-          AND $2 = ANY(p.route_modes)
+          AND p.route_modes && $2::TEXT[]
           AND p.stable_mints && $3::TEXT[]
           AND p.kamino_liquidity_mints && $3::TEXT[]
           AND cardinality(p.kamino_markets) > 0
@@ -814,7 +811,7 @@ async fn fetch_all_active_vaults(
         "#,
     )
     .bind(delegated_signer)
-    .bind(SAME_MINT_ROUTE_MODE)
+    .bind(&route_mode_aliases)
     .bind(enabled_mints)
     .fetch_all(neon.pool())
     .await?;
