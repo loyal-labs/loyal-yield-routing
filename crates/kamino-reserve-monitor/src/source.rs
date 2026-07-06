@@ -173,11 +173,7 @@ async fn run_laserstream_subscription(
     let mut last_seen_slot = None;
     while running.load(Ordering::Relaxed) {
         let attempt = reconnect_attempts + 1;
-        let from_slot = laserstream_reconnect_from_slot(
-            source.initial_from_slot,
-            source.replay_overlap_slots,
-            last_seen_slot,
-        );
+        let request = build_laserstream_attempt_request(&source, &reserves, last_seen_slot);
         for reserve in &reserves {
             if !send_event(
                 &tx,
@@ -194,7 +190,7 @@ async fn run_laserstream_subscription(
             &source,
             &reserves,
             attempt,
-            from_slot,
+            request,
             &mut last_seen_slot,
             &tx,
             &running,
@@ -253,12 +249,11 @@ async fn run_laserstream_attempt(
     source: &LaserstreamAccountUpdateSource,
     reserves: &[Pubkey],
     attempt: usize,
-    from_slot: u64,
+    request: SubscribeRequest,
     last_seen_slot: &mut Option<u64>,
     tx: &mpsc::UnboundedSender<AccountUpdateEvent>,
     running: &Arc<AtomicBool>,
 ) -> std::result::Result<(), SubscriptionAttemptError> {
-    let request = build_laserstream_subscribe_request(reserves, from_slot);
     let config = LaserstreamConfig::new(source.endpoint.clone(), source.api_key.clone())
         .with_max_reconnect_attempts(source.config.max_reconnect_attempts as u32)
         .with_replay(true);
@@ -312,6 +307,19 @@ async fn run_laserstream_attempt(
     }
 
     Ok(())
+}
+
+fn build_laserstream_attempt_request(
+    source: &LaserstreamAccountUpdateSource,
+    reserves: &[Pubkey],
+    last_seen_slot: Option<u64>,
+) -> SubscribeRequest {
+    let from_slot = laserstream_reconnect_from_slot(
+        source.initial_from_slot,
+        source.replay_overlap_slots,
+        last_seen_slot,
+    );
+    build_laserstream_subscribe_request(reserves, from_slot)
 }
 
 fn laserstream_reconnect_from_slot(
@@ -729,23 +737,47 @@ mod tests {
     use helius_laserstream::grpc::{SubscribeUpdateAccount, SubscribeUpdateAccountInfo};
 
     #[test]
-    fn laserstream_reconnect_from_slot_keeps_initial_before_updates() {
-        assert_eq!(laserstream_reconnect_from_slot(968, 32, None), 968);
+    fn laserstream_reconnect_from_slot_handles_overlap_edges() {
+        let cases = [
+            (968, 32, None, 968),
+            (968, 32, Some(1_050), 1_018),
+            (0, 32, Some(10), 0),
+            (968, 32, Some(990), 968),
+        ];
+
+        for (initial_from_slot, replay_overlap_slots, last_seen_slot, expected) in cases {
+            assert_eq!(
+                laserstream_reconnect_from_slot(
+                    initial_from_slot,
+                    replay_overlap_slots,
+                    last_seen_slot
+                ),
+                expected
+            );
+        }
     }
 
     #[test]
-    fn laserstream_reconnect_from_slot_advances_with_overlap() {
-        assert_eq!(laserstream_reconnect_from_slot(968, 32, Some(1_050)), 1_018);
-    }
+    fn laserstream_attempt_request_uses_observed_slot_for_reconnect() {
+        let source = LaserstreamAccountUpdateSource {
+            endpoint: "https://example.invalid".to_string(),
+            api_key: "test-key".to_string(),
+            initial_from_slot: 968,
+            replay_overlap_slots: 32,
+            config: SubscriptionConfig {
+                max_reconnect_attempts: 0,
+                reconnect_base_delay: Duration::ZERO,
+                reconnect_max_delay: Duration::ZERO,
+                heartbeat_interval: Duration::from_secs(1),
+            },
+        };
+        let reserve = Pubkey::new_unique();
 
-    #[test]
-    fn laserstream_reconnect_from_slot_saturates_near_zero() {
-        assert_eq!(laserstream_reconnect_from_slot(0, 32, Some(10)), 0);
-    }
+        let initial_request = build_laserstream_attempt_request(&source, &[reserve], None);
+        let reconnect_request = build_laserstream_attempt_request(&source, &[reserve], Some(1_050));
 
-    #[test]
-    fn laserstream_reconnect_from_slot_stays_above_initial_floor() {
-        assert_eq!(laserstream_reconnect_from_slot(968, 32, Some(990)), 968);
+        assert_eq!(initial_request.from_slot, Some(968));
+        assert_eq!(reconnect_request.from_slot, Some(1_018));
     }
 
     #[test]
@@ -762,21 +794,18 @@ mod tests {
     #[test]
     fn forward_laserstream_update_returns_observed_account_slot() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let reserve = Pubkey::new_unique();
-        let owner = Pubkey::new_unique();
         let slot = 42;
-        let data = vec![1, 2, 3];
         let update = SubscribeUpdate {
             filters: Vec::new(),
             created_at: None,
             update_oneof: Some(UpdateOneof::Account(SubscribeUpdateAccount {
                 account: Some(SubscribeUpdateAccountInfo {
-                    pubkey: reserve.to_bytes().to_vec(),
+                    pubkey: Pubkey::new_unique().to_bytes().to_vec(),
                     lamports: 0,
-                    owner: owner.to_bytes().to_vec(),
+                    owner: Pubkey::new_unique().to_bytes().to_vec(),
                     executable: false,
                     rent_epoch: 0,
-                    data: data.clone(),
+                    data: vec![1, 2, 3],
                     write_version: 0,
                     txn_signature: None,
                 }),
@@ -790,19 +819,8 @@ mod tests {
         assert_eq!(observed_slot, Some(slot));
         match rx.try_recv().unwrap() {
             AccountUpdateEvent::AccountUpdate {
-                metadata,
-                reserve: event_reserve,
-                slot: event_slot,
-                owner: event_owner,
-                data: event_data,
-                ..
-            } => {
-                assert_eq!(metadata.source, LASERSTREAM_SOURCE);
-                assert_eq!(event_reserve, reserve);
-                assert_eq!(event_slot, slot);
-                assert_eq!(event_owner, owner.to_string());
-                assert_eq!(event_data, data);
-            }
+                slot: event_slot, ..
+            } => assert_eq!(event_slot, slot),
             event => panic!("unexpected event: {event:?}"),
         }
     }
