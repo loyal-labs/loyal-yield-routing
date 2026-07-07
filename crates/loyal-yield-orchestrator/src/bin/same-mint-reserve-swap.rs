@@ -65,6 +65,8 @@ use solana_sdk::address_lookup_table::{
     state::{AddressLookupTable, LOOKUP_TABLE_MAX_ADDRESSES},
 };
 #[allow(deprecated)]
+use solana_sdk::system_instruction;
+#[allow(deprecated)]
 use solana_sdk::system_program;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -617,10 +619,21 @@ impl RouteLookupTableCoverage {
 }
 
 #[derive(Debug)]
+struct MissingObligationSetupFunding {
+    payer: String,
+    vault: String,
+    lamports: u64,
+    vault_lamports_before: u64,
+    payer_lamports_before: u64,
+    required_vault_lamports: u64,
+}
+
+#[derive(Debug)]
 struct MissingObligationSetupDryRun {
     policy_account: String,
     policy_source: &'static str,
     instruction_constraint_index: u8,
+    vault_rent_top_up: Option<MissingObligationSetupFunding>,
     init_execution: PolicyTransactionBuild,
 }
 
@@ -629,6 +642,7 @@ struct MissingObligationSetupSubmitResult {
     policy_account: String,
     policy_source: &'static str,
     instruction_constraint_index: u8,
+    vault_rent_top_up: Option<MissingObligationSetupFunding>,
     init_signature: String,
     init_submitted_slot: i64,
     init_confirmed_slot: i64,
@@ -2477,6 +2491,54 @@ fn build_missing_obligation_setup_dry_run(
         .as_ref()
         .map(|keypair| keypair as &dyn Signer)
         .unwrap_or(&delegated_signer);
+    build_missing_obligation_setup_dry_run_with_signers(
+        &rpc,
+        &lookup_table_accounts,
+        vault,
+        target,
+        policy_preflight,
+        fee_payer,
+        &delegated_signer,
+    )
+}
+
+fn missing_obligation_setup_vault_rent_top_up(
+    rpc: &RpcClient,
+    vault_pubkey: Pubkey,
+    fee_payer: &dyn Signer,
+) -> Result<(Option<MissingObligationSetupFunding>, Vec<Instruction>), Box<dyn Error>> {
+    let required_vault_lamports =
+        rpc.get_minimum_balance_for_rent_exemption(std::mem::size_of::<Obligation>() + 8)?;
+    let vault_lamports_before = rpc.get_balance(&vault_pubkey)?;
+    let payer_lamports_before = rpc.get_balance(&fee_payer.pubkey())?;
+    if vault_lamports_before >= required_vault_lamports || fee_payer.pubkey() == vault_pubkey {
+        return Ok((None, Vec::new()));
+    }
+
+    let lamports = required_vault_lamports.saturating_sub(vault_lamports_before);
+    let transfer = system_instruction::transfer(&fee_payer.pubkey(), &vault_pubkey, lamports);
+    Ok((
+        Some(MissingObligationSetupFunding {
+            payer: fee_payer.pubkey().to_string(),
+            vault: vault_pubkey.to_string(),
+            lamports,
+            vault_lamports_before,
+            payer_lamports_before,
+            required_vault_lamports,
+        }),
+        vec![transfer],
+    ))
+}
+
+fn build_missing_obligation_setup_dry_run_with_signers(
+    rpc: &RpcClient,
+    lookup_table_accounts: &[AddressLookupTableAccount],
+    vault: &SelectedVault,
+    target: &ChainPositionSummary,
+    policy_preflight: Option<&PolicyAccountPreflight>,
+    fee_payer: &dyn Signer,
+    delegated_signer: &dyn Signer,
+) -> Result<MissingObligationSetupDryRun, Box<dyn Error>> {
     let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
     let account_index = u8::try_from(vault.vault_index).map_err(|_| {
         format!(
@@ -2485,7 +2547,9 @@ fn build_missing_obligation_setup_dry_run(
         )
     })?;
     let (policy, instruction_constraint_index) =
-        resolve_init_obligation_policy(Some(&rpc), vault, target, policy_preflight)?;
+        resolve_init_obligation_policy(Some(rpc), vault, target, policy_preflight)?;
+    let (vault_rent_top_up, setup_pre_instructions) =
+        missing_obligation_setup_vault_rent_top_up(rpc, vault_pubkey, fee_payer)?;
     let route_policy = Pubkey::from_str(&vault.policy_account)?;
     let policy_source = if policy == route_policy {
         "route_policy"
@@ -2494,15 +2558,16 @@ fn build_missing_obligation_setup_dry_run(
     };
 
     let init_execution = build_init_obligation_execution_transaction(
-        &rpc,
-        &lookup_table_accounts,
+        rpc,
+        lookup_table_accounts,
         policy,
         account_index,
         vault_pubkey,
         target,
         instruction_constraint_index,
         fee_payer,
-        &delegated_signer,
+        delegated_signer,
+        &setup_pre_instructions,
         None,
     )?;
 
@@ -2510,6 +2575,7 @@ fn build_missing_obligation_setup_dry_run(
         policy_account: policy.to_string(),
         policy_source,
         instruction_constraint_index,
+        vault_rent_top_up,
         init_execution,
     })
 }
@@ -2534,6 +2600,26 @@ async fn execute_missing_obligation_setup(
         .as_ref()
         .map(|keypair| keypair as &dyn Signer)
         .unwrap_or(&delegated_signer);
+    execute_missing_obligation_setup_with_signers(
+        &rpc,
+        &lookup_table_accounts,
+        vault,
+        target,
+        policy_preflight,
+        fee_payer,
+        &delegated_signer,
+    )
+}
+
+fn execute_missing_obligation_setup_with_signers(
+    rpc: &RpcClient,
+    lookup_table_accounts: &[AddressLookupTableAccount],
+    vault: &SelectedVault,
+    target: &ChainPositionSummary,
+    policy_preflight: Option<&PolicyAccountPreflight>,
+    fee_payer: &dyn Signer,
+    delegated_signer: &dyn Signer,
+) -> Result<MissingObligationSetupSubmitResult, Box<dyn Error>> {
     let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
     let account_index = u8::try_from(vault.vault_index).map_err(|_| {
         format!(
@@ -2542,7 +2628,9 @@ async fn execute_missing_obligation_setup(
         )
     })?;
     let (policy, instruction_constraint_index) =
-        resolve_init_obligation_policy(Some(&rpc), vault, target, policy_preflight)?;
+        resolve_init_obligation_policy(Some(rpc), vault, target, policy_preflight)?;
+    let (vault_rent_top_up, setup_pre_instructions) =
+        missing_obligation_setup_vault_rent_top_up(rpc, vault_pubkey, fee_payer)?;
     let route_policy = Pubkey::from_str(&vault.policy_account)?;
     let policy_source = if policy == route_policy {
         "route_policy"
@@ -2550,26 +2638,28 @@ async fn execute_missing_obligation_setup(
         "setup_policy"
     };
     let init_execution = build_init_obligation_execution_transaction(
-        &rpc,
-        &lookup_table_accounts,
+        rpc,
+        lookup_table_accounts,
         policy,
         account_index,
         vault_pubkey,
         target,
         instruction_constraint_index,
         fee_payer,
-        &delegated_signer,
+        delegated_signer,
+        &setup_pre_instructions,
         None,
     )?;
     if let Some(error) = &init_execution.simulation_error {
         return Err(format!("init-obligation execution simulation failed: {error}").into());
     }
-    let init_submission = submit_built_policy_transaction(&rpc, &init_execution)?;
+    let init_submission = submit_built_policy_transaction(rpc, &init_execution)?;
 
     Ok(MissingObligationSetupSubmitResult {
         policy_account: policy.to_string(),
         policy_source,
         instruction_constraint_index,
+        vault_rent_top_up,
         init_signature: init_submission.signature,
         init_submitted_slot: init_submission.submitted_slot,
         init_confirmed_slot: init_submission.confirmed_slot,
@@ -2695,6 +2785,7 @@ fn build_init_obligation_execution_transaction(
     instruction_constraint_index: u8,
     fee_payer: &dyn Signer,
     delegated_signer: &dyn Signer,
+    setup_pre_instructions: &[Instruction],
     simulation_skip_reason: Option<String>,
 ) -> Result<PolicyTransactionBuild, Box<dyn Error>> {
     let init_instruction = kamino_init_obligation_instruction(vault_pubkey, target)?;
@@ -2710,10 +2801,12 @@ fn build_init_obligation_execution_transaction(
         transaction_accounts,
     );
     let transaction_signers = same_mint_route_signers(fee_payer, delegated_signer);
+    let mut instructions = setup_pre_instructions.to_vec();
+    instructions.push(outer_instruction);
     build_signed_transaction(
         rpc,
         fee_payer.pubkey(),
-        &[outer_instruction],
+        &instructions,
         lookup_table_accounts,
         &transaction_signers,
         "init-obligation setup execution",
@@ -3119,6 +3212,14 @@ async fn run_idle_vault_deposit_flow(
         .await?;
     let amount_i64 = i64::try_from(amount_raw)
         .map_err(|_| "idle vault deposit amount does not fit Postgres BIGINT")?;
+    let mut active_preview = initial_preview.clone();
+    let mut reloaded_policy_preflight: Option<PolicyAccountPreflight> = None;
+    let mut setup_obligation_before_deposit = false;
+    let mut setup_obligation_policy: Option<String> = None;
+    let mut setup_obligation_policy_source: Option<String> = None;
+    let mut setup_obligation_vault_rent_top_up_lamports: i64 = 0;
+    let mut missing_obligation_setup_dry_run: Option<Value> = None;
+    let mut missing_obligation_setup_result: Option<Value> = None;
 
     let mut blockers = Vec::new();
     if deposit_position.liquidity_mint != USDC_MINT.to_string() {
@@ -3146,10 +3247,39 @@ async fn run_idle_vault_deposit_flow(
         ));
     }
     if !deposit_position.obligation_exists {
-        blockers.push(format!(
-            "deposit obligation {} is missing for reserve {}; idle vault deposits require existing obligation setup",
-            deposit_position.obligation, deposit_position.reserve
-        ));
+        match build_missing_obligation_setup_dry_run_with_signers(
+            &rpc,
+            &lookup_table_accounts,
+            vault,
+            deposit_position,
+            policy_preflight,
+            &signer,
+            &signer,
+        ) {
+            Ok(dry_run) => {
+                setup_obligation_before_deposit = true;
+                setup_obligation_policy = Some(dry_run.policy_account.clone());
+                setup_obligation_policy_source = Some(dry_run.policy_source.to_owned());
+                setup_obligation_vault_rent_top_up_lamports = dry_run
+                    .vault_rent_top_up
+                    .as_ref()
+                    .map(|funding| i64::try_from(funding.lamports))
+                    .transpose()
+                    .map_err(|_| "setup obligation rent top-up lamports do not fit BIGINT")?
+                    .unwrap_or(0);
+                if let Some(error) = &dry_run.init_execution.simulation_error {
+                    blockers.push(format!(
+                        "init-obligation setup simulation failed before idle deposit: {error}"
+                    ));
+                }
+                missing_obligation_setup_dry_run =
+                    Some(missing_obligation_setup_dry_run_json(deposit_position, &dry_run));
+            }
+            Err(error) => blockers.push(format!(
+                "deposit obligation {} is missing for reserve {} and no authorized init_obligation setup could be built: {error}",
+                deposit_position.obligation, deposit_position.reserve
+            )),
+        }
     }
 
     match db_idle.as_ref() {
@@ -3243,41 +3373,46 @@ async fn run_idle_vault_deposit_flow(
         }
     }
 
-    let policy_plan = match build_initial_reserve_deposit_policy_plan(
-        vault,
-        initial_preview,
-        policy_preflight,
-        deposit_reserve,
-        amount_raw,
-        signer.pubkey(),
-        signer.pubkey(),
-        account_index,
-    ) {
-        Ok(plan) => Some(plan),
-        Err(error) => {
-            blockers.push(error.to_string());
-            None
-        }
-    };
-    let policy_transaction = if let Some(plan) = policy_plan.as_ref() {
-        let mut policy_instructions = plan.pre_instructions.clone();
-        policy_instructions.push(plan.instruction.clone());
-        Some(build_signed_transaction(
-            &rpc,
+    let mut dry_run_policy_plan = None;
+    let mut dry_run_policy_transaction = None;
+    if !setup_obligation_before_deposit {
+        dry_run_policy_plan = match build_initial_reserve_deposit_policy_plan(
+            vault,
+            initial_preview,
+            policy_preflight,
+            deposit_reserve,
+            amount_raw,
             signer.pubkey(),
-            &policy_instructions,
-            &lookup_table_accounts,
-            &[&signer],
-            "idle vault policy deposit",
-            if blockers.is_empty() {
+            signer.pubkey(),
+            account_index,
+        ) {
+            Ok(plan) => Some(plan),
+            Err(error) => {
+                blockers.push(error.to_string());
                 None
-            } else {
-                Some("idle deposit simulation skipped because preflight blockers exist".to_owned())
-            },
-        )?)
-    } else {
-        None
-    };
+            }
+        };
+        if let Some(plan) = dry_run_policy_plan.as_ref() {
+            let mut policy_instructions = plan.pre_instructions.clone();
+            policy_instructions.push(plan.instruction.clone());
+            dry_run_policy_transaction = Some(build_signed_transaction(
+                &rpc,
+                signer.pubkey(),
+                &policy_instructions,
+                &lookup_table_accounts,
+                &[&signer],
+                "idle vault policy deposit",
+                if blockers.is_empty() {
+                    None
+                } else {
+                    Some(
+                        "idle deposit simulation skipped because preflight blockers exist"
+                            .to_owned(),
+                    )
+                },
+            )?);
+        }
+    }
 
     let idle_decision_input = if options.execute {
         Some(IdleVaultDepositDecisionInput {
@@ -3299,6 +3434,10 @@ async fn run_idle_vault_deposit_flow(
                 .expected_edge_bps
                 .ok_or("--deposit-idle-vault-reserve --execute requires --expected-edge-bps")?,
             estimated_cost_lamports: 0,
+            setup_obligation_before_deposit,
+            setup_obligation_policy: setup_obligation_policy.clone(),
+            setup_obligation_policy_source: setup_obligation_policy_source.clone(),
+            setup_obligation_vault_rent_top_up_lamports,
         })
     } else {
         None
@@ -3321,8 +3460,11 @@ async fn run_idle_vault_deposit_flow(
                     target_reserve: deposit_reserve.to_owned(),
                 }, policy_preflight),
                 "preflightBlockers": blockers,
-                "policyDeposit": policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
-                "policyDepositTransaction": policy_transaction.as_ref().map(policy_transaction_json),
+                "setupObligationBeforeDeposit": setup_obligation_before_deposit,
+                "missingObligationSetup": missing_obligation_setup_dry_run,
+                "policyDepositRequiresSetup": setup_obligation_before_deposit,
+                "policyDeposit": dry_run_policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
+                "policyDepositTransaction": dry_run_policy_transaction.as_ref().map(policy_transaction_json),
                 "postConfirmReconcileReserves": idle_deposit_post_reconcile_reserves(options, deposit_reserve),
             }))?
         );
@@ -3373,8 +3515,10 @@ async fn run_idle_vault_deposit_flow(
                 "decisionId": blocked_decision.as_ref().map(|decision| decision.id.as_i64()),
                 "blockedDecision": blocked_decision.as_ref().map(idle_vault_deposit_decision_json),
                 "blockedDecisionSkipReason": blocked_decision_skip_reason,
-                "policyDeposit": policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
-                "policyDepositTransaction": policy_transaction.as_ref().map(policy_transaction_json),
+                "setupObligationBeforeDeposit": setup_obligation_before_deposit,
+                "missingObligationSetup": missing_obligation_setup_dry_run,
+                "policyDeposit": dry_run_policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
+                "policyDepositTransaction": dry_run_policy_transaction.as_ref().map(policy_transaction_json),
             }))?
         );
         return Err(blocker_reason.into());
@@ -3402,9 +3546,180 @@ async fn run_idle_vault_deposit_flow(
         }
     };
 
-    let policy_plan = policy_plan.ok_or("idle vault policy deposit plan was not built")?;
-    let policy_transaction =
-        policy_transaction.ok_or("idle vault policy deposit transaction was not built")?;
+    if decision.status.is_terminal() {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "status": "idle_vault_deposit_not_planned",
+                "writesDecision": false,
+                "sendsTransactions": false,
+                "skipReason": "matched_terminal_idle_vault_deposit_decision",
+                "decisionId": decision.id.as_i64(),
+                "decisionStatus": decision.status.as_str(),
+                "decision": idle_vault_deposit_decision_json(&decision),
+            }))?
+        );
+        return Err("idle vault deposit was not planned because a terminal matching decision already exists".into());
+    }
+
+    if setup_obligation_before_deposit {
+        let setup_result = match execute_missing_obligation_setup_with_signers(
+            &rpc,
+            &lookup_table_accounts,
+            vault,
+            deposit_position,
+            policy_preflight,
+            &signer,
+            &signer,
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                let reason = format!("idle vault init-obligation setup failed: {error}");
+                client
+                    .advance_decision(
+                        decision.id,
+                        DecisionAdvance::Fail {
+                            reason: reason.clone(),
+                        },
+                    )
+                    .await?;
+                return Err(reason.into());
+            }
+        };
+        missing_obligation_setup_result = Some(missing_obligation_setup_submit_result_json(
+            deposit_position,
+            &setup_result,
+        ));
+        active_preview = match load_chain_reconcile_preview(
+            &options.rpc_url,
+            vault,
+            &[deposit_reserve.to_owned()],
+        ) {
+            Ok(preview) => preview,
+            Err(error) => {
+                let reason = format!(
+                    "idle vault init-obligation setup confirmed but chain reload failed: {error}"
+                );
+                client
+                    .advance_decision(
+                        decision.id,
+                        DecisionAdvance::Fail {
+                            reason: reason.clone(),
+                        },
+                    )
+                    .await?;
+                return Err(reason.into());
+            }
+        };
+        reloaded_policy_preflight = match load_policy_account_preflight(
+            &options.rpc_url,
+            vault,
+            &active_preview,
+            &ReserveMove {
+                source_reserve: deposit_reserve.to_owned(),
+                target_reserve: deposit_reserve.to_owned(),
+            },
+        ) {
+            Ok(preflight) => Some(preflight),
+            Err(error) => {
+                let reason = format!(
+                    "idle vault init-obligation setup confirmed but policy reload failed: {error}"
+                );
+                client
+                    .advance_decision(
+                        decision.id,
+                        DecisionAdvance::Fail {
+                            reason: reason.clone(),
+                        },
+                    )
+                    .await?;
+                return Err(reason.into());
+            }
+        };
+        let active_deposit = match chain_position_for_reserve(&active_preview, deposit_reserve) {
+            Ok(position) => position,
+            Err(error) => {
+                let reason = format!(
+                    "idle vault init-obligation setup confirmed but target reserve reload failed: {error}"
+                );
+                client
+                    .advance_decision(
+                        decision.id,
+                        DecisionAdvance::Fail {
+                            reason: reason.clone(),
+                        },
+                    )
+                    .await?;
+                return Err(reason.into());
+            }
+        };
+        if !active_deposit.obligation_exists {
+            let reason = format!(
+                "deposit obligation {} is still missing after idle vault init-obligation setup",
+                active_deposit.obligation
+            );
+            client
+                .advance_decision(
+                    decision.id,
+                    DecisionAdvance::Fail {
+                        reason: reason.clone(),
+                    },
+                )
+                .await?;
+            return Err(reason.into());
+        }
+    }
+    let active_policy_preflight = reloaded_policy_preflight.as_ref().or(policy_preflight);
+    let active_deposit_position = chain_position_for_reserve(&active_preview, deposit_reserve)?;
+    let policy_plan = match build_initial_reserve_deposit_policy_plan(
+        vault,
+        &active_preview,
+        active_policy_preflight,
+        deposit_reserve,
+        amount_raw,
+        signer.pubkey(),
+        signer.pubkey(),
+        account_index,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            let reason = format!("idle vault policy deposit plan failed: {error}");
+            client
+                .advance_decision(
+                    decision.id,
+                    DecisionAdvance::Fail {
+                        reason: reason.clone(),
+                    },
+                )
+                .await?;
+            return Err(reason.into());
+        }
+    };
+    let mut policy_instructions = policy_plan.pre_instructions.clone();
+    policy_instructions.push(policy_plan.instruction.clone());
+    let policy_transaction = match build_signed_transaction(
+        &rpc,
+        signer.pubkey(),
+        &policy_instructions,
+        &lookup_table_accounts,
+        &[&signer],
+        "idle vault policy deposit",
+        None,
+    ) {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            let reason = format!("idle vault policy deposit transaction build failed: {error}");
+            client
+                .advance_decision(
+                    decision.id,
+                    DecisionAdvance::Fail {
+                        reason: reason.clone(),
+                    },
+                )
+                .await?;
+            return Err(reason.into());
+        }
+    };
     client
         .advance_decision(decision.id, DecisionAdvance::StartSimulation)
         .await?;
@@ -3516,7 +3831,7 @@ async fn run_idle_vault_deposit_flow(
         vault,
         &confirmed,
         deposit_reserve,
-        &deposit_position.market,
+        &active_deposit_position.market,
         &signature,
         confirmed_slot,
         amount_i64,
@@ -3530,9 +3845,11 @@ async fn run_idle_vault_deposit_flow(
             "writesDecision": true,
             "writesCurrentPositions": true,
             "sendsTransactions": true,
-            "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, &deposit_position, amount_raw, db_idle.as_ref(), options),
+            "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, active_deposit_position, amount_raw, db_idle.as_ref(), options),
             "vault": vault_json(vault),
             "vaultUsdcAta": vault_usdc_ata.to_string(),
+            "setupObligationBeforeDeposit": setup_obligation_before_deposit,
+            "missingObligationSetup": missing_obligation_setup_result,
             "preparedDecision": idle_vault_deposit_decision_json(&decision),
             "confirmedDecision": idle_vault_deposit_decision_json(&confirmed),
             "policyDeposit": initial_deposit_policy_preview_json(&policy_plan.preview),
@@ -10106,6 +10423,7 @@ fn missing_obligation_setup_dry_run_json(
         "policyAccount": dry_run.policy_account,
         "policySource": dry_run.policy_source,
         "instructionConstraintIndex": dry_run.instruction_constraint_index,
+        "vaultRentTopUp": dry_run.vault_rent_top_up.as_ref().map(missing_obligation_setup_funding_json),
         "initExecution": policy_transaction_json(&dry_run.init_execution),
     })
 }
@@ -10121,6 +10439,7 @@ fn missing_obligation_setup_submit_result_json(
         "policyAccount": result.policy_account,
         "policySource": result.policy_source,
         "instructionConstraintIndex": result.instruction_constraint_index,
+        "vaultRentTopUp": result.vault_rent_top_up.as_ref().map(missing_obligation_setup_funding_json),
         "initExecution": {
             "signature": result.init_signature,
             "submittedSlot": result.init_submitted_slot,
@@ -10128,6 +10447,17 @@ fn missing_obligation_setup_submit_result_json(
             "simulationUnitsConsumed": result.init_simulation_units_consumed,
             "transaction": transaction_packet_json(&result.init_transaction_packet),
         },
+    })
+}
+
+fn missing_obligation_setup_funding_json(funding: &MissingObligationSetupFunding) -> Value {
+    json!({
+        "payer": funding.payer,
+        "vault": funding.vault,
+        "lamports": funding.lamports,
+        "vaultLamportsBefore": funding.vault_lamports_before,
+        "payerLamportsBefore": funding.payer_lamports_before,
+        "requiredVaultLamports": funding.required_vault_lamports,
     })
 }
 
@@ -10904,7 +11234,7 @@ mod tests {
 fn print_help() {
     println!(
          "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--provision-lookup-table] [--provision-route-lookup-table] [--deposit-main-usdc <AMOUNT_RAW> | --deposit-reserve <RESERVE> <AMOUNT_RAW> | --deposit-idle-vault-reserve <RESERVE> <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--lookup-table <PUBKEY>...] [--execute]\n\n\
-         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and POLICY_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for live same-mint route execution; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses POLICY_KEYPAIR as fee payer and delegated signer, reuses durable lookup-table coverage, and fails before route send if coverage is missing. Add --provision-route-lookup-table with explicit source/target reserves plus --reconcile-from-chain for route lookup-table setup; it uses POLICY_KEYPAIR as the lookup-table authority and payer, cannot be combined with --optimization-cycle or --seed-from-user-position, and exits without writing a rebalance decision or sending the route. Add --deposit-idle-vault-reserve for router-owned USDC already inside the vault; execute mode requires expected idle token account, observed slot/time, mint, amount, target APY, and edge, uses POLICY_KEYPAIR as fee payer/delegated signer, and does not read SOLANA_TESTING_PK. Add --provision-lookup-table only with --update-policy for durable policy lookup-table setup. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and POLICY_KEYPAIR for the policy deposit; --deposit-reserve allows choosing a non-Main Safe USDC reserve when Main is already the APY winner. Full withdraw mode uses POLICY_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
+         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and POLICY_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for live same-mint route execution; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses POLICY_KEYPAIR as fee payer and delegated signer, reuses durable lookup-table coverage, and fails before route send if coverage is missing. Add --provision-route-lookup-table with explicit source/target reserves plus --reconcile-from-chain for route lookup-table setup; it uses POLICY_KEYPAIR as the lookup-table authority and payer, cannot be combined with --optimization-cycle or --seed-from-user-position, and exits without writing a rebalance decision or sending the route. Add --deposit-idle-vault-reserve for router-owned USDC already inside the vault; execute mode requires expected idle token account, observed slot/time, mint, amount, target APY, and edge, uses POLICY_KEYPAIR as fee payer/delegated signer for target obligation setup when needed and for deposit, and does not read SOLANA_TESTING_PK. Add --provision-lookup-table only with --update-policy for durable policy lookup-table setup. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and POLICY_KEYPAIR for the policy deposit; --deposit-reserve allows choosing a non-Main Safe USDC reserve when Main is already the APY winner. Full withdraw mode uses POLICY_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
          op run --env-file=.env.1password -- bun run same-mint:swap -- --settings <PUBKEY> --vault-index 1 --reconcile-from-chain --seed-from-user-position"
     );
 }

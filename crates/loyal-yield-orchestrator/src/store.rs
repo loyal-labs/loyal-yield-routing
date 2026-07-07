@@ -2502,10 +2502,59 @@ fn validate_idle_vault_deposit_decision_input(
             "idle vault deposit requires a positive edge".to_owned(),
         ));
     }
+    if input.setup_obligation_vault_rent_top_up_lamports < 0 {
+        return Err(OrchestratorError::SameMintRebalanceValidation(
+            "idle vault deposit setup obligation rent top-up must be non-negative".to_owned(),
+        ));
+    }
+    if input.setup_obligation_before_deposit {
+        if input
+            .setup_obligation_policy
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            return Err(OrchestratorError::SameMintRebalanceValidation(
+                "idle vault deposit setup obligation policy is required when setup is planned"
+                    .to_owned(),
+            ));
+        }
+        if input
+            .setup_obligation_policy_source
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            return Err(OrchestratorError::SameMintRebalanceValidation(
+                "idle vault deposit setup obligation policy source is required when setup is planned"
+                    .to_owned(),
+            ));
+        }
+    } else if input.setup_obligation_vault_rent_top_up_lamports != 0 {
+        return Err(OrchestratorError::SameMintRebalanceValidation(
+            "idle vault deposit setup obligation rent top-up requires setup to be planned"
+                .to_owned(),
+        ));
+    }
     Ok(())
 }
 
 fn idle_vault_deposit_execution_plan(input: &IdleVaultDepositDecisionInput) -> Value {
+    let mut route_steps = Vec::new();
+    if input.setup_obligation_before_deposit {
+        if input.setup_obligation_vault_rent_top_up_lamports > 0 {
+            route_steps.push(SYSTEM_TRANSFER_VAULT_RENT_TOP_UP_ROUTE_STEP_FOR_PLAN);
+        }
+        route_steps.push(KAMINO_INIT_OBLIGATION_ROUTE_STEP_FOR_PLAN);
+    }
+    route_steps.push(KAMINO_DEPOSIT_ROUTE_STEP_FOR_PLAN);
+    let policy_executions = if input.setup_obligation_before_deposit {
+        2
+    } else {
+        1
+    };
     json!({
         "kind": "idle_vault_deposit",
         "source_kind": "idle_vault",
@@ -2531,11 +2580,18 @@ fn idle_vault_deposit_execution_plan(input: &IdleVaultDepositDecisionInput) -> V
         "target_supply_apy_bps": input.target_apy_bps,
         "estimated_edge_bps": input.estimated_edge_bps,
         "edge_bps": input.estimated_edge_bps,
-        "policy_executions": 1,
-        "route_steps": [KAMINO_DEPOSIT_ROUTE_STEP_FOR_PLAN],
+        "policy_executions": policy_executions,
+        "setup_obligation_before_deposit": input.setup_obligation_before_deposit,
+        "setup_obligation_policy": input.setup_obligation_policy,
+        "setup_obligation_policy_source": input.setup_obligation_policy_source,
+        "setup_obligation_vault_rent_top_up_lamports": input.setup_obligation_vault_rent_top_up_lamports,
+        "route_steps": route_steps,
     })
 }
 
+const SYSTEM_TRANSFER_VAULT_RENT_TOP_UP_ROUTE_STEP_FOR_PLAN: &str =
+    "system_transfer_vault_rent_top_up";
+const KAMINO_INIT_OBLIGATION_ROUTE_STEP_FOR_PLAN: &str = "kamino_init_obligation";
 const KAMINO_DEPOSIT_ROUTE_STEP_FOR_PLAN: &str =
     "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2";
 

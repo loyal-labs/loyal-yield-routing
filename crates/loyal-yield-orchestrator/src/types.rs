@@ -643,6 +643,10 @@ pub struct IdleVaultDepositDecisionInput {
     pub target_apy_bps: i64,
     pub estimated_edge_bps: i64,
     pub estimated_cost_lamports: i64,
+    pub setup_obligation_before_deposit: bool,
+    pub setup_obligation_policy: Option<String>,
+    pub setup_obligation_policy_source: Option<String>,
+    pub setup_obligation_vault_rent_top_up_lamports: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

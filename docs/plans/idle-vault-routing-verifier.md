@@ -104,7 +104,22 @@ Required proof:
   liquidity mint, amount, target APY, and edge before writing or submitting.
 - It verifies the live vault ATA balance is at least the planned amount.
 - It fails closed when the DB idle row is stale above the live chain balance.
-- It builds a deposit-only route through `build_initial_reserve_deposit_policy_plan`.
+- It builds no source withdraw; idle liquidity is deposited from the live vault
+  ATA.
+- If the target Kamino obligation is missing, idle mode first uses the existing
+  market-scoped `init_obligation` route/setup policy with `POLICY_KEYPAIR` as
+  fee payer and delegated signer, confirms that setup transaction, reloads
+  chain/policy state, and only then builds the deposit through
+  `build_initial_reserve_deposit_policy_plan`.
+- Because the existing setup policy constrains Kamino's inner `fee_payer` to the
+  vault, idle setup may include a public `POLICY_KEYPAIR` SOL transfer that
+  tops the vault up to the KLend obligation rent floor before the protected
+  `init_obligation`. That top-up must be exact, visible in dry-run JSON as
+  `missingObligationSetup.vaultRentTopUp`, and encoded in
+  `execution_plan.setup_obligation_vault_rent_top_up_lamports`.
+- If no authorized `init_obligation` policy path exists, or setup simulation,
+  submission, confirmation, or reload fails, the idle decision is failed with an
+  explicit blocker and no deposit is submitted.
 - It simulates before submission, submits only when `--execute` is present,
   confirms, and reconciles all policy-eligible reserves for that mint.
 - It does not create fresh ALTs as part of normal idle execution.
@@ -117,7 +132,13 @@ cargo check -p loyal-yield-orchestrator --bin same-mint-yield-monitor --bin same
 
 Expected: both binaries compile, source inspection shows idle mode has no
 `SOLANA_TESTING_PK` dependency, and execution signer checks name
-`POLICY_KEYPAIR`, not `YIELD_ROUTER_KEYPAIR`.
+`POLICY_KEYPAIR`, not `YIELD_ROUTER_KEYPAIR`. Dry-run output for a missing target
+obligation shows `missingObligationSetup` plus `policyDepositRequiresSetup:
+true`, while execute mode records an `idle_vault_deposit` decision whose
+`execution_plan.setup_obligation_before_deposit = true` before sending setup or
+deposit transactions. If the vault lacks SOL for Kamino obligation rent, dry-run
+also shows the exact `vaultRentTopUp` amount and the DB plan records the same
+lamports in `setup_obligation_vault_rent_top_up_lamports`.
 
 ## DB Guardrails
 
@@ -135,6 +156,9 @@ Required proof:
 - No idle decisions exist for `amount_raw < 1000000`.
 - Active vaults with `amount_raw >= 1000000` have before and after idle balance
   evidence, or a recorded blocker after rollout.
+- Setup-aware idle decisions encode the setup step when required, so historical
+  missing-obligation blocker decisions cannot be mistaken for the new
+  executable plan.
 
 Migration verifier:
 
@@ -241,6 +265,10 @@ Required deployment proof after operator approval:
 
 - Apply migration `0009_idle_vault_routing` to Yield Neon and rerun
   `bun run yield:migrate:check` through 1Password until it passes.
+- Run the local one-shot fleet dry-run and targeted executor dry-runs before
+  deployment. If eligible targets are missing obligations, dry-run must show the
+  policy-authorized `missingObligationSetup` transaction and must not require
+  `SOLANA_TESTING_PK`.
 - Build and push the worker image with the `worker-images` GitHub Actions
   workflow.
 - Render services keep using immutable `ghcr.io/loyal-labs/loyal-yield-routing:sha-<commit>`
