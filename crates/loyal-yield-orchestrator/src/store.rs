@@ -23,6 +23,7 @@ const MIGRATION_0007: &str = include_str!("../migrations/0007_balance_sweep_sche
 const MIGRATION_0008: &str = include_str!("../migrations/0008_route_lookup_tables.sql");
 const MIGRATION_0009: &str = include_str!("../migrations/0009_idle_vault_routing.sql");
 const MIGRATION_0010: &str = include_str!("../migrations/0010_realtime_events.sql");
+const MIGRATION_0011: &str = include_str!("../migrations/0011_autodeposit_realtime_events.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -241,6 +242,12 @@ impl NeonSqlClient {
                 version: 10,
                 name: "realtime_events",
                 sql: MIGRATION_0010,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 11,
+                name: "autodeposit_realtime_events",
+                sql: MIGRATION_0011,
                 expected_checksum: None,
             },
         ] {

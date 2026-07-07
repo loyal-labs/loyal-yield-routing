@@ -7,14 +7,17 @@ use balance_sweep_autodeposit_trigger::{
 };
 use chrono::{DateTime, Utc};
 use clap::Parser;
+use serde_json::Value;
 use sqlx::{
-    postgres::{PgConnectOptions, PgPoolOptions},
+    postgres::{PgConnectOptions, PgListener, PgPoolOptions},
     PgPool, Row,
 };
 use tokio::time;
 
 const CONSUMER_NAME: &str = "balance_sweep_autodeposit_trigger";
 const USDC_MINT_ADDRESS: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const DEFAULT_REALTIME_CHANNEL: &str = "loyal_yield_realtime";
+const REALTIME_SCOPE_AUTODEPOSIT: &str = "autodeposit";
 
 #[derive(Debug, Parser)]
 #[command(about = "Project autodeposit surplus lots from Loyal wallet balance events")]
@@ -25,6 +28,14 @@ struct Args {
     batch_limit: i64,
     #[arg(long, default_value_t = 10)]
     poll_interval_seconds: u64,
+    #[arg(
+        long,
+        env = "BALANCE_SWEEP_REALTIME_CHANNEL",
+        default_value = DEFAULT_REALTIME_CHANNEL
+    )]
+    realtime_channel: String,
+    #[arg(long, env = "BALANCE_SWEEP_DISABLE_REALTIME_LISTEN")]
+    disable_realtime_listen: bool,
     #[arg(long)]
     once: bool,
     #[arg(long)]
@@ -98,6 +109,14 @@ struct ExecutableTargetRow {
     scheduled_slot_id: i64,
 }
 
+#[derive(Debug)]
+struct RealtimeWakeEventRow {
+    id: i64,
+    event_type: String,
+    scope: String,
+    reason: String,
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 struct ClaimOutcome {
@@ -166,6 +185,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    let mut realtime_listener = None;
     loop {
         let outcome = project_surplus_lots_once(&pool, args.batch_limit).await?;
         tracing::info!(
@@ -200,8 +220,145 @@ async fn main() -> Result<()> {
         if args.once {
             return Ok(());
         }
-        time::sleep(Duration::from_secs(args.poll_interval_seconds)).await;
+        wait_for_next_autodeposit_scan(
+            &pool,
+            &args.postgres_url,
+            &args.realtime_channel,
+            args.disable_realtime_listen,
+            &mut realtime_listener,
+            Duration::from_secs(args.poll_interval_seconds),
+        )
+        .await;
     }
+}
+
+async fn wait_for_next_autodeposit_scan(
+    pool: &PgPool,
+    postgres_url: &str,
+    channel: &str,
+    disable_realtime_listen: bool,
+    listener: &mut Option<PgListener>,
+    poll_interval: Duration,
+) {
+    if disable_realtime_listen {
+        time::sleep(poll_interval).await;
+        return;
+    }
+
+    if listener.is_none() {
+        if neon_url_looks_pooled(postgres_url) {
+            tracing::warn!(
+                "NEON_DATABASE_URL appears to use a pooled -pooler host; LISTEN/NOTIFY requires a direct connection, falling back to timed polling if connect fails"
+            );
+        }
+        match connect_realtime_listener(postgres_url, channel).await {
+            Ok(connected) => {
+                *listener = Some(connected);
+                tracing::info!(channel, "autodeposit realtime listener connected");
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    channel,
+                    "autodeposit realtime listener connect failed; using poll fallback"
+                );
+                time::sleep(poll_interval).await;
+                return;
+            }
+        }
+    }
+
+    let deadline = time::Instant::now() + poll_interval;
+    loop {
+        let Some(active_listener) = listener.as_mut() else {
+            return;
+        };
+        match time::timeout_at(deadline, active_listener.recv()).await {
+            Ok(Ok(notification)) => {
+                match autodeposit_wake_event_from_notification(pool, notification.payload()).await {
+                    Ok(Some(event)) => {
+                        tracing::info!(
+                            event_id = event.id,
+                            event_type = %event.event_type,
+                            scope = %event.scope,
+                            reason = %event.reason,
+                            "autodeposit realtime wakeup received"
+                        );
+                        return;
+                    }
+                    Ok(None) => {
+                        if time::Instant::now() >= deadline {
+                            return;
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "autodeposit realtime wakeup lookup failed; using poll fallback"
+                        );
+                        return;
+                    }
+                }
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    error = %error,
+                    "autodeposit realtime listener failed; reconnecting after poll fallback"
+                );
+                *listener = None;
+                time::sleep(poll_interval).await;
+                return;
+            }
+            Err(_) => return,
+        }
+    }
+}
+
+async fn connect_realtime_listener(postgres_url: &str, channel: &str) -> Result<PgListener> {
+    let mut listener = PgListener::connect(postgres_url).await?;
+    listener.listen(channel).await?;
+    Ok(listener)
+}
+
+async fn autodeposit_wake_event_from_notification(
+    pool: &PgPool,
+    payload: &str,
+) -> Result<Option<RealtimeWakeEventRow>> {
+    let Some(event_id) = realtime_event_id_from_payload(payload) else {
+        tracing::warn!("autodeposit realtime notification payload did not include event_id");
+        return Ok(None);
+    };
+    let Some(row) = sqlx::query(
+        r#"
+        SELECT id, event_type, scope, reason
+        FROM loyal_yield.realtime_events
+        WHERE id = $1
+        "#,
+    )
+    .bind(event_id)
+    .fetch_optional(pool)
+    .await?
+    else {
+        return Ok(None);
+    };
+    let event = RealtimeWakeEventRow {
+        id: row.try_get("id")?,
+        event_type: row.try_get("event_type")?,
+        scope: row.try_get("scope")?,
+        reason: row.try_get("reason")?,
+    };
+    Ok((event.scope == REALTIME_SCOPE_AUTODEPOSIT).then_some(event))
+}
+
+fn realtime_event_id_from_payload(payload: &str) -> Option<i64> {
+    let value = serde_json::from_str::<Value>(payload).ok()?;
+    value.get("event_id")?.as_i64()
+}
+
+fn neon_url_looks_pooled(postgres_url: &str) -> bool {
+    postgres_url.contains("-pooler.")
+        || postgres_url.contains("-pooler:")
+        || postgres_url.contains("-pooler/")
 }
 
 async fn execute_eligible_targets_once(

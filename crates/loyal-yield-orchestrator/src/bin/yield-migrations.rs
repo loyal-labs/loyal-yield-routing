@@ -67,6 +67,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0010_realtime_events.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 11,
+        name: "autodeposit_realtime_events",
+        sql: include_str!("../../migrations/0011_autodeposit_realtime_events.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -444,6 +450,40 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
     .await?;
     if !has_realtime_emit_function {
         return Err("missing loyal_yield.emit_realtime_event function".into());
+    }
+    let has_autodeposit_realtime_function: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'loyal_yield'
+              AND p.proname = 'emit_autodeposit_scheduled_slot_realtime_event'
+        )
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if !has_autodeposit_realtime_function {
+        return Err(
+            "missing loyal_yield.emit_autodeposit_scheduled_slot_realtime_event function".into(),
+        );
+    }
+    let has_autodeposit_realtime_trigger: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_trigger
+            WHERE tgrelid = 'loyal_yield.balance_sweep_scheduled_slots'::regclass
+              AND tgname = 'balance_sweep_scheduled_slots_realtime_event'
+              AND NOT tgisinternal
+        )
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if !has_autodeposit_realtime_trigger {
+        return Err("missing loyal_yield.balance_sweep_scheduled_slots realtime trigger".into());
     }
     Ok(())
 }
