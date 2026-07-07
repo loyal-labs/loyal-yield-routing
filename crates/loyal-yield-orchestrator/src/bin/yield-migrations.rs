@@ -79,6 +79,18 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0012_idle_vault_decision_plan_guardrails.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 13,
+        name: "earn_realtime_events",
+        sql: include_str!("../../migrations/0013_earn_realtime_events.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 14,
+        name: "autodeposit_execution_slot_realtime",
+        sql: include_str!("../../migrations/0014_autodeposit_execution_slot_realtime.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -490,6 +502,136 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
     .await?;
     if !has_autodeposit_realtime_trigger {
         return Err("missing loyal_yield.balance_sweep_scheduled_slots realtime trigger".into());
+    }
+
+    let has_realtime_private_scope_function: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'loyal_yield'
+              AND p.proname = 'realtime_private_scope_requires_identity'
+        )
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if !has_realtime_private_scope_function {
+        return Err("missing loyal_yield.realtime_private_scope_requires_identity function".into());
+    }
+
+    let has_autodeposit_execution_function: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'loyal_yield'
+              AND p.proname = 'emit_autodeposit_execution_realtime_event'
+        )
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if !has_autodeposit_execution_function {
+        return Err(
+            "missing loyal_yield.emit_autodeposit_execution_realtime_event function".into(),
+        );
+    }
+
+    let has_autodeposit_execution_trigger: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_trigger
+            WHERE tgrelid = 'loyal_yield.balance_sweep_executions'::regclass
+              AND tgname = 'balance_sweep_executions_realtime_event'
+              AND NOT tgisinternal
+        )
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if !has_autodeposit_execution_trigger {
+        return Err("missing loyal_yield.balance_sweep_executions realtime trigger".into());
+    }
+
+    for (function, description) in [
+        (
+            "emit_user_yield_position_realtime_event",
+            "user yield position realtime",
+        ),
+        (
+            "emit_user_yield_holding_event_realtime_event",
+            "user yield holding event realtime",
+        ),
+        (
+            "emit_earn_onboarding_realtime_event",
+            "earn onboarding realtime",
+        ),
+    ] {
+        let exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_proc p
+                JOIN pg_namespace n ON n.oid = p.pronamespace
+                WHERE n.nspname = 'loyal_yield'
+                  AND p.proname = $1
+            )
+            "#,
+        )
+        .bind(function)
+        .fetch_one(pool)
+        .await?;
+        if !exists {
+            return Err(format!("missing loyal_yield.{function} function ({description})").into());
+        }
+    }
+
+    for (relation, trigger) in [
+        (
+            "user_yield_positions",
+            "user_yield_positions_realtime_event",
+        ),
+        (
+            "user_yield_position_holding_events",
+            "user_yield_position_holding_events_realtime_event",
+        ),
+        (
+            "earn_deposit_onboarding_attempts",
+            "earn_deposit_onboarding_attempts_realtime_event",
+        ),
+    ] {
+        let relation_exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT to_regclass(format('loyal_yield.%I', $1)) IS NOT NULL
+            "#,
+        )
+        .bind(relation)
+        .fetch_one(pool)
+        .await?;
+        if relation_exists {
+            let trigger_exists: bool = sqlx::query_scalar(
+                r#"
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_trigger
+                    WHERE tgrelid = format('loyal_yield.%I', $1)::regclass
+                      AND tgname = $2
+                      AND NOT tgisinternal
+                )
+                "#,
+            )
+            .bind(relation)
+            .bind(trigger)
+            .fetch_one(pool)
+            .await?;
+            if !trigger_exists {
+                return Err(format!("missing loyal_yield.{relation} realtime trigger").into());
+            }
+        }
     }
     Ok(())
 }

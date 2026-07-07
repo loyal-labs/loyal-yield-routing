@@ -10,7 +10,15 @@ use subtle::ConstantTimeEq;
 pub const DEFAULT_REALTIME_CHANNEL: &str = "loyal_yield_realtime";
 pub const DEFAULT_SOLANA_ENV: &str = "mainnet-beta";
 pub const SCOPE_AUTODEPOSIT: &str = "autodeposit";
+pub const SCOPE_EARN: &str = "earn";
+pub const SCOPE_ONBOARDING: &str = "onboarding";
 pub const EVENT_AUTODEPOSIT_SLOT_CHANGED: &str = "autodeposit_slot_changed";
+pub const EVENT_EARN_AUTODEPOSIT_SWEEP_REQUESTED: &str = "earn.autodeposit.sweep_requested";
+pub const EVENT_EARN_AUTODEPOSIT_SWEEP_SELECTED: &str = "earn.autodeposit.sweep_selected";
+pub const EVENT_EARN_AUTODEPOSIT_SWEEP_EXECUTED: &str = "earn.autodeposit.sweep_executed";
+pub const EVENT_EARN_POSITION_CHANGED: &str = "earn.position.changed";
+pub const EVENT_EARN_TRANSACTION_RECORDED: &str = "earn.transaction.recorded";
+pub const EVENT_EARN_ONBOARDING_CHANGED: &str = "earn.onboarding.changed";
 
 pub mod autodeposit_reasons {
     pub const SCHEDULED_SLOT_SCHEDULED: &str = "scheduled_slot_scheduled";
@@ -107,8 +115,11 @@ pub fn validate_claims(claims: &RealtimeTokenClaims) -> Result<(), BoxError> {
     if claims.exp <= Utc::now().timestamp() {
         return Err("token expired".into());
     }
-    if claims.wallet_address.is_none() && claims.settings_pda.is_none() {
-        return Err("token must include walletAddress or settingsPda".into());
+    if claims.wallet_address.is_none()
+        && claims.settings_pda.is_none()
+        && claims.smart_account_address.is_none()
+    {
+        return Err("token must include walletAddress, settingsPda, or smartAccountAddress".into());
     }
     if claims.solana_env.trim().is_empty() {
         return Err("token solanaEnv cannot be empty".into());
@@ -129,6 +140,9 @@ pub fn notification_event_id_from_payload(payload: &str) -> Option<i64> {
 }
 
 pub fn event_matches_claims(row: &RealtimeEventRow, claims: &RealtimeTokenClaims) -> bool {
+    if private_event_requires_identity(&row.scope, &row.event_type) && !row_has_identity(row) {
+        return false;
+    }
     if !claims.scopes.iter().any(|scope| scope == &row.scope) {
         return false;
     }
@@ -153,6 +167,20 @@ pub fn event_matches_claims(row: &RealtimeEventRow, claims: &RealtimeTokenClaims
         }
     }
     true
+}
+
+pub fn private_scope_requires_identity(scope: &str) -> bool {
+    matches!(scope, SCOPE_AUTODEPOSIT | SCOPE_EARN | SCOPE_ONBOARDING)
+}
+
+pub fn private_event_requires_identity(scope: &str, event_type: &str) -> bool {
+    private_scope_requires_identity(scope) || event_type.starts_with("earn.")
+}
+
+pub fn row_has_identity(row: &RealtimeEventRow) -> bool {
+    row.wallet_address.is_some()
+        || row.settings_pda.is_some()
+        || row.smart_account_address.is_some()
 }
 
 pub fn invalidation_for_row(row: &RealtimeEventRow) -> RealtimeInvalidation {
@@ -283,4 +311,66 @@ pub fn reject_pooled_connection_url(database_url: &str) -> Result<(), BoxError> 
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn claims() -> RealtimeTokenClaims {
+        RealtimeTokenClaims {
+            exp: Utc::now().timestamp() + 60,
+            wallet_address: Some("wallet-1".to_owned()),
+            settings_pda: Some("settings-1".to_owned()),
+            smart_account_address: Some("smart-1".to_owned()),
+            solana_env: DEFAULT_SOLANA_ENV.to_owned(),
+            scopes: vec![SCOPE_EARN.to_owned()],
+        }
+    }
+
+    fn event_row(scope: &str) -> RealtimeEventRow {
+        RealtimeEventRow {
+            id: 1,
+            event_type: EVENT_EARN_TRANSACTION_RECORDED.to_owned(),
+            scope: scope.to_owned(),
+            reason: "test".to_owned(),
+            solana_env: Some(DEFAULT_SOLANA_ENV.to_owned()),
+            wallet_address: Some("wallet-1".to_owned()),
+            settings_pda: Some("settings-1".to_owned()),
+            smart_account_address: Some("smart-1".to_owned()),
+            vault_pubkey: None,
+            target_id: None,
+            scheduled_slot_id: None,
+            execution_id: None,
+        }
+    }
+
+    #[test]
+    fn private_event_without_identity_never_matches() {
+        let mut row = event_row(SCOPE_EARN);
+        row.wallet_address = None;
+        row.settings_pda = None;
+        row.smart_account_address = None;
+
+        assert!(!event_matches_claims(&row, &claims()));
+    }
+
+    #[test]
+    fn private_event_requires_matching_identity_fields() {
+        let row = event_row(SCOPE_EARN);
+        assert!(event_matches_claims(&row, &claims()));
+
+        let mut mismatched = claims();
+        mismatched.settings_pda = Some("settings-2".to_owned());
+        assert!(!event_matches_claims(&row, &mismatched));
+    }
+
+    #[test]
+    fn smart_account_only_claim_is_valid_identity() {
+        let mut smart_only = claims();
+        smart_only.wallet_address = None;
+        smart_only.settings_pda = None;
+
+        assert!(validate_claims(&smart_only).is_ok());
+    }
 }
