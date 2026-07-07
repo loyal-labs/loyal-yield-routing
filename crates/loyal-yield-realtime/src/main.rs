@@ -44,6 +44,7 @@ const DEFAULT_HEARTBEAT_SECONDS: u64 = 20;
 const DEFAULT_CATCH_UP_LIMIT: i64 = 500;
 const DEFAULT_CLIENT_BUFFER: usize = 256;
 const FALLBACK_TICK_SECONDS: u64 = 15;
+const DEFAULT_SOLANA_ENV: &str = "mainnet-beta";
 
 type HmacSha256 = Hmac<Sha256>;
 type SseMessage = Result<Event, Infallible>;
@@ -88,7 +89,7 @@ struct RealtimeTokenClaims {
     settings_pda: Option<String>,
     #[serde(rename = "smartAccountAddress", default)]
     smart_account_address: Option<String>,
-    #[serde(rename = "solanaEnv")]
+    #[serde(rename = "solanaEnv", default = "default_solana_env")]
     solana_env: String,
     scopes: Vec<String>,
 }
@@ -493,12 +494,16 @@ fn verify_token(token: &str, secret: &[u8]) -> Result<RealtimeTokenClaims, BoxEr
         return Err("token must include walletAddress or settingsPda".into());
     }
     if claims.solana_env.trim().is_empty() {
-        return Err("token solanaEnv is required".into());
+        return Err("token solanaEnv cannot be empty".into());
     }
     if claims.scopes.is_empty() {
         return Err("token scopes are required".into());
     }
     Ok(claims)
+}
+
+fn default_solana_env() -> String {
+    DEFAULT_SOLANA_ENV.to_owned()
 }
 
 fn reject_pooled_connection_url(database_url: &str) -> Result<(), BoxError> {

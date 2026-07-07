@@ -140,7 +140,7 @@ Required token claims:
 - expiry;
 - `walletAddress` and/or `settingsPda`;
 - optional `smartAccountAddress`;
-- `solanaEnv`;
+- optional `solanaEnv`, defaulting to mainnet when omitted;
 - allowed scopes.
 
 Required filtering:

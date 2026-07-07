@@ -201,8 +201,8 @@ Required runtime evidence:
 
 - `GET /healthz` on the Render URL returns `200 ok`;
 - an invalid or missing SSE token returns `401`;
-- with a valid short-lived test token, `/events?token=...` returns
-  `text/event-stream`;
+- with a valid short-lived test token that includes wallet/settings scope and no
+  cluster field, `/events?token=...` returns `text/event-stream`;
 - inserting a safe test event through `loyal_yield.emit_realtime_event(...)`
   produces an SSE event with `id: <event_id>`, `event: loyal_yield`, and an
   invalidation JSON body;
