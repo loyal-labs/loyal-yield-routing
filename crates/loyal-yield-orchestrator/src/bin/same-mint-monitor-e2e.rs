@@ -10,9 +10,9 @@ use std::{
 use chrono::{DateTime, Duration, Utc};
 use loyal_actions::{KAMINO_MAIN_USDC_RESERVE, USDC_MINT};
 use loyal_yield_orchestrator::{
-    solana_testing_keypair_from_env,
+    policy_keypair_from_env, solana_testing_keypair_from_env,
     sqlx::{postgres::PgPoolOptions, PgPool, Row},
-    yield_router_keypair_from_env, NeonSqlClient,
+    NeonSqlClient,
 };
 use loyal_yield_router::timescale::{
     SupportedReserveLatestQuery, SupportedReserveLatestRow, TimescaleRouterClient,
@@ -1091,7 +1091,7 @@ fn policy_update_evidence(
 fn signer_boundary_from_env() -> Result<SignerBoundary, Box<dyn Error>> {
     Ok(SignerBoundary {
         setup_authority: solana_testing_keypair_from_env()?.pubkey().to_string(),
-        optimizer: yield_router_keypair_from_env()?.pubkey().to_string(),
+        optimizer: policy_keypair_from_env()?.pubkey().to_string(),
     })
 }
 

@@ -3,6 +3,7 @@ use std::env;
 use thiserror::Error;
 
 pub const SOLANA_TESTING_PK_ENV: &str = "SOLANA_TESTING_PK";
+pub const POLICY_KEYPAIR_ENV: &str = "POLICY_KEYPAIR";
 pub const YIELD_ROUTER_KEYPAIR_ENV: &str = "YIELD_ROUTER_KEYPAIR";
 const SOLANA_SECRET_KEY_LENGTH: usize = 32;
 const SOLANA_KEYPAIR_LENGTH: usize = 64;
@@ -25,6 +26,10 @@ pub enum PolicySignerError {
 
 pub fn solana_testing_keypair_from_env() -> Result<Keypair, PolicySignerError> {
     keypair_from_env(SOLANA_TESTING_PK_ENV)
+}
+
+pub fn policy_keypair_from_env() -> Result<Keypair, PolicySignerError> {
+    keypair_from_env(POLICY_KEYPAIR_ENV)
 }
 
 pub fn yield_router_keypair_from_env() -> Result<Keypair, PolicySignerError> {

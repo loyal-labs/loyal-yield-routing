@@ -176,7 +176,7 @@ projects:
                 sync: false
               - key: SOLANA_RPC_URL
                 sync: false
-              - key: YIELD_ROUTER_KEYPAIR
+              - key: POLICY_KEYPAIR
                 sync: false
               - key: RUST_LOG
                 value: warn,same_mint_yield_monitor=info
@@ -241,7 +241,7 @@ projects:
                 sync: false
               - key: SOLANA_RPC_URL
                 sync: false
-              - key: YIELD_ROUTER_KEYPAIR
+              - key: POLICY_KEYPAIR
                 sync: false
               - key: RUST_LOG
                 value: warn,same_mint_yield_monitor=info

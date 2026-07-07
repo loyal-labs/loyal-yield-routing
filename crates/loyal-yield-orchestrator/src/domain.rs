@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 
 use crate::types::{
-    CurrentReservePosition, DecisionAdvance, DecisionStatus, DecisionTransition, PlannerConfig,
-    ReserveScore, SkipReason,
+    CurrentReservePosition, DecisionAdvance, DecisionReason, DecisionStatus, DecisionTransition,
+    PlannerConfig, ReserveScore, SkipReason,
 };
 use crate::OrchestratorError;
 
@@ -14,8 +14,8 @@ pub const AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED: &str =
 
 #[derive(Debug, Clone)]
 pub struct PlannedDecision {
-    pub source_snapshot_id: crate::types::SnapshotId,
-    pub source_reserve: String,
+    pub source_snapshot_id: Option<crate::types::SnapshotId>,
+    pub source_reserve: Option<String>,
     pub target_reserve: String,
     pub liquidity_mint: Option<String>,
     pub source_liquidity_mint: String,
@@ -29,6 +29,7 @@ pub struct PlannedDecision {
     pub source_collateral_amount_raw: Option<i64>,
     pub redeemable_source_liquidity_amount_raw: Option<i64>,
     pub idle_vault_liquidity_amount_raw: Option<i64>,
+    pub decision_reason: DecisionReason,
     pub execution_plan: Value,
 }
 
@@ -128,8 +129,8 @@ pub fn draft_same_mint_decision(
     };
 
     Ok(PlannedDecision {
-        source_snapshot_id: source.snapshot_id,
-        source_reserve: source.reserve.clone(),
+        source_snapshot_id: Some(source.snapshot_id),
+        source_reserve: Some(source.reserve.clone()),
         target_reserve: target.reserve.clone(),
         liquidity_mint: Some(source.liquidity_mint.clone()),
         source_liquidity_mint: source.liquidity_mint.clone(),
@@ -143,6 +144,7 @@ pub fn draft_same_mint_decision(
         source_collateral_amount_raw: evidence.source_collateral_amount_raw,
         redeemable_source_liquidity_amount_raw: evidence.redeemable_source_liquidity_amount_raw,
         idle_vault_liquidity_amount_raw: evidence.idle_vault_liquidity_amount_raw,
+        decision_reason: DecisionReason::TargetSupplyApyExceedsSource,
         execution_plan: json!({
             "kind": "same_mint",
             "source_reserve": source.reserve.clone(),

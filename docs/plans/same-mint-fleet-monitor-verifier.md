@@ -12,7 +12,7 @@ or Render worker logs.
 `same-mint-yield-monitor` must operate as a fleet worker in production: every
 poll discovers active `loyal_yield.managed_vaults` with active
 `loyal_yield.route_policies`, optimizes only same-mint Safe USDC Kamino policies
-whose delegated signer allowlist contains `YIELD_ROUTER_KEYPAIR`, and naturally
+whose delegated signer allowlist contains `POLICY_KEYPAIR`, and naturally
 stops watching a vault once the frontend or full-withdraw path marks the policy
 or vault inactive.
 
@@ -32,7 +32,7 @@ real chain and DB effects:
 Local setup, initial funding/deposit, obligation setup, full-withdraw wallet
 recovery, policy removal, and DB deactivation may use `SOLANA_TESTING_PK`.
 Fleet optimization and protected policy-mediated value movement must use only
-`YIELD_ROUTER_KEYPAIR`. Overall PASS is impossible with dry-run evidence alone.
+`POLICY_KEYPAIR`. Overall PASS is impossible with dry-run evidence alone.
 
 ## Commands Under Verification
 
@@ -81,7 +81,7 @@ intent:
 - the policy universe is USDC-compatible through `stable_mints` and
   `kamino_liquidity_mints`
 - the delegated signer list contains the pubkey derived from
-  `YIELD_ROUTER_KEYPAIR`
+  `POLICY_KEYPAIR`
 
 The output must report the number of discovered vaults and one JSON result per
 vault. Inactive policies or inactive vaults must be absent from the fleet output.
@@ -108,7 +108,7 @@ PASS only if fleet execution does not require or read `SOLANA_TESTING_PK`.
 `same-mint-yield-monitor --all-active-vaults --execute` must shell into
 `same-mint-reserve-swap --optimization-cycle --reconcile-from-chain --execute`
 with settings, vault index, source reserve, and target reserve, and route
-execution must use `YIELD_ROUTER_KEYPAIR` as delegated signer and fee payer.
+execution must use `POLICY_KEYPAIR` as delegated signer and fee payer.
 
 Setup/admin commands may use `SOLANA_TESTING_PK`; fleet optimization may not.
 
@@ -127,7 +127,7 @@ PASS only if:
 
 - `--full-withdraw-reserve <RESERVE>` withdraws the selected current reserve.
 - `--full-withdraw-main-usdc` behaves as an alias for Main USDC.
-- the protected Kamino withdraw is signed by `YIELD_ROUTER_KEYPAIR`.
+- the protected Kamino withdraw is signed by `POLICY_KEYPAIR`.
 - wallet USDC recovery and route-policy removal are signed by the
   `SOLANA_TESTING_PK` settings authority.
 - execute mode reconciles zero current positions after chain confirmation.
@@ -148,7 +148,7 @@ precondition is false, and after explicit approval runs a real `--execute`
 flow that proves this exact sequence with chain signatures and DB readbacks:
 
 - derive setup/admin authority from `SOLANA_TESTING_PK`.
-- derive optimizer signer from `YIELD_ROUTER_KEYPAIR`.
+- derive optimizer signer from `POLICY_KEYPAIR`.
 - require fresh Safe USDC candidate data and a positive APY edge from Main USDC
   to another eligible Safe USDC reserve before creating policy or depositing.
 - create/update the policy for the `SOLANA_TESTING_PK`-attached vault and record
@@ -161,7 +161,7 @@ flow that proves this exact sequence with chain signatures and DB readbacks:
   confirmed same-mint rebalance decision, submitted a confirmed route signature,
   and reconciled the final reserve position.
 - run generic full withdrawal from the current reserve selected by the optimizer.
-- verify `YIELD_ROUTER_KEYPAIR` signed the protected route execution and
+- verify `POLICY_KEYPAIR` signed the protected route execution and
   protected full-withdraw Kamino withdraw, while `SOLANA_TESTING_PK` signed
   wallet recovery and policy removal.
 - verify wallet/vault USDC return, closed policy account evidence, closeable
@@ -478,7 +478,7 @@ rollout of the fleet worker.
   `/usr/local/bin/same-mint-yield-monitor --all-active-vaults
   --poll-interval-seconds 300`. The service env-var names are
   `NEON_DATABASE_URL`, `TIMESCALEDB_URL`, `SOLANA_RPC_URL`,
-  `YIELD_ROUTER_KEYPAIR`, and `RUST_LOG`; `SOLANA_TESTING_PK` is absent.
+  `POLICY_KEYPAIR`, and `RUST_LOG`; `SOLANA_TESTING_PK` is absent.
 - Render dry-run log: PASS. The first post-deploy worker poll at
   `2026-06-15T05:20:03Z` reported `status: fleet_poll`, `execute: false`,
   `allActiveVaults: true`, `candidateCount: 4`, `discoveredVaultCount: 0`,
@@ -492,7 +492,7 @@ rollout of the fleet worker.
   `loyal-same-mint-yield-monitor` from dry-run fleet mode to real-funds
   execution mode with `/usr/local/bin/same-mint-yield-monitor
   --all-active-vaults --execute --poll-interval-seconds 300`. The service still
-  uses `YIELD_ROUTER_KEYPAIR` and no `SOLANA_TESTING_PK`.
+  uses `POLICY_KEYPAIR` and no `SOLANA_TESTING_PK`.
 - Post-E2E Render live rollout: PASS. On 2026-06-15, Render service
   `srv-d8n7gqbbc2fs73emk610` was patched to the fleet execution command and
   redeployed as `dep-d8nsdfpkh4rs73fhlc90` on the same pinned image
@@ -509,7 +509,7 @@ rollout of the fleet worker.
   planning and optimization.
   Per-Vault Isolation: PASS - covered by focused tests and fleet result shape.
   Optimizer Signer Boundary: PASS - route execution and protected withdraw used
-  `YIELD_ROUTER_KEYPAIR`; setup/deposit/wallet recovery/policy removal used
+  `POLICY_KEYPAIR`; setup/deposit/wallet recovery/policy removal used
   `SOLANA_TESTING_PK`.
   Fail-Closed Missing Obligation: PASS - covered by tests and setup preflight
   behavior; live target obligation existed.
@@ -519,7 +519,7 @@ rollout of the fleet worker.
   Live Full-Flow E2E: PASS - real deposit, monitor pickup, best-reserve move,
   and full withdrawal completed.
   Render Rollout Shape: PASS - live Render now uses the pinned light-worker
-  image, fleet execution command, `YIELD_ROUTER_KEYPAIR`, and no
+  image, fleet execution command, `POLICY_KEYPAIR`, and no
   `SOLANA_TESTING_PK`; runtime logs confirm `execute: true`.
   Local Checks: PASS - see local command results above.
   Required Live Evidence: PASS - command output, direct DB readback, and Solana

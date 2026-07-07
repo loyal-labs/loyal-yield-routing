@@ -431,6 +431,19 @@ pub struct CurrentReservePosition {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CurrentIdleTokenBalance {
+    pub vault_id: VaultId,
+    pub mint: String,
+    pub amount_raw: i64,
+    pub owner: String,
+    pub token_account: String,
+    pub observed_slot: i64,
+    pub observed_at: DateTime<Utc>,
+    pub source_commitment: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReserveScore {
     pub reserve: String,
     pub supply_apy_bps: i64,
@@ -497,6 +510,7 @@ impl fmt::Display for DecisionStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecisionReason {
     TargetSupplyApyExceedsSource,
+    IdleVaultLiquidityAvailable,
     ActiveDecision,
     NoValueSource,
     CrossMintOnly,
@@ -508,6 +522,7 @@ impl DecisionReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::TargetSupplyApyExceedsSource => "target_supply_apy_exceeds_source",
+            Self::IdleVaultLiquidityAvailable => "idle_vault_liquidity_available",
             Self::ActiveDecision => "active_decision",
             Self::NoValueSource => "no_value_source",
             Self::CrossMintOnly => "cross_mint_only",
@@ -519,6 +534,7 @@ impl DecisionReason {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "target_supply_apy_exceeds_source" => Some(Self::TargetSupplyApyExceedsSource),
+            "idle_vault_liquidity_available" => Some(Self::IdleVaultLiquidityAvailable),
             "active_decision" => Some(Self::ActiveDecision),
             "no_value_source" => Some(Self::NoValueSource),
             "cross_mint_only" => Some(Self::CrossMintOnly),
@@ -613,6 +629,20 @@ impl PlannedRebalanceDecisionInput {
             }),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IdleVaultDepositDecisionInput {
+    pub target_reserve: String,
+    pub target_market: Option<String>,
+    pub liquidity_mint: String,
+    pub amount_raw: i64,
+    pub idle_token_account: String,
+    pub idle_observed_slot: i64,
+    pub idle_observed_at: DateTime<Utc>,
+    pub target_apy_bps: i64,
+    pub estimated_edge_bps: i64,
+    pub estimated_cost_lamports: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

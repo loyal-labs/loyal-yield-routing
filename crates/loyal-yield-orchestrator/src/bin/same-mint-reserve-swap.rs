@@ -47,12 +47,12 @@ use loyal_yield_orchestrator::sqlx::{
     PgPool, Row,
 };
 use loyal_yield_orchestrator::{
-    route_amount_evidence_from_metadata, solana_testing_keypair_from_env,
-    yield_router_keypair_from_env, ConfirmSameMintRebalanceInput, DecisionAdvance, DecisionId,
-    DecisionStatus, NeonSqlClient, PolicyMatchInput, ReconciledReservePosition,
-    ReconciledVaultState, RouteLookupTableUpsert, SameMintRebalanceInput, SameMintRebalanceResult,
-    SnapshotId, VaultId, AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
-    ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+    policy_keypair_from_env, route_amount_evidence_from_metadata, solana_testing_keypair_from_env,
+    ConfirmSameMintRebalanceInput, CurrentIdleTokenBalance, DecisionAdvance, DecisionId,
+    DecisionStatus, IdleVaultDepositDecisionInput, NeonSqlClient, PlanOutcomeStatus,
+    PolicyMatchInput, RebalanceDecision, ReconciledReservePosition, ReconciledVaultState,
+    RouteLookupTableUpsert, SameMintRebalanceInput, SameMintRebalanceResult, SnapshotId, VaultId,
+    AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
 use num_bigint::BigUint;
 use num_traits::{ToPrimitive, Zero};
@@ -190,10 +190,9 @@ impl ReserveMove {
 }
 
 fn reconcile_reserves_for_move(options: &CliOptions, reserve_move: &ReserveMove) -> Vec<String> {
-    let mut reserves = vec![
-        reserve_move.source_reserve.clone(),
-        reserve_move.target_reserve.clone(),
-    ];
+    let mut reserves = Vec::new();
+    push_unique_string(&mut reserves, reserve_move.source_reserve.clone());
+    push_unique_string(&mut reserves, reserve_move.target_reserve.clone());
     if options.full_withdraw_main_usdc {
         let main = KAMINO_MAIN_USDC_RESERVE.to_string();
         if !reserves.iter().any(|existing| existing == &main) {
@@ -206,9 +205,10 @@ fn reconcile_reserves_for_move(options: &CliOptions, reserve_move: &ReserveMove)
         }
     }
     if let Some(reserve) = &options.initial_deposit_reserve {
-        if !reserves.iter().any(|existing| existing == reserve) {
-            reserves.push(reserve.clone());
-        }
+        push_unique_string(&mut reserves, reserve.clone());
+    }
+    if let Some(reserve) = &options.idle_vault_deposit_reserve {
+        push_unique_string(&mut reserves, reserve.clone());
     }
     if let Some(reserve) = &options.setup_obligation_reserve {
         if !reserves.iter().any(|existing| existing == reserve) {
@@ -221,6 +221,12 @@ fn reconcile_reserves_for_move(options: &CliOptions, reserve_move: &ReserveMove)
         }
     }
     reserves
+}
+
+fn push_unique_string(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
 }
 
 fn full_withdraw_reserve(options: &CliOptions) -> String {
@@ -241,6 +247,8 @@ struct CliOptions {
     update_active_policy: bool,
     initial_deposit_reserve: Option<String>,
     initial_deposit_amount_raw: Option<u64>,
+    idle_vault_deposit_reserve: Option<String>,
+    idle_vault_deposit_amount_raw: Option<u64>,
     full_withdraw_main_usdc: bool,
     full_withdraw_reserve: Option<String>,
     setup_obligation_reserve: Option<String>,
@@ -257,6 +265,9 @@ struct CliOptions {
     expected_liquidity_mint: Option<String>,
     expected_amount_raw: Option<i64>,
     expected_route_amount_semantics: Option<String>,
+    expected_idle_token_account: Option<String>,
+    expected_idle_observed_slot: Option<i64>,
+    expected_idle_observed_at: Option<DateTime<Utc>>,
     expected_source_apy_bps: Option<i64>,
     expected_target_apy_bps: Option<i64>,
     expected_edge_bps: Option<i64>,
@@ -803,7 +814,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         Err(message) => return Err(message.into()),
     };
-    let reserve_move = ReserveMove::from_options(&options)?;
+    let reserve_move = if let Some(reserve) = &options.idle_vault_deposit_reserve {
+        ReserveMove {
+            source_reserve: reserve.clone(),
+            target_reserve: reserve.clone(),
+        }
+    } else {
+        ReserveMove::from_options(&options)?
+    };
     let database_url =
         env::var("NEON_DATABASE_URL").map_err(|_| "NEON_DATABASE_URL must be set")?;
     let pool = connect(&database_url).await?;
@@ -817,7 +835,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     if options.update_policy {
         let default_authority = solana_testing_keypair_from_env()?.pubkey();
-        let default_delegated_signer = yield_router_keypair_from_env()?.pubkey();
+        let default_delegated_signer = policy_keypair_from_env()?.pubkey();
         let vault = if options.update_active_policy {
             match load_active_vault(&pool, &options.settings, options.vault_index).await? {
                 Some(vault) => vault,
@@ -855,6 +873,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let requires_chain_preview = options.reconcile_from_chain
         || options.initial_deposit_amount_raw.is_some()
+        || options.idle_vault_deposit_amount_raw.is_some()
         || options.full_withdraw_main_usdc
         || options.full_withdraw_reserve.is_some()
         || options.setup_obligation_reserve.is_some()
@@ -886,6 +905,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
             chain_preview
                 .as_ref()
                 .ok_or("reconcile current positions requires chain preview")?,
+        )
+        .await?;
+        return Ok(());
+    }
+    if let Some(amount_raw) = options.idle_vault_deposit_amount_raw {
+        let deposit_reserve = options
+            .idle_vault_deposit_reserve
+            .as_deref()
+            .ok_or("idle vault deposit reserve is required")?;
+        run_idle_vault_deposit_flow(
+            &options,
+            &client,
+            &vault,
+            chain_preview
+                .as_ref()
+                .ok_or("idle vault deposit requires chain preview")?,
+            policy_preflight.as_ref(),
+            deposit_reserve,
+            amount_raw,
         )
         .await?;
         return Ok(());
@@ -1448,7 +1486,7 @@ async fn provision_same_mint_route_lookup_table(
 ) -> Result<Value, Box<dyn Error>> {
     let rpc =
         RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
-    let signer = yield_router_keypair_from_env()?;
+    let signer = policy_keypair_from_env()?;
     let fee_payer: &dyn Signer = &signer;
     let expected_fee_payer = Pubkey::from_str(&route_execution.preview.fee_payer)?;
     if fee_payer.pubkey() != expected_fee_payer {
@@ -1724,7 +1762,7 @@ async fn run_policy_update_flow(
     .await?;
     let mut lookup_table_accounts =
         load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
-    let delegated_signer = yield_router_keypair_from_env()?;
+    let delegated_signer = policy_keypair_from_env()?;
     let db_delegated_signer_matches = vault
         .delegated_signers
         .iter()
@@ -2429,7 +2467,7 @@ fn build_missing_obligation_setup_dry_run(
         RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
     let lookup_table_pubkeys = lookup_table_pubkeys_from_options(options)?;
     let lookup_table_accounts = load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
-    let delegated_signer = yield_router_keypair_from_env()?;
+    let delegated_signer = policy_keypair_from_env()?;
     let admin_fee_payer = if options.optimization_cycle {
         None
     } else {
@@ -2486,7 +2524,7 @@ async fn execute_missing_obligation_setup(
         RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
     let lookup_table_pubkeys = lookup_table_pubkeys_from_options(options)?;
     let lookup_table_accounts = load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
-    let delegated_signer = yield_router_keypair_from_env()?;
+    let delegated_signer = policy_keypair_from_env()?;
     let admin_fee_payer = if options.optimization_cycle {
         None
     } else {
@@ -2701,7 +2739,7 @@ async fn run_initial_reserve_deposit_flow(
     let lookup_table_pubkeys = lookup_table_pubkeys_from_options(options)?;
     let lookup_table_accounts = load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
     let wallet_signer = solana_testing_keypair_from_env()?;
-    let delegated_signer = yield_router_keypair_from_env()?;
+    let delegated_signer = policy_keypair_from_env()?;
     let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
     let account_index = u8::try_from(vault.vault_index).map_err(|_| {
         format!(
@@ -3049,6 +3087,950 @@ async fn run_initial_reserve_deposit_flow(
     Ok(())
 }
 
+async fn run_idle_vault_deposit_flow(
+    options: &CliOptions,
+    client: &NeonSqlClient,
+    vault: &SelectedVault,
+    initial_preview: &ChainReconcilePreview,
+    policy_preflight: Option<&PolicyAccountPreflight>,
+    deposit_reserve: &str,
+    amount_raw: u64,
+) -> Result<(), Box<dyn Error>> {
+    if amount_raw == 0 {
+        return Err("idle vault deposit amount must be greater than 0".into());
+    }
+
+    let rpc =
+        RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
+    let lookup_table_pubkeys = lookup_table_pubkeys_from_options(options)?;
+    let lookup_table_accounts = load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
+    let signer = policy_keypair_from_env()?;
+    let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
+    let account_index = u8::try_from(vault.vault_index).map_err(|_| {
+        format!(
+            "vault index {} does not fit Squads account index",
+            vault.vault_index
+        )
+    })?;
+    let deposit_position = chain_position_for_reserve(initial_preview, deposit_reserve)?;
+    let vault_usdc_ata = derive_associated_token_address(&vault_pubkey, &USDC_MINT, &spl_token::ID);
+    let db_idle = client
+        .current_idle_token_balance(vault.id, &USDC_MINT.to_string())
+        .await?;
+    let amount_i64 = i64::try_from(amount_raw)
+        .map_err(|_| "idle vault deposit amount does not fit Postgres BIGINT")?;
+
+    let mut blockers = Vec::new();
+    if deposit_position.liquidity_mint != USDC_MINT.to_string() {
+        blockers.push(format!(
+            "target reserve {} liquidity mint {} is not USDC {}",
+            deposit_position.reserve, deposit_position.liquidity_mint, USDC_MINT
+        ));
+    }
+    if deposit_position.vault_liquidity_ata != vault_usdc_ata.to_string() {
+        blockers.push(format!(
+            "chain preview vault liquidity ATA {} does not match derived vault USDC ATA {}",
+            deposit_position.vault_liquidity_ata, vault_usdc_ata
+        ));
+    }
+    if !deposit_position.vault_liquidity_token_account_exists {
+        blockers.push(format!(
+            "vault idle USDC ATA {} does not exist",
+            vault_usdc_ata
+        ));
+    }
+    if deposit_position.vault_liquidity_amount_raw < amount_raw {
+        blockers.push(format!(
+            "live vault idle USDC balance {} is below planned deposit amount {}",
+            deposit_position.vault_liquidity_amount_raw, amount_raw
+        ));
+    }
+    if !deposit_position.obligation_exists {
+        blockers.push(format!(
+            "deposit obligation {} is missing for reserve {}; idle vault deposits require existing obligation setup",
+            deposit_position.obligation, deposit_position.reserve
+        ));
+    }
+
+    match db_idle.as_ref() {
+        Some(balance) => {
+            if balance.mint != USDC_MINT.to_string() {
+                blockers.push(format!(
+                    "DB idle mint {} does not match USDC {}",
+                    balance.mint, USDC_MINT
+                ));
+            }
+            if balance.token_account != vault_usdc_ata.to_string() {
+                blockers.push(format!(
+                    "DB idle token account {} does not match vault USDC ATA {}",
+                    balance.token_account, vault_usdc_ata
+                ));
+            }
+            if balance.amount_raw != amount_i64 {
+                blockers.push(format!(
+                    "DB idle amount {} does not match planned amount {}",
+                    balance.amount_raw, amount_i64
+                ));
+            }
+            if balance.amount_raw > i64::try_from(deposit_position.vault_liquidity_amount_raw)? {
+                blockers.push(format!(
+                    "DB idle amount {} is above live vault ATA balance {}",
+                    balance.amount_raw, deposit_position.vault_liquidity_amount_raw
+                ));
+            }
+            if let Some(expected_account) = &options.expected_idle_token_account {
+                if balance.token_account != *expected_account {
+                    blockers.push(format!(
+                        "expected idle token account {} does not match DB row {}",
+                        expected_account, balance.token_account
+                    ));
+                }
+            }
+            if let Some(expected_slot) = options.expected_idle_observed_slot {
+                if balance.observed_slot != expected_slot {
+                    blockers.push(format!(
+                        "expected idle observed slot {} does not match DB row {}",
+                        expected_slot, balance.observed_slot
+                    ));
+                }
+            }
+            if let Some(expected_at) = options.expected_idle_observed_at {
+                if balance.observed_at != expected_at {
+                    blockers.push(format!(
+                        "expected idle observed at {} does not match DB row {}",
+                        expected_at.to_rfc3339(),
+                        balance.observed_at.to_rfc3339()
+                    ));
+                }
+            }
+        }
+        None => blockers.push(format!(
+            "missing loyal_yield.vault_idle_token_balances_current row for vault {} USDC",
+            vault.id.as_i64()
+        )),
+    }
+
+    if let Some(expected_account) = &options.expected_idle_token_account {
+        if expected_account != &vault_usdc_ata.to_string() {
+            blockers.push(format!(
+                "expected idle token account {} does not match derived vault USDC ATA {}",
+                expected_account, vault_usdc_ata
+            ));
+        }
+    }
+    if let Some(expected_mint) = &options.expected_liquidity_mint {
+        if expected_mint != &USDC_MINT.to_string() {
+            blockers.push(format!(
+                "expected liquidity mint {} does not match USDC {}",
+                expected_mint, USDC_MINT
+            ));
+        }
+    }
+    if let Some(expected_amount) = options.expected_amount_raw {
+        if expected_amount != amount_i64 {
+            blockers.push(format!(
+                "expected amount {} does not match requested idle deposit amount {}",
+                expected_amount, amount_i64
+            ));
+        }
+    }
+    if let Some(expected_edge) = options.expected_edge_bps {
+        if expected_edge <= 0 {
+            blockers.push(format!(
+                "expected idle deposit edge {} must be positive",
+                expected_edge
+            ));
+        }
+    }
+
+    let policy_plan = match build_initial_reserve_deposit_policy_plan(
+        vault,
+        initial_preview,
+        policy_preflight,
+        deposit_reserve,
+        amount_raw,
+        signer.pubkey(),
+        signer.pubkey(),
+        account_index,
+    ) {
+        Ok(plan) => Some(plan),
+        Err(error) => {
+            blockers.push(error.to_string());
+            None
+        }
+    };
+    let policy_transaction = if let Some(plan) = policy_plan.as_ref() {
+        let mut policy_instructions = plan.pre_instructions.clone();
+        policy_instructions.push(plan.instruction.clone());
+        Some(build_signed_transaction(
+            &rpc,
+            signer.pubkey(),
+            &policy_instructions,
+            &lookup_table_accounts,
+            &[&signer],
+            "idle vault policy deposit",
+            if blockers.is_empty() {
+                None
+            } else {
+                Some("idle deposit simulation skipped because preflight blockers exist".to_owned())
+            },
+        )?)
+    } else {
+        None
+    };
+
+    if !options.execute {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "status": "idle_vault_deposit_dry_run",
+                "writesDecision": false,
+                "writesCurrentPositions": false,
+                "sendsTransactions": false,
+                "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, &deposit_position, amount_raw, db_idle.as_ref(), options),
+                "vault": vault_json(vault),
+                "vaultUsdcAta": vault_usdc_ata.to_string(),
+                "chainReconcile": chain_reconcile_preview_json(initial_preview),
+                "policyPreflight": policy_route_preflight_json(vault, &ReserveMove {
+                    source_reserve: deposit_reserve.to_owned(),
+                    target_reserve: deposit_reserve.to_owned(),
+                }, policy_preflight),
+                "preflightBlockers": blockers,
+                "policyDeposit": policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
+                "policyDepositTransaction": policy_transaction.as_ref().map(policy_transaction_json),
+                "postConfirmReconcileReserves": idle_deposit_post_reconcile_reserves(options, deposit_reserve),
+            }))?
+        );
+        return Ok(());
+    }
+
+    if !blockers.is_empty() {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "status": "idle_vault_deposit_preflight_blocked",
+                "writesDecision": false,
+                "writesCurrentPositions": false,
+                "sendsTransactions": false,
+                "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, &deposit_position, amount_raw, db_idle.as_ref(), options),
+                "preflightBlockers": blockers,
+                "policyDeposit": policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
+                "policyDepositTransaction": policy_transaction.as_ref().map(policy_transaction_json),
+            }))?
+        );
+        return Err("idle vault deposit preflight blocked before decision write".into());
+    }
+
+    let target_apy_bps = options
+        .expected_target_apy_bps
+        .ok_or("--deposit-idle-vault-reserve --execute requires --expected-target-apy-bps")?;
+    let edge_bps = options
+        .expected_edge_bps
+        .ok_or("--deposit-idle-vault-reserve --execute requires --expected-edge-bps")?;
+    let planned = client
+        .record_idle_vault_deposit_decision(
+            vault.id,
+            IdleVaultDepositDecisionInput {
+                target_reserve: deposit_reserve.to_owned(),
+                target_market: Some(deposit_position.market.clone()),
+                liquidity_mint: USDC_MINT.to_string(),
+                amount_raw: amount_i64,
+                idle_token_account: vault_usdc_ata.to_string(),
+                idle_observed_slot: options.expected_idle_observed_slot.ok_or(
+                    "--deposit-idle-vault-reserve --execute requires --expected-idle-observed-slot",
+                )?,
+                idle_observed_at: options.expected_idle_observed_at.ok_or(
+                    "--deposit-idle-vault-reserve --execute requires --expected-idle-observed-at",
+                )?,
+                target_apy_bps,
+                estimated_edge_bps: edge_bps,
+                estimated_cost_lamports: 0,
+            },
+        )
+        .await?;
+    let decision = match planned.status {
+        PlanOutcomeStatus::Planned(decision) => decision,
+        PlanOutcomeStatus::Skipped { reason } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "status": "idle_vault_deposit_not_planned",
+                    "writesDecision": planned.decision_id.is_some(),
+                    "sendsTransactions": false,
+                    "skipReason": reason.decision_reason().as_str(),
+                    "decisionId": planned.decision_id.map(|id| id.as_i64()),
+                }))?
+            );
+            return Err("idle vault deposit was not planned".into());
+        }
+    };
+
+    let policy_plan = policy_plan.ok_or("idle vault policy deposit plan was not built")?;
+    let policy_transaction =
+        policy_transaction.ok_or("idle vault policy deposit transaction was not built")?;
+    client
+        .advance_decision(decision.id, DecisionAdvance::StartSimulation)
+        .await?;
+    if let Some(error) = &policy_transaction.simulation_error {
+        client
+            .advance_decision(
+                decision.id,
+                DecisionAdvance::Fail {
+                    reason: format!("idle vault policy deposit simulation failed: {error}"),
+                },
+            )
+            .await?;
+        return Err(format!("idle vault policy deposit simulation failed: {error}").into());
+    }
+    client
+        .advance_decision(decision.id, DecisionAdvance::SimulationReady)
+        .await?;
+
+    let submitted_slot = i64::try_from(rpc.get_slot()?)?;
+    let signature = match rpc.send_and_confirm_transaction(&policy_transaction.transaction) {
+        Ok(signature) => signature,
+        Err(error) => {
+            client
+                .advance_decision(
+                    decision.id,
+                    DecisionAdvance::Fail {
+                        reason: format!("idle vault policy deposit submission failed: {error}"),
+                    },
+                )
+                .await?;
+            return Err(format!("idle vault policy deposit submission failed: {error}").into());
+        }
+    };
+    let confirmed_slot = i64::try_from(rpc.get_slot()?)?;
+    let signature = signature.to_string();
+    client
+        .advance_decision(
+            decision.id,
+            DecisionAdvance::Submit {
+                signature: signature.clone(),
+                slot: Some(submitted_slot),
+            },
+        )
+        .await?;
+    client
+        .advance_decision(decision.id, DecisionAdvance::StartConfirmation)
+        .await?;
+
+    let post_confirm = async {
+        let post_reconcile_reserves =
+            idle_deposit_post_reconcile_reserves(options, deposit_reserve);
+        let post_preview =
+            load_chain_reconcile_preview(&options.rpc_url, vault, &post_reconcile_reserves)?;
+        let post_reconcile_state = chain_preview_reconciled_state(&post_preview)?;
+        let post_snapshot = client
+            .reconcile_vault(vault.id, post_reconcile_state)
+            .await?;
+        let post_deposit_position = chain_position_for_reserve(&post_preview, deposit_reserve)?;
+        let idle_after = client
+            .record_current_idle_token_balance(CurrentIdleTokenBalance {
+                vault_id: vault.id,
+                mint: USDC_MINT.to_string(),
+                amount_raw: i64::try_from(post_deposit_position.vault_liquidity_amount_raw)?,
+                owner: vault.vault_pubkey.clone(),
+                token_account: vault_usdc_ata.to_string(),
+                observed_slot: post_preview.observed_slot,
+                observed_at: Utc::now(),
+                source_commitment: "confirmed".to_owned(),
+                updated_at: Utc::now(),
+            })
+            .await?;
+        let confirmed = client
+            .advance_decision(
+                decision.id,
+                DecisionAdvance::Confirm {
+                    slot: Some(confirmed_slot),
+                    post_snapshot_id: Some(post_snapshot.id),
+                },
+            )
+            .await?;
+        Ok::<_, Box<dyn Error>>((
+            post_reconcile_reserves,
+            post_preview,
+            post_snapshot,
+            idle_after,
+            confirmed,
+        ))
+    }
+    .await;
+    let (post_reconcile_reserves, post_preview, post_snapshot, idle_after, confirmed) =
+        match post_confirm {
+            Ok(value) => value,
+            Err(error) => {
+                let reason =
+                    format!("idle vault policy deposit confirmed but reconcile failed: {error}");
+                client
+                    .advance_decision(
+                        decision.id,
+                        DecisionAdvance::Fail {
+                            reason: reason.clone(),
+                        },
+                    )
+                    .await?;
+                return Err(reason.into());
+            }
+        };
+    let repair = repair_idle_vault_deposit_partial_pull_history(
+        client,
+        vault,
+        &confirmed,
+        deposit_reserve,
+        &deposit_position.market,
+        &signature,
+        confirmed_slot,
+        amount_i64,
+    )
+    .await?;
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "status": "idle_vault_deposit_executed",
+            "writesDecision": true,
+            "writesCurrentPositions": true,
+            "sendsTransactions": true,
+            "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, &deposit_position, amount_raw, db_idle.as_ref(), options),
+            "vault": vault_json(vault),
+            "vaultUsdcAta": vault_usdc_ata.to_string(),
+            "preparedDecision": idle_vault_deposit_decision_json(&decision),
+            "confirmedDecision": idle_vault_deposit_decision_json(&confirmed),
+            "policyDeposit": initial_deposit_policy_preview_json(&policy_plan.preview),
+            "policyDepositTransaction": {
+                "signature": signature,
+                "submittedSlot": submitted_slot,
+                "confirmedSlot": confirmed_slot,
+                "simulationUnitsConsumed": policy_transaction.simulation_units_consumed,
+                "transaction": transaction_packet_json(&policy_transaction.transaction_packet),
+            },
+            "reconciledSnapshotId": post_snapshot.id.as_i64(),
+            "postConfirmReconcileReserves": post_reconcile_reserves,
+            "postChainReconcile": chain_reconcile_preview_json(&post_preview),
+            "idleVaultBalanceAfter": idle_balance_json(&idle_after),
+            "partialPullRepair": repair,
+        }))?
+    );
+
+    Ok(())
+}
+
+fn idle_deposit_post_reconcile_reserves(
+    options: &CliOptions,
+    deposit_reserve: &str,
+) -> Vec<String> {
+    let mut reserves = Vec::new();
+    push_unique_string(&mut reserves, deposit_reserve.to_owned());
+    for reserve in &options.reconcile_reserves {
+        push_unique_string(&mut reserves, reserve.clone());
+    }
+    reserves
+}
+
+fn idle_vault_deposit_request_json(
+    vault: &SelectedVault,
+    deposit_reserve: &str,
+    deposit_position: &ChainPositionSummary,
+    amount_raw: u64,
+    db_idle: Option<&CurrentIdleTokenBalance>,
+    options: &CliOptions,
+) -> Value {
+    json!({
+        "kind": "idle_vault_deposit",
+        "sourceKind": "idle_vault",
+        "reserve": deposit_reserve,
+        "market": deposit_position.market,
+        "liquidityMint": USDC_MINT.to_string(),
+        "amountRaw": amount_raw.to_string(),
+        "idleVaultLiquidityAmountRaw": amount_raw.to_string(),
+        "idleTokenAccount": deposit_position.vault_liquidity_ata,
+        "liveIdleAmountRaw": deposit_position.vault_liquidity_amount_raw.to_string(),
+        "dbIdle": db_idle.map(idle_balance_json),
+        "expected": {
+            "idleTokenAccount": options.expected_idle_token_account,
+            "idleObservedSlot": options.expected_idle_observed_slot,
+            "idleObservedAt": options.expected_idle_observed_at.map(|value| value.to_rfc3339()),
+            "liquidityMint": options.expected_liquidity_mint,
+            "amountRaw": options.expected_amount_raw,
+            "targetApyBps": options.expected_target_apy_bps,
+            "edgeBps": options.expected_edge_bps,
+        },
+        "vaultId": vault.id.as_i64(),
+    })
+}
+
+fn idle_balance_json(balance: &CurrentIdleTokenBalance) -> Value {
+    json!({
+        "vaultId": balance.vault_id.as_i64(),
+        "mint": balance.mint,
+        "amountRaw": balance.amount_raw.to_string(),
+        "owner": balance.owner,
+        "tokenAccount": balance.token_account,
+        "observedSlot": balance.observed_slot,
+        "observedAt": balance.observed_at,
+        "sourceCommitment": balance.source_commitment,
+        "updatedAt": balance.updated_at,
+    })
+}
+
+fn idle_vault_deposit_decision_json(decision: &RebalanceDecision) -> Value {
+    json!({
+        "id": decision.id.as_i64(),
+        "vaultId": decision.vault_id.as_i64(),
+        "status": decision.status.as_str(),
+        "decisionReason": decision.decision_reason.as_str(),
+        "sourceReserve": decision.source_reserve,
+        "targetReserve": decision.target_reserve,
+        "liquidityMint": decision.liquidity_mint,
+        "amountRaw": decision.amount_raw.map(|amount| amount.to_string()),
+        "sourceApyBps": decision.source_apy_bps,
+        "targetApyBps": decision.target_apy_bps,
+        "estimatedEdgeBps": decision.estimated_edge_bps,
+        "signature": decision.signature,
+        "submittedSlot": decision.submitted_slot,
+        "confirmedSlot": decision.confirmed_slot,
+        "postSnapshotId": decision.post_snapshot_id.map(SnapshotId::as_i64),
+        "executionPlan": decision.execution_plan,
+    })
+}
+
+async fn repair_idle_vault_deposit_partial_pull_history(
+    client: &NeonSqlClient,
+    vault: &SelectedVault,
+    decision: &RebalanceDecision,
+    target_reserve: &str,
+    target_market: &str,
+    deposit_signature: &str,
+    confirmed_slot: i64,
+    planned_amount_raw: i64,
+) -> Result<Value, Box<dyn Error>> {
+    let mut tx = client.pool().begin().await?;
+    let app_tables_exist: bool = loyal_yield_orchestrator::sqlx::query_scalar(
+        r#"
+        SELECT to_regclass('loyal_yield.user_yield_position_deposits') IS NOT NULL
+           AND to_regclass('loyal_yield.user_yield_positions') IS NOT NULL
+           AND to_regclass('loyal_yield.user_yield_position_holding_events') IS NOT NULL
+        "#,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let target_row = loyal_yield_orchestrator::sqlx::query(
+        r#"
+        SELECT id, wallet, token_mint, vault_token_ata
+        FROM loyal_yield.balance_sweep_targets
+        WHERE settings = $1
+          AND vault_index = $2
+          AND vault_pubkey = $3
+          AND token_mint = $4
+        ORDER BY active DESC, last_seen_at DESC, id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(&vault.settings)
+    .bind(vault.vault_index)
+    .bind(&vault.vault_pubkey)
+    .bind(USDC_MINT.to_string())
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(target_row) = target_row else {
+        tx.commit().await?;
+        return Ok(json!({
+            "matchedPartialPullCount": 0,
+            "matchedPartialPullAmountRaw": "0",
+            "balanceSweepTargetFound": false,
+            "appHistoryRepair": "skipped_no_balance_sweep_target",
+        }));
+    };
+    let target_id: i64 = target_row.try_get("id")?;
+    let wallet: String = target_row.try_get("wallet")?;
+    let vault_token_ata: String = target_row.try_get("vault_token_ata")?;
+
+    let execution_rows = loyal_yield_orchestrator::sqlx::query(
+        r#"
+        SELECT id, amount_raw, signature
+        FROM loyal_yield.balance_sweep_executions
+        WHERE target_id = $1
+          AND token_mint = $2
+          AND COALESCE(destination_token_ata, destination_vault_ata) = $3
+          AND decoded_evidence->>'status' = 'partial_executed_pull_top_up_blocked'
+          AND decoded_evidence->>'idleVaultDepositDecisionId' IS NULL
+        ORDER BY slot ASC, id ASC
+        FOR UPDATE
+        "#,
+    )
+    .bind(target_id)
+    .bind(USDC_MINT.to_string())
+    .bind(&vault_token_ata)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let mut matched_ids = Vec::new();
+    let mut matched_signatures = Vec::new();
+    let mut matched_amount_raw = 0_i64;
+    for row in execution_rows {
+        let amount: i64 = row.try_get("amount_raw")?;
+        if matched_amount_raw + amount > planned_amount_raw {
+            break;
+        }
+        matched_amount_raw += amount;
+        matched_ids.push(row.try_get::<i64, _>("id")?);
+        matched_signatures.push(row.try_get::<String, _>("signature")?);
+        if matched_amount_raw == planned_amount_raw {
+            break;
+        }
+    }
+
+    if matched_ids.is_empty() {
+        tx.commit().await?;
+        return Ok(json!({
+            "matchedPartialPullCount": 0,
+            "matchedPartialPullAmountRaw": "0",
+            "balanceSweepTargetFound": true,
+            "appHistoryRepair": "skipped_no_matching_partial_pull",
+        }));
+    }
+
+    loyal_yield_orchestrator::sqlx::query(
+        r#"
+        UPDATE loyal_yield.balance_sweep_executions
+        SET
+            decoded_evidence = COALESCE(decoded_evidence, '{}'::jsonb)
+              || jsonb_build_object(
+                    'previousStatus', decoded_evidence->>'status',
+                    'status', 'partial_executed_pull_idle_vault_deposited',
+                    'idleVaultDepositDecisionId', $2::text,
+                    'kaminoDepositSignature', $3,
+                    'kaminoDepositSlot', $4::text,
+                    'idleVaultDepositAmountRaw', $5::text
+                 ),
+            decoded_at = now()
+        WHERE id = ANY($1)
+        "#,
+    )
+    .bind(&matched_ids)
+    .bind(decision.id.as_i64())
+    .bind(deposit_signature)
+    .bind(confirmed_slot)
+    .bind(planned_amount_raw)
+    .execute(&mut *tx)
+    .await?;
+
+    let mut app_history_repair = json!("skipped_app_tables_missing");
+    if app_tables_exist {
+        app_history_repair = repair_idle_vault_deposit_app_history_in_tx(
+            &mut tx,
+            vault,
+            target_reserve,
+            target_market,
+            &wallet,
+            deposit_signature,
+            confirmed_slot,
+            matched_amount_raw,
+            decision,
+        )
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(json!({
+        "matchedPartialPullCount": matched_ids.len(),
+        "matchedPartialPullIds": matched_ids,
+        "matchedPartialPullSignatures": matched_signatures,
+        "matchedPartialPullAmountRaw": matched_amount_raw.to_string(),
+        "plannedAmountRaw": planned_amount_raw.to_string(),
+        "balanceSweepTargetFound": true,
+        "appHistoryRepair": app_history_repair,
+    }))
+}
+
+async fn repair_idle_vault_deposit_app_history_in_tx(
+    tx: &mut loyal_yield_orchestrator::sqlx::Transaction<
+        '_,
+        loyal_yield_orchestrator::sqlx::Postgres,
+    >,
+    vault: &SelectedVault,
+    target_reserve: &str,
+    target_market: &str,
+    wallet: &str,
+    deposit_signature: &str,
+    confirmed_slot: i64,
+    principal_delta_raw: i64,
+    decision: &RebalanceDecision,
+) -> Result<Value, Box<dyn Error>> {
+    let deposit_row = loyal_yield_orchestrator::sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.user_yield_position_deposits (
+            deposit_signature,
+            policy_signature,
+            confirmed_slot,
+            wallet_address,
+            smart_account_address,
+            settings,
+            vault_index,
+            vault_pubkey,
+            policy_id,
+            policy_account,
+            policy_seed,
+            target_reserve,
+            market,
+            liquidity_mint,
+            target_supply_apy_bps,
+            deposit_mint,
+            principal_amount_raw,
+            confirmed_at,
+            created_at
+        )
+        VALUES ($1, $1, $2, $3, $4, $5, $6, $4, $7, $8, $7, $9, $10, $11, $12, $11, $13, now(), now())
+        ON CONFLICT (deposit_signature) DO NOTHING
+        RETURNING id
+        "#,
+    )
+    .bind(deposit_signature)
+    .bind(confirmed_slot)
+    .bind(wallet)
+    .bind(&vault.vault_pubkey)
+    .bind(&vault.settings)
+    .bind(vault.vault_index)
+    .bind(vault.policy_seed)
+    .bind(&vault.policy_account)
+    .bind(target_reserve)
+    .bind(target_market)
+    .bind(USDC_MINT.to_string())
+    .bind(decision.target_apy_bps)
+    .bind(principal_delta_raw)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    let Some(deposit_row) = deposit_row else {
+        return Ok(json!({
+            "status": "duplicate_deposit_signature",
+            "depositSignature": deposit_signature,
+        }));
+    };
+    let deposit_id: i64 = deposit_row.try_get("id")?;
+    let existing = loyal_yield_orchestrator::sqlx::query(
+        r#"
+        SELECT id, current_amount_raw, principal_amount_raw, current_reserve, current_liquidity_mint
+        FROM loyal_yield.user_yield_positions
+        WHERE settings = $1
+          AND vault_index = $2
+          AND wallet_address = $3
+          AND status::text = 'active'
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+        FOR UPDATE
+        "#,
+    )
+    .bind(&vault.settings)
+    .bind(vault.vault_index)
+    .bind(wallet)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    let observed_current_amount = decision.amount_raw.unwrap_or(principal_delta_raw);
+    let (position_id, event_type, next_amount_raw, next_principal_raw, holding_delta_raw) =
+        if let Some(existing) = existing {
+            let position_id: i64 = existing.try_get("id")?;
+            let current_amount_raw: i64 = existing.try_get("current_amount_raw")?;
+            let principal_amount_raw: i64 = existing.try_get("principal_amount_raw")?;
+            let current_reserve: String = existing.try_get("current_reserve")?;
+            let current_liquidity_mint: String = existing.try_get("current_liquidity_mint")?;
+            let same_current_holding = current_reserve == target_reserve
+                && current_liquidity_mint == USDC_MINT.to_string();
+            let next_amount_raw = if same_current_holding {
+                observed_current_amount
+            } else {
+                current_amount_raw
+            };
+            let next_principal_raw = principal_amount_raw + principal_delta_raw;
+            let holding_delta_raw = if same_current_holding {
+                Some(next_amount_raw - current_amount_raw)
+            } else {
+                None
+            };
+            loyal_yield_orchestrator::sqlx::query(
+                r#"
+                UPDATE loyal_yield.user_yield_positions
+                SET
+                    deposit_mint = $2,
+                    initial_liquidity_mint = $2,
+                    initial_market = $3,
+                    last_confirmed_slot = $4,
+                    last_deposit_signature = $5,
+                    policy_account = $6,
+                    policy_id = $7,
+                    policy_seed = $7,
+                    principal_amount_raw = $8,
+                    smart_account_address = $9,
+                    status = 'active'::loyal_yield.yield_position_status,
+                    updated_at = now(),
+                    vault_pubkey = $9,
+                    wallet_address = $10
+                WHERE id = $1
+                "#,
+            )
+            .bind(position_id)
+            .bind(USDC_MINT.to_string())
+            .bind(target_market)
+            .bind(confirmed_slot)
+            .bind(deposit_signature)
+            .bind(&vault.policy_account)
+            .bind(vault.policy_seed)
+            .bind(next_principal_raw)
+            .bind(&vault.vault_pubkey)
+            .bind(wallet)
+            .execute(&mut **tx)
+            .await?;
+            (
+                position_id,
+                "deposit_top_up",
+                next_amount_raw,
+                next_principal_raw,
+                holding_delta_raw,
+            )
+        } else {
+            let row = loyal_yield_orchestrator::sqlx::query(
+                r#"
+                INSERT INTO loyal_yield.user_yield_positions (
+                    wallet_address,
+                    smart_account_address,
+                    settings,
+                    vault_index,
+                    vault_pubkey,
+                    policy_id,
+                    policy_account,
+                    policy_seed,
+                    initial_reserve,
+                    initial_market,
+                    initial_liquidity_mint,
+                    initial_supply_apy_bps,
+                    deposit_mint,
+                    principal_amount_raw,
+                    current_reserve,
+                    current_market,
+                    current_liquidity_mint,
+                    current_amount_raw,
+                    current_observed_slot,
+                    current_observed_at,
+                    first_deposit_signature,
+                    last_deposit_signature,
+                    last_confirmed_slot,
+                    status,
+                    created_at,
+                    updated_at
+                )
+                VALUES ($1, $2, $3, $4, $2, $5, $6, $5, $7, $8, $9, $10, $9, $11, $7, $8, $9, $12, $13, now(), $14, $14, $13, 'active'::loyal_yield.yield_position_status, now(), now())
+                RETURNING id
+                "#,
+            )
+            .bind(wallet)
+            .bind(&vault.vault_pubkey)
+            .bind(&vault.settings)
+            .bind(vault.vault_index)
+            .bind(vault.policy_seed)
+            .bind(&vault.policy_account)
+            .bind(target_reserve)
+            .bind(target_market)
+            .bind(USDC_MINT.to_string())
+            .bind(decision.target_apy_bps)
+            .bind(principal_delta_raw)
+            .bind(observed_current_amount)
+            .bind(confirmed_slot)
+            .bind(deposit_signature)
+            .fetch_one(&mut **tx)
+            .await?;
+            (
+                row.try_get("id")?,
+                "deposit_initialized",
+                observed_current_amount,
+                principal_delta_raw,
+                Some(principal_delta_raw),
+            )
+        };
+
+    let event_row = loyal_yield_orchestrator::sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.user_yield_position_holding_events (
+            position_id,
+            event_type,
+            reserve,
+            market,
+            liquidity_mint,
+            amount_raw,
+            principal_delta_raw,
+            holding_delta_raw,
+            observed_slot,
+            observed_at,
+            source_signature,
+            source_deposit_id,
+            source_rebalance_decision_id,
+            created_at
+        )
+        VALUES ($1, $2::text::loyal_yield.user_yield_holding_event_type, $3, $4, $5, $6, $7, $8, $9, now(), $10, $11, $12, now())
+        RETURNING id
+        "#,
+    )
+    .bind(position_id)
+    .bind(event_type)
+    .bind(target_reserve)
+    .bind(target_market)
+    .bind(USDC_MINT.to_string())
+    .bind(next_amount_raw)
+    .bind(principal_delta_raw)
+    .bind(holding_delta_raw)
+    .bind(confirmed_slot)
+    .bind(deposit_signature)
+    .bind(deposit_id)
+    .bind(decision.id.as_i64())
+    .fetch_one(&mut **tx)
+    .await?;
+    let event_id: i64 = event_row.try_get("id")?;
+
+    loyal_yield_orchestrator::sqlx::query(
+        r#"
+        UPDATE loyal_yield.user_yield_positions
+        SET
+            current_amount_raw = $2,
+            current_liquidity_mint = $3,
+            current_market = $4,
+            current_observed_at = now(),
+            current_observed_slot = $5,
+            current_reserve = $6,
+            last_holding_event_id = $7,
+            last_confirmed_slot = $5,
+            last_deposit_signature = $8,
+            principal_amount_raw = $9,
+            status = 'active'::loyal_yield.yield_position_status,
+            updated_at = now()
+        WHERE id = $1
+        "#,
+    )
+    .bind(position_id)
+    .bind(next_amount_raw)
+    .bind(USDC_MINT.to_string())
+    .bind(target_market)
+    .bind(confirmed_slot)
+    .bind(target_reserve)
+    .bind(event_id)
+    .bind(deposit_signature)
+    .bind(next_principal_raw)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(json!({
+        "status": "repaired",
+        "positionId": position_id,
+        "depositId": deposit_id,
+        "holdingEventId": event_id,
+        "principalDeltaRaw": principal_delta_raw.to_string(),
+        "nextPrincipalRaw": next_principal_raw.to_string(),
+        "nextAmountRaw": next_amount_raw.to_string(),
+    }))
+}
+
 async fn deactivate_vault_policy_after_full_withdraw(
     client: &NeonSqlClient,
     vault: &SelectedVault,
@@ -3150,7 +4132,7 @@ async fn run_full_reserve_withdraw_flow(
         RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
     let lookup_table_pubkeys = lookup_table_pubkeys_from_options(options)?;
     let lookup_table_accounts = load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
-    let signer = yield_router_keypair_from_env()?;
+    let signer = policy_keypair_from_env()?;
     let authority_signer = solana_testing_keypair_from_env()?;
     let authority_pubkey = Pubkey::from_str(&vault.authority)?;
     if authority_signer.pubkey() != authority_pubkey {
@@ -6306,7 +7288,7 @@ fn uses_chain_preview_positions(options: &CliOptions, has_chain_preview: bool) -
 
 fn same_mint_route_fee_payer_pubkey(options: &CliOptions) -> Result<Pubkey, Box<dyn Error>> {
     if options.optimization_cycle || options.provision_route_lookup_table {
-        Ok(yield_router_keypair_from_env()?.pubkey())
+        Ok(policy_keypair_from_env()?.pubkey())
     } else {
         Ok(solana_testing_keypair_from_env()?.pubkey())
     }
@@ -6391,7 +7373,7 @@ fn build_route_execution_plan(
     fee_payer: Pubkey,
 ) -> Result<RouteExecutionPlan, Box<dyn Error>> {
     let policy_account = Pubkey::from_str(&vault.policy_account)?;
-    let signer_pubkey = yield_router_keypair_from_env()?.pubkey();
+    let signer_pubkey = policy_keypair_from_env()?.pubkey();
     if let Some(policy_preflight) = policy_preflight {
         if !policy_preflight
             .decoded
@@ -6400,7 +7382,7 @@ fn build_route_execution_plan(
             .any(|signer| signer == &signer_pubkey.to_string())
         {
             return Err(format!(
-                "decoded policy account {} does not allow YIELD_ROUTER_KEYPAIR signer {}",
+                "decoded policy account {} does not allow POLICY_KEYPAIR signer {}",
                 vault.policy_account, signer_pubkey
             )
             .into());
@@ -6566,6 +7548,11 @@ fn build_route_execution_plan(
     if target.obligation_exists {
         pre_instructions.extend(target_farm_init_instruction);
         pre_instructions.push(target_refresh_instruction);
+        protected_and_public_instructions.push(kamino_refresh_obligation_for_reserves_instruction(
+            target,
+            &[target.reserve.as_str()],
+        )?);
+        route_steps.push(KAMINO_REFRESH_OBLIGATION_ROUTE_STEP);
     } else {
         let (init_policy, init_index) =
             resolve_init_obligation_policy(rpc, vault, target, policy_preflight)?;
@@ -6594,6 +7581,7 @@ fn build_route_execution_plan(
         protected_and_public_instructions.extend(target_farm_init_instruction);
         protected_and_public_instructions.push(target_refresh_instruction);
         route_steps.push(KAMINO_INIT_OBLIGATION_ROUTE_STEP);
+        route_steps.push(KAMINO_REFRESH_OBLIGATION_ROUTE_STEP);
         inner_instruction_count += init_inner_count;
         transaction_account_count += init_transaction_account_count;
         outer_account_count += init_outer_account_count;
@@ -6664,7 +7652,7 @@ fn build_initial_reserve_deposit_policy_plan(
             .any(|signer| signer == &signer_pubkey.to_string())
         {
             return Err(format!(
-                "decoded policy account {} does not allow YIELD_ROUTER_KEYPAIR signer {}",
+                "decoded policy account {} does not allow POLICY_KEYPAIR signer {}",
                 vault.policy_account, signer_pubkey
             )
             .into());
@@ -6784,7 +7772,7 @@ fn build_full_main_usdc_withdraw_policy_plan(
             .any(|signer| signer == &signer_pubkey.to_string())
         {
             return Err(format!(
-                "decoded policy account {} does not allow YIELD_ROUTER_KEYPAIR signer {}",
+                "decoded policy account {} does not allow POLICY_KEYPAIR signer {}",
                 vault.policy_account, signer_pubkey
             )
             .into());
@@ -6871,7 +7859,7 @@ async fn execute_prepared_same_mint_route(
 ) -> Result<RouteExecutionSubmitResult, Box<dyn Error>> {
     let rpc =
         RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
-    let signer = yield_router_keypair_from_env()?;
+    let signer = policy_keypair_from_env()?;
     let admin_fee_payer = if options.optimization_cycle {
         None
     } else {
@@ -6884,7 +7872,7 @@ async fn execute_prepared_same_mint_route(
     let expected_signer = Pubkey::from_str(&route_execution.preview.signer)?;
     if signer.pubkey() != expected_signer {
         return Err(format!(
-            "YIELD_ROUTER_KEYPAIR pubkey {} does not match delegated signer {}",
+            "POLICY_KEYPAIR pubkey {} does not match delegated signer {}",
             signer.pubkey(),
             expected_signer
         )
@@ -7362,12 +8350,24 @@ fn collateral_farm_accounts(
 fn kamino_refresh_obligation_instruction(
     position: &ChainPositionSummary,
 ) -> Result<Instruction, Box<dyn Error>> {
-    let lending_market = Pubkey::from_str(&position.market)?;
-    let obligation = Pubkey::from_str(&position.obligation)?;
-    let remaining_accounts = position
+    let remaining_reserves = position
         .obligation_deposit_reserves
         .iter()
         .chain(position.obligation_borrow_reserves.iter())
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+
+    kamino_refresh_obligation_for_reserves_instruction(position, &remaining_reserves)
+}
+
+fn kamino_refresh_obligation_for_reserves_instruction(
+    position: &ChainPositionSummary,
+    reserves: &[&str],
+) -> Result<Instruction, Box<dyn Error>> {
+    let lending_market = Pubkey::from_str(&position.market)?;
+    let obligation = Pubkey::from_str(&position.obligation)?;
+    let remaining_accounts = reserves
+        .iter()
         .map(|reserve| {
             Pubkey::from_str(reserve)
                 .map(|pubkey| AccountMeta::new(pubkey, false))
@@ -8198,6 +9198,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     let mut update_active_policy = false;
     let mut initial_deposit_reserve = None;
     let mut initial_deposit_amount_raw = None;
+    let mut idle_vault_deposit_reserve = None;
+    let mut idle_vault_deposit_amount_raw = None;
     let mut full_withdraw_main_usdc = false;
     let mut full_withdraw_reserve = None;
     let mut setup_obligation_reserve = None;
@@ -8214,6 +9216,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     let mut expected_liquidity_mint = None;
     let mut expected_amount_raw = None;
     let mut expected_route_amount_semantics = None;
+    let mut expected_idle_token_account = None;
+    let mut expected_idle_observed_slot = None;
+    let mut expected_idle_observed_at = None;
     let mut expected_source_apy_bps = None;
     let mut expected_target_apy_bps = None;
     let mut expected_edge_bps = None;
@@ -8321,6 +9326,29 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
                 initial_deposit_reserve = Some(reserve);
                 initial_deposit_amount_raw = Some(amount);
             }
+            "--deposit-idle-vault-reserve" => {
+                if idle_vault_deposit_amount_raw.is_some() {
+                    return Err("choose only one idle vault deposit mode".to_owned());
+                }
+                let reserve = iter
+                    .next()
+                    .ok_or("--deposit-idle-vault-reserve requires a reserve public key")?;
+                Pubkey::from_str(&reserve)
+                    .map_err(|_| "--deposit-idle-vault-reserve reserve must be a public key")?;
+                let raw = iter
+                    .next()
+                    .ok_or("--deposit-idle-vault-reserve requires an amount in raw USDC units")?;
+                let amount = raw
+                    .parse::<u64>()
+                    .map_err(|_| "--deposit-idle-vault-reserve amount must be a u64")?;
+                if amount == 0 {
+                    return Err(
+                        "--deposit-idle-vault-reserve amount must be greater than 0".to_owned()
+                    );
+                }
+                idle_vault_deposit_reserve = Some(reserve);
+                idle_vault_deposit_amount_raw = Some(amount);
+            }
             "--execute" => execute = true,
             "--optimization-cycle" => optimization_cycle = true,
             "--reconcile-from-chain" => reconcile_from_chain = true,
@@ -8372,6 +9400,31 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
                         .ok_or("--expected-route-amount-semantics requires a value")?,
                 );
             }
+            "--expected-idle-token-account" => {
+                let raw = iter
+                    .next()
+                    .ok_or("--expected-idle-token-account requires a token account public key")?;
+                Pubkey::from_str(&raw)
+                    .map_err(|_| "--expected-idle-token-account must be a public key")?;
+                expected_idle_token_account = Some(raw);
+            }
+            "--expected-idle-observed-slot" => {
+                let raw = iter
+                    .next()
+                    .ok_or("--expected-idle-observed-slot requires a value")?;
+                expected_idle_observed_slot = Some(
+                    raw.parse::<i64>()
+                        .map_err(|_| "--expected-idle-observed-slot must be an i64")?,
+                );
+            }
+            "--expected-idle-observed-at" => {
+                let raw = iter
+                    .next()
+                    .ok_or("--expected-idle-observed-at requires an RFC3339 timestamp")?;
+                let parsed = DateTime::parse_from_rfc3339(&raw)
+                    .map_err(|_| "--expected-idle-observed-at must be an RFC3339 timestamp")?;
+                expected_idle_observed_at = Some(parsed.with_timezone(&Utc));
+            }
             "--expected-source-apy-bps" => {
                 let raw = iter
                     .next()
@@ -8417,9 +9470,16 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
         );
     }
     let full_withdraw_requested = full_withdraw_main_usdc || full_withdraw_reserve.is_some();
+    if initial_deposit_amount_raw.is_some() && idle_vault_deposit_amount_raw.is_some() {
+        return Err(
+            "--deposit-idle-vault-reserve cannot be combined with --deposit-main-usdc/--deposit-reserve"
+                .to_owned(),
+        );
+    }
     let selected_special_modes = [
         update_policy,
         initial_deposit_amount_raw.is_some(),
+        idle_vault_deposit_amount_raw.is_some(),
         full_withdraw_requested,
         setup_obligation_reserve.is_some(),
         reconcile_current_positions,
@@ -8431,7 +9491,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     .count();
     if selected_special_modes > 1 {
         return Err(
-            "--update-policy, --deposit-main-usdc/--deposit-reserve, --setup-obligation-reserve, --full-withdraw-reserve, --reconcile-current-positions, --e2e-main-prime-main, and --provision-route-lookup-table are mutually exclusive"
+            "--update-policy, --deposit-main-usdc/--deposit-reserve, --deposit-idle-vault-reserve, --setup-obligation-reserve, --full-withdraw-reserve, --reconcile-current-positions, --e2e-main-prime-main, and --provision-route-lookup-table are mutually exclusive"
                 .to_owned(),
         );
     }
@@ -8493,6 +9553,30 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     if reconcile_current_positions && (execute || seed_from_user_position) {
         return Err("--reconcile-current-positions cannot be combined with --execute or --seed-from-user-position".to_owned());
     }
+    if idle_vault_deposit_amount_raw.is_some() {
+        if !reconcile_from_chain {
+            return Err("--deposit-idle-vault-reserve requires --reconcile-from-chain".to_owned());
+        }
+        if seed_from_user_position {
+            return Err(
+                "--deposit-idle-vault-reserve cannot use --seed-from-user-position".to_owned(),
+            );
+        }
+        if execute
+            && (expected_idle_token_account.is_none()
+                || expected_idle_observed_slot.is_none()
+                || expected_idle_observed_at.is_none()
+                || expected_liquidity_mint.is_none()
+                || expected_amount_raw.is_none()
+                || expected_target_apy_bps.is_none()
+                || expected_edge_bps.is_none())
+        {
+            return Err(
+                "--deposit-idle-vault-reserve --execute requires --expected-idle-token-account, --expected-idle-observed-slot, --expected-idle-observed-at, --expected-liquidity-mint, --expected-amount-raw, --expected-target-apy-bps, and --expected-edge-bps"
+                    .to_owned(),
+            );
+        }
+    }
     if optimization_cycle {
         if !execute {
             return Err("--optimization-cycle requires --execute".to_owned());
@@ -8538,6 +9622,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
         update_active_policy,
         initial_deposit_reserve,
         initial_deposit_amount_raw,
+        idle_vault_deposit_reserve,
+        idle_vault_deposit_amount_raw,
         full_withdraw_main_usdc,
         full_withdraw_reserve,
         setup_obligation_reserve,
@@ -8554,6 +9640,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
         expected_liquidity_mint,
         expected_amount_raw,
         expected_route_amount_semantics,
+        expected_idle_token_account,
+        expected_idle_observed_slot,
+        expected_idle_observed_at,
         expected_source_apy_bps,
         expected_target_apy_bps,
         expected_edge_bps,
@@ -9443,6 +10532,8 @@ mod tests {
             update_active_policy: false,
             initial_deposit_reserve: None,
             initial_deposit_amount_raw: None,
+            idle_vault_deposit_reserve: None,
+            idle_vault_deposit_amount_raw: None,
             full_withdraw_main_usdc: false,
             full_withdraw_reserve: None,
             setup_obligation_reserve: None,
@@ -9461,6 +10552,9 @@ mod tests {
             expected_route_amount_semantics: Some(
                 ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY.to_owned(),
             ),
+            expected_idle_token_account: None,
+            expected_idle_observed_slot: None,
+            expected_idle_observed_at: None,
             expected_source_apy_bps: Some(100),
             expected_target_apy_bps: Some(200),
             expected_edge_bps: Some(100),
@@ -9772,8 +10866,8 @@ mod tests {
 
 fn print_help() {
     println!(
-         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--provision-lookup-table] [--provision-route-lookup-table] [--deposit-main-usdc <AMOUNT_RAW> | --deposit-reserve <RESERVE> <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--lookup-table <PUBKEY>...] [--execute]\n\n\
-         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and YIELD_ROUTER_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for live same-mint route execution; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses YIELD_ROUTER_KEYPAIR as fee payer and delegated signer, reuses durable lookup-table coverage, and fails before route send if coverage is missing. Add --provision-lookup-table only with --update-policy for durable policy lookup-table setup. Add --provision-route-lookup-table with explicit source/target reserves plus --reconcile-from-chain for route lookup-table setup; it cannot be combined with --optimization-cycle or --seed-from-user-position. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and YIELD_ROUTER_KEYPAIR for the policy deposit; --deposit-reserve allows choosing a non-Main Safe USDC reserve when Main is already the APY winner. Full withdraw mode uses YIELD_ROUTER_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
+         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--provision-lookup-table] [--provision-route-lookup-table] [--deposit-main-usdc <AMOUNT_RAW> | --deposit-reserve <RESERVE> <AMOUNT_RAW> | --deposit-idle-vault-reserve <RESERVE> <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--lookup-table <PUBKEY>...] [--execute]\n\n\
+         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and POLICY_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for live same-mint route execution; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses POLICY_KEYPAIR as fee payer and delegated signer, reuses durable lookup-table coverage, and fails before route send if coverage is missing. Add --provision-route-lookup-table with explicit source/target reserves plus --reconcile-from-chain for route lookup-table setup; it uses POLICY_KEYPAIR as the lookup-table authority and payer, cannot be combined with --optimization-cycle or --seed-from-user-position, and exits without writing a rebalance decision or sending the route. Add --deposit-idle-vault-reserve for router-owned USDC already inside the vault; execute mode requires expected idle token account, observed slot/time, mint, amount, target APY, and edge, uses POLICY_KEYPAIR as fee payer/delegated signer, and does not read SOLANA_TESTING_PK. Add --provision-lookup-table only with --update-policy for durable policy lookup-table setup. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and POLICY_KEYPAIR for the policy deposit; --deposit-reserve allows choosing a non-Main Safe USDC reserve when Main is already the APY winner. Full withdraw mode uses POLICY_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
          op run --env-file=.env.1password -- bun run same-mint:swap -- --settings <PUBKEY> --vault-index 1 --reconcile-from-chain --seed-from-user-position"
     );
 }

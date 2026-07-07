@@ -12,13 +12,12 @@ use chrono::{DateTime, Duration, Utc};
 use loyal_actions::{CASH_MINT, PYUSD_MINT, USDC_MINT, USDG_MINT, USDS_MINT, USDT_MINT};
 use loyal_yield_orchestrator::sqlx::Row;
 use loyal_yield_orchestrator::{
-    route_amount_evidence, solana_testing_keypair_from_env, yield_router_keypair_from_env,
-    CurrentReservePosition, ManagedVault, NeonSqlClient, NeonSqlConfig, PolicyId, RoutePolicy,
-    VaultId, ACTIVE_DECISION_STATUSES, SOLANA_TESTING_PK_ENV,
+    policy_keypair_from_env, route_amount_evidence, solana_testing_keypair_from_env,
+    CurrentIdleTokenBalance, CurrentReservePosition, ManagedVault, NeonSqlClient, NeonSqlConfig,
+    PolicyId, RoutePolicy, VaultId, ACTIVE_DECISION_STATUSES, SOLANA_TESTING_PK_ENV,
 };
 use loyal_yield_router::timescale::{
-    SupportedReserveLatestQuery, SupportedReserveLatestRow, TimescaleRouterClient,
-    TimescaleRouterClientConfig,
+    SupportedReserveLatestRow, TimescaleRouterClient, TimescaleRouterClientConfig,
 };
 use serde_json::{json, Value};
 use solana_sdk::{pubkey::Pubkey, signature::Signer};
@@ -28,6 +27,7 @@ const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 300;
 const DEFAULT_REBALANCE_COOLDOWN_SECONDS: u64 = 300;
 const DEFAULT_MAX_CANDIDATE_AGE_SECONDS: i64 = 6 * 60 * 60;
 const DEFAULT_MIN_EDGE_BPS: i64 = 1;
+const DEFAULT_MIN_IDLE_DEPOSIT_RAW: i64 = 1_000_000;
 const SAME_MINT_ROUTE_MODE: &str = "same_mint_kamino";
 const ENABLED_STABLE_MINTS_ENV: &str = "EARN_ROUTER_ENABLED_STABLE_MINTS";
 
@@ -42,6 +42,7 @@ struct Options {
     rebalance_cooldown_seconds: u64,
     max_candidate_age_seconds: i64,
     min_edge_bps: i64,
+    min_idle_deposit_raw: i64,
     enabled_mints: Vec<String>,
 }
 
@@ -62,6 +63,15 @@ struct PlannedMonitorMove {
     redeemable_source_liquidity_amount_raw: Option<i64>,
     idle_vault_liquidity_amount_raw: Option<i64>,
     source_apy_bps: i64,
+    target_apy_bps: i64,
+    edge_bps: i64,
+}
+
+#[derive(Debug, Clone)]
+struct PlannedIdleVaultDeposit {
+    idle: CurrentIdleTokenBalance,
+    target: SupportedReserveLatestRow,
+    amount_raw: i64,
     target_apy_bps: i64,
     edge_bps: i64,
 }
@@ -146,15 +156,50 @@ async fn run_once(
     let candidates = load_safe_stable_candidates(timescale, &options.enabled_mints).await?;
     let candidate_counts = candidate_counts_by_mint(&candidates);
     if options.all_active_vaults {
-        let optimizer_signer =
-            optimizer_signer.ok_or("YIELD_ROUTER_KEYPAIR signer was not loaded")?;
+        let optimizer_signer = optimizer_signer.ok_or("POLICY_KEYPAIR signer was not loaded")?;
         let vaults =
             fetch_all_active_vaults(neon, &optimizer_signer.to_string(), &options.enabled_mints)
                 .await?;
-        let mut results = Vec::with_capacity(vaults.len());
+        let idle_balances = load_idle_balances_by_vault(neon, &vaults).await?;
+        let mut vault_inputs = Vec::with_capacity(vaults.len());
+        let mut idle_priority_count = 0usize;
         for vault in vaults {
+            let idle_balance = idle_balances
+                .get(&vault.vault.id.as_i64())
+                .and_then(|balances| {
+                    balances
+                        .iter()
+                        .find(|balance| balance.mint == USDC_MINT.to_string())
+                })
+                .cloned();
+            let idle_priority = idle_vault_deposit_is_plannable(
+                options,
+                &vault,
+                neon,
+                &candidates,
+                idle_balance.as_ref(),
+            )
+            .await?;
+            if idle_priority {
+                idle_priority_count += 1;
+            }
+            vault_inputs.push((vault, idle_balance, idle_priority));
+        }
+
+        let defer_normal_rebalances = idle_priority_count > 0;
+        let mut results = Vec::with_capacity(vault_inputs.len());
+        for (vault, idle_balance, idle_priority) in vault_inputs {
             let vault_identity = vault_json(&vault);
-            match run_vault_once(options, vault, neon, &candidates).await {
+            if defer_normal_rebalances && !idle_priority {
+                results.push(idle_priority_deferred_result(
+                    options,
+                    &vault,
+                    &candidates,
+                    idle_balance.as_ref(),
+                ));
+                continue;
+            }
+            match run_vault_once(options, vault, neon, &candidates, idle_balance).await {
                 Ok(result) => results.push(result),
                 Err(error) => results.push(json!({
                     "status": "vault_error",
@@ -177,12 +222,90 @@ async fn run_once(
             "rebalanceCooldownSeconds": options.rebalance_cooldown_seconds,
             "maxCandidateAgeSeconds": options.max_candidate_age_seconds,
             "minEdgeBps": options.min_edge_bps,
+            "minIdleDepositRaw": options.min_idle_deposit_raw,
+            "idlePriorityDepositCount": idle_priority_count,
+            "normalRebalancesDeferredForIdleDeposits": defer_normal_rebalances,
             "results": results,
         }));
     }
 
     let vault = resolve_vault(neon, authority, options).await?;
-    run_vault_once(options, vault, neon, &candidates).await
+    let idle_balance = neon
+        .current_idle_token_balance(vault.vault.id, &USDC_MINT.to_string())
+        .await?;
+    run_vault_once(options, vault, neon, &candidates, idle_balance).await
+}
+
+async fn idle_vault_deposit_is_plannable(
+    options: &Options,
+    vault: &ResolvedVault,
+    neon: &NeonSqlClient,
+    candidates: &[SupportedReserveLatestRow],
+    idle_balance: Option<&CurrentIdleTokenBalance>,
+) -> Result<bool, Box<dyn Error>> {
+    if !vault
+        .policy
+        .route_modes
+        .iter()
+        .any(|mode| mode == SAME_MINT_ROUTE_MODE)
+    {
+        return Ok(false);
+    }
+    if active_decision_count(neon, vault.vault.id).await? > 0 {
+        return Ok(false);
+    }
+
+    let policy_candidates =
+        policy_eligible_candidates(&vault.policy, candidates, &options.enabled_mints);
+    let freshest_cutoff = Utc::now() - Duration::seconds(options.max_candidate_age_seconds);
+    let (fresh_candidates, _) = split_fresh_candidates(&policy_candidates, freshest_cutoff);
+    Ok(matches!(
+        plan_idle_vault_deposit(
+            idle_balance,
+            &fresh_candidates,
+            options.min_idle_deposit_raw
+        ),
+        Ok(Some(_))
+    ))
+}
+
+fn idle_priority_deferred_result(
+    options: &Options,
+    vault: &ResolvedVault,
+    candidates: &[SupportedReserveLatestRow],
+    idle_balance: Option<&CurrentIdleTokenBalance>,
+) -> Value {
+    let candidate_counts = candidate_counts_by_mint(candidates);
+    let skipped_mint_list = skipped_mints(&options.enabled_mints, candidates);
+    let policy_candidates =
+        policy_eligible_candidates(&vault.policy, candidates, &options.enabled_mints);
+    let freshest_cutoff = Utc::now() - Duration::seconds(options.max_candidate_age_seconds);
+    let (fresh_candidates, stale_candidate_count) =
+        split_fresh_candidates(&policy_candidates, freshest_cutoff);
+    let idle_plan = plan_idle_vault_deposit(
+        idle_balance,
+        &fresh_candidates,
+        options.min_idle_deposit_raw,
+    );
+
+    json!({
+        "status": "skipped_normal_rebalance_deferred_for_idle_vault_deposit",
+        "execute": options.execute,
+        "skipReason": "fleet_idle_vault_deposit_priority",
+        "enabledMints": options.enabled_mints.clone(),
+        "vault": vault_json(vault),
+        "idleVaultBalance": idle_balance.map(idle_balance_json),
+        "idleVaultDepositPlan": idle_vault_deposit_result_json(&idle_plan),
+        "candidates": candidates_json(candidates),
+        "policyEligibleCandidates": candidates_json(&policy_candidates),
+        "candidateCountsByMint": candidate_counts,
+        "policyEligibleCandidateCountsByMint": candidate_counts_by_mint(&policy_candidates),
+        "freshCandidateCountsByMint": candidate_counts_by_mint(&fresh_candidates),
+        "skippedMints": skipped_mint_list,
+        "freshCandidateCount": fresh_candidates.len(),
+        "staleCandidateCount": stale_candidate_count,
+        "minIdleDepositRaw": options.min_idle_deposit_raw,
+    })
 }
 
 async fn run_vault_once(
@@ -190,6 +313,7 @@ async fn run_vault_once(
     vault: ResolvedVault,
     neon: &NeonSqlClient,
     candidates: &[SupportedReserveLatestRow],
+    idle_balance: Option<CurrentIdleTokenBalance>,
 ) -> Result<Value, Box<dyn Error>> {
     let candidate_counts = candidate_counts_by_mint(candidates);
     let skipped_mint_list = skipped_mints(&options.enabled_mints, candidates);
@@ -233,6 +357,83 @@ async fn run_vault_once(
         }));
     }
 
+    let freshest_cutoff = Utc::now() - Duration::seconds(options.max_candidate_age_seconds);
+    let (fresh_candidates, stale_candidate_count) =
+        split_fresh_candidates(&policy_candidates, freshest_cutoff);
+    let idle_plan = plan_idle_vault_deposit(
+        idle_balance.as_ref(),
+        &fresh_candidates,
+        options.min_idle_deposit_raw,
+    );
+    if let Ok(Some(planned_idle_deposit)) = idle_plan.as_ref() {
+        if options.execute {
+            let execution =
+                execute_idle_vault_deposit(&vault, planned_idle_deposit, &policy_candidates)?;
+            let active_decision_count_after = active_decision_count(neon, vault.vault.id).await?;
+            if !execution.success {
+                return Ok(json!({
+                    "status": route_execution_status(&execution),
+                    "execute": true,
+                    "enabledMints": options.enabled_mints.clone(),
+                    "vault": vault_json(&vault),
+                    "activeDecisionCount": active_decisions,
+                    "activeDecisionCountAfter": active_decision_count_after,
+                    "idleVaultBalance": idle_balance.as_ref().map(idle_balance_json),
+                    "plannedIdleVaultDeposit": idle_vault_deposit_json(Some(planned_idle_deposit)),
+                    "routeExecution": route_execution_output_json(&execution),
+                    "candidates": candidates_json(candidates),
+                    "policyEligibleCandidates": candidates_json(&policy_candidates),
+                    "candidateCountsByMint": candidate_counts,
+                    "policyEligibleCandidateCountsByMint": candidate_counts_by_mint(&policy_candidates),
+                    "freshCandidateCountsByMint": candidate_counts_by_mint(&fresh_candidates),
+                    "skippedMints": skipped_mint_list,
+                    "freshCandidateCount": fresh_candidates.len(),
+                    "staleCandidateCount": stale_candidate_count,
+                    "minIdleDepositRaw": options.min_idle_deposit_raw,
+                }));
+            }
+            return Ok(json!({
+                "status": "idle_vault_deposit_executed",
+                "execute": true,
+                "enabledMints": options.enabled_mints.clone(),
+                "vault": vault_json(&vault),
+                "activeDecisionCount": active_decisions,
+                "activeDecisionCountAfter": active_decision_count_after,
+                "idleVaultBalance": idle_balance.as_ref().map(idle_balance_json),
+                "plannedIdleVaultDeposit": idle_vault_deposit_json(Some(planned_idle_deposit)),
+                "routeExecution": route_execution_output_json(&execution),
+                "candidates": candidates_json(candidates),
+                "policyEligibleCandidates": candidates_json(&policy_candidates),
+                "candidateCountsByMint": candidate_counts,
+                "policyEligibleCandidateCountsByMint": candidate_counts_by_mint(&policy_candidates),
+                "freshCandidateCountsByMint": candidate_counts_by_mint(&fresh_candidates),
+                "skippedMints": skipped_mint_list,
+                "freshCandidateCount": fresh_candidates.len(),
+                "staleCandidateCount": stale_candidate_count,
+                "minIdleDepositRaw": options.min_idle_deposit_raw,
+            }));
+        }
+        return Ok(json!({
+            "status": "planned_idle_vault_deposit_dry_run",
+            "execute": false,
+            "enabledMints": options.enabled_mints.clone(),
+            "vault": vault_json(&vault),
+            "activeDecisionCount": active_decisions,
+            "idleVaultBalance": idle_balance.as_ref().map(idle_balance_json),
+            "plannedIdleVaultDeposit": idle_vault_deposit_json(Some(planned_idle_deposit)),
+            "candidates": candidates_json(candidates),
+            "policyEligibleCandidates": candidates_json(&policy_candidates),
+            "candidateCountsByMint": candidate_counts,
+            "policyEligibleCandidateCountsByMint": candidate_counts_by_mint(&policy_candidates),
+            "freshCandidateCountsByMint": candidate_counts_by_mint(&fresh_candidates),
+            "skippedMints": skipped_mint_list,
+            "freshCandidateCount": fresh_candidates.len(),
+            "staleCandidateCount": stale_candidate_count,
+            "maxCandidateAgeSeconds": options.max_candidate_age_seconds,
+            "minIdleDepositRaw": options.min_idle_deposit_raw,
+        }));
+    }
+
     let recent_rebalance =
         recent_confirmed_rebalance(neon, vault.vault.id, options.rebalance_cooldown_seconds)
             .await?;
@@ -257,6 +458,8 @@ async fn run_vault_once(
             "candidateCountsByMint": candidate_counts,
             "policyEligibleCandidateCountsByMint": candidate_counts_by_mint(&policy_candidates),
             "skippedMints": skipped_mint_list,
+            "idleVaultBalance": idle_balance.as_ref().map(idle_balance_json),
+            "idleVaultDepositPlan": idle_vault_deposit_result_json(&idle_plan),
         }));
     }
 
@@ -268,6 +471,8 @@ async fn run_vault_once(
             "enabledMints": options.enabled_mints.clone(),
             "vault": vault_json(&vault),
             "chainReconcile": reconcile_output_json(&reconcile),
+            "idleVaultBalance": idle_balance.as_ref().map(idle_balance_json),
+            "idleVaultDepositPlan": idle_vault_deposit_result_json(&idle_plan),
             "candidates": candidates_json(candidates),
             "policyEligibleCandidates": candidates_json(&policy_candidates),
             "candidateCountsByMint": candidate_counts,
@@ -277,9 +482,6 @@ async fn run_vault_once(
     }
     let positions = neon.current_positions(vault.vault.id).await?;
     let policy_positions = policy_eligible_positions(&positions, &policy_candidates);
-    let freshest_cutoff = Utc::now() - Duration::seconds(options.max_candidate_age_seconds);
-    let (fresh_candidates, stale_candidate_count) =
-        split_fresh_candidates(&policy_candidates, freshest_cutoff);
 
     let plan = if fresh_candidates.is_empty() {
         Err("no_eligible_fresh_candidate_data".to_owned())
@@ -310,6 +512,8 @@ async fn run_vault_once(
                 "policyEligibleCurrentPositions": positions_json(&policy_positions),
                 "currentPositionsAfter": positions_json(&positions_after),
                 "chainReconcile": reconcile_output_json(&reconcile),
+                "idleVaultBalance": idle_balance.as_ref().map(idle_balance_json),
+                "idleVaultDepositPlan": idle_vault_deposit_result_json(&idle_plan),
                 "candidates": candidates_json(candidates),
                 "policyEligibleCandidates": candidates_json(&policy_candidates),
                 "candidateCountsByMint": candidate_counts,
@@ -333,6 +537,8 @@ async fn run_vault_once(
             "policyEligibleCurrentPositions": positions_json(&policy_positions),
             "currentPositionsAfter": positions_json(&positions_after),
             "chainReconcile": reconcile_output_json(&reconcile),
+            "idleVaultBalance": idle_balance.as_ref().map(idle_balance_json),
+            "idleVaultDepositPlan": idle_vault_deposit_result_json(&idle_plan),
             "candidates": candidates_json(candidates),
             "policyEligibleCandidates": candidates_json(&policy_candidates),
             "candidateCountsByMint": candidate_counts,
@@ -356,6 +562,8 @@ async fn run_vault_once(
         "currentPositions": positions_json(&positions),
         "policyEligibleCurrentPositions": positions_json(&policy_positions),
         "chainReconcile": reconcile_output_json(&reconcile),
+        "idleVaultBalance": idle_balance.as_ref().map(idle_balance_json),
+        "idleVaultDepositPlan": idle_vault_deposit_result_json(&idle_plan),
         "candidates": candidates_json(candidates),
         "policyEligibleCandidates": candidates_json(&policy_candidates),
         "candidateCountsByMint": candidate_counts,
@@ -436,6 +644,92 @@ fn execute_planned_move(
         },
         stderr_text: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
     })
+}
+
+fn execute_idle_vault_deposit(
+    vault: &ResolvedVault,
+    plan: &PlannedIdleVaultDeposit,
+    policy_candidates: &[SupportedReserveLatestRow],
+) -> Result<RouteExecutionOutput, Box<dyn Error>> {
+    let binary = same_mint_reserve_swap_binary()?;
+    let current_exe = env::current_exe()?;
+    let is_local_debug = current_exe.to_string_lossy().contains("/target/debug/");
+    let mut command = if binary.exists() && !is_local_debug {
+        Command::new(binary)
+    } else {
+        let mut fallback = Command::new("cargo");
+        fallback.args([
+            "run",
+            "-p",
+            "loyal-yield-orchestrator",
+            "--bin",
+            "same-mint-reserve-swap",
+            "--",
+        ]);
+        fallback
+    };
+    command
+        .arg("--settings")
+        .arg(&vault.vault.settings)
+        .arg("--vault-index")
+        .arg(vault.vault.vault_index.to_string())
+        .arg("--deposit-idle-vault-reserve")
+        .arg(&plan.target.reserve)
+        .arg(plan.amount_raw.to_string())
+        .arg("--expected-idle-token-account")
+        .arg(&plan.idle.token_account)
+        .arg("--expected-idle-observed-slot")
+        .arg(plan.idle.observed_slot.to_string())
+        .arg("--expected-idle-observed-at")
+        .arg(plan.idle.observed_at.to_rfc3339())
+        .arg("--expected-liquidity-mint")
+        .arg(&plan.idle.mint)
+        .arg("--expected-amount-raw")
+        .arg(plan.amount_raw.to_string())
+        .arg("--expected-target-apy-bps")
+        .arg(plan.target_apy_bps.to_string())
+        .arg("--expected-edge-bps")
+        .arg(plan.edge_bps.to_string())
+        .arg("--reconcile-from-chain")
+        .arg("--execute");
+    for reserve in idle_deposit_post_reconcile_reserves(&plan.idle.mint, policy_candidates) {
+        command.arg("--reconcile-reserve").arg(reserve);
+    }
+
+    let output = command.output()?;
+    let stdout_text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let stdout_json = if stdout_text.is_empty() {
+        None
+    } else {
+        serde_json::from_str::<Value>(&stdout_text).ok()
+    };
+    Ok(RouteExecutionOutput {
+        success: output.status.success(),
+        status_code: output.status.code(),
+        stdout_json,
+        stdout_text: if stdout_text.is_empty() {
+            None
+        } else {
+            Some(stdout_text)
+        },
+        stderr_text: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    })
+}
+
+fn idle_deposit_post_reconcile_reserves(
+    mint: &str,
+    policy_candidates: &[SupportedReserveLatestRow],
+) -> Vec<String> {
+    let mut reserves = Vec::new();
+    for candidate in policy_candidates
+        .iter()
+        .filter(|candidate| candidate.liquidity_mint == mint)
+    {
+        if !reserves.iter().any(|reserve| reserve == &candidate.reserve) {
+            reserves.push(candidate.reserve.clone());
+        }
+    }
+    reserves
 }
 
 fn same_mint_reserve_swap_binary() -> Result<PathBuf, Box<dyn Error>> {
@@ -542,15 +836,47 @@ async fn load_safe_stable_candidates(
     timescale: &TimescaleRouterClient,
     enabled_mints: &[String],
 ) -> Result<Vec<SupportedReserveLatestRow>, Box<dyn Error>> {
-    let mut candidates = Vec::new();
-    for mint in enabled_mints {
-        candidates.extend(
-            timescale
-                .latest_supported_reserves(SupportedReserveLatestQuery::safe_stable(mint.clone()))
-                .await?,
-        );
+    if enabled_mints.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(candidates)
+
+    let rows = loyal_yield_orchestrator::sqlx::query_as::<_, SupportedReserveLatestRow>(
+        r#"
+        SELECT l.observed_at,
+               l.slot,
+               l.reserve,
+               l.market,
+               l.market_name,
+               l.liquidity_mint,
+               l.symbol,
+               l.supply_apy,
+               l.borrow_apy,
+               l.total_supply_usd_estimate,
+               l.reserve_last_update_stale
+        FROM kamino.supported_reserves sr
+        JOIN kamino.latest_reserve_updates l
+          ON l.reserve = sr.reserve
+         AND l.market = sr.market
+         AND l.liquidity_mint = sr.liquidity_mint
+        WHERE sr.active = true
+          AND $1 = ANY(sr.risk_baskets)
+          AND sr.liquidity_mint = ANY($2)
+          AND l.reserve_last_update_stale = false
+          AND l.total_supply_usd_estimate > $3
+          AND l.supply_apy >= $4
+          AND l.supply_apy < $5
+        ORDER BY l.supply_apy DESC, l.observed_at DESC, l.reserve ASC
+        "#,
+    )
+    .bind("safe")
+    .bind(enabled_mints.to_vec())
+    .bind(100_000.0_f64)
+    .bind(0.0_f64)
+    .bind(0.5_f64)
+    .fetch_all(timescale.pool())
+    .await?;
+
+    Ok(rows)
 }
 
 fn policy_eligible_candidates(
@@ -668,6 +994,45 @@ fn plan_move(
     Ok(best)
 }
 
+fn plan_idle_vault_deposit(
+    idle: Option<&CurrentIdleTokenBalance>,
+    candidates: &[SupportedReserveLatestRow],
+    min_idle_deposit_raw: i64,
+) -> Result<Option<PlannedIdleVaultDeposit>, String> {
+    let Some(idle) = idle else {
+        return Ok(None);
+    };
+    if idle.amount_raw <= 0 {
+        return Ok(None);
+    }
+    if idle.mint != USDC_MINT.to_string() {
+        return Err("idle_vault_liquidity_non_usdc".to_owned());
+    }
+    if idle.amount_raw < min_idle_deposit_raw {
+        return Err("idle_vault_liquidity_below_threshold".to_owned());
+    }
+    let Some(target) = candidates
+        .iter()
+        .filter(|candidate| candidate.liquidity_mint == idle.mint)
+        .max_by(|left, right| compare_candidate_preference(left, right))
+        .cloned()
+    else {
+        return Err("no_eligible_fresh_candidate_data".to_owned());
+    };
+    let target_apy_bps = apy_to_bps(target.supply_apy);
+    let edge_bps = target_apy_bps;
+    if edge_bps <= 0 {
+        return Err("no_positive_idle_vault_deposit_edge".to_owned());
+    }
+    Ok(Some(PlannedIdleVaultDeposit {
+        idle: idle.clone(),
+        target,
+        amount_raw: idle.amount_raw,
+        target_apy_bps,
+        edge_bps,
+    }))
+}
+
 fn split_fresh_candidates(
     candidates: &[SupportedReserveLatestRow],
     freshest_cutoff: chrono::DateTime<Utc>,
@@ -733,7 +1098,7 @@ fn authority_for_options(options: &Options) -> Result<Option<Pubkey>, Box<dyn Er
 
 fn optimizer_signer_for_options(options: &Options) -> Result<Option<Pubkey>, Box<dyn Error>> {
     if options.all_active_vaults {
-        Ok(Some(yield_router_keypair_from_env()?.pubkey()))
+        Ok(Some(policy_keypair_from_env()?.pubkey()))
     } else {
         Ok(None)
     }
@@ -819,6 +1184,27 @@ async fn fetch_all_active_vaults(
     .fetch_all(neon.pool())
     .await?;
     rows.into_iter().map(resolved_vault_from_row).collect()
+}
+
+async fn load_idle_balances_by_vault(
+    neon: &NeonSqlClient,
+    vaults: &[ResolvedVault],
+) -> Result<BTreeMap<i64, Vec<CurrentIdleTokenBalance>>, Box<dyn Error>> {
+    let vault_ids = vaults
+        .iter()
+        .map(|vault| vault.vault.id)
+        .collect::<Vec<_>>();
+    let balances = neon
+        .current_idle_token_balances_for_vaults(&vault_ids)
+        .await?;
+    let mut by_vault = BTreeMap::<i64, Vec<CurrentIdleTokenBalance>>::new();
+    for balance in balances {
+        by_vault
+            .entry(balance.vault_id.as_i64())
+            .or_default()
+            .push(balance);
+    }
+    Ok(by_vault)
 }
 
 async fn fetch_vaults_by_settings_index(
@@ -1172,6 +1558,52 @@ fn planned_move_json(plan: Option<&PlannedMonitorMove>) -> Value {
     }
 }
 
+fn idle_balance_json(balance: &CurrentIdleTokenBalance) -> Value {
+    json!({
+        "vaultId": balance.vault_id.as_i64(),
+        "mint": balance.mint,
+        "amountRaw": balance.amount_raw,
+        "owner": balance.owner,
+        "tokenAccount": balance.token_account,
+        "observedSlot": balance.observed_slot,
+        "observedAt": balance.observed_at,
+        "sourceCommitment": balance.source_commitment,
+        "updatedAt": balance.updated_at,
+    })
+}
+
+fn idle_vault_deposit_json(plan: Option<&PlannedIdleVaultDeposit>) -> Value {
+    match plan {
+        Some(plan) => json!({
+            "kind": "idle_vault_deposit",
+            "sourceKind": "idle_vault",
+            "sourceApyBps": 0,
+            "targetReserve": plan.target.reserve,
+            "targetMarket": plan.target.market,
+            "liquidityMint": plan.idle.mint,
+            "amountRaw": plan.amount_raw,
+            "idleVaultLiquidityAmountRaw": plan.amount_raw,
+            "idleTokenAccount": plan.idle.token_account,
+            "idleObservedSlot": plan.idle.observed_slot,
+            "idleObservedAt": plan.idle.observed_at,
+            "targetApyBps": plan.target_apy_bps,
+            "estimatedEdgeBps": plan.edge_bps,
+        }),
+        None => Value::Null,
+    }
+}
+
+fn idle_vault_deposit_result_json(plan: &Result<Option<PlannedIdleVaultDeposit>, String>) -> Value {
+    match plan {
+        Ok(Some(plan)) => idle_vault_deposit_json(Some(plan)),
+        Ok(None) => Value::Null,
+        Err(reason) => json!({
+            "status": "skipped",
+            "skipReason": reason,
+        }),
+    }
+}
+
 fn recent_confirmed_rebalance_json(rebalance: &RecentConfirmedRebalance) -> Value {
     json!({
         "id": rebalance.id,
@@ -1246,6 +1678,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
         rebalance_cooldown_seconds: DEFAULT_REBALANCE_COOLDOWN_SECONDS,
         max_candidate_age_seconds: DEFAULT_MAX_CANDIDATE_AGE_SECONDS,
         min_edge_bps: DEFAULT_MIN_EDGE_BPS,
+        min_idle_deposit_raw: DEFAULT_MIN_IDLE_DEPOSIT_RAW,
         enabled_mints: enabled_stable_mints_from_env()?,
     };
     let mut iter = args.into_iter();
@@ -1293,6 +1726,13 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
                     .parse()
                     .map_err(|_| "--min-edge-bps must be an integer")?;
             }
+            "--min-idle-deposit-raw" => {
+                options.min_idle_deposit_raw = iter
+                    .next()
+                    .ok_or("--min-idle-deposit-raw requires a value")?
+                    .parse()
+                    .map_err(|_| "--min-idle-deposit-raw must be an integer")?;
+            }
             "--help" | "-h" => return Err(usage().into()),
             other => return Err(format!("unknown argument: {other}\n{}", usage()).into()),
         }
@@ -1302,6 +1742,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
     }
     if options.max_candidate_age_seconds <= 0 {
         return Err("--max-candidate-age-seconds must be greater than 0".into());
+    }
+    if options.min_idle_deposit_raw <= 0 {
+        return Err("--min-idle-deposit-raw must be greater than 0".into());
     }
     Ok(options)
 }
@@ -1347,5 +1790,5 @@ fn enabled_stable_mints_from_env() -> Result<Vec<String>, Box<dyn Error>> {
 }
 
 fn usage() -> &'static str {
-    "Usage: same-mint-yield-monitor [--once] [--execute] [--all-active-vaults | --settings <PUBKEY> --vault-index <N>] [--poll-interval-seconds <SECONDS>] [--rebalance-cooldown-seconds <SECONDS>] [--max-candidate-age-seconds <SECONDS>] [--min-edge-bps <BPS>]\n\nDry-run is the default. Fleet mode reads YIELD_ROUTER_KEYPAIR for DB discovery and never reads SOLANA_TESTING_PK. Explicit --settings/--vault-index mode does not read SOLANA_TESTING_PK. No-arg authority discovery mode is local dry-run/setup only and reads SOLANA_TESTING_PK. Live execution reads YIELD_ROUTER_KEYPAIR through same-mint-reserve-swap --optimization-cycle. Set EARN_ROUTER_ENABLED_STABLE_MINTS to a comma-separated subset of supported stable mint addresses for staged rollout. The same-vault rebalance cooldown defaults to 300 seconds; pass --rebalance-cooldown-seconds 0 only for local/test disable."
+    "Usage: same-mint-yield-monitor [--once] [--execute] [--all-active-vaults | --settings <PUBKEY> --vault-index <N>] [--poll-interval-seconds <SECONDS>] [--rebalance-cooldown-seconds <SECONDS>] [--max-candidate-age-seconds <SECONDS>] [--min-edge-bps <BPS>] [--min-idle-deposit-raw <RAW>]\n\nDry-run is the default. Fleet mode reads POLICY_KEYPAIR for DB discovery and never reads SOLANA_TESTING_PK. Explicit --settings/--vault-index mode does not read SOLANA_TESTING_PK. No-arg authority discovery mode is local dry-run/setup only and reads SOLANA_TESTING_PK. Live fleet execution passes idle-vault deposits through same-mint-reserve-swap, which reads POLICY_KEYPAIR as the delegated policy signer and transaction fee payer. Set EARN_ROUTER_ENABLED_STABLE_MINTS to a comma-separated subset of supported stable mint addresses for staged rollout. Idle-vault deposit routing is USDC-only and defaults to a 1_000_000 raw-unit threshold. The same-vault rebalance cooldown defaults to 300 seconds; pass --rebalance-cooldown-seconds 0 only for local/test disable."
 }

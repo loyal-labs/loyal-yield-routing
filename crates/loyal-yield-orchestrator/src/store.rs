@@ -21,6 +21,10 @@ const MIGRATION_0006: &str =
     include_str!("../migrations/0006_generic_balance_sweep_token_accounts.sql");
 const MIGRATION_0007: &str = include_str!("../migrations/0007_balance_sweep_scheduled_slots.sql");
 const MIGRATION_0008: &str = include_str!("../migrations/0008_route_lookup_tables.sql");
+const MIGRATION_0009: &str = include_str!("../migrations/0009_idle_vault_routing.sql");
+const MIGRATION_0010: &str = include_str!("../migrations/0010_realtime_events.sql");
+const LIVE_MIGRATION_0008_CHECKSUM: &str =
+    "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
 
 #[derive(Clone)]
@@ -183,41 +187,61 @@ impl NeonSqlClient {
                 version: 1,
                 name: "loyal_yield_orchestration",
                 sql: MIGRATION_0001,
+                expected_checksum: None,
             },
             StoreMigration {
                 version: 2,
                 name: "balance_sweep_surplus_lots",
                 sql: MIGRATION_0002,
+                expected_checksum: None,
             },
             StoreMigration {
                 version: 3,
                 name: "balance_sweep_initial_surplus",
                 sql: MIGRATION_0003,
+                expected_checksum: None,
             },
             StoreMigration {
                 version: 4,
                 name: "managed_vault_setup_policy",
                 sql: MIGRATION_0004,
+                expected_checksum: None,
             },
             StoreMigration {
                 version: 5,
                 name: "add_unsupported_amount_semantics",
                 sql: MIGRATION_0005,
+                expected_checksum: None,
             },
             StoreMigration {
                 version: 6,
                 name: "generic_balance_sweep_token_accounts",
                 sql: MIGRATION_0006,
+                expected_checksum: None,
             },
             StoreMigration {
                 version: 7,
                 name: "balance_sweep_scheduled_slots",
                 sql: MIGRATION_0007,
+                expected_checksum: None,
             },
             StoreMigration {
                 version: 8,
                 name: "route_lookup_tables",
                 sql: MIGRATION_0008,
+                expected_checksum: Some(LIVE_MIGRATION_0008_CHECKSUM),
+            },
+            StoreMigration {
+                version: 9,
+                name: "idle_vault_routing",
+                sql: MIGRATION_0009,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 10,
+                name: "realtime_events",
+                sql: MIGRATION_0010,
+                expected_checksum: None,
             },
         ] {
             apply_store_migration(&self.pool, migration).await?;
@@ -812,6 +836,138 @@ impl NeonSqlClient {
         rows.into_iter().map(current_position_from_row).collect()
     }
 
+    pub async fn current_idle_token_balance(
+        &self,
+        vault_id: VaultId,
+        mint: &str,
+    ) -> Result<Option<CurrentIdleTokenBalance>, OrchestratorError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                vault_id,
+                mint,
+                amount_raw,
+                owner,
+                token_account,
+                observed_slot,
+                observed_at,
+                source_commitment,
+                updated_at
+            FROM loyal_yield.vault_idle_token_balances_current
+            WHERE vault_id = $1
+              AND mint = $2
+            "#,
+        )
+        .bind(vault_id.as_i64())
+        .bind(mint)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(|row| current_idle_token_balance_from_row(&row))
+            .transpose()
+    }
+
+    pub async fn current_idle_token_balances_for_vaults(
+        &self,
+        vault_ids: &[VaultId],
+    ) -> Result<Vec<CurrentIdleTokenBalance>, OrchestratorError> {
+        if vault_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids = vault_ids.iter().map(|id| id.as_i64()).collect::<Vec<_>>();
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                vault_id,
+                mint,
+                amount_raw,
+                owner,
+                token_account,
+                observed_slot,
+                observed_at,
+                source_commitment,
+                updated_at
+            FROM loyal_yield.vault_idle_token_balances_current
+            WHERE vault_id = ANY($1)
+            ORDER BY vault_id, mint
+            "#,
+        )
+        .bind(&ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter()
+            .map(current_idle_token_balance_from_row)
+            .collect()
+    }
+
+    pub async fn record_current_idle_token_balance(
+        &self,
+        balance: CurrentIdleTokenBalance,
+    ) -> Result<CurrentIdleTokenBalance, OrchestratorError> {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.vault_idle_token_balances_current
+                (vault_id, mint, amount_raw, owner, token_account, observed_slot, observed_at, source_commitment, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+            ON CONFLICT (vault_id, mint) DO UPDATE SET
+                amount_raw = CASE
+                    WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
+                    THEN EXCLUDED.amount_raw
+                    ELSE loyal_yield.vault_idle_token_balances_current.amount_raw
+                END,
+                owner = CASE
+                    WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
+                    THEN EXCLUDED.owner
+                    ELSE loyal_yield.vault_idle_token_balances_current.owner
+                END,
+                token_account = CASE
+                    WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
+                    THEN EXCLUDED.token_account
+                    ELSE loyal_yield.vault_idle_token_balances_current.token_account
+                END,
+                observed_slot = GREATEST(loyal_yield.vault_idle_token_balances_current.observed_slot, EXCLUDED.observed_slot),
+                observed_at = CASE
+                    WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
+                    THEN EXCLUDED.observed_at
+                    ELSE loyal_yield.vault_idle_token_balances_current.observed_at
+                END,
+                source_commitment = CASE
+                    WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
+                    THEN EXCLUDED.source_commitment
+                    ELSE loyal_yield.vault_idle_token_balances_current.source_commitment
+                END,
+                updated_at = CASE
+                    WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
+                    THEN now()
+                    ELSE loyal_yield.vault_idle_token_balances_current.updated_at
+                END
+            RETURNING
+                vault_id,
+                mint,
+                amount_raw,
+                owner,
+                token_account,
+                observed_slot,
+                observed_at,
+                source_commitment,
+                updated_at
+            "#,
+        )
+        .bind(balance.vault_id.as_i64())
+        .bind(&balance.mint)
+        .bind(balance.amount_raw)
+        .bind(&balance.owner)
+        .bind(&balance.token_account)
+        .bind(balance.observed_slot)
+        .bind(balance.observed_at)
+        .bind(&balance.source_commitment)
+        .fetch_one(&self.pool)
+        .await?;
+
+        current_idle_token_balance_from_row(&row)
+    }
+
     pub async fn reconcile_vault(
         &self,
         vault_id: VaultId,
@@ -1032,8 +1188,8 @@ impl NeonSqlClient {
             None
         };
         let planned = PlannedDecision {
-            source_snapshot_id: input.source_snapshot_id,
-            source_reserve: input.source_reserve,
+            source_snapshot_id: Some(input.source_snapshot_id),
+            source_reserve: Some(input.source_reserve),
             target_reserve: input.target_reserve,
             liquidity_mint,
             source_liquidity_mint: input.source_liquidity_mint,
@@ -1065,7 +1221,57 @@ impl NeonSqlClient {
                 &input.execution_plan,
                 "idle_vault_liquidity_amount_raw",
             ),
+            decision_reason: DecisionReason::TargetSupplyApyExceedsSource,
             execution_plan: input.execution_plan,
+        };
+
+        let row =
+            insert_planned_decision(&mut *tx, vault_id, &planned, input.estimated_cost_lamports)
+                .await?;
+        let decision = from_row_to_decision(row)?;
+        tx.commit().await?;
+        Ok(PlanOutcome::planned(vault_id, decision))
+    }
+
+    pub async fn record_idle_vault_deposit_decision(
+        &self,
+        vault_id: VaultId,
+        input: IdleVaultDepositDecisionInput,
+    ) -> Result<PlanOutcome, OrchestratorError> {
+        let mut tx = self.pool.begin().await?;
+        let _ = fetch_managed_vault_for_update(&mut *tx, vault_id).await?;
+
+        if active_decision_exists(&mut *tx, vault_id).await? {
+            let decision =
+                insert_skipped_decision(&mut *tx, vault_id, SkipReason::ActiveDecision).await?;
+            tx.commit().await?;
+            return Ok(PlanOutcome::skipped(
+                vault_id,
+                SkipReason::ActiveDecision,
+                Some(from_row_to_decision(decision)?),
+            ));
+        }
+
+        validate_idle_vault_deposit_decision_input(&input)?;
+        let execution_plan = idle_vault_deposit_execution_plan(&input);
+        let planned = PlannedDecision {
+            source_snapshot_id: None,
+            source_reserve: None,
+            target_reserve: input.target_reserve,
+            liquidity_mint: Some(input.liquidity_mint.clone()),
+            source_liquidity_mint: input.liquidity_mint.clone(),
+            target_liquidity_mint: input.liquidity_mint,
+            amount_raw: input.amount_raw,
+            source_apy_bps: 0,
+            target_apy_bps: input.target_apy_bps,
+            estimated_edge_bps: input.estimated_edge_bps,
+            route_amount_semantics: ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY.to_owned(),
+            source_amount_semantics: Some("idle_vault".to_owned()),
+            source_collateral_amount_raw: None,
+            redeemable_source_liquidity_amount_raw: None,
+            idle_vault_liquidity_amount_raw: Some(input.amount_raw),
+            decision_reason: DecisionReason::IdleVaultLiquidityAvailable,
+            execution_plan,
         };
 
         let row =
@@ -1105,8 +1311,8 @@ impl NeonSqlClient {
         }
 
         let planned = PlannedDecision {
-            source_snapshot_id: input.expected_source_snapshot_id,
-            source_reserve: input.source_reserve.clone(),
+            source_snapshot_id: Some(input.expected_source_snapshot_id),
+            source_reserve: Some(input.source_reserve.clone()),
             target_reserve: input.target_reserve.clone(),
             liquidity_mint: Some(input.liquidity_mint.clone()),
             source_liquidity_mint: input.liquidity_mint.clone(),
@@ -1120,6 +1326,7 @@ impl NeonSqlClient {
             source_collateral_amount_raw: input.source_collateral_amount_raw,
             redeemable_source_liquidity_amount_raw: input.redeemable_source_liquidity_amount_raw,
             idle_vault_liquidity_amount_raw: input.idle_vault_liquidity_amount_raw,
+            decision_reason: DecisionReason::TargetSupplyApyExceedsSource,
             execution_plan: same_mint_execution_plan(&input),
         };
         let row =
@@ -1421,6 +1628,7 @@ struct StoreMigration {
     version: i64,
     name: &'static str,
     sql: &'static str,
+    expected_checksum: Option<&'static str>,
 }
 
 async fn ensure_schema_migration_ledger(pool: &PgPool) -> Result<(), OrchestratorError> {
@@ -1446,7 +1654,10 @@ async fn apply_store_migration(
     pool: &PgPool,
     migration: StoreMigration,
 ) -> Result<(), OrchestratorError> {
-    let expected_checksum = migration_checksum(migration.sql);
+    let expected_checksum = migration
+        .expected_checksum
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| migration_checksum(migration.sql));
     let applied_checksum = sqlx::query_scalar::<_, String>(
         "SELECT checksum FROM loyal_yield.schema_migrations WHERE version = $1",
     )
@@ -1914,6 +2125,7 @@ async fn insert_planned_decision(
     estimated_cost_lamports: i64,
 ) -> Result<DecisionRow, OrchestratorError> {
     let idempotency_key = rebalance_idempotency_key(vault_id, planned.source_snapshot_id, planned);
+    let source_snapshot_id = planned.source_snapshot_id.map(SnapshotId::as_i64);
     sqlx::query_as!(
         DecisionRow,
         r#"
@@ -1951,8 +2163,8 @@ async fn insert_planned_decision(
             updated_at
         "#,
         vault_id.as_i64(),
-        planned.source_snapshot_id.as_i64(),
-        &planned.source_reserve,
+        source_snapshot_id,
+        planned.source_reserve.as_deref(),
         &planned.target_reserve,
         planned.liquidity_mint.as_deref(),
         &planned.source_liquidity_mint,
@@ -1962,7 +2174,7 @@ async fn insert_planned_decision(
         planned.target_apy_bps,
         planned.estimated_edge_bps,
         estimated_cost_lamports,
-        DecisionReason::TargetSupplyApyExceedsSource.as_str(),
+        planned.decision_reason.as_str(),
         &planned.execution_plan,
         idempotency_key
     )
@@ -2242,6 +2454,72 @@ fn validate_planned_decision_input(
     Ok(())
 }
 
+fn validate_idle_vault_deposit_decision_input(
+    input: &IdleVaultDepositDecisionInput,
+) -> Result<(), OrchestratorError> {
+    if input.target_reserve.trim().is_empty() {
+        return Err(OrchestratorError::SameMintRebalanceValidation(
+            "idle vault deposit target reserve is required".to_owned(),
+        ));
+    }
+    if input.liquidity_mint.trim().is_empty() {
+        return Err(OrchestratorError::SameMintRebalanceValidation(
+            "idle vault deposit liquidity mint is required".to_owned(),
+        ));
+    }
+    if input.idle_token_account.trim().is_empty() {
+        return Err(OrchestratorError::SameMintRebalanceValidation(
+            "idle vault deposit token account is required".to_owned(),
+        ));
+    }
+    if input.amount_raw <= 0 {
+        return Err(OrchestratorError::SameMintRebalanceValidation(
+            "idle vault deposit amount_raw must be greater than 0".to_owned(),
+        ));
+    }
+    if input.idle_observed_slot < 0 {
+        return Err(OrchestratorError::SameMintRebalanceValidation(
+            "idle vault deposit observed slot must be non-negative".to_owned(),
+        ));
+    }
+    if input.estimated_edge_bps <= 0 {
+        return Err(OrchestratorError::SameMintRebalanceValidation(
+            "idle vault deposit requires a positive edge".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn idle_vault_deposit_execution_plan(input: &IdleVaultDepositDecisionInput) -> Value {
+    json!({
+        "kind": "idle_vault_deposit",
+        "source_kind": "idle_vault",
+        "source_reserve": Value::Null,
+        "target_reserve": input.target_reserve,
+        "target_market": input.target_market,
+        "liquidity_mint": input.liquidity_mint,
+        "source_liquidity_mint": input.liquidity_mint,
+        "target_liquidity_mint": input.liquidity_mint,
+        "amount_raw": input.amount_raw,
+        "route_amount_semantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+        "source_amount_semantics": "idle_vault",
+        "source_collateral_amount_raw": Value::Null,
+        "redeemable_source_liquidity_amount_raw": Value::Null,
+        "idle_vault_liquidity_amount_raw": input.amount_raw,
+        "idle_token_account": input.idle_token_account,
+        "idle_observed_slot": input.idle_observed_slot,
+        "idle_observed_at": input.idle_observed_at,
+        "source_apy_bps": 0,
+        "target_apy_bps": input.target_apy_bps,
+        "estimated_edge_bps": input.estimated_edge_bps,
+        "policy_executions": 1,
+        "route_steps": [KAMINO_DEPOSIT_ROUTE_STEP_FOR_PLAN],
+    })
+}
+
+const KAMINO_DEPOSIT_ROUTE_STEP_FOR_PLAN: &str =
+    "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2";
+
 fn require_plan_string(
     plan: &Value,
     field: &'static str,
@@ -2291,7 +2569,7 @@ fn same_mint_execution_plan(input: &SameMintRebalanceInput) -> Value {
 fn same_mint_execution_preview(planned: &PlannedDecision) -> SameMintExecutionPreview {
     SameMintExecutionPreview {
         kind: "same_mint".to_owned(),
-        source_reserve: planned.source_reserve.clone(),
+        source_reserve: planned.source_reserve.clone().unwrap_or_default(),
         target_reserve: planned.target_reserve.clone(),
         liquidity_mint: planned.source_liquidity_mint.clone(),
         amount_raw: planned.amount_raw,
@@ -2962,6 +3240,22 @@ fn route_lookup_table_lock_key(cluster: &str, scope: &str, authority: &str) -> S
     format!("route_lookup_table:{cluster}:{scope}:{authority}")
 }
 
+fn current_idle_token_balance_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<CurrentIdleTokenBalance, OrchestratorError> {
+    Ok(CurrentIdleTokenBalance {
+        vault_id: VaultId(row.try_get("vault_id")?),
+        mint: row.try_get("mint")?,
+        amount_raw: row.try_get("amount_raw")?,
+        owner: row.try_get("owner")?,
+        token_account: row.try_get("token_account")?,
+        observed_slot: row.try_get("observed_slot")?,
+        observed_at: row.try_get("observed_at")?,
+        source_commitment: row.try_get("source_commitment")?,
+        updated_at: row.try_get("updated_at")?,
+    })
+}
+
 fn ensure_terminal_repeat_matches(
     decision: &RebalanceDecision,
     advance: &DecisionAdvance,
@@ -3038,13 +3332,23 @@ fn from_row_to_decision(row: DecisionRow) -> Result<RebalanceDecision, Orchestra
 
 fn rebalance_idempotency_key(
     vault_id: VaultId,
-    snapshot_id: SnapshotId,
+    snapshot_id: Option<SnapshotId>,
     planned: &PlannedDecision,
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(vault_id.as_i64().to_le_bytes());
-    hasher.update(snapshot_id.as_i64().to_le_bytes());
-    hasher.update(planned.source_reserve.as_bytes());
+    if let Some(snapshot_id) = snapshot_id {
+        hasher.update(b"source_snapshot_id");
+        hasher.update(snapshot_id.as_i64().to_le_bytes());
+    } else {
+        hasher.update(b"no_source_snapshot_id");
+    }
+    if let Some(source_reserve) = &planned.source_reserve {
+        hasher.update(b"source_reserve");
+        hasher.update(source_reserve.as_bytes());
+    } else {
+        hasher.update(b"no_source_reserve");
+    }
     hasher.update(planned.target_reserve.as_bytes());
     if let Some(liquidity_mint) = &planned.liquidity_mint {
         hasher.update(b"liquidity_mint");

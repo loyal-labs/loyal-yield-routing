@@ -11,41 +11,61 @@ const MIGRATIONS: &[Migration] = &[
         version: 1,
         name: "loyal_yield_orchestration",
         sql: include_str!("../../migrations/0001_loyal_yield_orchestration.sql"),
+        expected_checksum: None,
     },
     Migration {
         version: 2,
         name: "balance_sweep_surplus_lots",
         sql: include_str!("../../migrations/0002_balance_sweep_surplus_lots.sql"),
+        expected_checksum: None,
     },
     Migration {
         version: 3,
         name: "balance_sweep_initial_surplus",
         sql: include_str!("../../migrations/0003_balance_sweep_initial_surplus.sql"),
+        expected_checksum: None,
     },
     Migration {
         version: 4,
         name: "managed_vault_setup_policy",
         sql: include_str!("../../migrations/0004_managed_vault_setup_policy.sql"),
+        expected_checksum: None,
     },
     Migration {
         version: 5,
         name: "add_unsupported_amount_semantics",
         sql: include_str!("../../migrations/0005_add_unsupported_amount_semantics.sql"),
+        expected_checksum: None,
     },
     Migration {
         version: 6,
         name: "generic_balance_sweep_token_accounts",
         sql: include_str!("../../migrations/0006_generic_balance_sweep_token_accounts.sql"),
+        expected_checksum: None,
     },
     Migration {
         version: 7,
         name: "balance_sweep_scheduled_slots",
         sql: include_str!("../../migrations/0007_balance_sweep_scheduled_slots.sql"),
+        expected_checksum: None,
     },
     Migration {
         version: 8,
         name: "route_lookup_tables",
         sql: include_str!("../../migrations/0008_route_lookup_tables.sql"),
+        expected_checksum: Some("d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34"),
+    },
+    Migration {
+        version: 9,
+        name: "idle_vault_routing",
+        sql: include_str!("../../migrations/0009_idle_vault_routing.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 10,
+        name: "realtime_events",
+        sql: include_str!("../../migrations/0010_realtime_events.sql"),
+        expected_checksum: None,
     },
 ];
 
@@ -56,6 +76,7 @@ struct Migration {
     version: i64,
     name: &'static str,
     sql: &'static str,
+    expected_checksum: Option<&'static str>,
 }
 
 enum Mode {
@@ -75,7 +96,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut pending = Vec::new();
     for migration in MIGRATIONS {
         match applied_checksum(&pool, migration.version).await? {
-            Some(applied) if applied == checksum(migration.sql) => {
+            Some(applied) if applied == migration.checksum() => {
                 println!(
                     "migration {} {} already applied",
                     migration.version, migration.name
@@ -178,7 +199,7 @@ async fn record_applied(pool: &PgPool, migration: &Migration) -> Result<(), sqlx
     ))
     .bind(migration.version)
     .bind(migration.name)
-    .bind(checksum(migration.sql))
+    .bind(migration.checksum())
     .execute(pool)
     .await?;
     Ok(())
@@ -199,6 +220,8 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "balance_sweep_scheduled_slots",
         "pending_balance_sweep_surplus_lots",
         "route_lookup_tables",
+        "vault_idle_token_balances_current",
+        "realtime_events",
     ] {
         let exists: bool = sqlx::query_scalar(
             r#"
@@ -266,6 +289,41 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
             "pending_balance_sweep_surplus_lots",
             "source_wallet_token_ata",
         ),
+        ("route_lookup_tables", "cluster"),
+        ("route_lookup_tables", "scope"),
+        ("route_lookup_tables", "table_address"),
+        ("route_lookup_tables", "authority"),
+        ("route_lookup_tables", "payer"),
+        ("route_lookup_tables", "status"),
+        ("route_lookup_tables", "durable"),
+        ("route_lookup_tables", "address_count"),
+        ("route_lookup_tables", "address_hash"),
+        ("route_lookup_tables", "addresses"),
+        ("vault_idle_token_balances_current", "vault_id"),
+        ("vault_idle_token_balances_current", "mint"),
+        ("vault_idle_token_balances_current", "amount_raw"),
+        ("vault_idle_token_balances_current", "owner"),
+        ("vault_idle_token_balances_current", "token_account"),
+        ("vault_idle_token_balances_current", "observed_slot"),
+        ("vault_idle_token_balances_current", "observed_at"),
+        ("vault_idle_token_balances_current", "source_commitment"),
+        ("vault_idle_token_balances_current", "updated_at"),
+        ("realtime_events", "id"),
+        ("realtime_events", "created_at"),
+        ("realtime_events", "event_type"),
+        ("realtime_events", "scope"),
+        ("realtime_events", "reason"),
+        ("realtime_events", "solana_env"),
+        ("realtime_events", "wallet_address"),
+        ("realtime_events", "settings_pda"),
+        ("realtime_events", "smart_account_address"),
+        ("realtime_events", "vault_pubkey"),
+        ("realtime_events", "target_id"),
+        ("realtime_events", "scheduled_slot_id"),
+        ("realtime_events", "execution_id"),
+        ("realtime_events", "source_table"),
+        ("realtime_events", "source_id"),
+        ("realtime_events", "payload"),
     ] {
         let exists: bool = sqlx::query_scalar(
             r#"
@@ -331,6 +389,62 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
                 .into(),
         );
     }
+    let idle_balance_pkey_columns: Option<Vec<String>> = sqlx::query_scalar(
+        r#"
+        SELECT ARRAY_AGG(a.attname ORDER BY cols.ordinality)
+        FROM pg_constraint c
+        CROSS JOIN LATERAL UNNEST(c.conkey) WITH ORDINALITY AS cols(attnum, ordinality)
+        JOIN pg_attribute a
+          ON a.attrelid = c.conrelid
+         AND a.attnum = cols.attnum
+        WHERE c.conrelid = 'loyal_yield.vault_idle_token_balances_current'::regclass
+          AND c.contype = 'p'
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if idle_balance_pkey_columns != Some(vec!["vault_id".to_owned(), "mint".to_owned()]) {
+        return Err(
+            "loyal_yield.vault_idle_token_balances_current primary key must be (vault_id, mint)"
+                .into(),
+        );
+    }
+    let has_idle_decision_reason: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_enum e
+            JOIN pg_type t ON t.oid = e.enumtypid
+            JOIN pg_namespace n ON n.oid = t.typnamespace
+            WHERE n.nspname = 'loyal_yield'
+              AND t.typname = 'decision_reason'
+              AND e.enumlabel = 'idle_vault_liquidity_available'
+        )
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if !has_idle_decision_reason {
+        return Err(
+            "missing loyal_yield.decision_reason idle_vault_liquidity_available value".into(),
+        );
+    }
+    let has_realtime_emit_function: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'loyal_yield'
+              AND p.proname = 'emit_realtime_event'
+        )
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if !has_realtime_emit_function {
+        return Err("missing loyal_yield.emit_realtime_event function".into());
+    }
     Ok(())
 }
 
@@ -341,4 +455,12 @@ fn checksum(sql: &str) -> String {
         encoded.push_str(&format!("{byte:02x}"));
     }
     encoded
+}
+
+impl Migration {
+    fn checksum(&self) -> String {
+        self.expected_checksum
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| checksum(self.sql))
+    }
 }

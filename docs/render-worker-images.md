@@ -82,7 +82,7 @@ the post-sweep Solana Week callback.
 
 Populate the remaining environment-specific secret values from the approved
 operator source: `NEON_DATABASE_URL`, `TIMESCALEDB_URL`, `SOLANA_RPC_URL`,
-`HELIUS_API_KEY`, `YIELD_ROUTER_KEYPAIR`, `POLICY_KEYPAIR`,
+`HELIUS_API_KEY`, `POLICY_KEYPAIR`,
 `SOLANA_TESTING_PK`, `SOLANA_WEEK_NOTIFY_SECRET`, `RENDER_API_KEY`,
 `SF_API_TOKEN`, and `DEPLOYMENT_PK` where that environment actually needs them.
 Do not create blank placeholder secret values. Older duplicate shells were renamed to
@@ -173,7 +173,7 @@ the Vercel UI or another non-echoing secret path. The Preview branch `staging`
 `NEON_DATABASE_URL` binding was added through the non-echoing Vercel REST API
 path and verified by env-name readback.
 
-The light worker image contains the Rust projector/trigger binaries, same-mint monitor/executor binaries, `route-lookup-table-cleanup`, Bun production dependencies, and `scripts/execute-autodeposit-policy.ts`. The autodeposit trigger invokes that in-image executor through `BALANCE_SWEEP_EXECUTOR_COMMAND`; it should not depend on a sibling checkout at runtime. After the June 16 same-mint amount-semantics incident response, the production same-mint monitor must return to fleet execution only after the incident regression, DB guardrail, local checks, fixed immutable image, and explicit operator approval pass. The approved production command is `/usr/local/bin/same-mint-yield-monitor --all-active-vaults --execute --poll-interval-seconds 300 --rebalance-cooldown-seconds 300`. That service does not include `SOLANA_TESTING_PK`; live optimization execution uses `YIELD_ROUTER_KEYPAIR` as the route payer and delegated signer. The monitor no longer provisions Address Lookup Tables during live execution; missing durable coverage must fail closed until an explicit operator-approved provisioning run records reusable tables. Monitor logs should report `execute: true`, `pollIntervalSeconds: 300`, and `rebalanceCooldownSeconds: 300`.
+The light worker image contains the Rust projector/trigger binaries, same-mint monitor/executor binaries, `route-lookup-table-cleanup`, Bun production dependencies, and `scripts/execute-autodeposit-policy.ts`. The autodeposit trigger invokes that in-image executor through `BALANCE_SWEEP_EXECUTOR_COMMAND`; it should not depend on a sibling checkout at runtime. After the June 16 same-mint amount-semantics incident response, the production same-mint monitor must return to fleet execution only after the incident regression, DB guardrail, local checks, fixed immutable image, and explicit operator approval pass. The approved production command is `/usr/local/bin/same-mint-yield-monitor --all-active-vaults --execute --poll-interval-seconds 300 --rebalance-cooldown-seconds 300`. That service does not include `SOLANA_TESTING_PK`; live optimization and idle-vault deposit execution uses `POLICY_KEYPAIR` as the route payer and delegated signer. The monitor no longer provisions Address Lookup Tables during live execution; missing durable coverage must fail closed until an explicit operator-approved provisioning run records reusable tables. Monitor logs should report `execute: true`, `pollIntervalSeconds: 300`, and `rebalanceCooldownSeconds: 300`.
 
 Staging worker posture is fail-closed until staging proves it cannot affect
 production users or production policies:
