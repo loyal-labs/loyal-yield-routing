@@ -26,6 +26,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         -p balance-sweep-ata-projector \
         -p balance-sweep-autodeposit-trigger \
         -p loyal-timescale-migrations \
+        -p loyal-yield-realtime \
         -p loyal-yield-orchestrator \
         --recipe-path recipe.json
 
@@ -36,9 +37,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         -p balance-sweep-ata-projector \
         -p balance-sweep-autodeposit-trigger \
         -p loyal-timescale-migrations \
+        -p loyal-yield-realtime \
         -p loyal-yield-orchestrator \
     && cp /app/target/release/balance-sweep-ata-projector /usr/local/bin/balance-sweep-ata-projector \
     && cp /app/target/release/balance-sweep-autodeposit-trigger /usr/local/bin/balance-sweep-autodeposit-trigger \
+    && cp /app/target/release/loyal-yield-realtime /usr/local/bin/loyal-yield-realtime \
     && cp /app/target/release/loyal-timescale-migrations /usr/local/bin/loyal-timescale-migrations \
     && cp /app/target/release/yield-migrations /usr/local/bin/yield-migrations \
     && cp /app/target/release/same-mint-reserve-swap /usr/local/bin/same-mint-reserve-swap \
@@ -69,6 +72,7 @@ COPY packages/loyal-actions packages/loyal-actions
 COPY scripts/execute-autodeposit-policy.ts scripts/execute-autodeposit-policy.ts
 COPY --from=builder /usr/local/bin/balance-sweep-ata-projector /usr/local/bin/balance-sweep-ata-projector
 COPY --from=builder /usr/local/bin/balance-sweep-autodeposit-trigger /usr/local/bin/balance-sweep-autodeposit-trigger
+COPY --from=builder /usr/local/bin/loyal-yield-realtime /usr/local/bin/loyal-yield-realtime
 COPY --from=builder /usr/local/bin/loyal-timescale-migrations /usr/local/bin/loyal-timescale-migrations
 COPY --from=builder /usr/local/bin/yield-migrations /usr/local/bin/yield-migrations
 COPY --from=builder /usr/local/bin/same-mint-reserve-swap /usr/local/bin/same-mint-reserve-swap
