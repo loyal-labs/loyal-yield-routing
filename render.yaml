@@ -106,6 +106,25 @@ projects:
     environments:
       - name: production
         services:
+          - type: web
+            name: loyal-yield-realtime
+            runtime: image
+            region: oregon
+            plan: starter
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-2145d37d592cae1a80a571f237432e406e2ebd49
+            dockerCommand: /usr/local/bin/loyal-yield-realtime
+            healthCheckPath: /healthz
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: REALTIME_AUTH_SECRET
+                sync: false
+              - key: RUST_LOG
+                value: warn,loyal_yield_realtime=info
+
           - type: worker
             name: loyal-balance-sweep-ata-projector
             runtime: image

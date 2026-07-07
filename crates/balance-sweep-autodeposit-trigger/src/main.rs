@@ -7,7 +7,10 @@ use balance_sweep_autodeposit_trigger::{
 };
 use chrono::{DateTime, Utc};
 use clap::Parser;
-use serde_json::Value;
+use loyal_yield_realtime_core::{
+    fetch_event_by_id, neon_url_looks_pooled, notification_event_id_from_payload, RealtimeEventRow,
+    DEFAULT_REALTIME_CHANNEL, SCOPE_AUTODEPOSIT,
+};
 use sqlx::{
     postgres::{PgConnectOptions, PgListener, PgPoolOptions},
     PgPool, Row,
@@ -16,8 +19,6 @@ use tokio::time;
 
 const CONSUMER_NAME: &str = "balance_sweep_autodeposit_trigger";
 const USDC_MINT_ADDRESS: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-const DEFAULT_REALTIME_CHANNEL: &str = "loyal_yield_realtime";
-const REALTIME_SCOPE_AUTODEPOSIT: &str = "autodeposit";
 
 #[derive(Debug, Parser)]
 #[command(about = "Project autodeposit surplus lots from Loyal wallet balance events")]
@@ -107,14 +108,6 @@ struct ExecutorOutcome {
 struct ExecutableTargetRow {
     target_id: i64,
     scheduled_slot_id: i64,
-}
-
-#[derive(Debug)]
-struct RealtimeWakeEventRow {
-    id: i64,
-    event_type: String,
-    scope: String,
-    reason: String,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -323,42 +316,15 @@ async fn connect_realtime_listener(postgres_url: &str, channel: &str) -> Result<
 async fn autodeposit_wake_event_from_notification(
     pool: &PgPool,
     payload: &str,
-) -> Result<Option<RealtimeWakeEventRow>> {
-    let Some(event_id) = realtime_event_id_from_payload(payload) else {
+) -> Result<Option<RealtimeEventRow>> {
+    let Some(event_id) = notification_event_id_from_payload(payload) else {
         tracing::warn!("autodeposit realtime notification payload did not include event_id");
         return Ok(None);
     };
-    let Some(row) = sqlx::query(
-        r#"
-        SELECT id, event_type, scope, reason
-        FROM loyal_yield.realtime_events
-        WHERE id = $1
-        "#,
-    )
-    .bind(event_id)
-    .fetch_optional(pool)
-    .await?
-    else {
+    let Some(event) = fetch_event_by_id(pool, event_id).await? else {
         return Ok(None);
     };
-    let event = RealtimeWakeEventRow {
-        id: row.try_get("id")?,
-        event_type: row.try_get("event_type")?,
-        scope: row.try_get("scope")?,
-        reason: row.try_get("reason")?,
-    };
-    Ok((event.scope == REALTIME_SCOPE_AUTODEPOSIT).then_some(event))
-}
-
-fn realtime_event_id_from_payload(payload: &str) -> Option<i64> {
-    let value = serde_json::from_str::<Value>(payload).ok()?;
-    value.get("event_id")?.as_i64()
-}
-
-fn neon_url_looks_pooled(postgres_url: &str) -> bool {
-    postgres_url.contains("-pooler.")
-        || postgres_url.contains("-pooler:")
-        || postgres_url.contains("-pooler/")
+    Ok((event.scope == SCOPE_AUTODEPOSIT).then_some(event))
 }
 
 async fn execute_eligible_targets_once(

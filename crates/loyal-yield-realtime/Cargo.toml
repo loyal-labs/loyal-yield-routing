@@ -6,16 +6,10 @@ description = "Server-sent event gateway for Loyal Yield realtime invalidations"
 
 [dependencies]
 axum = "0.8"
-base64 = "0.22"
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 futures-util = "0.3"
-hmac = "0.12"
+loyal-yield-realtime-core = { path = "../loyal-yield-realtime-core" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["chrono", "json", "macros", "postgres", "runtime-tokio-rustls"] }
-subtle = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
 tokio-stream = "0.1"
 tower-http = { version = "0.6", features = ["cors"] }
-url = "2"

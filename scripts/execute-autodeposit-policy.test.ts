@@ -154,7 +154,11 @@ describe("runtime dependency boundary", () => {
     ).text();
 
     expect(renderYaml).toContain("loyal-balance-sweep-autodeposit-trigger");
+    expect(renderYaml).toContain("loyal-yield-realtime");
     expect(renderYaml).toContain("runtime: image");
+    expect(renderYaml).toContain("/usr/local/bin/loyal-yield-realtime");
+    expect(renderYaml).toContain("healthCheckPath: /healthz");
+    expect(renderYaml).toContain("REALTIME_AUTH_SECRET");
     expect(renderYaml).toContain(
       "ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-"
     );

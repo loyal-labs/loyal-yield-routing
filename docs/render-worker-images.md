@@ -1,12 +1,13 @@
-# Render worker image deployment
+# Render worker and realtime image deployment
 
-The worker deployment boundary is intentionally split into two Render projects/environments:
+The worker/realtime deployment boundary is intentionally split into two Render
+projects/environments:
 
 | Purpose | Render project/environment | Services | Image |
 | --- | --- | --- | --- |
 | LaserStream-heavy monitors | `loyal-yield-laserstream-workers` / `production` | `loyal-kamino-reserve-monitor`, `loyal-balance-sweep-ata-monitor` | `ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-<commit>` |
 | LaserStream-heavy staging monitor | `loyal-yield-laserstream-workers` / `staging` | `loyal-balance-sweep-ata-monitor-staging` | `ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-<commit>` |
-| Lightweight SQL/background workers | `loyal-yield-light-workers` / `production` | `loyal-balance-sweep-ata-projector`, `loyal-balance-sweep-autodeposit-trigger`, `loyal-same-mint-yield-monitor` | `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-<commit>` |
+| Lightweight SQL/background workers and realtime web service | `loyal-yield-light-workers` / `production` | `loyal-yield-realtime`, `loyal-balance-sweep-ata-projector`, `loyal-balance-sweep-autodeposit-trigger`, `loyal-same-mint-yield-monitor` | `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-<commit>` |
 | Lightweight staging workers | `loyal-yield-light-workers` / `staging` | `loyal-balance-sweep-ata-projector-staging`, `loyal-balance-sweep-autodeposit-trigger-staging`, `loyal-same-mint-yield-monitor-staging` | `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-<commit>` |
 
 Current live pre-split Render state, observed with `render services -o json` on 2026-06-10:
@@ -27,6 +28,7 @@ Target split IDs, once created/imported in Render, must be recorded here before 
 | Heavy production environment | `evm-d8kgt3a8qa3s7382glc0` |
 | Light Render project | `prj-d8kgt4r7uimc73b1ul0g` |
 | Light production environment | `evm-d8kgt4r7uimc73b1ul1g` |
+| Light `loyal-yield-realtime` service | `srv-d966hcpkh4rs73da0j4g` |
 | Heavy `loyal-kamino-reserve-monitor` service | `srv-d8h4i9a8pkls73bver00` |
 | Heavy `loyal-balance-sweep-ata-monitor` service | `srv-d8j87m6q1p3s73ff8n8g` |
 | Light `loyal-balance-sweep-ata-projector` service | `srv-d8kfqpjbc2fs73chlc00` |
@@ -173,7 +175,39 @@ the Vercel UI or another non-echoing secret path. The Preview branch `staging`
 `NEON_DATABASE_URL` binding was added through the non-echoing Vercel REST API
 path and verified by env-name readback.
 
-The light worker image contains the Rust projector/trigger binaries, same-mint monitor/executor binaries, `route-lookup-table-cleanup`, Bun production dependencies, and `scripts/execute-autodeposit-policy.ts`. The autodeposit trigger invokes that in-image executor through `BALANCE_SWEEP_EXECUTOR_COMMAND`; it should not depend on a sibling checkout at runtime. After the June 16 same-mint amount-semantics incident response, the production same-mint monitor must return to fleet execution only after the incident regression, DB guardrail, local checks, fixed immutable image, and explicit operator approval pass. The approved production command is `/usr/local/bin/same-mint-yield-monitor --all-active-vaults --execute --poll-interval-seconds 300 --rebalance-cooldown-seconds 300`. That service does not include `SOLANA_TESTING_PK`; live optimization and idle-vault deposit execution uses `POLICY_KEYPAIR` as the route payer and delegated signer. The monitor no longer provisions Address Lookup Tables during live execution; missing durable coverage must fail closed until an explicit operator-approved provisioning run records reusable tables. Monitor logs should report `execute: true`, `pollIntervalSeconds: 300`, and `rebalanceCooldownSeconds: 300`.
+The light worker image contains the Rust projector/trigger/realtime binaries,
+same-mint monitor/executor binaries, `route-lookup-table-cleanup`, Bun
+production dependencies, and `scripts/execute-autodeposit-policy.ts`.
+`loyal-yield-realtime` runs from the same immutable image as a Render Web
+Service with command `/usr/local/bin/loyal-yield-realtime`, health path
+`/healthz`, direct `NEON_DATABASE_URL`, and `REALTIME_AUTH_SECRET` from the
+secret store. The autodeposit trigger invokes the in-image executor through
+`BALANCE_SWEEP_EXECUTOR_COMMAND`; it should not depend on a sibling checkout at
+runtime. After the June 16 same-mint amount-semantics incident response, the
+production same-mint monitor must return to fleet execution only after the
+incident regression, DB guardrail, local checks, fixed immutable image, and
+explicit operator approval pass. The approved production command is
+`/usr/local/bin/same-mint-yield-monitor --all-active-vaults --execute --poll-interval-seconds 300 --rebalance-cooldown-seconds 300`.
+That service does not include `SOLANA_TESTING_PK`; live optimization and
+idle-vault deposit execution uses `POLICY_KEYPAIR` as the route payer and
+delegated signer. The monitor no longer provisions Address Lookup Tables during
+live execution; missing durable coverage must fail closed until an explicit
+operator-approved provisioning run records reusable tables. Monitor logs should
+report `execute: true`, `pollIntervalSeconds: 300`, and
+`rebalanceCooldownSeconds: 300`.
+
+Realtime V2 hardening added two secret-safe verifier commands:
+
+```sh
+op run --env-file=.env.1password -- sh -c 'bun run verify:realtime:render-config'
+op run --env-file=.env.1password -- sh -c 'bun run verify:realtime:sse'
+```
+
+The first checks the Render service shape, immutable image tag, direct Neon host
+fingerprints, required env names, and autodeposit executor safety. The second
+signs a short-lived token, emits a safe durable event, verifies live SSE delivery,
+and verifies `Last-Event-ID` replay. Neither command prints secrets, tokens, full
+database URLs, or private keys.
 
 Staging worker posture is fail-closed until staging proves it cannot affect
 production users or production policies:

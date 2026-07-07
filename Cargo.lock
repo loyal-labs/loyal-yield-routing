@@ -692,6 +692,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "loyal-yield-realtime-core",
  "serde",
  "serde_json",
  "sqlx",
@@ -3173,18 +3174,27 @@ name = "loyal-yield-realtime"
 version = "0.1.0"
 dependencies = [
  "axum 0.8.9",
+ "futures-util",
+ "loyal-yield-realtime-core",
+ "serde",
+ "sqlx",
+ "tokio",
+ "tokio-stream",
+ "tower-http",
+]
+
+[[package]]
+name = "loyal-yield-realtime-core"
+version = "0.1.0"
+dependencies = [
  "base64 0.22.1",
  "chrono",
- "futures-util",
  "hmac 0.12.1",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
  "subtle",
- "tokio",
- "tokio-stream",
- "tower-http",
  "url",
 ]
 

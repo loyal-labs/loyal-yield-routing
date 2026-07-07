@@ -20,17 +20,17 @@ use axum::{
     routing::get,
     Router,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use chrono::Utc;
-use hmac::{Hmac, Mac};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use sha2::Sha256;
+use loyal_yield_realtime_core::{
+    event_matches_claims, fetch_events_after, invalidation_json_for_row, latest_event_id,
+    min_event_id, notification_event_id_from_payload, reject_pooled_connection_url,
+    resync_required_json, verify_hmac_token, BoxError, RealtimeEventRow, RealtimeTokenClaims,
+    DEFAULT_REALTIME_CHANNEL,
+};
+use serde::Deserialize;
 use sqlx::{
     postgres::{PgListener, PgPoolOptions},
     PgPool,
 };
-use subtle::ConstantTimeEq;
 use tokio::{
     net::TcpListener,
     sync::{mpsc, RwLock},
@@ -39,16 +39,12 @@ use tokio::{
 use tokio_stream::wrappers::ReceiverStream;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-const DEFAULT_CHANNEL: &str = "loyal_yield_realtime";
 const DEFAULT_HEARTBEAT_SECONDS: u64 = 20;
 const DEFAULT_CATCH_UP_LIMIT: i64 = 500;
 const DEFAULT_CLIENT_BUFFER: usize = 256;
 const FALLBACK_TICK_SECONDS: u64 = 15;
-const DEFAULT_SOLANA_ENV: &str = "mainnet-beta";
 
-type HmacSha256 = Hmac<Sha256>;
 type SseMessage = Result<Event, Infallible>;
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 #[derive(Clone)]
 struct Config {
@@ -78,59 +74,6 @@ struct ClientHandle {
 #[derive(Debug, Deserialize)]
 struct EventsQuery {
     token: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct RealtimeTokenClaims {
-    exp: i64,
-    #[serde(rename = "walletAddress", default)]
-    wallet_address: Option<String>,
-    #[serde(rename = "settingsPda", default)]
-    settings_pda: Option<String>,
-    #[serde(rename = "smartAccountAddress", default)]
-    smart_account_address: Option<String>,
-    #[serde(rename = "solanaEnv", default = "default_solana_env")]
-    solana_env: String,
-    scopes: Vec<String>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-struct RealtimeEventRow {
-    id: i64,
-    event_type: String,
-    scope: String,
-    reason: String,
-    solana_env: Option<String>,
-    wallet_address: Option<String>,
-    settings_pda: Option<String>,
-    smart_account_address: Option<String>,
-    target_id: Option<i64>,
-    scheduled_slot_id: Option<i64>,
-    execution_id: Option<i64>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RealtimeInvalidation {
-    #[serde(rename = "type")]
-    event_type: String,
-    event_id: i64,
-    scope: String,
-    reason: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    solana_env: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    wallet_address: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    settings_pda: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    smart_account_address: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    target_id: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    scheduled_slot_id: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    execution_id: Option<i64>,
 }
 
 #[tokio::main]
@@ -182,7 +125,7 @@ async fn events(
     let Some(token) = query.token.as_deref() else {
         return (StatusCode::UNAUTHORIZED, "missing token").into_response();
     };
-    let claims = match verify_token(token, &state.config.auth_secret) {
+    let claims = match verify_hmac_token(token, &state.config.auth_secret) {
         Ok(claims) => claims,
         Err(_) => return (StatusCode::UNAUTHORIZED, "invalid token").into_response(),
     };
@@ -244,8 +187,8 @@ async fn run_listener_session(state: &AppState, cursor: &mut i64) -> Result<(), 
         tokio::select! {
             notification = listener.recv() => {
                 let notification = notification?;
-                if let Err(error) = serde_json::from_str::<serde_json::Value>(notification.payload()) {
-                    eprintln!("realtime notification payload was not JSON: {error}");
+                if notification_event_id_from_payload(notification.payload()).is_none() {
+                    eprintln!("realtime notification payload did not include event_id");
                 }
                 catch_up_and_broadcast(state, cursor).await?;
             }
@@ -354,112 +297,17 @@ async fn send_client_catch_up(
     }
 }
 
-async fn latest_event_id(pool: &PgPool) -> Result<i64, sqlx::Error> {
-    let cursor: Option<i64> = sqlx::query_scalar("SELECT MAX(id) FROM loyal_yield.realtime_events")
-        .fetch_one(pool)
-        .await?;
-    Ok(cursor.unwrap_or(0))
-}
-
-async fn min_event_id(pool: &PgPool) -> Result<Option<i64>, sqlx::Error> {
-    sqlx::query_scalar("SELECT MIN(id) FROM loyal_yield.realtime_events")
-        .fetch_one(pool)
-        .await
-}
-
-async fn fetch_events_after(
-    pool: &PgPool,
-    cursor: i64,
-    limit: i64,
-) -> Result<Vec<RealtimeEventRow>, sqlx::Error> {
-    sqlx::query_as::<_, RealtimeEventRow>(
-        r#"
-        SELECT
-            id,
-            event_type,
-            scope,
-            reason,
-            solana_env,
-            wallet_address,
-            settings_pda,
-            smart_account_address,
-            target_id,
-            scheduled_slot_id,
-            execution_id
-        FROM loyal_yield.realtime_events
-        WHERE id > $1
-        ORDER BY id ASC
-        LIMIT $2
-        "#,
-    )
-    .bind(cursor)
-    .bind(limit)
-    .fetch_all(pool)
-    .await
-}
-
-fn event_matches_claims(row: &RealtimeEventRow, claims: &RealtimeTokenClaims) -> bool {
-    if !claims.scopes.iter().any(|scope| scope == &row.scope) {
-        return false;
-    }
-    if let Some(row_env) = row.solana_env.as_deref() {
-        if row_env != claims.solana_env {
-            return false;
-        }
-    }
-    if let Some(wallet_address) = row.wallet_address.as_deref() {
-        if claims.wallet_address.as_deref() != Some(wallet_address) {
-            return false;
-        }
-    }
-    if let Some(settings_pda) = row.settings_pda.as_deref() {
-        if claims.settings_pda.as_deref() != Some(settings_pda) {
-            return false;
-        }
-    }
-    if let Some(smart_account_address) = row.smart_account_address.as_deref() {
-        if claims.smart_account_address.as_deref() != Some(smart_account_address) {
-            return false;
-        }
-    }
-    true
-}
-
 fn sse_event_for_row(row: &RealtimeEventRow) -> Event {
-    let payload = RealtimeInvalidation {
-        event_type: row.event_type.clone(),
-        event_id: row.id,
-        scope: row.scope.clone(),
-        reason: row.reason.clone(),
-        solana_env: row.solana_env.clone(),
-        wallet_address: row.wallet_address.clone(),
-        settings_pda: row.settings_pda.clone(),
-        smart_account_address: row.smart_account_address.clone(),
-        target_id: row.target_id,
-        scheduled_slot_id: row.scheduled_slot_id,
-        execution_id: row.execution_id,
-    };
-    let data = serde_json::to_string(&payload).unwrap_or_else(|_| {
-        json!({
-            "type": "resync_required",
-            "reason": "serialization_failed"
-        })
-        .to_string()
-    });
     Event::default()
         .id(row.id.to_string())
         .event("loyal_yield")
-        .data(data)
+        .data(invalidation_json_for_row(row))
 }
 
 fn resync_required_event(reason: &str) -> Event {
-    Event::default().event("loyal_yield").data(
-        json!({
-            "type": "resync_required",
-            "reason": reason
-        })
-        .to_string(),
-    )
+    Event::default()
+        .event("loyal_yield")
+        .data(resync_required_json(reason))
 }
 
 fn parse_last_event_id(headers: &HeaderMap) -> Option<i64> {
@@ -467,58 +315,6 @@ fn parse_last_event_id(headers: &HeaderMap) -> Option<i64> {
         .get("last-event-id")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.trim().parse::<i64>().ok())
-}
-
-fn verify_token(token: &str, secret: &[u8]) -> Result<RealtimeTokenClaims, BoxError> {
-    let (encoded_payload, encoded_signature) = token
-        .split_once('.')
-        .ok_or("token must contain payload and signature")?;
-    if encoded_signature.contains('.') {
-        return Err("token must contain exactly one separator".into());
-    }
-
-    let signature = URL_SAFE_NO_PAD.decode(encoded_signature)?;
-    let mut mac = HmacSha256::new_from_slice(secret)?;
-    mac.update(encoded_payload.as_bytes());
-    let expected = mac.finalize().into_bytes();
-    if expected.as_slice().ct_eq(signature.as_slice()).unwrap_u8() != 1 {
-        return Err("token signature mismatch".into());
-    }
-
-    let payload = URL_SAFE_NO_PAD.decode(encoded_payload)?;
-    let claims: RealtimeTokenClaims = serde_json::from_slice(&payload)?;
-    if claims.exp <= Utc::now().timestamp() {
-        return Err("token expired".into());
-    }
-    if claims.wallet_address.is_none() && claims.settings_pda.is_none() {
-        return Err("token must include walletAddress or settingsPda".into());
-    }
-    if claims.solana_env.trim().is_empty() {
-        return Err("token solanaEnv cannot be empty".into());
-    }
-    if claims.scopes.is_empty() {
-        return Err("token scopes are required".into());
-    }
-    Ok(claims)
-}
-
-fn default_solana_env() -> String {
-    DEFAULT_SOLANA_ENV.to_owned()
-}
-
-fn reject_pooled_connection_url(database_url: &str) -> Result<(), BoxError> {
-    let parsed = url::Url::parse(database_url)?;
-    if parsed
-        .host_str()
-        .map(|host| host.contains("-pooler."))
-        .unwrap_or(false)
-    {
-        return Err(
-            "NEON_DATABASE_URL uses a pooled -pooler host; LISTEN/NOTIFY requires a direct connection"
-                .into(),
-        );
-    }
-    Ok(())
 }
 
 fn cors_layer(config: &Config) -> CorsLayer {
@@ -562,7 +358,8 @@ impl Config {
                 DEFAULT_HEARTBEAT_SECONDS,
             ),
             catch_up_limit: parse_env_i64("REALTIME_CATCH_UP_LIMIT", DEFAULT_CATCH_UP_LIMIT).max(1),
-            channel: env::var("REALTIME_CHANNEL").unwrap_or_else(|_| DEFAULT_CHANNEL.to_owned()),
+            channel: env::var("REALTIME_CHANNEL")
+                .unwrap_or_else(|_| DEFAULT_REALTIME_CHANNEL.to_owned()),
             port: parse_env_u16("PORT", 10000),
         })
     }
