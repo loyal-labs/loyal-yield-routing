@@ -24,6 +24,8 @@ const MIGRATION_0008: &str = include_str!("../migrations/0008_route_lookup_table
 const MIGRATION_0009: &str = include_str!("../migrations/0009_idle_vault_routing.sql");
 const MIGRATION_0010: &str = include_str!("../migrations/0010_realtime_events.sql");
 const MIGRATION_0011: &str = include_str!("../migrations/0011_autodeposit_realtime_events.sql");
+const MIGRATION_0012: &str =
+    include_str!("../migrations/0012_idle_vault_decision_plan_guardrails.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -248,6 +250,12 @@ impl NeonSqlClient {
                 version: 11,
                 name: "autodeposit_realtime_events",
                 sql: MIGRATION_0011,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 12,
+                name: "idle_vault_decision_plan_guardrails",
+                sql: MIGRATION_0012,
                 expected_checksum: None,
             },
         ] {
@@ -2515,10 +2523,14 @@ fn idle_vault_deposit_execution_plan(input: &IdleVaultDepositDecisionInput) -> V
         "idle_vault_liquidity_amount_raw": input.amount_raw,
         "idle_token_account": input.idle_token_account,
         "idle_observed_slot": input.idle_observed_slot,
+        "observed_slot": input.idle_observed_slot,
         "idle_observed_at": input.idle_observed_at,
+        "observed_at": input.idle_observed_at,
         "source_apy_bps": 0,
         "target_apy_bps": input.target_apy_bps,
+        "target_supply_apy_bps": input.target_apy_bps,
         "estimated_edge_bps": input.estimated_edge_bps,
+        "edge_bps": input.estimated_edge_bps,
         "policy_executions": 1,
         "route_steps": [KAMINO_DEPOSIT_ROUTE_STEP_FOR_PLAN],
     })

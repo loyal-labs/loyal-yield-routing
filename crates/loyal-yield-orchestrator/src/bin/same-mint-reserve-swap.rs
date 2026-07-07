@@ -3279,6 +3279,31 @@ async fn run_idle_vault_deposit_flow(
         None
     };
 
+    let idle_decision_input = if options.execute {
+        Some(IdleVaultDepositDecisionInput {
+            target_reserve: deposit_reserve.to_owned(),
+            target_market: Some(deposit_position.market.clone()),
+            liquidity_mint: USDC_MINT.to_string(),
+            amount_raw: amount_i64,
+            idle_token_account: vault_usdc_ata.to_string(),
+            idle_observed_slot: options.expected_idle_observed_slot.ok_or(
+                "--deposit-idle-vault-reserve --execute requires --expected-idle-observed-slot",
+            )?,
+            idle_observed_at: options.expected_idle_observed_at.ok_or(
+                "--deposit-idle-vault-reserve --execute requires --expected-idle-observed-at",
+            )?,
+            target_apy_bps: options.expected_target_apy_bps.ok_or(
+                "--deposit-idle-vault-reserve --execute requires --expected-target-apy-bps",
+            )?,
+            estimated_edge_bps: options
+                .expected_edge_bps
+                .ok_or("--deposit-idle-vault-reserve --execute requires --expected-edge-bps")?,
+            estimated_cost_lamports: 0,
+        })
+    } else {
+        None
+    };
+
     if !options.execute {
         println!(
             "{}",
@@ -3305,48 +3330,60 @@ async fn run_idle_vault_deposit_flow(
     }
 
     if !blockers.is_empty() {
+        let blocker_reason = format!(
+            "idle vault deposit preflight blocked: {}",
+            blockers.join("; ")
+        );
+        let mut blocked_decision = None;
+        let mut blocked_decision_skip_reason = None;
+        if let Some(input) = idle_decision_input.clone() {
+            let planned = client
+                .record_idle_vault_deposit_decision(vault.id, input)
+                .await?;
+            match planned.status {
+                PlanOutcomeStatus::Planned(decision) => {
+                    let decision = if decision.status.is_terminal() {
+                        decision
+                    } else {
+                        client
+                            .advance_decision(
+                                decision.id,
+                                DecisionAdvance::Fail {
+                                    reason: blocker_reason.clone(),
+                                },
+                            )
+                            .await?
+                    };
+                    blocked_decision = Some(decision);
+                }
+                PlanOutcomeStatus::Skipped { reason } => {
+                    blocked_decision_skip_reason = Some(reason.decision_reason().as_str());
+                }
+            }
+        }
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
                 "status": "idle_vault_deposit_preflight_blocked",
-                "writesDecision": false,
+                "writesDecision": blocked_decision.is_some(),
                 "writesCurrentPositions": false,
                 "sendsTransactions": false,
                 "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, &deposit_position, amount_raw, db_idle.as_ref(), options),
                 "preflightBlockers": blockers,
+                "decisionId": blocked_decision.as_ref().map(|decision| decision.id.as_i64()),
+                "blockedDecision": blocked_decision.as_ref().map(idle_vault_deposit_decision_json),
+                "blockedDecisionSkipReason": blocked_decision_skip_reason,
                 "policyDeposit": policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
                 "policyDepositTransaction": policy_transaction.as_ref().map(policy_transaction_json),
             }))?
         );
-        return Err("idle vault deposit preflight blocked before decision write".into());
+        return Err(blocker_reason.into());
     }
 
-    let target_apy_bps = options
-        .expected_target_apy_bps
-        .ok_or("--deposit-idle-vault-reserve --execute requires --expected-target-apy-bps")?;
-    let edge_bps = options
-        .expected_edge_bps
-        .ok_or("--deposit-idle-vault-reserve --execute requires --expected-edge-bps")?;
+    let idle_decision_input =
+        idle_decision_input.ok_or("idle vault deposit decision input was not built")?;
     let planned = client
-        .record_idle_vault_deposit_decision(
-            vault.id,
-            IdleVaultDepositDecisionInput {
-                target_reserve: deposit_reserve.to_owned(),
-                target_market: Some(deposit_position.market.clone()),
-                liquidity_mint: USDC_MINT.to_string(),
-                amount_raw: amount_i64,
-                idle_token_account: vault_usdc_ata.to_string(),
-                idle_observed_slot: options.expected_idle_observed_slot.ok_or(
-                    "--deposit-idle-vault-reserve --execute requires --expected-idle-observed-slot",
-                )?,
-                idle_observed_at: options.expected_idle_observed_at.ok_or(
-                    "--deposit-idle-vault-reserve --execute requires --expected-idle-observed-at",
-                )?,
-                target_apy_bps,
-                estimated_edge_bps: edge_bps,
-                estimated_cost_lamports: 0,
-            },
-        )
+        .record_idle_vault_deposit_decision(vault.id, idle_decision_input)
         .await?;
     let decision = match planned.status {
         PlanOutcomeStatus::Planned(decision) => decision,

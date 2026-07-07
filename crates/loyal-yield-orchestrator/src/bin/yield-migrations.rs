@@ -73,6 +73,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0011_autodeposit_realtime_events.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 12,
+        name: "idle_vault_decision_plan_guardrails",
+        sql: include_str!("../../migrations/0012_idle_vault_decision_plan_guardrails.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
