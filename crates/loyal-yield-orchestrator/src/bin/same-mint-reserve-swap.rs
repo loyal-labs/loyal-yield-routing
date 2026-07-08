@@ -343,6 +343,34 @@ struct ChainReconcilePreview {
     positions: Vec<ChainPositionSummary>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IdleVaultDepositBlockerKind {
+    SourceStale,
+    Safety,
+}
+
+#[derive(Clone, Debug)]
+struct IdleVaultDepositBlocker {
+    kind: IdleVaultDepositBlockerKind,
+    message: String,
+}
+
+impl IdleVaultDepositBlocker {
+    fn source_stale(message: impl Into<String>) -> Self {
+        Self {
+            kind: IdleVaultDepositBlockerKind::SourceStale,
+            message: message.into(),
+        }
+    }
+
+    fn safety(message: impl Into<String>) -> Self {
+        Self {
+            kind: IdleVaultDepositBlockerKind::Safety,
+            message: message.into(),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct UserPositionSeedPreview {
     source: String,
@@ -3212,6 +3240,8 @@ async fn run_idle_vault_deposit_flow(
         .await?;
     let amount_i64 = i64::try_from(amount_raw)
         .map_err(|_| "idle vault deposit amount does not fit Postgres BIGINT")?;
+    let live_idle_amount_i64 = i64::try_from(deposit_position.vault_liquidity_amount_raw)
+        .map_err(|_| "live idle vault USDC amount does not fit Postgres BIGINT")?;
     let mut active_preview = initial_preview.clone();
     let mut reloaded_policy_preflight: Option<PolicyAccountPreflight> = None;
     let mut setup_obligation_before_deposit = false;
@@ -3221,30 +3251,30 @@ async fn run_idle_vault_deposit_flow(
     let mut missing_obligation_setup_dry_run: Option<Value> = None;
     let mut missing_obligation_setup_result: Option<Value> = None;
 
-    let mut blockers = Vec::new();
+    let mut blockers: Vec<IdleVaultDepositBlocker> = Vec::new();
     if deposit_position.liquidity_mint != USDC_MINT.to_string() {
-        blockers.push(format!(
+        blockers.push(IdleVaultDepositBlocker::safety(format!(
             "target reserve {} liquidity mint {} is not USDC {}",
             deposit_position.reserve, deposit_position.liquidity_mint, USDC_MINT
-        ));
+        )));
     }
     if deposit_position.vault_liquidity_ata != vault_usdc_ata.to_string() {
-        blockers.push(format!(
+        blockers.push(IdleVaultDepositBlocker::safety(format!(
             "chain preview vault liquidity ATA {} does not match derived vault USDC ATA {}",
             deposit_position.vault_liquidity_ata, vault_usdc_ata
-        ));
+        )));
     }
     if !deposit_position.vault_liquidity_token_account_exists {
-        blockers.push(format!(
+        blockers.push(IdleVaultDepositBlocker::safety(format!(
             "vault idle USDC ATA {} does not exist",
             vault_usdc_ata
-        ));
+        )));
     }
     if deposit_position.vault_liquidity_amount_raw < amount_raw {
-        blockers.push(format!(
+        blockers.push(IdleVaultDepositBlocker::source_stale(format!(
             "live vault idle USDC balance {} is below planned deposit amount {}",
             deposit_position.vault_liquidity_amount_raw, amount_raw
-        ));
+        )));
     }
     if !deposit_position.obligation_exists {
         match build_missing_obligation_setup_dry_run_with_signers(
@@ -3268,108 +3298,113 @@ async fn run_idle_vault_deposit_flow(
                     .map_err(|_| "setup obligation rent top-up lamports do not fit BIGINT")?
                     .unwrap_or(0);
                 if let Some(error) = &dry_run.init_execution.simulation_error {
-                    blockers.push(format!(
+                    blockers.push(IdleVaultDepositBlocker::safety(format!(
                         "init-obligation setup simulation failed before idle deposit: {error}"
-                    ));
+                    )));
                 }
                 missing_obligation_setup_dry_run =
                     Some(missing_obligation_setup_dry_run_json(deposit_position, &dry_run));
             }
-            Err(error) => blockers.push(format!(
+            Err(error) => blockers.push(IdleVaultDepositBlocker::safety(format!(
                 "deposit obligation {} is missing for reserve {} and no authorized init_obligation setup could be built: {error}",
                 deposit_position.obligation, deposit_position.reserve
-            )),
+            ))),
         }
     }
 
     match db_idle.as_ref() {
         Some(balance) => {
             if balance.mint != USDC_MINT.to_string() {
-                blockers.push(format!(
+                blockers.push(IdleVaultDepositBlocker::safety(format!(
                     "DB idle mint {} does not match USDC {}",
                     balance.mint, USDC_MINT
-                ));
+                )));
             }
             if balance.token_account != vault_usdc_ata.to_string() {
-                blockers.push(format!(
+                blockers.push(IdleVaultDepositBlocker::safety(format!(
                     "DB idle token account {} does not match vault USDC ATA {}",
                     balance.token_account, vault_usdc_ata
-                ));
+                )));
             }
             if balance.amount_raw != amount_i64 {
-                blockers.push(format!(
+                blockers.push(IdleVaultDepositBlocker::source_stale(format!(
                     "DB idle amount {} does not match planned amount {}",
                     balance.amount_raw, amount_i64
-                ));
+                )));
             }
-            if balance.amount_raw > i64::try_from(deposit_position.vault_liquidity_amount_raw)? {
-                blockers.push(format!(
+            if balance.amount_raw > live_idle_amount_i64 {
+                blockers.push(IdleVaultDepositBlocker::source_stale(format!(
                     "DB idle amount {} is above live vault ATA balance {}",
-                    balance.amount_raw, deposit_position.vault_liquidity_amount_raw
-                ));
+                    balance.amount_raw, live_idle_amount_i64
+                )));
             }
             if let Some(expected_account) = &options.expected_idle_token_account {
                 if balance.token_account != *expected_account {
-                    blockers.push(format!(
+                    let reason = format!(
                         "expected idle token account {} does not match DB row {}",
                         expected_account, balance.token_account
-                    ));
+                    );
+                    if balance.token_account == vault_usdc_ata.to_string() {
+                        blockers.push(IdleVaultDepositBlocker::source_stale(reason));
+                    } else {
+                        blockers.push(IdleVaultDepositBlocker::safety(reason));
+                    }
                 }
             }
             if let Some(expected_slot) = options.expected_idle_observed_slot {
                 if balance.observed_slot != expected_slot {
-                    blockers.push(format!(
+                    blockers.push(IdleVaultDepositBlocker::source_stale(format!(
                         "expected idle observed slot {} does not match DB row {}",
                         expected_slot, balance.observed_slot
-                    ));
+                    )));
                 }
             }
             if let Some(expected_at) = options.expected_idle_observed_at {
                 if balance.observed_at != expected_at {
-                    blockers.push(format!(
+                    blockers.push(IdleVaultDepositBlocker::source_stale(format!(
                         "expected idle observed at {} does not match DB row {}",
                         expected_at.to_rfc3339(),
                         balance.observed_at.to_rfc3339()
-                    ));
+                    )));
                 }
             }
         }
-        None => blockers.push(format!(
+        None => blockers.push(IdleVaultDepositBlocker::safety(format!(
             "missing loyal_yield.vault_idle_token_balances_current row for vault {} USDC",
             vault.id.as_i64()
-        )),
+        ))),
     }
 
     if let Some(expected_account) = &options.expected_idle_token_account {
         if expected_account != &vault_usdc_ata.to_string() {
-            blockers.push(format!(
+            blockers.push(IdleVaultDepositBlocker::safety(format!(
                 "expected idle token account {} does not match derived vault USDC ATA {}",
                 expected_account, vault_usdc_ata
-            ));
+            )));
         }
     }
     if let Some(expected_mint) = &options.expected_liquidity_mint {
         if expected_mint != &USDC_MINT.to_string() {
-            blockers.push(format!(
+            blockers.push(IdleVaultDepositBlocker::safety(format!(
                 "expected liquidity mint {} does not match USDC {}",
                 expected_mint, USDC_MINT
-            ));
+            )));
         }
     }
     if let Some(expected_amount) = options.expected_amount_raw {
         if expected_amount != amount_i64 {
-            blockers.push(format!(
+            blockers.push(IdleVaultDepositBlocker::safety(format!(
                 "expected amount {} does not match requested idle deposit amount {}",
                 expected_amount, amount_i64
-            ));
+            )));
         }
     }
     if let Some(expected_edge) = options.expected_edge_bps {
         if expected_edge <= 0 {
-            blockers.push(format!(
+            blockers.push(IdleVaultDepositBlocker::safety(format!(
                 "expected idle deposit edge {} must be positive",
                 expected_edge
-            ));
+            )));
         }
     }
 
@@ -3388,7 +3423,7 @@ async fn run_idle_vault_deposit_flow(
         ) {
             Ok(plan) => Some(plan),
             Err(error) => {
-                blockers.push(error.to_string());
+                blockers.push(IdleVaultDepositBlocker::safety(error.to_string()));
                 None
             }
         };
@@ -3459,7 +3494,7 @@ async fn run_idle_vault_deposit_flow(
                     source_reserve: deposit_reserve.to_owned(),
                     target_reserve: deposit_reserve.to_owned(),
                 }, policy_preflight),
-                "preflightBlockers": blockers,
+                "preflightBlockers": idle_vault_deposit_blocker_messages(&blockers),
                 "setupObligationBeforeDeposit": setup_obligation_before_deposit,
                 "missingObligationSetup": missing_obligation_setup_dry_run,
                 "policyDepositRequiresSetup": setup_obligation_before_deposit,
@@ -3471,10 +3506,72 @@ async fn run_idle_vault_deposit_flow(
         return Ok(());
     }
 
+    if idle_vault_deposit_has_only_source_sync_blockers(&blockers) {
+        let synced_idle = record_live_idle_vault_balance(
+            client,
+            vault,
+            &vault_usdc_ata.to_string(),
+            initial_preview,
+            deposit_position,
+        )
+        .await?;
+        let preflight_blockers = idle_vault_deposit_blocker_messages(&blockers);
+        let source_sync_reasons = idle_vault_deposit_source_sync_reasons(&blockers);
+        if let Some(sync_conflict) = live_idle_vault_balance_sync_conflict(
+            &synced_idle,
+            vault,
+            &vault_usdc_ata.to_string(),
+            initial_preview,
+            live_idle_amount_i64,
+        ) {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "status": "idle_vault_deposit_stale_source_reconcile_conflict",
+                    "writesDecision": false,
+                    "writesCurrentPositions": false,
+                    "writesCurrentIdleBalance": false,
+                    "attemptedCurrentIdleBalanceWrite": true,
+                    "sendsTransactions": false,
+                    "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, deposit_position, amount_raw, db_idle.as_ref(), options),
+                    "preflightBlockers": preflight_blockers,
+                    "sourceSyncReasons": source_sync_reasons,
+                    "syncConflict": sync_conflict,
+                    "syncedIdleBalance": idle_balance_json(&synced_idle),
+                    "setupObligationBeforeDeposit": setup_obligation_before_deposit,
+                    "missingObligationSetup": missing_obligation_setup_dry_run,
+                    "policyDeposit": dry_run_policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
+                    "policyDepositTransaction": dry_run_policy_transaction.as_ref().map(policy_transaction_json),
+                }))?
+            );
+            return Ok(());
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "status": "idle_vault_deposit_stale_source_reconciled",
+                "writesDecision": false,
+                "writesCurrentPositions": false,
+                "writesCurrentIdleBalance": true,
+                "sendsTransactions": false,
+                "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, deposit_position, amount_raw, db_idle.as_ref(), options),
+                "preflightBlockers": preflight_blockers,
+                "sourceSyncReasons": source_sync_reasons,
+                "syncedIdleBalance": idle_balance_json(&synced_idle),
+                "setupObligationBeforeDeposit": setup_obligation_before_deposit,
+                "missingObligationSetup": missing_obligation_setup_dry_run,
+                "policyDeposit": dry_run_policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
+                "policyDepositTransaction": dry_run_policy_transaction.as_ref().map(policy_transaction_json),
+            }))?
+        );
+        return Ok(());
+    }
+
     if !blockers.is_empty() {
+        let preflight_blockers = idle_vault_deposit_blocker_messages(&blockers);
         let blocker_reason = format!(
             "idle vault deposit preflight blocked: {}",
-            blockers.join("; ")
+            preflight_blockers.join("; ")
         );
         let mut blocked_decision = None;
         let mut blocked_decision_skip_reason = None;
@@ -3511,7 +3608,7 @@ async fn run_idle_vault_deposit_flow(
                 "writesCurrentPositions": false,
                 "sendsTransactions": false,
                 "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, &deposit_position, amount_raw, db_idle.as_ref(), options),
-                "preflightBlockers": blockers,
+                "preflightBlockers": preflight_blockers,
                 "decisionId": blocked_decision.as_ref().map(|decision| decision.id.as_i64()),
                 "blockedDecision": blocked_decision.as_ref().map(idle_vault_deposit_decision_json),
                 "blockedDecisionSkipReason": blocked_decision_skip_reason,
@@ -3881,6 +3978,98 @@ fn idle_deposit_post_reconcile_reserves(
         push_unique_string(&mut reserves, reserve.clone());
     }
     reserves
+}
+
+fn idle_vault_deposit_blocker_messages(blockers: &[IdleVaultDepositBlocker]) -> Vec<String> {
+    blockers
+        .iter()
+        .map(|blocker| blocker.message.clone())
+        .collect()
+}
+
+fn idle_vault_deposit_source_sync_reasons(blockers: &[IdleVaultDepositBlocker]) -> Vec<String> {
+    blockers
+        .iter()
+        .filter(|blocker| blocker.kind == IdleVaultDepositBlockerKind::SourceStale)
+        .map(|blocker| blocker.message.clone())
+        .collect()
+}
+
+fn idle_vault_deposit_has_only_source_sync_blockers(blockers: &[IdleVaultDepositBlocker]) -> bool {
+    !blockers.is_empty()
+        && blockers
+            .iter()
+            .all(|blocker| blocker.kind == IdleVaultDepositBlockerKind::SourceStale)
+}
+
+async fn record_live_idle_vault_balance(
+    client: &NeonSqlClient,
+    vault: &SelectedVault,
+    vault_usdc_ata: &str,
+    preview: &ChainReconcilePreview,
+    deposit_position: &ChainPositionSummary,
+) -> Result<CurrentIdleTokenBalance, Box<dyn Error>> {
+    let now = Utc::now();
+    Ok(client
+        .record_current_idle_token_balance(CurrentIdleTokenBalance {
+            vault_id: vault.id,
+            mint: USDC_MINT.to_string(),
+            amount_raw: i64::try_from(deposit_position.vault_liquidity_amount_raw)
+                .map_err(|_| "live idle vault USDC amount does not fit Postgres BIGINT")?,
+            owner: vault.vault_pubkey.clone(),
+            token_account: vault_usdc_ata.to_owned(),
+            observed_slot: preview.observed_slot,
+            observed_at: now,
+            source_commitment: "confirmed".to_owned(),
+            updated_at: now,
+        })
+        .await?)
+}
+
+fn live_idle_vault_balance_sync_conflict(
+    balance: &CurrentIdleTokenBalance,
+    vault: &SelectedVault,
+    vault_usdc_ata: &str,
+    preview: &ChainReconcilePreview,
+    expected_amount_raw: i64,
+) -> Option<String> {
+    if balance.mint != USDC_MINT.to_string() {
+        return Some(format!(
+            "DB returned idle mint {}, expected USDC {}",
+            balance.mint, USDC_MINT
+        ));
+    }
+    if balance.amount_raw != expected_amount_raw {
+        return Some(format!(
+            "DB returned idle amount {}, expected live RPC amount {}",
+            balance.amount_raw, expected_amount_raw
+        ));
+    }
+    if balance.owner != vault.vault_pubkey {
+        return Some(format!(
+            "DB returned idle owner {}, expected vault {}",
+            balance.owner, vault.vault_pubkey
+        ));
+    }
+    if balance.token_account != vault_usdc_ata {
+        return Some(format!(
+            "DB returned idle token account {}, expected vault USDC ATA {}",
+            balance.token_account, vault_usdc_ata
+        ));
+    }
+    if balance.observed_slot < preview.observed_slot {
+        return Some(format!(
+            "DB returned idle observed slot {}, expected at least live RPC slot {}",
+            balance.observed_slot, preview.observed_slot
+        ));
+    }
+    if balance.source_commitment != "confirmed" {
+        return Some(format!(
+            "DB returned idle source commitment {}, expected confirmed",
+            balance.source_commitment
+        ));
+    }
+    None
 }
 
 fn idle_vault_deposit_request_json(

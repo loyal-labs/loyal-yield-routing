@@ -370,9 +370,10 @@ async fn run_vault_once(
             let execution =
                 execute_idle_vault_deposit(&vault, planned_idle_deposit, &policy_candidates)?;
             let active_decision_count_after = active_decision_count(neon, vault.vault.id).await?;
-            if !execution.success {
+            let execution_status = route_execution_status(&execution);
+            if !execution.success || execution_status != "idle_vault_deposit_executed" {
                 return Ok(json!({
-                    "status": route_execution_status(&execution),
+                    "status": execution_status,
                     "execute": true,
                     "enabledMints": options.enabled_mints.clone(),
                     "vault": vault_json(&vault),
