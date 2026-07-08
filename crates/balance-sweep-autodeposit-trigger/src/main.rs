@@ -520,7 +520,7 @@ async fn load_executable_targets(pool: &PgPool, limit: i64) -> Result<Vec<Execut
           )
         ORDER BY
             CASE WHEN slot.status = 'requested' THEN 0 ELSE 1 END,
-            slot.requested_at ASC NULLS LAST,
+            slot.requested_at DESC NULLS LAST,
             slot.eligible_after ASC,
             balance.updated_at ASC,
             target.id ASC,

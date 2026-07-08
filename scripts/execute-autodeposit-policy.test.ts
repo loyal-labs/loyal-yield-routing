@@ -187,6 +187,22 @@ describe("runtime dependency boundary", () => {
     expect(renderYaml).not.toContain("dockerfilePath: Dockerfile.light-workers");
   });
 
+  test("autodeposit trigger prioritizes newest execute-now slots first", async () => {
+    const source = await Bun.file(
+      new URL(
+        "../crates/balance-sweep-autodeposit-trigger/src/main.rs",
+        import.meta.url
+      )
+    ).text();
+
+    expect(source).toContain(
+      "CASE WHEN slot.status = 'requested' THEN 0 ELSE 1 END"
+    );
+    expect(source).toContain("slot.requested_at DESC NULLS LAST");
+    expect(source).toContain("slot.eligible_after ASC");
+    expect(source).not.toContain("slot.requested_at ASC NULLS LAST");
+  });
+
   test("sends Solana Week wallet addresses as base58 public keys", async () => {
     const source = await Bun.file(
       new URL("./execute-autodeposit-policy.ts", import.meta.url)
