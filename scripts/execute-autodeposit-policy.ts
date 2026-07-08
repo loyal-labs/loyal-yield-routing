@@ -167,6 +167,16 @@ type LotClaimResult =
       lots: ClaimedLot[];
     };
 
+class MissingActiveEarnRoutePolicyError extends Error {
+  readonly targetId: bigint;
+
+  constructor(targetId: bigint) {
+    super(`Autodeposit target ${targetId} does not have an active Earn route policy.`);
+    this.name = "MissingActiveEarnRoutePolicyError";
+    this.targetId = targetId;
+  }
+}
+
 const DEFAULT_COMMITMENT = "confirmed";
 const DEFAULT_LOCAL_SAME_MINT_COMMAND = ["bun", "run", "same-mint:swap", "--"] as const;
 const SAME_MINT_ROUTE_MODE = "same_mint_kamino";
@@ -491,15 +501,14 @@ async function loadEligibleTarget(
   }
 
   const row = rows[0] as Record<string, unknown>;
+  const id = BigInt(readRequiredString(row.id, "id"));
   const routePolicyAccount = readNullableString(row.route_policy_account);
   if (!routePolicyAccount) {
-    throw new Error(
-      `Autodeposit target ${row.id} does not have an active Earn route policy.`
-    );
+    throw new MissingActiveEarnRoutePolicyError(id);
   }
 
   return {
-    id: BigInt(readRequiredString(row.id, "id")),
+    id,
     settings: readRequiredString(row.settings, "settings"),
     vaultIndex: Number(readRequiredString(row.vault_index, "vault_index")),
     wallet: readRequiredString(row.wallet, "wallet"),
@@ -972,6 +981,26 @@ async function releaseAutodepositLotClaim(args: {
         last_error = 'claim released before autodeposit pull',
         updated_at = now()
     WHERE claim_token IN (SELECT claim_token FROM updated_claim)
+  `;
+}
+
+async function markScheduledSlotFailed(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  scheduledSlotId: bigint;
+  targetId: bigint;
+  lastError: string;
+}) {
+  const sql = args.neon(args.databaseUrl);
+  await sql`
+    UPDATE loyal_yield.balance_sweep_scheduled_slots
+    SET status = 'failed',
+        claim_token = NULL,
+        last_error = ${args.lastError},
+        updated_at = now()
+    WHERE id = ${args.scheduledSlotId.toString()}
+      AND target_id = ${args.targetId.toString()}
+      AND status IN ('scheduled', 'requested')
   `;
 }
 
@@ -1867,11 +1896,44 @@ async function main() {
   );
   const connection = new Connection(rpcUrl, DEFAULT_COMMITMENT);
 
-  const target = await loadEligibleTarget(
-    appModules.neon,
-    databaseUrl,
-    options.targetId
-  );
+  let target: EligibleTarget | null;
+  try {
+    target = await loadEligibleTarget(
+      appModules.neon,
+      databaseUrl,
+      options.targetId
+    );
+  } catch (error) {
+    if (
+      error instanceof MissingActiveEarnRoutePolicyError &&
+      options.execute &&
+      options.scheduledSlotId !== null
+    ) {
+      await markScheduledSlotFailed({
+        neon: appModules.neon,
+        databaseUrl,
+        scheduledSlotId: options.scheduledSlotId,
+        targetId: error.targetId,
+        lastError: error.message,
+      });
+      console.log(
+        JSON.stringify(
+          {
+            status: "failed",
+            reason: "missing_active_earn_route_policy",
+            targetId: error.targetId.toString(),
+            scheduledSlotId: options.scheduledSlotId.toString(),
+            error: error.message,
+          },
+          null,
+          2
+        )
+      );
+      process.exitCode = 1;
+      return;
+    }
+    throw error;
+  }
   if (!target) {
     console.log(
       JSON.stringify(

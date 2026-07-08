@@ -134,6 +134,18 @@ describe("runtime dependency boundary", () => {
     expect(source).not.toContain("prepareEarnUsdcDeposit");
   });
 
+  test("marks scheduled slot failures when an active route policy is missing", async () => {
+    const source = await Bun.file(
+      new URL("./execute-autodeposit-policy.ts", import.meta.url)
+    ).text();
+
+    expect(source).toContain("MissingActiveEarnRoutePolicyError");
+    expect(source).toContain("markScheduledSlotFailed");
+    expect(source).toContain("missing_active_earn_route_policy");
+    expect(source).toContain("status = 'failed'");
+    expect(source).toContain("last_error = ${args.lastError}");
+  });
+
   test("smart-account-vaults package exposes autodeposit pull helper", async () => {
     const { PublicKey } = await import("@solana/web3.js");
     const { createSmartAccountVaultsClient } = await import(
