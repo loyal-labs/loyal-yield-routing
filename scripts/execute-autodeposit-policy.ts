@@ -457,21 +457,19 @@ async function loadEligibleTarget(
     FROM loyal_yield.balance_sweep_targets t
     LEFT JOIN LATERAL (
       SELECT policy_account, policy_seed, route_modes
-      FROM loyal_yield.route_policies rp
-      LEFT JOIN loyal_yield.managed_vaults mv
-        ON mv.settings = rp.settings
-        AND mv.vault_index = rp.vault_index
-        AND mv.vault_pubkey = rp.vault_pubkey
-        AND mv.active_policy_id = rp.id
-        AND mv.active
-      WHERE rp.settings = t.settings
-        AND rp.vault_index = t.vault_index
+      FROM loyal_yield.managed_vaults mv
+      JOIN loyal_yield.route_policies rp
+        ON mv.active_policy_id = rp.id
         AND rp.active
+        AND rp.authority = t.authority
+        AND rp.settings = t.settings
+        AND rp.vault_index = t.vault_index
+        AND rp.vault_pubkey = t.vault_pubkey
+      WHERE mv.settings = t.settings
+        AND mv.vault_index = t.vault_index
+        AND mv.vault_pubkey = t.vault_pubkey
+        AND mv.active
         AND ${SAME_MINT_ROUTE_MODE} = ANY(rp.route_modes)
-      ORDER BY
-        CASE WHEN mv.id IS NULL THEN 1 ELSE 0 END,
-        rp.last_seen_slot DESC,
-        rp.id DESC
       LIMIT 1
     ) rp ON TRUE
     LEFT JOIN LATERAL (

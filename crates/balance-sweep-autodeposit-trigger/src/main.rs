@@ -19,6 +19,8 @@ use tokio::time;
 
 const CONSUMER_NAME: &str = "balance_sweep_autodeposit_trigger";
 const USDC_MINT_ADDRESS: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const STALE_REQUESTED_SLOT_SECONDS: i64 = 15 * 60;
+const REQUESTED_SLOT_TIMEOUT_ERROR: &str = "Autodeposit request timed out before worker selection.";
 
 #[derive(Debug, Parser)]
 #[command(about = "Project autodeposit surplus lots from Loyal wallet balance events")]
@@ -101,6 +103,8 @@ struct ExecutorOutcome {
     executions_attempted: usize,
     executions_succeeded: usize,
     executions_failed: usize,
+    missing_route_policy_slots_failed: i64,
+    stale_requested_slots_failed: i64,
     stale_claims_released: i64,
 }
 
@@ -206,6 +210,9 @@ async fn main() -> Result<()> {
                 executions_attempted = execution_outcome.executions_attempted,
                 executions_succeeded = execution_outcome.executions_succeeded,
                 executions_failed = execution_outcome.executions_failed,
+                missing_route_policy_slots_failed =
+                    execution_outcome.missing_route_policy_slots_failed,
+                stale_requested_slots_failed = execution_outcome.stale_requested_slots_failed,
                 stale_claims_released = execution_outcome.stale_claims_released,
                 "scanned eligible autodeposit lots for execution"
             );
@@ -333,11 +340,16 @@ async fn execute_eligible_targets_once(
     limit: i64,
     stale_selected_claim_seconds: i64,
 ) -> Result<ExecutorOutcome> {
+    let missing_route_policy_slots_failed =
+        fail_slots_without_active_earn_route_policy_once(pool, limit).await?;
+    let stale_requested_slots_failed = fail_stale_requested_slots_once(pool, limit).await?;
     let stale_claims_released =
         release_stale_selected_claims_once(pool, stale_selected_claim_seconds, limit).await?;
     let targets = load_executable_targets(pool, limit).await?;
     let mut outcome = ExecutorOutcome {
         targets_scanned: targets.len(),
+        missing_route_policy_slots_failed,
+        stale_requested_slots_failed,
         stale_claims_released,
         ..ExecutorOutcome::default()
     };
@@ -377,6 +389,106 @@ async fn execute_eligible_targets_once(
         }
     }
     Ok(outcome)
+}
+
+async fn fail_slots_without_active_earn_route_policy_once(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<i64> {
+    if limit <= 0 {
+        return Ok(0);
+    }
+
+    let rows = sqlx::query(
+        r#"
+        WITH doomed_slots AS (
+            SELECT slot.id, slot.target_id
+            FROM loyal_yield.balance_sweep_scheduled_slots AS slot
+            JOIN loyal_yield.balance_sweep_targets AS target
+              ON target.id = slot.target_id
+            WHERE slot.status IN ('scheduled', 'requested')
+              AND slot.eligible_after <= now()
+              AND target.active = true
+              AND target.lifecycle_status = 'active'
+              AND target.token_mint = $2
+              AND slot.token_mint = target.token_mint
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM loyal_yield.managed_vaults AS managed
+                  JOIN loyal_yield.route_policies AS policy
+                    ON policy.id = managed.active_policy_id
+                   AND policy.active = true
+                   AND policy.authority = target.authority
+                   AND policy.settings = target.settings
+                   AND policy.vault_index = target.vault_index
+                   AND policy.vault_pubkey = target.vault_pubkey
+                   AND 'same_mint_kamino' = ANY(policy.route_modes)
+                  WHERE managed.active = true
+                    AND managed.settings = target.settings
+                    AND managed.vault_index = target.vault_index
+                    AND managed.vault_pubkey = target.vault_pubkey
+              )
+            ORDER BY slot.eligible_after ASC, slot.id ASC
+            LIMIT $1
+            FOR UPDATE OF slot SKIP LOCKED
+        )
+        UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
+        SET status = 'failed',
+            claim_token = NULL,
+            last_error = format(
+                'Autodeposit target %s does not have an active Earn route policy.',
+                doomed.target_id
+            ),
+            updated_at = now()
+        FROM doomed_slots AS doomed
+        WHERE slot.id = doomed.id
+          AND slot.status IN ('scheduled', 'requested')
+        RETURNING slot.id
+        "#,
+    )
+    .bind(limit)
+    .bind(USDC_MINT_ADDRESS)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.len() as i64)
+}
+
+async fn fail_stale_requested_slots_once(pool: &PgPool, limit: i64) -> Result<i64> {
+    if limit <= 0 {
+        return Ok(0);
+    }
+
+    let rows = sqlx::query(
+        r#"
+        WITH stale_slots AS (
+            SELECT slot.id
+            FROM loyal_yield.balance_sweep_scheduled_slots AS slot
+            WHERE slot.status = 'requested'
+              AND COALESCE(slot.requested_at, slot.updated_at)
+                    < now() - ($1::bigint * interval '1 second')
+            ORDER BY COALESCE(slot.requested_at, slot.updated_at) ASC, slot.id ASC
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+        )
+        UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
+        SET status = 'failed',
+            claim_token = NULL,
+            last_error = $3,
+            updated_at = now()
+        FROM stale_slots AS stale
+        WHERE slot.id = stale.id
+          AND slot.status = 'requested'
+        RETURNING slot.id
+        "#,
+    )
+    .bind(STALE_REQUESTED_SLOT_SECONDS)
+    .bind(limit)
+    .bind(REQUESTED_SLOT_TIMEOUT_ERROR)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.len() as i64)
 }
 
 async fn release_stale_selected_claims_once(
