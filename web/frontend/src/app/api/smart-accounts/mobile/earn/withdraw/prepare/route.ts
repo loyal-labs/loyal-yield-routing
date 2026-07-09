@@ -19,37 +19,18 @@ import {
 } from "@/lib/yield-optimization/earn-withdraw-prepare-contracts.shared";
 import { getDeploymentPolicySignerPublicKey } from "@/lib/yield-optimization/deployment-policy-signer.server";
 import {
-  findCurrentEarnAutodepositState,
-  reconcileMissingOnChainEarnAutodepositPolicy,
-} from "@/lib/yield-optimization/earn-autodeposit-repository.server";
-import { reconcileEarnVaultPosition } from "@/lib/yield-optimization/earn-position-reconciliation.server";
-import {
-  earnReserveTargetFromActivePosition,
-  type EarnUsdcReserveTarget,
-} from "@/lib/yield-optimization/earn-reserve-target.server";
-import {
-  fetchEarnRpcHoldingsSnapshot,
-  type EarnRpcHolding,
-} from "@/lib/yield-optimization/earn-rpc-holdings.client";
-import { serializeRoutePolicyState } from "@/lib/yield-optimization/earn-state-serializers.server";
-import {
-  findActiveYieldRoutePolicyPair,
-  findCurrentNonzeroYieldVaultReservePositions,
-  EARN_FINAL_EXIT_IDLE_DUST_TOLERANCE_RAW,
-  findCurrentYieldVaultIdleTokenBalances,
-  findReconciledActiveYieldPositionForVault,
-  type CurrentYieldVaultIdleTokenBalanceRecord,
-  type CurrentYieldVaultReservePositionRecord,
-  type RoutePolicyRecord,
-  type UserYieldPositionRecord,
-} from "@/lib/yield-optimization/yield-deposit-repository.server";
+  EarnWithdrawResolveError,
+  resolveEarnUsdcWithdrawInput,
+} from "@/lib/yield-optimization/earn-withdraw-input-resolution.server";
 
 // Mobile twin of `yield-optimization/withdrawals/prepare`. Identical source
 // selection + prepare logic, but authenticated by a wallet signature (no
 // Turnstile/session) and it resolves the caller's smart account itself instead
 // of reading it from a session principal. Withdrawing requires an existing
-// account, so (unlike deposit) it never provisions. Keep the prepare body below
-// in sync with the session route.
+// account, so (unlike deposit) it never provisions. Source selection lives in
+// `earn-withdraw-input-resolution.server.ts`, shared with `../prepare-context`
+// (the on-device build twin) — this route remains for app versions that
+// predate on-device prepare.
 const EARN_DEPOSIT_VAULT_INDEX = 1;
 
 const connectionCache = new Map<SolanaEnv, Connection>();
@@ -83,335 +64,6 @@ function getConnection(cluster: SolanaEnv): Connection {
   return connection;
 }
 
-type EarnWithdrawSourceRequest = ReturnType<
-  typeof parseEarnWithdrawPrepareRequestBody
->["source"];
-
-type SelectedEarnWithdrawSource =
-  | {
-      amountRaw: bigint;
-      id: string;
-      liquidityMint: string;
-      market: string;
-      reserve: string;
-      type: "reserve";
-    }
-  | {
-      amountRaw: bigint;
-      id: string;
-      mint: string;
-      tokenAccount: string;
-      type: "idle";
-    };
-
-function publicKeyFromMetadata(
-  metadata: Record<string, unknown> | null | undefined,
-  keys: string[]
-): PublicKey | null {
-  if (!metadata) {
-    return null;
-  }
-
-  for (const key of keys) {
-    const value = metadata[key];
-    if (typeof value !== "string" || value.trim().length === 0) {
-      continue;
-    }
-    try {
-      return new PublicKey(value);
-    } catch {
-      continue;
-    }
-  }
-
-  return null;
-}
-
-function isNonEmptyString(value: string | null | undefined): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-function sourceMatchesDirectIdentifier(
-  source: SelectedEarnWithdrawSource,
-  request: NonNullable<EarnWithdrawSourceRequest>
-): boolean {
-  if (source.type !== request.type) {
-    return false;
-  }
-
-  const identifiers = [
-    request.id,
-    request.reserve,
-    request.tokenAccount,
-  ].filter(isNonEmptyString);
-
-  if (identifiers.includes(source.id)) {
-    return true;
-  }
-
-  return source.type === "reserve" && identifiers.includes(source.reserve);
-}
-
-function sourceMatchesStableMint(
-  source: SelectedEarnWithdrawSource,
-  request: NonNullable<EarnWithdrawSourceRequest>
-): boolean {
-  if (source.type !== request.type) {
-    return false;
-  }
-
-  const identifiers = [request.id, request.liquidityMint, request.mint].filter(
-    isNonEmptyString
-  );
-
-  return source.type === "reserve"
-    ? identifiers.includes(source.liquidityMint)
-    : identifiers.includes(source.mint);
-}
-
-function selectRequestedEarnWithdrawSource(
-  sources: SelectedEarnWithdrawSource[],
-  request: EarnWithdrawSourceRequest
-): SelectedEarnWithdrawSource | null {
-  if (!request) {
-    return sources.length === 1 ? sources[0] ?? null : null;
-  }
-
-  const directMatch = sources.find((source) =>
-    sourceMatchesDirectIdentifier(source, request)
-  );
-  if (directMatch) {
-    return directMatch;
-  }
-
-  const stableMintMatches = sources.filter((source) =>
-    sourceMatchesStableMint(source, request)
-  );
-  if (stableMintMatches.length === 1) {
-    return stableMintMatches[0] ?? null;
-  }
-
-  const amountMatchedStableMintMatches = stableMintMatches.filter(
-    (source) => request.amountRaw === source.amountRaw.toString()
-  );
-
-  return amountMatchedStableMintMatches.length === 1
-    ? amountMatchedStableMintMatches[0] ?? null
-    : null;
-}
-
-// Build withdraw sources from the LIVE on-chain holdings snapshot (partial
-// withdrawals). The DB read-model + reconcile can't follow a cross-market
-// rebalance; this scans the policy's markets and reflects reality. Drops entries
-// missing the identifiers a withdrawal needs to match/build.
-function buildSnapshotWithdrawSources(
-  holdings: EarnRpcHolding[]
-): SelectedEarnWithdrawSource[] {
-  const sources: SelectedEarnWithdrawSource[] = [];
-  for (const holding of holdings) {
-    let amountRaw: bigint;
-    try {
-      amountRaw = BigInt(holding.amountRaw);
-    } catch {
-      continue;
-    }
-    if (amountRaw <= BigInt(0)) {
-      continue;
-    }
-    if (holding.kind === "idle") {
-      const tokenAccount = holding.provenance.tokenAccount;
-      if (!tokenAccount) {
-        continue;
-      }
-      sources.push({
-        amountRaw,
-        id: tokenAccount,
-        mint: holding.liquidityMint,
-        tokenAccount,
-        type: "idle",
-      });
-      continue;
-    }
-    if (!holding.reserve || !holding.market) {
-      continue;
-    }
-    sources.push({
-      amountRaw,
-      id: holding.reserve,
-      liquidityMint: holding.liquidityMint,
-      market: holding.market,
-      reserve: holding.reserve,
-      type: "reserve",
-    });
-  }
-  return sources;
-}
-
-// The deployed Kamino reserve target for a snapshot-sourced withdrawal — used
-// when withdrawing idle USDC (a reserve withdrawal targets its own reserve).
-// Null when the vault holds no Kamino reserve (fully idle).
-function snapshotReserveTarget(
-  holdings: EarnRpcHolding[]
-): EarnUsdcReserveTarget | null {
-  const kamino = holdings.find(
-    (holding) => holding.kind === "kamino" && holding.reserve && holding.market
-  );
-  if (!kamino || !kamino.reserve || !kamino.market) {
-    return null;
-  }
-  let supplyApyBps: bigint | null = null;
-  if (kamino.supplyApyBps) {
-    try {
-      supplyApyBps = BigInt(kamino.supplyApyBps);
-    } catch {
-      supplyApyBps = null;
-    }
-  }
-  return {
-    liquidityMint: new PublicKey(kamino.liquidityMint),
-    market: new PublicKey(kamino.market),
-    reserve: new PublicKey(kamino.reserve),
-    supplyApyBps,
-  };
-}
-
-// Full-withdrawal targets from the live snapshot (fallback when the DB rows
-// are empty). Collateral metadata comes from the holding provenance when
-// present; the SDK resolves anything omitted on-chain.
-function snapshotFullWithdrawalTargets(
-  holdings: EarnRpcHolding[],
-  reserve: string
-): {
-  amountRaw: bigint;
-  liquidityMint: PublicKey;
-  market: PublicKey;
-  reserve: PublicKey;
-  reserveCollateralMint?: PublicKey;
-  supplyApyBps: bigint | null;
-}[] {
-  const targets = [];
-  for (const holding of holdings) {
-    if (
-      holding.kind !== "kamino" ||
-      holding.reserve !== reserve ||
-      !holding.market
-    ) {
-      continue;
-    }
-    let amountRaw: bigint;
-    try {
-      amountRaw = BigInt(holding.amountRaw);
-    } catch {
-      continue;
-    }
-    if (amountRaw <= BigInt(0)) {
-      continue;
-    }
-    let supplyApyBps: bigint | null = null;
-    if (holding.supplyApyBps) {
-      try {
-        supplyApyBps = BigInt(holding.supplyApyBps);
-      } catch {
-        supplyApyBps = null;
-      }
-    }
-    const reserveCollateralMint = publicKeyFromMetadata(holding.provenance, [
-      "reserveCollateralMint",
-    ]);
-    targets.push({
-      amountRaw,
-      liquidityMint: new PublicKey(holding.liquidityMint),
-      market: new PublicKey(holding.market),
-      reserve: new PublicKey(holding.reserve),
-      ...(reserveCollateralMint ? { reserveCollateralMint } : {}),
-      supplyApyBps,
-    });
-  }
-  return targets;
-}
-
-// Withdraw sources from the reconciled DB rows (full exits) — the row
-// planning metadata carries the collateral accounts the full-withdrawal
-// instruction prefers. Empty after a cross-market rebalance the reconcile
-// couldn't follow; the caller then falls back to the live snapshot.
-function buildDbEarnWithdrawSources(args: {
-  idleRows: CurrentYieldVaultIdleTokenBalanceRecord[];
-  position: UserYieldPositionRecord;
-  reserveRows: CurrentYieldVaultReservePositionRecord[];
-}): SelectedEarnWithdrawSource[] {
-  const reserveSources = args.reserveRows
-    .filter((row) => row.amountRaw > BigInt(0))
-    .map((row) => {
-      if (!row.market) {
-        throw new Error("Reconciled Earn reserve row is missing a market.");
-      }
-      return {
-        amountRaw: row.amountRaw,
-        id: row.reserve,
-        liquidityMint: row.liquidityMint,
-        market: row.market,
-        reserve: row.reserve,
-        type: "reserve" as const,
-      };
-    });
-  const idleSources = args.idleRows
-    .filter((row) => row.amountRaw > BigInt(0))
-    .map((row) => ({
-      amountRaw: row.amountRaw,
-      id: row.tokenAccount,
-      mint: row.mint,
-      tokenAccount: row.tokenAccount,
-      type: "idle" as const,
-    }));
-  const positionFallbackSources =
-    reserveSources.length === 0 &&
-    idleSources.length === 0 &&
-    isNonEmptyString(args.position.currentMarket) &&
-    args.position.currentAmountRaw > BigInt(0)
-      ? [
-          {
-            amountRaw: args.position.currentAmountRaw,
-            id: args.position.currentReserve,
-            liquidityMint: args.position.currentLiquidityMint,
-            market: args.position.currentMarket,
-            reserve: args.position.currentReserve,
-            type: "reserve" as const,
-          },
-        ]
-      : [];
-  return [...reserveSources, ...idleSources, ...positionFallbackSources];
-}
-
-function selectEarnWithdrawSource(args: {
-  amountRaw: bigint;
-  idleRows: CurrentYieldVaultIdleTokenBalanceRecord[];
-  mode: "partial" | "full";
-  position: UserYieldPositionRecord;
-  request: EarnWithdrawSourceRequest;
-  reserveRows: CurrentYieldVaultReservePositionRecord[];
-}): SelectedEarnWithdrawSource {
-  const sources = buildDbEarnWithdrawSources({
-    idleRows: args.idleRows,
-    position: args.position,
-    reserveRows: args.reserveRows,
-  });
-
-  if (sources.length === 0) {
-    throw new Error("No active Earn withdrawal source was found.");
-  }
-
-  const selected = selectRequestedEarnWithdrawSource(sources, args.request);
-
-  if (!selected) {
-    throw new Error("Select an Earn source before withdrawing.");
-  }
-  if (args.mode === "partial" && args.amountRaw > selected.amountRaw) {
-    throw new Error("Withdrawal exceeds the selected Earn source amount.");
-  }
-
-  return selected;
-}
-
 export async function POST(request: Request) {
   let body: unknown;
   try {
@@ -435,7 +87,9 @@ export async function POST(request: Request) {
 
   let amountRaw: bigint;
   let mode: "partial" | "full";
-  let selectedSourceRequest: EarnWithdrawSourceRequest;
+  let selectedSourceRequest: ReturnType<
+    typeof parseEarnWithdrawPrepareRequestBody
+  >["source"];
   try {
     ({
       amountRaw,
@@ -491,454 +145,36 @@ export async function POST(request: Request) {
 
   const solanaEnv = getConfiguredSolanaEnv();
   const cluster = resolveLoyalClusterForSolanaEnv(solanaEnv);
-  let policy: RoutePolicyRecord | null = null;
-  let effectiveAmountRaw: bigint | null = null;
 
   try {
     const serverEnv = getServerEnv();
     const programId = new PublicKey(serverEnv.loyalSmartAccounts.programId);
-    const settingsPdaKey = new PublicKey(settingsPda);
     const [earnVaultPda] = pda.getSmartAccountPda({
       accountIndex: EARN_DEPOSIT_VAULT_INDEX,
       programId,
-      settingsPda: settingsPdaKey,
+      settingsPda: new PublicKey(settingsPda),
     });
     const connection = getConnection(solanaEnv);
-    // Reconcile the DB position against the live on-chain Kamino obligation
-    // before deriving the withdrawal target — otherwise a stale snapshot points
-    // the withdraw at a reserve/market whose vanilla obligation doesn't exist
-    // (KLEND_OBLIGATION_NOT_FOUND). Mirrors the web `withdrawals/prepare` route.
-    await reconcileEarnVaultPosition({
-      authority: walletAddress,
+    const resolved = await resolveEarnUsdcWithdrawInput({
+      amountRaw,
       cluster,
       connection,
-      force: true,
-      settings: settingsPda,
-      vaultPubkey: earnVaultPda.toBase58(),
+      earnVaultPda,
+      logTag: "mobile-earn-withdraw-prepare",
+      mode,
+      policySigner: getDeploymentPolicySignerPublicKey(),
+      programId,
+      settingsPda,
+      sourceRequest: selectedSourceRequest,
+      walletAddress,
     });
-    const [policyResult, position, currentReserveRows, currentIdleRows] =
-      await Promise.all([
-        findActiveYieldRoutePolicyPair({
-          authority: walletAddress,
-          cluster,
-          settings: settingsPda,
-          vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
-          vaultPubkey: earnVaultPda.toBase58(),
-        }),
-        findReconciledActiveYieldPositionForVault({
-          cluster,
-          settings: settingsPda,
-          vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
-          walletAddress,
-        }),
-        findCurrentNonzeroYieldVaultReservePositions({
-          cluster,
-          settings: settingsPda,
-          vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
-          vaultPubkey: earnVaultPda.toBase58(),
-          walletAddress,
-        }),
-        findCurrentYieldVaultIdleTokenBalances({
-          cluster,
-          settings: settingsPda,
-          vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
-          vaultPubkey: earnVaultPda.toBase58(),
-          walletAddress,
-        }),
-      ]);
-    policy = policyResult?.routePolicy ?? null;
-    if (!policy) {
-      console.warn(
-        "[mobile-earn-withdraw-prepare] missing active Earn policy",
-        {
-          cluster,
-          settings: settingsPda,
-          vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
-          walletAddress,
-        }
-      );
-      return jsonError(
-        409,
-        "missing_earn_policy",
-        "Set up the Earn policy before withdrawing USDC."
-      );
-    }
-
-    if (!position) {
-      console.warn(
-        "[mobile-earn-withdraw-prepare] missing active Earn position",
-        {
-          cluster,
-          settings: settingsPda,
-          vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
-          walletAddress,
-        }
-      );
-      return jsonError(
-        409,
-        "missing_earn_position",
-        "No active Earn position was found for this withdrawal."
-      );
-    }
-
-    // Partial withdrawals source from the LIVE on-chain holdings snapshot — the
-    // same read `/holdings`, the withdraw picker, and the positions sheet use.
-    // The DB read-model + reconcile can't follow a cross-market rebalance, so it
-    // reports a stale reserve that the picker showed and this route would reject
-    // ("Select an Earn source"). Full exits keep the DB path (its reconciled
-    // rows carry the collateral metadata the full-withdrawal instruction needs).
-    let selectedSource: SelectedEarnWithdrawSource;
-    let isFinalExit: boolean;
-    let withdrawTarget: EarnUsdcReserveTarget;
-    // Set when a full exit had to source from the live snapshot (DB rows
-    // empty); the full-withdrawal targets are then built from it too.
-    let snapshotFullExitHoldings: EarnRpcHolding[] | null = null;
-    if (mode === "partial") {
-      const snapshot = await fetchEarnRpcHoldingsSnapshot({
-        cluster,
-        connection,
-        policy: policyResult
-          ? serializeRoutePolicyState(
-              policyResult.routePolicy,
-              policyResult.setupPolicy ?? null
-            )
-          : null,
-        programId,
-        settingsPda: settingsPdaKey,
-      });
-      const snapshotSources = buildSnapshotWithdrawSources(snapshot.holdings);
-      if (snapshotSources.length === 0) {
-        throw new Error("No active Earn withdrawal source was found.");
-      }
-      const selected = selectRequestedEarnWithdrawSource(
-        snapshotSources,
-        selectedSourceRequest
-      );
-      if (!selected) {
-        throw new Error("Select an Earn source before withdrawing.");
-      }
-      if (amountRaw > selected.amountRaw) {
-        throw new Error("Withdrawal exceeds the selected Earn source amount.");
-      }
-      selectedSource = selected;
-      effectiveAmountRaw = amountRaw;
-      const snapshotTotal = snapshotSources.reduce(
-        (total, source) => total + source.amountRaw,
-        BigInt(0)
-      );
-      isFinalExit = snapshotTotal - effectiveAmountRaw <= BigInt(0);
-      withdrawTarget =
-        selected.type === "reserve"
-          ? {
-              liquidityMint: new PublicKey(selected.liquidityMint),
-              market: new PublicKey(selected.market),
-              reserve: new PublicKey(selected.reserve),
-              supplyApyBps: null,
-            }
-          : snapshotReserveTarget(snapshot.holdings) ??
-            earnReserveTargetFromActivePosition(position);
-    } else if (
-      buildDbEarnWithdrawSources({
-        idleRows: currentIdleRows,
-        position,
-        reserveRows: currentReserveRows,
-      }).length === 0
-    ) {
-      // Full-exit snapshot fallback: after a cross-market rebalance the
-      // reconciled DB rows (and the position row) can read zero while the
-      // funds live on-chain in another market's obligation. Source the full
-      // exit from the same live snapshot partial withdrawals use — its
-      // provenance carries the collateral metadata the full path needs.
-      const snapshot = await fetchEarnRpcHoldingsSnapshot({
-        cluster,
-        connection,
-        policy: policyResult
-          ? serializeRoutePolicyState(
-              policyResult.routePolicy,
-              policyResult.setupPolicy ?? null
-            )
-          : null,
-        programId,
-        settingsPda: settingsPdaKey,
-      });
-      const snapshotSources = buildSnapshotWithdrawSources(snapshot.holdings);
-      if (snapshotSources.length === 0) {
-        throw new Error("No active Earn withdrawal source was found.");
-      }
-      const selected = selectRequestedEarnWithdrawSource(
-        snapshotSources,
-        selectedSourceRequest
-      );
-      if (!selected) {
-        throw new Error("Select an Earn source before withdrawing.");
-      }
-      selectedSource = selected;
-      effectiveAmountRaw = selected.amountRaw;
-      const remainingReserveAmountRaw = snapshotSources.reduce(
-        (total, source) =>
-          total +
-          (source.type === "reserve" && source.id !== selected.id
-            ? source.amountRaw
-            : BigInt(0)),
-        BigInt(0)
-      );
-      const remainingIdleAmountRaw = snapshotSources.reduce(
-        (total, source) =>
-          total +
-          (source.type === "idle" && source.id !== selected.id
-            ? source.amountRaw
-            : BigInt(0)),
-        BigInt(0)
-      );
-      isFinalExit =
-        remainingReserveAmountRaw <= BigInt(0) &&
-        remainingIdleAmountRaw < EARN_FINAL_EXIT_IDLE_DUST_TOLERANCE_RAW;
-      withdrawTarget =
-        selected.type === "reserve"
-          ? {
-              liquidityMint: new PublicKey(selected.liquidityMint),
-              market: new PublicKey(selected.market),
-              reserve: new PublicKey(selected.reserve),
-              supplyApyBps: null,
-            }
-          : snapshotReserveTarget(snapshot.holdings) ??
-            earnReserveTargetFromActivePosition(position);
-      snapshotFullExitHoldings = snapshot.holdings;
-    } else {
-      selectedSource = selectEarnWithdrawSource({
-        amountRaw,
-        idleRows: currentIdleRows,
-        mode,
-        position,
-        request: selectedSourceRequest,
-        reserveRows: currentReserveRows,
-      });
-      effectiveAmountRaw = selectedSource.amountRaw;
-      const remainingReserveAmountRaw = currentReserveRows.reduce(
-        (total, row) =>
-          total +
-          (selectedSource.type === "reserve" &&
-          row.reserve === selectedSource.reserve
-            ? row.amountRaw > effectiveAmountRaw!
-              ? row.amountRaw - effectiveAmountRaw!
-              : BigInt(0)
-            : row.amountRaw),
-        BigInt(0)
-      );
-      const remainingIdleAmountRaw = currentIdleRows.reduce(
-        (total, row) =>
-          total +
-          (selectedSource.type === "idle" &&
-          row.tokenAccount === selectedSource.tokenAccount
-            ? row.amountRaw > effectiveAmountRaw!
-              ? row.amountRaw - effectiveAmountRaw!
-              : BigInt(0)
-            : row.amountRaw),
-        BigInt(0)
-      );
-      isFinalExit =
-        remainingReserveAmountRaw <= BigInt(0) &&
-        remainingIdleAmountRaw < EARN_FINAL_EXIT_IDLE_DUST_TOLERANCE_RAW;
-      withdrawTarget = earnReserveTargetFromActivePosition(position);
-    }
-
-    const policySigner = getDeploymentPolicySignerPublicKey();
     const client = createSmartAccountVaultsClient({
       connection,
       programId,
     });
-    const yieldRoutingPolicy = {
-      account: new PublicKey(policy.policyAccount),
-      seed: policy.policySeed,
-      ...(policyResult?.setupPolicy
-        ? {
-            setupPolicy: {
-              account: new PublicKey(policyResult.setupPolicy.policyAccount),
-              seed: policyResult.setupPolicy.policySeed,
-            },
-          }
-        : {}),
-    };
-    const autodepositState =
-      mode === "full" && isFinalExit
-        ? await findCurrentEarnAutodepositState({
-            settings: settingsPda,
-            vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
-            walletAddress,
-          })
-        : null;
-    let autodepositClose:
-      | {
-          policy: PublicKey;
-          recurringDelegation: PublicKey;
-        }
-      | undefined;
-    let reconciledMissingAutodepositPolicy = false;
-
-    if (
-      autodepositState?.target.policyAccount &&
-      autodepositState.target.recurringDelegation
-    ) {
-      const autodepositPolicyAccount = new PublicKey(
-        autodepositState.target.policyAccount
-      );
-      const autodepositPolicyInfo = await connection.getAccountInfo(
-        autodepositPolicyAccount,
-        "confirmed"
-      );
-
-      if (autodepositPolicyInfo) {
-        autodepositClose = {
-          policy: autodepositPolicyAccount,
-          recurringDelegation: new PublicKey(
-            autodepositState.target.recurringDelegation
-          ),
-        };
-      } else {
-        reconciledMissingAutodepositPolicy = true;
-        const reconciledTarget =
-          await reconcileMissingOnChainEarnAutodepositPolicy({
-            policyAccount: autodepositState.target.policyAccount,
-            settings: settingsPda,
-            vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
-            walletAddress,
-          });
-        console.warn(
-          "[mobile-earn-withdraw-prepare] reconciled missing autodeposit policy account",
-          {
-            cluster,
-            lifecycleStatus: reconciledTarget.lifecycleStatus,
-            policyAccount: autodepositState.target.policyAccount,
-            reconciliationSource: "reconciled_missing_policy",
-            settings: settingsPda,
-            targetId: reconciledTarget.id.toString(),
-            vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
-            walletAddress,
-          }
-        );
-      }
-    }
-
-    if (
-      mode === "full" &&
-      isFinalExit &&
-      autodepositState &&
-      !autodepositClose &&
-      !reconciledMissingAutodepositPolicy
-    ) {
-      console.warn(
-        "[mobile-earn-withdraw-prepare] active autodeposit state is missing close metadata",
-        {
-          cluster,
-          policyAccount: autodepositState.target.policyAccount,
-          recurringDelegation: autodepositState.target.recurringDelegation,
-          settings: settingsPda,
-          targetId: autodepositState.target.id.toString(),
-          vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
-          walletAddress,
-        }
-      );
-    }
-
-    const withdrawInput = {
-      amountRaw: effectiveAmountRaw,
-      cluster,
-      feePayer: new PublicKey(walletAddress),
-      policySigner,
-      settingsPda: settingsPdaKey,
-      target: withdrawTarget,
-      ...(mode === "full" && selectedSource.type === "reserve"
-        ? {
-            fullWithdrawalTargets: snapshotFullExitHoldings
-              ? snapshotFullWithdrawalTargets(
-                  snapshotFullExitHoldings,
-                  selectedSource.reserve
-                )
-              : currentReserveRows
-                  .filter((row) => row.reserve === selectedSource.reserve)
-                  .map((row) => {
-                    if (!row.market) {
-                      throw new Error(
-                        "Reconciled Earn reserve row is missing a Kamino market."
-                      );
-                    }
-                    const reserveCollateralMint = publicKeyFromMetadata(
-                      row.planningMetadata,
-                      [
-                        "reserveCollateralMint",
-                        "reserve_collateral_mint",
-                        "collateralMint",
-                        "collateral_mint",
-                      ]
-                    );
-                    const reserveLiquiditySupply = publicKeyFromMetadata(
-                      row.planningMetadata,
-                      [
-                        "reserveLiquiditySupply",
-                        "reserve_liquidity_supply",
-                        "liquiditySupply",
-                        "liquidity_supply",
-                      ]
-                    );
-                    const vaultCollateralAta = publicKeyFromMetadata(
-                      row.planningMetadata,
-                      [
-                        "vaultCollateralAta",
-                        "vault_collateral_ata",
-                        "collateralAta",
-                        "collateral_ata",
-                      ]
-                    );
-
-                    return {
-                      amountRaw: row.amountRaw,
-                      liquidityMint: new PublicKey(row.liquidityMint),
-                      market: new PublicKey(row.market),
-                      reserve: new PublicKey(row.reserve),
-                      ...(reserveCollateralMint
-                        ? { reserveCollateralMint }
-                        : {}),
-                      ...(reserveLiquiditySupply
-                        ? { reserveLiquiditySupply }
-                        : {}),
-                      supplyApyBps: row.supplyApyBps ?? null,
-                      ...(vaultCollateralAta ? { vaultCollateralAta } : {}),
-                    };
-                  }),
-          }
-        : {}),
-      closePoliciesOnFullWithdrawal: isFinalExit,
-      source:
-        selectedSource.type === "idle"
-          ? {
-              amountRaw: selectedSource.amountRaw,
-              id: selectedSource.id,
-              mint: new PublicKey(selectedSource.mint),
-              tokenAccount: new PublicKey(selectedSource.tokenAccount),
-              type: "idle" as const,
-            }
-          : {
-              amountRaw: selectedSource.amountRaw,
-              id: selectedSource.id,
-              liquidityMint: new PublicKey(selectedSource.liquidityMint),
-              market: new PublicKey(selectedSource.market),
-              reserve: new PublicKey(selectedSource.reserve),
-              type: "reserve" as const,
-            },
-      walletAddress: new PublicKey(walletAddress),
-      yieldRoutingPolicy,
-    };
-    const preparedWithdraw =
-      mode === "full"
-        ? await client.prepareEarnUsdcWithdraw({
-            ...withdrawInput,
-            ...(autodepositClose ? { autodepositClose } : {}),
-            mode,
-          })
-        : await client.prepareEarnUsdcWithdraw({
-            ...withdrawInput,
-            mode,
-          });
+    const preparedWithdraw = await client.prepareEarnUsdcWithdraw(
+      resolved.input
+    );
 
     return NextResponse.json({
       cluster,
@@ -948,16 +184,16 @@ export async function POST(request: Request) {
       preparedWithdraw: serializePreparedEarnUsdcWithdraw(preparedWithdraw),
     });
   } catch (error) {
+    if (error instanceof EarnWithdrawResolveError) {
+      return jsonError(error.status, error.code, error.message);
+    }
     console.error("[mobile-earn-withdraw-prepare] prepare failed", {
       amountRaw: amountRaw.toString(),
-      effectiveAmountRaw: effectiveAmountRaw?.toString() ?? null,
       cluster,
       errorMessage:
         error instanceof Error ? error.message : "Unknown prepare error.",
       errorName: error instanceof Error ? error.name : typeof error,
       mode,
-      policyAccount: policy?.policyAccount ?? null,
-      policySeed: policy?.policySeed.toString() ?? null,
       settings: settingsPda,
       solanaEnv,
       stack: error instanceof Error ? error.stack : undefined,
