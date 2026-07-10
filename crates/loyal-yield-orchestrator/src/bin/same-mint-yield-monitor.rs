@@ -28,6 +28,7 @@ const DEFAULT_REBALANCE_COOLDOWN_SECONDS: u64 = 300;
 const DEFAULT_MAX_CANDIDATE_AGE_SECONDS: i64 = 6 * 60 * 60;
 const DEFAULT_MIN_EDGE_BPS: i64 = 1;
 const DEFAULT_MIN_IDLE_DEPOSIT_RAW: i64 = 1_000_000;
+const DEFAULT_FLEET_PAGE_SIZE: i64 = 50;
 const SAME_MINT_ROUTE_MODE: &str = "same_mint_kamino";
 const ENABLED_STABLE_MINTS_ENV: &str = "EARN_ROUTER_ENABLED_STABLE_MINTS";
 
@@ -43,6 +44,7 @@ struct Options {
     max_candidate_age_seconds: i64,
     min_edge_bps: i64,
     min_idle_deposit_raw: i64,
+    fleet_page_size: i64,
     enabled_mints: Vec<String>,
 }
 
@@ -154,79 +156,8 @@ async fn run_once(
     timescale: &TimescaleRouterClient,
 ) -> Result<Value, Box<dyn Error>> {
     let candidates = load_safe_stable_candidates(timescale, &options.enabled_mints).await?;
-    let candidate_counts = candidate_counts_by_mint(&candidates);
     if options.all_active_vaults {
-        let optimizer_signer = optimizer_signer.ok_or("POLICY_KEYPAIR signer was not loaded")?;
-        let vaults =
-            fetch_all_active_vaults(neon, &optimizer_signer.to_string(), &options.enabled_mints)
-                .await?;
-        let idle_balances = load_idle_balances_by_vault(neon, &vaults).await?;
-        let mut vault_inputs = Vec::with_capacity(vaults.len());
-        let mut idle_priority_count = 0usize;
-        for vault in vaults {
-            let idle_balance = idle_balances
-                .get(&vault.vault.id.as_i64())
-                .and_then(|balances| {
-                    balances
-                        .iter()
-                        .find(|balance| balance.mint == USDC_MINT.to_string())
-                })
-                .cloned();
-            let idle_priority = idle_vault_deposit_is_plannable(
-                options,
-                &vault,
-                neon,
-                &candidates,
-                idle_balance.as_ref(),
-            )
-            .await?;
-            if idle_priority {
-                idle_priority_count += 1;
-            }
-            vault_inputs.push((vault, idle_balance, idle_priority));
-        }
-
-        let defer_normal_rebalances = idle_priority_count > 0;
-        let mut results = Vec::with_capacity(vault_inputs.len());
-        for (vault, idle_balance, idle_priority) in vault_inputs {
-            let vault_identity = vault_json(&vault);
-            if defer_normal_rebalances && !idle_priority {
-                results.push(idle_priority_deferred_result(
-                    options,
-                    &vault,
-                    &candidates,
-                    idle_balance.as_ref(),
-                ));
-                continue;
-            }
-            match run_vault_once(options, vault, neon, &candidates, idle_balance).await {
-                Ok(result) => results.push(result),
-                Err(error) => results.push(json!({
-                    "status": "vault_error",
-                    "execute": options.execute,
-                    "vault": vault_identity,
-                    "error": error.to_string(),
-                })),
-            }
-        }
-        return Ok(json!({
-            "status": "fleet_poll",
-            "execute": options.execute,
-            "allActiveVaults": true,
-            "enabledMints": options.enabled_mints.clone(),
-            "discoveredVaultCount": results.len(),
-            "candidateCount": candidates.len(),
-            "candidateCountsByMint": candidate_counts,
-            "skippedMints": skipped_mints(&options.enabled_mints, &candidates),
-            "pollIntervalSeconds": options.poll_interval_seconds,
-            "rebalanceCooldownSeconds": options.rebalance_cooldown_seconds,
-            "maxCandidateAgeSeconds": options.max_candidate_age_seconds,
-            "minEdgeBps": options.min_edge_bps,
-            "minIdleDepositRaw": options.min_idle_deposit_raw,
-            "idlePriorityDepositCount": idle_priority_count,
-            "normalRebalancesDeferredForIdleDeposits": defer_normal_rebalances,
-            "results": results,
-        }));
+        return run_fleet_once(options, optimizer_signer, neon, &candidates).await;
     }
 
     let vault = resolve_vault(neon, authority, options).await?;
@@ -234,6 +165,128 @@ async fn run_once(
         .current_idle_token_balance(vault.vault.id, &USDC_MINT.to_string())
         .await?;
     run_vault_once(options, vault, neon, &candidates, idle_balance).await
+}
+
+async fn run_fleet_once(
+    options: &Options,
+    optimizer_signer: Option<Pubkey>,
+    neon: &NeonSqlClient,
+    candidates: &[SupportedReserveLatestRow],
+) -> Result<Value, Box<dyn Error>> {
+    let optimizer_signer = optimizer_signer.ok_or("POLICY_KEYPAIR signer was not loaded")?;
+    let delegated_signer = optimizer_signer.to_string();
+    let idle_mint = USDC_MINT.to_string();
+    // Keep one poll finite even if new vaults are discovered while it is running.
+    let scan_max_vault_id =
+        fetch_max_active_vault_id(neon, &delegated_signer, &options.enabled_mints).await?;
+    let mut idle_priority_count = 0usize;
+
+    // Preserve fleet-wide idle priority without retaining every vault in memory.
+    if let Some(scan_max_vault_id) = scan_max_vault_id {
+        let mut after_vault_id = 0i64;
+        loop {
+            let vaults = fetch_active_vault_page(
+                neon,
+                &delegated_signer,
+                &options.enabled_mints,
+                after_vault_id,
+                scan_max_vault_id,
+                options.fleet_page_size,
+            )
+            .await?;
+            let Some(last_vault_id) = vaults.last().map(|vault| vault.vault.id.as_i64()) else {
+                break;
+            };
+            let idle_balances = load_idle_balances_by_vault(neon, &vaults, &idle_mint).await?;
+            for vault in &vaults {
+                let idle_balance = idle_balances.get(&vault.vault.id.as_i64());
+                if idle_vault_deposit_is_plannable(options, vault, neon, candidates, idle_balance)
+                    .await?
+                {
+                    idle_priority_count += 1;
+                }
+            }
+            after_vault_id = last_vault_id;
+        }
+    }
+
+    let defer_normal_rebalances = idle_priority_count > 0;
+    let mut discovered_vault_count = 0usize;
+    if let Some(scan_max_vault_id) = scan_max_vault_id {
+        let mut after_vault_id = 0i64;
+        loop {
+            let vaults = fetch_active_vault_page(
+                neon,
+                &delegated_signer,
+                &options.enabled_mints,
+                after_vault_id,
+                scan_max_vault_id,
+                options.fleet_page_size,
+            )
+            .await?;
+            let Some(last_vault_id) = vaults.last().map(|vault| vault.vault.id.as_i64()) else {
+                break;
+            };
+            let idle_balances = load_idle_balances_by_vault(neon, &vaults, &idle_mint).await?;
+            for vault in vaults {
+                let vault_identity = vault_json(&vault);
+                let idle_balance = idle_balances.get(&vault.vault.id.as_i64()).cloned();
+                let idle_priority = if defer_normal_rebalances {
+                    idle_vault_deposit_is_plannable(
+                        options,
+                        &vault,
+                        neon,
+                        candidates,
+                        idle_balance.as_ref(),
+                    )
+                    .await?
+                } else {
+                    false
+                };
+                let result = if defer_normal_rebalances && !idle_priority {
+                    idle_priority_deferred_result(
+                        options,
+                        &vault,
+                        candidates,
+                        idle_balance.as_ref(),
+                    )
+                } else {
+                    match run_vault_once(options, vault, neon, candidates, idle_balance).await {
+                        Ok(result) => result,
+                        Err(error) => json!({
+                            "status": "vault_error",
+                            "execute": options.execute,
+                            "vault": vault_identity,
+                            "error": error.to_string(),
+                        }),
+                    }
+                };
+                println!("{}", serde_json::to_string(&result)?);
+                discovered_vault_count += 1;
+            }
+            after_vault_id = last_vault_id;
+        }
+    }
+
+    Ok(json!({
+        "status": "fleet_poll",
+        "execute": options.execute,
+        "allActiveVaults": true,
+        "enabledMints": options.enabled_mints.clone(),
+        "discoveredVaultCount": discovered_vault_count,
+        "scanMaxVaultId": scan_max_vault_id,
+        "fleetPageSize": options.fleet_page_size,
+        "candidateCount": candidates.len(),
+        "candidateCountsByMint": candidate_counts_by_mint(candidates),
+        "skippedMints": skipped_mints(&options.enabled_mints, candidates),
+        "pollIntervalSeconds": options.poll_interval_seconds,
+        "rebalanceCooldownSeconds": options.rebalance_cooldown_seconds,
+        "maxCandidateAgeSeconds": options.max_candidate_age_seconds,
+        "minEdgeBps": options.min_edge_bps,
+        "minIdleDepositRaw": options.min_idle_deposit_raw,
+        "idlePriorityDepositCount": idle_priority_count,
+        "normalRebalancesDeferredForIdleDeposits": defer_normal_rebalances,
+    }))
 }
 
 async fn idle_vault_deposit_is_plannable(
@@ -1133,10 +1186,40 @@ fn vault_resolution_mode(options: &Options) -> Result<VaultResolutionMode, Box<d
     }
 }
 
-async fn fetch_all_active_vaults(
+async fn fetch_max_active_vault_id(
     neon: &NeonSqlClient,
     delegated_signer: &str,
     enabled_mints: &[String],
+) -> Result<Option<i64>, Box<dyn Error>> {
+    let max_vault_id = loyal_yield_orchestrator::sqlx::query_scalar::<_, Option<i64>>(
+        r#"
+        SELECT MAX(v.id)
+        FROM loyal_yield.managed_vaults v
+        JOIN loyal_yield.route_policies p ON p.id = v.active_policy_id
+        WHERE v.active = true
+          AND p.active = true
+          AND $1 = ANY(p.delegated_signers)
+          AND $2 = ANY(p.route_modes)
+          AND p.stable_mints && $3::TEXT[]
+          AND p.kamino_liquidity_mints && $3::TEXT[]
+          AND cardinality(p.kamino_markets) > 0
+        "#,
+    )
+    .bind(delegated_signer)
+    .bind(SAME_MINT_ROUTE_MODE)
+    .bind(enabled_mints)
+    .fetch_one(neon.pool())
+    .await?;
+    Ok(max_vault_id)
+}
+
+async fn fetch_active_vault_page(
+    neon: &NeonSqlClient,
+    delegated_signer: &str,
+    enabled_mints: &[String],
+    after_vault_id: i64,
+    scan_max_vault_id: i64,
+    page_size: i64,
 ) -> Result<Vec<ResolvedVault>, Box<dyn Error>> {
     let rows = loyal_yield_orchestrator::sqlx::query(
         r#"
@@ -1176,12 +1259,18 @@ async fn fetch_all_active_vaults(
           AND p.stable_mints && $3::TEXT[]
           AND p.kamino_liquidity_mints && $3::TEXT[]
           AND cardinality(p.kamino_markets) > 0
-        ORDER BY v.last_seen_at DESC, v.id DESC
+          AND v.id > $4
+          AND v.id <= $5
+        ORDER BY v.id
+        LIMIT $6
         "#,
     )
     .bind(delegated_signer)
     .bind(SAME_MINT_ROUTE_MODE)
     .bind(enabled_mints)
+    .bind(after_vault_id)
+    .bind(scan_max_vault_id)
+    .bind(page_size)
     .fetch_all(neon.pool())
     .await?;
     rows.into_iter().map(resolved_vault_from_row).collect()
@@ -1190,20 +1279,18 @@ async fn fetch_all_active_vaults(
 async fn load_idle_balances_by_vault(
     neon: &NeonSqlClient,
     vaults: &[ResolvedVault],
-) -> Result<BTreeMap<i64, Vec<CurrentIdleTokenBalance>>, Box<dyn Error>> {
+    mint: &str,
+) -> Result<BTreeMap<i64, CurrentIdleTokenBalance>, Box<dyn Error>> {
     let vault_ids = vaults
         .iter()
         .map(|vault| vault.vault.id)
         .collect::<Vec<_>>();
     let balances = neon
-        .current_idle_token_balances_for_vaults(&vault_ids)
+        .current_idle_token_balances_for_vaults(&vault_ids, mint)
         .await?;
-    let mut by_vault = BTreeMap::<i64, Vec<CurrentIdleTokenBalance>>::new();
+    let mut by_vault = BTreeMap::<i64, CurrentIdleTokenBalance>::new();
     for balance in balances {
-        by_vault
-            .entry(balance.vault_id.as_i64())
-            .or_default()
-            .push(balance);
+        by_vault.insert(balance.vault_id.as_i64(), balance);
     }
     Ok(by_vault)
 }
@@ -1680,6 +1767,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
         max_candidate_age_seconds: DEFAULT_MAX_CANDIDATE_AGE_SECONDS,
         min_edge_bps: DEFAULT_MIN_EDGE_BPS,
         min_idle_deposit_raw: DEFAULT_MIN_IDLE_DEPOSIT_RAW,
+        fleet_page_size: DEFAULT_FLEET_PAGE_SIZE,
         enabled_mints: enabled_stable_mints_from_env()?,
     };
     let mut iter = args.into_iter();
@@ -1734,6 +1822,13 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
                     .parse()
                     .map_err(|_| "--min-idle-deposit-raw must be an integer")?;
             }
+            "--fleet-page-size" => {
+                options.fleet_page_size = iter
+                    .next()
+                    .ok_or("--fleet-page-size requires a value")?
+                    .parse()
+                    .map_err(|_| "--fleet-page-size must be an integer")?;
+            }
             "--help" | "-h" => return Err(usage().into()),
             other => return Err(format!("unknown argument: {other}\n{}", usage()).into()),
         }
@@ -1746,6 +1841,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
     }
     if options.min_idle_deposit_raw <= 0 {
         return Err("--min-idle-deposit-raw must be greater than 0".into());
+    }
+    if options.fleet_page_size <= 0 {
+        return Err("--fleet-page-size must be greater than 0".into());
     }
     Ok(options)
 }
@@ -1791,5 +1889,5 @@ fn enabled_stable_mints_from_env() -> Result<Vec<String>, Box<dyn Error>> {
 }
 
 fn usage() -> &'static str {
-    "Usage: same-mint-yield-monitor [--once] [--execute] [--all-active-vaults | --settings <PUBKEY> --vault-index <N>] [--poll-interval-seconds <SECONDS>] [--rebalance-cooldown-seconds <SECONDS>] [--max-candidate-age-seconds <SECONDS>] [--min-edge-bps <BPS>] [--min-idle-deposit-raw <RAW>]\n\nDry-run is the default. Fleet mode reads POLICY_KEYPAIR for DB discovery and never reads SOLANA_TESTING_PK. Explicit --settings/--vault-index mode does not read SOLANA_TESTING_PK. No-arg authority discovery mode is local dry-run/setup only and reads SOLANA_TESTING_PK. Live fleet execution passes idle-vault deposits through same-mint-reserve-swap, which reads POLICY_KEYPAIR as the delegated policy signer and transaction fee payer. Set EARN_ROUTER_ENABLED_STABLE_MINTS to a comma-separated subset of supported stable mint addresses for staged rollout. Idle-vault deposit routing is USDC-only and defaults to a 1_000_000 raw-unit threshold. The same-vault rebalance cooldown defaults to 300 seconds; pass --rebalance-cooldown-seconds 0 only for local/test disable."
+    "Usage: same-mint-yield-monitor [--once] [--execute] [--all-active-vaults | --settings <PUBKEY> --vault-index <N>] [--fleet-page-size <COUNT>] [--poll-interval-seconds <SECONDS>] [--rebalance-cooldown-seconds <SECONDS>] [--max-candidate-age-seconds <SECONDS>] [--min-edge-bps <BPS>] [--min-idle-deposit-raw <RAW>]\n\nDry-run is the default. Fleet mode reads POLICY_KEYPAIR for DB discovery, pages active vaults in batches of 50 by default, and never reads SOLANA_TESTING_PK. Explicit --settings/--vault-index mode does not read SOLANA_TESTING_PK. No-arg authority discovery mode is local dry-run/setup only and reads SOLANA_TESTING_PK. Live fleet execution passes idle-vault deposits through same-mint-reserve-swap, which reads POLICY_KEYPAIR as the delegated policy signer and transaction fee payer. Set EARN_ROUTER_ENABLED_STABLE_MINTS to a comma-separated subset of supported stable mint addresses for staged rollout. Idle-vault deposit routing is USDC-only and defaults to a 1_000_000 raw-unit threshold. The same-vault rebalance cooldown defaults to 300 seconds; pass --rebalance-cooldown-seconds 0 only for local/test disable."
 }

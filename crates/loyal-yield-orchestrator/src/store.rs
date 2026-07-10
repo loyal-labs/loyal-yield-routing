@@ -885,6 +885,7 @@ impl NeonSqlClient {
     pub async fn current_idle_token_balances_for_vaults(
         &self,
         vault_ids: &[VaultId],
+        mint: &str,
     ) -> Result<Vec<CurrentIdleTokenBalance>, OrchestratorError> {
         if vault_ids.is_empty() {
             return Ok(Vec::new());
@@ -904,10 +905,12 @@ impl NeonSqlClient {
                 updated_at
             FROM loyal_yield.vault_idle_token_balances_current
             WHERE vault_id = ANY($1)
+              AND mint = $2
             ORDER BY vault_id, mint
             "#,
         )
         .bind(&ids)
+        .bind(mint)
         .fetch_all(&self.pool)
         .await?;
 
