@@ -108,7 +108,7 @@ describe("top-up fee-payer SOL safety", () => {
       getBalance: async (address: typeof feePayer, commitment: string) => {
         expect(address.toBase58()).toBe(feePayer.toBase58());
         expect(commitment).toBe("confirmed");
-        return 19_999_999;
+        return 49_999_999;
       },
     } as unknown as Pick<Connection, "getBalance">;
 
@@ -129,7 +129,7 @@ describe("top-up fee-payer SOL safety", () => {
     const feePayer = Keypair.generate().publicKey;
     let pullCalls = 0;
     const connection = {
-      getBalance: async () => 20_000_000,
+      getBalance: async () => 50_000_000,
     } as unknown as Pick<Connection, "getBalance">;
 
     const result = await runAfterFeePayerSolSafety({
@@ -146,8 +146,8 @@ describe("top-up fee-payer SOL safety", () => {
       result: "pull-sent",
       safety: {
         feePayer: feePayer.toBase58(),
-        balanceLamports: 20_000_000,
-        minimumLamports: 20_000_000,
+        balanceLamports: 50_000_000,
+        minimumLamports: 50_000_000,
         commitment: "confirmed",
         checked: true,
       },

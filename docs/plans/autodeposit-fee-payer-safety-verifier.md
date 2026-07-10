@@ -14,7 +14,7 @@ report `OVERALL: PASS` only when every required item passes.
    with a clear error and the pull callback is not invoked. A balance equal to
    the minimum is accepted and invokes the pull exactly once.
 3. The minimum is the internal constant
-   `AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS = 20_000_000`; no environment
+   `AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS = 50_000_000`; no environment
    override or runtime parsing can weaken it.
 4. `render.yaml` and `.env.example` have no fee-payer-minimum configuration
    diff from `main`.
