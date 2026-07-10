@@ -13,12 +13,11 @@ report `OVERALL: PASS` only when every required item passes.
 2. When the fee-payer balance is below the configured minimum, execution fails
    with a clear error and the pull callback is not invoked. A balance equal to
    the minimum is accepted and invokes the pull exactly once.
-3. The minimum defaults to `20_000_000` lamports and can be overridden with
-   `AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS`. Missing values use the default;
-   zero, negative, fractional, non-numeric, and unsafe-integer values fail
-   closed before any pull.
-4. `render.yaml` exposes the non-secret production setting as `20000000`, and
-   `.env.example` documents the same variable without adding secret material.
+3. The minimum is the internal constant
+   `AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS = 20_000_000`; no environment
+   override or runtime parsing can weaken it.
+4. `render.yaml` and `.env.example` have no fee-payer-minimum configuration
+   diff from `main`.
 5. The final execution output records the checked fee-payer public key, observed
    balance, configured minimum, and commitment so operators can verify which
    safety check allowed a pull.

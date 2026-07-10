@@ -2,10 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { Keypair, type Connection } from "@solana/web3.js";
 
 import {
-  DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS,
   computeSweepAmount,
   parseKeypairSecret,
-  parseTopUpFeePayerMinimumLamports,
   runAfterFeePayerSolSafety,
 } from "./execute-autodeposit-policy";
 
@@ -110,7 +108,7 @@ describe("top-up fee-payer SOL safety", () => {
       getBalance: async (address: typeof feePayer, commitment: string) => {
         expect(address.toBase58()).toBe(feePayer.toBase58());
         expect(commitment).toBe("confirmed");
-        return DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS - 1;
+        return 19_999_999;
       },
     } as unknown as Pick<Connection, "getBalance">;
 
@@ -118,7 +116,6 @@ describe("top-up fee-payer SOL safety", () => {
       runAfterFeePayerSolSafety({
         connection,
         feePayer,
-        minimumLamports: DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS,
         run: async () => {
           pullCalls += 1;
           return "pull-sent";
@@ -132,14 +129,12 @@ describe("top-up fee-payer SOL safety", () => {
     const feePayer = Keypair.generate().publicKey;
     let pullCalls = 0;
     const connection = {
-      getBalance: async () =>
-        DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS,
+      getBalance: async () => 20_000_000,
     } as unknown as Pick<Connection, "getBalance">;
 
     const result = await runAfterFeePayerSolSafety({
       connection,
       feePayer,
-      minimumLamports: DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS,
       run: async () => {
         pullCalls += 1;
         return "pull-sent";
@@ -151,29 +146,12 @@ describe("top-up fee-payer SOL safety", () => {
       result: "pull-sent",
       safety: {
         feePayer: feePayer.toBase58(),
-        balanceLamports: DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS,
-        minimumLamports: DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS,
+        balanceLamports: 20_000_000,
+        minimumLamports: 20_000_000,
         commitment: "confirmed",
         checked: true,
       },
     });
-  });
-
-  test("defaults the minimum and rejects unsafe overrides", () => {
-    expect(parseTopUpFeePayerMinimumLamports(undefined)).toBe(
-      DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS
-    );
-    expect(parseTopUpFeePayerMinimumLamports(" 25000000 ")).toBe(25_000_000);
-
-    for (const invalid of [
-      "0",
-      "-1",
-      "1.5",
-      "not-a-number",
-      "9007199254740992",
-    ]) {
-      expect(() => parseTopUpFeePayerMinimumLamports(invalid)).toThrow();
-    }
   });
 });
 

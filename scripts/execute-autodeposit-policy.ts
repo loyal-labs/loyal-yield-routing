@@ -183,9 +183,7 @@ const SAME_MINT_ROUTE_MODE = "same_mint_kamino";
 const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDC_DECIMALS = 6;
 const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
-const AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS_ENV =
-  "AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS";
-export const DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS = 20_000_000;
+const AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS = 20_000_000;
 const SOLANA_WEEK_NOTIFY_ENDPOINT_ENV = "SOLANA_WEEK_NOTIFY_ENDPOINT";
 const SOLANA_WEEK_NOTIFY_SECRET_ENV = "SOLANA_WEEK_NOTIFY_SECRET";
 const SOLANA_WEEK_NOTIFY_TIMEOUT_MS = 5_000;
@@ -425,27 +423,6 @@ function requireEnv(name: string): string {
     throw new Error(`${name} is required.`);
   }
   return value;
-}
-
-export function parseTopUpFeePayerMinimumLamports(
-  value: string | undefined
-): number {
-  const normalized = value?.trim();
-  if (!normalized) {
-    return DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS;
-  }
-  if (!/^\d+$/.test(normalized)) {
-    throw new Error(
-      `${AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS_ENV} must be a positive integer.`
-    );
-  }
-  const minimumLamports = Number(normalized);
-  if (!Number.isSafeInteger(minimumLamports) || minimumLamports <= 0) {
-    throw new Error(
-      `${AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS_ENV} must be a positive safe integer.`
-    );
-  }
-  return minimumLamports;
 }
 
 async function loadEligibleTarget(
@@ -1384,27 +1361,21 @@ function requireTopUpFeePayer(
 export async function assertFeePayerSol(args: {
   connection: Pick<Connection, "getBalance">;
   feePayer: PublicKey;
-  minimumLamports: number;
 }): Promise<TopUpFeePayerSolSafety> {
-  if (!Number.isSafeInteger(args.minimumLamports) || args.minimumLamports <= 0) {
-    throw new Error(
-      "Kamino top-up fee-payer minimum must be a positive safe integer."
-    );
-  }
   const balanceLamports = await args.connection.getBalance(
     args.feePayer,
     DEFAULT_COMMITMENT
   );
-  if (balanceLamports < args.minimumLamports) {
+  if (balanceLamports < AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS) {
     throw new Error(
       `Kamino top-up fee payer ${args.feePayer.toBase58()} has ${balanceLamports} lamports; ` +
-        `${args.minimumLamports} required. Refusing to pull user funds.`
+        `${AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS} required. Refusing to pull user funds.`
     );
   }
   return {
     feePayer: args.feePayer.toBase58(),
     balanceLamports,
-    minimumLamports: args.minimumLamports,
+    minimumLamports: AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS,
     commitment: DEFAULT_COMMITMENT,
     checked: true,
   };
@@ -1413,7 +1384,6 @@ export async function assertFeePayerSol(args: {
 export async function runAfterFeePayerSolSafety<T>(args: {
   connection: Pick<Connection, "getBalance">;
   feePayer: PublicKey;
-  minimumLamports: number;
   run: () => Promise<T>;
 }): Promise<{ result: T; safety: TopUpFeePayerSolSafety }> {
   const safety = await assertFeePayerSol(args);
@@ -1964,9 +1934,6 @@ async function main() {
   const appModules = await loadAppModules();
   const PublicKeyCtor = appModules.PublicKey;
   const options = parseOptions(Bun.argv.slice(2));
-  const topUpFeePayerMinimumLamports = parseTopUpFeePayerMinimumLamports(
-    process.env[AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS_ENV]
-  );
   const databaseUrl = requireEnv("NEON_DATABASE_URL");
   const rpcUrl = requireEnv("SOLANA_RPC_URL");
   const policyKeypair = parseKeypairSecretWith(
@@ -2224,7 +2191,7 @@ async function main() {
       topUpFeePayerSafety: {
         feePayer: topUpFeePayer.toBase58(),
         balanceLamports: null,
-        minimumLamports: topUpFeePayerMinimumLamports,
+        minimumLamports: AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS,
         commitment: DEFAULT_COMMITMENT,
         checked: false,
       },
@@ -2253,7 +2220,6 @@ async function main() {
       await runAfterFeePayerSolSafety({
         connection,
         feePayer: topUpFeePayer,
-        minimumLamports: topUpFeePayerMinimumLamports,
         run: () =>
           sendPreparedOperation({
             compilePreparedOperation: appModules.compilePreparedOperation,
