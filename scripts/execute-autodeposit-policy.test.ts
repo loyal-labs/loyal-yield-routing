@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { Keypair } from "@solana/web3.js";
+import { Keypair, type Connection } from "@solana/web3.js";
 
 import {
   computeSweepAmount,
   parseKeypairSecret,
+  runAfterFeePayerSolSafety,
 } from "./execute-autodeposit-policy";
 
 function hex(bytes: Uint8Array): string {
@@ -95,6 +96,61 @@ describe("computeSweepAmount", () => {
       kind: "allowance_exhausted",
       excessRaw: BigInt(150),
       remainingAllowanceRaw: BigInt(0),
+    });
+  });
+});
+
+describe("top-up fee-payer SOL safety", () => {
+  test("rejects before invoking the pull when the fee payer is below the minimum", async () => {
+    const feePayer = Keypair.generate().publicKey;
+    let pullCalls = 0;
+    const connection = {
+      getBalance: async (address: typeof feePayer, commitment: string) => {
+        expect(address.toBase58()).toBe(feePayer.toBase58());
+        expect(commitment).toBe("confirmed");
+        return 49_999_999;
+      },
+    } as unknown as Pick<Connection, "getBalance">;
+
+    await expect(
+      runAfterFeePayerSolSafety({
+        connection,
+        feePayer,
+        run: async () => {
+          pullCalls += 1;
+          return "pull-sent";
+        },
+      })
+    ).rejects.toThrow("Refusing to pull user funds");
+    expect(pullCalls).toBe(0);
+  });
+
+  test("invokes the pull exactly once at the configured minimum", async () => {
+    const feePayer = Keypair.generate().publicKey;
+    let pullCalls = 0;
+    const connection = {
+      getBalance: async () => 50_000_000,
+    } as unknown as Pick<Connection, "getBalance">;
+
+    const result = await runAfterFeePayerSolSafety({
+      connection,
+      feePayer,
+      run: async () => {
+        pullCalls += 1;
+        return "pull-sent";
+      },
+    });
+
+    expect(pullCalls).toBe(1);
+    expect(result).toEqual({
+      result: "pull-sent",
+      safety: {
+        feePayer: feePayer.toBase58(),
+        balanceLamports: 50_000_000,
+        minimumLamports: 50_000_000,
+        commitment: "confirmed",
+        checked: true,
+      },
     });
   });
 });
