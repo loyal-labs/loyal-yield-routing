@@ -183,6 +183,9 @@ const SAME_MINT_ROUTE_MODE = "same_mint_kamino";
 const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDC_DECIMALS = 6;
 const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
+const AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS_ENV =
+  "AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS";
+export const DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS = 20_000_000;
 const SOLANA_WEEK_NOTIFY_ENDPOINT_ENV = "SOLANA_WEEK_NOTIFY_ENDPOINT";
 const SOLANA_WEEK_NOTIFY_SECRET_ENV = "SOLANA_WEEK_NOTIFY_SECRET";
 const SOLANA_WEEK_NOTIFY_TIMEOUT_MS = 5_000;
@@ -422,6 +425,27 @@ function requireEnv(name: string): string {
     throw new Error(`${name} is required.`);
   }
   return value;
+}
+
+export function parseTopUpFeePayerMinimumLamports(
+  value: string | undefined
+): number {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS;
+  }
+  if (!/^\d+$/.test(normalized)) {
+    throw new Error(
+      `${AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS_ENV} must be a positive integer.`
+    );
+  }
+  const minimumLamports = Number(normalized);
+  if (!Number.isSafeInteger(minimumLamports) || minimumLamports <= 0) {
+    throw new Error(
+      `${AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS_ENV} must be a positive safe integer.`
+    );
+  }
+  return minimumLamports;
 }
 
 async function loadEligibleTarget(
@@ -1230,6 +1254,14 @@ type SameMintTopUpResult = {
   json: Record<string, unknown> | null;
 };
 
+export type TopUpFeePayerSolSafety = {
+  feePayer: string;
+  balanceLamports: number;
+  minimumLamports: number;
+  commitment: typeof DEFAULT_COMMITMENT;
+  checked: true;
+};
+
 type SolanaWeekNotifyResult =
   | { status: "skipped"; reason: "missing_endpoint" | "missing_secret" }
   | { status: "sent"; httpStatus: number }
@@ -1337,6 +1369,55 @@ function summarizeTopUpResult(result: SameMintTopUpResult) {
     stdoutTail: tailLines(result.stdout, 16).map(redactSensitiveText),
     stderrTail: tailLines(result.stderr, 16).map(redactSensitiveText),
   };
+}
+
+function requireTopUpFeePayer(
+  result: SameMintTopUpResult,
+  PublicKeyCtor: typeof PublicKey
+): PublicKey {
+  const wallet = readRecord(result.json?.wallet);
+  return new PublicKeyCtor(
+    readRequiredString(wallet?.signer, "Kamino top-up fee payer")
+  );
+}
+
+export async function assertFeePayerSol(args: {
+  connection: Pick<Connection, "getBalance">;
+  feePayer: PublicKey;
+  minimumLamports: number;
+}): Promise<TopUpFeePayerSolSafety> {
+  if (!Number.isSafeInteger(args.minimumLamports) || args.minimumLamports <= 0) {
+    throw new Error(
+      "Kamino top-up fee-payer minimum must be a positive safe integer."
+    );
+  }
+  const balanceLamports = await args.connection.getBalance(
+    args.feePayer,
+    DEFAULT_COMMITMENT
+  );
+  if (balanceLamports < args.minimumLamports) {
+    throw new Error(
+      `Kamino top-up fee payer ${args.feePayer.toBase58()} has ${balanceLamports} lamports; ` +
+        `${args.minimumLamports} required. Refusing to pull user funds.`
+    );
+  }
+  return {
+    feePayer: args.feePayer.toBase58(),
+    balanceLamports,
+    minimumLamports: args.minimumLamports,
+    commitment: DEFAULT_COMMITMENT,
+    checked: true,
+  };
+}
+
+export async function runAfterFeePayerSolSafety<T>(args: {
+  connection: Pick<Connection, "getBalance">;
+  feePayer: PublicKey;
+  minimumLamports: number;
+  run: () => Promise<T>;
+}): Promise<{ result: T; safety: TopUpFeePayerSolSafety }> {
+  const safety = await assertFeePayerSol(args);
+  return { result: await args.run(), safety };
 }
 
 function redactSensitiveText(value: string): string {
@@ -1883,6 +1964,9 @@ async function main() {
   const appModules = await loadAppModules();
   const PublicKeyCtor = appModules.PublicKey;
   const options = parseOptions(Bun.argv.slice(2));
+  const topUpFeePayerMinimumLamports = parseTopUpFeePayerMinimumLamports(
+    process.env[AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS_ENV]
+  );
   const databaseUrl = requireEnv("NEON_DATABASE_URL");
   const rpcUrl = requireEnv("SOLANA_RPC_URL");
   const policyKeypair = parseKeypairSecretWith(
@@ -2099,6 +2183,7 @@ async function main() {
       rpcUrl,
       target,
     });
+    const topUpFeePayer = requireTopUpFeePayer(topUpDryRun, PublicKeyCtor);
 
     const plan = {
       status: options.execute ? "execute_requested" : "dry_run",
@@ -2131,9 +2216,17 @@ async function main() {
       ],
       signers: {
         pull: policyKeypair.publicKey.toBase58(),
+        kaminoTopUpFeePayer: topUpFeePayer.toBase58(),
         kaminoTopUp:
           readRecord(topUpDryRun.json?.policyDeposit)?.signer?.toString() ??
           null,
+      },
+      topUpFeePayerSafety: {
+        feePayer: topUpFeePayer.toBase58(),
+        balanceLamports: null,
+        minimumLamports: topUpFeePayerMinimumLamports,
+        commitment: DEFAULT_COMMITMENT,
+        checked: false,
       },
       policies: {
         sweep: target.sweepPolicyAccount,
@@ -2156,12 +2249,19 @@ async function main() {
 
     assertExecutablePreflight({ pullSimulation, topUpDryRun });
 
-    const pullSend = await sendPreparedOperation({
-      compilePreparedOperation: appModules.compilePreparedOperation,
-      connection,
-      prepared: pull.prepared,
-      signers: [policyKeypair],
-    });
+    const { result: pullSend, safety: topUpFeePayerSafety } =
+      await runAfterFeePayerSolSafety({
+        connection,
+        feePayer: topUpFeePayer,
+        minimumLamports: topUpFeePayerMinimumLamports,
+        run: () =>
+          sendPreparedOperation({
+            compilePreparedOperation: appModules.compilePreparedOperation,
+            connection,
+            prepared: pull.prepared,
+            signers: [policyKeypair],
+          }),
+      });
     pullSent = true;
     const walletPostPullRaw = await getTokenBalanceRaw(connection, walletUsdcAta);
     const vaultPostPullRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
@@ -2207,6 +2307,7 @@ async function main() {
           kaminoTopUpError:
             error instanceof Error ? error.message : String(error),
           kaminoTopUpDryRun: summarizeTopUpResult(topUpDryRun),
+          topUpFeePayerSafety,
           vaultPostPullRaw: vaultPostPullRaw.toString(),
         },
       });
@@ -2223,6 +2324,7 @@ async function main() {
             },
             walletPostPullRaw: walletPostPullRaw.toString(),
             vaultPostPullRaw: vaultPostPullRaw.toString(),
+            topUpFeePayerSafety,
             kaminoTopUpError:
               error instanceof Error ? error.message : String(error),
           },
@@ -2269,6 +2371,7 @@ async function main() {
                 topUpObservedPosition.observedSlot?.toString() ?? null,
             }
           : null,
+        topUpFeePayerSafety,
         vaultPostDepositRaw: vaultPostDepositRaw.toString(),
         yieldDepositRecord,
       },
@@ -2295,6 +2398,7 @@ async function main() {
           walletPostPullRaw: walletPostPullRaw.toString(),
           vaultPostPullRaw: vaultPostPullRaw.toString(),
           vaultPostDepositRaw: vaultPostDepositRaw.toString(),
+          topUpFeePayerSafety,
           kaminoTopUpExecution: summarizeTopUpResult(topUpExecute),
           yieldDepositRecord,
           solanaWeekNotify,

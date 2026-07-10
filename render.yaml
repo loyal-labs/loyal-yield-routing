@@ -166,6 +166,8 @@ projects:
                 sync: false
               - key: SOLANA_TESTING_PK
                 sync: false
+              - key: AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS
+                value: "20000000"
               - key: BALANCE_SWEEP_EXECUTOR_COMMAND
                 value: bun scripts/execute-autodeposit-policy.ts --require-lot-claim
               - key: BALANCE_SWEEP_EXECUTE_ELIGIBLE

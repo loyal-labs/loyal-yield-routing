@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { Keypair } from "@solana/web3.js";
+import { Keypair, type Connection } from "@solana/web3.js";
 
 import {
+  DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS,
   computeSweepAmount,
   parseKeypairSecret,
+  parseTopUpFeePayerMinimumLamports,
+  runAfterFeePayerSolSafety,
 } from "./execute-autodeposit-policy";
 
 function hex(bytes: Uint8Array): string {
@@ -96,6 +99,81 @@ describe("computeSweepAmount", () => {
       excessRaw: BigInt(150),
       remainingAllowanceRaw: BigInt(0),
     });
+  });
+});
+
+describe("top-up fee-payer SOL safety", () => {
+  test("rejects before invoking the pull when the fee payer is below the minimum", async () => {
+    const feePayer = Keypair.generate().publicKey;
+    let pullCalls = 0;
+    const connection = {
+      getBalance: async (address: typeof feePayer, commitment: string) => {
+        expect(address.toBase58()).toBe(feePayer.toBase58());
+        expect(commitment).toBe("confirmed");
+        return DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS - 1;
+      },
+    } as unknown as Pick<Connection, "getBalance">;
+
+    await expect(
+      runAfterFeePayerSolSafety({
+        connection,
+        feePayer,
+        minimumLamports: DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS,
+        run: async () => {
+          pullCalls += 1;
+          return "pull-sent";
+        },
+      })
+    ).rejects.toThrow("Refusing to pull user funds");
+    expect(pullCalls).toBe(0);
+  });
+
+  test("invokes the pull exactly once at the configured minimum", async () => {
+    const feePayer = Keypair.generate().publicKey;
+    let pullCalls = 0;
+    const connection = {
+      getBalance: async () =>
+        DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS,
+    } as unknown as Pick<Connection, "getBalance">;
+
+    const result = await runAfterFeePayerSolSafety({
+      connection,
+      feePayer,
+      minimumLamports: DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS,
+      run: async () => {
+        pullCalls += 1;
+        return "pull-sent";
+      },
+    });
+
+    expect(pullCalls).toBe(1);
+    expect(result).toEqual({
+      result: "pull-sent",
+      safety: {
+        feePayer: feePayer.toBase58(),
+        balanceLamports: DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS,
+        minimumLamports: DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS,
+        commitment: "confirmed",
+        checked: true,
+      },
+    });
+  });
+
+  test("defaults the minimum and rejects unsafe overrides", () => {
+    expect(parseTopUpFeePayerMinimumLamports(undefined)).toBe(
+      DEFAULT_AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS
+    );
+    expect(parseTopUpFeePayerMinimumLamports(" 25000000 ")).toBe(25_000_000);
+
+    for (const invalid of [
+      "0",
+      "-1",
+      "1.5",
+      "not-a-number",
+      "9007199254740992",
+    ]) {
+      expect(() => parseTopUpFeePayerMinimumLamports(invalid)).toThrow();
+    }
   });
 });
 
