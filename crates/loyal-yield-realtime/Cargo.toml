@@ -5,7 +5,9 @@ edition = "2021"
 description = "Server-sent event gateway for Loyal Yield realtime invalidations"
 
 [dependencies]
+async-stream = "0.3"
 axum = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 futures-util = "0.3"
 loyal-yield-realtime-core = { path = "../loyal-yield-realtime-core" }
 serde = { version = "1", features = ["derive"] }
@@ -13,3 +15,4 @@ sqlx = { version = "0.8", default-features = false, features = ["chrono", "json"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
 tokio-stream = "0.1"
 tower-http = { version = "0.6", features = ["cors"] }
+url = "2"

@@ -1622,6 +1622,7 @@ async function updateExecutionEvidence(args: {
 async function recordAutodepositYieldDeposit(args: {
   amountRaw: bigint;
   appModules: AppModules;
+  balanceSweepExecutionId: string;
   databaseUrl: string;
   depositSignature: string;
   depositSlot: bigint;
@@ -1630,9 +1631,14 @@ async function recordAutodepositYieldDeposit(args: {
   observedCurrentAmountRaw: bigint | null;
   observedSlot: bigint | null;
   policySignature: string;
+  scheduledSlotId: bigint | null;
   target: EligibleTarget;
   targetReserve: string;
-}): Promise<{ status: "duplicate" | "inserted"; positionId: string | null }> {
+}): Promise<{
+  status: "duplicate" | "inserted";
+  depositId: string;
+  positionId: string | null;
+}> {
   const sql = args.appModules.neon(args.databaseUrl);
   const now = new Date();
   const depositRows = await sql`
@@ -1654,6 +1660,8 @@ async function recordAutodepositYieldDeposit(args: {
       target_supply_apy_bps,
       deposit_mint,
       principal_amount_raw,
+      balance_sweep_execution_id,
+      balance_sweep_scheduled_slot_id,
       confirmed_at,
       created_at
     )
@@ -1675,6 +1683,8 @@ async function recordAutodepositYieldDeposit(args: {
       ${null},
       ${args.liquidityMint},
       ${args.amountRaw.toString()},
+      ${args.balanceSweepExecutionId},
+      ${args.scheduledSlotId?.toString() ?? null},
       ${now},
       ${now}
     )
@@ -1684,6 +1694,30 @@ async function recordAutodepositYieldDeposit(args: {
 
   const insertedDeposit = depositRows[0] as Record<string, unknown> | undefined;
   if (!insertedDeposit) {
+    const depositRows = await sql`
+      UPDATE loyal_yield.user_yield_position_deposits
+      SET
+        balance_sweep_execution_id = COALESCE(
+          balance_sweep_execution_id,
+          ${args.balanceSweepExecutionId}
+        ),
+        balance_sweep_scheduled_slot_id = COALESCE(
+          balance_sweep_scheduled_slot_id,
+          ${args.scheduledSlotId?.toString() ?? null}
+        )
+      WHERE deposit_signature = ${args.depositSignature}
+        AND (
+          balance_sweep_execution_id IS NULL
+          OR balance_sweep_execution_id = ${args.balanceSweepExecutionId}
+        )
+      RETURNING id
+    `;
+    const deposit = depositRows[0] as Record<string, unknown> | undefined;
+    if (!deposit) {
+      throw new Error(
+        "Autodeposit yield deposit is already linked to another sweep execution."
+      );
+    }
     const existingRows = await sql`
       SELECT position_id
       FROM loyal_yield.user_yield_position_holding_events
@@ -1694,6 +1728,7 @@ async function recordAutodepositYieldDeposit(args: {
     const existing = existingRows[0] as Record<string, unknown> | undefined;
     return {
       status: "duplicate",
+      depositId: readRequiredString(deposit.id, "deposit.id"),
       positionId: existing?.position_id?.toString() ?? null,
     };
   }
@@ -1888,7 +1923,48 @@ async function recordAutodepositYieldDeposit(args: {
     WHERE id = ${positionId}
   `;
 
-  return { status: "inserted", positionId };
+  return {
+    status: "inserted",
+    depositId: readRequiredString(insertedDeposit.id, "deposit.id"),
+    positionId,
+  };
+}
+
+async function markAutodepositExecutionCompleted(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  executionId: string;
+  scheduledSlotId: bigint;
+  kaminoDepositSignature: string;
+}) {
+  const sql = args.neon(args.databaseUrl);
+  await sql`
+    SELECT loyal_yield.mark_autodeposit_execution_completed(
+      ${args.executionId},
+      ${args.scheduledSlotId.toString()},
+      ${args.kaminoDepositSignature}
+    )
+  `;
+}
+
+async function markAutodepositExecutionFailed(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  executionId: string;
+  scheduledSlotId: bigint | null;
+  failureCode: "kamino_top_up_failed" | "yield_persistence_failed";
+}) {
+  if (args.scheduledSlotId === null) {
+    return;
+  }
+  const sql = args.neon(args.databaseUrl);
+  await sql`
+    SELECT loyal_yield.mark_autodeposit_execution_failed(
+      ${args.executionId},
+      ${args.scheduledSlotId.toString()},
+      ${args.failureCode}
+    )
+  `;
 }
 
 function summarizeSimulation(summary: SimulationSummary) {
@@ -2264,6 +2340,13 @@ async function main() {
       });
       topUpExecution = requireTopUpExecution(topUpExecute);
     } catch (error) {
+      await markAutodepositExecutionFailed({
+        neon: appModules.neon,
+        databaseUrl,
+        executionId: executionRecord.executionId,
+        scheduledSlotId: options.scheduledSlotId,
+        failureCode: "kamino_top_up_failed",
+      });
       await updateExecutionEvidence({
         neon: appModules.neon,
         databaseUrl,
@@ -2307,20 +2390,55 @@ async function main() {
       topUpReserve
     );
     const vaultPostDepositRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
-    const yieldDepositRecord = await recordAutodepositYieldDeposit({
-      amountRaw: executionAmountRaw,
-      appModules,
-      databaseUrl,
-      depositSignature: topUpExecution.signature,
-      depositSlot: topUpExecution.confirmedSlot,
-      liquidityMint: topUpLiquidityMint,
-      market: topUpMarket,
-      observedCurrentAmountRaw: topUpObservedPosition?.amountRaw ?? null,
-      observedSlot: topUpObservedPosition?.observedSlot ?? null,
-      policySignature: topUpExecution.signature,
-      target,
-      targetReserve: topUpReserve,
-    });
+    let yieldDepositRecord: Awaited<
+      ReturnType<typeof recordAutodepositYieldDeposit>
+    >;
+    try {
+      yieldDepositRecord = await recordAutodepositYieldDeposit({
+        amountRaw: executionAmountRaw,
+        appModules,
+        balanceSweepExecutionId: executionRecord.executionId,
+        databaseUrl,
+        depositSignature: topUpExecution.signature,
+        depositSlot: topUpExecution.confirmedSlot,
+        liquidityMint: topUpLiquidityMint,
+        market: topUpMarket,
+        observedCurrentAmountRaw: topUpObservedPosition?.amountRaw ?? null,
+        observedSlot: topUpObservedPosition?.observedSlot ?? null,
+        policySignature: topUpExecution.signature,
+        scheduledSlotId: options.scheduledSlotId,
+        target,
+        targetReserve: topUpReserve,
+      });
+      if (options.scheduledSlotId !== null) {
+        await markAutodepositExecutionCompleted({
+          neon: appModules.neon,
+          databaseUrl,
+          executionId: executionRecord.executionId,
+          scheduledSlotId: options.scheduledSlotId,
+          kaminoDepositSignature: topUpExecution.signature,
+        });
+      }
+    } catch (error) {
+      await markAutodepositExecutionFailed({
+        neon: appModules.neon,
+        databaseUrl,
+        executionId: executionRecord.executionId,
+        scheduledSlotId: options.scheduledSlotId,
+        failureCode: "yield_persistence_failed",
+      });
+      await updateExecutionEvidence({
+        neon: appModules.neon,
+        databaseUrl,
+        dedupeKey: executionRecord.dedupeKey,
+        decodedEvidence: {
+          status: "partial_executed_pull_yield_persistence_failed",
+          kaminoDepositSignature: topUpExecution.signature,
+          kaminoDepositSlot: topUpExecution.confirmedSlot.toString(),
+        },
+      });
+      throw error;
+    }
     await updateExecutionEvidence({
       neon: appModules.neon,
       databaseUrl,

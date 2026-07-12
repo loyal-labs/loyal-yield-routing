@@ -3173,7 +3173,9 @@ dependencies = [
 name = "loyal-yield-realtime"
 version = "0.1.0"
 dependencies = [
+ "async-stream",
  "axum 0.8.9",
+ "chrono",
  "futures-util",
  "loyal-yield-realtime-core",
  "serde",
@@ -3181,6 +3183,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tower-http",
+ "url",
 ]
 
 [[package]]
@@ -3188,6 +3191,7 @@ name = "loyal-yield-realtime-core"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "bs58",
  "chrono",
  "hmac 0.12.1",
  "serde",

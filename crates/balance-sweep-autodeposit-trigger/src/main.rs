@@ -21,6 +21,7 @@ const CONSUMER_NAME: &str = "balance_sweep_autodeposit_trigger";
 const USDC_MINT_ADDRESS: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const STALE_REQUESTED_SLOT_SECONDS: i64 = 15 * 60;
 const REQUESTED_SLOT_TIMEOUT_ERROR: &str = "Autodeposit request timed out before worker selection.";
+const MAX_DEBOUNCED_WAKEUPS: u64 = 1000;
 
 #[derive(Debug, Parser)]
 #[command(about = "Project autodeposit surplus lots from Loyal wallet balance events")]
@@ -39,6 +40,12 @@ struct Args {
     realtime_channel: String,
     #[arg(long, env = "BALANCE_SWEEP_DISABLE_REALTIME_LISTEN")]
     disable_realtime_listen: bool,
+    #[arg(
+        long,
+        env = "BALANCE_SWEEP_REALTIME_DEBOUNCE_MILLISECONDS",
+        default_value_t = 250
+    )]
+    realtime_debounce_milliseconds: u64,
     #[arg(long)]
     once: bool,
     #[arg(long)]
@@ -227,6 +234,7 @@ async fn main() -> Result<()> {
             args.disable_realtime_listen,
             &mut realtime_listener,
             Duration::from_secs(args.poll_interval_seconds),
+            Duration::from_millis(args.realtime_debounce_milliseconds),
         )
         .await;
     }
@@ -239,6 +247,7 @@ async fn wait_for_next_autodeposit_scan(
     disable_realtime_listen: bool,
     listener: &mut Option<PgListener>,
     poll_interval: Duration,
+    debounce_interval: Duration,
 ) {
     if disable_realtime_listen {
         time::sleep(poll_interval).await;
@@ -277,11 +286,46 @@ async fn wait_for_next_autodeposit_scan(
             Ok(Ok(notification)) => {
                 match autodeposit_wake_event_from_notification(pool, notification.payload()).await {
                     Ok(Some(event)) => {
+                        let mut wakeup_count = 1_u64;
+                        time::sleep(debounce_interval).await;
+                        while wakeup_count < MAX_DEBOUNCED_WAKEUPS {
+                            match time::timeout(Duration::from_millis(10), active_listener.recv())
+                                .await
+                            {
+                                Ok(Ok(notification)) => {
+                                    match autodeposit_wake_event_from_notification(
+                                        pool,
+                                        notification.payload(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Some(_)) => wakeup_count += 1,
+                                        Ok(None) => {}
+                                        Err(error) => {
+                                            tracing::warn!(
+                                                error = %error,
+                                                "autodeposit realtime debounce lookup failed"
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(Err(error)) => {
+                                    tracing::warn!(
+                                        error = %error,
+                                        "autodeposit realtime listener failed during debounce"
+                                    );
+                                    break;
+                                }
+                                Err(_) => break,
+                            }
+                        }
                         tracing::info!(
                             event_id = event.id,
                             event_type = %event.event_type,
                             scope = %event.scope,
                             reason = %event.reason,
+                            wakeup_count,
                             "autodeposit realtime wakeup received"
                         );
                         return;

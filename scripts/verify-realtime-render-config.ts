@@ -113,6 +113,14 @@ function requireTruthy(value: unknown, label: string) {
   }
 }
 
+function requireEnvValue(
+  vars: Map<string, RenderEnvVar>,
+  key: string,
+  expected: string
+) {
+  requireEqual(vars.get(key)?.value, expected, `Render env ${key}`);
+}
+
 function safeHostFromUrl(raw: string | undefined): string {
   if (!raw) {
     throw new Error("NEON_DATABASE_URL value missing from Render readback");
@@ -175,6 +183,19 @@ async function checkRealtimeService(serviceId: string) {
 
   const vars = await envVars(serviceId);
   requireTruthy(vars.get("REALTIME_AUTH_SECRET"), "REALTIME_AUTH_SECRET");
+  requireEnvValue(
+    vars,
+    "REALTIME_ALLOWED_ORIGINS",
+    "https://askloyal.com,https://www.askloyal.com"
+  );
+  requireEnvValue(vars, "REALTIME_HEARTBEAT_SECONDS", "15");
+  requireEnvValue(vars, "REALTIME_CATCH_UP_LIMIT", "500");
+  requireEnvValue(vars, "REALTIME_CLIENT_BUFFER", "1024");
+  requireEnvValue(vars, "REALTIME_MAX_TOKEN_LIFETIME_SECONDS", "300");
+  requireEnvValue(vars, "REALTIME_RETENTION_DAYS", "7");
+  requireEnvValue(vars, "REALTIME_RETENTION_BATCH_SIZE", "1000");
+  requireEnvValue(vars, "REALTIME_RETENTION_INTERVAL_SECONDS", "3600");
+  requireEnvValue(vars, "REALTIME_READY_MAX_LAG", "1000");
   const neonHost = safeHostFromUrl(vars.get("NEON_DATABASE_URL")?.value);
 
   console.log(
@@ -216,6 +237,11 @@ async function checkAutodepositService(serviceId: string) {
     vars.get("BALANCE_SWEEP_EXECUTE_ELIGIBLE")?.value,
     "true",
     "autodeposit execute env"
+  );
+  requireEnvValue(
+    vars,
+    "BALANCE_SWEEP_REALTIME_DEBOUNCE_MILLISECONDS",
+    "250"
   );
   const neonHost = safeHostFromUrl(vars.get("NEON_DATABASE_URL")?.value);
 

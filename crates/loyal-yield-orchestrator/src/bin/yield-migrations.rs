@@ -91,6 +91,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0014_autodeposit_execution_slot_realtime.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 15,
+        name: "realtime_web_mobile_protocol",
+        sql: include_str!("../../migrations/0015_realtime_web_mobile_protocol.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -246,6 +252,7 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "route_lookup_tables",
         "vault_idle_token_balances_current",
         "realtime_events",
+        "realtime_configuration",
     ] {
         let exists: bool = sqlx::query_scalar(
             r#"
@@ -289,6 +296,7 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         ("balance_sweep_targets", "wallet_token_ata"),
         ("balance_sweep_targets", "vault_token_ata"),
         ("balance_sweep_targets", "token_mint"),
+        ("balance_sweep_targets", "cluster"),
         ("balance_sweep_wallet_balances_current", "wallet_token_ata"),
         ("balance_sweep_wallet_balance_events", "wallet_token_ata"),
         ("balance_sweep_wallet_balance_events", "mint"),
@@ -348,6 +356,17 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         ("realtime_events", "source_table"),
         ("realtime_events", "source_id"),
         ("realtime_events", "payload"),
+        ("realtime_events", "schema_version"),
+        ("realtime_events", "earn_vault_address"),
+        ("realtime_events", "failure_code"),
+        ("realtime_events", "deliverable"),
+        ("realtime_configuration", "solana_env"),
+        ("balance_sweep_executions", "scheduled_slot_id"),
+        ("balance_sweep_executions", "yield_deposit_id"),
+        ("balance_sweep_executions", "yield_position_id"),
+        ("balance_sweep_executions", "kamino_deposit_signature"),
+        ("balance_sweep_executions", "completed_at"),
+        ("balance_sweep_executions", "completion_failure_code"),
     ] {
         let exists: bool = sqlx::query_scalar(
             r#"
@@ -366,6 +385,37 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         .await?;
         if !exists {
             return Err(format!("missing loyal_yield.{relation}.{column}").into());
+        }
+    }
+    let yield_deposits_exist: bool = sqlx::query_scalar(
+        "SELECT to_regclass('loyal_yield.user_yield_position_deposits') IS NOT NULL",
+    )
+    .fetch_one(pool)
+    .await?;
+    if yield_deposits_exist {
+        for column in [
+            "balance_sweep_execution_id",
+            "balance_sweep_scheduled_slot_id",
+        ] {
+            let exists: bool = sqlx::query_scalar(
+                r#"
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = 'loyal_yield'
+                      AND table_name = 'user_yield_position_deposits'
+                      AND column_name = $1
+                )
+                "#,
+            )
+            .bind(column)
+            .fetch_one(pool)
+            .await?;
+            if !exists {
+                return Err(
+                    format!("missing loyal_yield.user_yield_position_deposits.{column}").into(),
+                );
+            }
         }
     }
     for (relation, column) in [
@@ -569,6 +619,14 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         (
             "emit_earn_onboarding_realtime_event",
             "earn onboarding realtime",
+        ),
+        (
+            "mark_autodeposit_execution_completed",
+            "autodeposit completion transition",
+        ),
+        (
+            "mark_autodeposit_execution_failed",
+            "autodeposit failure transition",
         ),
     ] {
         let exists: bool = sqlx::query_scalar(

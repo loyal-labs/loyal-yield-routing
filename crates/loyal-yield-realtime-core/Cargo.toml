@@ -6,6 +6,7 @@ description = "Shared realtime contracts and durable event helpers for Loyal Yie
 
 [dependencies]
 base64 = "0.22"
+bs58 = "0.5"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 hmac = "0.12"
 serde = { version = "1", features = ["derive"] }
