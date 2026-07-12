@@ -159,9 +159,12 @@ Listener/broadcast lag: pending
 
 Isolated pre-production evidence:
 
-- final Neon branch `br-noisy-frog-aqv3jhuv` accepted migration 15 through the
-  real migration ledger and `--check` validator after the verifier-driven
-  trigger and conservative historical-backfill corrections;
+- Neon branch `br-noisy-frog-aqv3jhuv` accepted the verifier-driven trigger and
+  conservative historical-backfill corrections; final lock-order branch
+  `br-polished-boat-aqygo4w4` then accepted migration 15 through the real
+  migration ledger and `--check` validator while an execution-then-target
+  transaction was deliberately active, proving the DDL waits without the live
+  worker lock cycle;
 - retained-row backfill produced zero deliverable rows with incomplete private
   identity and zero deliverable legacy autodeposit event rows;
 - a branch-only lifecycle emitted one each of `scheduled`, `requested`,

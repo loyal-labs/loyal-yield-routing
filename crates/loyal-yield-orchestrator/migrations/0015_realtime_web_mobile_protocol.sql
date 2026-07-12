@@ -1,3 +1,9 @@
+-- Live autodeposit transactions read executions before targets. Acquire the
+-- two DDL locks in that same order so the forward migration waits cleanly
+-- instead of deadlocking with a request/claim cycle.
+LOCK TABLE loyal_yield.balance_sweep_executions IN ACCESS EXCLUSIVE MODE;
+LOCK TABLE loyal_yield.balance_sweep_targets IN ACCESS EXCLUSIVE MODE;
+
 ALTER TABLE loyal_yield.realtime_events
     ADD COLUMN IF NOT EXISTS schema_version SMALLINT NOT NULL DEFAULT 1,
     ADD COLUMN IF NOT EXISTS earn_vault_address TEXT,
