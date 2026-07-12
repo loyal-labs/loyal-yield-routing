@@ -144,19 +144,44 @@ Source reconciliation before implementation:
 - both commits are ancestors of the implementation branch; migrations `0013`
   and `0014` remain unchanged.
 
-Final rollout evidence is filled only after production verification:
+Final production rollout:
 
 ```text
-Migration: pending production apply (0015 realtime_web_mobile_protocol)
-Implementation commit: pending
-Realtime image tag/digest: pending
-Autodeposit image tag/digest: pending
-Realtime deploy ID: pending
-Autodeposit deploy ID: pending
-Live verifier: pending
-Recent Render error logs: pending
-Listener/broadcast lag: pending
+Migrations: 0015 realtime_web_mobile_protocol; 0016 autodeposit_requested_slot_wakeup
+Implementation commit: 4ead255ae260e7ddf31234e632c021d26e91b290
+Realtime image: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4ead255ae260e7ddf31234e632c021d26e91b290
+Realtime digest: sha256:06d0399e1d0c457d73e85b9fce3d176d2ba6352cffde2cec529aa0e12d26f192
+Realtime deploy: dep-d99fptok1i2s73e3vo2g
+Autodeposit image: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4ead255ae260e7ddf31234e632c021d26e91b290
+Autodeposit digest: sha256:06d0399e1d0c457d73e85b9fce3d176d2ba6352cffde2cec529aa0e12d26f192
+Autodeposit deploy: dep-d99fqeks728c73d6jtlg
+Registry credential: loyal-ghcr
+Ready state: listener=true broadcast_lag=0
 ```
+
+The full production SSE verifier passed CORS, bearer auth and negatives, token
+expiry closure, simultaneous web/mobile connections, identity/cluster
+isolation, replay after 501 unrelated rows, matching-overflow resync, and stale
+cursor resync. Exact-image Render configuration verification passed for both
+services using the direct Neon host. Render's Blueprint validator still reports
+the repository's documented private-GHCR image visibility caveat; live image,
+registry credential, environment, and deploy readback are authoritative.
+
+Production execution `5575`, target `5751`, scheduled slot `22228` emitted
+`scheduled > requested > selected > pull_confirmed > completed`. Deposit
+`11761` and position `5903` were linked to the execution before the atomic
+completion event `215677`. Seven-day aggregate metrics at verification time
+reported five completed samples, 22,670 ms request-to-selected, 5,303 ms
+selected-to-pull-confirmed, 7,872 ms pull-confirmed-to-completed, and 41,373 ms
+request-to-completed averages.
+
+The final worker connected only to `loyal_yield_autodeposit_wakeup`, ignored the
+broad SSE channel, debounced three distinct non-existent-slot hints as
+`wakeup_count=3`, re-read durable state, created no execution, and retained its
+periodic fallback scans. After the finite pre-existing owner-mismatch backlog,
+the final log window contained no application failure; one Render
+error-classified line was the successful canary's literal `"err": null` with
+exit code 0 and an empty error tail.
 
 Isolated pre-production evidence:
 
