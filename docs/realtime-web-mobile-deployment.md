@@ -122,6 +122,7 @@ REALTIME_RETENTION_BATCH_SIZE=1000
 REALTIME_RETENTION_INTERVAL_SECONDS=3600
 REALTIME_READY_MAX_LAG=1000
 BALANCE_SWEEP_REALTIME_DEBOUNCE_MILLISECONDS=250
+BALANCE_SWEEP_REALTIME_CHANNEL=loyal_yield_autodeposit_wakeup
 ```
 
 `/healthz` is process liveness. `/readyz` requires database access, a connected
@@ -177,5 +178,7 @@ Isolated pre-production evidence:
 - local SSE smoke passed exact CORS, bearer negatives, expiry closure,
   simultaneous web/mobile streams, user/cluster isolation, replay after 501
   unrelated rows, matching replay overflow, and expired-cursor resync;
-- the non-executing worker received a three-notification burst as
-  `wakeup_count=3` followed by one scan, while periodic polling remained active.
+- migration 16 creates a dedicated requested-slot notification trigger; the
+  non-executing worker ignored three broad SSE-channel notifications, received
+  a three-request dedicated burst as `wakeup_count=3` followed by one scan, and
+  continued its five-second periodic fallback scans.

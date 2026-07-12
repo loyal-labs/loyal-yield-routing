@@ -192,6 +192,8 @@ projects:
                 value: "true"
               - key: BALANCE_SWEEP_REALTIME_DEBOUNCE_MILLISECONDS
                 value: "250"
+              - key: BALANCE_SWEEP_REALTIME_CHANNEL
+                value: loyal_yield_autodeposit_wakeup
               - key: SOLANA_WEEK_NOTIFY_ENDPOINT
                 value: https://askloyal.com/api/solana-week/sweep-notify
               - key: SOLANA_WEEK_NOTIFY_SECRET

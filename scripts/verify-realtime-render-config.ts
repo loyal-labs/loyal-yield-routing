@@ -243,6 +243,11 @@ async function checkAutodepositService(serviceId: string) {
     "BALANCE_SWEEP_REALTIME_DEBOUNCE_MILLISECONDS",
     "250"
   );
+  requireEnvValue(
+    vars,
+    "BALANCE_SWEEP_REALTIME_CHANNEL",
+    "loyal_yield_autodeposit_wakeup"
+  );
   const neonHost = safeHostFromUrl(vars.get("NEON_DATABASE_URL")?.value);
 
   console.log(

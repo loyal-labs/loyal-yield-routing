@@ -7,10 +7,7 @@ use balance_sweep_autodeposit_trigger::{
 };
 use chrono::{DateTime, Utc};
 use clap::Parser;
-use loyal_yield_realtime_core::{
-    fetch_event_by_id, neon_url_looks_pooled, notification_event_id_from_payload, RealtimeEventRow,
-    DEFAULT_REALTIME_CHANNEL, SCOPE_AUTODEPOSIT,
-};
+use loyal_yield_realtime_core::neon_url_looks_pooled;
 use sqlx::{
     postgres::{PgConnectOptions, PgListener, PgPoolOptions},
     PgPool, Row,
@@ -22,6 +19,7 @@ const USDC_MINT_ADDRESS: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const STALE_REQUESTED_SLOT_SECONDS: i64 = 15 * 60;
 const REQUESTED_SLOT_TIMEOUT_ERROR: &str = "Autodeposit request timed out before worker selection.";
 const MAX_DEBOUNCED_WAKEUPS: u64 = 1000;
+const DEFAULT_AUTODEPOSIT_WAKE_CHANNEL: &str = "loyal_yield_autodeposit_wakeup";
 
 #[derive(Debug, Parser)]
 #[command(about = "Project autodeposit surplus lots from Loyal wallet balance events")]
@@ -35,7 +33,7 @@ struct Args {
     #[arg(
         long,
         env = "BALANCE_SWEEP_REALTIME_CHANNEL",
-        default_value = DEFAULT_REALTIME_CHANNEL
+        default_value = DEFAULT_AUTODEPOSIT_WAKE_CHANNEL
     )]
     realtime_channel: String,
     #[arg(long, env = "BALANCE_SWEEP_DISABLE_REALTIME_LISTEN")]
@@ -228,7 +226,6 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         wait_for_next_autodeposit_scan(
-            &pool,
             &args.postgres_url,
             &args.realtime_channel,
             args.disable_realtime_listen,
@@ -241,7 +238,6 @@ async fn main() -> Result<()> {
 }
 
 async fn wait_for_next_autodeposit_scan(
-    pool: &PgPool,
     postgres_url: &str,
     channel: &str,
     disable_realtime_listen: bool,
@@ -284,8 +280,8 @@ async fn wait_for_next_autodeposit_scan(
         };
         match time::timeout_at(deadline, active_listener.recv()).await {
             Ok(Ok(notification)) => {
-                match autodeposit_wake_event_from_notification(pool, notification.payload()).await {
-                    Ok(Some(event)) => {
+                match autodeposit_wakeup_from_notification(notification.payload()) {
+                    Some(scheduled_slot_id) => {
                         let mut wakeup_count = 1_u64;
                         time::sleep(debounce_interval).await;
                         while wakeup_count < MAX_DEBOUNCED_WAKEUPS {
@@ -293,21 +289,11 @@ async fn wait_for_next_autodeposit_scan(
                                 .await
                             {
                                 Ok(Ok(notification)) => {
-                                    match autodeposit_wake_event_from_notification(
-                                        pool,
+                                    match autodeposit_wakeup_from_notification(
                                         notification.payload(),
-                                    )
-                                    .await
-                                    {
-                                        Ok(Some(_)) => wakeup_count += 1,
-                                        Ok(None) => {}
-                                        Err(error) => {
-                                            tracing::warn!(
-                                                error = %error,
-                                                "autodeposit realtime debounce lookup failed"
-                                            );
-                                            break;
-                                        }
+                                    ) {
+                                        Some(_) => wakeup_count += 1,
+                                        None => {}
                                     }
                                 }
                                 Ok(Err(error)) => {
@@ -321,26 +307,16 @@ async fn wait_for_next_autodeposit_scan(
                             }
                         }
                         tracing::info!(
-                            event_id = event.id,
-                            event_type = %event.event_type,
-                            scope = %event.scope,
-                            reason = %event.reason,
+                            scheduled_slot_id,
                             wakeup_count,
-                            "autodeposit realtime wakeup received"
+                            "autodeposit requested-slot wakeup received"
                         );
                         return;
                     }
-                    Ok(None) => {
+                    None => {
                         if time::Instant::now() >= deadline {
                             return;
                         }
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            error = %error,
-                            "autodeposit realtime wakeup lookup failed; using poll fallback"
-                        );
-                        return;
                     }
                 }
             }
@@ -364,18 +340,19 @@ async fn connect_realtime_listener(postgres_url: &str, channel: &str) -> Result<
     Ok(listener)
 }
 
-async fn autodeposit_wake_event_from_notification(
-    pool: &PgPool,
-    payload: &str,
-) -> Result<Option<RealtimeEventRow>> {
-    let Some(event_id) = notification_event_id_from_payload(payload) else {
-        tracing::warn!("autodeposit realtime notification payload did not include event_id");
-        return Ok(None);
-    };
-    let Some(event) = fetch_event_by_id(pool, event_id).await? else {
-        return Ok(None);
-    };
-    Ok((event.scope == SCOPE_AUTODEPOSIT).then_some(event))
+fn autodeposit_wakeup_from_notification(payload: &str) -> Option<i64> {
+    #[derive(serde::Deserialize)]
+    struct WakeupHint {
+        scheduled_slot_id: i64,
+    }
+
+    match serde_json::from_str::<WakeupHint>(payload) {
+        Ok(hint) if hint.scheduled_slot_id > 0 => Some(hint.scheduled_slot_id),
+        _ => {
+            tracing::warn!("autodeposit wakeup payload was not a valid scheduled-slot hint");
+            None
+        }
+    }
 }
 
 async fn execute_eligible_targets_once(
