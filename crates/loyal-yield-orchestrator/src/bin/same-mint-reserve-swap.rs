@@ -332,7 +332,10 @@ impl SharedVaultOperationLease {
                     WHERE COALESCE(NULLIF(target.cluster, ''), 'mainnet-beta') = $1
                       AND target.vault_pubkey = $2
                       AND execution.lifecycle_state <> 'completed'
-                      AND execution.active_attempt_kind IS NOT NULL
+                      AND (
+                          execution.active_attempt_kind IS NOT NULL
+                          OR execution.lifecycle_state = 'deposit_confirmed'
+                      )
                 ) AS allowed
             )
             INSERT INTO loyal_yield.vault_operation_leases (

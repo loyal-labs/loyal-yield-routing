@@ -448,6 +448,7 @@ DECLARE
     );
     v_deposit RECORD;
     v_event RECORD;
+    v_linked_event RECORD;
     v_position RECORD;
     v_deposit_id BIGINT;
     v_position_id BIGINT;
@@ -457,7 +458,7 @@ DECLARE
     v_already_applied BOOLEAN := false;
     v_repairing_initial_deposit BOOLEAN := false;
     v_same_current_holding BOOLEAN := false;
-    v_has_newer_holding_event BOOLEAN := false;
+    v_can_repair_event_link BOOLEAN := false;
     v_event_type TEXT;
     v_next_amount_raw BIGINT;
     v_next_principal_raw BIGINT;
@@ -601,18 +602,7 @@ BEGIN
             RAISE EXCEPTION
                 'Existing autodeposit holding event has no matching active position';
         END IF;
-        SELECT
-            COALESCE(v_position.last_holding_event_id > v_event.id, false)
-            OR EXISTS (
-                SELECT 1
-                FROM loyal_yield.user_yield_position_holding_events AS newer_event
-                WHERE newer_event.position_id = v_event.position_id
-                  AND newer_event.id > v_event.id
-            )
-        INTO v_has_newer_holding_event;
-        IF v_has_newer_holding_event THEN
-            NULL;
-        ELSIF v_position.last_holding_event_id IS NOT DISTINCT FROM v_event.id THEN
+        IF v_position.last_holding_event_id IS NOT DISTINCT FROM v_event.id THEN
             IF v_position.current_amount_raw IS DISTINCT FROM v_event.amount_raw
                OR v_position.current_liquidity_mint IS DISTINCT FROM
                    v_event.liquidity_mint
@@ -624,6 +614,46 @@ BEGIN
                     'Existing autodeposit position does not match its linked holding event';
             END IF;
         ELSE
+            IF v_position.last_holding_event_id IS NOT NULL THEN
+                SELECT linked_event.*
+                INTO v_linked_event
+                FROM loyal_yield.user_yield_position_holding_events AS linked_event
+                WHERE linked_event.id = v_position.last_holding_event_id
+                  AND linked_event.position_id = v_position.id;
+                IF NOT FOUND THEN
+                    RAISE EXCEPTION
+                        'Autodeposit position current holding event is missing';
+                END IF;
+                v_can_repair_event_link :=
+                    v_position.last_deposit_signature IS NOT DISTINCT FROM
+                        p_deposit_signature
+                    AND v_linked_event.observed_slot < v_event.observed_slot
+                    AND v_position.current_observed_slot IS NOT DISTINCT FROM
+                        v_linked_event.observed_slot
+                    AND v_position.current_amount_raw IS NOT DISTINCT FROM
+                        v_linked_event.amount_raw
+                    AND v_position.current_liquidity_mint IS NOT DISTINCT FROM
+                        v_linked_event.liquidity_mint
+                    AND v_position.current_market IS NOT DISTINCT FROM
+                        v_linked_event.market
+                    AND v_position.current_reserve IS NOT DISTINCT FROM
+                        v_linked_event.reserve;
+            ELSE
+                SELECT
+                    v_position.last_deposit_signature IS NOT DISTINCT FROM
+                        p_deposit_signature
+                    AND v_position.current_observed_slot <= v_event.observed_slot
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM loyal_yield.user_yield_position_holding_events AS other_event
+                        WHERE other_event.position_id = v_event.position_id
+                          AND other_event.id <> v_event.id
+                          AND other_event.observed_slot >= v_event.observed_slot
+                    )
+                INTO v_can_repair_event_link;
+            END IF;
+        END IF;
+        IF v_can_repair_event_link THEN
             UPDATE loyal_yield.user_yield_positions AS position
             SET
                 current_amount_raw = v_event.amount_raw,
@@ -662,6 +692,10 @@ BEGIN
         v_position_id := v_position.id;
         v_already_applied := v_position.last_deposit_signature IS NOT DISTINCT FROM
             p_deposit_signature;
+        IF NOT v_inserted AND NOT v_already_applied THEN
+            RAISE EXCEPTION
+                'Legacy autodeposit deposit without matching position evidence requires manual reconciliation';
+        END IF;
         v_repairing_initial_deposit := v_already_applied
             AND v_position.first_deposit_signature IS NOT DISTINCT FROM
                 p_deposit_signature;

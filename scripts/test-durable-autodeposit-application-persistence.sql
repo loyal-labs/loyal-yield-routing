@@ -7,6 +7,7 @@ BEGIN;
 DO $$
 DECLARE
     v_position_id BIGINT;
+    v_lower_id_event_id BIGINT;
     v_fault_step TEXT;
     v_error_message TEXT;
     v_result RECORD;
@@ -291,6 +292,115 @@ BEGIN
         RAISE EXCEPTION 'older duplicate retry rewound newer holding evidence';
     END IF;
 
+    -- Sequence IDs are allocation order, not application order. Allocate a
+    -- future holding event first, create the autodeposit event second, then
+    -- apply/link the lower-ID event last. Retrying the autodeposit must preserve
+    -- the lower-ID current linkage.
+    INSERT INTO loyal_yield.user_yield_position_holding_events (
+        position_id,
+        event_type,
+        reserve,
+        market,
+        liquidity_mint,
+        amount_raw,
+        principal_delta_raw,
+        holding_delta_raw,
+        observed_slot,
+        observed_at,
+        source_signature,
+        created_at
+    ) VALUES (
+        v_position_id,
+        'snapshot_reconciled',
+        'ask1731-fault-reserve',
+        'ask1731-fault-market',
+        'ask1731-fault-mint',
+        1250,
+        0,
+        100,
+        7300,
+        now(),
+        'ask1731-lower-id-later-event',
+        now()
+    )
+    RETURNING id INTO v_lower_id_event_id;
+
+    SELECT *
+    INTO v_result
+    FROM loyal_yield.record_durable_autodeposit_yield_deposit(
+        25,
+        9100005,
+        'ask1731-higher-id-older-deposit',
+        7200,
+        'ask1731-fault-mint',
+        'ask1731-fault-market',
+        NULL,
+        7200,
+        'ask1731-higher-id-older-deposit',
+        9200005,
+        'ask1731-fault-wallet',
+        'ask1731-fault-vault',
+        'ask1731-fault-settings',
+        99,
+        7,
+        'ask1731-fault-policy',
+        'ask1731-fault-reserve'
+    );
+    SELECT event.*
+    INTO v_event
+    FROM loyal_yield.user_yield_position_holding_events AS event
+    WHERE event.source_signature = 'ask1731-higher-id-older-deposit';
+    IF v_result.result_status <> 'inserted'
+       OR v_event.id <= v_lower_id_event_id THEN
+        RAISE EXCEPTION 'lower-ID ordering fixture was not allocated as intended';
+    END IF;
+
+    UPDATE loyal_yield.user_yield_positions
+    SET
+        current_amount_raw = 1250,
+        current_observed_at = now(),
+        current_observed_slot = 7300,
+        last_confirmed_slot = 7300,
+        last_deposit_signature = 'ask1731-lower-id-later-deposit',
+        last_holding_event_id = v_lower_id_event_id,
+        updated_at = now()
+    WHERE id = v_position_id;
+
+    SELECT *
+    INTO v_result
+    FROM loyal_yield.record_durable_autodeposit_yield_deposit(
+        25,
+        9100005,
+        'ask1731-higher-id-older-deposit',
+        7200,
+        'ask1731-fault-mint',
+        'ask1731-fault-market',
+        NULL,
+        7200,
+        'ask1731-higher-id-older-deposit',
+        9200005,
+        'ask1731-fault-wallet',
+        'ask1731-fault-vault',
+        'ask1731-fault-settings',
+        99,
+        7,
+        'ask1731-fault-policy',
+        'ask1731-fault-reserve'
+    );
+    SELECT position.*
+    INTO v_position
+    FROM loyal_yield.user_yield_positions AS position
+    WHERE position.id = v_position_id;
+    IF v_result.result_status <> 'duplicate'
+       OR v_position.current_amount_raw <> 1250
+       OR v_position.current_observed_slot <> 7300
+       OR v_position.last_deposit_signature <>
+           'ask1731-lower-id-later-deposit'
+       OR v_position.last_holding_event_id IS DISTINCT FROM
+           v_lower_id_event_id THEN
+        RAISE EXCEPTION 'higher-ID duplicate rewound lower-ID current evidence';
+    END IF;
+
     -- Model an old worker dying after it inserted the first position but before
     -- its holding event. Repair must not add the initial principal/current
     -- amount a second time when the deposit signature is already on the row.
@@ -365,6 +475,90 @@ BEGIN
        OR (SELECT COUNT(*) FROM loyal_yield.user_yield_position_holding_events
            WHERE source_signature = 'ask1731-initial-repair-deposit') <> 1 THEN
         RAISE EXCEPTION 'legacy initial-position repair duplicated amount evidence';
+    END IF;
+
+    -- Once later position evidence exists, the now-eventless old deposit is
+    -- ambiguous: it may or may not have been applied by a legacy worker. It
+    -- must fail closed instead of being added to principal/current again.
+    UPDATE loyal_yield.user_yield_positions
+    SET last_holding_event_id = NULL
+    WHERE id = v_position_id;
+    DELETE FROM loyal_yield.user_yield_position_holding_events
+    WHERE source_signature = 'ask1731-initial-repair-deposit';
+    SELECT *
+    INTO v_result
+    FROM loyal_yield.record_durable_autodeposit_yield_deposit(
+        50,
+        9100004,
+        'ask1731-initial-repair-newer',
+        8100,
+        'ask1731-initial-repair-mint',
+        'ask1731-initial-repair-market',
+        NULL,
+        8100,
+        'ask1731-initial-repair-newer',
+        9200004,
+        'ask1731-initial-repair-wallet',
+        'ask1731-initial-repair-vault',
+        'ask1731-initial-repair-settings',
+        100,
+        8,
+        'ask1731-initial-repair-policy',
+        'ask1731-initial-repair-reserve'
+    );
+    IF v_result.result_status <> 'inserted' THEN
+        RAISE EXCEPTION 'ambiguous-partial newer fixture did not insert';
+    END IF;
+
+    BEGIN
+        PERFORM *
+        FROM loyal_yield.record_durable_autodeposit_yield_deposit(
+            100,
+            9100002,
+            'ask1731-initial-repair-deposit',
+            8000,
+            'ask1731-initial-repair-mint',
+            'ask1731-initial-repair-market',
+            NULL,
+            8000,
+            'ask1731-initial-repair-deposit',
+            9200002,
+            'ask1731-initial-repair-wallet',
+            'ask1731-initial-repair-vault',
+            'ask1731-initial-repair-settings',
+            100,
+            8,
+            'ask1731-initial-repair-policy',
+            'ask1731-initial-repair-reserve'
+        );
+        RAISE EXCEPTION 'ambiguous legacy partial was applied automatically';
+    EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS v_error_message = MESSAGE_TEXT;
+        IF v_error_message <>
+            'Legacy autodeposit deposit without matching position evidence requires manual reconciliation' THEN
+            RAISE;
+        END IF;
+    END;
+    SELECT position.*
+    INTO v_position
+    FROM loyal_yield.user_yield_positions AS position
+    WHERE position.id = v_position_id;
+    SELECT event.*
+    INTO v_event
+    FROM loyal_yield.user_yield_position_holding_events AS event
+    WHERE event.source_signature = 'ask1731-initial-repair-newer';
+    IF v_position.principal_amount_raw <> 150
+       OR v_position.current_amount_raw <> 150
+       OR v_position.current_observed_slot <> 8100
+       OR v_position.last_deposit_signature <>
+           'ask1731-initial-repair-newer'
+       OR v_position.last_holding_event_id IS DISTINCT FROM v_event.id
+       OR EXISTS (
+           SELECT 1
+           FROM loyal_yield.user_yield_position_holding_events
+           WHERE source_signature = 'ask1731-initial-repair-deposit'
+       ) THEN
+        RAISE EXCEPTION 'ambiguous legacy partial changed newer position evidence';
     END IF;
 END;
 $$;
