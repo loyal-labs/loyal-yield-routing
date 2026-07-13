@@ -124,14 +124,15 @@ A failed or expired pull becomes `needs_reconciliation` and is never automatical
 ### Kamino top-up
 
 1. Use only `confirmed_pull_amount_raw`; never use intended amount or total vault balance.
-2. Run the same-mint builder in dry-run mode with a fresh blockhash. The Rust JSON response includes the deterministic signature and exact signed transaction.
-3. Validate the response signature from the serialized transaction.
-4. Append the new top-up attempt and transition to `deposit_confirmation_pending` in one fenced CAS that requires `deposit_pending` and no existing replayable top-up attempt.
-5. Reconcile before broadcast, then broadcast only the exact persisted bytes.
-6. Confirm success from signature status and confirmed transaction token balances. The vault debit must equal the confirmed pull credit.
-7. On success, classify the attempt landed, reference it as the successful attempt, clear the reservation, and enter `deposit_confirmed`.
-8. On `failed` or `expired_not_landed`, retain the attempt and return to `deposit_pending`. A later invocation may append one fresh signed top-up attempt.
-9. On `unknown`, retain the same active attempt in `needs_reconciliation`; no replacement is allowed.
+2. Before any pull execution is persisted or broadcast, run the same-mint builder in dry-run mode and require a fully simulated deposit transaction. A missing Kamino obligation, `missingObligationSetup`, any preflight blocker, or a skipped deposit simulation fails closed with zero pull sends. Obligation setup remains an explicit prerequisite; this PR does not create an untracked setup transaction.
+3. After the pull confirms, run the same builder with a fresh blockhash. The Rust JSON response includes the deterministic signature and exact signed transaction.
+4. Validate the response signature from the serialized transaction.
+5. Append the new top-up attempt and transition to `deposit_confirmation_pending` in one fenced CAS that requires `deposit_pending` and no existing replayable top-up attempt.
+6. Reconcile before broadcast, then broadcast only the exact persisted bytes.
+7. Confirm success from signature status and confirmed transaction token balances. The vault debit must equal the confirmed pull credit.
+8. On success, classify the attempt landed, reference it as the successful attempt, clear the reservation, and enter `deposit_confirmed`.
+9. On `failed` or `expired_not_landed`, retain the attempt and return to `deposit_pending`. A later invocation may append one fresh signed top-up attempt.
+10. On `unknown`, retain the same active attempt in `needs_reconciliation`; no replacement is allowed.
 
 `BlockhashNotFound` is treated as ambiguous until the persisted signature is reconciled. Only a definitively non-landed top-up gets a fresh blockhash. The pull is never revisited.
 
@@ -139,7 +140,7 @@ The Rust CLI emits serialized signed bytes only when the durable executor passes
 
 ### Application persistence
 
-`deposit_confirmed` performs no Solana operation. It idempotently persists the yield deposit using the successful Kamino signature and balance-sweep execution uniqueness, verifies any duplicate deposit/holding evidence has the same amount, slot, reserve, market, and mint, repairs a process death after deposit/position/holding boundaries, invokes the existing completion function, and transitions to `completed`.
+`deposit_confirmed` performs no Solana operation. It invokes `record_durable_autodeposit_yield_deposit`, one PostgreSQL statement whose PL/pgSQL body holds an advisory transaction lock and atomically writes the unique deposit, position amount/principal, holding event, and final event linkage. Any exception rolls back every boundary. A retry either sees the complete signature-linked evidence and validates it or performs the complete transition; it cannot observe an incremented principal with a stale current amount. The existing completion function then links the execution and transitions it to `completed`.
 
 If the chain succeeds and any database write fails, the execution remains `deposit_confirmed`; recovery retries database persistence only.
 
@@ -154,18 +155,21 @@ The implementation is accepted only with all of the following:
 - Tests prove the top-up/application amount comes from confirmed pull evidence, not requested amount.
 - Tests prove a stale fence cannot append or broadcast a competing top-up.
 - Tests prove database failure after chain success causes only completion persistence to rerun.
+- `test-durable-autodeposit-application-persistence.sql` injects database exceptions after the deposit insert, existing-position update, holding-event insert, and final linkage update. Every injected boundary rolls back completely; the successful call and duplicate retry produce one deposit, one correctly valued event, and one position update.
+- The pre-pull obligation test proves an absent obligation sends zero pulls and a later fully preparable invocation completes with exactly one pull.
 - Rust compilation covers the shared lease/send-intent and reservation checks used by the idle worker.
 - Migration 17 is executed against an isolated PostgreSQL 17 database from both an empty compatible schema and fixtures representing completed legacy, blocked partial, idle-consumed partial, and new prepared rows.
 - The focused Bun tests, ESLint, TypeScript check, Rust checks/tests required by `AGENTS.md`, and `git diff --check` pass.
 
 Final local evidence on 2026-07-13:
 
-- focused Bun suites: 39 passed, 0 failed;
+- focused Bun suites: 40 passed, 0 failed, including the missing-obligation pre-pull gate;
 - `bun run lint` and the targeted ES2022 TypeScript check: passed;
 - same-mint binary tests: 17 passed; orchestrator library tests: 14 passed; trigger tests: 3 passed;
 - targeted Rust checks and `cargo fmt --all -- --check`: passed (one pre-existing `swap_lanes` dead-code warning);
 - migration runner `--check`: migrations 1-17 up to date on the isolated compatible-schema database;
 - synthetic SQL: completed/partial/new backfill, legacy-worker compatibility, fresh-pull exclusion, matching recovery, stale fence, and persisted-signature takeover assertions all passed;
+- application-ledger SQL fault injection: all four boundaries rolled back, then success and duplicate retry produced one matching deposit/event/position linkage;
 - `git diff --check` and changed-file credential-pattern scan: passed.
 
 The unrelated root Next.js build is not a release gate for these worker surfaces. It compiled successfully, then hit the existing repository TypeScript target error at `packages/loyal-actions/src/constants.ts:81` (`BigInt` literal with a target below ES2020); this PR does not change that package or the root target.

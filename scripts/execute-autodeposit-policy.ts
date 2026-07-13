@@ -1466,7 +1466,7 @@ async function readConfirmedTopUpEvidence(args: {
   return { confirmedSlot: balances.slot, vaultDebitRaw };
 }
 
-type SameMintTopUpResult = {
+export type SameMintTopUpResult = {
   command: string[];
   exitCode: number;
   stdout: string;
@@ -1753,446 +1753,49 @@ async function recordAutodepositYieldDeposit(args: {
   observedCurrentAmountRaw: bigint | null;
   observedSlot: bigint | null;
   policySignature: string;
-  scheduledSlotId: bigint | null;
+  scheduledSlotId: bigint;
   target: EligibleTarget;
   targetReserve: string;
 }): Promise<{
   status: "duplicate" | "inserted";
   depositId: string;
-  positionId: string | null;
+  positionId: string;
 }> {
   const sql = args.appModules.neon(args.databaseUrl);
-  const now = new Date();
-  const depositRows = await sql`
-    INSERT INTO loyal_yield.user_yield_position_deposits (
-      deposit_signature,
-      policy_signature,
-      confirmed_slot,
-      wallet_address,
-      smart_account_address,
-      settings,
-      vault_index,
-      vault_pubkey,
-      policy_id,
-      policy_account,
-      policy_seed,
-      target_reserve,
-      market,
-      liquidity_mint,
-      target_supply_apy_bps,
-      deposit_mint,
-      principal_amount_raw,
-      balance_sweep_execution_id,
-      balance_sweep_scheduled_slot_id,
-      confirmed_at,
-      created_at
-    )
-    VALUES (
+  const rows = await sql`
+    SELECT *
+    FROM loyal_yield.record_durable_autodeposit_yield_deposit(
+      ${args.amountRaw.toString()},
+      ${args.balanceSweepExecutionId},
       ${args.depositSignature},
-      ${args.policySignature},
       ${args.depositSlot.toString()},
+      ${args.liquidityMint},
+      ${args.market},
+      ${args.observedCurrentAmountRaw?.toString() ?? null},
+      ${args.observedSlot?.toString() ?? null},
+      ${args.policySignature},
+      ${args.scheduledSlotId.toString()},
       ${args.target.wallet},
       ${args.target.vaultPubkey},
       ${args.target.settings},
       ${args.target.vaultIndex},
-      ${args.target.vaultPubkey},
       ${args.target.routePolicySeed.toString()},
       ${args.target.routePolicyAccount},
-      ${args.target.routePolicySeed.toString()},
-      ${args.targetReserve},
-      ${args.market},
-      ${args.liquidityMint},
-      ${null},
-      ${args.liquidityMint},
-      ${args.amountRaw.toString()},
-      ${args.balanceSweepExecutionId},
-      ${args.scheduledSlotId.toString()},
-      ${now},
-      ${now}
+      ${args.targetReserve}
     )
-    ON CONFLICT (deposit_signature) DO NOTHING
-    RETURNING id
   `;
-
-  const insertedDeposit = depositRows[0] as Record<string, unknown> | undefined;
-  if (!insertedDeposit) {
-    const depositRows = await sql`
-      UPDATE loyal_yield.user_yield_position_deposits
-      SET
-        balance_sweep_execution_id = COALESCE(
-          balance_sweep_execution_id,
-          ${args.balanceSweepExecutionId}
-        ),
-        balance_sweep_scheduled_slot_id = COALESCE(
-          balance_sweep_scheduled_slot_id,
-          ${args.scheduledSlotId.toString()}
-        )
-      WHERE deposit_signature = ${args.depositSignature}
-        AND (
-          balance_sweep_execution_id IS NULL
-          OR balance_sweep_execution_id = ${args.balanceSweepExecutionId}
-        )
-        AND (
-          balance_sweep_scheduled_slot_id IS NULL
-          OR balance_sweep_scheduled_slot_id = ${args.scheduledSlotId.toString()}
-        )
-      RETURNING
-        id,
-        balance_sweep_execution_id,
-        balance_sweep_scheduled_slot_id,
-        confirmed_slot,
-        liquidity_mint,
-        principal_amount_raw,
-        target_reserve
-    `;
-    const deposit = depositRows[0] as Record<string, unknown> | undefined;
-    if (!deposit) {
-      throw new Error("Autodeposit yield deposit is already linked to another sweep execution.");
-    }
-    const depositId = readRequiredString(deposit.id, "deposit.id");
-    if (
-      BigInt(readRequiredString(deposit.confirmed_slot, "deposit.confirmed_slot")) !== args.depositSlot ||
-      readRequiredString(deposit.balance_sweep_execution_id, "deposit.balance_sweep_execution_id") !==
-        args.balanceSweepExecutionId ||
-      BigInt(readRequiredString(deposit.balance_sweep_scheduled_slot_id, "deposit.balance_sweep_scheduled_slot_id")) !==
-        args.scheduledSlotId ||
-      readRequiredString(deposit.liquidity_mint, "deposit.liquidity_mint") !== args.liquidityMint ||
-      BigInt(readRequiredString(deposit.principal_amount_raw, "deposit.principal_amount_raw")) !== args.amountRaw ||
-      readRequiredString(deposit.target_reserve, "deposit.target_reserve") !== args.targetReserve
-    ) {
-      throw new Error("Existing autodeposit yield deposit does not match confirmed chain evidence.");
-    }
-    const existingRows = await sql`
-      SELECT
-        id,
-        position_id,
-        amount_raw,
-        principal_delta_raw,
-        reserve,
-        market,
-        liquidity_mint,
-        observed_slot,
-        observed_at
-      FROM loyal_yield.user_yield_position_holding_events
-      WHERE source_signature = ${args.depositSignature}
-        AND source_deposit_id = ${depositId}
-      ORDER BY id DESC
-      LIMIT 1
-    `;
-    const existing = existingRows[0] as Record<string, unknown> | undefined;
-    if (existing) {
-      if (
-        BigInt(readRequiredString(existing.principal_delta_raw, "holding.principal_delta_raw")) !== args.amountRaw ||
-        readRequiredString(existing.reserve, "holding.reserve") !== args.targetReserve ||
-        readRequiredString(existing.market, "holding.market") !== args.market ||
-        readRequiredString(existing.liquidity_mint, "holding.liquidity_mint") !== args.liquidityMint
-      ) {
-        throw new Error("Existing autodeposit holding event does not match confirmed chain evidence.");
-      }
-      const eventId = readRequiredString(existing.id, "holding_event.id");
-      const positionId = readRequiredString(existing.position_id, "holding.position_id");
-      await sql`
-        UPDATE loyal_yield.user_yield_positions
-        SET
-          current_amount_raw = ${readRequiredString(existing.amount_raw, "holding.amount_raw")},
-          current_liquidity_mint = ${readRequiredString(existing.liquidity_mint, "holding.liquidity_mint")},
-          current_market = ${readRequiredString(existing.market, "holding.market")},
-          current_observed_at = ${readRequiredString(existing.observed_at, "holding.observed_at")},
-          current_observed_slot = ${readRequiredString(existing.observed_slot, "holding.observed_slot")},
-          current_reserve = ${readRequiredString(existing.reserve, "holding.reserve")},
-          last_holding_event_id = ${eventId},
-          updated_at = ${now}
-        WHERE id = ${positionId}
-          AND last_deposit_signature = ${args.depositSignature}
-      `;
-      return {
-        status: "duplicate",
-        depositId,
-        positionId: readRequiredString(existing.position_id, "holding.position_id"),
-      };
-    }
-
-    // A previous process may have stopped after inserting the unique deposit or
-    // after updating the position but before inserting its holding event. Repair
-    // either boundary without adding principal twice.
-    const positionedRows = await sql`
-      SELECT *
-      FROM loyal_yield.user_yield_positions
-      WHERE settings = ${args.target.settings}
-        AND vault_index = ${args.target.vaultIndex}
-        AND wallet_address = ${args.target.wallet}
-        AND last_deposit_signature = ${args.depositSignature}
-        AND status = 'active'
-      ORDER BY updated_at DESC, id DESC
-      LIMIT 1
-    `;
-    const positioned = positionedRows[0] as Record<string, unknown> | undefined;
-    if (positioned) {
-      const positionId = readRequiredString(positioned.id, "position.id");
-      const repairEventType =
-        positioned.first_deposit_signature?.toString() === args.depositSignature
-          ? "deposit_initialized"
-          : "deposit_top_up";
-      const repairedRows = await sql`
-        INSERT INTO loyal_yield.user_yield_position_holding_events (
-          position_id,
-          event_type,
-          reserve,
-          market,
-          liquidity_mint,
-          amount_raw,
-          principal_delta_raw,
-          holding_delta_raw,
-          observed_slot,
-          observed_at,
-          source_signature,
-          source_deposit_id,
-          created_at
-        )
-        VALUES (
-          ${positionId},
-          ${repairEventType},
-          ${args.targetReserve},
-          ${args.market},
-          ${args.liquidityMint},
-          ${readRequiredString(positioned.current_amount_raw, "position.current_amount_raw")},
-          ${args.amountRaw.toString()},
-          ${null},
-          ${(args.observedSlot ?? args.depositSlot).toString()},
-          ${now},
-          ${args.depositSignature},
-          ${depositId},
-          ${now}
-        )
-        RETURNING id
-      `;
-      const eventId = readRequiredString(
-        (repairedRows[0] as Record<string, unknown> | undefined)?.id,
-        "holding_event.id"
-      );
-      await sql`
-        UPDATE loyal_yield.user_yield_positions
-        SET last_holding_event_id = ${eventId}, updated_at = ${now}
-        WHERE id = ${positionId}
-      `;
-      return {
-        status: "duplicate",
-        depositId,
-        positionId,
-      };
-    }
-
-    const deletedRows = await sql`
-      DELETE FROM loyal_yield.user_yield_position_deposits
-      WHERE id = ${depositId}
-        AND balance_sweep_execution_id = ${args.balanceSweepExecutionId}
-        AND NOT EXISTS (
-          SELECT 1
-          FROM loyal_yield.user_yield_position_holding_events
-          WHERE source_deposit_id = ${depositId}
-        )
-      RETURNING id
-    `;
-    if (deletedRows.length !== 1) {
-      throw new Error("Incomplete autodeposit application persistence could not be repaired safely.");
-    }
-    return recordAutodepositYieldDeposit(args);
+  const result = rows[0] as Record<string, unknown> | undefined;
+  if (!result) {
+    throw new Error("Atomic autodeposit application persistence returned no result.");
   }
-
-  const existingRows = await sql`
-    SELECT *
-    FROM loyal_yield.user_yield_positions
-    WHERE settings = ${args.target.settings}
-      AND vault_index = ${args.target.vaultIndex}
-      AND wallet_address = ${args.target.wallet}
-      AND status = 'active'
-    ORDER BY updated_at DESC, id DESC
-    LIMIT 1
-  `;
-  const existing = existingRows[0] as Record<string, unknown> | undefined;
-  let positionId: string;
-  let eventType: "deposit_initialized" | "deposit_top_up";
-  let nextAmountRaw: bigint;
-  let nextPrincipalRaw: bigint;
-  let holdingDeltaRaw: bigint | null;
-
-  if (existing) {
-    positionId = readRequiredString(existing.id, "position.id");
-    if (readRequiredString(existing.status, "position.status") !== "active") {
-      throw new Error("Autodeposit top-up requires an active yield position.");
-    }
-    const currentAmountRaw = BigInt(
-      readRequiredString(existing.current_amount_raw, "current_amount_raw")
-    );
-    const principalAmountRaw = BigInt(
-      readRequiredString(existing.principal_amount_raw, "principal_amount_raw")
-    );
-    const sameCurrentHolding =
-      readRequiredString(existing.current_reserve, "current_reserve") ===
-        args.targetReserve &&
-      readRequiredString(
-        existing.current_liquidity_mint,
-        "current_liquidity_mint"
-      ) === args.liquidityMint;
-    eventType = "deposit_top_up";
-    nextAmountRaw =
-      sameCurrentHolding && args.observedCurrentAmountRaw !== null
-        ? args.observedCurrentAmountRaw
-        : sameCurrentHolding
-          ? currentAmountRaw + args.amountRaw
-          : currentAmountRaw;
-    nextPrincipalRaw = principalAmountRaw + args.amountRaw;
-    holdingDeltaRaw = sameCurrentHolding ? nextAmountRaw - currentAmountRaw : null;
-
-    await sql`
-      UPDATE loyal_yield.user_yield_positions
-      SET
-        deposit_mint = ${args.liquidityMint},
-        initial_liquidity_mint = ${args.liquidityMint},
-        initial_market = ${args.market},
-        last_confirmed_slot = ${args.depositSlot.toString()},
-        last_deposit_signature = ${args.depositSignature},
-        policy_account = ${args.target.routePolicyAccount},
-        policy_id = ${args.target.routePolicySeed.toString()},
-        policy_seed = ${args.target.routePolicySeed.toString()},
-        principal_amount_raw = ${nextPrincipalRaw.toString()},
-        smart_account_address = ${args.target.vaultPubkey},
-        status = 'active',
-        updated_at = ${now},
-        vault_pubkey = ${args.target.vaultPubkey},
-        wallet_address = ${args.target.wallet}
-      WHERE id = ${positionId}
-    `;
-  } else {
-    eventType = "deposit_initialized";
-    nextAmountRaw = args.observedCurrentAmountRaw ?? args.amountRaw;
-    nextPrincipalRaw = args.amountRaw;
-    holdingDeltaRaw = args.amountRaw;
-    const positionRows = await sql`
-      INSERT INTO loyal_yield.user_yield_positions (
-        wallet_address,
-        smart_account_address,
-        settings,
-        vault_index,
-        vault_pubkey,
-        policy_id,
-        policy_account,
-        policy_seed,
-        initial_reserve,
-        initial_market,
-        initial_liquidity_mint,
-        initial_supply_apy_bps,
-        deposit_mint,
-        principal_amount_raw,
-        current_reserve,
-        current_market,
-        current_liquidity_mint,
-        current_amount_raw,
-        current_observed_slot,
-        current_observed_at,
-        first_deposit_signature,
-        last_deposit_signature,
-        last_confirmed_slot,
-        status,
-        created_at,
-        updated_at
-      )
-      VALUES (
-        ${args.target.wallet},
-        ${args.target.vaultPubkey},
-        ${args.target.settings},
-        ${args.target.vaultIndex},
-        ${args.target.vaultPubkey},
-        ${args.target.routePolicySeed.toString()},
-        ${args.target.routePolicyAccount},
-        ${args.target.routePolicySeed.toString()},
-        ${args.targetReserve},
-        ${args.market},
-        ${args.liquidityMint},
-        ${null},
-        ${args.liquidityMint},
-        ${args.amountRaw.toString()},
-        ${args.targetReserve},
-        ${args.market},
-        ${args.liquidityMint},
-        ${args.amountRaw.toString()},
-        ${args.depositSlot.toString()},
-        ${now},
-        ${args.depositSignature},
-        ${args.depositSignature},
-        ${args.depositSlot.toString()},
-        'active',
-        ${now},
-        ${now}
-      )
-      RETURNING id
-    `;
-    positionId = readRequiredString(
-      (positionRows[0] as Record<string, unknown> | undefined)?.id,
-      "position.id"
-    );
+  const status = readRequiredString(result.result_status, "result_status");
+  if (status !== "inserted" && status !== "duplicate") {
+    throw new Error(`Unexpected atomic autodeposit persistence status ${status}.`);
   }
-
-  const eventRows = await sql`
-    INSERT INTO loyal_yield.user_yield_position_holding_events (
-      position_id,
-      event_type,
-      reserve,
-      market,
-      liquidity_mint,
-      amount_raw,
-      principal_delta_raw,
-      holding_delta_raw,
-      observed_slot,
-      observed_at,
-      source_signature,
-      source_deposit_id,
-      created_at
-    )
-    VALUES (
-      ${positionId},
-      ${eventType},
-      ${args.targetReserve},
-      ${args.market},
-      ${args.liquidityMint},
-      ${nextAmountRaw.toString()},
-      ${args.amountRaw.toString()},
-      ${holdingDeltaRaw?.toString() ?? null},
-      ${(args.observedSlot ?? args.depositSlot).toString()},
-      ${now},
-      ${args.depositSignature},
-      ${readRequiredString(insertedDeposit.id, "deposit.id")},
-      ${now}
-    )
-    RETURNING id
-  `;
-  const eventId = readRequiredString(
-    (eventRows[0] as Record<string, unknown> | undefined)?.id,
-    "holding_event.id"
-  );
-
-  await sql`
-    UPDATE loyal_yield.user_yield_positions
-    SET
-      current_amount_raw = ${nextAmountRaw.toString()},
-      current_liquidity_mint = ${args.liquidityMint},
-      current_market = ${args.market},
-      current_observed_at = ${now},
-      current_observed_slot = ${(args.observedSlot ?? args.depositSlot).toString()},
-      current_reserve = ${args.targetReserve},
-      last_holding_event_id = ${eventId},
-      last_confirmed_slot = ${args.depositSlot.toString()},
-      last_deposit_signature = ${args.depositSignature},
-      principal_amount_raw = ${nextPrincipalRaw.toString()},
-      status = 'active',
-      updated_at = ${now}
-    WHERE id = ${positionId}
-  `;
-
   return {
-    status: "inserted",
-    depositId: readRequiredString(insertedDeposit.id, "deposit.id"),
-    positionId,
+    status,
+    depositId: readRequiredString(result.result_deposit_id, "result_deposit_id"),
+    positionId: readRequiredString(result.result_position_id, "result_position_id"),
   };
 }
 
@@ -2231,7 +1834,15 @@ function topUpPolicySimulationError(result: SameMintTopUpResult): string | null 
   return policyDepositTransaction?.simulationError?.toString() ?? null;
 }
 
-function assertExecutablePreflight(args: { pullSimulation: SimulationSummary; topUpDryRun: SameMintTopUpResult }) {
+function topUpPolicySimulationSkippedReason(result: SameMintTopUpResult): string | null {
+  const policyDepositTransaction = readRecord(result.json?.policyDepositTransaction);
+  return policyDepositTransaction?.simulationSkippedReason?.toString() ?? null;
+}
+
+export function assertExecutablePreflight(args: {
+  pullSimulation: SimulationSummary;
+  topUpDryRun: SameMintTopUpResult;
+}) {
   if (args.pullSimulation.err) {
     throw new Error(
       `Autodeposit pull simulation failed; refusing to execute. simulation=${summarizeSimulationFailure(
@@ -2247,6 +1858,27 @@ function assertExecutablePreflight(args: { pullSimulation: SimulationSummary; to
       )}`
     );
   }
+  const topUpSkippedReason = topUpPolicySimulationSkippedReason(args.topUpDryRun);
+  const preflightBlockers = Array.isArray(args.topUpDryRun.json?.preflightBlockers)
+    ? args.topUpDryRun.json.preflightBlockers.filter((value) => value !== null)
+    : [];
+  const missingObligationSetup = args.topUpDryRun.json?.missingObligationSetup ?? null;
+  if (topUpSkippedReason || missingObligationSetup || preflightBlockers.length > 0) {
+    throw new Error(
+      `Kamino top-up is not fully preparable; refusing to pull user funds. topUp=${JSON.stringify(
+        summarizeTopUpResult(args.topUpDryRun)
+      )}`
+    );
+  }
+}
+
+export async function runAfterExecutablePreflight<T>(args: {
+  pullSimulation: SimulationSummary;
+  topUpDryRun: SameMintTopUpResult;
+  run: () => Promise<T>;
+}): Promise<T> {
+  assertExecutablePreflight(args);
+  return args.run();
 }
 
 const VAULT_LEASE_TTL_SECONDS = 90;
@@ -3534,11 +3166,14 @@ async function main() {
         );
       }
 
-      assertExecutablePreflight({ pullSimulation, topUpDryRun });
-
-      const topUpFeePayerSafety = await assertFeePayerSol({
-        connection,
-        feePayer: topUpFeePayer,
+      const topUpFeePayerSafety = await runAfterExecutablePreflight({
+        pullSimulation,
+        topUpDryRun,
+        run: () =>
+          assertFeePayerSol({
+            connection,
+            feePayer: topUpFeePayer,
+          }),
       });
       durableStore = new NeonDurableAutodepositStore({
         appModules,

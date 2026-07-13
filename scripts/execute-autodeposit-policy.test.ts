@@ -7,7 +7,9 @@ import {
   parseKeypairSecret,
   redactSensitiveText,
   reconcilePersistedAttempt,
+  runAfterExecutablePreflight,
   runAfterFeePayerSolSafety,
+  type SameMintTopUpResult,
 } from "./execute-autodeposit-policy";
 
 function hex(bytes: Uint8Array): string {
@@ -155,6 +157,62 @@ describe("top-up fee-payer SOL safety", () => {
         checked: true,
       },
     });
+  });
+});
+
+describe("pre-pull Kamino obligation gate", () => {
+  test("a missing obligation sends no pull and a later ready invocation completes with one pull", async () => {
+    const pullSimulation = { err: null, logs: [], unitsConsumed: 1 };
+    const missingObligation: SameMintTopUpResult = {
+      command: ["same-mint-reserve-swap"],
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      json: {
+        preflightBlockers: ["deposit obligation is missing"],
+        missingObligationSetup: { obligation: "missing-obligation" },
+        policyDepositTransaction: {
+          simulationError: null,
+          simulationSkippedReason: "init obligation must land before deposit simulation",
+        },
+      },
+    };
+    let pullCalls = 0;
+
+    await expect(
+      runAfterExecutablePreflight({
+        pullSimulation,
+        topUpDryRun: missingObligation,
+        run: async () => {
+          pullCalls += 1;
+          return "completed";
+        },
+      })
+    ).rejects.toThrow("refusing to pull user funds");
+    expect(pullCalls).toBe(0);
+
+    const readyTopUp: SameMintTopUpResult = {
+      ...missingObligation,
+      json: {
+        preflightBlockers: [],
+        missingObligationSetup: null,
+        policyDepositTransaction: {
+          simulationError: null,
+          simulationSkippedReason: null,
+        },
+      },
+    };
+    const result = await runAfterExecutablePreflight({
+      pullSimulation,
+      topUpDryRun: readyTopUp,
+      run: async () => {
+        pullCalls += 1;
+        return "completed";
+      },
+    });
+
+    expect(result).toBe("completed");
+    expect(pullCalls).toBe(1);
   });
 });
 

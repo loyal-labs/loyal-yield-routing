@@ -406,6 +406,402 @@ CREATE UNIQUE INDEX IF NOT EXISTS user_yield_position_deposits_sweep_execution_u
     ON loyal_yield.user_yield_position_deposits (balance_sweep_execution_id)
     WHERE balance_sweep_execution_id IS NOT NULL;
 
+-- Application-ledger persistence is one database statement. The advisory
+-- transaction lock also serializes a first deposit, where there is no position
+-- row yet to lock. A retry either observes the complete deposit/event/position
+-- linkage or performs the whole transition; it cannot observe an intermediate
+-- principal/current-balance state.
+CREATE OR REPLACE FUNCTION loyal_yield.record_durable_autodeposit_yield_deposit(
+    p_amount_raw BIGINT,
+    p_balance_sweep_execution_id BIGINT,
+    p_deposit_signature TEXT,
+    p_deposit_slot BIGINT,
+    p_liquidity_mint TEXT,
+    p_market TEXT,
+    p_observed_current_amount_raw BIGINT,
+    p_observed_slot BIGINT,
+    p_policy_signature TEXT,
+    p_scheduled_slot_id BIGINT,
+    p_wallet_address TEXT,
+    p_vault_pubkey TEXT,
+    p_settings TEXT,
+    p_vault_index BIGINT,
+    p_route_policy_seed BIGINT,
+    p_route_policy_account TEXT,
+    p_target_reserve TEXT
+)
+RETURNS TABLE (
+    result_status TEXT,
+    result_deposit_id BIGINT,
+    result_position_id BIGINT
+)
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, loyal_yield
+AS $$
+DECLARE
+    v_now TIMESTAMPTZ := now();
+    v_observed_slot BIGINT := COALESCE(p_observed_slot, p_deposit_slot);
+    v_fault_step TEXT := current_setting(
+        'loyal_yield.test_autodeposit_persistence_fault',
+        true
+    );
+    v_deposit RECORD;
+    v_event RECORD;
+    v_position RECORD;
+    v_deposit_id BIGINT;
+    v_position_id BIGINT;
+    v_event_id BIGINT;
+    v_inserted BOOLEAN := false;
+    v_position_existed BOOLEAN := false;
+    v_already_applied BOOLEAN := false;
+    v_same_current_holding BOOLEAN := false;
+    v_event_type TEXT;
+    v_next_amount_raw BIGINT;
+    v_next_principal_raw BIGINT;
+    v_holding_delta_raw BIGINT;
+BEGIN
+    IF p_amount_raw <= 0 THEN
+        RAISE EXCEPTION 'Autodeposit persistence amount must be positive';
+    END IF;
+
+    PERFORM pg_advisory_xact_lock(
+        hashtextextended(
+            p_settings || ':' || p_vault_index::TEXT || ':' || p_wallet_address,
+            0
+        )
+    );
+
+    INSERT INTO loyal_yield.user_yield_position_deposits (
+        deposit_signature,
+        policy_signature,
+        confirmed_slot,
+        wallet_address,
+        smart_account_address,
+        settings,
+        vault_index,
+        vault_pubkey,
+        policy_id,
+        policy_account,
+        policy_seed,
+        target_reserve,
+        market,
+        liquidity_mint,
+        target_supply_apy_bps,
+        deposit_mint,
+        principal_amount_raw,
+        balance_sweep_execution_id,
+        balance_sweep_scheduled_slot_id,
+        confirmed_at,
+        created_at
+    ) VALUES (
+        p_deposit_signature,
+        p_policy_signature,
+        p_deposit_slot,
+        p_wallet_address,
+        p_vault_pubkey,
+        p_settings,
+        p_vault_index,
+        p_vault_pubkey,
+        p_route_policy_seed,
+        p_route_policy_account,
+        p_route_policy_seed,
+        p_target_reserve,
+        p_market,
+        p_liquidity_mint,
+        NULL,
+        p_liquidity_mint,
+        p_amount_raw,
+        p_balance_sweep_execution_id,
+        p_scheduled_slot_id,
+        v_now,
+        v_now
+    )
+    ON CONFLICT (deposit_signature) DO NOTHING
+    RETURNING id INTO v_deposit_id;
+    v_inserted := FOUND;
+
+    IF NOT v_inserted THEN
+        SELECT deposit.*
+        INTO v_deposit
+        FROM loyal_yield.user_yield_position_deposits AS deposit
+        WHERE deposit.deposit_signature = p_deposit_signature
+        FOR UPDATE;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Autodeposit deposit conflict disappeared for signature %',
+                p_deposit_signature;
+        END IF;
+        IF v_deposit.confirmed_slot IS DISTINCT FROM p_deposit_slot
+           OR v_deposit.wallet_address IS DISTINCT FROM p_wallet_address
+           OR v_deposit.settings IS DISTINCT FROM p_settings
+           OR v_deposit.vault_index IS DISTINCT FROM p_vault_index
+           OR v_deposit.liquidity_mint IS DISTINCT FROM p_liquidity_mint
+           OR v_deposit.principal_amount_raw IS DISTINCT FROM p_amount_raw
+           OR v_deposit.target_reserve IS DISTINCT FROM p_target_reserve
+           OR (
+               v_deposit.balance_sweep_execution_id IS NOT NULL
+               AND v_deposit.balance_sweep_execution_id IS DISTINCT FROM
+                   p_balance_sweep_execution_id
+           )
+           OR (
+               v_deposit.balance_sweep_scheduled_slot_id IS NOT NULL
+               AND v_deposit.balance_sweep_scheduled_slot_id IS DISTINCT FROM
+                   p_scheduled_slot_id
+           ) THEN
+            RAISE EXCEPTION
+                'Existing autodeposit yield deposit does not match confirmed chain evidence';
+        END IF;
+        UPDATE loyal_yield.user_yield_position_deposits AS deposit
+        SET
+            balance_sweep_execution_id = COALESCE(
+                deposit.balance_sweep_execution_id,
+                p_balance_sweep_execution_id
+            ),
+            balance_sweep_scheduled_slot_id = COALESCE(
+                deposit.balance_sweep_scheduled_slot_id,
+                p_scheduled_slot_id
+            )
+        WHERE deposit.id = v_deposit.id;
+        v_deposit_id := v_deposit.id;
+    END IF;
+
+    IF v_fault_step = 'after_deposit_insert' THEN
+        RAISE EXCEPTION 'autodeposit persistence fault injection: %', v_fault_step;
+    END IF;
+
+    SELECT event.*
+    INTO v_event
+    FROM loyal_yield.user_yield_position_holding_events AS event
+    WHERE event.source_signature = p_deposit_signature
+      AND event.source_deposit_id = v_deposit_id
+    ORDER BY event.id DESC
+    LIMIT 1
+    FOR UPDATE;
+    IF FOUND THEN
+        IF v_event.principal_delta_raw IS DISTINCT FROM p_amount_raw
+           OR v_event.reserve IS DISTINCT FROM p_target_reserve
+           OR v_event.market IS DISTINCT FROM p_market
+           OR v_event.liquidity_mint IS DISTINCT FROM p_liquidity_mint
+           OR v_event.observed_slot IS DISTINCT FROM v_observed_slot THEN
+            RAISE EXCEPTION
+                'Existing autodeposit holding event does not match confirmed chain evidence';
+        END IF;
+        UPDATE loyal_yield.user_yield_positions AS position
+        SET
+            current_amount_raw = v_event.amount_raw,
+            current_liquidity_mint = v_event.liquidity_mint,
+            current_market = v_event.market,
+            current_observed_at = v_event.observed_at,
+            current_observed_slot = v_event.observed_slot,
+            current_reserve = v_event.reserve,
+            last_holding_event_id = v_event.id,
+            last_confirmed_slot = p_deposit_slot,
+            last_deposit_signature = p_deposit_signature,
+            updated_at = v_now
+        WHERE position.id = v_event.position_id
+          AND position.settings = p_settings
+          AND position.vault_index = p_vault_index
+          AND position.wallet_address = p_wallet_address
+          AND position.status = 'active';
+        IF NOT FOUND THEN
+            RAISE EXCEPTION
+                'Existing autodeposit holding event has no matching active position';
+        END IF;
+        RETURN QUERY SELECT 'duplicate'::TEXT, v_deposit_id, v_event.position_id;
+        RETURN;
+    END IF;
+
+    SELECT position.*
+    INTO v_position
+    FROM loyal_yield.user_yield_positions AS position
+    WHERE position.settings = p_settings
+      AND position.vault_index = p_vault_index
+      AND position.wallet_address = p_wallet_address
+      AND position.status = 'active'
+    ORDER BY position.updated_at DESC, position.id DESC
+    LIMIT 1
+    FOR UPDATE;
+    v_position_existed := FOUND;
+
+    IF v_position_existed THEN
+        IF v_position.current_amount_raw IS NULL
+           OR v_position.principal_amount_raw IS NULL THEN
+            RAISE EXCEPTION 'Active autodeposit position is missing amount evidence';
+        END IF;
+        v_position_id := v_position.id;
+        v_already_applied := v_position.last_deposit_signature IS NOT DISTINCT FROM
+            p_deposit_signature;
+        v_same_current_holding :=
+            v_position.current_reserve IS NOT DISTINCT FROM p_target_reserve
+            AND v_position.current_liquidity_mint IS NOT DISTINCT FROM p_liquidity_mint;
+        v_event_type := CASE
+            WHEN v_position.first_deposit_signature IS NOT DISTINCT FROM
+                p_deposit_signature
+            THEN 'deposit_initialized'
+            ELSE 'deposit_top_up'
+        END;
+        v_next_principal_raw := CASE
+            WHEN v_already_applied THEN v_position.principal_amount_raw
+            ELSE v_position.principal_amount_raw + p_amount_raw
+        END;
+        v_next_amount_raw := CASE
+            WHEN NOT v_same_current_holding THEN v_position.current_amount_raw
+            WHEN p_observed_current_amount_raw IS NOT NULL
+                THEN p_observed_current_amount_raw
+            ELSE v_position.current_amount_raw + p_amount_raw
+        END;
+        v_holding_delta_raw := CASE
+            WHEN v_same_current_holding
+                THEN v_next_amount_raw - v_position.current_amount_raw
+            ELSE NULL
+        END;
+
+        UPDATE loyal_yield.user_yield_positions AS position
+        SET
+            deposit_mint = p_liquidity_mint,
+            initial_liquidity_mint = p_liquidity_mint,
+            initial_market = p_market,
+            last_confirmed_slot = p_deposit_slot,
+            last_deposit_signature = p_deposit_signature,
+            policy_account = p_route_policy_account,
+            policy_id = p_route_policy_seed,
+            policy_seed = p_route_policy_seed,
+            principal_amount_raw = v_next_principal_raw,
+            current_amount_raw = v_next_amount_raw,
+            current_liquidity_mint = p_liquidity_mint,
+            current_market = p_market,
+            current_observed_at = v_now,
+            current_observed_slot = v_observed_slot,
+            current_reserve = p_target_reserve,
+            smart_account_address = p_vault_pubkey,
+            status = 'active',
+            updated_at = v_now,
+            vault_pubkey = p_vault_pubkey,
+            wallet_address = p_wallet_address
+        WHERE position.id = v_position_id;
+    ELSE
+        v_event_type := 'deposit_initialized';
+        v_next_amount_raw := COALESCE(p_observed_current_amount_raw, p_amount_raw);
+        v_next_principal_raw := p_amount_raw;
+        v_holding_delta_raw := p_amount_raw;
+        INSERT INTO loyal_yield.user_yield_positions (
+            wallet_address,
+            smart_account_address,
+            settings,
+            vault_index,
+            vault_pubkey,
+            policy_id,
+            policy_account,
+            policy_seed,
+            initial_reserve,
+            initial_market,
+            initial_liquidity_mint,
+            initial_supply_apy_bps,
+            deposit_mint,
+            principal_amount_raw,
+            current_reserve,
+            current_market,
+            current_liquidity_mint,
+            current_amount_raw,
+            current_observed_slot,
+            current_observed_at,
+            first_deposit_signature,
+            last_deposit_signature,
+            last_confirmed_slot,
+            status,
+            created_at,
+            updated_at
+        ) VALUES (
+            p_wallet_address,
+            p_vault_pubkey,
+            p_settings,
+            p_vault_index,
+            p_vault_pubkey,
+            p_route_policy_seed,
+            p_route_policy_account,
+            p_route_policy_seed,
+            p_target_reserve,
+            p_market,
+            p_liquidity_mint,
+            NULL,
+            p_liquidity_mint,
+            v_next_principal_raw,
+            p_target_reserve,
+            p_market,
+            p_liquidity_mint,
+            v_next_amount_raw,
+            v_observed_slot,
+            v_now,
+            p_deposit_signature,
+            p_deposit_signature,
+            p_deposit_slot,
+            'active',
+            v_now,
+            v_now
+        )
+        RETURNING id INTO v_position_id;
+    END IF;
+
+    IF v_fault_step = 'after_existing_position_update'
+       AND v_position_existed THEN
+        RAISE EXCEPTION 'autodeposit persistence fault injection: %', v_fault_step;
+    END IF;
+
+    INSERT INTO loyal_yield.user_yield_position_holding_events (
+        position_id,
+        event_type,
+        reserve,
+        market,
+        liquidity_mint,
+        amount_raw,
+        principal_delta_raw,
+        holding_delta_raw,
+        observed_slot,
+        observed_at,
+        source_signature,
+        source_deposit_id,
+        created_at
+    ) VALUES (
+        v_position_id,
+        v_event_type,
+        p_target_reserve,
+        p_market,
+        p_liquidity_mint,
+        v_next_amount_raw,
+        p_amount_raw,
+        v_holding_delta_raw,
+        v_observed_slot,
+        v_now,
+        p_deposit_signature,
+        v_deposit_id,
+        v_now
+    )
+    RETURNING id INTO v_event_id;
+
+    IF v_fault_step = 'after_holding_event_insert' THEN
+        RAISE EXCEPTION 'autodeposit persistence fault injection: %', v_fault_step;
+    END IF;
+
+    UPDATE loyal_yield.user_yield_positions AS position
+    SET
+        last_holding_event_id = v_event_id,
+        updated_at = v_now
+    WHERE position.id = v_position_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Autodeposit position disappeared before event linkage';
+    END IF;
+
+    IF v_fault_step = 'after_final_linkage_update' THEN
+        RAISE EXCEPTION 'autodeposit persistence fault injection: %', v_fault_step;
+    END IF;
+
+    RETURN QUERY SELECT
+        CASE WHEN v_inserted THEN 'inserted'::TEXT ELSE 'duplicate'::TEXT END,
+        v_deposit_id,
+        v_position_id;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION loyal_yield.reserved_autodeposit_amount_raw(
     p_cluster TEXT,
     p_vault_pubkey TEXT,
