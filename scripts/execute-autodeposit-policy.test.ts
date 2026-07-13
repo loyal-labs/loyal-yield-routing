@@ -3,6 +3,7 @@ import { Keypair, type Connection } from "@solana/web3.js";
 
 import {
   computeSweepAmount,
+  isMissingAutodepositTokenDelegateFailure,
   parseKeypairSecret,
   runAfterFeePayerSolSafety,
 } from "./execute-autodeposit-policy";
@@ -155,6 +156,23 @@ describe("top-up fee-payer SOL safety", () => {
   });
 });
 
+describe("autodeposit token delegate failures", () => {
+  test("recognizes the exact pull simulation owner mismatch", () => {
+    expect(
+      isMissingAutodepositTokenDelegateFailure(
+        new Error(
+          "Autodeposit pull simulation failed; refusing to execute. Program log: Error: owner does not match"
+        )
+      )
+    ).toBe(true);
+    expect(
+      isMissingAutodepositTokenDelegateFailure(
+        new Error("Kamino top-up failed: owner does not match")
+      )
+    ).toBe(false);
+  });
+});
+
 describe("runtime dependency boundary", () => {
   test("executor imports packages instead of sibling loyal-apps paths", async () => {
     const source = await Bun.file(
@@ -223,6 +241,16 @@ describe("runtime dependency boundary", () => {
         /LEAST\(\s+lot\.original_amount_raw,\s+lot\.remaining_amount_raw \+ item\.amount_raw\s+\)/g
       )
     ).toHaveLength(2);
+  });
+
+  test("pauses targets whose wallet token delegate no longer matches", async () => {
+    const source = await Bun.file(
+      new URL("./execute-autodeposit-policy.ts", import.meta.url)
+    ).text();
+
+    expect(source).toContain("pauseTargetForMissingDelegate");
+    expect(source).toContain("lifecycle_status = 'pending_delegation'");
+    expect(source).toContain("last_error = ${args.lastError}");
   });
 
   test("smart-account-vaults package exposes autodeposit pull helper", async () => {

@@ -183,6 +183,16 @@ const SAME_MINT_ROUTE_MODE = "same_mint_kamino";
 const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDC_DECIMALS = 6;
 const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
+
+export function isMissingAutodepositTokenDelegateFailure(
+  error: unknown
+): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("Autodeposit pull simulation failed") &&
+    message.includes("Program log: Error: owner does not match")
+  );
+}
 const AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS = 50_000_000;
 const SOLANA_WEEK_NOTIFY_ENDPOINT_ENV = "SOLANA_WEEK_NOTIFY_ENDPOINT";
 const SOLANA_WEEK_NOTIFY_SECRET_ENV = "SOLANA_WEEK_NOTIFY_SECRET";
@@ -933,6 +943,8 @@ async function releaseAutodepositLotClaim(args: {
   neon: AppModules["neon"];
   databaseUrl: string;
   claimToken: string;
+  lastError: string;
+  pauseTargetForMissingDelegate: boolean;
 }) {
   const sql = args.neon(args.databaseUrl);
   await sql`
@@ -969,6 +981,18 @@ async function releaseAutodepositLotClaim(args: {
         AND t.token_mint = ${USDC_MINT_ADDRESS}
       RETURNING l.id
     ),
+    paused_target AS (
+      UPDATE loyal_yield.balance_sweep_targets t
+      SET active = false,
+          lifecycle_status = 'pending_delegation',
+          last_seen_at = now()
+      FROM loyal_yield.balance_sweep_lot_claims c
+      WHERE c.claim_token = (SELECT claim_token FROM selected_claim)
+        AND c.target_id = t.id
+        AND ${args.pauseTargetForMissingDelegate}
+        AND EXISTS (SELECT 1 FROM restored)
+      RETURNING t.id
+    ),
     updated_claim AS (
       UPDATE loyal_yield.balance_sweep_lot_claims
       SET status = 'released',
@@ -980,7 +1004,7 @@ async function releaseAutodepositLotClaim(args: {
     UPDATE loyal_yield.balance_sweep_scheduled_slots
     SET status = 'failed',
         claim_token = NULL,
-        last_error = 'claim released before autodeposit pull',
+        last_error = ${args.lastError},
         updated_at = now()
     WHERE claim_token IN (SELECT claim_token FROM updated_claim)
   `;
@@ -2496,10 +2520,14 @@ async function main() {
     );
   } catch (error) {
     if (!pullSent && lotClaim?.status === "selected" && lotClaim.claimToken) {
+      const lastError = error instanceof Error ? error.message : String(error);
       await releaseAutodepositLotClaim({
         neon: appModules.neon,
         databaseUrl,
         claimToken: lotClaim.claimToken,
+        lastError: lastError.slice(0, 4_000),
+        pauseTargetForMissingDelegate:
+          isMissingAutodepositTokenDelegateFailure(error),
       });
     }
     throw error;
