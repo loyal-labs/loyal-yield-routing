@@ -947,7 +947,10 @@ async function releaseAutodepositLotClaim(args: {
     ),
     restored AS (
       UPDATE loyal_yield.balance_sweep_surplus_lots l
-      SET remaining_amount_raw = l.remaining_amount_raw + i.amount_raw,
+      SET remaining_amount_raw = LEAST(
+            l.original_amount_raw,
+            l.remaining_amount_raw + i.amount_raw
+          ),
           status = 'open',
           eligible_after = now() + (${PRE_SEND_FAILURE_RETRY_DELAY_SECONDS} * interval '1 second'),
           updated_at = now()
