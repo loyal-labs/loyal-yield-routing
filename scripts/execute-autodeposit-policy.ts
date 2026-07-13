@@ -1216,6 +1216,7 @@ async function prepareSignedOperation(args: {
 
 function preparedTopUpAttempt(
   result: SameMintTopUpResult,
+  options: { allowExpectedPrePullFundingSkip?: boolean } = {},
 ): PreparedSignedAttempt {
   const policyDepositTransaction = readRecord(
     result.json?.policyDepositTransaction,
@@ -1250,12 +1251,24 @@ function preparedTopUpAttempt(
       `Prepared Kamino transaction signature ${derivedSignature} does not match ${signature}.`,
     );
   }
+  if (transaction.message.recentBlockhash !== blockhash) {
+    throw new Error(
+      `Prepared Kamino transaction blockhash ${transaction.message.recentBlockhash} does not match ${blockhash}.`,
+    );
+  }
   if (policyDepositTransaction?.simulationError) {
     throw new Error(
       `Prepared Kamino top-up simulation failed: ${policyDepositTransaction.simulationError}`,
     );
   }
-  if (policyDepositTransaction?.simulationSkippedReason) {
+  if (
+    policyDepositTransaction?.simulationSkippedReason &&
+    !(
+      options.allowExpectedPrePullFundingSkip &&
+      policyDepositTransaction.simulationSkippedReason ===
+        PRE_PULL_FUNDING_SIMULATION_SKIP
+    )
+  ) {
     throw new Error(
       `Prepared Kamino top-up was not simulated: ${policyDepositTransaction.simulationSkippedReason}`,
     );
@@ -1839,6 +1852,17 @@ function topUpPolicySimulationSkippedReason(result: SameMintTopUpResult): string
   return policyDepositTransaction?.simulationSkippedReason?.toString() ?? null;
 }
 
+const PRE_PULL_FUNDING_SIMULATION_SKIP =
+  "policy deposit simulation requires the wallet funding transaction to land first";
+
+function isReplacedByAutodepositPullBlocker(blocker: unknown): boolean {
+  if (typeof blocker !== "string") return false;
+  return (
+    /^wallet USDC ATA .+ does not exist for .+$/.test(blocker) ||
+    /^wallet USDC balance \d+ is below needed funding amount \d+$/.test(blocker)
+  );
+}
+
 export function assertExecutablePreflight(args: {
   pullSimulation: SimulationSummary;
   topUpDryRun: SameMintTopUpResult;
@@ -1863,13 +1887,26 @@ export function assertExecutablePreflight(args: {
     ? args.topUpDryRun.json.preflightBlockers.filter((value) => value !== null)
     : [];
   const missingObligationSetup = args.topUpDryRun.json?.missingObligationSetup ?? null;
-  if (topUpSkippedReason || missingObligationSetup || preflightBlockers.length > 0) {
+  const unexpectedBlockers = preflightBlockers.filter(
+    (blocker) => !isReplacedByAutodepositPullBlocker(blocker)
+  );
+  const expectedFundingSkip =
+    topUpSkippedReason === PRE_PULL_FUNDING_SIMULATION_SKIP;
+  if (
+    missingObligationSetup ||
+    unexpectedBlockers.length > 0 ||
+    (preflightBlockers.length > 0 && !expectedFundingSkip) ||
+    (topUpSkippedReason !== null && !expectedFundingSkip)
+  ) {
     throw new Error(
       `Kamino top-up is not fully preparable; refusing to pull user funds. topUp=${JSON.stringify(
         summarizeTopUpResult(args.topUpDryRun)
       )}`
     );
   }
+  preparedTopUpAttempt(args.topUpDryRun, {
+    allowExpectedPrePullFundingSkip: expectedFundingSkip,
+  });
 }
 
 export async function runAfterExecutablePreflight<T>(args: {

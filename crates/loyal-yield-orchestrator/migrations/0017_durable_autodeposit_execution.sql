@@ -455,7 +455,9 @@ DECLARE
     v_inserted BOOLEAN := false;
     v_position_existed BOOLEAN := false;
     v_already_applied BOOLEAN := false;
+    v_repairing_initial_deposit BOOLEAN := false;
     v_same_current_holding BOOLEAN := false;
+    v_has_newer_holding_event BOOLEAN := false;
     v_event_type TEXT;
     v_next_amount_raw BIGINT;
     v_next_principal_raw BIGINT;
@@ -586,26 +588,55 @@ BEGIN
             RAISE EXCEPTION
                 'Existing autodeposit holding event does not match confirmed chain evidence';
         END IF;
-        UPDATE loyal_yield.user_yield_positions AS position
-        SET
-            current_amount_raw = v_event.amount_raw,
-            current_liquidity_mint = v_event.liquidity_mint,
-            current_market = v_event.market,
-            current_observed_at = v_event.observed_at,
-            current_observed_slot = v_event.observed_slot,
-            current_reserve = v_event.reserve,
-            last_holding_event_id = v_event.id,
-            last_confirmed_slot = p_deposit_slot,
-            last_deposit_signature = p_deposit_signature,
-            updated_at = v_now
+        SELECT position.*
+        INTO v_position
+        FROM loyal_yield.user_yield_positions AS position
         WHERE position.id = v_event.position_id
           AND position.settings = p_settings
           AND position.vault_index = p_vault_index
           AND position.wallet_address = p_wallet_address
-          AND position.status = 'active';
+          AND position.status = 'active'
+        FOR UPDATE;
         IF NOT FOUND THEN
             RAISE EXCEPTION
                 'Existing autodeposit holding event has no matching active position';
+        END IF;
+        SELECT
+            COALESCE(v_position.last_holding_event_id > v_event.id, false)
+            OR EXISTS (
+                SELECT 1
+                FROM loyal_yield.user_yield_position_holding_events AS newer_event
+                WHERE newer_event.position_id = v_event.position_id
+                  AND newer_event.id > v_event.id
+            )
+        INTO v_has_newer_holding_event;
+        IF v_has_newer_holding_event THEN
+            NULL;
+        ELSIF v_position.last_holding_event_id IS NOT DISTINCT FROM v_event.id THEN
+            IF v_position.current_amount_raw IS DISTINCT FROM v_event.amount_raw
+               OR v_position.current_liquidity_mint IS DISTINCT FROM
+                   v_event.liquidity_mint
+               OR v_position.current_market IS DISTINCT FROM v_event.market
+               OR v_position.current_observed_slot IS DISTINCT FROM
+                   v_event.observed_slot
+               OR v_position.current_reserve IS DISTINCT FROM v_event.reserve THEN
+                RAISE EXCEPTION
+                    'Existing autodeposit position does not match its linked holding event';
+            END IF;
+        ELSE
+            UPDATE loyal_yield.user_yield_positions AS position
+            SET
+                current_amount_raw = v_event.amount_raw,
+                current_liquidity_mint = v_event.liquidity_mint,
+                current_market = v_event.market,
+                current_observed_at = v_event.observed_at,
+                current_observed_slot = v_event.observed_slot,
+                current_reserve = v_event.reserve,
+                last_holding_event_id = v_event.id,
+                last_confirmed_slot = p_deposit_slot,
+                last_deposit_signature = p_deposit_signature,
+                updated_at = v_now
+            WHERE position.id = v_event.position_id;
         END IF;
         RETURN QUERY SELECT 'duplicate'::TEXT, v_deposit_id, v_event.position_id;
         RETURN;
@@ -631,6 +662,9 @@ BEGIN
         v_position_id := v_position.id;
         v_already_applied := v_position.last_deposit_signature IS NOT DISTINCT FROM
             p_deposit_signature;
+        v_repairing_initial_deposit := v_already_applied
+            AND v_position.first_deposit_signature IS NOT DISTINCT FROM
+                p_deposit_signature;
         v_same_current_holding :=
             v_position.current_reserve IS NOT DISTINCT FROM p_target_reserve
             AND v_position.current_liquidity_mint IS NOT DISTINCT FROM p_liquidity_mint;
@@ -648,9 +682,11 @@ BEGIN
             WHEN NOT v_same_current_holding THEN v_position.current_amount_raw
             WHEN p_observed_current_amount_raw IS NOT NULL
                 THEN p_observed_current_amount_raw
+            WHEN v_repairing_initial_deposit THEN v_position.current_amount_raw
             ELSE v_position.current_amount_raw + p_amount_raw
         END;
         v_holding_delta_raw := CASE
+            WHEN v_repairing_initial_deposit THEN p_amount_raw
             WHEN v_same_current_holding
                 THEN v_next_amount_raw - v_position.current_amount_raw
             ELSE NULL

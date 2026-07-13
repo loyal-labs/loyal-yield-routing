@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { Keypair, type Connection } from "@solana/web3.js";
+import {
+  Keypair,
+  TransactionMessage,
+  VersionedTransaction,
+  type Connection,
+} from "@solana/web3.js";
+import bs58 from "bs58";
 
 import {
   assertDurableExecuteIdentity,
@@ -16,6 +22,31 @@ function hex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
     ""
   );
+}
+
+function preparedTopUpTransaction(simulationSkippedReason: string | null) {
+  const signer = Keypair.generate();
+  const blockhash = Keypair.generate().publicKey.toBase58();
+  const transaction = new VersionedTransaction(
+    new TransactionMessage({
+      payerKey: signer.publicKey,
+      recentBlockhash: blockhash,
+      instructions: [],
+    }).compileToV0Message(),
+  );
+  transaction.sign([signer]);
+  return {
+    simulationError: null,
+    simulationSkippedReason,
+    preparedTransaction: {
+      signature: bs58.encode(transaction.signatures[0]!),
+      blockhash,
+      lastValidBlockHeight: "123",
+      signedTransactionBase64: Buffer.from(transaction.serialize()).toString(
+        "base64",
+      ),
+    },
+  };
 }
 
 describe("computeSweepAmount", () => {
@@ -161,7 +192,7 @@ describe("top-up fee-payer SOL safety", () => {
 });
 
 describe("pre-pull Kamino obligation gate", () => {
-  test("a missing obligation sends no pull and a later ready invocation completes with one pull", async () => {
+  test("a missing obligation sends no pull", async () => {
     const pullSimulation = { err: null, logs: [], unitsConsumed: 1 };
     const missingObligation: SameMintTopUpResult = {
       command: ["same-mint-reserve-swap"],
@@ -190,29 +221,76 @@ describe("pre-pull Kamino obligation gate", () => {
       })
     ).rejects.toThrow("refusing to pull user funds");
     expect(pullCalls).toBe(0);
+  });
 
-    const readyTopUp: SameMintTopUpResult = {
-      ...missingObligation,
+  test("the real empty-vault funding skip reaches one durable pull and deposit", async () => {
+    const pullSimulation = { err: null, logs: [], unitsConsumed: 1 };
+    const emptyVaultTopUp: SameMintTopUpResult = {
+      command: ["same-mint-reserve-swap"],
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
       json: {
-        preflightBlockers: [],
+        status: "initial_deposit_dry_run",
+        preflightBlockers: [
+          "wallet USDC balance 0 is below needed funding amount 100",
+        ],
         missingObligationSetup: null,
-        policyDepositTransaction: {
-          simulationError: null,
-          simulationSkippedReason: null,
+        chainReconcile: {
+          positions: [{ obligationExists: true, vaultLiquidityAmountRaw: "0" }],
         },
+        fundingTransaction: {
+          simulationError: null,
+          simulationSkippedReason:
+            "funding simulation skipped because wallet USDC preflight failed",
+        },
+        policyDepositTransaction: preparedTopUpTransaction(
+          "policy deposit simulation requires the wallet funding transaction to land first",
+        ),
       },
     };
+    let pullCalls = 0;
+    let depositCalls = 0;
     const result = await runAfterExecutablePreflight({
       pullSimulation,
-      topUpDryRun: readyTopUp,
+      topUpDryRun: emptyVaultTopUp,
       run: async () => {
         pullCalls += 1;
+        depositCalls += 1;
         return "completed";
       },
     });
 
     expect(result).toBe("completed");
     expect(pullCalls).toBe(1);
+    expect(depositCalls).toBe(1);
+  });
+
+  test("rejects an unknown simulation skip even when a signed transaction exists", async () => {
+    let pullCalls = 0;
+    await expect(
+      runAfterExecutablePreflight({
+        pullSimulation: { err: null, logs: [], unitsConsumed: 1 },
+        topUpDryRun: {
+          command: ["same-mint-reserve-swap"],
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          json: {
+            preflightBlockers: [],
+            missingObligationSetup: null,
+            policyDepositTransaction: preparedTopUpTransaction(
+              "some other prerequisite must land first",
+            ),
+          },
+        },
+        run: async () => {
+          pullCalls += 1;
+          return "completed";
+        },
+      }),
+    ).rejects.toThrow("refusing to pull user funds");
+    expect(pullCalls).toBe(0);
   });
 });
 

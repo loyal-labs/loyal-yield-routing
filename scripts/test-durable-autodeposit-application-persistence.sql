@@ -223,6 +223,149 @@ BEGIN
            WHERE source_signature = 'ask1731-fault-deposit') <> 1 THEN
         RAISE EXCEPTION 'idempotent persistence retry duplicated application evidence';
     END IF;
+
+    -- A retry of the older signature after a later top-up must validate and
+    -- return without rewinding the position read model to the older event.
+    SELECT *
+    INTO v_result
+    FROM loyal_yield.record_durable_autodeposit_yield_deposit(
+        50,
+        9100003,
+        'ask1731-newer-deposit',
+        7100,
+        'ask1731-fault-mint',
+        'ask1731-fault-market',
+        NULL,
+        7100,
+        'ask1731-newer-deposit',
+        9200003,
+        'ask1731-fault-wallet',
+        'ask1731-fault-vault',
+        'ask1731-fault-settings',
+        99,
+        7,
+        'ask1731-fault-policy',
+        'ask1731-fault-reserve'
+    );
+    SELECT event.*
+    INTO v_event
+    FROM loyal_yield.user_yield_position_holding_events AS event
+    WHERE event.source_signature = 'ask1731-newer-deposit';
+    IF v_result.result_status <> 'inserted'
+       OR v_event.amount_raw <> 1150
+       OR v_event.observed_slot <> 7100 THEN
+        RAISE EXCEPTION 'newer holding-event fixture did not persist';
+    END IF;
+
+    SELECT *
+    INTO v_result
+    FROM loyal_yield.record_durable_autodeposit_yield_deposit(
+        100,
+        9100001,
+        'ask1731-fault-deposit',
+        7000,
+        'ask1731-fault-mint',
+        'ask1731-fault-market',
+        NULL,
+        7000,
+        'ask1731-fault-deposit',
+        9200001,
+        'ask1731-fault-wallet',
+        'ask1731-fault-vault',
+        'ask1731-fault-settings',
+        99,
+        7,
+        'ask1731-fault-policy',
+        'ask1731-fault-reserve'
+    );
+    SELECT position.*
+    INTO v_position
+    FROM loyal_yield.user_yield_positions AS position
+    WHERE position.id = v_position_id;
+    IF v_result.result_status <> 'duplicate'
+       OR v_position.principal_amount_raw <> 1150
+       OR v_position.current_amount_raw <> 1150
+       OR v_position.current_observed_slot <> 7100
+       OR v_position.last_deposit_signature <> 'ask1731-newer-deposit'
+       OR v_position.last_holding_event_id IS DISTINCT FROM v_event.id THEN
+        RAISE EXCEPTION 'older duplicate retry rewound newer holding evidence';
+    END IF;
+
+    -- Model an old worker dying after it inserted the first position but before
+    -- its holding event. Repair must not add the initial principal/current
+    -- amount a second time when the deposit signature is already on the row.
+    SELECT *
+    INTO v_result
+    FROM loyal_yield.record_durable_autodeposit_yield_deposit(
+        100,
+        9100002,
+        'ask1731-initial-repair-deposit',
+        8000,
+        'ask1731-initial-repair-mint',
+        'ask1731-initial-repair-market',
+        NULL,
+        8000,
+        'ask1731-initial-repair-deposit',
+        9200002,
+        'ask1731-initial-repair-wallet',
+        'ask1731-initial-repair-vault',
+        'ask1731-initial-repair-settings',
+        100,
+        8,
+        'ask1731-initial-repair-policy',
+        'ask1731-initial-repair-reserve'
+    );
+    IF v_result.result_status <> 'inserted' THEN
+        RAISE EXCEPTION 'initial repair fixture did not insert';
+    END IF;
+    v_position_id := v_result.result_position_id;
+    UPDATE loyal_yield.user_yield_positions
+    SET last_holding_event_id = NULL
+    WHERE id = v_position_id;
+    DELETE FROM loyal_yield.user_yield_position_holding_events
+    WHERE source_signature = 'ask1731-initial-repair-deposit';
+
+    SELECT *
+    INTO v_result
+    FROM loyal_yield.record_durable_autodeposit_yield_deposit(
+        100,
+        9100002,
+        'ask1731-initial-repair-deposit',
+        8000,
+        'ask1731-initial-repair-mint',
+        'ask1731-initial-repair-market',
+        NULL,
+        8000,
+        'ask1731-initial-repair-deposit',
+        9200002,
+        'ask1731-initial-repair-wallet',
+        'ask1731-initial-repair-vault',
+        'ask1731-initial-repair-settings',
+        100,
+        8,
+        'ask1731-initial-repair-policy',
+        'ask1731-initial-repair-reserve'
+    );
+    SELECT position.*
+    INTO v_position
+    FROM loyal_yield.user_yield_positions AS position
+    WHERE position.id = v_position_id;
+    SELECT event.*
+    INTO v_event
+    FROM loyal_yield.user_yield_position_holding_events AS event
+    WHERE event.source_signature = 'ask1731-initial-repair-deposit';
+    IF v_result.result_status <> 'duplicate'
+       OR v_position.principal_amount_raw <> 100
+       OR v_position.current_amount_raw <> 100
+       OR v_position.last_holding_event_id IS DISTINCT FROM v_event.id
+       OR v_event.event_type <> 'deposit_initialized'
+       OR v_event.amount_raw <> 100
+       OR v_event.principal_delta_raw <> 100
+       OR v_event.holding_delta_raw <> 100
+       OR (SELECT COUNT(*) FROM loyal_yield.user_yield_position_holding_events
+           WHERE source_signature = 'ask1731-initial-repair-deposit') <> 1 THEN
+        RAISE EXCEPTION 'legacy initial-position repair duplicated amount evidence';
+    END IF;
 END;
 $$;
 
