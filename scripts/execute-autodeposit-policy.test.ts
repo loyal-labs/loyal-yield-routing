@@ -2,8 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { Keypair, type Connection } from "@solana/web3.js";
 
 import {
+  assertDurableExecuteIdentity,
   computeSweepAmount,
   parseKeypairSecret,
+  redactSensitiveText,
+  reconcilePersistedAttempt,
   runAfterFeePayerSolSafety,
 } from "./execute-autodeposit-policy";
 
@@ -155,6 +158,122 @@ describe("top-up fee-payer SOL safety", () => {
   });
 });
 
+describe("persisted signature reconciliation", () => {
+  test("keeps a processed signature unknown after its blockhash expires", async () => {
+    const connection = {
+      getSignatureStatuses: async () => ({
+        value: [
+          {
+            err: null,
+            confirmationStatus: "processed",
+            slot: 123,
+          },
+        ],
+      }),
+      getBlockHeight: async () => 999,
+    } as unknown as Connection;
+
+    await expect(
+      reconcilePersistedAttempt({
+        attempt: {
+          id: "1",
+          executionId: "1",
+          operationKind: "top_up",
+          attemptNumber: 1,
+          signature: "processed-signature",
+          blockhash: "old-blockhash",
+          lastValidBlockHeight: BigInt(100),
+          signedTransactionBase64: "signed-bytes",
+          classification: "unknown",
+          broadcastAt: null,
+        },
+        connection,
+        waitForConfirmation: false,
+      }),
+    ).resolves.toEqual({ classification: "unknown", error: null });
+  });
+
+  test("expires only a signature absent from status history", async () => {
+    const connection = {
+      getSignatureStatuses: async () => ({ value: [null] }),
+      getBlockHeight: async () => 101,
+    } as unknown as Connection;
+
+    await expect(
+      reconcilePersistedAttempt({
+        attempt: {
+          id: "1",
+          executionId: "1",
+          operationKind: "top_up",
+          attemptNumber: 1,
+          signature: "absent-signature",
+          blockhash: "old-blockhash",
+          lastValidBlockHeight: BigInt(100),
+          signedTransactionBase64: "signed-bytes",
+          classification: "unknown",
+          broadcastAt: null,
+        },
+        connection,
+        waitForConfirmation: false,
+      }),
+    ).resolves.toEqual({ classification: "expired_not_landed", error: null });
+  });
+});
+
+describe("durable execution identity", () => {
+  test("refuses live execution without a real claim and scheduled slot", () => {
+    expect(() =>
+      assertDurableExecuteIdentity({
+        execute: true,
+        requireLotClaim: false,
+        claimToken: null,
+        scheduledSlotId: null,
+      })
+    ).toThrow("for durable recovery");
+  });
+
+  test("allows planning without durable ownership and execution with it", () => {
+    expect(() =>
+      assertDurableExecuteIdentity({
+        execute: false,
+        requireLotClaim: false,
+        claimToken: null,
+        scheduledSlotId: null,
+      })
+    ).not.toThrow();
+    expect(() =>
+      assertDurableExecuteIdentity({
+        execute: true,
+        requireLotClaim: true,
+        claimToken: "claim",
+        scheduledSlotId: BigInt(1),
+      })
+    ).not.toThrow();
+  });
+});
+
+describe("durable execution log redaction", () => {
+  test("redacts RPC credentials and replayable signed bytes", () => {
+    const previousRpcUrl = process.env.SOLANA_RPC_URL;
+    process.env.SOLANA_RPC_URL = "https://rpc.example.test/?api-key=secret-value";
+    try {
+      const redacted = redactSensitiveText(
+        '{"rpc":"https://rpc.example.test/?api-key=secret-value","signedTransactionBase64":"replayable"}'
+      );
+      expect(redacted).not.toContain("secret-value");
+      expect(redacted).not.toContain("replayable");
+      expect(redacted).toContain("[redacted SOLANA_RPC_URL]");
+      expect(redacted).toContain("[redacted signed transaction]");
+    } finally {
+      if (previousRpcUrl === undefined) {
+        delete process.env.SOLANA_RPC_URL;
+      } else {
+        process.env.SOLANA_RPC_URL = previousRpcUrl;
+      }
+    }
+  });
+});
+
 describe("runtime dependency boundary", () => {
   test("executor imports packages instead of sibling loyal-apps paths", async () => {
     const source = await Bun.file(
@@ -176,6 +295,9 @@ describe("runtime dependency boundary", () => {
     expect(source).toContain('const SAME_MINT_ROUTE_MODE = "same_mint_kamino"');
     expect(source).toContain("= ANY(rp.route_modes)");
     expect(source).toContain("mv.active_policy_id = rp.id");
+    expect(source).toContain("COALESCE(recovery.top_up_policy_account, rp.policy_account)");
+    expect(source).toContain('"--route-policy-account"');
+    expect(source).toContain('"--emit-prepared-transaction"');
     expect(source).not.toContain("ORDER BY rp.last_seen_slot DESC, rp.id DESC\n      LIMIT 1");
   });
 
@@ -254,7 +376,7 @@ describe("runtime dependency boundary", () => {
     expect(source).toContain(
       "CASE WHEN slot.status = 'requested' THEN 0 ELSE 1 END"
     );
-    expect(source).toContain("slot.requested_at DESC NULLS LAST");
+    expect(source).toContain("requested_at DESC NULLS LAST");
     expect(source).toContain("slot.eligible_after ASC");
     expect(source).not.toContain("slot.requested_at ASC NULLS LAST");
   });

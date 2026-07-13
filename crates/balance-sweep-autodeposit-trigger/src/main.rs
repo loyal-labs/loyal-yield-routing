@@ -117,6 +117,7 @@ struct ExecutorOutcome {
 struct ExecutableTargetRow {
     target_id: i64,
     scheduled_slot_id: i64,
+    claim_token: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -376,14 +377,16 @@ async fn execute_eligible_targets_once(
     };
     for target in targets {
         outcome.executions_attempted += 1;
-        let claim_token = format!(
-            "autodeposit-trigger:{}:{}:{}",
-            target.target_id,
-            target.scheduled_slot_id,
-            Utc::now()
-                .timestamp_nanos_opt()
-                .unwrap_or_else(|| Utc::now().timestamp_micros())
-        );
+        let claim_token = target.claim_token.unwrap_or_else(|| {
+            format!(
+                "autodeposit-trigger:{}:{}:{}",
+                target.target_id,
+                target.scheduled_slot_id,
+                Utc::now()
+                    .timestamp_nanos_opt()
+                    .unwrap_or_else(|| Utc::now().timestamp_micros())
+            )
+        });
         let status = Command::new("sh")
             .arg("-c")
             .arg(build_executor_shell_command(
@@ -617,47 +620,118 @@ fn build_executor_shell_command(
 async fn load_executable_targets(pool: &PgPool, limit: i64) -> Result<Vec<ExecutableTargetRow>> {
     let rows = sqlx::query(
         r#"
-        SELECT
-            target.id AS target_id,
-            slot.id AS scheduled_slot_id
-        FROM loyal_yield.balance_sweep_scheduled_slots AS slot
-        JOIN loyal_yield.balance_sweep_targets AS target
-          ON target.id = slot.target_id
-        JOIN loyal_yield.balance_sweep_wallet_balances_current AS balance
-          ON balance.target_id = target.id
-         AND balance.mint = target.token_mint
-        WHERE target.active = true
-          AND target.lifecycle_status = 'active'
-          AND target.token_mint = $2
-          AND target.wallet_balance_floor_raw IS NOT NULL
-          AND balance.amount_raw > target.wallet_balance_floor_raw
-          AND slot.token_mint = target.token_mint
-          AND slot.status IN ('scheduled', 'requested')
-          AND slot.eligible_after <= now()
-          AND EXISTS (
-              SELECT 1
-              FROM loyal_yield.balance_sweep_surplus_lots AS lot
-              JOIN loyal_yield.balance_sweep_wallet_balance_events AS event
-                ON event.event_id = lot.source_event_id
-              WHERE lot.target_id = target.id
-                AND lot.scheduled_slot_id = slot.id
-                AND event.mint = target.token_mint
-                AND lot.status = 'open'
-                AND lot.remaining_amount_raw > 0
-          )
-          AND NOT EXISTS (
-              SELECT 1
-              FROM loyal_yield.balance_sweep_lot_claims AS claim
-              WHERE claim.target_id = target.id
-                AND claim.status = 'selected'
-          )
+        WITH candidates AS (
+            SELECT
+                execution.target_id,
+                execution.scheduled_slot_id,
+                execution.claim_token,
+                0 AS recovery_priority,
+                0 AS requested_priority,
+                NULL::timestamptz AS requested_at,
+                execution.inserted_at AS ready_at,
+                execution.inserted_at AS balance_updated_at,
+                execution.id AS ordering_id
+            FROM loyal_yield.balance_sweep_executions AS execution
+            JOIN loyal_yield.balance_sweep_targets AS target
+              ON target.id = execution.target_id
+            LEFT JOIN loyal_yield.vault_operation_leases AS operation_lease
+             ON operation_lease.cluster = COALESCE(NULLIF(target.cluster, ''), 'mainnet-beta')
+             AND operation_lease.vault_pubkey = target.vault_pubkey
+             AND (
+                  operation_lease.expires_at > now()
+                  OR operation_lease.blocking_signature IS NOT NULL
+             )
+            WHERE target.token_mint = $2
+              AND execution.scheduled_slot_id IS NOT NULL
+              AND execution.claim_token IS NOT NULL
+              AND (
+                  execution.lifecycle_state IN (
+                      'pull_confirmation_pending',
+                      'deposit_pending',
+                      'deposit_confirmation_pending',
+                      'deposit_confirmed'
+                  )
+                  OR (
+                      execution.lifecycle_state = 'needs_reconciliation'
+                      AND execution.active_attempt_kind IS NOT NULL
+                  )
+              )
+              AND operation_lease.vault_pubkey IS NULL
+
+            UNION ALL
+
+            SELECT
+                target.id AS target_id,
+                slot.id AS scheduled_slot_id,
+                NULL::text AS claim_token,
+                1 AS recovery_priority,
+                CASE WHEN slot.status = 'requested' THEN 0 ELSE 1 END AS requested_priority,
+                slot.requested_at,
+                slot.eligible_after AS ready_at,
+                balance.updated_at AS balance_updated_at,
+                slot.id AS ordering_id
+            FROM loyal_yield.balance_sweep_scheduled_slots AS slot
+            JOIN loyal_yield.balance_sweep_targets AS target
+              ON target.id = slot.target_id
+            JOIN loyal_yield.balance_sweep_wallet_balances_current AS balance
+              ON balance.target_id = target.id
+             AND balance.mint = target.token_mint
+            WHERE target.active = true
+              AND target.lifecycle_status = 'active'
+              AND target.token_mint = $2
+              AND target.wallet_balance_floor_raw IS NOT NULL
+              AND balance.amount_raw > target.wallet_balance_floor_raw
+              AND slot.token_mint = target.token_mint
+              AND slot.status IN ('scheduled', 'requested')
+              AND slot.eligible_after <= now()
+              AND EXISTS (
+                  SELECT 1
+                  FROM loyal_yield.balance_sweep_surplus_lots AS lot
+                  JOIN loyal_yield.balance_sweep_wallet_balance_events AS event
+                    ON event.event_id = lot.source_event_id
+                  WHERE lot.target_id = target.id
+                    AND lot.scheduled_slot_id = slot.id
+                    AND event.mint = target.token_mint
+                    AND lot.status = 'open'
+                    AND lot.remaining_amount_raw > 0
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM loyal_yield.balance_sweep_lot_claims AS claim
+                  WHERE claim.target_id = target.id
+                    AND claim.status = 'selected'
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM loyal_yield.balance_sweep_executions AS execution
+                  JOIN loyal_yield.balance_sweep_targets AS execution_target
+                    ON execution_target.id = execution.target_id
+                  WHERE COALESCE(NULLIF(execution_target.cluster, ''), 'mainnet-beta') =
+                        COALESCE(NULLIF(target.cluster, ''), 'mainnet-beta')
+                    AND execution_target.vault_pubkey = target.vault_pubkey
+                    AND execution.lifecycle_state <> 'completed'
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM loyal_yield.vault_operation_leases AS operation_lease
+                  WHERE operation_lease.cluster = COALESCE(NULLIF(target.cluster, ''), 'mainnet-beta')
+                    AND operation_lease.vault_pubkey = target.vault_pubkey
+                    AND (
+                        operation_lease.expires_at > now()
+                        OR operation_lease.blocking_signature IS NOT NULL
+                    )
+              )
+        )
+        SELECT target_id, scheduled_slot_id, claim_token
+        FROM candidates
         ORDER BY
-            CASE WHEN slot.status = 'requested' THEN 0 ELSE 1 END,
-            slot.requested_at DESC NULLS LAST,
-            slot.eligible_after ASC,
-            balance.updated_at ASC,
-            target.id ASC,
-            slot.id ASC
+            recovery_priority,
+            requested_priority,
+            requested_at DESC NULLS LAST,
+            ready_at,
+            balance_updated_at,
+            target_id,
+            ordering_id
         LIMIT $1
         "#,
     )
@@ -670,6 +744,7 @@ async fn load_executable_targets(pool: &PgPool, limit: i64) -> Result<Vec<Execut
             Ok(ExecutableTargetRow {
                 target_id: row.try_get("target_id")?,
                 scheduled_slot_id: row.try_get("scheduled_slot_id")?,
+                claim_token: row.try_get("claim_token")?,
             })
         })
         .collect()

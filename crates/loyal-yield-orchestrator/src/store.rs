@@ -777,15 +777,47 @@ impl NeonSqlClient {
             optional_to_i64_amount(input.destination_post_balance_raw)?;
         let row = sqlx::query(
             r#"
-            INSERT INTO loyal_yield.balance_sweep_executions
-                (target_id, signature, slot, source_wallet_ata, destination_vault_ata,
-                 token_mint, source_token_ata, destination_token_ata,
-                 amount_raw, source_pre_balance_raw, source_post_balance_raw,
-                 destination_pre_balance_raw, destination_post_balance_raw, source_commitment,
-                 raw_evidence, decoded_evidence, received_at, decoded_at, dedupe_key)
-            VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
-            ON CONFLICT (dedupe_key) DO UPDATE SET dedupe_key = EXCLUDED.dedupe_key
-            RETURNING
+            WITH execution AS (
+                INSERT INTO loyal_yield.balance_sweep_executions
+                    (target_id, signature, slot, source_wallet_ata, destination_vault_ata,
+                     token_mint, source_token_ata, destination_token_ata,
+                     amount_raw, source_pre_balance_raw, source_post_balance_raw,
+                     destination_pre_balance_raw, destination_post_balance_raw, source_commitment,
+                     raw_evidence, decoded_evidence, received_at, decoded_at, dedupe_key,
+                     lifecycle_state, requested_amount_raw, confirmed_pull_amount_raw,
+                     reserved_amount_raw)
+                VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6, $7, $8,
+                        $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+                        'needs_reconciliation', $9, $9, $9)
+                ON CONFLICT (dedupe_key) DO UPDATE SET dedupe_key = EXCLUDED.dedupe_key
+                RETURNING *
+            ),
+            recorded_attempt AS (
+                INSERT INTO loyal_yield.balance_sweep_execution_attempts (
+                    execution_id,
+                    operation_kind,
+                    attempt_number,
+                    signature,
+                    classification,
+                    prepared_at,
+                    classified_at,
+                    confirmed_slot,
+                    evidence
+                )
+                SELECT
+                    id,
+                    'pull',
+                    1,
+                    signature,
+                    'landed',
+                    COALESCE(received_at, inserted_at),
+                    COALESCE(decoded_at, received_at, inserted_at),
+                    slot,
+                    jsonb_build_object('source', 'orchestrator_observed_execution')
+                FROM execution
+                ON CONFLICT (signature) DO NOTHING
+            )
+            SELECT
                 id, target_id, signature, slot,
                 COALESCE(source_wallet_ata, source_token_ata) AS source_wallet_ata,
                 COALESCE(destination_vault_ata, destination_token_ata) AS destination_vault_ata,
@@ -793,6 +825,7 @@ impl NeonSqlClient {
                 amount_raw, source_pre_balance_raw, source_post_balance_raw,
                 destination_pre_balance_raw, destination_post_balance_raw, source_commitment,
                 raw_evidence, decoded_evidence, received_at, decoded_at, inserted_at, dedupe_key
+            FROM execution
             "#,
         )
         .bind(input.target_id.as_i64())

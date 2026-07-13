@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
 use klend_interface::{
     discriminators::{
@@ -242,6 +243,8 @@ fn full_withdraw_reserve(options: &CliOptions) -> String {
 struct CliOptions {
     settings: String,
     vault_index: i16,
+    route_policy_account: Option<String>,
+    emit_prepared_transaction: bool,
     direction: Direction,
     source_reserve: Option<String>,
     target_reserve: Option<String>,
@@ -295,6 +298,223 @@ struct SelectedVault {
     kamino_markets: Vec<String>,
     kamino_liquidity_mints: Vec<String>,
     swap_lanes: Value,
+}
+
+struct SharedVaultOperationLease {
+    pool: PgPool,
+    cluster: String,
+    vault_pubkey: String,
+    owner_token: String,
+    fence: i64,
+    heartbeat: tokio::task::JoinHandle<()>,
+}
+
+impl SharedVaultOperationLease {
+    async fn acquire(
+        client: &NeonSqlClient,
+        cluster: &str,
+        vault_pubkey: &str,
+    ) -> Result<Self, Box<dyn Error>> {
+        let pool = client.pool().clone();
+        let owner_token = format!(
+            "same-mint:{}:{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let row = loyal_yield_orchestrator::sqlx::query(
+            r#"
+            WITH operation_guard AS (
+                SELECT NOT EXISTS (
+                    SELECT 1
+                    FROM loyal_yield.balance_sweep_executions AS execution
+                    JOIN loyal_yield.balance_sweep_targets AS target
+                      ON target.id = execution.target_id
+                    WHERE COALESCE(NULLIF(target.cluster, ''), 'mainnet-beta') = $1
+                      AND target.vault_pubkey = $2
+                      AND execution.lifecycle_state <> 'completed'
+                      AND execution.active_attempt_kind IS NOT NULL
+                ) AS allowed
+            )
+            INSERT INTO loyal_yield.vault_operation_leases (
+                cluster, vault_pubkey, owner_token, fence, expires_at, updated_at
+            )
+            SELECT $1, $2, $3, 1, now() + interval '90 seconds', now()
+            FROM operation_guard
+            WHERE allowed
+            ON CONFLICT (cluster, vault_pubkey) DO UPDATE SET
+                owner_token = EXCLUDED.owner_token,
+                fence = loyal_yield.vault_operation_leases.fence + 1,
+                expires_at = EXCLUDED.expires_at,
+                updated_at = now()
+            WHERE loyal_yield.vault_operation_leases.expires_at <= now()
+              AND loyal_yield.vault_operation_leases.blocking_signature IS NULL
+              AND (SELECT allowed FROM operation_guard)
+            RETURNING fence
+            "#,
+        )
+        .bind(cluster)
+        .bind(vault_pubkey)
+        .bind(&owner_token)
+        .fetch_optional(&pool)
+        .await?
+        .ok_or("vault already has an active durable operation lease")?;
+        let fence = row.try_get::<i64, _>("fence")?;
+        let heartbeat_pool = pool.clone();
+        let heartbeat_cluster = cluster.to_owned();
+        let heartbeat_vault = vault_pubkey.to_owned();
+        let heartbeat_owner = owner_token.clone();
+        let heartbeat = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let renewed = loyal_yield_orchestrator::sqlx::query(
+                    r#"
+                    UPDATE loyal_yield.vault_operation_leases
+                    SET expires_at = now() + interval '90 seconds', updated_at = now()
+                    WHERE cluster = $1
+                      AND vault_pubkey = $2
+                      AND owner_token = $3
+                      AND fence = $4
+                      AND expires_at > now()
+                    "#,
+                )
+                .bind(&heartbeat_cluster)
+                .bind(&heartbeat_vault)
+                .bind(&heartbeat_owner)
+                .bind(fence)
+                .execute(&heartbeat_pool)
+                .await;
+                if !matches!(renewed, Ok(result) if result.rows_affected() == 1) {
+                    break;
+                }
+            }
+        });
+        Ok(Self {
+            pool,
+            cluster: cluster.to_owned(),
+            vault_pubkey: vault_pubkey.to_owned(),
+            owner_token,
+            fence,
+            heartbeat,
+        })
+    }
+
+    async fn assert_current(&self) -> Result<(), Box<dyn Error>> {
+        let current = loyal_yield_orchestrator::sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM loyal_yield.vault_operation_leases
+                WHERE cluster = $1
+                  AND vault_pubkey = $2
+                  AND owner_token = $3
+                  AND fence = $4
+                  AND expires_at > now()
+            )
+            "#,
+        )
+        .bind(&self.cluster)
+        .bind(&self.vault_pubkey)
+        .bind(&self.owner_token)
+        .bind(self.fence)
+        .fetch_one(&self.pool)
+        .await?;
+        if !current {
+            return Err("stale vault operation lease cannot authorize a send".into());
+        }
+        Ok(())
+    }
+
+    async fn persist_send_intent(
+        &self,
+        operation_kind: &str,
+        transaction: &PolicyTransactionBuild,
+    ) -> Result<(), Box<dyn Error>> {
+        let updated = loyal_yield_orchestrator::sqlx::query(
+            r#"
+            UPDATE loyal_yield.vault_operation_leases
+            SET blocking_operation_kind = $5,
+                blocking_signature = $6,
+                blocking_blockhash = $7,
+                blocking_last_valid_block_height = $8,
+                blocking_signed_transaction_base64 = $9,
+                updated_at = now()
+            WHERE cluster = $1
+              AND vault_pubkey = $2
+              AND owner_token = $3
+              AND fence = $4
+              AND expires_at > now()
+              AND blocking_signature IS NULL
+            "#,
+        )
+        .bind(&self.cluster)
+        .bind(&self.vault_pubkey)
+        .bind(&self.owner_token)
+        .bind(self.fence)
+        .bind(operation_kind)
+        .bind(&transaction.signature)
+        .bind(&transaction.recent_blockhash)
+        .bind(i64::try_from(transaction.last_valid_block_height)?)
+        .bind(&transaction.signed_transaction_base64)
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err("stale vault lease could not persist the exact signed send intent".into());
+        }
+        Ok(())
+    }
+
+    async fn clear_send_intent(&self, signature: &str) -> Result<(), Box<dyn Error>> {
+        let updated = loyal_yield_orchestrator::sqlx::query(
+            r#"
+            UPDATE loyal_yield.vault_operation_leases
+            SET blocking_operation_kind = NULL,
+                blocking_signature = NULL,
+                blocking_blockhash = NULL,
+                blocking_last_valid_block_height = NULL,
+                blocking_signed_transaction_base64 = NULL,
+                updated_at = now()
+            WHERE cluster = $1
+              AND vault_pubkey = $2
+              AND owner_token = $3
+              AND fence = $4
+              AND blocking_signature = $5
+            "#,
+        )
+        .bind(&self.cluster)
+        .bind(&self.vault_pubkey)
+        .bind(&self.owner_token)
+        .bind(self.fence)
+        .bind(signature)
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err("vault lease could not clear its persisted send intent".into());
+        }
+        Ok(())
+    }
+
+    async fn release(self) -> Result<(), Box<dyn Error>> {
+        self.heartbeat.abort();
+        loyal_yield_orchestrator::sqlx::query(
+            r#"
+            DELETE FROM loyal_yield.vault_operation_leases
+            WHERE cluster = $1
+              AND vault_pubkey = $2
+              AND owner_token = $3
+              AND fence = $4
+              AND blocking_signature IS NULL
+            "#,
+        )
+        .bind(&self.cluster)
+        .bind(&self.vault_pubkey)
+        .bind(&self.owner_token)
+        .bind(self.fence)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -768,6 +988,10 @@ struct ObligationAccountProof {
 #[derive(Debug)]
 struct PolicyTransactionBuild {
     transaction: VersionedTransaction,
+    signature: String,
+    recent_blockhash: String,
+    last_valid_block_height: u64,
+    signed_transaction_base64: String,
     transaction_packet: TransactionPacketSummary,
     best_case_single_lookup_table_packet: Option<TransactionPacketSummary>,
     simulation_error: Option<String>,
@@ -879,7 +1103,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let default_authority = solana_testing_keypair_from_env()?.pubkey();
         let default_delegated_signer = policy_keypair_from_env()?.pubkey();
         let vault = if options.update_active_policy {
-            match load_active_vault(&pool, &options.settings, options.vault_index).await? {
+            match load_active_vault(&pool, &options.settings, options.vault_index, None).await? {
                 Some(vault) => vault,
                 None => load_policy_target_vault(
                     &pool,
@@ -907,9 +1131,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let vault = load_active_vault(&pool, &options.settings, options.vault_index)
-        .await?
-        .ok_or("no active managed vault found for settings and vault index")?;
+    let vault = load_active_vault(
+        &pool,
+        &options.settings,
+        options.vault_index,
+        options.route_policy_account.as_deref(),
+    )
+    .await?
+    .ok_or("no active managed vault found for settings and vault index")?;
     validate_vault_policy(&vault)?;
     let reconcile_reserves = reconcile_reserves_for_move(&options, &reserve_move);
 
@@ -2648,6 +2877,27 @@ fn execute_missing_obligation_setup_with_signers(
     fee_payer: &dyn Signer,
     delegated_signer: &dyn Signer,
 ) -> Result<MissingObligationSetupSubmitResult, Box<dyn Error>> {
+    let setup = build_missing_obligation_setup_with_signers(
+        rpc,
+        lookup_table_accounts,
+        vault,
+        target,
+        policy_preflight,
+        fee_payer,
+        delegated_signer,
+    )?;
+    submit_missing_obligation_setup(rpc, setup)
+}
+
+fn build_missing_obligation_setup_with_signers(
+    rpc: &RpcClient,
+    lookup_table_accounts: &[AddressLookupTableAccount],
+    vault: &SelectedVault,
+    target: &ChainPositionSummary,
+    policy_preflight: Option<&PolicyAccountPreflight>,
+    fee_payer: &dyn Signer,
+    delegated_signer: &dyn Signer,
+) -> Result<MissingObligationSetupDryRun, Box<dyn Error>> {
     let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
     let account_index = u8::try_from(vault.vault_index).map_err(|_| {
         format!(
@@ -2678,21 +2928,34 @@ fn execute_missing_obligation_setup_with_signers(
         &setup_pre_instructions,
         None,
     )?;
-    if let Some(error) = &init_execution.simulation_error {
-        return Err(format!("init-obligation execution simulation failed: {error}").into());
-    }
-    let init_submission = submit_built_policy_transaction(rpc, &init_execution)?;
-
-    Ok(MissingObligationSetupSubmitResult {
+    Ok(MissingObligationSetupDryRun {
         policy_account: policy.to_string(),
         policy_source,
         instruction_constraint_index,
         vault_rent_top_up,
+        init_execution,
+    })
+}
+
+fn submit_missing_obligation_setup(
+    rpc: &RpcClient,
+    setup: MissingObligationSetupDryRun,
+) -> Result<MissingObligationSetupSubmitResult, Box<dyn Error>> {
+    if let Some(error) = &setup.init_execution.simulation_error {
+        return Err(format!("init-obligation execution simulation failed: {error}").into());
+    }
+    let init_submission = submit_built_policy_transaction(rpc, &setup.init_execution)?;
+
+    Ok(MissingObligationSetupSubmitResult {
+        policy_account: setup.policy_account,
+        policy_source: setup.policy_source,
+        instruction_constraint_index: setup.instruction_constraint_index,
+        vault_rent_top_up: setup.vault_rent_top_up,
         init_signature: init_submission.signature,
         init_submitted_slot: init_submission.submitted_slot,
         init_confirmed_slot: init_submission.confirmed_slot,
-        init_simulation_units_consumed: init_execution.simulation_units_consumed,
-        init_transaction_packet: init_execution.transaction_packet,
+        init_simulation_units_consumed: setup.init_execution.simulation_units_consumed,
+        init_transaction_packet: setup.init_execution.transaction_packet,
     })
 }
 
@@ -3070,7 +3333,12 @@ async fn run_initial_reserve_deposit_flow(
                 "missingObligationSetup": missing_obligation_setup_dry_run,
                 "fundingTransaction": policy_transaction_json(&funding_transaction),
                 "policyDeposit": policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
-                "policyDepositTransaction": dry_run_policy_transaction.as_ref().map(policy_transaction_json),
+                "policyDepositTransaction": dry_run_policy_transaction.as_ref().map(|transaction| {
+                    policy_transaction_json_for_output(
+                        transaction,
+                        options.emit_prepared_transaction,
+                    )
+                }),
             }))?
         );
         return Ok(());
@@ -3217,6 +3485,37 @@ async fn run_idle_vault_deposit_flow(
     deposit_reserve: &str,
     amount_raw: u64,
 ) -> Result<(), Box<dyn Error>> {
+    let lease =
+        SharedVaultOperationLease::acquire(client, "mainnet-beta", &vault.vault_pubkey).await?;
+    let result = run_idle_vault_deposit_flow_with_lease(
+        options,
+        client,
+        vault,
+        initial_preview,
+        policy_preflight,
+        deposit_reserve,
+        amount_raw,
+        &lease,
+    )
+    .await;
+    let release = lease.release().await;
+    match (result, release) {
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
+    }
+}
+
+async fn run_idle_vault_deposit_flow_with_lease(
+    options: &CliOptions,
+    client: &NeonSqlClient,
+    vault: &SelectedVault,
+    initial_preview: &ChainReconcilePreview,
+    policy_preflight: Option<&PolicyAccountPreflight>,
+    deposit_reserve: &str,
+    amount_raw: u64,
+    lease: &SharedVaultOperationLease,
+) -> Result<(), Box<dyn Error>> {
     if amount_raw == 0 {
         return Err("idle vault deposit amount must be greater than 0".into());
     }
@@ -3238,10 +3537,20 @@ async fn run_idle_vault_deposit_flow(
     let db_idle = client
         .current_idle_token_balance(vault.id, &USDC_MINT.to_string())
         .await?;
+    let reserved_autodeposit_amount_raw = loyal_yield_orchestrator::sqlx::query_scalar::<_, i64>(
+        "SELECT loyal_yield.reserved_autodeposit_amount_raw($1, $2, $3)",
+    )
+    .bind("mainnet-beta")
+    .bind(&vault.vault_pubkey)
+    .bind(USDC_MINT.to_string())
+    .fetch_one(client.pool())
+    .await?;
     let amount_i64 = i64::try_from(amount_raw)
         .map_err(|_| "idle vault deposit amount does not fit Postgres BIGINT")?;
     let live_idle_amount_i64 = i64::try_from(deposit_position.vault_liquidity_amount_raw)
         .map_err(|_| "live idle vault USDC amount does not fit Postgres BIGINT")?;
+    let available_idle_amount_i64 =
+        live_idle_amount_i64.saturating_sub(reserved_autodeposit_amount_raw);
     let mut active_preview = initial_preview.clone();
     let mut reloaded_policy_preflight: Option<PolicyAccountPreflight> = None;
     let mut setup_obligation_before_deposit = false;
@@ -3274,6 +3583,12 @@ async fn run_idle_vault_deposit_flow(
         blockers.push(IdleVaultDepositBlocker::source_stale(format!(
             "live vault idle USDC balance {} is below planned deposit amount {}",
             deposit_position.vault_liquidity_amount_raw, amount_raw
+        )));
+    }
+    if available_idle_amount_i64 < amount_i64 {
+        blockers.push(IdleVaultDepositBlocker::source_stale(format!(
+            "live vault idle USDC available amount {} excludes {} reserved by non-terminal autodeposit executions and is below planned deposit {}",
+            available_idle_amount_i64, reserved_autodeposit_amount_raw, amount_i64
         )));
     }
     if !deposit_position.obligation_exists {
@@ -3326,10 +3641,16 @@ async fn run_idle_vault_deposit_flow(
                     balance.token_account, vault_usdc_ata
                 )));
             }
-            if balance.amount_raw != amount_i64 {
+            let available_db_amount_raw = balance
+                .amount_raw
+                .saturating_sub(reserved_autodeposit_amount_raw);
+            if available_db_amount_raw != amount_i64 {
                 blockers.push(IdleVaultDepositBlocker::source_stale(format!(
-                    "DB idle amount {} does not match planned amount {}",
-                    balance.amount_raw, amount_i64
+                    "DB idle available amount {} (raw {}, reserved {}) does not match planned amount {}",
+                    available_db_amount_raw,
+                    balance.amount_raw,
+                    reserved_autodeposit_amount_raw,
+                    amount_i64
                 )));
             }
             if balance.amount_raw > live_idle_amount_i64 {
@@ -3660,7 +3981,7 @@ async fn run_idle_vault_deposit_flow(
     }
 
     if setup_obligation_before_deposit {
-        let setup_result = match execute_missing_obligation_setup_with_signers(
+        let setup = match build_missing_obligation_setup_with_signers(
             &rpc,
             &lookup_table_accounts,
             vault,
@@ -3683,6 +4004,36 @@ async fn run_idle_vault_deposit_flow(
                 return Err(reason.into());
             }
         };
+        lease
+            .persist_send_intent("idle_vault_setup_obligation", &setup.init_execution)
+            .await?;
+        lease.assert_current().await?;
+        let expected_setup_signature = setup.init_execution.signature.clone();
+        let setup_result = match submit_missing_obligation_setup(&rpc, setup) {
+            Ok(result) => result,
+            Err(error) => {
+                let reason = format!("idle vault init-obligation setup failed: {error}");
+                client
+                    .advance_decision(
+                        decision.id,
+                        DecisionAdvance::Fail {
+                            reason: reason.clone(),
+                        },
+                    )
+                    .await?;
+                return Err(reason.into());
+            }
+        };
+        if setup_result.init_signature != expected_setup_signature {
+            return Err(format!(
+                "idle vault setup RPC returned signature {}, expected persisted signature {}",
+                setup_result.init_signature, expected_setup_signature
+            )
+            .into());
+        }
+        lease
+            .clear_send_intent(&setup_result.init_signature)
+            .await?;
         missing_obligation_setup_result = Some(missing_obligation_setup_submit_result_json(
             deposit_position,
             &setup_result,
@@ -3835,6 +4186,10 @@ async fn run_idle_vault_deposit_flow(
         .advance_decision(decision.id, DecisionAdvance::SimulationReady)
         .await?;
 
+    lease
+        .persist_send_intent("idle_vault_deposit", &policy_transaction)
+        .await?;
+    lease.assert_current().await?;
     let submitted_slot = i64::try_from(rpc.get_slot()?)?;
     let signature = match rpc.send_and_confirm_transaction(&policy_transaction.transaction) {
         Ok(signature) => signature,
@@ -3850,6 +4205,13 @@ async fn run_idle_vault_deposit_flow(
             return Err(format!("idle vault policy deposit submission failed: {error}").into());
         }
     };
+    if signature.to_string() != policy_transaction.signature {
+        return Err(format!(
+            "idle vault RPC returned signature {signature}, expected persisted signature {}",
+            policy_transaction.signature
+        )
+        .into());
+    }
     let confirmed_slot = i64::try_from(rpc.get_slot()?)?;
     let signature = signature.to_string();
     client
@@ -3934,6 +4296,7 @@ async fn run_idle_vault_deposit_flow(
         amount_i64,
     )
     .await?;
+    lease.clear_send_intent(&signature).await?;
 
     println!(
         "{}",
@@ -5341,7 +5704,8 @@ fn build_signed_transaction_for_mode(
     alt_instruction_mode: AltInstructionMode,
 ) -> Result<PolicyTransactionBuild, Box<dyn Error>> {
     guard_lookup_table_mutations(instructions, alt_instruction_mode, operation_label)?;
-    let blockhash = rpc.get_latest_blockhash()?;
+    let (blockhash, last_valid_block_height) =
+        rpc.get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())?;
     let transaction = compile_versioned_transaction(
         payer,
         instructions,
@@ -5349,6 +5713,12 @@ fn build_signed_transaction_for_mode(
         blockhash,
         signers,
     )?;
+    let signature = transaction
+        .signatures
+        .first()
+        .ok_or("signed transaction is missing its deterministic signature")?
+        .to_string();
+    let signed_transaction_base64 = BASE64_STANDARD.encode(bincode::serialize(&transaction)?);
     let transaction_packet = transaction_packet_summary(&transaction, lookup_table_accounts)?;
     let best_case_single_lookup_table_packet =
         best_case_single_lookup_table_packet_summary(payer, instructions, blockhash, signers)?;
@@ -5395,6 +5765,10 @@ fn build_signed_transaction_for_mode(
 
     Ok(PolicyTransactionBuild {
         transaction,
+        signature,
+        recent_blockhash: blockhash.to_string(),
+        last_valid_block_height,
+        signed_transaction_base64,
         transaction_packet,
         best_case_single_lookup_table_packet,
         simulation_error,
@@ -6243,8 +6617,15 @@ fn transaction_packet_json(summary: &TransactionPacketSummary) -> Value {
 }
 
 fn policy_transaction_json(transaction: &PolicyTransactionBuild) -> Value {
+    policy_transaction_json_for_output(transaction, false)
+}
+
+fn policy_transaction_json_for_output(
+    transaction: &PolicyTransactionBuild,
+    emit_prepared_transaction: bool,
+) -> Value {
     let obligation_stale = policy_transaction_has_klend_obligation_stale(transaction);
-    json!({
+    let mut value = json!({
         "transaction": policy_transaction_packet_json(transaction),
         "simulationError": transaction.simulation_error,
         "simulationSkippedReason": transaction.simulation_skipped_reason,
@@ -6255,7 +6636,16 @@ fn policy_transaction_json(transaction: &PolicyTransactionBuild) -> Value {
         "refreshObligationPolicyNote": obligation_stale.then_some(
             "KLend deposit/withdraw needs a fresh obligation; the script now emits refresh_obligation as a public pre-instruction before protected value movement"
         ),
-    })
+    });
+    if emit_prepared_transaction {
+        value["preparedTransaction"] = json!({
+            "signature": transaction.signature,
+            "blockhash": transaction.recent_blockhash,
+            "lastValidBlockHeight": transaction.last_valid_block_height,
+            "signedTransactionBase64": transaction.signed_transaction_base64,
+        });
+    }
+    value
 }
 
 fn policy_transaction_has_klend_obligation_stale(transaction: &PolicyTransactionBuild) -> bool {
@@ -9534,6 +9924,7 @@ async fn load_active_vault(
     pool: &PgPool,
     settings: &str,
     vault_index: i16,
+    route_policy_account: Option<&str>,
 ) -> Result<Option<SelectedVault>, loyal_yield_orchestrator::sqlx::Error> {
     let row = loyal_yield_orchestrator::sqlx::query(
         r#"
@@ -9555,17 +9946,24 @@ async fn load_active_vault(
             p.kamino_liquidity_mints,
             p.swap_lanes
         FROM loyal_yield.managed_vaults v
-        JOIN loyal_yield.route_policies p ON p.id = v.active_policy_id
+        JOIN loyal_yield.route_policies p
+          ON p.settings = v.settings
+         AND p.vault_index = v.vault_index
+         AND p.vault_pubkey = v.vault_pubkey
+         AND (
+              ($3::text IS NULL AND p.id = v.active_policy_id AND p.active = true)
+              OR ($3::text IS NOT NULL AND p.policy_account = $3)
+         )
         LEFT JOIN loyal_yield.route_policies sp ON sp.id = v.setup_policy_id
           AND sp.active = true
         WHERE v.settings = $1
           AND v.vault_index = $2
           AND v.active = true
-          AND p.active = true
         "#,
     )
     .bind(settings)
     .bind(vault_index)
+    .bind(route_policy_account)
     .fetch_optional(pool)
     .await?;
 
@@ -9734,6 +10132,8 @@ async fn load_active_decision(
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, String> {
     let mut settings = None;
     let mut vault_index = None;
+    let mut route_policy_account = None;
+    let mut emit_prepared_transaction = false;
     let mut direction = Direction::MainToPrime;
     let mut source_reserve = None;
     let mut target_reserve = None;
@@ -9784,6 +10184,15 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
                         .map_err(|_| "--vault-index must be an i16")?,
                 );
             }
+            "--route-policy-account" => {
+                let raw = iter
+                    .next()
+                    .ok_or("--route-policy-account requires a policy public key")?;
+                Pubkey::from_str(&raw)
+                    .map_err(|_| "--route-policy-account must be a public key")?;
+                route_policy_account = Some(raw);
+            }
+            "--emit-prepared-transaction" => emit_prepared_transaction = true,
             "--direction" => {
                 let raw = iter.next().ok_or("--direction requires a value")?;
                 direction = Direction::parse(&raw)
@@ -10158,6 +10567,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     Ok(CliOptions {
         settings: settings.ok_or("--settings is required")?,
         vault_index: vault_index.ok_or("--vault-index is required")?,
+        route_policy_account,
+        emit_prepared_transaction,
         direction,
         source_reserve,
         target_reserve,
@@ -11081,6 +11492,8 @@ mod tests {
         CliOptions {
             settings: "settings".to_owned(),
             vault_index: 1,
+            route_policy_account: None,
+            emit_prepared_transaction: false,
             direction: Direction::MainToPrime,
             source_reserve: Some("source-reserve".to_owned()),
             target_reserve: Some("target-reserve".to_owned()),
@@ -11161,6 +11574,22 @@ mod tests {
         assert!(!options.optimization_cycle);
         assert_eq!(options.source_reserve, Some(source_reserve.to_string()));
         assert_eq!(options.target_reserve, Some(target_reserve.to_string()));
+    }
+
+    #[test]
+    fn accepts_explicit_route_policy_for_durable_recovery() {
+        let route_policy = Pubkey::new_unique();
+        let options = parse_args(vec![
+            "--settings".to_owned(),
+            Pubkey::new_unique().to_string(),
+            "--vault-index".to_owned(),
+            "1".to_owned(),
+            "--route-policy-account".to_owned(),
+            route_policy.to_string(),
+        ])
+        .expect("explicit durable route policy should parse");
+
+        assert_eq!(options.route_policy_account, Some(route_policy.to_string()));
     }
 
     #[test]
@@ -11422,8 +11851,8 @@ mod tests {
 
 fn print_help() {
     println!(
-         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--provision-lookup-table] [--provision-route-lookup-table] [--deposit-main-usdc <AMOUNT_RAW> | --deposit-reserve <RESERVE> <AMOUNT_RAW> | --deposit-idle-vault-reserve <RESERVE> <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--lookup-table <PUBKEY>...] [--execute]\n\n\
-         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and POLICY_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for live same-mint route execution; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses POLICY_KEYPAIR as fee payer and delegated signer, reuses durable lookup-table coverage, and fails before route send if coverage is missing. Add --provision-route-lookup-table with explicit source/target reserves plus --reconcile-from-chain for route lookup-table setup; it uses POLICY_KEYPAIR as the lookup-table authority and payer, cannot be combined with --optimization-cycle or --seed-from-user-position, and exits without writing a rebalance decision or sending the route. Add --deposit-idle-vault-reserve for router-owned USDC already inside the vault; execute mode requires expected idle token account, observed slot/time, mint, amount, target APY, and edge, uses POLICY_KEYPAIR as fee payer/delegated signer for target obligation setup when needed and for deposit, and does not read SOLANA_TESTING_PK. Add --provision-lookup-table only with --update-policy for durable policy lookup-table setup. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and POLICY_KEYPAIR for the policy deposit; --deposit-reserve allows choosing a non-Main Safe USDC reserve when Main is already the APY winner. Full withdraw mode uses POLICY_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
+         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> [--route-policy-account <PUBKEY>] [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--provision-lookup-table] [--provision-route-lookup-table] [--deposit-main-usdc <AMOUNT_RAW> | --deposit-reserve <RESERVE> <AMOUNT_RAW> | --deposit-idle-vault-reserve <RESERVE> <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--lookup-table <PUBKEY>...] [--execute]\n\n\
+         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and POLICY_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --route-policy-account only when a durable caller must select an exact previously recorded route policy instead of the current active policy. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for live same-mint route execution; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses POLICY_KEYPAIR as fee payer and delegated signer, reuses durable lookup-table coverage, and fails before route send if coverage is missing. Add --provision-route-lookup-table with explicit source/target reserves plus --reconcile-from-chain for route lookup-table setup; it uses POLICY_KEYPAIR as the lookup-table authority and payer, cannot be combined with --optimization-cycle or --seed-from-user-position, and exits without writing a rebalance decision or sending the route. Add --deposit-idle-vault-reserve for router-owned USDC already inside the vault; execute mode requires expected idle token account, observed slot/time, mint, amount, target APY, and edge, uses POLICY_KEYPAIR as fee payer/delegated signer for target obligation setup when needed and for deposit, and does not read SOLANA_TESTING_PK. Add --provision-lookup-table only with --update-policy for durable policy lookup-table setup. Initial deposit mode uses SOLANA_TESTING_PK for the funding wallet and POLICY_KEYPAIR for the policy deposit; --deposit-reserve allows choosing a non-Main Safe USDC reserve when Main is already the APY winner. Full withdraw mode uses POLICY_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
          op run --env-file=.env.1password -- bun run same-mint:swap -- --settings <PUBKEY> --vault-index 1 --reconcile-from-chain --seed-from-user-position"
     );
 }

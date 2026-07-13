@@ -103,6 +103,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0016_autodeposit_requested_slot_wakeup.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 17,
+        name: "durable_autodeposit_execution",
+        sql: include_str!("../../migrations/0017_durable_autodeposit_execution.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

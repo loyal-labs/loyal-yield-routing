@@ -164,6 +164,7 @@ async fn run_once(
     let idle_balance = neon
         .current_idle_token_balance(vault.vault.id, &USDC_MINT.to_string())
         .await?;
+    let idle_balance = available_idle_balance(neon, &vault, idle_balance).await?;
     run_vault_once(options, vault, neon, &candidates, idle_balance).await
 }
 
@@ -1288,11 +1289,63 @@ async fn load_idle_balances_by_vault(
     let balances = neon
         .current_idle_token_balances_for_vaults(&vault_ids, mint)
         .await?;
+    let ids = vaults
+        .iter()
+        .map(|vault| vault.vault.id.as_i64())
+        .collect::<Vec<_>>();
+    let reservation_rows = loyal_yield_orchestrator::sqlx::query(
+        r#"
+        SELECT
+            vault.id AS vault_id,
+            loyal_yield.reserved_autodeposit_amount_raw('mainnet-beta', vault.vault_pubkey, $2)
+                AS reserved_amount_raw
+        FROM loyal_yield.managed_vaults AS vault
+        WHERE vault.id = ANY($1)
+        "#,
+    )
+    .bind(&ids)
+    .bind(mint)
+    .fetch_all(neon.pool())
+    .await?;
+    let reservations = reservation_rows
+        .into_iter()
+        .map(|row| {
+            Ok::<_, loyal_yield_orchestrator::sqlx::Error>((
+                row.try_get::<i64, _>("vault_id")?,
+                row.try_get::<i64, _>("reserved_amount_raw")?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
     let mut by_vault = BTreeMap::<i64, CurrentIdleTokenBalance>::new();
-    for balance in balances {
+    for mut balance in balances {
+        let reserved = reservations
+            .get(&balance.vault_id.as_i64())
+            .copied()
+            .unwrap_or_default();
+        balance.amount_raw = balance.amount_raw.saturating_sub(reserved);
         by_vault.insert(balance.vault_id.as_i64(), balance);
     }
     Ok(by_vault)
+}
+
+async fn available_idle_balance(
+    neon: &NeonSqlClient,
+    vault: &ResolvedVault,
+    mut idle: Option<CurrentIdleTokenBalance>,
+) -> Result<Option<CurrentIdleTokenBalance>, Box<dyn Error>> {
+    let Some(balance) = idle.as_mut() else {
+        return Ok(idle);
+    };
+    let reserved = loyal_yield_orchestrator::sqlx::query_scalar::<_, i64>(
+        "SELECT loyal_yield.reserved_autodeposit_amount_raw($1, $2, $3)",
+    )
+    .bind("mainnet-beta")
+    .bind(&vault.vault.vault_pubkey)
+    .bind(&balance.mint)
+    .fetch_one(neon.pool())
+    .await?;
+    balance.amount_raw = balance.amount_raw.saturating_sub(reserved);
+    Ok(idle)
 }
 
 async fn fetch_vaults_by_settings_index(

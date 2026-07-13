@@ -9,6 +9,19 @@ import {
 import bs58 from "bs58";
 import { existsSync } from "node:fs";
 
+import {
+  runDurableAutodepositExecution,
+  type AttemptOutcome,
+  type DurableAutodepositExecution,
+  type DurableAutodepositStore,
+  type LandedAttemptEvidence,
+  type LeaseFence,
+  type PersistedAttempt,
+  type PreparedSignedAttempt,
+  type PullChainEvidence,
+  type TopUpChainEvidence,
+} from "./durable-autodeposit-execution";
+
 type PreparedOperation = {
   operation: string;
   payer: PublicKey;
@@ -98,12 +111,13 @@ type CliOptions = {
   execute: boolean;
   overrideFloorRaw: bigint | null;
   requireLotClaim: boolean;
-  scheduledSlotId: bigint | null;
+  scheduledSlotId: bigint;
   targetId: bigint | null;
 };
 
 type EligibleTarget = {
   id: bigint;
+  cluster: string;
   settings: string;
   vaultIndex: number;
   wallet: string;
@@ -417,6 +431,19 @@ function parseOptions(argv: string[]): CliOptions {
   };
 }
 
+export function assertDurableExecuteIdentity(
+  options: Pick<CliOptions, "claimToken" | "execute" | "requireLotClaim" | "scheduledSlotId">,
+): void {
+  if (
+    options.execute &&
+    (!options.requireLotClaim || options.claimToken === null || options.scheduledSlotId === null)
+  ) {
+    throw new Error(
+      "--execute requires --require-lot-claim, --claim-token, and --scheduled-slot-id for durable recovery.",
+    );
+  }
+}
+
 function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value || value.trim().length === 0) {
@@ -428,12 +455,13 @@ function requireEnv(name: string): string {
 async function loadEligibleTarget(
   neon: AppModules["neon"],
   databaseUrl: string,
-  targetId: bigint | null
+  options: Pick<CliOptions, "claimToken" | "scheduledSlotId" | "targetId">
 ): Promise<EligibleTarget | null> {
   const sql = neon(databaseUrl);
   const rows = await sql`
     SELECT
       t.id,
+      COALESCE(NULLIF(t.cluster, ''), 'mainnet-beta') AS cluster,
       t.settings,
       t.vault_index,
       t.wallet,
@@ -449,9 +477,10 @@ async function loadEligibleTarget(
       t.max_amount_per_period,
       t.period_length_seconds,
       t.start_timestamp,
-      rp.policy_account AS route_policy_account,
-      rp.policy_seed AS route_policy_seed,
-      rp.route_modes AS route_modes,
+      COALESCE(recovery.top_up_policy_account, rp.policy_account) AS route_policy_account,
+      COALESCE(recovery.top_up_policy_seed, rp.policy_seed) AS route_policy_seed,
+      COALESCE(recovery.top_up_route_modes, rp.route_modes) AS route_modes,
+      recovery.id AS recovery_execution_id,
       yp.current_reserve,
       yp.current_market,
       yp.current_liquidity_mint
@@ -474,6 +503,25 @@ async function loadEligibleTarget(
       LIMIT 1
     ) rp ON TRUE
     LEFT JOIN LATERAL (
+      SELECT
+        execution.id,
+        execution.top_up_policy_account,
+        execution.top_up_policy_seed,
+        execution.top_up_route_modes
+      FROM loyal_yield.balance_sweep_executions AS execution
+      WHERE execution.target_id = t.id
+        AND execution.lifecycle_state <> 'completed'
+        AND (
+          (${options.claimToken !== null}
+            AND execution.claim_token = ${options.claimToken})
+          OR
+          (${options.scheduledSlotId !== null}
+            AND execution.scheduled_slot_id = ${options.scheduledSlotId?.toString() ?? null})
+        )
+      ORDER BY execution.id DESC
+      LIMIT 1
+    ) recovery ON TRUE
+    LEFT JOIN LATERAL (
       SELECT current_reserve, current_market, current_liquidity_mint
       FROM loyal_yield.user_yield_positions yp
       WHERE yp.settings = t.settings
@@ -483,11 +531,16 @@ async function loadEligibleTarget(
       ORDER BY yp.updated_at DESC, yp.id DESC
       LIMIT 1
     ) yp ON TRUE
-    WHERE t.active
-      AND t.lifecycle_status = 'active'
-      AND t.wallet_balance_floor_raw IS NOT NULL
-      AND t.recurring_delegation IS NOT NULL
-      AND (${targetId === null} OR t.id = ${targetId?.toString() ?? null})
+    WHERE (
+        (
+          t.active
+          AND t.lifecycle_status = 'active'
+          AND t.wallet_balance_floor_raw IS NOT NULL
+          AND t.recurring_delegation IS NOT NULL
+        )
+        OR recovery.id IS NOT NULL
+      )
+      AND (${options.targetId === null} OR t.id = ${options.targetId?.toString() ?? null})
     ORDER BY t.id
     LIMIT 2
   `;
@@ -495,7 +548,7 @@ async function loadEligibleTarget(
   if (rows.length === 0) {
     return null;
   }
-  if (rows.length > 1 && targetId === null) {
+  if (rows.length > 1 && options.targetId === null) {
     throw new Error("Multiple eligible autodeposit targets found; pass --target-id.");
   }
 
@@ -508,6 +561,7 @@ async function loadEligibleTarget(
 
   return {
     id,
+    cluster: readRequiredString(row.cluster, "cluster"),
     settings: readRequiredString(row.settings, "settings"),
     vaultIndex: Number(readRequiredString(row.vault_index, "vault_index")),
     wallet: readRequiredString(row.wallet, "wallet"),
@@ -879,61 +933,7 @@ async function claimAutodepositLots(args: {
   return parseClaimRows(rows, args.targetId);
 }
 
-async function completeAutodepositLotClaim(args: {
-  neon: AppModules["neon"];
-  databaseUrl: string;
-  claimToken: string;
-  executionId: string;
-}) {
-  const sql = args.neon(args.databaseUrl);
-  await sql`
-    WITH matched_lots AS (
-      SELECT i.lot_id, i.amount_raw
-      FROM loyal_yield.balance_sweep_lot_claim_items i
-      JOIN loyal_yield.balance_sweep_surplus_lots l
-        ON l.id = i.lot_id
-      JOIN loyal_yield.balance_sweep_wallet_balance_events e
-        ON e.event_id = l.source_event_id
-      JOIN loyal_yield.balance_sweep_lot_claims c
-        ON c.claim_token = i.claim_token
-      JOIN loyal_yield.balance_sweep_targets t
-        ON t.id = c.target_id
-      WHERE i.claim_token = ${args.claimToken}
-        AND l.target_id = c.target_id
-        AND e.mint = t.token_mint
-        AND t.token_mint = ${USDC_MINT_ADDRESS}
-    ),
-    inserted AS (
-      INSERT INTO loyal_yield.balance_sweep_execution_lots
-        (execution_id, lot_id, amount_raw)
-      SELECT ${args.executionId}, lot_id, amount_raw
-      FROM matched_lots
-      ON CONFLICT (execution_id, lot_id) DO NOTHING
-      RETURNING lot_id
-    ),
-    updated_claim AS (
-      UPDATE loyal_yield.balance_sweep_lot_claims
-      SET status = 'executed',
-          execution_id = ${args.executionId},
-          updated_at = now()
-      WHERE claim_token = ${args.claimToken}
-        AND status = 'selected'
-        AND EXISTS (SELECT 1 FROM matched_lots)
-      RETURNING claim_token
-    )
-    UPDATE loyal_yield.balance_sweep_scheduled_slots
-    SET status = 'executed',
-        execution_id = ${args.executionId},
-        updated_at = now()
-    WHERE claim_token IN (SELECT claim_token FROM updated_claim)
-  `;
-}
-
-async function releaseAutodepositLotClaim(args: {
-  neon: AppModules["neon"];
-  databaseUrl: string;
-  claimToken: string;
-}) {
+async function releaseAutodepositLotClaim(args: { neon: AppModules["neon"]; databaseUrl: string; claimToken: string }) {
   const sql = args.neon(args.databaseUrl);
   await sql`
     WITH selected_claim AS (
@@ -1165,9 +1165,8 @@ async function simulatePreparedOperation(args: {
   prepared: PreparedOperation;
   signers: Keypair[];
 }): Promise<SimulationSummary> {
-  const latestBlockhash = await args.connection.getLatestBlockhash(
-    DEFAULT_COMMITMENT
-  );
+  const latestBlockhash =
+    await args.connection.getLatestBlockhash(DEFAULT_COMMITMENT);
   const transaction = args.compilePreparedOperation({
     prepared: args.prepared,
     blockhash: latestBlockhash.blockhash,
@@ -1186,41 +1185,285 @@ async function simulatePreparedOperation(args: {
   };
 }
 
-async function sendPreparedOperation(args: {
+async function prepareSignedOperation(args: {
   compilePreparedOperation: AppModules["compilePreparedOperation"];
   connection: Connection;
   prepared: PreparedOperation;
   signers: Keypair[];
-}): Promise<{ signature: string; slot: bigint }> {
-  const latestBlockhash = await args.connection.getLatestBlockhash(
-    DEFAULT_COMMITMENT
-  );
+}): Promise<PreparedSignedAttempt> {
+  const latestBlockhash =
+    await args.connection.getLatestBlockhash(DEFAULT_COMMITMENT);
   const transaction = args.compilePreparedOperation({
     prepared: args.prepared,
     blockhash: latestBlockhash.blockhash,
   });
   transaction.sign(args.signers);
-  const signature = await args.connection.sendRawTransaction(
-    transaction.serialize()
-  );
-  const confirmation = await args.connection.confirmTransaction(
-    {
-      signature,
-      blockhash: latestBlockhash.blockhash,
-      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-    },
-    DEFAULT_COMMITMENT
-  );
-  if (confirmation.value.err) {
+  const signatureBytes = transaction.signatures[0];
+  if (!signatureBytes) {
     throw new Error(
-      `Transaction ${signature} failed: ${JSON.stringify(confirmation.value.err)}`
+      "Prepared transaction is missing its deterministic signature.",
     );
   }
-  const parsed = await args.connection.getTransaction(signature, {
-    commitment: DEFAULT_COMMITMENT,
-    maxSupportedTransactionVersion: 0,
+  return {
+    signature: bs58.encode(signatureBytes),
+    blockhash: latestBlockhash.blockhash,
+    lastValidBlockHeight: BigInt(latestBlockhash.lastValidBlockHeight),
+    signedTransactionBase64: Buffer.from(transaction.serialize()).toString(
+      "base64",
+    ),
+  };
+}
+
+function preparedTopUpAttempt(
+  result: SameMintTopUpResult,
+): PreparedSignedAttempt {
+  const policyDepositTransaction = readRecord(
+    result.json?.policyDepositTransaction,
+  );
+  const prepared = readRecord(policyDepositTransaction?.preparedTransaction);
+  const signature = readRequiredString(
+    prepared?.signature,
+    "prepared Kamino top-up signature",
+  );
+  const blockhash = readRequiredString(
+    prepared?.blockhash,
+    "prepared Kamino top-up blockhash",
+  );
+  const lastValidBlockHeight = BigInt(
+    readRequiredString(
+      prepared?.lastValidBlockHeight,
+      "prepared Kamino top-up lastValidBlockHeight",
+    ),
+  );
+  const signedTransactionBase64 = readRequiredString(
+    prepared?.signedTransactionBase64,
+    "prepared Kamino top-up signed transaction",
+  );
+  const transaction = VersionedTransaction.deserialize(
+    Buffer.from(signedTransactionBase64, "base64"),
+  );
+  const derivedSignature = transaction.signatures[0]
+    ? bs58.encode(transaction.signatures[0])
+    : null;
+  if (derivedSignature !== signature) {
+    throw new Error(
+      `Prepared Kamino transaction signature ${derivedSignature} does not match ${signature}.`,
+    );
+  }
+  if (policyDepositTransaction?.simulationError) {
+    throw new Error(
+      `Prepared Kamino top-up simulation failed: ${policyDepositTransaction.simulationError}`,
+    );
+  }
+  if (policyDepositTransaction?.simulationSkippedReason) {
+    throw new Error(
+      `Prepared Kamino top-up was not simulated: ${policyDepositTransaction.simulationSkippedReason}`,
+    );
+  }
+  return {
+    signature,
+    blockhash,
+    lastValidBlockHeight,
+    signedTransactionBase64,
+  };
+}
+
+async function broadcastExactSignedTransaction(
+  connection: Connection,
+  attempt: PersistedAttempt,
+): Promise<string> {
+  const bytes = Buffer.from(attempt.signedTransactionBase64, "base64");
+  const transaction = VersionedTransaction.deserialize(bytes);
+  const derivedSignature = transaction.signatures[0]
+    ? bs58.encode(transaction.signatures[0])
+    : null;
+  if (derivedSignature !== attempt.signature) {
+    throw new Error(
+      `Persisted signed transaction derives ${derivedSignature}, expected ${attempt.signature}.`,
+    );
+  }
+  return connection.sendRawTransaction(bytes, {
+    maxRetries: 0,
+    skipPreflight: true,
   });
-  return { signature, slot: BigInt(parsed?.slot ?? 0) };
+}
+
+export async function reconcilePersistedAttempt(args: {
+  attempt: PersistedAttempt;
+  connection: Connection;
+  waitForConfirmation: boolean;
+}): Promise<AttemptOutcome> {
+  if (args.waitForConfirmation) {
+    try {
+      const confirmation = await args.connection.confirmTransaction(
+        {
+          signature: args.attempt.signature,
+          blockhash: args.attempt.blockhash,
+          lastValidBlockHeight: Number(args.attempt.lastValidBlockHeight),
+        },
+        DEFAULT_COMMITMENT,
+      );
+      if (confirmation.value.err) {
+        return {
+          classification: "failed",
+          error: confirmation.value.err,
+        };
+      }
+    } catch {
+      // A confirmation timeout or BlockhashNotFound is ambiguous until the
+      // persisted signature and block height are reconciled below.
+    }
+  }
+
+  const statuses = await args.connection.getSignatureStatuses(
+    [args.attempt.signature],
+    {
+      searchTransactionHistory: true,
+    },
+  );
+  const status = statuses.value[0];
+  if (status?.err) {
+    return { classification: "failed", error: status.err };
+  }
+  if (status) {
+    if (
+      status.confirmationStatus === "confirmed" ||
+      status.confirmationStatus === "finalized"
+    ) {
+      return {
+        classification: "landed",
+        confirmedSlot: BigInt(status.slot),
+      };
+    }
+    // A processed status proves the signature reached a fork. It is not safe
+    // to call the attempt non-landed merely because its blockhash later
+    // expires; reconciliation must retain the signature as unknown.
+    return { classification: "unknown", error: null };
+  }
+
+  const currentBlockHeight =
+    await args.connection.getBlockHeight(DEFAULT_COMMITMENT);
+  if (BigInt(currentBlockHeight) > args.attempt.lastValidBlockHeight) {
+    return {
+      classification: "expired_not_landed",
+      error: null,
+    };
+  }
+  return { classification: "unknown", error: null };
+}
+
+type ParsedTokenBalance = {
+  accountIndex: number;
+  mint: string;
+  uiTokenAmount: { amount: string };
+};
+
+async function readTokenBalanceEvidence(args: {
+  connection: Connection;
+  signature: string;
+  tokenMint: string;
+  sourceTokenAccount: string;
+  destinationTokenAccount?: string;
+}) {
+  const transaction = await args.connection.getParsedTransaction(
+    args.signature,
+    {
+      commitment: DEFAULT_COMMITMENT,
+      maxSupportedTransactionVersion: 0,
+    },
+  );
+  if (!transaction?.meta || transaction.meta.err) {
+    throw new Error(
+      `Confirmed transaction ${args.signature} is unavailable or failed.`,
+    );
+  }
+  const accountKeys = transaction.transaction.message.accountKeys.map((key) =>
+    key.pubkey.toBase58(),
+  );
+  const sourceIndex = accountKeys.indexOf(args.sourceTokenAccount);
+  const destinationIndex = args.destinationTokenAccount
+    ? accountKeys.indexOf(args.destinationTokenAccount)
+    : -1;
+  if (
+    sourceIndex < 0 ||
+    (args.destinationTokenAccount && destinationIndex < 0)
+  ) {
+    throw new Error(
+      `Transaction ${args.signature} does not contain the expected token accounts.`,
+    );
+  }
+  const pre = (transaction.meta.preTokenBalances ?? []) as ParsedTokenBalance[];
+  const post = (transaction.meta.postTokenBalances ??
+    []) as ParsedTokenBalance[];
+  const amountAt = (
+    balances: ParsedTokenBalance[],
+    accountIndex: number,
+  ): bigint => {
+    const balance = balances.find(
+      (item) =>
+        item.accountIndex === accountIndex && item.mint === args.tokenMint,
+    );
+    return balance ? BigInt(balance.uiTokenAmount.amount) : BigInt(0);
+  };
+  return {
+    slot: BigInt(transaction.slot),
+    sourcePreBalanceRaw: amountAt(pre, sourceIndex),
+    sourcePostBalanceRaw: amountAt(post, sourceIndex),
+    destinationPreBalanceRaw:
+      destinationIndex >= 0 ? amountAt(pre, destinationIndex) : BigInt(0),
+    destinationPostBalanceRaw:
+      destinationIndex >= 0 ? amountAt(post, destinationIndex) : BigInt(0),
+  };
+}
+
+async function readConfirmedPullEvidence(args: {
+  connection: Connection;
+  signature: string;
+  target: EligibleTarget;
+}): Promise<PullChainEvidence> {
+  const balances = await readTokenBalanceEvidence({
+    connection: args.connection,
+    signature: args.signature,
+    tokenMint: args.target.tokenMint,
+    sourceTokenAccount: args.target.walletTokenAta,
+    destinationTokenAccount: args.target.vaultTokenAta,
+  });
+  const sourceDebitRaw =
+    balances.sourcePreBalanceRaw - balances.sourcePostBalanceRaw;
+  const destinationCreditRaw =
+    balances.destinationPostBalanceRaw - balances.destinationPreBalanceRaw;
+  if (sourceDebitRaw <= BigInt(0) || sourceDebitRaw !== destinationCreditRaw) {
+    throw new Error(
+      `Pull ${args.signature} token evidence is inconsistent: source debit ${sourceDebitRaw}, vault credit ${destinationCreditRaw}.`,
+    );
+  }
+  return {
+    confirmedSlot: balances.slot,
+    ...balances,
+    destinationCreditRaw,
+  };
+}
+
+async function readConfirmedTopUpEvidence(args: {
+  amountRaw: bigint;
+  connection: Connection;
+  signature: string;
+  target: EligibleTarget;
+}): Promise<TopUpChainEvidence> {
+  const balances = await readTokenBalanceEvidence({
+    connection: args.connection,
+    signature: args.signature,
+    tokenMint: args.target.tokenMint,
+    sourceTokenAccount: args.target.vaultTokenAta,
+  });
+  const vaultDebitRaw =
+    balances.sourcePreBalanceRaw - balances.sourcePostBalanceRaw;
+  if (vaultDebitRaw !== args.amountRaw) {
+    throw new Error(
+      `Kamino top-up ${args.signature} debited ${vaultDebitRaw}, expected confirmed pull ${args.amountRaw}.`,
+    );
+  }
+  return { confirmedSlot: balances.slot, vaultDebitRaw };
 }
 
 type SameMintTopUpResult = {
@@ -1273,6 +1516,9 @@ async function runSameMintReserveTopUp(args: {
     args.target.settings,
     "--vault-index",
     args.target.vaultIndex.toString(),
+    "--route-policy-account",
+    args.target.routePolicyAccount,
+    "--emit-prepared-transaction",
     "--deposit-reserve",
     args.reserve,
     args.amountRaw.toString(),
@@ -1390,13 +1636,35 @@ export async function runAfterFeePayerSolSafety<T>(args: {
   return { result: await args.run(), safety };
 }
 
-function redactSensitiveText(value: string): string {
+export function redactSensitiveText(value: string): string {
   let redacted = value;
   const rpcUrl = process.env.SOLANA_RPC_URL;
   if (rpcUrl) {
     redacted = redacted.split(rpcUrl).join("[redacted SOLANA_RPC_URL]");
   }
-  return redacted.replace(/api-key=[^'"\s]+/gi, "api-key=[redacted]");
+  return redacted
+    .replace(/api-key=[^'"\s]+/gi, "api-key=[redacted]")
+    .replace(
+      /("signedTransactionBase64"\s*:\s*")[^"]+(")/g,
+      "$1[redacted signed transaction]$2"
+    );
+}
+
+function serializedRedactedError(error: unknown): string {
+  if (error === null || error === undefined) return "null";
+  const value =
+    error instanceof Error
+      ? { name: error.name, message: error.message }
+      : error;
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(value, (_key, item) =>
+      typeof item === "bigint" ? item.toString() : item
+    );
+  } catch {
+    serialized = undefined;
+  }
+  return redactSensitiveText(serialized ?? JSON.stringify(String(error)));
 }
 
 async function notifySolanaWeekSweep(args: {
@@ -1465,158 +1733,12 @@ function logSolanaWeekNotifyResult(result: SolanaWeekNotifyResult) {
   );
 }
 
-function requireTopUpExecution(result: SameMintTopUpResult): {
-  signature: string;
-  confirmedSlot: bigint;
-} {
-  if (result.json?.status !== "initial_deposit_executed") {
-    throw new Error(
-      `same-mint Kamino top-up did not report execution: ${JSON.stringify(
-        summarizeTopUpResult(result)
-      )}`
-    );
-  }
-  const policyDepositTransaction = readRecord(
-    result.json?.policyDepositTransaction
-  );
-  const signature = policyDepositTransaction?.signature?.toString();
-  const confirmedSlot = policyDepositTransaction?.confirmedSlot?.toString();
-  if (!signature || !confirmedSlot) {
-    throw new Error(
-      `same-mint Kamino top-up result is missing policy deposit signature/slot: ${JSON.stringify(
-        summarizeTopUpResult(result)
-      )}`
-    );
-  }
-  return { signature, confirmedSlot: BigInt(confirmedSlot) };
-}
-
-function readTopUpObservedPosition(
-  result: SameMintTopUpResult,
-  reserve: string
-): { amountRaw: bigint; observedSlot: bigint | null } | null {
-  const reconcile = readRecord(result.json?.postChainReconcile);
-  const positions = reconcile?.positions;
-  if (!Array.isArray(positions)) {
-    return null;
-  }
-  const position = positions
-    .map((item) => readRecord(item))
-    .find((item) => item?.reserve?.toString() === reserve);
-  const amountRaw = position?.amountRaw?.toString();
-  if (!amountRaw) {
-    return null;
-  }
-  const observedSlot = reconcile?.observedSlot?.toString();
-  return {
-    amountRaw: BigInt(amountRaw),
-    observedSlot: observedSlot ? BigInt(observedSlot) : null,
-  };
-}
-
 function readRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
 function tailLines(value: string, count: number): string[] {
   return value.trim().split(/\r?\n/).filter(Boolean).slice(-count);
-}
-
-async function recordPullExecution(args: {
-  neon: AppModules["neon"];
-  databaseUrl: string;
-  target: EligibleTarget;
-  signature: string;
-  slot: bigint;
-  amountRaw: bigint;
-  sourcePreBalanceRaw: bigint;
-  sourcePostBalanceRaw: bigint;
-  destinationPreBalanceRaw: bigint;
-  destinationPostBalanceRaw: bigint;
-}): Promise<{ dedupeKey: string; executionId: string }> {
-  const sql = args.neon(args.databaseUrl);
-  const dedupeKey = `${args.target.id.toString()}:autodeposit-pull:${args.signature}`;
-  const rows = await sql`
-    WITH inserted AS (
-      INSERT INTO loyal_yield.balance_sweep_executions (
-        target_id,
-        signature,
-        slot,
-        source_wallet_ata,
-        destination_vault_ata,
-        token_mint,
-        source_token_ata,
-        destination_token_ata,
-        amount_raw,
-        source_pre_balance_raw,
-        source_post_balance_raw,
-        destination_pre_balance_raw,
-        destination_post_balance_raw,
-        source_commitment,
-        raw_evidence,
-        decoded_evidence,
-        received_at,
-        decoded_at,
-        dedupe_key
-      )
-      VALUES (
-        ${args.target.id.toString()},
-        ${args.signature},
-        ${args.slot.toString()},
-        ${args.target.walletUsdcAta},
-        ${args.target.vaultUsdcAta},
-        ${args.target.tokenMint},
-        ${args.target.walletTokenAta},
-        ${args.target.vaultTokenAta},
-        ${args.amountRaw.toString()},
-        ${args.sourcePreBalanceRaw.toString()},
-        ${args.sourcePostBalanceRaw.toString()},
-        ${args.destinationPreBalanceRaw.toString()},
-        ${args.destinationPostBalanceRaw.toString()},
-        'confirmed',
-        ${JSON.stringify({ source: "single-vault-autodeposit-executor" })}::jsonb,
-        ${JSON.stringify({ sequence: "subscription_pull_then_kamino_deposit" })}::jsonb,
-        now(),
-        now(),
-        ${dedupeKey}
-      )
-      ON CONFLICT (dedupe_key) DO NOTHING
-      RETURNING id
-    ),
-    existing AS (
-      SELECT id
-      FROM loyal_yield.balance_sweep_executions
-      WHERE dedupe_key = ${dedupeKey}
-    )
-    SELECT id FROM inserted
-    UNION ALL
-    SELECT id FROM existing
-    LIMIT 1
-  `;
-  const row = rows[0] as Record<string, unknown> | undefined;
-  return {
-    dedupeKey,
-    executionId: readRequiredString(row?.id, "balance_sweep_execution.id"),
-  };
-}
-
-async function updateExecutionEvidence(args: {
-  decodedEvidence: Record<string, unknown>;
-  dedupeKey: string;
-  neon: AppModules["neon"];
-  databaseUrl: string;
-}) {
-  const sql = args.neon(args.databaseUrl);
-  await sql`
-    UPDATE loyal_yield.balance_sweep_executions
-    SET
-      decoded_evidence = COALESCE(decoded_evidence, '{}'::jsonb) ||
-        ${JSON.stringify(args.decodedEvidence)}::jsonb,
-      decoded_at = now()
-    WHERE dedupe_key = ${args.dedupeKey}
-  `;
 }
 
 async function recordAutodepositYieldDeposit(args: {
@@ -1684,7 +1806,7 @@ async function recordAutodepositYieldDeposit(args: {
       ${args.liquidityMint},
       ${args.amountRaw.toString()},
       ${args.balanceSweepExecutionId},
-      ${args.scheduledSlotId?.toString() ?? null},
+      ${args.scheduledSlotId.toString()},
       ${now},
       ${now}
     )
@@ -1703,34 +1825,178 @@ async function recordAutodepositYieldDeposit(args: {
         ),
         balance_sweep_scheduled_slot_id = COALESCE(
           balance_sweep_scheduled_slot_id,
-          ${args.scheduledSlotId?.toString() ?? null}
+          ${args.scheduledSlotId.toString()}
         )
       WHERE deposit_signature = ${args.depositSignature}
         AND (
           balance_sweep_execution_id IS NULL
           OR balance_sweep_execution_id = ${args.balanceSweepExecutionId}
         )
-      RETURNING id
+        AND (
+          balance_sweep_scheduled_slot_id IS NULL
+          OR balance_sweep_scheduled_slot_id = ${args.scheduledSlotId.toString()}
+        )
+      RETURNING
+        id,
+        balance_sweep_execution_id,
+        balance_sweep_scheduled_slot_id,
+        confirmed_slot,
+        liquidity_mint,
+        principal_amount_raw,
+        target_reserve
     `;
     const deposit = depositRows[0] as Record<string, unknown> | undefined;
     if (!deposit) {
-      throw new Error(
-        "Autodeposit yield deposit is already linked to another sweep execution."
-      );
+      throw new Error("Autodeposit yield deposit is already linked to another sweep execution.");
+    }
+    const depositId = readRequiredString(deposit.id, "deposit.id");
+    if (
+      BigInt(readRequiredString(deposit.confirmed_slot, "deposit.confirmed_slot")) !== args.depositSlot ||
+      readRequiredString(deposit.balance_sweep_execution_id, "deposit.balance_sweep_execution_id") !==
+        args.balanceSweepExecutionId ||
+      BigInt(readRequiredString(deposit.balance_sweep_scheduled_slot_id, "deposit.balance_sweep_scheduled_slot_id")) !==
+        args.scheduledSlotId ||
+      readRequiredString(deposit.liquidity_mint, "deposit.liquidity_mint") !== args.liquidityMint ||
+      BigInt(readRequiredString(deposit.principal_amount_raw, "deposit.principal_amount_raw")) !== args.amountRaw ||
+      readRequiredString(deposit.target_reserve, "deposit.target_reserve") !== args.targetReserve
+    ) {
+      throw new Error("Existing autodeposit yield deposit does not match confirmed chain evidence.");
     }
     const existingRows = await sql`
-      SELECT position_id
+      SELECT
+        id,
+        position_id,
+        amount_raw,
+        principal_delta_raw,
+        reserve,
+        market,
+        liquidity_mint,
+        observed_slot,
+        observed_at
       FROM loyal_yield.user_yield_position_holding_events
       WHERE source_signature = ${args.depositSignature}
+        AND source_deposit_id = ${depositId}
       ORDER BY id DESC
       LIMIT 1
     `;
     const existing = existingRows[0] as Record<string, unknown> | undefined;
-    return {
-      status: "duplicate",
-      depositId: readRequiredString(deposit.id, "deposit.id"),
-      positionId: existing?.position_id?.toString() ?? null,
-    };
+    if (existing) {
+      if (
+        BigInt(readRequiredString(existing.principal_delta_raw, "holding.principal_delta_raw")) !== args.amountRaw ||
+        readRequiredString(existing.reserve, "holding.reserve") !== args.targetReserve ||
+        readRequiredString(existing.market, "holding.market") !== args.market ||
+        readRequiredString(existing.liquidity_mint, "holding.liquidity_mint") !== args.liquidityMint
+      ) {
+        throw new Error("Existing autodeposit holding event does not match confirmed chain evidence.");
+      }
+      const eventId = readRequiredString(existing.id, "holding_event.id");
+      const positionId = readRequiredString(existing.position_id, "holding.position_id");
+      await sql`
+        UPDATE loyal_yield.user_yield_positions
+        SET
+          current_amount_raw = ${readRequiredString(existing.amount_raw, "holding.amount_raw")},
+          current_liquidity_mint = ${readRequiredString(existing.liquidity_mint, "holding.liquidity_mint")},
+          current_market = ${readRequiredString(existing.market, "holding.market")},
+          current_observed_at = ${readRequiredString(existing.observed_at, "holding.observed_at")},
+          current_observed_slot = ${readRequiredString(existing.observed_slot, "holding.observed_slot")},
+          current_reserve = ${readRequiredString(existing.reserve, "holding.reserve")},
+          last_holding_event_id = ${eventId},
+          updated_at = ${now}
+        WHERE id = ${positionId}
+          AND last_deposit_signature = ${args.depositSignature}
+      `;
+      return {
+        status: "duplicate",
+        depositId,
+        positionId: readRequiredString(existing.position_id, "holding.position_id"),
+      };
+    }
+
+    // A previous process may have stopped after inserting the unique deposit or
+    // after updating the position but before inserting its holding event. Repair
+    // either boundary without adding principal twice.
+    const positionedRows = await sql`
+      SELECT *
+      FROM loyal_yield.user_yield_positions
+      WHERE settings = ${args.target.settings}
+        AND vault_index = ${args.target.vaultIndex}
+        AND wallet_address = ${args.target.wallet}
+        AND last_deposit_signature = ${args.depositSignature}
+        AND status = 'active'
+      ORDER BY updated_at DESC, id DESC
+      LIMIT 1
+    `;
+    const positioned = positionedRows[0] as Record<string, unknown> | undefined;
+    if (positioned) {
+      const positionId = readRequiredString(positioned.id, "position.id");
+      const repairEventType =
+        positioned.first_deposit_signature?.toString() === args.depositSignature
+          ? "deposit_initialized"
+          : "deposit_top_up";
+      const repairedRows = await sql`
+        INSERT INTO loyal_yield.user_yield_position_holding_events (
+          position_id,
+          event_type,
+          reserve,
+          market,
+          liquidity_mint,
+          amount_raw,
+          principal_delta_raw,
+          holding_delta_raw,
+          observed_slot,
+          observed_at,
+          source_signature,
+          source_deposit_id,
+          created_at
+        )
+        VALUES (
+          ${positionId},
+          ${repairEventType},
+          ${args.targetReserve},
+          ${args.market},
+          ${args.liquidityMint},
+          ${readRequiredString(positioned.current_amount_raw, "position.current_amount_raw")},
+          ${args.amountRaw.toString()},
+          ${null},
+          ${(args.observedSlot ?? args.depositSlot).toString()},
+          ${now},
+          ${args.depositSignature},
+          ${depositId},
+          ${now}
+        )
+        RETURNING id
+      `;
+      const eventId = readRequiredString(
+        (repairedRows[0] as Record<string, unknown> | undefined)?.id,
+        "holding_event.id"
+      );
+      await sql`
+        UPDATE loyal_yield.user_yield_positions
+        SET last_holding_event_id = ${eventId}, updated_at = ${now}
+        WHERE id = ${positionId}
+      `;
+      return {
+        status: "duplicate",
+        depositId,
+        positionId,
+      };
+    }
+
+    const deletedRows = await sql`
+      DELETE FROM loyal_yield.user_yield_position_deposits
+      WHERE id = ${depositId}
+        AND balance_sweep_execution_id = ${args.balanceSweepExecutionId}
+        AND NOT EXISTS (
+          SELECT 1
+          FROM loyal_yield.user_yield_position_holding_events
+          WHERE source_deposit_id = ${depositId}
+        )
+      RETURNING id
+    `;
+    if (deletedRows.length !== 1) {
+      throw new Error("Incomplete autodeposit application persistence could not be repaired safely.");
+    }
+    return recordAutodepositYieldDeposit(args);
   }
 
   const existingRows = await sql`
@@ -1947,26 +2213,6 @@ async function markAutodepositExecutionCompleted(args: {
   `;
 }
 
-async function markAutodepositExecutionFailed(args: {
-  neon: AppModules["neon"];
-  databaseUrl: string;
-  executionId: string;
-  scheduledSlotId: bigint | null;
-  failureCode: "kamino_top_up_failed" | "yield_persistence_failed";
-}) {
-  if (args.scheduledSlotId === null) {
-    return;
-  }
-  const sql = args.neon(args.databaseUrl);
-  await sql`
-    SELECT loyal_yield.mark_autodeposit_execution_failed(
-      ${args.executionId},
-      ${args.scheduledSlotId.toString()},
-      ${args.failureCode}
-    )
-  `;
-}
-
 function summarizeSimulation(summary: SimulationSummary) {
   return {
     err: summary.err,
@@ -1985,10 +2231,7 @@ function topUpPolicySimulationError(result: SameMintTopUpResult): string | null 
   return policyDepositTransaction?.simulationError?.toString() ?? null;
 }
 
-function assertExecutablePreflight(args: {
-  pullSimulation: SimulationSummary;
-  topUpDryRun: SameMintTopUpResult;
-}) {
+function assertExecutablePreflight(args: { pullSimulation: SimulationSummary; topUpDryRun: SameMintTopUpResult }) {
   if (args.pullSimulation.err) {
     throw new Error(
       `Autodeposit pull simulation failed; refusing to execute. simulation=${summarizeSimulationFailure(
@@ -2006,28 +2249,955 @@ function assertExecutablePreflight(args: {
   }
 }
 
+const VAULT_LEASE_TTL_SECONDS = 90;
+const VAULT_LEASE_RENEW_INTERVAL_MS = 30_000;
+
+async function acquireVaultLease(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  cluster: string;
+  vaultPubkey: string;
+  claimToken: string | null;
+  scheduledSlotId: bigint | null;
+}): Promise<LeaseFence> {
+  const sql = args.neon(args.databaseUrl);
+  const ownerToken = crypto.randomUUID();
+  const rows = await sql`
+    WITH execution_state AS (
+      SELECT
+        COUNT(*) > 0 AS has_nonterminal,
+        COALESCE(BOOL_OR(
+          (${args.claimToken !== null}
+            AND execution.claim_token = ${args.claimToken})
+          OR
+          (${args.scheduledSlotId !== null}
+            AND execution.scheduled_slot_id = ${args.scheduledSlotId?.toString() ?? null})
+        ), false) AS has_matching_execution,
+        COALESCE(BOOL_OR(
+          execution.active_attempt_kind IS NOT NULL
+          AND NOT (
+              (${args.claimToken !== null}
+                AND execution.claim_token = ${args.claimToken})
+              OR
+              (${args.scheduledSlotId !== null}
+                AND execution.scheduled_slot_id = ${args.scheduledSlotId?.toString() ?? null})
+          )
+        ), false) AS has_competing_active_attempt
+      FROM loyal_yield.balance_sweep_executions AS execution
+      JOIN loyal_yield.balance_sweep_targets AS target
+        ON target.id = execution.target_id
+      WHERE COALESCE(NULLIF(target.cluster, ''), 'mainnet-beta') = ${args.cluster}
+        AND target.vault_pubkey = ${args.vaultPubkey}
+        AND execution.lifecycle_state <> 'completed'
+    ),
+    recovery_guard AS (
+      SELECT
+        NOT has_nonterminal
+        OR (has_matching_execution AND NOT has_competing_active_attempt)
+          AS allowed
+      FROM execution_state
+    )
+    INSERT INTO loyal_yield.vault_operation_leases (
+      cluster,
+      vault_pubkey,
+      owner_token,
+      fence,
+      expires_at,
+      updated_at
+    )
+    SELECT
+      ${args.cluster},
+      ${args.vaultPubkey},
+      ${ownerToken},
+      1,
+      now() + (${VAULT_LEASE_TTL_SECONDS} * interval '1 second'),
+      now()
+    FROM recovery_guard
+    WHERE allowed
+    ON CONFLICT (cluster, vault_pubkey) DO UPDATE
+    SET
+      owner_token = EXCLUDED.owner_token,
+      fence = loyal_yield.vault_operation_leases.fence + 1,
+      expires_at = EXCLUDED.expires_at,
+      updated_at = now()
+    WHERE loyal_yield.vault_operation_leases.expires_at <= now()
+      AND loyal_yield.vault_operation_leases.blocking_signature IS NULL
+      AND (SELECT allowed FROM recovery_guard)
+    RETURNING owner_token, fence
+  `;
+  const row = rows[0] as Record<string, unknown> | undefined;
+  if (!row) {
+    throw new Error(`Vault ${args.vaultPubkey} already has an active durable operation lease.`);
+  }
+  return {
+    cluster: args.cluster,
+    vaultPubkey: args.vaultPubkey,
+    ownerToken: readRequiredString(row.owner_token, "lease.owner_token"),
+    fence: BigInt(readRequiredString(row.fence, "lease.fence")),
+  };
+}
+
+async function renewVaultLease(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  lease: LeaseFence;
+}): Promise<boolean> {
+  const sql = args.neon(args.databaseUrl);
+  const rows = await sql`
+    UPDATE loyal_yield.vault_operation_leases
+    SET
+      expires_at = now() + (${VAULT_LEASE_TTL_SECONDS} * interval '1 second'),
+      updated_at = now()
+    WHERE cluster = ${args.lease.cluster}
+      AND vault_pubkey = ${args.lease.vaultPubkey}
+      AND owner_token = ${args.lease.ownerToken}
+      AND fence = ${args.lease.fence.toString()}
+      AND expires_at > now()
+    RETURNING fence
+  `;
+  return rows.length === 1;
+}
+
+async function releaseVaultLease(args: { neon: AppModules["neon"]; databaseUrl: string; lease: LeaseFence }) {
+  const sql = args.neon(args.databaseUrl);
+  await sql`
+    DELETE FROM loyal_yield.vault_operation_leases
+    WHERE cluster = ${args.lease.cluster}
+      AND vault_pubkey = ${args.lease.vaultPubkey}
+      AND owner_token = ${args.lease.ownerToken}
+      AND fence = ${args.lease.fence.toString()}
+  `;
+}
+
+async function withVaultLease<T>(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  cluster: string;
+  vaultPubkey: string;
+  claimToken: string | null;
+  scheduledSlotId: bigint | null;
+  run: (lease: LeaseFence) => Promise<T>;
+}): Promise<T> {
+  const lease = await acquireVaultLease(args);
+  let leaseLost = false;
+  const heartbeat = setInterval(() => {
+    void renewVaultLease({
+      neon: args.neon,
+      databaseUrl: args.databaseUrl,
+      lease,
+    })
+      .then((renewed) => {
+        if (!renewed) leaseLost = true;
+      })
+      .catch(() => {
+        leaseLost = true;
+      });
+  }, VAULT_LEASE_RENEW_INTERVAL_MS);
+  try {
+    const result = await args.run(lease);
+    if (leaseLost) {
+      throw new Error("Vault operation lease was lost during execution.");
+    }
+    return result;
+  } finally {
+    clearInterval(heartbeat);
+    await releaseVaultLease({
+      neon: args.neon,
+      databaseUrl: args.databaseUrl,
+      lease,
+    });
+  }
+}
+
+type DurableStoreContext = {
+  appModules: AppModules;
+  databaseUrl: string;
+  target: EligibleTarget;
+  claimToken: string | null;
+  scheduledSlotId: bigint | null;
+  requestedAmountRaw: bigint;
+  topUpReserve: string;
+  topUpMarket: string;
+  topUpLiquidityMint: string;
+};
+
+class NeonDurableAutodepositStore implements DurableAutodepositStore {
+  constructor(private readonly context: DurableStoreContext) {}
+
+  private sql() {
+    return this.context.appModules.neon(this.context.databaseUrl);
+  }
+
+  private async reload(): Promise<DurableAutodepositExecution> {
+    const execution = await this.loadExecution();
+    if (!execution) {
+      throw new Error("Durable autodeposit execution disappeared after persistence.");
+    }
+    return execution;
+  }
+
+  async loadExecution(): Promise<DurableAutodepositExecution | null> {
+    if (!this.context.claimToken && this.context.scheduledSlotId === null) {
+      return null;
+    }
+    const sql = this.sql();
+    const rows = await sql`
+      SELECT
+        execution.id,
+        execution.lifecycle_state,
+        execution.requested_amount_raw,
+        execution.confirmed_pull_amount_raw,
+        execution.reserved_amount_raw,
+        execution.signature AS pull_signature,
+        execution.kamino_deposit_signature,
+        execution.top_up_reserve,
+        execution.top_up_market,
+        execution.top_up_liquidity_mint,
+        attempt.id AS attempt_id,
+        attempt.operation_kind,
+        attempt.attempt_number,
+        attempt.signature AS attempt_signature,
+        attempt.blockhash,
+        attempt.last_valid_block_height,
+        attempt.signed_transaction_base64,
+        attempt.classification,
+        attempt.broadcast_at
+      FROM loyal_yield.balance_sweep_executions AS execution
+      LEFT JOIN LATERAL (
+        SELECT candidate.*
+        FROM loyal_yield.balance_sweep_execution_attempts AS candidate
+        WHERE candidate.execution_id = execution.id
+          AND candidate.operation_kind = execution.active_attempt_kind
+          AND candidate.classification IN ('prepared', 'unknown')
+        ORDER BY candidate.attempt_number DESC
+        LIMIT 1
+      ) AS attempt ON TRUE
+      WHERE execution.target_id = ${this.context.target.id.toString()}
+        AND (
+          (${this.context.claimToken !== null}
+            AND execution.claim_token = ${this.context.claimToken})
+          OR
+          (${this.context.scheduledSlotId !== null}
+            AND execution.scheduled_slot_id = ${this.context.scheduledSlotId?.toString() ?? null})
+        )
+      ORDER BY execution.id DESC
+      LIMIT 1
+    `;
+    const row = rows[0] as Record<string, unknown> | undefined;
+    if (!row) return null;
+    const hasReplayableAttempt =
+      row.attempt_id !== null &&
+      row.attempt_id !== undefined &&
+      row.blockhash !== null &&
+      row.last_valid_block_height !== null &&
+      row.signed_transaction_base64 !== null;
+    const activeAttempt: PersistedAttempt | null = hasReplayableAttempt
+      ? {
+          id: readRequiredString(row.attempt_id, "attempt.id"),
+          executionId: readRequiredString(row.id, "execution.id"),
+          operationKind: readRequiredString(
+            row.operation_kind,
+            "attempt.operation_kind"
+          ) as PersistedAttempt["operationKind"],
+          attemptNumber: Number(readRequiredString(row.attempt_number, "attempt.attempt_number")),
+          signature: readRequiredString(row.attempt_signature, "attempt.signature"),
+          blockhash: readRequiredString(row.blockhash, "attempt.blockhash"),
+          lastValidBlockHeight: BigInt(
+            readRequiredString(row.last_valid_block_height, "attempt.last_valid_block_height")
+          ),
+          signedTransactionBase64: readRequiredString(
+            row.signed_transaction_base64,
+            "attempt.signed_transaction_base64"
+          ),
+          classification: readRequiredString(
+            row.classification,
+            "attempt.classification"
+          ) as PersistedAttempt["classification"],
+          broadcastAt: row.broadcast_at ? readRequiredString(row.broadcast_at, "attempt.broadcast_at") : null,
+        }
+      : null;
+    return {
+      id: readRequiredString(row.id, "execution.id"),
+      lifecycleState: readRequiredString(
+        row.lifecycle_state,
+        "execution.lifecycle_state"
+      ) as DurableAutodepositExecution["lifecycleState"],
+      requestedAmountRaw: BigInt(readRequiredString(row.requested_amount_raw, "execution.requested_amount_raw")),
+      confirmedPullAmountRaw: row.confirmed_pull_amount_raw ? BigInt(row.confirmed_pull_amount_raw.toString()) : null,
+      reservedAmountRaw: BigInt(readRequiredString(row.reserved_amount_raw, "execution.reserved_amount_raw")),
+      activeAttempt,
+      pullSignature: row.pull_signature?.toString() ?? null,
+      successfulTopUpSignature: row.kamino_deposit_signature?.toString() ?? null,
+      topUpReserve: row.top_up_reserve?.toString() ?? this.context.topUpReserve,
+      topUpMarket: row.top_up_market?.toString() ?? this.context.topUpMarket,
+      topUpLiquidityMint: row.top_up_liquidity_mint?.toString() ?? this.context.topUpLiquidityMint,
+    };
+  }
+
+  async assertLease(lease: LeaseFence): Promise<void> {
+    const sql = this.sql();
+    const rows = await sql`
+      SELECT 1
+      FROM loyal_yield.vault_operation_leases
+      WHERE cluster = ${lease.cluster}
+        AND vault_pubkey = ${lease.vaultPubkey}
+        AND owner_token = ${lease.ownerToken}
+        AND fence = ${lease.fence.toString()}
+        AND expires_at > now()
+    `;
+    if (rows.length !== 1) {
+      throw new Error(`Vault lease ${lease.cluster}:${lease.vaultPubkey}:${lease.fence} is stale.`);
+    }
+  }
+
+  async createWithPreparedPull(
+    lease: LeaseFence,
+    attempt: PreparedSignedAttempt
+  ): Promise<DurableAutodepositExecution> {
+    const sql = this.sql();
+    const dedupeIdentity = this.context.claimToken ?? this.context.scheduledSlotId?.toString() ?? attempt.signature;
+    const dedupeKey = `${this.context.target.id}:durable-autodeposit:${dedupeIdentity}`;
+    const rows = await sql`
+      WITH lease_guard AS (
+        SELECT 1
+        FROM loyal_yield.vault_operation_leases
+        WHERE cluster = ${lease.cluster}
+          AND vault_pubkey = ${lease.vaultPubkey}
+          AND owner_token = ${lease.ownerToken}
+          AND fence = ${lease.fence.toString()}
+          AND expires_at > now()
+      ),
+      claim_guard AS (
+        SELECT claim_token
+        FROM loyal_yield.balance_sweep_lot_claims
+        WHERE claim_token = ${this.context.claimToken}
+          AND status = 'selected'
+          AND execution_id IS NULL
+        FOR UPDATE
+      ),
+      slot_guard AS (
+        SELECT id
+        FROM loyal_yield.balance_sweep_scheduled_slots
+        WHERE id = ${this.context.scheduledSlotId?.toString() ?? null}
+          AND status = 'selected'
+          AND execution_id IS NULL
+        FOR UPDATE
+      ),
+      inserted_execution AS (
+        INSERT INTO loyal_yield.balance_sweep_executions (
+          target_id,
+          signature,
+          slot,
+          source_wallet_ata,
+          destination_vault_ata,
+          token_mint,
+          source_token_ata,
+          destination_token_ata,
+          amount_raw,
+          source_commitment,
+          raw_evidence,
+          decoded_evidence,
+          dedupe_key,
+          scheduled_slot_id,
+          claim_token,
+          lifecycle_state,
+          requested_amount_raw,
+          confirmed_pull_amount_raw,
+          reserved_amount_raw,
+          top_up_reserve,
+          top_up_market,
+          top_up_liquidity_mint,
+          top_up_policy_account,
+          top_up_policy_seed,
+          top_up_route_modes,
+          active_attempt_kind
+        )
+        SELECT
+          ${this.context.target.id.toString()},
+          ${attempt.signature},
+          NULL,
+          ${this.context.target.walletUsdcAta},
+          ${this.context.target.vaultUsdcAta},
+          ${this.context.target.tokenMint},
+          ${this.context.target.walletTokenAta},
+          ${this.context.target.vaultTokenAta},
+          ${this.context.requestedAmountRaw.toString()},
+          'prepared',
+          ${JSON.stringify({ source: "durable-autodeposit-executor" })}::jsonb,
+          ${JSON.stringify({
+            status: "durable_pull_confirmation_pending",
+          })}::jsonb,
+          ${dedupeKey},
+          ${this.context.scheduledSlotId?.toString() ?? null},
+          ${this.context.claimToken},
+          'pull_confirmation_pending',
+          ${this.context.requestedAmountRaw.toString()},
+          NULL,
+          0,
+          ${this.context.topUpReserve},
+          ${this.context.topUpMarket},
+          ${this.context.topUpLiquidityMint},
+          ${this.context.target.routePolicyAccount},
+          ${this.context.target.routePolicySeed.toString()},
+          ${this.context.target.routeModes},
+          'pull'
+        FROM lease_guard
+        WHERE (${this.context.claimToken === null} OR EXISTS (SELECT 1 FROM claim_guard))
+          AND (${this.context.scheduledSlotId === null} OR EXISTS (SELECT 1 FROM slot_guard))
+        ON CONFLICT (dedupe_key) DO NOTHING
+        RETURNING id
+      ),
+      linked_claim AS (
+        UPDATE loyal_yield.balance_sweep_lot_claims AS claim
+        SET
+          execution_id = inserted_execution.id,
+          updated_at = now()
+        FROM inserted_execution
+        WHERE claim.claim_token = ${this.context.claimToken}
+          AND claim.status = 'selected'
+          AND claim.execution_id IS NULL
+        RETURNING claim.claim_token
+      ),
+      linked_slot AS (
+        UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
+        SET
+          execution_id = inserted_execution.id,
+          updated_at = now()
+        FROM inserted_execution
+        WHERE slot.id = ${this.context.scheduledSlotId?.toString() ?? null}
+          AND slot.status = 'selected'
+          AND slot.execution_id IS NULL
+        RETURNING slot.id
+      ),
+      inserted_attempt AS (
+        INSERT INTO loyal_yield.balance_sweep_execution_attempts (
+          execution_id,
+          operation_kind,
+          attempt_number,
+          signature,
+          blockhash,
+          last_valid_block_height,
+          signed_transaction_base64,
+          classification,
+          lease_owner_token,
+          lease_fence
+        )
+        SELECT
+          id,
+          'pull',
+          1,
+          ${attempt.signature},
+          ${attempt.blockhash},
+          ${attempt.lastValidBlockHeight.toString()},
+          ${attempt.signedTransactionBase64},
+          'prepared',
+          ${lease.ownerToken},
+          ${lease.fence.toString()}
+        FROM inserted_execution
+        WHERE (${this.context.claimToken === null} OR EXISTS (SELECT 1 FROM linked_claim))
+          AND (${this.context.scheduledSlotId === null} OR EXISTS (SELECT 1 FROM linked_slot))
+        RETURNING id
+      )
+      SELECT id FROM inserted_attempt
+    `;
+    if (rows.length !== 1) {
+      const existing = await this.loadExecution();
+      if (existing) return existing;
+      throw new Error("Fenced pull-attempt persistence did not acquire ownership.");
+    }
+    return this.reload();
+  }
+
+  async appendPreparedTopUp(
+    lease: LeaseFence,
+    executionId: string,
+    attempt: PreparedSignedAttempt
+  ): Promise<DurableAutodepositExecution> {
+    const sql = this.sql();
+    const rows = await sql`
+      WITH lease_guard AS (
+        SELECT 1
+        FROM loyal_yield.vault_operation_leases
+        WHERE cluster = ${lease.cluster}
+          AND vault_pubkey = ${lease.vaultPubkey}
+          AND owner_token = ${lease.ownerToken}
+          AND fence = ${lease.fence.toString()}
+          AND expires_at > now()
+      ),
+      owned_execution AS (
+        UPDATE loyal_yield.balance_sweep_executions AS execution
+        SET
+          lifecycle_state = 'deposit_confirmation_pending',
+          active_attempt_kind = 'top_up',
+          completion_failure_code = NULL,
+          decoded_evidence = COALESCE(execution.decoded_evidence, '{}'::jsonb) ||
+            ${JSON.stringify({
+              status: "durable_deposit_confirmation_pending",
+            })}::jsonb,
+          decoded_at = now()
+        FROM lease_guard
+        WHERE execution.id = ${executionId}
+          AND execution.lifecycle_state = 'deposit_pending'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM loyal_yield.balance_sweep_execution_attempts AS pending
+            WHERE pending.execution_id = execution.id
+              AND pending.operation_kind = 'top_up'
+              AND pending.classification IN ('prepared', 'unknown')
+          )
+        RETURNING execution.id
+      ),
+      inserted_attempt AS (
+        INSERT INTO loyal_yield.balance_sweep_execution_attempts (
+          execution_id,
+          operation_kind,
+          attempt_number,
+          signature,
+          blockhash,
+          last_valid_block_height,
+          signed_transaction_base64,
+          classification,
+          lease_owner_token,
+          lease_fence
+        )
+        SELECT
+          owned_execution.id,
+          'top_up',
+          COALESCE((
+            SELECT MAX(previous.attempt_number) + 1
+            FROM loyal_yield.balance_sweep_execution_attempts AS previous
+            WHERE previous.execution_id = owned_execution.id
+              AND previous.operation_kind = 'top_up'
+          ), 1),
+          ${attempt.signature},
+          ${attempt.blockhash},
+          ${attempt.lastValidBlockHeight.toString()},
+          ${attempt.signedTransactionBase64},
+          'prepared',
+          ${lease.ownerToken},
+          ${lease.fence.toString()}
+        FROM owned_execution
+        RETURNING id
+      )
+      SELECT id FROM inserted_attempt
+    `;
+    if (rows.length !== 1) {
+      throw new Error(`Execution ${executionId} refused a competing fenced top-up attempt.`);
+    }
+    return this.reload();
+  }
+
+  async recordBroadcast(lease: LeaseFence, attempt: PersistedAttempt) {
+    const sql = this.sql();
+    const rows = await sql`
+      UPDATE loyal_yield.balance_sweep_execution_attempts AS attempt
+      SET broadcast_at = COALESCE(attempt.broadcast_at, now())
+      WHERE attempt.id = ${attempt.id}
+        AND EXISTS (
+          SELECT 1
+          FROM loyal_yield.vault_operation_leases AS operation_lease
+          WHERE operation_lease.cluster = ${lease.cluster}
+            AND operation_lease.vault_pubkey = ${lease.vaultPubkey}
+            AND operation_lease.owner_token = ${lease.ownerToken}
+            AND operation_lease.fence = ${lease.fence.toString()}
+            AND operation_lease.expires_at > now()
+        )
+      RETURNING attempt.id
+    `;
+    if (rows.length !== 1) {
+      throw new Error("Stale lease could not record the broadcast boundary.");
+    }
+  }
+
+  async recordNonLandedAttempt(
+    lease: LeaseFence,
+    execution: DurableAutodepositExecution,
+    attempt: PersistedAttempt,
+    outcome: Exclude<AttemptOutcome, LandedAttemptEvidence>
+  ): Promise<DurableAutodepositExecution> {
+    const sql = this.sql();
+    const nextState =
+      attempt.operationKind === "top_up" &&
+      (outcome.classification === "failed" || outcome.classification === "expired_not_landed")
+        ? "deposit_pending"
+        : "needs_reconciliation";
+    const keepActive = outcome.classification === "unknown";
+    const rows = await sql`
+      WITH lease_guard AS (
+        SELECT 1
+        FROM loyal_yield.vault_operation_leases
+        WHERE cluster = ${lease.cluster}
+          AND vault_pubkey = ${lease.vaultPubkey}
+          AND owner_token = ${lease.ownerToken}
+          AND fence = ${lease.fence.toString()}
+          AND expires_at > now()
+      ),
+      classified AS (
+        UPDATE loyal_yield.balance_sweep_execution_attempts AS attempt_row
+        SET
+          classification = ${outcome.classification},
+          classified_at = now(),
+          chain_error = ${serializedRedactedError(outcome.error)}::jsonb
+        FROM lease_guard
+        WHERE attempt_row.id = ${attempt.id}
+          AND attempt_row.execution_id = ${execution.id}
+          AND attempt_row.classification IN ('prepared', 'unknown')
+        RETURNING attempt_row.id
+      )
+      UPDATE loyal_yield.balance_sweep_executions AS execution_row
+      SET
+        lifecycle_state = ${nextState},
+        active_attempt_kind = ${keepActive ? attempt.operationKind : null},
+        completion_failure_code = NULL,
+        decoded_evidence = COALESCE(execution_row.decoded_evidence, '{}'::jsonb) ||
+          jsonb_build_object(
+            'status', ${nextState === "deposit_pending" ? "durable_deposit_pending" : "durable_needs_reconciliation"},
+            'lastAttemptClassification', ${outcome.classification}
+          ),
+        decoded_at = now()
+      WHERE execution_row.id = ${execution.id}
+        AND EXISTS (SELECT 1 FROM classified)
+      RETURNING execution_row.id
+    `;
+    if (rows.length !== 1) {
+      throw new Error("Fenced attempt classification lost ownership.");
+    }
+    return this.reload();
+  }
+
+  async recordConfirmedPull(
+    lease: LeaseFence,
+    execution: DurableAutodepositExecution,
+    attempt: PersistedAttempt,
+    evidence: PullChainEvidence
+  ): Promise<DurableAutodepositExecution> {
+    const sql = this.sql();
+    const rows = await sql`
+      WITH lease_guard AS (
+        SELECT 1
+        FROM loyal_yield.vault_operation_leases
+        WHERE cluster = ${lease.cluster}
+          AND vault_pubkey = ${lease.vaultPubkey}
+          AND owner_token = ${lease.ownerToken}
+          AND fence = ${lease.fence.toString()}
+          AND expires_at > now()
+      ),
+      classified AS (
+        UPDATE loyal_yield.balance_sweep_execution_attempts AS attempt_row
+        SET
+          classification = 'landed',
+          classified_at = now(),
+          confirmed_slot = ${evidence.confirmedSlot.toString()},
+          chain_error = NULL,
+          evidence = attempt_row.evidence ||
+            ${JSON.stringify({
+              source: "confirmed_transaction_token_balances",
+            })}::jsonb
+        FROM lease_guard
+        WHERE attempt_row.id = ${attempt.id}
+          AND attempt_row.execution_id = ${execution.id}
+          AND attempt_row.operation_kind = 'pull'
+          AND attempt_row.classification IN ('prepared', 'unknown')
+        RETURNING attempt_row.id
+      ),
+      advanced AS (
+        UPDATE loyal_yield.balance_sweep_executions AS execution_row
+        SET
+          lifecycle_state = 'deposit_pending',
+          active_attempt_kind = NULL,
+          slot = ${evidence.confirmedSlot.toString()},
+          amount_raw = ${evidence.destinationCreditRaw.toString()},
+          confirmed_pull_amount_raw = ${evidence.destinationCreditRaw.toString()},
+          reserved_amount_raw = ${evidence.destinationCreditRaw.toString()},
+          source_pre_balance_raw = ${evidence.sourcePreBalanceRaw.toString()},
+          source_post_balance_raw = ${evidence.sourcePostBalanceRaw.toString()},
+          destination_pre_balance_raw = ${evidence.destinationPreBalanceRaw.toString()},
+          destination_post_balance_raw = ${evidence.destinationPostBalanceRaw.toString()},
+          source_commitment = 'confirmed',
+          received_at = COALESCE(execution_row.received_at, now()),
+          decoded_at = now(),
+          completion_failure_code = NULL,
+          decoded_evidence = COALESCE(execution_row.decoded_evidence, '{}'::jsonb) ||
+            jsonb_build_object(
+              'status', 'durable_deposit_pending',
+              'confirmedPullAmountRaw', ${evidence.destinationCreditRaw.toString()}::text,
+              'pullEvidenceSource', 'confirmed_transaction_token_balances'
+            )
+        WHERE execution_row.id = ${execution.id}
+          AND EXISTS (SELECT 1 FROM classified)
+        RETURNING execution_row.id, execution_row.claim_token, execution_row.scheduled_slot_id
+      ),
+      matched_lots AS (
+        SELECT item.lot_id, item.amount_raw
+        FROM loyal_yield.balance_sweep_lot_claim_items AS item
+        JOIN advanced ON advanced.claim_token = item.claim_token
+      ),
+      inserted_lots AS (
+        INSERT INTO loyal_yield.balance_sweep_execution_lots (
+          execution_id,
+          lot_id,
+          amount_raw
+        )
+        SELECT ${execution.id}, lot_id, amount_raw
+        FROM matched_lots
+        ON CONFLICT (execution_id, lot_id) DO NOTHING
+      ),
+      completed_claim AS (
+        UPDATE loyal_yield.balance_sweep_lot_claims AS claim
+        SET
+          status = 'executed',
+          execution_id = ${execution.id},
+          updated_at = now()
+        FROM advanced
+        WHERE claim.claim_token = advanced.claim_token
+          AND claim.status IN ('selected', 'executed')
+        RETURNING claim.claim_token
+      )
+      UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
+      SET
+        status = 'executed',
+        execution_id = ${execution.id},
+        updated_at = now()
+      FROM advanced
+      WHERE slot.id = advanced.scheduled_slot_id
+        AND slot.status IN ('selected', 'executed')
+      RETURNING slot.id
+    `;
+    if (rows.length !== 1 && this.context.scheduledSlotId !== null) {
+      throw new Error("Confirmed pull did not atomically consume its claim and slot.");
+    }
+    return this.reload();
+  }
+
+  async recordConfirmedTopUp(
+    lease: LeaseFence,
+    execution: DurableAutodepositExecution,
+    attempt: PersistedAttempt,
+    evidence: TopUpChainEvidence
+  ): Promise<DurableAutodepositExecution> {
+    const sql = this.sql();
+    const rows = await sql`
+      WITH lease_guard AS (
+        SELECT 1
+        FROM loyal_yield.vault_operation_leases
+        WHERE cluster = ${lease.cluster}
+          AND vault_pubkey = ${lease.vaultPubkey}
+          AND owner_token = ${lease.ownerToken}
+          AND fence = ${lease.fence.toString()}
+          AND expires_at > now()
+      ),
+      classified AS (
+        UPDATE loyal_yield.balance_sweep_execution_attempts AS attempt_row
+        SET
+          classification = 'landed',
+          classified_at = now(),
+          confirmed_slot = ${evidence.confirmedSlot.toString()},
+          chain_error = NULL,
+          evidence = attempt_row.evidence || jsonb_build_object(
+            'vaultDebitRaw', ${evidence.vaultDebitRaw.toString()}::text,
+            'source', 'confirmed_transaction_token_balances'
+          )
+        FROM lease_guard
+        WHERE attempt_row.id = ${attempt.id}
+          AND attempt_row.execution_id = ${execution.id}
+          AND attempt_row.operation_kind = 'top_up'
+          AND attempt_row.classification IN ('prepared', 'unknown')
+        RETURNING attempt_row.id
+      )
+      UPDATE loyal_yield.balance_sweep_executions AS execution_row
+      SET
+        lifecycle_state = 'deposit_confirmed',
+        active_attempt_kind = NULL,
+        successful_top_up_attempt_id = classified.id,
+        kamino_deposit_signature = ${attempt.signature},
+        reserved_amount_raw = 0,
+        completion_failure_code = NULL,
+        decoded_evidence = COALESCE(execution_row.decoded_evidence, '{}'::jsonb) ||
+          jsonb_build_object(
+            'status', 'durable_deposit_confirmed',
+            'kaminoDepositSignature', ${attempt.signature},
+            'kaminoDepositSlot', ${evidence.confirmedSlot.toString()}::text
+          ),
+        decoded_at = now()
+      FROM classified
+      WHERE execution_row.id = ${execution.id}
+        AND execution_row.confirmed_pull_amount_raw = ${evidence.vaultDebitRaw.toString()}
+      RETURNING execution_row.id
+    `;
+    if (rows.length !== 1) {
+      throw new Error("Fenced top-up confirmation did not match the pull reservation.");
+    }
+    return this.reload();
+  }
+
+  async persistCompletion(
+    lease: LeaseFence,
+    execution: DurableAutodepositExecution
+  ): Promise<DurableAutodepositExecution> {
+    await this.assertLease(lease);
+    if (
+      this.context.scheduledSlotId === null ||
+      !execution.successfulTopUpSignature ||
+      !execution.confirmedPullAmountRaw
+    ) {
+      throw new Error(`Execution ${execution.id} lacks the slot, signature, or amount needed for completion.`);
+    }
+    const sql = this.sql();
+    const attemptRows = await sql`
+      SELECT confirmed_slot
+      FROM loyal_yield.balance_sweep_execution_attempts
+      WHERE execution_id = ${execution.id}
+        AND operation_kind = 'top_up'
+        AND signature = ${execution.successfulTopUpSignature}
+        AND classification = 'landed'
+      LIMIT 1
+    `;
+    const depositSlot = BigInt(
+      readRequiredString(
+        (attemptRows[0] as Record<string, unknown> | undefined)?.confirmed_slot,
+        "successful top-up confirmed_slot"
+      )
+    );
+    await recordAutodepositYieldDeposit({
+      amountRaw: execution.confirmedPullAmountRaw,
+      appModules: this.context.appModules,
+      balanceSweepExecutionId: execution.id,
+      databaseUrl: this.context.databaseUrl,
+      depositSignature: execution.successfulTopUpSignature,
+      depositSlot,
+      liquidityMint: execution.topUpLiquidityMint,
+      market: execution.topUpMarket,
+      observedCurrentAmountRaw: null,
+      observedSlot: depositSlot,
+      policySignature: execution.successfulTopUpSignature,
+      scheduledSlotId: this.context.scheduledSlotId,
+      target: this.context.target,
+      targetReserve: execution.topUpReserve,
+    });
+    await markAutodepositExecutionCompleted({
+      neon: this.context.appModules.neon,
+      databaseUrl: this.context.databaseUrl,
+      executionId: execution.id,
+      scheduledSlotId: this.context.scheduledSlotId,
+      kaminoDepositSignature: execution.successfulTopUpSignature,
+    });
+    const rows = await sql`
+      UPDATE loyal_yield.balance_sweep_executions AS execution_row
+      SET
+        lifecycle_state = 'completed',
+        reserved_amount_raw = 0,
+        active_attempt_kind = NULL,
+        completion_failure_code = NULL,
+        decoded_evidence = COALESCE(execution_row.decoded_evidence, '{}'::jsonb) ||
+          ${JSON.stringify({ status: "executed" })}::jsonb,
+        decoded_at = now()
+      WHERE execution_row.id = ${execution.id}
+        AND execution_row.completed_at IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM loyal_yield.vault_operation_leases AS operation_lease
+          WHERE operation_lease.cluster = ${lease.cluster}
+            AND operation_lease.vault_pubkey = ${lease.vaultPubkey}
+            AND operation_lease.owner_token = ${lease.ownerToken}
+            AND operation_lease.fence = ${lease.fence.toString()}
+            AND operation_lease.expires_at > now()
+        )
+      RETURNING execution_row.id
+    `;
+    if (rows.length !== 1) {
+      throw new Error("Completion persistence lost its fenced lease.");
+    }
+    return this.reload();
+  }
+}
+
+async function executeDurableSaga(args: {
+  connection: Connection;
+  lease: LeaseFence;
+  pullPrepared: PreparedOperation | null;
+  policyKeypair: Keypair;
+  rpcUrl: string;
+  store: NeonDurableAutodepositStore;
+  target: EligibleTarget;
+  appModules: AppModules;
+}): Promise<DurableAutodepositExecution> {
+  return runDurableAutodepositExecution({
+    store: args.store,
+    lease: args.lease,
+    preparePull: async () => {
+      if (!args.pullPrepared) {
+        throw new Error(
+          "Recovery attempted to construct a replacement pull instead of reconciling persisted evidence."
+        );
+      }
+      return prepareSignedOperation({
+        compilePreparedOperation: args.appModules.compilePreparedOperation,
+        connection: args.connection,
+        prepared: args.pullPrepared,
+        signers: [args.policyKeypair],
+      });
+    },
+    prepareTopUp: async (amountRaw, execution) => {
+      const prepared = await runSameMintReserveTopUp({
+        amountRaw,
+        execute: false,
+        reserve: execution.topUpReserve,
+        rpcUrl: args.rpcUrl,
+        target: args.target,
+      });
+      return preparedTopUpAttempt(prepared);
+    },
+    broadcastExactSignedTransaction: (attempt) => broadcastExactSignedTransaction(args.connection, attempt),
+    reconcileAttempt: (attempt, waitForConfirmation) =>
+      reconcilePersistedAttempt({
+        attempt,
+        connection: args.connection,
+        waitForConfirmation,
+      }),
+    readConfirmedPullEvidence: (attempt) =>
+      readConfirmedPullEvidence({
+        connection: args.connection,
+        signature: attempt.signature,
+        target: args.target,
+      }),
+    readConfirmedTopUpEvidence: (attempt) => {
+      const executionAmountRaw = args.store.loadExecution().then((execution) => {
+        if (!execution?.confirmedPullAmountRaw) {
+          throw new Error("Top-up evidence requires confirmed pull amount.");
+        }
+        return execution.confirmedPullAmountRaw;
+      });
+      return executionAmountRaw.then((amountRaw) =>
+        readConfirmedTopUpEvidence({
+          amountRaw,
+          connection: args.connection,
+          signature: attempt.signature,
+          target: args.target,
+        })
+      );
+    },
+  });
+}
+
 async function main() {
   const appModules = await loadAppModules();
   const PublicKeyCtor = appModules.PublicKey;
   const options = parseOptions(Bun.argv.slice(2));
+  assertDurableExecuteIdentity(options);
   const databaseUrl = requireEnv("NEON_DATABASE_URL");
   const rpcUrl = requireEnv("SOLANA_RPC_URL");
   const policyKeypair = parseKeypairSecretWith(
     appModules.Keypair,
-    requireEnv("POLICY_KEYPAIR")
+    requireEnv("POLICY_KEYPAIR"),
   );
   const programId = new PublicKeyCtor(
-    process.env.LOYAL_SMART_ACCOUNTS_PROGRAM_ID ?? appModules.PROGRAM_ADDRESS
+    process.env.LOYAL_SMART_ACCOUNTS_PROGRAM_ID ?? appModules.PROGRAM_ADDRESS,
   );
   const connection = new Connection(rpcUrl, DEFAULT_COMMITMENT);
 
   let target: EligibleTarget | null;
   try {
-    target = await loadEligibleTarget(
-      appModules.neon,
-      databaseUrl,
-      options.targetId
-    );
+    target = await loadEligibleTarget(appModules.neon, databaseUrl, options);
   } catch (error) {
     if (
       error instanceof MissingActiveEarnRoutePolicyError &&
@@ -2051,8 +3221,8 @@ async function main() {
             error: error.message,
           },
           null,
-          2
-        )
+          2,
+        ),
       );
       process.exitCode = 1;
       return;
@@ -2064,442 +3234,426 @@ async function main() {
       JSON.stringify(
         { status: "noop", reason: "no_eligible_autodeposit_target" },
         null,
-        2
-      )
+        2,
+      ),
     );
     return;
   }
 
-  const walletUsdcAta = new PublicKeyCtor(target.walletUsdcAta);
-  const vaultUsdcAta = new PublicKeyCtor(target.vaultUsdcAta);
-  const walletBalanceRaw = await getTokenBalanceRaw(connection, walletUsdcAta);
-  const vaultPreBalanceRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
-  const allowance = await loadRecurringDelegationAllowance({
-    appModules,
-    connection,
-    recurringDelegation: new PublicKeyCtor(target.recurringDelegation),
-    periodLengthSeconds: target.periodLengthSeconds,
-    startTimestamp: target.startTimestamp,
-  });
-  const effectiveFloorRaw =
-    options.overrideFloorRaw ?? target.walletBalanceFloorRaw;
-  const sweepDecision = computeSweepAmount({
-    walletBalanceRaw,
-    walletBalanceFloorRaw: effectiveFloorRaw,
-    maxAmountPerPeriodRaw: target.maxAmountPerPeriodRaw,
-    remainingAllowanceRaw: allowance.remainingAmountInPeriodRaw,
-  });
-
-  if (
-    sweepDecision.kind === "no_excess" ||
-    sweepDecision.kind === "allowance_exhausted"
-  ) {
-    console.log(
-      JSON.stringify(
-        {
-          status: "noop",
-          reason:
-            sweepDecision.kind === "no_excess"
-              ? "wallet_balance_not_above_floor"
-              : "subscription_allowance_exhausted",
-          targetId: target.id.toString(),
-          scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
-          walletBalanceRaw: walletBalanceRaw.toString(),
-          walletBalanceFloorRaw: effectiveFloorRaw.toString(),
-          persistedWalletBalanceFloorRaw: target.walletBalanceFloorRaw.toString(),
-          overrideFloorRaw: options.overrideFloorRaw?.toString() ?? null,
-          excessRaw: sweepDecision.excessRaw.toString(),
-          subscriptionAllowance: summarizeAllowance(allowance),
-        },
-        null,
-        2
-      )
-    );
-    return;
-  }
-
-  const client = appModules.createSmartAccountVaultsClient({
-    connection: createPrepareConnection(connection),
-    programId,
-  });
-  assertAutodepositPullSupport(client);
-  const defaultEarnTarget = appModules.getKaminoUsdcEarnTargetForCluster(
-    appModules.LoyalCluster.MainnetBeta
-  );
-  const expectedUsdcMint = defaultEarnTarget.liquidityMint.toBase58();
-  if (expectedUsdcMint !== USDC_MINT_ADDRESS) {
-    throw new Error(
-      `SDK USDC mint ${expectedUsdcMint} does not match executor USDC guard ${USDC_MINT_ADDRESS}.`
-    );
-  }
-  if (target.tokenMint !== expectedUsdcMint) {
-    throw new Error(
-      `Autodeposit target mint ${target.tokenMint} is not supported; USDC-only executor expected ${expectedUsdcMint}.`
-    );
-  }
-
-  let lotClaim: LotClaimResult | null = null;
-  let executionAmountRaw = sweepDecision.amountRaw;
-  if (options.requireLotClaim) {
-    if (!options.execute) {
-      lotClaim = {
-        status: "noop",
-        reason: "lot_claim_skipped_for_dry_run",
-        claimToken: null,
-        targetId: target.id,
-        amountRaw: BigInt(0),
-        staleCheckEventId: BigInt(0),
-        lots: [],
-      };
-    } else {
-      if (!options.claimToken) {
-        throw new Error("--claim-token is required when executing with lot claims.");
-      }
-      lotClaim = await claimAutodepositLots({
-        neon: appModules.neon,
-        databaseUrl,
-        targetId: target.id,
-        tokenMint: target.tokenMint,
-        claimToken: options.claimToken,
-        scheduledSlotId: options.scheduledSlotId,
-        walletBalanceRaw,
-        walletBalanceFloorRaw: effectiveFloorRaw,
-        maxAmountPerPeriodRaw: target.maxAmountPerPeriodRaw,
-        remainingAllowanceRaw: allowance.remainingAmountInPeriodRaw,
-      });
-      if (lotClaim.status !== "selected") {
-        console.log(
-          JSON.stringify(
-            {
-              status: "noop",
-              reason: `lot_claim_${lotClaim.reason ?? lotClaim.status}`,
-              targetId: target.id.toString(),
-              scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
-              lotClaim: summarizeLotClaim(lotClaim),
-              walletBalanceRaw: walletBalanceRaw.toString(),
-              walletBalanceFloorRaw: effectiveFloorRaw.toString(),
-              subscriptionAllowance: summarizeAllowance(allowance),
-            },
-            null,
-            2
-          )
-        );
-        return;
-      }
-      executionAmountRaw = lotClaim.amountRaw;
-    }
-  }
-
-  let pullSent = false;
-  try {
-    const pull = await client.prepareEarnUsdcAutodepositPull({
-      policy: new PublicKeyCtor(target.sweepPolicyAccount),
-      walletAddress: new PublicKeyCtor(target.wallet),
-      feePayer: policyKeypair.publicKey,
-      policySigner: policyKeypair.publicKey,
-      recurringDelegation: new PublicKeyCtor(target.recurringDelegation),
-      amountRaw: executionAmountRaw,
-      cluster: appModules.LoyalCluster.MainnetBeta,
+  const runFlow = async (lease: LeaseFence | null) => {
+    const client = appModules.createSmartAccountVaultsClient({
+      connection: createPrepareConnection(connection),
+      programId,
     });
-    const topUpReserve =
-      target.currentReserve ?? defaultEarnTarget.reserve.toBase58();
-    const topUpMarket =
-      target.currentMarket ?? defaultEarnTarget.market.toBase58();
-    const topUpLiquidityMint =
-      target.currentLiquidityMint ?? pull.persistence.liquidityMint;
-    if (topUpLiquidityMint !== pull.persistence.liquidityMint) {
+    assertAutodepositPullSupport(client);
+    const defaultEarnTarget = appModules.getKaminoUsdcEarnTargetForCluster(
+      appModules.LoyalCluster.MainnetBeta,
+    );
+    const expectedUsdcMint = defaultEarnTarget.liquidityMint.toBase58();
+    if (expectedUsdcMint !== USDC_MINT_ADDRESS) {
       throw new Error(
-        `Autodeposit top-up liquidity mint ${topUpLiquidityMint} does not match pulled mint ${pull.persistence.liquidityMint}.`
+        `SDK USDC mint ${expectedUsdcMint} does not match executor USDC guard ${USDC_MINT_ADDRESS}.`,
       );
     }
-
-    const pullSimulation = await simulatePreparedOperation({
-      compilePreparedOperation: appModules.compilePreparedOperation,
-      connection,
-      prepared: pull.prepared,
-      signers: [policyKeypair],
-    });
-    const topUpDryRun = await runSameMintReserveTopUp({
-      amountRaw: executionAmountRaw,
-      execute: false,
-      reserve: topUpReserve,
-      rpcUrl,
-      target,
-    });
-    const topUpFeePayer = requireTopUpFeePayer(topUpDryRun, PublicKeyCtor);
-
-    const plan = {
-      status: options.execute ? "execute_requested" : "dry_run",
-      targetId: target.id.toString(),
-      scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
-      wallet: target.wallet,
-      vault: target.vaultPubkey,
-      walletUsdcAta: target.walletUsdcAta,
-      vaultUsdcAta: target.vaultUsdcAta,
-      walletBalanceRaw: walletBalanceRaw.toString(),
-      walletBalanceFloorRaw: effectiveFloorRaw.toString(),
-      persistedWalletBalanceFloorRaw: target.walletBalanceFloorRaw.toString(),
-      overrideFloorRaw: options.overrideFloorRaw?.toString() ?? null,
-      vaultPreBalanceRaw: vaultPreBalanceRaw.toString(),
-      topUpTarget: {
-        reserve: topUpReserve,
-        market: topUpMarket,
-        liquidityMint: topUpLiquidityMint,
-        source: target.currentReserve ? "active_yield_position" : "default_earn_target",
-      },
-      excessRaw: sweepDecision.excessRaw.toString(),
-      amountRaw: executionAmountRaw.toString(),
-      amountUi: Number(executionAmountRaw) / 10 ** USDC_DECIMALS,
-      cappedByMaxPerPeriod: sweepDecision.cappedByMaxPerPeriod,
-      cappedByRemainingAllowance: sweepDecision.cappedByRemainingAllowance,
-      subscriptionAllowance: summarizeAllowance(allowance),
-      transactionOrder: [
-        "subscription_pull_wallet_to_earn_vault",
-        "kamino_route_policy_top_up_from_earn_vault",
-      ],
-      signers: {
-        pull: policyKeypair.publicKey.toBase58(),
-        kaminoTopUpFeePayer: topUpFeePayer.toBase58(),
-        kaminoTopUp:
-          readRecord(topUpDryRun.json?.policyDeposit)?.signer?.toString() ??
-          null,
-      },
-      topUpFeePayerSafety: {
-        feePayer: topUpFeePayer.toBase58(),
-        balanceLamports: null,
-        minimumLamports: AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS,
-        commitment: DEFAULT_COMMITMENT,
-        checked: false,
-      },
-      policies: {
-        sweep: target.sweepPolicyAccount,
-        kaminoTopUp: target.routePolicyAccount,
-        kaminoTopUpSeed: target.routePolicySeed.toString(),
-        kaminoTopUpRouteModes: target.routeModes,
-      },
-      simulations: {
-        pull: summarizeSimulation(pullSimulation),
-        kaminoTopUp: summarizeTopUpResult(topUpDryRun),
-      },
-      lotClaim: lotClaim ? summarizeLotClaim(lotClaim) : null,
-      sendsTransactions: options.execute,
-    };
-
-    if (!options.execute) {
-      console.log(JSON.stringify(plan, null, 2));
-      return;
+    if (target.tokenMint !== expectedUsdcMint) {
+      throw new Error(
+        `Autodeposit target mint ${target.tokenMint} is not supported; USDC-only executor expected ${expectedUsdcMint}.`,
+      );
     }
-
-    assertExecutablePreflight({ pullSimulation, topUpDryRun });
-
-    const { result: pullSend, safety: topUpFeePayerSafety } =
-      await runAfterFeePayerSolSafety({
-        connection,
-        feePayer: topUpFeePayer,
-        run: () =>
-          sendPreparedOperation({
-            compilePreparedOperation: appModules.compilePreparedOperation,
-            connection,
-            prepared: pull.prepared,
-            signers: [policyKeypair],
-          }),
-      });
-    pullSent = true;
-    const walletPostPullRaw = await getTokenBalanceRaw(connection, walletUsdcAta);
-    const vaultPostPullRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
-    const executionRecord = await recordPullExecution({
-      neon: appModules.neon,
+    const defaultTopUpReserve =
+      target.currentReserve ?? defaultEarnTarget.reserve.toBase58();
+    const defaultTopUpMarket =
+      target.currentMarket ?? defaultEarnTarget.market.toBase58();
+    const defaultTopUpLiquidityMint =
+      target.currentLiquidityMint ?? expectedUsdcMint;
+    const recoveryStore = new NeonDurableAutodepositStore({
+      appModules,
       databaseUrl,
       target,
-      signature: pullSend.signature,
-      slot: pullSend.slot,
-      amountRaw: executionAmountRaw,
-      sourcePreBalanceRaw: walletBalanceRaw,
-      sourcePostBalanceRaw: walletPostPullRaw,
-      destinationPreBalanceRaw: vaultPreBalanceRaw,
-      destinationPostBalanceRaw: vaultPostPullRaw,
+      claimToken: options.claimToken,
+      scheduledSlotId: options.scheduledSlotId,
+      requestedAmountRaw: BigInt(0),
+      topUpReserve: defaultTopUpReserve,
+      topUpMarket: defaultTopUpMarket,
+      topUpLiquidityMint: defaultTopUpLiquidityMint,
     });
-    if (lotClaim?.status === "selected" && lotClaim.claimToken) {
-      await completeAutodepositLotClaim({
-        neon: appModules.neon,
-        databaseUrl,
-        claimToken: lotClaim.claimToken,
-        executionId: executionRecord.executionId,
-      });
-    }
-
-    let topUpExecute: SameMintTopUpResult;
-    let topUpExecution: { signature: string; confirmedSlot: bigint };
-    try {
-      topUpExecute = await runSameMintReserveTopUp({
-        amountRaw: executionAmountRaw,
-        execute: true,
-        reserve: topUpReserve,
+    const existingExecution = lease
+      ? await recoveryStore.loadExecution()
+      : null;
+    if (existingExecution) {
+      const recovered = await executeDurableSaga({
+        connection,
+        lease,
+        pullPrepared: null,
+        policyKeypair,
         rpcUrl,
+        store: recoveryStore,
         target,
-      });
-      topUpExecution = requireTopUpExecution(topUpExecute);
-    } catch (error) {
-      await markAutodepositExecutionFailed({
-        neon: appModules.neon,
-        databaseUrl,
-        executionId: executionRecord.executionId,
-        scheduledSlotId: options.scheduledSlotId,
-        failureCode: "kamino_top_up_failed",
-      });
-      await updateExecutionEvidence({
-        neon: appModules.neon,
-        databaseUrl,
-        dedupeKey: executionRecord.dedupeKey,
-        decodedEvidence: {
-          status: "partial_executed_pull_top_up_blocked",
-          kaminoTopUpError:
-            error instanceof Error ? error.message : String(error),
-          kaminoTopUpDryRun: summarizeTopUpResult(topUpDryRun),
-          topUpFeePayerSafety,
-          vaultPostPullRaw: vaultPostPullRaw.toString(),
-        },
+        appModules,
       });
       console.log(
         JSON.stringify(
           {
-            ...plan,
-            status: "partial_executed_pull_top_up_blocked",
+            status:
+              recovered.lifecycleState === "completed"
+                ? "executed"
+                : recovered.lifecycleState,
+            executionId: recovered.id,
+            lifecycleState: recovered.lifecycleState,
+            confirmedPullAmountRaw:
+              recovered.confirmedPullAmountRaw?.toString() ?? null,
+            reservedAmountRaw: recovered.reservedAmountRaw.toString(),
             signatures: {
-              pull: pullSend.signature,
+              pull: recovered.pullSignature,
+              kaminoDeposit: recovered.successfulTopUpSignature,
             },
-            confirmedSlots: {
-              pull: pullSend.slot.toString(),
-            },
-            walletPostPullRaw: walletPostPullRaw.toString(),
-            vaultPostPullRaw: vaultPostPullRaw.toString(),
-            topUpFeePayerSafety,
-            kaminoTopUpError:
-              error instanceof Error ? error.message : String(error),
+            recovery: true,
           },
           null,
-          2
-        )
+          2,
+        ),
       );
-      process.exitCode = 1;
+      if (recovered.lifecycleState !== "completed") {
+        process.exitCode = 1;
+      }
       return;
     }
 
-    const topUpObservedPosition = readTopUpObservedPosition(
-      topUpExecute,
-      topUpReserve
+    const walletUsdcAta = new PublicKeyCtor(target.walletUsdcAta);
+    const vaultUsdcAta = new PublicKeyCtor(target.vaultUsdcAta);
+    const walletBalanceRaw = await getTokenBalanceRaw(
+      connection,
+      walletUsdcAta,
     );
-    const vaultPostDepositRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
-    let yieldDepositRecord: Awaited<
-      ReturnType<typeof recordAutodepositYieldDeposit>
-    >;
-    try {
-      yieldDepositRecord = await recordAutodepositYieldDeposit({
-        amountRaw: executionAmountRaw,
-        appModules,
-        balanceSweepExecutionId: executionRecord.executionId,
-        databaseUrl,
-        depositSignature: topUpExecution.signature,
-        depositSlot: topUpExecution.confirmedSlot,
-        liquidityMint: topUpLiquidityMint,
-        market: topUpMarket,
-        observedCurrentAmountRaw: topUpObservedPosition?.amountRaw ?? null,
-        observedSlot: topUpObservedPosition?.observedSlot ?? null,
-        policySignature: topUpExecution.signature,
-        scheduledSlotId: options.scheduledSlotId,
-        target,
-        targetReserve: topUpReserve,
-      });
-      if (options.scheduledSlotId !== null) {
-        await markAutodepositExecutionCompleted({
+    const vaultPreBalanceRaw = await getTokenBalanceRaw(
+      connection,
+      vaultUsdcAta,
+    );
+    const allowance = await loadRecurringDelegationAllowance({
+      appModules,
+      connection,
+      recurringDelegation: new PublicKeyCtor(target.recurringDelegation),
+      periodLengthSeconds: target.periodLengthSeconds,
+      startTimestamp: target.startTimestamp,
+    });
+    const effectiveFloorRaw =
+      options.overrideFloorRaw ?? target.walletBalanceFloorRaw;
+    const sweepDecision = computeSweepAmount({
+      walletBalanceRaw,
+      walletBalanceFloorRaw: effectiveFloorRaw,
+      maxAmountPerPeriodRaw: target.maxAmountPerPeriodRaw,
+      remainingAllowanceRaw: allowance.remainingAmountInPeriodRaw,
+    });
+
+    if (
+      sweepDecision.kind === "no_excess" ||
+      sweepDecision.kind === "allowance_exhausted"
+    ) {
+      console.log(
+        JSON.stringify(
+          {
+            status: "noop",
+            reason:
+              sweepDecision.kind === "no_excess"
+                ? "wallet_balance_not_above_floor"
+                : "subscription_allowance_exhausted",
+            targetId: target.id.toString(),
+            scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
+            walletBalanceRaw: walletBalanceRaw.toString(),
+            walletBalanceFloorRaw: effectiveFloorRaw.toString(),
+            persistedWalletBalanceFloorRaw:
+              target.walletBalanceFloorRaw.toString(),
+            overrideFloorRaw: options.overrideFloorRaw?.toString() ?? null,
+            excessRaw: sweepDecision.excessRaw.toString(),
+            subscriptionAllowance: summarizeAllowance(allowance),
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+
+    let lotClaim: LotClaimResult | null = null;
+    let executionAmountRaw = sweepDecision.amountRaw;
+    if (options.requireLotClaim) {
+      if (!options.execute) {
+        lotClaim = {
+          status: "noop",
+          reason: "lot_claim_skipped_for_dry_run",
+          claimToken: null,
+          targetId: target.id,
+          amountRaw: BigInt(0),
+          staleCheckEventId: BigInt(0),
+          lots: [],
+        };
+      } else {
+        if (!options.claimToken) {
+          throw new Error(
+            "--claim-token is required when executing with lot claims.",
+          );
+        }
+        lotClaim = await claimAutodepositLots({
           neon: appModules.neon,
           databaseUrl,
-          executionId: executionRecord.executionId,
+          targetId: target.id,
+          tokenMint: target.tokenMint,
+          claimToken: options.claimToken,
           scheduledSlotId: options.scheduledSlotId,
-          kaminoDepositSignature: topUpExecution.signature,
+          walletBalanceRaw,
+          walletBalanceFloorRaw: effectiveFloorRaw,
+          maxAmountPerPeriodRaw: target.maxAmountPerPeriodRaw,
+          remainingAllowanceRaw: allowance.remainingAmountInPeriodRaw,
+        });
+        if (lotClaim.status !== "selected") {
+          console.log(
+            JSON.stringify(
+              {
+                status: "noop",
+                reason: `lot_claim_${lotClaim.reason ?? lotClaim.status}`,
+                targetId: target.id.toString(),
+                scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
+                lotClaim: summarizeLotClaim(lotClaim),
+                walletBalanceRaw: walletBalanceRaw.toString(),
+                walletBalanceFloorRaw: effectiveFloorRaw.toString(),
+                subscriptionAllowance: summarizeAllowance(allowance),
+              },
+              null,
+              2,
+            ),
+          );
+          return;
+        }
+        executionAmountRaw = lotClaim.amountRaw;
+      }
+    }
+
+    let pullSent = false;
+    let durableStore: NeonDurableAutodepositStore | null = null;
+    try {
+      const pull = await client.prepareEarnUsdcAutodepositPull({
+        policy: new PublicKeyCtor(target.sweepPolicyAccount),
+        walletAddress: new PublicKeyCtor(target.wallet),
+        feePayer: policyKeypair.publicKey,
+        policySigner: policyKeypair.publicKey,
+        recurringDelegation: new PublicKeyCtor(target.recurringDelegation),
+        amountRaw: executionAmountRaw,
+        cluster: appModules.LoyalCluster.MainnetBeta,
+      });
+      const topUpReserve = defaultTopUpReserve;
+      const topUpMarket = defaultTopUpMarket;
+      const topUpLiquidityMint =
+        target.currentLiquidityMint ?? pull.persistence.liquidityMint;
+      if (topUpLiquidityMint !== pull.persistence.liquidityMint) {
+        throw new Error(
+          `Autodeposit top-up liquidity mint ${topUpLiquidityMint} does not match pulled mint ${pull.persistence.liquidityMint}.`,
+        );
+      }
+
+      const pullSimulation = await simulatePreparedOperation({
+        compilePreparedOperation: appModules.compilePreparedOperation,
+        connection,
+        prepared: pull.prepared,
+        signers: [policyKeypair],
+      });
+      const topUpDryRun = await runSameMintReserveTopUp({
+        amountRaw: executionAmountRaw,
+        execute: false,
+        reserve: topUpReserve,
+        rpcUrl,
+        target,
+      });
+      const topUpFeePayer = requireTopUpFeePayer(topUpDryRun, PublicKeyCtor);
+
+      const plan = {
+        status: options.execute ? "execute_requested" : "dry_run",
+        targetId: target.id.toString(),
+        scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
+        wallet: target.wallet,
+        vault: target.vaultPubkey,
+        walletUsdcAta: target.walletUsdcAta,
+        vaultUsdcAta: target.vaultUsdcAta,
+        walletBalanceRaw: walletBalanceRaw.toString(),
+        walletBalanceFloorRaw: effectiveFloorRaw.toString(),
+        persistedWalletBalanceFloorRaw: target.walletBalanceFloorRaw.toString(),
+        overrideFloorRaw: options.overrideFloorRaw?.toString() ?? null,
+        vaultPreBalanceRaw: vaultPreBalanceRaw.toString(),
+        topUpTarget: {
+          reserve: topUpReserve,
+          market: topUpMarket,
+          liquidityMint: topUpLiquidityMint,
+          source: target.currentReserve
+            ? "active_yield_position"
+            : "default_earn_target",
+        },
+        excessRaw: sweepDecision.excessRaw.toString(),
+        amountRaw: executionAmountRaw.toString(),
+        amountUi: Number(executionAmountRaw) / 10 ** USDC_DECIMALS,
+        cappedByMaxPerPeriod: sweepDecision.cappedByMaxPerPeriod,
+        cappedByRemainingAllowance: sweepDecision.cappedByRemainingAllowance,
+        subscriptionAllowance: summarizeAllowance(allowance),
+        transactionOrder: [
+          "subscription_pull_wallet_to_earn_vault",
+          "kamino_route_policy_top_up_from_earn_vault",
+        ],
+        signers: {
+          pull: policyKeypair.publicKey.toBase58(),
+          kaminoTopUpFeePayer: topUpFeePayer.toBase58(),
+          kaminoTopUp:
+            readRecord(topUpDryRun.json?.policyDeposit)?.signer?.toString() ??
+            null,
+        },
+        topUpFeePayerSafety: {
+          feePayer: topUpFeePayer.toBase58(),
+          balanceLamports: null,
+          minimumLamports: AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS,
+          commitment: DEFAULT_COMMITMENT,
+          checked: false,
+        },
+        policies: {
+          sweep: target.sweepPolicyAccount,
+          kaminoTopUp: target.routePolicyAccount,
+          kaminoTopUpSeed: target.routePolicySeed.toString(),
+          kaminoTopUpRouteModes: target.routeModes,
+        },
+        simulations: {
+          pull: summarizeSimulation(pullSimulation),
+          kaminoTopUp: summarizeTopUpResult(topUpDryRun),
+        },
+        lotClaim: lotClaim ? summarizeLotClaim(lotClaim) : null,
+        sendsTransactions: options.execute,
+      };
+
+      if (!options.execute) {
+        console.log(JSON.stringify(plan, null, 2));
+        return;
+      }
+      if (!lease) {
+        throw new Error(
+          "Durable autodeposit execution requires a fenced vault lease.",
+        );
+      }
+
+      assertExecutablePreflight({ pullSimulation, topUpDryRun });
+
+      const topUpFeePayerSafety = await assertFeePayerSol({
+        connection,
+        feePayer: topUpFeePayer,
+      });
+      durableStore = new NeonDurableAutodepositStore({
+        appModules,
+        databaseUrl,
+        target,
+        claimToken: lotClaim?.claimToken ?? options.claimToken,
+        scheduledSlotId: options.scheduledSlotId,
+        requestedAmountRaw: executionAmountRaw,
+        topUpReserve,
+        topUpMarket,
+        topUpLiquidityMint,
+      });
+      const durableExecution = await executeDurableSaga({
+        connection,
+        lease,
+        pullPrepared: pull.prepared,
+        policyKeypair,
+        rpcUrl,
+        store: durableStore,
+        target,
+        appModules,
+      });
+      pullSent = durableExecution.pullSignature !== null;
+      const walletPostPullRaw = await getTokenBalanceRaw(
+        connection,
+        walletUsdcAta,
+      );
+      const vaultPostExecutionRaw = await getTokenBalanceRaw(
+        connection,
+        vaultUsdcAta,
+      );
+      if (durableExecution.lifecycleState !== "completed") {
+        console.log(
+          JSON.stringify(
+            {
+              ...plan,
+              status: durableExecution.lifecycleState,
+              executionId: durableExecution.id,
+              confirmedPullAmountRaw:
+                durableExecution.confirmedPullAmountRaw?.toString() ?? null,
+              reservedAmountRaw: durableExecution.reservedAmountRaw.toString(),
+              signatures: {
+                pull: durableExecution.pullSignature,
+                kaminoDeposit: durableExecution.successfulTopUpSignature,
+              },
+              walletPostPullRaw: walletPostPullRaw.toString(),
+              vaultPostExecutionRaw: vaultPostExecutionRaw.toString(),
+              topUpFeePayerSafety,
+            },
+            null,
+            2,
+          ),
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const solanaWeekNotify = await notifySolanaWeekSweep({
+        PublicKeyCtor,
+        ownerWalletAddress: target.wallet,
+      });
+      logSolanaWeekNotifyResult(solanaWeekNotify);
+
+      console.log(
+        JSON.stringify(
+          {
+            ...plan,
+            status: "executed",
+            executionId: durableExecution.id,
+            signatures: {
+              pull: durableExecution.pullSignature,
+              kaminoDeposit: durableExecution.successfulTopUpSignature,
+            },
+            walletPostPullRaw: walletPostPullRaw.toString(),
+            vaultPostExecutionRaw: vaultPostExecutionRaw.toString(),
+            confirmedPullAmountRaw:
+              durableExecution.confirmedPullAmountRaw?.toString() ?? null,
+            topUpFeePayerSafety,
+            solanaWeekNotify,
+          },
+          null,
+          2,
+        ),
+      );
+    } catch (error) {
+      const persistedExecution = durableStore
+        ? await durableStore.loadExecution()
+        : null;
+      if (
+        !pullSent &&
+        !persistedExecution &&
+        lotClaim?.status === "selected" &&
+        lotClaim.claimToken
+      ) {
+        await releaseAutodepositLotClaim({
+          neon: appModules.neon,
+          databaseUrl,
+          claimToken: lotClaim.claimToken,
         });
       }
-    } catch (error) {
-      await markAutodepositExecutionFailed({
-        neon: appModules.neon,
-        databaseUrl,
-        executionId: executionRecord.executionId,
-        scheduledSlotId: options.scheduledSlotId,
-        failureCode: "yield_persistence_failed",
-      });
-      await updateExecutionEvidence({
-        neon: appModules.neon,
-        databaseUrl,
-        dedupeKey: executionRecord.dedupeKey,
-        decodedEvidence: {
-          status: "partial_executed_pull_yield_persistence_failed",
-          kaminoDepositSignature: topUpExecution.signature,
-          kaminoDepositSlot: topUpExecution.confirmedSlot.toString(),
-        },
-      });
       throw error;
     }
-    await updateExecutionEvidence({
+  };
+
+  if (options.execute) {
+    await withVaultLease({
       neon: appModules.neon,
       databaseUrl,
-      dedupeKey: executionRecord.dedupeKey,
-      decodedEvidence: {
-        status: "executed",
-        kaminoDepositSignature: topUpExecution.signature,
-        kaminoDepositSlot: topUpExecution.confirmedSlot.toString(),
-        kaminoTopUp: summarizeTopUpResult(topUpExecute),
-        kaminoTopUpObservedPosition: topUpObservedPosition
-          ? {
-              amountRaw: topUpObservedPosition.amountRaw.toString(),
-              observedSlot:
-                topUpObservedPosition.observedSlot?.toString() ?? null,
-            }
-          : null,
-        topUpFeePayerSafety,
-        vaultPostDepositRaw: vaultPostDepositRaw.toString(),
-        yieldDepositRecord,
-      },
+      cluster: target.cluster,
+      vaultPubkey: target.vaultPubkey,
+      claimToken: options.claimToken,
+      scheduledSlotId: options.scheduledSlotId,
+      run: runFlow,
     });
-    const solanaWeekNotify = await notifySolanaWeekSweep({
-      PublicKeyCtor,
-      ownerWalletAddress: target.wallet,
-    });
-    logSolanaWeekNotifyResult(solanaWeekNotify);
-
-    console.log(
-      JSON.stringify(
-        {
-          ...plan,
-          status: "executed",
-          signatures: {
-            pull: pullSend.signature,
-            kaminoDeposit: topUpExecution.signature,
-          },
-          confirmedSlots: {
-            pull: pullSend.slot.toString(),
-            kaminoDeposit: topUpExecution.confirmedSlot.toString(),
-          },
-          walletPostPullRaw: walletPostPullRaw.toString(),
-          vaultPostPullRaw: vaultPostPullRaw.toString(),
-          vaultPostDepositRaw: vaultPostDepositRaw.toString(),
-          topUpFeePayerSafety,
-          kaminoTopUpExecution: summarizeTopUpResult(topUpExecute),
-          yieldDepositRecord,
-          solanaWeekNotify,
-        },
-        null,
-        2
-      )
-    );
-  } catch (error) {
-    if (!pullSent && lotClaim?.status === "selected" && lotClaim.claimToken) {
-      await releaseAutodepositLotClaim({
-        neon: appModules.neon,
-        databaseUrl,
-        claimToken: lotClaim.claimToken,
-      });
-    }
-    throw error;
+  } else {
+    await runFlow(null);
   }
 }
 
@@ -2509,7 +3663,9 @@ if (import.meta.main) {
       JSON.stringify(
         {
           status: "error",
-          error: error instanceof Error ? error.message : String(error),
+          error: redactSensitiveText(
+            error instanceof Error ? error.message : String(error),
+          ),
         },
         null,
         2
