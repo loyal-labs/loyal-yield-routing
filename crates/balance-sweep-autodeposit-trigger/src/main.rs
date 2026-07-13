@@ -559,7 +559,10 @@ async fn release_stale_selected_claims_once(
         ),
         restored_lots AS (
             UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
-            SET remaining_amount_raw = lot.remaining_amount_raw + item.amount_raw,
+            SET remaining_amount_raw = LEAST(
+                    lot.original_amount_raw,
+                    lot.remaining_amount_raw + item.amount_raw
+                ),
                 status = 'open',
                 eligible_after = now(),
                 updated_at = now()
@@ -814,7 +817,10 @@ async fn release_claim_once(pool: &PgPool, claim_token: &str) -> Result<ClaimOut
         ),
         restored AS (
             UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
-            SET remaining_amount_raw = lot.remaining_amount_raw + item.amount_raw,
+            SET remaining_amount_raw = LEAST(
+                    lot.original_amount_raw,
+                    lot.remaining_amount_raw + item.amount_raw
+                ),
                 status = 'open',
                 updated_at = now()
             FROM matched_items AS item

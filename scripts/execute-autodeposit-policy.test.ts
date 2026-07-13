@@ -202,6 +202,29 @@ describe("runtime dependency boundary", () => {
     expect(source).toContain("last_error = ${args.lastError}");
   });
 
+  test("caps every lot release at its original amount", async () => {
+    const executorSource = await Bun.file(
+      new URL("./execute-autodeposit-policy.ts", import.meta.url)
+    ).text();
+    const triggerSource = await Bun.file(
+      new URL(
+        "../crates/balance-sweep-autodeposit-trigger/src/main.rs",
+        import.meta.url
+      )
+    ).text();
+
+    expect(
+      executorSource.match(
+        /LEAST\(\s+l\.original_amount_raw,\s+l\.remaining_amount_raw \+ i\.amount_raw\s+\)/g
+      )
+    ).toHaveLength(1);
+    expect(
+      triggerSource.match(
+        /LEAST\(\s+lot\.original_amount_raw,\s+lot\.remaining_amount_raw \+ item\.amount_raw\s+\)/g
+      )
+    ).toHaveLength(2);
+  });
+
   test("smart-account-vaults package exposes autodeposit pull helper", async () => {
     const { PublicKey } = await import("@solana/web3.js");
     const { createSmartAccountVaultsClient } = await import(
