@@ -193,6 +193,18 @@ export function isMissingAutodepositTokenDelegateFailure(
     message.includes("Program log: Error: owner does not match")
   );
 }
+
+export function isMissingAutodepositRoutePolicyFailure(
+  error: unknown,
+  routePolicyAccount: string
+): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("same-mint Kamino top-up command failed") &&
+    message.includes(`AccountNotFound: pubkey=${routePolicyAccount}`)
+  );
+}
+
 const AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS = 50_000_000;
 const SOLANA_WEEK_NOTIFY_ENDPOINT_ENV = "SOLANA_WEEK_NOTIFY_ENDPOINT";
 const SOLANA_WEEK_NOTIFY_SECRET_ENV = "SOLANA_WEEK_NOTIFY_SECRET";
@@ -945,6 +957,7 @@ async function releaseAutodepositLotClaim(args: {
   claimToken: string;
   lastError: string;
   pauseTargetForMissingDelegate: boolean;
+  pauseTargetForMissingRoutePolicy: boolean;
 }) {
   const sql = args.neon(args.databaseUrl);
   await sql`
@@ -984,14 +997,17 @@ async function releaseAutodepositLotClaim(args: {
     paused_target AS (
       UPDATE loyal_yield.balance_sweep_targets t
       SET active = false,
-          lifecycle_status = 'pending_delegation',
+          lifecycle_status = CASE
+            WHEN ${args.pauseTargetForMissingRoutePolicy} THEN 'paused_missing_position'
+            ELSE 'pending_delegation'
+          END,
           last_seen_at = now()
       FROM loyal_yield.balance_sweep_lot_claims c
       WHERE c.claim_token = (SELECT claim_token FROM selected_claim)
         AND c.target_id = t.id
         AND t.active
         AND t.lifecycle_status = 'active'
-        AND ${args.pauseTargetForMissingDelegate}
+        AND (${args.pauseTargetForMissingDelegate} OR ${args.pauseTargetForMissingRoutePolicy})
         AND EXISTS (SELECT 1 FROM restored)
       RETURNING t.id
     ),
@@ -2530,6 +2546,11 @@ async function main() {
         lastError: lastError.slice(0, 4_000),
         pauseTargetForMissingDelegate:
           isMissingAutodepositTokenDelegateFailure(error),
+        pauseTargetForMissingRoutePolicy:
+          isMissingAutodepositRoutePolicyFailure(
+            error,
+            target.routePolicyAccount
+          ),
       });
     }
     throw error;

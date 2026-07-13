@@ -3,6 +3,7 @@ import { Keypair, type Connection } from "@solana/web3.js";
 
 import {
   computeSweepAmount,
+  isMissingAutodepositRoutePolicyFailure,
   isMissingAutodepositTokenDelegateFailure,
   parseKeypairSecret,
   runAfterFeePayerSolSafety,
@@ -173,6 +174,26 @@ describe("autodeposit token delegate failures", () => {
   });
 });
 
+describe("autodeposit route policy failures", () => {
+  test("recognizes only the target's missing route policy account", () => {
+    const routePolicyAccount = "45XAg7C8Uhxn6jkSnzm9Q7sSvDbvQ9PEUXjzjm78TvL6";
+    expect(
+      isMissingAutodepositRoutePolicyFailure(
+        new Error(
+          `same-mint Kamino top-up command failed with exit code 1: AccountNotFound: pubkey=${routePolicyAccount}`
+        ),
+        routePolicyAccount
+      )
+    ).toBe(true);
+    expect(
+      isMissingAutodepositRoutePolicyFailure(
+        new Error("same-mint Kamino top-up command failed: AccountNotFound: pubkey=other"),
+        routePolicyAccount
+      )
+    ).toBe(false);
+  });
+});
+
 describe("runtime dependency boundary", () => {
   test("executor imports packages instead of sibling loyal-apps paths", async () => {
     const source = await Bun.file(
@@ -243,7 +264,7 @@ describe("runtime dependency boundary", () => {
     ).toHaveLength(2);
   });
 
-  test("compare-and-sets missing delegates without gating claim release", async () => {
+  test("compare-and-sets invalid artifacts without gating claim release", async () => {
     const source = await Bun.file(
       new URL("./execute-autodeposit-policy.ts", import.meta.url)
     ).text();
@@ -261,6 +282,8 @@ describe("runtime dependency boundary", () => {
     expect(pausedTargetSql).toContain("AND t.active");
     expect(pausedTargetSql).toContain("AND t.lifecycle_status = 'active'");
     expect(pausedTargetSql).toContain("pauseTargetForMissingDelegate");
+    expect(pausedTargetSql).toContain("pauseTargetForMissingRoutePolicy");
+    expect(pausedTargetSql).toContain("paused_missing_position");
     expect(updatedClaimSql).toContain("EXISTS (SELECT 1 FROM restored)");
     expect(updatedClaimSql).not.toContain("paused_target");
   });
