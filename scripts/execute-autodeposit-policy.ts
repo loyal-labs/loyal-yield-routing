@@ -989,6 +989,8 @@ async function releaseAutodepositLotClaim(args: {
       FROM loyal_yield.balance_sweep_lot_claims c
       WHERE c.claim_token = (SELECT claim_token FROM selected_claim)
         AND c.target_id = t.id
+        AND t.active
+        AND t.lifecycle_status = 'active'
         AND ${args.pauseTargetForMissingDelegate}
         AND EXISTS (SELECT 1 FROM restored)
       RETURNING t.id

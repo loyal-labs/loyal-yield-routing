@@ -243,14 +243,26 @@ describe("runtime dependency boundary", () => {
     ).toHaveLength(2);
   });
 
-  test("pauses targets whose wallet token delegate no longer matches", async () => {
+  test("compare-and-sets missing delegates without gating claim release", async () => {
     const source = await Bun.file(
       new URL("./execute-autodeposit-policy.ts", import.meta.url)
     ).text();
+    const releaseSql = source.slice(
+      source.indexOf("async function releaseAutodepositLotClaim"),
+      source.indexOf("async function markScheduledSlotFailed")
+    );
+    const pausedTargetSql = releaseSql.match(
+      /paused_target AS \([\s\S]*?\n    \),\n    updated_claim AS \(/
+    )?.[0];
+    const updatedClaimSql = releaseSql.match(
+      /updated_claim AS \([\s\S]*?\n    \)\n    UPDATE loyal_yield\.balance_sweep_scheduled_slots/
+    )?.[0];
 
-    expect(source).toContain("pauseTargetForMissingDelegate");
-    expect(source).toContain("lifecycle_status = 'pending_delegation'");
-    expect(source).toContain("last_error = ${args.lastError}");
+    expect(pausedTargetSql).toContain("AND t.active");
+    expect(pausedTargetSql).toContain("AND t.lifecycle_status = 'active'");
+    expect(pausedTargetSql).toContain("pauseTargetForMissingDelegate");
+    expect(updatedClaimSql).toContain("EXISTS (SELECT 1 FROM restored)");
+    expect(updatedClaimSql).not.toContain("paused_target");
   });
 
   test("smart-account-vaults package exposes autodeposit pull helper", async () => {
