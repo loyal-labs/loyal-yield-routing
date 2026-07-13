@@ -26,6 +26,8 @@ const MIGRATION_0010: &str = include_str!("../migrations/0010_realtime_events.sq
 const MIGRATION_0011: &str = include_str!("../migrations/0011_autodeposit_realtime_events.sql");
 const MIGRATION_0012: &str =
     include_str!("../migrations/0012_idle_vault_decision_plan_guardrails.sql");
+const MIGRATION_0017: &str =
+    include_str!("../migrations/0017_autodeposit_account_not_found_quarantine.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -256,6 +258,12 @@ impl NeonSqlClient {
                 version: 12,
                 name: "idle_vault_decision_plan_guardrails",
                 sql: MIGRATION_0012,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 17,
+                name: "autodeposit_account_not_found_quarantine",
+                sql: MIGRATION_0017,
                 expected_checksum: None,
             },
         ] {

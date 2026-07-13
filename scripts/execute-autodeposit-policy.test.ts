@@ -2,11 +2,36 @@ import { describe, expect, test } from "bun:test";
 import { Keypair, type Connection } from "@solana/web3.js";
 
 import {
+  classifyAutodepositAccountDependency,
+  confirmDeterministicMissingAutodepositAccount,
   computeSweepAmount,
+  extractAccountNotFoundPubkey,
   isMissingAutodepositTokenDelegateFailure,
   parseKeypairSecret,
   runAfterFeePayerSolSafety,
+  validateRecurringDelegationRelationships,
 } from "./execute-autodeposit-policy";
+
+function accountDependencies() {
+  return {
+    managedVaultId: BigInt(11),
+    routePolicyId: BigInt(12),
+    sweepPolicySeed: BigInt(13),
+    routePolicyAccount: Keypair.generate().publicKey.toBase58(),
+    sweepPolicyAccount: Keypair.generate().publicKey.toBase58(),
+    recurringDelegation: Keypair.generate().publicKey.toBase58(),
+    walletTokenAccount: Keypair.generate().publicKey.toBase58(),
+    vaultTokenAccount: Keypair.generate().publicKey.toBase58(),
+  };
+}
+
+function ownerPrograms() {
+  return {
+    smartAccountProgram: Keypair.generate().publicKey.toBase58(),
+    subscriptionsProgram: Keypair.generate().publicKey.toBase58(),
+    tokenProgram: Keypair.generate().publicKey.toBase58(),
+  };
+}
 
 function hex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
@@ -173,6 +198,124 @@ describe("autodeposit token delegate failures", () => {
   });
 });
 
+describe("deterministic AccountNotFound classification", () => {
+  test("extracts and maps a known route-policy account", () => {
+    const dependencies = accountDependencies();
+    expect(
+      extractAccountNotFoundPubkey(
+        new Error(`RPC AccountNotFound: pubkey=${dependencies.routePolicyAccount}`)
+      )
+    ).toBe(dependencies.routePolicyAccount);
+    expect(
+      classifyAutodepositAccountDependency({
+        accountPubkey: dependencies.routePolicyAccount,
+        dependencies,
+        ownerPrograms: ownerPrograms(),
+      })?.accountRole
+    ).toBe("route_policy");
+  });
+
+  test("does not invent a role for an unknown pubkey", () => {
+    expect(
+      classifyAutodepositAccountDependency({
+        accountPubkey: Keypair.generate().publicKey.toBase58(),
+        dependencies: accountDependencies(),
+        ownerPrograms: ownerPrograms(),
+      })
+    ).toBeNull();
+  });
+
+  test("blocks only after a successful confirmed null account read", async () => {
+    const dependencies = accountDependencies();
+    const evidence = await confirmDeterministicMissingAutodepositAccount({
+      connection: {
+        getAccountInfoAndContext: async (
+          _pubkey: unknown,
+          commitment: string
+        ) => {
+          expect(commitment).toBe("confirmed");
+          return { context: { slot: 432_703_041 }, value: null };
+        },
+      } as unknown as Pick<Connection, "getAccountInfoAndContext">,
+      dependencies,
+      error: new Error(
+        `AccountNotFound: pubkey=${dependencies.routePolicyAccount}`
+      ),
+      ownerPrograms: ownerPrograms(),
+    });
+
+    expect(evidence).toMatchObject({
+      accountPubkey: dependencies.routePolicyAccount,
+      accountRole: "route_policy",
+      commitment: "confirmed",
+      observationSlot: BigInt(432_703_041),
+    });
+  });
+
+  test("keeps non-null and thrown RPC results retryable", async () => {
+    const dependencies = accountDependencies();
+    const error = new Error(
+      `AccountNotFound: pubkey=${dependencies.routePolicyAccount}`
+    );
+    const existingAccount = await confirmDeterministicMissingAutodepositAccount({
+      connection: {
+        getAccountInfoAndContext: async () => ({
+          context: { slot: 1 },
+          value: { owner: Keypair.generate().publicKey },
+        }),
+      } as unknown as Pick<Connection, "getAccountInfoAndContext">,
+      dependencies,
+      error,
+      ownerPrograms: ownerPrograms(),
+    });
+    const transientRpc = await confirmDeterministicMissingAutodepositAccount({
+      connection: {
+        getAccountInfoAndContext: async () => {
+          throw new Error("429 rate limited");
+        },
+      } as unknown as Pick<Connection, "getAccountInfoAndContext">,
+      dependencies,
+      error,
+      ownerPrograms: ownerPrograms(),
+    });
+
+    expect(existingAccount).toBeNull();
+    expect(transientRpc).toBeNull();
+  });
+});
+
+describe("account-not-found recovery validation", () => {
+  test("requires the current recurring delegation relationships", () => {
+    const delegator = Keypair.generate().publicKey;
+    const delegatee = Keypair.generate().publicKey;
+    const mint = Keypair.generate().publicKey;
+    const data = new Uint8Array(171);
+    const offsets = { delegator: 3, delegatee: 35, mint: 139 };
+    data.set(delegator.toBytes(), offsets.delegator);
+    data.set(delegatee.toBytes(), offsets.delegatee);
+    data.set(mint.toBytes(), offsets.mint);
+
+    const expected = {
+      delegator: delegator.toBase58(),
+      delegatee: delegatee.toBase58(),
+      mint: mint.toBase58(),
+    };
+    expect(
+      validateRecurringDelegationRelationships({ data, offsets, expected })
+    ).toEqual(expected);
+    expect(() =>
+      validateRecurringDelegationRelationships({
+        data,
+        offsets,
+        expected: {
+          ...expected,
+          delegatee: Keypair.generate().publicKey.toBase58(),
+        },
+      })
+    ).toThrow("delegatee");
+  });
+});
+
 describe("runtime dependency boundary", () => {
   test("executor imports packages instead of sibling loyal-apps paths", async () => {
     const source = await Bun.file(
@@ -255,7 +398,7 @@ describe("runtime dependency boundary", () => {
       /paused_target AS \([\s\S]*?\n    \),\n    updated_claim AS \(/
     )?.[0];
     const updatedClaimSql = releaseSql.match(
-      /updated_claim AS \([\s\S]*?\n    \)\n    UPDATE loyal_yield\.balance_sweep_scheduled_slots/
+      /updated_claim AS \([\s\S]*?\n    \),\n    updated_slot AS \(/
     )?.[0];
 
     expect(pausedTargetSql).toContain("AND t.active");
@@ -263,6 +406,41 @@ describe("runtime dependency boundary", () => {
     expect(pausedTargetSql).toContain("pauseTargetForMissingDelegate");
     expect(updatedClaimSql).toContain("EXISTS (SELECT 1 FROM restored)");
     expect(updatedClaimSql).not.toContain("paused_target");
+  });
+
+  test("persists target-local account blocks and excludes them before claims", async () => {
+    const executorSource = await Bun.file(
+      new URL("./execute-autodeposit-policy.ts", import.meta.url)
+    ).text();
+    const triggerSource = await Bun.file(
+      new URL(
+        "../crates/balance-sweep-autodeposit-trigger/src/main.rs",
+        import.meta.url
+      )
+    ).text();
+    const migration = await Bun.file(
+      new URL(
+        "../crates/loyal-yield-orchestrator/migrations/0017_autodeposit_account_not_found_quarantine.sql",
+        import.meta.url
+      )
+    ).text();
+
+    expect(migration).toContain("ALTER TABLE loyal_yield.balance_sweep_targets");
+    expect(migration).toContain("execution_blocked_reason");
+    expect(migration).toContain("execution_block_evidence");
+    expect(migration).not.toContain("CREATE TABLE");
+    expect(migration).toContain("balance_sweep_execution_block_metrics");
+    expect(migration).toContain("new_unique_wallets_24h");
+    expect(migration).toContain("recovered_unique_wallets_24h");
+    expect(executorSource).toContain("confirmDeterministicMissingAutodepositAccount");
+    expect(executorSource).toContain("blocked_targets AS");
+    expect(executorSource).toContain("THEN 'blocked'::loyal_yield");
+    expect(executorSource).toContain("--recover-account-not-found-target-id");
+    expect(executorSource).toContain("Recovery validation became stale");
+    expect(triggerSource).toContain("reconcile_account_not_found_blocks_if_due");
+    expect(
+      triggerSource.match(/execution_blocked_reason/g)?.length
+    ).toBeGreaterThanOrEqual(6);
   });
 
   test("smart-account-vaults package exposes autodeposit pull helper", async () => {

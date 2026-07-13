@@ -74,6 +74,12 @@ struct Args {
     execute_limit: i64,
     #[arg(
         long,
+        env = "BALANCE_SWEEP_ACCOUNT_NOT_FOUND_RECONCILE_SECONDS",
+        default_value_t = 300
+    )]
+    account_not_found_reconcile_seconds: i64,
+    #[arg(
+        long,
         env = "BALANCE_SWEEP_STALE_SELECTED_CLAIM_SECONDS",
         default_value_t = 900
     )]
@@ -111,6 +117,8 @@ struct ExecutorOutcome {
     missing_route_policy_slots_failed: i64,
     stale_requested_slots_failed: i64,
     stale_claims_released: i64,
+    account_not_found_recovery_runs: i64,
+    account_not_found_recovery_failures: i64,
 }
 
 #[derive(Debug)]
@@ -208,6 +216,7 @@ async fn main() -> Result<()> {
                 executor_command,
                 args.execute_limit,
                 args.stale_selected_claim_seconds,
+                args.account_not_found_reconcile_seconds,
             )
             .await?;
             tracing::info!(
@@ -219,6 +228,9 @@ async fn main() -> Result<()> {
                     execution_outcome.missing_route_policy_slots_failed,
                 stale_requested_slots_failed = execution_outcome.stale_requested_slots_failed,
                 stale_claims_released = execution_outcome.stale_claims_released,
+                account_not_found_recovery_runs = execution_outcome.account_not_found_recovery_runs,
+                account_not_found_recovery_failures =
+                    execution_outcome.account_not_found_recovery_failures,
                 "scanned eligible autodeposit lots for execution"
             );
         }
@@ -360,7 +372,16 @@ async fn execute_eligible_targets_once(
     executor_command: &str,
     limit: i64,
     stale_selected_claim_seconds: i64,
+    account_not_found_reconcile_seconds: i64,
 ) -> Result<ExecutorOutcome> {
+    let (account_not_found_recovery_runs, account_not_found_recovery_failures) =
+        reconcile_account_not_found_blocks_if_due(
+            pool,
+            executor_command,
+            limit,
+            account_not_found_reconcile_seconds,
+        )
+        .await?;
     let missing_route_policy_slots_failed =
         fail_slots_without_active_earn_route_policy_once(pool, limit).await?;
     let stale_requested_slots_failed = fail_stale_requested_slots_once(pool, limit).await?;
@@ -372,6 +393,8 @@ async fn execute_eligible_targets_once(
         missing_route_policy_slots_failed,
         stale_requested_slots_failed,
         stale_claims_released,
+        account_not_found_recovery_runs,
+        account_not_found_recovery_failures,
         ..ExecutorOutcome::default()
     };
     for target in targets {
@@ -433,6 +456,7 @@ async fn fail_slots_without_active_earn_route_policy_once(
               AND target.lifecycle_status = 'active'
               AND target.token_mint = $2
               AND slot.token_mint = target.token_mint
+              AND target.execution_blocked_reason IS NULL
               AND NOT EXISTS (
                   SELECT 1
                   FROM loyal_yield.managed_vaults AS managed
@@ -486,6 +510,12 @@ async fn fail_stale_requested_slots_once(pool: &PgPool, limit: i64) -> Result<i6
             SELECT slot.id
             FROM loyal_yield.balance_sweep_scheduled_slots AS slot
             WHERE slot.status = 'requested'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM loyal_yield.balance_sweep_targets AS blocked_target
+                  WHERE blocked_target.id = slot.target_id
+                    AND blocked_target.execution_blocked_reason = 'account_not_found'
+              )
               AND COALESCE(slot.requested_at, slot.updated_at)
                     < now() - ($1::bigint * interval '1 second')
             ORDER BY COALESCE(slot.requested_at, slot.updated_at) ASC, slot.id ASC
@@ -580,10 +610,28 @@ async fn release_stale_selected_claims_once(
         ),
         failed_slots AS (
             UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
-            SET status = 'failed',
+            SET status = CASE
+                    WHEN EXISTS (
+                        SELECT 1
+                        FROM loyal_yield.balance_sweep_targets AS blocked_target
+                        WHERE blocked_target.id = slot.target_id
+                          AND blocked_target.execution_blocked_reason = 'account_not_found'
+                    )
+                    THEN 'blocked'::loyal_yield.balance_sweep_scheduled_slot_status
+                    ELSE 'failed'::loyal_yield.balance_sweep_scheduled_slot_status
+                END,
                 claim_token = NULL,
-                last_error = 'stale selected claim released by autodeposit worker',
-                updated_at = now()
+                last_error = COALESCE(
+                    slot.last_error,
+                    (
+                        SELECT blocked_target.execution_block_evidence ->> 'lastExecutionError'
+                        FROM loyal_yield.balance_sweep_targets AS blocked_target
+                        WHERE blocked_target.id = slot.target_id
+                          AND blocked_target.execution_blocked_reason = 'account_not_found'
+                    ),
+                    'stale selected claim released by autodeposit worker'
+                ),
+            updated_at = now()
             WHERE slot.claim_token IN (SELECT claim_token FROM released_claims)
                OR slot.id IN (
                   SELECT scheduled_slot_id
@@ -617,6 +665,67 @@ fn build_executor_shell_command(
     )
 }
 
+fn build_recovery_shell_command(
+    executor_command: &str,
+    limit: i64,
+    min_age_seconds: i64,
+) -> String {
+    format!(
+        "{} --reconcile-account-not-found-blocks --reconcile-limit {} --reconcile-min-age-seconds {}",
+        executor_command, limit, min_age_seconds
+    )
+}
+
+async fn reconcile_account_not_found_blocks_if_due(
+    pool: &PgPool,
+    executor_command: &str,
+    limit: i64,
+    min_age_seconds: i64,
+) -> Result<(i64, i64)> {
+    if limit <= 0 || min_age_seconds < 0 {
+        return Ok((0, 0));
+    }
+    let due: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM loyal_yield.balance_sweep_targets AS target
+            WHERE target.execution_blocked_reason = 'account_not_found'
+              AND COALESCE(
+                    target.execution_block_last_checked_at,
+                    target.execution_blocked_at
+                  )
+                    <= now() - ($1::bigint * interval '1 second')
+        )
+        "#,
+    )
+    .bind(min_age_seconds)
+    .fetch_one(pool)
+    .await?;
+    if !due {
+        return Ok((0, 0));
+    }
+
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(build_recovery_shell_command(
+            executor_command,
+            limit,
+            min_age_seconds,
+        ))
+        .status()
+        .context("spawn account-not-found block reconciliation")?;
+    if status.success() {
+        Ok((1, 0))
+    } else {
+        tracing::warn!(
+            status = ?status,
+            "account-not-found block reconciliation exited unsuccessfully; normal blocked-target exclusion remains active"
+        );
+        Ok((1, 1))
+    }
+}
+
 async fn load_executable_targets(pool: &PgPool, limit: i64) -> Result<Vec<ExecutableTargetRow>> {
     let rows = sqlx::query(
         r#"
@@ -633,6 +742,7 @@ async fn load_executable_targets(pool: &PgPool, limit: i64) -> Result<Vec<Execut
           AND target.lifecycle_status = 'active'
           AND target.token_mint = $2
           AND target.wallet_balance_floor_raw IS NOT NULL
+          AND target.execution_blocked_reason IS NULL
           AND balance.amount_raw > target.wallet_balance_floor_raw
           AND slot.token_mint = target.token_mint
           AND slot.status IN ('scheduled', 'requested')
@@ -843,9 +953,27 @@ async fn release_claim_once(pool: &PgPool, claim_token: &str) -> Result<ClaimOut
         sqlx::query(
             r#"
             UPDATE loyal_yield.balance_sweep_scheduled_slots
-            SET status = 'failed',
+            SET status = CASE
+                    WHEN EXISTS (
+                        SELECT 1
+                        FROM loyal_yield.balance_sweep_targets AS blocked_target
+                        WHERE blocked_target.id = balance_sweep_scheduled_slots.target_id
+                          AND blocked_target.execution_blocked_reason = 'account_not_found'
+                    )
+                    THEN 'blocked'::loyal_yield.balance_sweep_scheduled_slot_status
+                    ELSE 'failed'::loyal_yield.balance_sweep_scheduled_slot_status
+                END,
                 claim_token = NULL,
-                last_error = 'claim released before autodeposit pull',
+                last_error = COALESCE(
+                    last_error,
+                    (
+                        SELECT blocked_target.execution_block_evidence ->> 'lastExecutionError'
+                        FROM loyal_yield.balance_sweep_targets AS blocked_target
+                        WHERE blocked_target.id = balance_sweep_scheduled_slots.target_id
+                          AND blocked_target.execution_blocked_reason = 'account_not_found'
+                    ),
+                    'claim released before autodeposit pull'
+                ),
                 updated_at = now()
             WHERE claim_token = $1
             "#,
@@ -882,10 +1010,12 @@ async fn claim_eligible_lots_once(
 
     let target_active = sqlx::query_scalar::<_, bool>(
         r#"
-        SELECT active AND lifecycle_status = 'active'
-        FROM loyal_yield.balance_sweep_targets
-        WHERE id = $1
-          AND token_mint = $2
+        SELECT target.active
+               AND target.lifecycle_status = 'active'
+               AND target.execution_blocked_reason IS NULL
+        FROM loyal_yield.balance_sweep_targets AS target
+        WHERE target.id = $1
+          AND target.token_mint = $2
         FOR UPDATE
         "#,
     )
@@ -1098,6 +1228,12 @@ async fn lock_executable_slot(
           AND token_mint = $3
           AND status IN ('scheduled', 'requested')
           AND eligible_after <= now()
+          AND NOT EXISTS (
+              SELECT 1
+              FROM loyal_yield.balance_sweep_targets AS target
+              WHERE target.id = $2
+                AND target.execution_blocked_reason = 'account_not_found'
+          )
         FOR UPDATE
         "#,
     )

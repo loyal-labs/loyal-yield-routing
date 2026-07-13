@@ -6,6 +6,7 @@ import {
   type AddressLookupTableAccount,
   type TransactionInstruction,
 } from "@solana/web3.js";
+import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import bs58 from "bs58";
 import { existsSync } from "node:fs";
 
@@ -65,9 +66,12 @@ type AppModules = {
   SUBSCRIPTIONS_PROGRAM_ID: PublicKey;
   SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PER_PERIOD_OFFSET: number;
   SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PULLED_OFFSET: number;
+  SUBSCRIPTION_RECURRING_DELEGATION_DELEGATEE_OFFSET: number;
+  SUBSCRIPTION_RECURRING_DELEGATION_DELEGATOR_OFFSET: number;
   SUBSCRIPTION_RECURRING_DELEGATION_DATA_LEN: number;
   SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR: number;
   SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR_OFFSET: number;
+  SUBSCRIPTION_RECURRING_DELEGATION_MINT_OFFSET: number;
 };
 
 export type SweepAmountInput = {
@@ -97,6 +101,10 @@ type CliOptions = {
   claimToken: string | null;
   execute: boolean;
   overrideFloorRaw: bigint | null;
+  reconcileAccountNotFoundBlocks: boolean;
+  reconcileLimit: number;
+  reconcileMinAgeSeconds: number;
+  recoverAccountNotFoundTargetId: bigint | null;
   requireLotClaim: boolean;
   scheduledSlotId: bigint | null;
   targetId: bigint | null;
@@ -104,6 +112,9 @@ type CliOptions = {
 
 type EligibleTarget = {
   id: bigint;
+  managedVaultId: bigint;
+  routePolicyId: bigint;
+  sweepPolicySeed: bigint;
   settings: string;
   vaultIndex: number;
   wallet: string;
@@ -125,6 +136,86 @@ type EligibleTarget = {
   currentReserve: string | null;
   currentMarket: string | null;
   currentLiquidityMint: string | null;
+};
+
+export type MissingAccountRole =
+  | "route_policy"
+  | "sweep_policy"
+  | "recurring_delegation"
+  | "wallet_token_account"
+  | "vault_token_account";
+
+export type AutodepositAccountDependencies = {
+  managedVaultId: bigint;
+  routePolicyId: bigint;
+  sweepPolicySeed: bigint;
+  routePolicyAccount: string;
+  sweepPolicyAccount: string;
+  recurringDelegation: string;
+  walletTokenAccount: string;
+  vaultTokenAccount: string;
+};
+
+export type ConfirmedMissingAccountEvidence = {
+  accountPubkey: string;
+  accountRole: MissingAccountRole;
+  expectedOwnerProgram: string;
+  dependencyFingerprint: string;
+  managedVaultId: bigint;
+  routePolicyId: bigint;
+  sweepPolicySeed: bigint;
+  commitment: typeof DEFAULT_COMMITMENT;
+  observationSlot: bigint;
+  observedAt: string;
+};
+
+export type RecurringDelegationRelationships = {
+  delegator: string;
+  delegatee: string;
+  mint: string;
+};
+
+type AccountDependency = {
+  accountPubkey: string;
+  accountRole: MissingAccountRole;
+  expectedOwnerProgram: string;
+  dependencyFingerprint: string;
+  managedVaultId: bigint;
+  routePolicyId: bigint;
+  sweepPolicySeed: bigint;
+};
+
+type BlockedTargetRecoveryRow = {
+  targetId: bigint;
+  wallet: string;
+  vaultPubkey: string;
+  tokenMint: string;
+  targetActive: boolean;
+  lifecycleStatus: string;
+  accountRole: MissingAccountRole;
+  missingAccountPubkey: string;
+  managedVaultId: bigint | null;
+  routePolicyId: bigint | null;
+  sweepPolicySeed: bigint;
+  routePolicyAccount: string | null;
+  sweepPolicyAccount: string;
+  recurringDelegation: string | null;
+  walletTokenAccount: string;
+  vaultTokenAccount: string;
+};
+
+type RecoveryValidation = {
+  dependencyAccountPubkey: string;
+  dependencyFingerprint: string;
+  managedVaultId: bigint;
+  routePolicyId: bigint;
+  sweepPolicySeed: bigint;
+  routePolicyAccount: string;
+  sweepPolicyAccount: string;
+  recurringDelegation: string;
+  walletTokenAccount: string;
+  vaultTokenAccount: string;
+  evidence: Record<string, unknown>;
 };
 
 type SimulationSummary = {
@@ -183,6 +274,120 @@ const SAME_MINT_ROUTE_MODE = "same_mint_kamino";
 const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDC_DECIMALS = 6;
 const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
+const DEFAULT_BLOCK_RECONCILE_LIMIT = 25;
+const DEFAULT_BLOCK_RECONCILE_MIN_AGE_SECONDS = 5 * 60;
+
+type AccountOwnerPrograms = {
+  smartAccountProgram: string;
+  subscriptionsProgram: string;
+  tokenProgram: string;
+};
+
+export function extractAccountNotFoundPubkey(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.match(
+      /AccountNotFound: pubkey=([1-9A-HJ-NP-Za-km-z]{32,44})/
+    )?.[1] ?? null
+  );
+}
+
+export function classifyAutodepositAccountDependency(args: {
+  accountPubkey: string;
+  dependencies: AutodepositAccountDependencies;
+  ownerPrograms: AccountOwnerPrograms;
+}): AccountDependency | null {
+  const common = {
+    managedVaultId: args.dependencies.managedVaultId,
+    routePolicyId: args.dependencies.routePolicyId,
+    sweepPolicySeed: args.dependencies.sweepPolicySeed,
+  };
+  const dependency = (
+    accountRole: MissingAccountRole,
+    expectedOwnerProgram: string,
+    fingerprintId: bigint | null = null
+  ): AccountDependency => ({
+    accountPubkey: args.accountPubkey,
+    accountRole,
+    expectedOwnerProgram,
+    dependencyFingerprint: [
+      `${accountRole}:${fingerprintId?.toString() ?? "none"}:${args.accountPubkey}`,
+      `route_policy:${args.dependencies.routePolicyId}:${args.dependencies.routePolicyAccount}`,
+      `sweep_policy:${args.dependencies.sweepPolicySeed}:${args.dependencies.sweepPolicyAccount}`,
+      `recurring_delegation:${args.dependencies.recurringDelegation}`,
+      `wallet_token_account:${args.dependencies.walletTokenAccount}`,
+      `vault_token_account:${args.dependencies.vaultTokenAccount}`,
+    ].join("|"),
+    ...common,
+  });
+
+  if (args.accountPubkey === args.dependencies.routePolicyAccount) {
+    return dependency(
+      "route_policy",
+      args.ownerPrograms.smartAccountProgram,
+      args.dependencies.routePolicyId
+    );
+  }
+  if (args.accountPubkey === args.dependencies.sweepPolicyAccount) {
+    return dependency(
+      "sweep_policy",
+      args.ownerPrograms.smartAccountProgram,
+      args.dependencies.sweepPolicySeed
+    );
+  }
+  if (args.accountPubkey === args.dependencies.recurringDelegation) {
+    return dependency(
+      "recurring_delegation",
+      args.ownerPrograms.subscriptionsProgram
+    );
+  }
+  if (args.accountPubkey === args.dependencies.walletTokenAccount) {
+    return dependency("wallet_token_account", args.ownerPrograms.tokenProgram);
+  }
+  if (args.accountPubkey === args.dependencies.vaultTokenAccount) {
+    return dependency("vault_token_account", args.ownerPrograms.tokenProgram);
+  }
+  return null;
+}
+
+export async function confirmDeterministicMissingAutodepositAccount(args: {
+  connection: Pick<Connection, "getAccountInfoAndContext">;
+  dependencies: AutodepositAccountDependencies;
+  error: unknown;
+  ownerPrograms: AccountOwnerPrograms;
+}): Promise<ConfirmedMissingAccountEvidence | null> {
+  const accountPubkey = extractAccountNotFoundPubkey(args.error);
+  if (!accountPubkey) {
+    return null;
+  }
+  const dependency = classifyAutodepositAccountDependency({
+    accountPubkey,
+    dependencies: args.dependencies,
+    ownerPrograms: args.ownerPrograms,
+  });
+  if (!dependency) {
+    return null;
+  }
+
+  try {
+    const result = await args.connection.getAccountInfoAndContext(
+      new PublicKey(accountPubkey),
+      DEFAULT_COMMITMENT
+    );
+    if (result.value !== null) {
+      return null;
+    }
+    return {
+      ...dependency,
+      commitment: DEFAULT_COMMITMENT,
+      observationSlot: BigInt(result.context.slot),
+      observedAt: new Date().toISOString(),
+    };
+  } catch {
+    // Ambiguous RPC/transport failures stay retryable and never create a block.
+    return null;
+  }
+}
 
 export function isMissingAutodepositTokenDelegateFailure(
   error: unknown
@@ -229,12 +434,18 @@ async function loadAppModules(): Promise<AppModules> {
       loyalActionsModule.SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PER_PERIOD_OFFSET,
     SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PULLED_OFFSET:
       loyalActionsModule.SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PULLED_OFFSET,
+    SUBSCRIPTION_RECURRING_DELEGATION_DELEGATEE_OFFSET:
+      loyalActionsModule.SUBSCRIPTION_RECURRING_DELEGATION_DELEGATEE_OFFSET,
+    SUBSCRIPTION_RECURRING_DELEGATION_DELEGATOR_OFFSET:
+      loyalActionsModule.SUBSCRIPTION_RECURRING_DELEGATION_DELEGATOR_OFFSET,
     SUBSCRIPTION_RECURRING_DELEGATION_DATA_LEN:
       loyalActionsModule.SUBSCRIPTION_RECURRING_DELEGATION_DATA_LEN,
     SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR:
       loyalActionsModule.SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR,
     SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR_OFFSET:
       loyalActionsModule.SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR_OFFSET,
+    SUBSCRIPTION_RECURRING_DELEGATION_MINT_OFFSET:
+      loyalActionsModule.SUBSCRIPTION_RECURRING_DELEGATION_MINT_OFFSET,
   };
 }
 
@@ -363,6 +574,10 @@ function parseOptions(argv: string[]): CliOptions {
   let claimToken: string | null = null;
   let execute = false;
   let overrideFloorRaw: bigint | null = null;
+  let reconcileAccountNotFoundBlocks = false;
+  let reconcileLimit = DEFAULT_BLOCK_RECONCILE_LIMIT;
+  let reconcileMinAgeSeconds = DEFAULT_BLOCK_RECONCILE_MIN_AGE_SECONDS;
+  let recoverAccountNotFoundTargetId: bigint | null = null;
   let requireLotClaim = false;
   let scheduledSlotId: bigint | null = null;
   let targetId: bigint | null = null;
@@ -371,6 +586,41 @@ function parseOptions(argv: string[]): CliOptions {
     const arg = argv[index];
     if (arg === "--execute") {
       execute = true;
+      continue;
+    }
+    if (arg === "--reconcile-account-not-found-blocks") {
+      reconcileAccountNotFoundBlocks = true;
+      continue;
+    }
+    if (arg === "--recover-account-not-found-target-id") {
+      const value = argv[index + 1];
+      if (!value || !/^\d+$/.test(value)) {
+        throw new Error(
+          "--recover-account-not-found-target-id requires an unsigned integer value."
+        );
+      }
+      recoverAccountNotFoundTargetId = BigInt(value);
+      index += 1;
+      continue;
+    }
+    if (arg === "--reconcile-limit") {
+      const value = argv[index + 1];
+      if (!value || !/^\d+$/.test(value) || Number(value) < 1) {
+        throw new Error("--reconcile-limit requires a positive integer value.");
+      }
+      reconcileLimit = Number(value);
+      index += 1;
+      continue;
+    }
+    if (arg === "--reconcile-min-age-seconds") {
+      const value = argv[index + 1];
+      if (!value || !/^\d+$/.test(value)) {
+        throw new Error(
+          "--reconcile-min-age-seconds requires an unsigned integer value."
+        );
+      }
+      reconcileMinAgeSeconds = Number(value);
+      index += 1;
       continue;
     }
     if (arg === "--target-id") {
@@ -421,6 +671,10 @@ function parseOptions(argv: string[]): CliOptions {
     claimToken,
     execute,
     overrideFloorRaw,
+    reconcileAccountNotFoundBlocks,
+    reconcileLimit,
+    reconcileMinAgeSeconds,
+    recoverAccountNotFoundTargetId,
     requireLotClaim,
     scheduledSlotId,
     targetId,
@@ -444,6 +698,7 @@ async function loadEligibleTarget(
   const rows = await sql`
     SELECT
       t.id,
+      t.policy_seed AS sweep_policy_seed,
       t.settings,
       t.vault_index,
       t.wallet,
@@ -459,6 +714,8 @@ async function loadEligibleTarget(
       t.max_amount_per_period,
       t.period_length_seconds,
       t.start_timestamp,
+      rp.managed_vault_id,
+      rp.route_policy_id,
       rp.policy_account AS route_policy_account,
       rp.policy_seed AS route_policy_seed,
       rp.route_modes AS route_modes,
@@ -467,7 +724,12 @@ async function loadEligibleTarget(
       yp.current_liquidity_mint
     FROM loyal_yield.balance_sweep_targets t
     LEFT JOIN LATERAL (
-      SELECT policy_account, policy_seed, route_modes
+      SELECT
+        mv.id AS managed_vault_id,
+        rp.id AS route_policy_id,
+        rp.policy_account,
+        rp.policy_seed,
+        rp.route_modes
       FROM loyal_yield.managed_vaults mv
       JOIN loyal_yield.route_policies rp
         ON mv.active_policy_id = rp.id
@@ -497,6 +759,7 @@ async function loadEligibleTarget(
       AND t.lifecycle_status = 'active'
       AND t.wallet_balance_floor_raw IS NOT NULL
       AND t.recurring_delegation IS NOT NULL
+      AND t.execution_blocked_reason IS NULL
       AND (${targetId === null} OR t.id = ${targetId?.toString() ?? null})
     ORDER BY t.id
     LIMIT 2
@@ -518,6 +781,15 @@ async function loadEligibleTarget(
 
   return {
     id,
+    managedVaultId: BigInt(
+      readRequiredString(row.managed_vault_id, "managed_vault_id")
+    ),
+    routePolicyId: BigInt(
+      readRequiredString(row.route_policy_id, "route_policy_id")
+    ),
+    sweepPolicySeed: BigInt(
+      readRequiredString(row.sweep_policy_seed, "sweep_policy_seed")
+    ),
     settings: readRequiredString(row.settings, "settings"),
     vaultIndex: Number(readRequiredString(row.vault_index, "vault_index")),
     wallet: readRequiredString(row.wallet, "wallet"),
@@ -553,6 +825,561 @@ async function loadEligibleTarget(
     currentReserve: readNullableString(row.current_reserve),
     currentMarket: readNullableString(row.current_market),
     currentLiquidityMint: readNullableString(row.current_liquidity_mint),
+  };
+}
+
+function accountOwnerPrograms(args: {
+  appModules: AppModules;
+  smartAccountProgram: PublicKey;
+}): AccountOwnerPrograms {
+  return {
+    smartAccountProgram: args.smartAccountProgram.toBase58(),
+    subscriptionsProgram: args.appModules.SUBSCRIPTIONS_PROGRAM_ID.toBase58(),
+    tokenProgram: TOKEN_PROGRAM_ID.toBase58(),
+  };
+}
+
+function accountDependencies(
+  target: EligibleTarget
+): AutodepositAccountDependencies {
+  return {
+    managedVaultId: target.managedVaultId,
+    routePolicyId: target.routePolicyId,
+    sweepPolicySeed: target.sweepPolicySeed,
+    routePolicyAccount: target.routePolicyAccount,
+    sweepPolicyAccount: target.sweepPolicyAccount,
+    recurringDelegation: target.recurringDelegation,
+    walletTokenAccount: target.walletUsdcAta,
+    vaultTokenAccount: target.vaultUsdcAta,
+  };
+}
+
+async function loadBlockedTargetsForRecovery(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  limit: number;
+  minAgeSeconds: number;
+  targetId: bigint | null;
+}): Promise<BlockedTargetRecoveryRow[]> {
+  const sql = args.neon(args.databaseUrl);
+  const rows = await sql`
+    SELECT
+      target.id AS target_id,
+      target.wallet,
+      target.execution_block_evidence ->> 'accountRole' AS account_role,
+      target.execution_block_evidence ->> 'missingAccountPubkey' AS missing_account_pubkey,
+      target.active AS target_active,
+      target.lifecycle_status,
+      target.vault_pubkey,
+      target.token_mint,
+      target.policy_account AS sweep_policy_account,
+      target.recurring_delegation,
+      COALESCE(target.wallet_usdc_ata, target.wallet_token_ata) AS wallet_token_ata,
+      COALESCE(target.vault_usdc_ata, target.vault_token_ata) AS vault_token_ata,
+      target.policy_seed AS sweep_policy_seed,
+      managed.id AS managed_vault_id,
+      route_policy.id AS route_policy_id,
+      route_policy.policy_account AS route_policy_account
+    FROM loyal_yield.balance_sweep_targets target
+    LEFT JOIN loyal_yield.managed_vaults managed
+      ON managed.settings = target.settings
+     AND managed.vault_index = target.vault_index
+     AND managed.vault_pubkey = target.vault_pubkey
+     AND managed.active
+    LEFT JOIN loyal_yield.route_policies route_policy
+      ON route_policy.id = managed.active_policy_id
+     AND route_policy.active
+     AND route_policy.authority = target.authority
+     AND route_policy.settings = target.settings
+     AND route_policy.vault_index = target.vault_index
+     AND route_policy.vault_pubkey = target.vault_pubkey
+     AND ${SAME_MINT_ROUTE_MODE} = ANY(route_policy.route_modes)
+    WHERE target.execution_blocked_reason = 'account_not_found'
+      AND (
+        ${args.targetId !== null}
+        OR COALESCE(
+             target.execution_block_last_checked_at,
+             target.execution_blocked_at
+           )
+             <= now() - (${args.minAgeSeconds} * interval '1 second')
+      )
+      AND (${args.targetId === null} OR target.id = ${args.targetId?.toString() ?? null})
+    ORDER BY COALESCE(
+      target.execution_block_last_checked_at,
+      target.execution_blocked_at
+    ) ASC, target.id ASC
+    LIMIT ${args.limit}
+  `;
+
+  return rows.map((value) => {
+    const row = value as Record<string, unknown>;
+    return {
+      targetId: BigInt(readRequiredString(row.target_id, "target_id")),
+      wallet: readRequiredString(row.wallet, "wallet"),
+      vaultPubkey: readRequiredString(row.vault_pubkey, "vault_pubkey"),
+      tokenMint: readRequiredString(row.token_mint, "token_mint"),
+      targetActive: row.target_active === true,
+      lifecycleStatus: readRequiredString(
+        row.lifecycle_status,
+        "lifecycle_status"
+      ),
+      accountRole: readRequiredString(
+        row.account_role,
+        "account_role"
+      ) as MissingAccountRole,
+      missingAccountPubkey: readRequiredString(
+        row.missing_account_pubkey,
+        "missing_account_pubkey"
+      ),
+      managedVaultId: readNullableBigInt(row.managed_vault_id),
+      routePolicyId: readNullableBigInt(row.route_policy_id),
+      sweepPolicySeed: BigInt(
+        readRequiredString(row.sweep_policy_seed, "sweep_policy_seed")
+      ),
+      routePolicyAccount: readNullableString(row.route_policy_account),
+      sweepPolicyAccount: readRequiredString(
+        row.sweep_policy_account,
+        "sweep_policy_account"
+      ),
+      recurringDelegation: readNullableString(row.recurring_delegation),
+      walletTokenAccount: readRequiredString(
+        row.wallet_token_ata,
+        "wallet_token_ata"
+      ),
+      vaultTokenAccount: readRequiredString(
+        row.vault_token_ata,
+        "vault_token_ata"
+      ),
+    };
+  });
+}
+
+function readNullableBigInt(value: unknown): bigint | null {
+  const text = readNullableString(value);
+  return text === null ? null : BigInt(text);
+}
+
+function recoveryFingerprint(row: BlockedTargetRecoveryRow): string {
+  return [
+    `route_policy:${row.routePolicyId?.toString() ?? "none"}:${row.routePolicyAccount ?? "none"}`,
+    `sweep_policy:${row.sweepPolicySeed.toString()}:${row.sweepPolicyAccount}`,
+    `recurring_delegation:${row.recurringDelegation ?? "none"}`,
+    `wallet_token_account:${row.walletTokenAccount}`,
+    `vault_token_account:${row.vaultTokenAccount}`,
+  ].join("|");
+}
+
+function dependencyAccountForRecovery(
+  row: BlockedTargetRecoveryRow
+): string | null {
+  switch (row.accountRole) {
+    case "route_policy":
+      return row.routePolicyAccount;
+    case "sweep_policy":
+      return row.sweepPolicyAccount;
+    case "recurring_delegation":
+      return row.recurringDelegation;
+    case "wallet_token_account":
+      return row.walletTokenAccount;
+    case "vault_token_account":
+      return row.vaultTokenAccount;
+  }
+}
+
+async function readValidatedRecoveryAccount(args: {
+  connection: Pick<Connection, "getAccountInfoAndContext">;
+  expectedOwner: PublicKey;
+  pubkey: string;
+  role: MissingAccountRole;
+}) {
+  const result = await args.connection.getAccountInfoAndContext(
+    new PublicKey(args.pubkey),
+    DEFAULT_COMMITMENT
+  );
+  if (result.value === null) {
+    throw new Error(
+      `Recovery validation: ${args.role} account ${args.pubkey} is still missing.`
+    );
+  }
+  if (!result.value.owner.equals(args.expectedOwner)) {
+    throw new Error(
+      `Recovery validation: ${args.role} account ${args.pubkey} owner ${result.value.owner.toBase58()} does not match ${args.expectedOwner.toBase58()}.`
+    );
+  }
+  return {
+    account: result.value,
+    evidence: {
+      role: args.role,
+      pubkey: args.pubkey,
+      owner: result.value.owner.toBase58(),
+      observationSlot: result.context.slot.toString(),
+      commitment: DEFAULT_COMMITMENT,
+      valueIsNull: false,
+    },
+  };
+}
+
+function validateRecurringDelegationAccountData(args: {
+  account: { data: Uint8Array };
+  appModules: AppModules;
+  expectedRelationships?: {
+    delegatee: string;
+    delegator: string;
+    mint: string;
+  };
+  pubkey: string;
+}) {
+  if (
+    args.account.data.length <
+    args.appModules.SUBSCRIPTION_RECURRING_DELEGATION_DATA_LEN
+  ) {
+    throw new Error(
+      `Recurring delegation account ${args.pubkey} has unexpected data length ${args.account.data.length}.`
+    );
+  }
+  const discriminator =
+    args.account.data[
+      args.appModules.SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR_OFFSET
+    ];
+  if (
+    discriminator !==
+    args.appModules.SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR
+  ) {
+    throw new Error(
+      `Recurring delegation account ${args.pubkey} has unexpected discriminator ${discriminator}.`
+    );
+  }
+  const relationships = validateRecurringDelegationRelationships({
+    data: args.account.data,
+    offsets: {
+      delegator:
+        args.appModules.SUBSCRIPTION_RECURRING_DELEGATION_DELEGATOR_OFFSET,
+      delegatee:
+        args.appModules.SUBSCRIPTION_RECURRING_DELEGATION_DELEGATEE_OFFSET,
+      mint: args.appModules.SUBSCRIPTION_RECURRING_DELEGATION_MINT_OFFSET,
+    },
+    expected: args.expectedRelationships,
+  });
+  return relationships;
+}
+
+export function validateRecurringDelegationRelationships(args: {
+  data: Uint8Array;
+  offsets: { delegator: number; delegatee: number; mint: number };
+  expected?: RecurringDelegationRelationships;
+}): RecurringDelegationRelationships {
+  const relationships = {
+    delegator: readPublicKeyAtOffset(
+      args.data,
+      args.offsets.delegator,
+      "delegator"
+    ),
+    delegatee: readPublicKeyAtOffset(
+      args.data,
+      args.offsets.delegatee,
+      "delegatee"
+    ),
+    mint: readPublicKeyAtOffset(
+      args.data,
+      args.offsets.mint,
+      "mint"
+    ),
+  };
+  if (args.expected) {
+    for (const key of ["delegator", "delegatee", "mint"] as const) {
+      if (relationships[key] !== args.expected[key]) {
+        throw new Error(
+          `Recurring delegation ${key} ${relationships[key]} does not match ${args.expected[key]}.`
+        );
+      }
+    }
+  }
+  return relationships;
+}
+
+function readPublicKeyAtOffset(
+  data: Uint8Array,
+  offset: number,
+  label: string
+): string {
+  if (offset < 0 || offset + 32 > data.length) {
+    throw new Error(`Recurring delegation account is missing ${label}.`);
+  }
+  return new PublicKey(data.slice(offset, offset + 32)).toBase58();
+}
+
+async function validateBlockedTargetRecovery(args: {
+  appModules: AppModules;
+  connection: Pick<Connection, "getAccountInfoAndContext">;
+  programId: PublicKey;
+  row: BlockedTargetRecoveryRow;
+}): Promise<RecoveryValidation> {
+  const row = args.row;
+  if (!row.targetActive || row.lifecycleStatus !== "active") {
+    throw new Error(
+      `Recovery validation: target ${row.targetId} is not product-eligible (${row.lifecycleStatus}).`
+    );
+  }
+  if (
+    row.managedVaultId === null ||
+    row.routePolicyId === null ||
+    row.routePolicyAccount === null
+  ) {
+    throw new Error(
+      `Recovery validation: target ${row.targetId} does not have a current active Earn route policy.`
+    );
+  }
+  if (row.recurringDelegation === null) {
+    throw new Error(
+      `Recovery validation: target ${row.targetId} does not have a recurring delegation.`
+    );
+  }
+  const dependencyAccountPubkey = dependencyAccountForRecovery(row);
+  if (!dependencyAccountPubkey) {
+    throw new Error(
+      `Recovery validation: target ${row.targetId} has no current ${row.accountRole} dependency.`
+    );
+  }
+
+  const routePolicy = await readValidatedRecoveryAccount({
+    connection: args.connection,
+    expectedOwner: args.programId,
+    pubkey: row.routePolicyAccount,
+    role: "route_policy",
+  });
+  const sweepPolicy = await readValidatedRecoveryAccount({
+    connection: args.connection,
+    expectedOwner: args.programId,
+    pubkey: row.sweepPolicyAccount,
+    role: "sweep_policy",
+  });
+  const recurringDelegation = await readValidatedRecoveryAccount({
+    connection: args.connection,
+    expectedOwner: args.appModules.SUBSCRIPTIONS_PROGRAM_ID,
+    pubkey: row.recurringDelegation,
+    role: "recurring_delegation",
+  });
+  const delegationRelationships = validateRecurringDelegationAccountData({
+    account: recurringDelegation.account,
+    appModules: args.appModules,
+    expectedRelationships: {
+      delegator: row.wallet,
+      delegatee: row.vaultPubkey,
+      mint: row.tokenMint,
+    },
+    pubkey: row.recurringDelegation,
+  });
+  const walletTokenAccount = await readValidatedRecoveryAccount({
+    connection: args.connection,
+    expectedOwner: TOKEN_PROGRAM_ID,
+    pubkey: row.walletTokenAccount,
+    role: "wallet_token_account",
+  });
+  const vaultTokenAccount = await readValidatedRecoveryAccount({
+    connection: args.connection,
+    expectedOwner: TOKEN_PROGRAM_ID,
+    pubkey: row.vaultTokenAccount,
+    role: "vault_token_account",
+  });
+
+  return {
+    dependencyAccountPubkey,
+    dependencyFingerprint: recoveryFingerprint(row),
+    managedVaultId: row.managedVaultId,
+    routePolicyId: row.routePolicyId,
+    sweepPolicySeed: row.sweepPolicySeed,
+    routePolicyAccount: row.routePolicyAccount,
+    sweepPolicyAccount: row.sweepPolicyAccount,
+    recurringDelegation: row.recurringDelegation,
+    walletTokenAccount: row.walletTokenAccount,
+    vaultTokenAccount: row.vaultTokenAccount,
+    evidence: {
+      previousMissingAccount: row.missingAccountPubkey,
+      currentDependencyAccount: dependencyAccountPubkey,
+      currentFingerprint: recoveryFingerprint(row),
+      delegationRelationships,
+      accounts: [
+        routePolicy.evidence,
+        sweepPolicy.evidence,
+        recurringDelegation.evidence,
+        walletTokenAccount.evidence,
+        vaultTokenAccount.evidence,
+      ],
+    },
+  };
+}
+
+async function recordBlockRecoveryCheckFailure(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  targetId: bigint;
+  error: string;
+}) {
+  const sql = args.neon(args.databaseUrl);
+  await sql`
+    UPDATE loyal_yield.balance_sweep_targets
+    SET execution_block_last_checked_at = now(),
+        execution_block_last_check_error = ${args.error}
+    WHERE id = ${args.targetId.toString()}
+      AND execution_blocked_reason = 'account_not_found'
+  `;
+}
+
+async function recoverValidatedExecutionBlock(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  source: "automatic" | "manual";
+  targetId: bigint;
+  validation: RecoveryValidation;
+}): Promise<boolean> {
+  const sql = args.neon(args.databaseUrl);
+  const rows = await sql`
+    WITH recovered_target AS (
+      UPDATE loyal_yield.balance_sweep_targets target
+      SET execution_blocked_reason = NULL,
+          execution_block_last_checked_at = now(),
+          execution_block_last_check_error = NULL,
+          execution_block_recovered_at = now(),
+          execution_block_evidence = target.execution_block_evidence ||
+            jsonb_build_object(
+              'recovery',
+              ${JSON.stringify({
+                accountPubkey: args.validation.dependencyAccountPubkey,
+                fingerprint: args.validation.dependencyFingerprint,
+                source: args.source,
+                evidence: args.validation.evidence,
+              })}::jsonb
+            )
+      WHERE target.id = ${args.targetId.toString()}
+        AND target.execution_blocked_reason = 'account_not_found'
+        AND EXISTS (
+          SELECT 1
+          FROM loyal_yield.managed_vaults managed
+          JOIN loyal_yield.route_policies route_policy
+            ON route_policy.id = managed.active_policy_id
+           AND route_policy.active
+           AND route_policy.id = ${args.validation.routePolicyId.toString()}
+           AND route_policy.policy_account = ${args.validation.routePolicyAccount}
+           AND ${SAME_MINT_ROUTE_MODE} = ANY(route_policy.route_modes)
+          WHERE managed.settings = target.settings
+           AND managed.vault_index = target.vault_index
+           AND managed.vault_pubkey = target.vault_pubkey
+           AND managed.active
+           AND managed.id = ${args.validation.managedVaultId.toString()}
+        )
+        AND target.active
+        AND target.lifecycle_status = 'active'
+        AND target.policy_seed = ${args.validation.sweepPolicySeed.toString()}
+        AND target.policy_account = ${args.validation.sweepPolicyAccount}
+        AND target.recurring_delegation = ${args.validation.recurringDelegation}
+        AND COALESCE(target.wallet_usdc_ata, target.wallet_token_ata) = ${args.validation.walletTokenAccount}
+        AND COALESCE(target.vault_usdc_ata, target.vault_token_ata) = ${args.validation.vaultTokenAccount}
+      RETURNING target.id AS target_id
+    ),
+    rescheduled_slots AS (
+      UPDATE loyal_yield.balance_sweep_scheduled_slots slot
+      SET status = 'scheduled',
+          eligible_after = now(),
+          claim_token = NULL,
+          last_error = NULL,
+          updated_at = now()
+      WHERE slot.target_id IN (SELECT target_id FROM recovered_target)
+        AND slot.status = 'blocked'
+      RETURNING slot.id
+    ),
+    reopened_lots AS (
+      UPDATE loyal_yield.balance_sweep_surplus_lots lot
+      SET status = 'open',
+          eligible_after = now(),
+          updated_at = now()
+      WHERE lot.scheduled_slot_id IN (SELECT id FROM rescheduled_slots)
+        AND lot.remaining_amount_raw > 0
+      RETURNING lot.id
+    )
+    SELECT
+      (SELECT COUNT(*) FROM recovered_target)::bigint AS recovered_blocks,
+      (SELECT COUNT(*) FROM rescheduled_slots)::bigint AS rescheduled_slots,
+      (SELECT COUNT(*) FROM reopened_lots)::bigint AS reopened_lots
+  `;
+  const row = rows[0] as Record<string, unknown> | undefined;
+  return row
+    ? BigInt(readRequiredString(row.recovered_blocks, "recovered_blocks")) ===
+        BigInt(1)
+    : false;
+}
+
+async function reconcileAccountNotFoundBlocks(args: {
+  appModules: AppModules;
+  connection: Pick<Connection, "getAccountInfoAndContext">;
+  databaseUrl: string;
+  limit: number;
+  minAgeSeconds: number;
+  neon: AppModules["neon"];
+  programId: PublicKey;
+  targetId: bigint | null;
+}) {
+  const source = args.targetId === null ? "automatic" : "manual";
+  const blocks = await loadBlockedTargetsForRecovery({
+    neon: args.neon,
+    databaseUrl: args.databaseUrl,
+    limit: args.limit,
+    minAgeSeconds: args.targetId === null ? args.minAgeSeconds : 0,
+    targetId: args.targetId,
+  });
+  if (args.targetId !== null && blocks.length === 0) {
+    throw new Error(
+      `No active account_not_found block exists for target ${args.targetId}.`
+    );
+  }
+  let recovered = 0;
+  let stillBlocked = 0;
+  for (const block of blocks) {
+    try {
+      const validation = await validateBlockedTargetRecovery({
+        appModules: args.appModules,
+        connection: args.connection,
+        programId: args.programId,
+        row: block,
+      });
+      if (
+        await recoverValidatedExecutionBlock({
+          neon: args.neon,
+          databaseUrl: args.databaseUrl,
+          source,
+          targetId: block.targetId,
+          validation,
+        })
+      ) {
+        recovered += 1;
+      } else {
+        stillBlocked += 1;
+        await recordBlockRecoveryCheckFailure({
+          neon: args.neon,
+          databaseUrl: args.databaseUrl,
+          targetId: block.targetId,
+          error: "Recovery validation became stale before the atomic update.",
+        });
+      }
+    } catch (error) {
+      stillBlocked += 1;
+      await recordBlockRecoveryCheckFailure({
+        neon: args.neon,
+        databaseUrl: args.databaseUrl,
+        targetId: block.targetId,
+        error: redactSensitiveText(
+          error instanceof Error ? error.message : String(error)
+        ).slice(0, 4_000),
+      });
+    }
+  }
+  return {
+    status: "account_not_found_block_reconciliation",
+    source,
+    scanned: blocks.length,
+    recovered,
+    stillBlocked,
+    targetId: args.targetId?.toString() ?? null,
+    sendsTransactions: false,
   };
 }
 
@@ -668,6 +1495,7 @@ async function claimAutodepositLots(args: {
         AND active
         AND lifecycle_status = 'active'
         AND token_mint = ${args.tokenMint}
+        AND execution_blocked_reason IS NULL
       FOR UPDATE
     ),
     slot_guard AS (
@@ -939,20 +1767,146 @@ async function completeAutodepositLotClaim(args: {
   `;
 }
 
+async function quarantineAutodepositTargetBeforeClaim(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  targetId: bigint;
+  scheduledSlotId: bigint | null;
+  lastError: string;
+  evidence: ConfirmedMissingAccountEvidence;
+}): Promise<boolean> {
+  const sql = args.neon(args.databaseUrl);
+  const rows = await sql`
+    WITH candidate_targets AS (
+      SELECT DISTINCT
+        affected.id AS target_id,
+        affected.wallet,
+        managed.id AS managed_vault_id,
+        route_policy.id AS route_policy_id,
+        affected.policy_seed AS sweep_policy_seed,
+        CASE
+          WHEN affected.id = ${args.targetId.toString()}
+          THEN ${args.scheduledSlotId?.toString() ?? null}::bigint
+          ELSE NULL
+        END AS scheduled_slot_id
+      FROM loyal_yield.balance_sweep_targets affected
+      LEFT JOIN loyal_yield.managed_vaults managed
+        ON managed.settings = affected.settings
+       AND managed.vault_index = affected.vault_index
+       AND managed.vault_pubkey = affected.vault_pubkey
+       AND managed.active
+      LEFT JOIN loyal_yield.route_policies route_policy
+        ON route_policy.id = managed.active_policy_id
+       AND route_policy.active
+       AND route_policy.authority = affected.authority
+       AND route_policy.settings = affected.settings
+       AND route_policy.vault_index = affected.vault_index
+       AND route_policy.vault_pubkey = affected.vault_pubkey
+       AND ${SAME_MINT_ROUTE_MODE} = ANY(route_policy.route_modes)
+      WHERE affected.active
+        AND affected.lifecycle_status = 'active'
+        AND (
+          (${args.evidence.accountRole} = 'route_policy'
+            AND route_policy.policy_account = ${args.evidence.accountPubkey})
+          OR (${args.evidence.accountRole} = 'sweep_policy'
+            AND affected.policy_account = ${args.evidence.accountPubkey})
+          OR (${args.evidence.accountRole} = 'recurring_delegation'
+            AND affected.recurring_delegation = ${args.evidence.accountPubkey})
+          OR (${args.evidence.accountRole} = 'wallet_token_account'
+            AND COALESCE(affected.wallet_usdc_ata, affected.wallet_token_ata) = ${args.evidence.accountPubkey})
+          OR (${args.evidence.accountRole} = 'vault_token_account'
+            AND COALESCE(affected.vault_usdc_ata, affected.vault_token_ata) = ${args.evidence.accountPubkey})
+        )
+    ),
+    affected_targets AS (
+      SELECT candidate.*
+      FROM candidate_targets candidate
+      JOIN loyal_yield.balance_sweep_targets target
+        ON target.id = candidate.target_id
+      FOR UPDATE OF target
+    ),
+    blocked_targets AS (
+      UPDATE loyal_yield.balance_sweep_targets target
+      SET execution_blocked_reason = 'account_not_found',
+          execution_block_evidence = ${JSON.stringify({
+            missingAccountPubkey: args.evidence.accountPubkey,
+            accountRole: args.evidence.accountRole,
+            expectedOwnerProgram: args.evidence.expectedOwnerProgram,
+            dependencyFingerprint: args.evidence.dependencyFingerprint,
+            rpcCommitment: args.evidence.commitment,
+            observationSlot: args.evidence.observationSlot.toString(),
+            observedAt: args.evidence.observedAt,
+            lastExecutionError: args.lastError,
+            rpcMethod: "getAccountInfo",
+            valueIsNull: true,
+          })}::jsonb || jsonb_build_object(
+            'managedVaultId', affected.managed_vault_id,
+            'routePolicyId', affected.route_policy_id,
+            'sweepPolicySeed', affected.sweep_policy_seed,
+            'scheduledSlotId', affected.scheduled_slot_id
+          ),
+          execution_blocked_at = CASE
+            WHEN target.execution_blocked_reason = 'account_not_found'
+            THEN COALESCE(target.execution_blocked_at, now())
+            ELSE now()
+          END,
+          execution_block_last_checked_at = NULL,
+          execution_block_last_check_error = NULL,
+          execution_block_recovered_at = NULL
+      FROM affected_targets affected
+      WHERE target.id = affected.target_id
+        AND (
+          target.execution_blocked_reason IS NULL
+          OR target.execution_blocked_reason = 'account_not_found'
+        )
+      RETURNING target.id AS target_id
+    ),
+    blocked_slot AS (
+      UPDATE loyal_yield.balance_sweep_scheduled_slots slot
+      SET status = 'blocked',
+          claim_token = NULL,
+          last_error = ${args.lastError},
+          updated_at = now()
+      WHERE slot.id = ${args.scheduledSlotId?.toString() ?? null}
+        AND slot.target_id = ${args.targetId.toString()}
+        AND slot.status IN ('scheduled', 'requested')
+        AND EXISTS (
+          SELECT 1
+          FROM blocked_targets block
+          WHERE block.target_id = slot.target_id
+        )
+      RETURNING slot.id
+    )
+    SELECT
+      EXISTS (
+        SELECT 1
+        FROM blocked_targets
+        WHERE target_id = ${args.targetId.toString()}
+      ) AS source_blocked,
+      (SELECT COUNT(*) FROM blocked_targets)::bigint AS affected_targets,
+      (SELECT COUNT(*) FROM blocked_slot)::bigint AS blocked_slots
+  `;
+  return (rows[0] as Record<string, unknown> | undefined)?.source_blocked === true;
+}
+
 async function releaseAutodepositLotClaim(args: {
   neon: AppModules["neon"];
   databaseUrl: string;
   claimToken: string;
   lastError: string;
+  accountNotFoundEvidence: ConfirmedMissingAccountEvidence | null;
   pauseTargetForMissingDelegate: boolean;
-}) {
+}): Promise<boolean> {
+  const evidence = args.accountNotFoundEvidence;
   const sql = args.neon(args.databaseUrl);
-  await sql`
+  const rows = await sql`
     WITH selected_claim AS (
-      SELECT c.claim_token
+      SELECT c.claim_token, c.target_id, slot.id AS scheduled_slot_id
       FROM loyal_yield.balance_sweep_lot_claims c
       JOIN loyal_yield.balance_sweep_targets t
         ON t.id = c.target_id
+      LEFT JOIN loyal_yield.balance_sweep_scheduled_slots slot
+        ON slot.claim_token = c.claim_token
       WHERE c.claim_token = ${args.claimToken}
         AND c.status = 'selected'
         AND t.token_mint = ${USDC_MINT_ADDRESS}
@@ -981,6 +1935,95 @@ async function releaseAutodepositLotClaim(args: {
         AND t.token_mint = ${USDC_MINT_ADDRESS}
       RETURNING l.id
     ),
+    candidate_targets AS (
+      SELECT DISTINCT
+        affected.id AS target_id,
+        affected.wallet,
+        managed.id AS managed_vault_id,
+        route_policy.id AS route_policy_id,
+        affected.policy_seed AS sweep_policy_seed,
+        CASE
+          WHEN affected.id = source.id
+          THEN (SELECT scheduled_slot_id FROM selected_claim)
+          ELSE NULL
+        END AS scheduled_slot_id
+      FROM selected_claim selected
+      JOIN loyal_yield.balance_sweep_targets source
+        ON source.id = selected.target_id
+      JOIN loyal_yield.balance_sweep_targets affected
+        ON affected.active
+       AND affected.lifecycle_status = 'active'
+      LEFT JOIN loyal_yield.managed_vaults managed
+        ON managed.settings = affected.settings
+       AND managed.vault_index = affected.vault_index
+       AND managed.vault_pubkey = affected.vault_pubkey
+       AND managed.active
+      LEFT JOIN loyal_yield.route_policies route_policy
+        ON route_policy.id = managed.active_policy_id
+       AND route_policy.active
+       AND route_policy.authority = affected.authority
+       AND route_policy.settings = affected.settings
+       AND route_policy.vault_index = affected.vault_index
+       AND route_policy.vault_pubkey = affected.vault_pubkey
+       AND ${SAME_MINT_ROUTE_MODE} = ANY(route_policy.route_modes)
+      WHERE ${evidence !== null}
+        AND EXISTS (SELECT 1 FROM restored)
+        AND (
+          (${evidence?.accountRole ?? null} = 'route_policy'
+            AND route_policy.policy_account = ${evidence?.accountPubkey ?? null})
+          OR (${evidence?.accountRole ?? null} = 'sweep_policy'
+            AND affected.policy_account = ${evidence?.accountPubkey ?? null})
+          OR (${evidence?.accountRole ?? null} = 'recurring_delegation'
+            AND affected.recurring_delegation = ${evidence?.accountPubkey ?? null})
+          OR (${evidence?.accountRole ?? null} = 'wallet_token_account'
+            AND COALESCE(affected.wallet_usdc_ata, affected.wallet_token_ata) = ${evidence?.accountPubkey ?? null})
+          OR (${evidence?.accountRole ?? null} = 'vault_token_account'
+            AND COALESCE(affected.vault_usdc_ata, affected.vault_token_ata) = ${evidence?.accountPubkey ?? null})
+        )
+    ),
+    affected_targets AS (
+      SELECT candidate.*
+      FROM candidate_targets candidate
+      JOIN loyal_yield.balance_sweep_targets target
+        ON target.id = candidate.target_id
+      FOR UPDATE OF target
+    ),
+    blocked_targets AS (
+      UPDATE loyal_yield.balance_sweep_targets target
+      SET execution_blocked_reason = 'account_not_found',
+          execution_block_evidence = ${JSON.stringify({
+            missingAccountPubkey: evidence?.accountPubkey ?? null,
+            accountRole: evidence?.accountRole ?? null,
+            expectedOwnerProgram: evidence?.expectedOwnerProgram ?? null,
+            dependencyFingerprint: evidence?.dependencyFingerprint ?? null,
+            rpcCommitment: evidence?.commitment ?? null,
+            observationSlot: evidence?.observationSlot.toString() ?? null,
+            observedAt: evidence?.observedAt ?? null,
+            lastExecutionError: args.lastError,
+            rpcMethod: "getAccountInfo",
+            valueIsNull: true,
+          })}::jsonb || jsonb_build_object(
+            'managedVaultId', affected.managed_vault_id,
+            'routePolicyId', affected.route_policy_id,
+            'sweepPolicySeed', affected.sweep_policy_seed,
+            'scheduledSlotId', affected.scheduled_slot_id
+          ),
+          execution_blocked_at = CASE
+            WHEN target.execution_blocked_reason = 'account_not_found'
+            THEN COALESCE(target.execution_blocked_at, now())
+            ELSE now()
+          END,
+          execution_block_last_checked_at = NULL,
+          execution_block_last_check_error = NULL,
+          execution_block_recovered_at = NULL
+      FROM affected_targets affected
+      WHERE target.id = affected.target_id
+        AND (
+          target.execution_blocked_reason IS NULL
+          OR target.execution_blocked_reason = 'account_not_found'
+        )
+      RETURNING target.id AS target_id
+    ),
     paused_target AS (
       UPDATE loyal_yield.balance_sweep_targets t
       SET active = false,
@@ -1002,14 +2045,36 @@ async function releaseAutodepositLotClaim(args: {
       WHERE claim_token = (SELECT claim_token FROM selected_claim)
         AND EXISTS (SELECT 1 FROM restored)
       RETURNING claim_token
-    )
-    UPDATE loyal_yield.balance_sweep_scheduled_slots
-    SET status = 'failed',
+    ),
+    updated_slot AS (
+      UPDATE loyal_yield.balance_sweep_scheduled_slots
+      SET status = CASE
+          WHEN EXISTS (
+            SELECT 1
+            FROM blocked_targets block
+            JOIN selected_claim selected
+              ON selected.target_id = block.target_id
+          )
+          THEN 'blocked'::loyal_yield.balance_sweep_scheduled_slot_status
+          ELSE 'failed'::loyal_yield.balance_sweep_scheduled_slot_status
+        END,
         claim_token = NULL,
         last_error = ${args.lastError},
         updated_at = now()
-    WHERE claim_token IN (SELECT claim_token FROM updated_claim)
+      WHERE claim_token IN (SELECT claim_token FROM updated_claim)
+      RETURNING id, status::text
+    )
+    SELECT
+      EXISTS (
+        SELECT 1
+        FROM blocked_targets block
+        JOIN selected_claim selected
+          ON selected.target_id = block.target_id
+      ) AS source_blocked,
+      (SELECT COUNT(*) FROM blocked_targets)::bigint AS affected_targets,
+      (SELECT COUNT(*) FROM updated_slot)::bigint AS updated_slots
   `;
+  return (rows[0] as Record<string, unknown> | undefined)?.source_blocked === true;
 }
 
 async function markScheduledSlotFailed(args: {
@@ -1047,7 +2112,9 @@ async function getTokenBalanceRaw(
       error instanceof Error &&
       error.message.toLowerCase().includes("could not find account")
     ) {
-      return BigInt(0);
+      throw new Error(
+        `AccountNotFound: pubkey=${tokenAccount.toBase58()} token account does not exist.`
+      );
     }
     throw error;
   }
@@ -1066,7 +2133,7 @@ async function loadRecurringDelegationAllowance(args: {
   );
   if (!account) {
     throw new Error(
-      `Recurring delegation account ${args.recurringDelegation.toBase58()} was not found.`
+      `AccountNotFound: pubkey=${args.recurringDelegation.toBase58()} recurring delegation does not exist.`
     );
   }
   if (!account.owner.equals(args.appModules.SUBSCRIPTIONS_PROGRAM_ID)) {
@@ -1074,26 +2141,11 @@ async function loadRecurringDelegationAllowance(args: {
       `Recurring delegation account ${args.recurringDelegation.toBase58()} is not owned by the Subscriptions program.`
     );
   }
-  if (
-    account.data.length <
-    args.appModules.SUBSCRIPTION_RECURRING_DELEGATION_DATA_LEN
-  ) {
-    throw new Error(
-      `Recurring delegation account ${args.recurringDelegation.toBase58()} has unexpected data length ${account.data.length}.`
-    );
-  }
-  const discriminator =
-    account.data[
-      args.appModules.SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR_OFFSET
-    ];
-  if (
-    discriminator !==
-    args.appModules.SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR
-  ) {
-    throw new Error(
-      `Recurring delegation account ${args.recurringDelegation.toBase58()} has unexpected discriminator ${discriminator}.`
-    );
-  }
+  validateRecurringDelegationAccountData({
+    account,
+    appModules: args.appModules,
+    pubkey: args.recurringDelegation.toBase58(),
+  });
 
   const amountPerPeriodRaw = readU64Le(
     account.data,
@@ -2035,20 +3087,63 @@ function assertExecutablePreflight(args: {
   }
 }
 
+function logAccountNotFoundQuarantine(args: {
+  evidence: ConfirmedMissingAccountEvidence;
+  phase: "pre_claim" | "claim_release";
+  targetId: bigint;
+}) {
+  console.warn(
+    JSON.stringify({
+      event: "autodeposit_account_not_found_quarantined",
+      level: "warn",
+      phase: args.phase,
+      targetId: args.targetId.toString(),
+      accountPubkey: args.evidence.accountPubkey,
+      accountRole: args.evidence.accountRole,
+      observationSlot: args.evidence.observationSlot.toString(),
+      commitment: args.evidence.commitment,
+    })
+  );
+}
+
 async function main() {
   const appModules = await loadAppModules();
   const PublicKeyCtor = appModules.PublicKey;
   const options = parseOptions(Bun.argv.slice(2));
   const databaseUrl = requireEnv("NEON_DATABASE_URL");
   const rpcUrl = requireEnv("SOLANA_RPC_URL");
-  const policyKeypair = parseKeypairSecretWith(
-    appModules.Keypair,
-    requireEnv("POLICY_KEYPAIR")
-  );
   const programId = new PublicKeyCtor(
     process.env.LOYAL_SMART_ACCOUNTS_PROGRAM_ID ?? appModules.PROGRAM_ADDRESS
   );
   const connection = new Connection(rpcUrl, DEFAULT_COMMITMENT);
+
+  if (
+    options.reconcileAccountNotFoundBlocks ||
+    options.recoverAccountNotFoundTargetId !== null
+  ) {
+    if (options.execute || options.claimToken !== null) {
+      throw new Error(
+        "Account-not-found recovery is read-only on Solana and cannot be combined with --execute or --claim-token."
+      );
+    }
+    const result = await reconcileAccountNotFoundBlocks({
+      appModules,
+      connection,
+      databaseUrl,
+      limit: options.reconcileLimit,
+      minAgeSeconds: options.reconcileMinAgeSeconds,
+      neon: appModules.neon,
+      programId,
+      targetId: options.recoverAccountNotFoundTargetId,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  const policyKeypair = parseKeypairSecretWith(
+    appModules.Keypair,
+    requireEnv("POLICY_KEYPAIR")
+  );
 
   let target: EligibleTarget | null;
   try {
@@ -2101,15 +3196,52 @@ async function main() {
 
   const walletUsdcAta = new PublicKeyCtor(target.walletUsdcAta);
   const vaultUsdcAta = new PublicKeyCtor(target.vaultUsdcAta);
-  const walletBalanceRaw = await getTokenBalanceRaw(connection, walletUsdcAta);
-  const vaultPreBalanceRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
-  const allowance = await loadRecurringDelegationAllowance({
-    appModules,
-    connection,
-    recurringDelegation: new PublicKeyCtor(target.recurringDelegation),
-    periodLengthSeconds: target.periodLengthSeconds,
-    startTimestamp: target.startTimestamp,
-  });
+  let walletBalanceRaw: bigint;
+  let vaultPreBalanceRaw: bigint;
+  let allowance: RecurringDelegationAllowance;
+  try {
+    walletBalanceRaw = await getTokenBalanceRaw(connection, walletUsdcAta);
+    vaultPreBalanceRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
+    allowance = await loadRecurringDelegationAllowance({
+      appModules,
+      connection,
+      recurringDelegation: new PublicKeyCtor(target.recurringDelegation),
+      periodLengthSeconds: target.periodLengthSeconds,
+      startTimestamp: target.startTimestamp,
+    });
+  } catch (error) {
+    const lastError = redactSensitiveText(
+      error instanceof Error ? error.message : String(error)
+    ).slice(0, 4_000);
+    const evidence = await confirmDeterministicMissingAutodepositAccount({
+      connection,
+      dependencies: accountDependencies(target),
+      error,
+      ownerPrograms: accountOwnerPrograms({
+        appModules,
+        smartAccountProgram: programId,
+      }),
+    });
+    if (
+      options.execute &&
+      evidence &&
+      (await quarantineAutodepositTargetBeforeClaim({
+        neon: appModules.neon,
+        databaseUrl,
+        targetId: target.id,
+        scheduledSlotId: options.scheduledSlotId,
+        lastError,
+        evidence,
+      }))
+    ) {
+      logAccountNotFoundQuarantine({
+        evidence,
+        phase: "pre_claim",
+        targetId: target.id,
+      });
+    }
+    throw error;
+  }
   const effectiveFloorRaw =
     options.overrideFloorRaw ?? target.walletBalanceFloorRaw;
   const sweepDecision = computeSweepAmount({
@@ -2522,15 +3654,36 @@ async function main() {
     );
   } catch (error) {
     if (!pullSent && lotClaim?.status === "selected" && lotClaim.claimToken) {
-      const lastError = error instanceof Error ? error.message : String(error);
-      await releaseAutodepositLotClaim({
+      const lastError = redactSensitiveText(
+        error instanceof Error ? error.message : String(error)
+      ).slice(0, 4_000);
+      const accountNotFoundEvidence =
+        await confirmDeterministicMissingAutodepositAccount({
+          connection,
+          dependencies: accountDependencies(target),
+          error,
+          ownerPrograms: accountOwnerPrograms({
+            appModules,
+            smartAccountProgram: programId,
+          }),
+        });
+      const blocked = await releaseAutodepositLotClaim({
         neon: appModules.neon,
         databaseUrl,
         claimToken: lotClaim.claimToken,
-        lastError: lastError.slice(0, 4_000),
+        lastError,
+        accountNotFoundEvidence,
         pauseTargetForMissingDelegate:
+          accountNotFoundEvidence === null &&
           isMissingAutodepositTokenDelegateFailure(error),
       });
+      if (blocked && accountNotFoundEvidence) {
+        logAccountNotFoundQuarantine({
+          evidence: accountNotFoundEvidence,
+          phase: "claim_release",
+          targetId: target.id,
+        });
+      }
     }
     throw error;
   }

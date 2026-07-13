@@ -103,6 +103,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0016_autodeposit_requested_slot_wakeup.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 17,
+        name: "autodeposit_account_not_found_quarantine",
+        sql: include_str!("../../migrations/0017_autodeposit_account_not_found_quarantine.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -254,6 +260,7 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "balance_sweep_execution_lots",
         "balance_sweep_executions",
         "balance_sweep_scheduled_slots",
+        "balance_sweep_execution_block_metrics",
         "pending_balance_sweep_surplus_lots",
         "route_lookup_tables",
         "vault_idle_token_balances_current",
@@ -298,10 +305,34 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
             "missing loyal_yield.balance_sweep_surplus_classification initial_surplus value".into(),
         );
     }
+    let has_blocked_scheduled_slot: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_enum e
+            JOIN pg_type t ON t.oid = e.enumtypid
+            JOIN pg_namespace n ON n.oid = t.typnamespace
+            WHERE n.nspname = 'loyal_yield'
+              AND t.typname = 'balance_sweep_scheduled_slot_status'
+              AND e.enumlabel = 'blocked'
+        )
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if !has_blocked_scheduled_slot {
+        return Err("missing loyal_yield.balance_sweep_scheduled_slot_status blocked value".into());
+    }
     for (relation, column) in [
         ("balance_sweep_targets", "wallet_token_ata"),
         ("balance_sweep_targets", "vault_token_ata"),
         ("balance_sweep_targets", "token_mint"),
+        ("balance_sweep_targets", "execution_blocked_reason"),
+        ("balance_sweep_targets", "execution_block_evidence"),
+        ("balance_sweep_targets", "execution_blocked_at"),
+        ("balance_sweep_targets", "execution_block_last_checked_at"),
+        ("balance_sweep_targets", "execution_block_last_check_error"),
+        ("balance_sweep_targets", "execution_block_recovered_at"),
         ("balance_sweep_targets", "cluster"),
         ("balance_sweep_wallet_balances_current", "wallet_token_ata"),
         ("balance_sweep_wallet_balance_events", "wallet_token_ata"),
@@ -321,6 +352,29 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         ("balance_sweep_scheduled_slots", "last_error"),
         ("balance_sweep_scheduled_slots", "created_at"),
         ("balance_sweep_scheduled_slots", "updated_at"),
+        ("balance_sweep_execution_block_metrics", "account_role"),
+        ("balance_sweep_execution_block_metrics", "new_blocks_24h"),
+        (
+            "balance_sweep_execution_block_metrics",
+            "new_unique_wallets_24h",
+        ),
+        ("balance_sweep_execution_block_metrics", "active_blocks"),
+        (
+            "balance_sweep_execution_block_metrics",
+            "active_unique_wallets",
+        ),
+        (
+            "balance_sweep_execution_block_metrics",
+            "recovered_blocks_24h",
+        ),
+        (
+            "balance_sweep_execution_block_metrics",
+            "recovered_unique_wallets_24h",
+        ),
+        (
+            "balance_sweep_execution_block_metrics",
+            "oldest_active_block_at",
+        ),
         ("pending_balance_sweep_surplus_lots", "scheduled_slot_id"),
         ("pending_balance_sweep_surplus_lots", "source_mint"),
         (
