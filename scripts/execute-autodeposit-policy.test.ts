@@ -3,6 +3,7 @@ import { Keypair, type Connection } from "@solana/web3.js";
 
 import {
   computeSweepAmount,
+  isMissingAutodepositTokenDelegateFailure,
   parseKeypairSecret,
   runAfterFeePayerSolSafety,
 } from "./execute-autodeposit-policy";
@@ -155,6 +156,23 @@ describe("top-up fee-payer SOL safety", () => {
   });
 });
 
+describe("autodeposit token delegate failures", () => {
+  test("recognizes the exact pull simulation owner mismatch", () => {
+    expect(
+      isMissingAutodepositTokenDelegateFailure(
+        new Error(
+          "Autodeposit pull simulation failed; refusing to execute. Program log: Error: owner does not match"
+        )
+      )
+    ).toBe(true);
+    expect(
+      isMissingAutodepositTokenDelegateFailure(
+        new Error("Kamino top-up failed: owner does not match")
+      )
+    ).toBe(false);
+  });
+});
+
 describe("runtime dependency boundary", () => {
   test("executor imports packages instead of sibling loyal-apps paths", async () => {
     const source = await Bun.file(
@@ -223,6 +241,28 @@ describe("runtime dependency boundary", () => {
         /LEAST\(\s+lot\.original_amount_raw,\s+lot\.remaining_amount_raw \+ item\.amount_raw\s+\)/g
       )
     ).toHaveLength(2);
+  });
+
+  test("compare-and-sets missing delegates without gating claim release", async () => {
+    const source = await Bun.file(
+      new URL("./execute-autodeposit-policy.ts", import.meta.url)
+    ).text();
+    const releaseSql = source.slice(
+      source.indexOf("async function releaseAutodepositLotClaim"),
+      source.indexOf("async function markScheduledSlotFailed")
+    );
+    const pausedTargetSql = releaseSql.match(
+      /paused_target AS \([\s\S]*?\n    \),\n    updated_claim AS \(/
+    )?.[0];
+    const updatedClaimSql = releaseSql.match(
+      /updated_claim AS \([\s\S]*?\n    \)\n    UPDATE loyal_yield\.balance_sweep_scheduled_slots/
+    )?.[0];
+
+    expect(pausedTargetSql).toContain("AND t.active");
+    expect(pausedTargetSql).toContain("AND t.lifecycle_status = 'active'");
+    expect(pausedTargetSql).toContain("pauseTargetForMissingDelegate");
+    expect(updatedClaimSql).toContain("EXISTS (SELECT 1 FROM restored)");
+    expect(updatedClaimSql).not.toContain("paused_target");
   });
 
   test("smart-account-vaults package exposes autodeposit pull helper", async () => {
