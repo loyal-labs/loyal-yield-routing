@@ -62,6 +62,8 @@ pub enum OrchestratorError {
     StoreInvariant(String),
     #[error("same-mint rebalance validation failed: {0}")]
     SameMintRebalanceValidation(String),
+    #[error("lookup-table binding {binding_id} activation is blocked by a live usage lease")]
+    LookupTableBindingActivationDeferred { binding_id: i64 },
 }
 
 impl OrchestratorError {

@@ -24,9 +24,10 @@ use loyal_yield_orchestrator::{
     LookupTableProvisioningRequestStatus, LookupTableProvisioningRequestUpsert,
     LookupTableReconciliationDecision, LookupTableReconciliationObservation,
     LookupTableRolloutMode, LookupTableSharedMarketOperationFenceResult, LookupTableSignatureState,
-    LookupTableVaultBindingRecord, NeonSqlClient, NeonSqlConfig, PackedShardPolicy,
-    ReusableOnlyCutoverPreflight, SharedMarketCatalogPlanPolicy, SharedMarketCatalogReadiness,
-    SharedMarketPhysicalDriftReport, SignedLookupTableTransaction, VaultId, POLICY_KEYPAIR_ENV,
+    LookupTableVaultBindingRecord, NeonSqlClient, NeonSqlConfig, OrchestratorError,
+    PackedShardPolicy, ReusableOnlyCutoverPreflight, SharedMarketCatalogPlanPolicy,
+    SharedMarketCatalogReadiness, SharedMarketPhysicalDriftReport, SignedLookupTableTransaction,
+    VaultId, POLICY_KEYPAIR_ENV,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -931,10 +932,30 @@ async fn plan_next_provisioning_request(
                     else {
                         unreachable!()
                     };
-                    (
-                        0,
-                        activate_binding_if_ready(client, binding, recent_slot).await?,
-                    )
+                    match activate_binding_if_ready(client, binding, recent_slot).await {
+                        Ok(activated) => (0, activated),
+                        Err(error) => {
+                            let Some(error_code) =
+                                binding_activation_defer_code(error.as_ref(), binding.id)
+                            else {
+                                return Err(error);
+                            };
+                            println!(
+                                "{}",
+                                json!({
+                                    "event": "alt_provisioner_binding_activation_deferred",
+                                    "cluster": options.cluster,
+                                    "requestId": request.id,
+                                    "vaultId": request.vault_id.as_i64(),
+                                    "bindingId": binding.id,
+                                    "errorCode": error_code,
+                                    "retryAt": plan.request.next_attempt_at,
+                                    "transactionsSent": false,
+                                })
+                            );
+                            (0, false)
+                        }
+                    }
                 }
                 AtomicVaultAllocationResult::BindingReserved { operations, .. }
                 | AtomicVaultAllocationResult::CreateQueued { operations, .. } => {
@@ -992,6 +1013,23 @@ async fn plan_next_provisioning_request(
         }
     }
     Ok(true)
+}
+
+fn binding_activation_defer_code(
+    error: &(dyn Error + 'static),
+    binding_id: i64,
+) -> Option<&'static str> {
+    match error.downcast_ref::<OrchestratorError>()? {
+        OrchestratorError::LookupTableBindingActivationDeferred {
+            binding_id: blocked_binding_id,
+        } if *blocked_binding_id == binding_id => Some("logical_head_usage_lease"),
+        OrchestratorError::Sqlx(loyal_yield_orchestrator::sqlx::Error::Database(database))
+            if database.code().as_deref() == Some("40P01") =>
+        {
+            Some("database_deadlock")
+        }
+        _ => None,
+    }
 }
 
 async fn activate_binding_if_ready(

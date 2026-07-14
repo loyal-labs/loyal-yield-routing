@@ -24,8 +24,11 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use solana_client::{
+    client_error::{ClientError, ClientErrorKind},
     rpc_client::RpcClient,
     rpc_config::{RpcSendTransactionConfig, RpcSimulateTransactionConfig},
+    rpc_custom_error::JSON_RPC_SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED,
+    rpc_request::RpcError as SolanaRpcError,
 };
 use solana_sdk::address_lookup_table::{
     instruction as address_lookup_table_instruction, program as address_lookup_table_program,
@@ -49,6 +52,8 @@ const AUDITED_KEYPAIR_ENVS: &[&str] = &[
     "DEPLOYMENT_PK",
     "SOLANA_TESTING_PK",
 ];
+const MIN_CONTEXT_SLOT_MAX_ATTEMPTS: usize = 8;
+const MIN_CONTEXT_SLOT_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Debug)]
 struct Options {
@@ -2653,7 +2658,8 @@ async fn send_cleanup_instruction_batch(
         rpc.get_latest_blockhash_with_commitment(CommitmentConfig::finalized())?;
     let mut transaction = unsigned_cleanup_transaction(instructions, signer.pubkey(), blockhash);
     ensure_cleanup_transaction_fits_packet(&transaction)?;
-    let simulation = simulate_cleanup_transaction(rpc, &transaction)?;
+    let minimum_context_slot = rpc.get_slot_with_commitment(CommitmentConfig::finalized())?;
+    let simulation = simulate_cleanup_transaction(rpc, &transaction, minimum_context_slot)?;
     let estimated_fee_lamports = rpc.get_fee_for_message(&transaction.message)?;
     let recipient_balance_before = close_recipient
         .map(|recipient| {
@@ -2730,16 +2736,18 @@ async fn send_cleanup_instruction_batch(
             },
         )
         .await?;
-    let returned_signature = match rpc.send_transaction_with_config(
-        &transaction,
-        RpcSendTransactionConfig {
-            skip_preflight: false,
-            preflight_commitment: Some(CommitmentLevel::Finalized),
-            max_retries: Some(0),
-            min_context_slot: Some(rpc.get_slot_with_commitment(CommitmentConfig::finalized())?),
-            ..RpcSendTransactionConfig::default()
-        },
-    ) {
+    let returned_signature = match retry_minimum_context_slot(|| {
+        rpc.send_transaction_with_config(
+            &transaction,
+            RpcSendTransactionConfig {
+                skip_preflight: false,
+                preflight_commitment: Some(CommitmentLevel::Finalized),
+                max_retries: Some(0),
+                min_context_slot: Some(minimum_context_slot),
+                ..RpcSendTransactionConfig::default()
+            },
+        )
+    }) {
         Ok(signature) => signature,
         Err(error) => {
             database
@@ -2903,17 +2911,20 @@ fn cleanup_transaction_packet_json(packet: &CleanupTransactionPacket) -> Value {
 fn simulate_cleanup_transaction(
     rpc: &RpcClient,
     transaction: &Transaction,
+    minimum_context_slot: u64,
 ) -> Result<Value, Box<dyn Error>> {
-    let simulation = rpc.simulate_transaction_with_config(
-        transaction,
-        RpcSimulateTransactionConfig {
-            sig_verify: false,
-            replace_recent_blockhash: false,
-            commitment: Some(CommitmentConfig::finalized()),
-            min_context_slot: Some(rpc.get_slot_with_commitment(CommitmentConfig::finalized())?),
-            ..RpcSimulateTransactionConfig::default()
-        },
-    )?;
+    let simulation = retry_minimum_context_slot(|| {
+        rpc.simulate_transaction_with_config(
+            transaction,
+            RpcSimulateTransactionConfig {
+                sig_verify: false,
+                replace_recent_blockhash: false,
+                commitment: Some(CommitmentConfig::finalized()),
+                min_context_slot: Some(minimum_context_slot),
+                ..RpcSimulateTransactionConfig::default()
+            },
+        )
+    })?;
     let logs = simulation.value.logs.clone().unwrap_or_default();
     if let Some(error) = simulation.value.err.as_ref() {
         return Err(format!(
@@ -2926,6 +2937,32 @@ fn simulate_cleanup_transaction(
         "err": simulation.value.err.as_ref().map(|error| format!("{error:?}")),
         "logs": logs,
     }))
+}
+
+fn retry_minimum_context_slot<T>(
+    mut operation: impl FnMut() -> Result<T, ClientError>,
+) -> Result<T, ClientError> {
+    for attempt in 1..=MIN_CONTEXT_SLOT_MAX_ATTEMPTS {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if attempt < MIN_CONTEXT_SLOT_MAX_ATTEMPTS
+                    && is_minimum_context_slot_not_reached(&error) =>
+            {
+                std::thread::sleep(MIN_CONTEXT_SLOT_RETRY_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("minimum-context retry loop always returns on its final attempt")
+}
+
+fn is_minimum_context_slot_not_reached(error: &ClientError) -> bool {
+    matches!(
+        error.kind(),
+        ClientErrorKind::RpcError(SolanaRpcError::RpcResponseError { code, .. })
+            if *code == JSON_RPC_SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED
+    )
 }
 
 #[cfg(test)]

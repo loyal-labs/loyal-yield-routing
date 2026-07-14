@@ -6581,20 +6581,33 @@ impl NeonSqlClient {
             .ok_or_else(|| stale_store_update("reusable lookup table", identity_table_id))?;
         let table = reusable_lookup_table_from_row(&table_row)?;
         let durable: bool = table_row.try_get("durable")?;
-        let live_usage_count: i64 = sqlx::query_scalar(
+        // Publishing a logical binding on an unchanged packed table does not
+        // invalidate routes for other vaults that share the physical ALT.
+        // Fence only leases that belong to this vault/head, while treating
+        // malformed unscoped vault-table leases as ambiguous and fail-closed.
+        // Physical mutation, generation replacement, rollback, and cleanup
+        // retain their table-wide lease fences elsewhere in this module.
+        let predecessor_binding_id = predecessor.as_ref().map(|binding| binding.id);
+        let conflicting_usage_count: i64 = sqlx::query_scalar(
             r#"
             SELECT count(*) FROM loyal_yield.lookup_table_usage_leases
             WHERE route_lookup_table_id = ANY($1)
               AND released_at IS NULL AND expires_at > now()
+              AND (
+                  vault_id = $2
+                  OR binding_id = $3
+                  OR vault_id IS NULL
+                  OR binding_id IS NULL
+              )
             "#,
         )
         .bind(&affected_table_ids)
+        .bind(candidate.vault_id.as_i64())
+        .bind(predecessor_binding_id)
         .fetch_one(&mut *tx)
         .await?;
-        if live_usage_count != 0 {
-            return Err(OrchestratorError::StoreInvariant(format!(
-                "binding {binding_id} head has an unexpired usage lease"
-            )));
+        if conflicting_usage_count != 0 {
+            return Err(OrchestratorError::LookupTableBindingActivationDeferred { binding_id });
         }
         let expected_allocation_kind = match candidate.allocation_mode {
             LookupTableBindingMode::PackedShard => LookupTableAllocationKind::VaultShard,
