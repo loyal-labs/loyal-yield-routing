@@ -363,6 +363,12 @@ struct ChainTable {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChainClassification {
+    state: LookupTableChainState,
+    membership_already_reconciled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SignatureObservation {
     state: LookupTableSignatureState,
     observed_slot: Option<u64>,
@@ -1533,7 +1539,7 @@ async fn reconcile_existing_operation(
     let chain = load_chain_table(rpc, leased.physical_table.as_ref())?;
     let current_height = rpc.get_block_height()?;
     let finalized_slot = chain.observed_slot;
-    let chain_state = classify_chain_state(leased, persisted_membership, &chain)?;
+    let chain_classification = classify_chain_state(leased, persisted_membership, &chain)?;
     let chain_observed_after_signature = signature_observation
         .observed_slot
         .is_none_or(|signature_slot| chain.observed_slot >= signature_slot);
@@ -1544,7 +1550,7 @@ async fn reconcile_existing_operation(
         operation_kind: leased.operation.operation_kind,
         persisted_status: leased.operation.operation_state,
         signature_state,
-        chain_state,
+        chain_state: chain_classification.state,
         chain_observed_finalized: chain_observed_after_signature,
         blockhash_expired: leased
             .operation
@@ -1611,6 +1617,7 @@ async fn reconcile_existing_operation(
                 persisted_membership,
                 &chain,
                 finalized_slot,
+                chain_classification.membership_already_reconciled,
             )
             .await?;
             let mut current = leased.operation.operation_state;
@@ -1770,6 +1777,7 @@ async fn reconcile_physical_membership(
     persisted: &[LookupTableMembershipAddress],
     chain: &ChainTable,
     observed_slot: u64,
+    membership_already_reconciled: bool,
 ) -> Result<(), Box<dyn Error>> {
     let Some(table) = leased.physical_table.as_ref() else {
         if leased.operation.operation_kind == LookupTableOperationKind::Close {
@@ -1794,49 +1802,58 @@ async fn reconcile_physical_membership(
             );
         }
         let added_slot = last_extended_slot;
-        let now = Utc::now();
-        let addresses = chain
-            .addresses
-            .iter()
-            .enumerate()
-            .map(|(ordinal, address)| {
-                if let Some(existing) = persisted
-                    .get(ordinal)
-                    .filter(|row| row.address == address.to_string())
-                {
-                    let mut existing = existing.clone();
-                    existing.last_verified_slot = i64::try_from(observed_slot).unwrap_or(i64::MAX);
-                    existing.last_verified_at = now;
-                    existing
-                } else {
-                    let slot = if ordinal >= start {
-                        added_slot
+        let updated = if membership_already_reconciled {
+            table.clone()
+        } else {
+            let now = Utc::now();
+            let addresses = chain
+                .addresses
+                .iter()
+                .enumerate()
+                .map(|(ordinal, address)| {
+                    if let Some(existing) = persisted
+                        .get(ordinal)
+                        .filter(|row| row.address == address.to_string())
+                    {
+                        let mut existing = existing.clone();
+                        existing.last_verified_slot =
+                            i64::try_from(observed_slot).unwrap_or(i64::MAX);
+                        existing.last_verified_at = now;
+                        existing
                     } else {
-                        observed_slot
-                    };
-                    LookupTableMembershipAddress {
-                        address: address.to_string(),
-                        ordinal: ordinal as i32,
-                        added_operation_id: Some(leased.operation.id),
-                        added_slot: i64::try_from(slot).unwrap_or(i64::MAX),
-                        usable_after_slot: i64::try_from(slot.saturating_add(1))
-                            .unwrap_or(i64::MAX),
-                        last_verified_slot: i64::try_from(observed_slot).unwrap_or(i64::MAX),
-                        last_verified_at: now,
+                        let slot = if ordinal >= start {
+                            added_slot
+                        } else {
+                            observed_slot
+                        };
+                        LookupTableMembershipAddress {
+                            address: address.to_string(),
+                            ordinal: ordinal as i32,
+                            added_operation_id: Some(leased.operation.id),
+                            added_slot: i64::try_from(slot).unwrap_or(i64::MAX),
+                            usable_after_slot: i64::try_from(slot.saturating_add(1))
+                                .unwrap_or(i64::MAX),
+                            last_verified_slot: i64::try_from(observed_slot).unwrap_or(i64::MAX),
+                            last_verified_at: now,
+                        }
                     }
-                }
-            })
-            .collect::<Vec<_>>();
-        let updated = client
-            .replace_confirmed_lookup_table_membership(
-                table.id,
-                table.mutation_epoch,
-                table.mutation_epoch + 1,
-                i64::try_from(observed_slot)?,
-                i64::try_from(last_extended_slot)?,
-                addresses,
-            )
-            .await?;
+                })
+                .collect::<Vec<_>>();
+            client
+                .replace_confirmed_lookup_table_membership(
+                    table.id,
+                    leased.operation.mutation_epoch,
+                    leased
+                        .operation
+                        .mutation_epoch
+                        .checked_add(1)
+                        .ok_or("lookup-table mutation epoch overflow")?,
+                    i64::try_from(observed_slot)?,
+                    i64::try_from(last_extended_slot)?,
+                    addresses,
+                )
+                .await?
+        };
         let accepting_allocations = updated.accepting_allocations
             && updated.allocation_kind != LookupTableAllocationKind::DedicatedVault;
         let updated = if updated.desired_state == LookupTableLifecycle::Preparing {
@@ -2158,27 +2175,39 @@ fn classify_chain_state(
     leased: &LeasedLookupTableOperation,
     persisted: &[LookupTableMembershipAddress],
     chain: &ChainTable,
-) -> Result<LookupTableChainState, Box<dyn Error>> {
+) -> Result<ChainClassification, Box<dyn Error>> {
     let kind = leased.operation.operation_kind;
     if kind == LookupTableOperationKind::Close {
-        return Ok(if chain.account.is_none() {
-            LookupTableChainState::ExactMatch
-        } else {
-            LookupTableChainState::Missing
+        return Ok(ChainClassification {
+            state: if chain.account.is_none() {
+                LookupTableChainState::ExactMatch
+            } else {
+                LookupTableChainState::Missing
+            },
+            membership_already_reconciled: false,
         });
     }
     let Some(account) = chain.account.as_ref() else {
-        return Ok(LookupTableChainState::Missing);
+        return Ok(ChainClassification {
+            state: LookupTableChainState::Missing,
+            membership_already_reconciled: false,
+        });
     };
     if account.owner != alt_program::id() {
-        return Ok(LookupTableChainState::AuthorityDrift);
+        return Ok(ChainClassification {
+            state: LookupTableChainState::AuthorityDrift,
+            membership_already_reconciled: false,
+        });
     }
     let physical = leased
         .physical_table
         .as_ref()
         .ok_or("chain account exists without physical table metadata")?;
     if chain.authority.map(|key| key.to_string()) != Some(physical.authority.clone()) {
-        return Ok(LookupTableChainState::AuthorityDrift);
+        return Ok(ChainClassification {
+            state: LookupTableChainState::AuthorityDrift,
+            membership_already_reconciled: false,
+        });
     }
     let active = chain.deactivation_slot == Some(u64::MAX);
     if matches!(
@@ -2189,38 +2218,117 @@ fn classify_chain_state(
             | LookupTableOperationKind::Verify
     ) && !active
     {
-        return Ok(LookupTableChainState::LifecycleDrift);
-    }
-    if kind == LookupTableOperationKind::Deactivate {
-        return Ok(if active {
-            LookupTableChainState::Missing
-        } else {
-            LookupTableChainState::ExactMatch
+        return Ok(ChainClassification {
+            state: LookupTableChainState::LifecycleDrift,
+            membership_already_reconciled: false,
         });
     }
-    let mut expected = persisted
+    if kind == LookupTableOperationKind::Deactivate {
+        return Ok(ChainClassification {
+            state: if active {
+                LookupTableChainState::Missing
+            } else {
+                LookupTableChainState::ExactMatch
+            },
+            membership_already_reconciled: false,
+        });
+    }
+    let persisted_addresses = persisted
         .iter()
         .map(|row| Pubkey::from_str(&row.address))
         .collect::<Result<Vec<_>, _>>()?;
-    if matches!(
+    let mutating_kind = matches!(
         kind,
         LookupTableOperationKind::Create
             | LookupTableOperationKind::Extend
             | LookupTableOperationKind::Rollover
-    ) {
-        expected.extend(parse_addresses(&leased.addresses)?);
-    }
-    if chain.addresses == expected {
-        return Ok(LookupTableChainState::ExactMatch);
-    }
-    let old_prefix = persisted
+    );
+    let mutation_addresses = if mutating_kind {
+        parse_addresses(&leased.addresses)?
+    } else {
+        Vec::new()
+    };
+    let persisted_strings = persisted
         .iter()
-        .map(|row| Pubkey::from_str(&row.address))
-        .collect::<Result<Vec<_>, _>>()?;
-    if chain.addresses == old_prefix {
-        return Ok(LookupTableChainState::Missing);
+        .map(|row| row.address.clone())
+        .collect::<Vec<_>>();
+
+    // A crash can occur after membership replacement commits but before the
+    // table lifecycle and operation status advance. Recognize only that exact
+    // durable boundary: this operation owns the exact appended suffix and the
+    // physical mutation epoch advanced exactly once. A finalized transaction
+    // that truly had no effect retains the operation epoch and cannot pass.
+    let membership_already_reconciled = !mutation_addresses.is_empty()
+        && leased.operation.route_lookup_table_id == Some(physical.id)
+        && leased.operation.family_id == physical.family_id
+        && leased.operation.mutation_epoch.checked_add(1) == Some(physical.mutation_epoch)
+        && i32::try_from(persisted.len()).ok() == Some(physical.address_count)
+        && physical.usable_address_count == physical.address_count
+        && ordered_address_hash(&persisted_strings) == physical.address_hash
+        && chain.addresses == persisted_addresses
+        && persisted
+            .iter()
+            .enumerate()
+            .all(|(ordinal, row)| i32::try_from(ordinal).ok() == Some(row.ordinal))
+        && persisted_addresses
+            .len()
+            .checked_sub(mutation_addresses.len())
+            .is_some_and(|prefix_len| {
+                let operation_shape_matches =
+                    chain.last_extended_start_index.map(usize::from) == Some(prefix_len)
+                        && match kind {
+                            LookupTableOperationKind::Create
+                            | LookupTableOperationKind::Rollover => prefix_len == 0,
+                            LookupTableOperationKind::Extend => true,
+                            _ => false,
+                        };
+                operation_shape_matches
+                    && persisted_addresses[prefix_len..] == mutation_addresses
+                    && persisted[..prefix_len]
+                        .iter()
+                        .all(|row| row.added_operation_id != Some(leased.operation.id))
+                    && persisted[prefix_len..].iter().all(|row| {
+                        row.added_operation_id == Some(leased.operation.id)
+                            && chain
+                                .last_extended_slot
+                                .and_then(|slot| i64::try_from(slot).ok())
+                                .is_some_and(|added_slot| {
+                                    row.added_slot == added_slot
+                                        && added_slot.checked_add(1) == Some(row.usable_after_slot)
+                                })
+                    })
+            });
+    if membership_already_reconciled {
+        return Ok(ChainClassification {
+            state: LookupTableChainState::ExactMatch,
+            membership_already_reconciled: true,
+        });
     }
-    Ok(LookupTableChainState::PrefixDrift)
+    if mutating_kind && physical.mutation_epoch != leased.operation.mutation_epoch {
+        return Ok(ChainClassification {
+            state: LookupTableChainState::PrefixDrift,
+            membership_already_reconciled: false,
+        });
+    }
+
+    let mut expected = persisted_addresses.clone();
+    expected.extend(mutation_addresses);
+    if chain.addresses == expected {
+        return Ok(ChainClassification {
+            state: LookupTableChainState::ExactMatch,
+            membership_already_reconciled: false,
+        });
+    }
+    if chain.addresses == persisted_addresses {
+        return Ok(ChainClassification {
+            state: LookupTableChainState::Missing,
+            membership_already_reconciled: false,
+        });
+    }
+    Ok(ChainClassification {
+        state: LookupTableChainState::PrefixDrift,
+        membership_already_reconciled: false,
+    })
 }
 
 fn load_signature_state(
