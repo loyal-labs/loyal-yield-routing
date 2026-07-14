@@ -9,12 +9,13 @@ use std::{
 };
 
 use chrono::{DateTime, Duration, Utc};
-use loyal_actions::{CASH_MINT, PYUSD_MINT, USDC_MINT, USDG_MINT, USDS_MINT, USDT_MINT};
+use loyal_actions::USDC_MINT;
 use loyal_yield_orchestrator::sqlx::Row;
 use loyal_yield_orchestrator::{
-    policy_keypair_from_env, route_amount_evidence, solana_testing_keypair_from_env,
-    CurrentIdleTokenBalance, CurrentReservePosition, ManagedVault, NeonSqlClient, NeonSqlConfig,
-    PolicyId, RoutePolicy, VaultId, ACTIVE_DECISION_STATUSES, SOLANA_TESTING_PK_ENV,
+    enabled_stable_mints_from_env, policy_keypair_from_env, route_amount_evidence,
+    solana_testing_keypair_from_env, CurrentIdleTokenBalance, CurrentReservePosition, ManagedVault,
+    NeonSqlClient, NeonSqlConfig, PolicyId, RoutePolicy, VaultId, ACTIVE_DECISION_STATUSES,
+    SOLANA_TESTING_PK_ENV,
 };
 use loyal_yield_router::timescale::{
     SupportedReserveLatestRow, TimescaleRouterClient, TimescaleRouterClientConfig,
@@ -30,7 +31,6 @@ const DEFAULT_MIN_EDGE_BPS: i64 = 1;
 const DEFAULT_MIN_IDLE_DEPOSIT_RAW: i64 = 1_000_000;
 const DEFAULT_FLEET_PAGE_SIZE: i64 = 50;
 const SAME_MINT_ROUTE_MODE: &str = "same_mint_kamino";
-const ENABLED_STABLE_MINTS_ENV: &str = "EARN_ROUTER_ENABLED_STABLE_MINTS";
 
 #[derive(Debug, Clone)]
 struct Options {
@@ -180,37 +180,6 @@ async fn run_fleet_once(
     let scan_max_vault_id =
         fetch_max_active_vault_id(neon, &delegated_signer, &options.enabled_mints).await?;
     let mut idle_priority_count = 0usize;
-
-    // Preserve fleet-wide idle priority without retaining every vault in memory.
-    if let Some(scan_max_vault_id) = scan_max_vault_id {
-        let mut after_vault_id = 0i64;
-        loop {
-            let vaults = fetch_active_vault_page(
-                neon,
-                &delegated_signer,
-                &options.enabled_mints,
-                after_vault_id,
-                scan_max_vault_id,
-                options.fleet_page_size,
-            )
-            .await?;
-            let Some(last_vault_id) = vaults.last().map(|vault| vault.vault.id.as_i64()) else {
-                break;
-            };
-            let idle_balances = load_idle_balances_by_vault(neon, &vaults, &idle_mint).await?;
-            for vault in &vaults {
-                let idle_balance = idle_balances.get(&vault.vault.id.as_i64());
-                if idle_vault_deposit_is_plannable(options, vault, neon, candidates, idle_balance)
-                    .await?
-                {
-                    idle_priority_count += 1;
-                }
-            }
-            after_vault_id = last_vault_id;
-        }
-    }
-
-    let defer_normal_rebalances = idle_priority_count > 0;
     let mut discovered_vault_count = 0usize;
     if let Some(scan_max_vault_id) = scan_max_vault_id {
         let mut after_vault_id = 0i64;
@@ -231,26 +200,7 @@ async fn run_fleet_once(
             for vault in vaults {
                 let vault_identity = vault_json(&vault);
                 let idle_balance = idle_balances.get(&vault.vault.id.as_i64()).cloned();
-                let idle_priority = if defer_normal_rebalances {
-                    idle_vault_deposit_is_plannable(
-                        options,
-                        &vault,
-                        neon,
-                        candidates,
-                        idle_balance.as_ref(),
-                    )
-                    .await?
-                } else {
-                    false
-                };
-                let result = if defer_normal_rebalances && !idle_priority {
-                    idle_priority_deferred_result(
-                        options,
-                        &vault,
-                        candidates,
-                        idle_balance.as_ref(),
-                    )
-                } else {
+                let result =
                     match run_vault_once(options, vault, neon, candidates, idle_balance).await {
                         Ok(result) => result,
                         Err(error) => json!({
@@ -259,8 +209,12 @@ async fn run_fleet_once(
                             "vault": vault_identity,
                             "error": error.to_string(),
                         }),
-                    }
-                };
+                    };
+                idle_priority_count += usize::from(
+                    result
+                        .get("plannedIdleVaultDeposit")
+                        .is_some_and(|plan| !plan.is_null()),
+                );
                 println!("{}", serde_json::to_string(&result)?);
                 discovered_vault_count += 1;
             }
@@ -285,80 +239,9 @@ async fn run_fleet_once(
         "minEdgeBps": options.min_edge_bps,
         "minIdleDepositRaw": options.min_idle_deposit_raw,
         "idlePriorityDepositCount": idle_priority_count,
-        "normalRebalancesDeferredForIdleDeposits": defer_normal_rebalances,
+        "idleRoutingOrder": "per_vault_before_normal",
+        "normalRebalancesDeferredForIdleDeposits": false,
     }))
-}
-
-async fn idle_vault_deposit_is_plannable(
-    options: &Options,
-    vault: &ResolvedVault,
-    neon: &NeonSqlClient,
-    candidates: &[SupportedReserveLatestRow],
-    idle_balance: Option<&CurrentIdleTokenBalance>,
-) -> Result<bool, Box<dyn Error>> {
-    if !vault
-        .policy
-        .route_modes
-        .iter()
-        .any(|mode| mode == SAME_MINT_ROUTE_MODE)
-    {
-        return Ok(false);
-    }
-    if active_decision_count(neon, vault.vault.id).await? > 0 {
-        return Ok(false);
-    }
-
-    let policy_candidates =
-        policy_eligible_candidates(&vault.policy, candidates, &options.enabled_mints);
-    let freshest_cutoff = Utc::now() - Duration::seconds(options.max_candidate_age_seconds);
-    let (fresh_candidates, _) = split_fresh_candidates(&policy_candidates, freshest_cutoff);
-    Ok(matches!(
-        plan_idle_vault_deposit(
-            idle_balance,
-            &fresh_candidates,
-            options.min_idle_deposit_raw
-        ),
-        Ok(Some(_))
-    ))
-}
-
-fn idle_priority_deferred_result(
-    options: &Options,
-    vault: &ResolvedVault,
-    candidates: &[SupportedReserveLatestRow],
-    idle_balance: Option<&CurrentIdleTokenBalance>,
-) -> Value {
-    let candidate_counts = candidate_counts_by_mint(candidates);
-    let skipped_mint_list = skipped_mints(&options.enabled_mints, candidates);
-    let policy_candidates =
-        policy_eligible_candidates(&vault.policy, candidates, &options.enabled_mints);
-    let freshest_cutoff = Utc::now() - Duration::seconds(options.max_candidate_age_seconds);
-    let (fresh_candidates, stale_candidate_count) =
-        split_fresh_candidates(&policy_candidates, freshest_cutoff);
-    let idle_plan = plan_idle_vault_deposit(
-        idle_balance,
-        &fresh_candidates,
-        options.min_idle_deposit_raw,
-    );
-
-    json!({
-        "status": "skipped_normal_rebalance_deferred_for_idle_vault_deposit",
-        "execute": options.execute,
-        "skipReason": "fleet_idle_vault_deposit_priority",
-        "enabledMints": options.enabled_mints.clone(),
-        "vault": vault_json(vault),
-        "idleVaultBalance": idle_balance.map(idle_balance_json),
-        "idleVaultDepositPlan": idle_vault_deposit_result_json(&idle_plan),
-        "candidates": candidates_json(candidates),
-        "policyEligibleCandidates": candidates_json(&policy_candidates),
-        "candidateCountsByMint": candidate_counts,
-        "policyEligibleCandidateCountsByMint": candidate_counts_by_mint(&policy_candidates),
-        "freshCandidateCountsByMint": candidate_counts_by_mint(&fresh_candidates),
-        "skippedMints": skipped_mint_list,
-        "freshCandidateCount": fresh_candidates.len(),
-        "staleCandidateCount": stale_candidate_count,
-        "minIdleDepositRaw": options.min_idle_deposit_raw,
-    })
 }
 
 async fn run_vault_once(
@@ -1846,46 +1729,6 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
         return Err("--fleet-page-size must be greater than 0".into());
     }
     Ok(options)
-}
-
-fn default_enabled_stable_mints() -> Vec<String> {
-    [
-        CASH_MINT, USDG_MINT, PYUSD_MINT, USDC_MINT, USDT_MINT, USDS_MINT,
-    ]
-    .into_iter()
-    .map(|mint| mint.to_string())
-    .collect()
-}
-
-fn enabled_stable_mints_from_env() -> Result<Vec<String>, Box<dyn Error>> {
-    let default_mints = default_enabled_stable_mints();
-    let Ok(raw) = env::var(ENABLED_STABLE_MINTS_ENV) else {
-        return Ok(default_mints);
-    };
-    let supported = default_mints
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    let mut enabled = Vec::new();
-    for mint in raw
-        .split(',')
-        .map(str::trim)
-        .filter(|mint| !mint.is_empty())
-    {
-        if !supported.contains(mint) {
-            return Err(format!(
-                "{ENABLED_STABLE_MINTS_ENV} contains unsupported stable mint {mint}"
-            )
-            .into());
-        }
-        if !enabled.iter().any(|existing| existing == mint) {
-            enabled.push(mint.to_owned());
-        }
-    }
-    if enabled.is_empty() {
-        return Err(format!("{ENABLED_STABLE_MINTS_ENV} did not contain any mints").into());
-    }
-    Ok(enabled)
 }
 
 fn usage() -> &'static str {

@@ -8,7 +8,12 @@ pub use loyal_actions::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use solana_sdk::{address_lookup_table::instruction::derive_lookup_table_address, pubkey::Pubkey};
+use solana_sdk::{
+    address_lookup_table::{
+        instruction::derive_lookup_table_address, program as address_lookup_table_program,
+    },
+    pubkey::Pubkey,
+};
 use sqlx::{Postgres, QueryBuilder, Row};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -126,6 +131,15 @@ string_enum! {
         SharedMarket => "shared_market",
         VaultShard => "vault_shard",
         DedicatedVault => "dedicated_vault"
+    }
+}
+
+string_enum! {
+    /// Structured classification for tables created before reusable families.
+    /// These values must never be promoted into reusable allocation kinds.
+    pub enum LegacyLookupTableKind, "legacy lookup-table kind" {
+        LegacyRoute => "legacy_route",
+        LegacyMixed => "legacy_mixed"
     }
 }
 
@@ -387,6 +401,30 @@ string_enum! {
         Satisfied => "satisfied",
         Failed => "failed",
         Cancelled => "cancelled"
+    }
+}
+
+string_enum! {
+    pub enum SharedMarketCatalogReadiness, "shared-market catalog readiness" {
+        Pending => "pending",
+        Provisioning => "provisioning",
+        Active => "active",
+        Failed => "failed"
+    }
+}
+
+string_enum! {
+pub enum SharedMarketCatalogRouteValidationState, "shared-market catalog route validation state" {
+        Covered => "covered",
+        MissingHead => "missing_head",
+        Drift => "drift"
+    }
+}
+
+string_enum! {
+    pub enum SharedMarketPhysicalDriftResolution, "shared-market physical drift resolution" {
+        Open => "open",
+        Resolved => "resolved"
     }
 }
 
@@ -1113,12 +1151,6 @@ pub fn reconcile_lookup_table_operation(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LookupTableBundleKind {
-    Legacy,
-    Reusable,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolverTableCandidate {
     pub table_id: i64,
@@ -1149,7 +1181,6 @@ pub struct ResolverTableCandidate {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedLookupTableBundle {
-    pub kind: LookupTableBundleKind,
     pub tables: Vec<ResolverTableCandidate>,
     pub required_addresses: BTreeSet<String>,
     pub missing_addresses: BTreeSet<String>,
@@ -1166,79 +1197,6 @@ impl ResolvedLookupTableBundle {
                 .tables
                 .iter()
                 .all(|table| table.rpc_verified && table.usable && table.lifecycle.may_resolve())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolverSelectionInput {
-    pub rollout_mode: LookupTableRolloutMode,
-    pub force_legacy: bool,
-    pub legacy: Option<ResolvedLookupTableBundle>,
-    pub reusable: Option<ResolvedLookupTableBundle>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResolverSelection {
-    Execute(ResolvedLookupTableBundle),
-    Shadow {
-        execute: ResolvedLookupTableBundle,
-        reusable_evidence: Option<ResolvedLookupTableBundle>,
-    },
-    Blocked {
-        reason: &'static str,
-    },
-}
-
-pub fn select_lookup_table_bundle(input: ResolverSelectionInput) -> ResolverSelection {
-    let complete_legacy = input.legacy.filter(ResolvedLookupTableBundle::ready);
-    let complete_reusable = input
-        .reusable
-        .clone()
-        .filter(ResolvedLookupTableBundle::ready);
-
-    if input.force_legacy {
-        return complete_legacy.map_or(
-            ResolverSelection::Blocked {
-                reason: "global force-legacy is active but complete legacy coverage is unavailable",
-            },
-            ResolverSelection::Execute,
-        );
-    }
-
-    match input.rollout_mode {
-        LookupTableRolloutMode::Legacy => complete_legacy.map_or(
-            ResolverSelection::Blocked {
-                reason: "legacy rollout mode requires complete legacy coverage",
-            },
-            ResolverSelection::Execute,
-        ),
-        LookupTableRolloutMode::Shadow => complete_legacy.map_or(
-            ResolverSelection::Blocked {
-                reason: "shadow rollout mode requires complete authoritative legacy coverage",
-            },
-            |execute| ResolverSelection::Shadow {
-                execute,
-                reusable_evidence: input.reusable,
-            },
-        ),
-        LookupTableRolloutMode::PreferReusable => {
-            if let Some(reusable) = complete_reusable {
-                ResolverSelection::Execute(reusable)
-            } else {
-                complete_legacy.map_or(
-                    ResolverSelection::Blocked {
-                        reason: "neither reusable nor legacy coverage is complete",
-                    },
-                    ResolverSelection::Execute,
-                )
-            }
-        }
-        LookupTableRolloutMode::ReusableOnly => complete_reusable.map_or(
-            ResolverSelection::Blocked {
-                reason: "reusable-only rollout mode requires complete reusable coverage",
-            },
-            ResolverSelection::Execute,
-        ),
     }
 }
 
@@ -1493,6 +1451,174 @@ pub struct LookupTableManifestRecord {
     pub sealed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub addresses: Vec<LookupTableManifestAddressRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SharedMarketCatalogUpsert {
+    pub cluster: String,
+    pub catalog_version: String,
+    pub desired_set_hash: String,
+    pub enabled_mints_hash: String,
+    pub reserve_set_hash: String,
+    pub addresses: Vec<LookupTableManifestAddressRecord>,
+    pub source_slot: Option<i64>,
+    pub source_observed_at: Option<DateTime<Utc>>,
+    pub source_metadata: Value,
+    pub reason: String,
+    pub updated_by: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SharedMarketCatalogHeadRecord {
+    pub family_id: i64,
+    pub catalog_revision_id: i64,
+    pub catalog_revision: i64,
+    pub manifest_id: i64,
+    pub cluster: String,
+    pub catalog_version: String,
+    pub desired_set_hash: String,
+    pub enabled_mints_hash: String,
+    pub reserve_set_hash: String,
+    pub address_count: i32,
+    pub source_slot: Option<i64>,
+    pub source_observed_at: Option<DateTime<Utc>>,
+    pub source_metadata: Value,
+    pub reason: String,
+    pub updated_by: String,
+    pub active_generation: Option<i32>,
+    pub target_generation: Option<i32>,
+    pub readiness_state: SharedMarketCatalogReadiness,
+    pub activated_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub addresses: Vec<LookupTableManifestAddressRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedMarketCatalogRouteValidation {
+    pub state: SharedMarketCatalogRouteValidationState,
+    pub catalog_revision_id: Option<i64>,
+    pub catalog_revision: Option<i64>,
+    pub desired_set_hash: Option<String>,
+    pub readiness_state: Option<SharedMarketCatalogReadiness>,
+    pub target_generation: Option<i32>,
+    pub active_generation: Option<i32>,
+    pub route_missing_addresses: Vec<String>,
+    pub semantic_mismatch_addresses: Vec<String>,
+    pub active_missing_addresses: Vec<String>,
+    pub active_extra_addresses: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SharedMarketCatalogPlanPolicy {
+    pub shared_shard_capacity: u16,
+    pub max_extension_addresses: usize,
+    pub operation_context: Value,
+    pub estimated_fee_lamports: Option<i64>,
+    pub estimated_rent_lamports: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SharedMarketCatalogPlan {
+    pub catalog: SharedMarketCatalogHeadRecord,
+    pub shared_target_generation: i32,
+    pub shared_operations: Vec<LookupTableOperationRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedMarketPhysicalDriftReport {
+    pub cluster: String,
+    pub catalog_revision_id: i64,
+    pub family_id: i64,
+    pub route_lookup_table_id: i64,
+    pub expected_mutation_epoch: i64,
+    pub expected_table_address: String,
+    pub expected_authority: String,
+    pub observed_slot: i64,
+    pub observed_table_present: bool,
+    pub observed_authority: Option<String>,
+    pub observed_active: bool,
+    pub observed_last_extended_slot: Option<i64>,
+    pub observed_warm: bool,
+    /// Exact finalized on-chain order. Empty only when the table is absent.
+    pub observed_addresses: Vec<String>,
+    pub reason: String,
+    pub reported_by: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedMarketPhysicalDriftRecord {
+    pub id: i64,
+    pub evidence_hash: String,
+    pub cluster: String,
+    pub family_id: i64,
+    pub catalog_revision_id: i64,
+    pub route_lookup_table_id: i64,
+    pub expected_mutation_epoch: i64,
+    pub expected_table_address: String,
+    pub expected_authority: String,
+    pub observed_slot: i64,
+    pub observed_table_present: bool,
+    pub observed_authority: Option<String>,
+    pub observed_active: bool,
+    pub observed_last_extended_slot: Option<i64>,
+    pub observed_warm: bool,
+    pub observed_address_hash: String,
+    pub observed_addresses: Vec<String>,
+    pub reason: String,
+    pub reported_by: String,
+    pub resolution_state: SharedMarketPhysicalDriftResolution,
+    pub resolution_target_generation: Option<i32>,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LookupTableClusterBudgetPolicy {
+    pub max_lamports: i64,
+    pub rolling_window_seconds: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LookupTableClusterBudgetReservation {
+    pub approved: bool,
+    pub replayed: bool,
+    pub reservation_id: Option<i64>,
+    pub cluster: String,
+    pub operation_id: i64,
+    pub fencing_token: i64,
+    pub estimated_fee_lamports: i64,
+    pub estimated_rent_lamports: i64,
+    pub requested_lamports: i64,
+    pub spent_lamports: i64,
+    pub reserved_lamports: i64,
+    pub charged_lamports: i64,
+    pub remaining_lamports: i64,
+    pub window_ends_at: DateTime<Utc>,
+}
+
+/// Exact DB evidence that a caller must verify against finalized RPC before
+/// reusable-only cutover. Passing this value back fences every mutable field
+/// used to authorize the cutover.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReusableOnlyCutoverPreflight {
+    pub cluster: String,
+    pub catalog_revision_id: i64,
+    pub catalog_revision: i64,
+    pub manifest_id: i64,
+    pub manifest_hash: String,
+    pub ordered_address_hash: String,
+    pub ordered_addresses: Vec<String>,
+    pub shared_family_id: i64,
+    pub active_generation: i32,
+    pub target_generation: i32,
+    pub physical_table_id: i64,
+    pub physical_table_address: String,
+    pub physical_authority: String,
+    pub physical_mutation_epoch: i64,
+    pub physical_last_verified_slot: i64,
+    pub physical_address_count: i32,
+    pub physical_usable_address_count: i32,
 }
 
 pub fn shared_market_manifest_addresses(
@@ -1809,6 +1935,17 @@ pub struct EffectiveLookupTableRollout {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReusableOnlyCutoverResult {
+    pub cluster: String,
+    pub catalog_revision_id: i64,
+    pub shared_family_id: i64,
+    pub shared_generation: i32,
+    pub vault_family_id: i64,
+    pub aligned_vault_control_count: i64,
+    pub global_control: LookupTableRolloutControl,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LookupTableUsageLeaseRecord {
     pub id: i64,
     pub cluster: String,
@@ -1921,6 +2058,161 @@ pub struct LegacyLookupTableRetirement {
     pub durable: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyLookupTableCleanupProtection {
+    pub table_id: i64,
+    pub cluster: String,
+    pub table_address: String,
+    pub import_run_id: Option<i64>,
+    pub legacy_kind: Option<LegacyLookupTableKind>,
+    pub status: String,
+    pub durable: bool,
+    pub family_id: Option<i64>,
+    pub expected_authority: String,
+    pub address_count: i32,
+    pub address_hash: String,
+    pub ordered_addresses: Vec<String>,
+    pub last_verified_slot: Option<i64>,
+    pub zero_reference: bool,
+    pub nonselectable: bool,
+    pub can_deactivate: bool,
+    pub can_close: bool,
+    pub authorization_token: String,
+    pub protection_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifiedLegacyLookupTableCleanup {
+    pub cluster: String,
+    pub table_address: String,
+    pub expected_authorization_token: String,
+    pub operation_kind: LookupTableOperationKind,
+    pub transaction_signature: String,
+    pub observed_slot: i64,
+    pub close_recipient: Option<String>,
+    pub reclaimed_lamports: Option<i64>,
+}
+
+/// Short-lived cleanup authorization. Retirement plus database triggers form
+/// the durable nonblocking fence while the chain transaction finalizes.
+pub struct LegacyLookupTableCleanupAuthorization {
+    client: NeonSqlClient,
+    protection: LegacyLookupTableCleanupProtection,
+    operation_kind: LookupTableOperationKind,
+}
+
+impl LegacyLookupTableCleanupAuthorization {
+    pub fn protection(&self) -> &LegacyLookupTableCleanupProtection {
+        &self.protection
+    }
+
+    pub async fn record_finalized(
+        self,
+        input: VerifiedLegacyLookupTableCleanup,
+    ) -> Result<(), OrchestratorError> {
+        if input.cluster != self.protection.cluster
+            || input.table_address != self.protection.table_address
+            || input.expected_authorization_token != self.protection.authorization_token
+            || input.operation_kind != self.operation_kind
+            || input.transaction_signature.trim().is_empty()
+            || input.observed_slot < 0
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "legacy cleanup finalized evidence does not match its fenced authorization"
+                    .to_owned(),
+            ));
+        }
+        match self.operation_kind {
+            LookupTableOperationKind::Deactivate => {
+                if input.close_recipient.is_some() || input.reclaimed_lamports.is_some() {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "legacy deactivation must not record close refund evidence".to_owned(),
+                    ));
+                }
+            }
+            LookupTableOperationKind::Close => {
+                if input.close_recipient.as_deref()
+                    != Some(self.protection.expected_authority.as_str())
+                    || input.reclaimed_lamports.is_none_or(|value| value <= 0)
+                {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "legacy close must refund positive rent to the policy authority".to_owned(),
+                    ));
+                }
+            }
+            _ => {
+                return Err(OrchestratorError::StoreInvariant(
+                    "legacy cleanup authorization only supports deactivate or close".to_owned(),
+                ));
+            }
+        }
+        self.client
+            .record_verified_legacy_lookup_table_cleanup(&self.protection, input)
+            .await
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyLookupTableImportSource {
+    pub id: i64,
+    pub cluster: String,
+    pub scope: String,
+    pub table_address: String,
+    pub authority: String,
+    pub status: String,
+    pub durable: bool,
+    pub address_count: i32,
+    pub address_hash: String,
+    pub addresses: Vec<String>,
+    pub legacy_kind: Option<LegacyLookupTableKind>,
+    pub legacy_import_run_id: Option<i64>,
+    pub last_extended_slot: Option<i64>,
+    pub last_extended_start_index: Option<i32>,
+    pub last_verified_slot: Option<i64>,
+    pub last_verified_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifiedLegacyLookupTableImport {
+    pub source: LegacyLookupTableImportSource,
+    pub legacy_kind: LegacyLookupTableKind,
+    pub observed_owner: String,
+    pub observed_authority: String,
+    /// Stored as text because an active Solana ALT uses `u64::MAX`, which does
+    /// not fit PostgreSQL BIGINT.
+    pub observed_deactivation_slot: String,
+    pub observed_last_extended_slot: i64,
+    pub observed_last_extended_start_index: i32,
+    pub observed_address_count: i32,
+    pub observed_address_hash: String,
+    pub observed_addresses: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyLookupTableFleetImportRequest {
+    pub cluster: String,
+    pub rpc_genesis_hash: String,
+    pub verified_slot: i64,
+    pub verified_at: DateTime<Utc>,
+    pub import_fingerprint: String,
+    pub reason: String,
+    pub updated_by: String,
+    pub expected_table_count: i32,
+    pub tables: Vec<VerifiedLegacyLookupTableImport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyLookupTableFleetImportResult {
+    pub import_run_id: i64,
+    pub cluster: String,
+    pub legacy_kind: LegacyLookupTableKind,
+    pub verified_slot: i64,
+    pub verified_at: DateTime<Utc>,
+    pub imported_table_count: i32,
+    pub import_fingerprint: String,
+    pub replayed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AtomicVaultAllocationRequest {
     pub cluster: String,
@@ -1954,6 +2246,26 @@ pub enum AtomicVaultAllocationResult {
         binding: LookupTableVaultBindingRecord,
         operations: Vec<LookupTableOperationRecord>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ActiveVaultBindingDisposition {
+    Ready,
+    Verify {
+        table: ReusableLookupTableRecord,
+        persisted_addresses: Vec<String>,
+    },
+    Relocate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClusterBudgetUsage {
+    spent_lamports: i64,
+    reserved_lamports: i64,
+    charged_lamports: i64,
+    operation_reserved_lamports: i64,
+    operation_actual_lamports: i64,
+    window_ends_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2194,37 +2506,169 @@ fn validate_lookup_table_family_bootstrap(
     Ok(())
 }
 
-impl NeonSqlClient {
-    /// Returns true when an ALT manager identity is already entrusted with
-    /// route execution or pays for a durable legacy route table.
-    pub async fn lookup_table_manager_identity_overlaps_control_plane(
-        &self,
-        manager: &str,
-    ) -> Result<bool, OrchestratorError> {
-        Ok(sqlx::query_scalar::<_, bool>(
-            r#"
-            SELECT EXISTS (
-                SELECT 1
-                FROM loyal_yield.route_policies
-                WHERE active = TRUE
-                  AND ($1 = authority OR $1 = ANY(delegated_signers))
-                UNION ALL
-                SELECT 1
-                FROM loyal_yield.balance_sweep_targets
-                WHERE active = TRUE
-                  AND ($1 = authority OR $1 = wallet OR $1 = ANY(delegated_signers))
-                UNION ALL
-                SELECT 1
-                FROM loyal_yield.route_lookup_tables
-                WHERE family_id IS NULL AND durable = TRUE AND payer = $1
-            )
-            "#,
-        )
-        .bind(manager)
-        .fetch_one(self.pool())
-        .await?)
+async fn classify_active_vault_binding_in_connection(
+    tx: &mut sqlx::PgConnection,
+    family: &LookupTableFamilyRecord,
+    binding: &LookupTableVaultBindingRecord,
+    manifest_addresses: &BTreeSet<String>,
+) -> Result<ActiveVaultBindingDisposition, OrchestratorError> {
+    let Some(table_row) = sqlx::query(
+        r#"
+        SELECT * FROM loyal_yield.route_lookup_tables
+        WHERE id = $1 AND family_id = $2
+        FOR UPDATE
+        "#,
+    )
+    .bind(binding.route_lookup_table_id)
+    .bind(family.id)
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        return Ok(ActiveVaultBindingDisposition::Relocate);
+    };
+    let table = reusable_lookup_table_from_row(&table_row)?;
+    let durable: bool = table_row.try_get("durable")?;
+    let expected_allocation_kind = match binding.allocation_mode {
+        LookupTableBindingMode::PackedShard => LookupTableAllocationKind::VaultShard,
+        LookupTableBindingMode::Dedicated => LookupTableAllocationKind::DedicatedVault,
+    };
+    if table.cluster != family.cluster
+        || table.authority != family.provisioning_authority
+        || table.payer != family.payer
+        || table.allocation_kind != expected_allocation_kind
+        || family.active_generation != Some(table.generation)
+        || table.desired_state != LookupTableLifecycle::Active
+        || !durable
+        || binding.reserved_capacity < i32::try_from(manifest_addresses.len()).unwrap_or(i32::MAX)
+    {
+        return Ok(ActiveVaultBindingDisposition::Relocate);
     }
 
+    let membership_rows = sqlx::query(
+        r#"
+        SELECT address, ordinal, added_operation_id, added_slot,
+               usable_after_slot, last_verified_slot, last_verified_at
+        FROM loyal_yield.lookup_table_addresses
+        WHERE route_lookup_table_id = $1 ORDER BY ordinal
+        "#,
+    )
+    .bind(table.id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let membership = membership_rows
+        .iter()
+        .map(|row| {
+            Ok(LookupTableMembershipAddress {
+                address: row.try_get("address")?,
+                ordinal: row.try_get("ordinal")?,
+                added_operation_id: row.try_get("added_operation_id")?,
+                added_slot: row.try_get("added_slot")?,
+                usable_after_slot: row.try_get("usable_after_slot")?,
+                last_verified_slot: row.try_get("last_verified_slot")?,
+                last_verified_at: row.try_get("last_verified_at")?,
+            })
+        })
+        .collect::<Result<Vec<_>, OrchestratorError>>()?;
+    let persisted_addresses = membership
+        .iter()
+        .map(|entry| entry.address.clone())
+        .collect::<Vec<_>>();
+    let persisted_set = persisted_addresses.iter().cloned().collect::<BTreeSet<_>>();
+    let structurally_complete = membership.len()
+        == usize::try_from(table.address_count).unwrap_or(usize::MAX)
+        && membership
+            .iter()
+            .enumerate()
+            .all(|(ordinal, entry)| entry.ordinal == ordinal as i32)
+        && ordered_address_hash(&persisted_addresses) == table.address_hash
+        && manifest_addresses.is_subset(&persisted_set);
+    if !structurally_complete {
+        return Ok(ActiveVaultBindingDisposition::Relocate);
+    }
+
+    let pending_operation_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT count(*) FROM loyal_yield.lookup_table_operations
+        WHERE route_lookup_table_id = $1
+          AND operation_state NOT IN ('complete', 'permanent_failure', 'cancelled')
+        "#,
+    )
+    .bind(table.id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let fully_verified = table.legacy_status == "usable"
+        && table.usable_address_count == table.address_count
+        && table.last_verified_slot.is_some_and(|slot| {
+            validate_membership(&membership, slot).is_ok()
+                && membership.iter().all(|entry| {
+                    entry.usable_after_slot <= slot && entry.last_verified_slot >= slot
+                })
+        })
+        && pending_operation_count == 0;
+    Ok(if fully_verified {
+        ActiveVaultBindingDisposition::Ready
+    } else {
+        ActiveVaultBindingDisposition::Verify {
+            table,
+            persisted_addresses,
+        }
+    })
+}
+
+async fn load_cluster_budget_usage_in_connection(
+    tx: &mut sqlx::PgConnection,
+    cluster: &str,
+    operation_id: i64,
+    now: DateTime<Utc>,
+) -> Result<ClusterBudgetUsage, OrchestratorError> {
+    let row = sqlx::query(
+        r#"
+        WITH per_operation AS (
+            SELECT operation.id,
+                   COALESCE(sum(reservation.reserved_lamports), 0)::BIGINT
+                       AS reserved_lamports,
+                   (COALESCE(operation.actual_fee_lamports, 0)
+                    + COALESCE(operation.actual_rent_lamports, 0))::BIGINT
+                       AS actual_lamports,
+                   min(reservation.reserved_until) AS window_ends_at
+            FROM loyal_yield.lookup_table_cluster_budget_reservations reservation
+            JOIN loyal_yield.lookup_table_operations operation
+              ON operation.id = reservation.operation_id
+            WHERE reservation.cluster = $1
+              AND reservation.reserved_until > $3
+              AND operation.operation_state <> 'cancelled'
+            GROUP BY operation.id, operation.actual_fee_lamports,
+                     operation.actual_rent_lamports
+        )
+        SELECT COALESCE(sum(actual_lamports), 0)::BIGINT AS spent_lamports,
+               COALESCE(sum(GREATEST(reserved_lamports - actual_lamports, 0)), 0)::BIGINT
+                   AS reserved_lamports,
+               COALESCE(sum(GREATEST(reserved_lamports, actual_lamports)), 0)::BIGINT
+                   AS charged_lamports,
+               COALESCE(max(reserved_lamports) FILTER (WHERE id = $2), 0)::BIGINT
+                   AS operation_reserved_lamports,
+               COALESCE(max(actual_lamports) FILTER (WHERE id = $2), 0)::BIGINT
+                   AS operation_actual_lamports,
+               min(window_ends_at) AS window_ends_at
+        FROM per_operation
+        "#,
+    )
+    .bind(cluster)
+    .bind(operation_id)
+    .bind(now)
+    .fetch_one(&mut *tx)
+    .await?;
+    Ok(ClusterBudgetUsage {
+        spent_lamports: row.try_get("spent_lamports")?,
+        reserved_lamports: row.try_get("reserved_lamports")?,
+        charged_lamports: row.try_get("charged_lamports")?,
+        operation_reserved_lamports: row.try_get("operation_reserved_lamports")?,
+        operation_actual_lamports: row.try_get("operation_actual_lamports")?,
+        window_ends_at: row.try_get("window_ends_at")?,
+    })
+}
+
+impl NeonSqlClient {
     pub async fn upsert_lookup_table_family(
         &self,
         input: LookupTableFamilyUpsert,
@@ -2256,17 +2700,9 @@ impl NeonSqlClient {
                     .to_owned(),
             ));
         }
-        if self
-            .lookup_table_manager_identity_overlaps_control_plane(&input.provisioning_authority)
-            .await?
-            || (input.payer != input.provisioning_authority
-                && self
-                    .lookup_table_manager_identity_overlaps_control_plane(&input.payer)
-                    .await?)
-        {
+        if input.payer != input.provisioning_authority {
             return Err(OrchestratorError::StoreInvariant(
-                "ALT manager authority/payer overlaps a durable route signer, authority, wallet, or legacy route payer"
-                    .to_owned(),
+                "lookup-table family provisioning authority and payer must match".to_owned(),
             ));
         }
         let inserted = sqlx::query(
@@ -2531,6 +2967,493 @@ impl NeonSqlClient {
         .fetch_all(self.pool())
         .await?;
         lookup_table_manifest_from_rows(&row, &address_rows).map(Some)
+    }
+
+    /// Publishes a vault-independent shared-market catalog revision and moves
+    /// the single durable family head atomically. Route requests never call
+    /// this method and therefore cannot grow shared desired state implicitly.
+    pub async fn upsert_shared_market_catalog(
+        &self,
+        mut input: SharedMarketCatalogUpsert,
+    ) -> Result<SharedMarketCatalogHeadRecord, OrchestratorError> {
+        input.addresses.sort_by_key(|address| address.ordinal);
+        validate_request_addresses(
+            &input.addresses,
+            LookupTableManifestSubject::SharedMarket,
+            true,
+        )?;
+        if input.addresses.is_empty()
+            || input.cluster.trim().is_empty()
+            || input.catalog_version.trim().is_empty()
+            || input.reason.trim().is_empty()
+            || input.updated_by.trim().is_empty()
+            || input.source_slot.is_some_and(|slot| slot < 0)
+            || !input.source_metadata.is_object()
+            || !is_sha256_hex(&input.desired_set_hash)
+            || !is_sha256_hex(&input.enabled_mints_hash)
+            || !is_sha256_hex(&input.reserve_set_hash)
+            || lookup_table_manifest_address_records_hash(&input.addresses)
+                != input.desired_set_hash
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "shared-market catalog metadata or canonical address hash is invalid".to_owned(),
+            ));
+        }
+
+        let mut tx = self.pool().begin().await?;
+        let family_rows = sqlx::query(
+            r#"
+            SELECT * FROM loyal_yield.lookup_table_families
+            WHERE cluster = $1 AND kind = 'shared_market' AND desired_state = 'active'
+            ORDER BY logical_name, id
+            FOR UPDATE
+            "#,
+        )
+        .bind(&input.cluster)
+        .fetch_all(&mut *tx)
+        .await?;
+        if family_rows.len() != 1 {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "cluster {:?} requires exactly one active shared_market lookup-table family, found {}",
+                input.cluster,
+                family_rows.len()
+            )));
+        }
+        let family = lookup_table_family_from_row(&family_rows[0])?;
+        if family.catalog_version != input.catalog_version
+            || input.addresses.len() > usize::try_from(family.allocation_high_water).unwrap_or(0)
+        {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "shared-market catalog does not match family {} version/capacity",
+                family.id
+            )));
+        }
+
+        let current = load_shared_market_catalog_head_in_connection(
+            &mut tx,
+            &input.cluster,
+            SharedMarketCatalogHeadLock::Update,
+        )
+        .await?;
+        if let Some(current) = current.as_ref() {
+            if current.catalog_version == input.catalog_version
+                && current.desired_set_hash == input.desired_set_hash
+            {
+                if current.enabled_mints_hash != input.enabled_mints_hash
+                    || current.reserve_set_hash != input.reserve_set_hash
+                    || current.addresses != input.addresses
+                {
+                    return Err(OrchestratorError::StoreInvariant(format!(
+                        "shared-market catalog head {} has conflicting normalized identity",
+                        current.catalog_revision_id
+                    )));
+                }
+                tx.commit().await?;
+                return Ok(current.clone());
+            }
+        }
+
+        let manifest = persist_lookup_table_manifest_in_tx(
+            &mut tx,
+            LookupTableManifestWrite {
+                family_id: family.id,
+                subject_kind: LookupTableManifestSubject::SharedMarket,
+                subject_key: format!("shared-market-catalog:{}", input.catalog_version),
+                vault_id: None,
+                desired_set_hash: input.desired_set_hash.clone(),
+                source_slot: input.source_slot,
+                planner_version: family.planner_version.clone(),
+                catalog_version: family.catalog_version.clone(),
+                addresses: input.addresses.clone(),
+            },
+        )
+        .await?;
+        // A new monotonic audit revision may intentionally point back to an
+        // older immutable manifest (A -> B -> A rollback). Manifest identity
+        // is content-addressed; only catalog revision/head identity advances.
+        let catalog_revision = current
+            .as_ref()
+            .map_or(1, |head| head.catalog_revision.saturating_add(1));
+        let catalog_revision_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO loyal_yield.lookup_table_shared_market_catalog_revisions
+                (family_id, manifest_id, catalog_revision, catalog_version,
+                 desired_set_hash, enabled_mints_hash, reserve_set_hash,
+                 address_count, source_slot, source_observed_at,
+                 source_metadata, reason, updated_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            RETURNING id
+            "#,
+        )
+        .bind(family.id)
+        .bind(manifest.id)
+        .bind(catalog_revision)
+        .bind(&input.catalog_version)
+        .bind(&input.desired_set_hash)
+        .bind(&input.enabled_mints_hash)
+        .bind(&input.reserve_set_hash)
+        .bind(i32::try_from(input.addresses.len()).map_err(|_| {
+            OrchestratorError::StoreInvariant(
+                "shared-market catalog address count exceeds PostgreSQL INTEGER".to_owned(),
+            )
+        })?)
+        .bind(manifest.source_slot)
+        .bind(input.source_observed_at)
+        .bind(&input.source_metadata)
+        .bind(&input.reason)
+        .bind(&input.updated_by)
+        .fetch_one(&mut *tx)
+        .await?;
+        if current.is_some() {
+            sqlx::query(
+                r#"
+                UPDATE loyal_yield.lookup_table_shared_market_catalog_heads
+                SET catalog_revision_id = $2, target_generation = NULL,
+                    readiness_state = 'pending', activated_at = NULL,
+                    updated_at = now()
+                WHERE family_id = $1
+                "#,
+            )
+            .bind(family.id)
+            .bind(catalog_revision_id)
+            .execute(&mut *tx)
+            .await?;
+        } else {
+            sqlx::query(
+                r#"
+                INSERT INTO loyal_yield.lookup_table_shared_market_catalog_heads
+                    (family_id, catalog_revision_id)
+                VALUES ($1, $2)
+                "#,
+            )
+            .bind(family.id)
+            .bind(catalog_revision_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        let head = load_shared_market_catalog_head_in_connection(
+            &mut tx,
+            &input.cluster,
+            SharedMarketCatalogHeadLock::None,
+        )
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "shared-market catalog head disappeared after publication".to_owned(),
+            )
+        })?;
+        tx.commit().await?;
+        Ok(head)
+    }
+
+    pub async fn shared_market_catalog_head(
+        &self,
+        cluster: &str,
+    ) -> Result<Option<SharedMarketCatalogHeadRecord>, OrchestratorError> {
+        let mut connection = self.pool().acquire().await?;
+        load_shared_market_catalog_head_from_connection(
+            &mut connection,
+            cluster,
+            SharedMarketCatalogHeadLock::None,
+        )
+        .await
+    }
+
+    /// Read-only runtime fence. `Covered` means both the route's typed shared
+    /// requirements are catalog subsets and the active physical generation is
+    /// the exact current catalog (no append-only remnants from an older head).
+    pub async fn validate_shared_market_catalog_route(
+        &self,
+        cluster: &str,
+        mut route_addresses: Vec<LookupTableManifestAddressRecord>,
+    ) -> Result<SharedMarketCatalogRouteValidation, OrchestratorError> {
+        route_addresses.sort_by_key(|address| address.ordinal);
+        validate_request_addresses(
+            &route_addresses,
+            LookupTableManifestSubject::SharedMarket,
+            true,
+        )?;
+        let mut tx = self.pool().begin().await?;
+        let Some(catalog) = load_shared_market_catalog_head_in_connection(
+            &mut tx,
+            cluster,
+            SharedMarketCatalogHeadLock::None,
+        )
+        .await?
+        else {
+            tx.commit().await?;
+            return Ok(SharedMarketCatalogRouteValidation {
+                state: SharedMarketCatalogRouteValidationState::MissingHead,
+                catalog_revision_id: None,
+                catalog_revision: None,
+                desired_set_hash: None,
+                readiness_state: None,
+                target_generation: None,
+                active_generation: None,
+                route_missing_addresses: route_addresses
+                    .into_iter()
+                    .map(|row| row.address)
+                    .collect(),
+                semantic_mismatch_addresses: Vec::new(),
+                active_missing_addresses: Vec::new(),
+                active_extra_addresses: Vec::new(),
+            });
+        };
+        let (route_missing_addresses, semantic_mismatch_addresses) =
+            shared_market_route_catalog_drift(&route_addresses, &catalog.addresses);
+        let physical = shared_market_catalog_generation_evidence_in_connection(
+            &mut tx,
+            catalog.family_id,
+            catalog.active_generation,
+            &catalog.addresses,
+        )
+        .await?;
+        let covered = route_missing_addresses.is_empty()
+            && semantic_mismatch_addresses.is_empty()
+            && catalog.readiness_state == SharedMarketCatalogReadiness::Active
+            && catalog.target_generation == catalog.active_generation
+            && physical.ready;
+        let validation = SharedMarketCatalogRouteValidation {
+            state: if covered {
+                SharedMarketCatalogRouteValidationState::Covered
+            } else {
+                SharedMarketCatalogRouteValidationState::Drift
+            },
+            catalog_revision_id: Some(catalog.catalog_revision_id),
+            catalog_revision: Some(catalog.catalog_revision),
+            desired_set_hash: Some(catalog.desired_set_hash),
+            readiness_state: Some(catalog.readiness_state),
+            target_generation: catalog.target_generation,
+            active_generation: catalog.active_generation,
+            route_missing_addresses,
+            semantic_mismatch_addresses,
+            active_missing_addresses: physical.missing_addresses,
+            active_extra_addresses: physical.extra_addresses,
+        };
+        tx.commit().await?;
+        Ok(validation)
+    }
+
+    /// Persists finalized RPC drift against the exact current catalog/table
+    /// fence. The catalog planner treats every open report as a mandatory
+    /// generation rollover, even when the normalized DB membership still
+    /// appears exact.
+    pub async fn report_shared_market_physical_drift(
+        &self,
+        input: SharedMarketPhysicalDriftReport,
+    ) -> Result<SharedMarketPhysicalDriftRecord, OrchestratorError> {
+        if input.cluster.trim().is_empty()
+            || input.reason.trim().is_empty()
+            || input.reported_by.trim().is_empty()
+            || input.observed_slot < 0
+            || input.expected_mutation_epoch < 0
+            || input
+                .observed_last_extended_slot
+                .is_some_and(|slot| slot < 0)
+            || input.observed_addresses.len() > usize::from(LOOKUP_TABLE_HARD_CAPACITY)
+            || (!input.observed_table_present
+                && (input.observed_authority.is_some()
+                    || input.observed_active
+                    || input.observed_last_extended_slot.is_some()
+                    || input.observed_warm
+                    || !input.observed_addresses.is_empty()))
+            || (input.observed_warm && input.observed_last_extended_slot.is_none())
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "shared-market physical drift report is malformed".to_owned(),
+            ));
+        }
+        let mut observed_seen = BTreeSet::new();
+        if input
+            .observed_addresses
+            .iter()
+            .any(|address| !observed_seen.insert(address) || Pubkey::from_str(address).is_err())
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "shared-market physical drift addresses must be valid, unique pubkeys in finalized order"
+                    .to_owned(),
+            ));
+        }
+        let observed_hash = ordered_address_hash(&input.observed_addresses);
+        let mut tx = self.pool().begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('shared-alt-drift:' || $1, 0))")
+            .bind(&input.cluster)
+            .execute(&mut *tx)
+            .await?;
+        let catalog = load_shared_market_catalog_head_in_connection(
+            &mut tx,
+            &input.cluster,
+            SharedMarketCatalogHeadLock::Update,
+        )
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "shared-market physical drift has no current catalog head".to_owned(),
+            )
+        })?;
+        if catalog.catalog_revision_id != input.catalog_revision_id
+            || catalog.family_id != input.family_id
+            || catalog.readiness_state != SharedMarketCatalogReadiness::Active
+            || catalog.active_generation != catalog.target_generation
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "shared-market physical drift report lost its active catalog fence".to_owned(),
+            ));
+        }
+        let table_row = sqlx::query(
+            r#"
+            SELECT * FROM loyal_yield.route_lookup_tables
+            WHERE id = $1 AND family_id = $2 AND generation = $3
+              AND allocation_kind = 'shared_market'
+            FOR UPDATE
+            "#,
+        )
+        .bind(input.route_lookup_table_id)
+        .bind(input.family_id)
+        .bind(catalog.active_generation)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            stale_store_update("shared-market physical table", input.route_lookup_table_id)
+        })?;
+        let table = reusable_lookup_table_from_row(&table_row)?;
+        if table.cluster != input.cluster
+            || table.table_address != input.expected_table_address
+            || table.authority != input.expected_authority
+            || table.mutation_epoch != input.expected_mutation_epoch
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "shared-market physical drift report lost its table/mutation fence".to_owned(),
+            ));
+        }
+        let expected_addresses = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT address FROM loyal_yield.lookup_table_addresses
+            WHERE route_lookup_table_id = $1 ORDER BY ordinal
+            "#,
+        )
+        .bind(table.id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let is_drift = !input.observed_table_present
+            || input.observed_authority.as_deref() != Some(table.authority.as_str())
+            || !input.observed_active
+            || !input.observed_warm
+            || input.observed_addresses != expected_addresses
+            || input.observed_addresses
+                != catalog
+                    .addresses
+                    .iter()
+                    .map(|row| row.address.clone())
+                    .collect::<Vec<_>>();
+        if !is_drift {
+            return Err(OrchestratorError::StoreInvariant(
+                "shared-market physical drift report matches the exact active catalog".to_owned(),
+            ));
+        }
+        let observed_present = input.observed_table_present.to_string();
+        let observed_active = input.observed_active.to_string();
+        let observed_last_extended_slot = input
+            .observed_last_extended_slot
+            .map(|slot| slot.to_string())
+            .unwrap_or_default();
+        let observed_warm = input.observed_warm.to_string();
+        let observed_slot = input.observed_slot.to_string();
+        let expected_epoch = input.expected_mutation_epoch.to_string();
+        let evidence_hash = hash_length_prefixed_values(
+            [
+                input.cluster.as_str(),
+                &input.catalog_revision_id.to_string(),
+                &input.family_id.to_string(),
+                &input.route_lookup_table_id.to_string(),
+                expected_epoch.as_str(),
+                input.expected_table_address.as_str(),
+                input.expected_authority.as_str(),
+                observed_slot.as_str(),
+                observed_present.as_str(),
+                input.observed_authority.as_deref().unwrap_or(""),
+                observed_active.as_str(),
+                observed_last_extended_slot.as_str(),
+                observed_warm.as_str(),
+                observed_hash.as_str(),
+                input.reason.as_str(),
+                input.reported_by.as_str(),
+            ]
+            .into_iter()
+            .chain(input.observed_addresses.iter().map(String::as_str)),
+        );
+        let observed_json = serde_json::to_value(&input.observed_addresses).map_err(|error| {
+            OrchestratorError::StoreInvariant(format!(
+                "shared-market physical drift addresses cannot be serialized: {error}"
+            ))
+        })?;
+        let inserted_id = sqlx::query_scalar::<_, i64>(
+            r#"
+            INSERT INTO loyal_yield.lookup_table_shared_market_physical_drifts
+                (evidence_hash, cluster, family_id, catalog_revision_id,
+                 route_lookup_table_id, expected_mutation_epoch,
+                 expected_table_address, expected_authority, observed_slot,
+                 observed_table_present, observed_authority, observed_active,
+                 observed_last_extended_slot, observed_warm,
+                 observed_address_hash, observed_addresses, reason, reported_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                    $13, $14, $15, $16, $17, $18)
+            ON CONFLICT (evidence_hash) DO NOTHING
+            RETURNING id
+            "#,
+        )
+        .bind(&evidence_hash)
+        .bind(&input.cluster)
+        .bind(input.family_id)
+        .bind(input.catalog_revision_id)
+        .bind(input.route_lookup_table_id)
+        .bind(input.expected_mutation_epoch)
+        .bind(&input.expected_table_address)
+        .bind(&input.expected_authority)
+        .bind(input.observed_slot)
+        .bind(input.observed_table_present)
+        .bind(&input.observed_authority)
+        .bind(input.observed_active)
+        .bind(input.observed_last_extended_slot)
+        .bind(input.observed_warm)
+        .bind(&observed_hash)
+        .bind(observed_json)
+        .bind(&input.reason)
+        .bind(&input.reported_by)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let drift_id = if let Some(id) = inserted_id {
+            id
+        } else {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM loyal_yield.lookup_table_shared_market_physical_drifts WHERE evidence_hash = $1",
+            )
+            .bind(&evidence_hash)
+            .fetch_one(&mut *tx)
+            .await?
+        };
+        sqlx::query(
+            r#"
+            UPDATE loyal_yield.lookup_table_shared_market_catalog_heads
+            SET readiness_state = 'provisioning', activated_at = NULL,
+                updated_at = now()
+            WHERE family_id = $1 AND catalog_revision_id = $2
+              AND target_generation IS NOT NULL
+            "#,
+        )
+        .bind(input.family_id)
+        .bind(input.catalog_revision_id)
+        .execute(&mut *tx)
+        .await?;
+        let row = sqlx::query(
+            "SELECT * FROM loyal_yield.lookup_table_shared_market_physical_drifts WHERE id = $1",
+        )
+        .bind(drift_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let drift = shared_market_physical_drift_from_row(&row)?;
+        tx.commit().await?;
+        Ok(drift)
     }
 
     pub async fn insert_lookup_table_vault_binding(
@@ -3007,17 +3930,6 @@ mod reusable_alt_tests {
         }
     }
 
-    fn bundle(kind: LookupTableBundleKind, ready: bool) -> ResolvedLookupTableBundle {
-        ResolvedLookupTableBundle {
-            kind,
-            tables: vec![resolver_candidate(1, &["a"], ready)],
-            required_addresses: addresses(&["a"]),
-            missing_addresses: BTreeSet::new(),
-            packet_fits: true,
-            simulation_succeeded: true,
-        }
-    }
-
     #[test]
     fn reusable_alt_resolver_requires_fresh_rpc_and_selects_minimal_bundle() {
         let required = addresses(&["a", "b"]);
@@ -3031,7 +3943,6 @@ mod reusable_alt_tests {
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].table_id, 3);
         let not_rpc_verified = ResolvedLookupTableBundle {
-            kind: LookupTableBundleKind::Reusable,
             tables: selected,
             required_addresses: required,
             missing_addresses: BTreeSet::new(),
@@ -3060,39 +3971,6 @@ mod reusable_alt_tests {
             Err(LookupTableDomainError::TooManyResolverCandidates {
                 actual: 3,
                 limit: 2
-            })
-        ));
-    }
-
-    #[test]
-    fn reusable_alt_rollout_force_legacy_and_prefer_fallback_are_deterministic() {
-        let legacy = bundle(LookupTableBundleKind::Legacy, true);
-        let reusable = bundle(LookupTableBundleKind::Reusable, true);
-        let selected = select_lookup_table_bundle(ResolverSelectionInput {
-            rollout_mode: LookupTableRolloutMode::ReusableOnly,
-            force_legacy: true,
-            legacy: Some(legacy.clone()),
-            reusable: Some(reusable),
-        });
-        assert!(matches!(
-            selected,
-            ResolverSelection::Execute(ResolvedLookupTableBundle {
-                kind: LookupTableBundleKind::Legacy,
-                ..
-            })
-        ));
-
-        let selected = select_lookup_table_bundle(ResolverSelectionInput {
-            rollout_mode: LookupTableRolloutMode::PreferReusable,
-            force_legacy: false,
-            legacy: Some(legacy),
-            reusable: Some(bundle(LookupTableBundleKind::Reusable, false)),
-        });
-        assert!(matches!(
-            selected,
-            ResolverSelection::Execute(ResolvedLookupTableBundle {
-                kind: LookupTableBundleKind::Legacy,
-                ..
             })
         ));
     }
@@ -3527,6 +4405,15 @@ impl NeonSqlClient {
                 "allocator request does not exactly match the sealed vault manifest".to_owned(),
             ));
         }
+        let required_single_binding_capacity = request
+            .desired_addresses
+            .len()
+            .saturating_add(usize::from(request.policy.per_vault_growth_reservation));
+        if required_single_binding_capacity > usize::from(durable_hard_capacity) {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "vault manifest requires {required_single_binding_capacity} addresses including growth reserve, exceeding the single-binding ALT capacity {durable_hard_capacity}; multi-binding partitioning is not yet atomic across route readiness and usage leases"
+            )));
+        }
         let desired_head_revision = upsert_vault_desired_head_in_tx(
             tx,
             request.family_id,
@@ -3565,13 +4452,86 @@ impl NeonSqlClient {
             .as_ref()
             .map(lookup_table_binding_from_row)
             .transpose()?;
+        let mut relocate_active_table_id = None;
         if let Some(binding) = &active_binding {
             if binding.manifest_id == request.manifest_id
                 && binding.desired_head_revision == desired_head_revision
             {
-                return Ok(AtomicVaultAllocationResult::Existing {
-                    binding: binding.clone(),
-                });
+                match classify_active_vault_binding_in_connection(
+                    tx,
+                    &family,
+                    binding,
+                    &request.desired_addresses,
+                )
+                .await?
+                {
+                    ActiveVaultBindingDisposition::Ready => {
+                        return Ok(AtomicVaultAllocationResult::Existing {
+                            binding: binding.clone(),
+                        });
+                    }
+                    ActiveVaultBindingDisposition::Verify {
+                        table,
+                        persisted_addresses,
+                    } => {
+                        let pending_rows = sqlx::query(
+                            r#"
+                            SELECT * FROM loyal_yield.lookup_table_operations
+                            WHERE route_lookup_table_id = $1
+                              AND operation_state NOT IN ('complete', 'permanent_failure', 'cancelled')
+                            ORDER BY created_at, id
+                            "#,
+                        )
+                        .bind(table.id)
+                        .fetch_all(&mut *tx)
+                        .await?;
+                        let mut operations = pending_rows
+                            .iter()
+                            .map(lookup_table_operation_from_row)
+                            .collect::<Result<Vec<_>, _>>()?;
+                        if operations.is_empty() {
+                            let verification_key = hash_length_prefixed_values([
+                                "vault-active-physical-verify",
+                                request.cluster.as_str(),
+                                &table.id.to_string(),
+                                &table.mutation_epoch.to_string(),
+                                &binding.id.to_string(),
+                                &binding.desired_head_revision.to_string(),
+                                &table.last_verified_slot.unwrap_or(-1).to_string(),
+                                &ordered_address_hash(&persisted_addresses),
+                            ]);
+                            operations.push(
+                                enqueue_lookup_table_operation_in_tx(
+                                    &mut *tx,
+                                    &LookupTableOperationEnqueue {
+                                        idempotency_key: verification_key,
+                                        family_id: request.family_id,
+                                        route_lookup_table_id: Some(table.id),
+                                        manifest_id: Some(request.manifest_id),
+                                        binding_id: Some(binding.id),
+                                        operation_kind: LookupTableOperationKind::Verify,
+                                        target_generation: None,
+                                        target_shard_ordinal: None,
+                                        operation_context: request.operation_context.clone(),
+                                        mutation_epoch: table.mutation_epoch,
+                                        estimated_fee_lamports: Some(0),
+                                        estimated_rent_lamports: Some(0),
+                                        addresses: Vec::new(),
+                                    },
+                                )
+                                .await?,
+                            );
+                        }
+                        return Ok(AtomicVaultAllocationResult::BindingReserved {
+                            allocation: PackedVaultAllocation::KeepExisting { table_id: table.id },
+                            binding: binding.clone(),
+                            operations,
+                        });
+                    }
+                    ActiveVaultBindingDisposition::Relocate => {
+                        relocate_active_table_id = Some(binding.route_lookup_table_id);
+                    }
+                }
             }
         }
         let in_flight_binding_rows = sqlx::query(
@@ -3702,7 +4662,11 @@ impl NeonSqlClient {
                 } else {
                     LookupTableAllocationAcceptance::Sealed
                 },
-                lifecycle: table.desired_state,
+                lifecycle: if relocate_active_table_id == Some(table.id) {
+                    LookupTableLifecycle::Failed
+                } else {
+                    table.desired_state
+                },
             })
             .collect::<Vec<_>>();
         let allocation_request = PackedVaultAllocationRequest {
@@ -3969,6 +4933,247 @@ impl NeonSqlClient {
         })
     }
 
+    /// Plans the current catalog head without requiring a vault request. The
+    /// expected immutable revision id fences a stale catalog derivation.
+    pub async fn plan_shared_market_catalog_head(
+        &self,
+        cluster: &str,
+        expected_catalog_revision_id: i64,
+        policy: SharedMarketCatalogPlanPolicy,
+    ) -> Result<SharedMarketCatalogPlan, OrchestratorError> {
+        if policy.max_extension_addresses == 0 {
+            return Err(OrchestratorError::StoreInvariant(
+                "max extension addresses must be positive".to_owned(),
+            ));
+        }
+        let mut tx = self.pool().begin().await?;
+        let catalog = load_shared_market_catalog_head_in_connection(
+            &mut tx,
+            cluster,
+            SharedMarketCatalogHeadLock::Update,
+        )
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(format!(
+                "cluster {cluster:?} has no shared-market catalog head"
+            ))
+        })?;
+        if catalog.catalog_revision_id != expected_catalog_revision_id {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "shared-market catalog head changed from revision id {expected_catalog_revision_id} to {}",
+                catalog.catalog_revision_id
+            )));
+        }
+        let (shared_target_generation, shared_operations) = self
+            .plan_shared_market_operations_in_connection(
+                &mut tx,
+                cluster,
+                &catalog,
+                policy.shared_shard_capacity,
+                policy.max_extension_addresses,
+                policy.operation_context,
+                policy.estimated_fee_lamports,
+                policy.estimated_rent_lamports,
+            )
+            .await?;
+        update_shared_market_catalog_plan_state_in_connection(
+            &mut tx,
+            &catalog,
+            shared_target_generation,
+        )
+        .await?;
+        let catalog = load_shared_market_catalog_head_in_connection(
+            &mut tx,
+            cluster,
+            SharedMarketCatalogHeadLock::None,
+        )
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "shared-market catalog head disappeared after planning".to_owned(),
+            )
+        })?;
+        tx.commit().await?;
+        Ok(SharedMarketCatalogPlan {
+            catalog,
+            shared_target_generation,
+            shared_operations,
+        })
+    }
+
+    /// Reconciles the current catalog readiness and atomically activates a
+    /// fully materialized target generation. Incomplete work remains in the
+    /// provisioning state for the generic operation worker to continue.
+    pub async fn reconcile_shared_market_catalog_head(
+        &self,
+        cluster: &str,
+        expected_catalog_revision_id: i64,
+        policy: SharedMarketCatalogPlanPolicy,
+        rollback_until: DateTime<Utc>,
+    ) -> Result<SharedMarketCatalogHeadRecord, OrchestratorError> {
+        if rollback_until <= Utc::now() || policy.max_extension_addresses == 0 {
+            return Err(OrchestratorError::StoreInvariant(
+                "shared-market catalog reconciliation requires a future rollback deadline and positive extension size"
+                    .to_owned(),
+            ));
+        }
+        let mut tx = self.pool().begin().await?;
+        let catalog = load_shared_market_catalog_head_in_connection(
+            &mut tx,
+            cluster,
+            SharedMarketCatalogHeadLock::Update,
+        )
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(format!(
+                "cluster {cluster:?} has no shared-market catalog head"
+            ))
+        })?;
+        if catalog.catalog_revision_id != expected_catalog_revision_id {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "shared-market catalog head changed from revision id {expected_catalog_revision_id} to {}",
+                catalog.catalog_revision_id
+            )));
+        }
+        let (planned_target_generation, _) = self
+            .plan_shared_market_operations_in_connection(
+                &mut tx,
+                cluster,
+                &catalog,
+                policy.shared_shard_capacity,
+                policy.max_extension_addresses,
+                policy.operation_context,
+                policy.estimated_fee_lamports,
+                policy.estimated_rent_lamports,
+            )
+            .await?;
+        update_shared_market_catalog_plan_state_in_connection(
+            &mut tx,
+            &catalog,
+            planned_target_generation,
+        )
+        .await?;
+        let catalog = load_shared_market_catalog_head_in_connection(
+            &mut tx,
+            cluster,
+            SharedMarketCatalogHeadLock::None,
+        )
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "shared-market catalog head disappeared during reconciliation".to_owned(),
+            )
+        })?;
+        let target_generation = catalog.target_generation.ok_or_else(|| {
+            OrchestratorError::StoreInvariant(format!(
+                "shared-market catalog revision {} has not been planned",
+                catalog.catalog_revision_id
+            ))
+        })?;
+        let has_permanent_failure: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1 FROM loyal_yield.lookup_table_operations
+                WHERE family_id = $1 AND manifest_id = $2
+                  AND operation_state = 'permanent_failure'
+            )
+            "#,
+        )
+        .bind(catalog.family_id)
+        .bind(catalog.manifest_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if has_permanent_failure {
+            sqlx::query(
+                r#"
+                UPDATE loyal_yield.lookup_table_shared_market_catalog_heads
+                SET readiness_state = 'failed', activated_at = NULL, updated_at = now()
+                WHERE family_id = $1 AND catalog_revision_id = $2
+                "#,
+            )
+            .bind(catalog.family_id)
+            .bind(catalog.catalog_revision_id)
+            .execute(&mut *tx)
+            .await?;
+        } else {
+            let evidence = shared_market_catalog_generation_evidence_in_connection(
+                &mut tx,
+                catalog.family_id,
+                Some(target_generation),
+                &catalog.addresses,
+            )
+            .await?;
+            if evidence.ready {
+                if catalog.active_generation != Some(target_generation) {
+                    activate_shared_market_catalog_generation_in_connection(
+                        &mut tx,
+                        catalog.family_id,
+                        target_generation,
+                        rollback_until,
+                    )
+                    .await?;
+                }
+                sqlx::query(
+                    r#"
+                    UPDATE loyal_yield.lookup_table_shared_market_physical_drifts
+                    SET resolution_state = 'resolved',
+                        resolution_target_generation = $3,
+                        resolved_at = now()
+                    WHERE family_id = $1 AND catalog_revision_id = $2
+                      AND resolution_state = 'open'
+                    "#,
+                )
+                .bind(catalog.family_id)
+                .bind(catalog.catalog_revision_id)
+                .bind(target_generation)
+                .execute(&mut *tx)
+                .await?;
+                sqlx::query(
+                    r#"
+                    UPDATE loyal_yield.lookup_table_shared_market_catalog_heads
+                    SET readiness_state = 'active', activated_at = COALESCE(activated_at, now()),
+                        updated_at = now()
+                    WHERE family_id = $1 AND catalog_revision_id = $2
+                      AND target_generation = $3
+                    "#,
+                )
+                .bind(catalog.family_id)
+                .bind(catalog.catalog_revision_id)
+                .bind(target_generation)
+                .execute(&mut *tx)
+                .await?;
+            } else {
+                sqlx::query(
+                    r#"
+                    UPDATE loyal_yield.lookup_table_shared_market_catalog_heads
+                    SET readiness_state = 'provisioning', activated_at = NULL,
+                        updated_at = now()
+                    WHERE family_id = $1 AND catalog_revision_id = $2
+                      AND target_generation = $3
+                    "#,
+                )
+                .bind(catalog.family_id)
+                .bind(catalog.catalog_revision_id)
+                .bind(target_generation)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+        let catalog = load_shared_market_catalog_head_in_connection(
+            &mut tx,
+            cluster,
+            SharedMarketCatalogHeadLock::None,
+        )
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "shared-market catalog head disappeared after reconciliation".to_owned(),
+            )
+        })?;
+        tx.commit().await?;
+        Ok(catalog)
+    }
+
     pub async fn plan_lookup_table_provisioning_request(
         &self,
         cluster: &str,
@@ -4023,6 +5228,56 @@ impl NeonSqlClient {
             source_slot,
         )
         .await?;
+        let shared_manifest_id = shared_manifest.id;
+        let catalog = load_shared_market_catalog_head_in_connection(
+            &mut tx,
+            cluster,
+            SharedMarketCatalogHeadLock::Update,
+        )
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(format!(
+                "cluster {cluster:?} has no authoritative shared-market catalog head"
+            ))
+        })?;
+        if shared_manifest.family_id != catalog.family_id {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "route shared manifest {} does not belong to catalog family {}",
+                shared_manifest.id, catalog.family_id
+            )));
+        }
+        let (route_missing, semantic_mismatches) =
+            shared_market_route_catalog_drift(&shared_manifest.addresses, &catalog.addresses);
+        if !route_missing.is_empty() || !semantic_mismatches.is_empty() {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "route shared manifest {} drifted from catalog revision {} ({} missing, {} semantic mismatch)",
+                shared_manifest.id,
+                catalog.catalog_revision_id,
+                route_missing.len(),
+                semantic_mismatches.len()
+            )));
+        }
+        let (shared_target_generation, shared_operations) = self
+            .plan_shared_market_operations_in_connection(
+                &mut *tx,
+                cluster,
+                &catalog,
+                policy.shared_shard_capacity,
+                policy.max_extension_addresses,
+                policy.operation_context.clone(),
+                policy.estimated_fee_lamports,
+                policy.estimated_rent_lamports,
+            )
+            .await?;
+        update_shared_market_catalog_plan_state_in_connection(
+            &mut tx,
+            &catalog,
+            shared_target_generation,
+        )
+        .await?;
+
+        // Shared drift is fenced above before deriving or allocating any vault
+        // desired state. A catalog/code mismatch cannot consume shard capacity.
         let vault_manifest = resolve_or_persist_request_manifest_in_tx(
             &mut *tx,
             cluster,
@@ -4031,7 +5286,6 @@ impl NeonSqlClient {
             source_slot,
         )
         .await?;
-        let shared_manifest_id = shared_manifest.id;
         let vault_manifest_id = vault_manifest.id;
         sqlx::query(
             r#"
@@ -4045,21 +5299,6 @@ impl NeonSqlClient {
         .bind(vault_manifest_id)
         .execute(&mut *tx)
         .await?;
-
-        let shared_family_id = shared_manifest.family_id;
-        let (shared_target_generation, shared_operations) = self
-            .plan_shared_market_operations_in_connection(
-                &mut *tx,
-                cluster,
-                shared_family_id,
-                shared_manifest_id,
-                policy.shared_shard_capacity,
-                policy.max_extension_addresses,
-                policy.operation_context.clone(),
-                policy.estimated_fee_lamports,
-                policy.estimated_rent_lamports,
-            )
-            .await?;
 
         let vault_family_id = vault_manifest.family_id;
         let vault_addresses = sqlx::query_scalar::<_, String>(
@@ -4113,39 +5352,32 @@ impl NeonSqlClient {
               AND operation_state NOT IN ('complete', 'permanent_failure', 'cancelled')
             "#,
         )
-        .bind(shared_manifest_id)
+        .bind(catalog.manifest_id)
         .bind(vault_manifest_id)
         .fetch_one(&mut *tx)
         .await?;
-        let shared_ready: bool = sqlx::query_scalar(
-            r#"
-            SELECT CASE WHEN $3 = 0 THEN TRUE ELSE
-                COALESCE(family.active_generation = $2, FALSE)
-                AND EXISTS (
-                    SELECT 1 FROM loyal_yield.route_lookup_tables route_table
-                    WHERE route_table.family_id = $1 AND route_table.generation = $2
-                      AND route_table.allocation_kind = 'shared_market'
-                )
-                AND COALESCE((
-                    SELECT bool_and(
-                        route_table.desired_state = 'active'
-                        AND route_table.usable_address_count = route_table.address_count
-                        AND route_table.last_verified_slot IS NOT NULL
-                    )
-                    FROM loyal_yield.route_lookup_tables route_table
-                    WHERE route_table.family_id = $1 AND route_table.generation = $2
-                      AND route_table.allocation_kind = 'shared_market'
-                ), FALSE)
-            END
-            FROM loyal_yield.lookup_table_families family
-            WHERE family.id = $1
-            "#,
+        let refreshed_catalog = load_shared_market_catalog_head_in_connection(
+            &mut tx,
+            cluster,
+            SharedMarketCatalogHeadLock::None,
         )
-        .bind(shared_family_id)
-        .bind(shared_target_generation)
-        .bind(shared_manifest.address_count)
-        .fetch_one(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "shared-market catalog head disappeared during route planning".to_owned(),
+            )
+        })?;
+        let shared_evidence = shared_market_catalog_generation_evidence_in_connection(
+            &mut tx,
+            refreshed_catalog.family_id,
+            refreshed_catalog.active_generation,
+            &refreshed_catalog.addresses,
+        )
         .await?;
+        let shared_ready = refreshed_catalog.readiness_state
+            == SharedMarketCatalogReadiness::Active
+            && refreshed_catalog.target_generation == refreshed_catalog.active_generation
+            && shared_evidence.ready;
         let request_satisfied = provisioning_request_is_satisfied(
             shared_ready,
             shared_operations.len(),
@@ -4191,14 +5423,14 @@ impl NeonSqlClient {
         &self,
         tx: &mut sqlx::PgConnection,
         cluster: &str,
-        family_id: i64,
-        manifest_id: i64,
+        catalog: &SharedMarketCatalogHeadRecord,
         requested_shard_capacity: u16,
         max_extension_addresses: usize,
         operation_context: Value,
         estimated_fee_lamports: Option<i64>,
         estimated_rent_lamports: Option<i64>,
     ) -> Result<(i32, Vec<LookupTableOperationRecord>), OrchestratorError> {
+        let family_id = catalog.family_id;
         let family_row = sqlx::query(
             "SELECT * FROM loyal_yield.lookup_table_families WHERE id = $1 AND cluster = $2 FOR UPDATE",
         )
@@ -4210,6 +5442,8 @@ impl NeonSqlClient {
         let family = lookup_table_family_from_row(&family_row)?;
         if family.kind != LookupTableFamilyKind::SharedMarket
             || family.desired_state != LookupTableFamilyState::Active
+            || family.id != catalog.family_id
+            || family.catalog_version != catalog.catalog_version
         {
             return Err(OrchestratorError::StoreInvariant(format!(
                 "lookup-table family {family_id} is not an active shared-market family"
@@ -4218,53 +5452,26 @@ impl NeonSqlClient {
         let shard_capacity = requested_shard_capacity
             .min(family.allocation_high_water as u16)
             .min(family.hard_capacity as u16);
-        let cohort_rows = sqlx::query(
-            r#"
-            SELECT DISTINCT ON (manifest.subject_key) manifest.id, manifest.subject_key
-            FROM loyal_yield.lookup_table_manifests manifest
-            JOIN loyal_yield.lookup_table_provisioning_requests request
-              ON request.shared_manifest_id = manifest.id
-            WHERE manifest.family_id = $1 AND manifest.subject_kind = 'shared_market'
-              AND manifest.sealed_at IS NOT NULL
-              AND manifest.planner_version = $2 AND manifest.catalog_version = $3
-              AND request.sealed_at IS NOT NULL
-              AND request.request_status <> 'cancelled'
-            ORDER BY manifest.subject_key, manifest.created_at DESC, manifest.id DESC
-            "#,
-        )
-        .bind(family_id)
-        .bind(&family.planner_version)
-        .bind(&family.catalog_version)
-        .fetch_all(&mut *tx)
-        .await?;
-        let mut cohorts = Vec::new();
-        let mut referenced_manifest_is_current = false;
-        for row in cohort_rows {
-            let cohort_manifest_id: i64 = row.try_get("id")?;
-            referenced_manifest_is_current |= cohort_manifest_id == manifest_id;
-            let cohort_addresses = sqlx::query_scalar::<_, String>(
-                "SELECT address FROM loyal_yield.lookup_table_manifest_addresses WHERE manifest_id = $1 ORDER BY ordinal",
-            )
-            .bind(cohort_manifest_id)
-            .fetch_all(&mut *tx)
-            .await?
-            .into_iter()
-            .collect();
-            cohorts.push(SharedMarketRouteCohort {
-                cohort_key: row.try_get("subject_key")?,
-                addresses: cohort_addresses,
-            });
-        }
-        if cohorts.is_empty() {
+        if catalog.addresses.is_empty() {
             return Err(OrchestratorError::StoreInvariant(
-                "shared-market family has no current sealed manifest cohorts".to_owned(),
+                "shared-market catalog head is empty".to_owned(),
             ));
         }
-        if !referenced_manifest_is_current {
+        if usize::from(shard_capacity) < catalog.addresses.len() {
             return Err(OrchestratorError::StoreInvariant(format!(
-                "shared-market manifest {manifest_id} is not current for the family planner/catalog"
+                "shared-market catalog revision {} has {} addresses but one durable ALT is limited to {shard_capacity}",
+                catalog.catalog_revision_id,
+                catalog.addresses.len()
             )));
         }
+        let cohorts = vec![SharedMarketRouteCohort {
+            cohort_key: format!("catalog:{}", catalog.catalog_revision_id),
+            addresses: catalog
+                .addresses
+                .iter()
+                .map(|row| row.address.clone())
+                .collect(),
+        }];
         let shard_plan =
             plan_shared_market_shards(&cohorts, shard_capacity).map_err(domain_store_error)?;
         let active_generation = family.active_generation.unwrap_or_default();
@@ -4319,7 +5526,27 @@ impl NeonSqlClient {
                 .collect(),
             );
         }
-        let requires_rollover = physical.len() > shard_plan.len()
+        let has_open_physical_drift: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM loyal_yield.lookup_table_shared_market_physical_drifts drift
+                JOIN loyal_yield.route_lookup_tables route_table
+                  ON route_table.id = drift.route_lookup_table_id
+                WHERE drift.family_id = $1
+                  AND drift.catalog_revision_id = $2
+                  AND drift.resolution_state = 'open'
+                  AND route_table.generation = $3
+            )
+            "#,
+        )
+        .bind(family_id)
+        .bind(catalog.catalog_revision_id)
+        .bind(active_generation)
+        .fetch_one(&mut *tx)
+        .await?;
+        let requires_rollover = has_open_physical_drift
+            || physical.len() > shard_plan.len()
             || physical.iter().any(|table| {
                 let desired = shard_plan
                     .get(table.shard_ordinal as usize)
@@ -4448,7 +5675,7 @@ impl NeonSqlClient {
                         idempotency_key: intent.idempotency_key(),
                         family_id,
                         route_lookup_table_id: Some(table.id),
-                        manifest_id: Some(manifest_id),
+                        manifest_id: Some(catalog.manifest_id),
                         binding_id: None,
                         operation_kind: kind,
                         target_generation: (kind == LookupTableOperationKind::Create)
@@ -5649,6 +6876,331 @@ impl NeonSqlClient {
         Ok(result.rows_affected())
     }
 
+    /// Returns the complete durable legacy fleet that must be verified as one
+    /// unit. Import intentionally never selects reusable-family rows.
+    pub async fn legacy_lookup_tables_for_import(
+        &self,
+        cluster: &str,
+    ) -> Result<Vec<LegacyLookupTableImportSource>, OrchestratorError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, cluster, scope, table_address, authority, status, durable,
+                   address_count, address_hash, addresses, legacy_kind,
+                   legacy_import_run_id, last_extended_slot,
+                   last_extended_start_index, last_verified_slot, last_verified_at
+            FROM loyal_yield.route_lookup_tables
+            WHERE cluster = $1
+              AND family_id IS NULL
+              AND durable = TRUE
+              AND status IN ('active', 'warming', 'usable')
+            ORDER BY id
+            "#,
+        )
+        .bind(cluster)
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter()
+            .map(legacy_lookup_table_import_source_from_row)
+            .collect()
+    }
+
+    /// Persists a successful fleet verification in one transaction. The RPC
+    /// phase happens before this method is called; this transaction locks and
+    /// rechecks the entire eligible fleet so a concurrent registry change
+    /// causes zero import writes.
+    pub async fn import_verified_legacy_lookup_table_fleet(
+        &self,
+        input: LegacyLookupTableFleetImportRequest,
+    ) -> Result<LegacyLookupTableFleetImportResult, OrchestratorError> {
+        validate_legacy_lookup_table_fleet_import(&input)?;
+        let canonical_fingerprint = legacy_lookup_table_import_fingerprint(
+            &input.cluster,
+            &input.rpc_genesis_hash,
+            input.verified_slot,
+            &input.tables,
+        );
+        if input.import_fingerprint != canonical_fingerprint {
+            return Err(OrchestratorError::StoreInvariant(
+                "legacy lookup-table import fingerprint is not canonical".to_owned(),
+            ));
+        }
+        let legacy_kind = input.tables[0].legacy_kind;
+        let imported_table_count = i32::try_from(input.tables.len()).map_err(|_| {
+            OrchestratorError::StoreInvariant(
+                "legacy lookup-table fleet size does not fit PostgreSQL INTEGER".to_owned(),
+            )
+        })?;
+        let mut tx = self.pool().begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("LOCK TABLE loyal_yield.route_lookup_tables IN SHARE ROW EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('legacy-alt-import:' || $1, 0))",
+        )
+        .bind(&input.cluster)
+        .execute(&mut *tx)
+        .await?;
+
+        let locked_rows = sqlx::query(
+            r#"
+            SELECT id, cluster, scope, table_address, authority, status, durable,
+                   address_count, address_hash, addresses, legacy_kind,
+                   legacy_import_run_id, last_extended_slot,
+                   last_extended_start_index, last_verified_slot, last_verified_at
+            FROM loyal_yield.route_lookup_tables
+            WHERE cluster = $1
+              AND family_id IS NULL
+              AND durable = TRUE
+              AND status IN ('active', 'warming', 'usable')
+            ORDER BY id
+            FOR UPDATE
+            "#,
+        )
+        .bind(&input.cluster)
+        .fetch_all(&mut *tx)
+        .await?;
+        let locked_sources = locked_rows
+            .iter()
+            .map(legacy_lookup_table_import_source_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        let expected_sources = input
+            .tables
+            .iter()
+            .map(|table| table.source.clone())
+            .collect::<Vec<_>>();
+        if locked_sources != expected_sources {
+            return Err(OrchestratorError::StoreInvariant(
+                "legacy lookup-table fleet changed after RPC verification".to_owned(),
+            ));
+        }
+
+        let inserted_import_run_id = sqlx::query_scalar::<_, i64>(
+            r#"
+            INSERT INTO loyal_yield.lookup_table_legacy_import_runs
+                (cluster, rpc_genesis_hash, verified_slot, verified_at,
+                 legacy_kind, expected_table_count, verified_table_count,
+                 import_fingerprint, reason, updated_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8, $9)
+            ON CONFLICT (cluster, import_fingerprint) DO NOTHING
+            RETURNING id
+            "#,
+        )
+        .bind(&input.cluster)
+        .bind(&input.rpc_genesis_hash)
+        .bind(input.verified_slot)
+        .bind(input.verified_at)
+        .bind(legacy_kind.as_str())
+        .bind(imported_table_count)
+        .bind(&input.import_fingerprint)
+        .bind(&input.reason)
+        .bind(&input.updated_by)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let (import_run_id, effective_verified_at, replayed) = match inserted_import_run_id {
+            Some(id) => (id, input.verified_at, false),
+            None => {
+                let existing = sqlx::query(
+                    r#"
+                    SELECT id, rpc_genesis_hash, verified_slot, verified_at,
+                           legacy_kind, expected_table_count, verified_table_count
+                    FROM loyal_yield.lookup_table_legacy_import_runs
+                    WHERE cluster = $1 AND import_fingerprint = $2
+                    "#,
+                )
+                .bind(&input.cluster)
+                .bind(&input.import_fingerprint)
+                .fetch_one(&mut *tx)
+                .await?;
+                let id: i64 = existing.try_get("id")?;
+                let existing_verified_at: DateTime<Utc> = existing.try_get("verified_at")?;
+                let exact_run_matches = existing.try_get::<String, _>("rpc_genesis_hash")?
+                    == input.rpc_genesis_hash
+                    && existing.try_get::<i64, _>("verified_slot")? == input.verified_slot
+                    && existing.try_get::<String, _>("legacy_kind")? == legacy_kind.as_str()
+                    && existing.try_get::<i32, _>("expected_table_count")? == imported_table_count
+                    && existing.try_get::<i32, _>("verified_table_count")? == imported_table_count;
+                let registry_matches_existing_run = locked_sources.iter().all(|source| {
+                    source.legacy_import_run_id == Some(id)
+                        && source.last_verified_slot == Some(input.verified_slot)
+                        && source.last_verified_at == Some(existing_verified_at)
+                        && source.legacy_kind == Some(legacy_kind)
+                });
+                if !exact_run_matches || !registry_matches_existing_run {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "legacy lookup-table import fingerprint conflicts with existing evidence"
+                            .to_owned(),
+                    ));
+                }
+                (id, existing_verified_at, true)
+            }
+        };
+
+        for table in &input.tables {
+            let addresses = serde_json::to_value(&table.source.addresses).map_err(|error| {
+                OrchestratorError::StoreInvariant(format!(
+                    "legacy lookup-table address evidence could not be encoded: {error}"
+                ))
+            })?;
+            let observed_addresses =
+                serde_json::to_value(&table.observed_addresses).map_err(|error| {
+                    OrchestratorError::StoreInvariant(format!(
+                        "observed legacy lookup-table addresses could not be encoded: {error}"
+                    ))
+                })?;
+            if replayed {
+                let evidence_matches: bool = sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM loyal_yield.lookup_table_legacy_import_evidence
+                        WHERE import_run_id = $1
+                          AND route_lookup_table_id = $2
+                          AND table_address = $3
+                          AND scope = $4
+                          AND legacy_kind = $5
+                          AND expected_authority = $6
+                          AND observed_authority = $7
+                          AND observed_owner = $8
+                          AND observed_deactivation_slot = $9
+                          AND observed_last_extended_slot = $10
+                          AND observed_last_extended_start_index = $11
+                          AND address_count = $12
+                          AND address_hash = $13
+                          AND addresses = $14
+                          AND verified_slot = $15
+                          AND verified_at = $16
+                    )
+                    "#,
+                )
+                .bind(import_run_id)
+                .bind(table.source.id)
+                .bind(&table.source.table_address)
+                .bind(&table.source.scope)
+                .bind(table.legacy_kind.as_str())
+                .bind(&table.source.authority)
+                .bind(&table.observed_authority)
+                .bind(&table.observed_owner)
+                .bind(&table.observed_deactivation_slot)
+                .bind(table.observed_last_extended_slot)
+                .bind(table.observed_last_extended_start_index)
+                .bind(table.observed_address_count)
+                .bind(&table.observed_address_hash)
+                .bind(&observed_addresses)
+                .bind(input.verified_slot)
+                .bind(effective_verified_at)
+                .fetch_one(&mut *tx)
+                .await?;
+                if !evidence_matches {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "legacy lookup-table import fingerprint resolved to different evidence"
+                            .to_owned(),
+                    ));
+                }
+                continue;
+            }
+            sqlx::query(
+                r#"
+                INSERT INTO loyal_yield.lookup_table_legacy_import_evidence
+                    (import_run_id, route_lookup_table_id, table_address, scope,
+                     legacy_kind, expected_authority, observed_authority,
+                     observed_owner, observed_deactivation_slot,
+                     observed_last_extended_slot,
+                     observed_last_extended_start_index, address_count,
+                     address_hash, addresses, verified_slot, verified_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                        $12, $13, $14, $15, $16)
+                ON CONFLICT (import_run_id, route_lookup_table_id) DO NOTHING
+                "#,
+            )
+            .bind(import_run_id)
+            .bind(table.source.id)
+            .bind(&table.source.table_address)
+            .bind(&table.source.scope)
+            .bind(table.legacy_kind.as_str())
+            .bind(&table.source.authority)
+            .bind(&table.observed_authority)
+            .bind(&table.observed_owner)
+            .bind(&table.observed_deactivation_slot)
+            .bind(table.observed_last_extended_slot)
+            .bind(table.observed_last_extended_start_index)
+            .bind(table.observed_address_count)
+            .bind(&table.observed_address_hash)
+            .bind(&observed_addresses)
+            .bind(input.verified_slot)
+            .bind(effective_verified_at)
+            .execute(&mut *tx)
+            .await?;
+
+            let updated = sqlx::query(
+                r#"
+                UPDATE loyal_yield.route_lookup_tables
+                SET legacy_kind = $2,
+                    legacy_import_run_id = $3,
+                    last_extended_slot = $4,
+                    last_extended_start_index = $5,
+                    last_verified_slot = $6,
+                    last_verified_at = $7,
+                    updated_at = now()
+                WHERE id = $1
+                  AND family_id IS NULL
+                  AND durable = TRUE
+                  AND status = $8
+                  AND authority = $9
+                  AND address_count = $10
+                  AND address_hash = $11
+                  AND addresses = $12
+                  AND (legacy_kind IS NULL OR legacy_kind = $2)
+                "#,
+            )
+            .bind(table.source.id)
+            .bind(table.legacy_kind.as_str())
+            .bind(import_run_id)
+            .bind(table.observed_last_extended_slot)
+            .bind(table.observed_last_extended_start_index)
+            .bind(input.verified_slot)
+            .bind(effective_verified_at)
+            .bind(&table.source.status)
+            .bind(&table.source.authority)
+            .bind(table.source.address_count)
+            .bind(&table.source.address_hash)
+            .bind(&addresses)
+            .execute(&mut *tx)
+            .await?;
+            if updated.rows_affected() != 1 {
+                return Err(stale_store_update(
+                    "legacy lookup-table import target",
+                    table.source.id,
+                ));
+            }
+        }
+
+        let evidence_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM loyal_yield.lookup_table_legacy_import_evidence WHERE import_run_id = $1",
+        )
+        .bind(import_run_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if evidence_count != i64::from(imported_table_count) {
+            return Err(OrchestratorError::StoreInvariant(
+                "legacy lookup-table import audit evidence is incomplete".to_owned(),
+            ));
+        }
+        tx.commit().await?;
+        Ok(LegacyLookupTableFleetImportResult {
+            import_run_id,
+            cluster: input.cluster,
+            legacy_kind,
+            verified_slot: input.verified_slot,
+            verified_at: effective_verified_at,
+            imported_table_count,
+            import_fingerprint: input.import_fingerprint,
+            replayed,
+        })
+    }
+
     /// Explicitly removes an imported legacy table from the durable resolver
     /// set. The row remains as audit history for the existing cleanup scanner.
     pub async fn retire_legacy_route_lookup_table(
@@ -5710,7 +7262,7 @@ impl NeonSqlClient {
         .await?;
         let global_rollout = sqlx::query(
             r#"
-            SELECT rollout_mode, force_legacy
+            SELECT rollout_mode, force_legacy, updated_at
             FROM loyal_yield.lookup_table_rollout_controls
             WHERE cluster = $1 AND vault_id IS NULL
             FOR SHARE
@@ -5723,6 +7275,9 @@ impl NeonSqlClient {
             row.try_get::<String, _>("rollout_mode").ok().as_deref() == Some("reusable_only")
                 && row.try_get::<bool, _>("force_legacy").ok() == Some(false)
         });
+        let reusable_only_cutover_at = global_rollout
+            .as_ref()
+            .and_then(|row| row.try_get::<DateTime<Utc>, _>("updated_at").ok());
         let active_overrides = sqlx::query(
             r#"
             SELECT control.rollout_mode, control.force_legacy
@@ -5744,7 +7299,7 @@ impl NeonSqlClient {
             .count();
         let readiness_rows = sqlx::query(
             r#"
-            SELECT selection_kind, legacy_table_ids, selected_table_ids
+            SELECT selection_kind, legacy_table_ids, selected_table_ids, updated_at
             FROM loyal_yield.lookup_table_route_readiness_current
             WHERE cluster = $1
               AND ($2 = ANY(legacy_table_ids) OR $2 = ANY(selected_table_ids))
@@ -5756,15 +7311,21 @@ impl NeonSqlClient {
         .fetch_all(&mut *tx)
         .await?;
         let has_selected_legacy_reference = readiness_rows.iter().any(|row| {
-            row.try_get::<Option<String>, _>("selection_kind")
-                .ok()
-                .flatten()
-                .as_deref()
-                == Some("legacy")
-                || row
-                    .try_get::<Vec<i64>, _>("selected_table_ids")
+            let post_cutover = reusable_only_cutover_at.is_none_or(|cutover_at| {
+                row.try_get::<DateTime<Utc>, _>("updated_at")
+                    .is_ok_and(|updated_at| updated_at >= cutover_at)
+            });
+            post_cutover
+                && (row
+                    .try_get::<Option<String>, _>("selection_kind")
                     .ok()
-                    .is_some_and(|ids| ids.contains(&table_id))
+                    .flatten()
+                    .as_deref()
+                    == Some("legacy")
+                    || row
+                        .try_get::<Vec<i64>, _>("selected_table_ids")
+                        .ok()
+                        .is_some_and(|ids| ids.contains(&table_id)))
         });
         if has_usage_lease
             || !cluster_reusable_only
@@ -5779,8 +7340,20 @@ impl NeonSqlClient {
         sqlx::query(
             r#"
             UPDATE loyal_yield.lookup_table_route_readiness_current
-            SET legacy_table_ids = array_remove(legacy_table_ids, $2), updated_at = now()
-            WHERE cluster = $1 AND $2 = ANY(legacy_table_ids)
+            SET legacy_table_ids = array_remove(legacy_table_ids, $2),
+                selected_table_ids = array_remove(selected_table_ids, $2),
+                selected_table_count = cardinality(array_remove(selected_table_ids, $2)),
+                selection_kind = CASE
+                    WHEN selection_kind = 'legacy' THEN 'blocked'
+                    ELSE selection_kind
+                END,
+                fallback_reason = CASE
+                    WHEN selection_kind = 'legacy' THEN 'legacy_table_retired'
+                    ELSE fallback_reason
+                END,
+                updated_at = now()
+            WHERE cluster = $1
+              AND ($2 = ANY(legacy_table_ids) OR $2 = ANY(selected_table_ids))
             "#,
         )
         .bind(&input.cluster)
@@ -5987,6 +7560,7 @@ impl NeonSqlClient {
                 existing.request_status,
                 LookupTableProvisioningRequestStatus::Failed
                     | LookupTableProvisioningRequestStatus::Cancelled
+                    | LookupTableProvisioningRequestStatus::Satisfied
             ) {
                 sqlx::query(
                     r#"
@@ -5994,6 +7568,7 @@ impl NeonSqlClient {
                     SET request_status = 'requested', requested_at = now(),
                         lease_owner = NULL, lease_expires_at = NULL,
                         next_attempt_at = NULL, error_code = NULL, error_detail = NULL,
+                        satisfied_at = NULL,
                         updated_at = now()
                     WHERE id = $1
                     "#,
@@ -6102,6 +7677,317 @@ impl NeonSqlClient {
     ) -> Result<Option<LookupTableCleanupProtection>, OrchestratorError> {
         self.lookup_table_cleanup_protection_excluding(cluster, table_address, None)
             .await
+    }
+
+    /// Returns exact imported legacy evidence plus a fresh, row-locked
+    /// zero-reference/nonselectable decision. Imported legacy ALTs never enter
+    /// reusable families and must use this API instead of the v2 cleanup path.
+    pub async fn legacy_lookup_table_cleanup_protection(
+        &self,
+        cluster: &str,
+        table_address: &str,
+    ) -> Result<Option<LegacyLookupTableCleanupProtection>, OrchestratorError> {
+        let mut tx = self.pool().begin().await?;
+        let row = sqlx::query(
+            r#"
+            SELECT route_table.id, route_table.cluster, route_table.table_address,
+                   route_table.legacy_import_run_id, route_table.legacy_kind,
+                   route_table.status, route_table.durable, route_table.family_id,
+                   route_table.authority, route_table.address_count,
+                   route_table.address_hash, route_table.addresses,
+                   route_table.last_verified_slot,
+                   evidence.import_run_id AS evidence_import_run_id,
+                   evidence.legacy_kind AS evidence_legacy_kind,
+                   evidence.expected_authority AS evidence_authority,
+                   evidence.address_count AS evidence_address_count,
+                   evidence.address_hash AS evidence_address_hash,
+                   evidence.addresses AS evidence_addresses,
+                   EXISTS (
+                       SELECT 1 FROM loyal_yield.lookup_table_usage_leases usage
+                       WHERE usage.route_lookup_table_id = route_table.id
+                         AND usage.released_at IS NULL AND usage.expires_at > now()
+                   ) AS has_usage_lease,
+                   EXISTS (
+                       SELECT 1 FROM loyal_yield.lookup_table_route_readiness_current readiness
+                       WHERE readiness.cluster = route_table.cluster
+                         AND (route_table.id = ANY(readiness.legacy_table_ids)
+                              OR route_table.id = ANY(readiness.selected_table_ids))
+                   ) AS has_readiness_reference,
+                   EXISTS (
+                       SELECT 1 FROM loyal_yield.lookup_table_operations operation
+                       WHERE operation.route_lookup_table_id = route_table.id
+                         AND operation.operation_state NOT IN ('complete', 'permanent_failure', 'cancelled')
+                   ) AS has_pending_operation,
+                   COALESCE((
+                       SELECT control.rollout_mode = 'reusable_only' AND NOT control.force_legacy
+                       FROM loyal_yield.lookup_table_rollout_controls control
+                       WHERE control.cluster = route_table.cluster AND control.vault_id IS NULL
+                   ), FALSE) AS cluster_reusable_only,
+                   EXISTS (
+                       SELECT 1 FROM loyal_yield.lookup_table_rollout_controls control
+                       JOIN loyal_yield.managed_vaults vault ON vault.id = control.vault_id
+                       WHERE control.cluster = route_table.cluster AND vault.active = TRUE
+                         AND (control.rollout_mode <> 'reusable_only' OR control.force_legacy)
+                   ) AS has_unsafe_override
+            FROM loyal_yield.route_lookup_tables route_table
+            LEFT JOIN loyal_yield.lookup_table_legacy_import_evidence evidence
+              ON evidence.import_run_id = route_table.legacy_import_run_id
+             AND evidence.route_lookup_table_id = route_table.id
+            WHERE route_table.cluster = $1 AND route_table.table_address = $2
+            FOR UPDATE OF route_table
+            "#,
+        )
+        .bind(cluster)
+        .bind(table_address)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let table_id: i64 = row.try_get("id")?;
+        let import_run_id: Option<i64> = row.try_get("legacy_import_run_id")?;
+        let legacy_kind_raw: Option<String> = row.try_get("legacy_kind")?;
+        let legacy_kind = legacy_kind_raw
+            .clone()
+            .map(|value| parse_store_enum("legacy lookup-table kind", value))
+            .transpose()?;
+        let status: String = row.try_get("status")?;
+        let durable: bool = row.try_get("durable")?;
+        let family_id: Option<i64> = row.try_get("family_id")?;
+        let authority: String = row.try_get("authority")?;
+        let address_count: i32 = row.try_get("address_count")?;
+        let address_hash: String = row.try_get("address_hash")?;
+        let ordered_addresses = serde_json::from_value::<Vec<String>>(row.try_get("addresses")?)
+            .map_err(|error| {
+                OrchestratorError::StoreInvariant(format!(
+                    "legacy lookup-table registry addresses are invalid: {error}"
+                ))
+            })?;
+        let evidence_exact = import_run_id.is_some()
+            && row.try_get::<Option<i64>, _>("evidence_import_run_id")? == import_run_id
+            && row.try_get::<Option<String>, _>("evidence_legacy_kind")? == legacy_kind_raw
+            && row
+                .try_get::<Option<String>, _>("evidence_authority")?
+                .as_deref()
+                == Some(authority.as_str())
+            && row.try_get::<Option<i32>, _>("evidence_address_count")? == Some(address_count)
+            && row
+                .try_get::<Option<String>, _>("evidence_address_hash")?
+                .as_deref()
+                == Some(address_hash.as_str())
+            && row.try_get::<Option<Value>, _>("evidence_addresses")?
+                == Some(serde_json::to_value(&ordered_addresses).map_err(|error| {
+                    OrchestratorError::StoreInvariant(format!(
+                        "legacy lookup-table evidence cannot be compared: {error}"
+                    ))
+                })?);
+        let has_usage_lease: bool = row.try_get("has_usage_lease")?;
+        let has_readiness_reference: bool = row.try_get("has_readiness_reference")?;
+        let has_pending_operation: bool = row.try_get("has_pending_operation")?;
+        let cluster_reusable_only: bool = row.try_get("cluster_reusable_only")?;
+        let has_unsafe_override: bool = row.try_get("has_unsafe_override")?;
+        let nonselectable = !durable && !matches!(status.as_str(), "active" | "warming" | "usable");
+        let zero_reference = !has_usage_lease && !has_readiness_reference && !has_pending_operation;
+        let mut reasons = Vec::new();
+        if family_id.is_some() {
+            reasons.push("belongs_to_reusable_family".to_owned());
+        }
+        if !evidence_exact {
+            reasons.push("missing_or_mismatched_import_evidence".to_owned());
+        }
+        if !nonselectable {
+            reasons.push("legacy_table_still_selectable".to_owned());
+        }
+        if !cluster_reusable_only || has_unsafe_override {
+            reasons.push("rollout_not_fully_reusable_only".to_owned());
+        }
+        if has_usage_lease {
+            reasons.push("unexpired_usage_lease".to_owned());
+        }
+        if has_readiness_reference {
+            reasons.push("readiness_reference".to_owned());
+        }
+        if has_pending_operation {
+            reasons.push("pending_operation".to_owned());
+        }
+        let can_deactivate = reasons.is_empty() && status == "retiring";
+        let can_close = reasons.is_empty() && status == "deactivated";
+        if !can_deactivate && !can_close && reasons.is_empty() {
+            reasons.push(
+                if status == "closed" {
+                    "already_closed"
+                } else {
+                    "legacy_lifecycle_not_actionable"
+                }
+                .to_owned(),
+            );
+        }
+        let token_values = vec![
+            cluster.to_owned(),
+            table_id.to_string(),
+            table_address.to_owned(),
+            import_run_id.unwrap_or_default().to_string(),
+            legacy_kind_raw.unwrap_or_default(),
+            status.clone(),
+            durable.to_string(),
+            authority.clone(),
+            address_count.to_string(),
+            address_hash.clone(),
+            zero_reference.to_string(),
+            nonselectable.to_string(),
+            cluster_reusable_only.to_string(),
+            has_unsafe_override.to_string(),
+        ];
+        let authorization_token = hash_length_prefixed_values(
+            token_values
+                .iter()
+                .map(String::as_str)
+                .chain(ordered_addresses.iter().map(String::as_str)),
+        );
+        let protection = LegacyLookupTableCleanupProtection {
+            table_id,
+            cluster: cluster.to_owned(),
+            table_address: table_address.to_owned(),
+            import_run_id,
+            legacy_kind,
+            status,
+            durable,
+            family_id,
+            expected_authority: authority,
+            address_count,
+            address_hash,
+            ordered_addresses,
+            last_verified_slot: row.try_get("last_verified_slot")?,
+            zero_reference,
+            nonselectable,
+            can_deactivate,
+            can_close,
+            authorization_token,
+            protection_reasons: reasons,
+        };
+        tx.commit().await?;
+        Ok(Some(protection))
+    }
+
+    /// Performs the short, immediate pre-sign authorization read. Retirement
+    /// triggers durably reject every new reference and rollout reversal, so no
+    /// database transaction or advisory lock is held across chain RPC.
+    pub async fn begin_legacy_lookup_table_cleanup_authorization(
+        &self,
+        cluster: &str,
+        table_address: &str,
+        expected_authorization_token: &str,
+        operation_kind: LookupTableOperationKind,
+    ) -> Result<LegacyLookupTableCleanupAuthorization, OrchestratorError> {
+        let protection = self
+            .legacy_lookup_table_cleanup_protection(cluster, table_address)
+            .await?
+            .ok_or_else(|| {
+                OrchestratorError::StoreInvariant(
+                    "legacy cleanup authorization target was not found".to_owned(),
+                )
+            })?;
+        let authorized = match operation_kind {
+            LookupTableOperationKind::Deactivate => protection.can_deactivate,
+            LookupTableOperationKind::Close => protection.can_close,
+            _ => false,
+        };
+        if protection.authorization_token != expected_authorization_token || !authorized {
+            return Err(OrchestratorError::StoreInvariant(
+                "legacy cleanup authorization token is stale or not actionable".to_owned(),
+            ));
+        }
+        Ok(LegacyLookupTableCleanupAuthorization {
+            client: self.clone(),
+            protection,
+            operation_kind,
+        })
+    }
+
+    async fn record_verified_legacy_lookup_table_cleanup(
+        &self,
+        expected: &LegacyLookupTableCleanupProtection,
+        input: VerifiedLegacyLookupTableCleanup,
+    ) -> Result<(), OrchestratorError> {
+        let current = self
+            .legacy_lookup_table_cleanup_protection(&input.cluster, &input.table_address)
+            .await?
+            .ok_or_else(|| {
+                OrchestratorError::StoreInvariant(
+                    "legacy cleanup finalized target disappeared".to_owned(),
+                )
+            })?;
+        let actionable = match input.operation_kind {
+            LookupTableOperationKind::Deactivate => current.can_deactivate,
+            LookupTableOperationKind::Close => current.can_close,
+            _ => false,
+        };
+        if current.authorization_token != input.expected_authorization_token
+            || current.authorization_token != expected.authorization_token
+            || !actionable
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "legacy cleanup authorization changed before finalized record".to_owned(),
+            ));
+        }
+        let mut tx = self.pool().begin().await?;
+        let (expected_status, updated) = match input.operation_kind {
+            LookupTableOperationKind::Deactivate => (
+                "retiring",
+                sqlx::query(
+                    r#"
+                    UPDATE loyal_yield.route_lookup_tables
+                    SET status = 'deactivated', deactivated_slot = $2,
+                        deactivate_signature = $3, updated_at = now()
+                    WHERE id = $1 AND status = 'retiring' AND durable = FALSE
+                      AND family_id IS NULL AND legacy_import_run_id = $4
+                      AND authority = $5 AND address_count = $6 AND address_hash = $7
+                    "#,
+                )
+                .bind(current.table_id)
+                .bind(input.observed_slot)
+                .bind(&input.transaction_signature)
+                .bind(current.import_run_id)
+                .bind(&current.expected_authority)
+                .bind(current.address_count)
+                .bind(&current.address_hash)
+                .execute(&mut *tx)
+                .await?,
+            ),
+            LookupTableOperationKind::Close => (
+                "deactivated",
+                sqlx::query(
+                    r#"
+                    UPDATE loyal_yield.route_lookup_tables
+                    SET status = 'closed', closed_signature = $2,
+                        close_recipient = $3, reclaimed_lamports = $4,
+                        updated_at = now()
+                    WHERE id = $1 AND status = 'deactivated' AND durable = FALSE
+                      AND family_id IS NULL AND legacy_import_run_id = $5
+                      AND authority = $6 AND address_count = $7 AND address_hash = $8
+                    "#,
+                )
+                .bind(current.table_id)
+                .bind(&input.transaction_signature)
+                .bind(&input.close_recipient)
+                .bind(input.reclaimed_lamports)
+                .bind(current.import_run_id)
+                .bind(&current.expected_authority)
+                .bind(current.address_count)
+                .bind(&current.address_hash)
+                .execute(&mut *tx)
+                .await?,
+            ),
+            _ => unreachable!("validated by authorization"),
+        };
+        if updated.rows_affected() != 1 {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "legacy cleanup {expected_status} row changed before finalized record"
+            )));
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Re-reads cleanup blockers while excluding the operation whose signer is
@@ -6280,6 +8166,139 @@ impl NeonSqlClient {
     }
 }
 
+fn legacy_lookup_table_import_source_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<LegacyLookupTableImportSource, OrchestratorError> {
+    let legacy_kind = row
+        .try_get::<Option<String>, _>("legacy_kind")?
+        .map(|value| parse_store_enum("legacy lookup-table kind", value))
+        .transpose()?;
+    let addresses =
+        serde_json::from_value::<Vec<String>>(row.try_get("addresses")?).map_err(|error| {
+            OrchestratorError::StoreInvariant(format!(
+                "legacy lookup-table address list is invalid: {error}"
+            ))
+        })?;
+    Ok(LegacyLookupTableImportSource {
+        id: row.try_get("id")?,
+        cluster: row.try_get("cluster")?,
+        scope: row.try_get("scope")?,
+        table_address: row.try_get("table_address")?,
+        authority: row.try_get("authority")?,
+        status: row.try_get("status")?,
+        durable: row.try_get("durable")?,
+        address_count: row.try_get("address_count")?,
+        address_hash: row.try_get("address_hash")?,
+        addresses,
+        legacy_kind,
+        legacy_import_run_id: row.try_get("legacy_import_run_id")?,
+        last_extended_slot: row.try_get("last_extended_slot")?,
+        last_extended_start_index: row.try_get("last_extended_start_index")?,
+        last_verified_slot: row.try_get("last_verified_slot")?,
+        last_verified_at: row.try_get("last_verified_at")?,
+    })
+}
+
+pub fn legacy_lookup_table_import_fingerprint(
+    cluster: &str,
+    rpc_genesis_hash: &str,
+    verified_slot: i64,
+    tables: &[VerifiedLegacyLookupTableImport],
+) -> String {
+    let mut parts = vec![
+        cluster.to_owned(),
+        rpc_genesis_hash.to_owned(),
+        verified_slot.to_string(),
+    ];
+    for table in tables {
+        parts.extend([
+            table.source.id.to_string(),
+            table.source.scope.clone(),
+            table.source.table_address.clone(),
+            table.source.authority.clone(),
+            table.legacy_kind.as_str().to_owned(),
+            table.observed_owner.clone(),
+            table.observed_authority.clone(),
+            table.observed_deactivation_slot.clone(),
+            table.observed_last_extended_slot.to_string(),
+            table.observed_last_extended_start_index.to_string(),
+            table.observed_address_count.to_string(),
+            table.observed_address_hash.clone(),
+        ]);
+        parts.extend(table.observed_addresses.iter().cloned());
+    }
+    ordered_address_hash(&parts)
+}
+
+fn validate_legacy_lookup_table_fleet_import(
+    input: &LegacyLookupTableFleetImportRequest,
+) -> Result<(), OrchestratorError> {
+    if input.cluster.trim().is_empty()
+        || input.rpc_genesis_hash.trim().is_empty()
+        || input.verified_slot < 0
+        || input.reason.trim().is_empty()
+        || input.updated_by.trim().is_empty()
+        || input.import_fingerprint.len() != 64
+        || !input
+            .import_fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        || input.tables.is_empty()
+        || input.expected_table_count <= 0
+        || usize::try_from(input.expected_table_count).ok() != Some(input.tables.len())
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "legacy lookup-table fleet import metadata is incomplete".to_owned(),
+        ));
+    }
+    let expected_kind = input.tables[0].legacy_kind;
+    let mut table_ids = BTreeSet::new();
+    let mut table_addresses = BTreeSet::new();
+    let mut previous_id = None;
+    for table in &input.tables {
+        let source = &table.source;
+        let address_count = usize::try_from(source.address_count).ok();
+        let existing_kind_matches = source
+            .legacy_kind
+            .is_none_or(|legacy_kind| legacy_kind == table.legacy_kind);
+        if table.legacy_kind != expected_kind
+            || source.cluster != input.cluster
+            || !source.durable
+            || !matches!(source.status.as_str(), "active" | "warming" | "usable")
+            || address_count != Some(source.addresses.len())
+            || source.addresses.len() > usize::from(LOOKUP_TABLE_HARD_CAPACITY)
+            || source.address_hash.len() != 64
+            || ordered_address_hash(&source.addresses) != source.address_hash
+            || Pubkey::from_str(&source.table_address).is_err()
+            || Pubkey::from_str(&source.authority).is_err()
+            || table.observed_authority != source.authority
+            || table.observed_owner != address_lookup_table_program::id().to_string()
+            || table.observed_deactivation_slot != u64::MAX.to_string()
+            || table.observed_last_extended_slot < 0
+            || !(0..=255).contains(&table.observed_last_extended_start_index)
+            || table.observed_last_extended_start_index > table.observed_address_count
+            || table.observed_address_count != source.address_count
+            || table.observed_address_hash != source.address_hash
+            || table.observed_addresses != source.addresses
+            || input.verified_slot <= table.observed_last_extended_slot
+            || source
+                .last_verified_slot
+                .is_some_and(|last_verified_slot| input.verified_slot < last_verified_slot)
+            || !existing_kind_matches
+            || !table_ids.insert(source.id)
+            || !table_addresses.insert(&source.table_address)
+            || previous_id.is_some_and(|id| source.id <= id)
+        {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "legacy lookup-table import evidence is invalid for table {}",
+                source.id
+            )));
+        }
+        previous_id = Some(source.id);
+    }
+    Ok(())
+}
+
 fn parse_store_enum<T>(kind: &'static str, value: String) -> Result<T, OrchestratorError>
 where
     T: FromStr<Err = LookupTableDomainError>,
@@ -6303,6 +8322,514 @@ fn stale_fenced_operation(id: i64) -> OrchestratorError {
     OrchestratorError::StoreInvariant(format!(
         "lookup-table operation {id} lease is stale, expired, or fenced"
     ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SharedMarketCatalogHeadLock {
+    None,
+    Update,
+}
+
+impl SharedMarketCatalogHeadLock {
+    const fn clause(self) -> &'static str {
+        match self {
+            Self::None => "",
+            Self::Update => " FOR UPDATE OF family, head",
+        }
+    }
+}
+
+async fn load_shared_market_catalog_head_in_connection(
+    tx: &mut sqlx::PgConnection,
+    cluster: &str,
+    lock: SharedMarketCatalogHeadLock,
+) -> Result<Option<SharedMarketCatalogHeadRecord>, OrchestratorError> {
+    load_shared_market_catalog_head_from_connection(tx, cluster, lock).await
+}
+
+async fn load_shared_market_catalog_head_from_connection(
+    connection: &mut sqlx::PgConnection,
+    cluster: &str,
+    lock: SharedMarketCatalogHeadLock,
+) -> Result<Option<SharedMarketCatalogHeadRecord>, OrchestratorError> {
+    let sql = format!(
+        r#"
+        SELECT family.id AS family_id, family.cluster,
+               family.active_generation,
+               head.catalog_revision_id, head.target_generation,
+               head.readiness_state, head.activated_at,
+               head.created_at AS head_created_at,
+               head.updated_at AS head_updated_at,
+               revision.catalog_revision, revision.manifest_id,
+               revision.catalog_version, revision.desired_set_hash,
+               revision.enabled_mints_hash, revision.reserve_set_hash,
+               revision.address_count, revision.source_slot,
+               revision.source_observed_at, revision.source_metadata,
+               revision.reason, revision.updated_by
+        FROM loyal_yield.lookup_table_families family
+        JOIN loyal_yield.lookup_table_shared_market_catalog_heads head
+          ON head.family_id = family.id
+        JOIN loyal_yield.lookup_table_shared_market_catalog_revisions revision
+          ON revision.id = head.catalog_revision_id
+         AND revision.family_id = family.id
+        JOIN loyal_yield.lookup_table_manifests manifest
+          ON manifest.id = revision.manifest_id
+         AND manifest.family_id = family.id
+         AND manifest.subject_kind = 'shared_market'
+         AND manifest.sealed_at IS NOT NULL
+        WHERE family.cluster = $1 AND family.kind = 'shared_market'
+          AND family.desired_state = 'active'
+        {}
+        "#,
+        lock.clause()
+    );
+    let rows = sqlx::query(&sql)
+        .bind(cluster)
+        .fetch_all(&mut *connection)
+        .await?;
+    if rows.len() > 1 {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "cluster {cluster:?} has multiple active shared-market catalog heads"
+        )));
+    }
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let manifest_id: i64 = row.try_get("manifest_id")?;
+    let address_rows = sqlx::query(
+        r#"
+        SELECT address, ordinal, semantic_class, account_role, is_writable
+        FROM loyal_yield.lookup_table_manifest_addresses
+        WHERE manifest_id = $1 ORDER BY ordinal
+        "#,
+    )
+    .bind(manifest_id)
+    .fetch_all(&mut *connection)
+    .await?;
+    let addresses = address_rows
+        .iter()
+        .map(lookup_table_manifest_address_from_row)
+        .collect::<Result<Vec<_>, _>>()?;
+    let address_count: i32 = row.try_get("address_count")?;
+    if usize::try_from(address_count).ok() != Some(addresses.len()) {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "shared-market catalog manifest {manifest_id} address count drifted"
+        )));
+    }
+    Ok(Some(SharedMarketCatalogHeadRecord {
+        family_id: row.try_get("family_id")?,
+        catalog_revision_id: row.try_get("catalog_revision_id")?,
+        catalog_revision: row.try_get("catalog_revision")?,
+        manifest_id,
+        cluster: row.try_get("cluster")?,
+        catalog_version: row.try_get("catalog_version")?,
+        desired_set_hash: row.try_get("desired_set_hash")?,
+        enabled_mints_hash: row.try_get("enabled_mints_hash")?,
+        reserve_set_hash: row.try_get("reserve_set_hash")?,
+        address_count,
+        source_slot: row.try_get("source_slot")?,
+        source_observed_at: row.try_get("source_observed_at")?,
+        source_metadata: row.try_get("source_metadata")?,
+        reason: row.try_get("reason")?,
+        updated_by: row.try_get("updated_by")?,
+        active_generation: row.try_get("active_generation")?,
+        target_generation: row.try_get("target_generation")?,
+        readiness_state: row
+            .try_get::<String, _>("readiness_state")?
+            .parse()
+            .map_err(domain_store_error)?,
+        activated_at: row.try_get("activated_at")?,
+        created_at: row.try_get("head_created_at")?,
+        updated_at: row.try_get("head_updated_at")?,
+        addresses,
+    }))
+}
+
+fn shared_market_route_catalog_drift(
+    route_addresses: &[LookupTableManifestAddressRecord],
+    catalog_addresses: &[LookupTableManifestAddressRecord],
+) -> (Vec<String>, Vec<String>) {
+    let catalog = catalog_addresses
+        .iter()
+        .map(|row| (row.address.as_str(), row))
+        .collect::<BTreeMap<_, _>>();
+    let mut missing = Vec::new();
+    let mut semantic_mismatches = Vec::new();
+    for route in route_addresses {
+        let Some(catalog_row) = catalog.get(route.address.as_str()) else {
+            missing.push(route.address.clone());
+            continue;
+        };
+        let route_roles = route
+            .account_role
+            .split(',')
+            .filter(|role| !role.is_empty())
+            .collect::<BTreeSet<_>>();
+        let catalog_roles = catalog_row
+            .account_role
+            .split(',')
+            .filter(|role| !role.is_empty())
+            .collect::<BTreeSet<_>>();
+        if !route_roles.is_subset(&catalog_roles) || (route.is_writable && !catalog_row.is_writable)
+        {
+            semantic_mismatches.push(route.address.clone());
+        }
+    }
+    (missing, semantic_mismatches)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SharedMarketCatalogGenerationEvidence {
+    ready: bool,
+    missing_addresses: Vec<String>,
+    extra_addresses: Vec<String>,
+}
+
+async fn shared_market_catalog_generation_evidence_in_connection(
+    tx: &mut sqlx::PgConnection,
+    family_id: i64,
+    generation: Option<i32>,
+    catalog_addresses: &[LookupTableManifestAddressRecord],
+) -> Result<SharedMarketCatalogGenerationEvidence, OrchestratorError> {
+    let desired = catalog_addresses
+        .iter()
+        .map(|row| row.address.clone())
+        .collect::<BTreeSet<_>>();
+    let Some(generation) = generation else {
+        return Ok(SharedMarketCatalogGenerationEvidence {
+            ready: false,
+            missing_addresses: desired.into_iter().collect(),
+            extra_addresses: Vec::new(),
+        });
+    };
+    let table_rows = sqlx::query(
+        r#"
+        SELECT id, desired_state, address_count, usable_address_count,
+               last_verified_slot
+        FROM loyal_yield.route_lookup_tables
+        WHERE family_id = $1 AND generation = $2
+          AND allocation_kind = 'shared_market'
+          AND desired_state NOT IN ('deactivated', 'closed', 'failed')
+        ORDER BY shard_ordinal, id
+        "#,
+    )
+    .bind(family_id)
+    .bind(generation)
+    .fetch_all(&mut *tx)
+    .await?;
+    let table_ids = table_rows
+        .iter()
+        .map(|row| row.try_get::<i64, _>("id"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let physical = if table_ids.is_empty() {
+        BTreeSet::new()
+    } else {
+        sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT address FROM loyal_yield.lookup_table_addresses
+            WHERE route_lookup_table_id = ANY($1)
+            ORDER BY address
+            "#,
+        )
+        .bind(&table_ids)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+    };
+    let pending_operation_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT count(*) FROM loyal_yield.lookup_table_operations
+        WHERE family_id = $1
+          AND (
+              target_generation = $2
+              OR route_lookup_table_id = ANY($3)
+          )
+          AND operation_state NOT IN ('complete', 'permanent_failure', 'cancelled')
+        "#,
+    )
+    .bind(family_id)
+    .bind(generation)
+    .bind(&table_ids)
+    .fetch_one(&mut *tx)
+    .await?;
+    let rows_ready = table_rows.len() == 1
+        && table_rows.iter().all(|row| {
+            matches!(
+                row.try_get::<Option<String>, _>("desired_state")
+                    .ok()
+                    .flatten()
+                    .as_deref(),
+                Some("active" | "standby")
+            ) && row
+                .try_get::<Option<i32>, _>("usable_address_count")
+                .ok()
+                .flatten()
+                == row.try_get::<i32, _>("address_count").ok()
+                && row
+                    .try_get::<Option<i64>, _>("last_verified_slot")
+                    .ok()
+                    .flatten()
+                    .is_some()
+        });
+    Ok(SharedMarketCatalogGenerationEvidence {
+        ready: rows_ready && pending_operation_count == 0 && physical == desired,
+        missing_addresses: desired.difference(&physical).cloned().collect(),
+        extra_addresses: physical.difference(&desired).cloned().collect(),
+    })
+}
+
+async fn load_reusable_only_cutover_preflight_in_connection(
+    tx: &mut sqlx::PgConnection,
+    cluster: &str,
+) -> Result<ReusableOnlyCutoverPreflight, OrchestratorError> {
+    let catalog = load_shared_market_catalog_head_in_connection(
+        tx,
+        cluster,
+        SharedMarketCatalogHeadLock::Update,
+    )
+    .await?
+    .ok_or_else(|| {
+        OrchestratorError::StoreInvariant(format!(
+            "cluster {cluster:?} has no authoritative shared-market catalog head"
+        ))
+    })?;
+    let active_generation = catalog.active_generation.ok_or_else(|| {
+        OrchestratorError::StoreInvariant(
+            "shared-market catalog has no active generation".to_owned(),
+        )
+    })?;
+    let target_generation = catalog.target_generation.ok_or_else(|| {
+        OrchestratorError::StoreInvariant(
+            "shared-market catalog has no target generation".to_owned(),
+        )
+    })?;
+    if catalog.readiness_state != SharedMarketCatalogReadiness::Active
+        || active_generation != target_generation
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "shared-market catalog is not active on its target generation".to_owned(),
+        ));
+    }
+    let rows = sqlx::query(
+        r#"
+        SELECT * FROM loyal_yield.route_lookup_tables
+        WHERE family_id = $1 AND generation = $2
+          AND allocation_kind = 'shared_market'
+          AND desired_state = 'active'
+        ORDER BY shard_ordinal, id FOR UPDATE
+        "#,
+    )
+    .bind(catalog.family_id)
+    .bind(active_generation)
+    .fetch_all(&mut *tx)
+    .await?;
+    if rows.len() != 1 {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "shared-market cutover requires exactly one active physical ALT, found {}",
+            rows.len()
+        )));
+    }
+    let table = reusable_lookup_table_from_row(&rows[0])?;
+    let durable: bool = rows[0].try_get("durable")?;
+    let ordered_addresses = sqlx::query_scalar::<_, String>(
+        "SELECT address FROM loyal_yield.lookup_table_addresses WHERE route_lookup_table_id = $1 ORDER BY ordinal",
+    )
+    .bind(table.id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let expected_addresses = catalog
+        .addresses
+        .iter()
+        .map(|row| row.address.clone())
+        .collect::<Vec<_>>();
+    let ordered_hash = ordered_address_hash(&ordered_addresses);
+    if !durable
+        || table.legacy_status != "usable"
+        || table.last_verified_slot.is_none()
+        || table.address_count != table.usable_address_count
+        || table.address_count != i32::try_from(ordered_addresses.len()).unwrap_or(-1)
+        || table.address_hash != ordered_hash
+        || ordered_addresses != expected_addresses
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "shared-market cutover physical ALT is not durable, exact, warm, and verified"
+                .to_owned(),
+        ));
+    }
+    Ok(ReusableOnlyCutoverPreflight {
+        cluster: cluster.to_owned(),
+        catalog_revision_id: catalog.catalog_revision_id,
+        catalog_revision: catalog.catalog_revision,
+        manifest_id: catalog.manifest_id,
+        manifest_hash: catalog.desired_set_hash,
+        ordered_address_hash: ordered_hash,
+        ordered_addresses,
+        shared_family_id: catalog.family_id,
+        active_generation,
+        target_generation,
+        physical_table_id: table.id,
+        physical_table_address: table.table_address,
+        physical_authority: table.authority,
+        physical_mutation_epoch: table.mutation_epoch,
+        physical_last_verified_slot: table.last_verified_slot.unwrap_or_default(),
+        physical_address_count: table.address_count,
+        physical_usable_address_count: table.usable_address_count,
+    })
+}
+
+async fn update_shared_market_catalog_plan_state_in_connection(
+    tx: &mut sqlx::PgConnection,
+    catalog: &SharedMarketCatalogHeadRecord,
+    target_generation: i32,
+) -> Result<(), OrchestratorError> {
+    let evidence = shared_market_catalog_generation_evidence_in_connection(
+        tx,
+        catalog.family_id,
+        Some(target_generation),
+        &catalog.addresses,
+    )
+    .await?;
+    let active = catalog.active_generation == Some(target_generation) && evidence.ready;
+    let updated = sqlx::query(
+        r#"
+        UPDATE loyal_yield.lookup_table_shared_market_catalog_heads
+        SET target_generation = $3,
+            readiness_state = CASE
+                WHEN readiness_state = 'failed' THEN 'failed'
+                WHEN $4 THEN 'active'
+                ELSE 'provisioning'
+            END,
+            activated_at = CASE
+                WHEN $4 THEN COALESCE(activated_at, now())
+                ELSE NULL
+            END,
+            updated_at = now()
+        WHERE family_id = $1 AND catalog_revision_id = $2
+        "#,
+    )
+    .bind(catalog.family_id)
+    .bind(catalog.catalog_revision_id)
+    .bind(target_generation)
+    .bind(active)
+    .execute(&mut *tx)
+    .await?;
+    if updated.rows_affected() != 1 {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "shared-market catalog revision {} lost its head fence during planning",
+            catalog.catalog_revision_id
+        )));
+    }
+    Ok(())
+}
+
+async fn activate_shared_market_catalog_generation_in_connection(
+    tx: &mut sqlx::PgConnection,
+    family_id: i64,
+    target_generation: i32,
+    rollback_until: DateTime<Utc>,
+) -> Result<(), OrchestratorError> {
+    let family_row =
+        sqlx::query("SELECT * FROM loyal_yield.lookup_table_families WHERE id = $1 FOR UPDATE")
+            .bind(family_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| stale_store_update("shared-market family", family_id))?;
+    let family = lookup_table_family_from_row(&family_row)?;
+    if family.kind != LookupTableFamilyKind::SharedMarket {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "lookup-table family {family_id} is not shared-market"
+        )));
+    }
+    let mut affected_generations = vec![target_generation];
+    if let Some(active_generation) = family.active_generation {
+        affected_generations.push(active_generation);
+    }
+    affected_generations.sort_unstable();
+    affected_generations.dedup();
+    let affected_rows = sqlx::query(
+        r#"
+        SELECT id FROM loyal_yield.route_lookup_tables
+        WHERE family_id = $1 AND generation = ANY($2)
+        ORDER BY id FOR UPDATE
+        "#,
+    )
+    .bind(family_id)
+    .bind(&affected_generations)
+    .fetch_all(&mut *tx)
+    .await?;
+    let affected_table_ids = affected_rows
+        .iter()
+        .map(|row| row.try_get::<i64, _>("id"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let live_usage_count: i64 = if affected_table_ids.is_empty() {
+        0
+    } else {
+        sqlx::query_scalar(
+            r#"
+            SELECT count(*) FROM loyal_yield.lookup_table_usage_leases
+            WHERE route_lookup_table_id = ANY($1)
+              AND released_at IS NULL AND expires_at > now()
+            "#,
+        )
+        .bind(&affected_table_ids)
+        .fetch_one(&mut *tx)
+        .await?
+    };
+    if live_usage_count != 0 {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "shared-market family {family_id} generation activation has an unexpired usage lease"
+        )));
+    }
+    if let Some(current_generation) = family.active_generation {
+        if current_generation != target_generation {
+            sqlx::query(
+                r#"
+                UPDATE loyal_yield.route_lookup_tables
+                SET desired_state = 'standby', accepting_allocations = FALSE,
+                    rollback_until = $3, updated_at = now()
+                WHERE family_id = $1 AND generation = $2
+                  AND allocation_kind = 'shared_market'
+                  AND desired_state = 'active'
+                "#,
+            )
+            .bind(family_id)
+            .bind(current_generation)
+            .bind(rollback_until)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+    sqlx::query(
+        r#"
+        UPDATE loyal_yield.route_lookup_tables
+        SET desired_state = 'active', status = 'usable',
+            rollback_until = $3, updated_at = now()
+        WHERE family_id = $1 AND generation = $2
+          AND allocation_kind = 'shared_market'
+        "#,
+    )
+    .bind(family_id)
+    .bind(target_generation)
+    .bind(rollback_until)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE loyal_yield.lookup_table_families
+        SET previous_generation = CASE
+                WHEN active_generation IS DISTINCT FROM $2 THEN active_generation
+                ELSE previous_generation END,
+            active_generation = $2, rollback_until = $3, updated_at = now()
+        WHERE id = $1
+        "#,
+    )
+    .bind(family_id)
+    .bind(target_generation)
+    .bind(rollback_until)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
 }
 
 async fn upsert_vault_desired_head_in_tx(
@@ -6601,7 +9128,7 @@ async fn resolve_or_persist_vault_aggregate_manifest_in_tx(
             },
         )
         .collect::<Vec<_>>();
-    let desired_set_hash = manifest_address_records_hash(&addresses);
+    let desired_set_hash = lookup_table_manifest_address_records_hash(&addresses);
     persist_lookup_table_manifest_in_tx(
         tx,
         LookupTableManifestWrite {
@@ -6801,7 +9328,18 @@ fn ordered_address_hash(addresses: &[String]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn manifest_address_records_hash(addresses: &[LookupTableManifestAddressRecord]) -> String {
+fn hash_length_prefixed_values<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
+    let mut hasher = Sha256::new();
+    for value in values {
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+pub fn lookup_table_manifest_address_records_hash(
+    addresses: &[LookupTableManifestAddressRecord],
+) -> String {
     let mut hasher = Sha256::new();
     for address in addresses {
         for value in [
@@ -6816,6 +9354,13 @@ fn manifest_address_records_hash(addresses: &[LookupTableManifestAddressRecord])
         hasher.update([u8::from(address.is_writable)]);
     }
     format!("{:x}", hasher.finalize())
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 async fn enqueue_lookup_table_operation_in_tx(
@@ -7069,6 +9614,47 @@ fn lookup_table_manifest_address_from_row(
         )?,
         account_role: row.try_get("account_role")?,
         is_writable: row.try_get("is_writable")?,
+    })
+}
+
+fn shared_market_physical_drift_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<SharedMarketPhysicalDriftRecord, OrchestratorError> {
+    let observed_addresses = serde_json::from_value::<Vec<String>>(
+        row.try_get("observed_addresses")?,
+    )
+    .map_err(|error| {
+        OrchestratorError::StoreInvariant(format!(
+            "shared-market physical drift address evidence is invalid: {error}"
+        ))
+    })?;
+    Ok(SharedMarketPhysicalDriftRecord {
+        id: row.try_get("id")?,
+        evidence_hash: row.try_get("evidence_hash")?,
+        cluster: row.try_get("cluster")?,
+        family_id: row.try_get("family_id")?,
+        catalog_revision_id: row.try_get("catalog_revision_id")?,
+        route_lookup_table_id: row.try_get("route_lookup_table_id")?,
+        expected_mutation_epoch: row.try_get("expected_mutation_epoch")?,
+        expected_table_address: row.try_get("expected_table_address")?,
+        expected_authority: row.try_get("expected_authority")?,
+        observed_slot: row.try_get("observed_slot")?,
+        observed_table_present: row.try_get("observed_table_present")?,
+        observed_authority: row.try_get("observed_authority")?,
+        observed_active: row.try_get("observed_active")?,
+        observed_last_extended_slot: row.try_get("observed_last_extended_slot")?,
+        observed_warm: row.try_get("observed_warm")?,
+        observed_address_hash: row.try_get("observed_address_hash")?,
+        observed_addresses,
+        reason: row.try_get("reason")?,
+        reported_by: row.try_get("reported_by")?,
+        resolution_state: parse_store_enum(
+            "shared-market physical drift resolution",
+            row.try_get::<String, _>("resolution_state")?,
+        )?,
+        resolution_target_generation: row.try_get("resolution_target_generation")?,
+        resolved_at: row.try_get("resolved_at")?,
+        created_at: row.try_get("created_at")?,
     })
 }
 
@@ -7687,6 +10273,217 @@ impl NeonSqlClient {
             physical_table: Some(updated_table),
             persisted_membership,
         })
+    }
+
+    /// Atomically reserves a cluster-wide rolling-window budget for one
+    /// simulated provisioning attempt. The `(operation_id, fencing_token)`
+    /// identity makes retries in the same lease idempotent while a new lease
+    /// conservatively reserves a new attempt. No process-local counter is used.
+    pub async fn reserve_lookup_table_cluster_budget(
+        &self,
+        cluster: &str,
+        operation_id: i64,
+        lease: &LookupTableOperationLease,
+        policy: LookupTableClusterBudgetPolicy,
+        estimated_fee_lamports: i64,
+        estimated_rent_lamports: i64,
+    ) -> Result<LookupTableClusterBudgetReservation, OrchestratorError> {
+        if cluster.trim().is_empty()
+            || policy.max_lamports <= 0
+            || !(1..=31_536_000).contains(&policy.rolling_window_seconds)
+            || estimated_fee_lamports < 0
+            || estimated_rent_lamports < 0
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "lookup-table cluster budget requires positive limit/window and nonnegative simulated accounting"
+                    .to_owned(),
+            ));
+        }
+        let requested_lamports = estimated_fee_lamports
+            .checked_add(estimated_rent_lamports)
+            .ok_or_else(|| {
+                OrchestratorError::StoreInvariant(
+                    "lookup-table cluster budget request overflowed lamports".to_owned(),
+                )
+            })?;
+        let mut tx = self.pool().begin().await?;
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-budget:' || $1, 0))",
+        )
+        .bind(cluster)
+        .execute(&mut *tx)
+        .await?;
+        let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await?;
+        let operation_row = sqlx::query(
+            r#"
+            SELECT operation.*, family.cluster AS family_cluster
+            FROM loyal_yield.lookup_table_operations operation
+            JOIN loyal_yield.lookup_table_families family
+              ON family.id = operation.family_id
+            WHERE operation.id = $1
+            FOR UPDATE OF operation
+            "#,
+        )
+        .bind(operation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| stale_store_update("lookup-table operation", operation_id))?;
+        let operation = lookup_table_operation_from_row(&operation_row)?;
+        if operation_row.try_get::<String, _>("family_cluster")? != cluster
+            || operation.operation_state != LookupTableOperationStatus::Leased
+            || !matches!(
+                operation.operation_kind,
+                LookupTableOperationKind::Create
+                    | LookupTableOperationKind::Extend
+                    | LookupTableOperationKind::Rollover
+                    | LookupTableOperationKind::Deactivate
+                    | LookupTableOperationKind::Close
+            )
+            || operation.lease_owner.as_deref() != Some(lease.owner.as_str())
+            || operation.fencing_token != lease.fencing_token
+            || operation.lease_expires_at.is_none_or(|until| until <= now)
+        {
+            return Err(stale_fenced_operation(operation_id));
+        }
+
+        let existing = sqlx::query(
+            r#"
+            SELECT id, lease_owner, estimated_fee_lamports,
+                   estimated_rent_lamports, reserved_lamports, reserved_until
+            FROM loyal_yield.lookup_table_cluster_budget_reservations
+            WHERE operation_id = $1 AND fencing_token = $2
+            "#,
+        )
+        .bind(operation_id)
+        .bind(lease.fencing_token)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(existing) = existing {
+            if existing.try_get::<String, _>("lease_owner")? != lease.owner
+                || existing.try_get::<i64, _>("estimated_fee_lamports")? != estimated_fee_lamports
+                || existing.try_get::<i64, _>("estimated_rent_lamports")? != estimated_rent_lamports
+                || existing.try_get::<i64, _>("reserved_lamports")? != requested_lamports
+            {
+                return Err(OrchestratorError::StoreInvariant(format!(
+                    "lookup-table operation {operation_id} budget fence was replayed with different accounting"
+                )));
+            }
+            let usage =
+                load_cluster_budget_usage_in_connection(&mut tx, cluster, operation_id, now)
+                    .await?;
+            let window_ends_at: DateTime<Utc> = existing.try_get("reserved_until")?;
+            let result = LookupTableClusterBudgetReservation {
+                approved: true,
+                replayed: true,
+                reservation_id: Some(existing.try_get("id")?),
+                cluster: cluster.to_owned(),
+                operation_id,
+                fencing_token: lease.fencing_token,
+                estimated_fee_lamports,
+                estimated_rent_lamports,
+                requested_lamports,
+                spent_lamports: usage.spent_lamports,
+                reserved_lamports: usage.reserved_lamports,
+                charged_lamports: usage.charged_lamports,
+                remaining_lamports: policy.max_lamports.saturating_sub(usage.charged_lamports),
+                window_ends_at,
+            };
+            tx.commit().await?;
+            return Ok(result);
+        }
+
+        let usage =
+            load_cluster_budget_usage_in_connection(&mut tx, cluster, operation_id, now).await?;
+        let current_operation_charge = usage
+            .operation_reserved_lamports
+            .max(usage.operation_actual_lamports);
+        let prospective_operation_charge = usage
+            .operation_reserved_lamports
+            .checked_add(requested_lamports)
+            .ok_or_else(|| {
+                OrchestratorError::StoreInvariant(
+                    "lookup-table cluster budget operation reservation overflowed".to_owned(),
+                )
+            })?
+            .max(usage.operation_actual_lamports);
+        let prospective_charge = usage
+            .charged_lamports
+            .checked_add(prospective_operation_charge - current_operation_charge)
+            .ok_or_else(|| {
+                OrchestratorError::StoreInvariant(
+                    "lookup-table cluster budget total overflowed".to_owned(),
+                )
+            })?;
+        let requested_window_end: DateTime<Utc> = sqlx::query_scalar(
+            "SELECT $1::timestamptz + ($2::double precision * interval '1 second')",
+        )
+        .bind(now)
+        .bind(policy.rolling_window_seconds)
+        .fetch_one(&mut *tx)
+        .await?;
+        if prospective_charge > policy.max_lamports {
+            let result = LookupTableClusterBudgetReservation {
+                approved: false,
+                replayed: false,
+                reservation_id: None,
+                cluster: cluster.to_owned(),
+                operation_id,
+                fencing_token: lease.fencing_token,
+                estimated_fee_lamports,
+                estimated_rent_lamports,
+                requested_lamports,
+                spent_lamports: usage.spent_lamports,
+                reserved_lamports: usage.reserved_lamports,
+                charged_lamports: usage.charged_lamports,
+                remaining_lamports: policy.max_lamports.saturating_sub(usage.charged_lamports),
+                window_ends_at: usage.window_ends_at.unwrap_or(requested_window_end),
+            };
+            tx.commit().await?;
+            return Ok(result);
+        }
+        let reservation_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO loyal_yield.lookup_table_cluster_budget_reservations
+                (cluster, operation_id, fencing_token, lease_owner,
+                 estimated_fee_lamports, estimated_rent_lamports,
+                 reserved_lamports, reserved_at, reserved_until)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id
+            "#,
+        )
+        .bind(cluster)
+        .bind(operation_id)
+        .bind(lease.fencing_token)
+        .bind(&lease.owner)
+        .bind(estimated_fee_lamports)
+        .bind(estimated_rent_lamports)
+        .bind(requested_lamports)
+        .bind(now)
+        .bind(requested_window_end)
+        .fetch_one(&mut *tx)
+        .await?;
+        let usage =
+            load_cluster_budget_usage_in_connection(&mut tx, cluster, operation_id, now).await?;
+        let result = LookupTableClusterBudgetReservation {
+            approved: true,
+            replayed: false,
+            reservation_id: Some(reservation_id),
+            cluster: cluster.to_owned(),
+            operation_id,
+            fencing_token: lease.fencing_token,
+            estimated_fee_lamports,
+            estimated_rent_lamports,
+            requested_lamports,
+            spent_lamports: usage.spent_lamports,
+            reserved_lamports: usage.reserved_lamports,
+            charged_lamports: usage.charged_lamports,
+            remaining_lamports: policy.max_lamports.saturating_sub(usage.charged_lamports),
+            window_ends_at: usage.window_ends_at.unwrap_or(requested_window_end),
+        };
+        tx.commit().await?;
+        Ok(result)
     }
 
     pub async fn persist_signed_lookup_table_transaction(
@@ -8710,6 +11507,171 @@ impl NeonSqlClient {
             .transpose()
     }
 
+    pub async fn reusable_only_cutover_preflight(
+        &self,
+        cluster: &str,
+    ) -> Result<ReusableOnlyCutoverPreflight, OrchestratorError> {
+        if cluster.trim().is_empty() {
+            return Err(OrchestratorError::StoreInvariant(
+                "reusable-only cutover preflight requires a cluster".to_owned(),
+            ));
+        }
+        let mut tx = self.pool().begin().await?;
+        let evidence = load_reusable_only_cutover_preflight_in_connection(&mut tx, cluster).await?;
+        tx.commit().await?;
+        Ok(evidence)
+    }
+
+    /// Performs the direct reusable-only cutover as one cluster-fenced write.
+    /// It intentionally proves only the durable shared catalog and demand
+    /// provisioning infrastructure, never fleet-wide vault coverage.
+    pub async fn activate_reusable_only_cutover(
+        &self,
+        expected_preflight: &ReusableOnlyCutoverPreflight,
+        reason: &str,
+        updated_by: &str,
+    ) -> Result<ReusableOnlyCutoverResult, OrchestratorError> {
+        let cluster = expected_preflight.cluster.as_str();
+        if cluster.trim().is_empty() || reason.trim().is_empty() || updated_by.trim().is_empty() {
+            return Err(OrchestratorError::StoreInvariant(
+                "reusable-only cutover requires cluster, reason, and operator identity".to_owned(),
+            ));
+        }
+        let mut tx = self.pool().begin().await?;
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-rollout:' || $1, 0))",
+        )
+        .bind(cluster)
+        .execute(&mut *tx)
+        .await?;
+        let current_preflight =
+            load_reusable_only_cutover_preflight_in_connection(&mut tx, cluster).await?;
+        if current_preflight != *expected_preflight {
+            return Err(OrchestratorError::StoreInvariant(
+                "reusable-only cutover preflight evidence changed after finalized RPC verification"
+                    .to_owned(),
+            ));
+        }
+        let catalog = load_shared_market_catalog_head_in_connection(
+            &mut tx,
+            cluster,
+            SharedMarketCatalogHeadLock::Update,
+        )
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(format!(
+                "cluster {cluster:?} has no authoritative shared-market catalog head"
+            ))
+        })?;
+        let shared_generation = catalog.target_generation.ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "shared-market catalog head has no planned target generation".to_owned(),
+            )
+        })?;
+        let shared_evidence = shared_market_catalog_generation_evidence_in_connection(
+            &mut tx,
+            catalog.family_id,
+            catalog.active_generation,
+            &catalog.addresses,
+        )
+        .await?;
+        if catalog.readiness_state != SharedMarketCatalogReadiness::Active
+            || catalog.active_generation != Some(shared_generation)
+            || !shared_evidence.ready
+        {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "shared-market catalog revision {} is not exact, active, and reusable-only ready",
+                catalog.catalog_revision_id
+            )));
+        }
+        let vault_family_rows = sqlx::query(
+            r#"
+            SELECT * FROM loyal_yield.lookup_table_families
+            WHERE cluster = $1 AND kind = 'vault_shards' AND desired_state = 'active'
+            ORDER BY logical_name, id FOR UPDATE
+            "#,
+        )
+        .bind(cluster)
+        .fetch_all(&mut *tx)
+        .await?;
+        if vault_family_rows.len() != 1 {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "cluster {cluster:?} requires exactly one active vault-shards family before cutover, found {}",
+                vault_family_rows.len()
+            )));
+        }
+        let vault_family = lookup_table_family_from_row(&vault_family_rows[0])?;
+        sqlx::query(
+            "SELECT id FROM loyal_yield.lookup_table_rollout_controls WHERE cluster = $1 ORDER BY id FOR UPDATE",
+        )
+        .bind(cluster)
+        .fetch_all(&mut *tx)
+        .await?;
+        let global_row = sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.lookup_table_rollout_controls
+                (cluster, vault_id, rollout_mode, force_legacy, reason, updated_by)
+            VALUES ($1, NULL, 'reusable_only', FALSE, $2, $3)
+            ON CONFLICT (cluster) WHERE vault_id IS NULL DO UPDATE SET
+                rollout_mode = 'reusable_only', force_legacy = FALSE,
+                reason = EXCLUDED.reason, updated_by = EXCLUDED.updated_by,
+                updated_at = now()
+            RETURNING *
+            "#,
+        )
+        .bind(cluster)
+        .bind(reason)
+        .bind(updated_by)
+        .fetch_one(&mut *tx)
+        .await?;
+        let global_control = lookup_table_rollout_from_row(&global_row)?;
+        let aligned = sqlx::query(
+            r#"
+            UPDATE loyal_yield.lookup_table_rollout_controls
+            SET rollout_mode = 'reusable_only', force_legacy = FALSE,
+                reason = $2, updated_by = $3, updated_at = now()
+            WHERE cluster = $1 AND vault_id IS NOT NULL
+              AND (rollout_mode <> 'reusable_only' OR force_legacy
+                   OR reason IS DISTINCT FROM $2 OR updated_by <> $3)
+            "#,
+        )
+        .bind(cluster)
+        .bind(reason)
+        .bind(updated_by)
+        .execute(&mut *tx)
+        .await?;
+        let hidden_override_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT count(*) FROM loyal_yield.lookup_table_rollout_controls
+            WHERE cluster = $1
+              AND (rollout_mode <> 'reusable_only' OR force_legacy)
+            "#,
+        )
+        .bind(cluster)
+        .fetch_one(&mut *tx)
+        .await?;
+        if hidden_override_count != 0 {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "reusable-only cutover left {hidden_override_count} hidden rollout override(s)"
+            )));
+        }
+        let result = ReusableOnlyCutoverResult {
+            cluster: cluster.to_owned(),
+            catalog_revision_id: catalog.catalog_revision_id,
+            shared_family_id: catalog.family_id,
+            shared_generation,
+            vault_family_id: vault_family.id,
+            aligned_vault_control_count: i64::try_from(aligned.rows_affected()).map_err(|_| {
+                OrchestratorError::StoreInvariant(
+                    "aligned vault rollout control count exceeds i64".to_owned(),
+                )
+            })?,
+            global_control,
+        };
+        tx.commit().await?;
+        Ok(result)
+    }
+
     pub async fn upsert_lookup_table_rollout_control(
         &self,
         cluster: &str,
@@ -8928,6 +11890,92 @@ impl NeonSqlClient {
         let snapshot = sqlx::query_scalar::<_, Value>(
             r#"
             SELECT jsonb_build_object(
+                'shared_market_catalog', COALESCE((
+                    SELECT jsonb_build_object(
+                        'family_id', family.id,
+                        'family_logical_name', family.logical_name,
+                        'catalog_revision_id', revision.id,
+                        'catalog_revision', revision.catalog_revision,
+                        'catalog_version', revision.catalog_version,
+                        'desired_set_hash', revision.desired_set_hash,
+                        'enabled_mints_hash', revision.enabled_mints_hash,
+                        'reserve_set_hash', revision.reserve_set_hash,
+                        'address_count', revision.address_count,
+                        'source_slot', revision.source_slot,
+                        'source_observed_at', revision.source_observed_at,
+                        'target_generation', head.target_generation,
+                        'active_generation', family.active_generation,
+                        'readiness_state', head.readiness_state,
+                        'activated_at', head.activated_at,
+                        'expected_authority', family.provisioning_authority,
+                        'payer', family.payer,
+                        'physical_table_count', (
+                            SELECT count(*)
+                            FROM loyal_yield.route_lookup_tables route_table
+                            WHERE route_table.family_id = family.id
+                              AND route_table.generation = family.active_generation
+                              AND route_table.allocation_kind = 'shared_market'
+                              AND route_table.desired_state NOT IN ('deactivated', 'closed', 'failed')
+                        ),
+                        'physical_address_count', COALESCE((
+                            SELECT sum(route_table.address_count)
+                            FROM loyal_yield.route_lookup_tables route_table
+                            WHERE route_table.family_id = family.id
+                              AND route_table.generation = family.active_generation
+                              AND route_table.allocation_kind = 'shared_market'
+                              AND route_table.desired_state NOT IN ('deactivated', 'closed', 'failed')
+                        ), 0),
+                        'usable_address_count', COALESCE((
+                            SELECT sum(route_table.usable_address_count)
+                            FROM loyal_yield.route_lookup_tables route_table
+                            WHERE route_table.family_id = family.id
+                              AND route_table.generation = family.active_generation
+                              AND route_table.allocation_kind = 'shared_market'
+                              AND route_table.desired_state NOT IN ('deactivated', 'closed', 'failed')
+                        ), 0),
+                        'last_verified_slot', (
+                            SELECT min(route_table.last_verified_slot)
+                            FROM loyal_yield.route_lookup_tables route_table
+                            WHERE route_table.family_id = family.id
+                              AND route_table.generation = family.active_generation
+                              AND route_table.allocation_kind = 'shared_market'
+                              AND route_table.desired_state NOT IN ('deactivated', 'closed', 'failed')
+                        )
+                    )
+                    FROM loyal_yield.lookup_table_shared_market_catalog_heads head
+                    JOIN loyal_yield.lookup_table_shared_market_catalog_revisions revision
+                      ON revision.id = head.catalog_revision_id
+                    JOIN loyal_yield.lookup_table_families family
+                      ON family.id = head.family_id
+                    WHERE family.cluster = $1
+                ), '{}'::jsonb),
+                'provisioning_requests', COALESCE((
+                    SELECT jsonb_build_object(
+                        'depth', count(*) FILTER (
+                            WHERE request.request_status IN ('requested', 'planning', 'queued', 'failed')
+                        ),
+                        'oldest_requested_at', min(request.requested_at) FILTER (
+                            WHERE request.request_status IN ('requested', 'planning', 'queued', 'failed')
+                        ),
+                        'oldest_age_seconds', COALESCE(floor(extract(epoch FROM now() - (
+                            min(request.requested_at) FILTER (
+                                WHERE request.request_status IN ('requested', 'planning', 'queued', 'failed')
+                            )
+                        )))::BIGINT, 0),
+                        'max_attempt_count', COALESCE(max(request.attempt_count), 0),
+                        'by_status', COALESCE((
+                            SELECT jsonb_object_agg(request_status, status_count)
+                            FROM (
+                                SELECT request_status, count(*) AS status_count
+                                FROM loyal_yield.lookup_table_provisioning_requests
+                                WHERE cluster = $1
+                                GROUP BY request_status
+                            ) grouped_requests
+                        ), '{}'::jsonb)
+                    )
+                    FROM loyal_yield.lookup_table_provisioning_requests request
+                    WHERE request.cluster = $1
+                ), '{}'::jsonb),
                 'readiness', jsonb_build_object(
                     'active_vault_count', (
                         SELECT count(*) FROM loyal_yield.managed_vaults vault

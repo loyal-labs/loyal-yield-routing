@@ -11,20 +11,31 @@ DECLARE
     invalid_usage_leases BIGINT;
     invalid_accounting BIGINT;
     invalid_provisioning_requests BIGINT;
+    invalid_legacy_imports BIGINT;
+    invalid_legacy_import_runs BIGINT;
+    invalid_shared_catalogs BIGINT;
+    invalid_shared_physical_drifts BIGINT;
+    invalid_budget_reservations BIGINT;
 BEGIN
     IF NOT EXISTS (
         SELECT 1
         FROM loyal_yield.schema_migrations
-        WHERE version = 17
-          AND name = 'reusable_route_lookup_tables'
+        WHERE version = 20
+          AND name = 'demand_driven_shared_market_catalog'
     ) THEN
-        RAISE EXCEPTION 'migration 17 reusable_route_lookup_tables is not recorded';
+        RAISE EXCEPTION 'migration 20 demand_driven_shared_market_catalog is not recorded';
     END IF;
 
     SELECT array_agg(required_relation ORDER BY required_relation)
     INTO missing_relations
     FROM unnest(ARRAY[
         'lookup_table_families',
+        'lookup_table_legacy_import_runs',
+        'lookup_table_legacy_import_evidence',
+        'lookup_table_shared_market_catalog_revisions',
+        'lookup_table_shared_market_catalog_heads',
+        'lookup_table_shared_market_physical_drifts',
+        'lookup_table_cluster_budget_reservations',
         'lookup_table_manifests',
         'lookup_table_manifest_addresses',
         'lookup_table_vault_desired_heads',
@@ -60,7 +71,9 @@ BEGIN
         'last_verified_slot',
         'last_verified_at',
         'mutation_epoch',
-        'rollback_until'
+        'rollback_until',
+        'legacy_kind',
+        'legacy_import_run_id'
     ]) AS required_column
     WHERE NOT EXISTS (
         SELECT 1
@@ -78,6 +91,74 @@ BEGIN
     INTO missing_columns
     FROM (VALUES
         ('lookup_table_families', 'rollback_until'),
+        ('lookup_table_legacy_import_runs', 'rpc_genesis_hash'),
+        ('lookup_table_legacy_import_runs', 'verified_slot'),
+        ('lookup_table_legacy_import_runs', 'verified_at'),
+        ('lookup_table_legacy_import_runs', 'legacy_kind'),
+        ('lookup_table_legacy_import_runs', 'expected_table_count'),
+        ('lookup_table_legacy_import_runs', 'verified_table_count'),
+        ('lookup_table_legacy_import_runs', 'import_fingerprint'),
+        ('lookup_table_legacy_import_runs', 'reason'),
+        ('lookup_table_legacy_import_runs', 'updated_by'),
+        ('lookup_table_legacy_import_evidence', 'import_run_id'),
+        ('lookup_table_legacy_import_evidence', 'route_lookup_table_id'),
+        ('lookup_table_legacy_import_evidence', 'legacy_kind'),
+        ('lookup_table_legacy_import_evidence', 'observed_authority'),
+        ('lookup_table_legacy_import_evidence', 'observed_owner'),
+        ('lookup_table_legacy_import_evidence', 'observed_deactivation_slot'),
+        ('lookup_table_legacy_import_evidence', 'observed_last_extended_slot'),
+        ('lookup_table_legacy_import_evidence', 'observed_last_extended_start_index'),
+        ('lookup_table_legacy_import_evidence', 'address_count'),
+        ('lookup_table_legacy_import_evidence', 'address_hash'),
+        ('lookup_table_legacy_import_evidence', 'addresses'),
+        ('lookup_table_legacy_import_evidence', 'verified_slot'),
+        ('lookup_table_legacy_import_evidence', 'verified_at'),
+        ('lookup_table_shared_market_catalog_revisions', 'family_id'),
+        ('lookup_table_shared_market_catalog_revisions', 'manifest_id'),
+        ('lookup_table_shared_market_catalog_revisions', 'catalog_revision'),
+        ('lookup_table_shared_market_catalog_revisions', 'catalog_version'),
+        ('lookup_table_shared_market_catalog_revisions', 'desired_set_hash'),
+        ('lookup_table_shared_market_catalog_revisions', 'enabled_mints_hash'),
+        ('lookup_table_shared_market_catalog_revisions', 'reserve_set_hash'),
+        ('lookup_table_shared_market_catalog_revisions', 'address_count'),
+        ('lookup_table_shared_market_catalog_revisions', 'source_slot'),
+        ('lookup_table_shared_market_catalog_revisions', 'source_observed_at'),
+        ('lookup_table_shared_market_catalog_revisions', 'source_metadata'),
+        ('lookup_table_shared_market_catalog_revisions', 'reason'),
+        ('lookup_table_shared_market_catalog_revisions', 'updated_by'),
+        ('lookup_table_shared_market_catalog_heads', 'family_id'),
+        ('lookup_table_shared_market_catalog_heads', 'catalog_revision_id'),
+        ('lookup_table_shared_market_catalog_heads', 'target_generation'),
+        ('lookup_table_shared_market_catalog_heads', 'readiness_state'),
+        ('lookup_table_shared_market_catalog_heads', 'activated_at'),
+        ('lookup_table_shared_market_physical_drifts', 'evidence_hash'),
+        ('lookup_table_shared_market_physical_drifts', 'cluster'),
+        ('lookup_table_shared_market_physical_drifts', 'family_id'),
+        ('lookup_table_shared_market_physical_drifts', 'catalog_revision_id'),
+        ('lookup_table_shared_market_physical_drifts', 'route_lookup_table_id'),
+        ('lookup_table_shared_market_physical_drifts', 'expected_mutation_epoch'),
+        ('lookup_table_shared_market_physical_drifts', 'expected_table_address'),
+        ('lookup_table_shared_market_physical_drifts', 'expected_authority'),
+        ('lookup_table_shared_market_physical_drifts', 'observed_slot'),
+        ('lookup_table_shared_market_physical_drifts', 'observed_table_present'),
+        ('lookup_table_shared_market_physical_drifts', 'observed_authority'),
+        ('lookup_table_shared_market_physical_drifts', 'observed_active'),
+        ('lookup_table_shared_market_physical_drifts', 'observed_address_hash'),
+        ('lookup_table_shared_market_physical_drifts', 'observed_addresses'),
+        ('lookup_table_shared_market_physical_drifts', 'reason'),
+        ('lookup_table_shared_market_physical_drifts', 'reported_by'),
+        ('lookup_table_shared_market_physical_drifts', 'resolution_state'),
+        ('lookup_table_shared_market_physical_drifts', 'resolution_target_generation'),
+        ('lookup_table_shared_market_physical_drifts', 'resolved_at'),
+        ('lookup_table_cluster_budget_reservations', 'cluster'),
+        ('lookup_table_cluster_budget_reservations', 'operation_id'),
+        ('lookup_table_cluster_budget_reservations', 'fencing_token'),
+        ('lookup_table_cluster_budget_reservations', 'lease_owner'),
+        ('lookup_table_cluster_budget_reservations', 'estimated_fee_lamports'),
+        ('lookup_table_cluster_budget_reservations', 'estimated_rent_lamports'),
+        ('lookup_table_cluster_budget_reservations', 'reserved_lamports'),
+        ('lookup_table_cluster_budget_reservations', 'reserved_at'),
+        ('lookup_table_cluster_budget_reservations', 'reserved_until'),
         ('lookup_table_families', 'hard_capacity'),
         ('lookup_table_families', 'largest_atomic_expansion'),
         ('lookup_table_families', 'safety_margin'),
@@ -111,6 +192,10 @@ BEGIN
         ('lookup_table_provisioning_requests', 'desired_shared_address_count'),
         ('lookup_table_provisioning_requests', 'desired_vault_address_count'),
         ('lookup_table_provisioning_requests', 'sealed_at'),
+        ('lookup_table_provisioning_requests', 'error_code'),
+        ('lookup_table_provisioning_requests', 'error_detail'),
+        ('lookup_table_provisioning_requests', 'requested_at'),
+        ('lookup_table_provisioning_requests', 'satisfied_at'),
         ('lookup_table_provisioning_request_addresses', 'request_id'),
         ('lookup_table_provisioning_request_addresses', 'address'),
         ('lookup_table_provisioning_request_addresses', 'semantic_class'),
@@ -166,6 +251,207 @@ BEGIN
            OR COALESCE(reserved_address_count, 0) > COALESCE(allocation_high_water, 256)
     ) THEN
         RAISE EXCEPTION 'physical lookup-table capacity invariant failed';
+    END IF;
+
+    SELECT count(*)
+    INTO invalid_legacy_imports
+    FROM loyal_yield.route_lookup_tables route_table
+    WHERE (
+        route_table.family_id IS NOT NULL
+        AND (route_table.legacy_kind IS NOT NULL OR route_table.legacy_import_run_id IS NOT NULL)
+    ) OR (
+        route_table.legacy_import_run_id IS NOT NULL
+        AND NOT EXISTS (
+            SELECT 1
+            FROM loyal_yield.lookup_table_legacy_import_evidence evidence
+            JOIN loyal_yield.lookup_table_legacy_import_runs import_run
+              ON import_run.id = evidence.import_run_id
+            WHERE evidence.import_run_id = route_table.legacy_import_run_id
+              AND evidence.route_lookup_table_id = route_table.id
+              AND evidence.table_address = route_table.table_address
+              AND evidence.scope = route_table.scope
+              AND evidence.legacy_kind = route_table.legacy_kind
+              AND evidence.expected_authority = route_table.authority
+              AND evidence.address_count = route_table.address_count
+              AND evidence.address_hash = route_table.address_hash
+              AND evidence.addresses = route_table.addresses
+              AND evidence.observed_last_extended_slot = route_table.last_extended_slot
+              AND evidence.observed_last_extended_start_index = route_table.last_extended_start_index
+              AND evidence.verified_slot = route_table.last_verified_slot
+              AND evidence.verified_at = route_table.last_verified_at
+              AND import_run.cluster = route_table.cluster
+        )
+    );
+
+    SELECT count(*)
+    INTO invalid_legacy_import_runs
+    FROM loyal_yield.lookup_table_legacy_import_runs import_run
+    WHERE import_run.expected_table_count <> (
+        SELECT count(*)
+        FROM loyal_yield.lookup_table_legacy_import_evidence evidence
+        WHERE evidence.import_run_id = import_run.id
+    );
+
+    IF invalid_legacy_imports <> 0 OR invalid_legacy_import_runs <> 0 THEN
+        RAISE EXCEPTION
+            'legacy lookup-table import invariant failed for % table(s) and % run(s)',
+            invalid_legacy_imports,
+            invalid_legacy_import_runs;
+    END IF;
+
+    SELECT count(*)
+    INTO invalid_shared_catalogs
+    FROM loyal_yield.lookup_table_shared_market_catalog_heads head
+    JOIN loyal_yield.lookup_table_shared_market_catalog_revisions revision
+      ON revision.id = head.catalog_revision_id
+    JOIN loyal_yield.lookup_table_families family ON family.id = head.family_id
+    JOIN loyal_yield.lookup_table_manifests manifest ON manifest.id = revision.manifest_id
+    WHERE revision.family_id <> head.family_id
+       OR family.kind <> 'shared_market'
+       OR family.desired_state <> 'active'
+       OR manifest.family_id <> head.family_id
+       OR manifest.subject_kind <> 'shared_market'
+       OR manifest.sealed_at IS NULL
+       OR manifest.catalog_version <> revision.catalog_version
+       OR manifest.desired_set_hash <> revision.desired_set_hash
+       OR manifest.address_count <> revision.address_count
+       OR length(btrim(revision.reason)) = 0
+       OR length(btrim(revision.updated_by)) = 0
+       OR jsonb_typeof(revision.source_metadata) <> 'object'
+       OR revision.address_count > family.allocation_high_water
+       OR revision.address_count <> (
+           SELECT count(*)
+           FROM loyal_yield.lookup_table_manifest_addresses address
+           WHERE address.manifest_id = revision.manifest_id
+             AND address.semantic_class = 'shared_market'
+       )
+       OR (
+           head.readiness_state = 'active'
+           AND (
+               head.target_generation IS DISTINCT FROM family.active_generation
+               OR head.activated_at IS NULL
+               OR 1 <> (
+                   SELECT count(*)
+                   FROM loyal_yield.route_lookup_tables route_table
+                   WHERE route_table.family_id = family.id
+                     AND route_table.generation = family.active_generation
+                     AND route_table.allocation_kind = 'shared_market'
+                     AND route_table.desired_state = 'active'
+                     AND route_table.usable_address_count = route_table.address_count
+                     AND route_table.last_verified_slot IS NOT NULL
+               )
+               OR EXISTS (
+                   SELECT address.address
+                   FROM loyal_yield.lookup_table_manifest_addresses address
+                   WHERE address.manifest_id = revision.manifest_id
+                   EXCEPT
+                   SELECT membership.address
+                   FROM loyal_yield.route_lookup_tables route_table
+                   JOIN loyal_yield.lookup_table_addresses membership
+                     ON membership.route_lookup_table_id = route_table.id
+                   WHERE route_table.family_id = family.id
+                     AND route_table.generation = family.active_generation
+                     AND route_table.allocation_kind = 'shared_market'
+               )
+               OR EXISTS (
+                   SELECT membership.address
+                   FROM loyal_yield.route_lookup_tables route_table
+                   JOIN loyal_yield.lookup_table_addresses membership
+                     ON membership.route_lookup_table_id = route_table.id
+                   WHERE route_table.family_id = family.id
+                     AND route_table.generation = family.active_generation
+                     AND route_table.allocation_kind = 'shared_market'
+                   EXCEPT
+                   SELECT address.address
+                   FROM loyal_yield.lookup_table_manifest_addresses address
+                   WHERE address.manifest_id = revision.manifest_id
+               )
+           )
+       );
+
+    IF invalid_shared_catalogs <> 0 THEN
+        RAISE EXCEPTION
+            'invalid authoritative shared-market catalog head(s): %',
+            invalid_shared_catalogs;
+    END IF;
+
+    SELECT count(*)
+    INTO invalid_shared_physical_drifts
+    FROM loyal_yield.lookup_table_shared_market_physical_drifts drift
+    JOIN loyal_yield.lookup_table_families family ON family.id = drift.family_id
+    JOIN loyal_yield.lookup_table_shared_market_catalog_revisions revision
+      ON revision.id = drift.catalog_revision_id
+    JOIN loyal_yield.route_lookup_tables route_table
+      ON route_table.id = drift.route_lookup_table_id
+    WHERE family.cluster <> drift.cluster
+       OR family.kind <> 'shared_market'
+       OR revision.family_id <> drift.family_id
+       OR route_table.family_id <> drift.family_id
+       OR route_table.table_address <> drift.expected_table_address
+       OR route_table.authority <> drift.expected_authority
+       OR drift.expected_mutation_epoch < 0
+       OR drift.observed_slot < 0
+       OR drift.evidence_hash !~ '^[0-9a-f]{64}$'
+       OR drift.observed_address_hash !~ '^[0-9a-f]{64}$'
+       OR length(btrim(drift.reason)) = 0
+       OR length(btrim(drift.reported_by)) = 0
+       OR jsonb_typeof(drift.observed_addresses) <> 'array'
+       OR jsonb_array_length(drift.observed_addresses) > 256
+       OR (
+           NOT drift.observed_table_present
+           AND (
+               drift.observed_authority IS NOT NULL
+               OR drift.observed_active
+               OR jsonb_array_length(drift.observed_addresses) <> 0
+           )
+       )
+       OR (
+           drift.resolution_state = 'open'
+           AND (
+               drift.resolution_target_generation IS NOT NULL
+               OR drift.resolved_at IS NOT NULL
+               OR NOT EXISTS (
+                   SELECT 1
+                   FROM loyal_yield.lookup_table_shared_market_catalog_heads head
+                   WHERE head.family_id = drift.family_id
+                     AND head.catalog_revision_id = drift.catalog_revision_id
+                     AND head.readiness_state <> 'active'
+               )
+           )
+       )
+       OR (
+           drift.resolution_state = 'resolved'
+           AND (
+               drift.resolution_target_generation IS NULL
+               OR drift.resolved_at IS NULL
+           )
+       );
+
+    IF invalid_shared_physical_drifts <> 0 THEN
+        RAISE EXCEPTION 'invalid shared-market physical drift evidence row(s): %',
+            invalid_shared_physical_drifts;
+    END IF;
+
+    SELECT count(*)
+    INTO invalid_budget_reservations
+    FROM loyal_yield.lookup_table_cluster_budget_reservations reservation
+    JOIN loyal_yield.lookup_table_operations operation
+      ON operation.id = reservation.operation_id
+    JOIN loyal_yield.lookup_table_families family ON family.id = operation.family_id
+    WHERE family.cluster <> reservation.cluster
+       OR reservation.fencing_token <= 0
+       OR length(btrim(reservation.lease_owner)) = 0
+       OR reservation.reserved_lamports
+            <> reservation.estimated_fee_lamports + reservation.estimated_rent_lamports
+       OR reservation.reserved_lamports < 0
+       OR reservation.estimated_fee_lamports < 0
+       OR reservation.estimated_rent_lamports < 0
+       OR reservation.reserved_until <= reservation.reserved_at
+       OR reservation.fencing_token > operation.fencing_token;
+
+    IF invalid_budget_reservations <> 0 THEN
+        RAISE EXCEPTION 'invalid durable cluster budget reservation row(s): %',
+            invalid_budget_reservations;
     END IF;
 
     SELECT count(*)
@@ -317,7 +603,13 @@ BEGIN
            request_status = 'planning'
            AND (lease_owner IS NULL OR lease_expires_at IS NULL OR sealed_at IS NULL)
        )
-       OR (request_status = 'satisfied' AND satisfied_at IS NULL);
+       OR (request_status = 'satisfied' AND satisfied_at IS NULL)
+       OR (error_code IS NOT NULL AND length(btrim(error_code)) = 0)
+       OR (error_detail IS NOT NULL AND length(btrim(error_detail)) = 0)
+       OR (
+           request_status = 'failed'
+           AND (NULLIF(btrim(error_code), '') IS NULL OR NULLIF(btrim(error_detail), '') IS NULL)
+       );
 
     SELECT invalid_provisioning_requests + count(*)
     INTO invalid_provisioning_requests
@@ -356,6 +648,40 @@ SELECT json_build_object(
         FROM loyal_yield.route_lookup_tables
         WHERE family_id IS NOT NULL
     ),
+    'verifiedLegacyTables', (
+        SELECT count(*)
+        FROM loyal_yield.route_lookup_tables
+        WHERE family_id IS NULL AND legacy_import_run_id IS NOT NULL
+    ),
+    'legacyImportRuns', (
+        SELECT count(*) FROM loyal_yield.lookup_table_legacy_import_runs
+    ),
+    'sharedMarketCatalogHeads', (
+        SELECT count(*) FROM loyal_yield.lookup_table_shared_market_catalog_heads
+    ),
+    'sharedMarketCatalog', (
+        SELECT json_build_object(
+            'heads', count(*),
+            'pending', count(*) FILTER (WHERE readiness_state = 'pending'),
+            'provisioning', count(*) FILTER (WHERE readiness_state = 'provisioning'),
+            'active', count(*) FILTER (WHERE readiness_state = 'active'),
+            'failed', count(*) FILTER (WHERE readiness_state = 'failed'),
+            'revisionsWithReason', (
+                SELECT count(*)
+                FROM loyal_yield.lookup_table_shared_market_catalog_revisions
+                WHERE NULLIF(btrim(reason), '') IS NOT NULL
+            )
+        )
+        FROM loyal_yield.lookup_table_shared_market_catalog_heads
+    ),
+    'sharedPhysicalDrift', (
+        SELECT json_build_object(
+            'total', count(*),
+            'open', count(*) FILTER (WHERE resolution_state = 'open'),
+            'resolved', count(*) FILTER (WHERE resolution_state = 'resolved')
+        )
+        FROM loyal_yield.lookup_table_shared_market_physical_drifts
+    ),
     'manifests', (SELECT count(*) FROM loyal_yield.lookup_table_manifests),
     'bindings', (SELECT count(*) FROM loyal_yield.lookup_table_vault_bindings),
     'desiredVaultHeads', (SELECT count(*) FROM loyal_yield.lookup_table_vault_desired_heads),
@@ -369,10 +695,38 @@ SELECT json_build_object(
         FROM loyal_yield.lookup_table_provisioning_requests
         WHERE request_status IN ('requested', 'planning', 'queued', 'failed')
     ),
+    'provisioningRequests', (
+        SELECT json_build_object(
+            'total', count(*),
+            'requested', count(*) FILTER (WHERE request_status = 'requested'),
+            'planning', count(*) FILTER (WHERE request_status = 'planning'),
+            'queued', count(*) FILTER (WHERE request_status = 'queued'),
+            'satisfied', count(*) FILTER (WHERE request_status = 'satisfied'),
+            'failed', count(*) FILTER (WHERE request_status = 'failed'),
+            'cancelled', count(*) FILTER (WHERE request_status = 'cancelled'),
+            'failedWithReason', count(*) FILTER (
+                WHERE request_status = 'failed'
+                  AND NULLIF(btrim(error_code), '') IS NOT NULL
+                  AND NULLIF(btrim(error_detail), '') IS NOT NULL
+            )
+        )
+        FROM loyal_yield.lookup_table_provisioning_requests
+    ),
     'pendingOperations', (
         SELECT count(*)
         FROM loyal_yield.lookup_table_operations
         WHERE operation_state NOT IN ('complete', 'permanent_failure', 'cancelled')
+    ),
+    'clusterBudgetReservations', (
+        SELECT json_build_object(
+            'total', count(*),
+            'active', count(*) FILTER (WHERE reserved_until > now()),
+            'activeReservedLamports', COALESCE(
+                sum(reserved_lamports) FILTER (WHERE reserved_until > now()),
+                0
+            )
+        )
+        FROM loyal_yield.lookup_table_cluster_budget_reservations
     ),
     'lamports', (
         SELECT json_build_object(

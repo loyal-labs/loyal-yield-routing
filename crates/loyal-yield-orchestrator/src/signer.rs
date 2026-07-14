@@ -5,7 +5,6 @@ use thiserror::Error;
 pub const SOLANA_TESTING_PK_ENV: &str = "SOLANA_TESTING_PK";
 pub const POLICY_KEYPAIR_ENV: &str = "POLICY_KEYPAIR";
 pub const YIELD_ROUTER_KEYPAIR_ENV: &str = "YIELD_ROUTER_KEYPAIR";
-pub const YIELD_ALT_MANAGER_KEYPAIR_ENV: &str = "YIELD_ALT_MANAGER_KEYPAIR";
 const SOLANA_SECRET_KEY_LENGTH: usize = 32;
 const SOLANA_KEYPAIR_LENGTH: usize = 64;
 
@@ -35,10 +34,6 @@ pub fn policy_keypair_from_env() -> Result<Keypair, PolicySignerError> {
 
 pub fn yield_router_keypair_from_env() -> Result<Keypair, PolicySignerError> {
     keypair_from_env(YIELD_ROUTER_KEYPAIR_ENV)
-}
-
-pub fn yield_alt_manager_keypair_from_env() -> Result<Keypair, PolicySignerError> {
-    keypair_from_env(YIELD_ALT_MANAGER_KEYPAIR_ENV)
 }
 
 pub fn keypair_from_env(name: &'static str) -> Result<Keypair, PolicySignerError> {

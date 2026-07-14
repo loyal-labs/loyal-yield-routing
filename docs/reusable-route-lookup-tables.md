@@ -16,8 +16,8 @@ Earn routes consume two logical address collections:
 A collection is durable; a physical ALT is replaceable. Collections have active
 and previous generations, and a generation may have multiple measured shards.
 The normal route should compile with the active stable generation and the
-vault's active shard binding. Exact source/target route scopes remain legacy
-fallback and readiness identities only.
+vault's active shard binding. Exact source/target route scopes remain
+readiness/audit identities only; the normal runtime has no legacy fallback.
 
 Extra addresses in an ALT are not authorization. Squads policies and the route
 builder continue to constrain usable accounts and instructions.
@@ -30,8 +30,9 @@ The continuous same-mint monitor and route executor are reuse-only. They may:
 - resolve active bindings;
 - load physical ALTs from RPC;
 - compile, measure, and simulate;
-- record readiness blockers and, outside force-legacy mode, request
-  provisioning;
+- record readiness blockers; shared-catalog drift emits a repair signal but no
+  vault allocation request, while missing vault coverage seals one idempotent
+  provisioning request in `reusable_only`;
 - fail closed when coverage is missing.
 
 They must never create, extend, freeze, deactivate, or close an ALT.
@@ -47,7 +48,8 @@ All commands require an explicit cluster. Do not infer a cluster from an RPC URL
 Non-secret configuration:
 
 - `YIELD_ALT_CLUSTER`: `mainnet-beta`, `devnet`, `testnet`, or `localnet`;
-- provisioner operation, concurrency, and lamport budget limits;
+- provisioner operation/concurrency limits plus `YIELD_ALT_MAX_LAMPORTS` and
+  `YIELD_ALT_BUDGET_WINDOW_SECONDS` for the durable cluster-wide rolling budget;
 - measured largest atomic expansion, shard safety margin, vault growth
   reservation, and maximum bound-vault settings;
 - rollout mode defaults.
@@ -58,10 +60,14 @@ Secret configuration, injected through the repository's 1Password environment:
 - `SOLANA_RPC_URL` for every cleanup run, every provisioner reconciliation or
   execute run, and every same-mint run that uses a managed/non-default endpoint,
   because managed endpoints may embed access credentials;
-- `YIELD_ALT_MANAGER_KEYPAIR` only for explicit provisioner execute mode.
+- `POLICY_KEYPAIR` for explicit provisioner/legacy-cleanup execute mode and the
+  existing authorized Earn movement path. The policy identity is intentionally
+  reused as the ALT authority, payer, and old-table refund recipient.
 
-The route monitor does not need `YIELD_ALT_MANAGER_KEYPAIR`. Never print the
-keypair value, signed transaction bytes, full database URL, or access tokens.
+The signerless shared-catalog seeder and legacy import command do not load
+`POLICY_KEYPAIR`. The route monitor cannot mutate an ALT even though it uses the
+same key for authorized Earn movement. Never print the keypair value, signed
+transaction bytes, full database URL, or access tokens.
 Structured output may identify an RPC only by scheme, host, and port; it strips
 userinfo, path, query, and fragment so provider credentials cannot enter logs.
 The same-mint worker, provisioner, and cleanup command read the RPC genesis hash
@@ -106,6 +112,15 @@ fees/rent are stored before broadcast; actual spend or reclaimed rent is
 recorded only after a finalized signature and exact chain-effect
 reconciliation.
 
+After simulation and before signing, every mutating attempt reserves its
+worst-case fee plus rent in PostgreSQL under the operation's fencing token.
+`--max-lamports` is a cluster-wide rolling-window ceiling, not a process-local
+or per-batch counter; `--budget-window-seconds` defines that window. Durable
+reservations survive provisioner restarts and serialize overlapping Render
+instances. A denied reservation sends nothing, and replaying the same
+operation/fence/accounting is idempotent. Conflicting accounting or a stale
+lease fails closed.
+
 Capacity planning and transaction chunking are separate controls. Each family
 stores immutable catalog evidence for:
 
@@ -115,10 +130,10 @@ allocation high-water = 256 - largest atomic expansion - safety margin
 
 `--largest-atomic-expansion` supplies the measured catalog value when families
 are bootstrapped. `--address-chunk` only bounds one extend transaction and must
-not change the stored high-water mark. The manager authority and payer are
-durably checked against active route authorities, delegated signers, wallets,
-and legacy durable route payers; optional process environment is an additional
-check, not the ownership boundary.
+not change the stored high-water mark. The ALT authority and payer must be the
+same standard policy identity. The family catalog persists both values and
+rejects authority/payer drift; reusing the policy identity is intentional and
+is not an ownership conflict.
 
 The current 13-fixture route catalog measures a largest single-class atomic
 expansion of `21` addresses. With the documented default safety margin of `16`,
@@ -127,6 +142,23 @@ generated catalog evidence, not a forever constant: rerun
 `bun run verify:reusable-alts:routes` after any route/action-account change and
 use its final `reusable_alt_catalog_summary` JSON line when bootstrapping a
 new catalog version.
+
+The shared-market catalog is deliberately one exact physical ALT per
+generation. If the complete catalog exceeds that family's allocation
+high-water mark, the signerless publisher and planner fail before a catalog
+write, operation enqueue, signer load, or transaction. The current system does
+not truncate or auto-shard shared data. A larger catalog requires a future
+shared-sharding schema, resolver, compiler-fixture, and migration verifier.
+
+Finalized RPC truth can invalidate an otherwise exact database catalog. An
+authority, lifecycle, ordered-membership, prefix, or account-presence mismatch
+is persisted as immutable physical-drift evidence fenced to the catalog
+revision, table, and mutation epoch. The active head immediately leaves
+`active`, routes emit the shared-catalog repair blocker without creating vault
+demand, and the planner builds a complete replacement generation. The report
+is resolved only when that replacement is finalized, warm, exact, and active;
+the provisioner must not "repair" or reactivate the drifted generation in
+place.
 
 Each vault manifest is the durable address union of every sealed, non-cancelled
 route-requirement cohort observed for that vault, rather than the latest route's
@@ -144,62 +176,77 @@ same-generation shard with no remaining live binding may retire after the
 rollback/reference fences clear; generation rollover is not required merely to
 reclaim an empty shard.
 
-## Rollout Modes
+## Rollout Controls
 
-Per-vault modes are:
+The deployed Earn runtime executes only when the effective mode is
+`reusable_only` and force-legacy is false. Missing v2 coverage fails closed and
+seals provisioning demand; it never discovers or resolves an exact-scope
+legacy table.
 
-- `legacy`: exact-route tables only;
-- `shadow`: legacy execution plus reusable compilation/readiness evidence;
-- `prefer_reusable`: reusable when fully ready, otherwise complete legacy
-  fallback;
-- `reusable_only`: reusable or fail closed, with no silent fallback.
+Historical database values remain readable for migration compatibility, but
+their runtime meaning is deliberately narrow:
 
-Mode resolution is deliberately independent: `legacy` and global force-legacy
-do not query reusable RPC state, while `reusable_only` does not query legacy
-state. `shadow` requires a verified legacy bundle and records reusable errors
-as evidence. `prefer_reusable` may use a fully verified reusable bundle even if
-legacy resolution is malformed, but fails when neither path is complete. The
-global force-legacy path also skips reusable leases and provisioning requests,
-and treats its minimal readiness write as best-effort, so a kill switch cannot
-be blocked by an unhealthy reusable control plane.
+- `legacy`, `shadow`, and `prefer_reusable` are fail-closed stop states;
+- global or per-vault force-legacy is also a fail-closed stop;
+- only `reusable_only` with force-legacy disabled may compile or send.
 
-A global force-legacy control overrides per-vault modes. Before legacy
-retirement, rollback is a database pointer change:
+Operational rollback after cutover is therefore one of:
 
-- enable global force-legacy;
-- move one vault back to `legacy`;
-- point a family to its previous generation;
-- point a vault to its previous binding;
-- pause the provisioner.
+- pause routing or the provisioner;
+- point a shared family to its verified previous v2 generation;
+- point one vault to its verified previous v2 binding.
+
+The first shared generation and first vault binding honestly have no reusable
+predecessor. Do not create duplicate standby ALTs merely to manufacture one.
 
 Do not roll schema backward during an operational rollback.
 
 ## Safe Migration Order
 
-1. Apply and verify migration `0017` on an isolated database branch.
-2. Import legacy physical tables only after RPC readback; label them mixed
-   legacy tables rather than promoting them.
-3. Provision and verify the stable generation plus every packed binding for a
-   live legacy consumer or currently executable route while legacy routing
-   remains authoritative. Do not preallocate every theoretical route belonging
-   to a dormant active-policy row.
-4. Immediately before cutover, resolve, compile, packet-check, and simulate
-   every live route requirement against the reusable state. Record the exact
-   manifests, selected tables, verification slots, and rollback targets.
-5. Set the eligible fleet directly to `reusable_only` in one fenced control
-   operation. A canary cohort and an artificial observation delay are not part
-   of this migration.
-6. Read the control plane back, run the normal worker path, and reconcile at
-   least one real reusable-ALT movement when an executable movement is
-   available.
-7. Mark each legacy row nonselectable only after a fresh zero-reference check.
-8. Deactivate each eligible legacy ALT, wait the mandatory Solana SlotHashes
-   cooldown, recheck references, then close it and record the refund.
+1. Apply and verify migration `0017`, existing realtime migration `0018`,
+   legacy audit migration `0019`, and shared-catalog migration `0020` on an
+   isolated database branch, then production.
+2. Import the complete eligible legacy fleet only for immutable audit and
+   refund accounting. Label it `legacy_mixed`; never promote it to a v2 family,
+   create another exact-scope table, or copy its scope allocation strategy.
+3. Bootstrap both v2 family records with the public key derived from the
+   standard `POLICY_KEYPAIR`.
+4. Run the signerless shared-catalog command against the complete active,
+   safe, enabled-stable Kamino reserve set, review its finalized dry run, then
+   publish the immutable catalog head. Do not derive this bootstrap set from
+   one vault or one attempted route.
+5. Deploy the continuously running, budgeted provisioner and let it create,
+   fully populate, warm, and verify that exact durable shared-market v2 ALT.
+   Keep routing in a fail-closed stop mode. Stop and drain the old monitor,
+   prove there is no prepared decision or send still using it, then deploy the
+   no-legacy monitor from the same immutable light-worker image as the
+   provisioner.
+6. Atomically prove the shared head, align every per-vault override, and switch
+   directly to global `reusable_only`. There is no vault backfill, canary, or
+   all-vault coverage gate. Let the normal monitor immediately attempt current
+   optimizations. Missing
+   vault coverage must stop before decision creation/send, seal one idempotent
+   request, and return. The provisioner packs that genuine demand into the
+   best-fit v2 vault shard; the next monitor cycle retries normally.
+7. Verify at least one funded production vault completes a real defer ->
+   provision -> retry -> confirmed movement sequence. Join its finalized
+   signature to the route decision and reusable table bundle, prove the source
+   chain position decreased and the selected higher-yield eligible target
+   position increased, reconcile the same state into Neon, and prove a later
+   monitor cycle neither repeats the move nor leaves its request stuck. Then
+   prove the deployed worker has no legacy resolution plus zero remaining live
+   references to every old table. A no-op poll or provisioner success is not
+   sufficient production proof.
+8. Mark each legacy row nonselectable. For every table, perform a fresh
+   zero-reference preview, simulate immediately before deactivation, submit and
+   prove finality, wait the mandatory Solana SlotHashes cooldown, then repeat
+   the zero-reference preview and simulation immediately before close. Prove
+   finalized account closure and the rent balance delta to the policy account.
 
-A route that was not materialized in the cutover snapshot remains fail-closed.
-Its first attempted movement seals a typed provisioning request; a later retry
-may execute only after the provisioner has expanded or allocated the reusable
-tables and the resolver has independently verified them.
+The expected first-use latency is one monitor cycle for a vault whose packed
+data is not present yet. That rebalance is deferred, not lost or recorded as a
+failed movement. Later routes reuse the same shared table and existing packed
+shard headroom.
 
 Production migration, provisioning transactions, Render changes, direct money
 movement, deactivation, and closure require explicit operator approval.
@@ -225,6 +272,18 @@ reconciles that operation and is the only process that may send it. Direct
 cleanup signing remains limited to explicitly audited, unregistered legacy
 orphans.
 
+Legacy refund is not a single best-effort cleanup command. Before the first
+deactivation, the old monitor must be stopped and drained, the no-legacy image
+must be the only deployed route runtime, and all bindings, leases, operations,
+prepared decisions, and readiness references must be zero. Each mutation must
+use `--simulate-before-submit`, be confirmed at finalized commitment, and be
+followed by an RPC lifecycle readback. After deactivation, wait until the table
+is absent from the relevant SlotHashes window; do not estimate or bypass the
+cooldown. Immediately before close, repeat the database/RPC reference scan and
+simulation. The close recipient must equal the public key derived from
+`POLICY_KEYPAIR`; record the finalized signature, pre/post recipient lamports,
+reclaimed delta, and final RPC account absence.
+
 ## Required Readbacks
 
 Operators should be able to inspect, without secrets:
@@ -234,9 +293,12 @@ Operators should be able to inspect, without secrets:
   bound-vault count, and fragmentation;
 - desired manifests and missing addresses;
 - operation queue age, attempts, signature, and reconciliation state;
-- reusable-ready vault coverage and legacy fallback reason;
+- durable rolling-budget window, active reservations, charged/remaining
+  lamports, and denied attempts;
+- reusable-ready vault coverage and demand-deferral reason;
 - selected table contribution and serialized packet size;
 - authority/prefix drift;
+- immutable shared physical-drift reports and their replacement generations;
 - lamports spent and reclaimed.
 
 ## Operator Command Cookbook
@@ -246,9 +308,42 @@ all environment expansion inside the `op run` subprocess. `YIELD_ALT_CLUSTER`,
 `NEON_DATABASE_URL`, and `SOLANA_RPC_URL` must come from the mounted environment
 for cleanup; reconciliation and provisioner execution also require the RPC,
 while status and database-only administration do not. The public values
-`YIELD_ALT_MANAGER_PUBKEY`,
+`YIELD_ALT_POLICY_PUBKEY`,
 `YIELD_ALT_CATALOG_VERSION`, `YIELD_ALT_OPERATOR_ID`, and the database IDs used
 for rollback may be supplied by the operator without exposing secret material.
+
+Before provisioning reusable tables, inventory and import the complete durable
+legacy fleet. The importer is dry-run by default, uses one finalized RPC
+snapshot, validates the configured genesis, owner, authority, active lifecycle,
+warmup, exact ordered membership, count, and hash for every eligible row, and
+writes nothing if any row fails. It never loads a signer. The command prints a
+`registryFleetHash`; copy that exact hash into the separately approved write.
+The current pre-reusable exact-scope tables contain both stable market and vault
+addresses, so their classification is `legacy_mixed`. Do not guess or combine
+different classifications in one run; a future heterogeneous fleet requires an
+explicit per-table import design first.
+
+```sh
+op run --env-file=.env.1password -- sh -c \
+  'bun run same-mint:alt-import-legacy -- \
+    --legacy-kind legacy_mixed \
+    --expected-table-count "$YIELD_ALT_LEGACY_EXPECTED_COUNT"'
+
+op run --env-file=.env.1password -- sh -c \
+  'bun run same-mint:alt-import-legacy -- \
+    --legacy-kind legacy_mixed \
+    --expected-table-count "$YIELD_ALT_LEGACY_EXPECTED_COUNT" \
+    --expected-fleet-hash "$YIELD_ALT_LEGACY_FLEET_HASH" \
+    --admin-write \
+    --reason "classify and reverify complete legacy ALT fleet" \
+    --updated-by "$YIELD_ALT_OPERATOR_ID"'
+```
+
+Review the dry-run count, every table result, the finalized verification slot,
+and the fleet hash before approving the write. A write re-locks and rereads the
+full eligible registry inside a serializable transaction, so registry drift
+after RPC verification aborts the import without a partial classification. An
+exact replay verifies the existing immutable evidence instead of rewriting it.
 
 Inspect the control plane and queued work without loading a signer or writing:
 
@@ -262,19 +357,41 @@ op run --env-file=.env.1password -- sh -c \
 
 Create or verify the two logical families. This is an idempotent metadata
 operation: it validates an existing family's immutable configuration and does
-not reset live generation pointers. It never loads the manager keypair.
+not reset live generation pointers. It accepts only the public key corresponding
+to the standard `POLICY_KEYPAIR`; it never loads that keypair.
 
 ```sh
 op run --env-file=.env.1password -- sh -c \
   'bun run same-mint:alt-provisioner -- \
     --cluster "$YIELD_ALT_CLUSTER" \
     --bootstrap-families \
-    --manager-pubkey "$YIELD_ALT_MANAGER_PUBKEY" \
+    --policy-pubkey "$YIELD_ALT_POLICY_PUBKEY" \
     --catalog-version "$YIELD_ALT_CATALOG_VERSION" \
     --largest-atomic-expansion "$YIELD_ALT_LARGEST_ATOMIC_EXPANSION" \
     --safety-margin "$YIELD_ALT_SAFETY_MARGIN" \
     --admin-write \
     --reason "bootstrap reusable ALT families" \
+    --updated-by "$YIELD_ALT_OPERATOR_ID"'
+```
+
+Derive the authoritative catalog independently of any vault. Dry-run is the
+default and performs one finalized reserve-account snapshot, checks every
+reserve owner/market/mint identity, validates the family high-water mark, and
+loads no signer. The approved write publishes the immutable head and queues v2
+operations only; it still sends no transaction and never allocates vault data.
+
+```sh
+op run --env-file=.env.1password -- sh -c \
+  'bun run same-mint:alt-shared-catalog -- \
+    --cluster "$YIELD_ALT_CLUSTER" \
+    --catalog-version "$YIELD_ALT_CATALOG_VERSION"'
+
+op run --env-file=.env.1password -- sh -c \
+  'bun run same-mint:alt-shared-catalog -- \
+    --cluster "$YIELD_ALT_CLUSTER" \
+    --catalog-version "$YIELD_ALT_CATALOG_VERSION" \
+    --admin-write \
+    --reason "publish complete durable Earn shared-market catalog" \
     --updated-by "$YIELD_ALT_OPERATOR_ID"'
 ```
 
@@ -299,10 +416,10 @@ op run --env-file=.env.1password -- sh -c \
 ```
 
 Execute bounded mutation work only after reviewing status and dry-run output.
-This is the only mode that loads `YIELD_ALT_MANAGER_KEYPAIR`; the positive
-lamport limit is mandatory and applies to the selected batch. `--max-attempts`
-bounds unsigned retries; signed ambiguity is reconciled regardless of that
-retry budget.
+This is the only provisioner mode that loads `POLICY_KEYPAIR`; the positive
+lamport limit is mandatory and applies across all overlapping workers in the
+durable rolling window. `--max-attempts` bounds unsigned retries; signed
+ambiguity is reconciled regardless of that retry budget.
 
 ```sh
 op run --env-file=.env.1password -- sh -c \
@@ -311,39 +428,33 @@ op run --env-file=.env.1password -- sh -c \
     --execute \
     --max-operations 1 \
     --max-attempts 5 \
-    --max-lamports "$YIELD_ALT_MAX_LAMPORTS"'
+    --max-lamports "$YIELD_ALT_MAX_LAMPORTS" \
+    --budget-window-seconds "$YIELD_ALT_BUDGET_WINDOW_SECONDS"'
 ```
 
-Set one vault's rollout mode using its database `managed_vaults.id`. This is an
-operator control and rollback tool, not a required canary step:
+After the shared v2 catalog and demand-driven provisioner path are verified,
+perform the direct cutover with one finalized-RPC plus database-fenced action.
+The provisioner first loads the exact active shared ALT at finalized
+commitment and proves table address, authority, lifecycle, ordered membership,
+hash, usable count, verification slot, and mutation epoch against a database
+preflight. The database transaction then rejects any changed preflight,
+requires the packed-vault family, sets global `reusable_only` with force-legacy
+disabled, and aligns every per-vault override. There is deliberately no
+all-vault coverage precondition:
 
 ```sh
 op run --env-file=.env.1password -- sh -c \
   'bun run same-mint:alt-provisioner -- \
     --cluster "$YIELD_ALT_CLUSTER" \
-    --set-rollout-mode prefer_reusable \
-    --vault-id "$YIELD_ALT_VAULT_ID" \
+    --activate-reusable-only \
     --admin-write \
-    --reason "explicit per-vault reusable ALT control" \
+    --reason "activate demand-driven reusable v2 routing" \
     --updated-by "$YIELD_ALT_OPERATOR_ID"'
 ```
 
-After the all-vault pre-cutover proof passes, the direct fleet switch writes the
-global mode in one fenced operation (per-vault overrides, if any, must already
-agree or be updated explicitly):
-
-```sh
-op run --env-file=.env.1password -- sh -c \
-  'bun run same-mint:alt-provisioner -- \
-    --cluster "$YIELD_ALT_CLUSTER" \
-    --set-rollout-mode reusable_only \
-    --admin-write \
-    --reason "direct reusable ALT fleet cutover after full preflight" \
-    --updated-by "$YIELD_ALT_OPERATOR_ID"'
-```
-
-The global force-legacy kill switch overrides every per-vault mode. Clearing
-it does not itself advance any vault's stored mode.
+The global force-legacy control is retained only as a fail-closed stop. It does
+not resolve old tables. Clearing it does not itself advance any vault's stored
+mode.
 
 ```sh
 op run --env-file=.env.1password -- sh -c \
@@ -351,7 +462,7 @@ op run --env-file=.env.1password -- sh -c \
     --cluster "$YIELD_ALT_CLUSTER" \
     --force-legacy \
     --admin-write \
-    --reason "reusable ALT rollback" \
+    --reason "stop reusable ALT routing" \
     --updated-by "$YIELD_ALT_OPERATOR_ID"'
 
 op run --env-file=.env.1password -- sh -c \
@@ -418,7 +529,7 @@ op run --env-file=.env.1password -- sh -c \
     --expected-address-hash "$YIELD_ALT_LEGACY_ADDRESS_HASH" \
     --expected-address-count "$YIELD_ALT_LEGACY_ADDRESS_COUNT" \
     --admin-write \
-    --reason "direct cutover verified and legacy references drained" \
+    --reason "v2 routing verified and legacy references drained" \
     --updated-by "$YIELD_ALT_OPERATOR_ID"'
 ```
 
@@ -433,16 +544,38 @@ read; the examples inject `SOLANA_RPC_URL` through 1Password.
 op run --env-file=.env.1password -- sh -c \
   'bun run same-mint:alt-cleanup -- \
     --cluster "$YIELD_ALT_CLUSTER" \
-    --table "$YIELD_ALT_CLEANUP_TABLE" \
-    --limit 1'
+    --authority "$YIELD_ALT_POLICY_PUBKEY" \
+    --recipient "$YIELD_ALT_POLICY_PUBKEY" \
+    --authority-key-env POLICY_KEYPAIR \
+    --scan-program-accounts \
+    --scan-history'
 
 op run --env-file=.env.1password -- sh -c \
   'bun run same-mint:alt-cleanup -- \
     --cluster "$YIELD_ALT_CLUSTER" \
-    --table "$YIELD_ALT_CLEANUP_TABLE" \
-    --limit 1 \
+    --authority "$YIELD_ALT_POLICY_PUBKEY" \
+    --recipient "$YIELD_ALT_POLICY_PUBKEY" \
+    --authority-key-env POLICY_KEYPAIR \
+    --scan-program-accounts \
+    --scan-history \
+    --expected-fleet-count "$YIELD_ALT_LEGACY_EXPECTED_COUNT" \
+    --expected-fleet-hash "$YIELD_ALT_CLEANUP_FLEET_HASH" \
+    --simulate-before-submit \
     --execute'
 ```
+
+The dry run must exhaustively discover the standard-policy legacy fleet and
+print `legacyFleetCount` plus `inventoryFleetHash`; copy those exact cleanup
+values into the separately approved execute environment. Do not substitute the
+importer's registry hash. Execute ignores candidate limits and refuses a
+partial fleet, a changed count/hash, any non-policy authority, or a non-policy
+recipient. Run it once to deactivate all eligible active legacy tables. Verify
+each signature finalized and each RPC lifecycle changed to deactivated, then
+wait for the actual SlotHashes cooldown. Run the full exhaustive zero-reference
+dry run again and capture its fresh fleet hash; only then run the same simulated
+execute form to close. Close is complete only after finalized RPC absence for
+every approved table and the recorded policy-account lamport delta matches the
+reconciled reclaimed-rent evidence.
 
 Treat `--execute`, rollout changes, rollback, and cleanup as production actions
 when pointed at production. They require the separate approvals described by

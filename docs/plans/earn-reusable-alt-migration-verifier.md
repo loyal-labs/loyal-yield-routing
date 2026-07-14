@@ -15,14 +15,47 @@ Do not weaken this verifier to match a partial implementation. If a required
 condition is discovered to encode the wrong safety goal, update this document
 explicitly and record the reason before continuing.
 
-Operator correction recorded 2026-07-13: production uses one direct cutover,
-not a canary or cohort expansion. The pre-cutover fleet is every vault/scope
-that currently references a live legacy ALT plus every route that is executable
-at the cutover snapshot. Dormant active policy rows and route shapes that have
-never materialized are provisioned on demand: their first attempted movement
-must fail closed, seal a typed request, and wait for the dedicated provisioner.
-Precreating one ALT allocation for every theoretical active-policy route would
-reintroduce the waste this migration removes.
+Operator correction recorded 2026-07-14: this migration creates durable v2
+ALTs; it does not create any new exact-scope legacy ALT. Bootstrap the complete
+stable shared-market address catalog once, then let packed vault-data shards
+grow only from genuine route attempts. There is no fleet-wide vault backfill
+and no requirement that every valued or policy-enabled vault have reusable
+coverage before cutover. A vault's first missing-coverage attempt must fail
+before decision creation or fund movement, seal an idempotent typed request,
+and succeed on a later monitor cycle after the provisioner has verified the
+required packed binding.
+
+Operator correction recorded 2026-07-14: production uses one direct switch to
+`reusable_only`, not a canary or cohort expansion. Cutover readiness means the
+fully populated shared v2 family, packed-shard allocator, request path, and
+`POLICY_KEYPAIR` provisioner are operational. It does not mean pre-provisioning
+the current fleet. The normal monitor should begin attempting live
+optimizations immediately after the switch so demand is discovered and served
+without manufacturing unused tables.
+
+Operator correction recorded 2026-07-13: reusable ALT creation, extension,
+deactivation, closure, fees, and rent use the existing standard
+`POLICY_KEYPAIR`. The durable family authority and payer must both equal that
+policy public key. A separate ALT-manager key is neither required nor allowed
+for this migration. The provisioner remains a dedicated mutation process; the
+word "dedicated" describes the worker boundary, not a separate signing
+identity. Closed legacy ALT rent must return to the same policy account.
+
+Operator approval recorded 2026-07-13: after implementation and pre-cutover
+proof pass, perform the production migration directly, verify it, then retire,
+deactivate, wait the mandatory SlotHashes cooldown, and close/refund the old
+ALTs. This is the explicit approval required by checks 14-20; it does not waive
+any proof, cooldown, or fresh zero-reference gate.
+
+Verifier correction recorded 2026-07-14: the first reusable generation and a
+vault's first packed binding have no honest reusable predecessor. Requiring a
+duplicate standby fleet solely to manufacture an initial rollback target would
+double rent and defeat the reuse goal. Once the no-legacy worker is deployed,
+global force-legacy is a fail-closed emergency stop, not a path back to the old
+tables. Every previous reusable generation or binding that actually exists
+after a later rollover/relocation must be validated and kept through its
+rollback window; absence on first activation is valid and must not be
+represented by a fabricated pointer.
 
 ## Goal
 
@@ -45,19 +78,23 @@ The durable architectural rules are:
 - route/action builders own account requirements and semantic classification;
 - logical families, manifests, and bindings own reusable address sets;
 - physical ALTs are append-only, replaceable transport artifacts;
-- one logical shared-market family may use one physical table while it fits,
-  but the schema and resolver support generations and measured sharding;
+- one logical shared-market family uses one exact physical table per generation;
+  publication and planning fail before any write when the complete catalog
+  exceeds the configured single-table high-water mark. Supporting a catalog
+  that no longer fits is a future, explicitly verified shared-sharding
+  migration, never silent truncation or an implicit second table;
 - vault-dependent addresses are packed into bounded multi-vault shards by
   default, with dedicated tables only for measured outliers;
-- source/target route keys are readiness fingerprints and legacy fallback
-  identities, never owners of new physical tables;
+- source/target route keys are readiness/audit fingerprints, never owners of
+  new physical tables;
 - the normal executor is reuse-only and fails closed before decision creation
   and again before send when coverage is incomplete;
 - ALT creation, extension, rollover, deactivation, and closure belong to a
-  dedicated, budgeted provisioner/reconciler;
-- existing mixed exact-route tables remain available as an emergency fallback
-  until the direct cutover has been verified and every legacy reference has
-  drained.
+  dedicated, budgeted provisioner/reconciler using `POLICY_KEYPAIR`;
+- existing mixed exact-route tables are imported only for exact audit and rent
+  recovery; no new legacy table may be created;
+- legacy resolution is removed from the deployed normal worker before the old
+  tables are retired, deactivated, cooled down, closed, and refunded.
 
 ## Verdict Levels
 
@@ -73,48 +110,41 @@ was cut over.
 ### Production Migration Verdict
 
 `PRODUCTION MIGRATION: PASS` additionally requires every check in **Production
-Migration Required Checks**. Applying the production migration, funding an ALT
-manager, sending ALT transactions, changing Render, cutting traffic over, or
-closing legacy tables requires separate explicit operator approval. Those
-actions must not be inferred from this verifier or from an implementation task.
+Migration Required Checks**. Applying the production migration, spending from
+`POLICY_KEYPAIR`, sending ALT transactions, changing Render, cutting traffic
+over, or closing legacy tables requires separate explicit operator approval.
+The correction above records that approval for this migration; it does not
+authorize unrelated production changes.
 
-Until that approval and evidence exist, report `PRODUCTION MIGRATION: NOT RUN`,
+Until the production evidence exists, report `PRODUCTION MIGRATION: NOT RUN`,
 not PASS.
 
 ## Latest Verifier Run
 
-Run on 2026-07-13 from a genuinely empty disposable Postgres database
-(`loyal_reusable_alt_root_11`). The full checked-in verifier passed, including
-all migrations from 1 through 17, a second idempotent migration run, the Rust
-schema verifier twice, the SQL schema verifier twice, and the adversarial
-database behavior verifier twice. Migration 13's recorded checksum was also
-compared with its unmodified source bytes after the blank-database compatibility
-path ran; both were
-`e2a5a99a1440cf6aa6cd15a095eb531900d61bf2a37965283b4990be3693f0cd`.
+The 2026-07-14 verifier ran from a clean checkout of the implementation tree
+against a fresh disposable PostgreSQL database. The checked-in command emitted
+the exact `HEAD` SHA; the immutable worker-image tag must match that emitted SHA
+and the deployment evidence must record it. The run applied migrations 1–20,
+reapplied them idempotently, executed the independent SQL invariant suite twice,
+passed 23 database behavior checks, and passed all 13 exact v0 route fixtures.
 
 ```text
-1. Additive Schema And Migration Ownership: PASS - migration 0017, fresh apply/check twice, schema verification twice, and migration 0008 byte guard passed
-2. Typed Account Manifest Is Exact: PASS - typed static/shared/vault provenance and exact compiler-universe tests passed
-3. Packed-Shard Allocator Is Capacity Safe: PASS - deterministic capacity, concurrency, cohort-union, relocation, and stale-head adversarial tests passed
-4. Durable And Recoverable ALT Operations: PASS - fenced outbox, signed-before-send, retry, crash recovery, warmup, and reconciliation tests passed
-5. Dedicated Provisioner Boundary: PASS - mutation-callsite scan found only the provisioner and cleanup binaries; execute/signer/budget gates passed
-6. Reusable Resolver And Rollout Modes: PASS - bounded exact-minimal resolver, all rollout modes, RPC genesis, and endpoint-redaction tests passed
-7. Compiler, Packet, And Simulation Proof: PASS - all 13 v0 fixtures had exact coverage and execution, max packet 1,199 bytes, largest expansion 21
-8. Fail-Closed Execution And Mutation Guard: PASS - both execution fences and all ALT mutation variants, including nested instructions, passed rejection tests
-9. All Earn Lanes Use The Same Resolver: PASS - movement, idle-deposit, setup, and cleanup fixtures use the shared typed planning/resolution path
-10. Binding-Aware Cleanup And Rollover: PASS - reference, lease, operation, rollback-window, cooldown, authority, and prefix fences passed
-11. Observability And Operator Controls: PASS - readiness, topology, queue, accounting, drift, mode, pause, rollback, and cleanup readbacks are implemented and verified
-12. Implementation Verification Commands: PASS - checked-in full verifier and isolated database gates passed, including repeat apply/check/schema/behavior runs
-13. Scope And Diff Integrity: PASS - diff, formatting, migration-0008 byte, mutation-boundary, and secret scans passed; unrelated worktree changes remain excluded
+1. Additive Schema And Migration Ownership: PASS - migrations 0008/0017 stayed immutable; ordered migrations 0018/0019/0020 applied and checked twice
+2. Typed Account Manifest Is Exact: PASS - provenance-owned static/shared/vault classes matched the v0 compiler universe
+3. Packed-Shard Allocator Is Capacity Safe: PASS - concurrency, union, exact-capacity, one-over, growth, relocation, and supersession checks passed
+4. Durable And Recoverable ALT Operations: PASS - fenced outbox, chain-first recovery, warm suffix, physical drift, and durable budget checks passed
+5. Dedicated Provisioner Boundary: PASS - mutation-callsite scan found only provisioner/cleanup workers; execute uses POLICY_KEYPAIR
+6. Reusable-Only Resolver And Cutover Controls: PASS - legacy states fail closed; finalized exact cutover and stale-evidence rejection passed
+7. Compiler, Packet, And Simulation Proof: PASS - all 13 route fixtures compiled, covered, simulated, executed, and stayed below 1,232 bytes
+8. Fail-Closed Execution And Mutation Guard: PASS - missing coverage defers predecision and every ALT-program mutation variant is rejected
+9. All Earn Lanes Use The Same Resolver: PASS - same-mint, idle deposit, setup, policy, withdrawal, and cleanup fixtures share typed resolution
+10. Binding-Aware Cleanup And Rollover: PASS - zero-reference, rollback, retirement, post-retirement DB fences, cooldown, recipient, and refund checks passed
+11. Observability And Operator Controls: PASS - status/readback includes readiness, queue, budget, drift, headroom, compilation, spend, and refund evidence
+12. Implementation Verification Commands: PASS - full repository verifier and fresh isolated database replay passed
+13. Scope And Diff Integrity: PASS - clean exact-commit mode, unmerged/untracked checks, immutable migrations, and secret scan passed
 IMPLEMENTATION: PASS
 
-14. Production Migration And Legacy Import: NOT RUN - implementation verification did not mutate production
-15. Shared Generation Provisioning: NOT RUN - implementation verification did not send transactions
-16. Packed Vault Backfill: NOT RUN - implementation verification used disposable database fixtures
-17. Direct Cutover Proof: NOT RUN - awaiting production execution
-18. Fleet Cutover: NOT RUN - awaiting production execution
-19. Legacy Retirement: NOT RUN - awaiting production execution and mandatory SlotHashes cooldown
-20. Production Monitoring: NOT RUN - awaiting production deployment and readback
+14-20. Production migration checks: NOT RUN
 PRODUCTION MIGRATION: NOT RUN
 ```
 
@@ -132,7 +162,11 @@ prerequisites pass.
    - Measure the exact compiler-eligible address sets and packet sizes.
 2. **Land the additive control-plane schema**
    - Add migration `0017`; do not rewrite existing migrations.
-   - Register it in the dedicated `yield-migrations` runner and schema
+   - Preserve migration `0018_earn_activity_realtime`; it is the existing
+     realtime migration and is not part of ALT allocation.
+   - Add the immutable legacy audit import as migration `0019` and the
+     demand-driven shared-market catalog as migration `0020`.
+   - Register all ordered migrations in the dedicated `yield-migrations` runner and schema
      validator.
    - Keep legacy tables and reads valid.
 3. **Land typed manifests and allocation rules**
@@ -145,26 +179,32 @@ prerequisites pass.
      outbox, chain reconciliation, per-suffix warmup, and generation rollover.
    - Package mutation in a dedicated worker command; keep it disabled from
      normal execution.
-5. **Land reusable resolution and comparison modes**
+5. **Land reusable resolution and demand evidence**
    - Resolve the active shared generation and vault binding independently of
      route fee payer.
-   - Compile and record legacy versus reusable evidence while legacy remains
-     authoritative.
-6. **Land cutover and rollback modes**
-   - Support `legacy`, `shadow`, `prefer_reusable`, and `reusable_only` per
-     vault, plus a global force-legacy kill switch.
+   - Compile and record exact reusable coverage, packet, and simulation
+     evidence; missing coverage seals demand rather than selecting legacy.
+6. **Land cutover and rollback controls**
+   - Require `reusable_only` with force-legacy disabled for money movement.
+     Historical `legacy`, `shadow`, `prefer_reusable`, and force-legacy control
+     values are fail-closed stop states once the legacy resolver is removed.
    - Make active-generation and active-binding changes atomic and reversible.
 7. **Land cleanup and operational safeguards**
    - Protect every active/standby/bound/leased/pending/in-flight table.
    - Retire only after zero references and the required cooldown.
 8. **Run the complete implementation verifier**
    - Do not begin production provisioning until `IMPLEMENTATION: PASS`.
-9. **Perform the approved direct migration**
-   - Import legacy state, provision shared and vault tables, prove every live
-     reusable bundle before changing routing, cut the eligible fleet over in
-     one controlled operation, verify the post-cutover path, then deactivate
-     and close only zero-reference legacy tables after Solana's required
-     cooldown.
+9. **Perform the approved demand-driven direct migration**
+   - Apply migrations, import legacy state for refund accounting, populate and
+     fully provision the durable shared catalog, and start the packed-shard
+     provisioner while routing remains fail closed.
+   - Drain the old monitor, deploy the no-legacy monitor, and switch directly
+     to `reusable_only` without a vault backfill.
+   - Only after that switch, prove a genuine missing-vault attempt defers
+     safely, seals one request, is provisioned, and succeeds on retry with a
+     confirmed optimized movement.
+   - Deactivate/close only zero-reference legacy tables after Solana's required
+     cooldown, with simulation, finality, and policy-account refund proof.
 
 ## Implementation Required Checks
 
@@ -185,6 +225,9 @@ equivalent normalized names:
   epoch;
 - immutable manifests and normalized manifest addresses with subject, semantic
   class/role, desired-set hash, source slot, and planner version;
+- a monotonic shared-catalog head that points to one sealed shared manifest and
+  records enabled-mint, reserve-set, address-set, source-slot, and revision
+  evidence independently of any vault request;
 - vault-to-table bindings with allocation mode, reserved capacity, predecessor,
   activation interval, and lifecycle;
 - normalized on-chain table membership with table, address, ordinal, added
@@ -270,6 +313,8 @@ Required behavior:
 - each vault's desired manifest is a durable union across all sealed,
   non-cancelled route-requirement cohorts for that vault, so observing a new
   route shape cannot drop addresses needed by an earlier shape;
+- shared desired state comes only from the authoritative stable-market catalog;
+  a route's shared manifest must be its subset and cannot grow the shared ALT;
 - a binding is reserved transactionally before remote provisioning starts;
 - a vault that cannot fit receives a new/preparing shard or dedicated table,
   rather than a partial binding;
@@ -280,8 +325,11 @@ Required behavior:
 - the previous binding remains available for rollback;
 - the stable family extends only while the full desired manifest plus headroom
   fits; otherwise it builds a compact next generation;
-- if a measured shared-market universe exceeds 256, the planner supports
-  co-occurrence-based shared shards rather than silently truncating it.
+- if the complete measured shared-market universe exceeds the configured
+  single-table high-water mark (and therefore cannot fit one ALT with the
+  required headroom), catalog publication/planning fails before durable writes
+  or transactions. Shared sharding requires a future schema/resolver/verifier
+  migration; the current implementation must never truncate or auto-split it.
 
 Required adversarial evidence includes concurrent reservation, duplicate
 address, exact-capacity, one-over-capacity, growth-reservation, and relocation
@@ -316,9 +364,16 @@ Required behavior:
 - existing warmed entries remain usable while a new suffix warms;
 - readiness tracks a usable prefix or per-address `usable_after_slot`;
 - production readiness requires finalization and a later usable slot;
-- create/extend spend is limited by explicit cluster, payer, SOL budget, rate,
-  and concurrency configuration;
-- the table mutation authority is independent of the route fee payer.
+- after simulation and before signing, every mutation attempt reserves its
+  worst-case fee plus rent in a PostgreSQL-backed, cluster-wide rolling budget
+  under the operation fencing token; the limit survives restarts, serializes
+  overlapping workers, replays the same fence idempotently, and denies
+  overspend without signing or sending;
+- create/extend spend is additionally limited by explicit cluster, payer,
+  rate, and concurrency configuration;
+- the table mutation authority and payer are the standard policy public key,
+  loaded from `POLICY_KEYPAIR` only inside explicit provisioner/cleanup execute
+  paths.
 
 FAIL if state exists only in process memory, if an operation is first persisted
 after send, or if timeout recovery submits another mutation without chain
@@ -333,9 +388,12 @@ Required behavior:
 
 - normal same-mint, idle-vault, policy, monitor, and E2E execution cannot call
   create, extend, freeze, deactivate, or close;
+- the shared-catalog sync command is signerless, sends no transaction, and may
+  only publish/plan an explicit, capacity-checked immutable revision;
 - the provisioner can be paused independently of routing;
 - it supports dry-run/reconcile-only behavior without a signer;
-- execute mode requires the dedicated configured ALT-manager authority/payer;
+- execute mode requires `POLICY_KEYPAIR`, and the derived public key must match
+  both the durable family authority and payer;
 - execute mode reports cluster, table, operation kind, address count, expected
   rent/fee budget, and simulation result without printing secret material;
 - transaction signing/sending remains disabled unless an operator explicitly
@@ -353,31 +411,29 @@ rg -n "create_lookup_table|extend_lookup_table|freeze_lookup_table|deactivate_lo
 Every resulting mutation callsite must be exclusive to the dedicated
 provisioner/cleanup boundary and unreachable from normal movement.
 
-### 6. Reusable Resolver And Rollout Modes
+### 6. Reusable-Only Resolver And Cutover Controls
 
 PASS only if a reusable resolver returns the smallest verified table bundle for
 a vault without requiring the route fee payer to equal table authority.
 
 Required behavior:
 
-- `legacy` resolves only the existing exact-route path;
-- `shadow` executes through legacy and records reusable coverage, contribution,
-  packet bytes, and simulation comparison without sending through reusable
-  tables;
-- `prefer_reusable` uses reusable tables only after exact coverage, warmup,
-  generation, binding, packet, and simulation gates pass, otherwise falling
-  back to a complete legacy bundle;
 - `reusable_only` fails closed when reusable readiness is false and never falls
   back silently;
-- a global force-legacy switch overrides per-vault mode without schema rollback;
+- `legacy`, `shadow`, `prefer_reusable`, and global/per-vault force-legacy are
+  stop states that perform no legacy RPC lookup and send no movement after the
+  legacy resolver removal;
 - the normal reusable bundle is the active shared generation plus the vault's
   active shard binding;
 - standby/previous generations are not selected except by an explicit rollback
   pointer;
+- finalized RPC authority, lifecycle, presence, prefix, or ordered-membership
+  drift persists an immutable report, demotes the shared head, blocks routes
+  without creating vault demand, and forces a complete replacement generation;
 - tables that contribute no compiled lookup indexes are omitted;
 - resolver output is deterministic and records why every selected table was
   chosen;
-- source/target scope remains only in readiness and legacy fallback records;
+- source/target scope remains only in readiness/audit records;
 - explicit cluster configuration replaces URL-substring cluster inference;
 - the same-mint worker, provisioner reconciliation/execute mode, and cleanup
   verify the RPC genesis hash against that explicit cluster before their first
@@ -386,10 +442,14 @@ Required behavior:
 - accepted RPC endpoints are absolute HTTP(S) URLs, and both structured output
   and fatal error paths omit userinfo, path, query, fragment, and access-token
   material while retaining non-secret method/status context.
+- direct cutover obtains exact database preflight evidence, verifies the same
+  physical shared table at finalized RPC, and atomically rejects any revision,
+  generation, table, authority, ordered hash, count, verification-slot, or
+  mutation-epoch change before aligning rollout controls.
 
-FAIL if the new resolver unions every legacy and reusable table, trusts cached
-JSON membership without RPC verification, or continues filtering by route payer
-as ALT authority.
+FAIL if the runtime contains a legacy table discovery/resolution branch, unions
+legacy and reusable tables, trusts cached JSON membership without RPC
+verification, or filters by route payer as ALT authority.
 
 ### 7. Compiler, Packet, And Simulation Proof
 
@@ -435,10 +495,13 @@ Required behavior:
 - every Address Lookup Table Program mutation instruction—create, extend,
   freeze, deactivate, and close—is rejected from normal route transaction
   submission;
-- missing coverage upserts a structured readiness blocker and idempotent
-  provisioning request without spending SOL;
+- shared-catalog drift records a structured readiness/repair blocker and does
+  not create a vault provisioning request or reserve vault-shard capacity;
+- missing vault coverage upserts a structured readiness blocker and one
+  idempotent provisioning request without spending SOL;
 - normal execution never waits for provisioning or mutates a table inline;
-- extra addresses present in a shared shard do not weaken Squads policy checks.
+- extra addresses present in a packed vault shard do not weaken Squads policy
+  checks.
 
 Required regression evidence must prove rejection of all mutation instruction
 variants, not only create and extend.
@@ -488,18 +551,23 @@ Cleanup must remain dry-run-first and require explicit execute approval.
 PASS only if structured logs/readbacks expose:
 
 - reusable-ready active vault count and percentage;
-- legacy fallback count and reason;
+- requests deferred for shared-catalog drift or missing vault coverage, with
+  explicit reason;
 - missing-address and route-readiness blockers;
 - operation queue depth, oldest age, attempts, and terminal failures;
+- durable rolling-budget reservations, active reserved lamports, actual spend,
+  remaining budget, and window end;
 - table family/generation/shard, address count, usable prefix, reservations,
   headroom, bound-vault count, and fragmentation;
 - database/chain prefix or authority drift;
+- open/resolved shared physical-drift evidence and replacement generation;
 - provisioning rent/fees spent and cleanup rent reclaimed;
 - compiled bundle table count and packet size;
 - rollout mode and global force-legacy state.
 
-The repo must document provisioner pause, force-legacy rollback, previous
-generation rollback, vault-binding rollback, reconciliation, and safe cleanup.
+The repo must document provisioner pause, force-legacy as a fail-closed stop,
+previous-generation rollback, vault-binding rollback, reconciliation, and safe
+cleanup.
 
 ### 12. Implementation Verification Commands
 
@@ -520,9 +588,29 @@ The migration check must run through:
 op run --env-file=.env.1password -- sh -c 'bun run yield:migrate:check'
 ```
 
-against an isolated branch containing migration `0017`. If the database branch
+against an isolated branch containing migration `0017`, the existing realtime
+migration `0018`, and ALT migrations `0019` and `0020`. If the database branch
 or credentials are unavailable, report this check FAIL; do not replace it with
 source inspection.
+
+The final implementation verdict must be reproduced from a clean checkout of
+the exact commit intended for the worker image, with
+`REUSABLE_ALT_VERIFY_EXACT_COMMIT=1`. A dirty developer-tree run may be useful
+while iterating, but it cannot supply the final PASS evidence.
+
+The exact-commit invocation is:
+
+```sh
+op run --env-file=.env.1password -- sh -c \
+  'REUSABLE_ALT_VERIFY_EXACT_COMMIT=1 \
+   RUN_REUSABLE_ALT_DATABASE_CHECKS=1 \
+   YIELD_ALT_VERIFICATION_DATABASE_KIND=isolated \
+   bun run verify:reusable-alts'
+```
+
+`NEON_DATABASE_URL` must name a disposable database whose name contains
+`reusable_alt`. The emitted commit SHA must be the SHA used to build the
+immutable monitor/provisioner image.
 
 Any additional checked-in verifier command introduced by the implementation
 must also pass. Tests may use localnet/devnet or read-only mainnet fixtures; no
@@ -545,6 +633,11 @@ git diff --check
 No plaintext secrets, private keys, full database URLs, or signed transaction
 bytes may appear in source, logs, tests, docs, or the diff.
 
+The checked-in verifier must scan tracked and untracked text without echoing
+matched secret content, reject unmerged paths, and in exact-commit mode reject
+every staged, unstaged, or untracked path. Working-tree iteration output is not
+eligible evidence for final `IMPLEMENTATION: PASS`.
+
 ## Production Migration Required Checks
 
 These checks are mandatory for `PRODUCTION MIGRATION: PASS` but must not be run
@@ -552,13 +645,16 @@ without explicit operator approval.
 
 ### 14. Production Migration And Legacy Import
 
-- Migration `0017` is applied through `yield-migrations` and checksum/readback
-  succeeds.
+- Migration `0017`, existing realtime migration `0018`, legacy audit migration
+  `0019`, and demand-driven shared-catalog migration `0020` are applied through
+  `yield-migrations` and checksum/readback succeeds.
 - Every live legacy physical table is reloaded from RPC before import.
 - Imported tables remain `legacy_route`/`legacy_mixed`; none is relabeled as a
   clean shared or vault table.
 - Unknown, missing, authority-drifted, or prefix-mismatched tables are blocked
   and reported.
+- Import is audit/refund bookkeeping only and cannot create or extend a legacy
+  table.
 
 ### 15. Shared Generation Provisioning
 
@@ -566,67 +662,111 @@ without explicit operator approval.
   selected physical topology.
 - Create/extend operations are durably recorded before broadcast and reconcile
   to finalized chain state.
-- The generation is warm and prefix/hash verified before the direct cutover.
-- Its previous generation pointer and rollback command are recorded.
+- Every production mutation has an approved durable cluster-budget reservation
+  derived from its simulation; overlapping workers and process restarts cannot
+  reset or oversubscribe the rolling lamport ceiling.
+- The durable shared generation contains the full stable market-data catalog,
+  not merely the accounts seen in one vault's first route.
+- The generation is warm and prefix/hash verified before the direct switch.
+- A first generation may honestly have no reusable predecessor; later
+  generations must retain and validate their real predecessor.
 
-### 16. Packed Vault Backfill
+### 16. Demand-Driven Packed Vault Provisioning
 
-- Every vault/scope with a live legacy ALT reference and every route executable
-  at the cutover snapshot is included; current money-moving consumers are
-  never deferred behind dormant policy rows.
-- Shards respect capacity, reservation, cohort, budget, and concurrency limits.
-- Every active binding points to a verified warmed table containing its complete
-  manifest.
-- No vault is split across an incomplete preparing/active binding.
-- A dormant or previously unseen route is not preallocated speculatively. Its
-  first attempt must fail before movement intent/send, seal a provisioning
-  request, and become eligible only after the normal provisioner verifies it.
+- No fleet-wide vault manifest or packed binding backfill is run. Before the
+  monitor creates genuine demand, the expected vault binding count may be zero.
+- This proof runs after the direct switch in check 18; check numbering groups
+  evidence by concern and is not permission to manufacture pre-cutover demand.
+- A representative route with missing vault coverage fails before durable
+  movement intent and before send, records a readiness blocker, and seals one
+  idempotent provisioning request for its exact typed manifest.
+- The continuously deployed provisioner leases that request, allocates or
+  extends the best-fit packed v2 shard with `POLICY_KEYPAIR`, respects capacity,
+  reservation, cohort, budget, and concurrency limits, and verifies warm chain
+  state before marking it satisfied.
+- The next normal monitor cycle independently resolves the binding and can
+  compile, simulate, and execute the route. The rebalance is deferred, not
+  lost or silently failed.
+- Additional vaults repeat the same path and reuse existing shard headroom;
+  only measured outliers receive a dedicated v2 table.
 
-### 17. Direct Cutover Proof
+### 17. Demand-Driven Cutover Readiness
 
-- Immediately before cutover, every live route requirement is resolved against
-  the intended reusable state, has exact coverage, compiles within the packet
-  limit, and simulates successfully where the route supports simulation.
-- Packet size, selected tables, table contribution, manifest fingerprints, and
-  verification slots are durably recorded.
-- The force-legacy switch plus previous-generation and previous-binding
-  rollback targets are present and validated without introducing a canary
-  cohort or an artificial observation delay.
-- The direct cutover is fenced so a concurrent lease, stale desired head, or
-  stale provisioner cannot partially activate an obsolete generation or
-  binding.
+- The shared catalog generation is active, warm, and verified; packed-vault
+  family metadata is active; and the deployed provisioner is healthy in
+  bounded execute mode with the standard policy identity.
+- A signerless pre-cutover probe proves that shared-catalog drift records a
+  readiness/repair signal without creating a vault provisioning request, while
+  a typed missing-vault fixture proves the request path can seal idempotently
+  without creating a decision or sending funds. It must not pre-provision a
+  production vault merely to satisfy this gate.
+- Activation remains fenced by desired-head revision, mutation epoch, leases,
+  warmup, and chain-prefix verification so a stale provisioner cannot publish
+  an obsolete generation or binding.
+- The cutover command re-verifies the exact shared ALT at finalized RPC and
+  passes that complete evidence into the atomic database fence; a database-only
+  warm/active flag is insufficient.
+- Readiness explicitly does not require coverage for every managed vault or
+  every route visible in a database snapshot.
 
-### 18. Fleet Cutover
+### 18. Direct Reusable-Only Cutover
 
-- Every migration-eligible live legacy consumer and every currently executable
-  route is reusable-ready before the fleet switch.
-- New onboarding creates manifests/bindings rather than exact-route tables.
-- The eligible fleet is switched directly to `reusable_only` only after the
-  pre-cutover proof passes; no canary cohort or staged expansion is required.
-- Post-cutover readback proves all intended vaults use the selected active
-  generation/bindings, and the normal worker completes at least one real
-  confirmed, reconciled reusable-ALT movement when an executable movement is
-  available.
+- New onboarding and every new route attempt create v2 manifests/requests;
+  nothing can create a new exact-scope legacy ALT.
+- Routing is switched directly to global `reusable_only` after check 17; no
+  canary cohort, staged rollout, or all-vault coverage gate is required.
+- One cluster-fenced cutover transaction proves the exact active shared head,
+  sets global `reusable_only` with force-legacy disabled, and aligns every
+  per-vault override; no hidden legacy stop/resolver state remains.
+- Post-cutover readback shows the normal monitor discovering genuine demand,
+  the provisioner draining it, and at least one real funded production vault
+  completing a confirmed, reconciled optimization through reusable v2 ALTs.
+  Production PASS must wait for an executable positive-edge movement; a no-op
+  poll, submitted signature, or provisioner success alone is not substitute
+  evidence. That same live sequence supplies check 16 evidence: predecision
+  defer, one request, packed-shard provision, next-cycle compile/simulate, and
+  confirmed movement.
+- The movement proof joins one finalized transaction signature to the route
+  decision and exact reusable table bundle, then reloads chain state to prove
+  the source position decreased, the selected higher-yield eligible target
+  position increased, and Neon reconciliation agrees. A later monitor cycle
+  recognizes the optimized position and neither repeats the move nor leaves
+  its provisioning request stuck.
 - Signer history shows zero ALT mutation outside the provisioner after cutover.
 
-### 19. Legacy Retirement
+### 19. Legacy Resolver Removal And Retirement
 
-- Retirement candidates have zero bindings, operations, leases, in-flight
-  references, and fallback observations.
+- The deployed normal worker has no legacy ALT resolution/fallback path before
+  any old table is deactivated. Legacy rows remain only as verified retirement
+  inventory.
+- Retirement candidates have zero bindings, operations, leases, prepared or
+  in-flight references, and fallback observations.
+- Cleanup exhaustively discovers the entire standard-policy legacy fleet and
+  matches a freshly approved count/hash; partial candidate limits, a stale
+  inventory hash, any other authority, or any other recipient fail closed.
 - Deactivation, cooldown, and close are individually verified from chain.
-- A table is never closed merely because the direct fleet switch succeeded;
+- The old monitor is drained and the no-legacy immutable image is confirmed
+  active before deactivation. Every deactivate/close transaction is simulated
+  immediately before submit and verified at finalized commitment.
+- A table is never closed merely because the direct switch succeeded;
   closure still requires a fresh zero-reference check immediately before both
   deactivation and close.
-- Reclaimed rent and close recipients are recorded.
+- Reclaimed rent, finalized signatures, and recipient balance deltas are
+  recorded, and every refund recipient is the standard policy account derived
+  from `POLICY_KEYPAIR`.
 
 ### 20. Production Monitoring
 
 - Alerts exist for readiness regression, missing coverage, operation backlog,
   capacity/headroom, authority/prefix drift, provisioning budget, orphaned
   tables, fallback use, and cleanup anomalies.
-- Render uses the expected immutable light-worker image and separate provisioner
-  command.
+- Render uses the immutable light-worker image built from the exact commit that
+  passed checks 1-13, with the monitor and separate provisioner pinned to that
+  same image tag/digest and their expected distinct commands.
 - Production logs and database readbacks agree with current chain state.
+- A finalized post-cutover optimization satisfying check 18 is retained as the
+  end-to-end health proof; production cannot PASS on service health, ALT
+  creation, or dry-run evidence without an actual optimized fund movement.
 
 ## Required Verdict Format
 
@@ -636,7 +776,7 @@ without explicit operator approval.
 3. Packed-Shard Allocator Is Capacity Safe: PASS|FAIL - evidence
 4. Durable And Recoverable ALT Operations: PASS|FAIL - evidence
 5. Dedicated Provisioner Boundary: PASS|FAIL - evidence
-6. Reusable Resolver And Rollout Modes: PASS|FAIL - evidence
+6. Reusable-Only Resolver And Cutover Controls: PASS|FAIL - evidence
 7. Compiler, Packet, And Simulation Proof: PASS|FAIL - evidence
 8. Fail-Closed Execution And Mutation Guard: PASS|FAIL - evidence
 9. All Earn Lanes Use The Same Resolver: PASS|FAIL - evidence
@@ -648,10 +788,10 @@ IMPLEMENTATION: PASS|FAIL
 
 14. Production Migration And Legacy Import: PASS|FAIL|NOT RUN - evidence
 15. Shared Generation Provisioning: PASS|FAIL|NOT RUN - evidence
-16. Packed Vault Backfill: PASS|FAIL|NOT RUN - evidence
-17. Direct Cutover Proof: PASS|FAIL|NOT RUN - evidence
-18. Fleet Cutover: PASS|FAIL|NOT RUN - evidence
-19. Legacy Retirement: PASS|FAIL|NOT RUN - evidence
+16. Demand-Driven Packed Vault Provisioning: PASS|FAIL|NOT RUN - evidence
+17. Demand-Driven Cutover Readiness: PASS|FAIL|NOT RUN - evidence
+18. Direct Reusable-Only Cutover: PASS|FAIL|NOT RUN - evidence
+19. Legacy Resolver Removal And Retirement: PASS|FAIL|NOT RUN - evidence
 20. Production Monitoring: PASS|FAIL|NOT RUN - evidence
 PRODUCTION MIGRATION: PASS|FAIL|NOT RUN
 ```

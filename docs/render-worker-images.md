@@ -34,6 +34,7 @@ Target split IDs, once created/imported in Render, must be recorded here before 
 | Light `loyal-balance-sweep-ata-projector` service | `srv-d8kfqpjbc2fs73chlc00` |
 | Light `loyal-balance-sweep-autodeposit-trigger` service | `srv-d8lplql7vvec73f1it6g` |
 | Light `loyal-same-mint-yield-monitor` service | `srv-d8n7gqbbc2fs73emk610` |
+| Light `loyal-route-lookup-table-provisioner` service | pending creation and production readback |
 | Heavy staging environment | `evm-d8plqfrtqb8s738actsg` |
 | Heavy `loyal-balance-sweep-ata-monitor-staging` service | `srv-d8plrh9194ac739eulrg` |
 | Light staging environment | `evm-d8plqhgjs32c738s1n70` |
@@ -177,6 +178,7 @@ path and verified by env-name readback.
 
 The light worker image contains the Rust projector/trigger/realtime binaries,
 same-mint monitor/executor binaries, `route-lookup-table-provisioner`,
+`route-lookup-table-shared-catalog`, `route-lookup-table-legacy-import`,
 `route-lookup-table-cleanup`, Bun
 production dependencies, and `scripts/execute-autodeposit-policy.ts`.
 `loyal-yield-realtime` runs from the same immutable image as a Render Web
@@ -191,11 +193,49 @@ explicit operator approval pass. The approved production command is
 `/usr/local/bin/same-mint-yield-monitor --all-active-vaults --execute --poll-interval-seconds 300 --rebalance-cooldown-seconds 300`.
 That service does not include `SOLANA_TESTING_PK`; live optimization and
 idle-vault deposit execution uses `POLICY_KEYPAIR` as the route payer and
-delegated signer. The monitor no longer provisions Address Lookup Tables during
-live execution; missing durable coverage must fail closed until an explicit
-operator-approved provisioning run records reusable tables. Monitor logs should
-report `execute: true`, `pollIntervalSeconds: 300`, and
+delegated signer. The monitor never mutates Address Lookup Tables during live
+execution. Missing durable coverage fails before a decision/send, seals an
+idempotent request, and is served by the separate continuously deployed,
+budgeted provisioner using `POLICY_KEYPAIR`; the next monitor cycle retries.
+The provisioner must stay on the same pinned light-worker image as the monitor
+while using its own Render worker command. Its positive max-lamport ceiling and
+budget-window seconds must be explicit; reservations are PostgreSQL-backed and
+cluster-wide so a restart or overlapping Render instance cannot reset spend.
+Monitor logs should report
+`execute: true`, `pollIntervalSeconds: 300`, and
 `rebalanceCooldownSeconds: 300`.
+
+The durable-v2 ALT production order is strict:
+
+1. Apply and verify migrations `0017`, `0018_earn_activity_realtime`,
+   `0019_legacy_lookup_table_imports`, and
+   `0020_demand_driven_shared_market_catalog`.
+2. Import legacy ALTs for audit/refund accounting, bootstrap both v2 families,
+   publish the complete signerless shared catalog, and run the provisioner
+   until the exact shared generation is finalized, warm, and active. Keep
+   routing fail closed during this work.
+3. Pin the provisioner and monitor to the same newly built immutable
+   `light-workers:sha-<commit>` image. Stop and drain the old monitor, prove no
+   prepared decision/send remains, then start the no-legacy monitor and the
+   separately budgeted `POLICY_KEYPAIR` provisioner.
+4. Perform the finalized-RPC-verified, atomic global `reusable_only` switch. Do
+   not run a vault fleet backfill. The first genuine missing-vault attempt must
+   defer before decision creation/send, seal one request, be packed by the
+   provisioner, and retry on the next monitor cycle.
+5. Do not call the deployment healthy until Render logs, database evidence,
+   and finalized RPC readback prove at least one eligible deposit/rebalance was
+   compiled with reusable v2 ALTs, simulated, confirmed, and reconciled. A
+   running service or empty queue alone is insufficient.
+6. Only after the deployed no-legacy image and zero-reference proof are current
+   may old tables be retired. Cleanup must exhaustively match the approved
+   standard-policy fleet count/hash, simulate immediately before every
+   deactivate and close, verify finality, wait the observed SlotHashes cooldown,
+   repeat the exhaustive zero-reference proof before close, and prove rent
+   returned to the standard policy account.
+
+Record the provisioner service ID, immutable image digest, command, bounded
+lamport/operation settings, and final monitor/provisioner deploy IDs in this
+document before the production migration verdict is marked PASS.
 
 Realtime V2 hardening added two secret-safe verifier commands:
 

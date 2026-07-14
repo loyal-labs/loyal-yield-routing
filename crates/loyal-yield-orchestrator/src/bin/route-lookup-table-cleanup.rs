@@ -7,14 +7,16 @@ use std::{
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+#[cfg(test)]
+use loyal_yield_orchestrator::LookupTableLifecycle;
 use loyal_yield_orchestrator::{
     keypair_from_string,
     rpc_safety::{
         redacted_external_error, redacted_rpc_endpoint, validate_rpc_endpoint,
         validate_rpc_genesis_hash,
     },
-    LookupTableCleanupProtection, LookupTableLifecycle, LookupTableOperationEnqueue,
-    LookupTableOperationKind, NeonSqlClient, NeonSqlConfig, YIELD_ROUTER_KEYPAIR_ENV,
+    LegacyLookupTableCleanupProtection, LookupTableCleanupProtection, LookupTableOperationKind,
+    NeonSqlClient, NeonSqlConfig, VerifiedLegacyLookupTableCleanup, POLICY_KEYPAIR_ENV,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -25,8 +27,13 @@ use solana_sdk::address_lookup_table::{
     state::{estimate_last_valid_slot, AddressLookupTable},
 };
 use solana_sdk::{
-    account::Account, commitment_config::CommitmentConfig, instruction::Instruction,
-    packet::PACKET_DATA_SIZE, pubkey::Pubkey, signature::Signer, transaction::Transaction,
+    account::Account,
+    commitment_config::CommitmentConfig,
+    instruction::Instruction,
+    packet::PACKET_DATA_SIZE,
+    pubkey::Pubkey,
+    signature::{Signature, Signer},
+    transaction::Transaction,
 };
 
 const AFFECTED_POLICY_AUTHORITY: &str = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5";
@@ -56,6 +63,8 @@ struct Options {
     simulate_before_submit: bool,
     bundle_size: usize,
     trace_timing: bool,
+    expected_fleet_count: Option<usize>,
+    expected_fleet_hash: Option<String>,
 }
 
 #[derive(Debug)]
@@ -90,13 +99,22 @@ struct PlannedCleanup {
     instruction: Instruction,
     recipient: Option<Pubkey>,
     reclaimed_lamports: u64,
+    expected_authority: Pubkey,
+    expected_address_count: usize,
+    expected_address_hash: String,
+    expected_cleanup_authorization_token: String,
 }
 
 #[derive(Debug)]
 struct CleanupTransactionResult {
     signature: String,
-    simulation: Option<Value>,
+    simulation: Value,
     transaction_packet: CleanupTransactionPacket,
+    estimated_fee_lamports: u64,
+    recipient_balance_before: Option<u64>,
+    recipient_balance_after: Option<u64>,
+    expected_refund_lamports: u64,
+    minimum_net_recipient_increase_lamports: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -226,7 +244,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .map_err(|_| "NEON_DATABASE_URL is required for binding-aware ALT cleanup")?;
     let database = NeonSqlClient::connect(NeonSqlConfig::new(database_url)).await?;
     database
-        .require_schema_migration(17, "reusable_route_lookup_tables")
+        .require_schema_migration(19, "legacy_lookup_table_imports")
         .await?;
     let trace = TraceLog::new(options.trace_timing);
     trace.event(
@@ -242,13 +260,28 @@ async fn run() -> Result<(), Box<dyn Error>> {
         }),
     );
     let rpc =
-        RpcClient::new_with_commitment(options.rpc_url.clone(), CommitmentConfig::confirmed());
+        RpcClient::new_with_commitment(options.rpc_url.clone(), CommitmentConfig::finalized());
     let observed_genesis_hash = rpc
         .get_genesis_hash()
         .map_err(|_| "failed to read genesis hash from configured ALT cleanup RPC endpoint")?;
     validate_rpc_genesis_hash(&options.cluster, observed_genesis_hash).map_err(|error| {
         format!("refusing ALT cleanup read or mutation against mismatched RPC: {error}")
     })?;
+    let signer = if options.execute {
+        let signer = load_authority_signer(&options)?;
+        let expected_policy = Pubkey::from_str(AFFECTED_POLICY_AUTHORITY)?;
+        if signer.pubkey() != expected_policy {
+            return Err(format!(
+                "POLICY_KEYPAIR pubkey {} does not match the standard policy authority {}",
+                signer.pubkey(),
+                expected_policy
+            )
+            .into());
+        }
+        Some(signer)
+    } else {
+        None
+    };
     let phase_started = Instant::now();
     let protected = protected_legacy_tables(&database).await?;
     trace.finish(
@@ -343,28 +376,72 @@ async fn run() -> Result<(), Box<dyn Error>> {
     );
 
     let phase_started = Instant::now();
-    let current_slot = rpc.get_slot()?;
+    let current_slot = rpc.get_slot_with_commitment(CommitmentConfig::finalized())?;
     trace.finish(
         "cleanup.current_slot",
         phase_started,
         json!({ "currentSlot": current_slot }),
     );
-    let mut signer: Option<Box<dyn Signer>> = None;
     let mut rows = Vec::new();
     let mut planned_cleanups = Vec::new();
-    let mut queued_operation_count = 0_usize;
+    let queued_operation_count = 0_usize;
     let mut total_reclaimable = 0_u64;
     let mut total_reclaimed = 0_u64;
 
     let phase_started = Instant::now();
     let loaded_candidates = load_candidates(&rpc, &table_addresses, &trace)?;
+    let mut classified_v2_tables = BTreeSet::new();
+    for (table_address, loaded) in &loaded_candidates {
+        if loaded.is_ok()
+            && database
+                .lookup_table_cleanup_protection(&options.cluster, &table_address.to_string())
+                .await?
+                .is_some()
+        {
+            classified_v2_tables.insert(*table_address);
+        }
+    }
+    let policy_authority = Pubkey::from_str(AFFECTED_POLICY_AUTHORITY)?;
+    let legacy_inventory = loaded_candidates
+        .iter()
+        .filter_map(|(_, loaded)| loaded.as_ref().ok())
+        .filter(|candidate| {
+            candidate.owner == address_lookup_table_program::id()
+                && candidate.authority == Some(policy_authority)
+                && !classified_v2_tables.contains(&candidate.table_address)
+        })
+        .collect::<Vec<_>>();
+    let inventory_fleet_hash = approved_policy_fleet_hash(&legacy_inventory);
+    if options
+        .expected_fleet_count
+        .is_some_and(|expected| expected != legacy_inventory.len())
+    {
+        return Err(format!(
+            "policy legacy fleet has {} extant tables, but --expected-fleet-count is {}",
+            legacy_inventory.len(),
+            options.expected_fleet_count.expect("checked Some")
+        )
+        .into());
+    }
+    if options
+        .expected_fleet_hash
+        .as_deref()
+        .is_some_and(|expected| expected != inventory_fleet_hash)
+    {
+        return Err("policy legacy fleet differs from --expected-fleet-hash".into());
+    }
     trace.finish(
         "cleanup.candidate_accounts",
         phase_started,
-        json!({ "accountCount": loaded_candidates.len() }),
+        json!({
+            "accountCount": loaded_candidates.len(),
+            "legacyFleetCount": legacy_inventory.len(),
+            "excludedV2TableCount": classified_v2_tables.len(),
+            "inventoryFleetHash": inventory_fleet_hash,
+        }),
     );
     let phase_started = Instant::now();
-    for (table_address, loaded_candidate) in loaded_candidates {
+    for (table_address, loaded_candidate) in &loaded_candidates {
         let candidate = match loaded_candidate {
             Ok(candidate) => candidate,
             Err(error) => {
@@ -382,16 +459,28 @@ async fn run() -> Result<(), Box<dyn Error>> {
         let registered_protection = database
             .lookup_table_cleanup_protection(&options.cluster, &candidate.table_address.to_string())
             .await?;
+        let legacy_protection = if registered_protection.is_none() {
+            database
+                .legacy_lookup_table_cleanup_protection(
+                    &options.cluster,
+                    &candidate.table_address.to_string(),
+                )
+                .await?
+        } else {
+            None
+        };
         let manually_protected = protected_all.contains(&candidate.table_address);
         let (action, reason) = if manually_protected {
             ("skip", "legacy_registry_env_or_manual_allowlist".to_owned())
-        } else if let Some(protection) = registered_protection.as_ref() {
-            classify_registered_candidate(&candidate, protection, &options.cluster, current_slot)
+        } else if registered_protection.is_some() {
+            (
+                "skip",
+                "classified_v2_table_use_dedicated_provisioner".to_owned(),
+            )
+        } else if let Some(protection) = legacy_protection.as_ref() {
+            classify_imported_legacy_candidate(candidate, protection, current_slot)
         } else {
-            let authority_matches = candidate
-                .authority
-                .is_some_and(|authority| options.authorities.contains(&authority));
-            classify_candidate(&candidate, authority_matches, None, current_slot)
+            ("skip", "not_verified_imported_legacy_inventory".to_owned())
         };
         if matches!(action, "deactivate" | "close") {
             total_reclaimable = total_reclaimable.saturating_add(candidate.lamports);
@@ -402,65 +491,20 @@ async fn run() -> Result<(), Box<dyn Error>> {
             .map(|event| history_event_json(event, &protected_all))
             .collect::<Vec<_>>();
 
-        let mut execution = Value::Null;
+        let execution = Value::Null;
         if options.execute && matches!(action, "deactivate" | "close") {
-            if let Some(protection) = registered_protection.as_ref() {
-                let operation_kind = if action == "deactivate" {
-                    LookupTableOperationKind::Deactivate
-                } else {
-                    LookupTableOperationKind::Close
-                };
-                let operation = database
-                    .enqueue_lookup_table_operation(LookupTableOperationEnqueue {
-                        idempotency_key: format!(
-                            "cleanup:{}:{}:{}:{}",
-                            options.cluster,
-                            protection.table_id,
-                            operation_kind.as_str(),
-                            protection.mutation_epoch
-                        ),
-                        family_id: protection.family_id,
-                        route_lookup_table_id: Some(protection.table_id),
-                        manifest_id: None,
-                        binding_id: None,
-                        operation_kind,
-                        target_generation: None,
-                        target_shard_ordinal: None,
-                        operation_context: json!({
-                            "source": "route_lookup_table_cleanup",
-                            "cluster": options.cluster,
-                            "table": candidate.table_address.to_string(),
-                            "expectedAuthority": protection.expected_authority,
-                            "expectedAddressHash": protection.address_hash,
-                            "expectedMutationEpoch": protection.mutation_epoch,
-                            "closeRecipient": options.recipient.map(|recipient| recipient.to_string()),
-                            "expectedReclaimedRentLamports": if action == "close" {
-                                Some(candidate.lamports.to_string())
-                            } else {
-                                None
-                            },
-                        }),
-                        mutation_epoch: protection.mutation_epoch,
-                        estimated_fee_lamports: None,
-                        estimated_rent_lamports: None,
-                        addresses: Vec::new(),
-                    })
-                    .await?;
-                queued_operation_count += 1;
-                execution = json!({
-                    "boundary": "dedicated_provisioner",
-                    "queuedOperationId": operation.id,
-                    "operationState": operation.operation_state.as_str(),
-                    "operationKind": operation.operation_kind.as_str(),
-                    "sendsTransactionHere": false,
-                });
-            } else {
-                if signer.is_none() {
-                    signer = Some(load_authority_signer(&options)?);
-                }
+            if registered_protection.is_none() {
+                let authorization = require_retired_imported_legacy_cleanup_authorization(
+                    &database,
+                    &options.cluster,
+                    candidate,
+                    action,
+                    legacy_protection.as_ref(),
+                )
+                .await?;
                 let signer = signer
                     .as_ref()
-                    .ok_or("legacy cleanup authority signer was not loaded")?;
+                    .ok_or("POLICY_KEYPAIR was not loaded for cleanup execute")?;
                 let authority = candidate
                     .authority
                     .ok_or("candidate had no authority during execute")?;
@@ -486,12 +530,18 @@ async fn run() -> Result<(), Box<dyn Error>> {
                         instruction,
                         recipient: None,
                         reclaimed_lamports: 0,
+                        expected_authority: authority,
+                        expected_address_count: candidate.address_count,
+                        expected_address_hash: ordered_candidate_address_hash(&candidate.addresses),
+                        expected_cleanup_authorization_token: authorization.authorization_token,
                     });
                 } else {
-                    let recipient = options
-                        .recipient
-                        .or_else(|| Some(signer.pubkey()))
-                        .ok_or("--recipient is required for close execution")?;
+                    let recipient = options.recipient.unwrap_or_else(|| signer.pubkey());
+                    if recipient != signer.pubkey() {
+                        return Err(
+                            "close recipient must equal the POLICY_KEYPAIR public key".into()
+                        );
+                    }
                     let instruction = address_lookup_table_instruction::close_lookup_table(
                         candidate.table_address,
                         signer.pubkey(),
@@ -504,6 +554,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
                         instruction,
                         recipient: Some(recipient),
                         reclaimed_lamports: candidate.lamports,
+                        expected_authority: authority,
+                        expected_address_count: candidate.address_count,
+                        expected_address_hash: ordered_candidate_address_hash(&candidate.addresses),
+                        expected_cleanup_authorization_token: authorization.authorization_token,
                     });
                 }
             }
@@ -521,6 +575,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             "action": action,
             "reason": reason,
             "registeredControlPlane": registered_protection.as_ref().map(cleanup_protection_json),
+            "legacyCleanupProtection": legacy_protection.as_ref().map(legacy_cleanup_protection_json),
             "historyEvents": candidate_history,
             "execution": execution,
         }));
@@ -537,16 +592,14 @@ async fn run() -> Result<(), Box<dyn Error>> {
 
     if options.execute && !planned_cleanups.is_empty() {
         let phase_started = Instant::now();
-        let signer = signer
-            .as_ref()
-            .ok_or("--execute requires an authority signer")?;
+        let signer = signer.as_ref().ok_or("--execute requires POLICY_KEYPAIR")?;
         total_reclaimed = execute_planned_cleanups(
+            &database,
             &rpc,
             &options,
             signer.as_ref(),
             &planned_cleanups,
             &mut rows,
-            current_slot,
         )
         .await?;
         trace.finish(
@@ -575,6 +628,11 @@ async fn run() -> Result<(), Box<dyn Error>> {
             "minSlot": options.min_slot,
             "explicitTableCount": options.tables.len(),
             "protectedTableCount": protected_all.len(),
+            "legacyFleetCount": legacy_inventory.len(),
+            "inventoryFleetHash": inventory_fleet_hash,
+            "excludedV2TableCount": classified_v2_tables.len(),
+            "expectedFleetCount": options.expected_fleet_count,
+            "expectedFleetHash": options.expected_fleet_hash,
             "feesRecoverable": false,
             "feeNote": "ALT account rent can be reclaimed after close; transaction fees are not recoverable.",
             "currentSlot": current_slot,
@@ -592,6 +650,54 @@ async fn run() -> Result<(), Box<dyn Error>> {
     trace.finish("cleanup.output", phase_started, json!({}));
     trace.event("cleanup.done", json!({}));
     Ok(())
+}
+
+async fn require_retired_imported_legacy_cleanup_authorization(
+    database: &NeonSqlClient,
+    cluster: &str,
+    candidate: &Candidate,
+    action: &str,
+    expected: Option<&LegacyLookupTableCleanupProtection>,
+) -> Result<LegacyLookupTableCleanupProtection, Box<dyn Error>> {
+    let protection = database
+        .legacy_lookup_table_cleanup_protection(cluster, &candidate.table_address.to_string())
+        .await?
+        .ok_or("legacy ALT is missing imported cleanup evidence")?;
+    if expected
+        .is_some_and(|expected| expected.authorization_token != protection.authorization_token)
+    {
+        return Err("legacy ALT cleanup authorization changed during planning".into());
+    }
+    if protection.expected_authority
+        != candidate
+            .authority
+            .map_or_else(String::new, |authority| authority.to_string())
+        || usize::try_from(protection.address_count)? != candidate.address_count
+        || protection.address_hash != ordered_candidate_address_hash(&candidate.addresses)
+        || protection.ordered_addresses
+            != candidate
+                .addresses
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+    {
+        return Err("legacy ALT chain identity differs from immutable import evidence".into());
+    }
+    let authorized = match action {
+        "deactivate" => protection.can_deactivate,
+        "close" => protection.can_close,
+        _ => false,
+    };
+    if !authorized {
+        return Err(format!(
+            "legacy ALT {}/{} is not authorized to {action}: {}",
+            cluster,
+            candidate.table_address,
+            protection.protection_reasons.join(",")
+        )
+        .into());
+    }
+    Ok(protection)
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn Error>> {
@@ -616,12 +722,14 @@ where
     let mut scan_history = false;
     let mut include_env_authorities = false;
     let mut limit = 500_usize;
-    let mut history_limit = 100_usize;
+    let mut history_limit = 1_000_usize;
     let mut min_slot = None;
     let mut authority_key_env = None;
     let mut simulate_before_submit = false;
     let mut bundle_size = 1_usize;
     let mut trace_timing = false;
+    let mut expected_fleet_count = None;
+    let mut expected_fleet_hash = None;
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -640,6 +748,20 @@ where
             "--dry-run" => execute = false,
             "--simulate-before-submit" => simulate_before_submit = true,
             "--trace-timing" => trace_timing = true,
+            "--expected-fleet-count" => {
+                expected_fleet_count = Some(
+                    iter.next()
+                        .ok_or("--expected-fleet-count requires a value")?
+                        .parse()
+                        .map_err(|_| "--expected-fleet-count must be a usize")?,
+                );
+            }
+            "--expected-fleet-hash" => {
+                expected_fleet_hash = Some(
+                    iter.next()
+                        .ok_or("--expected-fleet-hash requires a value")?,
+                );
+            }
             "--bundle-size" => {
                 bundle_size = iter
                     .next()
@@ -677,7 +799,7 @@ where
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: route-lookup-table-cleanup --cluster <CLUSTER> --rpc-url <URL> [--authority <PUBKEY>...] [--include-env-authorities] [--table <PUBKEY>...] [--allowlist <PUBKEY>...] [--recipient <PUBKEY>] [--authority-key-env <ENV>] [--scan-program-accounts] [--scan-history] [--history-limit <N>] [--min-slot <SLOT>] [--simulate-before-submit] [--bundle-size <N>] [--trace-timing] [--execute]\n\nDry-run is the default. Every mode requires explicit YIELD_ALT_CLUSTER/--cluster, SOLANA_RPC_URL/--rpc-url, and NEON_DATABASE_URL. The RPC genesis hash is verified against the explicit cluster before any chain read or mutation. Execute uses YIELD_ROUTER_KEYPAIR only for unregistered legacy cleanup; registered reusable tables enqueue durable cleanup operations for the dedicated provisioner. --simulate-before-submit simulates each signed legacy cleanup transaction immediately before submit. --bundle-size groups up to N legacy close/deactivate instructions that use the same authority signer into one transaction. --trace-timing emits timestamped phase duration logs to stderr. --include-env-authorities derives public keys from present YIELD_ROUTER_KEYPAIR, POLICY_KEYPAIR, DEPLOYMENT_PK, and SOLANA_TESTING_PK values without printing secrets."
+                    "Usage: route-lookup-table-cleanup --cluster <CLUSTER> --rpc-url <URL> [--table <PUBKEY>...] [--allowlist <PUBKEY>...] [--recipient <POLICY_PUBKEY>] [--scan-program-accounts] [--scan-history] [--history-limit <N>] [--min-slot <SLOT>] [--bundle-size 1] [--trace-timing] [--expected-fleet-count <N> --expected-fleet-hash <HASH> --execute]\n\nDry-run is the default. Every mode requires explicit YIELD_ALT_CLUSTER/--cluster, SOLANA_RPC_URL/--rpc-url, and NEON_DATABASE_URL. The RPC genesis hash is verified against the explicit cluster before any chain read or mutation. Execute always loads the standard POLICY_KEYPAIR, requires exhaustive program-account plus history discovery, requires the approved policy-authority legacy fleet count/hash, simulates every transaction, waits for finalization, and permits close refunds only to the policy signer. Classified v2 tables are never mutated by this command. Execute requires --bundle-size 1 so each mutation holds a dedicated database authorization fence through finalization. --trace-timing emits timestamped phase duration logs to stderr."
                 );
                 std::process::exit(0);
             }
@@ -702,6 +824,43 @@ where
     let rpc_url = rpc_url
         .filter(|value| !value.trim().is_empty())
         .ok_or("SOLANA_RPC_URL or --rpc-url is required for every cleanup mode")?;
+    if expected_fleet_hash
+        .as_deref()
+        .is_some_and(|hash| hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err("--expected-fleet-hash must be a 64-character hexadecimal hash".into());
+    }
+    if execute {
+        let policy = Pubkey::from_str(AFFECTED_POLICY_AUTHORITY)?;
+        if recipient.is_some_and(|value| value != policy) {
+            return Err("--execute close recipient must equal the standard policy pubkey".into());
+        }
+        if authority_key_env
+            .as_deref()
+            .is_some_and(|name| name != POLICY_KEYPAIR_ENV)
+        {
+            return Err("--execute only permits the standard POLICY_KEYPAIR signer".into());
+        }
+        if include_env_authorities || authorities.iter().any(|authority| *authority != policy) {
+            return Err("--execute only permits the standard policy authority inventory".into());
+        }
+        if expected_fleet_count.is_none() || expected_fleet_hash.is_none() {
+            return Err(
+                "--execute requires --expected-fleet-count and --expected-fleet-hash from an approved dry run"
+                    .into(),
+            );
+        }
+        if bundle_size != 1 {
+            return Err(
+                "--execute requires --bundle-size 1 so each legacy mutation holds its own database authorization fence"
+                    .into(),
+            );
+        }
+        scan_program_accounts = true;
+        scan_history = true;
+        limit = 0;
+        simulate_before_submit = true;
+    }
     Ok(Options {
         cluster,
         rpc_url,
@@ -720,6 +879,8 @@ where
         simulate_before_submit,
         bundle_size,
         trace_timing,
+        expected_fleet_count,
+        expected_fleet_hash,
     })
 }
 
@@ -1302,6 +1463,7 @@ fn candidate_from_account(table_address: Pubkey, account: &Account) -> Result<Ca
     })
 }
 
+#[cfg(test)]
 fn classify_candidate(
     candidate: &Candidate,
     authority_matches: bool,
@@ -1341,6 +1503,7 @@ fn classify_candidate(
     )
 }
 
+#[cfg(test)]
 fn classify_registered_candidate(
     candidate: &Candidate,
     protection: &LookupTableCleanupProtection,
@@ -1431,6 +1594,28 @@ fn ordered_candidate_address_hash(addresses: &[Pubkey]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+fn approved_policy_fleet_hash(candidates: &[&Candidate]) -> String {
+    let mut candidates = candidates.to_vec();
+    candidates.sort_by_key(|candidate| candidate.table_address);
+    let mut parts = vec!["legacy-alt-policy-fleet-v1".to_owned()];
+    for candidate in candidates {
+        parts.extend([
+            candidate.table_address.to_string(),
+            candidate
+                .authority
+                .map_or_else(String::new, |value| value.to_string()),
+            candidate.address_count.to_string(),
+            ordered_candidate_address_hash(&candidate.addresses),
+        ]);
+    }
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
 fn cleanup_protection_json(protection: &LookupTableCleanupProtection) -> Value {
     json!({
         "cluster": protection.cluster,
@@ -1448,6 +1633,77 @@ fn cleanup_protection_json(protection: &LookupTableCleanupProtection) -> Value {
     })
 }
 
+fn legacy_cleanup_protection_json(protection: &LegacyLookupTableCleanupProtection) -> Value {
+    json!({
+        "cluster": protection.cluster,
+        "tableId": protection.table_id,
+        "importRunId": protection.import_run_id,
+        "legacyKind": protection.legacy_kind.map(|kind| kind.as_str()),
+        "status": protection.status,
+        "durable": protection.durable,
+        "expectedAuthority": protection.expected_authority,
+        "addressCount": protection.address_count,
+        "addressHash": protection.address_hash,
+        "lastVerifiedSlot": protection.last_verified_slot,
+        "zeroReference": protection.zero_reference,
+        "nonselectable": protection.nonselectable,
+        "canDeactivate": protection.can_deactivate,
+        "canClose": protection.can_close,
+        "authorizationToken": protection.authorization_token,
+        "protectionReasons": protection.protection_reasons,
+    })
+}
+
+fn classify_imported_legacy_candidate(
+    candidate: &Candidate,
+    protection: &LegacyLookupTableCleanupProtection,
+    current_slot: u64,
+) -> (&'static str, String) {
+    let identity_matches = protection.family_id.is_none()
+        && protection.import_run_id.is_some()
+        && protection.expected_authority
+            == candidate
+                .authority
+                .map_or_else(String::new, |authority| authority.to_string())
+        && usize::try_from(protection.address_count).ok() == Some(candidate.address_count)
+        && protection.address_hash == ordered_candidate_address_hash(&candidate.addresses)
+        && protection.ordered_addresses
+            == candidate
+                .addresses
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+    if !identity_matches {
+        return ("skip", "legacy_import_chain_identity_drift".to_owned());
+    }
+    if protection.can_deactivate && candidate.deactivation_slot == u64::MAX {
+        return (
+            "deactivate",
+            "retired_imported_legacy_table_has_zero_references".to_owned(),
+        );
+    }
+    if protection.can_close && candidate.deactivation_slot != u64::MAX {
+        let close_after = estimate_last_valid_slot(candidate.deactivation_slot);
+        if current_slot <= close_after {
+            return (
+                "defer",
+                format!("retired_imported_legacy_table_cooldown_until_{close_after}"),
+            );
+        }
+        return (
+            "close",
+            "retired_imported_legacy_table_cooldown_elapsed".to_owned(),
+        );
+    }
+    (
+        "skip",
+        format!(
+            "legacy_cleanup_not_authorized:{}",
+            protection.protection_reasons.join(",")
+        ),
+    )
+}
+
 fn lookup_table_status(candidate: &Candidate, current_slot: u64) -> &'static str {
     if candidate.deactivation_slot == u64::MAX {
         "active"
@@ -1462,62 +1718,139 @@ fn load_authority_signer(options: &Options) -> Result<Box<dyn Signer>, Box<dyn E
     let env_name = options
         .authority_key_env
         .as_deref()
-        .unwrap_or(YIELD_ROUTER_KEYPAIR_ENV);
+        .unwrap_or(POLICY_KEYPAIR_ENV);
     let value = env::var(env_name).map_err(|_| format!("{env_name} must be set for --execute"))?;
     Ok(Box::new(keypair_from_string(&value)?))
 }
 
 async fn execute_planned_cleanups(
+    database: &NeonSqlClient,
     rpc: &RpcClient,
     options: &Options,
     signer: &dyn Signer,
     planned_cleanups: &[PlannedCleanup],
     rows: &mut [Value],
-    current_slot: u64,
 ) -> Result<u64, Box<dyn Error>> {
     let mut total_reclaimed = 0_u64;
     preflight_cleanup_batches_fit_packet(rpc, signer, planned_cleanups, options.bundle_size)?;
     for (batch_index, batch) in planned_cleanups.chunks(options.bundle_size).enumerate() {
+        let cleanup = batch
+            .first()
+            .filter(|_| batch.len() == 1)
+            .ok_or("legacy cleanup execute requires exactly one instruction per fenced batch")?;
+        let operation_kind = match cleanup.kind {
+            "deactivate_lookup_table" => LookupTableOperationKind::Deactivate,
+            "close_lookup_table" => LookupTableOperationKind::Close,
+            other => return Err(format!("unsupported cleanup kind {other}").into()),
+        };
+        let authorization = database
+            .begin_legacy_lookup_table_cleanup_authorization(
+                &options.cluster,
+                &cleanup.table_address.to_string(),
+                &cleanup.expected_cleanup_authorization_token,
+                operation_kind,
+            )
+            .await?;
+        let candidate = load_candidate(rpc, cleanup.table_address)?;
+        if authorization.protection().expected_authority
+            != candidate
+                .authority
+                .map_or_else(String::new, |authority| authority.to_string())
+            || usize::try_from(authorization.protection().address_count)? != candidate.address_count
+            || authorization.protection().address_hash
+                != ordered_candidate_address_hash(&candidate.addresses)
+        {
+            return Err(
+                "legacy ALT chain identity changed after database authorization fencing".into(),
+            );
+        }
+        revalidate_cleanup_chain_evidence(rpc, cleanup)?;
         let instructions = batch
             .iter()
             .map(|cleanup| cleanup.instruction.clone())
             .collect::<Vec<_>>();
+        let expected_refund_lamports = batch
+            .iter()
+            .map(|cleanup| cleanup.reclaimed_lamports)
+            .sum::<u64>();
+        let close_recipient = batch.iter().find_map(|cleanup| cleanup.recipient);
+        if batch
+            .iter()
+            .filter_map(|cleanup| cleanup.recipient)
+            .any(|recipient| Some(recipient) != close_recipient)
+        {
+            return Err("cleanup batch contains multiple close recipients".into());
+        }
         let result = send_cleanup_instruction_batch(
             rpc,
             signer,
             &instructions,
-            options.simulate_before_submit,
+            close_recipient,
+            expected_refund_lamports,
         )?;
-        for (batch_instruction_index, cleanup) in batch.iter().enumerate() {
-            let mut execution = json!({
-                "signature": result.signature.clone(),
-                "kind": cleanup.kind,
-                "batchIndex": batch_index,
-                "batchInstructionIndex": batch_instruction_index,
-                "batchSize": batch.len(),
-                "transaction": cleanup_transaction_packet_json(&result.transaction_packet),
-            });
-            if let Some(simulation) = result.simulation.as_ref() {
-                execution["simulation"] = simulation.clone();
-            }
+        let mut execution = json!({
+            "signature": result.signature.clone(),
+            "kind": cleanup.kind,
+            "batchIndex": batch_index,
+            "batchInstructionIndex": 0,
+            "batchSize": 1,
+            "transaction": cleanup_transaction_packet_json(&result.transaction_packet),
+            "finalized": true,
+            "estimatedFeeLamports": result.estimated_fee_lamports.to_string(),
+            "recipientBalanceBefore": result.recipient_balance_before.map(|value| value.to_string()),
+            "recipientBalanceAfter": result.recipient_balance_after.map(|value| value.to_string()),
+            "expectedBatchRefundLamports": result.expected_refund_lamports.to_string(),
+            "minimumNetRecipientIncreaseLamports": result.minimum_net_recipient_increase_lamports.to_string(),
+            "refundProven": result.expected_refund_lamports == 0 || result.recipient_balance_after.is_some(),
+            "simulation": result.simulation.clone(),
+        });
+        let (observed_slot, close_recipient, reclaimed_lamports) =
             if let Some(recipient) = cleanup.recipient {
+                let post_close = rpc.get_account_with_commitment(
+                    &cleanup.table_address,
+                    CommitmentConfig::finalized(),
+                )?;
+                if post_close.value.is_some() {
+                    return Err(format!(
+                        "closed ALT {} still exists at finalized commitment",
+                        cleanup.table_address
+                    )
+                    .into());
+                }
                 total_reclaimed = total_reclaimed.saturating_add(cleanup.reclaimed_lamports);
                 execution["recipient"] = json!(recipient.to_string());
                 execution["reclaimedLamports"] = json!(cleanup.reclaimed_lamports.to_string());
-                execution["databaseRecord"] = record_closed(
-                    &cleanup.table_address,
-                    &result.signature,
-                    &recipient,
-                    cleanup.reclaimed_lamports,
+                (
+                    i64::try_from(rpc.get_slot_with_commitment(CommitmentConfig::finalized())?)?,
+                    Some(recipient.to_string()),
+                    Some(i64::try_from(cleanup.reclaimed_lamports)?),
                 )
-                .await;
             } else {
-                execution["databaseRecord"] =
-                    record_deactivated(&cleanup.table_address, current_slot, &result.signature)
-                        .await;
-            }
-            set_candidate_execution(rows, cleanup.row_index, execution)?;
-        }
+                let reloaded = load_candidate(rpc, cleanup.table_address)?;
+                if reloaded.deactivation_slot == u64::MAX {
+                    return Err(format!(
+                        "deactivated ALT {} remains active at finalized commitment",
+                        cleanup.table_address
+                    )
+                    .into());
+                }
+                execution["actualDeactivationSlot"] = json!(reloaded.deactivation_slot.to_string());
+                (i64::try_from(reloaded.deactivation_slot)?, None, None)
+            };
+        authorization
+            .record_finalized(VerifiedLegacyLookupTableCleanup {
+                cluster: options.cluster.clone(),
+                table_address: cleanup.table_address.to_string(),
+                expected_authorization_token: cleanup.expected_cleanup_authorization_token.clone(),
+                operation_kind,
+                transaction_signature: result.signature.clone(),
+                observed_slot,
+                close_recipient,
+                reclaimed_lamports,
+            })
+            .await?;
+        execution["databaseRecord"] = json!({ "status": "fenced_recorded" });
+        set_candidate_execution(rows, cleanup.row_index, execution)?;
     }
     Ok(total_reclaimed)
 }
@@ -1569,7 +1902,8 @@ fn send_cleanup_instruction_batch(
     rpc: &RpcClient,
     signer: &dyn Signer,
     instructions: &[Instruction],
-    simulate_before_submit: bool,
+    close_recipient: Option<Pubkey>,
+    expected_refund_lamports: u64,
 ) -> Result<CleanupTransactionResult, Box<dyn Error>> {
     let blockhash = rpc.get_latest_blockhash()?;
     let transaction = Transaction::new_signed_with_payer(
@@ -1579,17 +1913,99 @@ fn send_cleanup_instruction_batch(
         blockhash,
     );
     let transaction_packet = ensure_cleanup_transaction_fits_packet(&transaction)?;
-    let simulation = if simulate_before_submit {
-        Some(simulate_cleanup_transaction(rpc, &transaction)?)
-    } else {
-        None
-    };
-    let signature = rpc.send_and_confirm_transaction(&transaction)?.to_string();
+    let simulation = simulate_cleanup_transaction(rpc, &transaction)?;
+    let estimated_fee_lamports = rpc.get_fee_for_message(&transaction.message)?;
+    let recipient_balance_before = close_recipient
+        .map(|recipient| {
+            rpc.get_balance_with_commitment(&recipient, CommitmentConfig::finalized())
+                .map(|response| response.value)
+        })
+        .transpose()?;
+    let signature = rpc.send_and_confirm_transaction_with_spinner_and_commitment(
+        &transaction,
+        CommitmentConfig::finalized(),
+    )?;
+    require_finalized_signature(rpc, &signature)?;
+    let recipient_balance_after = close_recipient
+        .map(|recipient| {
+            rpc.get_balance_with_commitment(&recipient, CommitmentConfig::finalized())
+                .map(|response| response.value)
+        })
+        .transpose()?;
+    let minimum_net_recipient_increase_lamports =
+        expected_refund_lamports.saturating_sub(estimated_fee_lamports);
+    if let (Some(before), Some(after)) = (recipient_balance_before, recipient_balance_after) {
+        let minimum_after = before.saturating_add(minimum_net_recipient_increase_lamports);
+        if after < minimum_after {
+            return Err(format!(
+                "finalized policy recipient balance did not prove the ALT refund: before={before}, after={after}, expected_refund={expected_refund_lamports}, estimated_fee={estimated_fee_lamports}"
+            )
+            .into());
+        }
+    }
     Ok(CleanupTransactionResult {
-        signature,
+        signature: signature.to_string(),
         simulation,
         transaction_packet,
+        estimated_fee_lamports,
+        recipient_balance_before,
+        recipient_balance_after,
+        expected_refund_lamports,
+        minimum_net_recipient_increase_lamports,
     })
+}
+
+fn require_finalized_signature(
+    rpc: &RpcClient,
+    signature: &Signature,
+) -> Result<(), Box<dyn Error>> {
+    let status = rpc
+        .get_signature_statuses_with_history(&[*signature])?
+        .value
+        .into_iter()
+        .next()
+        .flatten()
+        .ok_or("cleanup signature was not found after finalized confirmation")?;
+    if let Some(error) = status.err {
+        return Err(format!("cleanup transaction finalized with error: {error:?}").into());
+    }
+    if !status.satisfies_commitment(CommitmentConfig::finalized()) {
+        return Err("cleanup transaction did not reach finalized commitment".into());
+    }
+    Ok(())
+}
+
+fn revalidate_cleanup_chain_evidence(
+    rpc: &RpcClient,
+    cleanup: &PlannedCleanup,
+) -> Result<(), Box<dyn Error>> {
+    let candidate = load_candidate(rpc, cleanup.table_address)?;
+    if candidate.owner != address_lookup_table_program::id()
+        || candidate.authority != Some(cleanup.expected_authority)
+        || candidate.address_count != cleanup.expected_address_count
+        || ordered_candidate_address_hash(&candidate.addresses) != cleanup.expected_address_hash
+    {
+        return Err(format!(
+            "ALT {} chain evidence changed immediately before cleanup mutation",
+            cleanup.table_address
+        )
+        .into());
+    }
+    match cleanup.kind {
+        "deactivate_lookup_table" if candidate.deactivation_slot != u64::MAX => {
+            Err("ALT is no longer active immediately before deactivation".into())
+        }
+        "close_lookup_table" if candidate.deactivation_slot == u64::MAX => {
+            Err("ALT is active immediately before close".into())
+        }
+        "close_lookup_table"
+            if rpc.get_slot_with_commitment(CommitmentConfig::finalized())?
+                <= estimate_last_valid_slot(candidate.deactivation_slot) =>
+        {
+            Err("ALT deactivation cooldown is not finalized immediately before close".into())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn ensure_cleanup_transaction_fits_packet(
@@ -1634,90 +2050,6 @@ fn simulate_cleanup_transaction(
         "err": simulation.value.err.as_ref().map(|error| format!("{error:?}")),
         "logs": logs,
     }))
-}
-
-async fn record_deactivated(table_address: &Pubkey, slot: u64, signature: &str) -> Value {
-    let Ok(database_url) = env::var("NEON_DATABASE_URL") else {
-        return json!({
-            "status": "skipped",
-            "reason": "NEON_DATABASE_URL unset",
-        });
-    };
-    let client = match NeonSqlClient::connect(NeonSqlConfig::new(database_url)).await {
-        Ok(client) => client,
-        Err(error) => {
-            return json!({
-                "status": "failed",
-                "error": safe_cleanup_operational_error(&error),
-            });
-        }
-    };
-    let slot = match i64::try_from(slot) {
-        Ok(slot) => slot,
-        Err(error) => {
-            return json!({
-                "status": "failed",
-                "error": safe_cleanup_operational_error(&error),
-            });
-        }
-    };
-    match client
-        .mark_route_lookup_table_deactivated(&table_address.to_string(), slot, signature)
-        .await
-    {
-        Ok(_) => json!({ "status": "recorded" }),
-        Err(error) => json!({
-            "status": "failed",
-            "error": safe_cleanup_operational_error(&error),
-        }),
-    }
-}
-
-async fn record_closed(
-    table_address: &Pubkey,
-    signature: &str,
-    recipient: &Pubkey,
-    reclaimed_lamports: u64,
-) -> Value {
-    let Ok(database_url) = env::var("NEON_DATABASE_URL") else {
-        return json!({
-            "status": "skipped",
-            "reason": "NEON_DATABASE_URL unset",
-        });
-    };
-    let client = match NeonSqlClient::connect(NeonSqlConfig::new(database_url)).await {
-        Ok(client) => client,
-        Err(error) => {
-            return json!({
-                "status": "failed",
-                "error": safe_cleanup_operational_error(&error),
-            });
-        }
-    };
-    let reclaimed_lamports = match i64::try_from(reclaimed_lamports) {
-        Ok(reclaimed_lamports) => reclaimed_lamports,
-        Err(error) => {
-            return json!({
-                "status": "failed",
-                "error": safe_cleanup_operational_error(&error),
-            });
-        }
-    };
-    match client
-        .mark_route_lookup_table_closed(
-            &table_address.to_string(),
-            signature,
-            &recipient.to_string(),
-            reclaimed_lamports,
-        )
-        .await
-    {
-        Ok(_) => json!({ "status": "recorded" }),
-        Err(error) => json!({
-            "status": "failed",
-            "error": safe_cleanup_operational_error(&error),
-        }),
-    }
 }
 
 #[cfg(test)]
@@ -2016,16 +2348,23 @@ mod tests {
             "--rpc-url".to_owned(),
             "http://localhost:8899".to_owned(),
             "--execute".to_owned(),
-            "--simulate-before-submit".to_owned(),
+            "--expected-fleet-count".to_owned(),
+            "31".to_owned(),
+            "--expected-fleet-hash".to_owned(),
+            "a".repeat(64),
             "--bundle-size".to_owned(),
-            "4".to_owned(),
+            "1".to_owned(),
             "--trace-timing".to_owned(),
         ])
         .expect("cleanup safety options should parse");
 
         assert!(options.execute);
         assert!(options.simulate_before_submit);
-        assert_eq!(options.bundle_size, 4);
+        assert!(options.scan_program_accounts);
+        assert!(options.scan_history);
+        assert_eq!(options.limit, 0);
+        assert_eq!(options.expected_fleet_count, Some(31));
+        assert_eq!(options.bundle_size, 1);
         assert!(options.trace_timing);
     }
 
@@ -2053,6 +2392,26 @@ mod tests {
         .expect_err("zero bundle size should be rejected");
 
         assert_eq!(error.to_string(), "--bundle-size must be at least 1");
+    }
+
+    #[test]
+    fn alt_cleanup_rejects_unfenced_execute_batching() {
+        let error = parse_args(vec![
+            "--cluster".to_owned(),
+            "localnet".to_owned(),
+            "--rpc-url".to_owned(),
+            "http://localhost:8899".to_owned(),
+            "--execute".to_owned(),
+            "--expected-fleet-count".to_owned(),
+            "31".to_owned(),
+            "--expected-fleet-hash".to_owned(),
+            "a".repeat(64),
+            "--bundle-size".to_owned(),
+            "2".to_owned(),
+        ])
+        .expect_err("multi-table execute cannot share one legacy authorization fence");
+
+        assert!(error.to_string().contains("database authorization fence"));
     }
 
     #[test]

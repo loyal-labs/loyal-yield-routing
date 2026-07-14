@@ -302,39 +302,6 @@ impl NeonSqlClient {
         Ok(())
     }
 
-    pub async fn durable_route_lookup_tables(
-        &self,
-        cluster: &str,
-        scope: &str,
-        authority: &str,
-    ) -> Result<Vec<RouteLookupTable>, OrchestratorError> {
-        if !route_lookup_tables_relation_exists(&self.pool).await? {
-            return Ok(Vec::new());
-        }
-        let rows = sqlx::query(
-            r#"
-            SELECT id, cluster, scope, table_address, authority, payer, status, durable,
-                   address_count, address_hash, addresses, create_signature, extend_signatures,
-                   last_extended_slot, warmup_slot, deactivated_slot, deactivate_signature,
-                   closed_signature, close_recipient, reclaimed_lamports, notes,
-                   created_at, updated_at
-            FROM loyal_yield.route_lookup_tables
-            WHERE cluster = $1
-              AND scope = $2
-              AND authority = $3
-              AND durable = TRUE
-              AND status IN ('active', 'warming', 'usable')
-            ORDER BY updated_at DESC, id DESC
-            "#,
-        )
-        .bind(cluster)
-        .bind(scope)
-        .bind(authority)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(route_lookup_table_from_row).collect())
-    }
-
     pub async fn protected_route_lookup_table_addresses(
         &self,
     ) -> Result<Vec<String>, OrchestratorError> {

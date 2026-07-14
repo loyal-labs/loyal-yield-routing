@@ -10,8 +10,8 @@ use chrono::Utc;
 use loyal_yield_orchestrator::{
     persisted_lookup_table_success_accounting, reconcile_lookup_table_operation,
     rpc_safety::{redacted_external_error, validate_rpc_endpoint, validate_rpc_genesis_hash},
-    yield_alt_manager_keypair_from_env, AtomicVaultAllocationResult, LeasedLookupTableOperation,
-    LegacyLookupTableRetirementRequest, LookupTableAllocationKind, LookupTableChainState,
+    AtomicVaultAllocationResult, LeasedLookupTableOperation, LegacyLookupTableRetirementRequest,
+    LookupTableAllocationKind, LookupTableChainState, LookupTableClusterBudgetPolicy,
     LookupTableFamilyKind, LookupTableFamilyRecord, LookupTableFamilyState,
     LookupTableFamilyUpsert, LookupTableLifecycle, LookupTableMembershipAddress,
     LookupTableOperationAdvance, LookupTableOperationKind, LookupTableOperationLease,
@@ -19,8 +19,9 @@ use loyal_yield_orchestrator::{
     LookupTableProvisioningRequestRecord, LookupTableProvisioningRequestStatus,
     LookupTableReconciliationDecision, LookupTableReconciliationObservation,
     LookupTableRolloutMode, LookupTableSignatureState, LookupTableVaultBindingRecord,
-    NeonSqlClient, NeonSqlConfig, PackedShardPolicy, SignedLookupTableTransaction, VaultId,
-    POLICY_KEYPAIR_ENV, SOLANA_TESTING_PK_ENV, YIELD_ROUTER_KEYPAIR_ENV,
+    NeonSqlClient, NeonSqlConfig, PackedShardPolicy, ReusableOnlyCutoverPreflight,
+    SharedMarketCatalogPlanPolicy, SharedMarketCatalogReadiness, SharedMarketPhysicalDriftReport,
+    SignedLookupTableTransaction, VaultId, POLICY_KEYPAIR_ENV,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -46,6 +47,7 @@ const RPC_URL_ENV: &str = "SOLANA_RPC_URL";
 const CLUSTER_ENV: &str = "YIELD_ALT_CLUSTER";
 const PAUSED_ENV: &str = "YIELD_ALT_PROVISIONING_PAUSED";
 const MAX_LAMPORTS_ENV: &str = "YIELD_ALT_MAX_LAMPORTS";
+const BUDGET_WINDOW_SECONDS_ENV: &str = "YIELD_ALT_BUDGET_WINDOW_SECONDS";
 const LARGEST_ATOMIC_EXPANSION_ENV: &str = "YIELD_ALT_LARGEST_ATOMIC_EXPANSION";
 const DEFAULT_MAX_OPERATIONS: usize = 8;
 const DEFAULT_ADDRESS_CHUNK: usize = 20;
@@ -56,6 +58,9 @@ const MAX_RATE_LIMIT_MS: u64 = 60_000;
 const MAX_OPERATIONS_PER_BATCH: usize = 100;
 const DEFAULT_RETRY_SECONDS: i64 = 30;
 const DEFAULT_MAX_ATTEMPTS: i32 = 5;
+const DEFAULT_BUDGET_WINDOW_SECONDS: i64 = 86_400;
+const MIN_BUDGET_WINDOW_SECONDS: i64 = 60;
+const MAX_BUDGET_WINDOW_SECONDS: i64 = 31_536_000;
 const EXPIRED_TRANSACTION_RETRY_CODE: &str = "expired_transaction_not_observed";
 const DEFAULT_SAFETY_MARGIN: u16 = 16;
 const DEFAULT_VAULT_GROWTH_RESERVATION: u16 = 8;
@@ -93,6 +98,7 @@ enum AdminAction {
     RollbackBinding(i64),
     FinalizeRollbacks(i64),
     RetireLegacy(Pubkey),
+    ActivateReusableOnly,
     ForceLegacy,
     ClearForceLegacy,
     SetRolloutMode(LookupTableRolloutMode),
@@ -111,6 +117,7 @@ struct Options {
     max_attempts: i32,
     address_chunk: usize,
     max_lamports: u64,
+    budget_window_seconds: i64,
     lease_seconds: u64,
     rate_limit_ms: u64,
     concurrency: usize,
@@ -123,7 +130,7 @@ struct Options {
     admin_write: bool,
     admin_reason: Option<String>,
     admin_updated_by: Option<String>,
-    admin_manager_pubkey: Option<Pubkey>,
+    admin_policy_pubkey: Option<Pubkey>,
     catalog_version: Option<String>,
     shared_family_name: String,
     vault_family_name: String,
@@ -159,6 +166,7 @@ impl fmt::Display for BudgetExhausted {
 
 impl Error for BudgetExhausted {}
 
+#[cfg(test)]
 impl Budget {
     const fn exhausted(&self) -> bool {
         self.selected >= self.limit
@@ -189,7 +197,8 @@ struct OperationBatchResult {
 }
 
 const fn should_continue_worker(watch: bool, batch: OperationBatchResult) -> bool {
-    watch && !batch.budget_exhausted
+    let _ = batch;
+    watch
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,6 +253,9 @@ const fn family_operation_gate(
 enum SubmissionStage {
     Built,
     Simulated,
+    BudgetDenied,
+    BudgetApproved,
+    Signed,
     Persisted,
     Broadcast,
 }
@@ -270,9 +282,29 @@ impl SubmissionGate {
         Ok(())
     }
 
-    fn persisted(&mut self) -> Result<(), String> {
+    fn sign_after_budget<F>(&mut self, approved: bool, sign: F) -> Result<bool, String>
+    where
+        F: FnOnce() -> Result<(), String>,
+    {
         if self.stage != SubmissionStage::Simulated {
-            return Err("signed metadata may be persisted only after simulation".to_owned());
+            return Err("budget decision must follow unsigned simulation".to_owned());
+        }
+        if !approved {
+            self.stage = SubmissionStage::BudgetDenied;
+            return Ok(false);
+        }
+        self.stage = SubmissionStage::BudgetApproved;
+        sign()?;
+        self.stage = SubmissionStage::Signed;
+        Ok(true)
+    }
+
+    fn persisted(&mut self) -> Result<(), String> {
+        if self.stage != SubmissionStage::Signed {
+            return Err(
+                "signed metadata may be persisted only after simulation and budget approval"
+                    .to_owned(),
+            );
         }
         self.stage = SubmissionStage::Persisted;
         Ok(())
@@ -350,7 +382,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     )
     .await?;
     client
-        .require_schema_migration(17, "reusable_route_lookup_tables")
+        .require_schema_migration(20, "demand_driven_shared_market_catalog")
         .await?;
 
     apply_admin_action(&client, &options).await?;
@@ -402,7 +434,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
         if !should_continue_worker(options.watch, batch) {
             break;
         }
-        if batch.processed == 0 {
+        if batch.budget_exhausted {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        } else if batch.processed == 0 {
             tokio::time::sleep(Duration::from_millis(options.rate_limit_ms.max(250))).await;
         }
     }
@@ -417,25 +451,8 @@ async fn run_operation_batch(
     budget: &mut Budget,
 ) -> Result<OperationBatchResult, Box<dyn Error>> {
     let mut processed = 0;
-    if options.mode == RunMode::Execute && budget.exhausted() {
-        println!(
-            "{}",
-            json!({
-                "event": "alt_provisioner_batch_budget_exhausted",
-                "cluster": options.cluster,
-                "budgetLimitLamports": budget.limit.to_string(),
-                "selectedBudgetLamports": budget.selected.to_string(),
-                "attemptConsumed": false,
-                "transactionsSent": false,
-                "workerExitsSuccessfully": true,
-            })
-        );
-        return Ok(OperationBatchResult {
-            processed,
-            budget_exhausted: true,
-        });
-    }
     if options.mode == RunMode::Execute {
+        processed += usize::from(reconcile_shared_market_catalog(client, rpc, options).await?);
         processed += usize::from(plan_next_provisioning_request(client, rpc, options).await?);
     }
     for index in 0..options.max_operations {
@@ -483,7 +500,7 @@ async fn run_operation_batch(
                         "retryAt": recorded.next_attempt_at,
                         "attemptConsumed": false,
                         "transactionsSent": false,
-                        "workerExitsSuccessfully": true,
+                        "workerKeepsWatching": options.watch,
                     })
                 );
                 return Ok(OperationBatchResult {
@@ -537,6 +554,188 @@ async fn run_operation_batch(
         processed,
         budget_exhausted: false,
     })
+}
+
+async fn reconcile_shared_market_catalog(
+    client: &NeonSqlClient,
+    rpc: &RpcClient,
+    options: &Options,
+) -> Result<bool, Box<dyn Error>> {
+    let Some(mut before) = client.shared_market_catalog_head(&options.cluster).await? else {
+        return Ok(false);
+    };
+    if before.readiness_state == SharedMarketCatalogReadiness::Active {
+        let preflight = client
+            .reusable_only_cutover_preflight(&options.cluster)
+            .await?;
+        if report_finalized_shared_drift_if_any(client, rpc, options, &preflight).await? {
+            before = client
+                .shared_market_catalog_head(&options.cluster)
+                .await?
+                .ok_or("shared-market catalog disappeared after drift report")?;
+        }
+    }
+    let families = client
+        .active_lookup_table_families(&options.cluster)
+        .await?;
+    let shared_family = families
+        .iter()
+        .find(|family| family.kind == LookupTableFamilyKind::SharedMarket)
+        .ok_or("cluster has a shared-market catalog head but no active shared-market family")?;
+    if shared_family.id != before.family_id {
+        return Err("shared-market catalog head does not belong to the active family".into());
+    }
+    let recent_slot = rpc.get_slot_with_commitment(CommitmentConfig::finalized())?;
+    let after = client
+        .reconcile_shared_market_catalog_head(
+            &options.cluster,
+            before.catalog_revision_id,
+            SharedMarketCatalogPlanPolicy {
+                shared_shard_capacity: u16::try_from(shared_family.allocation_high_water)?,
+                max_extension_addresses: options.address_chunk,
+                operation_context: json!({
+                    "planner": PLANNER_VERSION,
+                    "recent_slot": recent_slot,
+                    "catalog_revision_id": before.catalog_revision_id,
+                    "catalog_revision": before.catalog_revision,
+                }),
+                estimated_fee_lamports: None,
+                estimated_rent_lamports: None,
+            },
+            Utc::now() + chrono::Duration::hours(24),
+        )
+        .await?;
+    let changed = before.target_generation != after.target_generation
+        || before.active_generation != after.active_generation
+        || before.readiness_state != after.readiness_state
+        || before.activated_at != after.activated_at;
+    if changed {
+        println!(
+            "{}",
+            json!({
+                "event": "alt_shared_market_catalog_reconciled",
+                "cluster": options.cluster,
+                "catalogRevisionId": after.catalog_revision_id,
+                "catalogRevision": after.catalog_revision,
+                "addressCount": after.address_count,
+                "targetGeneration": after.target_generation,
+                "activeGeneration": after.active_generation,
+                "readinessState": after.readiness_state.as_str(),
+                "activatedAt": after.activated_at,
+                "transactionsSent": false,
+            })
+        );
+    }
+    Ok(changed)
+}
+
+async fn report_finalized_shared_drift_if_any(
+    client: &NeonSqlClient,
+    rpc: &RpcClient,
+    options: &Options,
+    preflight: &ReusableOnlyCutoverPreflight,
+) -> Result<bool, Box<dyn Error>> {
+    let observed_slot = rpc.get_slot_with_commitment(CommitmentConfig::finalized())?;
+    let table_address = Pubkey::from_str(&preflight.physical_table_address)?;
+    let account = rpc
+        .get_account_with_commitment(&table_address, CommitmentConfig::finalized())?
+        .value;
+    let (present, authority, active, last_extended_slot, warm, addresses, reason) = match account {
+        None => (
+            false,
+            None,
+            false,
+            None,
+            false,
+            Vec::new(),
+            "finalized_shared_table_missing",
+        ),
+        Some(account) if account.owner != alt_program::id() => (
+            true,
+            None,
+            false,
+            None,
+            false,
+            Vec::new(),
+            "finalized_shared_table_owner_drift",
+        ),
+        Some(account) => match AddressLookupTable::deserialize(&account.data) {
+            Ok(table) => {
+                let authority = table.meta.authority.map(|value| value.to_string());
+                let active = table.meta.deactivation_slot == u64::MAX;
+                let addresses = table
+                    .addresses
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>();
+                let warm = observed_slot > table.meta.last_extended_slot;
+                if authority.as_deref() == Some(preflight.physical_authority.as_str())
+                    && active
+                    && warm
+                    && addresses == preflight.ordered_addresses
+                {
+                    return Ok(false);
+                }
+                (
+                    true,
+                    authority,
+                    active,
+                    Some(i64::try_from(table.meta.last_extended_slot)?),
+                    warm,
+                    addresses,
+                    if !warm {
+                        "finalized_shared_table_not_warm"
+                    } else {
+                        "finalized_shared_table_identity_or_membership_drift"
+                    },
+                )
+            }
+            Err(_) => (
+                true,
+                None,
+                false,
+                None,
+                false,
+                Vec::new(),
+                "finalized_shared_table_decode_drift",
+            ),
+        },
+    };
+    let drift = client
+        .report_shared_market_physical_drift(SharedMarketPhysicalDriftReport {
+            cluster: options.cluster.clone(),
+            catalog_revision_id: preflight.catalog_revision_id,
+            family_id: preflight.shared_family_id,
+            route_lookup_table_id: preflight.physical_table_id,
+            expected_mutation_epoch: preflight.physical_mutation_epoch,
+            expected_table_address: preflight.physical_table_address.clone(),
+            expected_authority: preflight.physical_authority.clone(),
+            observed_slot: i64::try_from(observed_slot)?,
+            observed_table_present: present,
+            observed_authority: authority,
+            observed_active: active,
+            observed_last_extended_slot: last_extended_slot,
+            observed_warm: warm,
+            observed_addresses: addresses,
+            reason: reason.to_owned(),
+            reported_by: options.worker_id.clone(),
+        })
+        .await?;
+    println!(
+        "{}",
+        json!({
+            "event": "alt_shared_market_finalized_drift_reported",
+            "cluster": options.cluster,
+            "catalogRevisionId": preflight.catalog_revision_id,
+            "tableId": preflight.physical_table_id,
+            "table": preflight.physical_table_address,
+            "observedSlot": observed_slot,
+            "reason": reason,
+            "driftEvidenceHash": drift.evidence_hash,
+            "transactionsSent": false,
+        })
+    );
+    Ok(true)
 }
 
 async fn plan_next_provisioning_request(
@@ -597,27 +796,6 @@ async fn plan_next_provisioning_request(
         .await;
     match plan {
         Ok(plan) => {
-            let generation_activated = if shared_family.active_generation
-                != Some(plan.shared_target_generation)
-                && plan.shared_operations.is_empty()
-                && shared_generation_is_ready(
-                    client,
-                    shared_family.id,
-                    plan.shared_target_generation,
-                )
-                .await?
-            {
-                client
-                    .activate_lookup_table_family_generation(
-                        shared_family.id,
-                        plan.shared_target_generation,
-                        Utc::now() + chrono::Duration::hours(24),
-                    )
-                    .await?;
-                true
-            } else {
-                false
-            };
             let (vault_operation_count, binding_activated) = match &plan.vault_allocation {
                 AtomicVaultAllocationResult::NotRequired
                 | AtomicVaultAllocationResult::Existing { .. } => (0, false),
@@ -639,6 +817,10 @@ async fn plan_next_provisioning_request(
                     (operations.len(), false)
                 }
             };
+            let catalog = client
+                .shared_market_catalog_head(&options.cluster)
+                .await?
+                .ok_or("shared-market catalog head disappeared after request planning")?;
             println!(
                 "{}",
                 json!({
@@ -652,7 +834,8 @@ async fn plan_next_provisioning_request(
                     "sharedOperationCount": plan.shared_operations.len(),
                     "vaultOperationCount": vault_operation_count,
                     "bindingActivated": binding_activated,
-                    "generationActivated": generation_activated,
+                    "sharedCatalogReadiness": catalog.readiness_state.as_str(),
+                    "sharedCatalogActiveGeneration": catalog.active_generation,
                     "transactionsSent": false,
                 })
             );
@@ -731,34 +914,6 @@ async fn activate_binding_if_ready(
         )
         .await?;
     Ok(true)
-}
-
-async fn shared_generation_is_ready(
-    client: &NeonSqlClient,
-    family_id: i64,
-    generation: i32,
-) -> Result<bool, Box<dyn Error>> {
-    let ready = loyal_yield_orchestrator::sqlx::query_scalar::<_, bool>(
-        r#"
-        SELECT count(*) > 0
-           AND bool_and(desired_state = 'active'
-                        AND usable_address_count = address_count
-                        AND last_verified_slot IS NOT NULL)
-           AND NOT EXISTS (
-                SELECT 1 FROM loyal_yield.lookup_table_operations operation
-                WHERE operation.family_id = $1
-                  AND operation.target_generation = $2
-                  AND operation.operation_state NOT IN ('complete', 'permanent_failure', 'cancelled')
-           )
-        FROM loyal_yield.route_lookup_tables
-        WHERE family_id = $1 AND generation = $2
-        "#,
-    )
-    .bind(family_id)
-    .bind(generation)
-    .fetch_one(client.pool())
-    .await?;
-    Ok(ready)
 }
 
 fn provisioning_request_lease(
@@ -875,9 +1030,8 @@ async fn process_leased_operation(
         }
     }
     validate_chunk(&leased, options.address_chunk)?;
-    let signer = signer.ok_or("execute mode reached mutation planning without a manager signer")?;
+    let signer = signer.ok_or("execute mode reached mutation planning without POLICY_KEYPAIR")?;
     validate_manager_boundary(signer, &family, leased.physical_table.as_ref())?;
-    validate_manager_independence_from_control_plane(client, signer.pubkey()).await?;
     prepare_cleanup_lifecycle(client, rpc, &mut leased).await?;
     validate_cleanup_mutation_at_signing(client, options, &leased).await?;
 
@@ -914,15 +1068,18 @@ async fn process_leased_operation(
     }
 
     let chain = load_chain_table(rpc, leased.physical_table.as_ref())?;
-    let built =
-        build_signed_mutation(rpc, signer, &family, &leased, &persisted_membership, &chain)?;
+    let mut built = build_unsigned_mutation(
+        rpc,
+        signer.pubkey(),
+        &family,
+        &leased,
+        &persisted_membership,
+        &chain,
+    )?;
     let selected = built
         .expected_fee_lamports
         .checked_add(built.expected_rent_lamports)
         .ok_or("operation spend estimate overflow")?;
-    if let Err(exhausted) = budget.reserve(selected) {
-        return Ok(LeasedOperationOutcome::BudgetExhausted(exhausted));
-    }
 
     let mut gate = SubmissionGate::built();
     let simulation = rpc.simulate_transaction(&built.transaction)?;
@@ -935,6 +1092,49 @@ async fn process_leased_operation(
         .into());
     }
     gate.simulated()?;
+
+    let durable_budget = client
+        .reserve_lookup_table_cluster_budget(
+            &options.cluster,
+            leased.operation.id,
+            &lease,
+            LookupTableClusterBudgetPolicy {
+                max_lamports: i64::try_from(options.max_lamports)?,
+                rolling_window_seconds: options.budget_window_seconds,
+            },
+            i64::try_from(built.expected_fee_lamports)?,
+            i64::try_from(built.expected_rent_lamports)?,
+        )
+        .await?;
+    budget.selected = u64::try_from(durable_budget.charged_lamports.max(0))?;
+    let signed = gate.sign_after_budget(durable_budget.approved, || {
+        built
+            .transaction
+            .try_sign(&[signer], built.recent_blockhash)
+            .map_err(|error| format!("ALT transaction signing failed: {error}"))
+    })?;
+    if !signed {
+        return Ok(LeasedOperationOutcome::BudgetExhausted(BudgetExhausted {
+            current: u64::try_from(durable_budget.charged_lamports.max(0))?,
+            requested: selected,
+            limit: options.max_lamports,
+        }));
+    }
+    println!(
+        "{}",
+        json!({
+            "event": "alt_provisioner_durable_budget_reserved",
+            "cluster": options.cluster,
+            "operationId": leased.operation.id,
+            "approved": durable_budget.approved,
+            "replayed": durable_budget.replayed,
+            "requestedLamports": durable_budget.requested_lamports.to_string(),
+            "chargedLamports": durable_budget.charged_lamports.to_string(),
+            "remainingLamports": durable_budget.remaining_lamports.to_string(),
+            "windowEndsAt": durable_budget.window_ends_at,
+            "transactionsSent": false,
+        })
+    );
 
     let signature = built
         .transaction
@@ -1357,9 +1557,9 @@ async fn reconcile_physical_membership(
     Ok(())
 }
 
-fn build_signed_mutation(
+fn build_unsigned_mutation(
     rpc: &RpcClient,
-    signer: &Keypair,
+    authority: Pubkey,
     _family: &LookupTableFamilyRecord,
     leased: &LeasedLookupTableOperation,
     persisted: &[LookupTableMembershipAddress],
@@ -1369,7 +1569,6 @@ fn build_signed_mutation(
         .ok_or("verify operations reconcile chain state and never build a mutation")?;
     let (recent_blockhash, last_valid_block_height) =
         rpc.get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())?;
-    let authority = signer.pubkey();
     let mut reclaimed_rent_lamports = 0;
     let table_address = leased
         .physical_table
@@ -1433,8 +1632,7 @@ fn build_signed_mutation(
                 return Err("lookup-table close cooldown has not elapsed".into());
             }
             reclaimed_rent_lamports = account.lamports;
-            let recipient =
-                close_recipient(&leased.operation.operation_context)?.unwrap_or(authority);
+            let recipient = policy_close_recipient(&leased.operation.operation_context, authority)?;
             vec![alt_instruction::close_lookup_table(
                 table_address,
                 authority,
@@ -1443,12 +1641,8 @@ fn build_signed_mutation(
         }
         LookupTableOperationKind::Verify => unreachable!("guarded by provisioner_mutation_path"),
     };
-    let transaction = Transaction::new_signed_with_payer(
-        &instructions,
-        Some(&authority),
-        &[signer],
-        recent_blockhash,
-    );
+    let mut transaction = Transaction::new_with_payer(&instructions, Some(&authority));
+    transaction.message.recent_blockhash = recent_blockhash;
     let packet_size = bincode::serialize(&transaction)?.len();
     if packet_size > PACKET_DATA_SIZE {
         return Err(format!(
@@ -1788,62 +1982,18 @@ fn validate_manager_boundary(
     family: &LookupTableFamilyRecord,
     physical: Option<&loyal_yield_orchestrator::ReusableLookupTableRecord>,
 ) -> Result<(), Box<dyn Error>> {
-    let manager_pubkey = manager.pubkey().to_string();
-    if family.provisioning_authority != manager_pubkey || family.payer != manager_pubkey {
-        return Err("dedicated ALT manager does not match the family's authority and payer".into());
+    let policy_pubkey = manager.pubkey().to_string();
+    if family.provisioning_authority != policy_pubkey || family.payer != policy_pubkey {
+        return Err(
+            "configured ALT authority does not match the family's authority and payer".into(),
+        );
     }
     if let Some(table) = physical {
-        if table.authority != manager_pubkey || table.payer != manager_pubkey {
+        if table.authority != policy_pubkey || table.payer != policy_pubkey {
             return Err(
-                "dedicated ALT manager does not match physical table authority/payer".into(),
+                "configured ALT authority does not match physical table authority/payer".into(),
             );
         }
-    }
-    let configured_route_fee_payers = [
-        YIELD_ROUTER_KEYPAIR_ENV,
-        POLICY_KEYPAIR_ENV,
-        SOLANA_TESTING_PK_ENV,
-    ]
-    .into_iter()
-    .filter_map(|name| {
-        loyal_yield_orchestrator::keypair_from_env(name)
-            .ok()
-            .map(|keypair| (name, keypair.pubkey()))
-    })
-    .collect::<Vec<_>>();
-    validate_manager_independence(manager.pubkey(), &configured_route_fee_payers)?;
-    Ok(())
-}
-
-fn validate_manager_independence(
-    manager: Pubkey,
-    configured_route_fee_payers: &[(&str, Pubkey)],
-) -> Result<(), Box<dyn Error>> {
-    if let Some((name, _)) = configured_route_fee_payers
-        .iter()
-        .find(|(_, route_fee_payer)| *route_fee_payer == manager)
-    {
-        return Err(format!(
-            "YIELD_ALT_MANAGER_KEYPAIR must be independent of configured route fee payer {name}"
-        )
-        .into());
-    }
-    Ok(())
-}
-
-async fn validate_manager_independence_from_control_plane(
-    client: &NeonSqlClient,
-    manager: Pubkey,
-) -> Result<(), Box<dyn Error>> {
-    let manager = manager.to_string();
-    let overlaps_route_identity = client
-        .lookup_table_manager_identity_overlaps_control_plane(&manager)
-        .await?;
-    if overlaps_route_identity {
-        return Err(
-            "ALT manager authority/payer overlaps a durable route signer, authority, wallet, or legacy route payer"
-                .into(),
-        );
     }
     Ok(())
 }
@@ -1976,8 +2126,20 @@ fn close_recipient(context: &Value) -> Result<Option<Pubkey>, Box<dyn Error>> {
         .map_err(Into::into)
 }
 
+fn policy_close_recipient(context: &Value, authority: Pubkey) -> Result<Pubkey, Box<dyn Error>> {
+    let recipient = close_recipient(context)?.unwrap_or(authority);
+    if recipient != authority {
+        return Err("lookup-table close recipient must equal the POLICY_KEYPAIR authority".into());
+    }
+    Ok(recipient)
+}
+
 fn load_manager_signer() -> Result<Keypair, Box<dyn Error>> {
-    yield_alt_manager_keypair_from_env().map_err(Into::into)
+    loyal_yield_orchestrator::keypair_from_env(alt_authority_signer_env()).map_err(Into::into)
+}
+
+const fn alt_authority_signer_env() -> &'static str {
+    POLICY_KEYPAIR_ENV
 }
 
 fn operation_lease(
@@ -2088,6 +2250,32 @@ async fn emit_status(client: &NeonSqlClient, options: &Options) -> Result<(), Bo
     let snapshot = client
         .lookup_table_control_plane_snapshot(&options.cluster)
         .await?;
+    let durable_safety: Value = loyal_yield_orchestrator::sqlx::query_scalar(
+        r#"
+        SELECT jsonb_build_object(
+            'activeBudgetReservationCount', count(*) FILTER (
+                WHERE reservation.reserved_until > now()
+                  AND operation.operation_state <> 'cancelled'
+            ),
+            'activeReservedLamports', COALESCE(sum(reservation.reserved_lamports) FILTER (
+                WHERE reservation.reserved_until > now()
+                  AND operation.operation_state <> 'cancelled'
+            ), 0),
+            'openSharedPhysicalDriftCount', (
+                SELECT count(*)
+                FROM loyal_yield.lookup_table_shared_market_physical_drifts drift
+                WHERE drift.cluster = $1 AND drift.resolution_state = 'open'
+            )
+        )
+        FROM loyal_yield.lookup_table_cluster_budget_reservations reservation
+        JOIN loyal_yield.lookup_table_operations operation
+          ON operation.id = reservation.operation_id
+        WHERE reservation.cluster = $1
+        "#,
+    )
+    .bind(&options.cluster)
+    .fetch_one(client.pool())
+    .await?;
     println!(
         "{}",
         json!({
@@ -2099,12 +2287,14 @@ async fn emit_status(client: &NeonSqlClient, options: &Options) -> Result<(), Bo
             "maxAttempts": options.max_attempts,
             "addressChunk": options.address_chunk,
             "maxLamports": options.max_lamports.to_string(),
+            "budgetWindowSeconds": options.budget_window_seconds,
             "rateLimitMs": options.rate_limit_ms,
             "concurrency": options.concurrency,
             "safetyMargin": options.safety_margin,
             "largestAtomicExpansion": options.largest_atomic_expansion,
             "vaultGrowthReservation": options.vault_growth_reservation,
             "maxVaultCohort": options.max_vault_cohort,
+            "durableSafety": durable_safety,
             "snapshot": snapshot,
         })
     );
@@ -2152,6 +2342,61 @@ async fn emit_dry_run_queue(
     Ok(())
 }
 
+fn validate_reusable_only_cutover_rpc_preflight(
+    options: &Options,
+    preflight: &ReusableOnlyCutoverPreflight,
+) -> Result<(), Box<dyn Error>> {
+    if preflight.cluster != options.cluster {
+        return Err("cutover preflight belongs to a different cluster".into());
+    }
+    let rpc_url = options
+        .rpc_url
+        .as_ref()
+        .ok_or("reusable-only cutover requires a finalized RPC endpoint")?;
+    let rpc = RpcClient::new_with_commitment(rpc_url.clone(), CommitmentConfig::finalized());
+    let genesis_hash = rpc
+        .get_genesis_hash()
+        .map_err(|_| "failed to read genesis hash for reusable-only cutover")?;
+    validate_rpc_genesis_hash(&options.cluster, genesis_hash)
+        .map_err(|error| format!("refusing reusable-only cutover on mismatched RPC: {error}"))?;
+    let observed_slot = rpc.get_slot_with_commitment(CommitmentConfig::finalized())?;
+    let table_address = Pubkey::from_str(&preflight.physical_table_address)?;
+    let account = rpc
+        .get_account_with_commitment(&table_address, CommitmentConfig::finalized())?
+        .value
+        .ok_or("shared lookup table is absent at finalized commitment")?;
+    if account.owner != alt_program::id() {
+        return Err("shared lookup table has the wrong finalized owner".into());
+    }
+    let table = AddressLookupTable::deserialize(&account.data)?;
+    let expected_authority = Pubkey::from_str(&preflight.physical_authority)?;
+    if table.meta.authority != Some(expected_authority) || table.meta.deactivation_slot != u64::MAX
+    {
+        return Err(
+            "shared lookup table authority/lifecycle failed finalized cutover preflight".into(),
+        );
+    }
+    if observed_slot <= table.meta.last_extended_slot {
+        return Err("shared lookup table is not warm at finalized cutover preflight slot".into());
+    }
+    let observed_addresses = table
+        .addresses
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if observed_addresses != preflight.ordered_addresses
+        || ordered_address_hash(&observed_addresses) != preflight.ordered_address_hash
+        || i32::try_from(observed_addresses.len())? != preflight.physical_address_count
+        || preflight.physical_usable_address_count != preflight.physical_address_count
+        || preflight.physical_last_verified_slot > i64::try_from(observed_slot)?
+    {
+        return Err(
+            "shared lookup table finalized membership changed before reusable-only cutover".into(),
+        );
+    }
+    Ok(())
+}
+
 async fn apply_admin_action(
     client: &NeonSqlClient,
     options: &Options,
@@ -2171,9 +2416,8 @@ async fn apply_admin_action(
         .as_deref()
         .ok_or("control-plane changes require --updated-by")?;
     if options.admin_action == AdminAction::BootstrapFamilies {
-        let manager_pubkey = options.admin_manager_pubkey.expect("validated by parser");
-        validate_manager_independence_from_control_plane(client, manager_pubkey).await?;
-        let manager = manager_pubkey.to_string();
+        let policy_pubkey = options.admin_policy_pubkey.expect("validated by parser");
+        let manager = policy_pubkey.to_string();
         let catalog_version = options
             .catalog_version
             .as_deref()
@@ -2335,13 +2579,46 @@ async fn apply_admin_action(
         );
         return Ok(());
     }
+    if options.admin_action == AdminAction::ActivateReusableOnly {
+        let preflight = client
+            .reusable_only_cutover_preflight(&options.cluster)
+            .await?;
+        validate_reusable_only_cutover_rpc_preflight(options, &preflight)?;
+        let cutover = client
+            .activate_reusable_only_cutover(&preflight, reason, updated_by)
+            .await?;
+        println!(
+            "{}",
+            json!({
+                "event": "alt_reusable_only_cutover_activated",
+                "cluster": cutover.cluster,
+                "catalogRevisionId": cutover.catalog_revision_id,
+                "sharedFamilyId": cutover.shared_family_id,
+                "sharedGeneration": cutover.shared_generation,
+                "sharedPhysicalTableId": preflight.physical_table_id,
+                "sharedPhysicalTable": preflight.physical_table_address,
+                "sharedPhysicalMutationEpoch": preflight.physical_mutation_epoch,
+                "finalizedRpcPreflight": true,
+                "vaultFamilyId": cutover.vault_family_id,
+                "alignedVaultControlCount": cutover.aligned_vault_control_count,
+                "rolloutMode": cutover.global_control.rollout_mode.as_str(),
+                "forceLegacy": cutover.global_control.force_legacy,
+                "reason": reason,
+                "updatedBy": updated_by,
+                "signerLoaded": false,
+                "transactionsSent": false,
+            })
+        );
+        return Ok(());
+    }
     let control = match options.admin_action {
         AdminAction::None
         | AdminAction::BootstrapFamilies
         | AdminAction::RollbackFamily(_)
         | AdminAction::RollbackBinding(_)
         | AdminAction::FinalizeRollbacks(_)
-        | AdminAction::RetireLegacy(_) => {
+        | AdminAction::RetireLegacy(_)
+        | AdminAction::ActivateReusableOnly => {
             unreachable!()
         }
         AdminAction::ForceLegacy => {
@@ -2384,8 +2661,8 @@ fn bootstrap_family_inputs(
     options: &Options,
 ) -> Result<Vec<LookupTableFamilyUpsert>, Box<dyn Error>> {
     let manager = options
-        .admin_manager_pubkey
-        .ok_or("--bootstrap-families requires --manager-pubkey")?
+        .admin_policy_pubkey
+        .ok_or("--bootstrap-families requires --policy-pubkey")?
         .to_string();
     let catalog_version = options
         .catalog_version
@@ -2453,6 +2730,10 @@ where
         .transpose()?
         .unwrap_or_default();
     let mut budget_was_explicit = read_env(MAX_LAMPORTS_ENV).is_some();
+    let mut budget_window_seconds = read_env(BUDGET_WINDOW_SECONDS_ENV)
+        .map(|value| value.parse::<i64>())
+        .transpose()?
+        .unwrap_or(DEFAULT_BUDGET_WINDOW_SECONDS);
     let mut lease_seconds = DEFAULT_LEASE_SECONDS;
     let mut rate_limit_ms = DEFAULT_RATE_LIMIT_MS;
     let mut concurrency = 1usize;
@@ -2467,7 +2748,7 @@ where
     let mut admin_write = false;
     let mut admin_reason = None;
     let mut admin_updated_by = None;
-    let mut admin_manager_pubkey = None;
+    let mut admin_policy_pubkey = None;
     let mut catalog_version = None;
     let mut shared_family_name = DEFAULT_SHARED_FAMILY_NAME.to_owned();
     let mut vault_family_name = DEFAULT_VAULT_FAMILY_NAME.to_owned();
@@ -2496,6 +2777,9 @@ where
             "--max-lamports" => {
                 max_lamports = next_value(&mut args, "--max-lamports")?.parse()?;
                 budget_was_explicit = true;
+            }
+            "--budget-window-seconds" => {
+                budget_window_seconds = next_value(&mut args, "--budget-window-seconds")?.parse()?
             }
             "--lease-seconds" => {
                 lease_seconds = next_value(&mut args, "--lease-seconds")?.parse()?
@@ -2542,6 +2826,9 @@ where
             "--clear-force-legacy" => {
                 set_admin_action(&mut admin_action, AdminAction::ClearForceLegacy)?
             }
+            "--activate-reusable-only" => {
+                set_admin_action(&mut admin_action, AdminAction::ActivateReusableOnly)?
+            }
             "--set-rollout-mode" => {
                 let value = next_value(&mut args, "--set-rollout-mode")?;
                 set_admin_action(
@@ -2552,10 +2839,10 @@ where
             "--admin-write" => admin_write = true,
             "--reason" => admin_reason = Some(next_value(&mut args, "--reason")?),
             "--updated-by" => admin_updated_by = Some(next_value(&mut args, "--updated-by")?),
-            "--manager-pubkey" => {
-                admin_manager_pubkey = Some(Pubkey::from_str(&next_value(
+            "--policy-pubkey" => {
+                admin_policy_pubkey = Some(Pubkey::from_str(&next_value(
                     &mut args,
-                    "--manager-pubkey",
+                    "--policy-pubkey",
                 )?)?)
             }
             "--catalog-version" => {
@@ -2608,11 +2895,23 @@ where
     if mode != RunMode::DryRun && rpc_url.is_none() {
         return Err("--reconcile-only/--execute requires SOLANA_RPC_URL or --rpc-url".into());
     }
+    if admin_action == AdminAction::ActivateReusableOnly && rpc_url.is_none() {
+        return Err(
+            "--activate-reusable-only requires SOLANA_RPC_URL or --rpc-url for finalized preflight"
+                .into(),
+        );
+    }
     if mode == RunMode::Execute && (!budget_was_explicit || max_lamports == 0) {
         return Err(
             "--execute requires a positive explicit --max-lamports or YIELD_ALT_MAX_LAMPORTS"
                 .into(),
         );
+    }
+    if !(MIN_BUDGET_WINDOW_SECONDS..=MAX_BUDGET_WINDOW_SECONDS).contains(&budget_window_seconds) {
+        return Err(format!(
+            "--budget-window-seconds must be between {MIN_BUDGET_WINDOW_SECONDS} and {MAX_BUDGET_WINDOW_SECONDS}"
+        )
+        .into());
     }
     if max_operations == 0 || max_operations > MAX_OPERATIONS_PER_BATCH {
         return Err(
@@ -2653,11 +2952,11 @@ where
         );
     }
     if admin_action == AdminAction::BootstrapFamilies
-        && (admin_manager_pubkey.is_none()
+        && (admin_policy_pubkey.is_none()
             || catalog_version.is_none()
             || largest_atomic_expansion.is_none())
     {
-        return Err("--bootstrap-families requires --manager-pubkey, --catalog-version, and --largest-atomic-expansion from measured catalog evidence".into());
+        return Err("--bootstrap-families requires --policy-pubkey, --catalog-version, and --largest-atomic-expansion from measured catalog evidence".into());
     }
     if admin_vault_id.is_some() && !matches!(admin_action, AdminAction::SetRolloutMode(_)) {
         return Err("--vault-id is supported only with --set-rollout-mode".into());
@@ -2699,6 +2998,7 @@ where
         max_attempts,
         address_chunk,
         max_lamports,
+        budget_window_seconds,
         lease_seconds,
         rate_limit_ms,
         concurrency,
@@ -2711,7 +3011,7 @@ where
         admin_write,
         admin_reason,
         admin_updated_by,
-        admin_manager_pubkey,
+        admin_policy_pubkey,
         catalog_version,
         shared_family_name,
         vault_family_name,
@@ -2776,7 +3076,7 @@ fn default_worker_id() -> String {
 }
 
 fn usage() -> &'static str {
-    "Usage: route-lookup-table-provisioner --cluster <CLUSTER> [--status|--reconcile-only|--execute] [--pause] [--watch] [--max-operations <N>] [--max-attempts <1..100>] [--address-chunk <1..20>] [--max-lamports <LAMPORTS>] [--lease-seconds <N>] [--rate-limit-ms <N>] [--concurrency 1] [--safety-margin <N>] [--vault-growth-reservation <N>] [--max-vault-cohort <N>] [--worker-id <ID>]\n\nDry-run is the default and never loads a signer or writes. Reconcile-only may update durable reconciliation state but never signs or sends. Execute requires YIELD_ALT_MANAGER_KEYPAIR plus an explicit positive lamport budget. Reads NEON_DATABASE_URL, SOLANA_RPC_URL, and explicit YIELD_ALT_CLUSTER; cluster is never inferred from the RPC URL. Admin controls require --admin-write --reason <TEXT> --updated-by <ID>: --force-legacy, --clear-force-legacy, --set-rollout-mode <MODE> [--vault-id <DB_ID>], --rollback-family <FAMILY_ID>, --rollback-binding <ACTIVE_BINDING_ID> --observed-slot <SLOT>, --finalize-rollbacks <FAMILY_ID>, --retire-legacy <TABLE> --expected-authority <PUBKEY> --expected-address-hash <HASH> --expected-address-count <N>, or --bootstrap-families --manager-pubkey <PUBKEY> --catalog-version <VERSION> --largest-atomic-expansion <MEASURED_COUNT> [--safety-margin <N>] [--shared-family-name <NAME>] [--vault-family-name <NAME>]. The largest atomic expansion is catalog evidence and is independent of the transaction address chunk. Force-legacy remains global. Administrative lifecycle changes consume public control-plane metadata and never load a signer."
+    "Usage: route-lookup-table-provisioner --cluster <CLUSTER> [--status|--reconcile-only|--execute] [--pause] [--watch] [--max-operations <N>] [--max-attempts <1..100>] [--address-chunk <1..20>] [--max-lamports <LAMPORTS>] [--budget-window-seconds <60..31536000>] [--lease-seconds <N>] [--rate-limit-ms <N>] [--concurrency 1] [--safety-margin <N>] [--vault-growth-reservation <N>] [--max-vault-cohort <N>] [--worker-id <ID>]\n\nDry-run is the default and never loads a signer or writes. Reconcile-only may update durable reconciliation state but never signs or sends. Execute uses the standard POLICY_KEYPAIR as ALT authority/payer and requires an explicit positive PostgreSQL-backed rolling-window lamport budget that survives worker restarts. Reads NEON_DATABASE_URL, SOLANA_RPC_URL, and explicit YIELD_ALT_CLUSTER; cluster is never inferred from the RPC URL. Admin controls require --admin-write --reason <TEXT> --updated-by <ID>: --activate-reusable-only (fresh-verifies the exact active shared ALT at finalized RPC, then atomically fences that evidence and aligns every rollout override), --force-legacy, --clear-force-legacy, --set-rollout-mode <MODE> [--vault-id <DB_ID>], --rollback-family <FAMILY_ID>, --rollback-binding <ACTIVE_BINDING_ID> --observed-slot <SLOT>, --finalize-rollbacks <FAMILY_ID>, --retire-legacy <TABLE> --expected-authority <PUBKEY> --expected-address-hash <HASH> --expected-address-count <N>, or --bootstrap-families --policy-pubkey <POLICY_PUBKEY> --catalog-version <VERSION> --largest-atomic-expansion <MEASURED_COUNT> [--safety-margin <N>] [--shared-family-name <NAME>] [--vault-family-name <NAME>]. The largest atomic expansion is catalog evidence and is independent of the transaction address chunk. Force-legacy remains global. Administrative lifecycle changes consume public control-plane metadata and never load a signer."
 }
 
 #[cfg(test)]
@@ -2849,28 +3149,8 @@ mod tests {
     }
 
     #[test]
-    fn reusable_alt_manager_is_distinct_from_every_configured_route_fee_payer() {
-        let manager = Pubkey::new_unique();
-        let policy = Pubkey::new_unique();
-        validate_manager_independence(
-            manager,
-            &[
-                (YIELD_ROUTER_KEYPAIR_ENV, Pubkey::new_unique()),
-                (POLICY_KEYPAIR_ENV, policy),
-                (SOLANA_TESTING_PK_ENV, Pubkey::new_unique()),
-            ],
-        )
-        .expect("independent ALT manager should pass");
-
-        let error = validate_manager_independence(
-            manager,
-            &[
-                (POLICY_KEYPAIR_ENV, policy),
-                (SOLANA_TESTING_PK_ENV, manager),
-            ],
-        )
-        .expect_err("matching any route fee payer must fail");
-        assert!(error.to_string().contains(SOLANA_TESTING_PK_ENV));
+    fn reusable_alt_mutations_use_the_standard_policy_authority() {
+        assert_eq!(alt_authority_signer_env(), POLICY_KEYPAIR_ENV);
     }
 
     #[test]
@@ -2940,7 +3220,7 @@ mod tests {
             }
         );
         assert_eq!(budget.selected, 100);
-        assert!(!should_continue_worker(
+        assert!(should_continue_worker(
             true,
             OperationBatchResult {
                 processed: 1,
@@ -2952,6 +3232,13 @@ mod tests {
             OperationBatchResult {
                 processed: 1,
                 budget_exhausted: false,
+            }
+        ));
+        assert!(!should_continue_worker(
+            false,
+            OperationBatchResult {
+                processed: 1,
+                budget_exhausted: true,
             }
         ));
     }
@@ -3025,9 +3312,28 @@ mod tests {
         assert!(gate.broadcast().is_err());
         gate.simulated().unwrap();
         assert!(gate.broadcast().is_err());
+        assert!(gate.sign_after_budget(true, || Ok(())).unwrap());
         gate.persisted().unwrap();
         gate.broadcast().unwrap();
         assert_eq!(gate.stage, SubmissionStage::Broadcast);
+    }
+
+    #[test]
+    fn reusable_alt_denied_budget_never_invokes_signing() {
+        let mut gate = SubmissionGate::built();
+        gate.simulated().unwrap();
+        let signing_invocations = std::cell::Cell::new(0_u8);
+        let signed = gate
+            .sign_after_budget(false, || {
+                signing_invocations.set(signing_invocations.get() + 1);
+                Ok(())
+            })
+            .unwrap();
+        assert!(!signed);
+        assert_eq!(signing_invocations.get(), 0);
+        assert_eq!(gate.stage, SubmissionStage::BudgetDenied);
+        assert!(gate.persisted().is_err());
+        assert!(gate.broadcast().is_err());
     }
 
     #[test]
@@ -3186,6 +3492,25 @@ mod tests {
     }
 
     #[test]
+    fn reusable_alt_direct_cutover_has_one_atomic_admin_action() {
+        let options = parse_args(
+            [
+                "--activate-reusable-only",
+                "--admin-write",
+                "--reason",
+                "direct durable v2 cutover",
+                "--updated-by",
+                "operator",
+            ],
+            env_map(&base_env()),
+        )
+        .unwrap();
+        assert_eq!(options.admin_action, AdminAction::ActivateReusableOnly);
+        assert!(options.admin_write);
+        assert!(options.admin_vault_id.is_none());
+    }
+
+    #[test]
     fn reusable_alt_per_vault_rollout_control_is_distinct_from_global_force_legacy() {
         let canary = parse_args(
             [
@@ -3313,7 +3638,7 @@ mod tests {
         let options = parse_args(
             [
                 "--bootstrap-families",
-                "--manager-pubkey",
+                "--policy-pubkey",
                 &manager,
                 "--catalog-version",
                 "stable-v1",
@@ -3335,7 +3660,7 @@ mod tests {
         assert_eq!(options.admin_action, AdminAction::BootstrapFamilies);
         assert_eq!(options.mode, RunMode::DryRun);
         assert!(!options.mode.may_sign());
-        assert_eq!(options.admin_manager_pubkey.unwrap().to_string(), manager);
+        assert_eq!(options.admin_policy_pubkey.unwrap().to_string(), manager);
         let first = bootstrap_family_inputs(&options).unwrap();
         let retry = bootstrap_family_inputs(&options).unwrap();
         assert_eq!(first, retry);
@@ -3349,11 +3674,12 @@ mod tests {
 
     #[test]
     fn reusable_alt_cleanup_context_requires_fresh_identity_fields() {
+        let policy = Pubkey::new_unique();
         let context = json!({
             "expectedAuthority": Pubkey::new_unique().to_string(),
             "expectedAddressHash": "abc123",
             "expectedMutationEpoch": 7,
-            "closeRecipient": Pubkey::new_unique().to_string(),
+            "closeRecipient": policy.to_string(),
         });
         assert!(!context_string(&context, "expectedAuthority")
             .unwrap()
@@ -3367,6 +3693,9 @@ mod tests {
             Some(7)
         );
         assert!(close_recipient(&context).unwrap().is_some());
+        assert_eq!(policy_close_recipient(&context, policy).unwrap(), policy);
+        assert!(policy_close_recipient(&context, Pubkey::new_unique()).is_err());
+        assert_eq!(policy_close_recipient(&json!({}), policy).unwrap(), policy);
         assert!(context_string(&json!({}), "expectedAddressHash").is_err());
     }
 

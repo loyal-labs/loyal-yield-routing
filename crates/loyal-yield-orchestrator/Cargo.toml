@@ -24,3 +24,6 @@ spl-token.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["chrono", "json", "macros", "postgres", "runtime-tokio-rustls"] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[dev-dependencies]
+bytemuck = "1"

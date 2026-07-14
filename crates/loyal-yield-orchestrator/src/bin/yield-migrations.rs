@@ -115,6 +115,18 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0018_earn_activity_realtime.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 19,
+        name: "legacy_lookup_table_imports",
+        sql: include_str!("../../migrations/0019_legacy_lookup_table_imports.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 20,
+        name: "demand_driven_shared_market_catalog",
+        sql: include_str!("../../migrations/0020_demand_driven_shared_market_catalog.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -320,6 +332,12 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "balance_sweep_scheduled_slots",
         "pending_balance_sweep_surplus_lots",
         "route_lookup_tables",
+        "lookup_table_legacy_import_runs",
+        "lookup_table_legacy_import_evidence",
+        "lookup_table_shared_market_catalog_revisions",
+        "lookup_table_shared_market_catalog_heads",
+        "lookup_table_shared_market_physical_drifts",
+        "lookup_table_cluster_budget_reservations",
         "lookup_table_families",
         "lookup_table_manifests",
         "lookup_table_manifest_addresses",
@@ -415,6 +433,12 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         ("route_lookup_tables", "address_hash"),
         ("route_lookup_tables", "addresses"),
         ("route_lookup_tables", "family_id"),
+        ("route_lookup_tables", "legacy_import_run_id"),
+        ("lookup_table_legacy_import_evidence", "import_run_id"),
+        (
+            "lookup_table_legacy_import_evidence",
+            "route_lookup_table_id",
+        ),
         ("route_lookup_tables", "allocation_kind"),
         ("route_lookup_tables", "generation"),
         ("route_lookup_tables", "shard_ordinal"),
@@ -428,6 +452,151 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         ("route_lookup_tables", "last_verified_at"),
         ("route_lookup_tables", "mutation_epoch"),
         ("route_lookup_tables", "rollback_until"),
+        ("route_lookup_tables", "legacy_kind"),
+        ("route_lookup_tables", "legacy_import_run_id"),
+        ("lookup_table_legacy_import_runs", "id"),
+        ("lookup_table_legacy_import_runs", "cluster"),
+        ("lookup_table_legacy_import_runs", "rpc_genesis_hash"),
+        ("lookup_table_legacy_import_runs", "verified_slot"),
+        ("lookup_table_legacy_import_runs", "verified_at"),
+        ("lookup_table_legacy_import_runs", "legacy_kind"),
+        ("lookup_table_legacy_import_runs", "expected_table_count"),
+        ("lookup_table_legacy_import_runs", "verified_table_count"),
+        ("lookup_table_legacy_import_runs", "import_fingerprint"),
+        ("lookup_table_legacy_import_runs", "reason"),
+        ("lookup_table_legacy_import_runs", "updated_by"),
+        ("lookup_table_legacy_import_runs", "created_at"),
+        ("lookup_table_legacy_import_evidence", "id"),
+        ("lookup_table_legacy_import_evidence", "import_run_id"),
+        (
+            "lookup_table_legacy_import_evidence",
+            "route_lookup_table_id",
+        ),
+        ("lookup_table_legacy_import_evidence", "table_address"),
+        ("lookup_table_legacy_import_evidence", "scope"),
+        ("lookup_table_legacy_import_evidence", "legacy_kind"),
+        ("lookup_table_legacy_import_evidence", "expected_authority"),
+        ("lookup_table_legacy_import_evidence", "observed_authority"),
+        ("lookup_table_legacy_import_evidence", "observed_owner"),
+        (
+            "lookup_table_legacy_import_evidence",
+            "observed_deactivation_slot",
+        ),
+        (
+            "lookup_table_legacy_import_evidence",
+            "observed_last_extended_slot",
+        ),
+        (
+            "lookup_table_legacy_import_evidence",
+            "observed_last_extended_start_index",
+        ),
+        ("lookup_table_legacy_import_evidence", "address_count"),
+        ("lookup_table_legacy_import_evidence", "address_hash"),
+        ("lookup_table_legacy_import_evidence", "addresses"),
+        ("lookup_table_legacy_import_evidence", "verified_slot"),
+        ("lookup_table_legacy_import_evidence", "verified_at"),
+        ("lookup_table_legacy_import_evidence", "created_at"),
+        ("lookup_table_shared_market_catalog_revisions", "id"),
+        ("lookup_table_shared_market_catalog_revisions", "family_id"),
+        (
+            "lookup_table_shared_market_catalog_revisions",
+            "manifest_id",
+        ),
+        (
+            "lookup_table_shared_market_catalog_revisions",
+            "catalog_revision",
+        ),
+        (
+            "lookup_table_shared_market_catalog_revisions",
+            "catalog_version",
+        ),
+        (
+            "lookup_table_shared_market_catalog_revisions",
+            "desired_set_hash",
+        ),
+        (
+            "lookup_table_shared_market_catalog_revisions",
+            "enabled_mints_hash",
+        ),
+        (
+            "lookup_table_shared_market_catalog_revisions",
+            "reserve_set_hash",
+        ),
+        (
+            "lookup_table_shared_market_catalog_revisions",
+            "address_count",
+        ),
+        (
+            "lookup_table_shared_market_catalog_revisions",
+            "source_slot",
+        ),
+        (
+            "lookup_table_shared_market_catalog_revisions",
+            "source_observed_at",
+        ),
+        (
+            "lookup_table_shared_market_catalog_revisions",
+            "source_metadata",
+        ),
+        ("lookup_table_shared_market_catalog_revisions", "reason"),
+        ("lookup_table_shared_market_catalog_revisions", "updated_by"),
+        ("lookup_table_shared_market_catalog_revisions", "created_at"),
+        ("lookup_table_shared_market_catalog_heads", "family_id"),
+        (
+            "lookup_table_shared_market_catalog_heads",
+            "catalog_revision_id",
+        ),
+        (
+            "lookup_table_shared_market_catalog_heads",
+            "target_generation",
+        ),
+        (
+            "lookup_table_shared_market_catalog_heads",
+            "readiness_state",
+        ),
+        ("lookup_table_shared_market_catalog_heads", "activated_at"),
+        ("lookup_table_shared_market_catalog_heads", "created_at"),
+        ("lookup_table_shared_market_catalog_heads", "updated_at"),
+        ("lookup_table_shared_market_physical_drifts", "id"),
+        (
+            "lookup_table_shared_market_physical_drifts",
+            "evidence_hash",
+        ),
+        ("lookup_table_shared_market_physical_drifts", "cluster"),
+        ("lookup_table_shared_market_physical_drifts", "family_id"),
+        (
+            "lookup_table_shared_market_physical_drifts",
+            "catalog_revision_id",
+        ),
+        (
+            "lookup_table_shared_market_physical_drifts",
+            "route_lookup_table_id",
+        ),
+        (
+            "lookup_table_shared_market_physical_drifts",
+            "expected_mutation_epoch",
+        ),
+        (
+            "lookup_table_shared_market_physical_drifts",
+            "observed_slot",
+        ),
+        (
+            "lookup_table_shared_market_physical_drifts",
+            "observed_address_hash",
+        ),
+        (
+            "lookup_table_shared_market_physical_drifts",
+            "resolution_state",
+        ),
+        ("lookup_table_cluster_budget_reservations", "id"),
+        ("lookup_table_cluster_budget_reservations", "cluster"),
+        ("lookup_table_cluster_budget_reservations", "operation_id"),
+        ("lookup_table_cluster_budget_reservations", "fencing_token"),
+        (
+            "lookup_table_cluster_budget_reservations",
+            "reserved_lamports",
+        ),
+        ("lookup_table_cluster_budget_reservations", "reserved_until"),
         ("lookup_table_families", "id"),
         ("lookup_table_families", "cluster"),
         ("lookup_table_families", "logical_name"),
@@ -736,6 +905,102 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
             "route_lookup_tables_v2_metadata_check",
         ),
         (
+            "route_lookup_tables",
+            "route_lookup_tables_legacy_import_check",
+        ),
+        (
+            "lookup_table_legacy_import_runs",
+            "lookup_table_legacy_import_runs_identity_unique",
+        ),
+        (
+            "lookup_table_legacy_import_runs",
+            "lookup_table_legacy_import_runs_kind_check",
+        ),
+        (
+            "lookup_table_legacy_import_runs",
+            "lookup_table_legacy_import_runs_count_check",
+        ),
+        (
+            "lookup_table_legacy_import_runs",
+            "lookup_table_legacy_import_runs_slot_check",
+        ),
+        (
+            "lookup_table_legacy_import_runs",
+            "lookup_table_legacy_import_runs_text_check",
+        ),
+        (
+            "lookup_table_legacy_import_evidence",
+            "lookup_table_legacy_import_evidence_run_table_unique",
+        ),
+        (
+            "lookup_table_legacy_import_evidence",
+            "lookup_table_legacy_import_evidence_kind_check",
+        ),
+        (
+            "lookup_table_legacy_import_evidence",
+            "lookup_table_legacy_import_evidence_count_check",
+        ),
+        (
+            "lookup_table_legacy_import_evidence",
+            "lookup_table_legacy_import_evidence_slot_check",
+        ),
+        (
+            "lookup_table_legacy_import_evidence",
+            "lookup_table_legacy_import_evidence_hash_check",
+        ),
+        (
+            "lookup_table_shared_market_catalog_revisions",
+            "lookup_table_shared_catalog_revision_unique",
+        ),
+        (
+            "lookup_table_shared_market_catalog_revisions",
+            "lookup_table_shared_catalog_revision_check",
+        ),
+        (
+            "lookup_table_shared_market_catalog_revisions",
+            "lookup_table_shared_catalog_address_count_check",
+        ),
+        (
+            "lookup_table_shared_market_catalog_revisions",
+            "lookup_table_shared_catalog_source_slot_check",
+        ),
+        (
+            "lookup_table_shared_market_catalog_revisions",
+            "lookup_table_shared_catalog_metadata_check",
+        ),
+        (
+            "lookup_table_shared_market_catalog_heads",
+            "lookup_table_shared_catalog_head_generation_check",
+        ),
+        (
+            "lookup_table_shared_market_catalog_heads",
+            "lookup_table_shared_catalog_head_readiness_check",
+        ),
+        (
+            "lookup_table_shared_market_catalog_heads",
+            "lookup_table_shared_catalog_head_lifecycle_check",
+        ),
+        (
+            "lookup_table_shared_market_physical_drifts",
+            "lookup_table_shared_market_physical_drift_hash_check",
+        ),
+        (
+            "lookup_table_shared_market_physical_drifts",
+            "lookup_table_shared_market_physical_drift_observation_check",
+        ),
+        (
+            "lookup_table_shared_market_physical_drifts",
+            "lookup_table_shared_market_physical_drift_resolution_check",
+        ),
+        (
+            "lookup_table_cluster_budget_reservations",
+            "lookup_table_cluster_budget_operation_fence_unique",
+        ),
+        (
+            "lookup_table_cluster_budget_reservations",
+            "lookup_table_cluster_budget_amount_check",
+        ),
+        (
             "lookup_table_families",
             "lookup_table_families_cluster_logical_name_unique",
         ),
@@ -999,6 +1264,16 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         ("lookup_table_route_readiness_current", "shared_family_id"),
         ("lookup_table_route_readiness_current", "vault_binding_id"),
         ("lookup_table_rollout_controls", "vault_id"),
+        ("lookup_table_shared_market_physical_drifts", "family_id"),
+        (
+            "lookup_table_shared_market_physical_drifts",
+            "catalog_revision_id",
+        ),
+        (
+            "lookup_table_shared_market_physical_drifts",
+            "route_lookup_table_id",
+        ),
+        ("lookup_table_cluster_budget_reservations", "operation_id"),
     ] {
         let exists: bool = sqlx::query_scalar(
             r#"
@@ -1026,6 +1301,11 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
     for index in [
         "lookup_table_families_one_active_kind_idx",
         "route_lookup_tables_unique_family_generation_shard_idx",
+        "route_lookup_tables_legacy_import_idx",
+        "lookup_table_legacy_import_evidence_table_idx",
+        "lookup_table_shared_catalog_revision_family_idx",
+        "lookup_table_shared_market_physical_drift_open_idx",
+        "lookup_table_cluster_budget_active_idx",
         "lookup_table_vault_bindings_one_active_idx",
         "lookup_table_usage_leases_active_table_idx",
         "lookup_table_provisioning_requests_work_queue_idx",
@@ -1042,6 +1322,42 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         }
     }
     for (relation, trigger) in [
+        (
+            "route_lookup_tables",
+            "route_lookup_tables_legacy_kind_immutable",
+        ),
+        (
+            "lookup_table_legacy_import_runs",
+            "lookup_table_legacy_import_runs_immutable",
+        ),
+        (
+            "lookup_table_legacy_import_evidence",
+            "lookup_table_legacy_import_evidence_immutable",
+        ),
+        (
+            "lookup_table_legacy_import_evidence",
+            "lookup_table_legacy_import_evidence_consistent",
+        ),
+        (
+            "lookup_table_shared_market_catalog_revisions",
+            "lookup_table_shared_catalog_revision_consistent",
+        ),
+        (
+            "lookup_table_shared_market_catalog_revisions",
+            "lookup_table_shared_catalog_revisions_immutable",
+        ),
+        (
+            "lookup_table_shared_market_catalog_heads",
+            "lookup_table_shared_catalog_head_consistent",
+        ),
+        (
+            "lookup_table_shared_market_physical_drifts",
+            "lookup_table_shared_market_physical_drift_immutable",
+        ),
+        (
+            "lookup_table_cluster_budget_reservations",
+            "lookup_table_cluster_budget_reservations_immutable",
+        ),
         ("lookup_table_manifests", "lookup_table_manifests_immutable"),
         (
             "lookup_table_manifest_addresses",
@@ -1442,15 +1758,147 @@ async fn verify_reusable_alts(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         SELECT EXISTS (
             SELECT 1
             FROM loyal_yield.schema_migrations
-            WHERE version = 17
-              AND name = 'reusable_route_lookup_tables'
+            WHERE version = 20
+              AND name = 'demand_driven_shared_market_catalog'
         )
         "#,
     )
     .fetch_one(pool)
     .await?;
     if !migration_applied {
-        return Err("migration 17 reusable_route_lookup_tables is not recorded".into());
+        return Err("migration 20 demand_driven_shared_market_catalog is not recorded".into());
+    }
+
+    let invalid_shared_catalogs: i64 = sqlx::query_scalar(
+        r#"
+        SELECT count(*)
+        FROM loyal_yield.lookup_table_shared_market_catalog_heads head
+        JOIN loyal_yield.lookup_table_shared_market_catalog_revisions revision
+          ON revision.id = head.catalog_revision_id
+        JOIN loyal_yield.lookup_table_families family ON family.id = head.family_id
+        JOIN loyal_yield.lookup_table_manifests manifest ON manifest.id = revision.manifest_id
+        WHERE revision.family_id <> head.family_id
+           OR family.kind <> 'shared_market'
+           OR family.desired_state <> 'active'
+           OR manifest.family_id <> head.family_id
+           OR manifest.subject_kind <> 'shared_market'
+           OR manifest.sealed_at IS NULL
+           OR manifest.catalog_version <> revision.catalog_version
+           OR manifest.desired_set_hash <> revision.desired_set_hash
+           OR manifest.address_count <> revision.address_count
+           OR revision.address_count > family.allocation_high_water
+           OR revision.address_count <> (
+               SELECT count(*)
+               FROM loyal_yield.lookup_table_manifest_addresses address
+               WHERE address.manifest_id = revision.manifest_id
+                 AND address.semantic_class = 'shared_market'
+           )
+           OR (
+               head.readiness_state = 'active'
+               AND (
+                   head.target_generation IS DISTINCT FROM family.active_generation
+                   OR head.activated_at IS NULL
+                   OR 1 <> (
+                       SELECT count(*)
+                       FROM loyal_yield.route_lookup_tables route_table
+                       WHERE route_table.family_id = family.id
+                         AND route_table.generation = family.active_generation
+                         AND route_table.allocation_kind = 'shared_market'
+                         AND route_table.desired_state = 'active'
+                         AND route_table.usable_address_count = route_table.address_count
+                         AND route_table.last_verified_slot IS NOT NULL
+                   )
+                   OR EXISTS (
+                       SELECT address.address
+                       FROM loyal_yield.lookup_table_manifest_addresses address
+                       WHERE address.manifest_id = revision.manifest_id
+                       EXCEPT
+                       SELECT membership.address
+                       FROM loyal_yield.route_lookup_tables route_table
+                       JOIN loyal_yield.lookup_table_addresses membership
+                         ON membership.route_lookup_table_id = route_table.id
+                       WHERE route_table.family_id = family.id
+                         AND route_table.generation = family.active_generation
+                         AND route_table.allocation_kind = 'shared_market'
+                   )
+                   OR EXISTS (
+                       SELECT membership.address
+                       FROM loyal_yield.route_lookup_tables route_table
+                       JOIN loyal_yield.lookup_table_addresses membership
+                         ON membership.route_lookup_table_id = route_table.id
+                       WHERE route_table.family_id = family.id
+                         AND route_table.generation = family.active_generation
+                         AND route_table.allocation_kind = 'shared_market'
+                       EXCEPT
+                       SELECT address.address
+                       FROM loyal_yield.lookup_table_manifest_addresses address
+                       WHERE address.manifest_id = revision.manifest_id
+                   )
+               )
+           )
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if invalid_shared_catalogs != 0 {
+        return Err(format!(
+            "invalid authoritative shared-market catalog head(s): {invalid_shared_catalogs}"
+        )
+        .into());
+    }
+
+    let invalid_legacy_imports: i64 = sqlx::query_scalar(
+        r#"
+        SELECT count(*)
+        FROM loyal_yield.route_lookup_tables route_table
+        WHERE (
+            route_table.family_id IS NOT NULL
+            AND (route_table.legacy_kind IS NOT NULL OR route_table.legacy_import_run_id IS NOT NULL)
+        ) OR (
+            route_table.legacy_import_run_id IS NOT NULL
+            AND NOT EXISTS (
+                SELECT 1
+                FROM loyal_yield.lookup_table_legacy_import_evidence evidence
+                JOIN loyal_yield.lookup_table_legacy_import_runs import_run
+                  ON import_run.id = evidence.import_run_id
+                WHERE evidence.import_run_id = route_table.legacy_import_run_id
+                  AND evidence.route_lookup_table_id = route_table.id
+                  AND evidence.table_address = route_table.table_address
+                  AND evidence.scope = route_table.scope
+                  AND evidence.legacy_kind = route_table.legacy_kind
+                  AND evidence.expected_authority = route_table.authority
+                  AND evidence.address_count = route_table.address_count
+                  AND evidence.address_hash = route_table.address_hash
+                  AND evidence.addresses = route_table.addresses
+                  AND evidence.observed_last_extended_slot = route_table.last_extended_slot
+                  AND evidence.observed_last_extended_start_index = route_table.last_extended_start_index
+                  AND evidence.verified_slot = route_table.last_verified_slot
+                  AND evidence.verified_at = route_table.last_verified_at
+                  AND import_run.cluster = route_table.cluster
+            )
+        )
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    let invalid_legacy_import_runs: i64 = sqlx::query_scalar(
+        r#"
+        SELECT count(*)
+        FROM loyal_yield.lookup_table_legacy_import_runs import_run
+        WHERE import_run.expected_table_count <> (
+            SELECT count(*)
+            FROM loyal_yield.lookup_table_legacy_import_evidence evidence
+            WHERE evidence.import_run_id = import_run.id
+        )
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if invalid_legacy_imports != 0 || invalid_legacy_import_runs != 0 {
+        return Err(format!(
+            "legacy lookup-table import invariant failed for {invalid_legacy_imports} table(s) and {invalid_legacy_import_runs} run(s)"
+        )
+        .into());
     }
 
     let invalid_family_capacity: bool = sqlx::query_scalar(
@@ -1741,6 +2189,20 @@ async fn verify_reusable_alts(pool: &PgPool) -> Result<(), Box<dyn Error>> {
     )
     .fetch_one(pool)
     .await?;
+    let verified_legacy_table_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.route_lookup_tables WHERE family_id IS NULL AND legacy_import_run_id IS NOT NULL",
+    )
+    .fetch_one(pool)
+    .await?;
+    let legacy_import_run_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM loyal_yield.lookup_table_legacy_import_runs")
+            .fetch_one(pool)
+            .await?;
+    let shared_catalog_head_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.lookup_table_shared_market_catalog_heads",
+    )
+    .fetch_one(pool)
+    .await?;
     let manifest_count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM loyal_yield.lookup_table_manifests")
             .fetch_one(pool)
@@ -1801,6 +2263,9 @@ async fn verify_reusable_alts(pool: &PgPool) -> Result<(), Box<dyn Error>> {
             "status": "reusable_alt_schema_ready",
             "families": family_count,
             "physicalTables": physical_table_count,
+            "verifiedLegacyTables": verified_legacy_table_count,
+            "legacyImportRuns": legacy_import_run_count,
+            "sharedMarketCatalogHeads": shared_catalog_head_count,
             "manifests": manifest_count,
             "bindings": binding_count,
             "desiredVaultHeads": desired_vault_head_count,
@@ -1833,6 +2298,26 @@ impl Migration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migrations_are_strictly_ordered_and_alt_versions_follow_realtime() {
+        assert!(MIGRATIONS
+            .windows(2)
+            .all(|pair| pair[0].version < pair[1].version));
+        for (version, name) in [
+            (18, "earn_activity_realtime"),
+            (19, "legacy_lookup_table_imports"),
+            (20, "demand_driven_shared_market_catalog"),
+        ] {
+            assert_eq!(
+                MIGRATIONS
+                    .iter()
+                    .find(|migration| migration.version == version)
+                    .map(|migration| migration.name),
+                Some(name),
+            );
+        }
+    }
 
     #[test]
     fn non_legacy_earn_migrations_execute_the_original_bytes() {

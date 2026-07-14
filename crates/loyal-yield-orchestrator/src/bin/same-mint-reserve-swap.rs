@@ -4,7 +4,6 @@ use std::{
     convert::TryInto,
     env,
     error::Error,
-    future::Future,
     str::FromStr,
 };
 
@@ -57,17 +56,17 @@ use loyal_yield_orchestrator::{
     lookup_table_manifest_hash as control_plane_lookup_table_manifest_hash,
     minimal_verified_table_bundle, policy_keypair_from_env, route_amount_evidence_from_metadata,
     rpc_safety::{redacted_external_error, validate_rpc_endpoint, validate_rpc_genesis_hash},
-    select_lookup_table_bundle, shared_market_manifest_addresses, shared_market_manifest_hash,
-    solana_testing_keypair_from_env, vault_manifest_addresses, vault_manifest_hash,
-    ConfirmSameMintRebalanceInput, CurrentIdleTokenBalance, DecisionAdvance, DecisionId,
-    DecisionStatus, EffectiveLookupTableRollout, IdleVaultDepositDecisionInput,
-    LookupTableAllocationKind, LookupTableBundleKind, LookupTableLifecycle,
+    shared_market_manifest_addresses, shared_market_manifest_hash, solana_testing_keypair_from_env,
+    vault_manifest_addresses, vault_manifest_hash, ConfirmSameMintRebalanceInput,
+    CurrentIdleTokenBalance, DecisionAdvance, DecisionId, DecisionStatus,
+    EffectiveLookupTableRollout, IdleVaultDepositDecisionInput, LookupTableAllocationKind,
     LookupTableProvisioningRequestUpsert, LookupTableReadinessRecord, LookupTableReadinessStatus,
     LookupTableRolloutMode, LookupTableSelectionKind, LookupTableSimulationState,
     LookupTableUsageLeaseBundle, LookupTableUsageLeaseKind, NeonSqlClient, PlanOutcomeStatus,
     PolicyMatchInput, RebalanceDecision, ReconciledReservePosition, ReconciledVaultState,
-    ResolvedLookupTableBundle, ResolverSelection, ResolverSelectionInput, ResolverTableCandidate,
-    RouteLookupTable, SameMintRebalanceInput, SameMintRebalanceResult, SnapshotId, VaultId,
+    ResolvedLookupTableBundle, ResolverTableCandidate, SameMintRebalanceInput,
+    SameMintRebalanceResult, SharedMarketCatalogRouteValidation,
+    SharedMarketCatalogRouteValidationState, SnapshotId, VaultId,
     AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
 use num_bigint::BigUint;
@@ -288,7 +287,6 @@ struct CliOptions {
     expected_edge_bps: Option<i64>,
     cluster: String,
     rpc_url: String,
-    lookup_tables: Vec<Pubkey>,
 }
 
 #[derive(Debug)]
@@ -360,6 +358,7 @@ struct ChainReconcilePreview {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IdleVaultDepositBlockerKind {
     SourceStale,
+    LookupTable,
     Safety,
 }
 
@@ -380,6 +379,13 @@ impl IdleVaultDepositBlocker {
     fn safety(message: impl Into<String>) -> Self {
         Self {
             kind: IdleVaultDepositBlockerKind::Safety,
+            message: message.into(),
+        }
+    }
+
+    fn lookup_table(message: impl Into<String>) -> Self {
+        Self {
+            kind: IdleVaultDepositBlockerKind::LookupTable,
             message: message.into(),
         }
     }
@@ -641,68 +647,6 @@ struct CompiledLookupTableBundle {
 }
 
 #[derive(Debug)]
-enum LookupTableResolverAttempt<T, E> {
-    Skipped { reason: &'static str },
-    Resolved(T),
-    Failed(E),
-}
-
-impl<T, E> LookupTableResolverAttempt<T, E> {
-    const fn state(&self) -> &'static str {
-        match self {
-            Self::Skipped { .. } => "skipped",
-            Self::Resolved(_) => "resolved",
-            Self::Failed(_) => "failed",
-        }
-    }
-}
-
-async fn attempt_reusable_resolution<T, E, Resolve, ResolveFuture>(
-    rollout_mode: LookupTableRolloutMode,
-    force_legacy: bool,
-    resolve: Resolve,
-) -> LookupTableResolverAttempt<T, E>
-where
-    Resolve: FnOnce() -> ResolveFuture,
-    ResolveFuture: Future<Output = Result<T, E>>,
-{
-    if force_legacy {
-        return LookupTableResolverAttempt::Skipped {
-            reason: "global force-legacy bypassed reusable resolution",
-        };
-    }
-    if rollout_mode == LookupTableRolloutMode::Legacy {
-        return LookupTableResolverAttempt::Skipped {
-            reason: "legacy rollout mode bypassed reusable resolution",
-        };
-    }
-    match resolve().await {
-        Ok(resolved) => LookupTableResolverAttempt::Resolved(resolved),
-        Err(error) => LookupTableResolverAttempt::Failed(error),
-    }
-}
-
-async fn attempt_legacy_resolution<T, E, Resolve, ResolveFuture>(
-    rollout_mode: LookupTableRolloutMode,
-    force_legacy: bool,
-    resolve: Resolve,
-) -> LookupTableResolverAttempt<T, E>
-where
-    Resolve: FnOnce() -> ResolveFuture,
-    ResolveFuture: Future<Output = Result<T, E>>,
-{
-    if !force_legacy && rollout_mode == LookupTableRolloutMode::ReusableOnly {
-        return LookupTableResolverAttempt::Skipped {
-            reason: "reusable-only rollout mode bypassed legacy resolution",
-        };
-    }
-    match resolve().await {
-        Ok(resolved) => LookupTableResolverAttempt::Resolved(resolved),
-        Err(error) => LookupTableResolverAttempt::Failed(error),
-    }
-}
-
-#[derive(Debug)]
 struct RuntimeLookupTableResolution {
     rollout: EffectiveLookupTableRollout,
     route_fingerprint: String,
@@ -712,15 +656,11 @@ struct RuntimeLookupTableResolution {
     active_binding_fingerprint: String,
     active_binding_id: Option<i64>,
     selection_kind: LookupTableSelectionKind,
-    fallback_reason: Option<String>,
     blocker: Option<String>,
     selected_bundle: Option<ResolvedLookupTableBundle>,
     selected_transaction: Option<VersionedTransaction>,
     selected_transaction_packet: Option<TransactionPacketSummary>,
     selected_simulation_units_consumed: Option<u64>,
-    legacy_table_ids: Vec<i64>,
-    legacy_missing_addresses: BTreeSet<String>,
-    legacy_packet_fits: Option<bool>,
     reusable_table_ids: Vec<i64>,
     required_addresses: BTreeSet<String>,
     reusable_missing_addresses: BTreeSet<String>,
@@ -729,6 +669,7 @@ struct RuntimeLookupTableResolution {
     reusable_packet_fits: Option<bool>,
     reusable_simulation_units_consumed: Option<u64>,
     reusable_simulation_error: Option<String>,
+    shared_catalog_covered: bool,
     observed_slot: i64,
     evidence: Value,
 }
@@ -778,25 +719,16 @@ impl RuntimeLookupTableResolution {
     }
 
     fn require_deferred_simulation_coverage(&self) -> Result<(), Box<dyn Error>> {
-        let legacy_ready =
-            self.legacy_missing_addresses.is_empty() && self.legacy_packet_fits == Some(true);
-        let reusable_ready =
-            self.reusable_missing_addresses.is_empty() && self.reusable_packet_fits == Some(true);
-        let ready = deferred_simulation_coverage_ready(
-            self.rollout.rollout_mode,
-            self.rollout.force_legacy,
-            legacy_ready,
-            reusable_ready,
-        );
+        let ready = reusable_runtime_enabled(&self.rollout) && self.reusable_ready;
         if ready {
             Ok(())
         } else {
             Err(format!(
-                "lookup-table coverage/packet gate failed before prerequisite transaction: mode={}, legacyMissing={}, reusableMissing={}, legacyPacketFits={:?}, reusablePacketFits={:?}",
+                "reusable lookup-table coverage/packet/catalog gate failed before prerequisite transaction: mode={}, forceLegacy={}, sharedCatalogCovered={}, reusableMissing={}, reusablePacketFits={:?}",
                 self.rollout.rollout_mode.as_str(),
-                self.legacy_missing_addresses.len(),
+                self.rollout.force_legacy,
+                self.shared_catalog_covered,
                 self.reusable_missing_addresses.len(),
-                self.legacy_packet_fits,
                 self.reusable_packet_fits,
             )
             .into())
@@ -804,19 +736,37 @@ impl RuntimeLookupTableResolution {
     }
 }
 
-fn deferred_simulation_coverage_ready(
-    rollout_mode: LookupTableRolloutMode,
-    force_legacy: bool,
-    legacy_ready: bool,
+fn reusable_runtime_enabled(rollout: &EffectiveLookupTableRollout) -> bool {
+    rollout.rollout_mode == LookupTableRolloutMode::ReusableOnly && !rollout.force_legacy
+}
+
+fn reusable_runtime_blocker(
+    rollout: &EffectiveLookupTableRollout,
+    shared_catalog_covered: bool,
     reusable_ready: bool,
-) -> bool {
-    if force_legacy {
-        return legacy_ready;
-    }
-    match rollout_mode {
-        LookupTableRolloutMode::Legacy | LookupTableRolloutMode::Shadow => legacy_ready,
-        LookupTableRolloutMode::PreferReusable => reusable_ready || legacy_ready,
-        LookupTableRolloutMode::ReusableOnly => reusable_ready,
+) -> Option<String> {
+    if rollout.force_legacy {
+        Some(
+            "global force-legacy is a fail-closed stop because legacy ALT resolution has been removed"
+                .to_owned(),
+        )
+    } else if rollout.rollout_mode != LookupTableRolloutMode::ReusableOnly {
+        Some(format!(
+            "lookup-table rollout mode {} is disabled because legacy ALT resolution has been removed; reusable_only is required",
+            rollout.rollout_mode.as_str()
+        ))
+    } else if !shared_catalog_covered {
+        Some(
+            "shared_market_catalog_drift: route shared requirements are not covered by the exact active durable catalog generation"
+                .to_owned(),
+        )
+    } else if !reusable_ready {
+        Some(
+            "reusable-only runtime requires complete reusable ALT coverage and simulation"
+                .to_owned(),
+        )
+    } else {
+        None
     }
 }
 
@@ -1048,7 +998,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let pool = connect(&database_url).await?;
     let client = NeonSqlClient::from_pool(pool.clone());
     client
-        .require_schema_migration(17, "reusable_route_lookup_tables")
+        .require_schema_migration(20, "demand_driven_shared_market_catalog")
         .await?;
 
     if let Some(amount_raw) = options.e2e_deposit_amount_raw {
@@ -1834,9 +1784,6 @@ fn lifecycle_phase_args(options: &CliOptions, phase_args: &[String]) -> Vec<Stri
         "--cluster".to_owned(),
         options.cluster.clone(),
     ];
-    for lookup_table in &options.lookup_tables {
-        args.extend(["--lookup-table".to_owned(), lookup_table.to_string()]);
-    }
     args.extend(phase_args.iter().cloned());
     if options.seed_from_user_position {
         args.push("--seed-from-user-position".to_owned());
@@ -1914,14 +1861,10 @@ async fn run_policy_update_flow(
         "same_mint_policy:{}:{}:{}",
         vault.settings, vault.vault_index, vault.policy_account
     );
-    let lookup_table_pubkeys = lookup_table_pubkeys_for_scope(
-        client,
-        options,
-        &policy_lookup_table_scope,
-        authority_signer.pubkey(),
-    )
-    .await?;
-    let lookup_table_accounts = load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
+    // Legacy exact-scope ALTs are deliberately absent from measurement. The
+    // best-case packet estimator remains useful, while every actual send is
+    // compiled by the reusable resolver below.
+    let lookup_table_accounts = Vec::new();
     let delegated_signer = policy_keypair_from_env()?;
     let db_delegated_signer_matches = vault
         .delegated_signers
@@ -3849,7 +3792,7 @@ async fn run_idle_vault_deposit_flow(
         )
         .await?;
         if let Some(blocker) = resolution.blocker.as_ref() {
-            blockers.push(IdleVaultDepositBlocker::safety(format!(
+            blockers.push(IdleVaultDepositBlocker::lookup_table(format!(
                 "idle setup lookup-table resolver blocked: {blocker}"
             )));
         }
@@ -3894,7 +3837,7 @@ async fn run_idle_vault_deposit_flow(
         )
         .await?;
         if let Some(blocker) = resolution.blocker.as_ref() {
-            blockers.push(IdleVaultDepositBlocker::safety(format!(
+            blockers.push(IdleVaultDepositBlocker::lookup_table(format!(
                 "idle deposit lookup-table resolver blocked: {blocker}"
             )));
         }
@@ -3998,6 +3941,32 @@ async fn run_idle_vault_deposit_flow(
             }))?
         );
         return Ok(());
+    }
+
+    if idle_vault_deposit_requires_lookup_table_provisioning(&blockers) {
+        let preflight_blockers = idle_vault_deposit_blocker_messages(&blockers);
+        let blocker_reason = format!(
+            "idle vault deposit lookup-table provisioning deferred: {}",
+            preflight_blockers.join("; ")
+        );
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "status": "idle_vault_deposit_lookup_table_deferred",
+                "writesDecision": false,
+                "writesCurrentPositions": false,
+                "sendsTransactions": false,
+                "retry": "next_monitor_cycle_after_provisioning",
+                "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, &deposit_position, amount_raw, db_idle.as_ref(), options),
+                "preflightBlockers": preflight_blockers,
+                "setupObligationBeforeDeposit": setup_obligation_before_deposit,
+                "missingObligationSetup": missing_obligation_setup_dry_run,
+                "policyDeposit": dry_run_policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
+                "policyDepositTransaction": dry_run_policy_transaction.as_ref().map(policy_transaction_json),
+                "lookupTableResolution": idle_lookup_table_evidence.clone(),
+            }))?
+        );
+        return Err(blocker_reason.into());
     }
 
     if idle_vault_deposit_has_only_source_sync_blockers(&blockers) {
@@ -4630,6 +4599,14 @@ fn idle_vault_deposit_has_only_source_sync_blockers(blockers: &[IdleVaultDeposit
         && blockers
             .iter()
             .all(|blocker| blocker.kind == IdleVaultDepositBlockerKind::SourceStale)
+}
+
+fn idle_vault_deposit_requires_lookup_table_provisioning(
+    blockers: &[IdleVaultDepositBlocker],
+) -> bool {
+    blockers
+        .iter()
+        .any(|blocker| blocker.kind == IdleVaultDepositBlockerKind::LookupTable)
 }
 
 async fn record_live_idle_vault_balance(
@@ -5303,8 +5280,9 @@ async fn run_full_reserve_withdraw_flow(
 ) -> Result<(), Box<dyn Error>> {
     let rpc =
         RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
-    let lookup_table_pubkeys = lookup_table_pubkeys_from_options(options)?;
-    let lookup_table_accounts = load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
+    // Preview-only builds intentionally use no legacy lookup tables. Every
+    // submitted phase is recompiled through the reusable resolver.
+    let lookup_table_accounts = Vec::new();
     let signer = policy_keypair_from_env()?;
     let authority_signer = solana_testing_keypair_from_env()?;
     let authority_pubkey = Pubkey::from_str(&vault.authority)?;
@@ -6374,44 +6352,6 @@ fn missing_lookup_table_addresses(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn resolve_and_compile_legacy_lookup_table_bundle(
-    client: &NeonSqlClient,
-    rpc: &RpcClient,
-    options: &CliOptions,
-    scope: &str,
-    required_addresses: &BTreeSet<String>,
-    observed_slot_u64: u64,
-    fee_payer: Pubkey,
-    instructions: &[Instruction],
-    blockhash: Hash,
-    signers: &[&dyn Signer],
-) -> Result<CompiledLookupTableBundle, Box<dyn Error>> {
-    let legacy_records =
-        legacy_route_lookup_table_records(client, options, scope, &fee_payer.to_string()).await?;
-    let (legacy_candidates, legacy_accounts, mut legacy_failures) =
-        verify_legacy_lookup_table_candidates(rpc, legacy_records, observed_slot_u64);
-    let (legacy_tables, legacy_missing) = minimal_verified_table_bundle(
-        required_addresses,
-        &legacy_candidates,
-        LOOKUP_TABLE_RESOLVER_EXACT_SEARCH_LIMIT,
-    )?;
-    let mut legacy = compile_lookup_table_bundle(
-        rpc,
-        LookupTableBundleKind::Legacy,
-        legacy_tables,
-        legacy_missing,
-        required_addresses.clone(),
-        legacy_accounts,
-        fee_payer,
-        instructions,
-        blockhash,
-        signers,
-    );
-    legacy.verification_failures.append(&mut legacy_failures);
-    Ok(legacy)
-}
-
-#[allow(clippy::too_many_arguments)]
 async fn resolve_and_compile_reusable_lookup_table_bundle(
     client: &NeonSqlClient,
     rpc: &RpcClient,
@@ -6448,7 +6388,6 @@ async fn resolve_and_compile_reusable_lookup_table_bundle(
         .collect::<BTreeSet<_>>();
     let mut reusable = compile_lookup_table_bundle(
         rpc,
-        LookupTableBundleKind::Reusable,
         reusable_tables,
         reusable_missing,
         required_addresses.clone(),
@@ -6464,34 +6403,6 @@ async fn resolve_and_compile_reusable_lookup_table_bundle(
     Ok(reusable)
 }
 
-fn unavailable_legacy_lookup_table_bundle(
-    required_addresses: &BTreeSet<String>,
-    code: &'static str,
-    reason: impl Into<String>,
-    is_error: bool,
-) -> CompiledLookupTableBundle {
-    let reason = reason.into();
-    CompiledLookupTableBundle {
-        domain: ResolvedLookupTableBundle {
-            kind: LookupTableBundleKind::Legacy,
-            tables: Vec::new(),
-            required_addresses: required_addresses.clone(),
-            missing_addresses: required_addresses.clone(),
-            packet_fits: false,
-            simulation_succeeded: false,
-        },
-        transaction: None,
-        transaction_packet: None,
-        simulation_units_consumed: None,
-        simulation_error: is_error.then(|| reason.clone()),
-        verification_failures: vec![json!({
-            "stage": "resolver",
-            "code": code,
-            "reason": reason,
-        })],
-    }
-}
-
 fn unavailable_reusable_lookup_table_bundle(
     required_addresses: &BTreeSet<String>,
     code: &'static str,
@@ -6501,7 +6412,6 @@ fn unavailable_reusable_lookup_table_bundle(
     let reason = reason.into();
     CompiledLookupTableBundle {
         domain: ResolvedLookupTableBundle {
-            kind: LookupTableBundleKind::Reusable,
             tables: Vec::new(),
             required_addresses: required_addresses.clone(),
             missing_addresses: required_addresses.clone(),
@@ -6585,107 +6495,45 @@ async fn resolve_route_lookup_tables(
     let rollout = client
         .effective_lookup_table_rollout(&options.cluster, vault.id)
         .await?;
+    let shared_catalog_validation = client
+        .validate_shared_market_catalog_route(
+            &options.cluster,
+            shared_market_manifest_addresses(manifest),
+        )
+        .await?;
+    let shared_catalog_covered =
+        shared_catalog_validation.state == SharedMarketCatalogRouteValidationState::Covered;
     let blockhash = rpc.get_latest_blockhash()?;
-    let legacy_attempt =
-        attempt_legacy_resolution(rollout.rollout_mode, rollout.force_legacy, || {
-            resolve_and_compile_legacy_lookup_table_bundle(
-                client,
-                rpc,
-                options,
-                scope,
-                &required_addresses,
-                observed_slot_u64,
-                fee_payer,
-                instructions,
-                blockhash,
-                signers,
-            )
-        })
-        .await;
-    let legacy_resolution_state = legacy_attempt.state();
-    let mut legacy_resolution_error_code = None;
-    let (mut legacy, legacy_selection_candidate) = match legacy_attempt {
-        LookupTableResolverAttempt::Skipped { reason } => (
-            unavailable_legacy_lookup_table_bundle(
-                &required_addresses,
-                "legacy_resolution_skipped",
-                reason,
-                false,
-            ),
-            None,
-        ),
-        LookupTableResolverAttempt::Resolved(bundle) => {
-            let selection_candidate = Some(bundle.domain.clone());
-            (bundle, selection_candidate)
-        }
-        LookupTableResolverAttempt::Failed(error) => {
-            let detail = safe_lookup_table_resolution_error(error.as_ref());
-            legacy_resolution_error_code = Some("legacy_resolution_failed");
-            let bundle = unavailable_legacy_lookup_table_bundle(
-                &required_addresses,
-                "legacy_resolution_failed",
-                detail,
-                true,
-            );
-            let selection_candidate = Some(bundle.domain.clone());
-            (bundle, selection_candidate)
-        }
-    };
-
-    let reusable_attempt =
-        attempt_reusable_resolution(rollout.rollout_mode, rollout.force_legacy, || {
-            resolve_and_compile_reusable_lookup_table_bundle(
-                client,
-                rpc,
-                options,
-                vault,
-                &required_addresses,
-                observed_slot,
-                observed_slot_u64,
-                fee_payer,
-                instructions,
-                blockhash,
-                signers,
-            )
-        })
-        .await;
-    let reusable_resolution_state = reusable_attempt.state();
     let mut reusable_resolution_error_code = None;
-    let (mut reusable, reusable_selection_candidate) = match reusable_attempt {
-        LookupTableResolverAttempt::Skipped { reason } => (
-            unavailable_reusable_lookup_table_bundle(
-                &required_addresses,
-                "reusable_resolution_skipped",
-                reason,
-                false,
-            ),
-            None,
-        ),
-        LookupTableResolverAttempt::Resolved(bundle) => {
-            let selection_candidate = Some(bundle.domain.clone());
-            (bundle, selection_candidate)
-        }
-        LookupTableResolverAttempt::Failed(error) => {
-            let detail = safe_lookup_table_resolution_error(error.as_ref());
-            reusable_resolution_error_code = Some("reusable_resolution_failed");
-            let bundle = unavailable_reusable_lookup_table_bundle(
-                &required_addresses,
-                "reusable_resolution_failed",
-                detail,
-                true,
-            );
-            let selection_candidate = Some(bundle.domain.clone());
-            (bundle, selection_candidate)
-        }
-    };
-
-    let mut legacy_evidence = compiled_lookup_table_bundle_json(&legacy);
-    if let Some(fields) = legacy_evidence.as_object_mut() {
-        fields.insert("resolutionState".to_owned(), json!(legacy_resolution_state));
-        if let Some(code) = legacy_resolution_error_code {
-            fields.insert("resolutionErrorCode".to_owned(), json!(code));
-        }
-    }
+    let (mut reusable, reusable_resolution_state) =
+        match resolve_and_compile_reusable_lookup_table_bundle(
+            client,
+            rpc,
+            options,
+            vault,
+            &required_addresses,
+            observed_slot,
+            observed_slot_u64,
+            fee_payer,
+            instructions,
+            blockhash,
+            signers,
+        )
+        .await
+        {
+            Ok(bundle) => (bundle, "resolved"),
+            Err(error) => {
+                let detail = safe_lookup_table_resolution_error(error.as_ref());
+                reusable_resolution_error_code = Some("reusable_resolution_failed");
+                let bundle = unavailable_reusable_lookup_table_bundle(
+                    &required_addresses,
+                    "reusable_resolution_failed",
+                    detail,
+                    true,
+                );
+                (bundle, "failed")
+            }
+        };
     let mut reusable_evidence = compiled_lookup_table_bundle_json(&reusable);
     if let Some(fields) = reusable_evidence.as_object_mut() {
         fields.insert(
@@ -6696,17 +6544,6 @@ async fn resolve_route_lookup_tables(
             fields.insert("resolutionErrorCode".to_owned(), json!(code));
         }
     }
-    let legacy_table_ids = legacy
-        .domain
-        .tables
-        .iter()
-        .map(|table| table.table_id)
-        .collect::<Vec<_>>();
-    let legacy_missing_addresses = legacy.domain.missing_addresses.clone();
-    let legacy_packet_fits = legacy
-        .transaction_packet
-        .as_ref()
-        .map(|packet| packet.fits_packet_data_size);
     let reusable_table_ids = reusable
         .domain
         .tables
@@ -6714,7 +6551,7 @@ async fn resolve_route_lookup_tables(
         .map(|table| table.table_id)
         .collect::<Vec<_>>();
     let reusable_missing_addresses = reusable.domain.missing_addresses.clone();
-    let reusable_ready = reusable.domain.ready();
+    let reusable_ready = reusable.domain.ready() && shared_catalog_covered;
     let reusable_compiled_message_size = reusable
         .transaction_packet
         .as_ref()
@@ -6725,77 +6562,37 @@ async fn resolve_route_lookup_tables(
         .map(|packet| packet.fits_packet_data_size);
     let reusable_simulation_units_consumed = reusable.simulation_units_consumed;
     let reusable_simulation_error = reusable.simulation_error.clone();
-    let selection = select_lookup_table_bundle(ResolverSelectionInput {
-        rollout_mode: rollout.rollout_mode,
-        force_legacy: rollout.force_legacy,
-        legacy: legacy_selection_candidate,
-        reusable: reusable_selection_candidate,
-    });
-    let (selection_kind, fallback_reason, blocker, selected_kind) = match selection {
-        ResolverSelection::Execute(bundle) => {
-            let fallback_reason = if rollout.force_legacy {
-                Some("force-legacy control selected the legacy bundle".to_owned())
-            } else if rollout.rollout_mode == LookupTableRolloutMode::PreferReusable
-                && bundle.kind == LookupTableBundleKind::Legacy
-            {
-                Some(if reusable_resolution_state == "failed" {
-                    "reusable resolver failed; selected verified legacy fallback".to_owned()
-                } else {
-                    "reusable bundle was not send-ready; selected verified legacy fallback"
-                        .to_owned()
-                })
-            } else {
-                None
-            };
-            let selection_kind = match bundle.kind {
-                LookupTableBundleKind::Legacy => LookupTableSelectionKind::Legacy,
-                LookupTableBundleKind::Reusable => LookupTableSelectionKind::Reusable,
-            };
-            (selection_kind, fallback_reason, None, Some(bundle.kind))
-        }
-        ResolverSelection::Shadow { execute, .. } => (
-            LookupTableSelectionKind::Legacy,
-            Some(if reusable_resolution_state == "failed" {
-                "shadow rollout executes verified legacy; reusable resolver error recorded"
-                    .to_owned()
-            } else {
-                "shadow rollout executes verified legacy while recording reusable evidence"
-                    .to_owned()
-            }),
-            None,
-            Some(execute.kind),
-        ),
-        ResolverSelection::Blocked { reason } => (
-            LookupTableSelectionKind::Blocked,
-            None,
-            Some(reason.to_owned()),
-            None,
-        ),
+    let blocker = reusable_runtime_blocker(&rollout, shared_catalog_covered, reusable_ready);
+    let selection_kind = if blocker.is_none() {
+        LookupTableSelectionKind::Reusable
+    } else {
+        LookupTableSelectionKind::Blocked
     };
-
-    let selected_bundle = match selected_kind {
-        Some(LookupTableBundleKind::Legacy) => Some(legacy.domain.clone()),
-        Some(LookupTableBundleKind::Reusable) => Some(reusable.domain.clone()),
-        None => None,
-    };
+    let selected_bundle = blocker.is_none().then(|| reusable.domain.clone());
     let selected_table_ids = selected_bundle
         .as_ref()
         .map(|bundle| bundle.tables.iter().map(|table| table.table_id).collect())
         .unwrap_or_else(Vec::new);
-    let (active_binding_fingerprint, active_binding_id) =
-        if selected_kind == Some(LookupTableBundleKind::Reusable) {
-            active_lookup_table_binding_fingerprint(client, vault.id, &selected_table_ids).await?
-        } else {
-            (stable_fingerprint(&["legacy", "no-reusable-binding"]), None)
-        };
+    let (active_binding_fingerprint, active_binding_id) = if selected_bundle.is_some() {
+        active_lookup_table_binding_fingerprint(client, vault.id, &selected_table_ids).await?
+    } else {
+        (stable_fingerprint(&["reusable", "no-active-binding"]), None)
+    };
     let selection_fingerprint = selected_bundle.as_ref().map(|bundle| {
         let mut parts = vec![
             requirements_fingerprint.clone(),
             active_binding_fingerprint.clone(),
-            match bundle.kind {
-                LookupTableBundleKind::Legacy => "legacy".to_owned(),
-                LookupTableBundleKind::Reusable => "reusable".to_owned(),
-            },
+            "reusable".to_owned(),
+            format!(
+                "shared-catalog:{}:{}",
+                shared_catalog_validation
+                    .catalog_revision_id
+                    .map_or_else(|| "none".to_owned(), |id| id.to_string()),
+                shared_catalog_validation
+                    .desired_set_hash
+                    .as_deref()
+                    .unwrap_or("none")
+            ),
         ];
         for table in &bundle.tables {
             parts.push(format!(
@@ -6813,11 +6610,7 @@ async fn resolve_route_lookup_tables(
         .as_ref()
         .map(|fingerprint| format!("route-resolution:{fingerprint}"));
 
-    let selected = match selected_kind {
-        Some(LookupTableBundleKind::Legacy) => Some(&mut legacy),
-        Some(LookupTableBundleKind::Reusable) => Some(&mut reusable),
-        None => None,
-    };
+    let selected = blocker.is_none().then_some(&mut reusable);
     let (selected_transaction, selected_transaction_packet, selected_simulation_units_consumed) =
         if let Some(selected) = selected {
             (
@@ -6844,18 +6637,16 @@ async fn resolve_route_lookup_tables(
         },
         "selection": {
             "kind": selection_kind.as_str(),
-            "fallbackReason": fallback_reason,
             "blocker": blocker,
             "fingerprint": selection_fingerprint,
             "activeBindingFingerprint": active_binding_fingerprint,
             "tableIds": selected_table_ids,
         },
         "requiredAddresses": required_addresses.iter().cloned().collect::<Vec<_>>(),
-        "legacy": legacy_evidence,
         "reusable": reusable_evidence,
+        "sharedMarketCatalog": shared_market_catalog_validation_json(&shared_catalog_validation),
         "typedManifest": lookup_table_manifest_json(manifest),
     });
-
     Ok(RuntimeLookupTableResolution {
         rollout,
         route_fingerprint,
@@ -6865,15 +6656,11 @@ async fn resolve_route_lookup_tables(
         active_binding_fingerprint,
         active_binding_id,
         selection_kind,
-        fallback_reason,
         blocker,
         selected_bundle,
         selected_transaction,
         selected_transaction_packet,
         selected_simulation_units_consumed,
-        legacy_table_ids,
-        legacy_missing_addresses,
-        legacy_packet_fits,
         reusable_table_ids,
         required_addresses,
         reusable_missing_addresses,
@@ -6882,121 +6669,10 @@ async fn resolve_route_lookup_tables(
         reusable_packet_fits,
         reusable_simulation_units_consumed,
         reusable_simulation_error,
+        shared_catalog_covered,
         observed_slot,
         evidence,
     })
-}
-
-async fn legacy_route_lookup_table_records(
-    client: &NeonSqlClient,
-    options: &CliOptions,
-    scope: &str,
-    authority: &str,
-) -> Result<Vec<RouteLookupTable>, Box<dyn Error>> {
-    let mut records = client
-        .durable_route_lookup_tables(&options.cluster, scope, authority)
-        .await?;
-    let configured_addresses = lookup_table_pubkeys_from_options(options)?
-        .into_iter()
-        .map(|address| address.to_string())
-        .collect::<Vec<_>>();
-    if !configured_addresses.is_empty() {
-        let rows = loyal_yield_orchestrator::sqlx::query_scalar::<_, Value>(
-            r#"
-            SELECT to_jsonb(route_table)
-            FROM loyal_yield.route_lookup_tables route_table
-            WHERE route_table.cluster = $1
-              AND route_table.authority = $2
-              AND route_table.table_address = ANY($3)
-              AND route_table.family_id IS NULL
-              AND route_table.durable = TRUE
-              AND route_table.status IN ('active', 'warming', 'usable')
-            ORDER BY route_table.updated_at DESC, route_table.id DESC
-            "#,
-        )
-        .bind(&options.cluster)
-        .bind(authority)
-        .bind(&configured_addresses)
-        .fetch_all(client.pool())
-        .await?;
-        for row in rows {
-            records.push(serde_json::from_value(row).map_err(|error| {
-                format!("registered legacy lookup-table row could not be decoded: {error}")
-            })?);
-        }
-    }
-    records.sort_by_key(|record| record.id);
-    records.dedup_by_key(|record| record.id);
-    Ok(records)
-}
-
-fn verify_legacy_lookup_table_candidates(
-    rpc: &RpcClient,
-    records: Vec<RouteLookupTable>,
-    observed_slot: u64,
-) -> (
-    Vec<ResolverTableCandidate>,
-    BTreeMap<i64, AddressLookupTableAccount>,
-    Vec<Value>,
-) {
-    let mut candidates = Vec::new();
-    let mut accounts = BTreeMap::new();
-    let mut failures = Vec::new();
-    for record in records {
-        let table_id = record.id;
-        let table_address = record.table_address.clone();
-        let ordered_prefix = match serde_json::from_value::<Vec<String>>(record.addresses.clone()) {
-            Ok(addresses) => addresses,
-            Err(error) => {
-                failures.push(json!({
-                    "tableId": table_id,
-                    "tableAddress": table_address,
-                    "reason": format!("legacy DB address list is invalid: {error}"),
-                }));
-                continue;
-            }
-        };
-        let persisted_prefix_verified = record.durable
-            && record.address_count >= 0
-            && record.address_count as usize == ordered_prefix.len()
-            && record.deactivated_slot.is_none();
-        let mut candidate = ResolverTableCandidate {
-            table_id,
-            table_address: record.table_address,
-            expected_authority: record.authority,
-            family_id: None,
-            allocation_kind: None,
-            generation: 0,
-            shard_index: 0,
-            ordered_usable_prefix: ordered_prefix.clone(),
-            ordered_durable_addresses: ordered_prefix.clone(),
-            addresses: ordered_prefix.iter().cloned().collect(),
-            usable_prefix_len: u16::try_from(ordered_prefix.len()).unwrap_or(u16::MAX),
-            address_hash: ordered_lookup_table_address_hash(&ordered_prefix),
-            mutation_epoch: 0,
-            last_verified_slot: record.warmup_slot.or(record.last_extended_slot),
-            lifecycle: LookupTableLifecycle::Active,
-            persisted_prefix_verified,
-            rpc_verified: false,
-            usable: persisted_prefix_verified,
-        };
-        match verify_lookup_table_candidate(rpc, &mut candidate, observed_slot) {
-            Ok(account) => {
-                accounts.insert(table_id, account);
-            }
-            Err(reason) => {
-                candidate.rpc_verified = false;
-                candidate.usable = false;
-                failures.push(json!({
-                    "tableId": table_id,
-                    "tableAddress": candidate.table_address,
-                    "reason": safe_same_mint_operational_error(&reason),
-                }));
-            }
-        }
-        candidates.push(candidate);
-    }
-    (candidates, accounts, failures)
 }
 
 fn verify_reusable_lookup_table_candidates(
@@ -7134,7 +6810,6 @@ fn verify_lookup_table_candidate(
 #[allow(clippy::too_many_arguments)]
 fn compile_lookup_table_bundle(
     rpc: &RpcClient,
-    kind: LookupTableBundleKind,
     mut tables: Vec<ResolverTableCandidate>,
     mut missing_addresses: BTreeSet<String>,
     required_addresses: BTreeSet<String>,
@@ -7241,7 +6916,6 @@ fn compile_lookup_table_bundle(
         && missing_addresses.is_empty();
     CompiledLookupTableBundle {
         domain: ResolvedLookupTableBundle {
-            kind,
             tables,
             required_addresses,
             missing_addresses,
@@ -7300,10 +6974,7 @@ fn loaded_lookup_table_addresses(
 
 fn compiled_lookup_table_bundle_json(bundle: &CompiledLookupTableBundle) -> Value {
     json!({
-        "kind": match bundle.domain.kind {
-            LookupTableBundleKind::Legacy => "legacy",
-            LookupTableBundleKind::Reusable => "reusable",
-        },
+        "kind": "reusable",
         "ready": bundle.domain.ready(),
         "packetFits": bundle.domain.packet_fits,
         "simulationSucceeded": bundle.domain.simulation_succeeded,
@@ -7328,6 +6999,22 @@ fn compiled_lookup_table_bundle_json(bundle: &CompiledLookupTableBundle) -> Valu
         })).collect::<Vec<_>>(),
         "transaction": bundle.transaction_packet.as_ref().map(transaction_packet_json),
         "verificationFailures": bundle.verification_failures,
+    })
+}
+
+fn shared_market_catalog_validation_json(validation: &SharedMarketCatalogRouteValidation) -> Value {
+    json!({
+        "state": validation.state.as_str(),
+        "catalogRevisionId": validation.catalog_revision_id,
+        "catalogRevision": validation.catalog_revision,
+        "desiredSetHash": validation.desired_set_hash,
+        "readinessState": validation.readiness_state.map(|state| state.as_str()),
+        "targetGeneration": validation.target_generation,
+        "activeGeneration": validation.active_generation,
+        "routeMissingAddresses": validation.route_missing_addresses,
+        "semanticMismatchAddresses": validation.semantic_mismatch_addresses,
+        "activeMissingAddresses": validation.active_missing_addresses,
+        "activeExtraAddresses": validation.active_extra_addresses,
     })
 }
 
@@ -7376,33 +7063,6 @@ async fn active_lookup_table_binding_fingerprint(
     Ok((stable_fingerprint_owned(&parts), binding_id))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LookupTablePersistencePolicy {
-    readiness_best_effort: bool,
-    acquire_route_lease: bool,
-    request_provisioning: bool,
-}
-
-const fn lookup_table_persistence_policy(
-    force_legacy: bool,
-    acquire_route_lease: bool,
-    request_provisioning: bool,
-) -> LookupTablePersistencePolicy {
-    if force_legacy {
-        LookupTablePersistencePolicy {
-            readiness_best_effort: true,
-            acquire_route_lease: false,
-            request_provisioning: false,
-        }
-    } else {
-        LookupTablePersistencePolicy {
-            readiness_best_effort: false,
-            acquire_route_lease,
-            request_provisioning,
-        }
-    }
-}
-
 async fn persist_route_lookup_table_resolution(
     client: &NeonSqlClient,
     options: &CliOptions,
@@ -7415,11 +7075,6 @@ async fn persist_route_lookup_table_resolution(
     acquire_route_lease: bool,
     request_provisioning: bool,
 ) -> Result<(), Box<dyn Error>> {
-    let persistence_policy = lookup_table_persistence_policy(
-        resolution.rollout.force_legacy,
-        acquire_route_lease,
-        request_provisioning,
-    );
     let selected_table_ids = resolution.selected_table_ids();
     let selected_table_count = i32::try_from(selected_table_ids.len())?;
     let required_count = i32::try_from(resolution.required_addresses.len())?;
@@ -7442,7 +7097,7 @@ async fn persist_route_lookup_table_resolution(
             .find(|table| table.allocation_kind == Some(LookupTableAllocationKind::SharedMarket))
             .and_then(|table| table.family_id)
     });
-    let readiness_result = client
+    client
         .upsert_lookup_table_readiness(LookupTableReadinessRecord {
             cluster: options.cluster.clone(),
             vault_id: vault.id,
@@ -7466,17 +7121,14 @@ async fn persist_route_lookup_table_resolution(
                 .iter()
                 .cloned()
                 .collect::<Vec<_>>()),
-            legacy_table_ids: resolution.legacy_table_ids.clone(),
+            legacy_table_ids: Vec::new(),
             reusable_table_ids: resolution.reusable_table_ids.clone(),
             compiled_message_size: packet_size,
             packet_limit: Some(i32::try_from(PACKET_DATA_SIZE)?),
             observed_slot: Some(resolution.observed_slot),
             observed_at: Utc::now(),
             selection_kind: Some(resolution.selection_kind),
-            fallback_reason: resolution
-                .fallback_reason
-                .clone()
-                .or_else(|| resolution.blocker.clone()),
+            fallback_reason: resolution.blocker.clone(),
             rollout_mode: Some(resolution.rollout.rollout_mode),
             selected_table_ids: selected_table_ids.clone(),
             selected_table_count: Some(selected_table_count),
@@ -7489,25 +7141,17 @@ async fn persist_route_lookup_table_resolution(
             simulation_error: resolution.reusable_simulation_error.clone(),
             updated_at: Utc::now(),
         })
-        .await;
-    if persistence_policy.readiness_best_effort {
-        if readiness_result.is_err() {
-            eprintln!(
-                "{}",
-                json!({
-                    "event": "force_legacy_lookup_table_readiness_write_failed",
-                    "cluster": options.cluster,
-                    "vaultId": vault.id.as_i64(),
-                    "routeFingerprint": resolution.route_fingerprint,
-                    "continuesVerifiedLegacySend": true,
-                })
-            );
-        }
-    } else {
-        readiness_result?;
-    }
+        .await?;
 
-    if persistence_policy.request_provisioning && !resolution.reusable_missing_addresses.is_empty()
+    let missing_vault_addresses = vault_manifest_addresses(manifest)
+        .into_iter()
+        .map(|address| address.address)
+        .filter(|address| resolution.reusable_missing_addresses.contains(address))
+        .collect::<BTreeSet<_>>();
+    if request_provisioning
+        && reusable_runtime_enabled(&resolution.rollout)
+        && resolution.shared_catalog_covered
+        && !missing_vault_addresses.is_empty()
     {
         client
             .upsert_lookup_table_provisioning_request(LookupTableProvisioningRequestUpsert {
@@ -7525,7 +7169,7 @@ async fn persist_route_lookup_table_resolution(
             .await?;
     }
 
-    if persistence_policy.acquire_route_lease {
+    if acquire_route_lease {
         resolution.require_ready()?;
         client
             .upsert_lookup_table_usage_leases(LookupTableUsageLeaseBundle {
@@ -7822,39 +7466,6 @@ fn ordered_lookup_table_address_hash(addresses: &[String]) -> String {
     stable_fingerprint_owned(addresses)
 }
 
-fn lookup_table_pubkeys_from_options(options: &CliOptions) -> Result<Vec<Pubkey>, Box<dyn Error>> {
-    let mut pubkeys = options.lookup_tables.clone();
-    if let Ok(raw) = env::var("YIELD_ROUTE_LOOKUP_TABLES") {
-        pubkeys.extend(parse_lookup_table_list(&raw)?);
-    }
-    pubkeys.sort();
-    pubkeys.dedup();
-    Ok(pubkeys)
-}
-
-async fn lookup_table_pubkeys_for_scope(
-    client: &NeonSqlClient,
-    options: &CliOptions,
-    scope: &str,
-    authority: Pubkey,
-) -> Result<Vec<Pubkey>, Box<dyn Error>> {
-    let mut pubkeys = lookup_table_pubkeys_from_options(options)?;
-    let records = client
-        .durable_route_lookup_tables(&options.cluster, scope, &authority.to_string())
-        .await?;
-    for record in records {
-        pubkeys.push(Pubkey::from_str(&record.table_address).map_err(|error| {
-            format!(
-                "registered lookup table {} for scope {scope} is not a public key: {error}",
-                record.table_address
-            )
-        })?);
-    }
-    pubkeys.sort();
-    pubkeys.dedup();
-    Ok(pubkeys)
-}
-
 fn same_mint_route_lookup_table_scope_for_reserves(
     vault: &SelectedVault,
     source_reserve: &str,
@@ -7864,36 +7475,6 @@ fn same_mint_route_lookup_table_scope_for_reserves(
         "same_mint_kamino:{}:{}:{}:{}",
         vault.settings, vault.vault_index, source_reserve, target_reserve
     )
-}
-
-fn parse_lookup_table_list(raw: &str) -> Result<Vec<Pubkey>, String> {
-    raw.split(|character: char| character == ',' || character.is_ascii_whitespace())
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| {
-            let value = value.trim();
-            Pubkey::from_str(value)
-                .map_err(|_| format!("lookup table address {value:?} is not a public key"))
-        })
-        .collect()
-}
-
-fn load_address_lookup_table_accounts(
-    rpc: &RpcClient,
-    table_addresses: &[Pubkey],
-) -> Result<Vec<AddressLookupTableAccount>, Box<dyn Error>> {
-    table_addresses
-        .iter()
-        .map(|table_address| {
-            let account = rpc.get_account(table_address)?;
-            let table = AddressLookupTable::deserialize(&account.data).map_err(|error| {
-                format!("failed to deserialize address lookup table {table_address}: {error:?}")
-            })?;
-            Ok(AddressLookupTableAccount {
-                key: *table_address,
-                addresses: table.addresses.to_vec(),
-            })
-        })
-        .collect()
 }
 
 fn compile_versioned_transaction(
@@ -11896,7 +11477,6 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     let mut expected_edge_bps = None;
     let mut cluster = env::var("YIELD_ALT_CLUSTER").ok();
     let mut rpc_url = env::var("SOLANA_RPC_URL").unwrap_or_else(|_| DEFAULT_SOLANA_RPC_URL.into());
-    let mut lookup_tables = Vec::new();
     let mut iter = args.into_iter();
 
     while let Some(arg) = iter.next() {
@@ -12127,12 +11707,6 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
             "--cluster" => {
                 cluster = Some(iter.next().ok_or("--cluster requires a value")?);
             }
-            "--lookup-table" => {
-                let raw = iter.next().ok_or("--lookup-table requires a public key")?;
-                lookup_tables.push(
-                    Pubkey::from_str(&raw).map_err(|_| "--lookup-table must be a public key")?,
-                );
-            }
             "--help" | "-h" => return Err("help".to_owned()),
             _ => return Err(format!("unknown argument: {arg}")),
         }
@@ -12280,7 +11854,6 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
         expected_edge_bps,
         cluster,
         rpc_url,
-        lookup_tables,
     })
 }
 
@@ -13163,6 +12736,24 @@ mod tests {
     }
 
     #[test]
+    fn idle_lookup_table_blocker_requires_predecision_provisioning_defer() {
+        let blockers = vec![
+            IdleVaultDepositBlocker::source_stale("source snapshot changed"),
+            IdleVaultDepositBlocker::lookup_table("vault manifest is not covered"),
+            IdleVaultDepositBlocker::safety("unrelated safety blocker"),
+        ];
+
+        assert!(idle_vault_deposit_requires_lookup_table_provisioning(
+            &blockers
+        ));
+        assert!(!idle_vault_deposit_has_only_source_sync_blockers(&blockers));
+        assert!(!idle_vault_deposit_requires_lookup_table_provisioning(&[
+            IdleVaultDepositBlocker::source_stale("source snapshot changed"),
+            IdleVaultDepositBlocker::safety("unrelated safety blocker"),
+        ]));
+    }
+
+    #[test]
     fn same_mint_fatal_log_payload_never_contains_rpc_credentials() {
         let payload = same_mint_fatal_error_payload(&CREDENTIAL_BEARING_RPC_ERROR);
         assert_eq!(payload["event"], "same_mint_route_worker_fatal");
@@ -13295,250 +12886,63 @@ mod tests {
             expected_edge_bps: Some(100),
             cluster: "localnet".to_owned(),
             rpc_url: "http://localhost:8899".to_owned(),
-            lookup_tables: Vec::new(),
         }
     }
 
     #[test]
-    fn deferred_simulation_coverage_respects_every_rollout_mode_and_force_legacy() {
-        assert!(deferred_simulation_coverage_ready(
+    fn reusable_runtime_rejects_every_legacy_rollout_state() {
+        let rollout = |rollout_mode, force_legacy| EffectiveLookupTableRollout {
+            rollout_mode,
+            force_legacy,
+            global: None,
+            vault: None,
+        };
+
+        assert!(reusable_runtime_blocker(
+            &rollout(LookupTableRolloutMode::ReusableOnly, false),
+            true,
+            true,
+        )
+        .is_none());
+        assert!(reusable_runtime_blocker(
+            &rollout(LookupTableRolloutMode::ReusableOnly, false),
+            true,
+            false,
+        )
+        .is_some_and(|blocker| blocker.contains("complete reusable ALT coverage")));
+        assert!(reusable_runtime_blocker(
+            &rollout(LookupTableRolloutMode::ReusableOnly, false),
+            false,
+            true,
+        )
+        .is_some_and(|blocker| blocker.contains("shared_market_catalog_drift")));
+
+        for mode in [
             LookupTableRolloutMode::Legacy,
-            false,
-            true,
-            false,
-        ));
-        assert!(!deferred_simulation_coverage_ready(
             LookupTableRolloutMode::Shadow,
-            false,
-            false,
-            true,
-        ));
-        assert!(deferred_simulation_coverage_ready(
             LookupTableRolloutMode::PreferReusable,
-            false,
-            false,
-            true,
-        ));
-        assert!(deferred_simulation_coverage_ready(
-            LookupTableRolloutMode::PreferReusable,
-            false,
-            true,
-            false,
-        ));
-        assert!(!deferred_simulation_coverage_ready(
-            LookupTableRolloutMode::ReusableOnly,
-            false,
-            true,
-            false,
-        ));
-        assert!(deferred_simulation_coverage_ready(
-            LookupTableRolloutMode::ReusableOnly,
-            false,
-            false,
-            true,
-        ));
-        assert!(!deferred_simulation_coverage_ready(
-            LookupTableRolloutMode::ReusableOnly,
-            true,
-            false,
-            true,
-        ));
-    }
-
-    #[tokio::test]
-    async fn reusable_resolution_errors_are_bypassed_or_fail_closed_for_every_rollout_mode() {
-        let required_address = Pubkey::new_unique().to_string();
-        let required_addresses = BTreeSet::from([required_address.clone()]);
-        let complete_legacy = ResolvedLookupTableBundle {
-            kind: LookupTableBundleKind::Legacy,
-            tables: Vec::new(),
-            required_addresses: BTreeSet::new(),
-            missing_addresses: BTreeSet::new(),
-            packet_fits: true,
-            simulation_succeeded: true,
-        };
-        let incomplete_reusable = ResolvedLookupTableBundle {
-            kind: LookupTableBundleKind::Reusable,
-            tables: Vec::new(),
-            required_addresses: required_addresses.clone(),
-            missing_addresses: required_addresses,
-            packet_fits: false,
-            simulation_succeeded: false,
-        };
-        let policies = [
-            (LookupTableRolloutMode::ReusableOnly, true, "skipped"),
-            (LookupTableRolloutMode::Legacy, false, "skipped"),
-            (LookupTableRolloutMode::Shadow, false, "failed"),
-            (LookupTableRolloutMode::PreferReusable, false, "failed"),
-            (LookupTableRolloutMode::ReusableOnly, false, "failed"),
-        ];
-
-        for failure in [
-            "malformed reusable resolver row",
-            "too many reusable resolver candidates",
         ] {
-            for (rollout_mode, force_legacy, expected_state) in policies {
-                let called = std::cell::Cell::new(false);
-                let attempt = attempt_reusable_resolution(rollout_mode, force_legacy, || {
-                    called.set(true);
-                    async move { Err::<(), &'static str>(failure) }
-                })
-                .await;
-                assert_eq!(attempt.state(), expected_state, "{failure}");
-                assert_eq!(called.get(), expected_state == "failed", "{failure}");
-
-                let reusable = match attempt {
-                    LookupTableResolverAttempt::Skipped { .. } => None,
-                    LookupTableResolverAttempt::Resolved(()) => unreachable!(),
-                    LookupTableResolverAttempt::Failed(error) => {
-                        assert_eq!(error, failure);
-                        Some(incomplete_reusable.clone())
-                    }
-                };
-                let selection = select_lookup_table_bundle(ResolverSelectionInput {
-                    rollout_mode,
-                    force_legacy,
-                    legacy: Some(complete_legacy.clone()),
-                    reusable,
-                });
-
-                match (rollout_mode, force_legacy, selection) {
-                    (_, true, ResolverSelection::Execute(bundle))
-                    | (LookupTableRolloutMode::Legacy, false, ResolverSelection::Execute(bundle))
-                    | (
-                        LookupTableRolloutMode::PreferReusable,
-                        false,
-                        ResolverSelection::Execute(bundle),
-                    ) => assert_eq!(bundle.kind, LookupTableBundleKind::Legacy, "{failure}"),
-                    (
-                        LookupTableRolloutMode::Shadow,
-                        false,
-                        ResolverSelection::Shadow { execute, .. },
-                    ) => assert_eq!(execute.kind, LookupTableBundleKind::Legacy, "{failure}"),
-                    (
-                        LookupTableRolloutMode::ReusableOnly,
-                        false,
-                        ResolverSelection::Blocked { .. },
-                    ) => {}
-                    unexpected => {
-                        panic!("unexpected resolver selection for {failure}: {unexpected:?}")
-                    }
-                }
-            }
+            assert!(reusable_runtime_blocker(&rollout(mode, false), true, true)
+                .is_some_and(|blocker| blocker.contains("legacy ALT resolution has been removed")));
         }
-    }
 
-    #[tokio::test]
-    async fn legacy_resolution_errors_are_bypassed_or_fail_closed_for_every_rollout_mode() {
-        let required_address = Pubkey::new_unique().to_string();
-        let required_addresses = BTreeSet::from([required_address.clone()]);
-        let incomplete_legacy = ResolvedLookupTableBundle {
-            kind: LookupTableBundleKind::Legacy,
-            tables: Vec::new(),
-            required_addresses: required_addresses.clone(),
-            missing_addresses: required_addresses.clone(),
-            packet_fits: false,
-            simulation_succeeded: false,
-        };
-        let complete_reusable = ResolvedLookupTableBundle {
-            kind: LookupTableBundleKind::Reusable,
-            tables: Vec::new(),
-            required_addresses: BTreeSet::new(),
-            missing_addresses: BTreeSet::new(),
-            packet_fits: true,
-            simulation_succeeded: true,
-        };
-        let incomplete_reusable = ResolvedLookupTableBundle {
-            kind: LookupTableBundleKind::Reusable,
-            tables: Vec::new(),
-            required_addresses: required_addresses.clone(),
-            missing_addresses: required_addresses,
-            packet_fits: false,
-            simulation_succeeded: false,
-        };
-        let policies = [
-            (LookupTableRolloutMode::ReusableOnly, false, "skipped"),
-            (LookupTableRolloutMode::PreferReusable, false, "failed"),
-            (LookupTableRolloutMode::Shadow, false, "failed"),
-            (LookupTableRolloutMode::Legacy, false, "failed"),
-            (LookupTableRolloutMode::PreferReusable, true, "failed"),
-        ];
-
-        for failure in [
-            "malformed legacy resolver row",
-            "too many legacy resolver candidates",
-        ] {
-            for (rollout_mode, force_legacy, expected_state) in policies {
-                let called = std::cell::Cell::new(false);
-                let attempt = attempt_legacy_resolution(rollout_mode, force_legacy, || {
-                    called.set(true);
-                    async move { Err::<(), &'static str>(failure) }
-                })
-                .await;
-                assert_eq!(attempt.state(), expected_state, "{failure}");
-                assert_eq!(called.get(), expected_state == "failed", "{failure}");
-
-                let legacy = match attempt {
-                    LookupTableResolverAttempt::Skipped { .. } => None,
-                    LookupTableResolverAttempt::Resolved(()) => unreachable!(),
-                    LookupTableResolverAttempt::Failed(error) => {
-                        assert_eq!(error, failure);
-                        Some(incomplete_legacy.clone())
-                    }
-                };
-                let selection = select_lookup_table_bundle(ResolverSelectionInput {
-                    rollout_mode,
-                    force_legacy,
-                    legacy: legacy.clone(),
-                    reusable: Some(complete_reusable.clone()),
-                });
-
-                match (rollout_mode, force_legacy, selection) {
-                    (
-                        LookupTableRolloutMode::ReusableOnly
-                        | LookupTableRolloutMode::PreferReusable,
-                        false,
-                        ResolverSelection::Execute(bundle),
-                    ) => assert_eq!(bundle.kind, LookupTableBundleKind::Reusable, "{failure}"),
-                    (_, _, ResolverSelection::Blocked { .. }) => {}
-                    unexpected => {
-                        panic!("unexpected resolver selection for {failure}: {unexpected:?}")
-                    }
-                }
-
-                if rollout_mode == LookupTableRolloutMode::PreferReusable && !force_legacy {
-                    assert!(matches!(
-                        select_lookup_table_bundle(ResolverSelectionInput {
-                            rollout_mode,
-                            force_legacy,
-                            legacy,
-                            reusable: Some(incomplete_reusable.clone()),
-                        }),
-                        ResolverSelection::Blocked { .. }
-                    ));
-                }
-            }
-        }
+        assert!(reusable_runtime_blocker(
+            &rollout(LookupTableRolloutMode::ReusableOnly, true),
+            true,
+            true,
+        )
+        .is_some_and(|blocker| blocker.contains("force-legacy is a fail-closed stop")));
     }
 
     #[test]
-    fn force_legacy_persistence_is_best_effort_and_skips_reusable_control_plane_writes() {
-        assert_eq!(
-            lookup_table_persistence_policy(true, true, true),
-            LookupTablePersistencePolicy {
-                readiness_best_effort: true,
-                acquire_route_lease: false,
-                request_provisioning: false,
-            }
-        );
-        assert_eq!(
-            lookup_table_persistence_policy(false, true, true),
-            LookupTablePersistencePolicy {
-                readiness_best_effort: false,
-                acquire_route_lease: true,
-                request_provisioning: true,
-            }
-        );
+    fn legacy_lookup_table_cli_argument_is_rejected() {
+        let error = parse_args([
+            "--lookup-table".to_owned(),
+            Pubkey::new_unique().to_string(),
+        ])
+        .unwrap_err();
+
+        assert_eq!(error, "unknown argument: --lookup-table");
     }
 
     #[test]
@@ -14146,8 +13550,8 @@ mod tests {
 
 fn print_help() {
     println!(
-         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> --cluster <mainnet-beta|devnet|testnet|localnet> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--deposit-main-usdc <AMOUNT_RAW> | --deposit-reserve <RESERVE> <AMOUNT_RAW> | --deposit-idle-vault-reserve <RESERVE> <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--lookup-table <PUBKEY>...] [--execute]\n\n\
-         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, requires YIELD_ALT_CLUSTER or --cluster, and optionally reads YIELD_ROUTE_LOOKUP_TABLES for legacy measurement/fallback. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and POLICY_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Policy create/update, obligation setup, initial/idle policy deposits, same-mint moves, full withdrawal, wallet recovery, and policy cleanup all use the same Neon rollout, typed-manifest, readiness, usage-lease, fresh-RPC, exact-v0, and immediate pre-send resolver path. The wallet-to-vault funding transaction is deliberately ALT-free. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for live same-mint route execution; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses POLICY_KEYPAIR as fee payer and delegated signer, resolves the effective legacy/shadow/reusable rollout from Neon, fresh-verifies every selected ALT against RPC, compiles and simulates the exact v0 transaction, and fails before the decision or send when readiness or leases are invalid. Missing reusable coverage records an idempotent provisioning request for the dedicated provisioner; this route process never creates or extends ALTs. Add --deposit-idle-vault-reserve for router-owned USDC already inside the vault; execute mode requires expected idle token account, observed slot/time, mint, amount, target APY, and edge, uses POLICY_KEYPAIR as fee payer/delegated signer for target obligation setup when needed and for deposit, and does not read SOLANA_TESTING_PK. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and POLICY_KEYPAIR for the policy deposit; --deposit-reserve allows choosing a non-Main Safe USDC reserve when Main is already the APY winner. Full withdraw mode uses POLICY_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
+         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> --cluster <mainnet-beta|devnet|testnet|localnet> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--deposit-main-usdc <AMOUNT_RAW> | --deposit-reserve <RESERVE> <AMOUNT_RAW> | --deposit-idle-vault-reserve <RESERVE> <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--execute]\n\n\
+         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and requires YIELD_ALT_CLUSTER or --cluster. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and POLICY_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Policy create/update, obligation setup, initial/idle policy deposits, same-mint moves, full withdrawal, wallet recovery, and policy cleanup all use the same Neon rollout, typed-manifest, readiness, usage-lease, fresh-RPC, exact-v0, and immediate pre-send resolver path. The wallet-to-vault funding transaction is deliberately ALT-free. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for live same-mint route execution; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses POLICY_KEYPAIR as fee payer and delegated signer, requires reusable_only rollout state with force_legacy disabled, fresh-verifies every selected reusable ALT against RPC, compiles and simulates the exact v0 transaction, and fails before the decision or send when readiness or leases are invalid. Missing reusable coverage records an idempotent provisioning request for the dedicated provisioner; this route process never creates or extends ALTs. Legacy, shadow, prefer_reusable, and force_legacy control states fail closed because legacy ALT resolution has been removed. Add --deposit-idle-vault-reserve for router-owned USDC already inside the vault; execute mode requires expected idle token account, observed slot/time, mint, amount, target APY, and edge, uses POLICY_KEYPAIR as fee payer/delegated signer for target obligation setup when needed and for deposit, and does not read SOLANA_TESTING_PK. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and POLICY_KEYPAIR for the policy deposit; --deposit-reserve allows choosing a non-Main Safe USDC reserve when Main is already the APY winner. Full withdraw mode uses POLICY_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
          op run --env-file=.env.1password -- bun run same-mint:swap -- --settings <PUBKEY> --vault-index 1 --reconcile-from-chain --seed-from-user-position"
     );
 }
