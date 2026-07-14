@@ -24,6 +24,8 @@ use thiserror::Error;
 
 pub const LOOKUP_TABLE_HARD_CAPACITY: u16 = 256;
 pub const SHARED_MARKET_LOGICAL_CATALOG_MAX_ADDRESSES: usize = 10_000;
+const LOOKUP_TABLE_DB_CONCURRENCY_MAX_ATTEMPTS: usize = 3;
+const LOOKUP_TABLE_DB_CONCURRENCY_RETRY_BASE_MILLIS: u64 = 50;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum LookupTableDomainError {
@@ -7371,7 +7373,46 @@ impl NeonSqlClient {
                 "lookup-table usage lease bundle must be nonempty and unexpired".to_owned(),
             ));
         }
+
+        for attempt in 1..=LOOKUP_TABLE_DB_CONCURRENCY_MAX_ATTEMPTS {
+            match self
+                .upsert_lookup_table_usage_leases_once(bundle.clone())
+                .await
+            {
+                Ok(leases) => return Ok(leases),
+                Err(error) => {
+                    let Some(sqlstate) = retryable_lookup_table_database_conflict(&error) else {
+                        return Err(error);
+                    };
+                    if attempt == LOOKUP_TABLE_DB_CONCURRENCY_MAX_ATTEMPTS {
+                        return Err(error);
+                    }
+                    log_lookup_table_database_retry(
+                        "upsert_lookup_table_usage_leases",
+                        sqlstate,
+                        attempt,
+                    );
+                    sleep_for_lookup_table_database_retry(attempt).await;
+                }
+            }
+        }
+        unreachable!("bounded lookup-table database retry returns on its final attempt")
+    }
+
+    async fn upsert_lookup_table_usage_leases_once(
+        &self,
+        bundle: LookupTableUsageLeaseBundle,
+    ) -> Result<Vec<LookupTableUsageLeaseRecord>, OrchestratorError> {
         let mut tx = self.pool().begin().await?;
+        // Migration 0019's reference guard takes this same cluster lock in the
+        // lease trigger. Take it before any physical-table row lock so route
+        // persistence and provisioner mutations share one lock order.
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-rollout:' || $1, 0))",
+        )
+        .bind(&bundle.cluster)
+        .execute(&mut *tx)
+        .await?;
         let locked_tables = sqlx::query(
             r#"
             SELECT id, family_id, allocation_kind, desired_state, status
@@ -10192,6 +10233,42 @@ where
 
 fn domain_store_error(error: LookupTableDomainError) -> OrchestratorError {
     OrchestratorError::StoreInvariant(error.to_string())
+}
+
+fn retryable_lookup_table_database_conflict(error: &OrchestratorError) -> Option<&'static str> {
+    let OrchestratorError::Sqlx(sqlx::Error::Database(database)) = error else {
+        return None;
+    };
+    match database.code().as_deref() {
+        Some("40P01") => Some("40P01"),
+        Some("40001") => Some("40001"),
+        Some("55P03") => Some("55P03"),
+        _ => None,
+    }
+}
+
+fn log_lookup_table_database_retry(
+    operation: &'static str,
+    sqlstate: &'static str,
+    attempt: usize,
+) {
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "event": "lookup_table_database_concurrency_retry",
+            "operation": operation,
+            "sqlstate": sqlstate,
+            "attempt": attempt,
+            "nextAttempt": attempt + 1,
+            "maxAttempts": LOOKUP_TABLE_DB_CONCURRENCY_MAX_ATTEMPTS,
+        })
+    );
+}
+
+async fn sleep_for_lookup_table_database_retry(attempt: usize) {
+    let delay_millis = LOOKUP_TABLE_DB_CONCURRENCY_RETRY_BASE_MILLIS
+        .saturating_mul(u64::try_from(attempt).unwrap_or(u64::MAX));
+    tokio::time::sleep(std::time::Duration::from_millis(delay_millis)).await;
 }
 
 fn stale_store_update(kind: &str, id: i64) -> OrchestratorError {
@@ -14529,7 +14606,43 @@ impl NeonSqlClient {
                 "readiness selected table count does not match its unique table ids".to_owned(),
             ));
         }
+
+        for attempt in 1..=LOOKUP_TABLE_DB_CONCURRENCY_MAX_ATTEMPTS {
+            match self.upsert_lookup_table_readiness_once(input.clone()).await {
+                Ok(readiness) => return Ok(readiness),
+                Err(error) => {
+                    let Some(sqlstate) = retryable_lookup_table_database_conflict(&error) else {
+                        return Err(error);
+                    };
+                    if attempt == LOOKUP_TABLE_DB_CONCURRENCY_MAX_ATTEMPTS {
+                        return Err(error);
+                    }
+                    log_lookup_table_database_retry(
+                        "upsert_lookup_table_readiness",
+                        sqlstate,
+                        attempt,
+                    );
+                    sleep_for_lookup_table_database_retry(attempt).await;
+                }
+            }
+        }
+        unreachable!("bounded lookup-table database retry returns on its final attempt")
+    }
+
+    async fn upsert_lookup_table_readiness_once(
+        &self,
+        input: LookupTableReadinessRecord,
+    ) -> Result<LookupTableReadinessRecord, OrchestratorError> {
         let mut tx = self.pool().begin().await?;
+        // The readiness trigger takes this rollout lock even for reusable-v2
+        // rows. Acquire it before sharing physical rows, matching provisioner
+        // and cleanup transactions and removing the row -> advisory inversion.
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-rollout:' || $1, 0))",
+        )
+        .bind(&input.cluster)
+        .execute(&mut *tx)
+        .await?;
         if !input.selected_table_ids.is_empty() {
             let selected_rows = sqlx::query(
                 r#"
