@@ -10,7 +10,7 @@ use std::{collections::BTreeSet, env, error::Error, str::FromStr};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chrono::Utc;
 use loyal_yield_orchestrator::{
-    legacy_lookup_table_import_fingerprint,
+    historical_legacy_lookup_table_address_hash, legacy_lookup_table_import_fingerprint,
     rpc_safety::{redacted_external_error, validate_rpc_endpoint, validate_rpc_genesis_hash},
     LegacyLookupTableFleetImportRequest, LegacyLookupTableImportSource, LegacyLookupTableKind,
     NeonSqlClient, NeonSqlConfig, VerifiedLegacyLookupTableImport,
@@ -267,6 +267,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
         observed_slot,
         &verified,
     );
+    let historical_hash_normalization_count = verified
+        .iter()
+        .filter(|table| table.source.address_hash != table.observed_address_hash)
+        .count();
     let table_report = verified
         .iter()
         .map(|table| {
@@ -275,7 +279,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 "tableAddress": table.source.table_address,
                 "scope": table.source.scope,
                 "addressCount": table.source.address_count,
-                "addressHash": table.source.address_hash,
+                "persistedAddressHash": table.source.address_hash,
+                "canonicalAddressHash": table.observed_address_hash,
+                "hashNormalizationRequired": table.source.address_hash != table.observed_address_hash,
                 "authority": table.source.authority,
                 "lastExtendedSlot": table.observed_last_extended_slot,
             })
@@ -296,6 +302,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 "programInventoryCount": program_inventory.len(),
                 "historyInventoryCount": history_inventory.len(),
                 "excludedV2TableCount": v2_tables.len(),
+                "historicalHashNormalizationCount": historical_hash_normalization_count,
                 "importFingerprint": import_fingerprint,
                 "tables": table_report,
                 "databaseWrites": false,
@@ -341,6 +348,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             "programInventoryCount": program_inventory.len(),
             "historyInventoryCount": history_inventory.len(),
             "excludedV2TableCount": v2_tables.len(),
+            "historicalHashNormalizationCount": historical_hash_normalization_count,
             "tables": table_report,
             "replayed": result.replayed,
             "databaseWrites": !result.replayed,
@@ -754,8 +762,12 @@ fn verify_source(
     if expected_count != source.addresses.len() || expected_count > 256 {
         return Err("persisted address count differs from ordered address list".to_owned());
     }
-    let expected_hash = ordered_address_hash(&source.addresses);
-    if source.address_hash != expected_hash {
+    let canonical_address_hash = ordered_address_hash(&source.addresses);
+    let historical_address_hash = historical_legacy_lookup_table_address_hash(&source.addresses);
+    let is_unimported_historical_row = source.legacy_kind.is_none()
+        && source.legacy_import_run_id.is_none()
+        && source.address_hash == historical_address_hash;
+    if source.address_hash != canonical_address_hash && !is_unimported_historical_row {
         return Err("persisted address hash differs from ordered address list".to_owned());
     }
     let expected_authority = Pubkey::from_str(&source.authority)
@@ -803,8 +815,9 @@ fn verify_source(
             "RPC full ordered membership differs from the persisted address list".to_owned(),
         );
     }
-    if ordered_address_hash(&chain_addresses) != source.address_hash {
-        return Err("RPC ordered membership hash differs from persisted address hash".to_owned());
+    let observed_address_hash = ordered_address_hash(&chain_addresses);
+    if observed_address_hash != canonical_address_hash {
+        return Err("RPC ordered membership hash differs from persisted address list".to_owned());
     }
     Ok(VerifiedLegacyLookupTableImport {
         source: source.clone(),
@@ -821,7 +834,7 @@ fn verify_source(
         observed_last_extended_start_index: i32::from(table.meta.last_extended_slot_start_index),
         observed_address_count: i32::try_from(chain_addresses.len())
             .map_err(|_| "lookup-table address count does not fit PostgreSQL INTEGER")?,
-        observed_address_hash: ordered_address_hash(&chain_addresses),
+        observed_address_hash,
         observed_addresses: chain_addresses,
     })
 }
@@ -1122,10 +1135,11 @@ mod tests {
     }
 
     #[test]
-    fn exact_active_warm_alt_passes_full_verification() {
+    fn canonical_hash_path_still_passes_full_verification() {
         let authority = Pubkey::new_unique();
         let addresses = [Pubkey::new_unique(), Pubkey::new_unique()];
-        let source = source(authority, &addresses);
+        let mut source = source(authority, &addresses);
+        source.legacy_import_run_id = Some(99);
         let account = account(authority, &addresses, 10);
         let verified = verify_source(
             &source,
@@ -1136,6 +1150,136 @@ mod tests {
         .unwrap();
         assert_eq!(verified.source, source);
         assert_eq!(verified.observed_last_extended_slot, 10);
+        assert_eq!(
+            verified.observed_address_hash,
+            ordered_address_hash(&verified.observed_addresses)
+        );
+    }
+
+    #[test]
+    fn historical_v1_hash_golden_vector_is_frozen() {
+        let first = "11111111111111111111111111111111".to_owned();
+        let second = "AddressLookupTab1e1111111111111111111111111".to_owned();
+        let expected = "d1890c4c261f8c57ad5e722b4f542e88e8f4d18bb87262701ddef94634b2e62e";
+
+        assert_eq!(
+            historical_legacy_lookup_table_address_hash(&[first.clone(), second.clone()]),
+            expected
+        );
+        assert_eq!(
+            historical_legacy_lookup_table_address_hash(&[second, first]),
+            expected,
+            "the frozen v1 digest sorted address strings before hashing"
+        );
+    }
+
+    #[test]
+    fn unimported_historical_v1_hash_passes_and_yields_canonical_observation() {
+        let authority = Pubkey::new_unique();
+        let addresses = [Pubkey::new_unique(), Pubkey::new_unique()];
+        let mut source = source(authority, &addresses);
+        let canonical_hash = ordered_address_hash(&source.addresses);
+        source.address_hash = historical_legacy_lookup_table_address_hash(&source.addresses);
+        assert_ne!(source.address_hash, canonical_hash);
+
+        let verified = verify_source(
+            &source,
+            Some(&account(authority, &addresses, 10)),
+            11,
+            LegacyLookupTableKind::LegacyMixed,
+        )
+        .unwrap();
+
+        assert_eq!(verified.source.address_hash, source.address_hash);
+        assert_eq!(verified.observed_address_hash, canonical_hash);
+        assert_eq!(verified.observed_addresses, source.addresses);
+    }
+
+    #[test]
+    fn historical_v1_hash_is_rejected_after_import() {
+        let authority = Pubkey::new_unique();
+        let addresses = [Pubkey::new_unique(), Pubkey::new_unique()];
+        let mut source = source(authority, &addresses);
+        source.address_hash = historical_legacy_lookup_table_address_hash(&source.addresses);
+        source.legacy_import_run_id = Some(99);
+
+        let error = verify_source(
+            &source,
+            Some(&account(authority, &addresses, 10)),
+            11,
+            LegacyLookupTableKind::LegacyMixed,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "persisted address hash differs from ordered address list"
+        );
+
+        let mut classified_only = source;
+        classified_only.legacy_import_run_id = None;
+        classified_only.legacy_kind = Some(LegacyLookupTableKind::LegacyMixed);
+        assert_eq!(
+            verify_source(
+                &classified_only,
+                Some(&account(authority, &addresses, 10)),
+                11,
+                LegacyLookupTableKind::LegacyMixed,
+            )
+            .unwrap_err(),
+            "persisted address hash differs from ordered address list"
+        );
+    }
+
+    #[test]
+    fn reordered_rpc_membership_fails_even_when_historical_set_hash_matches() {
+        let authority = Pubkey::new_unique();
+        let addresses = [Pubkey::new_unique(), Pubkey::new_unique()];
+        let reordered = [addresses[1], addresses[0]];
+        let mut source = source(authority, &addresses);
+        source.address_hash = historical_legacy_lookup_table_address_hash(&source.addresses);
+        let reordered_strings = reordered
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            historical_legacy_lookup_table_address_hash(&reordered_strings),
+            source.address_hash
+        );
+
+        let error = verify_source(
+            &source,
+            Some(&account(authority, &reordered, 10)),
+            11,
+            LegacyLookupTableKind::LegacyMixed,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "RPC full ordered membership differs from the persisted address list"
+        );
+    }
+
+    #[test]
+    fn invalid_noncanonical_nonhistorical_hash_fails_closed() {
+        let authority = Pubkey::new_unique();
+        let addresses = [Pubkey::new_unique(), Pubkey::new_unique()];
+        let mut source = source(authority, &addresses);
+        source.address_hash = "0".repeat(64);
+
+        let error = verify_source(
+            &source,
+            Some(&account(authority, &addresses, 10)),
+            11,
+            LegacyLookupTableKind::LegacyMixed,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "persisted address hash differs from ordered address list"
+        );
     }
 
     #[test]

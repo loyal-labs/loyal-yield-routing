@@ -7517,6 +7517,63 @@ impl NeonSqlClient {
             }
         };
 
+        // The pre-reusable writer stored a set-style digest (sorted Base58
+        // strings separated by NUL bytes). Accepting that digest is confined
+        // to the finalized-RPC import boundary. Before immutable evidence is
+        // inserted, normalize every such row to the reusable-v2 ordered
+        // digest derived from the exact RPC membership. The fleet lock plus
+        // this CAS makes the normalization all-or-nothing with the import.
+        if !replayed {
+            for table in &input.tables {
+                if table.source.address_hash == table.observed_address_hash {
+                    continue;
+                }
+                let addresses = serde_json::to_value(&table.source.addresses).map_err(|error| {
+                    OrchestratorError::StoreInvariant(format!(
+                        "legacy lookup-table address normalization could not be encoded: {error}"
+                    ))
+                })?;
+                let normalized = sqlx::query(
+                    r#"
+                    UPDATE loyal_yield.route_lookup_tables
+                    SET address_hash = $2,
+                        updated_at = now()
+                    WHERE id = $1
+                      AND cluster = $3
+                      AND scope = $4
+                      AND table_address = $5
+                      AND family_id IS NULL
+                      AND durable = TRUE
+                      AND status = $6
+                      AND authority = $7
+                      AND address_count = $8
+                      AND address_hash = $9
+                      AND addresses = $10
+                      AND legacy_kind IS NULL
+                      AND legacy_import_run_id IS NULL
+                    "#,
+                )
+                .bind(table.source.id)
+                .bind(&table.observed_address_hash)
+                .bind(&table.source.cluster)
+                .bind(&table.source.scope)
+                .bind(&table.source.table_address)
+                .bind(&table.source.status)
+                .bind(&table.source.authority)
+                .bind(table.source.address_count)
+                .bind(&table.source.address_hash)
+                .bind(&addresses)
+                .execute(&mut *tx)
+                .await?;
+                if normalized.rows_affected() != 1 {
+                    return Err(stale_store_update(
+                        "legacy lookup-table historical hash normalization target",
+                        table.source.id,
+                    ));
+                }
+            }
+        }
+
         for table in &input.tables {
             let addresses = serde_json::to_value(&table.source.addresses).map_err(|error| {
                 OrchestratorError::StoreInvariant(format!(
@@ -7644,7 +7701,7 @@ impl NeonSqlClient {
             .bind(&table.source.status)
             .bind(&table.source.authority)
             .bind(table.source.address_count)
-            .bind(&table.source.address_hash)
+            .bind(&table.observed_address_hash)
             .bind(&addresses)
             .execute(&mut *tx)
             .await?;
@@ -9692,6 +9749,13 @@ fn validate_legacy_lookup_table_fleet_import(
     for table in &input.tables {
         let source = &table.source;
         let address_count = usize::try_from(source.address_count).ok();
+        let canonical_address_hash = ordered_address_hash(&source.addresses);
+        let historical_preimport_hash = source.legacy_kind.is_none()
+            && source.legacy_import_run_id.is_none()
+            && historical_legacy_lookup_table_address_hash(&source.addresses)
+                == source.address_hash;
+        let persisted_address_hash_is_valid =
+            source.address_hash == canonical_address_hash || historical_preimport_hash;
         let existing_kind_matches = source
             .legacy_kind
             .is_none_or(|legacy_kind| legacy_kind == table.legacy_kind);
@@ -9701,8 +9765,8 @@ fn validate_legacy_lookup_table_fleet_import(
             || !matches!(source.status.as_str(), "active" | "warming" | "usable")
             || address_count != Some(source.addresses.len())
             || source.addresses.len() > usize::from(LOOKUP_TABLE_HARD_CAPACITY)
-            || source.address_hash.len() != 64
-            || ordered_address_hash(&source.addresses) != source.address_hash
+            || !is_sha256_hex(&source.address_hash)
+            || !persisted_address_hash_is_valid
             || Pubkey::from_str(&source.table_address).is_err()
             || Pubkey::from_str(&source.authority).is_err()
             || table.observed_authority != source.authority
@@ -9712,7 +9776,8 @@ fn validate_legacy_lookup_table_fleet_import(
             || !(0..=255).contains(&table.observed_last_extended_start_index)
             || table.observed_last_extended_start_index > table.observed_address_count
             || table.observed_address_count != source.address_count
-            || table.observed_address_hash != source.address_hash
+            || table.observed_address_hash != canonical_address_hash
+            || ordered_address_hash(&table.observed_addresses) != table.observed_address_hash
             || table.observed_addresses != source.addresses
             || input.verified_slot <= table.observed_last_extended_slot
             || source
@@ -11079,6 +11144,22 @@ fn ordered_address_hash(addresses: &[String]) -> String {
     for address in addresses {
         hasher.update((address.len() as u64).to_le_bytes());
         hasher.update(address.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+/// Frozen digest used by the exact-scope ALT writer before reusable-v2.
+///
+/// This is intentionally exposed only so the audited legacy importer can
+/// recognize pre-import rows. Imported registry state, immutable evidence,
+/// reusable tables, and cleanup all use the canonical ordered digest above.
+pub fn historical_legacy_lookup_table_address_hash(addresses: &[String]) -> String {
+    let mut ordered = addresses.to_vec();
+    ordered.sort();
+    let mut hasher = Sha256::new();
+    for address in ordered {
+        hasher.update(address.as_bytes());
+        hasher.update([0]);
     }
     format!("{:x}", hasher.finalize())
 }

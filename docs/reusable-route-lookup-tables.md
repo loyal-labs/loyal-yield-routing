@@ -438,8 +438,14 @@ Before provisioning reusable tables, inventory and import the complete durable
 legacy fleet. The importer is dry-run by default, uses one finalized RPC
 snapshot, validates the configured genesis, owner, authority, active lifecycle,
 warmup, exact ordered membership, count, and hash for every eligible row, and
-writes nothing if any row fails. It never loads a signer. The command prints a
-`registryFleetHash`; copy that exact hash into the separately approved write.
+writes nothing if any row fails. It never loads a signer. The command prints an
+`inventoryFleetHash`; copy that exact hash into the separately approved write.
+Rows created by the historical exact-scope writer may carry its sorted,
+NUL-delimited v1 digest. The importer recognizes that digest only while the row
+is unclassified and unimported. After exact ordered membership is independently
+verified from finalized RPC, the same serializable fleet transaction normalizes
+the registry and immutable evidence to the reusable-v2 ordered digest. Cleanup
+and all post-import reads accept only the reusable-v2 digest.
 The current pre-reusable exact-scope tables contain both stable market and vault
 addresses, so their classification is `legacy_mixed`. Do not guess or combine
 different classifications in one run; a future heterogeneous fleet requires an
@@ -448,11 +454,13 @@ explicit per-table import design first.
 ```sh
 op run --env-file=.env.1password -- sh -c \
   'bun run same-mint:alt-import-legacy -- \
+    --cluster "$YIELD_ALT_CLUSTER" \
     --legacy-kind legacy_mixed \
     --expected-table-count "$YIELD_ALT_LEGACY_EXPECTED_COUNT"'
 
 op run --env-file=.env.1password -- sh -c \
   'bun run same-mint:alt-import-legacy -- \
+    --cluster "$YIELD_ALT_CLUSTER" \
     --legacy-kind legacy_mixed \
     --expected-table-count "$YIELD_ALT_LEGACY_EXPECTED_COUNT" \
     --expected-fleet-hash "$YIELD_ALT_LEGACY_FLEET_HASH" \
@@ -783,14 +791,16 @@ inject `SOLANA_RPC_URL` through 1Password.
 
 ```sh
 op run --env-file=.env.1password -- sh -c \
-  'bun run same-mint:alt-cleanup -- \
+  'unset YIELD_ROUTE_LOOKUP_TABLES
+   bun run same-mint:alt-cleanup -- \
     --cluster "$YIELD_ALT_CLUSTER" \
     --scan-history \
     --history-limit "$YIELD_ALT_HISTORY_PAGE_SIZE" \
     --min-slot "$YIELD_ALT_CLEANUP_MIN_SLOT"'
 
 op run --env-file=.env.1password -- sh -c \
-  'bun run same-mint:alt-cleanup -- \
+  'unset YIELD_ROUTE_LOOKUP_TABLES
+   bun run same-mint:alt-cleanup -- \
     --cluster "$YIELD_ALT_CLUSTER" \
     --authority "$YIELD_ALT_POLICY_PUBKEY" \
     --recipient "$YIELD_ALT_POLICY_PUBKEY" \
@@ -805,6 +815,10 @@ op run --env-file=.env.1password -- sh -c \
     --simulate-before-submit \
     --execute'
 ```
+
+Execute mode ignores `YIELD_ROUTE_LOOKUP_TABLES` by design, while dry-run mode
+still treats it as a protection input. Unset it for both commands, as shown,
+so the approved preview and the mutation inventory are identical.
 
 The dry run must load the complete immutable imported fleet (including closed
 rows), perform finalized batched account reads, and paginate signer history to

@@ -5112,11 +5112,32 @@ async fn verify_legacy_import_audit(client: &NeonSqlClient, run: &str) -> Verify
     let cluster = format!("db-verify-legacy-import-{run}");
     let deactivate_signature = format!("db-verifier-deactivate-signature-{run}");
     let close_signature = format!("db-verifier-close-signature-{run}");
+    let mut expected_ordered_addresses = Vec::new();
     for ordinal in 0..2 {
-        let addresses = vec![
+        let mut addresses = vec![
             unique_pubkey(&format!("legacy-import-{ordinal}-a")).to_string(),
             unique_pubkey(&format!("legacy-import-{ordinal}-b")).to_string(),
         ];
+        if ordinal == 0 {
+            // Historical exact-scope rows hashed the lexically sorted address
+            // strings with a NUL delimiter even though the JSON array retained
+            // the ALT's physical order. Keep the order deliberately distinct
+            // so this fixture cannot accidentally exercise only canonical v2
+            // rows.
+            addresses.sort_by(|left, right| right.cmp(left));
+        }
+        let address_hash = if ordinal == 0 {
+            historical_legacy_lookup_table_address_hash(&addresses)
+        } else {
+            ordered_address_hash(&addresses)
+        };
+        if ordinal == 0 {
+            ensure(
+                address_hash != ordered_address_hash(&addresses),
+                "historical legacy fixture did not differ from its canonical ordered hash",
+            )?;
+        }
+        expected_ordered_addresses.push(addresses.clone());
         loyal_yield_orchestrator::sqlx::query(
             r#"
             INSERT INTO loyal_yield.route_lookup_tables
@@ -5131,14 +5152,29 @@ async fn verify_legacy_import_audit(client: &NeonSqlClient, run: &str) -> Verify
         .bind(unique_pubkey(&format!("legacy-import-table-{ordinal}")).to_string())
         .bind(unique_pubkey(&format!("legacy-import-authority-{ordinal}")).to_string())
         .bind(i32::try_from(addresses.len())?)
-        .bind(ordered_address_hash(&addresses))
+        .bind(address_hash)
         .bind(json!(addresses))
         .execute(client.pool())
         .await?;
     }
 
     let sources = client.legacy_lookup_tables_for_import(&cluster).await?;
+    ensure(
+        sources.len() == 2
+            && sources[0].address_hash
+                == historical_legacy_lookup_table_address_hash(&sources[0].addresses)
+            && sources[0].address_hash != ordered_address_hash(&sources[0].addresses),
+        "legacy import fixture did not begin with an exact historical v1 identity",
+    )?;
     let first_request = legacy_import_request(&cluster, sources, 100, "first verified import")?;
+    ensure(
+        first_request.tables.iter().all(|table| {
+            table.observed_address_hash == ordered_address_hash(&table.observed_addresses)
+                && table.observed_addresses == table.source.addresses
+                && table.observed_address_count == table.source.address_count
+        }),
+        "legacy RPC observations were not independently canonicalized",
+    )?;
     let first = client
         .import_verified_legacy_lookup_table_fleet(first_request)
         .await?;
@@ -5170,6 +5206,51 @@ async fn verify_legacy_import_audit(client: &NeonSqlClient, run: &str) -> Verify
         imported_rows == 2 && evidence_rows == 2,
         "legacy import registry pointers and immutable evidence are incomplete",
     )?;
+    let normalized_rows = loyal_yield_orchestrator::sqlx::query(
+        r#"
+        SELECT registry.address_count AS registry_address_count,
+               registry.address_hash AS registry_address_hash,
+               registry.addresses AS registry_addresses,
+               evidence.address_count AS evidence_address_count,
+               evidence.address_hash AS evidence_address_hash,
+               evidence.addresses AS evidence_addresses
+        FROM loyal_yield.route_lookup_tables registry
+        JOIN loyal_yield.lookup_table_legacy_import_evidence evidence
+          ON evidence.import_run_id = registry.legacy_import_run_id
+         AND evidence.route_lookup_table_id = registry.id
+        WHERE registry.cluster = $1 AND registry.legacy_import_run_id = $2
+        ORDER BY registry.id
+        "#,
+    )
+    .bind(&cluster)
+    .bind(first.import_run_id)
+    .fetch_all(client.pool())
+    .await?;
+    ensure(
+        normalized_rows.len() == expected_ordered_addresses.len(),
+        "legacy import normalization omitted a registry/evidence row",
+    )?;
+    for (row, expected_addresses) in normalized_rows
+        .iter()
+        .zip(expected_ordered_addresses.iter())
+    {
+        let registry_addresses =
+            serde_json::from_value::<Vec<String>>(row.try_get::<Value, _>("registry_addresses")?)?;
+        let evidence_addresses =
+            serde_json::from_value::<Vec<String>>(row.try_get::<Value, _>("evidence_addresses")?)?;
+        let canonical_hash = ordered_address_hash(expected_addresses);
+        ensure(
+            row.try_get::<i32, _>("registry_address_count")?
+                == i32::try_from(expected_addresses.len())?
+                && row.try_get::<i32, _>("evidence_address_count")?
+                    == i32::try_from(expected_addresses.len())?
+                && row.try_get::<String, _>("registry_address_hash")? == canonical_hash
+                && row.try_get::<String, _>("evidence_address_hash")? == canonical_hash
+                && registry_addresses == *expected_addresses
+                && evidence_addresses == *expected_addresses,
+            "legacy import did not atomically normalize hashes while preserving ordered identity",
+        )?;
+    }
     ensure(
         loyal_yield_orchestrator::sqlx::query(
             r#"
@@ -5200,6 +5281,13 @@ async fn verify_legacy_import_audit(client: &NeonSqlClient, run: &str) -> Verify
     )?;
 
     let replay_sources = client.legacy_lookup_tables_for_import(&cluster).await?;
+    ensure(
+        replay_sources.iter().all(|source| {
+            source.address_hash == ordered_address_hash(&source.addresses)
+                && usize::try_from(source.address_count).ok() == Some(source.addresses.len())
+        }),
+        "legacy import replay did not reload canonical registry identities",
+    )?;
     let replay = client
         .import_verified_legacy_lookup_table_fleet(legacy_import_request(
             &cluster,
@@ -5282,11 +5370,22 @@ async fn verify_legacy_import_audit(client: &NeonSqlClient, run: &str) -> Verify
         "imported legacy registry evidence could be changed without reverification",
     )?;
 
-    let cleanup_source = client
-        .legacy_lookup_tables_for_import(&cluster)
-        .await?
+    let cleanup_fleet = client
+        .imported_legacy_lookup_table_cleanup_fleet(&cluster)
+        .await?;
+    ensure(
+        cleanup_fleet.len() == expected_ordered_addresses.len()
+            && cleanup_fleet.iter().all(|record| {
+                record.source.address_hash == ordered_address_hash(&record.source.addresses)
+                    && usize::try_from(record.source.address_count).ok()
+                        == Some(record.source.addresses.len())
+            }),
+        "imported legacy cleanup fleet did not retain canonical ordered identities",
+    )?;
+    let cleanup_source = cleanup_fleet
         .into_iter()
         .next()
+        .map(|record| record.source)
         .ok_or_else(|| io::Error::other("imported legacy cleanup fixture disappeared"))?;
     client
         .set_lookup_table_rollout_mode(
@@ -5580,21 +5679,30 @@ async fn verify_legacy_import_audit(client: &NeonSqlClient, run: &str) -> Verify
     )?;
 
     let stale_cluster = format!("db-verify-legacy-import-stale-{run}");
-    let stale_addresses = vec![unique_pubkey("legacy-stale-address").to_string()];
+    let mut stale_addresses = vec![
+        unique_pubkey("legacy-stale-address-a").to_string(),
+        unique_pubkey("legacy-stale-address-b").to_string(),
+    ];
+    stale_addresses.sort_by(|left, right| right.cmp(left));
+    let stale_historical_hash = historical_legacy_lookup_table_address_hash(&stale_addresses);
+    ensure(
+        stale_historical_hash != ordered_address_hash(&stale_addresses),
+        "stale legacy fixture did not begin with a historical hash",
+    )?;
     loyal_yield_orchestrator::sqlx::query(
         r#"
         INSERT INTO loyal_yield.route_lookup_tables
             (cluster, scope, table_address, authority, payer, status, durable,
              address_count, address_hash, addresses, last_extended_slot,
              last_extended_start_index)
-        VALUES ($1, 'stale-scope', $2, $3, $3, 'usable', TRUE, 1, $4, $5, 90, 0)
+        VALUES ($1, 'stale-scope', $2, $3, $3, 'usable', TRUE, 2, $4, $5, 90, 0)
         "#,
     )
     .bind(&stale_cluster)
     .bind(unique_pubkey("legacy-stale-table").to_string())
     .bind(unique_pubkey("legacy-stale-authority").to_string())
-    .bind(ordered_address_hash(&stale_addresses))
-    .bind(json!(stale_addresses))
+    .bind(&stale_historical_hash)
+    .bind(json!(stale_addresses.clone()))
     .execute(client.pool())
     .await?;
     let stale_request = legacy_import_request(
@@ -5624,7 +5732,51 @@ async fn verify_legacy_import_audit(client: &NeonSqlClient, run: &str) -> Verify
     .bind(&stale_cluster)
     .fetch_one(client.pool())
     .await?;
-    ensure(stale_writes == 0, "failed fleet import left audit writes")
+    let stale_evidence_writes: i64 = loyal_yield_orchestrator::sqlx::query_scalar(
+        r#"
+        SELECT count(*)
+        FROM loyal_yield.lookup_table_legacy_import_evidence evidence
+        JOIN loyal_yield.route_lookup_tables registry
+          ON registry.id = evidence.route_lookup_table_id
+        WHERE registry.cluster = $1
+        "#,
+    )
+    .bind(&stale_cluster)
+    .fetch_one(client.pool())
+    .await?;
+    let stale_row = loyal_yield_orchestrator::sqlx::query(
+        r#"
+        SELECT address_count, address_hash, addresses, legacy_kind,
+               legacy_import_run_id, last_verified_slot, last_verified_at
+        FROM loyal_yield.route_lookup_tables
+        WHERE cluster = $1
+        "#,
+    )
+    .bind(&stale_cluster)
+    .fetch_one(client.pool())
+    .await?;
+    let persisted_stale_addresses =
+        serde_json::from_value::<Vec<String>>(stale_row.try_get("addresses")?)?;
+    ensure(
+        stale_writes == 0
+            && stale_evidence_writes == 0
+            && stale_row.try_get::<i32, _>("address_count")? == 2
+            && stale_row.try_get::<String, _>("address_hash")? == stale_historical_hash
+            && persisted_stale_addresses == stale_addresses
+            && stale_row
+                .try_get::<Option<String>, _>("legacy_kind")?
+                .is_none()
+            && stale_row
+                .try_get::<Option<i64>, _>("legacy_import_run_id")?
+                .is_none()
+            && stale_row
+                .try_get::<Option<i64>, _>("last_verified_slot")?
+                .is_none()
+            && stale_row
+                .try_get::<Option<chrono::DateTime<Utc>>, _>("last_verified_at")?
+                .is_none(),
+        "failed fleet import left partial hash normalization or audit evidence",
+    )
 }
 
 fn legacy_import_request(
@@ -5642,7 +5794,7 @@ fn legacy_import_request(
             observed_last_extended_slot: 90,
             observed_last_extended_start_index: 0,
             observed_address_count: source.address_count,
-            observed_address_hash: source.address_hash.clone(),
+            observed_address_hash: ordered_address_hash(&source.addresses),
             observed_addresses: source.addresses.clone(),
             source,
             legacy_kind: LegacyLookupTableKind::LegacyMixed,

@@ -715,6 +715,12 @@ without explicit operator approval.
   clean shared or vault table.
 - Unknown, missing, authority-drifted, or prefix-mismatched tables are blocked
   and reported.
+- A historical sorted/NUL-delimited hash is accepted only for an unclassified,
+  unimported familyless row whose complete ordered membership independently
+  matches finalized RPC. The audited fleet transaction normalizes registry and
+  immutable evidence to the reusable-v2 ordered hash before linking the import;
+  a failure rolls back every normalization and evidence write, and cleanup
+  remains reusable-v2-hash-only.
 - Import is audit/refund bookkeeping only and cannot create or extend a legacy
   table.
 - The write is fenced by the exact dry-run `inventoryFleetHash`, expected count,
@@ -874,8 +880,9 @@ without explicit operator approval.
   post-cutover ALT mutation. The set difference between policy ALT mutation
   signatures and the union of provisioner, legacy-deactivate, and legacy-close
   signatures is empty.
-- Cleanup explicitly removes any injected `YIELD_ROUTE_LOOKUP_TABLES` value so
-  the legacy inventory cannot protect itself. Before refund accounting, every
+- Execute-mode cleanup ignores `YIELD_ROUTE_LOOKUP_TABLES` by design, and the
+  operator explicitly unsets it for both preview and execute so the approved
+  preview matches the mutation inventory. Before refund accounting, every
   other process able to spend from `POLICY_KEYPAIR` is suspended; partial
   retries retain the original imported fleet hash, paginated history boundary,
   mutation-set hash, stored deactivate/close signatures, and cumulative refund
