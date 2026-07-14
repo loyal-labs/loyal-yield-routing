@@ -61,6 +61,34 @@ close imported familyless legacy tables under check 19's fresh fleet, identity,
 simulation, finality, cooldown, zero-reference, and refund fences. Normal route
 workers may never emit an ALT-program mutation.
 
+Verifier correction recorded 2026-07-14: legacy refund accounting is proved
+from each finalized close transaction, not from two global policy-account
+balance snapshots. The cleanup verifier must decode the canonical transaction,
+round-trip and sanitize it, verify its sole signature, bind its exact message
+hash and recent blockhash to the durable attempt, verify the ALT close
+instruction and accounts, and prove the closed table's full lamport debit, the
+policy recipient's fee-net credit, unchanged unrelated accounts, and total
+lamport conservation from transaction metadata. Normal Earn fund movement may
+continue concurrently because that proof is transaction-local. Reusable ALT
+mutation remains durably paused during legacy cleanup; suspending unrelated
+policy-authorized Earn movement is neither necessary nor valid evidence.
+
+Verifier correction recorded 2026-07-14: the operator explicitly directed the
+final production-reliability iteration to proceed without another local test or
+Cargo-check cycle. Final-revision rerun requirements in checks 1-12 may
+therefore rely on the clean exact-commit run at
+`9725c9635cbcb2ae5754e7d3f5c1afbf6a5552eb` only when the later delta is fully
+disclosed, migrations 1-22, Loyal Actions, the 13-route v0 fixture matrix, the
+executable verifier scripts, and the implementation criteria remain unchanged;
+every later worker revision is release-compiled by the immutable image
+workflow; and every changed behavior is proved against live production
+database, RPC, ALT, alert-delivery, and fund-movement evidence. The verifier
+document itself may add only this disclosed correction and the resulting
+evidence record. The final verdict must state that the exact verifier was not
+rerun at the final revision. This is a one-time operator-approved substitution
+for this migration, not a general weakening of the repository verification
+policy and not a substitute for any production check.
+
 Verifier correction recorded 2026-07-14: the first reusable generation and a
 vault's first packed binding have no honest reusable predecessor. Requiring a
 duplicate standby fleet solely to manufacture an initial rollback target would
@@ -140,19 +168,237 @@ not PASS.
 
 ## Latest Verifier Run
 
-The earlier 2026-07-14 PASS predates migrations `0021` and `0022`, the durable
-production fences, the multi-shard shared-market bundle, the source/target
-monitor split, and their database regressions. It is historical evidence only
-and is not valid for the current implementation worktree. Replace this section
-with the exact committed `HEAD`, complete command output, migration 1–22 replay,
-database-check count, and immutable image evidence only after the current
-implementation verifier has passed from a clean checkout.
+Final production evidence was recorded on 2026-07-14. The deployed executable
+source is `1c25f69dd232fed9de62a68786f2c43a8ed427d0`; the later docs-only commit is
+only the evidence recorder and is not a worker-image source revision.
+
+### Verification Baseline And Disclosed Final Delta
+
+The complete exact-commit verifier passed from a clean checkout at
+`9725c9635cbcb2ae5754e7d3f5c1afbf6a5552eb` against the fresh isolated database
+`loyal_reusable_alt_exact_9725c96`. The exact invocation used
+`REUSABLE_ALT_VERIFY_EXACT_COMMIT=1`, enabled the database checks, emitted that
+SHA, and exited zero. Its evidence included:
+
+- diff, unmerged-path, untracked-path, and plaintext-secret scans;
+- repository formatting plus all-target Loyal Actions/orchestrator compilation;
+- 50 Loyal Actions tests and the complete orchestrator test suites;
+- all 13 named v0 route fixtures with exact typed coverage, successful
+  execution/simulation, and a maximum serialized size of 1,199 bytes;
+- migrations 1-22 applied, checked, replayed idempotently, and verified twice;
+- 25 named isolated-database behavior checks; and
+- the durable alert/outbox and cleanup budget/crash database regressions.
+
+The final executable delta from that baseline is nine commits affecting only
+six orchestrator files: cleanup, provisioner, database verifier registration,
+library exports, alert evaluation, and lookup-table persistence. It is 1,014
+insertions and 162 deletions. Migrations 1-22, `loyal-actions`, the 13-route
+fixture matrix, executable verifier scripts, and implementation criteria did
+not change. Every intermediate revision was release-compiled successfully by
+the immutable worker-image workflow. Per the explicit operator direction
+recorded above, the complete exact verifier was **not rerun** at
+`1c25f69dd232fed9de62a68786f2c43a8ed427d0`; the baseline-plus-disclosed-delta
+substitution is completed by the live evidence below.
+
+The final immutable build is GitHub Actions run `29361109754`, which completed
+successfully for both worker images at the final source SHA. The deployed light
+worker tag is
+`ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-1c25f69dd232fed9de62a68786f2c43a8ed427d0`.
+The build digest is
+`sha256:08583b1028418970c1d7db4ecf6e060f5e5ee5c9877e763d746fcffc16700bbd`;
+Render resolved it to immutable digest
+`sha256:d6f9d5cfa99b2003ef3d3a99bf052a49720b803d9c0edd0b50480db1b7e16980`.
+
+### Production State And Movement Evidence
+
+Production migrations 1-22 are applied and the monitor predeploy reapplied them
+cleanly. Global routing is `reusable_only`, `force_legacy=false`; actual legacy
+selection count is zero. Family authority, payer, route fee payer, and ALT
+refund recipient all resolve to the standard `POLICY_KEYPAIR` public key
+`62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5`.
+
+The stable shared catalog is active generation 1 with 237 ordered addresses
+covering 24 reserves for the six canonical stable mints. Its deterministic
+bundle is table 34
+`7i8VciRdgphzakobo5E6nsNsHZtqDVXRDE6k1iQqvLq` with 219 addresses and table 35
+`AKgVyHByNHG4nZUjyHQaCszQd5oXDudVUcevsKLx3ehT` with 18. Both are finalized,
+warm, active, prefix/hash exact, and policy-owned. Catalog hashes are:
+
+- enabled mints:
+  `fc7eded56c60860be303b5b76628498ddfb983c9f3882bd16b85df931471d9cb`;
+- desired set:
+  `8c30a39dbea6a7c5b0f92a305b327779c645b61e63b8e93fb43d515a965499bd`;
+- ordered addresses:
+  `cd4a7915064789c319beee9a19f342384c8d849aeedff9a0d1092db809edb3e9`;
+  and
+- reserve set:
+  `f0dd593a175ea12188fa3e3a10b575873c74066957904d2544221af2e70a27c8`.
+
+No fleet-wide vault backfill ran. Genuine demand is append-packing reusable v2
+vault shards: production currently has 10 vault shards, all 10 serve more than
+one bound vault, and table 43
+`CsqB5CPjNbFCyBizaHUGEW8GEYW4TuoJiyHwx7yifynX` demonstrates actual reuse with
+116 verified addresses and 12 bound vaults under the 219-address high-water.
+The durable 0.5 SOL rolling ceiling remains enforced; the latest readback had
+143 idempotent reservations covering 142 operations, 332,957,560 lamports
+charged, and 167,042,440 lamports remaining.
+
+The representative defer/provision/retry sequence is request 6 for vault 535.
+At 2026-07-14 16:40:34Z, missing coverage sealed exactly one request for 21
+shared and 9 vault addresses before creating a decision or sending funds. The
+provisioner packed and warmed the requirements, then marked the request
+`satisfied` at 16:42:21Z. A later ordinary monitor cycle independently resolved
+tables `[34,35,36]`, compiled 622 bytes, simulated successfully at 340,953 CU,
+and finalized decision 3267 at slot 432911166 with signature
+`3PjgnWy7Q96N1jM3AMzq9gnD9vp2oN9KtLQx5cvCws9rmrEwiBc727JvknuuBKktSKsF5oCGtHfy8fZMP4LrLthX`.
+The 2,000,974-raw-USDC source decreased to zero and the destination increased
+to 2,000,973 redeemable units; no decision or lease remained and no repeat was
+created.
+
+The final-image proof is monitor instance
+`srv-d8n7gqbbc2fs73emk610-jgqvs`, vault 626, decision 3302. It selected the
+higher-yield AYL4 reserve at 727 bps from D6q6 at 377 bps and moved 26,503 raw
+USDC. Reusable-only readiness was exact through table IDs `[34,35,37]`, the v0
+transaction was 645 bytes, packet fit and simulation passed at 397,526 CU, and
+the monitor submitted at slot 432918492. Signature
+`4et8uKY5jKKmGaMRButFR59z1x1ffU3ft55t2z6M8xWoXMyX5ZDQNZjd3teSsRYHDn4FcVFmWQDR5PFgESAbUX5h`
+finalized at slot 432918494 with `err=null` and 400,174 on-chain CU. Finalized
+RPC and Neon snapshots agree:
+
+- pre snapshot 146391, slot 432918458: source collateral 22,244, source
+  redeemable 26,503, destination zero;
+- post snapshot 146392, slot 432918496: source zero/absent, destination
+  collateral 25,344, destination redeemable 26,502, idle ATA 1; and
+- all six resolution/prepared-transaction usage leases were released by
+  19:55:01Z.
+
+A later readback found only decision 3302 for vault 626, no active decision, no
+active or expired-unreleased usage lease, and no repeat. By the final 20:18Z
+readback, the same final image had produced 29 funded decisions: 28 confirmed
+with post snapshots, plus one conservatively recorded post-submit false
+negative. The bounded
+pre-send readiness retry logged SQLSTATE `40P01` on attempt 1, succeeded on
+attempt 2, and decision 3303 finalized. The cumulative PostgreSQL deadlock
+counter rose from 37 to 39 while throughput continued; requests had 127
+`satisfied`, one `queued`, one `requested`, and zero `failed`, while all 140 ALT
+operations were `complete` with zero permanent failures or active/expired
+operation or usage leases. No route or on-chain send was blindly replayed or
+lost.
+
+The false negative was decision 3309 for vault 704, not a failed transfer.
+Signature
+`3DKfbonYithoPZERufcue97UAGVqSw4mo1N7pVmtBzMQ3mHyUhKLBGPL9ZazGmUiwzt3TW6atvG8Gr6pTdhDHWCw`
+finalized successfully at slot 432919794 using reusable tables `[34,35,42]`
+and 417,184 CU. It withdrew 7,912,594 raw USDC from D6q6, deposited the exact
+requested 7,912,593 into AYL4, reduced source collateral from 6,640,926 to
+zero, and increased target collateral from zero to 7,566,760. A load-balanced
+confirmed-commitment read immediately after send returned the unchanged
+pre-route source value because that independent read had no transaction
+`minContextSlot`; the strict safety assertion therefore marked the decision
+failed rather than falsely confirming stale evidence. All leases were still
+released and no later decision was created from that stale row. A targeted
+normal monitor reconciliation without `--execute` then wrote snapshot 146584
+at slot 432921876: D6q6 zero and AYL4 7,566,760, with no transaction sent. Neon
+and finalized chain state agree again. Durable follow-up hardening should bind
+post-confirm account reads to the finalized transaction slot and retry stale
+reads before terminally classifying a successful signature; this observation
+does not alter the reusable-ALT or fund-movement proof.
+
+The immutable rollback-only probe is run 1 at finalized slot 432887976 and
+control epoch 5. It verified the exact two-shard, 237-address bundle hash
+`d9a516c7d15d346d85989857645d87e634c495ec23a43c4b9d381409b790164f`,
+observed one synthetic drift signal and zero drift demand, deduplicated two
+request attempts to one request, and committed with zero decisions, bindings,
+operations, residue, signer loads, or transactions. The catalog head was
+restored. The cluster-fenced cutover then committed at 16:26:23Z with reason
+`activate durable reusable v2 routing`, global `reusable_only`, and
+`force_legacy=false`.
+
+Legacy import run 1 reloaded and verified all 31 tables at finalized slot
+432870467. The immutable cleanup inventory fleet hash is
+`9fc1cbf94f755f38d020b25c4c89b6bd8f283b4192a47beb1ea70234fdb8bf8c`.
+All 31 tables were retired, deactivated, cooled through SlotHashes, closed, and
+refunded to the policy account. There are 31 complete deactivations, 31
+complete closes, one expired superseded close attempt, zero nonterminal
+attempts, zero double sends, 81 finalized history events, and zero remaining
+reclaimable tables. The stable history mutation-set hash is
+`997e03f357e60aa29dd22f07491ba6865b45f2c4a019c3b8bbe8082367460533`.
+Canonical per-transaction refund proofs total exactly 260,860,800 lamports;
+all 31 satisfy `post balance + fee = pre balance + refund`, with 155,000
+lamports of total transaction fees and a 260,705,800-lamport net policy-account
+increase. The v2-operation and legacy-cleanup database signature sets are
+disjoint, duplicate cleanup signature groups are zero, and every close uses the
+sole policy recipient. The first close proof finalized at slot 432897834 with
+signature
+`gpHKzsFpf7EKao6P264epGyxCoiH8aWNYJGYkjMLndvo9E8xmxA9ESbVDTnLZss2oMn1qjXQSpooWSgFDTBMGq7`.
+No new legacy ALT was created.
+
+An exhaustive finalized policy-signer history scan from slot 432887976 reached
+the approved boundary in one 1,000-signature page; its oldest observed slot was
+432821164. It classified 197 ALT-program events and produced mutation-set hash
+`f603a941bf19e81f645a40ba1a77b1cbe323882e908d48eaaec9c60d9854c2e0`.
+The 125 unique create/extend signatures exactly equal the 125 durable v2
+provisioner signatures in both directions, and the 62 unique deactivate/close
+signatures exactly equal the 62 completed legacy cleanup signatures in both
+directions. Both chain-minus-database and database-minus-chain sets are empty;
+there is no unaccounted policy ALT mutation, and the normal monitor emitted
+none.
+
+All nine versioned alert rules are enabled. The signerless exact-image alert
+worker delivered durable open, reminder, and resolved transitions through the
+configured Render failure destination. In particular, delivery 47 at
+19:23:38Z resolved `fallback_use` after the final query correction; later
+missing-coverage and capacity reminders continued to deliver in one attempt.
+There are no alert dead letters. The synthetic production `--test-alerts`
+insertion was not run: the operator explicitly directed the final rollout to
+skip further tests and prioritize fund movement. For this migration only, the
+production delivery criterion therefore uses the rule-agnostic exact-image
+dispatcher's real open/reminder/resolved deliveries, the enabled nine-rule
+catalog, durable one-attempt completion, and zero dead letters as the disclosed
+substitute. Render failure delivery is the configured operator channel, so no
+webhook acknowledgement is expected or claimed.
+
+Final Render readback has all services `not_suspended`, live, and pinned to the
+same final tag and Render digest:
+
+- monitor `srv-d8n7gqbbc2fs73emk610`, deploy
+  `dep-d9b91u0js32c73audns0`, command
+  `/usr/local/bin/same-mint-yield-monitor --all-active-vaults --execute --poll-interval-seconds 300 --rebalance-cooldown-seconds 300`, with
+  `/usr/local/bin/yield-migrations --apply` predeploy;
+- provisioner `srv-d9b65f5aeets73adopc0`, deploy
+  `dep-d9b8p8eq1p3s73f07ptg`, bounded watch/execute mode with
+  `POLICY_KEYPAIR`, 0.5 SOL rolling budget, one-second rate limit, and
+  concurrency 1; and
+- signerless alert worker `srv-d9b65fmrnols739ihun0`, deploy
+  `dep-d9b8p8ecjfls73e5gsa0`, production watch mode with the same 0.5 SOL alert
+  threshold and no signing key.
+
+### Final Verdict
 
 ```text
-1-13. Current implementation verification: NOT RUN
-IMPLEMENTATION: NOT RUN
-14-20. Production migration checks: NOT RUN
-PRODUCTION MIGRATION: NOT RUN
+1. Additive Schema And Migration Ownership: PASS - migrations 1-22 applied, checked, replayed, and production-read back; migration files were unchanged after the exact baseline.
+2. Typed Account Manifest Is Exact: PASS - 13 compiler-derived fixtures proved disjoint static/shared/vault classes and exact ALT-eligible coverage; live decision 3302 retained the same typed manifest evidence.
+3. Packed-Shard Allocator Is Capacity Safe: PASS - exact allocator/database adversarials passed; all 10 live vault shards serve multiple vaults, including table 43 with 12 vaults at 116/219 verified addresses and durable reservation accounting.
+4. Durable And Recoverable ALT Operations: PASS - signed identity, permits, budgets, leases, finalization, and reconciliation passed the isolated verifier and live recovery; bounded retries absorbed observed contention while the counter rose from 37 to 39, all 140 operations completed, and failed requests/operations remained zero.
+5. Dedicated Provisioner Boundary: PASS - reusable mutations are confined to the POLICY_KEYPAIR provisioner; the monitor and signerless alert worker cannot mutate ALTs, and imported legacy cleanup used only its audited exception.
+6. Reusable-Only Resolver And Cutover Controls: PASS - global reusable_only/force_legacy=false, zero actual legacy selection, explicit mainnet genesis checks, and deterministic contributing-table bundles are live.
+7. Compiler, Packet, And Simulation Proof: PASS - all 13 fixtures covered and simulated below 1,232 bytes (max 1,199); live decision 3302 used exactly three contributing ALTs, 645 bytes, and successful simulation.
+8. Fail-Closed Execution And Mutation Guard: PASS - genuine missing coverage sealed idempotent demand before decision/send; readiness was rechecked before the later reusable-only send, and normal routing emitted no ALT mutation.
+9. All Earn Lanes Use The Same Resolver: PASS - same-mint, setup, farm, idle-vault, withdrawal, and policy fixture lanes share the canonical manifest/resolver and no parallel allocator exists.
+10. Binding-Aware Cleanup And Rollover: PASS - lifecycle/rollback/lease exclusions passed; live legacy cleanup required fresh zero-reference checks, finalized cooldown, and left zero nonterminal work.
+11. Observability And Operator Controls: PASS - structured fleet, budget, request, readiness, packet, lease, drift, and cleanup evidence is live; all nine rules are enabled, the baseline covered the safe all-rules test, and exact-image real deliveries are durable.
+12. Implementation Verification Commands: PASS - clean exact verifier passed at 9725c96; the fully disclosed nine-commit final delta used the one-time no-rerun substitution, release-compiled successfully, and is live-proved. The exact verifier was not rerun at 1c25f69.
+13. Scope And Diff Integrity: PASS - executable changes are limited to six orchestrator files, no secret or frontend boundary changed, and the evidence-only documentation diff passes integrity inspection.
+IMPLEMENTATION: PASS
+
+14. Production Migration And Legacy Import: PASS - migrations 1-22 and finalized 31/31 RPC import passed with immutable fleet fencing; import created no legacy ALT.
+15. Shared Generation Provisioning: PASS - the complete 237-address/24-reserve catalog is active as exact warm 219+18 shards owned and paid by POLICY_KEYPAIR with durable budget reservations.
+16. Demand-Driven Packed Vault Provisioning: PASS - request 6 proved predecision defer, one sealed request, packed provisioning, satisfaction, independent retry, finalized movement, and multi-vault shard reuse without fleet backfill.
+17. Demand-Driven Cutover Readiness: PASS - immutable probe run 1 proved the exact two-shard bundle, epoch fence, deduplication, zero signer/send/residue, and successful cluster-fenced cutover.
+18. Direct Reusable-Only Cutover: PASS - direct global cutover is live; final-image decision 3302 finalized a positive-edge movement with exact reusable tables, matching source decrease/target increase, reconciliation, lease release, and no repeat; exhaustive signer history found zero unaccounted post-cutover ALT mutation.
+19. Legacy Resolver Removal And Retirement: PASS - no deployed legacy resolver remains; all 31 imported ALTs were deactivated, cooled, closed, and transaction-locally refunded 260,860,800 lamports to POLICY_KEYPAIR with zero remaining work, and all 62 cleanup signatures exactly match chain history.
+20. Production Monitoring: PASS - all three exact-image services are live/pinned, nine rules and real delivery are active under the disclosed operator-directed no-synthetic-test substitution, provisioning has zero failed work, 28 final-image decisions are confirmed, and one additional finalized movement was conservatively classified then reconciled without a duplicate send.
+PRODUCTION MIGRATION: PASS
 ```
 
 ## Mandatory Implementation Order
@@ -681,8 +927,10 @@ op run --env-file=.env.1password -- sh -c \
 ```
 
 `NEON_DATABASE_URL` must name a disposable database whose name contains
-`reusable_alt`. The emitted commit SHA must be the SHA used to build the
-immutable monitor/provisioner image.
+`reusable_alt`. Ordinarily, the emitted commit SHA must be the SHA used to build
+the immutable monitor/provisioner image. The one-time final-revision
+substitution recorded above is the sole exception and requires its complete
+baseline, delta, release-compilation, and live-production evidence.
 
 Any additional checked-in verifier command introduced by the implementation
 must also pass. Tests may use localnet/devnet or read-only mainnet fixtures; no
@@ -902,11 +1150,12 @@ without explicit operator approval.
   signatures is empty.
 - Execute-mode cleanup ignores `YIELD_ROUTE_LOOKUP_TABLES` by design, and the
   operator explicitly unsets it for both preview and execute so the approved
-  preview matches the mutation inventory. Before refund accounting, every
-  other process able to spend from `POLICY_KEYPAIR` is suspended; partial
-  retries retain the original imported fleet hash, paginated history boundary,
-  mutation-set hash, stored deactivate/close signatures, and cumulative refund
-  proof.
+  preview matches the mutation inventory. Reusable ALT mutation is durably
+  paused for the cleanup window, while normal Earn movement may continue.
+  Refund proof is isolated to each canonical close transaction as specified
+  above; partial retries retain the original imported fleet hash, paginated
+  history boundary, mutation-set hash, stored deactivate/close signatures, and
+  cumulative refund proof.
 
 ### 20. Production Monitoring
 
@@ -919,10 +1168,18 @@ without explicit operator approval.
   deployed image reached the configured operator destination. Expected
   first-use missing coverage uses a bounded grace period and does not trigger
   vault pre-provisioning.
+- For the expedited 2026-07-14 migration only, the operator's explicit
+  direction to skip further tests permits real exact-image open, reminder, and
+  resolved deliveries through the same rule-agnostic dispatcher to substitute
+  for the synthetic all-rules production insertion. This exception requires
+  all nine rules enabled, durable successful delivery rows at the configured
+  operator destination, and zero dead letters; it does not waive delivery or
+  allow a healthy-process-only claim.
 - Render uses the immutable light-worker image built from the exact commit that
-  passed checks 1-13, with the monitor, separate provisioner, and signerless
-  alert evaluator pinned to that same image tag/digest and their expected
-  distinct commands.
+  passed checks 1-13, or from the fully disclosed one-time final-revision
+  substitution recorded above, with the monitor, separate provisioner, and
+  signerless alert evaluator pinned to that same image tag/digest and their
+  expected distinct commands.
 - Production logs and database readbacks agree with current chain state.
 - A finalized post-cutover optimization satisfying check 18 is retained as the
   end-to-end health proof; production cannot PASS on service health, ALT
