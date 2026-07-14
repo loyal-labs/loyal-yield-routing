@@ -92,7 +92,7 @@ struct ManagedVaultRow {
     last_seen_at: DateTime<Utc>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, sqlx::FromRow)]
 struct SnapshotRow {
     id: i64,
     vault_id: i64,
@@ -119,6 +119,21 @@ struct CurrentPositionRow {
     observed_slot: i64,
     observed_at: DateTime<Utc>,
     planning_metadata: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SameMintConfirmationProjectionSource {
+    ObservedPostSnapshot,
+    DecisionFallback,
+}
+
+impl SameMintConfirmationProjectionSource {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ObservedPostSnapshot => "observed_post_snapshot",
+            Self::DecisionFallback => "decision_fallback",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1402,7 +1417,7 @@ impl NeonSqlClient {
         input: ConfirmSameMintRebalanceInput,
     ) -> Result<SameMintRebalanceResult, OrchestratorError> {
         let mut tx = self.pool.begin().await?;
-        let decision = fetch_decision_for_update(&mut *tx, input.decision_id).await?;
+        let decision = fetch_decision_for_update(&mut tx, input.decision_id).await?;
         if decision.status == DecisionStatus::Confirmed {
             ensure_same_mint_confirm_repeat_matches(&decision, &input)?;
             tx.commit().await?;
@@ -1410,178 +1425,47 @@ impl NeonSqlClient {
         }
         ensure_confirmable_same_mint_decision(&decision)?;
         ensure_same_mint_route_amount_semantics(&decision)?;
-        let vault = fetch_managed_vault_for_update(&mut *tx, decision.vault_id).await?;
-        let current = current_positions_for_update(&mut *tx, decision.vault_id).await?;
-        let source_reserve = required_decision_field(&decision.source_reserve, "source_reserve")?;
-        let target_reserve = required_decision_field(&decision.target_reserve, "target_reserve")?;
-        let liquidity_mint = required_decision_field(&decision.liquidity_mint, "liquidity_mint")?;
-        let amount_raw = decision
-            .amount_raw
-            .ok_or_else(|| OrchestratorError::StoreInvariant("missing amount_raw".to_owned()))?;
-
-        if let Some(post_snapshot_id) = input.post_snapshot_id {
-            let decision = update_confirmed_decision(
-                &mut *tx,
-                input.decision_id,
-                &input.signature,
-                input.submitted_slot,
-                input.confirmed_slot,
-                post_snapshot_id,
+        let vault = fetch_managed_vault_for_update(&mut tx, decision.vault_id).await?;
+        let mut positions = current_positions_for_update(&mut tx, decision.vault_id).await?;
+        let (mut snapshot_row, projection_source) = if let Some(post_snapshot_id) =
+            input.post_snapshot_id
+        {
+            let snapshot_row =
+                fetch_position_snapshot_for_update(&mut tx, post_snapshot_id).await?;
+            ensure_authoritative_post_snapshot(&snapshot_row, &vault, &positions)?;
+            (
+                snapshot_row,
+                SameMintConfirmationProjectionSource::ObservedPostSnapshot,
             )
-            .await?;
-            tx.commit().await?;
-            return Ok(same_mint_result_from_confirmed_decision(decision));
-        }
-
-        let mut next_positions = Vec::with_capacity(current.len());
-        let mut saw_source = false;
-        let mut saw_target = false;
-        for mut position in current {
-            if position.reserve == source_reserve {
-                if position.liquidity_mint != liquidity_mint {
-                    return Err(OrchestratorError::SameMintRebalanceValidation(format!(
-                        "source reserve liquidity mint {} does not match decision mint {}",
-                        position.liquidity_mint, liquidity_mint
-                    )));
-                }
-                saw_source = true;
-                position.amount_raw = 0;
-                position.has_value = false;
-                position.planning_metadata =
-                    same_mint_projection_metadata(&decision, "source_after_confirm", 0);
-            } else if position.reserve == target_reserve {
-                if position.liquidity_mint != liquidity_mint {
-                    return Err(OrchestratorError::SameMintRebalanceValidation(format!(
-                        "target reserve liquidity mint {} does not match decision mint {}",
-                        position.liquidity_mint, liquidity_mint
-                    )));
-                }
-                saw_target = true;
-                position.amount_raw = amount_raw;
-                position.has_value = amount_raw > 0;
-                position.planning_metadata =
-                    same_mint_projection_metadata(&decision, "target_after_confirm", amount_raw);
-            }
-            next_positions.push(position);
-        }
-        if !saw_source || !saw_target {
-            return Err(OrchestratorError::StoreInvariant(
-                "same-mint confirm requires source and target current positions".to_owned(),
-            ));
-        }
-
-        sqlx::query!(
-            r#"
-            UPDATE loyal_yield.vault_position_snapshots
-            SET is_current = FALSE
-            WHERE vault_id = $1 AND is_current
-            "#,
-            decision.vault_id.as_i64()
-        )
-        .execute(&mut *tx)
-        .await?;
-
-        let snapshot_row = sqlx::query_as!(
-            SnapshotRow,
-            r#"
-            INSERT INTO loyal_yield.vault_position_snapshots
-                (vault_id, policy_id, observed_slot, observed_at, chain_slot, context)
-            VALUES ($1, $2, $3, COALESCE($4, now()), $5, $6)
-            RETURNING
-                id,
-                vault_id,
-                policy_id,
-                observed_slot,
-                observed_at,
-                chain_slot,
-                lock_attempt_id,
-                is_current,
-                context
-            "#,
-            decision.vault_id.as_i64(),
-            vault.active_policy_id.as_i64(),
-            input.confirmed_slot,
-            input.observed_at,
-            input.confirmed_slot,
-            json!({
-                "kind": "same_mint_rebalance_confirmed",
-                "decision_id": input.decision_id.as_i64(),
-                "signature": input.signature,
-            })
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-
-        let mut observed_reserves = Vec::with_capacity(next_positions.len());
-        for position in next_positions {
-            observed_reserves.push(position.reserve.clone());
-            sqlx::query!(
-                r#"
-                INSERT INTO loyal_yield.vault_position_snapshot_positions
-                    (snapshot_id, reserve, market, liquidity_mint, amount_raw, supply_apy_bps, borrow_apy_bps, has_value, planning_metadata)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                "#,
-                snapshot_row.id,
-                position.reserve,
-                position.market,
-                position.liquidity_mint,
-                position.amount_raw,
-                position.supply_apy_bps,
-                position.borrow_apy_bps,
-                position.has_value,
-                position.planning_metadata
+        } else {
+            let snapshot_row =
+                create_same_mint_confirmation_snapshot(&mut tx, &vault, &decision, &input).await?;
+            (
+                snapshot_row,
+                SameMintConfirmationProjectionSource::DecisionFallback,
             )
-            .execute(&mut *tx)
-            .await?;
+        };
 
-            sqlx::query!(
-                r#"
-                INSERT INTO loyal_yield.vault_reserve_positions_current
-                    (vault_id, reserve, market, liquidity_mint, amount_raw, has_value, supply_apy_bps, borrow_apy_bps,
-                     snapshot_id, observed_slot, observed_at, planning_metadata)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                ON CONFLICT (vault_id, reserve) DO UPDATE SET
-                    amount_raw = EXCLUDED.amount_raw,
-                    has_value = EXCLUDED.has_value,
-                    supply_apy_bps = EXCLUDED.supply_apy_bps,
-                    borrow_apy_bps = EXCLUDED.borrow_apy_bps,
-                    snapshot_id = EXCLUDED.snapshot_id,
-                    observed_slot = EXCLUDED.observed_slot,
-                    observed_at = EXCLUDED.observed_at,
-                    market = EXCLUDED.market,
-                    liquidity_mint = EXCLUDED.liquidity_mint,
-                    planning_metadata = EXCLUDED.planning_metadata
-                "#,
-                decision.vault_id.as_i64(),
-                position.reserve,
-                position.market,
-                position.liquidity_mint,
-                position.amount_raw,
-                position.has_value,
-                position.supply_apy_bps,
-                position.borrow_apy_bps,
-                snapshot_row.id,
-                snapshot_row.observed_slot,
-                snapshot_row.observed_at,
-                position.planning_metadata
-            )
-            .execute(&mut *tx)
-            .await?;
+        for position in &mut positions {
+            position.snapshot_id = SnapshotId(snapshot_row.id);
+            position.observed_slot = snapshot_row.observed_slot;
+            position.observed_at = snapshot_row.observed_at;
         }
-
-        sqlx::query!(
-            r#"
-            DELETE FROM loyal_yield.vault_reserve_positions_current
-            WHERE vault_id = $1 AND NOT (reserve = ANY($2))
-            "#,
-            decision.vault_id.as_i64(),
-            &observed_reserves
-        )
-        .execute(&mut *tx)
-        .await?;
+        let next_positions =
+            project_confirmed_same_mint_positions(&decision, positions, projection_source)?;
+        let source_snapshot_context = (projection_source
+            == SameMintConfirmationProjectionSource::ObservedPostSnapshot)
+            .then_some(&snapshot_row.context);
+        snapshot_row.context = same_mint_confirmation_snapshot_context(
+            source_snapshot_context,
+            &decision,
+            &input,
+            projection_source,
+        );
+        persist_same_mint_confirmation_projection(&mut tx, &snapshot_row, &next_positions).await?;
 
         let decision = update_confirmed_decision(
-            &mut *tx,
+            &mut tx,
             input.decision_id,
             &input.signature,
             input.submitted_slot,
@@ -2159,6 +2043,225 @@ async fn current_positions_for_update(
     .await?;
 
     rows.into_iter().map(current_position_from_row).collect()
+}
+
+async fn fetch_position_snapshot_for_update(
+    conn: &mut PgConnection,
+    snapshot_id: SnapshotId,
+) -> Result<SnapshotRow, OrchestratorError> {
+    let snapshot = sqlx::query_as::<_, SnapshotRow>(
+        r#"
+        SELECT
+            id,
+            vault_id,
+            policy_id,
+            observed_slot,
+            observed_at,
+            chain_slot,
+            lock_attempt_id,
+            is_current,
+            context
+        FROM loyal_yield.vault_position_snapshots
+        WHERE id = $1
+        FOR UPDATE
+        "#,
+    )
+    .bind(snapshot_id.as_i64())
+    .fetch_optional(conn)
+    .await?;
+
+    snapshot.ok_or_else(|| {
+        OrchestratorError::StoreInvariant(format!(
+            "same-mint post snapshot {snapshot_id} does not exist"
+        ))
+    })
+}
+
+fn ensure_authoritative_post_snapshot(
+    snapshot: &SnapshotRow,
+    vault: &ManagedVault,
+    current: &[CurrentReservePosition],
+) -> Result<(), OrchestratorError> {
+    let snapshot_id = SnapshotId(snapshot.id);
+    if snapshot.vault_id != vault.id.as_i64() {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "same-mint post snapshot {snapshot_id} belongs to vault {}, not {}",
+            snapshot.vault_id, vault.id
+        )));
+    }
+    if snapshot.policy_id != vault.active_policy_id.as_i64() {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "same-mint post snapshot {snapshot_id} belongs to policy {}, not active policy {}",
+            snapshot.policy_id, vault.active_policy_id
+        )));
+    }
+    if !snapshot.is_current {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "same-mint post snapshot {snapshot_id} is not current"
+        )));
+    }
+    if current.is_empty() {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "same-mint post snapshot {snapshot_id} has no authoritative positions"
+        )));
+    }
+    if current
+        .iter()
+        .any(|position| position.snapshot_id != snapshot_id)
+    {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "same-mint post snapshot {snapshot_id} does not own every current reserve row"
+        )));
+    }
+    Ok(())
+}
+
+async fn create_same_mint_confirmation_snapshot(
+    conn: &mut PgConnection,
+    vault: &ManagedVault,
+    decision: &RebalanceDecision,
+    input: &ConfirmSameMintRebalanceInput,
+) -> Result<SnapshotRow, OrchestratorError> {
+    sqlx::query(
+        r#"
+        UPDATE loyal_yield.vault_position_snapshots
+        SET is_current = FALSE
+        WHERE vault_id = $1 AND is_current
+        "#,
+    )
+    .bind(decision.vault_id.as_i64())
+    .execute(&mut *conn)
+    .await?;
+
+    let context = same_mint_confirmation_snapshot_context(
+        None,
+        decision,
+        input,
+        SameMintConfirmationProjectionSource::DecisionFallback,
+    );
+    let snapshot = sqlx::query_as::<_, SnapshotRow>(
+        r#"
+        INSERT INTO loyal_yield.vault_position_snapshots
+            (vault_id, policy_id, observed_slot, observed_at, chain_slot, context)
+        VALUES ($1, $2, $3, COALESCE($4, now()), $5, $6)
+        RETURNING
+            id,
+            vault_id,
+            policy_id,
+            observed_slot,
+            observed_at,
+            chain_slot,
+            lock_attempt_id,
+            is_current,
+            context
+        "#,
+    )
+    .bind(decision.vault_id.as_i64())
+    .bind(vault.active_policy_id.as_i64())
+    .bind(input.confirmed_slot)
+    .bind(input.observed_at)
+    .bind(input.confirmed_slot)
+    .bind(context)
+    .fetch_one(conn)
+    .await?;
+
+    Ok(snapshot)
+}
+
+async fn persist_same_mint_confirmation_projection(
+    conn: &mut PgConnection,
+    snapshot: &SnapshotRow,
+    positions: &[CurrentReservePosition],
+) -> Result<(), OrchestratorError> {
+    sqlx::query(
+        r#"
+        UPDATE loyal_yield.vault_position_snapshots
+        SET context = $2
+        WHERE id = $1
+        "#,
+    )
+    .bind(snapshot.id)
+    .bind(&snapshot.context)
+    .execute(&mut *conn)
+    .await?;
+
+    let mut observed_reserves = Vec::with_capacity(positions.len());
+    for position in positions {
+        observed_reserves.push(position.reserve.clone());
+        sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.vault_position_snapshot_positions
+                (snapshot_id, reserve, market, liquidity_mint, amount_raw, supply_apy_bps, borrow_apy_bps, has_value, planning_metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (snapshot_id, reserve) DO UPDATE SET
+                    market = $3,
+                    liquidity_mint = $4,
+                    amount_raw = $5,
+                    supply_apy_bps = $6,
+                    borrow_apy_bps = $7,
+                    has_value = $8,
+                    planning_metadata = $9
+            "#,
+        )
+        .bind(snapshot.id)
+        .bind(&position.reserve)
+        .bind(position.market.as_deref())
+        .bind(&position.liquidity_mint)
+        .bind(position.amount_raw)
+        .bind(position.supply_apy_bps)
+        .bind(position.borrow_apy_bps)
+        .bind(position.has_value)
+        .bind(&position.planning_metadata)
+        .execute(&mut *conn)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.vault_reserve_positions_current
+                (vault_id, reserve, market, liquidity_mint, amount_raw, has_value, supply_apy_bps, borrow_apy_bps,
+                 snapshot_id, observed_slot, observed_at, planning_metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            ON CONFLICT (vault_id, reserve) DO UPDATE SET
+                amount_raw = EXCLUDED.amount_raw,
+                has_value = EXCLUDED.has_value,
+                supply_apy_bps = EXCLUDED.supply_apy_bps,
+                borrow_apy_bps = EXCLUDED.borrow_apy_bps,
+                snapshot_id = EXCLUDED.snapshot_id,
+                observed_slot = EXCLUDED.observed_slot,
+                observed_at = EXCLUDED.observed_at,
+                market = EXCLUDED.market,
+                liquidity_mint = EXCLUDED.liquidity_mint,
+                planning_metadata = EXCLUDED.planning_metadata
+            "#,
+        )
+        .bind(snapshot.vault_id)
+        .bind(&position.reserve)
+        .bind(position.market.as_deref())
+        .bind(&position.liquidity_mint)
+        .bind(position.amount_raw)
+        .bind(position.has_value)
+        .bind(position.supply_apy_bps)
+        .bind(position.borrow_apy_bps)
+        .bind(snapshot.id)
+        .bind(snapshot.observed_slot)
+        .bind(snapshot.observed_at)
+        .bind(&position.planning_metadata)
+        .execute(&mut *conn)
+        .await?;
+    }
+
+    sqlx::query(
+        r#"
+        DELETE FROM loyal_yield.vault_reserve_positions_current
+        WHERE vault_id = $1 AND NOT (reserve = ANY($2))
+        "#,
+    )
+    .bind(snapshot.vault_id)
+    .bind(&observed_reserves)
+    .execute(conn)
+    .await?;
+
+    Ok(())
 }
 
 async fn insert_planned_decision(
@@ -2778,18 +2881,203 @@ fn ensure_same_mint_route_amount_semantics(
     Ok(())
 }
 
+fn same_mint_confirmation_snapshot_context(
+    existing: Option<&Value>,
+    decision: &RebalanceDecision,
+    input: &ConfirmSameMintRebalanceInput,
+    projection_source: SameMintConfirmationProjectionSource,
+) -> Value {
+    json!({
+        "kind": "same_mint_rebalance_confirmed",
+        "amount_semantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+        "projection_source": projection_source.as_str(),
+        "decision_id": decision.id.as_i64(),
+        "signature": input.signature,
+        "source_snapshot": existing.cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn explicit_redeemable_position_amount(
+    position: &CurrentReservePosition,
+) -> Result<i64, OrchestratorError> {
+    if position.amount_raw < 0 {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "reserve {} has a negative current amount",
+            position.reserve
+        )));
+    }
+    let amount_semantics = position
+        .planning_metadata
+        .get("amount_semantics")
+        .or_else(|| position.planning_metadata.get("route_amount_semantics"))
+        .and_then(Value::as_str);
+    let amount = match amount_semantics {
+        Some(ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY) => position.amount_raw,
+        Some(AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED) => json_i64(
+            &position.planning_metadata,
+            "redeemable_liquidity_amount_raw",
+        )
+        .or_else(|| {
+            json_i64(
+                &position.planning_metadata,
+                "redeemable_source_liquidity_amount_raw",
+            )
+        })
+        .ok_or_else(|| {
+            OrchestratorError::SameMintRebalanceValidation(format!(
+                "reserve {} collateral snapshot is missing explicit redeemable liquidity",
+                position.reserve
+            ))
+        })?,
+        _ if position.amount_raw == 0 => 0,
+        _ => {
+            return Err(OrchestratorError::SameMintRebalanceValidation(format!(
+                "reserve {} has unsupported amount semantics {:?}",
+                position.reserve, amount_semantics
+            )))
+        }
+    };
+    if amount < 0 {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "reserve {} has a negative redeemable liquidity amount",
+            position.reserve
+        )));
+    }
+    Ok(amount)
+}
+
+fn project_confirmed_same_mint_positions(
+    decision: &RebalanceDecision,
+    positions: Vec<CurrentReservePosition>,
+    projection_source: SameMintConfirmationProjectionSource,
+) -> Result<Vec<CurrentReservePosition>, OrchestratorError> {
+    let source_reserve = required_decision_field(&decision.source_reserve, "source_reserve")?;
+    let target_reserve = required_decision_field(&decision.target_reserve, "target_reserve")?;
+    let liquidity_mint = required_decision_field(&decision.liquidity_mint, "liquidity_mint")?;
+    let decision_amount_raw = decision
+        .amount_raw
+        .ok_or_else(|| OrchestratorError::StoreInvariant("missing amount_raw".to_owned()))?;
+    let mut saw_source = false;
+    let mut saw_target = false;
+    let mut next_positions = Vec::with_capacity(positions.len());
+
+    for mut position in positions {
+        let observed_amount_raw = position.amount_raw;
+        let observed_metadata = position.planning_metadata.clone();
+        let observed_liquidity_amount_raw = explicit_redeemable_position_amount(&position)?;
+        let (projection_role, projected_amount_raw) = if position.reserve == source_reserve {
+            if position.liquidity_mint != liquidity_mint {
+                return Err(OrchestratorError::SameMintRebalanceValidation(format!(
+                    "source reserve liquidity mint {} does not match decision mint {}",
+                    position.liquidity_mint, liquidity_mint
+                )));
+            }
+            saw_source = true;
+            match projection_source {
+                SameMintConfirmationProjectionSource::ObservedPostSnapshot
+                    if observed_liquidity_amount_raw != 0 =>
+                {
+                    return Err(OrchestratorError::SameMintRebalanceValidation(format!(
+                        "post-confirm source reserve {} still has {} redeemable liquidity",
+                        position.reserve, observed_liquidity_amount_raw
+                    )));
+                }
+                SameMintConfirmationProjectionSource::DecisionFallback
+                    if observed_liquidity_amount_raw != decision_amount_raw =>
+                {
+                    return Err(OrchestratorError::SameMintRebalanceValidation(format!(
+                        "source reserve {} redeemable liquidity {} changed from decision amount {}",
+                        position.reserve, observed_liquidity_amount_raw, decision_amount_raw
+                    )));
+                }
+                _ => {}
+            }
+            ("source_after_confirm", 0)
+        } else if position.reserve == target_reserve {
+            if position.liquidity_mint != liquidity_mint {
+                return Err(OrchestratorError::SameMintRebalanceValidation(format!(
+                    "target reserve liquidity mint {} does not match decision mint {}",
+                    position.liquidity_mint, liquidity_mint
+                )));
+            }
+            saw_target = true;
+            let projected_amount_raw = match projection_source {
+                SameMintConfirmationProjectionSource::ObservedPostSnapshot => {
+                    if observed_liquidity_amount_raw <= 0 {
+                        return Err(OrchestratorError::SameMintRebalanceValidation(format!(
+                            "post-confirm target reserve {} has no redeemable liquidity",
+                            position.reserve
+                        )));
+                    }
+                    observed_liquidity_amount_raw
+                }
+                SameMintConfirmationProjectionSource::DecisionFallback => {
+                    observed_liquidity_amount_raw
+                        .checked_add(decision_amount_raw)
+                        .ok_or_else(|| {
+                            OrchestratorError::StoreInvariant(
+                                "same-mint target liquidity projection overflowed".to_owned(),
+                            )
+                        })?
+                }
+            };
+            ("target_after_confirm", projected_amount_raw)
+        } else {
+            ("preserved_after_confirm", observed_liquidity_amount_raw)
+        };
+
+        position.amount_raw = projected_amount_raw;
+        position.has_value = projected_amount_raw > 0;
+        position.planning_metadata = same_mint_projection_metadata(
+            decision,
+            projection_role,
+            projected_amount_raw,
+            observed_amount_raw,
+            observed_liquidity_amount_raw,
+            &observed_metadata,
+            projection_source,
+        );
+        next_positions.push(position);
+    }
+
+    if !saw_source || !saw_target {
+        return Err(OrchestratorError::StoreInvariant(
+            "same-mint confirm requires source and target post-rebalance positions".to_owned(),
+        ));
+    }
+    Ok(next_positions)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn same_mint_projection_metadata(
     decision: &RebalanceDecision,
     projection_role: &str,
     projected_amount_raw: i64,
+    observed_amount_raw: i64,
+    observed_liquidity_amount_raw: i64,
+    observed_metadata: &Value,
+    projection_source: SameMintConfirmationProjectionSource,
 ) -> Value {
+    let observed_amount_semantics = observed_metadata
+        .get("amount_semantics")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let observed_collateral_amount_raw = (observed_amount_semantics.as_str()
+        == Some(AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED))
+    .then_some(observed_amount_raw);
     json!({
         "source": "same_mint_confirmation_projection",
         "projection_role": projection_role,
+        "projection_source": projection_source.as_str(),
         "decision_id": decision.id.as_i64(),
         "route_amount_semantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
         "amount_semantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
         "projected_amount_raw": projected_amount_raw,
+        "observed_amount_raw": observed_amount_raw,
+        "observed_amount_semantics": observed_amount_semantics,
+        "observed_collateral_amount_raw": observed_collateral_amount_raw,
+        "observed_redeemable_liquidity_amount_raw": observed_liquidity_amount_raw,
+        "observed_planning_metadata": observed_metadata,
         "source_reserve": decision.source_reserve,
         "target_reserve": decision.target_reserve,
         "liquidity_mint": decision.liquidity_mint,
@@ -2879,6 +3167,27 @@ mod tests {
         }
     }
 
+    fn current_position(
+        reserve: &str,
+        amount_raw: i64,
+        planning_metadata: Value,
+    ) -> CurrentReservePosition {
+        CurrentReservePosition {
+            vault_id: VaultId(419),
+            reserve: reserve.to_owned(),
+            market: Some(format!("{reserve}-market")),
+            liquidity_mint: "USDC".to_owned(),
+            amount_raw,
+            has_value: amount_raw > 0,
+            supply_apy_bps: None,
+            borrow_apy_bps: None,
+            snapshot_id: SnapshotId(947),
+            observed_slot: 10_000,
+            observed_at: Utc::now(),
+            planning_metadata,
+        }
+    }
+
     #[test]
     fn confirmation_rejects_missing_route_amount_semantics() {
         let decision = same_mint_decision(
@@ -2943,8 +3252,18 @@ mod tests {
         );
 
         ensure_same_mint_route_amount_semantics(&decision).expect("routeable plan is confirmable");
-        let metadata =
-            same_mint_projection_metadata(&decision, "target_after_confirm", 480_000_000);
+        let metadata = same_mint_projection_metadata(
+            &decision,
+            "target_after_confirm",
+            480_000_000,
+            404_323_479,
+            480_000_000,
+            &json!({
+                "source": "chain_reconcile_preview",
+                "amount_semantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
+            }),
+            SameMintConfirmationProjectionSource::ObservedPostSnapshot,
+        );
 
         assert_eq!(
             metadata.get("amount_semantics").and_then(Value::as_str),
@@ -2961,6 +3280,64 @@ mod tests {
                 .get("redeemable_source_liquidity_amount_raw")
                 .and_then(Value::as_i64),
             Some(480_000_000)
+        );
+        assert_eq!(
+            metadata
+                .get("observed_collateral_amount_raw")
+                .and_then(Value::as_i64),
+            Some(404_323_479)
+        );
+    }
+
+    #[test]
+    fn confirmation_fallback_preserves_existing_target_liquidity() {
+        let decision = same_mint_decision(
+            json!({
+                "kind": "same_mint",
+                "amount_raw": 100,
+                "route_amount_semantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+                "source_amount_semantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+                "redeemable_source_liquidity_amount_raw": 100,
+            }),
+            Some(100),
+        );
+        let positions = vec![
+            current_position(
+                "source",
+                100,
+                json!({
+                    "amount_semantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+                }),
+            ),
+            current_position(
+                "target",
+                25,
+                json!({
+                    "amount_semantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+                }),
+            ),
+        ];
+
+        let projected = project_confirmed_same_mint_positions(
+            &decision,
+            positions,
+            SameMintConfirmationProjectionSource::DecisionFallback,
+        )
+        .expect("fallback projection is valid");
+
+        assert_eq!(
+            projected
+                .iter()
+                .find(|position| position.reserve == "source")
+                .map(|position| position.amount_raw),
+            Some(0)
+        );
+        assert_eq!(
+            projected
+                .iter()
+                .find(|position| position.reserve == "target")
+                .map(|position| position.amount_raw),
+            Some(125)
         );
     }
 }
