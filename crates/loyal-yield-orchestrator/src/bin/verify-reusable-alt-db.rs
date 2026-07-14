@@ -5725,6 +5725,7 @@ async fn verify_legacy_import_audit(client: &NeonSqlClient, run: &str) -> Verify
             FinalizedLegacyLookupTableCleanupAttempt {
                 transaction_signature: deactivate_signature,
                 finalized_slot: 150,
+                recipient_balance_before: None,
                 recipient_balance_after: None,
                 actual_reclaimed_lamports: None,
             },

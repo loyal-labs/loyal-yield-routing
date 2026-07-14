@@ -2576,6 +2576,7 @@ pub struct SignedLegacyLookupTableCleanupAttempt {
 pub struct FinalizedLegacyLookupTableCleanupAttempt {
     pub transaction_signature: String,
     pub finalized_slot: i64,
+    pub recipient_balance_before: Option<i64>,
     pub recipient_balance_after: Option<i64>,
     pub actual_reclaimed_lamports: Option<i64>,
 }
@@ -9529,6 +9530,9 @@ impl NeonSqlClient {
         if attempt_id <= 0
             || input.transaction_signature.trim().is_empty()
             || input.finalized_slot < 0
+            || input
+                .recipient_balance_before
+                .is_some_and(|value| value < 0)
             || input.recipient_balance_after.is_some_and(|value| value < 0)
             || input
                 .actual_reclaimed_lamports
@@ -9550,6 +9554,7 @@ impl NeonSqlClient {
         if attempt.attempt_state == LegacyLookupTableCleanupAttemptState::Complete {
             if attempt.transaction_signature.as_deref() == Some(&input.transaction_signature)
                 && attempt.finalized_slot == Some(input.finalized_slot)
+                && attempt.recipient_balance_before == input.recipient_balance_before
                 && attempt.recipient_balance_after == input.recipient_balance_after
                 && attempt.actual_reclaimed_lamports == input.actual_reclaimed_lamports
             {
@@ -9573,7 +9578,8 @@ impl NeonSqlClient {
         }
         let (expected_status, updated) = match attempt.operation_kind {
             LookupTableOperationKind::Deactivate => {
-                if input.recipient_balance_after.is_some()
+                if input.recipient_balance_before.is_some()
+                    || input.recipient_balance_after.is_some()
                     || input.actual_reclaimed_lamports.is_some()
                 {
                     return Err(OrchestratorError::StoreInvariant(
@@ -9603,9 +9609,9 @@ impl NeonSqlClient {
                 )
             }
             LookupTableOperationKind::Close => {
-                let before = attempt.recipient_balance_before.ok_or_else(|| {
+                let before = input.recipient_balance_before.ok_or_else(|| {
                     OrchestratorError::StoreInvariant(
-                        "legacy close signed attempt lacks recipient balance before".to_owned(),
+                        "legacy close finalization lacks recipient balance before".to_owned(),
                     )
                 })?;
                 let after = input.recipient_balance_after.ok_or_else(|| {
@@ -9623,12 +9629,22 @@ impl NeonSqlClient {
                         "legacy close attempt lacks expected reclaimed rent".to_owned(),
                     )
                 })?;
-                let fee = attempt.estimated_fee_lamports.unwrap_or_default();
-                if reclaimed != expected_reclaimed
-                    || after < before.saturating_add(expected_reclaimed.saturating_sub(fee))
-                {
+                let fee = attempt.estimated_fee_lamports.ok_or_else(|| {
+                    OrchestratorError::StoreInvariant(
+                        "legacy close signed attempt lacks estimated fee".to_owned(),
+                    )
+                })?;
+                let expected_after = before
+                    .checked_add(expected_reclaimed)
+                    .and_then(|balance| balance.checked_sub(fee))
+                    .ok_or_else(|| {
+                        OrchestratorError::StoreInvariant(
+                            "legacy close transaction balance proof overflowed".to_owned(),
+                        )
+                    })?;
+                if reclaimed != expected_reclaimed || after != expected_after {
                     return Err(OrchestratorError::StoreInvariant(
-                        "legacy close recipient balances do not prove the exact cumulative refund"
+                        "legacy close transaction balances do not prove the exact refund"
                             .to_owned(),
                     ));
                 }
@@ -9667,16 +9683,18 @@ impl NeonSqlClient {
             r#"
             UPDATE loyal_yield.lookup_table_legacy_cleanup_attempts
             SET attempt_state = 'complete', finalized_slot = $2,
-                recipient_balance_after = $3, actual_reclaimed_lamports = $4,
+                recipient_balance_before = $3, recipient_balance_after = $4,
+                actual_reclaimed_lamports = $5,
                 error_code = NULL, error_detail = NULL, updated_at = now()
             WHERE id = $1
               AND attempt_state IN ('signed', 'submitted', 'needs_reconcile')
-              AND transaction_signature = $5
+              AND transaction_signature = $6
             RETURNING *
             "#,
         )
         .bind(attempt_id)
         .bind(input.finalized_slot)
+        .bind(input.recipient_balance_before)
         .bind(input.recipient_balance_after)
         .bind(input.actual_reclaimed_lamports)
         .bind(&input.transaction_signature)

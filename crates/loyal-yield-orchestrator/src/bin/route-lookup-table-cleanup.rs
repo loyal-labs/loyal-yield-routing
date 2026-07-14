@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use loyal_yield_orchestrator::{
     keypair_from_string,
     rpc_safety::{
@@ -41,6 +42,7 @@ use solana_sdk::{
     message::Message,
     packet::PACKET_DATA_SIZE,
     pubkey::Pubkey,
+    sanitize::Sanitize,
     signature::{Signature, Signer},
     transaction::Transaction,
 };
@@ -161,6 +163,14 @@ struct CleanupTransactionResult {
     expected_refund_lamports: u64,
     minimum_net_recipient_increase_lamports: u64,
     budget_reservation: LegacyLookupTableCleanupBudgetReservation,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FinalizedCloseTransactionEvidence {
+    finalized_slot: u64,
+    recipient_balance_before: u64,
+    recipient_balance_after: u64,
+    fee_lamports: u64,
 }
 
 #[derive(Debug)]
@@ -1530,6 +1540,344 @@ async fn rpc_call(
         .ok_or_else(|| format!("RPC {method} response did not include result").into())
 }
 
+async fn finalized_close_transaction_evidence(
+    http: &reqwest::Client,
+    rpc_url: &str,
+    signature: &str,
+    expected_finalized_slot: u64,
+    expected_table: Pubkey,
+    recipient: Pubkey,
+    expected_refund_lamports: u64,
+    expected_recent_blockhash: &str,
+    expected_message_hash: &str,
+    expected_fee_lamports: u64,
+) -> Result<FinalizedCloseTransactionEvidence, Box<dyn Error>> {
+    if recipient.to_string() != AFFECTED_POLICY_AUTHORITY {
+        return Err("legacy close transaction recipient is not the standard policy account".into());
+    }
+    if expected_table == recipient {
+        return Err("legacy close table and policy account must differ".into());
+    }
+    let transaction = rpc_call(
+        http,
+        rpc_url,
+        "getTransaction",
+        json!([
+            signature,
+            {
+                "encoding": "json",
+                "commitment": "finalized",
+                "maxSupportedTransactionVersion": 0,
+            }
+        ]),
+    )
+    .await?;
+    if transaction.is_null() {
+        return Err(format!(
+            "finalized cleanup transaction {signature} was unavailable for refund proof"
+        )
+        .into());
+    }
+    let finalized_slot = transaction
+        .get("slot")
+        .and_then(Value::as_u64)
+        .ok_or("finalized cleanup transaction omitted its slot")?;
+    if finalized_slot != expected_finalized_slot {
+        return Err(format!(
+            "finalized cleanup transaction slot mismatch: status={expected_finalized_slot}, transaction={finalized_slot}"
+        )
+        .into());
+    }
+    let signatures = transaction
+        .pointer("/transaction/signatures")
+        .and_then(Value::as_array)
+        .ok_or("finalized cleanup transaction omitted its signatures")?;
+    if signatures.len() != 1 || signatures[0].as_str() != Some(signature) {
+        return Err(
+            "finalized cleanup transaction signature set differs from durable identity".into(),
+        );
+    }
+    if transaction.get("version").and_then(Value::as_str) != Some("legacy") {
+        return Err("finalized cleanup transaction is not a legacy transaction".into());
+    }
+    let encoded_transaction = rpc_call(
+        http,
+        rpc_url,
+        "getTransaction",
+        json!([
+            signature,
+            {
+                "encoding": "base64",
+                "commitment": "finalized",
+                "maxSupportedTransactionVersion": 0,
+            }
+        ]),
+    )
+    .await?;
+    if encoded_transaction.is_null() {
+        return Err(format!(
+            "finalized cleanup transaction {signature} was unavailable for message proof"
+        )
+        .into());
+    }
+    if encoded_transaction.get("slot").and_then(Value::as_u64) != Some(expected_finalized_slot)
+        || encoded_transaction.get("version").and_then(Value::as_str) != Some("legacy")
+    {
+        return Err(
+            "base64 cleanup transaction slot/version differs from finalized JSON evidence".into(),
+        );
+    }
+    let encoded_payload = encoded_transaction
+        .get("transaction")
+        .and_then(Value::as_array)
+        .ok_or("base64 cleanup transaction omitted its encoded payload")?;
+    if encoded_payload.len() != 2 || encoded_payload[1].as_str() != Some("base64") {
+        return Err("cleanup transaction payload is not canonical base64 encoding".into());
+    }
+    let transaction_bytes = BASE64.decode(
+        encoded_payload[0]
+            .as_str()
+            .ok_or("base64 cleanup transaction payload is not a string")?,
+    )?;
+    let canonical_transaction = bincode::deserialize::<Transaction>(&transaction_bytes)?;
+    if bincode::serialize(&canonical_transaction)? != transaction_bytes {
+        return Err("cleanup transaction payload is not canonical legacy serialization".into());
+    }
+    canonical_transaction
+        .sanitize()
+        .map_err(|error| format!("cleanup transaction failed sanitization: {error:?}"))?;
+    canonical_transaction
+        .verify()
+        .map_err(|error| format!("cleanup transaction signature verification failed: {error}"))?;
+    if canonical_transaction.signatures.len() != 1
+        || canonical_transaction.signatures[0].to_string() != signature
+        || canonical_transaction.message.recent_blockhash.to_string() != expected_recent_blockhash
+    {
+        return Err(
+            "canonical cleanup transaction signature/blockhash differs from durable identity"
+                .into(),
+        );
+    }
+    let canonical_message_hash = {
+        let mut hasher = Sha256::new();
+        hasher.update(bincode::serialize(&canonical_transaction.message)?);
+        format!("{:x}", hasher.finalize())
+    };
+    if canonical_message_hash != expected_message_hash {
+        return Err(
+            "canonical cleanup transaction message hash differs from durable identity".into(),
+        );
+    }
+    let message = transaction
+        .pointer("/transaction/message")
+        .and_then(Value::as_object)
+        .ok_or("finalized cleanup transaction omitted its message")?;
+    if message.get("recentBlockhash").and_then(Value::as_str) != Some(expected_recent_blockhash) {
+        return Err(
+            "finalized cleanup transaction recent blockhash differs from durable identity".into(),
+        );
+    }
+    match message.get("addressTableLookups") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(lookups)) if lookups.is_empty() => {}
+        _ => {
+            return Err("legacy cleanup transaction unexpectedly uses address lookup tables".into())
+        }
+    }
+    let meta = transaction
+        .get("meta")
+        .and_then(Value::as_object)
+        .ok_or("finalized cleanup transaction omitted metadata")?;
+    match meta.get("err") {
+        Some(Value::Null) => {}
+        Some(error) => {
+            return Err(format!("finalized cleanup transaction failed: {error}").into());
+        }
+        None => return Err("finalized cleanup transaction metadata omitted success state".into()),
+    }
+    let fee_lamports = meta
+        .get("fee")
+        .and_then(Value::as_u64)
+        .ok_or("finalized cleanup transaction metadata omitted its fee")?;
+    if fee_lamports != expected_fee_lamports {
+        return Err(format!(
+            "finalized cleanup transaction fee {fee_lamports} differs from durable estimate {expected_fee_lamports}"
+        )
+        .into());
+    }
+    let account_keys = transaction
+        .get("transaction")
+        .and_then(|transaction| transaction.get("message"))
+        .and_then(|message| message.get("accountKeys"))
+        .and_then(Value::as_array)
+        .ok_or("finalized cleanup transaction omitted account keys")?
+        .iter()
+        .map(|value| {
+            account_key_from_value(value)
+                .ok_or_else(|| "finalized cleanup transaction contained an invalid account key")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let pre_balances = meta
+        .get("preBalances")
+        .and_then(Value::as_array)
+        .ok_or("finalized cleanup transaction omitted pre-balances")?
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .ok_or("finalized cleanup transaction contained an invalid pre-balance")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let post_balances = meta
+        .get("postBalances")
+        .and_then(Value::as_array)
+        .ok_or("finalized cleanup transaction omitted post-balances")?
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .ok_or("finalized cleanup transaction contained an invalid post-balance")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if account_keys.is_empty()
+        || account_keys.len() != pre_balances.len()
+        || account_keys.len() != post_balances.len()
+    {
+        return Err(
+            "finalized cleanup transaction account and balance vector lengths differ".into(),
+        );
+    }
+    let recipient_key = recipient.to_string();
+    let table_key = expected_table.to_string();
+    let recipient_indexes = account_keys
+        .iter()
+        .enumerate()
+        .filter_map(|(index, key)| (key == &recipient_key).then_some(index))
+        .collect::<Vec<_>>();
+    if recipient_indexes.len() != 1 {
+        return Err(
+            "finalized cleanup transaction does not contain exactly one policy account key".into(),
+        );
+    }
+    let recipient_index = recipient_indexes[0];
+    let table_indexes = account_keys
+        .iter()
+        .enumerate()
+        .filter_map(|(index, key)| (key == &table_key).then_some(index))
+        .collect::<Vec<_>>();
+    if table_indexes.len() != 1 {
+        return Err(
+            "finalized cleanup transaction does not contain exactly one expected table key".into(),
+        );
+    }
+    let table_index = table_indexes[0];
+    if recipient_index != 0 || recipient_index == table_index {
+        return Err(
+            "finalized cleanup transaction policy/table account indexes are invalid".into(),
+        );
+    }
+    let instructions = message
+        .get("instructions")
+        .and_then(Value::as_array)
+        .ok_or("finalized cleanup transaction omitted its instructions")?;
+    if instructions.len() != 1 {
+        return Err("finalized cleanup transaction must contain exactly one instruction".into());
+    }
+    let instruction = &instructions[0];
+    let program_index = instruction
+        .get("programIdIndex")
+        .and_then(Value::as_u64)
+        .and_then(|index| usize::try_from(index).ok())
+        .ok_or("finalized cleanup transaction close instruction omitted its program index")?;
+    if account_keys.get(program_index) != Some(&address_lookup_table_program::id().to_string()) {
+        return Err(
+            "finalized cleanup transaction instruction is not owned by the ALT program".into(),
+        );
+    }
+    let instruction_accounts = instruction
+        .get("accounts")
+        .and_then(Value::as_array)
+        .ok_or("finalized cleanup transaction close instruction omitted its accounts")?
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|index| usize::try_from(index).ok())
+                .ok_or(
+                    "finalized cleanup transaction close instruction has an invalid account index",
+                )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if instruction_accounts != [table_index, recipient_index, recipient_index] {
+        return Err(
+            "finalized cleanup transaction close accounts differ from table/policy/policy".into(),
+        );
+    }
+    let instruction_data = instruction
+        .get("data")
+        .and_then(Value::as_str)
+        .ok_or("finalized cleanup transaction close instruction omitted its data")?;
+    let decoded_instruction = bs58::decode(instruction_data).into_vec()?;
+    if !matches!(
+        bincode::deserialize::<address_lookup_table_instruction::ProgramInstruction>(
+            &decoded_instruction
+        )?,
+        address_lookup_table_instruction::ProgramInstruction::CloseLookupTable
+    ) {
+        return Err("finalized cleanup transaction instruction is not CloseLookupTable".into());
+    }
+    if pre_balances[table_index] != expected_refund_lamports || post_balances[table_index] != 0 {
+        return Err(
+            "finalized cleanup transaction table balance does not prove the expected rent debit"
+                .into(),
+        );
+    }
+    let recipient_post_plus_fee = post_balances[recipient_index]
+        .checked_add(fee_lamports)
+        .ok_or("finalized cleanup recipient post-balance plus fee overflowed")?;
+    let recipient_pre_plus_table_debit = pre_balances[recipient_index]
+        .checked_add(pre_balances[table_index])
+        .ok_or("finalized cleanup recipient pre-balance plus table debit overflowed")?;
+    if recipient_post_plus_fee != recipient_pre_plus_table_debit {
+        return Err(
+            "finalized cleanup transaction policy balance does not equal refund minus fee".into(),
+        );
+    }
+    for index in 0..account_keys.len() {
+        if index != recipient_index
+            && index != table_index
+            && pre_balances[index] != post_balances[index]
+        {
+            return Err(
+                "finalized cleanup transaction changed an unrelated account balance".into(),
+            );
+        }
+    }
+    let total_pre = pre_balances.iter().try_fold(0_u64, |total, balance| {
+        total
+            .checked_add(*balance)
+            .ok_or("finalized cleanup transaction pre-balance total overflowed")
+    })?;
+    let total_post = post_balances.iter().try_fold(0_u64, |total, balance| {
+        total
+            .checked_add(*balance)
+            .ok_or("finalized cleanup transaction post-balance total overflowed")
+    })?;
+    if total_pre
+        != total_post
+            .checked_add(fee_lamports)
+            .ok_or("finalized cleanup transaction post-balance total plus fee overflowed")?
+    {
+        return Err("finalized cleanup transaction does not conserve lamports net of fee".into());
+    }
+    Ok(FinalizedCloseTransactionEvidence {
+        finalized_slot,
+        recipient_balance_before: pre_balances[recipient_index],
+        recipient_balance_after: post_balances[recipient_index],
+        fee_lamports,
+    })
+}
+
 fn lookup_table_events_from_transaction(
     signature: &str,
     slot: u64,
@@ -2316,6 +2664,7 @@ async fn reconcile_pending_legacy_cleanup_attempts(
     let mut summary = LegacyCleanupRecoverySummary::default();
     let current_height = i64::try_from(rpc.get_block_height()?)?;
     let finalized_slot = rpc.get_slot_with_commitment(CommitmentConfig::finalized())?;
+    let http = reqwest::Client::new();
     for attempt in attempts {
         if attempt.attempt_state == LegacyLookupTableCleanupAttemptState::Prepared {
             summary.waiting_count += 1;
@@ -2384,23 +2733,76 @@ async fn reconcile_pending_legacy_cleanup_attempts(
                 row["execution"]["attemptState"] = json!("permanent_failure");
             }
             LegacyCleanupRecoveryDecision::Complete { observed_slot } => {
-                let recipient_balance_after = attempt
-                    .close_recipient
-                    .as_deref()
-                    .map(Pubkey::from_str)
-                    .transpose()?
-                    .map(|recipient| finalized_account_lamports(rpc, &recipient, observed_slot))
-                    .transpose()?
-                    .map(i64::try_from)
-                    .transpose()?;
+                let (
+                    completion_slot,
+                    recipient_balance_before,
+                    recipient_balance_after,
+                    actual_reclaimed_lamports,
+                ) = if attempt.operation_kind == LookupTableOperationKind::Close {
+                    let signature_slot = match signature_state {
+                        PersistedCleanupSignatureState::FinalizedSuccess { slot } => slot,
+                        _ => {
+                            return Err(
+                                "completed close recovery lacks finalized signature state".into()
+                            )
+                        }
+                    };
+                    let recipient = Pubkey::from_str(
+                        attempt
+                            .close_recipient
+                            .as_deref()
+                            .ok_or("legacy close recovery lacks a recipient")?,
+                    )?;
+                    let expected_table = Pubkey::from_str(&attempt.table_address)?;
+                    let expected_refund_lamports = u64::try_from(
+                        attempt
+                            .expected_reclaimed_lamports
+                            .ok_or("legacy close recovery lacks expected reclaimed rent")?,
+                    )?;
+                    let expected_recent_blockhash = attempt
+                        .recent_blockhash
+                        .as_deref()
+                        .ok_or("legacy close recovery lacks a durable recent blockhash")?;
+                    let expected_message_hash = attempt
+                        .message_hash
+                        .as_deref()
+                        .ok_or("legacy close recovery lacks a durable message hash")?;
+                    let expected_fee_lamports = u64::try_from(
+                        attempt
+                            .estimated_fee_lamports
+                            .ok_or("legacy close recovery lacks a durable estimated fee")?,
+                    )?;
+                    let evidence = finalized_close_transaction_evidence(
+                        &http,
+                        &options.rpc_url,
+                        &signature,
+                        signature_slot,
+                        expected_table,
+                        recipient,
+                        expected_refund_lamports,
+                        expected_recent_blockhash,
+                        expected_message_hash,
+                        expected_fee_lamports,
+                    )
+                    .await?;
+                    (
+                        evidence.finalized_slot,
+                        Some(i64::try_from(evidence.recipient_balance_before)?),
+                        Some(i64::try_from(evidence.recipient_balance_after)?),
+                        attempt.expected_reclaimed_lamports,
+                    )
+                } else {
+                    (observed_slot, None, None, None)
+                };
                 database
                     .complete_legacy_lookup_table_cleanup_attempt(
                         attempt.id,
                         FinalizedLegacyLookupTableCleanupAttempt {
                             transaction_signature: signature,
-                            finalized_slot: i64::try_from(observed_slot)?,
+                            finalized_slot: i64::try_from(completion_slot)?,
+                            recipient_balance_before,
                             recipient_balance_after,
-                            actual_reclaimed_lamports: attempt.expected_reclaimed_lamports,
+                            actual_reclaimed_lamports,
                         },
                     )
                     .await?;
@@ -2575,6 +2977,10 @@ async fn execute_planned_cleanups(
                 FinalizedLegacyLookupTableCleanupAttempt {
                     transaction_signature: result.signature.clone(),
                     finalized_slot: observed_slot,
+                    recipient_balance_before: result
+                        .recipient_balance_before
+                        .map(i64::try_from)
+                        .transpose()?,
                     recipient_balance_after: result
                         .recipient_balance_after
                         .map(i64::try_from)
@@ -2675,7 +3081,7 @@ async fn send_cleanup_instruction_batch(
     let minimum_context_slot = rpc.get_slot_with_commitment(CommitmentConfig::finalized())?;
     let simulation = simulate_cleanup_transaction(rpc, &transaction, minimum_context_slot)?;
     let estimated_fee_lamports = rpc.get_fee_for_message(&transaction.message)?;
-    let recipient_balance_before = close_recipient
+    let recipient_balance_before_snapshot = close_recipient
         .map(|recipient| finalized_account_lamports(rpc, &recipient, minimum_context_slot))
         .transpose()?;
     let attempt = database
@@ -2732,16 +3138,17 @@ async fn send_cleanup_instruction_batch(
         hasher.update(bincode::serialize(&transaction.message)?);
         format!("{:x}", hasher.finalize())
     };
+    let recent_blockhash = blockhash.to_string();
     database
         .persist_signed_legacy_lookup_table_cleanup_attempt(
             attempt.id,
             SignedLegacyLookupTableCleanupAttempt {
                 transaction_signature: signature.to_string(),
-                message_hash,
-                recent_blockhash: blockhash.to_string(),
+                message_hash: message_hash.clone(),
+                recent_blockhash: recent_blockhash.clone(),
                 last_valid_block_height: i64::try_from(last_valid_block_height)?,
                 estimated_fee_lamports: i64::try_from(estimated_fee_lamports)?,
-                recipient_balance_before: recipient_balance_before
+                recipient_balance_before: recipient_balance_before_snapshot
                     .map(i64::try_from)
                     .transpose()?,
             },
@@ -2810,16 +3217,43 @@ async fn send_cleanup_instruction_batch(
         .into());
     }
     let finalized_slot = require_finalized_signature(rpc, &signature)?;
-    let recipient_balance_after = close_recipient
-        .map(|recipient| finalized_account_lamports(rpc, &recipient, finalized_slot))
-        .transpose()?;
+    let close_transaction_evidence = if let Some(recipient) = close_recipient {
+        Some(
+            finalized_close_transaction_evidence(
+                &reqwest::Client::new(),
+                &options.rpc_url,
+                &signature.to_string(),
+                finalized_slot,
+                cleanup.table_address,
+                recipient,
+                expected_refund_lamports,
+                &recent_blockhash,
+                &message_hash,
+                estimated_fee_lamports,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let recipient_balance_before =
+        close_transaction_evidence.map(|evidence| evidence.recipient_balance_before);
+    let recipient_balance_after =
+        close_transaction_evidence.map(|evidence| evidence.recipient_balance_after);
     let minimum_net_recipient_increase_lamports =
         expected_refund_lamports.saturating_sub(estimated_fee_lamports);
-    if let (Some(before), Some(after)) = (recipient_balance_before, recipient_balance_after) {
-        let minimum_after = before.saturating_add(minimum_net_recipient_increase_lamports);
-        if after < minimum_after {
+    if let Some(evidence) = close_transaction_evidence {
+        let expected_after = evidence
+            .recipient_balance_before
+            .checked_add(expected_refund_lamports)
+            .and_then(|balance| balance.checked_sub(evidence.fee_lamports))
+            .ok_or("cleanup transaction refund balance proof overflowed")?;
+        if evidence.recipient_balance_after != expected_after {
             return Err(format!(
-                "finalized policy recipient balance did not prove the ALT refund: before={before}, after={after}, expected_refund={expected_refund_lamports}, estimated_fee={estimated_fee_lamports}"
+                "finalized cleanup transaction did not prove the exact ALT refund: before={}, after={}, expected_refund={expected_refund_lamports}, actual_fee={}",
+                evidence.recipient_balance_before,
+                evidence.recipient_balance_after,
+                evidence.fee_lamports,
             )
             .into());
         }
