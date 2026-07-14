@@ -1,4 +1,9 @@
-use std::{process::Command, str::FromStr, time::Duration};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    process::Command,
+    str::FromStr,
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use balance_sweep_autodeposit_trigger::{
@@ -12,13 +17,14 @@ use sqlx::{
     postgres::{PgConnectOptions, PgListener, PgPoolOptions},
     PgPool, Row,
 };
-use tokio::time;
+use tokio::{sync::mpsc, time};
 
 const CONSUMER_NAME: &str = "balance_sweep_autodeposit_trigger";
 const USDC_MINT_ADDRESS: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const STALE_REQUESTED_SLOT_SECONDS: i64 = 15 * 60;
 const REQUESTED_SLOT_TIMEOUT_ERROR: &str = "Autodeposit request timed out before worker selection.";
 const MAX_DEBOUNCED_WAKEUPS: u64 = 1000;
+const DEFAULT_REALTIME_HINT_QUEUE_CAPACITY: usize = 1024;
 const DEFAULT_AUTODEPOSIT_WAKE_CHANNEL: &str = "loyal_yield_autodeposit_wakeup";
 
 #[derive(Debug, Parser)]
@@ -44,6 +50,12 @@ struct Args {
         default_value_t = 250
     )]
     realtime_debounce_milliseconds: u64,
+    #[arg(
+        long,
+        env = "BALANCE_SWEEP_REALTIME_HINT_QUEUE_CAPACITY",
+        default_value_t = DEFAULT_REALTIME_HINT_QUEUE_CAPACITY
+    )]
+    realtime_hint_queue_capacity: usize,
     #[arg(long)]
     once: bool,
     #[arg(long)]
@@ -113,10 +125,56 @@ struct ExecutorOutcome {
     stale_claims_released: i64,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ExecutableTargetRow {
     target_id: i64,
     scheduled_slot_id: i64,
+}
+
+#[derive(Debug)]
+struct SlotHintQueue {
+    capacity: usize,
+    queued: HashSet<i64>,
+    slot_ids: VecDeque<i64>,
+}
+
+impl SlotHintQueue {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            queued: HashSet::new(),
+            slot_ids: VecDeque::new(),
+        }
+    }
+
+    fn push(&mut self, slot_id: i64) {
+        if slot_id <= 0 || self.queued.contains(&slot_id) {
+            return;
+        }
+        if self.slot_ids.len() == self.capacity {
+            if let Some(evicted) = self.slot_ids.pop_front() {
+                self.queued.remove(&evicted);
+                tracing::warn!(
+                    scheduled_slot_id = evicted,
+                    "autodeposit realtime hint queue evicted its oldest slot"
+                );
+            }
+        }
+        self.slot_ids.push_back(slot_id);
+        self.queued.insert(slot_id);
+    }
+
+    fn drain(&mut self, limit: usize) -> Vec<i64> {
+        let mut drained = Vec::with_capacity(limit.min(self.slot_ids.len()));
+        while drained.len() < limit {
+            let Some(slot_id) = self.slot_ids.pop_front() else {
+                break;
+            };
+            self.queued.remove(&slot_id);
+            drained.push(slot_id);
+        }
+        drained
+    }
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -187,8 +245,19 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut realtime_listener = None;
+    let (realtime_hint_sender, mut realtime_hint_receiver) =
+        mpsc::channel(args.realtime_hint_queue_capacity.max(1));
+    let _realtime_listener_task = (!args.disable_realtime_listen).then(|| {
+        tokio::spawn(run_autodeposit_realtime_listener(
+            args.postgres_url.clone(),
+            args.realtime_channel.clone(),
+            realtime_hint_sender,
+            Duration::from_secs(args.poll_interval_seconds),
+        ))
+    });
+    let mut pending_slot_hints = SlotHintQueue::new(args.realtime_hint_queue_capacity);
     loop {
+        drain_available_slot_hints(&mut realtime_hint_receiver, &mut pending_slot_hints);
         let outcome = project_surplus_lots_once(&pool, args.batch_limit).await?;
         tracing::info!(
             events_scanned = outcome.events_scanned,
@@ -203,11 +272,13 @@ async fn main() -> Result<()> {
             let executor_command = args.executor_command.as_deref().context(
                 "--executor-command or BALANCE_SWEEP_EXECUTOR_COMMAND is required with --execute-eligible",
             )?;
+            let hinted_slot_ids = pending_slot_hints.drain(args.execute_limit.max(0) as usize);
             let execution_outcome = execute_eligible_targets_once(
                 &pool,
                 executor_command,
                 args.execute_limit,
                 args.stale_selected_claim_seconds,
+                &hinted_slot_ids,
             )
             .await?;
             tracing::info!(
@@ -226,10 +297,9 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         wait_for_next_autodeposit_scan(
-            &args.postgres_url,
-            &args.realtime_channel,
             args.disable_realtime_listen,
-            &mut realtime_listener,
+            &mut realtime_hint_receiver,
+            &mut pending_slot_hints,
             Duration::from_secs(args.poll_interval_seconds),
             Duration::from_millis(args.realtime_debounce_milliseconds),
         )
@@ -238,10 +308,9 @@ async fn main() -> Result<()> {
 }
 
 async fn wait_for_next_autodeposit_scan(
-    postgres_url: &str,
-    channel: &str,
     disable_realtime_listen: bool,
-    listener: &mut Option<PgListener>,
+    receiver: &mut mpsc::Receiver<i64>,
+    pending_slot_hints: &mut SlotHintQueue,
     poll_interval: Duration,
     debounce_interval: Duration,
 ) {
@@ -250,86 +319,91 @@ async fn wait_for_next_autodeposit_scan(
         return;
     }
 
-    if listener.is_none() {
-        if neon_url_looks_pooled(postgres_url) {
-            tracing::warn!(
-                "NEON_DATABASE_URL appears to use a pooled -pooler host; LISTEN/NOTIFY requires a direct connection, falling back to timed polling if connect fails"
+    match time::timeout(poll_interval, receiver.recv()).await {
+        Ok(Some(scheduled_slot_id)) => {
+            pending_slot_hints.push(scheduled_slot_id);
+            time::sleep(debounce_interval).await;
+            drain_available_slot_hints(receiver, pending_slot_hints);
+            tracing::info!(
+                scheduled_slot_id,
+                queued_hint_count = pending_slot_hints.slot_ids.len(),
+                "autodeposit requested-slot wakeup received"
             );
         }
-        match connect_realtime_listener(postgres_url, channel).await {
-            Ok(connected) => {
-                *listener = Some(connected);
+        Ok(None) => time::sleep(poll_interval).await,
+        Err(_) => {}
+    }
+}
+
+fn drain_available_slot_hints(
+    receiver: &mut mpsc::Receiver<i64>,
+    pending_slot_hints: &mut SlotHintQueue,
+) {
+    for _ in 0..MAX_DEBOUNCED_WAKEUPS {
+        match receiver.try_recv() {
+            Ok(slot_id) => pending_slot_hints.push(slot_id),
+            Err(_) => break,
+        }
+    }
+}
+
+async fn run_autodeposit_realtime_listener(
+    postgres_url: String,
+    channel: String,
+    sender: mpsc::Sender<i64>,
+    reconnect_delay: Duration,
+) {
+    if neon_url_looks_pooled(&postgres_url) {
+        tracing::warn!(
+            "NEON_DATABASE_URL appears to use a pooled -pooler host; LISTEN/NOTIFY requires a direct connection"
+        );
+    }
+
+    loop {
+        let mut listener = match connect_realtime_listener(&postgres_url, &channel).await {
+            Ok(listener) => {
                 tracing::info!(channel, "autodeposit realtime listener connected");
+                listener
             }
             Err(error) => {
                 tracing::warn!(
                     error = %error,
                     channel,
-                    "autodeposit realtime listener connect failed; using poll fallback"
+                    "autodeposit realtime listener connect failed; timed scans remain active"
                 );
-                time::sleep(poll_interval).await;
-                return;
+                time::sleep(reconnect_delay).await;
+                continue;
             }
-        }
-    }
-
-    let deadline = time::Instant::now() + poll_interval;
-    loop {
-        let Some(active_listener) = listener.as_mut() else {
-            return;
         };
-        match time::timeout_at(deadline, active_listener.recv()).await {
-            Ok(Ok(notification)) => {
-                match autodeposit_wakeup_from_notification(notification.payload()) {
-                    Some(scheduled_slot_id) => {
-                        let mut wakeup_count = 1_u64;
-                        time::sleep(debounce_interval).await;
-                        while wakeup_count < MAX_DEBOUNCED_WAKEUPS {
-                            match time::timeout(Duration::from_millis(10), active_listener.recv())
-                                .await
-                            {
-                                Ok(Ok(notification)) => {
-                                    match autodeposit_wakeup_from_notification(
-                                        notification.payload(),
-                                    ) {
-                                        Some(_) => wakeup_count += 1,
-                                        None => {}
-                                    }
-                                }
-                                Ok(Err(error)) => {
-                                    tracing::warn!(
-                                        error = %error,
-                                        "autodeposit realtime listener failed during debounce"
-                                    );
-                                    break;
-                                }
-                                Err(_) => break,
-                            }
-                        }
-                        tracing::info!(
-                            scheduled_slot_id,
-                            wakeup_count,
-                            "autodeposit requested-slot wakeup received"
-                        );
-                        return;
-                    }
-                    None => {
-                        if time::Instant::now() >= deadline {
-                            return;
+
+        loop {
+            match listener.recv().await {
+                Ok(notification) => {
+                    let Some(slot_id) =
+                        autodeposit_wakeup_from_notification(notification.payload())
+                    else {
+                        continue;
+                    };
+                    if let Err(error) = sender.try_send(slot_id) {
+                        match error {
+                            mpsc::error::TrySendError::Full(_) => tracing::warn!(
+                                scheduled_slot_id = slot_id,
+                                "autodeposit realtime receiver is full; durable polling will recover"
+                            ),
+                            mpsc::error::TrySendError::Closed(_) => return,
                         }
                     }
                 }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        channel,
+                        "autodeposit realtime listener failed; reconnecting while timed scans remain active"
+                    );
+                    time::sleep(reconnect_delay).await;
+                    break;
+                }
             }
-            Ok(Err(error)) => {
-                tracing::warn!(
-                    error = %error,
-                    "autodeposit realtime listener failed; reconnecting after poll fallback"
-                );
-                *listener = None;
-                time::sleep(poll_interval).await;
-                return;
-            }
-            Err(_) => return,
         }
     }
 }
@@ -360,13 +434,14 @@ async fn execute_eligible_targets_once(
     executor_command: &str,
     limit: i64,
     stale_selected_claim_seconds: i64,
+    hinted_slot_ids: &[i64],
 ) -> Result<ExecutorOutcome> {
     let missing_route_policy_slots_failed =
         fail_slots_without_active_earn_route_policy_once(pool, limit).await?;
     let stale_requested_slots_failed = fail_stale_requested_slots_once(pool, limit).await?;
     let stale_claims_released =
         release_stale_selected_claims_once(pool, stale_selected_claim_seconds, limit).await?;
-    let targets = load_executable_targets(pool, limit).await?;
+    let targets = load_executable_targets(pool, limit, hinted_slot_ids).await?;
     let mut outcome = ExecutorOutcome {
         targets_scanned: targets.len(),
         missing_route_policy_slots_failed,
@@ -617,7 +692,11 @@ fn build_executor_shell_command(
     )
 }
 
-async fn load_executable_targets(pool: &PgPool, limit: i64) -> Result<Vec<ExecutableTargetRow>> {
+async fn load_executable_targets(
+    pool: &PgPool,
+    limit: i64,
+    hinted_slot_ids: &[i64],
+) -> Result<Vec<ExecutableTargetRow>> {
     let rows = sqlx::query(
         r#"
         SELECT
@@ -655,6 +734,11 @@ async fn load_executable_targets(pool: &PgPool, limit: i64) -> Result<Vec<Execut
                 AND claim.status = 'selected'
           )
         ORDER BY
+            CASE WHEN slot.id = ANY($3::bigint[]) THEN 0 ELSE 1 END,
+            CASE
+                WHEN slot.id = ANY($3::bigint[])
+                THEN array_position($3::bigint[], slot.id)
+            END ASC NULLS LAST,
             CASE WHEN slot.status = 'requested' THEN 0 ELSE 1 END,
             slot.requested_at DESC NULLS LAST,
             slot.eligible_after ASC,
@@ -666,16 +750,44 @@ async fn load_executable_targets(pool: &PgPool, limit: i64) -> Result<Vec<Execut
     )
     .bind(limit)
     .bind(USDC_MINT_ADDRESS)
+    .bind(hinted_slot_ids)
     .fetch_all(pool)
     .await?;
-    rows.into_iter()
+    let targets = rows
+        .into_iter()
         .map(|row| {
             Ok(ExecutableTargetRow {
                 target_id: row.try_get("target_id")?,
                 scheduled_slot_id: row.try_get("scheduled_slot_id")?,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    Ok(prioritize_executable_targets(
+        targets,
+        hinted_slot_ids,
+        limit.max(0) as usize,
+    ))
+}
+
+fn prioritize_executable_targets(
+    mut targets: Vec<ExecutableTargetRow>,
+    hinted_slot_ids: &[i64],
+    limit: usize,
+) -> Vec<ExecutableTargetRow> {
+    let hint_rank = hinted_slot_ids
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, slot_id)| (slot_id, index))
+        .collect::<HashMap<_, _>>();
+    targets.sort_by_key(|target| {
+        hint_rank
+            .get(&target.scheduled_slot_id)
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
+    targets.truncate(limit);
+    targets
 }
 
 async fn complete_claim_once(
@@ -1632,4 +1744,69 @@ async fn advance_projection_offset(
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn target(target_id: i64, scheduled_slot_id: i64) -> ExecutableTargetRow {
+        ExecutableTargetRow {
+            target_id,
+            scheduled_slot_id,
+        }
+    }
+
+    #[test]
+    fn slot_hint_queue_is_bounded_deduplicated_and_fifo() {
+        let mut queue = SlotHintQueue::new(3);
+        queue.push(11);
+        queue.push(12);
+        queue.push(11);
+        queue.push(13);
+
+        assert_eq!(queue.drain(2), vec![11, 12]);
+        queue.push(14);
+        queue.push(15);
+
+        assert_eq!(queue.drain(4), vec![13, 14, 15]);
+    }
+
+    #[test]
+    fn eligible_hints_are_prioritized_without_inventing_ineligible_targets() {
+        let ordered = prioritize_executable_targets(
+            vec![target(1, 101), target(2, 102), target(3, 103)],
+            &[999, 103, 101],
+            3,
+        );
+
+        assert_eq!(
+            ordered,
+            vec![target(3, 103), target(1, 101), target(2, 102)]
+        );
+        assert!(ordered
+            .iter()
+            .all(|candidate| candidate.scheduled_slot_id != 999));
+    }
+
+    #[tokio::test]
+    async fn silent_realtime_listener_returns_to_global_poll_fallback() {
+        let (_sender, mut receiver) = mpsc::channel(1);
+        let mut hints = SlotHintQueue::new(1);
+
+        time::timeout(
+            Duration::from_millis(100),
+            wait_for_next_autodeposit_scan(
+                false,
+                &mut receiver,
+                &mut hints,
+                Duration::from_millis(5),
+                Duration::ZERO,
+            ),
+        )
+        .await
+        .expect("global poll fallback must stay live without notifications");
+
+        assert!(hints.drain(1).is_empty());
+    }
 }

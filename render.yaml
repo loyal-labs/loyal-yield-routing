@@ -125,7 +125,7 @@ projects:
               - key: REALTIME_AUTH_PREVIOUS_SECRET
                 sync: false
               - key: REALTIME_ALLOWED_ORIGINS
-                value: https://askloyal.com,https://www.askloyal.com
+                value: https://askloyal.com,https://www.askloyal.com,https://app.askloyal.com
               - key: REALTIME_HEARTBEAT_SECONDS
                 value: "15"
               - key: REALTIME_CATCH_UP_LIMIT
@@ -173,7 +173,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4ead255ae260e7ddf31234e632c021d26e91b290
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-5fc5f7825a717cfb0ccaab57cee5e38f09aa7f53
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-autodeposit-trigger --execute-eligible
             maxShutdownDelaySeconds: 60
@@ -192,6 +192,8 @@ projects:
                 value: "true"
               - key: BALANCE_SWEEP_REALTIME_DEBOUNCE_MILLISECONDS
                 value: "250"
+              - key: BALANCE_SWEEP_REALTIME_HINT_QUEUE_CAPACITY
+                value: "1024"
               - key: BALANCE_SWEEP_REALTIME_CHANNEL
                 value: loyal_yield_autodeposit_wakeup
               - key: SOLANA_WEEK_NOTIFY_ENDPOINT
