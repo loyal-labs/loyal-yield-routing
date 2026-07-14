@@ -759,7 +759,19 @@ fn prove_and_execute_v0(
         .iter()
         .map(|requirement| requirement.address)
         .collect::<Vec<_>>();
-    if !shared_addresses.is_empty() {
+    if shared_addresses.len() > 1 {
+        // The production shared-market family is append-packed across
+        // durable physical shards. Put every shared requirement in a distinct
+        // table here to prove the worst measured contributing-shard topology:
+        // all Earn shapes must still compile, fit, simulate, and execute even
+        // when every shared account arrived in a different historical shard.
+        selected_tables.extend(shared_addresses.into_iter().map(|address| {
+            AddressLookupTableAccount {
+                key: Pubkey::new_unique(),
+                addresses: vec![address],
+            }
+        }));
+    } else if !shared_addresses.is_empty() {
         selected_tables.push(AddressLookupTableAccount {
             key: Pubkey::new_unique(),
             addresses: shared_addresses,

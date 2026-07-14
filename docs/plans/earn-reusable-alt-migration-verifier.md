@@ -82,7 +82,7 @@ The target resolution path is:
 ```text
 route plan for vault V
   static accounts        -> v0 message static keys
-  shared-market accounts -> active shared-market generation
+  shared-market accounts -> contributing shards in active shared generation
   vault accounts         -> V's active packed-shard binding
                            -> compile -> coverage -> packet check -> simulate
 ```
@@ -92,11 +92,14 @@ The durable architectural rules are:
 - route/action builders own account requirements and semantic classification;
 - logical families, manifests, and bindings own reusable address sets;
 - physical ALTs are append-only, replaceable transport artifacts;
-- one logical shared-market family uses one exact physical table per generation;
-  publication and planning fail before any write when the complete catalog
-  exceeds the configured single-table high-water mark. Supporting a catalog
-  that no longer fits is a future, explicitly verified shared-sharding
-  migration, never silent truncation or an implicit second table;
+- one logical shared-market family deterministically append-packs its complete
+  ordered manifest into as many physical shards as required per generation;
+  every physical shard stays at or below the configured high-water mark, shard
+  ordinals and membership ranges are stable, and routes select only the
+  contributing subset. The production bootstrap evidence is 237 logical
+  addresses against a 219 per-table high-water, so the required exact shape is
+  two shards containing 219 and 18 addresses—not lowered capacity evidence,
+  truncation, or a legacy table;
 - vault-dependent addresses are packed into bounded multi-vault shards by
   default, with dedicated tables only for measured outliers;
 - source/target route keys are readiness/audit fingerprints, never owners of
@@ -137,12 +140,13 @@ not PASS.
 
 ## Latest Verifier Run
 
-The earlier 2026-07-14 PASS predates migration `0021`, the durable production
-fences, the source/target monitor split, and their database regressions. It is
-historical evidence only and is not valid for the current implementation
-worktree. Replace this section with the exact committed `HEAD`, complete command
-output, migration 1–21 replay, database-check count, and immutable image evidence
-only after the current implementation verifier has passed from a clean checkout.
+The earlier 2026-07-14 PASS predates migrations `0021` and `0022`, the durable
+production fences, the multi-shard shared-market bundle, the source/target
+monitor split, and their database regressions. It is historical evidence only
+and is not valid for the current implementation worktree. Replace this section
+with the exact committed `HEAD`, complete command output, migration 1–22 replay,
+database-check count, and immutable image evidence only after the current
+implementation verifier has passed from a clean checkout.
 
 ```text
 1-13. Current implementation verification: NOT RUN
@@ -173,6 +177,10 @@ prerequisites pass.
      audits, durable provisioner pause state, and durable alert
      incident/delivery state; it must seed no vault manifest, binding, request,
      or ALT operation.
+   - Add migration `0022` for a logical shared-market catalog that may span a
+     deterministic ordered bundle of physical ALT shards and for immutable
+     per-shard pre-cutover evidence; it must not weaken the measured physical
+     high-water or Solana's 256-address hard limit.
    - Register all ordered migrations in the dedicated `yield-migrations` runner and schema
      validator.
    - Keep legacy tables and reads valid.
@@ -330,7 +338,8 @@ Required behavior:
   non-cancelled route-requirement cohorts for that vault, so observing a new
   route shape cannot drop addresses needed by an earlier shape;
 - shared desired state comes only from the authoritative stable-market catalog;
-  a route's shared manifest must be its subset and cannot grow the shared ALT;
+  a route's shared manifest must be its subset and cannot grow the logical
+  shared catalog or any physical shard;
 - catalog target eligibility and source/exit retention are separate: active,
   safe, enabled-stable reserves define new targets, while physical shared
   inventory includes every known reserve for the explicit enabled stable mints
@@ -357,13 +366,16 @@ Required behavior:
 - a durable desired-head revision supersedes older preparing/warming bindings,
   and activation transactionally rejects a stale revision or an older contender;
 - the previous binding remains available for rollback;
-- the stable family extends only while the full desired manifest plus headroom
-  fits; otherwise it builds a compact next generation;
-- if the complete measured shared-market universe exceeds the configured
-  single-table high-water mark (and therefore cannot fit one ALT with the
-  required headroom), catalog publication/planning fails before durable writes
-  or transactions. Shared sharding requires a future schema/resolver/verifier
-  migration; the current implementation must never truncate or auto-split it.
+- the stable family preserves the logical manifest order and deterministically
+  chunks it by physical high-water. Existing shards keep their exact prefix,
+  the tail shard extends until full, and later addresses append into additional
+  shards; a replacement generation recreates that same complete partition;
+- logical shared-catalog size may exceed one table's high-water, while every
+  physical shard remains within both that high-water and Solana's 256-address
+  hard limit. Publication/planning must fail before durable writes or
+  transactions if any address is truncated, duplicated, reordered, or left
+  uncovered; silently lowering the measured `21`-address expansion or the
+  physical safety contract to force 237 addresses into one table is a FAIL.
 
 Required adversarial evidence includes concurrent reservation, duplicate
 address, exact-capacity, one-over-capacity, growth-reservation, relocation, and
@@ -485,10 +497,11 @@ Required behavior:
 - accepted RPC endpoints are absolute HTTP(S) URLs, and both structured output
   and fatal error paths omit userinfo, path, query, fragment, and access-token
   material while retaining non-secret method/status context.
-- direct cutover obtains exact database preflight evidence, verifies the same
-  physical shared table at finalized RPC, and atomically rejects any revision,
-  generation, table, authority, ordered hash, count, verification-slot, or
-  mutation-epoch change before aligning rollout controls.
+- direct cutover obtains exact database preflight evidence, verifies every
+  physical table in the same shared bundle at finalized RPC, and atomically
+  rejects any revision, generation, bundle hash/count, shard ordinal, table,
+  authority, ordered hash, verification-slot, or mutation-epoch change before
+  aligning rollout controls.
 
 FAIL if the runtime contains a legacy table discovery/resolution branch, unions
 legacy and reusable tables, trusts cached JSON membership without RPC
@@ -647,9 +660,10 @@ op run --env-file=.env.1password -- sh -c 'bun run yield:migrate:check'
 ```
 
 against an isolated branch containing migration `0017`, the existing realtime
-migration `0018`, ALT migrations `0019` and `0020`, and production-control
-migration `0021`. If the database branch or credentials are unavailable, report
-this check FAIL; do not replace it with source inspection.
+migration `0018`, ALT migrations `0019` and `0020`, production-control
+migration `0021`, and multi-shard shared-bundle migration `0022`. If the
+database branch or credentials are unavailable, report this check FAIL; do not
+replace it with source inspection.
 
 The final implementation verdict must be reproduced from a clean checkout of
 the exact commit intended for the worker image, with
@@ -708,8 +722,9 @@ without explicit operator approval.
   prepared, or in-flight route transactions that can change the fleet.
 - Migration `0017`, existing realtime migration `0018`, legacy audit migration
   `0019`, and demand-driven shared-catalog migration `0020` are applied through
-  `yield-migrations`; operational verification migration `0021` is also
-  applied, and checksum/readback succeeds for all of them.
+  `yield-migrations`; operational verification migration `0021` and
+  multi-shard shared-bundle migration `0022` are also applied, and
+  checksum/readback succeeds for migrations 1–22.
 - Every live legacy physical table is reloaded from RPC before import.
 - Imported tables remain `legacy_route`/`legacy_mixed`; none is relabeled as a
   clean shared or vault table.
@@ -753,7 +768,8 @@ without explicit operator approval.
   admin write is fenced by the dry-run desired-set, enabled-mint, reserve-set,
   and ordered-address hashes plus exact reserve/address counts and finalized
   source slot; any intervening change fails before a database write.
-- The generation is warm and prefix/hash verified before the direct switch.
+- Every physical shard is warm and prefix/hash verified, and the aggregate
+  bundle identity is exact, before the direct switch.
 - A first generation may honestly have no reusable predecessor; later
   generations must retain and validate their real predecessor.
 
@@ -782,22 +798,25 @@ without explicit operator approval.
   family metadata is active; and the deployed provisioner is healthy in
   bounded execute mode with the standard policy identity.
 - A signerless production-connected rollback probe first verifies the exact
-  active shared ALT at finalized RPC. In one short database transaction, it
+  active shared ALT bundle at finalized RPC. In one short database transaction, it
   injects a deterministic in-memory physical mismatch through the same
   drift-report path and observes a repair signal with zero vault demand; it
   then inserts the same typed missing-vault fixture twice and observes exactly
   one sealed request with zero decision, binding, operation, or send. The
   exercised mutations are rolled back to a savepoint, same-transaction
   readback proves zero routing or provisioning residue, and the transaction
-  commits only an immutable audit row recording finalized slot, hashes,
-  counts, paused control epoch, and rollback result. The probe may not load
-  `POLICY_KEYPAIR` or pre-provision a production vault.
+  commits only an immutable parent audit row plus immutable per-shard children
+  recording the bundle hash/count, finalized slot, shard ordinals, table
+  identities, hashes, counts, mutation epochs, paused control epoch, and
+  rollback result. The singular parent table fields remain only the selected
+  synthetic drift target. The probe may not load `POLICY_KEYPAIR` or
+  pre-provision a production vault.
 - Activation remains fenced by desired-head revision, mutation epoch, leases,
   warmup, and chain-prefix verification so a stale provisioner cannot publish
   an obsolete generation or binding.
-- The cutover command re-verifies the exact shared ALT at finalized RPC and
-  passes that complete evidence into the atomic database fence; a database-only
-  warm/active flag is insufficient.
+- The cutover command re-verifies every table in the exact shared bundle at
+  finalized RPC and passes that complete evidence into the atomic database
+  fence; a database-only warm/active flag or one-shard sample is insufficient.
 - The rollback-only probe locks and rechecks the same durable paused control
   epoch after finalized RPC, requires zero active broadcast permits and zero
   in-flight mutations, and persists that epoch in its immutable PASS row.
@@ -815,10 +834,11 @@ without explicit operator approval.
   per-vault override; no hidden legacy stop/resolver state remains.
 - That transaction requires the durable pause, zero active broadcast permits,
   zero in-flight mutations, and the latest immutable PASS probe matching the
-  current pause epoch, catalog revision, shared manifest, physical table,
-  address, authority, mutation epoch, ordered hash, and count. It rejects any
-  later operation/permit mutation and atomically rechecks the complete fresh
-  finalized observation before changing rollout controls.
+  current pause epoch, catalog revision, shared manifest, aggregate bundle
+  hash/count, and every physical shard's ordinal, table identity, address,
+  authority, mutation epoch, ordered hash, and count. It rejects any later
+  operation/permit mutation and atomically rechecks the complete fresh
+  finalized bundle observation before changing rollout controls.
 - Post-cutover readback shows the normal monitor discovering genuine demand,
   the provisioner draining it, and at least one real funded production vault
   completing a confirmed, reconciled optimization through reusable v2 ALTs.

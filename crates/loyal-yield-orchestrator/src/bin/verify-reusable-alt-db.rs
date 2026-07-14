@@ -289,11 +289,11 @@ async fn verify_shared_market_catalog_control_plane(
 ) -> VerifyResult<()> {
     let cluster = format!("db-verify-shared-catalog-{run}");
     let authority = unique_pubkey("shared-catalog-authority").to_string();
-    let (shared_family, _vault_family) = create_families(client, &cluster, &authority, 40).await?;
+    let (shared_family, _vault_family) = create_families(client, &cluster, &authority, 219).await?;
     let vault_id = create_vault(client, &format!("shared-catalog-{run}"), 41).await?;
     let catalog_v1 = typed_addresses(
         LookupTableManifestSubject::SharedMarket,
-        2,
+        440,
         "shared-catalog-v1",
     );
     let head_v1 = publish_shared_catalog(client, &cluster, catalog_v1.clone(), run, 90_000).await?;
@@ -304,47 +304,8 @@ async fn verify_shared_market_catalog_control_plane(
             && head_v1.catalog_revision_id == replayed.catalog_revision_id
             && head_v1.manifest_id == replayed.manifest_id
             && head_v1.readiness_state == SharedMarketCatalogReadiness::Pending
-            && head_v1.address_count == 2,
+            && head_v1.address_count == 440,
         "shared catalog publication was not immutable and idempotent",
-    )?;
-    let oversized_addresses = typed_addresses(
-        LookupTableManifestSubject::SharedMarket,
-        41,
-        "shared-catalog-oversized",
-    );
-    let oversized_hash = lookup_table_manifest_address_records_hash(&oversized_addresses);
-    let oversized_manifest = client
-        .persist_lookup_table_manifest(LookupTableManifestWrite {
-            family_id: shared_family.id,
-            subject_kind: LookupTableManifestSubject::SharedMarket,
-            subject_key: format!("shared-catalog-oversized-{run}"),
-            vault_id: None,
-            desired_set_hash: oversized_hash.clone(),
-            source_slot: Some(90_000),
-            planner_version: shared_family.planner_version.clone(),
-            catalog_version: shared_family.catalog_version.clone(),
-            addresses: oversized_addresses,
-        })
-        .await?;
-    let oversized_revision = loyal_yield_orchestrator::sqlx::query(
-        r#"
-        INSERT INTO loyal_yield.lookup_table_shared_market_catalog_revisions
-            (family_id, manifest_id, catalog_revision, catalog_version,
-             desired_set_hash, enabled_mints_hash, reserve_set_hash,
-             address_count, source_slot, source_metadata, reason, updated_by)
-        VALUES ($1, $2, 99, $3, $4, $4, $4, 41, 90000,
-                '{}'::jsonb, 'must fail capacity fence', 'isolated-db-verifier')
-        "#,
-    )
-    .bind(shared_family.id)
-    .bind(oversized_manifest.id)
-    .bind(&shared_family.catalog_version)
-    .bind(&oversized_hash)
-    .execute(client.pool())
-    .await;
-    ensure(
-        oversized_revision.is_err(),
-        "database accepted a shared catalog larger than one family ALT high-water mark",
     )?;
     ensure(
         client
@@ -372,10 +333,10 @@ async fn verify_shared_market_catalog_control_plane(
         )
         .await?;
     ensure(
-        plan_v1.shared_operations.len() == 1
+        plan_v1.shared_operations.len() == 3
             && plan_v1.catalog.target_generation == Some(plan_v1.shared_target_generation)
             && plan_v1.catalog.readiness_state == SharedMarketCatalogReadiness::Provisioning,
-        "shared catalog did not plan one durable physical ALT",
+        "logical shared catalog larger than 256 addresses did not append-pack across three durable physical ALT shards",
     )?;
     for operation in &plan_v1.shared_operations {
         materialize_operation_manifest(client, operation, 90_001).await?;
@@ -417,24 +378,24 @@ async fn verify_shared_market_catalog_control_plane(
         )
         .await?;
     let stale_cutover_preflight = client.reusable_only_cutover_preflight(&cluster).await?;
-    let stale_cutover_observation = finalized_shared_observation(
-        &stale_cutover_preflight,
-        90_002,
-        stale_cutover_preflight.physical_last_extended_slot,
-    );
-    let drifted_addresses = stale_cutover_preflight.ordered_addresses.clone();
+    let stale_cutover_observation = finalized_shared_observation(&stale_cutover_preflight, 90_002);
+    let stale_drift_target = stale_cutover_preflight
+        .shared_tables
+        .first()
+        .ok_or_else(|| io::Error::other("shared drift fixture has no physical shard"))?;
+    let drifted_addresses = stale_drift_target.ordered_addresses.clone();
     let drift_report = client
         .report_shared_market_physical_drift(SharedMarketPhysicalDriftReport {
             cluster: cluster.clone(),
             catalog_revision_id: stale_cutover_preflight.catalog_revision_id,
             family_id: stale_cutover_preflight.shared_family_id,
-            route_lookup_table_id: stale_cutover_preflight.physical_table_id,
-            expected_mutation_epoch: stale_cutover_preflight.physical_mutation_epoch,
-            expected_table_address: stale_cutover_preflight.physical_table_address.clone(),
-            expected_authority: stale_cutover_preflight.physical_authority.clone(),
+            route_lookup_table_id: stale_drift_target.table_id,
+            expected_mutation_epoch: stale_drift_target.mutation_epoch,
+            expected_table_address: stale_drift_target.table_address.clone(),
+            expected_authority: stale_drift_target.authority.clone(),
             observed_slot: 90_002,
             observed_table_present: true,
-            observed_authority: Some(stale_cutover_preflight.physical_authority.clone()),
+            observed_authority: Some(stale_drift_target.authority.clone()),
             observed_active: true,
             observed_last_extended_slot: Some(90_002),
             observed_warm: false,
@@ -508,11 +469,7 @@ async fn verify_shared_market_catalog_control_plane(
         )
         .await?;
     let probe_preflight = client.reusable_only_cutover_preflight(&cluster).await?;
-    let probe_cutover_observation = finalized_shared_observation(
-        &probe_preflight,
-        90_004,
-        probe_preflight.physical_last_extended_slot,
-    );
+    let probe_cutover_observation = finalized_shared_observation(&probe_preflight, 90_004);
     ensure(
         client
             .activate_reusable_only_cutover(
@@ -528,7 +485,11 @@ async fn verify_shared_market_catalog_control_plane(
     let probe_token = ordered_address_hash(&[format!("precutover-probe-token-{run}")]);
     let requirements_fingerprint =
         ordered_address_hash(&[format!("precutover-probe-requirements-{run}")]);
-    let mut synthetic_drift_addresses = probe_preflight.ordered_addresses.clone();
+    let probe_drift_target = probe_preflight
+        .shared_tables
+        .last()
+        .ok_or_else(|| io::Error::other("shared probe fixture has no physical shard"))?;
+    let mut synthetic_drift_addresses = probe_drift_target.ordered_addresses.clone();
     synthetic_drift_addresses
         .pop()
         .ok_or_else(|| io::Error::other("shared probe fixture requires one address"))?;
@@ -541,21 +502,20 @@ async fn verify_shared_market_catalog_control_plane(
         .run_lookup_table_precutover_probe(LookupTablePrecutoverProbe {
             probe_token: probe_token.clone(),
             provisioner_control_epoch: durable_pause.control_epoch,
-            finalized_slot: 90_004,
-            finalized_addresses: probe_preflight.ordered_addresses.clone(),
+            finalized_observation: probe_cutover_observation.clone(),
             drift_report: SharedMarketPhysicalDriftReport {
                 cluster: cluster.clone(),
                 catalog_revision_id: probe_preflight.catalog_revision_id,
                 family_id: probe_preflight.shared_family_id,
-                route_lookup_table_id: probe_preflight.physical_table_id,
-                expected_mutation_epoch: probe_preflight.physical_mutation_epoch,
-                expected_table_address: probe_preflight.physical_table_address.clone(),
-                expected_authority: probe_preflight.physical_authority.clone(),
+                route_lookup_table_id: probe_drift_target.table_id,
+                expected_mutation_epoch: probe_drift_target.mutation_epoch,
+                expected_table_address: probe_drift_target.table_address.clone(),
+                expected_authority: probe_drift_target.authority.clone(),
                 observed_slot: 90_004,
                 observed_table_present: true,
-                observed_authority: Some(probe_preflight.physical_authority.clone()),
+                observed_authority: Some(probe_drift_target.authority.clone()),
                 observed_active: true,
-                observed_last_extended_slot: Some(probe_preflight.physical_last_extended_slot),
+                observed_last_extended_slot: Some(probe_drift_target.last_extended_slot),
                 observed_warm: true,
                 observed_addresses: synthetic_drift_addresses,
                 reason: format!("precutover-probe-synthetic-drift:{probe_token}"),
@@ -598,15 +558,19 @@ async fn verify_shared_market_catalog_control_plane(
     .await;
     ensure(
         probe_audit.result == "pass"
-            && probe_audit.shared_table_address == probe_preflight.physical_table_address
-            && probe_audit.shared_authority == probe_preflight.physical_authority
-            && probe_audit.shared_mutation_epoch == probe_preflight.physical_mutation_epoch
+            && probe_audit.shared_table_address == probe_drift_target.table_address
+            && probe_audit.shared_authority == probe_drift_target.authority
+            && probe_audit.shared_mutation_epoch == probe_drift_target.mutation_epoch
             && probe_audit.finalized_slot == 90_004
-            && probe_audit.finalized_last_extended_slot
-                == probe_preflight.physical_last_extended_slot
-            && probe_audit.finalized_address_hash == probe_preflight.ordered_address_hash
-            && usize::try_from(probe_audit.finalized_address_count)?
+            && probe_audit.finalized_last_extended_slot == probe_drift_target.last_extended_slot
+            && probe_audit.finalized_address_hash == probe_drift_target.ordered_address_hash
+            && probe_audit.finalized_address_count == probe_drift_target.address_count
+            && probe_audit.shared_table_bundle_hash == probe_preflight.shared_table_bundle_hash
+            && usize::try_from(probe_audit.shared_table_count)?
+                == probe_preflight.shared_tables.len()
+            && usize::try_from(probe_audit.finalized_bundle_address_count)?
                 == probe_preflight.ordered_addresses.len()
+            && probe_audit.shared_tables.len() == probe_preflight.shared_tables.len()
             && probe_audit.finalized_shared_exact
             && probe_audit.drift_signal_count == 1
             && probe_audit.drift_provisioning_request_count == 0
@@ -623,14 +587,86 @@ async fn verify_shared_market_catalog_control_plane(
             && immutable_probe_update.is_err(),
         "rollback-only pre-cutover probe did not preserve exact signerless zero-residue evidence",
     )?;
+
+    // The parent compatibility identity is security-relevant cutover evidence,
+    // not merely a formatted digest. Copy the valid immutable audit with a
+    // different token/fingerprint but a forged bundle hash; the deferred
+    // parent/child consistency trigger must reject the transaction at commit.
+    let mut tampered_probe_tx = client.pool().begin().await?;
+    let tampered_probe_token =
+        ordered_address_hash(&[format!("tampered-precutover-probe-token-{run}")]);
+    let tampered_requirements_fingerprint =
+        ordered_address_hash(&[format!("tampered-precutover-probe-requirements-{run}")]);
+    let tampered_probe_id: i64 = loyal_yield_orchestrator::sqlx::query_scalar(
+        r#"
+        INSERT INTO loyal_yield.lookup_table_precutover_probe_runs
+            (probe_token, cluster, vault_id, catalog_revision_id,
+             shared_manifest_id, route_lookup_table_id,
+             shared_table_address, shared_authority, shared_mutation_epoch,
+             provisioner_control_epoch, requirements_fingerprint,
+             finalized_slot, finalized_last_extended_slot,
+             finalized_address_hash, finalized_address_count,
+             shared_table_bundle_hash, shared_table_count,
+             finalized_bundle_address_count,
+             finalized_shared_exact, synthetic_drift_evidence_hash,
+             drift_signal_count, drift_provisioning_request_count,
+             duplicate_request_attempt_count, distinct_request_count,
+             decision_count, binding_count, operation_count,
+             rollback_residue_count, catalog_head_restored,
+             signer_loaded, transactions_sent, result)
+        SELECT $2, cluster, vault_id, catalog_revision_id,
+               shared_manifest_id, route_lookup_table_id,
+               shared_table_address, shared_authority, shared_mutation_epoch,
+               provisioner_control_epoch, $3,
+               finalized_slot, finalized_last_extended_slot,
+               finalized_address_hash, finalized_address_count,
+               repeat('f', 64), shared_table_count,
+               finalized_bundle_address_count,
+               finalized_shared_exact, synthetic_drift_evidence_hash,
+               drift_signal_count, drift_provisioning_request_count,
+               duplicate_request_attempt_count, distinct_request_count,
+               decision_count, binding_count, operation_count,
+               rollback_residue_count, catalog_head_restored,
+               signer_loaded, transactions_sent, result
+        FROM loyal_yield.lookup_table_precutover_probe_runs
+        WHERE id = $1
+        RETURNING id
+        "#,
+    )
+    .bind(probe_audit.id)
+    .bind(&tampered_probe_token)
+    .bind(&tampered_requirements_fingerprint)
+    .fetch_one(&mut *tampered_probe_tx)
+    .await?;
+    loyal_yield_orchestrator::sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.lookup_table_precutover_probe_shared_tables
+            (probe_run_id, shard_ordinal, route_lookup_table_id,
+             shared_table_address, shared_authority, shared_mutation_epoch,
+             finalized_slot, finalized_last_extended_slot,
+             finalized_address_hash, finalized_address_count)
+        SELECT $2, shard_ordinal, route_lookup_table_id,
+               shared_table_address, shared_authority, shared_mutation_epoch,
+               finalized_slot, finalized_last_extended_slot,
+               finalized_address_hash, finalized_address_count
+        FROM loyal_yield.lookup_table_precutover_probe_shared_tables
+        WHERE probe_run_id = $1
+        ORDER BY shard_ordinal
+        "#,
+    )
+    .bind(probe_audit.id)
+    .bind(tampered_probe_id)
+    .execute(&mut *tampered_probe_tx)
+    .await?;
+    ensure(
+        tampered_probe_tx.commit().await.is_err(),
+        "pre-cutover probe accepted a forged shared-table bundle hash",
+    )?;
     let cutover_preflight = client.reusable_only_cutover_preflight(&cluster).await?;
-    let cutover_observation = finalized_shared_observation(
-        &cutover_preflight,
-        90_005,
-        cutover_preflight.physical_last_extended_slot,
-    );
+    let cutover_observation = finalized_shared_observation(&cutover_preflight, 90_005);
     let mut wrong_finalized_observation = cutover_observation.clone();
-    wrong_finalized_observation.authority = unique_pubkey("wrong-cutover-authority").to_string();
+    wrong_finalized_observation.shared_tables[0].authority =
+        unique_pubkey("wrong-cutover-authority").to_string();
     ensure(
         client
             .activate_reusable_only_cutover(
@@ -834,6 +870,73 @@ async fn verify_shared_market_catalog_control_plane(
         "failed shared-drift defense omitted durable request status/reason evidence",
     )?;
 
+    // A pre-cutover probe is an immutable snapshot of the catalog revision it
+    // certified. Later append-stable growth may legally extend the current
+    // tail shard in place. Keep that old audit in this database fixture so the
+    // fleet-wide schema verifier proves it does not compare historical epochs,
+    // counts, hashes, or membership against the mutable current table row.
+    let mut appended_address = typed_addresses(
+        LookupTableManifestSubject::SharedMarket,
+        1,
+        "shared-catalog-post-probe-append",
+    )
+    .into_iter()
+    .next()
+    .ok_or_else(|| io::Error::other("post-probe append fixture is empty"))?;
+    appended_address.ordinal = i32::try_from(catalog_v1.len())?;
+    let mut append_catalog = catalog_v1.clone();
+    append_catalog.push(appended_address);
+    let append_head = publish_shared_catalog(client, &cluster, append_catalog, run, 90_006).await?;
+    let append_plan = client
+        .plan_shared_market_catalog_head(
+            &cluster,
+            append_head.catalog_revision_id,
+            shared_catalog_policy(90_006),
+        )
+        .await?;
+    ensure(
+        append_head.catalog_revision == 2
+            && append_plan.shared_target_generation
+                == repaired_v1.active_generation.unwrap_or_default()
+            && append_plan.shared_operations.len() == 1
+            && append_plan.shared_operations[0].operation_kind == LookupTableOperationKind::Extend,
+        "post-probe append did not reuse and extend the durable tail shard",
+    )?;
+    for operation in &append_plan.shared_operations {
+        materialize_operation_manifest(client, operation, 90_007).await?;
+    }
+    let active_append = client
+        .reconcile_shared_market_catalog_head(
+            &cluster,
+            append_head.catalog_revision_id,
+            shared_catalog_policy(90_007),
+            Utc::now() + Duration::hours(1),
+        )
+        .await?;
+    let post_append_probe_snapshot: (i64, i32, String) = loyal_yield_orchestrator::sqlx::query_as(
+        r#"
+            SELECT route_table.mutation_epoch,
+                   route_table.address_count,
+                   route_table.address_hash
+            FROM loyal_yield.lookup_table_precutover_probe_shared_tables shared
+            JOIN loyal_yield.route_lookup_tables route_table
+              ON route_table.id = shared.route_lookup_table_id
+            WHERE shared.probe_run_id = $1
+              AND shared.shard_ordinal = $2
+            "#,
+    )
+    .bind(probe_audit.id)
+    .bind(probe_drift_target.shard_ordinal)
+    .fetch_one(client.pool())
+    .await?;
+    ensure(
+        active_append.readiness_state == SharedMarketCatalogReadiness::Active
+            && post_append_probe_snapshot.0 > probe_drift_target.mutation_epoch
+            && post_append_probe_snapshot.1 > probe_drift_target.address_count
+            && post_append_probe_snapshot.2 != probe_drift_target.ordered_address_hash,
+        "post-probe append did not advance the historical probe's current tail-shard state",
+    )?;
+
     let catalog_v2 = normalize_catalog_addresses([
         vec![catalog_v1[1].clone()],
         typed_addresses(
@@ -842,9 +945,9 @@ async fn verify_shared_market_catalog_control_plane(
             "shared-catalog-v2-new",
         ),
     ]);
-    let head_v2 = publish_shared_catalog(client, &cluster, catalog_v2.clone(), run, 90_003).await?;
+    let head_v2 = publish_shared_catalog(client, &cluster, catalog_v2.clone(), run, 90_008).await?;
     ensure(
-        head_v2.catalog_revision == 2
+        head_v2.catalog_revision == 3
             && head_v2.catalog_revision_id != head_v1.catalog_revision_id
             && head_v2.readiness_state == SharedMarketCatalogReadiness::Pending,
         "shared catalog head did not advance as a pending monotonic revision",
@@ -862,7 +965,7 @@ async fn verify_shared_market_catalog_control_plane(
         .plan_shared_market_catalog_head(
             &cluster,
             head_v2.catalog_revision_id,
-            shared_catalog_policy(90_003),
+            shared_catalog_policy(90_008),
         )
         .await?;
     ensure(
@@ -871,13 +974,13 @@ async fn verify_shared_market_catalog_control_plane(
         "catalog shrink/change did not plan an exact rollover generation",
     )?;
     for operation in &plan_v2.shared_operations {
-        materialize_operation_manifest(client, operation, 90_004).await?;
+        materialize_operation_manifest(client, operation, 90_009).await?;
     }
     let active_v2 = client
         .reconcile_shared_market_catalog_head(
             &cluster,
             head_v2.catalog_revision_id,
-            shared_catalog_policy(90_004),
+            shared_catalog_policy(90_009),
             Utc::now() + Duration::hours(1),
         )
         .await?;
@@ -892,9 +995,9 @@ async fn verify_shared_market_catalog_control_plane(
         "catalog rollover did not activate exact new physical membership",
     )?;
 
-    let rollback_head = publish_shared_catalog(client, &cluster, catalog_v1, run, 90_005).await?;
+    let rollback_head = publish_shared_catalog(client, &cluster, catalog_v1, run, 90_010).await?;
     ensure(
-        rollback_head.catalog_revision == 3
+        rollback_head.catalog_revision == 4
             && rollback_head.manifest_id == head_v1.manifest_id
             && rollback_head.catalog_revision_id != head_v1.catalog_revision_id
             && rollback_head.readiness_state == SharedMarketCatalogReadiness::Pending,
@@ -2741,7 +2844,7 @@ async fn verify_active_head_growth_and_relocation(
         })
         .collect();
     let table = client
-        .replace_confirmed_lookup_table_membership(table.id, 0, 1, observed_slot, membership)
+        .replace_confirmed_lookup_table_membership(table.id, 0, 1, observed_slot, 100, membership)
         .await?;
     let table = client
         .mark_reusable_lookup_table_verification(
@@ -3287,8 +3390,25 @@ async fn materialize_table_manifest(
     .bind(observed_slot)
     .execute(client.pool())
     .await?;
-    let membership = manifest
-        .addresses
+    let table = client
+        .reusable_lookup_table(table_id)
+        .await?
+        .ok_or_else(|| io::Error::other("physical table disappeared during materialization"))?;
+    let lifecycle_before_materialization = table.desired_state;
+    let physical_addresses = if table.allocation_kind == LookupTableAllocationKind::SharedMarket {
+        let capacity = usize::try_from(table.allocation_high_water)?;
+        let start = usize::try_from(table.shard_ordinal)?
+            .checked_mul(capacity)
+            .ok_or_else(|| io::Error::other("shared shard range overflowed"))?;
+        let end = start.saturating_add(capacity).min(manifest.addresses.len());
+        manifest
+            .addresses
+            .get(start..end)
+            .ok_or_else(|| io::Error::other("shared shard range is absent from manifest"))?
+    } else {
+        manifest.addresses.as_slice()
+    };
+    let membership = physical_addresses
         .iter()
         .enumerate()
         .map(|(ordinal, address)| LookupTableMembershipAddress {
@@ -3302,47 +3422,51 @@ async fn materialize_table_manifest(
         })
         .collect::<Vec<_>>();
     let table = client
-        .reusable_lookup_table(table_id)
-        .await?
-        .ok_or_else(|| io::Error::other("physical table disappeared during materialization"))?;
-    let table = client
         .replace_confirmed_lookup_table_membership(
             table.id,
             table.mutation_epoch,
             table.mutation_epoch + 1,
             observed_slot,
+            observed_slot - 1,
             membership,
         )
         .await?;
-    let table = client
-        .mark_reusable_lookup_table_verification(
-            table.id,
-            table.mutation_epoch,
-            LookupTableLifecycle::Preparing,
-            LookupTableLifecycle::Warming,
-            true,
-            table.address_count,
-            observed_slot,
-        )
-        .await?;
-    client
-        .mark_reusable_lookup_table_verification(
-            table.id,
-            table.mutation_epoch,
-            LookupTableLifecycle::Warming,
-            LookupTableLifecycle::Active,
-            true,
-            table.address_count,
-            observed_slot,
-        )
-        .await?;
-    loyal_yield_orchestrator::sqlx::query(
-        "UPDATE loyal_yield.route_lookup_tables SET last_extended_slot = $2 WHERE id = $1",
-    )
-    .bind(table.id)
-    .bind(observed_slot - 1)
-    .execute(client.pool())
-    .await?;
+    if lifecycle_before_materialization == LookupTableLifecycle::Preparing {
+        let table = client
+            .mark_reusable_lookup_table_verification(
+                table.id,
+                table.mutation_epoch,
+                LookupTableLifecycle::Preparing,
+                LookupTableLifecycle::Warming,
+                true,
+                table.address_count,
+                observed_slot,
+            )
+            .await?;
+        client
+            .mark_reusable_lookup_table_verification(
+                table.id,
+                table.mutation_epoch,
+                LookupTableLifecycle::Warming,
+                LookupTableLifecycle::Active,
+                true,
+                table.address_count,
+                observed_slot,
+            )
+            .await?;
+    } else {
+        client
+            .mark_reusable_lookup_table_verification(
+                table.id,
+                table.mutation_epoch,
+                lifecycle_before_materialization,
+                lifecycle_before_materialization,
+                true,
+                table.address_count,
+                observed_slot,
+            )
+            .await?;
+    }
     Ok(())
 }
 
@@ -4440,6 +4564,7 @@ async fn verify_atomic_binding_activation_fence(
             table.id,
             0,
             1,
+            121,
             120,
             vec![LookupTableMembershipAddress {
                 address: manifest_addresses[0].address.clone(),
@@ -4447,7 +4572,7 @@ async fn verify_atomic_binding_activation_fence(
                 added_operation_id: None,
                 added_slot: 120,
                 usable_after_slot: 121,
-                last_verified_slot: 120,
+                last_verified_slot: 121,
                 last_verified_at: Utc::now(),
             }],
         )
@@ -4460,7 +4585,7 @@ async fn verify_atomic_binding_activation_fence(
             LookupTableLifecycle::Active,
             true,
             1,
-            120,
+            121,
         )
         .await?;
     ensure(
@@ -6551,7 +6676,7 @@ async fn force_advance_shared_catalog_head_for_race_fixture(
 
 fn shared_catalog_policy(slot: i64) -> SharedMarketCatalogPlanPolicy {
     SharedMarketCatalogPlanPolicy {
-        shared_shard_capacity: 40,
+        shared_shard_capacity: 219,
         max_extension_addresses: 20,
         operation_context: json!({"source": "isolated_db_verifier", "recent_slot": slot}),
         estimated_fee_lamports: Some(5_000),
@@ -6597,8 +6722,15 @@ async fn create_family(
     high_water: i32,
     active_generation: Option<i32>,
 ) -> VerifyResult<LookupTableFamilyRecord> {
-    let allocation_high_water = high_water.min(62);
-    let safety_margin = if 64 - allocation_high_water > 4 { 4 } else { 1 };
+    let hard_capacity = if high_water > 62 { 256 } else { 64 };
+    let allocation_high_water = high_water.min(hard_capacity - 2);
+    let safety_margin = if hard_capacity == 256 {
+        16.min(hard_capacity - allocation_high_water - 1)
+    } else if hard_capacity - allocation_high_water > 4 {
+        4
+    } else {
+        1
+    };
     Ok(client
         .create_or_validate_lookup_table_family(LookupTableFamilyUpsert {
             cluster: cluster.to_owned(),
@@ -6612,8 +6744,8 @@ async fn create_family(
             rollback_until: None,
             provisioning_authority: authority.to_owned(),
             payer: authority.to_owned(),
-            hard_capacity: 64,
-            largest_atomic_expansion: 64 - allocation_high_water - safety_margin,
+            hard_capacity,
+            largest_atomic_expansion: hard_capacity - allocation_high_water - safety_margin,
             safety_margin,
             allocation_high_water,
         })
@@ -6959,19 +7091,28 @@ async fn insert_legacy_fixture(
 fn finalized_shared_observation(
     preflight: &ReusableOnlyCutoverPreflight,
     observed_slot: i64,
-    last_extended_slot: i64,
 ) -> FinalizedSharedTableObservation {
+    let shared_tables = preflight
+        .shared_tables
+        .iter()
+        .map(|table| FinalizedSharedTableShardObservation {
+            table_id: table.table_id,
+            shard_ordinal: table.shard_ordinal,
+            table_address: table.table_address.clone(),
+            authority: table.authority.clone(),
+            mutation_epoch: table.mutation_epoch,
+            last_extended_slot: table.last_extended_slot,
+            ordered_address_hash: table.ordered_address_hash.clone(),
+            address_count: table.address_count,
+            ordered_addresses: table.ordered_addresses.clone(),
+        })
+        .collect::<Vec<_>>();
+    let shared_table_bundle_hash = finalized_shared_table_bundle_hash(&shared_tables);
     FinalizedSharedTableObservation {
         cluster: preflight.cluster.clone(),
-        physical_table_id: preflight.physical_table_id,
-        table_address: preflight.physical_table_address.clone(),
-        authority: preflight.physical_authority.clone(),
-        mutation_epoch: preflight.physical_mutation_epoch,
         observed_slot,
-        last_extended_slot,
-        ordered_address_hash: preflight.ordered_address_hash.clone(),
-        address_count: preflight.physical_address_count,
-        ordered_addresses: preflight.ordered_addresses.clone(),
+        shared_table_bundle_hash,
+        shared_tables,
     }
 }
 

@@ -135,6 +135,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0021_reusable_alt_production_controls.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 22,
+        name: "shared_market_alt_bundles",
+        sql: include_str!("../../migrations/0022_shared_market_alt_bundles.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -362,6 +368,7 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "lookup_table_provisioner_controls",
         "lookup_table_provisioner_broadcast_permits",
         "lookup_table_precutover_probe_runs",
+        "lookup_table_precutover_probe_shared_tables",
         "lookup_table_alert_rules",
         "lookup_table_alert_incidents",
         "lookup_table_alert_deliveries",
@@ -675,6 +682,15 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         ),
         (
             "lookup_table_precutover_probe_runs",
+            "shared_table_bundle_hash",
+        ),
+        ("lookup_table_precutover_probe_runs", "shared_table_count"),
+        (
+            "lookup_table_precutover_probe_runs",
+            "finalized_bundle_address_count",
+        ),
+        (
+            "lookup_table_precutover_probe_runs",
             "finalized_shared_exact",
         ),
         (
@@ -709,6 +725,47 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         ("lookup_table_precutover_probe_runs", "transactions_sent"),
         ("lookup_table_precutover_probe_runs", "result"),
         ("lookup_table_precutover_probe_runs", "created_at"),
+        (
+            "lookup_table_precutover_probe_shared_tables",
+            "probe_run_id",
+        ),
+        (
+            "lookup_table_precutover_probe_shared_tables",
+            "shard_ordinal",
+        ),
+        (
+            "lookup_table_precutover_probe_shared_tables",
+            "route_lookup_table_id",
+        ),
+        (
+            "lookup_table_precutover_probe_shared_tables",
+            "shared_table_address",
+        ),
+        (
+            "lookup_table_precutover_probe_shared_tables",
+            "shared_authority",
+        ),
+        (
+            "lookup_table_precutover_probe_shared_tables",
+            "shared_mutation_epoch",
+        ),
+        (
+            "lookup_table_precutover_probe_shared_tables",
+            "finalized_slot",
+        ),
+        (
+            "lookup_table_precutover_probe_shared_tables",
+            "finalized_last_extended_slot",
+        ),
+        (
+            "lookup_table_precutover_probe_shared_tables",
+            "finalized_address_hash",
+        ),
+        (
+            "lookup_table_precutover_probe_shared_tables",
+            "finalized_address_count",
+        ),
+        ("lookup_table_precutover_probe_shared_tables", "created_at"),
         ("lookup_table_alert_rules", "rule_key"),
         ("lookup_table_alert_rules", "rule_version"),
         ("lookup_table_alert_rules", "enabled"),
@@ -1281,6 +1338,26 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
             "lookup_table_precutover_probe_pass_check",
         ),
         (
+            "lookup_table_precutover_probe_runs",
+            "lookup_table_precutover_probe_bundle_check",
+        ),
+        (
+            "lookup_table_precutover_probe_shared_tables",
+            "lookup_table_precutover_probe_shared_tables_pkey",
+        ),
+        (
+            "lookup_table_precutover_probe_shared_tables",
+            "lookup_table_precutover_probe_shared_table_id_unique",
+        ),
+        (
+            "lookup_table_precutover_probe_shared_tables",
+            "lookup_table_precutover_probe_shared_table_address_unique",
+        ),
+        (
+            "lookup_table_precutover_probe_shared_tables",
+            "lookup_table_precutover_probe_shared_table_identity_check",
+        ),
+        (
             "lookup_table_alert_rules",
             "lookup_table_alert_rules_key_check",
         ),
@@ -1724,6 +1801,14 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
             "lookup_table_precutover_probe_runs",
             "route_lookup_table_id",
         ),
+        (
+            "lookup_table_precutover_probe_shared_tables",
+            "probe_run_id",
+        ),
+        (
+            "lookup_table_precutover_probe_shared_tables",
+            "route_lookup_table_id",
+        ),
         ("lookup_table_provisioner_broadcast_permits", "operation_id"),
         ("lookup_table_provisioner_broadcast_permits", "cluster"),
         ("lookup_table_alert_incidents", "alert_condition"),
@@ -1772,6 +1857,7 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "lookup_table_cluster_budget_active_idx",
         "lookup_table_provisioner_broadcast_permits_active_idx",
         "lookup_table_provisioner_broadcast_permits_cluster_active_idx",
+        "lookup_table_precutover_probe_shared_tables_route_idx",
         "lookup_table_vault_bindings_one_active_idx",
         "lookup_table_usage_leases_active_table_idx",
         "lookup_table_provisioning_requests_work_queue_idx",
@@ -1830,6 +1916,18 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         (
             "lookup_table_precutover_probe_runs",
             "lookup_table_precutover_probe_runs_immutable",
+        ),
+        (
+            "lookup_table_precutover_probe_runs",
+            "lookup_table_precutover_probe_bundle_consistent",
+        ),
+        (
+            "lookup_table_precutover_probe_shared_tables",
+            "lookup_table_precutover_probe_shared_tables_immutable",
+        ),
+        (
+            "lookup_table_precutover_probe_shared_tables",
+            "lookup_table_precutover_probe_shared_tables_consistent",
         ),
         ("lookup_table_alert_rules", "lookup_table_alert_rules_guard"),
         (
@@ -2270,16 +2368,17 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
 async fn verify_reusable_alts(pool: &PgPool) -> Result<(), Box<dyn Error>> {
     let migrations_applied: bool = sqlx::query_scalar(
         r#"
-        SELECT count(*) = 2
+        SELECT count(*) = 3
         FROM loyal_yield.schema_migrations
         WHERE (version = 20 AND name = 'demand_driven_shared_market_catalog')
            OR (version = 21 AND name = 'reusable_alt_production_controls')
+           OR (version = 22 AND name = 'shared_market_alt_bundles')
         "#,
     )
     .fetch_one(pool)
     .await?;
     if !migrations_applied {
-        return Err("migrations 20 demand_driven_shared_market_catalog and 21 reusable_alt_production_controls must both be recorded".into());
+        return Err("migrations 20 demand_driven_shared_market_catalog, 21 reusable_alt_production_controls, and 22 shared_market_alt_bundles must all be recorded".into());
     }
 
     let invalid_shared_catalogs: i64 = sqlx::query_scalar(
@@ -2299,7 +2398,6 @@ async fn verify_reusable_alts(pool: &PgPool) -> Result<(), Box<dyn Error>> {
            OR manifest.catalog_version <> revision.catalog_version
            OR manifest.desired_set_hash <> revision.desired_set_hash
            OR manifest.address_count <> revision.address_count
-           OR revision.address_count > family.allocation_high_water
            OR revision.address_count <> (
                SELECT count(*)
                FROM loyal_yield.lookup_table_manifest_addresses address
@@ -2311,7 +2409,9 @@ async fn verify_reusable_alts(pool: &PgPool) -> Result<(), Box<dyn Error>> {
                AND (
                    head.target_generation IS DISTINCT FROM family.active_generation
                    OR head.activated_at IS NULL
-                   OR 1 <> (
+                   OR (
+                       revision.address_count + family.allocation_high_water - 1
+                   ) / family.allocation_high_water <> (
                        SELECT count(*)
                        FROM loyal_yield.route_lookup_tables route_table
                        WHERE route_table.family_id = family.id
@@ -2322,6 +2422,37 @@ async fn verify_reusable_alts(pool: &PgPool) -> Result<(), Box<dyn Error>> {
                          AND route_table.last_verified_slot IS NOT NULL
                    )
                    OR EXISTS (
+                       SELECT 1
+                       FROM loyal_yield.route_lookup_tables route_table
+                       WHERE route_table.family_id = family.id
+                         AND route_table.generation = family.active_generation
+                         AND route_table.allocation_kind = 'shared_market'
+                         AND (
+                             route_table.desired_state <> 'active'
+                             OR route_table.address_count > family.allocation_high_water
+                             OR route_table.usable_address_count <> route_table.address_count
+                             OR route_table.last_verified_slot IS NULL
+                         )
+                   )
+                   OR revision.address_count <> (
+                       SELECT count(*)
+                       FROM loyal_yield.route_lookup_tables route_table
+                       JOIN loyal_yield.lookup_table_addresses membership
+                         ON membership.route_lookup_table_id = route_table.id
+                       WHERE route_table.family_id = family.id
+                         AND route_table.generation = family.active_generation
+                         AND route_table.allocation_kind = 'shared_market'
+                   )
+                   OR revision.address_count <> (
+                       SELECT count(DISTINCT membership.address)
+                       FROM loyal_yield.route_lookup_tables route_table
+                       JOIN loyal_yield.lookup_table_addresses membership
+                         ON membership.route_lookup_table_id = route_table.id
+                       WHERE route_table.family_id = family.id
+                         AND route_table.generation = family.active_generation
+                         AND route_table.allocation_kind = 'shared_market'
+                   )
+                   OR EXISTS (
                        SELECT address.address
                        FROM loyal_yield.lookup_table_manifest_addresses address
                        WHERE address.manifest_id = revision.manifest_id
@@ -2347,6 +2478,37 @@ async fn verify_reusable_alts(pool: &PgPool) -> Result<(), Box<dyn Error>> {
                        FROM loyal_yield.lookup_table_manifest_addresses address
                        WHERE address.manifest_id = revision.manifest_id
                    )
+                   OR EXISTS (
+                       WITH expected AS (
+                           SELECT (
+                                      address.ordinal
+                                      / family.allocation_high_water
+                                  )::INTEGER AS shard_ordinal,
+                                  (
+                                      address.ordinal
+                                      % family.allocation_high_water
+                                  )::INTEGER AS physical_ordinal,
+                                  address.address
+                           FROM loyal_yield.lookup_table_manifest_addresses address
+                           WHERE address.manifest_id = revision.manifest_id
+                             AND address.semantic_class = 'shared_market'
+                       ), observed AS (
+                           SELECT route_table.shard_ordinal,
+                                  membership.ordinal AS physical_ordinal,
+                                  membership.address
+                           FROM loyal_yield.route_lookup_tables route_table
+                           JOIN loyal_yield.lookup_table_addresses membership
+                             ON membership.route_lookup_table_id = route_table.id
+                           WHERE route_table.family_id = family.id
+                             AND route_table.generation = family.active_generation
+                             AND route_table.allocation_kind = 'shared_market'
+                       )
+                       SELECT 1
+                       FROM expected
+                       FULL JOIN observed
+                         USING (shard_ordinal, physical_ordinal)
+                       WHERE expected.address IS DISTINCT FROM observed.address
+                   )
                )
            )
         "#,
@@ -2356,6 +2518,141 @@ async fn verify_reusable_alts(pool: &PgPool) -> Result<(), Box<dyn Error>> {
     if invalid_shared_catalogs != 0 {
         return Err(format!(
             "invalid authoritative shared-market catalog head(s): {invalid_shared_catalogs}"
+        )
+        .into());
+    }
+
+    let invalid_precutover_probe_bundles: i64 = sqlx::query_scalar(
+        r#"
+        SELECT count(*)
+        FROM loyal_yield.lookup_table_precutover_probe_runs probe
+        LEFT JOIN loyal_yield.lookup_table_shared_market_catalog_revisions revision
+          ON revision.id = probe.catalog_revision_id
+        LEFT JOIN loyal_yield.lookup_table_manifests manifest
+          ON manifest.id = probe.shared_manifest_id
+        WHERE revision.id IS NULL
+           OR manifest.id IS NULL
+           OR revision.manifest_id <> probe.shared_manifest_id
+           OR manifest.family_id <> revision.family_id
+           OR probe.result <> 'pass'
+           OR probe.shared_table_bundle_hash !~ '^[0-9a-f]{64}$'
+           OR probe.shared_table_bundle_hash IS DISTINCT FROM (
+               SELECT loyal_yield.hash_length_prefixed_text(
+                   ARRAY['loyal-reusable-shared-table-bundle-v1']::TEXT[]
+                   || COALESCE(
+                       array_agg(
+                           bundle_field.field_value
+                           ORDER BY shared.shard_ordinal,
+                                    bundle_field.field_ordinal
+                       ),
+                       ARRAY[]::TEXT[]
+                   )
+               )
+               FROM loyal_yield.lookup_table_precutover_probe_shared_tables shared
+               CROSS JOIN LATERAL (
+                   VALUES
+                       (0, shared.route_lookup_table_id::TEXT),
+                       (1, shared.shard_ordinal::TEXT),
+                       (2, shared.shared_table_address),
+                       (3, shared.shared_authority),
+                       (4, shared.shared_mutation_epoch::TEXT),
+                       (5, shared.finalized_last_extended_slot::TEXT),
+                       (6, shared.finalized_address_hash),
+                       (7, shared.finalized_address_count::TEXT)
+               ) AS bundle_field(field_ordinal, field_value)
+               WHERE shared.probe_run_id = probe.id
+           )
+           OR probe.shared_table_count <> (
+               SELECT count(*)
+               FROM loyal_yield.lookup_table_precutover_probe_shared_tables shared
+               WHERE shared.probe_run_id = probe.id
+           )
+           OR probe.finalized_bundle_address_count <> revision.address_count
+           OR probe.finalized_bundle_address_count <> (
+               SELECT COALESCE(sum(shared.finalized_address_count), 0)
+               FROM loyal_yield.lookup_table_precutover_probe_shared_tables shared
+               WHERE shared.probe_run_id = probe.id
+           )
+           OR NOT EXISTS (
+               SELECT 1
+               FROM loyal_yield.lookup_table_precutover_probe_shared_tables shared
+               WHERE shared.probe_run_id = probe.id
+                 AND shared.route_lookup_table_id = probe.route_lookup_table_id
+                 AND shared.shared_table_address = probe.shared_table_address
+                 AND shared.shared_authority = probe.shared_authority
+                 AND shared.shared_mutation_epoch = probe.shared_mutation_epoch
+                 AND shared.finalized_slot = probe.finalized_slot
+                 AND shared.finalized_last_extended_slot = probe.finalized_last_extended_slot
+                 AND shared.finalized_address_hash = probe.finalized_address_hash
+                 AND shared.finalized_address_count = probe.finalized_address_count
+           )
+           OR EXISTS (
+               SELECT 1
+               FROM loyal_yield.lookup_table_precutover_probe_shared_tables shared
+               LEFT JOIN loyal_yield.route_lookup_tables route_table
+                 ON route_table.id = shared.route_lookup_table_id
+               JOIN loyal_yield.lookup_table_families family
+                 ON family.id = revision.family_id
+               WHERE shared.probe_run_id = probe.id
+                 AND (
+                     shared.shard_ordinal < 0
+                     OR shared.finalized_slot <> probe.finalized_slot
+                     OR shared.finalized_slot <= shared.finalized_last_extended_slot
+                     OR shared.finalized_address_hash !~ '^[0-9a-f]{64}$'
+                     OR shared.finalized_address_count NOT BETWEEN 1 AND 256
+                     OR route_table.id IS NULL
+                     OR family.cluster <> probe.cluster
+                     OR route_table.cluster <> probe.cluster
+                     OR route_table.family_id <> revision.family_id
+                     OR route_table.allocation_kind <> 'shared_market'
+                     OR route_table.shard_ordinal <> shared.shard_ordinal
+                     OR route_table.table_address <> shared.shared_table_address
+                     OR route_table.authority <> shared.shared_authority
+                     OR route_table.mutation_epoch < shared.shared_mutation_epoch
+                     OR route_table.address_count < shared.finalized_address_count
+                     OR shared.finalized_address_count > family.allocation_high_water
+                 )
+           )
+           OR EXISTS (
+               WITH expected AS (
+                   SELECT (
+                              address.ordinal / family.allocation_high_water
+                          )::INTEGER AS shard_ordinal,
+                          count(*)::INTEGER AS finalized_address_count,
+                          loyal_yield.hash_length_prefixed_text(
+                              array_agg(address.address ORDER BY address.ordinal)
+                          ) AS finalized_address_hash
+                   FROM loyal_yield.lookup_table_manifest_addresses address
+                   JOIN loyal_yield.lookup_table_families family
+                     ON family.id = manifest.family_id
+                   WHERE address.manifest_id = probe.shared_manifest_id
+                     AND address.semantic_class = 'shared_market'
+                   GROUP BY (
+                       address.ordinal / family.allocation_high_water
+                   )::INTEGER
+               ), observed AS (
+                   SELECT shared.shard_ordinal,
+                          shared.finalized_address_count,
+                          shared.finalized_address_hash
+                   FROM loyal_yield.lookup_table_precutover_probe_shared_tables shared
+                   WHERE shared.probe_run_id = probe.id
+               )
+               SELECT 1
+               FROM expected
+               FULL JOIN observed
+                 USING (shard_ordinal)
+               WHERE expected.finalized_address_count
+                         IS DISTINCT FROM observed.finalized_address_count
+                  OR expected.finalized_address_hash
+                         IS DISTINCT FROM observed.finalized_address_hash
+           )
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if invalid_precutover_probe_bundles != 0 {
+        return Err(format!(
+            "invalid immutable pre-cutover shared bundle(s): {invalid_precutover_probe_bundles}"
         )
         .into());
     }
@@ -2716,6 +3013,11 @@ async fn verify_reusable_alts(pool: &PgPool) -> Result<(), Box<dyn Error>> {
     )
     .fetch_one(pool)
     .await?;
+    let precutover_probe_shared_table_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.lookup_table_precutover_probe_shared_tables",
+    )
+    .fetch_one(pool)
+    .await?;
     let manifest_count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM loyal_yield.lookup_table_manifests")
             .fetch_one(pool)
@@ -2779,6 +3081,7 @@ async fn verify_reusable_alts(pool: &PgPool) -> Result<(), Box<dyn Error>> {
             "verifiedLegacyTables": verified_legacy_table_count,
             "legacyImportRuns": legacy_import_run_count,
             "sharedMarketCatalogHeads": shared_catalog_head_count,
+            "precutoverProbeSharedTables": precutover_probe_shared_table_count,
             "manifests": manifest_count,
             "bindings": binding_count,
             "desiredVaultHeads": desired_vault_head_count,
@@ -2822,6 +3125,7 @@ mod tests {
             (19, "legacy_lookup_table_imports"),
             (20, "demand_driven_shared_market_catalog"),
             (21, "reusable_alt_production_controls"),
+            (22, "shared_market_alt_bundles"),
         ] {
             assert_eq!(
                 MIGRATIONS

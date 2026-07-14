@@ -8,10 +8,11 @@ use std::{collections::BTreeSet, env, error::Error, fmt, str::FromStr, time::Dur
 
 use chrono::Utc;
 use loyal_yield_orchestrator::{
-    lookup_table_manifest_address_records_hash, persisted_lookup_table_success_accounting,
-    reconcile_lookup_table_operation,
+    finalized_shared_table_bundle_hash, lookup_table_manifest_address_records_hash,
+    persisted_lookup_table_success_accounting, reconcile_lookup_table_operation,
     rpc_safety::{redacted_external_error, validate_rpc_endpoint, validate_rpc_genesis_hash},
-    AtomicVaultAllocationResult, FinalizedSharedTableObservation, LeasedLookupTableOperation,
+    AtomicVaultAllocationResult, FinalizedSharedTableObservation,
+    FinalizedSharedTableShardObservation, LeasedLookupTableOperation,
     LegacyLookupTableRetirementRequest, LookupTableAllocationKind, LookupTableChainState,
     LookupTableClusterBudgetPolicy, LookupTableFamilyKind, LookupTableFamilyRecord,
     LookupTableFamilyState, LookupTableFamilyUpsert, LookupTableLifecycle,
@@ -721,107 +722,138 @@ async fn report_finalized_shared_drift_if_any(
     options: &Options,
     preflight: &ReusableOnlyCutoverPreflight,
 ) -> Result<bool, Box<dyn Error>> {
-    let observed_slot = rpc.get_slot_with_commitment(CommitmentConfig::finalized())?;
-    let table_address = Pubkey::from_str(&preflight.physical_table_address)?;
-    let account = rpc
-        .get_account_with_commitment(&table_address, CommitmentConfig::finalized())?
-        .value;
-    let (present, authority, active, last_extended_slot, warm, addresses, reason) = match account {
-        None => (
-            false,
-            None,
-            false,
-            None,
-            false,
-            Vec::new(),
-            "finalized_shared_table_missing",
-        ),
-        Some(account) if account.owner != alt_program::id() => (
-            true,
-            None,
-            false,
-            None,
-            false,
-            Vec::new(),
-            "finalized_shared_table_owner_drift",
-        ),
-        Some(account) => match AddressLookupTable::deserialize(&account.data) {
-            Ok(table) => {
-                let authority = table.meta.authority.map(|value| value.to_string());
-                let active = table.meta.deactivation_slot == u64::MAX;
-                let addresses = table
-                    .addresses
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>();
-                let warm = observed_slot > table.meta.last_extended_slot;
-                if authority.as_deref() == Some(preflight.physical_authority.as_str())
-                    && active
-                    && warm
-                    && addresses == preflight.ordered_addresses
-                {
-                    return Ok(false);
-                }
-                (
+    if preflight.shared_tables.is_empty() {
+        return Err("shared-market finalized drift check requires a non-empty bundle".into());
+    }
+    let table_addresses = preflight
+        .shared_tables
+        .iter()
+        .map(|table| Pubkey::from_str(&table.table_address))
+        .collect::<Result<Vec<_>, _>>()?;
+    let response =
+        rpc.get_multiple_accounts_with_commitment(&table_addresses, CommitmentConfig::finalized())?;
+    if response.value.len() != preflight.shared_tables.len() {
+        return Err("finalized RPC returned an incomplete shared-table bundle".into());
+    }
+    let observed_slot = response.context.slot;
+    let observed_slot_i64 = i64::try_from(observed_slot)?;
+    if preflight
+        .shared_tables
+        .iter()
+        .any(|table| table.last_verified_slot > observed_slot_i64)
+    {
+        return Err(
+            "finalized RPC context is older than persisted shared-table verification".into(),
+        );
+    }
+    for (expected, account) in preflight.shared_tables.iter().zip(response.value) {
+        let (present, authority, active, last_extended_slot, warm, addresses, reason) =
+            match account {
+                None => (
+                    false,
+                    None,
+                    false,
+                    None,
+                    false,
+                    Vec::new(),
+                    "finalized_shared_table_missing",
+                ),
+                Some(account) if account.owner != alt_program::id() => (
                     true,
-                    authority,
-                    active,
-                    Some(i64::try_from(table.meta.last_extended_slot)?),
-                    warm,
-                    addresses,
-                    if !warm {
-                        "finalized_shared_table_not_warm"
-                    } else {
-                        "finalized_shared_table_identity_or_membership_drift"
-                    },
-                )
-            }
-            Err(_) => (
-                true,
-                None,
-                false,
-                None,
-                false,
-                Vec::new(),
-                "finalized_shared_table_decode_drift",
-            ),
-        },
-    };
-    let drift = client
-        .report_shared_market_physical_drift(SharedMarketPhysicalDriftReport {
-            cluster: options.cluster.clone(),
-            catalog_revision_id: preflight.catalog_revision_id,
-            family_id: preflight.shared_family_id,
-            route_lookup_table_id: preflight.physical_table_id,
-            expected_mutation_epoch: preflight.physical_mutation_epoch,
-            expected_table_address: preflight.physical_table_address.clone(),
-            expected_authority: preflight.physical_authority.clone(),
-            observed_slot: i64::try_from(observed_slot)?,
-            observed_table_present: present,
-            observed_authority: authority,
-            observed_active: active,
-            observed_last_extended_slot: last_extended_slot,
-            observed_warm: warm,
-            observed_addresses: addresses,
-            reason: reason.to_owned(),
-            reported_by: options.worker_id.clone(),
-        })
-        .await?;
-    println!(
-        "{}",
-        json!({
-            "event": "alt_shared_market_finalized_drift_reported",
-            "cluster": options.cluster,
-            "catalogRevisionId": preflight.catalog_revision_id,
-            "tableId": preflight.physical_table_id,
-            "table": preflight.physical_table_address,
-            "observedSlot": observed_slot,
-            "reason": reason,
-            "driftEvidenceHash": drift.evidence_hash,
-            "transactionsSent": false,
-        })
-    );
-    Ok(true)
+                    None,
+                    false,
+                    None,
+                    false,
+                    Vec::new(),
+                    "finalized_shared_table_owner_drift",
+                ),
+                Some(account) => match AddressLookupTable::deserialize(&account.data) {
+                    Ok(table) => {
+                        let authority = table.meta.authority.map(|value| value.to_string());
+                        let active = table.meta.deactivation_slot == u64::MAX;
+                        let addresses = table
+                            .addresses
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>();
+                        let last_extended_slot = i64::try_from(table.meta.last_extended_slot)?;
+                        let warm = observed_slot > table.meta.last_extended_slot;
+                        if authority.as_deref() == Some(expected.authority.as_str())
+                            && active
+                            && warm
+                            && last_extended_slot == expected.last_extended_slot
+                            && addresses == expected.ordered_addresses
+                        {
+                            continue;
+                        }
+                        (
+                            true,
+                            authority,
+                            active,
+                            Some(last_extended_slot),
+                            warm,
+                            addresses,
+                            if !warm {
+                                "finalized_shared_table_not_warm"
+                            } else {
+                                "finalized_shared_table_identity_or_membership_drift"
+                            },
+                        )
+                    }
+                    Err(_) => (
+                        true,
+                        None,
+                        false,
+                        None,
+                        false,
+                        Vec::new(),
+                        "finalized_shared_table_decode_drift",
+                    ),
+                },
+            };
+        let drift = client
+            .report_shared_market_physical_drift(SharedMarketPhysicalDriftReport {
+                cluster: options.cluster.clone(),
+                catalog_revision_id: preflight.catalog_revision_id,
+                family_id: preflight.shared_family_id,
+                route_lookup_table_id: expected.table_id,
+                expected_mutation_epoch: expected.mutation_epoch,
+                expected_table_address: expected.table_address.clone(),
+                expected_authority: expected.authority.clone(),
+                observed_slot: observed_slot_i64,
+                observed_table_present: present,
+                observed_authority: authority,
+                observed_active: active,
+                observed_last_extended_slot: last_extended_slot,
+                observed_warm: warm,
+                observed_addresses: addresses,
+                reason: reason.to_owned(),
+                reported_by: options.worker_id.clone(),
+            })
+            .await?;
+        println!(
+            "{}",
+            json!({
+                "event": "alt_shared_market_finalized_drift_reported",
+                "cluster": options.cluster,
+                "catalogRevisionId": preflight.catalog_revision_id,
+                "sharedTableBundleHash": preflight.shared_table_bundle_hash,
+                "shardOrdinal": expected.shard_ordinal,
+                "tableId": expected.table_id,
+                "table": expected.table_address,
+                "observedSlot": observed_slot,
+                "reason": reason,
+                "driftEvidenceHash": drift.evidence_hash,
+                "transactionsSent": false,
+            })
+        );
+        // Reporting one exact shard mismatch demotes the logical catalog head
+        // and forces a replacement of the complete generation. A second
+        // report from this same snapshot would intentionally lose the active
+        // head fence after the first transaction commits.
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 async fn plan_next_provisioning_request(
@@ -1753,7 +1785,15 @@ async fn reconcile_physical_membership(
             | LookupTableOperationKind::Verify
     ) {
         let start = usize::from(chain.last_extended_start_index.unwrap_or_default());
-        let added_slot = chain.last_extended_slot.unwrap_or(observed_slot);
+        let last_extended_slot = chain
+            .last_extended_slot
+            .ok_or("reconciled lookup-table membership has no finalized last-extended slot")?;
+        if last_extended_slot >= observed_slot {
+            return Err(
+                "reconciled lookup-table membership is not warm at the finalized slot".into(),
+            );
+        }
+        let added_slot = last_extended_slot;
         let now = Utc::now();
         let addresses = chain
             .addresses
@@ -1793,6 +1833,7 @@ async fn reconcile_physical_membership(
                 table.mutation_epoch,
                 table.mutation_epoch + 1,
                 i64::try_from(observed_slot)?,
+                i64::try_from(last_extended_slot)?,
                 addresses,
             )
             .await?;
@@ -2704,55 +2745,103 @@ fn validate_reusable_only_cutover_rpc_preflight(
         .map_err(|_| "failed to read genesis hash for reusable-only cutover")?;
     validate_rpc_genesis_hash(&options.cluster, genesis_hash)
         .map_err(|error| format!("refusing reusable-only cutover on mismatched RPC: {error}"))?;
-    let observed_slot = rpc.get_slot_with_commitment(CommitmentConfig::finalized())?;
-    let table_address = Pubkey::from_str(&preflight.physical_table_address)?;
-    let account = rpc
-        .get_account_with_commitment(&table_address, CommitmentConfig::finalized())?
-        .value
-        .ok_or("shared lookup table is absent at finalized commitment")?;
-    if account.owner != alt_program::id() {
-        return Err("shared lookup table has the wrong finalized owner".into());
+    if preflight.shared_tables.is_empty() {
+        return Err("reusable-only cutover requires a non-empty shared-table bundle".into());
     }
-    let table = AddressLookupTable::deserialize(&account.data)?;
-    let expected_authority = Pubkey::from_str(&preflight.physical_authority)?;
-    if table.meta.authority != Some(expected_authority) || table.meta.deactivation_slot != u64::MAX
-    {
-        return Err(
-            "shared lookup table authority/lifecycle failed finalized cutover preflight".into(),
-        );
-    }
-    if observed_slot <= table.meta.last_extended_slot {
-        return Err("shared lookup table is not warm at finalized cutover preflight slot".into());
-    }
-    let observed_addresses = table
-        .addresses
+    let table_addresses = preflight
+        .shared_tables
         .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    let observed_slot = i64::try_from(observed_slot)?;
-    let last_extended_slot = i64::try_from(table.meta.last_extended_slot)?;
-    if observed_addresses != preflight.ordered_addresses
-        || ordered_address_hash(&observed_addresses) != preflight.ordered_address_hash
-        || i32::try_from(observed_addresses.len())? != preflight.physical_address_count
-        || preflight.physical_usable_address_count != preflight.physical_address_count
-        || last_extended_slot != preflight.physical_last_extended_slot
-        || preflight.physical_last_verified_slot > observed_slot
+        .map(|table| Pubkey::from_str(&table.table_address))
+        .collect::<Result<Vec<_>, _>>()?;
+    let response =
+        rpc.get_multiple_accounts_with_commitment(&table_addresses, CommitmentConfig::finalized())?;
+    if response.value.len() != preflight.shared_tables.len() {
+        return Err("finalized RPC returned an incomplete shared-table bundle".into());
+    }
+    let observed_slot = i64::try_from(response.context.slot)?;
+    let mut finalized_tables = Vec::with_capacity(preflight.shared_tables.len());
+    let mut flattened_addresses = Vec::new();
+    for (expected, account) in preflight.shared_tables.iter().zip(response.value) {
+        let account = account.ok_or_else(|| {
+            format!(
+                "shared lookup table shard {} is absent at finalized commitment",
+                expected.shard_ordinal
+            )
+        })?;
+        if account.owner != alt_program::id() {
+            return Err(format!(
+                "shared lookup table shard {} has the wrong finalized owner",
+                expected.shard_ordinal
+            )
+            .into());
+        }
+        let table = AddressLookupTable::deserialize(&account.data)?;
+        let expected_authority = Pubkey::from_str(&expected.authority)?;
+        if table.meta.authority != Some(expected_authority)
+            || table.meta.deactivation_slot != u64::MAX
+        {
+            return Err(format!(
+                "shared lookup table shard {} authority/lifecycle failed finalized cutover preflight",
+                expected.shard_ordinal
+            )
+            .into());
+        }
+        let last_extended_slot = i64::try_from(table.meta.last_extended_slot)?;
+        if observed_slot <= last_extended_slot {
+            return Err(format!(
+                "shared lookup table shard {} is not warm at finalized cutover preflight slot",
+                expected.shard_ordinal
+            )
+            .into());
+        }
+        let observed_addresses = table
+            .addresses
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let observed_hash = ordered_address_hash(&observed_addresses);
+        if observed_addresses != expected.ordered_addresses
+            || observed_hash != expected.ordered_address_hash
+            || i32::try_from(observed_addresses.len())? != expected.address_count
+            || expected.usable_address_count != expected.address_count
+            || last_extended_slot != expected.last_extended_slot
+            || expected.last_verified_slot > observed_slot
+        {
+            return Err(format!(
+                "shared lookup table shard {} finalized identity or membership changed before reusable-only cutover",
+                expected.shard_ordinal
+            )
+            .into());
+        }
+        flattened_addresses.extend(observed_addresses.iter().cloned());
+        finalized_tables.push(FinalizedSharedTableShardObservation {
+            table_id: expected.table_id,
+            shard_ordinal: expected.shard_ordinal,
+            table_address: expected.table_address.clone(),
+            authority: expected.authority.clone(),
+            mutation_epoch: expected.mutation_epoch,
+            last_extended_slot,
+            ordered_address_hash: observed_hash,
+            address_count: i32::try_from(observed_addresses.len())?,
+            ordered_addresses: observed_addresses,
+        });
+    }
+    if flattened_addresses != preflight.ordered_addresses
+        || ordered_address_hash(&flattened_addresses) != preflight.ordered_address_hash
     {
         return Err(
-            "shared lookup table finalized membership changed before reusable-only cutover".into(),
+            "finalized shared-table shard union does not exactly match the logical catalog".into(),
         );
+    }
+    let shared_table_bundle_hash = finalized_shared_table_bundle_hash(&finalized_tables);
+    if shared_table_bundle_hash != preflight.shared_table_bundle_hash {
+        return Err("finalized shared-table bundle identity changed before cutover".into());
     }
     Ok(FinalizedSharedTableObservation {
         cluster: preflight.cluster.clone(),
-        physical_table_id: preflight.physical_table_id,
-        table_address: preflight.physical_table_address.clone(),
-        authority: preflight.physical_authority.clone(),
-        mutation_epoch: preflight.physical_mutation_epoch,
         observed_slot,
-        last_extended_slot,
-        ordered_address_hash: ordered_address_hash(&observed_addresses),
-        address_count: i32::try_from(observed_addresses.len())?,
-        ordered_addresses: observed_addresses,
+        shared_table_bundle_hash,
+        shared_tables: finalized_tables,
     })
 }
 
@@ -2779,8 +2868,20 @@ async fn run_precutover_probe(
         .reusable_only_cutover_preflight(&options.cluster)
         .await?;
     let finalized = validate_reusable_only_cutover_rpc_preflight(options, &preflight)?;
-    if finalized.ordered_addresses.is_empty() {
-        return Err("pre-cutover probe requires a non-empty finalized shared table".into());
+    let finalized_addresses = finalized
+        .shared_tables
+        .iter()
+        .flat_map(|table| table.ordered_addresses.iter().cloned())
+        .collect::<Vec<_>>();
+    let drift_target = finalized
+        .shared_tables
+        .last()
+        .cloned()
+        .ok_or("pre-cutover probe requires a non-empty finalized shared-table bundle")?;
+    if finalized_addresses.is_empty() || drift_target.ordered_addresses.is_empty() {
+        return Err(
+            "pre-cutover probe requires non-empty finalized shared-table membership".into(),
+        );
     }
     require_precutover_probe_mutations_drained(client, &options.cluster).await?;
     let probe_token = ordered_address_hash(&[format!(
@@ -2788,7 +2889,7 @@ async fn run_precutover_probe(
         options.cluster,
         probe_vault_id.as_i64(),
         preflight.catalog_revision_id,
-        preflight.physical_mutation_epoch,
+        preflight.shared_table_bundle_hash,
         finalized.observed_slot,
         Utc::now().timestamp_micros(),
     )]);
@@ -2796,8 +2897,7 @@ async fn run_precutover_probe(
         ordered_address_hash(&[format!("precutover-probe-requirements:{probe_token}")]);
     let route_fingerprint =
         ordered_address_hash(&[format!("precutover-probe-route:{probe_token}")]);
-    let fixture_address =
-        derive_precutover_probe_vault_address(&probe_token, &finalized.ordered_addresses);
+    let fixture_address = derive_precutover_probe_vault_address(&probe_token, &finalized_addresses);
     let vault_addresses = vec![LookupTableManifestAddressRecord {
         address: fixture_address,
         ordinal: 0,
@@ -2806,29 +2906,28 @@ async fn run_precutover_probe(
         is_writable: true,
     }];
     let desired_vault_hash = lookup_table_manifest_address_records_hash(&vault_addresses);
-    let mut synthetic_drift_addresses = finalized.ordered_addresses.clone();
+    let mut synthetic_drift_addresses = drift_target.ordered_addresses.clone();
     synthetic_drift_addresses
         .pop()
-        .expect("non-empty finalized shared table checked above");
+        .expect("non-empty finalized shared-table shard checked above");
     let audit = client
         .run_lookup_table_precutover_probe(LookupTablePrecutoverProbe {
             probe_token: probe_token.clone(),
             provisioner_control_epoch: durable_pause.control_epoch,
-            finalized_slot: finalized.observed_slot,
-            finalized_addresses: finalized.ordered_addresses,
+            finalized_observation: finalized.clone(),
             drift_report: SharedMarketPhysicalDriftReport {
                 cluster: options.cluster.clone(),
                 catalog_revision_id: preflight.catalog_revision_id,
                 family_id: preflight.shared_family_id,
-                route_lookup_table_id: preflight.physical_table_id,
-                expected_mutation_epoch: preflight.physical_mutation_epoch,
-                expected_table_address: preflight.physical_table_address,
-                expected_authority: preflight.physical_authority.clone(),
+                route_lookup_table_id: drift_target.table_id,
+                expected_mutation_epoch: drift_target.mutation_epoch,
+                expected_table_address: drift_target.table_address.clone(),
+                expected_authority: drift_target.authority.clone(),
                 observed_slot: finalized.observed_slot,
                 observed_table_present: true,
-                observed_authority: Some(preflight.physical_authority),
+                observed_authority: Some(drift_target.authority),
                 observed_active: true,
-                observed_last_extended_slot: Some(finalized.last_extended_slot),
+                observed_last_extended_slot: Some(drift_target.last_extended_slot),
                 observed_warm: true,
                 observed_addresses: synthetic_drift_addresses,
                 reason: format!("precutover-probe-synthetic-drift:{probe_token}"),
@@ -2866,6 +2965,10 @@ async fn run_precutover_probe(
             "finalizedLastExtendedSlot": audit.finalized_last_extended_slot,
             "finalizedAddressHash": audit.finalized_address_hash,
             "finalizedAddressCount": audit.finalized_address_count,
+            "sharedTableBundleHash": audit.shared_table_bundle_hash,
+            "sharedTableCount": audit.shared_table_count,
+            "finalizedBundleAddressCount": audit.finalized_bundle_address_count,
+            "sharedTables": audit.shared_tables,
             "finalizedSharedExact": audit.finalized_shared_exact,
             "syntheticDriftSignalCount": audit.drift_signal_count,
             "driftProvisioningRequestCount": audit.drift_provisioning_request_count,
@@ -3171,9 +3274,9 @@ async fn apply_admin_action(
                 "catalogRevisionId": cutover.catalog_revision_id,
                 "sharedFamilyId": cutover.shared_family_id,
                 "sharedGeneration": cutover.shared_generation,
-                "sharedPhysicalTableId": preflight.physical_table_id,
-                "sharedPhysicalTable": preflight.physical_table_address,
-                "sharedPhysicalMutationEpoch": preflight.physical_mutation_epoch,
+                "sharedTableBundleHash": preflight.shared_table_bundle_hash,
+                "sharedTableCount": preflight.shared_tables.len(),
+                "sharedPhysicalTables": preflight.shared_tables,
                 "finalizedRpcPreflight": true,
                 "finalizedObservedSlot": cutover.finalized_observed_slot,
                 "finalizedAddressHash": cutover.finalized_address_hash,
@@ -3718,7 +3821,7 @@ fn default_worker_id() -> String {
 }
 
 fn usage() -> &'static str {
-    "Usage: route-lookup-table-provisioner --cluster <CLUSTER> [--status|--provisioner-pause-status|--reconcile-only|--execute|--precutover-probe --probe-vault-id <DB_ID>] [--watch] [--max-operations <N>] [--max-attempts <1..100>] [--address-chunk <1..20>] [--max-lamports <LAMPORTS>] [--budget-window-seconds <60..31536000>] [--lease-seconds <N>] [--rate-limit-ms <N>] [--concurrency 1] [--safety-margin <N>] [--vault-growth-reservation <N>] [--max-vault-cohort <N>] [--worker-id <ID>]\n\nDry-run is the default and never loads a signer or writes. --precutover-probe requires a durable cluster pause, proves the exact shared ALT at finalized RPC, executes the real drift/request paths in a rollback-only transaction, and commits only an immutable PASS audit row for that paused control epoch; it cannot be combined with worker/admin modes and never loads POLICY_KEYPAIR or sends. Reconcile-only may update durable reconciliation state but never signs or sends. Execute uses the standard POLICY_KEYPAIR as ALT authority/payer and requires an explicit positive PostgreSQL-backed rolling-window lamport budget that survives worker restarts. Every send first commits an exact broadcast permit in a short database transaction; no transaction or advisory lock crosses RPC. Reads NEON_DATABASE_URL, SOLANA_RPC_URL, and explicit YIELD_ALT_CLUSTER; cluster is never inferred from the RPC URL. The local YIELD_ALT_PROVISIONING_PAUSED environment gate remains an emergency process stop. Durable cluster pause controls are --set-provisioner-pause or --clear-provisioner-pause; read them with --provisioner-pause-status. Admin controls require --admin-write --reason <TEXT> --updated-by <ID>: --set-provisioner-pause, --clear-provisioner-pause, --activate-reusable-only (requires the paused/drained current exact PASS probe, fresh-verifies the exact active shared ALT at finalized RPC, then atomically fences that evidence and aligns every rollout override), --force-legacy, --clear-force-legacy, --set-rollout-mode <MODE> [--vault-id <DB_ID>], --rollback-family <FAMILY_ID>, --rollback-binding <ACTIVE_BINDING_ID> --observed-slot <SLOT>, --finalize-rollbacks <FAMILY_ID>, --retire-legacy <TABLE> --expected-authority <PUBKEY> --expected-address-hash <HASH> --expected-address-count <N>, or --bootstrap-families --policy-pubkey <POLICY_PUBKEY> --catalog-version <VERSION> --largest-atomic-expansion <MEASURED_COUNT> [--safety-margin <N>] [--shared-family-name <NAME>] [--vault-family-name <NAME>]. Bootstrap rejects any policy identity other than the repo standard authority. The largest atomic expansion is catalog evidence and is independent of the transaction address chunk. Force-legacy remains global. Administrative lifecycle changes consume public control-plane metadata and never load a signer."
+    "Usage: route-lookup-table-provisioner --cluster <CLUSTER> [--status|--provisioner-pause-status|--reconcile-only|--execute|--precutover-probe --probe-vault-id <DB_ID>] [--watch] [--max-operations <N>] [--max-attempts <1..100>] [--address-chunk <1..20>] [--max-lamports <LAMPORTS>] [--budget-window-seconds <60..31536000>] [--lease-seconds <N>] [--rate-limit-ms <N>] [--concurrency 1] [--safety-margin <N>] [--vault-growth-reservation <N>] [--max-vault-cohort <N>] [--worker-id <ID>]\n\nDry-run is the default and never loads a signer or writes. --precutover-probe requires a durable cluster pause, proves the complete exact shared ALT bundle at finalized RPC, executes the real drift/request paths in a rollback-only transaction, and commits only an immutable PASS audit row for that paused control epoch; it cannot be combined with worker/admin modes and never loads POLICY_KEYPAIR or sends. Reconcile-only may update durable reconciliation state but never signs or sends. Execute uses the standard POLICY_KEYPAIR as ALT authority/payer and requires an explicit positive PostgreSQL-backed rolling-window lamport budget that survives worker restarts. Every send first commits an exact broadcast permit in a short database transaction; no transaction or advisory lock crosses RPC. Reads NEON_DATABASE_URL, SOLANA_RPC_URL, and explicit YIELD_ALT_CLUSTER; cluster is never inferred from the RPC URL. The local YIELD_ALT_PROVISIONING_PAUSED environment gate remains an emergency process stop. Durable cluster pause controls are --set-provisioner-pause or --clear-provisioner-pause; read them with --provisioner-pause-status. Admin controls require --admin-write --reason <TEXT> --updated-by <ID>: --set-provisioner-pause, --clear-provisioner-pause, --activate-reusable-only (requires the paused/drained current exact PASS probe, fresh-verifies every shard in the exact active shared ALT bundle at finalized RPC, then atomically fences that evidence and aligns every rollout override), --force-legacy, --clear-force-legacy, --set-rollout-mode <MODE> [--vault-id <DB_ID>], --rollback-family <FAMILY_ID>, --rollback-binding <ACTIVE_BINDING_ID> --observed-slot <SLOT>, --finalize-rollbacks <FAMILY_ID>, --retire-legacy <TABLE> --expected-authority <PUBKEY> --expected-address-hash <HASH> --expected-address-count <N>, or --bootstrap-families --policy-pubkey <POLICY_PUBKEY> --catalog-version <VERSION> --largest-atomic-expansion <MEASURED_COUNT> [--safety-margin <N>] [--shared-family-name <NAME>] [--vault-family-name <NAME>]. Bootstrap rejects any policy identity other than the repo standard authority. The largest atomic expansion is catalog evidence and is independent of the transaction address chunk. Force-legacy remains global. Administrative lifecycle changes consume public control-plane metadata and never load a signer."
 }
 
 #[cfg(test)]

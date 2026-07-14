@@ -39,6 +39,15 @@ BEGIN
         RAISE EXCEPTION 'migration 21 reusable_alt_production_controls is not recorded';
     END IF;
 
+    IF NOT EXISTS (
+        SELECT 1
+        FROM loyal_yield.schema_migrations
+        WHERE version = 22
+          AND name = 'shared_market_alt_bundles'
+    ) THEN
+        RAISE EXCEPTION 'migration 22 shared_market_alt_bundles is not recorded';
+    END IF;
+
     SELECT array_agg(required_relation ORDER BY required_relation)
     INTO missing_relations
     FROM unnest(ARRAY[
@@ -65,7 +74,8 @@ BEGIN
         'lookup_table_rollout_controls',
         'lookup_table_provisioner_controls',
         'lookup_table_provisioner_broadcast_permits',
-        'lookup_table_precutover_probe_runs'
+        'lookup_table_precutover_probe_runs',
+        'lookup_table_precutover_probe_shared_tables'
     ]) AS required_relation
     WHERE to_regclass('loyal_yield.' || required_relation) IS NULL;
 
@@ -207,6 +217,19 @@ BEGIN
         ('lookup_table_precutover_probe_runs', 'finalized_slot'),
         ('lookup_table_precutover_probe_runs', 'finalized_address_hash'),
         ('lookup_table_precutover_probe_runs', 'finalized_address_count'),
+        ('lookup_table_precutover_probe_runs', 'shared_table_bundle_hash'),
+        ('lookup_table_precutover_probe_runs', 'shared_table_count'),
+        ('lookup_table_precutover_probe_runs', 'finalized_bundle_address_count'),
+        ('lookup_table_precutover_probe_shared_tables', 'probe_run_id'),
+        ('lookup_table_precutover_probe_shared_tables', 'shard_ordinal'),
+        ('lookup_table_precutover_probe_shared_tables', 'route_lookup_table_id'),
+        ('lookup_table_precutover_probe_shared_tables', 'shared_table_address'),
+        ('lookup_table_precutover_probe_shared_tables', 'shared_authority'),
+        ('lookup_table_precutover_probe_shared_tables', 'shared_mutation_epoch'),
+        ('lookup_table_precutover_probe_shared_tables', 'finalized_slot'),
+        ('lookup_table_precutover_probe_shared_tables', 'finalized_last_extended_slot'),
+        ('lookup_table_precutover_probe_shared_tables', 'finalized_address_hash'),
+        ('lookup_table_precutover_probe_shared_tables', 'finalized_address_count'),
         ('lookup_table_families', 'hard_capacity'),
         ('lookup_table_families', 'largest_atomic_expansion'),
         ('lookup_table_families', 'safety_margin'),
@@ -366,7 +389,6 @@ BEGIN
        OR length(btrim(revision.reason)) = 0
        OR length(btrim(revision.updated_by)) = 0
        OR jsonb_typeof(revision.source_metadata) <> 'object'
-       OR revision.address_count > family.allocation_high_water
        OR revision.address_count <> (
            SELECT count(*)
            FROM loyal_yield.lookup_table_manifest_addresses address
@@ -378,7 +400,9 @@ BEGIN
            AND (
                head.target_generation IS DISTINCT FROM family.active_generation
                OR head.activated_at IS NULL
-               OR 1 <> (
+               OR (
+                   revision.address_count + family.allocation_high_water - 1
+               ) / family.allocation_high_water <> (
                    SELECT count(*)
                    FROM loyal_yield.route_lookup_tables route_table
                    WHERE route_table.family_id = family.id
@@ -389,6 +413,37 @@ BEGIN
                      AND route_table.last_verified_slot IS NOT NULL
                )
                OR EXISTS (
+                   SELECT 1
+                   FROM loyal_yield.route_lookup_tables route_table
+                   WHERE route_table.family_id = family.id
+                     AND route_table.generation = family.active_generation
+                     AND route_table.allocation_kind = 'shared_market'
+                     AND (
+                         route_table.desired_state <> 'active'
+                         OR route_table.address_count > family.allocation_high_water
+                         OR route_table.usable_address_count <> route_table.address_count
+                         OR route_table.last_verified_slot IS NULL
+                     )
+               )
+               OR revision.address_count <> (
+                   SELECT count(*)
+                   FROM loyal_yield.route_lookup_tables route_table
+                   JOIN loyal_yield.lookup_table_addresses membership
+                     ON membership.route_lookup_table_id = route_table.id
+                   WHERE route_table.family_id = family.id
+                     AND route_table.generation = family.active_generation
+                     AND route_table.allocation_kind = 'shared_market'
+               )
+               OR revision.address_count <> (
+                   SELECT count(DISTINCT membership.address)
+                   FROM loyal_yield.route_lookup_tables route_table
+                   JOIN loyal_yield.lookup_table_addresses membership
+                     ON membership.route_lookup_table_id = route_table.id
+                   WHERE route_table.family_id = family.id
+                     AND route_table.generation = family.active_generation
+                     AND route_table.allocation_kind = 'shared_market'
+               )
+               OR EXISTS (
                    SELECT address.address
                    FROM loyal_yield.lookup_table_manifest_addresses address
                    WHERE address.manifest_id = revision.manifest_id
@@ -413,6 +468,37 @@ BEGIN
                    SELECT address.address
                    FROM loyal_yield.lookup_table_manifest_addresses address
                    WHERE address.manifest_id = revision.manifest_id
+               )
+               OR EXISTS (
+                   WITH expected AS (
+                       SELECT (
+                                  address.ordinal
+                                  / family.allocation_high_water
+                              )::INTEGER AS shard_ordinal,
+                              (
+                                  address.ordinal
+                                  % family.allocation_high_water
+                              )::INTEGER AS physical_ordinal,
+                              address.address
+                       FROM loyal_yield.lookup_table_manifest_addresses address
+                       WHERE address.manifest_id = revision.manifest_id
+                         AND address.semantic_class = 'shared_market'
+                   ), observed AS (
+                       SELECT route_table.shard_ordinal,
+                              membership.ordinal AS physical_ordinal,
+                              membership.address
+                       FROM loyal_yield.route_lookup_tables route_table
+                       JOIN loyal_yield.lookup_table_addresses membership
+                         ON membership.route_lookup_table_id = route_table.id
+                       WHERE route_table.family_id = family.id
+                         AND route_table.generation = family.active_generation
+                         AND route_table.allocation_kind = 'shared_market'
+                   )
+                   SELECT 1
+                   FROM expected
+                   FULL JOIN observed
+                     USING (shard_ordinal, physical_ordinal)
+                   WHERE expected.address IS DISTINCT FROM observed.address
                )
            )
        );
@@ -575,21 +661,127 @@ BEGIN
     SELECT count(*)
     INTO invalid_precutover_probes
     FROM loyal_yield.lookup_table_precutover_probe_runs probe
-    JOIN loyal_yield.lookup_table_shared_market_catalog_revisions revision
+    LEFT JOIN loyal_yield.lookup_table_shared_market_catalog_revisions revision
       ON revision.id = probe.catalog_revision_id
-    JOIN loyal_yield.lookup_table_manifests manifest
+    LEFT JOIN loyal_yield.lookup_table_manifests manifest
       ON manifest.id = probe.shared_manifest_id
-    JOIN loyal_yield.route_lookup_tables route_table
-      ON route_table.id = probe.route_lookup_table_id
-    WHERE revision.manifest_id <> probe.shared_manifest_id
+    WHERE revision.id IS NULL
+       OR manifest.id IS NULL
+       OR revision.manifest_id <> probe.shared_manifest_id
        OR manifest.family_id <> revision.family_id
-       OR route_table.family_id <> revision.family_id
-       OR route_table.table_address <> probe.shared_table_address
-       OR route_table.authority <> probe.shared_authority
        OR probe.provisioner_control_epoch < 0
-       OR probe.finalized_slot <= probe.finalized_last_extended_slot
-       OR probe.finalized_address_hash !~ '^[0-9a-f]{64}$'
-       OR probe.result <> 'pass';
+       OR probe.result <> 'pass'
+       OR probe.shared_table_bundle_hash !~ '^[0-9a-f]{64}$'
+       OR probe.shared_table_bundle_hash IS DISTINCT FROM (
+           SELECT loyal_yield.hash_length_prefixed_text(
+               ARRAY['loyal-reusable-shared-table-bundle-v1']::TEXT[]
+               || COALESCE(
+                   array_agg(
+                       bundle_field.field_value
+                       ORDER BY shared.shard_ordinal,
+                                bundle_field.field_ordinal
+                   ),
+                   ARRAY[]::TEXT[]
+               )
+           )
+           FROM loyal_yield.lookup_table_precutover_probe_shared_tables shared
+           CROSS JOIN LATERAL (
+               VALUES
+                   (0, shared.route_lookup_table_id::TEXT),
+                   (1, shared.shard_ordinal::TEXT),
+                   (2, shared.shared_table_address),
+                   (3, shared.shared_authority),
+                   (4, shared.shared_mutation_epoch::TEXT),
+                   (5, shared.finalized_last_extended_slot::TEXT),
+                   (6, shared.finalized_address_hash),
+                   (7, shared.finalized_address_count::TEXT)
+           ) AS bundle_field(field_ordinal, field_value)
+           WHERE shared.probe_run_id = probe.id
+       )
+       OR probe.shared_table_count <> (
+           SELECT count(*)
+           FROM loyal_yield.lookup_table_precutover_probe_shared_tables shared
+           WHERE shared.probe_run_id = probe.id
+       )
+       OR probe.finalized_bundle_address_count <> revision.address_count
+       OR probe.finalized_bundle_address_count <> (
+           SELECT COALESCE(sum(shared.finalized_address_count), 0)
+           FROM loyal_yield.lookup_table_precutover_probe_shared_tables shared
+           WHERE shared.probe_run_id = probe.id
+       )
+       OR NOT EXISTS (
+           SELECT 1
+           FROM loyal_yield.lookup_table_precutover_probe_shared_tables shared
+           WHERE shared.probe_run_id = probe.id
+             AND shared.route_lookup_table_id = probe.route_lookup_table_id
+             AND shared.shared_table_address = probe.shared_table_address
+             AND shared.shared_authority = probe.shared_authority
+             AND shared.shared_mutation_epoch = probe.shared_mutation_epoch
+             AND shared.finalized_slot = probe.finalized_slot
+             AND shared.finalized_last_extended_slot = probe.finalized_last_extended_slot
+             AND shared.finalized_address_hash = probe.finalized_address_hash
+             AND shared.finalized_address_count = probe.finalized_address_count
+       )
+       OR EXISTS (
+           SELECT 1
+           FROM loyal_yield.lookup_table_precutover_probe_shared_tables shared
+           LEFT JOIN loyal_yield.route_lookup_tables route_table
+             ON route_table.id = shared.route_lookup_table_id
+           JOIN loyal_yield.lookup_table_families family
+             ON family.id = revision.family_id
+           WHERE shared.probe_run_id = probe.id
+             AND (
+                 shared.shard_ordinal < 0
+                 OR shared.finalized_slot <> probe.finalized_slot
+                 OR shared.finalized_slot <= shared.finalized_last_extended_slot
+                 OR shared.finalized_address_hash !~ '^[0-9a-f]{64}$'
+                 OR shared.finalized_address_count NOT BETWEEN 1 AND 256
+                 OR route_table.id IS NULL
+                 OR family.cluster <> probe.cluster
+                 OR route_table.cluster <> probe.cluster
+                 OR route_table.family_id <> revision.family_id
+                 OR route_table.allocation_kind <> 'shared_market'
+                 OR route_table.shard_ordinal <> shared.shard_ordinal
+                 OR route_table.table_address <> shared.shared_table_address
+                 OR route_table.authority <> shared.shared_authority
+                 OR route_table.mutation_epoch < shared.shared_mutation_epoch
+                 OR route_table.address_count < shared.finalized_address_count
+                 OR shared.finalized_address_count > family.allocation_high_water
+             )
+       )
+       OR EXISTS (
+           WITH expected AS (
+               SELECT (
+                          address.ordinal / family.allocation_high_water
+                      )::INTEGER AS shard_ordinal,
+                      count(*)::INTEGER AS finalized_address_count,
+                      loyal_yield.hash_length_prefixed_text(
+                          array_agg(address.address ORDER BY address.ordinal)
+                      ) AS finalized_address_hash
+               FROM loyal_yield.lookup_table_manifest_addresses address
+               JOIN loyal_yield.lookup_table_families family
+                 ON family.id = manifest.family_id
+               WHERE address.manifest_id = probe.shared_manifest_id
+                 AND address.semantic_class = 'shared_market'
+               GROUP BY (
+                   address.ordinal / family.allocation_high_water
+               )::INTEGER
+           ), observed AS (
+               SELECT shared.shard_ordinal,
+                      shared.finalized_address_count,
+                      shared.finalized_address_hash
+               FROM loyal_yield.lookup_table_precutover_probe_shared_tables shared
+               WHERE shared.probe_run_id = probe.id
+           )
+           SELECT 1
+           FROM expected
+           FULL JOIN observed
+             USING (shard_ordinal)
+           WHERE expected.finalized_address_count
+                     IS DISTINCT FROM observed.finalized_address_count
+              OR expected.finalized_address_hash
+                     IS DISTINCT FROM observed.finalized_address_hash
+       );
 
     IF invalid_precutover_probes <> 0 THEN
         RAISE EXCEPTION 'invalid immutable pre-cutover probe row(s): %',
@@ -890,6 +1082,10 @@ SELECT json_build_object(
     ),
     'precutoverProbeRuns', (
         SELECT count(*) FROM loyal_yield.lookup_table_precutover_probe_runs
+    ),
+    'precutoverProbeSharedTables', (
+        SELECT count(*)
+        FROM loyal_yield.lookup_table_precutover_probe_shared_tables
     ),
     'lamports', (
         SELECT json_build_object(

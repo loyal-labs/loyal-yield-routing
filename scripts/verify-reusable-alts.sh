@@ -19,7 +19,8 @@ for migration in \
   crates/loyal-yield-orchestrator/migrations/0018_earn_activity_realtime.sql \
   crates/loyal-yield-orchestrator/migrations/0019_legacy_lookup_table_imports.sql \
   crates/loyal-yield-orchestrator/migrations/0020_demand_driven_shared_market_catalog.sql \
-  crates/loyal-yield-orchestrator/migrations/0021_reusable_alt_production_controls.sql; do
+  crates/loyal-yield-orchestrator/migrations/0021_reusable_alt_production_controls.sql \
+  crates/loyal-yield-orchestrator/migrations/0022_shared_market_alt_bundles.sql; do
   if [[ ! -f "$migration" ]]; then
     echo "required ordered migration is missing: $migration" >&2
     exit 1
@@ -53,7 +54,8 @@ if [[ "${REUSABLE_ALT_VERIFY_EXACT_COMMIT:-0}" == "1" ]]; then
     crates/loyal-yield-orchestrator/migrations/0018_earn_activity_realtime.sql \
     crates/loyal-yield-orchestrator/migrations/0019_legacy_lookup_table_imports.sql \
     crates/loyal-yield-orchestrator/migrations/0020_demand_driven_shared_market_catalog.sql \
-    crates/loyal-yield-orchestrator/migrations/0021_reusable_alt_production_controls.sql; do
+    crates/loyal-yield-orchestrator/migrations/0021_reusable_alt_production_controls.sql \
+    crates/loyal-yield-orchestrator/migrations/0022_shared_market_alt_bundles.sql; do
     if ! git cat-file -e "HEAD:$migration"; then
       echo "exact commit does not contain required migration: $migration" >&2
       exit 1

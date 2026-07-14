@@ -9,7 +9,7 @@ use loyal_yield_orchestrator::{
     DerivedSharedMarketCatalog, LookupTableFamilyKind, LookupTableManifestAddressRecord,
     LookupTableManifestSubject, NeonSqlClient, NeonSqlConfig, SharedMarketCatalogHeadRecord,
     SharedMarketCatalogPlanPolicy, SharedMarketCatalogUpsert, SupportedKaminoReserve,
-    ENABLED_STABLE_MINTS_ENV,
+    ENABLED_STABLE_MINTS_ENV, SHARED_MARKET_LOGICAL_CATALOG_MAX_ADDRESSES,
 };
 use loyal_yield_router::timescale::{TimescaleRouterClient, TimescaleRouterClientConfig};
 use serde_json::{json, Value};
@@ -306,17 +306,14 @@ async fn run() -> Result<(), Box<dyn Error>> {
     )?;
     let shared_high_water = usize::try_from(shared_family.allocation_high_water)
         .map_err(|_| "shared-market family allocation high-water is invalid")?;
-    if catalog.addresses.len() > shared_high_water {
-        return Err(format!(
-            "retention-safe shared-market catalog has {} addresses ({} target-eligible, {} required by the broad stable/source universe, {} retained-only), exceeding durable shared ALT high-water {}",
-            catalog.addresses.len(),
-            retention.eligible_address_count,
-            retention.required_source_address_count,
-            retention.retained_only_address_count,
-            shared_high_water
-        )
-        .into());
+    if shared_high_water == 0 {
+        return Err("shared-market family allocation high-water must be positive".into());
     }
+    let shared_physical_shard_count = catalog
+        .addresses
+        .len()
+        .saturating_add(shared_high_water - 1)
+        / shared_high_water;
     let source_metadata = json!({
         "source": "kamino.supported_reserves+neon_source_references+finalized_rpc",
         "riskBasket": "safe",
@@ -327,6 +324,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
         "reserveCount": supported_reserves.len(),
         "knownStableReserveCount": known_stable_reserves.len(),
         "addressCount": catalog.addresses.len(),
+        "physicalShardCount": shared_physical_shard_count,
+        "physicalShardCapacity": shared_high_water,
         "eligibleAddressCount": retention.eligible_address_count,
         "requiredSourceAddressCount": retention.required_source_address_count,
         "sourceOnlyAddressCount": retention.source_only_address_count,
@@ -398,6 +397,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         })).collect::<Vec<_>>(),
         "sharedFamilyId": shared_family.id,
         "sharedFamilyAllocationHighWater": shared_family.allocation_high_water,
+        "sharedPhysicalShardCount": shared_physical_shard_count,
         "sourceSlot": source_slot,
         "approvalFence": {
             "expectedDesiredSetHash": catalog.desired_set_hash,
@@ -1046,8 +1046,13 @@ where
     if expected_reserve_count.is_some_and(|count| count == 0) {
         return Err("--expected-reserve-count must be greater than zero".into());
     }
-    if expected_address_count.is_some_and(|count| count == 0 || count > 256) {
-        return Err("--expected-address-count must be between 1 and 256".into());
+    if expected_address_count
+        .is_some_and(|count| count == 0 || count > SHARED_MARKET_LOGICAL_CATALOG_MAX_ADDRESSES)
+    {
+        return Err(format!(
+            "--expected-address-count must be between 1 and {SHARED_MARKET_LOGICAL_CATALOG_MAX_ADDRESSES}"
+        )
+        .into());
     }
     if expected_minimum_source_slot.is_some_and(|slot| slot < 0) {
         return Err("--expected-minimum-source-slot must not be negative".into());
@@ -1132,7 +1137,7 @@ fn next_value(
 }
 
 fn usage() -> &'static str {
-    "Usage: route-lookup-table-shared-catalog --catalog-version <VERSION> [--cluster <CLUSTER>] [--rpc-url <URL>] [--enabled-stable-mints <MINTS>] [--address-chunk <1..20>] [--admin-write --reason <TEXT> --updated-by <ID> --expected-desired-set-hash <HASH> --expected-enabled-mints-hash <HASH> --expected-ordered-address-hash <HASH> --expected-reserve-set-hash <HASH> --expected-reserve-count <N> --expected-address-count <N> --expected-minimum-source-slot <SLOT>]\n\nDry-run is the default. The command treats active safe rows for the explicit enabled stable mints as new-target eligibility, while physical shared inventory includes all known reserves for those mints regardless of active/risk state plus every nonzero-held or in-flight source referenced by Neon. It decodes that complete source-safe universe in one finalized RPC snapshot, validates owner/market/mint identity, and unions its accounts with every address in durable shared-catalog history. Previously approved source/exit accounts remain in the current head's physical order; historical-only recovery and newly required accounts append, while roles and writability only widen. Because there is no durable zero-live-reference proof yet, publication never removes a previously approved address. A dry run emits seven approval-fence values over this retention-safe catalog: all four hashes and both counts are exact, while minimum source slot is the accepted finalized freshness floor. --admin-write requires all seven and rejects content drift, held/in-flight source drift, or slot regression before atomically publishing the catalog head and queuing only its shared ALT plan; it never loads a signer, sends a transaction, or backfills vault ALTs."
+    "Usage: route-lookup-table-shared-catalog --catalog-version <VERSION> [--cluster <CLUSTER>] [--rpc-url <URL>] [--enabled-stable-mints <MINTS>] [--address-chunk <1..20>] [--admin-write --reason <TEXT> --updated-by <ID> --expected-desired-set-hash <HASH> --expected-enabled-mints-hash <HASH> --expected-ordered-address-hash <HASH> --expected-reserve-set-hash <HASH> --expected-reserve-count <N> --expected-address-count <N> --expected-minimum-source-slot <SLOT>]\n\nDry-run is the default. The command treats active safe rows for the explicit enabled stable mints as new-target eligibility, while physical shared inventory includes all known reserves for those mints regardless of active/risk state plus every nonzero-held or in-flight source referenced by Neon. It decodes that complete source-safe universe in one finalized RPC snapshot, validates owner/market/mint identity, and unions its accounts with every address in durable shared-catalog history. Previously approved source/exit accounts remain in the current head's physical order; historical-only recovery and newly required accounts append, while roles and writability only widen. Because there is no durable zero-live-reference proof yet, publication never removes a previously approved address. The logical catalog is append-packed deterministically across as many durable physical shared shards as its family high-water requires; route compilation selects only contributing shards. A dry run emits seven approval-fence values over this retention-safe catalog: all four hashes and both counts are exact, while minimum source slot is the accepted finalized freshness floor. --admin-write requires all seven and rejects content drift, held/in-flight source drift, or slot regression before atomically publishing the catalog head and queuing only its shared ALT plan; it never loads a signer, sends a transaction, or backfills vault ALTs."
 }
 
 #[cfg(test)]
@@ -1217,7 +1222,7 @@ mod tests {
                 "--expected-reserve-count".to_owned(),
                 "4".to_owned(),
                 "--expected-address-count".to_owned(),
-                "17".to_owned(),
+                "237".to_owned(),
                 "--expected-minimum-source-slot".to_owned(),
                 "123".to_owned(),
             ],
@@ -1237,7 +1242,7 @@ mod tests {
                 ordered_address_hash: "b".repeat(64),
                 reserve_set_hash: "c".repeat(64),
                 reserve_count: 4,
-                address_count: 17,
+                address_count: 237,
                 minimum_source_slot: 123,
             })
         );

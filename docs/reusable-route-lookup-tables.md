@@ -108,6 +108,14 @@ evidence updates one incident; changed evidence or the reminder interval emits
 a reminder; a healthy observation resolves the same incident. Delivery leases,
 fencing tokens, retry wait, and dead-letter state survive process restarts.
 
+Migration `0022_shared_market_alt_bundles` separates one logical shared-market
+catalog from its deterministic ordered bundle of physical ALT shards. It keeps
+each physical shard within the family's measured high-water and Solana's
+256-address limit, while immutable pre-cutover parent and per-shard child rows
+record the complete finalized bundle. For the measured production bootstrap,
+237 logical addresses at a 219-address high-water means two physical shards of
+219 and 18 addresses.
+
 Required values are `NEON_DATABASE_URL`, `SOLANA_RPC_URL`,
 `YIELD_ALT_CLUSTER`, and the non-secret `YIELD_ALT_POLICY_PUBKEY`. Preferred
 delivery is a generic JSON webhook in `YIELD_ALT_ALERT_WEBHOOK_URL`; an optional
@@ -215,14 +223,22 @@ is not an ownership conflict.
 
 The current 13-fixture route catalog measures a largest single-class atomic
 expansion of `21` addresses. With the documented default safety margin of `16`,
-the bootstrap high-water is therefore `256 - 21 - 16 = 219`. Treat this as
-generated catalog evidence, not a forever constant: rerun
+the per-physical-table bootstrap high-water is therefore
+`256 - 21 - 16 = 219`. Treat this as generated catalog evidence, not a forever
+constant: rerun
 `bun run verify:reusable-alts:routes` after any route/action-account change and
 use its final `reusable_alt_catalog_summary` JSON line when bootstrapping a
 new catalog version.
 
-The shared-market catalog is deliberately one exact physical ALT per
-generation. The active/safe/enabled-stable reserve query controls eligibility
+The shared-market catalog is one logical, append-ordered manifest per
+generation. It is deterministically chunked into contiguous physical shards at
+the family high-water, and routes load only the shards that contribute compiled
+indexes. The production bootstrap measured 237 logical addresses, so the
+correct `219`-high-water layout is two exact shards containing 219 and 18
+addresses. Lowering the measured expansion or safety evidence to force one
+table would misstate the verified route catalog.
+
+The active/safe/enabled-stable reserve query controls eligibility
 for new deposits; it does not authorize removing accounts needed to exit an
 existing or deprecated source position. Physical inventory therefore includes
 every known reserve for the explicit enabled stable mints regardless of
@@ -243,17 +259,19 @@ in-flight routes, so there is intentionally no address-removal path. A future
 removal workflow must add and verify that proof before it may shrink the
 durable union.
 
-This retained-prefix ordering lets a newly discovered address extend the
-current generation even when its base58 text sorts before an existing address;
-the new-target reserve-set identity remains distinct from retained physical ALT
-order. If the complete catalog exceeds that family's allocation high-water
-mark, the signerless publisher and planner fail before a catalog write,
-operation enqueue, signer load, or transaction. The current system does not
-truncate or auto-shard shared data. A larger catalog requires a future
-shared-sharding schema, resolver, compiler-fixture, and migration verifier.
+This retained-prefix ordering lets a newly discovered address extend the tail
+shard of the current generation even when its base58 text sorts before an
+existing address; once that shard reaches the high-water, the deterministic
+next ordinal begins another physical shard. The new-target reserve-set identity
+remains distinct from retained physical ALT order. The signerless publisher and
+planner must fail before a catalog write, operation enqueue, signer load, or
+transaction if the deterministic shards do not cover the complete logical
+catalog exactly or if any physical shard exceeds its high-water. They never
+truncate, duplicate, or reorder shared data.
 
 Finalized RPC truth can invalidate an otherwise exact database catalog. An
-authority, lifecycle, ordered-membership, prefix, or account-presence mismatch
+authority, lifecycle, shard ordinal, ordered-membership, prefix, or
+account-presence mismatch in any physical table
 is persisted as immutable physical-drift evidence fenced to the catalog
 revision, table, and mutation epoch. The active head immediately leaves
 `active`, routes emit the shared-catalog repair blocker without creating vault
@@ -307,8 +325,9 @@ Do not roll schema backward during an operational rollback.
 
 1. Apply and verify migration `0017`, existing realtime migration `0018`,
    legacy audit migration `0019`, shared-catalog migration `0020`, and
-   production-control/alert/probe-audit migration `0021` on an isolated
-   database branch, then production.
+   production-control/alert/probe-audit migration `0021`, followed by
+   multi-shard shared-bundle migration `0022`, on an isolated database branch,
+   then production. Verify the complete migration 1–22 replay and checksums.
 2. Import the complete eligible legacy fleet only for immutable audit and
    refund accounting. Label it `legacy_mixed`; never promote it to a v2 family,
    create another exact-scope table, or copy its scope allocation strategy.
@@ -319,7 +338,7 @@ Do not roll schema backward during an operational rollback.
    publish the immutable catalog head. Do not derive this bootstrap set from
    one vault or one attempted route.
 5. Deploy the continuously running, budgeted provisioner and let it create,
-   fully populate, warm, and verify that exact durable shared-market v2 ALT.
+   fully populate, warm, and verify that exact durable shared-market v2 bundle.
    Keep routing in a fail-closed stop mode. Stop and drain the old monitor,
    prove there is no prepared decision or send still using it, then deploy the
    no-legacy monitor from the same immutable light-worker image as the
@@ -350,7 +369,7 @@ Do not roll schema backward during an operational rollback.
 
 The expected first-use latency is one monitor cycle for a vault whose packed
 data is not present yet. That rebalance is deferred, not lost or recorded as a
-failed movement. Later routes reuse the same shared table and existing packed
+failed movement. Later routes reuse the same shared bundle and existing packed
 shard headroom.
 
 Production migration, provisioning transactions, Render changes, direct money
@@ -524,9 +543,10 @@ new-target eligibility; the desired-set, ordered-address hash, and address
 count cover the broad source-safe and retention-safe physical union. Review the
 emitted `knownStableReserveCount`, `requiredSourceReserveCount`,
 `sourceOnlyAddressCount`, `retainedOnlyAddressCount`, and
-`appendedAddressCount` as part of approval. If this broad inventory exceeds the
-single shared-family high-water mark, publication must fail; target filtering
-must not be used to make it fit.
+`appendedAddressCount` as part of approval. If this broad inventory exceeds one
+physical high-water, review the deterministic shard count and per-shard counts;
+every shard must be at most the high-water and their ordered union must equal
+the logical catalog. Target filtering must not be used to make it fit.
 
 ```sh
 op run --env-file=.env.1password -- sh -c \
@@ -627,16 +647,18 @@ Before direct cutover, keep routing stopped and the provisioner durably paused,
 then run the production-connected rollback-only probe against one existing
 active vault row. This special mode branches before status/admin handling and
 before signer loading. It checks the mutation queue is drained both before and
-after the finalized RPC read, then proves the exact shared table address,
-authority, mutation epoch, last-extension slot, ordered addresses, hash, and
-count at finalized RPC,
+after the finalized RPC read, then proves every shared table's shard ordinal,
+address, authority, mutation epoch, last-extension slot, ordered addresses,
+hash, and count at finalized RPC plus the aggregate bundle hash/count,
 passes a deliberate one-address mismatch through the real shared-drift store
 path, passes the same typed missing-vault request twice through the real request
 upsert, observes one drift signal and one sealed request with zero decisions,
 bindings, operations, or sends, and rolls the whole exercise back. It then
 proves zero residue and an unchanged active catalog head before persisting only
-an immutable PASS audit row containing that exact finalized table identity and
-durable paused control epoch. The rollback-only database transaction locks and
+an immutable PASS parent audit row plus per-shard child rows containing that
+exact finalized bundle identity and durable paused control epoch. The singular
+parent table fields identify only the selected synthetic drift target. The
+rollback-only database transaction locks and
 rechecks that epoch plus zero active broadcast permits and zero in-flight
 mutations after the finalized RPC read, so a concurrent resume or grant makes
 the probe fail instead of producing stale evidence.
@@ -652,22 +674,24 @@ op run --env-file=.env.1password -- sh -c \
 Do not combine the probe with `--execute`, reconciliation, watch/status, pause,
 or any admin action. The probe neither reads `POLICY_KEYPAIR` nor creates
 durable vault demand; a missing or inactive probe vault, non-exact finalized
-shared table, stale catalog fence, rollback residue, or non-zero side-effect
+shared bundle, stale catalog fence, rollback residue, or non-zero side-effect
 count is a hard failure. Any leased, signed, submitted, reconciling, or otherwise
 in-flight ALT mutation is also a hard failure; wait for it to drain and rerun.
 
 After the shared v2 catalog and demand-driven provisioner path are verified,
 perform the direct cutover with one finalized-RPC plus database-fenced action.
-The provisioner first loads the exact active shared ALT at finalized
-commitment and proves table address, authority, lifecycle, ordered membership,
-hash, usable count, verification slot, and mutation epoch against a database
+The provisioner first loads every table in the exact active shared ALT bundle
+at finalized commitment and proves shard ordinal, table address, authority,
+lifecycle, ordered membership, hash, usable count, verification slot, and
+mutation epoch against a database
 preflight. The database transaction locks and rechecks the durable pause,
 requires zero active broadcast permits and zero in-flight mutations, consumes
 the latest immutable PASS probe for the same pause epoch and exact
-catalog/manifest/table identity, and rejects later operation or permit
-mutations. It also rechecks the complete finalized RPC observation (table
-id/address, authority, mutation epoch, slot, last-extension slot, ordered
-addresses/hash/count), requires the packed-vault family, sets global
+catalog/manifest/bundle identity, and rejects later operation or permit
+mutations. It also rechecks the complete finalized RPC observations (bundle
+hash/count plus every shard's table id/address, authority, mutation epoch, slot,
+last-extension slot, ordered addresses/hash/count), requires the packed-vault
+family, sets global
 `reusable_only` with force-legacy disabled, and aligns every per-vault override.
 There is deliberately no all-vault coverage precondition:
 

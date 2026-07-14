@@ -23,6 +23,7 @@ use std::{
 use thiserror::Error;
 
 pub const LOOKUP_TABLE_HARD_CAPACITY: u16 = 256;
+pub const SHARED_MARKET_LOGICAL_CATALOG_MAX_ADDRESSES: usize = 10_000;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum LookupTableDomainError {
@@ -48,6 +49,8 @@ pub enum LookupTableDomainError {
     InvalidFencingToken,
     #[error("shared-market cohort {cohort_key:?} was supplied with conflicting address sets")]
     ConflictingSharedMarketCohort { cohort_key: String },
+    #[error("shared-market catalog requires {actual} shards, exceeding INTEGER ordinals")]
+    SharedMarketShardCountOverflow { actual: usize },
 }
 
 macro_rules! string_enum {
@@ -530,6 +533,35 @@ pub struct SharedMarketRouteCohort {
 pub struct SharedMarketShardPlan {
     pub shard_ordinal: i32,
     pub addresses: Vec<String>,
+}
+
+/// Packs the authoritative append-stable catalog order into deterministic
+/// physical shards. Existing full shard prefixes never move when a later
+/// catalog revision only appends addresses; only the final shard can extend
+/// before a new ordinal is allocated.
+pub fn append_pack_shared_market_shards(
+    ordered_addresses: &[String],
+    shard_capacity: u16,
+) -> Result<Vec<SharedMarketShardPlan>, LookupTableDomainError> {
+    if shard_capacity == 0 || shard_capacity > LOOKUP_TABLE_HARD_CAPACITY {
+        return Err(LookupTableDomainError::InvalidHardCapacity(shard_capacity));
+    }
+    let shard_count = ordered_addresses
+        .len()
+        .div_ceil(usize::from(shard_capacity));
+    if shard_count > i32::MAX as usize {
+        return Err(LookupTableDomainError::SharedMarketShardCountOverflow {
+            actual: shard_count,
+        });
+    }
+    Ok(ordered_addresses
+        .chunks(usize::from(shard_capacity))
+        .enumerate()
+        .map(|(shard_ordinal, addresses)| SharedMarketShardPlan {
+            shard_ordinal: shard_ordinal as i32,
+            addresses: addresses.to_vec(),
+        })
+        .collect())
 }
 
 /// Deterministically clusters frequently co-occurring shared accounts without
@@ -1255,26 +1287,55 @@ pub fn minimal_verified_table_bundle(
     let (candidates, missing) =
         persisted_relevant_table_candidates(required_addresses, candidates, exact_search_limit)?;
 
+    // Shared-market shards are an exact, disjoint partition of one logical
+    // catalog. Every shard that intersects this route is therefore a mandatory
+    // contributor, not an exponential subset-search candidate. Keep the
+    // bounded exact search only for potentially overlapping vault candidates.
+    let (mandatory_shared, optional): (Vec<_>, Vec<_>) =
+        candidates.into_iter().partition(|candidate| {
+            candidate.allocation_kind == Some(LookupTableAllocationKind::SharedMarket)
+        });
+    let mandatory_covered = mandatory_shared
+        .iter()
+        .flat_map(|candidate| candidate.addresses.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    let remaining_required = required_addresses
+        .difference(&mandatory_covered)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if remaining_required.is_empty() {
+        let mut selected = mandatory_shared;
+        selected.sort_by(resolver_candidate_identity_order);
+        return Ok((selected, BTreeSet::new()));
+    }
+
     let mut best: Option<(Vec<usize>, usize)> = None;
     let mut selected = Vec::new();
-    search_table_subsets(0, &candidates, required_addresses, &mut selected, &mut best);
+    search_table_subsets(0, &optional, &remaining_required, &mut selected, &mut best);
     if let Some((indexes, _)) = best {
-        return Ok((
-            indexes
-                .into_iter()
-                .map(|index| candidates[index].clone())
-                .collect(),
-            BTreeSet::new(),
-        ));
+        let mut selected = mandatory_shared;
+        selected.extend(indexes.into_iter().map(|index| optional[index].clone()));
+        selected.sort_by(resolver_candidate_identity_order);
+        return Ok((selected, BTreeSet::new()));
     }
 
     Ok((Vec::new(), missing))
 }
 
+fn resolver_candidate_identity_order(
+    left: &ResolverTableCandidate,
+    right: &ResolverTableCandidate,
+) -> std::cmp::Ordering {
+    left.table_address
+        .cmp(&right.table_address)
+        .then_with(|| left.table_id.cmp(&right.table_id))
+}
+
 /// Returns every persisted-eligible candidate that can contribute to this
-/// route. Runtime must RPC-verify this bounded set before exact minimization;
+/// route. Runtime must RPC-verify this set before exact minimization;
 /// preselecting a single persisted bundle would make one drifted overlap hide a
-/// healthy alternative.
+/// healthy alternative. Only non-shared candidates consume the exponential
+/// exact-search bound; disjoint shared shards are mandatory contributors.
 pub fn persisted_relevant_table_candidates(
     required_addresses: &BTreeSet<String>,
     candidates: &[ResolverTableCandidate],
@@ -1294,14 +1355,16 @@ pub fn persisted_relevant_table_candidates(
         })
         .cloned()
         .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| {
-        left.table_address
-            .cmp(&right.table_address)
-            .then_with(|| left.table_id.cmp(&right.table_id))
-    });
-    if candidates.len() > exact_search_limit {
+    candidates.sort_by(resolver_candidate_identity_order);
+    let exact_candidate_count = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.allocation_kind != Some(LookupTableAllocationKind::SharedMarket)
+        })
+        .count();
+    if exact_candidate_count > exact_search_limit {
         return Err(LookupTableDomainError::TooManyResolverCandidates {
-            actual: candidates.len(),
+            actual: exact_candidate_count,
             limit: exact_search_limit,
         });
     }
@@ -1629,10 +1692,9 @@ pub struct LookupTablePrecutoverProbe {
     /// Exact durable paused-control epoch observed before finalized RPC and
     /// rechecked under a row lock by the rollback-only database exercise.
     pub provisioner_control_epoch: i64,
-    pub finalized_slot: i64,
-    /// Exact finalized on-chain order after owner/authority/lifecycle/warmth
+    /// Exact finalized on-chain bundle after owner/authority/lifecycle/warmth
     /// validation by the provisioner.
-    pub finalized_addresses: Vec<String>,
+    pub finalized_observation: FinalizedSharedTableObservation,
     /// Deliberately mismatched observation passed through the production drift
     /// reporter inside the rollback-only transaction.
     pub drift_report: SharedMarketPhysicalDriftReport,
@@ -1659,6 +1721,10 @@ pub struct LookupTablePrecutoverProbeRecord {
     pub finalized_last_extended_slot: i64,
     pub finalized_address_hash: String,
     pub finalized_address_count: i32,
+    pub shared_table_bundle_hash: String,
+    pub shared_table_count: i32,
+    pub finalized_bundle_address_count: i32,
+    pub shared_tables: Vec<LookupTablePrecutoverProbeSharedTableRecord>,
     pub finalized_shared_exact: bool,
     pub synthetic_drift_evidence_hash: String,
     pub drift_signal_count: i32,
@@ -1674,6 +1740,20 @@ pub struct LookupTablePrecutoverProbeRecord {
     pub transactions_sent: bool,
     pub result: String,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LookupTablePrecutoverProbeSharedTableRecord {
+    pub probe_run_id: i64,
+    pub shard_ordinal: i32,
+    pub route_lookup_table_id: i64,
+    pub shared_table_address: String,
+    pub shared_authority: String,
+    pub shared_mutation_epoch: i64,
+    pub finalized_slot: i64,
+    pub finalized_last_extended_slot: i64,
+    pub finalized_address_hash: String,
+    pub finalized_address_count: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1732,32 +1812,194 @@ pub struct ReusableOnlyCutoverPreflight {
     pub shared_family_id: i64,
     pub active_generation: i32,
     pub target_generation: i32,
-    pub physical_table_id: i64,
-    pub physical_table_address: String,
-    pub physical_authority: String,
-    pub physical_mutation_epoch: i64,
-    pub physical_last_extended_slot: i64,
-    pub physical_last_verified_slot: i64,
-    pub physical_address_count: i32,
-    pub physical_usable_address_count: i32,
+    pub shared_table_bundle_hash: String,
+    pub shared_tables: Vec<ReusableOnlyCutoverSharedTable>,
 }
 
-/// Exact finalized RPC evidence for the shared physical table. The caller
-/// obtains this only after checking genesis hash, owner, authority, lifecycle,
-/// warmth, and ordered membership. Cutover rechecks every field against the
-/// concurrently locked database preflight before changing rollout state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FinalizedSharedTableObservation {
-    pub cluster: String,
-    pub physical_table_id: i64,
+pub struct ReusableOnlyCutoverSharedTable {
+    pub table_id: i64,
+    pub shard_ordinal: i32,
     pub table_address: String,
     pub authority: String,
     pub mutation_epoch: i64,
-    pub observed_slot: i64,
+    pub last_extended_slot: i64,
+    pub last_verified_slot: i64,
+    pub ordered_address_hash: String,
+    pub address_count: i32,
+    pub usable_address_count: i32,
+    pub ordered_addresses: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinalizedSharedTableShardObservation {
+    pub table_id: i64,
+    pub shard_ordinal: i32,
+    pub table_address: String,
+    pub authority: String,
+    pub mutation_epoch: i64,
     pub last_extended_slot: i64,
     pub ordered_address_hash: String,
     pub address_count: i32,
     pub ordered_addresses: Vec<String>,
+}
+
+/// Exact finalized RPC evidence for the active shared physical bundle. The
+/// caller obtains this only after checking every shard's genesis, owner,
+/// authority, lifecycle, warmth, and ordered membership. Cutover rechecks the
+/// complete ordered bundle against the concurrently locked database preflight.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinalizedSharedTableObservation {
+    pub cluster: String,
+    pub observed_slot: i64,
+    pub shared_table_bundle_hash: String,
+    pub shared_tables: Vec<FinalizedSharedTableShardObservation>,
+}
+
+fn shared_table_bundle_hash_from_parts(
+    tables: impl IntoIterator<Item = (i64, i32, String, String, i64, i64, String, i32)>,
+) -> String {
+    let mut parts = vec!["loyal-reusable-shared-table-bundle-v1".to_owned()];
+    for (
+        table_id,
+        shard_ordinal,
+        table_address,
+        authority,
+        mutation_epoch,
+        last_extended_slot,
+        ordered_address_hash,
+        address_count,
+    ) in tables
+    {
+        parts.extend([
+            table_id.to_string(),
+            shard_ordinal.to_string(),
+            table_address,
+            authority,
+            mutation_epoch.to_string(),
+            last_extended_slot.to_string(),
+            ordered_address_hash,
+            address_count.to_string(),
+        ]);
+    }
+    hash_length_prefixed_values(parts.iter().map(String::as_str))
+}
+
+pub fn reusable_only_cutover_shared_table_bundle_hash(
+    tables: &[ReusableOnlyCutoverSharedTable],
+) -> String {
+    shared_table_bundle_hash_from_parts(tables.iter().map(|table| {
+        (
+            table.table_id,
+            table.shard_ordinal,
+            table.table_address.clone(),
+            table.authority.clone(),
+            table.mutation_epoch,
+            table.last_extended_slot,
+            table.ordered_address_hash.clone(),
+            table.address_count,
+        )
+    }))
+}
+
+pub fn finalized_shared_table_bundle_hash(
+    tables: &[FinalizedSharedTableShardObservation],
+) -> String {
+    shared_table_bundle_hash_from_parts(tables.iter().map(|table| {
+        (
+            table.table_id,
+            table.shard_ordinal,
+            table.table_address.clone(),
+            table.authority.clone(),
+            table.mutation_epoch,
+            table.last_extended_slot,
+            table.ordered_address_hash.clone(),
+            table.address_count,
+        )
+    }))
+}
+
+fn validate_finalized_shared_table_observation(
+    observation: &FinalizedSharedTableObservation,
+) -> Result<Vec<String>, OrchestratorError> {
+    if observation.cluster.trim().is_empty()
+        || observation.observed_slot < 0
+        || observation.shared_tables.is_empty()
+        || !is_sha256_hex(&observation.shared_table_bundle_hash)
+        || finalized_shared_table_bundle_hash(&observation.shared_tables)
+            != observation.shared_table_bundle_hash
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "finalized shared-table bundle identity is malformed".to_owned(),
+        ));
+    }
+    let mut table_ids = BTreeSet::new();
+    let mut table_addresses = BTreeSet::new();
+    let mut shared_addresses = BTreeSet::new();
+    let mut flattened = Vec::new();
+    for (ordinal, table) in observation.shared_tables.iter().enumerate() {
+        if table.table_id <= 0
+            || table.shard_ordinal != i32::try_from(ordinal).unwrap_or(-1)
+            || table.mutation_epoch < 0
+            || table.last_extended_slot < 0
+            || table.last_extended_slot >= observation.observed_slot
+            || table.address_count <= 0
+            || table.address_count > i32::from(LOOKUP_TABLE_HARD_CAPACITY)
+            || usize::try_from(table.address_count).ok() != Some(table.ordered_addresses.len())
+            || !is_sha256_hex(&table.ordered_address_hash)
+            || ordered_address_hash(&table.ordered_addresses) != table.ordered_address_hash
+            || Pubkey::from_str(&table.table_address).is_err()
+            || Pubkey::from_str(&table.authority).is_err()
+            || !table_ids.insert(table.table_id)
+            || !table_addresses.insert(table.table_address.as_str())
+            || table.ordered_addresses.iter().any(|address| {
+                Pubkey::from_str(address).is_err() || !shared_addresses.insert(address.as_str())
+            })
+        {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "finalized shared-table shard {ordinal} is malformed, duplicated, or not warm"
+            )));
+        }
+        flattened.extend(table.ordered_addresses.iter().cloned());
+    }
+    Ok(flattened)
+}
+
+fn validate_finalized_shared_tables_against_preflight(
+    preflight: &ReusableOnlyCutoverPreflight,
+    observation: &FinalizedSharedTableObservation,
+) -> Result<Vec<String>, OrchestratorError> {
+    let flattened = validate_finalized_shared_table_observation(observation)?;
+    let tables_match = preflight.shared_tables.len() == observation.shared_tables.len()
+        && preflight
+            .shared_tables
+            .iter()
+            .zip(&observation.shared_tables)
+            .all(|(expected, observed)| {
+                expected.table_id == observed.table_id
+                    && expected.shard_ordinal == observed.shard_ordinal
+                    && expected.table_address == observed.table_address
+                    && expected.authority == observed.authority
+                    && expected.mutation_epoch == observed.mutation_epoch
+                    && expected.last_extended_slot == observed.last_extended_slot
+                    && expected.last_verified_slot <= observation.observed_slot
+                    && expected.ordered_address_hash == observed.ordered_address_hash
+                    && expected.address_count == observed.address_count
+                    && expected.usable_address_count == observed.address_count
+                    && expected.ordered_addresses == observed.ordered_addresses
+            });
+    if preflight.cluster != observation.cluster
+        || preflight.shared_table_bundle_hash != observation.shared_table_bundle_hash
+        || preflight.ordered_address_hash != ordered_address_hash(&flattened)
+        || preflight.ordered_addresses != flattened
+        || !tables_match
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "finalized shared-table bundle does not match the locked reusable-only preflight"
+                .to_owned(),
+        ));
+    }
+    Ok(flattened)
 }
 
 pub fn shared_market_manifest_addresses(
@@ -3348,11 +3590,7 @@ impl NeonSqlClient {
         mut input: SharedMarketCatalogUpsert,
     ) -> Result<SharedMarketCatalogHeadRecord, OrchestratorError> {
         input.addresses.sort_by_key(|address| address.ordinal);
-        validate_request_addresses(
-            &input.addresses,
-            LookupTableManifestSubject::SharedMarket,
-            true,
-        )?;
+        validate_logical_shared_market_catalog_addresses(&input.addresses)?;
         if input.addresses.is_empty()
             || input.cluster.trim().is_empty()
             || input.catalog_version.trim().is_empty()
@@ -3391,11 +3629,9 @@ impl NeonSqlClient {
             )));
         }
         let family = lookup_table_family_from_row(&family_rows[0])?;
-        if family.catalog_version != input.catalog_version
-            || input.addresses.len() > usize::try_from(family.allocation_high_water).unwrap_or(0)
-        {
+        if family.catalog_version != input.catalog_version {
             return Err(OrchestratorError::StoreInvariant(format!(
-                "shared-market catalog does not match family {} version/capacity",
+                "shared-market catalog does not match family {} version",
                 family.id
             )));
         }
@@ -3585,11 +3821,7 @@ impl NeonSqlClient {
         mut route_addresses: Vec<LookupTableManifestAddressRecord>,
     ) -> Result<SharedMarketCatalogRouteValidation, OrchestratorError> {
         route_addresses.sort_by_key(|address| address.ordinal);
-        validate_request_addresses(
-            &route_addresses,
-            LookupTableManifestSubject::SharedMarket,
-            true,
-        )?;
+        validate_request_addresses(&route_addresses, LookupTableManifestSubject::SharedMarket)?;
         let mut tx = self.pool().begin().await?;
         let Some(catalog) = load_shared_market_catalog_head_in_connection(
             &mut tx,
@@ -3850,6 +4082,63 @@ mod reusable_alt_tests {
             .flat_map(|shard| shard.addresses.iter().cloned())
             .collect::<BTreeSet<_>>();
         assert_eq!(planned, one_over[0].addresses);
+    }
+
+    #[test]
+    fn reusable_alt_shared_append_pack_preserves_full_prefixes_and_extends_only_tail() {
+        let first = ordered_addresses(&["a", "b", "c", "d", "e"]);
+        let first_plan = append_pack_shared_market_shards(&first, 4).unwrap();
+        assert_eq!(
+            first_plan,
+            vec![
+                SharedMarketShardPlan {
+                    shard_ordinal: 0,
+                    addresses: ordered_addresses(&["a", "b", "c", "d"]),
+                },
+                SharedMarketShardPlan {
+                    shard_ordinal: 1,
+                    addresses: ordered_addresses(&["e"]),
+                },
+            ]
+        );
+
+        let appended = ordered_addresses(&["a", "b", "c", "d", "e", "f", "g", "h", "i"]);
+        let appended_plan = append_pack_shared_market_shards(&appended, 4).unwrap();
+        assert_eq!(appended_plan[0], first_plan[0]);
+        assert!(appended_plan[1]
+            .addresses
+            .starts_with(&first_plan[1].addresses));
+        assert_eq!(
+            appended_plan[1].addresses,
+            ordered_addresses(&["e", "f", "g", "h"])
+        );
+        assert_eq!(appended_plan[2].addresses, ordered_addresses(&["i"]));
+        assert_eq!(
+            appended_plan
+                .iter()
+                .flat_map(|shard| shard.addresses.iter().cloned())
+                .collect::<Vec<_>>(),
+            appended
+        );
+    }
+
+    #[test]
+    fn reusable_alt_shared_append_pack_splits_production_catalog_without_reducing_headroom() {
+        let catalog = (0..237)
+            .map(|index| format!("address-{index:03}"))
+            .collect::<Vec<_>>();
+        let plan = append_pack_shared_market_shards(&catalog, 219).unwrap();
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0].shard_ordinal, 0);
+        assert_eq!(plan[0].addresses.len(), 219);
+        assert_eq!(plan[1].shard_ordinal, 1);
+        assert_eq!(plan[1].addresses.len(), 18);
+        assert_eq!(
+            plan.iter()
+                .flat_map(|shard| shard.addresses.iter().cloned())
+                .collect::<Vec<_>>(),
+            catalog
+        );
     }
 
     #[test]
@@ -4287,6 +4576,60 @@ mod reusable_alt_tests {
             simulation_succeeded: true,
         };
         assert!(!not_rpc_verified.ready());
+    }
+
+    #[test]
+    fn reusable_alt_resolver_selects_only_contributing_shared_shards() {
+        let required = addresses(&["shared-a", "shared-z", "vault"]);
+        let mut first_shared = resolver_candidate(1, &["shared-a", "unused-a"], true);
+        first_shared.allocation_kind = Some(LookupTableAllocationKind::SharedMarket);
+        let mut second_shared = resolver_candidate(2, &["shared-z", "unused-z"], true);
+        second_shared.allocation_kind = Some(LookupTableAllocationKind::SharedMarket);
+        let mut irrelevant_shared = resolver_candidate(3, &["unused-only"], true);
+        irrelevant_shared.allocation_kind = Some(LookupTableAllocationKind::SharedMarket);
+        let vault = resolver_candidate(4, &["vault"], true);
+        let (selected, missing) = minimal_verified_table_bundle(
+            &required,
+            &[first_shared, second_shared, irrelevant_shared, vault],
+            8,
+        )
+        .unwrap();
+        assert!(missing.is_empty());
+        assert_eq!(
+            selected
+                .iter()
+                .map(|table| table.table_id)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([1, 2, 4])
+        );
+    }
+
+    #[test]
+    fn reusable_alt_resolver_does_not_apply_exponential_bound_to_disjoint_shared_shards() {
+        let mut required = BTreeSet::new();
+        let mut candidates = Vec::new();
+        for index in 0..21 {
+            let address = format!("shared-{index}");
+            required.insert(address.clone());
+            let mut candidate = resolver_candidate(i64::from(index), &[address.as_str()], true);
+            candidate.allocation_kind = Some(LookupTableAllocationKind::SharedMarket);
+            candidates.push(candidate);
+        }
+        required.insert("vault".to_owned());
+        candidates.push(resolver_candidate(100, &["vault"], true));
+
+        let (selected, missing) = minimal_verified_table_bundle(&required, &candidates, 1).unwrap();
+        assert!(missing.is_empty());
+        assert_eq!(selected.len(), 22);
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|candidate| {
+                    candidate.allocation_kind == Some(LookupTableAllocationKind::SharedMarket)
+                })
+                .count(),
+            21
+        );
     }
 
     #[test]
@@ -5851,26 +6194,18 @@ impl NeonSqlClient {
                 "shared-market catalog head is empty".to_owned(),
             ));
         }
-        if usize::from(shard_capacity) < catalog.addresses.len() {
-            return Err(OrchestratorError::StoreInvariant(format!(
-                "shared-market catalog revision {} has {} addresses but one durable ALT is limited to {shard_capacity}",
-                catalog.catalog_revision_id,
-                catalog.addresses.len()
-            )));
-        }
-        // The shared catalog is deliberately one durable ALT. Its approved
-        // order is append-stable across revisions, so preserve that order
-        // exactly instead of routing it through the generic BTreeSet shard
-        // planner (which would turn a lexicographically earlier discovery into
-        // a needless replacement generation).
-        let shard_plan = vec![SharedMarketShardPlan {
-            shard_ordinal: 0,
-            addresses: catalog
-                .addresses
-                .iter()
-                .map(|row| row.address.clone())
-                .collect(),
-        }];
+        // The logical catalog can exceed one physical ALT. Preserve its
+        // append-stable order and fill deterministic shard ordinals in that
+        // exact order. A later append therefore extends only the final shard
+        // (and then allocates the next ordinal) instead of relocating an
+        // already-active prefix.
+        let ordered_addresses = catalog
+            .addresses
+            .iter()
+            .map(|row| row.address.clone())
+            .collect::<Vec<_>>();
+        let shard_plan = append_pack_shared_market_shards(&ordered_addresses, shard_capacity)
+            .map_err(domain_store_error)?;
         // Signed work keeps its identity and may only be reconciled; the
         // before-sign and before-broadcast head fences prevent it from
         // mutating a newer catalog revision.
@@ -7940,14 +8275,19 @@ impl NeonSqlClient {
         &self,
         mut input: LookupTablePrecutoverProbe,
     ) -> Result<LookupTablePrecutoverProbeRecord, OrchestratorError> {
+        let finalized_addresses =
+            validate_finalized_shared_table_observation(&input.finalized_observation)?;
+        let drift_target = input
+            .finalized_observation
+            .shared_tables
+            .iter()
+            .find(|table| table.table_id == input.drift_report.route_lookup_table_id)
+            .cloned();
         if !is_sha256_hex(&input.probe_token)
             || input.provisioner_control_epoch < 0
-            || input.finalized_slot < 0
-            || input.finalized_addresses.is_empty()
-            || input.finalized_addresses.len() > usize::from(LOOKUP_TABLE_HARD_CAPACITY)
             || input.provisioning_request.vault_id.as_i64() <= 0
             || !is_sha256_hex(&input.provisioning_request.requirements_fingerprint)
-            || input.drift_report.observed_slot != input.finalized_slot
+            || input.drift_report.observed_slot != input.finalized_observation.observed_slot
             || !input.drift_report.observed_table_present
             || !input.drift_report.observed_active
             || !input.drift_report.observed_warm
@@ -7967,33 +8307,36 @@ impl NeonSqlClient {
                     .to_owned(),
             ));
         }
-        let mut finalized_seen = BTreeSet::new();
-        if input
-            .finalized_addresses
-            .iter()
-            .any(|address| !finalized_seen.insert(address) || Pubkey::from_str(address).is_err())
-        {
+        let Some(drift_target) = drift_target else {
             return Err(OrchestratorError::StoreInvariant(
-                "pre-cutover probe finalized addresses must be valid unique pubkeys in exact order"
+                "pre-cutover probe drift target is absent from the finalized shared bundle"
                     .to_owned(),
             ));
-        }
-        if input.finalized_addresses.len() != input.drift_report.observed_addresses.len() + 1
-            || input.finalized_addresses[..input.drift_report.observed_addresses.len()]
+        };
+        if input.drift_report.expected_mutation_epoch != drift_target.mutation_epoch
+            || input.drift_report.expected_table_address != drift_target.table_address
+            || input.drift_report.expected_authority != drift_target.authority
+            || input.drift_report.observed_authority.as_deref()
+                != Some(drift_target.authority.as_str())
+            || input.drift_report.observed_last_extended_slot
+                != Some(drift_target.last_extended_slot)
+            || drift_target.ordered_addresses.len()
+                != input.drift_report.observed_addresses.len() + 1
+            || drift_target.ordered_addresses[..input.drift_report.observed_addresses.len()]
                 != input.drift_report.observed_addresses
         {
             return Err(OrchestratorError::StoreInvariant(
-                "pre-cutover probe synthetic drift must remove exactly the final shared address"
-                    .to_owned(),
+                "pre-cutover probe synthetic drift must remove exactly the final address of its fenced shared shard".to_owned(),
             ));
         }
         let observed_hash = validate_shared_market_physical_drift_report(&input.drift_report)?;
         validate_lookup_table_provisioning_request(&mut input.provisioning_request)?;
-        let finalized_address_hash = ordered_address_hash(&input.finalized_addresses);
-        let finalized_address_count =
-            i32::try_from(input.finalized_addresses.len()).map_err(|_| {
+        let finalized_address_hash = drift_target.ordered_address_hash.clone();
+        let finalized_address_count = drift_target.address_count;
+        let finalized_bundle_address_count =
+            i32::try_from(finalized_addresses.len()).map_err(|_| {
                 OrchestratorError::StoreInvariant(
-                    "pre-cutover probe finalized address count exceeds PostgreSQL INTEGER"
+                    "pre-cutover probe finalized bundle address count exceeds PostgreSQL INTEGER"
                         .to_owned(),
                 )
             })?;
@@ -8005,7 +8348,7 @@ impl NeonSqlClient {
             .drift_report
             .observed_last_extended_slot
             .expect("validated signerless finalized observation above");
-        if finalized_last_extended_slot >= input.finalized_slot {
+        if finalized_last_extended_slot >= input.finalized_observation.observed_slot {
             return Err(OrchestratorError::StoreInvariant(
                 "pre-cutover probe finalized shared table is not warm".to_owned(),
             ));
@@ -8084,47 +8427,22 @@ impl NeonSqlClient {
             .iter()
             .map(|address| address.address.clone())
             .collect::<Vec<_>>();
-        let physical_row =
-            sqlx::query("SELECT * FROM loyal_yield.route_lookup_tables WHERE id = $1 FOR UPDATE")
-                .bind(input.drift_report.route_lookup_table_id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .ok_or_else(|| {
-                    OrchestratorError::StoreInvariant(
-                        "pre-cutover probe finalized shared physical table disappeared".to_owned(),
-                    )
-                })?;
-        let physical = reusable_lookup_table_from_row(&physical_row)?;
-        let physical_last_extended_slot: Option<i64> =
-            physical_row.try_get("last_extended_slot")?;
-        let physical_addresses = sqlx::query_scalar::<_, String>(
-            r#"
-            SELECT address
-            FROM loyal_yield.lookup_table_addresses
-            WHERE route_lookup_table_id = $1
-            ORDER BY ordinal
-            "#,
+        let current_preflight = load_reusable_only_cutover_preflight_in_connection(
+            &mut tx,
+            &input.drift_report.cluster,
         )
-        .bind(input.drift_report.route_lookup_table_id)
-        .fetch_all(&mut *tx)
         .await?;
-        if physical.cluster != input.drift_report.cluster
-            || physical.family_id != input.drift_report.family_id
-            || physical.table_address != input.drift_report.expected_table_address
-            || physical.authority != input.drift_report.expected_authority
-            || physical.mutation_epoch != input.drift_report.expected_mutation_epoch
-            || physical_last_extended_slot != Some(finalized_last_extended_slot)
-            || physical.address_count != finalized_address_count
-            || physical.usable_address_count != finalized_address_count
-            || physical.address_hash != finalized_address_hash
-            || physical
-                .last_verified_slot
-                .is_none_or(|slot| slot > input.finalized_slot)
-            || catalog_addresses != input.finalized_addresses
-            || physical_addresses != input.finalized_addresses
+        let locked_finalized_addresses = validate_finalized_shared_tables_against_preflight(
+            &current_preflight,
+            &input.finalized_observation,
+        )?;
+        if current_preflight.catalog_revision_id != catalog_before.catalog_revision_id
+            || current_preflight.manifest_id != shared_manifest_id
+            || catalog_addresses != finalized_addresses
+            || locked_finalized_addresses != finalized_addresses
         {
             return Err(OrchestratorError::StoreInvariant(
-                "pre-cutover probe finalized shared proof does not match exact DB catalog/table order"
+                "pre-cutover probe finalized shared bundle does not match exact DB catalog/table order"
                     .to_owned(),
             ));
         }
@@ -8236,6 +8554,8 @@ impl NeonSqlClient {
                  provisioner_control_epoch, requirements_fingerprint,
                  finalized_slot, finalized_last_extended_slot,
                  finalized_address_hash, finalized_address_count,
+                 shared_table_bundle_hash, shared_table_count,
+                 finalized_bundle_address_count,
                  finalized_shared_exact, synthetic_drift_evidence_hash,
                  drift_signal_count, drift_provisioning_request_count,
                  duplicate_request_attempt_count, distinct_request_count,
@@ -8243,8 +8563,9 @@ impl NeonSqlClient {
                  rollback_residue_count, catalog_head_restored,
                  signer_loaded, transactions_sent, result)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                    $11, $12, $13, $14, $15, TRUE, $16, $17, $18, 2,
-                    $19, $20, $21, $22, $23, $24, FALSE, FALSE, 'pass')
+                    $11, $12, $13, $14, $15, $16, $17, $18, TRUE,
+                    $19, $20, $21, 2, $22, $23, $24, $25, $26, $27,
+                    FALSE, FALSE, 'pass')
             RETURNING *
             "#,
         )
@@ -8259,10 +8580,19 @@ impl NeonSqlClient {
         .bind(input.drift_report.expected_mutation_epoch)
         .bind(input.provisioner_control_epoch)
         .bind(&input.provisioning_request.requirements_fingerprint)
-        .bind(input.finalized_slot)
+        .bind(input.finalized_observation.observed_slot)
         .bind(finalized_last_extended_slot)
         .bind(&finalized_address_hash)
         .bind(finalized_address_count)
+        .bind(&input.finalized_observation.shared_table_bundle_hash)
+        .bind(
+            i32::try_from(input.finalized_observation.shared_tables.len()).map_err(|_| {
+                OrchestratorError::StoreInvariant(
+                    "probe shared table count exceeds INTEGER".to_owned(),
+                )
+            })?,
+        )
+        .bind(finalized_bundle_address_count)
         .bind(&drift.evidence_hash)
         .bind(i32::try_from(drift_signal_count).map_err(|_| {
             OrchestratorError::StoreInvariant("probe drift count exceeds INTEGER".to_owned())
@@ -8292,7 +8622,27 @@ impl NeonSqlClient {
         .bind(catalog_head_restored)
         .fetch_one(&mut *tx)
         .await?;
-        let audit = lookup_table_precutover_probe_from_row(&row)?;
+        let probe_run_id: i64 = row.try_get("id")?;
+        let mut child_insert = QueryBuilder::<Postgres>::new(
+            "INSERT INTO loyal_yield.lookup_table_precutover_probe_shared_tables (probe_run_id, shard_ordinal, route_lookup_table_id, shared_table_address, shared_authority, shared_mutation_epoch, finalized_slot, finalized_last_extended_slot, finalized_address_hash, finalized_address_count) ",
+        );
+        child_insert.push_values(
+            &input.finalized_observation.shared_tables,
+            |mut row, table| {
+                row.push_bind(probe_run_id)
+                    .push_bind(table.shard_ordinal)
+                    .push_bind(table.table_id)
+                    .push_bind(&table.table_address)
+                    .push_bind(&table.authority)
+                    .push_bind(table.mutation_epoch)
+                    .push_bind(input.finalized_observation.observed_slot)
+                    .push_bind(table.last_extended_slot)
+                    .push_bind(&table.ordered_address_hash)
+                    .push_bind(table.address_count);
+            },
+        );
+        child_insert.build().execute(&mut *tx).await?;
+        let audit = lookup_table_precutover_probe_from_row_in_connection(&mut tx, &row).await?;
         tx.commit().await?;
         Ok(audit)
     }
@@ -10232,11 +10582,29 @@ async fn shared_market_operation_head_fence_detail(
     .bind(operation.id)
     .fetch_all(&mut *tx)
     .await?;
-    let desired = catalog
+    let catalog_addresses = catalog
         .addresses
         .iter()
         .map(|address| address.address.clone())
         .collect::<Vec<_>>();
+    let shard_capacity = u16::try_from(table.allocation_high_water).map_err(|_| {
+        OrchestratorError::StoreInvariant(format!(
+            "shared-market table {} has an invalid allocation high-water",
+            table.id
+        ))
+    })?;
+    let desired_plan = append_pack_shared_market_shards(&catalog_addresses, shard_capacity)
+        .map_err(domain_store_error)?;
+    let Some(desired) = desired_plan
+        .iter()
+        .find(|shard| shard.shard_ordinal == table.shard_ordinal)
+        .map(|shard| shard.addresses.as_slice())
+    else {
+        return Ok(Some(
+            "shared-market operation targets a shard absent from the current catalog plan"
+                .to_owned(),
+        ));
+    };
     let older_nonterminal_exists: bool = sqlx::query_scalar(
         r#"
         SELECT EXISTS (
@@ -10260,8 +10628,8 @@ async fn shared_market_operation_head_fence_detail(
     if older_nonterminal_exists
         || operation_addresses.is_empty()
         || !table_count_matches
-        || !ordered_prefix_matches(&confirmed, &desired)
-        || !ordered_confirmed_and_pending_match(&confirmed, &operation_addresses, &desired)
+        || !ordered_prefix_matches(&confirmed, desired)
+        || !ordered_confirmed_and_pending_match(&confirmed, &operation_addresses, desired)
     {
         return Ok(Some(
             "shared-market operation is not the unique next ordered suffix of the current physical prefix"
@@ -10289,10 +10657,23 @@ async fn shared_market_catalog_generation_evidence_in_connection(
             extra_addresses: Vec::new(),
         });
     };
+    let allocation_high_water: i32 = sqlx::query_scalar(
+        "SELECT allocation_high_water FROM loyal_yield.lookup_table_families WHERE id = $1",
+    )
+    .bind(family_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let shard_capacity = u16::try_from(allocation_high_water).map_err(|_| {
+        OrchestratorError::StoreInvariant(format!(
+            "shared-market family {family_id} has an invalid allocation high-water"
+        ))
+    })?;
+    let shard_plan = append_pack_shared_market_shards(&desired_ordered, shard_capacity)
+        .map_err(domain_store_error)?;
     let table_rows = sqlx::query(
         r#"
         SELECT id, desired_state, address_count, usable_address_count,
-               last_verified_slot
+               last_verified_slot, shard_ordinal, allocation_high_water
         FROM loyal_yield.route_lookup_tables
         WHERE family_id = $1 AND generation = $2
           AND allocation_kind = 'shared_market'
@@ -10308,12 +10689,12 @@ async fn shared_market_catalog_generation_evidence_in_connection(
         .iter()
         .map(|row| row.try_get::<i64, _>("id"))
         .collect::<Result<Vec<_>, _>>()?;
-    let physical_ordered = if table_ids.is_empty() {
+    let membership_rows = if table_ids.is_empty() {
         Vec::new()
     } else {
-        sqlx::query_scalar::<_, String>(
+        sqlx::query(
             r#"
-            SELECT address.address
+            SELECT address.route_lookup_table_id, address.ordinal, address.address
             FROM loyal_yield.lookup_table_addresses address
             JOIN loyal_yield.route_lookup_tables route_table
               ON route_table.id = address.route_lookup_table_id
@@ -10325,6 +10706,24 @@ async fn shared_market_catalog_generation_evidence_in_connection(
         .fetch_all(&mut *tx)
         .await?
     };
+    let mut memberships = BTreeMap::<i64, Vec<(i32, String)>>::new();
+    for row in membership_rows {
+        memberships
+            .entry(row.try_get("route_lookup_table_id")?)
+            .or_default()
+            .push((row.try_get("ordinal")?, row.try_get("address")?));
+    }
+    let physical_ordered = table_rows
+        .iter()
+        .flat_map(|row| {
+            row.try_get::<i64, _>("id")
+                .ok()
+                .and_then(|id| memberships.get(&id))
+                .into_iter()
+                .flatten()
+                .map(|(_, address)| address.clone())
+        })
+        .collect::<Vec<_>>();
     let physical = physical_ordered.iter().cloned().collect::<BTreeSet<_>>();
     let pending_operation_count: i64 = sqlx::query_scalar(
         r#"
@@ -10342,8 +10741,14 @@ async fn shared_market_catalog_generation_evidence_in_connection(
     .bind(&table_ids)
     .fetch_one(&mut *tx)
     .await?;
-    let rows_ready = table_rows.len() == 1
-        && table_rows.iter().all(|row| {
+    let rows_ready = !table_rows.is_empty()
+        && table_rows.len() == shard_plan.len()
+        && table_rows.iter().zip(&shard_plan).all(|(row, shard)| {
+            let table_id = row.try_get::<i64, _>("id").ok();
+            let membership = table_id
+                .and_then(|id| memberships.get(&id))
+                .map(Vec::as_slice)
+                .unwrap_or_default();
             matches!(
                 row.try_get::<Option<String>, _>("desired_state")
                     .ok()
@@ -10360,6 +10765,29 @@ async fn shared_market_catalog_generation_evidence_in_connection(
                     .ok()
                     .flatten()
                     .is_some()
+                && row
+                    .try_get::<Option<i32>, _>("shard_ordinal")
+                    .ok()
+                    .flatten()
+                    == Some(shard.shard_ordinal)
+                && row
+                    .try_get::<Option<i32>, _>("allocation_high_water")
+                    .ok()
+                    .flatten()
+                    == Some(allocation_high_water)
+                && row.try_get::<i32, _>("address_count").ok()
+                    == i32::try_from(shard.addresses.len()).ok()
+                && membership.len() == shard.addresses.len()
+                && membership
+                    .iter()
+                    .enumerate()
+                    .all(|(ordinal, (stored_ordinal, _))| {
+                        i32::try_from(ordinal).ok() == Some(*stored_ordinal)
+                    })
+                && membership
+                    .iter()
+                    .map(|(_, address)| address)
+                    .eq(shard.addresses.iter())
         });
     Ok(SharedMarketCatalogGenerationEvidence {
         ready: rows_ready && pending_operation_count == 0 && physical_ordered == desired_ordered,
@@ -10413,60 +10841,87 @@ async fn load_reusable_only_cutover_preflight_in_connection(
     .bind(active_generation)
     .fetch_all(&mut *tx)
     .await?;
-    if rows.len() != 1 {
-        return Err(OrchestratorError::StoreInvariant(format!(
-            "shared-market cutover requires exactly one active physical ALT, found {}",
-            rows.len()
-        )));
-    }
-    let table = reusable_lookup_table_from_row(&rows[0])?;
-    let durable: bool = rows[0].try_get("durable")?;
-    let physical_last_extended_slot: Option<i64> = rows[0].try_get("last_extended_slot")?;
-    let ordered_addresses = sqlx::query_scalar::<_, String>(
-        "SELECT address FROM loyal_yield.lookup_table_addresses WHERE route_lookup_table_id = $1 ORDER BY ordinal",
+    let family_high_water: i32 = sqlx::query_scalar(
+        "SELECT allocation_high_water FROM loyal_yield.lookup_table_families WHERE id = $1",
     )
-    .bind(table.id)
-    .fetch_all(&mut *tx)
+    .bind(catalog.family_id)
+    .fetch_one(&mut *tx)
     .await?;
     let expected_addresses = catalog
         .addresses
         .iter()
         .map(|row| row.address.clone())
         .collect::<Vec<_>>();
-    let ordered_hash = ordered_address_hash(&ordered_addresses);
-    if !durable
-        || table.legacy_status != "usable"
-        || physical_last_extended_slot.is_none()
-        || table.last_verified_slot.is_none()
-        || table.address_count != table.usable_address_count
-        || table.address_count != i32::try_from(ordered_addresses.len()).unwrap_or(-1)
-        || table.address_hash != ordered_hash
-        || ordered_addresses != expected_addresses
-    {
-        return Err(OrchestratorError::StoreInvariant(
-            "shared-market cutover physical ALT is not durable, exact, warm, and verified"
-                .to_owned(),
-        ));
+    let shard_capacity = u16::try_from(family_high_water).map_err(|_| {
+        OrchestratorError::StoreInvariant(
+            "shared-market family has an invalid allocation high-water".to_owned(),
+        )
+    })?;
+    let shard_plan = append_pack_shared_market_shards(&expected_addresses, shard_capacity)
+        .map_err(domain_store_error)?;
+    if rows.is_empty() || rows.len() != shard_plan.len() {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "shared-market cutover requires {} exact active physical ALT shard(s), found {}",
+            shard_plan.len(),
+            rows.len()
+        )));
     }
+    let mut shared_tables = Vec::with_capacity(rows.len());
+    for (row, shard) in rows.iter().zip(&shard_plan) {
+        let table = reusable_lookup_table_from_row(row)?;
+        let durable: bool = row.try_get("durable")?;
+        let last_extended_slot: Option<i64> = row.try_get("last_extended_slot")?;
+        let ordered_addresses = sqlx::query_scalar::<_, String>(
+            "SELECT address FROM loyal_yield.lookup_table_addresses WHERE route_lookup_table_id = $1 ORDER BY ordinal",
+        )
+        .bind(table.id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let ordered_hash = ordered_address_hash(&ordered_addresses);
+        if !durable
+            || table.legacy_status != "usable"
+            || table.shard_ordinal != shard.shard_ordinal
+            || table.allocation_high_water != family_high_water
+            || last_extended_slot.is_none()
+            || table.last_verified_slot.is_none()
+            || table.address_count != table.usable_address_count
+            || table.address_count != i32::try_from(ordered_addresses.len()).unwrap_or(-1)
+            || table.address_hash != ordered_hash
+            || ordered_addresses != shard.addresses
+        {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "shared-market cutover physical ALT shard {} is not durable, exact, warm, and verified",
+                shard.shard_ordinal
+            )));
+        }
+        shared_tables.push(ReusableOnlyCutoverSharedTable {
+            table_id: table.id,
+            shard_ordinal: table.shard_ordinal,
+            table_address: table.table_address,
+            authority: table.authority,
+            mutation_epoch: table.mutation_epoch,
+            last_extended_slot: last_extended_slot.unwrap_or_default(),
+            last_verified_slot: table.last_verified_slot.unwrap_or_default(),
+            ordered_address_hash: ordered_hash,
+            address_count: table.address_count,
+            usable_address_count: table.usable_address_count,
+            ordered_addresses,
+        });
+    }
+    let shared_table_bundle_hash = reusable_only_cutover_shared_table_bundle_hash(&shared_tables);
     Ok(ReusableOnlyCutoverPreflight {
         cluster: cluster.to_owned(),
         catalog_revision_id: catalog.catalog_revision_id,
         catalog_revision: catalog.catalog_revision,
         manifest_id: catalog.manifest_id,
         manifest_hash: catalog.desired_set_hash,
-        ordered_address_hash: ordered_hash,
-        ordered_addresses,
+        ordered_address_hash: ordered_address_hash(&expected_addresses),
+        ordered_addresses: expected_addresses,
         shared_family_id: catalog.family_id,
         active_generation,
         target_generation,
-        physical_table_id: table.id,
-        physical_table_address: table.table_address,
-        physical_authority: table.authority,
-        physical_mutation_epoch: table.mutation_epoch,
-        physical_last_extended_slot: physical_last_extended_slot.unwrap_or_default(),
-        physical_last_verified_slot: table.last_verified_slot.unwrap_or_default(),
-        physical_address_count: table.address_count,
-        physical_usable_address_count: table.usable_address_count,
+        shared_table_bundle_hash,
+        shared_tables,
     })
 }
 
@@ -11061,10 +11516,15 @@ fn validate_manifest_write(input: &LookupTableManifestWrite) -> Result<(), Orche
             "lookup-table manifest subject/vault shape is invalid".to_owned(),
         ));
     }
-    if input.addresses.len() > usize::from(LOOKUP_TABLE_HARD_CAPACITY) {
-        return Err(OrchestratorError::StoreInvariant(
-            "lookup-table manifest contains more than 256 addresses".to_owned(),
-        ));
+    let maximum_address_count = match input.subject_kind {
+        LookupTableManifestSubject::SharedMarket => SHARED_MARKET_LOGICAL_CATALOG_MAX_ADDRESSES,
+        LookupTableManifestSubject::Vault => usize::from(LOOKUP_TABLE_HARD_CAPACITY),
+    };
+    if input.addresses.len() > maximum_address_count {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "lookup-table {} manifest exceeds its logical address limit of {maximum_address_count}",
+            input.subject_kind.as_str()
+        )));
     }
     let mut seen = BTreeSet::new();
     for (expected_ordinal, address) in input.addresses.iter().enumerate() {
@@ -11084,12 +11544,36 @@ fn validate_manifest_write(input: &LookupTableManifestWrite) -> Result<(), Orche
 fn validate_request_addresses(
     addresses: &[LookupTableManifestAddressRecord],
     expected_class: LookupTableManifestSubject,
-    _manifest_will_be_derived: bool,
 ) -> Result<(), OrchestratorError> {
-    if addresses.len() > usize::from(LOOKUP_TABLE_HARD_CAPACITY) {
+    validate_typed_addresses(
+        addresses,
+        expected_class,
+        usize::from(LOOKUP_TABLE_HARD_CAPACITY),
+        "provisioning request",
+    )
+}
+
+fn validate_logical_shared_market_catalog_addresses(
+    addresses: &[LookupTableManifestAddressRecord],
+) -> Result<(), OrchestratorError> {
+    validate_typed_addresses(
+        addresses,
+        LookupTableManifestSubject::SharedMarket,
+        SHARED_MARKET_LOGICAL_CATALOG_MAX_ADDRESSES,
+        "logical shared-market catalog",
+    )
+}
+
+fn validate_typed_addresses(
+    addresses: &[LookupTableManifestAddressRecord],
+    expected_class: LookupTableManifestSubject,
+    maximum_address_count: usize,
+    context: &str,
+) -> Result<(), OrchestratorError> {
+    if addresses.len() > maximum_address_count {
         return Err(OrchestratorError::StoreInvariant(format!(
-            "provisioning request {} class exceeds lookup-table hard capacity",
-            expected_class.as_str()
+            "{context} {} class exceeds its address limit of {maximum_address_count}",
+            expected_class.as_str(),
         )));
     }
     let mut seen = BTreeSet::new();
@@ -11101,7 +11585,7 @@ fn validate_request_addresses(
             || Pubkey::from_str(&address.address).is_err()
         {
             return Err(OrchestratorError::StoreInvariant(format!(
-                "provisioning request {} addresses must be valid pubkeys, unique, contiguous, typed, and role-labelled",
+                "{context} {} addresses must be valid pubkeys, unique, contiguous, typed, and role-labelled",
                 expected_class.as_str()
             )));
         }
@@ -11818,6 +12302,10 @@ fn lookup_table_precutover_probe_from_row(
         finalized_last_extended_slot: row.try_get("finalized_last_extended_slot")?,
         finalized_address_hash: row.try_get("finalized_address_hash")?,
         finalized_address_count: row.try_get("finalized_address_count")?,
+        shared_table_bundle_hash: row.try_get("shared_table_bundle_hash")?,
+        shared_table_count: row.try_get("shared_table_count")?,
+        finalized_bundle_address_count: row.try_get("finalized_bundle_address_count")?,
+        shared_tables: Vec::new(),
         finalized_shared_exact: row.try_get("finalized_shared_exact")?,
         synthetic_drift_evidence_hash: row.try_get("synthetic_drift_evidence_hash")?,
         drift_signal_count: row.try_get("drift_signal_count")?,
@@ -11834,6 +12322,52 @@ fn lookup_table_precutover_probe_from_row(
         result: row.try_get("result")?,
         created_at: row.try_get("created_at")?,
     })
+}
+
+fn lookup_table_precutover_probe_shared_table_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<LookupTablePrecutoverProbeSharedTableRecord, OrchestratorError> {
+    Ok(LookupTablePrecutoverProbeSharedTableRecord {
+        probe_run_id: row.try_get("probe_run_id")?,
+        shard_ordinal: row.try_get("shard_ordinal")?,
+        route_lookup_table_id: row.try_get("route_lookup_table_id")?,
+        shared_table_address: row.try_get("shared_table_address")?,
+        shared_authority: row.try_get("shared_authority")?,
+        shared_mutation_epoch: row.try_get("shared_mutation_epoch")?,
+        finalized_slot: row.try_get("finalized_slot")?,
+        finalized_last_extended_slot: row.try_get("finalized_last_extended_slot")?,
+        finalized_address_hash: row.try_get("finalized_address_hash")?,
+        finalized_address_count: row.try_get("finalized_address_count")?,
+    })
+}
+
+async fn lookup_table_precutover_probe_from_row_in_connection(
+    tx: &mut sqlx::PgConnection,
+    row: &sqlx::postgres::PgRow,
+) -> Result<LookupTablePrecutoverProbeRecord, OrchestratorError> {
+    let mut record = lookup_table_precutover_probe_from_row(row)?;
+    let child_rows = sqlx::query(
+        r#"
+        SELECT *
+        FROM loyal_yield.lookup_table_precutover_probe_shared_tables
+        WHERE probe_run_id = $1
+        ORDER BY shard_ordinal
+        "#,
+    )
+    .bind(record.id)
+    .fetch_all(&mut *tx)
+    .await?;
+    record.shared_tables = child_rows
+        .iter()
+        .map(lookup_table_precutover_probe_shared_table_from_row)
+        .collect::<Result<Vec<_>, _>>()?;
+    if i32::try_from(record.shared_tables.len()).ok() != Some(record.shared_table_count) {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "pre-cutover probe {} shared-table evidence count drifted",
+            record.id
+        )));
+    }
+    Ok(record)
 }
 
 fn validate_shared_market_physical_drift_report(
@@ -11901,13 +12435,8 @@ fn validate_lookup_table_provisioning_request(
     validate_request_addresses(
         &input.shared_addresses,
         LookupTableManifestSubject::SharedMarket,
-        input.shared_manifest_id.is_none(),
     )?;
-    validate_request_addresses(
-        &input.vault_addresses,
-        LookupTableManifestSubject::Vault,
-        input.vault_manifest_id.is_none(),
-    )?;
+    validate_request_addresses(&input.vault_addresses, LookupTableManifestSubject::Vault)?;
     let shared_set = input
         .shared_addresses
         .iter()
@@ -11971,6 +12500,7 @@ async fn report_shared_market_physical_drift_in_tx(
         stale_store_update("shared-market physical table", input.route_lookup_table_id)
     })?;
     let table = reusable_lookup_table_from_row(&table_row)?;
+    let expected_last_extended_slot: Option<i64> = table_row.try_get("last_extended_slot")?;
     if table.cluster != input.cluster
         || table.table_address != input.expected_table_address
         || table.authority != input.expected_authority
@@ -11989,17 +12519,30 @@ async fn report_shared_market_physical_drift_in_tx(
     .bind(table.id)
     .fetch_all(&mut *tx)
     .await?;
+    let catalog_addresses = catalog
+        .addresses
+        .iter()
+        .map(|row| row.address.clone())
+        .collect::<Vec<_>>();
+    let shard_capacity = u16::try_from(table.allocation_high_water).map_err(|_| {
+        OrchestratorError::StoreInvariant(format!(
+            "shared-market table {} has an invalid allocation high-water",
+            table.id
+        ))
+    })?;
+    let shard_plan = append_pack_shared_market_shards(&catalog_addresses, shard_capacity)
+        .map_err(domain_store_error)?;
+    let planned_addresses = shard_plan
+        .iter()
+        .find(|shard| shard.shard_ordinal == table.shard_ordinal)
+        .map(|shard| shard.addresses.as_slice());
     let is_drift = !input.observed_table_present
         || input.observed_authority.as_deref() != Some(table.authority.as_str())
         || !input.observed_active
         || !input.observed_warm
+        || input.observed_last_extended_slot != expected_last_extended_slot
         || input.observed_addresses != expected_addresses
-        || input.observed_addresses
-            != catalog
-                .addresses
-                .iter()
-                .map(|row| row.address.clone())
-                .collect::<Vec<_>>();
+        || planned_addresses != Some(expected_addresses.as_slice());
     if !is_drift {
         return Err(OrchestratorError::StoreInvariant(
             "shared-market physical drift report matches the exact active catalog".to_owned(),
@@ -13620,10 +14163,17 @@ impl NeonSqlClient {
         expected_mutation_epoch: i64,
         new_mutation_epoch: i64,
         observed_slot: i64,
+        observed_last_extended_slot: i64,
         mut addresses: Vec<LookupTableMembershipAddress>,
     ) -> Result<ReusableLookupTableRecord, OrchestratorError> {
         addresses.sort_by_key(|address| address.ordinal);
         validate_membership(&addresses, observed_slot)?;
+        if observed_last_extended_slot < 0 || observed_last_extended_slot >= observed_slot {
+            return Err(OrchestratorError::StoreInvariant(
+                "confirmed lookup-table membership requires a warm finalized last-extended slot"
+                    .to_owned(),
+            ));
+        }
         if new_mutation_epoch <= expected_mutation_epoch {
             return Err(OrchestratorError::StoreInvariant(
                 "lookup-table membership mutation epoch must advance".to_owned(),
@@ -13696,8 +14246,10 @@ impl NeonSqlClient {
                 last_verified_slot = $7,
                 last_verified_at = $8,
                 mutation_epoch = $9,
+                last_extended_slot = $10,
                 updated_at = now()
             WHERE id = $1 AND mutation_epoch = $2
+              AND (last_extended_slot IS NULL OR last_extended_slot <= $10)
             RETURNING *
             "#,
         )
@@ -13710,8 +14262,10 @@ impl NeonSqlClient {
         .bind(observed_slot)
         .bind(last_verified_at)
         .bind(new_mutation_epoch)
-        .fetch_one(&mut *tx)
-        .await?;
+        .bind(observed_last_extended_slot)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| stale_store_update("reusable lookup table", table_id))?;
         tx.commit().await?;
         reusable_lookup_table_from_row(&row)
     }
@@ -14131,27 +14685,14 @@ impl NeonSqlClient {
         updated_by: &str,
     ) -> Result<ReusableOnlyCutoverResult, OrchestratorError> {
         let cluster = expected_preflight.cluster.as_str();
-        if cluster.trim().is_empty()
-            || reason.trim().is_empty()
-            || updated_by.trim().is_empty()
-            || finalized_observation.cluster != cluster
-            || finalized_observation.physical_table_id <= 0
-            || finalized_observation.mutation_epoch < 0
-            || finalized_observation.observed_slot < 0
-            || finalized_observation.last_extended_slot < 0
-            || finalized_observation.last_extended_slot >= finalized_observation.observed_slot
-            || finalized_observation.address_count <= 0
-            || !is_sha256_hex(&finalized_observation.ordered_address_hash)
-            || usize::try_from(finalized_observation.address_count).ok()
-                != Some(finalized_observation.ordered_addresses.len())
-            || ordered_address_hash(&finalized_observation.ordered_addresses)
-                != finalized_observation.ordered_address_hash
-        {
+        if cluster.trim().is_empty() || reason.trim().is_empty() || updated_by.trim().is_empty() {
             return Err(OrchestratorError::StoreInvariant(
                 "reusable-only cutover requires valid cluster, operator, and exact finalized shared-table evidence"
                     .to_owned(),
             ));
         }
+        let finalized_addresses =
+            validate_finalized_shared_table_observation(finalized_observation)?;
         let mut tx = self.pool().begin().await?;
         sqlx::query(
             "SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-rollout:' || $1, 0))",
@@ -14203,24 +14744,10 @@ impl NeonSqlClient {
                     .to_owned(),
             ));
         }
-        if finalized_observation.physical_table_id != current_preflight.physical_table_id
-            || finalized_observation.table_address != current_preflight.physical_table_address
-            || finalized_observation.authority != current_preflight.physical_authority
-            || finalized_observation.mutation_epoch != current_preflight.physical_mutation_epoch
-            || finalized_observation.last_extended_slot
-                != current_preflight.physical_last_extended_slot
-            || finalized_observation.observed_slot < current_preflight.physical_last_verified_slot
-            || finalized_observation.ordered_address_hash != current_preflight.ordered_address_hash
-            || finalized_observation.address_count != current_preflight.physical_address_count
-            || finalized_observation.address_count
-                != current_preflight.physical_usable_address_count
-            || finalized_observation.ordered_addresses != current_preflight.ordered_addresses
-        {
-            return Err(OrchestratorError::StoreInvariant(
-                "reusable-only cutover finalized RPC observation does not match the locked shared-table identity"
-                    .to_owned(),
-            ));
-        }
+        validate_finalized_shared_tables_against_preflight(
+            &current_preflight,
+            finalized_observation,
+        )?;
         let probe_row = sqlx::query(
             r#"
             SELECT *
@@ -14240,18 +14767,47 @@ impl NeonSqlClient {
                     .to_owned(),
             )
         })?;
-        let probe = lookup_table_precutover_probe_from_row(&probe_row)?;
+        let probe =
+            lookup_table_precutover_probe_from_row_in_connection(&mut tx, &probe_row).await?;
+        let probe_tables_match = probe.shared_tables.len()
+            == finalized_observation.shared_tables.len()
+            && probe
+                .shared_tables
+                .iter()
+                .zip(&finalized_observation.shared_tables)
+                .all(|(persisted, observed)| {
+                    persisted.shard_ordinal == observed.shard_ordinal
+                        && persisted.route_lookup_table_id == observed.table_id
+                        && persisted.shared_table_address == observed.table_address
+                        && persisted.shared_authority == observed.authority
+                        && persisted.shared_mutation_epoch == observed.mutation_epoch
+                        && persisted.finalized_slot <= finalized_observation.observed_slot
+                        && persisted.finalized_last_extended_slot == observed.last_extended_slot
+                        && persisted.finalized_address_hash == observed.ordered_address_hash
+                        && persisted.finalized_address_count == observed.address_count
+                });
+        let probe_target = finalized_observation
+            .shared_tables
+            .iter()
+            .find(|table| table.table_id == probe.route_lookup_table_id);
         if probe.result != "pass"
             || probe.provisioner_control_epoch != provisioner_control.control_epoch
             || probe.catalog_revision_id != current_preflight.catalog_revision_id
             || probe.shared_manifest_id != current_preflight.manifest_id
-            || probe.route_lookup_table_id != current_preflight.physical_table_id
-            || probe.shared_table_address != current_preflight.physical_table_address
-            || probe.shared_authority != current_preflight.physical_authority
-            || probe.shared_mutation_epoch != current_preflight.physical_mutation_epoch
-            || probe.finalized_address_hash != current_preflight.ordered_address_hash
-            || probe.finalized_address_count != current_preflight.physical_address_count
-            || probe.finalized_last_extended_slot != finalized_observation.last_extended_slot
+            || probe.shared_table_bundle_hash != current_preflight.shared_table_bundle_hash
+            || probe.shared_table_count
+                != i32::try_from(current_preflight.shared_tables.len()).unwrap_or(-1)
+            || probe.finalized_bundle_address_count
+                != i32::try_from(current_preflight.ordered_addresses.len()).unwrap_or(-1)
+            || !probe_tables_match
+            || probe_target.is_none_or(|target| {
+                probe.shared_table_address != target.table_address
+                    || probe.shared_authority != target.authority
+                    || probe.shared_mutation_epoch != target.mutation_epoch
+                    || probe.finalized_address_hash != target.ordered_address_hash
+                    || probe.finalized_address_count != target.address_count
+                    || probe.finalized_last_extended_slot != target.last_extended_slot
+            })
             || probe.finalized_slot > finalized_observation.observed_slot
             || !probe.finalized_shared_exact
         {
@@ -14398,8 +14954,12 @@ impl NeonSqlClient {
             })?,
             provisioner_control_epoch: provisioner_control.control_epoch,
             finalized_observed_slot: finalized_observation.observed_slot,
-            finalized_address_hash: finalized_observation.ordered_address_hash.clone(),
-            finalized_address_count: finalized_observation.address_count,
+            finalized_address_hash: current_preflight.ordered_address_hash,
+            finalized_address_count: i32::try_from(finalized_addresses.len()).map_err(|_| {
+                OrchestratorError::StoreInvariant(
+                    "cutover finalized bundle address count exceeds INTEGER".to_owned(),
+                )
+            })?,
             global_control,
         };
         tx.commit().await?;
