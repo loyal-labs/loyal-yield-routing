@@ -227,6 +227,64 @@ pub fn mock_kamino_reserve_transaction(
     )
 }
 
+#[derive(Debug)]
+pub struct MockKaminoRoutePart {
+    pub instructions: Vec<SquadsCompiledInstruction>,
+    pub accounts: Vec<AccountMeta>,
+    pub lookup_table_requirements: loyal_actions::YieldRouteLookupTableRequirements,
+}
+
+impl MockKaminoRoutePart {
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<SquadsCompiledInstruction>,
+        Vec<AccountMeta>,
+        loyal_actions::YieldRouteLookupTableRequirements,
+    ) {
+        (
+            self.instructions,
+            self.accounts,
+            self.lookup_table_requirements,
+        )
+    }
+}
+
+pub fn mock_kamino_reserve_route_part(
+    vault: Pubkey,
+    reserve: MockKaminoReserveTokenAccounts,
+    data: Vec<u8>,
+) -> MockKaminoRoutePart {
+    let (instructions, accounts) = mock_kamino_reserve_transaction(vault, reserve, data);
+    let mut reserve_requirements = loyal_actions::KaminoReserveLookupTableAccounts::new(
+        reserve.market,
+        reserve.reserve,
+        reserve.liquidity_mint,
+    );
+    reserve_requirements.market_authorities = vec![
+        reserve.lending_market_authority,
+        loyal_actions::derive_kamino_lending_market_authority(reserve.market),
+    ];
+    reserve_requirements.liquidity_supply = Some(reserve.reserve_liquidity_supply);
+    reserve_requirements.collateral_mint = Some(reserve.collateral_mint);
+    reserve_requirements.infrastructure = vec![
+        KAMINO_LEND_PROGRAM_ID,
+        spl_token::id(),
+        solana_sdk::sysvar::instructions::id(),
+    ];
+    let mut lookup_table_requirements = loyal_actions::YieldRouteLookupTableRequirements::default();
+    lookup_table_requirements.add_kamino_reserve(reserve_requirements);
+    lookup_table_requirements.add_vault_account(vault);
+    lookup_table_requirements.add_vault_token_account(reserve.vault_liquidity);
+    lookup_table_requirements.add_vault_token_account(reserve.vault_collateral);
+
+    MockKaminoRoutePart {
+        instructions,
+        accounts,
+        lookup_table_requirements,
+    }
+}
+
 pub fn derive_mock_jupiter_swap_authority() -> Pubkey {
     Pubkey::find_program_address(&[JUPITER_SWAP_AUTHORITY_SEED], &JUPITER_V6_PROGRAM_ID).0
 }

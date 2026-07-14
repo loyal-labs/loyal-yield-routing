@@ -21,7 +21,6 @@ The examples below use these shell aliases:
 SWAP='op run --env-file=.env.1password -- bun run same-mint:swap --'
 MONITOR='op run --env-file=.env.1password -- bun run same-mint:monitor --'
 MONITOR_E2E='op run --env-file=.env.1password -- bun run same-mint:monitor-e2e --'
-CLEANUP='op run --env-file=.env.1password -- bun run same-mint:alt-cleanup --'
 ```
 
 Run the full lifecycle dry-run through 1Password:
@@ -33,7 +32,7 @@ $SWAP \
   --e2e-main-prime-main <AMOUNT_RAW>
 ```
 
-`--e2e-main-prime-main` is the verifier-facing command. It defaults to dry-run and expands into five child invocations of this same binary: policy create/update with durable policy lookup-table provisioning, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main USDC withdrawal. Add `--execute` only after explicit approval; then each child phase keeps its own simulation-before-send guard and exits on the first failed phase.
+`--e2e-main-prime-main` is the verifier-facing command. It defaults to dry-run and expands into five child invocations of this same binary: policy create/update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main USDC withdrawal. Every phase is ALT reuse-only. Missing coverage records a durable provisioning request and stops; the dedicated provisioner must satisfy that request before the E2E is retried. Add `--execute` only after explicit approval; then each child phase keeps its own simulation-before-send guard and exits on the first failed phase.
 
 Run only the route dry-run through 1Password:
 
@@ -82,8 +81,7 @@ Policy create/update dry-run:
 $SWAP \
   --settings <SQUADS_SETTINGS> \
   --vault-index <VAULT_INDEX> \
-  --update-policy \
-  --provision-lookup-table
+  --update-policy
 ```
 
 Policy update mode uses `SOLANA_TESTING_PK` as the Squads settings authority and writes `POLICY_KEYPAIR` as the delegated ProgramInteraction signer. It simulates the settings transaction before any send. `--execute` submits only after the authority key matches the selected policy row.
@@ -100,35 +98,30 @@ $SWAP \
 
 That active-policy path is useful for narrowing an already live policy without creating another policy account.
 
-Policy update and route execution compile v0 transactions, matching the sibling Earn verifier's `compilePreparedOperation(...)` pattern. Pass one or more lookup tables with `--lookup-table <PUBKEY>` or set `YIELD_ROUTE_LOOKUP_TABLES` to a comma/whitespace separated list. Route execution also loads durable lookup tables from the Neon `loyal_yield.route_lookup_tables` registry for the cluster/scope/authority. The dry-run reports `transaction.packetSizeBytes`, `transaction.packetDataSizeBytes`, lookup-table counts, static key counts, and `instructionDataBytes` before simulation. If the serialized packet is already over Solana's 1232-byte limit, simulation is skipped and the JSON reports the packet blocker.
+Policy update and route execution compile v0 transactions through the shared reusable resolver. The route builder emits a typed static/shared-market/vault manifest, the resolver fresh-loads the smallest eligible table bundle from RPC, removes tables with zero compiled contribution, measures the serialized packet, and simulates before send. Explicit `--cluster` or `YIELD_ALT_CLUSTER` configuration is required; the cluster is never inferred from an RPC URL. At startup the worker accepts only an absolute HTTP(S) endpoint and verifies its genesis hash against that cluster before database or route work, so the default mainnet endpoint cannot run under a devnet, testnet, or localnet label. Fatal, readiness, and persisted failure details redact complete endpoint URLs and access tokens. Legacy `--lookup-table`/`YIELD_ROUTE_LOOKUP_TABLES` inputs remain limited to documented legacy non-route operations while migration rollback is available.
 
-`--provision-lookup-table` is policy-update/admin-only and must be combined with `--update-policy`. In dry-run it reports `lookupTableProvisioning.requiredAddresses` and the missing addresses from supplied or registry lookup tables. With `--execute`, it creates or extends a durable table only when needed, waits until the table is warm for lookup use, reloads it, and records the table plus create/extend signatures in the registry. It cannot be combined with `--optimization-cycle`.
-
-Route ALT setup is a separate explicit provisioning mode:
+ALT provisioning is a separate command and process boundary:
 
 ```sh
-$SWAP \
-  --settings <SQUADS_SETTINGS> \
-  --vault-index <VAULT_INDEX> \
-  --source-reserve <SOURCE_RESERVE> \
-  --target-reserve <TARGET_RESERVE> \
-  --provision-route-lookup-table \
-  --reconcile-from-chain
+op run --env-file=.env.1password -- sh -c \
+  'bun run same-mint:alt-provisioner -- --cluster <CLUSTER> --status'
 ```
 
-Add `--execute` only after approval. This mode uses `POLICY_KEYPAIR` as the lookup-table authority and payer, reuses an authority-matching durable table when capacity allows, extends only missing addresses, records the durable registry row, and exits without writing a rebalance decision or sending the route transaction. It cannot be combined with `--optimization-cycle` or `--seed-from-user-position`. Normal route execution is reuse-only: if durable lookup-table coverage is incomplete, it fails closed before route simulation or send.
+The provisioner is dry-run/reconcile-first and uses the independent `YIELD_ALT_MANAGER_KEYPAIR` only for an explicit, budgeted `--execute` run. Normal same-mint, idle-vault, policy, cleanup, monitor, and E2E movement never create or extend a table. When reusable coverage is incomplete, execution fails before durable movement intent, writes an idempotent provisioning request, and returns without spending SOL.
 
 ALT cleanup dry-run:
 
 ```sh
-$CLEANUP \
-  --include-env-authorities \
-  --authority 62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5 \
-  --scan-program-accounts \
-  --scan-history
+op run --env-file=.env.1password -- sh -c \
+  'bun run same-mint:alt-cleanup -- \
+    --cluster "$YIELD_ALT_CLUSTER" \
+    --include-env-authorities \
+    --authority 62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5 \
+    --scan-program-accounts \
+    --scan-history'
 ```
 
-The cleanup command protects registry tables, `YIELD_ROUTE_LOOKUP_TABLES`, and explicit `--allowlist` tables. It keeps the JSON report on stdout; add `--trace-timing` to emit timestamped phase trace logs to stderr. `--include-env-authorities` derives audited public keys from present `YIELD_ROUTER_KEYPAIR`, `POLICY_KEYPAIR`, `DEPLOYMENT_PK`, and `SOLANA_TESTING_PK` values without printing secrets. `--scan-program-accounts` discovers currently reclaimable ALT accounts by authority, with paginated `getProgramAccountsV2` fallback on Helius. `--scan-history` adds recent create/extend/deactivate/close evidence from audited signer history; use `--history-limit <N>` to widen the search and `--min-slot <SLOT>` for post-deploy audits. Limited scans stop once the requested candidate limit is reached, and candidate accounts are loaded in batches. Add `--execute` only after approval; active orphan tables are deactivated first, and closeable deactivated tables are closed after the ALT cooldown. For live cleanup, `--simulate-before-submit` simulates each signed cleanup transaction immediately before submit, and `--bundle-size <N>` groups up to N close/deactivate lookup-table instructions that share the same authority signer into one transaction.
+Cleanup requires `SOLANA_RPC_URL` in every mode and verifies its genesis hash against the explicit cluster before any chain read. It protects registry tables, `YIELD_ROUTE_LOOKUP_TABLES`, and explicit `--allowlist` tables. It keeps the JSON report on stdout and logs only the RPC origin; add `--trace-timing` to emit timestamped phase trace logs to stderr. `--include-env-authorities` derives audited public keys from present `YIELD_ROUTER_KEYPAIR`, `POLICY_KEYPAIR`, `DEPLOYMENT_PK`, and `SOLANA_TESTING_PK` values without printing secrets. `--scan-program-accounts` discovers currently reclaimable ALT accounts by authority, with paginated `getProgramAccountsV2` fallback on Helius. `--scan-history` adds recent create/extend/deactivate/close evidence from audited signer history; use `--history-limit <N>` to widen the search and `--min-slot <SLOT>` for post-deploy audits. Limited scans stop once the requested candidate limit is reached, and candidate accounts are loaded in batches. Add `--execute` only after approval; active orphan tables are deactivated first, and closeable deactivated tables are closed after the ALT cooldown. For live cleanup, `--simulate-before-submit` simulates each signed cleanup transaction immediately before submit, and `--bundle-size <N>` groups up to N close/deactivate lookup-table instructions that share the same authority signer into one transaction.
 
 Initial Main USDC deposit dry-run:
 
@@ -235,7 +228,7 @@ $SWAP \
 
 Current implementation note: the script reuses `loyal-yield-orchestrator` same-mint input validation and reads current positions from Neon. It can preview the chain state needed for current-position reconciliation and can seed current-position rows from `user_yield_positions` through the existing snapshot store when `--execute --seed-from-user-position` is approved.
 
-`--optimization-cycle --execute` first requires a chain preflight with a non-zero source collateral account. If the destination obligation is missing, the decoded Squads route policy-account state must include a target-market `init_obligation` constraint; the script executes that setup transaction with `POLICY_KEYPAIR`, confirms it, and reloads chain state before route planning continues. The decoded policy must also include `POLICY_KEYPAIR` as a delegated signer, both required markets, and the required live KLend same-mint withdraw/deposit route steps. The route transaction uses `POLICY_KEYPAIR` as the fee payer and only optimization signer, and can only reuse durable lookup-table coverage loaded from the registry, CLI, or environment. Route execution indexes are selected from the decoded Squads ProgramInteraction policy account when chain preflight is available, instead of trusting stale route metadata.
+`--optimization-cycle --execute` first requires a chain preflight with a non-zero source collateral account. If the destination obligation is missing, the decoded Squads route policy-account state must include a target-market `init_obligation` constraint; the script resolves and verifies ALT coverage for that setup transaction, executes it with `POLICY_KEYPAIR`, confirms it, and reloads chain state before route planning continues. The decoded policy must also include `POLICY_KEYPAIR` as a delegated signer, both required markets, and the required live KLend same-mint withdraw/deposit route steps. The route transaction uses `POLICY_KEYPAIR` as the fee payer and only optimization signer, while reusable ALT authority remains independent. Route execution indexes are selected from the decoded Squads ProgramInteraction policy account when chain preflight is available, instead of trusting stale route metadata.
 
 If the execution preflight fails, the script returns before writing a `rebalance_decisions` row. After that preflight passes, it calls `prepare_same_mint_rebalance`, reloads the persisted `loyal_yield.rebalance_decisions` row by decision id, verifies its `same_mint` execution plan fields and idempotency key, simulates the Squads ProgramInteraction route built from that row, submits the transaction, waits for confirmation, and calls `confirm_same_mint_rebalance` to finalize the decision and current-position snapshot. If any adapter step fails after the decision is created, the script marks the decision failed instead of leaving it active.
 

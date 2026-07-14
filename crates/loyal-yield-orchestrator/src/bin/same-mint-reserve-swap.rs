@@ -1,10 +1,14 @@
 use std::process::Command;
 use std::{
-    collections::BTreeSet, convert::TryInto, env, error::Error, str::FromStr, thread,
-    time::Duration,
+    collections::{BTreeMap, BTreeSet},
+    convert::TryInto,
+    env,
+    error::Error,
+    future::Future,
+    str::FromStr,
 };
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use klend_interface::{
     discriminators::{
         DEPOSIT_RESERVE_LIQUIDITY_AND_OBLIGATION_COLLATERAL_V2, INIT_OBLIGATION,
@@ -31,27 +35,39 @@ use klend_interface::{
     FARMS_PROGRAM_ID, KLEND_PROGRAM_ID,
 };
 use loyal_actions::{
-    compile_squads_inner_instruction, create_init_obligation_yield_route_action,
-    create_same_mint_market_mint_yield_route_action, derive_action_account,
-    derive_kamino_obligation_farm_user_state, derive_kamino_vanilla_obligation,
-    execute_program_interaction_policy_instruction, execute_sync_transaction_instruction,
-    kamino_init_obligation_farm_instruction, remove_policy_instruction,
-    update_all_in_one_market_mint_yield_route_action, update_init_obligation_yield_route_action,
-    update_same_mint_market_mint_yield_route_action, KaminoInitObligationFarm, LoyalActionContext,
-    RouteTopology, SwapLane, YieldRouteActionBuilder, YieldRouteActionSeeds, YieldRouteActionSetup,
-    YieldRouteUniverse, ASSOCIATED_TOKEN_PROGRAM_ID, KAMINO_MAIN_USDC_RESERVE,
-    SQUADS_SMART_ACCOUNT_PROGRAM_ID, USDC_MINT, YIELD_ROUTE_WITHDRAW_ACTION_SEED,
+    compile_squads_inner_instruction, compiler_lookup_eligible_addresses,
+    create_init_obligation_yield_route_action, create_same_mint_market_mint_yield_route_action,
+    derive_action_account, derive_kamino_obligation_farm_user_state,
+    derive_kamino_vanilla_obligation, execute_program_interaction_policy_instruction,
+    execute_sync_transaction_instruction, kamino_init_obligation_farm_instruction,
+    remove_policy_instruction, update_all_in_one_market_mint_yield_route_action,
+    update_init_obligation_yield_route_action, update_same_mint_market_mint_yield_route_action,
+    KaminoInitObligationFarm, KaminoReserveLookupTableAccounts, LookupTableManifest,
+    LoyalActionContext, RouteTopology, SwapLane, YieldRouteActionBuilder, YieldRouteActionSeeds,
+    YieldRouteActionSetup, YieldRouteInstruction, YieldRouteInstructionPlan,
+    YieldRouteLookupTableRequirements, YieldRouteUniverse, ASSOCIATED_TOKEN_PROGRAM_ID,
+    KAMINO_MAIN_USDC_RESERVE, SQUADS_SMART_ACCOUNT_PROGRAM_ID, USDC_MINT,
+    YIELD_ROUTE_WITHDRAW_ACTION_SEED,
 };
 use loyal_yield_orchestrator::sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
     PgPool, Row,
 };
 use loyal_yield_orchestrator::{
-    policy_keypair_from_env, route_amount_evidence_from_metadata, solana_testing_keypair_from_env,
+    lookup_table_manifest_hash as control_plane_lookup_table_manifest_hash,
+    minimal_verified_table_bundle, policy_keypair_from_env, route_amount_evidence_from_metadata,
+    rpc_safety::{redacted_external_error, validate_rpc_endpoint, validate_rpc_genesis_hash},
+    select_lookup_table_bundle, shared_market_manifest_addresses, shared_market_manifest_hash,
+    solana_testing_keypair_from_env, vault_manifest_addresses, vault_manifest_hash,
     ConfirmSameMintRebalanceInput, CurrentIdleTokenBalance, DecisionAdvance, DecisionId,
-    DecisionStatus, IdleVaultDepositDecisionInput, NeonSqlClient, PlanOutcomeStatus,
+    DecisionStatus, EffectiveLookupTableRollout, IdleVaultDepositDecisionInput,
+    LookupTableAllocationKind, LookupTableBundleKind, LookupTableLifecycle,
+    LookupTableProvisioningRequestUpsert, LookupTableReadinessRecord, LookupTableReadinessStatus,
+    LookupTableRolloutMode, LookupTableSelectionKind, LookupTableSimulationState,
+    LookupTableUsageLeaseBundle, LookupTableUsageLeaseKind, NeonSqlClient, PlanOutcomeStatus,
     PolicyMatchInput, RebalanceDecision, ReconciledReservePosition, ReconciledVaultState,
-    RouteLookupTableUpsert, SameMintRebalanceInput, SameMintRebalanceResult, SnapshotId, VaultId,
+    ResolvedLookupTableBundle, ResolverSelection, ResolverSelectionInput, ResolverTableCandidate,
+    RouteLookupTable, SameMintRebalanceInput, SameMintRebalanceResult, SnapshotId, VaultId,
     AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
 use num_bigint::BigUint;
@@ -62,7 +78,7 @@ use solana_client::rpc_client::RpcClient;
 #[allow(deprecated)]
 use solana_sdk::address_lookup_table::{
     instruction as address_lookup_table_instruction, program as address_lookup_table_program,
-    state::{AddressLookupTable, LOOKUP_TABLE_MAX_ADDRESSES},
+    state::AddressLookupTable,
 };
 #[allow(deprecated)]
 use solana_sdk::system_instruction;
@@ -100,10 +116,9 @@ const KAMINO_INIT_OBLIGATION_FARM_ROUTE_STEP: &str = "kamino_init_obligation_far
 const KAMINO_REFRESH_OBLIGATION_ROUTE_STEP: &str = "kamino_refresh_obligation";
 const KAMINO_STABLE_UNIVERSE_PRESET: &str = "kamino_stable";
 const SAFE_RISK_PROFILE: &str = "safe";
-const LOOKUP_TABLE_EXTEND_CHUNK_SIZE: usize = 20;
-const LOOKUP_TABLE_WARMUP_MAX_POLLS: usize = 40;
-const LOOKUP_TABLE_WARMUP_POLL_MS: u64 = 500;
-
+const LOOKUP_TABLE_RESOLVER_EXACT_SEARCH_LIMIT: usize = 16;
+const LOOKUP_TABLE_ROUTE_LEASE_MINUTES: i64 = 10;
+const LOOKUP_TABLE_PREPARED_LEASE_MINUTES: i64 = 5;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Direction {
     MainToPrime,
@@ -261,8 +276,6 @@ struct CliOptions {
     reconcile_current_positions: bool,
     reconcile_reserves: Vec<String>,
     seed_from_user_position: bool,
-    provision_lookup_table: bool,
-    provision_route_lookup_table: bool,
     expected_source_snapshot_id: Option<i64>,
     expected_liquidity_mint: Option<String>,
     expected_amount_raw: Option<i64>,
@@ -273,6 +286,7 @@ struct CliOptions {
     expected_source_apy_bps: Option<i64>,
     expected_target_apy_bps: Option<i64>,
     expected_edge_bps: Option<i64>,
+    cluster: String,
     rpc_url: String,
     lookup_tables: Vec<Pubkey>,
 }
@@ -601,6 +615,7 @@ struct PolicyConstraintValidation {
 struct RouteExecutionPlan {
     pre_instructions: Vec<Instruction>,
     instructions: Vec<Instruction>,
+    lookup_table_manifest: LookupTableManifest,
     preview: RouteExecutionPreview,
 }
 
@@ -611,38 +626,197 @@ struct RouteExecutionSubmitResult {
     confirmed_slot: i64,
     simulation_units_consumed: Option<u64>,
     transaction_packet: TransactionPacketSummary,
-    lookup_table_provisioning: Value,
+    lookup_table_resolution: Value,
     confirmed: SameMintRebalanceResult,
 }
 
 #[derive(Debug)]
-struct RouteLookupTableCoverage {
-    scope: String,
-    lookup_table_accounts: Vec<AddressLookupTableAccount>,
-    required_addresses: Vec<Pubkey>,
-    missing_addresses: Vec<Pubkey>,
+struct CompiledLookupTableBundle {
+    domain: ResolvedLookupTableBundle,
+    transaction: Option<VersionedTransaction>,
+    transaction_packet: Option<TransactionPacketSummary>,
+    simulation_units_consumed: Option<u64>,
+    simulation_error: Option<String>,
+    verification_failures: Vec<Value>,
 }
 
-impl RouteLookupTableCoverage {
-    fn reuse_only_json(&self, options: &CliOptions, fee_payer: Pubkey) -> Value {
-        json!({
-            "enabled": false,
-            "mode": "route_execution_reuse_only",
-            "execute": options.execute,
-            "status": if self.missing_addresses.is_empty() { "lookup_table_coverage_ready" } else { "lookup_table_coverage_missing" },
-            "cluster": route_lookup_table_cluster(&options.rpc_url),
-            "scope": self.scope.as_str(),
-            "authority": fee_payer.to_string(),
-            "payer": fee_payer.to_string(),
-            "requiredAddresses": pubkeys_json(&self.required_addresses),
-            "requiredAddressCount": self.required_addresses.len(),
-            "missingBeforeProvision": pubkeys_json(&self.missing_addresses),
-            "missingBeforeProvisionCount": self.missing_addresses.len(),
-            "coverageAfterProvision": lookup_table_coverage_json(
-                &self.required_addresses,
-                &self.lookup_table_accounts
-            ),
-        })
+#[derive(Debug)]
+enum LookupTableResolverAttempt<T, E> {
+    Skipped { reason: &'static str },
+    Resolved(T),
+    Failed(E),
+}
+
+impl<T, E> LookupTableResolverAttempt<T, E> {
+    const fn state(&self) -> &'static str {
+        match self {
+            Self::Skipped { .. } => "skipped",
+            Self::Resolved(_) => "resolved",
+            Self::Failed(_) => "failed",
+        }
+    }
+}
+
+async fn attempt_reusable_resolution<T, E, Resolve, ResolveFuture>(
+    rollout_mode: LookupTableRolloutMode,
+    force_legacy: bool,
+    resolve: Resolve,
+) -> LookupTableResolverAttempt<T, E>
+where
+    Resolve: FnOnce() -> ResolveFuture,
+    ResolveFuture: Future<Output = Result<T, E>>,
+{
+    if force_legacy {
+        return LookupTableResolverAttempt::Skipped {
+            reason: "global force-legacy bypassed reusable resolution",
+        };
+    }
+    if rollout_mode == LookupTableRolloutMode::Legacy {
+        return LookupTableResolverAttempt::Skipped {
+            reason: "legacy rollout mode bypassed reusable resolution",
+        };
+    }
+    match resolve().await {
+        Ok(resolved) => LookupTableResolverAttempt::Resolved(resolved),
+        Err(error) => LookupTableResolverAttempt::Failed(error),
+    }
+}
+
+async fn attempt_legacy_resolution<T, E, Resolve, ResolveFuture>(
+    rollout_mode: LookupTableRolloutMode,
+    force_legacy: bool,
+    resolve: Resolve,
+) -> LookupTableResolverAttempt<T, E>
+where
+    Resolve: FnOnce() -> ResolveFuture,
+    ResolveFuture: Future<Output = Result<T, E>>,
+{
+    if !force_legacy && rollout_mode == LookupTableRolloutMode::ReusableOnly {
+        return LookupTableResolverAttempt::Skipped {
+            reason: "reusable-only rollout mode bypassed legacy resolution",
+        };
+    }
+    match resolve().await {
+        Ok(resolved) => LookupTableResolverAttempt::Resolved(resolved),
+        Err(error) => LookupTableResolverAttempt::Failed(error),
+    }
+}
+
+#[derive(Debug)]
+struct RuntimeLookupTableResolution {
+    rollout: EffectiveLookupTableRollout,
+    route_fingerprint: String,
+    requirements_fingerprint: String,
+    selection_fingerprint: Option<String>,
+    route_lease_reference: Option<String>,
+    active_binding_fingerprint: String,
+    active_binding_id: Option<i64>,
+    selection_kind: LookupTableSelectionKind,
+    fallback_reason: Option<String>,
+    blocker: Option<String>,
+    selected_bundle: Option<ResolvedLookupTableBundle>,
+    selected_transaction: Option<VersionedTransaction>,
+    selected_transaction_packet: Option<TransactionPacketSummary>,
+    selected_simulation_units_consumed: Option<u64>,
+    legacy_table_ids: Vec<i64>,
+    legacy_missing_addresses: BTreeSet<String>,
+    legacy_packet_fits: Option<bool>,
+    reusable_table_ids: Vec<i64>,
+    required_addresses: BTreeSet<String>,
+    reusable_missing_addresses: BTreeSet<String>,
+    reusable_ready: bool,
+    reusable_compiled_message_size: Option<usize>,
+    reusable_packet_fits: Option<bool>,
+    reusable_simulation_units_consumed: Option<u64>,
+    reusable_simulation_error: Option<String>,
+    observed_slot: i64,
+    evidence: Value,
+}
+
+#[derive(Debug)]
+struct RouteLookupTablePhase {
+    route_kind: &'static str,
+    scope: String,
+    source_reserve: String,
+    target_reserve: String,
+    instructions: Vec<Instruction>,
+    manifest: LookupTableManifest,
+    resolution: RuntimeLookupTableResolution,
+}
+
+#[derive(Debug)]
+struct SubmittedLookupTablePhase {
+    signature: String,
+    submitted_slot: i64,
+    confirmed_slot: i64,
+    simulation_units_consumed: Option<u64>,
+    transaction_packet: TransactionPacketSummary,
+    lookup_table_resolution: Value,
+}
+
+impl RuntimeLookupTableResolution {
+    fn selected_table_ids(&self) -> Vec<i64> {
+        self.selected_bundle
+            .as_ref()
+            .map(|bundle| bundle.tables.iter().map(|table| table.table_id).collect())
+            .unwrap_or_default()
+    }
+
+    fn require_ready(&self) -> Result<(), Box<dyn Error>> {
+        if let Some(blocker) = &self.blocker {
+            return Err(blocker.clone().into());
+        }
+        if self.selected_bundle.is_none()
+            || self.selected_transaction.is_none()
+            || self.selected_transaction_packet.is_none()
+            || self.selection_fingerprint.is_none()
+            || self.route_lease_reference.is_none()
+        {
+            return Err("lookup-table resolver did not produce a send-ready selection".into());
+        }
+        Ok(())
+    }
+
+    fn require_deferred_simulation_coverage(&self) -> Result<(), Box<dyn Error>> {
+        let legacy_ready =
+            self.legacy_missing_addresses.is_empty() && self.legacy_packet_fits == Some(true);
+        let reusable_ready =
+            self.reusable_missing_addresses.is_empty() && self.reusable_packet_fits == Some(true);
+        let ready = deferred_simulation_coverage_ready(
+            self.rollout.rollout_mode,
+            self.rollout.force_legacy,
+            legacy_ready,
+            reusable_ready,
+        );
+        if ready {
+            Ok(())
+        } else {
+            Err(format!(
+                "lookup-table coverage/packet gate failed before prerequisite transaction: mode={}, legacyMissing={}, reusableMissing={}, legacyPacketFits={:?}, reusablePacketFits={:?}",
+                self.rollout.rollout_mode.as_str(),
+                self.legacy_missing_addresses.len(),
+                self.reusable_missing_addresses.len(),
+                self.legacy_packet_fits,
+                self.reusable_packet_fits,
+            )
+            .into())
+        }
+    }
+}
+
+fn deferred_simulation_coverage_ready(
+    rollout_mode: LookupTableRolloutMode,
+    force_legacy: bool,
+    legacy_ready: bool,
+    reusable_ready: bool,
+) -> bool {
+    if force_legacy {
+        return legacy_ready;
+    }
+    match rollout_mode {
+        LookupTableRolloutMode::Legacy | LookupTableRolloutMode::Shadow => legacy_ready,
+        LookupTableRolloutMode::PreferReusable => reusable_ready || legacy_ready,
+        LookupTableRolloutMode::ReusableOnly => reusable_ready,
     }
 }
 
@@ -662,6 +836,8 @@ struct MissingObligationSetupDryRun {
     policy_source: &'static str,
     instruction_constraint_index: u8,
     vault_rent_top_up: Option<MissingObligationSetupFunding>,
+    instructions: Vec<Instruction>,
+    lookup_table_requirements: YieldRouteLookupTableRequirements,
     init_execution: PolicyTransactionBuild,
 }
 
@@ -676,13 +852,6 @@ struct MissingObligationSetupSubmitResult {
     init_confirmed_slot: i64,
     init_simulation_units_consumed: Option<u64>,
     init_transaction_packet: TransactionPacketSummary,
-}
-
-#[derive(Debug)]
-struct SubmittedPolicyTransaction {
-    signature: String,
-    submitted_slot: i64,
-    confirmed_slot: i64,
 }
 
 #[derive(Debug)]
@@ -722,6 +891,7 @@ struct InitialDepositPolicyPreview {
 struct InitialDepositPolicyPlan {
     pre_instructions: Vec<Instruction>,
     instruction: Instruction,
+    lookup_table_requirements: YieldRouteLookupTableRequirements,
     preview: InitialDepositPolicyPreview,
 }
 
@@ -744,6 +914,7 @@ struct FullWithdrawPolicyPreview {
 struct FullWithdrawPolicyPlan {
     pre_instructions: Vec<Instruction>,
     instruction: Instruction,
+    lookup_table_requirements: YieldRouteLookupTableRequirements,
     preview: FullWithdrawPolicyPreview,
 }
 
@@ -774,12 +945,6 @@ struct PolicyTransactionBuild {
     simulation_logs: Value,
     simulation_skipped_reason: Option<String>,
     simulation_units_consumed: Option<u64>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AltInstructionMode {
-    RejectProvisioning,
-    AllowProvisioning,
 }
 
 #[derive(Debug)]
@@ -847,7 +1012,14 @@ enum PlanBlocker {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() {
+    if let Err(error) = run().await {
+        eprintln!("{}", same_mint_fatal_error_payload(error.as_ref()));
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), Box<dyn Error>> {
     let options = match parse_args(env::args().skip(1)) {
         Ok(value) => value,
         Err(message) if message == "help" => {
@@ -856,6 +1028,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         Err(message) => return Err(message.into()),
     };
+    validate_rpc_endpoint(&options.rpc_url)?;
+    let rpc =
+        RpcClient::new_with_commitment(options.rpc_url.clone(), CommitmentConfig::confirmed());
+    let observed_genesis_hash = rpc
+        .get_genesis_hash()
+        .map_err(|_| "failed to read genesis hash from configured same-mint route RPC endpoint")?;
+    validate_same_mint_rpc_genesis(&options.cluster, observed_genesis_hash)?;
     let reserve_move = if let Some(reserve) = &options.idle_vault_deposit_reserve {
         ReserveMove {
             source_reserve: reserve.clone(),
@@ -868,7 +1047,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         env::var("NEON_DATABASE_URL").map_err(|_| "NEON_DATABASE_URL must be set")?;
     let pool = connect(&database_url).await?;
     let client = NeonSqlClient::from_pool(pool.clone());
-    client.apply_migrations().await?;
+    client
+        .require_schema_migration(17, "reusable_route_lookup_tables")
+        .await?;
 
     if let Some(amount_raw) = options.e2e_deposit_amount_raw {
         run_lifecycle_e2e_flow(&options, amount_raw)?;
@@ -992,6 +1173,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Some(setup_reserve) = &options.setup_obligation_reserve {
         run_setup_obligation_flow(
             &options,
+            &client,
             &vault,
             chain_preview
                 .as_ref()
@@ -1165,7 +1347,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             route_fee_payer.expect("chain preview implies route fee payer"),
         ) {
             Ok(plan) => (Some(plan), None),
-            Err(error) if !options.execute => (None, Some(error.to_string())),
+            Err(error) if !options.execute => (
+                None,
+                Some(safe_same_mint_operational_error_with_context(
+                    "route_plan_build_failed",
+                    error.as_ref(),
+                )),
+            ),
             Err(error) => return Err(error),
         }
     } else {
@@ -1182,100 +1370,90 @@ async fn main() -> Result<(), Box<dyn Error>> {
         route_execution.as_ref(),
     );
     if let Some(error) = &route_build_error {
-        execution_preflight_blockers
-            .push(format!("route execution plan could not be built: {error}"));
+        execution_preflight_blockers.push(error.clone());
     }
-    let mut route_lookup_table_provisioning: Option<Value> = None;
+    let mut route_lookup_table_resolution: Option<RuntimeLookupTableResolution> = None;
+    let mut route_lookup_table_evidence: Option<Value> = None;
     if let Some(route_execution) = &route_execution {
         let mut transaction_instructions = route_execution.pre_instructions.clone();
         transaction_instructions.extend(route_execution.instructions.iter().cloned());
-        if let Err(error) = guard_lookup_table_mutations(
-            &transaction_instructions,
-            AltInstructionMode::RejectProvisioning,
-            "route execution",
-        ) {
-            execution_preflight_blockers.push(error.to_string());
+        if let Err(error) =
+            guard_lookup_table_mutations(&transaction_instructions, "route execution")
+        {
+            execution_preflight_blockers.push(safe_same_mint_operational_error(&error));
         }
         let fee_payer = Pubkey::from_str(&route_execution.preview.fee_payer)?;
-        let delegated_signer = Pubkey::from_str(&route_execution.preview.signer)?;
-        let lookup_table_scope = same_mint_route_lookup_table_scope(&vault, &reserve_move);
         let route_rpc = RpcClient::new_with_commitment(
             options.rpc_url.to_owned(),
             CommitmentConfig::confirmed(),
         );
-        let coverage = route_lookup_table_reuse_coverage(
+        let delegated_signer = policy_keypair_from_env()?;
+        let admin_fee_payer = if options.optimization_cycle {
+            None
+        } else {
+            Some(solana_testing_keypair_from_env()?)
+        };
+        let fee_payer_signer: &dyn Signer = admin_fee_payer
+            .as_ref()
+            .map(|signer| signer as &dyn Signer)
+            .unwrap_or(&delegated_signer);
+        if fee_payer_signer.pubkey() != fee_payer {
+            return Err(format!(
+                "runtime lookup-table fee payer {} does not match prepared fee payer {}",
+                fee_payer_signer.pubkey(),
+                fee_payer
+            )
+            .into());
+        }
+        let transaction_signers = same_mint_route_signers(fee_payer_signer, &delegated_signer);
+        let lookup_table_scope = same_mint_route_lookup_table_scope_for_reserves(
+            &vault,
+            &reserve_move.source_reserve,
+            &reserve_move.target_reserve,
+        );
+        let resolution = resolve_route_lookup_tables(
             &client,
             &route_rpc,
             &options,
+            &vault,
+            &reserve_move.source_reserve,
+            &reserve_move.target_reserve,
+            "same_mint_kamino",
             &lookup_table_scope,
             fee_payer,
-            delegated_signer,
-            route_execution,
+            &transaction_instructions,
+            &route_execution.lookup_table_manifest,
+            &transaction_signers,
         )
         .await?;
-        if !options.provision_route_lookup_table {
-            if let Err(error) =
-                ensure_route_lookup_table_coverage(&coverage.scope, &coverage.missing_addresses)
-            {
-                execution_preflight_blockers.push(error.to_string());
-            }
+        if options.execute {
+            let acquire_route_lease =
+                resolution.blocker.is_none() && execution_preflight_blockers.is_empty();
+            persist_route_lookup_table_resolution(
+                &client,
+                &options,
+                &vault,
+                &reserve_move.source_reserve,
+                &reserve_move.target_reserve,
+                "same_mint_kamino",
+                &route_execution.lookup_table_manifest,
+                &resolution,
+                acquire_route_lease,
+                true,
+            )
+            .await?;
         }
-        route_lookup_table_provisioning = Some(coverage.reuse_only_json(&options, fee_payer));
+        if let Some(blocker) = &resolution.blocker {
+            execution_preflight_blockers.push(format!(
+                "lookup-table resolver blocked route execution: {blocker}"
+            ));
+        }
+        route_lookup_table_evidence = Some(resolution.evidence.clone());
+        route_lookup_table_resolution = Some(resolution);
     }
     let execution_preflight_blocker_reason = execution_preflight_blockers.first().cloned();
     let would_execute_route =
         route_execution.is_some() && execution_preflight_blocker_reason.is_none();
-    if options.provision_route_lookup_table {
-        if let Some(reason) = &execution_preflight_blocker_reason {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({
-                    "status": "route_lookup_table_provisioning_blocked",
-                    "reason": reason,
-                    "writesDecision": false,
-                    "writesCurrentPositions": false,
-                    "picksUpExecution": false,
-                    "sendsTransactions": false,
-                    "direction": options.direction.as_str(),
-                    "vault": vault_json(&vault),
-                    "requiredReserves": required_reserves_json(&reserve_move),
-                    "chainReconcile": chain_preview.as_ref().map(chain_reconcile_preview_json),
-                    "policyPreflight": policy_route_preflight_json(&vault, &reserve_move, policy_preflight.as_ref()),
-                    "routeExecution": route_execution.as_ref().map(|plan| route_execution_preview_json(&plan.preview)),
-                }))?
-            );
-            return Err("route lookup table provisioning blocked before send".into());
-        }
-        let route_execution = route_execution
-            .as_ref()
-            .ok_or("route execution plan is unavailable for lookup table provisioning")?;
-        let provisioning = provision_same_mint_route_lookup_table(
-            &client,
-            &options,
-            &vault,
-            &reserve_move,
-            route_execution,
-        )
-        .await?;
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&json!({
-                "status": if options.execute { "route_lookup_table_provisioned" } else { "route_lookup_table_provisioning_dry_run" },
-                "writesDecision": false,
-                "writesCurrentPositions": false,
-                "picksUpExecution": false,
-                "sendsTransactions": options.execute,
-                "direction": options.direction.as_str(),
-                "vault": vault_json(&vault),
-                "requiredReserves": required_reserves_json(&reserve_move),
-                "chainReconcile": chain_preview.as_ref().map(chain_reconcile_preview_json),
-                "policyPreflight": policy_route_preflight_json(&vault, &reserve_move, policy_preflight.as_ref()),
-                "routeExecution": route_execution_preview_json(&route_execution.preview),
-                "lookupTableProvisioning": provisioning,
-            }))?
-        );
-        return Ok(());
-    }
     if options.execute {
         if let Some(reason) = &execution_preflight_blocker_reason {
             println!(
@@ -1295,8 +1473,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     "userPositionSeed": user_position_seed.as_ref().map(user_position_seed_preview_json),
                     "policyPreflight": policy_route_preflight_json(&vault, &reserve_move, policy_preflight.as_ref()),
                     "sameMintInput": same_mint_input_json(&pre_reconcile_input),
-                    "routeExecution": route_execution.as_ref().map(|plan| route_execution_preview_json(&plan.preview)),
-                    "lookupTableProvisioning": route_lookup_table_provisioning.clone(),
+                    "routeExecution": route_execution.as_ref().map(route_execution_preview_json),
+                    "lookupTableResolution": route_lookup_table_evidence.clone(),
                     "targetObligationSetup": chain_preview.as_ref().and_then(|preview| target_obligation_setup_json(preview, &reserve_move, &vault, policy_preflight.as_ref())),
                     "missingObligationSetup": inline_missing_obligation_setup.clone(),
                 }))?
@@ -1329,8 +1507,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 "policyPreflight": policy_route_preflight_json(&vault, &reserve_move, policy_preflight.as_ref()),
                 "sameMintInput": same_mint_input_json(&pre_reconcile_input),
                 "routeBuildError": route_build_error,
-                "routeExecution": route_execution.as_ref().map(|plan| route_execution_preview_json(&plan.preview)),
-                "lookupTableProvisioning": route_lookup_table_provisioning,
+                "routeExecution": route_execution.as_ref().map(route_execution_preview_json),
+                "lookupTableResolution": route_lookup_table_evidence,
                 "targetObligationSetup": chain_preview.as_ref().and_then(|preview| target_obligation_setup_json(preview, &reserve_move, &vault, policy_preflight.as_ref())),
                 "missingObligationSetup": inline_missing_obligation_setup.clone(),
                 "executionPlan": {
@@ -1350,10 +1528,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let decision_id = prepared
             .decision_id
             .ok_or("planned same-mint rebalance result did not include decision id")?;
+        let predecision_lookup_tables = route_lookup_table_resolution
+            .as_ref()
+            .ok_or("planned same-mint route is missing predecision lookup-table resolution")?;
         let execution_decision = match load_prepared_same_mint_decision(&pool, decision_id).await {
             Ok(value) => value,
             Err(error) => {
-                let reason = error.to_string();
+                let reason = same_mint_decision_failure_reason("decision_load_failed", &error);
                 let _ = client
                     .advance_decision(
                         decision_id,
@@ -1362,6 +1543,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         },
                     )
                     .await;
+                release_route_resolution_lease(&client, predecision_lookup_tables).await;
                 return Err(format!(
                     "same-mint route execution failed after decision {}: {reason}",
                     decision_id.as_i64()
@@ -1370,7 +1552,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         };
         if let Err(error) = validate_execution_decision_route(&execution_decision, &reserve_move) {
-            let reason = error.to_string();
+            let reason =
+                same_mint_decision_failure_reason("decision_route_validation_failed", &error);
             let _ = client
                 .advance_decision(
                     decision_id,
@@ -1379,6 +1562,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     },
                 )
                 .await;
+            release_route_resolution_lease(&client, predecision_lookup_tables).await;
             return Err(format!(
                 "same-mint route execution failed after decision {}: {reason}",
                 decision_id.as_i64()
@@ -1404,7 +1588,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ) {
             Ok(value) => value,
             Err(error) => {
-                let reason = error.to_string();
+                let reason =
+                    same_mint_decision_failure_reason("route_plan_build_failed", error.as_ref());
                 let _ = client
                     .advance_decision(
                         decision_id,
@@ -1413,6 +1598,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         },
                     )
                     .await;
+                release_route_resolution_lease(&client, predecision_lookup_tables).await;
                 return Err(format!(
                     "same-mint route execution failed after decision {}: {reason}",
                     decision_id.as_i64()
@@ -1426,12 +1612,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &vault,
             &execution_decision,
             &route_execution,
+            predecision_lookup_tables,
         )
         .await
         {
             Ok(value) => value,
             Err(error) => {
-                let reason = error.to_string();
+                let reason =
+                    same_mint_decision_failure_reason("route_execution_failed", error.as_ref());
                 let _ = client
                     .advance_decision(
                         decision_id,
@@ -1468,7 +1656,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 "sameMintInput": same_mint_input_json(&pre_reconcile_input),
                 "preparedDecision": same_mint_result_json(&prepared),
                 "executionDecision": prepared_same_mint_decision_json(&execution_decision),
-                "routeExecution": route_execution_preview_json(&route_execution.preview),
+                "routeExecution": route_execution_preview_json(&route_execution),
                 "missingObligationSetup": route_execution.preview.missing_obligation_setup.as_ref().map(inline_missing_obligation_setup_json),
                 "executionPickup": {
                     "decisionId": decision_id.as_i64(),
@@ -1478,7 +1666,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     "confirmedSlot": execution.confirmed_slot,
                     "simulationUnitsConsumed": execution.simulation_units_consumed,
                     "transaction": transaction_packet_json(&execution.transaction_packet),
-                    "lookupTableProvisioning": execution.lookup_table_provisioning,
+                    "lookupTableResolution": execution.lookup_table_resolution,
                     "finalStatus": execution.confirmed.status.as_str(),
                 },
                 "confirmedDecision": same_mint_result_json(&execution.confirmed),
@@ -1490,6 +1678,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }))?
         );
         return Ok(());
+    }
+
+    if let Some(resolution) = route_lookup_table_resolution.as_ref() {
+        release_route_resolution_lease(&client, resolution).await;
     }
 
     println!(
@@ -1512,67 +1704,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "policyPreflight": policy_route_preflight_json(&vault, &reserve_move, policy_preflight.as_ref()),
             "sameMintInput": same_mint_input_json(&pre_reconcile_input),
             "preparedDecision": same_mint_result_json(&prepared),
-            "routeExecution": route_execution.as_ref().map(|plan| route_execution_preview_json(&plan.preview)),
+            "routeExecution": route_execution.as_ref().map(route_execution_preview_json),
             "missingObligationSetup": inline_missing_obligation_setup.clone(),
         }))?
     );
     Err("same-mint rebalance was not planned".into())
 }
 
-async fn provision_same_mint_route_lookup_table(
-    client: &NeonSqlClient,
-    options: &CliOptions,
-    vault: &SelectedVault,
-    reserve_move: &ReserveMove,
-    route_execution: &RouteExecutionPlan,
-) -> Result<Value, Box<dyn Error>> {
-    let rpc =
-        RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
-    let signer = policy_keypair_from_env()?;
-    let fee_payer: &dyn Signer = &signer;
-    let expected_fee_payer = Pubkey::from_str(&route_execution.preview.fee_payer)?;
-    if fee_payer.pubkey() != expected_fee_payer {
-        return Err(format!(
-            "route ALT provisioning payer {} does not match prepared route fee payer {}",
-            fee_payer.pubkey(),
-            expected_fee_payer
-        )
-        .into());
-    }
-    let scope = same_mint_route_lookup_table_scope(vault, reserve_move);
-    let lookup_table_pubkeys =
-        lookup_table_pubkeys_for_scope(client, options, &scope, fee_payer.pubkey()).await?;
-    let mut lookup_table_accounts =
-        load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
-    let mut transaction_instructions = route_execution.pre_instructions.clone();
-    transaction_instructions.extend(route_execution.instructions.iter().cloned());
-    let signer_pubkeys = same_mint_route_signer_pubkeys(fee_payer.pubkey(), signer.pubkey());
-    let required_lookup_addresses = best_case_lookup_table_addresses(
-        fee_payer.pubkey(),
-        &transaction_instructions,
-        &signer_pubkeys,
-    );
-    prepare_durable_route_lookup_table(
-        client,
-        &rpc,
-        options,
-        &scope,
-        fee_payer.pubkey(),
-        fee_payer,
-        &required_lookup_addresses,
-        &mut lookup_table_accounts,
-    )
-    .await
-}
-
 fn run_lifecycle_e2e_flow(options: &CliOptions, amount_raw: u64) -> Result<(), Box<dyn Error>> {
     let phase_specs = lifecycle_e2e_phase_specs(amount_raw);
     let mut phase_results = Vec::new();
-    let mut runtime_lookup_tables = Vec::new();
     for spec in phase_specs {
         let phase = LifecyclePhaseCommand {
             name: spec.name,
-            args: lifecycle_phase_args(options, &spec.args, &runtime_lookup_tables),
+            args: lifecycle_phase_args(options, &spec.args),
         };
         let result = run_lifecycle_phase(&phase, options)?;
         let success = result
@@ -1592,18 +1737,10 @@ fn run_lifecycle_e2e_flow(options: &CliOptions, amount_raw: u64) -> Result<(), B
                     "settings": options.settings,
                     "vaultIndex": options.vault_index,
                     "depositAmountRaw": amount_raw.to_string(),
-                    "runtimeLookupTables": runtime_lookup_tables.iter().map(ToString::to_string).collect::<Vec<_>>(),
                     "phases": phase_results,
                 }))?
             );
             return Err("same-mint lifecycle E2E phase failed".into());
-        }
-        if options.execute && spec.name == "policy_update" {
-            if let Some(created_lookup_table) =
-                created_lookup_table_from_lifecycle_phase_result(phase_results.last().unwrap())?
-            {
-                runtime_lookup_tables.push(created_lookup_table);
-            }
         }
     }
     let all_phase_processes_succeeded = phase_results.iter().all(|result| {
@@ -1625,7 +1762,6 @@ fn run_lifecycle_e2e_flow(options: &CliOptions, amount_raw: u64) -> Result<(), B
             "settings": options.settings,
             "vaultIndex": options.vault_index,
             "depositAmountRaw": amount_raw.to_string(),
-            "runtimeLookupTables": runtime_lookup_tables.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "phaseOrder": [
                 "policy_update",
                 "initial_main_usdc_deposit",
@@ -1637,6 +1773,11 @@ fn run_lifecycle_e2e_flow(options: &CliOptions, amount_raw: u64) -> Result<(), B
         }))?
     );
     Ok(())
+}
+
+fn validate_same_mint_rpc_genesis(cluster: &str, observed: Hash) -> Result<(), String> {
+    validate_rpc_genesis_hash(cluster, observed)
+        .map_err(|error| format!("refusing same-mint route work against mismatched RPC: {error}"))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1655,10 +1796,7 @@ fn lifecycle_e2e_phase_specs(amount_raw: u64) -> Vec<LifecyclePhaseSpec> {
     vec![
         LifecyclePhaseSpec {
             name: "policy_update",
-            args: vec![
-                "--update-policy".to_owned(),
-                "--provision-lookup-table".to_owned(),
-            ],
+            args: vec!["--update-policy".to_owned()],
         },
         LifecyclePhaseSpec {
             name: "initial_main_usdc_deposit",
@@ -1687,21 +1825,16 @@ fn lifecycle_e2e_phase_specs(amount_raw: u64) -> Vec<LifecyclePhaseSpec> {
     ]
 }
 
-fn lifecycle_phase_args(
-    options: &CliOptions,
-    phase_args: &[String],
-    runtime_lookup_tables: &[Pubkey],
-) -> Vec<String> {
+fn lifecycle_phase_args(options: &CliOptions, phase_args: &[String]) -> Vec<String> {
     let mut args = vec![
         "--settings".to_owned(),
         options.settings.clone(),
         "--vault-index".to_owned(),
         options.vault_index.to_string(),
+        "--cluster".to_owned(),
+        options.cluster.clone(),
     ];
     for lookup_table in &options.lookup_tables {
-        args.extend(["--lookup-table".to_owned(), lookup_table.to_string()]);
-    }
-    for lookup_table in runtime_lookup_tables {
         args.extend(["--lookup-table".to_owned(), lookup_table.to_string()]);
     }
     args.extend(phase_args.iter().cloned());
@@ -1712,20 +1845,6 @@ fn lifecycle_phase_args(
         args.push("--execute".to_owned());
     }
     args
-}
-
-fn created_lookup_table_from_lifecycle_phase_result(
-    result: &Value,
-) -> Result<Option<Pubkey>, Box<dyn Error>> {
-    let Some(raw) = result
-        .pointer("/stdout/lookupTableProvisioning/createdLookupTable")
-        .and_then(Value::as_str)
-    else {
-        return Ok(None);
-    };
-    Pubkey::from_str(raw).map(Some).map_err(|error| {
-        format!("policy update returned invalid lookup table {raw}: {error}").into()
-    })
 }
 
 fn run_lifecycle_phase(
@@ -1802,8 +1921,7 @@ async fn run_policy_update_flow(
         authority_signer.pubkey(),
     )
     .await?;
-    let mut lookup_table_accounts =
-        load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
+    let lookup_table_accounts = load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
     let delegated_signer = policy_keypair_from_env()?;
     let db_delegated_signer_matches = vault
         .delegated_signers
@@ -1917,22 +2035,31 @@ async fn run_policy_update_flow(
         );
 
     if all_in_one_best_case_fits {
-        let required_lookup_addresses = best_case_lookup_table_addresses(
+        let policy_instructions = vec![all_in_one_instruction.clone()];
+        let policy_manifest = policy_lookup_table_manifest(
             authority_signer.pubkey(),
-            &[all_in_one_instruction.clone()],
-            &[authority_signer.pubkey()],
-        );
-        let lookup_table_provisioning = prepare_durable_route_lookup_table(
+            &policy_instructions,
+            vault,
+            &[&all_in_one_setup],
+            &[policy],
+        )?;
+        let policy_lookup_table_phase = prepare_route_lookup_table_phase(
             client,
             &rpc,
             options,
-            &policy_lookup_table_scope,
+            vault,
+            "policy",
+            "policy",
+            "policy_update_all_in_one",
+            policy_lookup_table_scope.clone(),
             authority_signer.pubkey(),
-            &authority_signer,
-            &required_lookup_addresses,
-            &mut lookup_table_accounts,
+            policy_instructions,
+            policy_manifest,
+            &[&authority_signer],
+            options.execute,
         )
         .await?;
+        let lookup_table_provisioning = policy_lookup_table_phase.resolution.evidence.clone();
         let policy_transaction = build_policy_transaction(
             &rpc,
             authority_signer.pubkey(),
@@ -1980,33 +2107,19 @@ async fn run_policy_update_flow(
             return Ok(());
         }
 
-        if let Some(error) = policy_transaction.simulation_error.clone() {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({
-                    "status": "policy_update_simulation_failed",
-                    "writesDecision": false,
-                    "sendsTransactions": false,
-                    "fallbackRequired": false,
-                    "lookupTableProvisioning": lookup_table_provisioning.clone(),
-                    "policyAllInOneAttempt": all_in_one_preview,
-                    "policyCreate": if policy_exists { None } else { Some(policy_preview.clone()) },
-                    "policyUpdate": if policy_exists { Some(policy_preview.clone()) } else { None },
-                    "policyFinalizeUpdate": Value::Null,
-                }))?
-            );
-            return Err(format!(
-                "policy {} simulation failed: {error}",
-                if policy_exists { "update" } else { "create" }
-            )
-            .into());
-        }
-
-        let submitted_slot = rpc.get_slot()?;
-        let signature = rpc
-            .send_and_confirm_transaction(&policy_transaction.transaction)?
-            .to_string();
-        let confirmed_slot = rpc.get_slot()?;
+        let submitted_policy = submit_route_lookup_table_phase(
+            client,
+            &rpc,
+            options,
+            vault,
+            &policy_lookup_table_phase,
+            &[&authority_signer],
+            &format!("policy-update:{policy}"),
+        )
+        .await?;
+        let submitted_slot = u64::try_from(submitted_policy.submitted_slot)?;
+        let signature = submitted_policy.signature.clone();
+        let confirmed_slot = u64::try_from(submitted_policy.confirmed_slot)?;
         let create_signature = if policy_exists {
             None
         } else {
@@ -2057,6 +2170,7 @@ async fn run_policy_update_flow(
                 "sendsTransactions": true,
                 "fallbackRequired": false,
                 "lookupTableProvisioning": lookup_table_provisioning,
+                "lookupTableResolution": submitted_policy.lookup_table_resolution,
                 "signature": signature,
                 "submittedSlot": i64::try_from(submitted_slot)?,
                 "confirmedSlot": i64::try_from(confirmed_slot)?,
@@ -2166,23 +2280,71 @@ async fn run_policy_update_flow(
         .first()
         .ok_or("fallback setup policy instruction was not built")?
         .clone();
-    let required_lookup_addresses = best_case_lookup_table_addresses(
+    let route_policy_instructions = vec![route_instruction.clone()];
+    let setup_policy_instructions = vec![setup_instruction.clone()];
+    let route_policy_manifest = policy_lookup_table_manifest(
         authority_signer.pubkey(),
-        &[route_instruction.clone(), setup_instruction.clone()],
-        &[authority_signer.pubkey()],
-    );
-    let lookup_table_provisioning = prepare_durable_route_lookup_table(
+        &route_policy_instructions,
+        vault,
+        &[&route_setup],
+        &[policy],
+    )?;
+    let setup_policy_manifest = policy_lookup_table_manifest(
+        authority_signer.pubkey(),
+        &setup_policy_instructions,
+        vault,
+        &[&setup_policy_setup],
+        &[setup_policy],
+    )?;
+    let setup_policy_requires_landed_route_create = !policy_exists && !setup_policy_exists;
+    let route_policy_lookup_table_phase = prepare_route_lookup_table_phase(
         client,
         &rpc,
         options,
-        &policy_lookup_table_scope,
+        vault,
+        "policy",
+        "policy",
+        "route_policy_update",
+        policy_lookup_table_scope.clone(),
         authority_signer.pubkey(),
-        &authority_signer,
-        &required_lookup_addresses,
-        &mut lookup_table_accounts,
+        route_policy_instructions,
+        route_policy_manifest,
+        &[&authority_signer],
+        options.execute,
     )
     .await?;
-    let setup_policy_requires_landed_route_create = !policy_exists && !setup_policy_exists;
+    let setup_policy_lookup_table_phase = prepare_route_lookup_table_phase(
+        client,
+        &rpc,
+        options,
+        vault,
+        "policy",
+        "setup_policy",
+        "setup_policy_update",
+        policy_lookup_table_scope.clone(),
+        authority_signer.pubkey(),
+        setup_policy_instructions,
+        setup_policy_manifest,
+        &[&authority_signer],
+        options.execute && !setup_policy_requires_landed_route_create,
+    )
+    .await?;
+    if options.execute && setup_policy_requires_landed_route_create {
+        setup_policy_lookup_table_phase
+            .resolution
+            .require_deferred_simulation_coverage()
+            .map_err(|error| {
+                format!(
+                    "setup-policy ALT coverage is incomplete before route-policy creation: {error}"
+                )
+            })?;
+    }
+    let lookup_table_provisioning = json!({
+        "mode": "active_reusable_resolver",
+        "routePolicy": route_policy_lookup_table_phase.resolution.evidence.clone(),
+        "setupPolicy": setup_policy_lookup_table_phase.resolution.evidence.clone(),
+        "setupSimulationDeferredUntilRouteCreateLands": setup_policy_requires_landed_route_create,
+    });
     let setup_policy_simulation_skip_reason = setup_policy_requires_landed_route_create.then(|| {
         "setup policy create uses the next Squads policy seed and must be simulated after the route policy create lands".to_owned()
     });
@@ -2307,16 +2469,25 @@ async fn run_policy_update_flow(
         return Err(format!("fallback setup policy simulation failed: {error}").into());
     }
 
-    let route_submitted_slot = rpc.get_slot()?;
-    let route_signature = rpc
-        .send_and_confirm_transaction(&route_policy_transaction.transaction)?
-        .to_string();
-    let route_confirmed_slot = rpc.get_slot()?;
+    let submitted_route_policy = submit_route_lookup_table_phase(
+        client,
+        &rpc,
+        options,
+        vault,
+        &route_policy_lookup_table_phase,
+        &[&authority_signer],
+        &format!("route-policy-update:{policy}"),
+    )
+    .await?;
+    let route_submitted_slot = u64::try_from(submitted_route_policy.submitted_slot)?;
+    let route_signature = submitted_route_policy.signature.clone();
+    let route_confirmed_slot = u64::try_from(submitted_route_policy.confirmed_slot)?;
+    let mut active_setup_lookup_table_phase = setup_policy_lookup_table_phase;
     if setup_policy_requires_landed_route_create {
         setup_policy_transaction = build_policy_transaction(
             &rpc,
             authority_signer.pubkey(),
-            setup_instruction,
+            setup_instruction.clone(),
             &lookup_table_accounts,
             &authority_signer,
             "setup policy fallback create",
@@ -2362,12 +2533,43 @@ async fn run_policy_update_flow(
             )
             .into());
         }
+        let setup_policy_manifest = policy_lookup_table_manifest(
+            authority_signer.pubkey(),
+            std::slice::from_ref(&setup_instruction),
+            vault,
+            &[&setup_policy_setup],
+            &[setup_policy],
+        )?;
+        active_setup_lookup_table_phase = prepare_route_lookup_table_phase(
+            client,
+            &rpc,
+            options,
+            vault,
+            "policy",
+            "setup_policy",
+            "setup_policy_update",
+            policy_lookup_table_scope.clone(),
+            authority_signer.pubkey(),
+            vec![setup_instruction.clone()],
+            setup_policy_manifest,
+            &[&authority_signer],
+            true,
+        )
+        .await?;
     }
-    let setup_submitted_slot = rpc.get_slot()?;
-    let setup_signature = rpc
-        .send_and_confirm_transaction(&setup_policy_transaction.transaction)?
-        .to_string();
-    let setup_confirmed_slot = rpc.get_slot()?;
+    let submitted_setup_policy = submit_route_lookup_table_phase(
+        client,
+        &rpc,
+        options,
+        vault,
+        &active_setup_lookup_table_phase,
+        &[&authority_signer],
+        &format!("setup-policy-update:{setup_policy}"),
+    )
+    .await?;
+    let setup_submitted_slot = u64::try_from(submitted_setup_policy.submitted_slot)?;
+    let setup_signature = submitted_setup_policy.signature.clone();
+    let setup_confirmed_slot = u64::try_from(submitted_setup_policy.confirmed_slot)?;
     let create_signature = if policy_exists {
         None
     } else {
@@ -2460,6 +2662,10 @@ async fn run_policy_update_flow(
             "fallbackRequired": true,
             "fallbackReason": "all_safe_one_policy_exceeds_packet_limit",
             "lookupTableProvisioning": lookup_table_provisioning,
+            "lookupTableResolution": {
+                "routePolicy": submitted_route_policy.lookup_table_resolution,
+                "setupPolicy": submitted_setup_policy.lookup_table_resolution,
+            },
             "signature": route_signature,
             "submittedSlot": i64::try_from(route_submitted_slot)?,
             "confirmedSlot": i64::try_from(route_confirmed_slot)?,
@@ -2507,8 +2713,6 @@ fn build_missing_obligation_setup_dry_run(
 ) -> Result<MissingObligationSetupDryRun, Box<dyn Error>> {
     let rpc =
         RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
-    let lookup_table_pubkeys = lookup_table_pubkeys_from_options(options)?;
-    let lookup_table_accounts = load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
     let delegated_signer = policy_keypair_from_env()?;
     let admin_fee_payer = if options.optimization_cycle {
         None
@@ -2521,7 +2725,7 @@ fn build_missing_obligation_setup_dry_run(
         .unwrap_or(&delegated_signer);
     build_missing_obligation_setup_dry_run_with_signers(
         &rpc,
-        &lookup_table_accounts,
+        &[],
         vault,
         target,
         policy_preflight,
@@ -2585,17 +2789,24 @@ fn build_missing_obligation_setup_dry_run_with_signers(
         "setup_policy"
     };
 
-    let init_execution = build_init_obligation_execution_transaction(
-        rpc,
-        lookup_table_accounts,
+    let instruction_plan = init_obligation_execution_instructions(
         policy,
         account_index,
         vault_pubkey,
         target,
         instruction_constraint_index,
-        fee_payer,
         delegated_signer,
         &setup_pre_instructions,
+    )?;
+    let (instructions, lookup_table_requirements) = instruction_plan.into_parts();
+    let transaction_signers = same_mint_route_signers(fee_payer, delegated_signer);
+    let init_execution = build_signed_transaction(
+        rpc,
+        fee_payer.pubkey(),
+        &instructions,
+        lookup_table_accounts,
+        &transaction_signers,
+        "init-obligation setup execution",
         None,
     )?;
 
@@ -2604,20 +2815,22 @@ fn build_missing_obligation_setup_dry_run_with_signers(
         policy_source,
         instruction_constraint_index,
         vault_rent_top_up,
+        instructions,
+        lookup_table_requirements,
         init_execution,
     })
 }
 
-async fn execute_missing_obligation_setup(
+async fn execute_missing_obligation_setup_with_reusable_alts(
     options: &CliOptions,
+    client: &NeonSqlClient,
     vault: &SelectedVault,
+    _preview: &ChainReconcilePreview,
     target: &ChainPositionSummary,
     policy_preflight: Option<&PolicyAccountPreflight>,
-) -> Result<MissingObligationSetupSubmitResult, Box<dyn Error>> {
+) -> Result<(MissingObligationSetupSubmitResult, Value), Box<dyn Error>> {
     let rpc =
         RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
-    let lookup_table_pubkeys = lookup_table_pubkeys_from_options(options)?;
-    let lookup_table_accounts = load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
     let delegated_signer = policy_keypair_from_env()?;
     let admin_fee_payer = if options.optimization_cycle {
         None
@@ -2628,26 +2841,6 @@ async fn execute_missing_obligation_setup(
         .as_ref()
         .map(|keypair| keypair as &dyn Signer)
         .unwrap_or(&delegated_signer);
-    execute_missing_obligation_setup_with_signers(
-        &rpc,
-        &lookup_table_accounts,
-        vault,
-        target,
-        policy_preflight,
-        fee_payer,
-        &delegated_signer,
-    )
-}
-
-fn execute_missing_obligation_setup_with_signers(
-    rpc: &RpcClient,
-    lookup_table_accounts: &[AddressLookupTableAccount],
-    vault: &SelectedVault,
-    target: &ChainPositionSummary,
-    policy_preflight: Option<&PolicyAccountPreflight>,
-    fee_payer: &dyn Signer,
-    delegated_signer: &dyn Signer,
-) -> Result<MissingObligationSetupSubmitResult, Box<dyn Error>> {
     let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
     let account_index = u8::try_from(vault.vault_index).map_err(|_| {
         format!(
@@ -2656,48 +2849,81 @@ fn execute_missing_obligation_setup_with_signers(
         )
     })?;
     let (policy, instruction_constraint_index) =
-        resolve_init_obligation_policy(Some(rpc), vault, target, policy_preflight)?;
+        resolve_init_obligation_policy(Some(&rpc), vault, target, policy_preflight)?;
     let (vault_rent_top_up, setup_pre_instructions) =
-        missing_obligation_setup_vault_rent_top_up(rpc, vault_pubkey, fee_payer)?;
+        missing_obligation_setup_vault_rent_top_up(&rpc, vault_pubkey, fee_payer)?;
     let route_policy = Pubkey::from_str(&vault.policy_account)?;
     let policy_source = if policy == route_policy {
         "route_policy"
     } else {
         "setup_policy"
     };
-    let init_execution = build_init_obligation_execution_transaction(
-        rpc,
-        lookup_table_accounts,
+    let instruction_plan = init_obligation_execution_instructions(
         policy,
         account_index,
         vault_pubkey,
         target,
         instruction_constraint_index,
-        fee_payer,
-        delegated_signer,
+        &delegated_signer,
         &setup_pre_instructions,
-        None,
     )?;
-    if let Some(error) = &init_execution.simulation_error {
-        return Err(format!("init-obligation execution simulation failed: {error}").into());
-    }
-    let init_submission = submit_built_policy_transaction(rpc, &init_execution)?;
-
-    Ok(MissingObligationSetupSubmitResult {
-        policy_account: policy.to_string(),
-        policy_source,
-        instruction_constraint_index,
-        vault_rent_top_up,
-        init_signature: init_submission.signature,
-        init_submitted_slot: init_submission.submitted_slot,
-        init_confirmed_slot: init_submission.confirmed_slot,
-        init_simulation_units_consumed: init_execution.simulation_units_consumed,
-        init_transaction_packet: init_execution.transaction_packet,
-    })
+    let (instructions, lookup_table_requirements) = instruction_plan.into_parts();
+    let manifest = route_lookup_table_manifest(
+        fee_payer.pubkey(),
+        &instructions,
+        vault,
+        &lookup_table_requirements,
+        &[],
+    )?;
+    let signers = same_mint_route_signers(fee_payer, &delegated_signer);
+    let scope =
+        same_mint_route_lookup_table_scope_for_reserves(vault, &target.reserve, &target.reserve);
+    let phase = prepare_route_lookup_table_phase(
+        client,
+        &rpc,
+        options,
+        vault,
+        &target.reserve,
+        &target.reserve,
+        "kamino_obligation_setup",
+        scope,
+        fee_payer.pubkey(),
+        instructions,
+        manifest,
+        &signers,
+        true,
+    )
+    .await?;
+    let submitted = submit_route_lookup_table_phase(
+        client,
+        &rpc,
+        options,
+        vault,
+        &phase,
+        &signers,
+        &format!("kamino-obligation-setup:{}", target.obligation),
+    )
+    .await?;
+    let lookup_table_resolution = submitted.lookup_table_resolution.clone();
+    Ok((
+        MissingObligationSetupSubmitResult {
+            policy_account: policy.to_string(),
+            policy_source,
+            instruction_constraint_index,
+            vault_rent_top_up,
+            init_signature: submitted.signature,
+            init_submitted_slot: submitted.submitted_slot,
+            init_confirmed_slot: submitted.confirmed_slot,
+            init_simulation_units_consumed: submitted.simulation_units_consumed,
+            init_transaction_packet: submitted.transaction_packet,
+        },
+        lookup_table_resolution,
+    ))
 }
 
 async fn run_setup_obligation_flow(
     options: &CliOptions,
+    client: &NeonSqlClient,
     vault: &SelectedVault,
     preview: &ChainReconcilePreview,
     setup_reserve: &str,
@@ -2730,6 +2956,44 @@ async fn run_setup_obligation_flow(
     if !options.execute {
         let dry_run =
             build_missing_obligation_setup_dry_run(options, vault, target, policy_preflight)?;
+        let delegated_signer = policy_keypair_from_env()?;
+        let admin_fee_payer = if options.optimization_cycle {
+            None
+        } else {
+            Some(solana_testing_keypair_from_env()?)
+        };
+        let fee_payer: &dyn Signer = admin_fee_payer
+            .as_ref()
+            .map(|keypair| keypair as &dyn Signer)
+            .unwrap_or(&delegated_signer);
+        let rpc = RpcClient::new_with_commitment(
+            options.rpc_url.to_owned(),
+            CommitmentConfig::confirmed(),
+        );
+        let manifest = route_lookup_table_manifest(
+            fee_payer.pubkey(),
+            &dry_run.instructions,
+            vault,
+            &dry_run.lookup_table_requirements,
+            &[],
+        )?;
+        let signers = same_mint_route_signers(fee_payer, &delegated_signer);
+        let lookup_table_phase = prepare_route_lookup_table_phase(
+            client,
+            &rpc,
+            options,
+            vault,
+            setup_reserve,
+            setup_reserve,
+            "kamino_obligation_setup",
+            same_mint_route_lookup_table_scope_for_reserves(vault, setup_reserve, setup_reserve),
+            fee_payer.pubkey(),
+            dry_run.instructions.clone(),
+            manifest,
+            &signers,
+            false,
+        )
+        .await?;
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
@@ -2748,12 +3012,21 @@ async fn run_setup_obligation_flow(
                 },
                 "chainReconcile": chain_reconcile_preview_json(preview),
                 "missingObligationSetup": missing_obligation_setup_dry_run_json(target, &dry_run),
+                "lookupTableResolution": lookup_table_phase.resolution.evidence,
             }))?
         );
         return Ok(());
     }
 
-    let result = execute_missing_obligation_setup(options, vault, target, policy_preflight).await?;
+    let (result, lookup_table_resolution) = execute_missing_obligation_setup_with_reusable_alts(
+        options,
+        client,
+        vault,
+        preview,
+        target,
+        policy_preflight,
+    )
+    .await?;
     let post_preview = load_chain_reconcile_preview(
         &options.rpc_url,
         vault,
@@ -2781,42 +3054,28 @@ async fn run_setup_obligation_flow(
                 "obligationExists": post_target.obligation_exists,
             },
             "setup": missing_obligation_setup_submit_result_json(target, &result),
+            "lookupTableResolution": lookup_table_resolution,
             "postChainReconcile": chain_reconcile_preview_json(&post_preview),
         }))?
     );
     Ok(())
 }
 
-fn submit_built_policy_transaction(
-    rpc: &RpcClient,
-    transaction: &PolicyTransactionBuild,
-) -> Result<SubmittedPolicyTransaction, Box<dyn Error>> {
-    let submitted_slot = i64::try_from(rpc.get_slot()?)?;
-    let signature = rpc
-        .send_and_confirm_transaction(&transaction.transaction)?
-        .to_string();
-    let confirmed_slot = i64::try_from(rpc.get_slot()?)?;
-    Ok(SubmittedPolicyTransaction {
-        signature,
-        submitted_slot,
-        confirmed_slot,
-    })
-}
-
-fn build_init_obligation_execution_transaction(
-    rpc: &RpcClient,
-    lookup_table_accounts: &[AddressLookupTableAccount],
+fn init_obligation_execution_instructions(
     policy: Pubkey,
     account_index: u8,
     vault_pubkey: Pubkey,
     target: &ChainPositionSummary,
     instruction_constraint_index: u8,
-    fee_payer: &dyn Signer,
     delegated_signer: &dyn Signer,
     setup_pre_instructions: &[Instruction],
-    simulation_skip_reason: Option<String>,
-) -> Result<PolicyTransactionBuild, Box<dyn Error>> {
+) -> Result<YieldRouteInstructionPlan, Box<dyn Error>> {
     let init_instruction = kamino_init_obligation_instruction(vault_pubkey, target)?;
+    guard_lookup_table_mutations(
+        std::slice::from_ref(init_instruction.instruction()),
+        "raw init-obligation policy inner instruction",
+    )?;
+    let (init_instruction, mut init_requirements) = init_instruction.into_parts();
     let mut transaction_accounts = Vec::new();
     let init_compiled =
         compile_squads_inner_instruction(&mut transaction_accounts, init_instruction);
@@ -2828,18 +3087,19 @@ fn build_init_obligation_execution_transaction(
         vec![instruction_constraint_index],
         transaction_accounts,
     );
-    let transaction_signers = same_mint_route_signers(fee_payer, delegated_signer);
-    let mut instructions = setup_pre_instructions.to_vec();
-    instructions.push(outer_instruction);
-    build_signed_transaction(
-        rpc,
-        fee_payer.pubkey(),
-        &instructions,
-        lookup_table_accounts,
-        &transaction_signers,
-        "init-obligation setup execution",
-        simulation_skip_reason,
-    )
+    init_requirements.add_policy(policy);
+    let mut outer_requirements = YieldRouteLookupTableRequirements::default();
+    outer_requirements.add_vault_account(vault_pubkey);
+    outer_requirements.add_policy(policy);
+    let mut plan = YieldRouteInstructionPlan::with_outer_context(outer_requirements);
+    for instruction in setup_pre_instructions {
+        plan.push_outer_instruction(instruction.clone());
+    }
+    plan.push(YieldRouteInstruction::new(
+        outer_instruction,
+        init_requirements,
+    ))?;
+    Ok(plan)
 }
 
 async fn run_initial_reserve_deposit_flow(
@@ -2857,8 +3117,6 @@ async fn run_initial_reserve_deposit_flow(
 
     let rpc =
         RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
-    let lookup_table_pubkeys = lookup_table_pubkeys_from_options(options)?;
-    let lookup_table_accounts = load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
     let wallet_signer = solana_testing_keypair_from_env()?;
     let delegated_signer = policy_keypair_from_env()?;
     let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
@@ -2872,7 +3130,7 @@ async fn run_initial_reserve_deposit_flow(
     let mut active_preview = initial_preview.clone();
     let mut reloaded_policy_preflight: Option<PolicyAccountPreflight> = None;
     let mut missing_obligation_setup_result: Option<Value> = None;
-    let missing_obligation_setup_dry_run =
+    let mut missing_obligation_setup_dry_run =
         if !options.execute && !deposit_position.obligation_exists {
             Some(
                 build_missing_obligation_setup_dry_run(
@@ -2887,13 +3145,56 @@ async fn run_initial_reserve_deposit_flow(
                         "targetObligation": deposit_position.obligation,
                         "targetReserve": deposit_position.reserve,
                         "targetMarket": deposit_position.market,
-                        "error": error.to_string(),
+                        "error": safe_same_mint_operational_error(error.as_ref()),
                     })
                 }),
             )
         } else {
             None
         };
+    if !options.execute && !deposit_position.obligation_exists {
+        if let Ok(setup_dry_run) = build_missing_obligation_setup_dry_run(
+            options,
+            vault,
+            deposit_position,
+            policy_preflight,
+        ) {
+            let setup_manifest = route_lookup_table_manifest(
+                wallet_signer.pubkey(),
+                &setup_dry_run.instructions,
+                vault,
+                &setup_dry_run.lookup_table_requirements,
+                &[],
+            )?;
+            let setup_signers: Vec<&dyn Signer> = vec![&wallet_signer, &delegated_signer];
+            let setup_phase = prepare_route_lookup_table_phase(
+                client,
+                &rpc,
+                options,
+                vault,
+                deposit_reserve,
+                deposit_reserve,
+                "kamino_obligation_setup",
+                same_mint_route_lookup_table_scope_for_reserves(
+                    vault,
+                    deposit_reserve,
+                    deposit_reserve,
+                ),
+                wallet_signer.pubkey(),
+                setup_dry_run.instructions,
+                setup_manifest,
+                &setup_signers,
+                false,
+            )
+            .await?;
+            if let Some(Value::Object(fields)) = missing_obligation_setup_dry_run.as_mut() {
+                fields.insert(
+                    "lookupTableResolution".to_owned(),
+                    setup_phase.resolution.evidence,
+                );
+            }
+        }
+    }
     let wallet_usdc_ata =
         derive_associated_token_address(&wallet_signer.pubkey(), &USDC_MINT, &spl_token::ID);
     let vault_usdc_ata = derive_associated_token_address(&vault_pubkey, &USDC_MINT, &spl_token::ID);
@@ -2935,13 +3236,22 @@ async fn run_initial_reserve_deposit_flow(
         return Err("initial reserve deposit preflight blocked before setup".into());
     }
     if options.execute && !deposit_position.obligation_exists {
-        let setup_result =
-            execute_missing_obligation_setup(options, vault, deposit_position, policy_preflight)
-                .await?;
-        missing_obligation_setup_result = Some(missing_obligation_setup_submit_result_json(
-            deposit_position,
-            &setup_result,
-        ));
+        let (setup_result, lookup_table_resolution) =
+            execute_missing_obligation_setup_with_reusable_alts(
+                options,
+                client,
+                vault,
+                initial_preview,
+                deposit_position,
+                policy_preflight,
+            )
+            .await?;
+        let mut setup_result_json =
+            missing_obligation_setup_submit_result_json(deposit_position, &setup_result);
+        if let Value::Object(fields) = &mut setup_result_json {
+            fields.insert("lookupTableResolution".to_owned(), lookup_table_resolution);
+        }
+        missing_obligation_setup_result = Some(setup_result_json);
         active_preview =
             load_chain_reconcile_preview(&options.rpc_url, vault, &[deposit_reserve.to_owned()])?;
         reloaded_policy_preflight = Some(load_policy_account_preflight(
@@ -2991,7 +3301,7 @@ async fn run_initial_reserve_deposit_flow(
         &rpc,
         wallet_signer.pubkey(),
         &funding_instructions,
-        &lookup_table_accounts,
+        &[],
         &[&wallet_signer],
         "initial reserve funding",
         funding_skip_reason,
@@ -3009,7 +3319,7 @@ async fn run_initial_reserve_deposit_flow(
     ) {
         Ok(plan) => Some(plan),
         Err(error) => {
-            blockers.push(error.to_string());
+            blockers.push(safe_same_mint_operational_error(error.as_ref()));
             None
         }
     };
@@ -3029,11 +3339,47 @@ async fn run_initial_reserve_deposit_flow(
             &rpc,
             wallet_signer.pubkey(),
             &policy_instructions,
-            &lookup_table_accounts,
+            &[],
             &[&wallet_signer, &delegated_signer],
             "initial reserve policy deposit",
             policy_simulation_skip_reason,
         )?)
+    } else {
+        None
+    };
+    let pre_funding_lookup_table_phase = if let Some(plan) = policy_plan.as_ref() {
+        let mut instructions = plan.pre_instructions.clone();
+        instructions.push(plan.instruction.clone());
+        let manifest = route_lookup_table_manifest(
+            wallet_signer.pubkey(),
+            &instructions,
+            vault,
+            &plan.lookup_table_requirements,
+            &[],
+        )?;
+        let signers: Vec<&dyn Signer> = vec![&wallet_signer, &delegated_signer];
+        Some(
+            prepare_route_lookup_table_phase(
+                client,
+                &rpc,
+                options,
+                vault,
+                deposit_reserve,
+                deposit_reserve,
+                "initial_reserve_deposit",
+                same_mint_route_lookup_table_scope_for_reserves(
+                    vault,
+                    deposit_reserve,
+                    deposit_reserve,
+                ),
+                wallet_signer.pubkey(),
+                instructions,
+                manifest,
+                &signers,
+                false,
+            )
+            .await?,
+        )
     } else {
         None
     };
@@ -3071,9 +3417,21 @@ async fn run_initial_reserve_deposit_flow(
                 "fundingTransaction": policy_transaction_json(&funding_transaction),
                 "policyDeposit": policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
                 "policyDepositTransaction": dry_run_policy_transaction.as_ref().map(policy_transaction_json),
+                "lookupTableResolution": pre_funding_lookup_table_phase.as_ref().map(|phase| phase.resolution.evidence.clone()),
             }))?
         );
         return Ok(());
+    }
+
+    if let Some(phase) = pre_funding_lookup_table_phase.as_ref() {
+        phase
+            .resolution
+            .require_deferred_simulation_coverage()
+            .map_err(|error| {
+                format!(
+                    "initial reserve deposit ALT coverage is incomplete before wallet funding: {error}"
+                )
+            })?;
     }
 
     if !blockers.is_empty() {
@@ -3125,26 +3483,49 @@ async fn run_initial_reserve_deposit_flow(
     )?;
     let mut policy_instructions = policy_plan.pre_instructions.clone();
     policy_instructions.push(policy_plan.instruction.clone());
-    let policy_transaction = build_signed_transaction(
-        &rpc,
+    let policy_manifest = route_lookup_table_manifest(
         wallet_signer.pubkey(),
         &policy_instructions,
-        &lookup_table_accounts,
-        &[&wallet_signer, &delegated_signer],
-        "initial reserve policy deposit",
-        None,
+        vault,
+        &policy_plan.lookup_table_requirements,
+        &[],
     )?;
-    if let Some(error) = &policy_transaction.simulation_error {
-        return Err(format!(
-            "initial reserve policy deposit simulation failed after funding tx {}: {error}",
+    let policy_signers: Vec<&dyn Signer> = vec![&wallet_signer, &delegated_signer];
+    let policy_lookup_table_phase = prepare_route_lookup_table_phase(
+        client,
+        &rpc,
+        options,
+        vault,
+        deposit_reserve,
+        deposit_reserve,
+        "initial_reserve_deposit",
+        same_mint_route_lookup_table_scope_for_reserves(vault, deposit_reserve, deposit_reserve),
+        wallet_signer.pubkey(),
+        policy_instructions,
+        policy_manifest,
+        &policy_signers,
+        true,
+    )
+    .await?;
+    let submitted_policy = submit_route_lookup_table_phase(
+        client,
+        &rpc,
+        options,
+        vault,
+        &policy_lookup_table_phase,
+        &policy_signers,
+        &format!("initial-reserve-deposit:{}", deposit_reserve),
+    )
+    .await
+    .map_err(|error| {
+        format!(
+            "initial reserve policy deposit failed after funding tx {}: {error}",
             funding_signature
         )
-        .into());
-    }
-
-    let policy_submitted_slot = i64::try_from(rpc.get_slot()?)?;
-    let policy_signature = rpc.send_and_confirm_transaction(&policy_transaction.transaction)?;
-    let policy_confirmed_slot = i64::try_from(rpc.get_slot()?)?;
+    })?;
+    let policy_submitted_slot = submitted_policy.submitted_slot;
+    let policy_signature = submitted_policy.signature.clone();
+    let policy_confirmed_slot = submitted_policy.confirmed_slot;
     let post_preview =
         load_chain_reconcile_preview(&options.rpc_url, vault, &[deposit_reserve.to_owned()])?;
     let snapshot = client
@@ -3156,11 +3537,11 @@ async fn run_initial_reserve_deposit_flow(
         funding_confirmed_slot: Some(funding_confirmed_slot),
         funding_simulation_units_consumed: funding_transaction.simulation_units_consumed,
         funding_transaction_packet: funding_transaction.transaction_packet,
-        policy_signature: Some(policy_signature.to_string()),
+        policy_signature: Some(policy_signature),
         policy_submitted_slot: Some(policy_submitted_slot),
         policy_confirmed_slot: Some(policy_confirmed_slot),
-        policy_simulation_units_consumed: policy_transaction.simulation_units_consumed,
-        policy_transaction_packet: policy_transaction.transaction_packet,
+        policy_simulation_units_consumed: submitted_policy.simulation_units_consumed,
+        policy_transaction_packet: submitted_policy.transaction_packet,
         reconciled_snapshot_id: Some(snapshot.id),
         post_chain_preview: Some(post_preview),
     };
@@ -3200,6 +3581,7 @@ async fn run_initial_reserve_deposit_flow(
                 "simulationUnitsConsumed": result.policy_simulation_units_consumed,
                 "transaction": transaction_packet_json(&result.policy_transaction_packet),
             },
+            "lookupTableResolution": submitted_policy.lookup_table_resolution,
             "reconciledSnapshotId": result.reconciled_snapshot_id.map(SnapshotId::as_i64),
             "postChainReconcile": result.post_chain_preview.as_ref().map(chain_reconcile_preview_json),
         }))?
@@ -3223,8 +3605,6 @@ async fn run_idle_vault_deposit_flow(
 
     let rpc =
         RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
-    let lookup_table_pubkeys = lookup_table_pubkeys_from_options(options)?;
-    let lookup_table_accounts = load_address_lookup_table_accounts(&rpc, &lookup_table_pubkeys)?;
     let signer = policy_keypair_from_env()?;
     let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
     let account_index = u8::try_from(vault.vault_index).map_err(|_| {
@@ -3248,6 +3628,7 @@ async fn run_idle_vault_deposit_flow(
     let mut setup_obligation_policy: Option<String> = None;
     let mut setup_obligation_policy_source: Option<String> = None;
     let mut setup_obligation_vault_rent_top_up_lamports: i64 = 0;
+    let mut missing_obligation_setup_plan: Option<MissingObligationSetupDryRun> = None;
     let mut missing_obligation_setup_dry_run: Option<Value> = None;
     let mut missing_obligation_setup_result: Option<Value> = None;
 
@@ -3279,7 +3660,7 @@ async fn run_idle_vault_deposit_flow(
     if !deposit_position.obligation_exists {
         match build_missing_obligation_setup_dry_run_with_signers(
             &rpc,
-            &lookup_table_accounts,
+            &[],
             vault,
             deposit_position,
             policy_preflight,
@@ -3297,18 +3678,18 @@ async fn run_idle_vault_deposit_flow(
                     .transpose()
                     .map_err(|_| "setup obligation rent top-up lamports do not fit BIGINT")?
                     .unwrap_or(0);
-                if let Some(error) = &dry_run.init_execution.simulation_error {
-                    blockers.push(IdleVaultDepositBlocker::safety(format!(
-                        "init-obligation setup simulation failed before idle deposit: {error}"
-                    )));
-                }
-                missing_obligation_setup_dry_run =
-                    Some(missing_obligation_setup_dry_run_json(deposit_position, &dry_run));
+                missing_obligation_setup_dry_run = Some(missing_obligation_setup_dry_run_json(
+                    deposit_position,
+                    &dry_run,
+                ));
+                missing_obligation_setup_plan = Some(dry_run);
             }
-            Err(error) => blockers.push(IdleVaultDepositBlocker::safety(format!(
-                "deposit obligation {} is missing for reserve {} and no authorized init_obligation setup could be built: {error}",
-                deposit_position.obligation, deposit_position.reserve
-            ))),
+            Err(error) => blockers.push(IdleVaultDepositBlocker::safety(
+                safe_same_mint_operational_error_with_context(
+                    "idle_vault_init_obligation_plan_failed",
+                    error.as_ref(),
+                ),
+            )),
         }
     }
 
@@ -3408,46 +3789,158 @@ async fn run_idle_vault_deposit_flow(
         }
     }
 
-    let mut dry_run_policy_plan = None;
-    let mut dry_run_policy_transaction = None;
-    if !setup_obligation_before_deposit {
-        dry_run_policy_plan = match build_initial_reserve_deposit_policy_plan(
+    let mut predicted_deposit_preview = initial_preview.clone();
+    if setup_obligation_before_deposit {
+        let predicted_position = predicted_deposit_preview
+            .positions
+            .iter_mut()
+            .find(|position| position.reserve == deposit_reserve)
+            .ok_or("idle deposit target disappeared from predicted post-setup preview")?;
+        predicted_position.obligation_exists = true;
+    }
+    let dry_run_policy_plan = match build_initial_reserve_deposit_policy_plan(
+        vault,
+        &predicted_deposit_preview,
+        policy_preflight,
+        deposit_reserve,
+        amount_raw,
+        signer.pubkey(),
+        signer.pubkey(),
+        account_index,
+    ) {
+        Ok(plan) => Some(plan),
+        Err(error) => {
+            blockers.push(IdleVaultDepositBlocker::safety(
+                safe_same_mint_operational_error(error.as_ref()),
+            ));
+            None
+        }
+    };
+    let dry_run_policy_transaction: Option<PolicyTransactionBuild> = None;
+    let mut setup_lookup_table_phase: Option<RouteLookupTablePhase> = None;
+    let mut deposit_lookup_table_phase: Option<RouteLookupTablePhase> = None;
+    let transaction_signers = vec![&signer as &dyn Signer];
+
+    if let Some(setup) = missing_obligation_setup_plan.as_ref() {
+        let manifest = route_lookup_table_manifest(
+            signer.pubkey(),
+            &setup.instructions,
             vault,
-            initial_preview,
-            policy_preflight,
+            &setup.lookup_table_requirements,
+            &[],
+        )?;
+        let scope = format!(
+            "idle_vault_deposit_setup:{}:{}:{}",
+            vault.settings, vault.vault_index, deposit_reserve
+        );
+        let resolution = resolve_route_lookup_tables(
+            client,
+            &rpc,
+            options,
+            vault,
             deposit_reserve,
-            amount_raw,
+            deposit_reserve,
+            "idle_vault_deposit_setup",
+            &scope,
             signer.pubkey(),
+            &setup.instructions,
+            &manifest,
+            &transaction_signers,
+        )
+        .await?;
+        if let Some(blocker) = resolution.blocker.as_ref() {
+            blockers.push(IdleVaultDepositBlocker::safety(format!(
+                "idle setup lookup-table resolver blocked: {blocker}"
+            )));
+        }
+        setup_lookup_table_phase = Some(RouteLookupTablePhase {
+            route_kind: "idle_vault_deposit_setup",
+            scope,
+            source_reserve: deposit_reserve.to_owned(),
+            target_reserve: deposit_reserve.to_owned(),
+            instructions: setup.instructions.clone(),
+            manifest,
+            resolution,
+        });
+    }
+
+    if let Some(plan) = dry_run_policy_plan.as_ref() {
+        let mut instructions = plan.pre_instructions.clone();
+        instructions.push(plan.instruction.clone());
+        let manifest = route_lookup_table_manifest(
             signer.pubkey(),
-            account_index,
-        ) {
-            Ok(plan) => Some(plan),
-            Err(error) => {
-                blockers.push(IdleVaultDepositBlocker::safety(error.to_string()));
-                None
-            }
-        };
-        if let Some(plan) = dry_run_policy_plan.as_ref() {
-            let mut policy_instructions = plan.pre_instructions.clone();
-            policy_instructions.push(plan.instruction.clone());
-            dry_run_policy_transaction = Some(build_signed_transaction(
-                &rpc,
-                signer.pubkey(),
-                &policy_instructions,
-                &lookup_table_accounts,
-                &[&signer],
-                "idle vault policy deposit",
-                if blockers.is_empty() {
-                    None
-                } else {
-                    Some(
-                        "idle deposit simulation skipped because preflight blockers exist"
-                            .to_owned(),
-                    )
-                },
-            )?);
+            &instructions,
+            vault,
+            &plan.lookup_table_requirements,
+            &[],
+        )?;
+        let scope = format!(
+            "idle_vault_deposit:{}:{}:{}",
+            vault.settings, vault.vault_index, deposit_reserve
+        );
+        let resolution = resolve_route_lookup_tables(
+            client,
+            &rpc,
+            options,
+            vault,
+            deposit_reserve,
+            deposit_reserve,
+            "idle_vault_deposit",
+            &scope,
+            signer.pubkey(),
+            &instructions,
+            &manifest,
+            &transaction_signers,
+        )
+        .await?;
+        if let Some(blocker) = resolution.blocker.as_ref() {
+            blockers.push(IdleVaultDepositBlocker::safety(format!(
+                "idle deposit lookup-table resolver blocked: {blocker}"
+            )));
+        }
+        deposit_lookup_table_phase = Some(RouteLookupTablePhase {
+            route_kind: "idle_vault_deposit",
+            scope,
+            source_reserve: deposit_reserve.to_owned(),
+            target_reserve: deposit_reserve.to_owned(),
+            instructions,
+            manifest,
+            resolution,
+        });
+    }
+
+    if options.execute {
+        let acquire_leases = blockers.is_empty();
+        for phase in [
+            setup_lookup_table_phase.as_ref(),
+            deposit_lookup_table_phase.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            persist_route_lookup_table_resolution(
+                client,
+                options,
+                vault,
+                &phase.source_reserve,
+                &phase.target_reserve,
+                phase.route_kind,
+                &phase.manifest,
+                &phase.resolution,
+                acquire_leases,
+                true,
+            )
+            .await?;
         }
     }
+    let idle_lookup_table_evidence = json!({
+        "setup": setup_lookup_table_phase
+            .as_ref()
+            .map(|phase| phase.resolution.evidence.clone()),
+        "deposit": deposit_lookup_table_phase
+            .as_ref()
+            .map(|phase| phase.resolution.evidence.clone()),
+    });
 
     let idle_decision_input = if options.execute {
         Some(IdleVaultDepositDecisionInput {
@@ -3500,6 +3993,7 @@ async fn run_idle_vault_deposit_flow(
                 "policyDepositRequiresSetup": setup_obligation_before_deposit,
                 "policyDeposit": dry_run_policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
                 "policyDepositTransaction": dry_run_policy_transaction.as_ref().map(policy_transaction_json),
+                "lookupTableResolution": idle_lookup_table_evidence.clone(),
                 "postConfirmReconcileReserves": idle_deposit_post_reconcile_reserves(options, deposit_reserve),
             }))?
         );
@@ -3542,6 +4036,7 @@ async fn run_idle_vault_deposit_flow(
                     "missingObligationSetup": missing_obligation_setup_dry_run,
                     "policyDeposit": dry_run_policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
                     "policyDepositTransaction": dry_run_policy_transaction.as_ref().map(policy_transaction_json),
+                    "lookupTableResolution": idle_lookup_table_evidence.clone(),
                 }))?
             );
             return Ok(());
@@ -3562,6 +4057,7 @@ async fn run_idle_vault_deposit_flow(
                 "missingObligationSetup": missing_obligation_setup_dry_run,
                 "policyDeposit": dry_run_policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
                 "policyDepositTransaction": dry_run_policy_transaction.as_ref().map(policy_transaction_json),
+                "lookupTableResolution": idle_lookup_table_evidence.clone(),
             }))?
         );
         return Ok(());
@@ -3616,6 +4112,7 @@ async fn run_idle_vault_deposit_flow(
                 "missingObligationSetup": missing_obligation_setup_dry_run,
                 "policyDeposit": dry_run_policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
                 "policyDepositTransaction": dry_run_policy_transaction.as_ref().map(policy_transaction_json),
+                "lookupTableResolution": idle_lookup_table_evidence.clone(),
             }))?
         );
         return Err(blocker_reason.into());
@@ -3629,6 +4126,12 @@ async fn run_idle_vault_deposit_flow(
     let decision = match planned.status {
         PlanOutcomeStatus::Planned(decision) => decision,
         PlanOutcomeStatus::Skipped { reason } => {
+            release_idle_lookup_table_phase_leases(
+                client,
+                setup_lookup_table_phase.as_ref(),
+                deposit_lookup_table_phase.as_ref(),
+            )
+            .await;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
@@ -3644,6 +4147,12 @@ async fn run_idle_vault_deposit_flow(
     };
 
     if decision.status.is_terminal() {
+        release_idle_lookup_table_phase_leases(
+            client,
+            setup_lookup_table_phase.as_ref(),
+            deposit_lookup_table_phase.as_ref(),
+        )
+        .await;
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
@@ -3660,18 +4169,70 @@ async fn run_idle_vault_deposit_flow(
     }
 
     if setup_obligation_before_deposit {
-        let setup_result = match execute_missing_obligation_setup_with_signers(
-            &rpc,
-            &lookup_table_accounts,
-            vault,
-            deposit_position,
-            policy_preflight,
-            &signer,
-            &signer,
-        ) {
+        let setup_phase = setup_lookup_table_phase
+            .as_ref()
+            .ok_or("idle deposit setup lookup-table phase was not prepared")?;
+        let prepared_lease_reference = format!(
+            "idle-decision:{}:setup:{}",
+            decision.id.as_i64(),
+            setup_phase.resolution.requirements_fingerprint
+        );
+        let setup_result = match async {
+            let mut presend = resolve_route_lookup_tables_immediately_before_send(
+                client,
+                &rpc,
+                options,
+                vault,
+                setup_phase,
+                &setup_phase.instructions,
+                &setup_phase.manifest,
+                &[&signer],
+                &prepared_lease_reference,
+            )
+            .await?;
+            let transaction = presend
+                .selected_transaction
+                .take()
+                .ok_or("idle setup resolver did not return a signed transaction")?;
+            let transaction_packet = presend
+                .selected_transaction_packet
+                .take()
+                .ok_or("idle setup resolver did not return packet evidence")?;
+            let submitted_slot = i64::try_from(rpc.get_slot()?)?;
+            let signature = rpc.send_and_confirm_transaction(&transaction)?.to_string();
+            let confirmed_slot = i64::try_from(rpc.get_slot()?)?;
+            let setup_plan = missing_obligation_setup_plan
+                .take()
+                .ok_or("idle setup metadata was not prepared")?;
+            Ok::<_, Box<dyn Error>>(MissingObligationSetupSubmitResult {
+                policy_account: setup_plan.policy_account,
+                policy_source: setup_plan.policy_source,
+                instruction_constraint_index: setup_plan.instruction_constraint_index,
+                vault_rent_top_up: setup_plan.vault_rent_top_up,
+                init_signature: signature,
+                init_submitted_slot: submitted_slot,
+                init_confirmed_slot: confirmed_slot,
+                init_simulation_units_consumed: presend.selected_simulation_units_consumed,
+                init_transaction_packet: transaction_packet,
+            })
+        }
+        .await
+        {
             Ok(result) => result,
             Err(error) => {
-                let reason = format!("idle vault init-obligation setup failed: {error}");
+                release_route_lookup_table_phase_leases(
+                    client,
+                    setup_phase,
+                    Some(&prepared_lease_reference),
+                )
+                .await;
+                if let Some(deposit_phase) = deposit_lookup_table_phase.as_ref() {
+                    release_route_lookup_table_phase_leases(client, deposit_phase, None).await;
+                }
+                let reason = safe_same_mint_operational_error_with_context(
+                    "idle_vault_init_obligation_setup_failed",
+                    error.as_ref(),
+                );
                 client
                     .advance_decision(
                         decision.id,
@@ -3683,6 +4244,12 @@ async fn run_idle_vault_deposit_flow(
                 return Err(reason.into());
             }
         };
+        release_route_lookup_table_phase_leases(
+            client,
+            setup_phase,
+            Some(&prepared_lease_reference),
+        )
+        .await;
         missing_obligation_setup_result = Some(missing_obligation_setup_submit_result_json(
             deposit_position,
             &setup_result,
@@ -3694,9 +4261,13 @@ async fn run_idle_vault_deposit_flow(
         ) {
             Ok(preview) => preview,
             Err(error) => {
-                let reason = format!(
-                    "idle vault init-obligation setup confirmed but chain reload failed: {error}"
+                let reason = safe_same_mint_operational_error_with_context(
+                    "idle_vault_init_obligation_chain_reload_failed",
+                    error.as_ref(),
                 );
+                if let Some(deposit_phase) = deposit_lookup_table_phase.as_ref() {
+                    release_route_lookup_table_phase_leases(client, deposit_phase, None).await;
+                }
                 client
                     .advance_decision(
                         decision.id,
@@ -3719,9 +4290,13 @@ async fn run_idle_vault_deposit_flow(
         ) {
             Ok(preflight) => Some(preflight),
             Err(error) => {
-                let reason = format!(
-                    "idle vault init-obligation setup confirmed but policy reload failed: {error}"
+                let reason = safe_same_mint_operational_error_with_context(
+                    "idle_vault_init_obligation_policy_reload_failed",
+                    error.as_ref(),
                 );
+                if let Some(deposit_phase) = deposit_lookup_table_phase.as_ref() {
+                    release_route_lookup_table_phase_leases(client, deposit_phase, None).await;
+                }
                 client
                     .advance_decision(
                         decision.id,
@@ -3736,9 +4311,13 @@ async fn run_idle_vault_deposit_flow(
         let active_deposit = match chain_position_for_reserve(&active_preview, deposit_reserve) {
             Ok(position) => position,
             Err(error) => {
-                let reason = format!(
-                    "idle vault init-obligation setup confirmed but target reserve reload failed: {error}"
+                let reason = safe_same_mint_operational_error_with_context(
+                    "idle_vault_init_obligation_target_reload_failed",
+                    error.as_ref(),
                 );
+                if let Some(deposit_phase) = deposit_lookup_table_phase.as_ref() {
+                    release_route_lookup_table_phase_leases(client, deposit_phase, None).await;
+                }
                 client
                     .advance_decision(
                         decision.id,
@@ -3755,6 +4334,9 @@ async fn run_idle_vault_deposit_flow(
                 "deposit obligation {} is still missing after idle vault init-obligation setup",
                 active_deposit.obligation
             );
+            if let Some(deposit_phase) = deposit_lookup_table_phase.as_ref() {
+                release_route_lookup_table_phase_leases(client, deposit_phase, None).await;
+            }
             client
                 .advance_decision(
                     decision.id,
@@ -3780,7 +4362,13 @@ async fn run_idle_vault_deposit_flow(
     ) {
         Ok(plan) => plan,
         Err(error) => {
-            let reason = format!("idle vault policy deposit plan failed: {error}");
+            let reason = safe_same_mint_operational_error_with_context(
+                "idle_vault_policy_deposit_plan_failed",
+                error.as_ref(),
+            );
+            if let Some(deposit_phase) = deposit_lookup_table_phase.as_ref() {
+                release_route_lookup_table_phase_leases(client, deposit_phase, None).await;
+            }
             client
                 .advance_decision(
                     decision.id,
@@ -3794,18 +4382,46 @@ async fn run_idle_vault_deposit_flow(
     };
     let mut policy_instructions = policy_plan.pre_instructions.clone();
     policy_instructions.push(policy_plan.instruction.clone());
-    let policy_transaction = match build_signed_transaction(
-        &rpc,
+    let deposit_phase = deposit_lookup_table_phase
+        .as_ref()
+        .ok_or("idle deposit lookup-table phase was not prepared")?;
+    let actual_deposit_manifest = route_lookup_table_manifest(
         signer.pubkey(),
         &policy_instructions,
-        &lookup_table_accounts,
+        vault,
+        &policy_plan.lookup_table_requirements,
+        &[],
+    )?;
+    let prepared_lease_reference = format!(
+        "idle-decision:{}:deposit:{}",
+        decision.id.as_i64(),
+        deposit_phase.resolution.requirements_fingerprint
+    );
+    let mut presend_lookup_tables = match resolve_route_lookup_tables_immediately_before_send(
+        client,
+        &rpc,
+        options,
+        vault,
+        deposit_phase,
+        &policy_instructions,
+        &actual_deposit_manifest,
         &[&signer],
-        "idle vault policy deposit",
-        None,
-    ) {
-        Ok(transaction) => transaction,
+        &prepared_lease_reference,
+    )
+    .await
+    {
+        Ok(resolution) => resolution,
         Err(error) => {
-            let reason = format!("idle vault policy deposit transaction build failed: {error}");
+            release_route_lookup_table_phase_leases(
+                client,
+                deposit_phase,
+                Some(&prepared_lease_reference),
+            )
+            .await;
+            let reason = safe_same_mint_operational_error_with_context(
+                "idle_vault_policy_deposit_lookup_table_presend_failed",
+                error.as_ref(),
+            );
             client
                 .advance_decision(
                     decision.id,
@@ -3817,40 +4433,51 @@ async fn run_idle_vault_deposit_flow(
             return Err(reason.into());
         }
     };
+    let policy_transaction = presend_lookup_tables
+        .selected_transaction
+        .take()
+        .ok_or("idle deposit resolver did not return a signed transaction")?;
+    let policy_transaction_packet = presend_lookup_tables
+        .selected_transaction_packet
+        .take()
+        .ok_or("idle deposit resolver did not return packet evidence")?;
+    let policy_simulation_units_consumed = presend_lookup_tables.selected_simulation_units_consumed;
+    let final_lookup_table_evidence = presend_lookup_tables.evidence.clone();
     client
         .advance_decision(decision.id, DecisionAdvance::StartSimulation)
         .await?;
-    if let Some(error) = &policy_transaction.simulation_error {
-        client
-            .advance_decision(
-                decision.id,
-                DecisionAdvance::Fail {
-                    reason: format!("idle vault policy deposit simulation failed: {error}"),
-                },
-            )
-            .await?;
-        return Err(format!("idle vault policy deposit simulation failed: {error}").into());
-    }
     client
         .advance_decision(decision.id, DecisionAdvance::SimulationReady)
         .await?;
 
     let submitted_slot = i64::try_from(rpc.get_slot()?)?;
-    let signature = match rpc.send_and_confirm_transaction(&policy_transaction.transaction) {
+    let signature = match rpc.send_and_confirm_transaction(&policy_transaction) {
         Ok(signature) => signature,
         Err(error) => {
+            release_route_lookup_table_phase_leases(
+                client,
+                deposit_phase,
+                Some(&prepared_lease_reference),
+            )
+            .await;
+            let reason = safe_same_mint_operational_error_with_context(
+                "idle_vault_policy_deposit_submission_failed",
+                &error,
+            );
             client
                 .advance_decision(
                     decision.id,
                     DecisionAdvance::Fail {
-                        reason: format!("idle vault policy deposit submission failed: {error}"),
+                        reason: reason.clone(),
                     },
                 )
                 .await?;
-            return Err(format!("idle vault policy deposit submission failed: {error}").into());
+            return Err(reason.into());
         }
     };
     let confirmed_slot = i64::try_from(rpc.get_slot()?)?;
+    release_route_lookup_table_phase_leases(client, deposit_phase, Some(&prepared_lease_reference))
+        .await;
     let signature = signature.to_string();
     client
         .advance_decision(
@@ -3910,8 +4537,10 @@ async fn run_idle_vault_deposit_flow(
         match post_confirm {
             Ok(value) => value,
             Err(error) => {
-                let reason =
-                    format!("idle vault policy deposit confirmed but reconcile failed: {error}");
+                let reason = safe_same_mint_operational_error_with_context(
+                    "idle_vault_policy_deposit_confirmed_reconcile_failed",
+                    error.as_ref(),
+                );
                 client
                     .advance_decision(
                         decision.id,
@@ -3954,9 +4583,10 @@ async fn run_idle_vault_deposit_flow(
                 "signature": signature,
                 "submittedSlot": submitted_slot,
                 "confirmedSlot": confirmed_slot,
-                "simulationUnitsConsumed": policy_transaction.simulation_units_consumed,
-                "transaction": transaction_packet_json(&policy_transaction.transaction_packet),
+                "simulationUnitsConsumed": policy_simulation_units_consumed,
+                "transaction": transaction_packet_json(&policy_transaction_packet),
             },
+            "lookupTableResolution": final_lookup_table_evidence,
             "reconciledSnapshotId": post_snapshot.id.as_i64(),
             "postConfirmReconcileReserves": post_reconcile_reserves,
             "postChainReconcile": chain_reconcile_preview_json(&post_preview),
@@ -4761,7 +5391,7 @@ async fn run_full_reserve_withdraw_flow(
     ) {
         Ok(plan) => Some(plan),
         Err(error) => {
-            blockers.push(error.to_string());
+            blockers.push(safe_same_mint_operational_error(error.as_ref()));
             None
         }
     };
@@ -4781,6 +5411,41 @@ async fn run_full_reserve_withdraw_flow(
                 Some("withdraw simulation skipped because preflight blockers exist".to_owned())
             },
         )?)
+    } else {
+        None
+    };
+    let withdraw_lookup_table_phase = if let Some(plan) = policy_plan.as_ref() {
+        let mut instructions = plan.pre_instructions.clone();
+        instructions.push(plan.instruction.clone());
+        let manifest = route_lookup_table_manifest(
+            signer.pubkey(),
+            &instructions,
+            vault,
+            &plan.lookup_table_requirements,
+            &[],
+        )?;
+        Some(
+            prepare_route_lookup_table_phase(
+                client,
+                &rpc,
+                options,
+                vault,
+                withdraw_reserve,
+                withdraw_reserve,
+                "full_reserve_withdraw",
+                same_mint_route_lookup_table_scope_for_reserves(
+                    vault,
+                    withdraw_reserve,
+                    withdraw_reserve,
+                ),
+                signer.pubkey(),
+                instructions,
+                manifest,
+                &[&signer],
+                options.execute && blockers.is_empty(),
+            )
+            .await?,
+        )
     } else {
         None
     };
@@ -4804,7 +5469,7 @@ async fn run_full_reserve_withdraw_flow(
     let policy_close_transaction = Some(build_policy_transaction(
         &rpc,
         authority_signer.pubkey(),
-        policy_close_instruction,
+        policy_close_instruction.clone(),
         &lookup_table_accounts,
         &authority_signer,
         "full withdraw policy close",
@@ -4828,7 +5493,7 @@ async fn run_full_reserve_withdraw_flow(
                 Some(build_policy_transaction(
                     &rpc,
                     authority_signer.pubkey(),
-                    setup_policy_close_instruction,
+                    setup_policy_close_instruction.clone(),
                     &lookup_table_accounts,
                     &authority_signer,
                     "full withdraw setup policy close",
@@ -4851,6 +5516,107 @@ async fn run_full_reserve_withdraw_flow(
             None
         };
     dedup_strings_in_place(&mut blockers);
+
+    let preflight_recovery_plan = vault_usdc_recovery_instructions(
+        settings_pubkey,
+        authority_signer.pubkey(),
+        vault_pubkey,
+        account_index,
+        wallet_usdc_ata,
+        vault_usdc_ata,
+        withdraw.amount_raw,
+    )?;
+    let preflight_recovery_manifest = route_lookup_table_manifest(
+        authority_signer.pubkey(),
+        preflight_recovery_plan.instructions(),
+        vault,
+        preflight_recovery_plan.lookup_table_requirements(),
+        &[wallet_usdc_ata],
+    )?;
+    let (preflight_recovery_instructions, _) = preflight_recovery_plan.into_parts();
+    let preflight_recovery_phase = prepare_route_lookup_table_phase(
+        client,
+        &rpc,
+        options,
+        vault,
+        withdraw_reserve,
+        withdraw_reserve,
+        "full_withdraw_wallet_recovery",
+        same_mint_route_lookup_table_scope_for_reserves(vault, withdraw_reserve, withdraw_reserve),
+        authority_signer.pubkey(),
+        preflight_recovery_instructions,
+        preflight_recovery_manifest,
+        &[&authority_signer],
+        false,
+    )
+    .await?;
+    let preflight_policy_close_instructions = vec![policy_close_instruction.clone()];
+    let preflight_policy_close_manifest = policy_lookup_table_manifest(
+        authority_signer.pubkey(),
+        &preflight_policy_close_instructions,
+        vault,
+        &[],
+        &[policy_account_pubkey],
+    )?;
+    let preflight_policy_close_phase = prepare_route_lookup_table_phase(
+        client,
+        &rpc,
+        options,
+        vault,
+        withdraw_reserve,
+        withdraw_reserve,
+        "full_withdraw_policy_close",
+        same_mint_route_lookup_table_scope_for_reserves(vault, withdraw_reserve, withdraw_reserve),
+        authority_signer.pubkey(),
+        preflight_policy_close_instructions,
+        preflight_policy_close_manifest,
+        &[&authority_signer],
+        options.execute && blockers.is_empty(),
+    )
+    .await?;
+    let preflight_setup_policy_close_phase = if let Some(setup_policy_pubkey) =
+        setup_policy_account_pubkey.filter(|_| {
+            setup_policy_account_before
+                .as_ref()
+                .is_some_and(|account| account.exists)
+        }) {
+        let instructions = vec![remove_policy_instruction(
+            settings_pubkey,
+            authority_signer.pubkey(),
+            setup_policy_pubkey,
+        )];
+        let manifest = policy_lookup_table_manifest(
+            authority_signer.pubkey(),
+            &instructions,
+            vault,
+            &[],
+            &[setup_policy_pubkey],
+        )?;
+        Some(
+            prepare_route_lookup_table_phase(
+                client,
+                &rpc,
+                options,
+                vault,
+                withdraw_reserve,
+                withdraw_reserve,
+                "full_withdraw_setup_policy_close",
+                same_mint_route_lookup_table_scope_for_reserves(
+                    vault,
+                    withdraw_reserve,
+                    withdraw_reserve,
+                ),
+                authority_signer.pubkey(),
+                instructions,
+                manifest,
+                &[&authority_signer],
+                options.execute && blockers.is_empty(),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
 
     if !options.execute {
         println!(
@@ -4894,6 +5660,7 @@ async fn run_full_reserve_withdraw_flow(
                     },
                 "policyWithdraw": policy_plan.as_ref().map(|plan| full_withdraw_policy_preview_json(&plan.preview)),
                 "policyWithdrawTransaction": withdraw_transaction.as_ref().map(policy_transaction_json),
+                "lookupTableResolution": withdraw_lookup_table_phase.as_ref().map(|phase| phase.resolution.evidence.clone()),
                 "walletRecoveryTransaction": wallet_recovery_transaction.as_ref().map(policy_transaction_json),
                 "policyClose": {
                         "policyAccount": vault.policy_account,
@@ -4910,6 +5677,11 @@ async fn run_full_reserve_withdraw_flow(
                     "policyExists": account.exists,
                 })),
                 "setupPolicyCloseTransaction": setup_policy_close_transaction.as_ref().map(policy_transaction_json),
+                "cleanupLookupTableResolution": {
+                    "walletRecovery": preflight_recovery_phase.resolution.evidence.clone(),
+                    "policyClose": preflight_policy_close_phase.resolution.evidence.clone(),
+                    "setupPolicyClose": preflight_setup_policy_close_phase.as_ref().map(|phase| phase.resolution.evidence.clone()),
+                },
             }))?
         );
         return Ok(());
@@ -4934,23 +5706,44 @@ async fn run_full_reserve_withdraw_flow(
                 },
                 "policyWithdraw": policy_plan.as_ref().map(|plan| full_withdraw_policy_preview_json(&plan.preview)),
                 "policyWithdrawTransaction": withdraw_transaction.as_ref().map(policy_transaction_json),
+                "lookupTableResolution": withdraw_lookup_table_phase.as_ref().map(|phase| phase.resolution.evidence.clone()),
                 "walletRecoveryTransaction": wallet_recovery_transaction.as_ref().map(policy_transaction_json),
                 "policyCloseTransaction": policy_close_transaction.as_ref().map(policy_transaction_json),
                 "setupPolicyCloseTransaction": setup_policy_close_transaction.as_ref().map(policy_transaction_json),
+                "cleanupLookupTableResolution": {
+                    "walletRecovery": preflight_recovery_phase.resolution.evidence.clone(),
+                    "policyClose": preflight_policy_close_phase.resolution.evidence.clone(),
+                    "setupPolicyClose": preflight_setup_policy_close_phase.as_ref().map(|phase| phase.resolution.evidence.clone()),
+                },
             }))?
         );
         return Err("full reserve withdraw preflight blocked before live submit".into());
     }
+    preflight_recovery_phase
+        .resolution
+        .require_deferred_simulation_coverage()
+        .map_err(|error| {
+            format!(
+                "full-withdraw cleanup ALT coverage is incomplete before reserve withdrawal: {error}"
+            )
+        })?;
     let policy_plan = policy_plan.ok_or("full withdraw plan was not built")?;
-    let withdraw_transaction =
-        withdraw_transaction.ok_or("full withdraw transaction was not built")?;
-    if let Some(error) = &withdraw_transaction.simulation_error {
-        return Err(format!("full reserve withdraw simulation failed: {error}").into());
-    }
-
-    let submitted_slot = i64::try_from(rpc.get_slot()?)?;
-    let signature = rpc.send_and_confirm_transaction(&withdraw_transaction.transaction)?;
-    let confirmed_slot = i64::try_from(rpc.get_slot()?)?;
+    let withdraw_lookup_table_phase = withdraw_lookup_table_phase
+        .as_ref()
+        .ok_or("full withdraw lookup-table phase was not built")?;
+    let submitted_withdraw = submit_route_lookup_table_phase(
+        client,
+        &rpc,
+        options,
+        vault,
+        withdraw_lookup_table_phase,
+        &[&signer],
+        &format!("full-reserve-withdraw:{}", withdraw_reserve),
+    )
+    .await?;
+    let submitted_slot = submitted_withdraw.submitted_slot;
+    let signature = submitted_withdraw.signature.clone();
+    let confirmed_slot = submitted_withdraw.confirmed_slot;
     let (vault_usdc_after_withdraw_raw, vault_usdc_after_withdraw_exists) =
         load_spl_token_account_amount(&rpc, &vault_usdc_ata, &USDC_MINT)?;
     if !vault_usdc_after_withdraw_exists {
@@ -4960,87 +5753,96 @@ async fn run_full_reserve_withdraw_flow(
         )
         .into());
     }
-    let wallet_recovery_transaction = build_vault_usdc_recovery_transaction(
-        &rpc,
-        &lookup_table_accounts,
+    let wallet_recovery_plan = vault_usdc_recovery_instructions(
         settings_pubkey,
-        &authority_signer,
+        authority_signer.pubkey(),
         vault_pubkey,
         account_index,
         wallet_usdc_ata,
         vault_usdc_ata,
         vault_usdc_after_withdraw_raw,
-        None,
     )?;
-    if let Some(error) = &wallet_recovery_transaction.simulation_error {
-        return Err(format!("full withdraw wallet recovery simulation failed: {error}").into());
-    }
-    let wallet_recovery_submitted_slot = i64::try_from(rpc.get_slot()?)?;
-    let wallet_recovery_signature =
-        rpc.send_and_confirm_transaction(&wallet_recovery_transaction.transaction)?;
-    let wallet_recovery_confirmed_slot = i64::try_from(rpc.get_slot()?)?;
-
-    let policy_close_instruction = remove_policy_instruction(
-        settings_pubkey,
+    let wallet_recovery_manifest = route_lookup_table_manifest(
         authority_signer.pubkey(),
-        policy_account_pubkey,
-    );
-    let policy_close_transaction = build_policy_transaction(
+        wallet_recovery_plan.instructions(),
+        vault,
+        wallet_recovery_plan.lookup_table_requirements(),
+        &[wallet_usdc_ata],
+    )?;
+    let (wallet_recovery_instructions, _) = wallet_recovery_plan.into_parts();
+    let wallet_recovery_phase = prepare_route_lookup_table_phase(
+        client,
         &rpc,
+        options,
+        vault,
+        withdraw_reserve,
+        withdraw_reserve,
+        "full_withdraw_wallet_recovery",
+        same_mint_route_lookup_table_scope_for_reserves(vault, withdraw_reserve, withdraw_reserve),
         authority_signer.pubkey(),
-        policy_close_instruction,
-        &lookup_table_accounts,
-        &authority_signer,
-        "full withdraw policy close",
-        None,
-    )?;
-    if let Some(error) = &policy_close_transaction.simulation_error {
-        return Err(format!("full withdraw policy close simulation failed: {error}").into());
+        wallet_recovery_instructions,
+        wallet_recovery_manifest,
+        &[&authority_signer],
+        true,
+    )
+    .await?;
+    if wallet_recovery_phase.resolution.route_fingerprint
+        != preflight_recovery_phase.resolution.route_fingerprint
+        || wallet_recovery_phase.resolution.requirements_fingerprint
+            != preflight_recovery_phase.resolution.requirements_fingerprint
+    {
+        return Err(
+            "full-withdraw wallet-recovery ALT requirements changed after reserve withdrawal"
+                .into(),
+        );
     }
-    let policy_close_submitted_slot = i64::try_from(rpc.get_slot()?)?;
-    let policy_close_signature =
-        rpc.send_and_confirm_transaction(&policy_close_transaction.transaction)?;
-    let policy_close_confirmed_slot = i64::try_from(rpc.get_slot()?)?;
-    let setup_policy_close_result = if let (Some(setup_policy_pubkey), Some(setup_policy_before)) = (
-        setup_policy_account_pubkey.as_ref(),
-        setup_policy_account_before.as_ref(),
-    ) {
-        if setup_policy_before.exists {
-            let setup_policy_close_instruction = remove_policy_instruction(
-                settings_pubkey,
-                authority_signer.pubkey(),
-                *setup_policy_pubkey,
-            );
-            let setup_policy_close_transaction = build_policy_transaction(
-                &rpc,
-                authority_signer.pubkey(),
-                setup_policy_close_instruction,
-                &lookup_table_accounts,
-                &authority_signer,
-                "full withdraw setup policy close",
-                None,
-            )?;
-            if let Some(error) = &setup_policy_close_transaction.simulation_error {
-                return Err(
-                    format!("full withdraw setup policy close simulation failed: {error}").into(),
-                );
-            }
-            let submitted_slot = i64::try_from(rpc.get_slot()?)?;
-            let signature =
-                rpc.send_and_confirm_transaction(&setup_policy_close_transaction.transaction)?;
-            let confirmed_slot = i64::try_from(rpc.get_slot()?)?;
-            Some((
-                signature,
-                submitted_slot,
-                confirmed_slot,
-                setup_policy_close_transaction,
-            ))
+    let submitted_wallet_recovery = submit_route_lookup_table_phase(
+        client,
+        &rpc,
+        options,
+        vault,
+        &wallet_recovery_phase,
+        &[&authority_signer],
+        &format!("full-withdraw-wallet-recovery:{}", withdraw_reserve),
+    )
+    .await?;
+    let wallet_recovery_submitted_slot = submitted_wallet_recovery.submitted_slot;
+    let wallet_recovery_signature = submitted_wallet_recovery.signature.clone();
+    let wallet_recovery_confirmed_slot = submitted_wallet_recovery.confirmed_slot;
+
+    let submitted_policy_close = submit_route_lookup_table_phase(
+        client,
+        &rpc,
+        options,
+        vault,
+        &preflight_policy_close_phase,
+        &[&authority_signer],
+        &format!("full-withdraw-policy-close:{}", vault.policy_account),
+    )
+    .await?;
+    let policy_close_submitted_slot = submitted_policy_close.submitted_slot;
+    let policy_close_signature = submitted_policy_close.signature.clone();
+    let policy_close_confirmed_slot = submitted_policy_close.confirmed_slot;
+    let setup_policy_close_result =
+        if let Some(setup_policy_phase) = preflight_setup_policy_close_phase.as_ref() {
+            Some(
+                submit_route_lookup_table_phase(
+                    client,
+                    &rpc,
+                    options,
+                    vault,
+                    setup_policy_phase,
+                    &[&authority_signer],
+                    &format!(
+                        "full-withdraw-setup-policy-close:{}",
+                        vault.setup_policy_account.as_deref().unwrap_or("unknown")
+                    ),
+                )
+                .await?,
+            )
         } else {
             None
-        }
-    } else {
-        None
-    };
+        };
 
     let post_preview = load_chain_reconcile_preview(
         &options.rpc_url,
@@ -5097,8 +5899,8 @@ async fn run_full_reserve_withdraw_flow(
         "signature": signature.to_string(),
         "submittedSlot": submitted_slot,
         "confirmedSlot": confirmed_slot,
-        "simulationUnitsConsumed": withdraw_transaction.simulation_units_consumed,
-        "transaction": transaction_packet_json(&withdraw_transaction.transaction_packet),
+        "simulationUnitsConsumed": submitted_withdraw.simulation_units_consumed,
+        "transaction": transaction_packet_json(&submitted_withdraw.transaction_packet),
     });
     let wallet_recovery_json = json!({
         "wallet": authority_signer.pubkey().to_string(),
@@ -5116,8 +5918,9 @@ async fn run_full_reserve_withdraw_flow(
         "signature": wallet_recovery_signature.to_string(),
         "submittedSlot": wallet_recovery_submitted_slot,
         "confirmedSlot": wallet_recovery_confirmed_slot,
-        "simulationUnitsConsumed": wallet_recovery_transaction.simulation_units_consumed,
-        "transaction": transaction_packet_json(&wallet_recovery_transaction.transaction_packet),
+        "simulationUnitsConsumed": submitted_wallet_recovery.simulation_units_consumed,
+        "transaction": transaction_packet_json(&submitted_wallet_recovery.transaction_packet),
+        "lookupTableResolution": submitted_wallet_recovery.lookup_table_resolution,
     });
     let policy_close_json = json!({
         "policyAccount": vault.policy_account,
@@ -5130,8 +5933,9 @@ async fn run_full_reserve_withdraw_flow(
         "signature": policy_close_signature.to_string(),
         "submittedSlot": policy_close_submitted_slot,
         "confirmedSlot": policy_close_confirmed_slot,
-        "simulationUnitsConsumed": policy_close_transaction.simulation_units_consumed,
-        "transaction": transaction_packet_json(&policy_close_transaction.transaction_packet),
+        "simulationUnitsConsumed": submitted_policy_close.simulation_units_consumed,
+        "transaction": transaction_packet_json(&submitted_policy_close.transaction_packet),
+        "lookupTableResolution": submitted_policy_close.lookup_table_resolution,
     });
     let setup_policy_close_json = match setup_policy_account_before.as_ref() {
         Some(before) => json!({
@@ -5147,12 +5951,13 @@ async fn run_full_reserve_withdraw_flow(
         None => Value::Null,
     };
     let setup_policy_close_transaction_json = match setup_policy_close_result.as_ref() {
-        Some((signature, submitted_slot, confirmed_slot, transaction)) => json!({
-            "signature": signature.to_string(),
-            "submittedSlot": submitted_slot,
-            "confirmedSlot": confirmed_slot,
-            "simulationUnitsConsumed": transaction.simulation_units_consumed,
-            "transaction": transaction_packet_json(&transaction.transaction_packet),
+        Some(submitted) => json!({
+            "signature": submitted.signature,
+            "submittedSlot": submitted.submitted_slot,
+            "confirmedSlot": submitted.confirmed_slot,
+            "simulationUnitsConsumed": submitted.simulation_units_consumed,
+            "transaction": transaction_packet_json(&submitted.transaction_packet),
+            "lookupTableResolution": submitted.lookup_table_resolution,
         }),
         None => Value::Null,
     };
@@ -5207,6 +6012,7 @@ async fn run_full_reserve_withdraw_flow(
             "vault": vault_json(vault),
             "policyWithdraw": full_withdraw_policy_preview_json(&policy_plan.preview),
             "policyWithdrawTransaction": policy_withdraw_transaction_json,
+            "lookupTableResolution": submitted_withdraw.lookup_table_resolution,
             "walletRecovery": wallet_recovery_json,
             "walletRecoveryTransaction": wallet_recovery_transaction_json,
             "policyClose": policy_close_json,
@@ -5235,6 +6041,37 @@ fn build_vault_usdc_recovery_transaction(
     amount_raw: u64,
     simulation_skip_reason: Option<String>,
 ) -> Result<PolicyTransactionBuild, Box<dyn Error>> {
+    let instruction_plan = vault_usdc_recovery_instructions(
+        settings,
+        authority_signer.pubkey(),
+        vault_pubkey,
+        account_index,
+        wallet_usdc_ata,
+        vault_usdc_ata,
+        amount_raw,
+    )?;
+
+    build_signed_transaction(
+        rpc,
+        authority_signer.pubkey(),
+        instruction_plan.instructions(),
+        lookup_table_accounts,
+        &[authority_signer],
+        "full withdraw vault USDC recovery",
+        simulation_skip_reason,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn vault_usdc_recovery_instructions(
+    settings: Pubkey,
+    authority: Pubkey,
+    vault_pubkey: Pubkey,
+    account_index: u8,
+    wallet_usdc_ata: Pubkey,
+    vault_usdc_ata: Pubkey,
+    amount_raw: u64,
+) -> Result<YieldRouteInstructionPlan, Box<dyn Error>> {
     let mut inner_instructions = Vec::new();
     if amount_raw > 0 {
         inner_instructions.push(spl_token::instruction::transfer_checked(
@@ -5251,10 +6088,14 @@ fn build_vault_usdc_recovery_transaction(
     inner_instructions.push(spl_token::instruction::close_account(
         &spl_token::ID,
         &vault_usdc_ata,
-        &authority_signer.pubkey(),
+        &authority,
         &vault_pubkey,
         &[],
     )?);
+    guard_lookup_table_mutations(
+        &inner_instructions,
+        "raw full-withdraw wallet-recovery inner instructions",
+    )?;
 
     let mut transaction_accounts = Vec::new();
     let compiled_instructions = inner_instructions
@@ -5263,30 +6104,29 @@ fn build_vault_usdc_recovery_transaction(
         .collect::<Vec<_>>();
     let recovery_instruction = execute_sync_transaction_instruction(
         settings,
-        authority_signer.pubkey(),
+        authority,
         account_index,
         compiled_instructions,
         transaction_accounts,
     );
-    let instructions = vec![
-        create_associated_token_account_idempotent_instruction(
-            authority_signer.pubkey(),
-            authority_signer.pubkey(),
-            USDC_MINT,
-            spl_token::ID,
-        ),
-        recovery_instruction,
-    ];
-
-    build_signed_transaction(
-        rpc,
-        authority_signer.pubkey(),
-        &instructions,
-        lookup_table_accounts,
-        &[authority_signer],
-        "full withdraw vault USDC recovery",
-        simulation_skip_reason,
-    )
+    let mut requirements = YieldRouteLookupTableRequirements::new(settings, vault_pubkey);
+    requirements.add_vault_token_account(wallet_usdc_ata);
+    requirements.add_vault_token_account(vault_usdc_ata);
+    requirements.add_shared_liquidity_mint(USDC_MINT);
+    requirements.add_infrastructure_accounts([
+        spl_token::ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+        system_program::ID,
+    ]);
+    let mut plan = YieldRouteInstructionPlan::with_outer_context(requirements);
+    plan.push_outer_instruction(create_associated_token_account_idempotent_instruction(
+        authority,
+        authority,
+        USDC_MINT,
+        spl_token::ID,
+    ));
+    plan.push_outer_instruction(recovery_instruction);
+    Ok(plan)
 }
 
 fn build_policy_transaction(
@@ -5318,29 +6158,7 @@ fn build_signed_transaction(
     operation_label: &str,
     simulation_skip_reason: Option<String>,
 ) -> Result<PolicyTransactionBuild, Box<dyn Error>> {
-    build_signed_transaction_for_mode(
-        rpc,
-        payer,
-        instructions,
-        lookup_table_accounts,
-        signers,
-        operation_label,
-        simulation_skip_reason,
-        AltInstructionMode::RejectProvisioning,
-    )
-}
-
-fn build_signed_transaction_for_mode(
-    rpc: &RpcClient,
-    payer: Pubkey,
-    instructions: &[Instruction],
-    lookup_table_accounts: &[AddressLookupTableAccount],
-    signers: &[&dyn Signer],
-    operation_label: &str,
-    simulation_skip_reason: Option<String>,
-    alt_instruction_mode: AltInstructionMode,
-) -> Result<PolicyTransactionBuild, Box<dyn Error>> {
-    guard_lookup_table_mutations(instructions, alt_instruction_mode, operation_label)?;
+    guard_lookup_table_mutations(instructions, operation_label)?;
     let blockhash = rpc.get_latest_blockhash()?;
     let transaction = compile_versioned_transaction(
         payer,
@@ -5406,12 +6224,8 @@ fn build_signed_transaction_for_mode(
 
 fn guard_lookup_table_mutations(
     instructions: &[Instruction],
-    mode: AltInstructionMode,
     operation_label: &str,
 ) -> Result<(), Box<dyn Error>> {
-    if mode == AltInstructionMode::AllowProvisioning {
-        return Ok(());
-    }
     for instruction in instructions {
         if let Some(kind) = lookup_table_mutation_kind(instruction) {
             return Err(format!(
@@ -5429,16 +6243,21 @@ fn lookup_table_mutation_kind(instruction: &Instruction) -> Option<&'static str>
     }
     match bincode::deserialize::<address_lookup_table_instruction::ProgramInstruction>(
         &instruction.data,
-    )
-    .ok()?
-    {
-        address_lookup_table_instruction::ProgramInstruction::CreateLookupTable { .. } => {
+    ) {
+        Ok(address_lookup_table_instruction::ProgramInstruction::CreateLookupTable { .. }) => {
             Some("create")
         }
-        address_lookup_table_instruction::ProgramInstruction::ExtendLookupTable { .. } => {
+        Ok(address_lookup_table_instruction::ProgramInstruction::ExtendLookupTable { .. }) => {
             Some("extend")
         }
-        _ => None,
+        Ok(address_lookup_table_instruction::ProgramInstruction::FreezeLookupTable) => {
+            Some("freeze")
+        }
+        Ok(address_lookup_table_instruction::ProgramInstruction::DeactivateLookupTable) => {
+            Some("deactivate")
+        }
+        Ok(address_lookup_table_instruction::ProgramInstruction::CloseLookupTable) => Some("close"),
+        Err(_) => Some("unknown"),
     }
 }
 
@@ -5538,295 +6357,7 @@ fn setup_policy_operation_preview_json(
     }))
 }
 
-async fn prepare_durable_route_lookup_table(
-    client: &NeonSqlClient,
-    rpc: &RpcClient,
-    options: &CliOptions,
-    scope: &str,
-    payer: Pubkey,
-    authority_signer: &dyn Signer,
-    required_addresses: &[Pubkey],
-    lookup_table_accounts: &mut Vec<AddressLookupTableAccount>,
-) -> Result<Value, Box<dyn Error>> {
-    let provisioning_enabled =
-        options.provision_lookup_table || options.provision_route_lookup_table;
-    let cluster = route_lookup_table_cluster(&options.rpc_url);
-    let authority = authority_signer.pubkey();
-    let mut missing_before =
-        missing_lookup_table_addresses(required_addresses, lookup_table_accounts);
-    let mut created_lookup_table = None;
-    let mut extended_lookup_table = None;
-    let mut create_signature = None;
-    let mut create_submitted_slot = None;
-    let mut create_confirmed_slot = None;
-    let mut create_transaction_json = Value::Null;
-    let mut extend_transactions = Vec::new();
-    let mut warmup = Value::Null;
-    let mut provisioning_lock_key = None;
-    let mut reusable_lookup_table = reusable_lookup_table_for_missing_addresses(
-        rpc,
-        authority,
-        &missing_before,
-        lookup_table_accounts,
-    )?;
-
-    if provisioning_enabled && options.execute && !missing_before.is_empty() {
-        let provisioning_lock = client
-            .acquire_route_lookup_table_provisioning_lock(&cluster, scope, &authority.to_string())
-            .await?;
-        provisioning_lock_key = Some(provisioning_lock.key().to_owned());
-
-        let table_pubkeys =
-            lookup_table_pubkeys_for_scope(client, options, scope, authority).await?;
-        *lookup_table_accounts = load_address_lookup_table_accounts(rpc, &table_pubkeys)?;
-        missing_before = missing_lookup_table_addresses(required_addresses, lookup_table_accounts);
-        reusable_lookup_table = reusable_lookup_table_for_missing_addresses(
-            rpc,
-            authority,
-            &missing_before,
-            lookup_table_accounts,
-        )?;
-
-        if !missing_before.is_empty() {
-            if missing_before.len() > LOOKUP_TABLE_MAX_ADDRESSES {
-                return Err(format!(
-                    "lookup table needs {} addresses but one table can hold at most {}",
-                    missing_before.len(),
-                    LOOKUP_TABLE_MAX_ADDRESSES
-                )
-                .into());
-            }
-
-            let lookup_table_address = if let Some(existing) = reusable_lookup_table {
-                extended_lookup_table = Some(existing);
-                existing
-            } else {
-                let recent_slot = lookup_table_recent_slot(rpc)?;
-                let (create_instruction, lookup_table_address) =
-                    address_lookup_table_instruction::create_lookup_table(
-                        authority,
-                        payer,
-                        recent_slot,
-                    );
-                let create_transaction = build_signed_transaction_for_mode(
-                    rpc,
-                    payer,
-                    &[create_instruction],
-                    &[],
-                    &[authority_signer],
-                    "route lookup table create",
-                    None,
-                    AltInstructionMode::AllowProvisioning,
-                )?;
-                create_transaction_json = policy_transaction_json(&create_transaction);
-                if let Some(error) = create_transaction.simulation_error.as_ref() {
-                    return Err(format!("lookup table create simulation failed: {error}").into());
-                }
-                let submitted_slot = rpc.get_slot()?;
-                let signature = rpc
-                    .send_and_confirm_transaction(&create_transaction.transaction)?
-                    .to_string();
-                let confirmed_slot = rpc.get_slot()?;
-                created_lookup_table = Some(lookup_table_address);
-                create_signature = Some(signature);
-                create_submitted_slot = Some(i64::try_from(submitted_slot)?);
-                create_confirmed_slot = Some(i64::try_from(confirmed_slot)?);
-                lookup_table_address
-            };
-
-            for chunk in missing_before.chunks(LOOKUP_TABLE_EXTEND_CHUNK_SIZE) {
-                let extend_instruction = address_lookup_table_instruction::extend_lookup_table(
-                    lookup_table_address,
-                    authority,
-                    Some(payer),
-                    chunk.to_vec(),
-                );
-                let extend_transaction = build_signed_transaction_for_mode(
-                    rpc,
-                    payer,
-                    &[extend_instruction],
-                    &[],
-                    &[authority_signer],
-                    "route lookup table extend",
-                    None,
-                    AltInstructionMode::AllowProvisioning,
-                )?;
-                let transaction_json = policy_transaction_json(&extend_transaction);
-                if let Some(error) = extend_transaction.simulation_error.as_ref() {
-                    return Err(format!("lookup table extend simulation failed: {error}").into());
-                }
-                let submitted_slot = rpc.get_slot()?;
-                let signature = rpc
-                    .send_and_confirm_transaction(&extend_transaction.transaction)?
-                    .to_string();
-                let confirmed_slot = rpc.get_slot()?;
-                extend_transactions.push(json!({
-                    "signature": signature,
-                    "submittedSlot": i64::try_from(submitted_slot)?,
-                    "confirmedSlot": i64::try_from(confirmed_slot)?,
-                    "addressCount": chunk.len(),
-                    "addresses": pubkeys_json(chunk),
-                    "transaction": transaction_json,
-                }));
-            }
-
-            warmup = wait_for_lookup_table_warmup(rpc, lookup_table_address)?;
-            let mut table_pubkeys =
-                lookup_table_pubkeys_for_scope(client, options, scope, authority).await?;
-            table_pubkeys.push(lookup_table_address);
-            table_pubkeys.sort();
-            table_pubkeys.dedup();
-            *lookup_table_accounts = load_address_lookup_table_accounts(rpc, &table_pubkeys)?;
-            let recorded_account = lookup_table_accounts
-                .iter()
-                .find(|account| account.key == lookup_table_address)
-                .ok_or("provisioned lookup table was not reloadable")?;
-            let last_extended_slot = lookup_table_last_extended_slot(rpc, lookup_table_address)?;
-            let extend_signatures_json = json!(extend_transactions
-                .iter()
-                .filter_map(|value| value.get("signature").and_then(Value::as_str))
-                .collect::<Vec<_>>());
-            record_durable_lookup_table(
-                client,
-                options,
-                scope,
-                lookup_table_address,
-                authority,
-                payer,
-                &recorded_account.addresses,
-                create_signature.clone(),
-                extend_signatures_json,
-                last_extended_slot.map(i64::try_from).transpose()?,
-                lookup_table_warmup_slot(&warmup),
-                "usable",
-                Some("route lookup table provisioning".to_owned()),
-            )
-            .await?;
-        }
-        provisioning_lock.release().await?;
-    }
-
-    let missing_after = missing_lookup_table_addresses(required_addresses, lookup_table_accounts);
-    let status = if missing_after.is_empty() {
-        "lookup_table_coverage_ready"
-    } else if !provisioning_enabled {
-        "lookup_table_coverage_missing"
-    } else if options.execute {
-        "lookup_table_coverage_missing"
-    } else if reusable_lookup_table.is_some() {
-        "lookup_table_would_extend"
-    } else {
-        "lookup_table_would_create"
-    };
-
-    Ok(json!({
-        "enabled": provisioning_enabled,
-        "mode": "route_provisioning",
-        "execute": options.execute,
-        "status": status,
-        "cluster": cluster,
-        "scope": scope,
-        "authority": authority.to_string(),
-        "payer": payer.to_string(),
-        "provisioningLock": provisioning_lock_key,
-        "requiredAddresses": pubkeys_json(required_addresses),
-        "requiredAddressCount": required_addresses.len(),
-        "missingBeforeProvision": pubkeys_json(&missing_before),
-        "missingBeforeProvisionCount": missing_before.len(),
-        "wouldCreateLookupTable": provisioning_enabled && !options.execute && !missing_before.is_empty() && reusable_lookup_table.is_none(),
-        "wouldExtendLookupTable": provisioning_enabled && !options.execute && !missing_before.is_empty() && reusable_lookup_table.is_some(),
-        "reusableLookupTable": reusable_lookup_table.map(|pubkey| pubkey.to_string()),
-        "extendedLookupTable": extended_lookup_table.map(|pubkey| pubkey.to_string()),
-        "createdLookupTable": created_lookup_table.map(|pubkey| pubkey.to_string()),
-        "createSignature": create_signature,
-        "createSubmittedSlot": create_submitted_slot,
-        "createConfirmedSlot": create_confirmed_slot,
-        "createTransaction": create_transaction_json,
-        "extendTransactions": extend_transactions,
-        "warmup": warmup,
-        "coverageAfterProvision": lookup_table_coverage_json(required_addresses, lookup_table_accounts),
-    }))
-}
-
-fn reusable_lookup_table_for_missing_addresses(
-    rpc: &RpcClient,
-    authority: Pubkey,
-    missing_addresses: &[Pubkey],
-    lookup_table_accounts: &[AddressLookupTableAccount],
-) -> Result<Option<Pubkey>, Box<dyn Error>> {
-    if missing_addresses.is_empty() {
-        return Ok(None);
-    }
-    for account in lookup_table_accounts {
-        if account.addresses.len() + missing_addresses.len() > LOOKUP_TABLE_MAX_ADDRESSES {
-            continue;
-        }
-        let raw = rpc.get_account(&account.key)?;
-        let table = AddressLookupTable::deserialize(&raw.data).map_err(|error| {
-            format!(
-                "failed to deserialize address lookup table {} for authority check: {error:?}",
-                account.key
-            )
-        })?;
-        if table.meta.authority == Some(authority) {
-            return Ok(Some(account.key));
-        }
-    }
-    Ok(None)
-}
-
-fn lookup_table_last_extended_slot(
-    rpc: &RpcClient,
-    lookup_table_address: Pubkey,
-) -> Result<Option<u64>, Box<dyn Error>> {
-    let account = rpc.get_account(&lookup_table_address)?;
-    let table = AddressLookupTable::deserialize(&account.data).map_err(|error| {
-        format!("failed to deserialize address lookup table {lookup_table_address}: {error:?}")
-    })?;
-    Ok(Some(table.meta.last_extended_slot))
-}
-
-fn lookup_table_recent_slot(rpc: &RpcClient) -> Result<u64, Box<dyn Error>> {
-    Ok(rpc.get_slot_with_commitment(CommitmentConfig::finalized())?)
-}
-
-fn wait_for_lookup_table_warmup(
-    rpc: &RpcClient,
-    lookup_table_address: Pubkey,
-) -> Result<Value, Box<dyn Error>> {
-    let mut last_extended_slot = None;
-    for _ in 0..LOOKUP_TABLE_WARMUP_MAX_POLLS {
-        let account = rpc.get_account(&lookup_table_address)?;
-        let table = AddressLookupTable::deserialize(&account.data).map_err(|error| {
-            format!("failed to deserialize address lookup table {lookup_table_address}: {error:?}")
-        })?;
-        let current_slot = rpc.get_slot()?;
-        last_extended_slot = Some(table.meta.last_extended_slot);
-        if current_slot > table.meta.last_extended_slot {
-            return Ok(json!({
-                "lookupTable": lookup_table_address.to_string(),
-                "lastExtendedSlot": i64::try_from(table.meta.last_extended_slot)?,
-                "readySlot": i64::try_from(current_slot)?,
-                "ready": true,
-            }));
-        }
-        thread::sleep(Duration::from_millis(LOOKUP_TABLE_WARMUP_POLL_MS));
-    }
-    Err(format!(
-        "lookup table {lookup_table_address} did not warm up after {} polls; last_extended_slot={:?}",
-        LOOKUP_TABLE_WARMUP_MAX_POLLS, last_extended_slot
-    )
-    .into())
-}
-
-fn lookup_table_warmup_slot(warmup: &Value) -> Option<i64> {
-    warmup
-        .get("readySlot")
-        .and_then(Value::as_i64)
-        .or_else(|| warmup.get("usableSlot").and_then(Value::as_i64))
-        .or_else(|| warmup.get("currentSlot").and_then(Value::as_i64))
-}
-
+#[cfg(test)]
 fn missing_lookup_table_addresses(
     required_addresses: &[Pubkey],
     lookup_table_accounts: &[AddressLookupTableAccount],
@@ -5842,73 +6373,1453 @@ fn missing_lookup_table_addresses(
         .collect()
 }
 
-fn lookup_table_coverage_json(
-    required_addresses: &[Pubkey],
-    lookup_table_accounts: &[AddressLookupTableAccount],
-) -> Value {
-    let missing = missing_lookup_table_addresses(required_addresses, lookup_table_accounts);
-    json!({
-        "coversAllRequiredAddresses": missing.is_empty(),
-        "missingAddresses": pubkeys_json(&missing),
-        "missingAddressCount": missing.len(),
-        "lookupTables": lookup_table_accounts.iter().map(|account| {
-            json!({
-                "account": account.key.to_string(),
-                "addressCount": account.addresses.len(),
-                "coveredRequiredAddresses": pubkeys_json(
-                    &required_addresses
-                        .iter()
-                        .copied()
-                        .filter(|address| account.addresses.contains(address))
-                        .collect::<Vec<_>>()
-                ),
-            })
-        }).collect::<Vec<_>>(),
-    })
-}
-
-async fn route_lookup_table_reuse_coverage(
+#[allow(clippy::too_many_arguments)]
+async fn resolve_and_compile_legacy_lookup_table_bundle(
     client: &NeonSqlClient,
     rpc: &RpcClient,
     options: &CliOptions,
     scope: &str,
+    required_addresses: &BTreeSet<String>,
+    observed_slot_u64: u64,
     fee_payer: Pubkey,
-    delegated_signer: Pubkey,
-    route_execution: &RouteExecutionPlan,
-) -> Result<RouteLookupTableCoverage, Box<dyn Error>> {
-    let lookup_table_pubkeys =
-        lookup_table_pubkeys_for_scope(client, options, scope, fee_payer).await?;
-    let lookup_table_accounts = load_address_lookup_table_accounts(rpc, &lookup_table_pubkeys)?;
-    let mut transaction_instructions = route_execution.pre_instructions.clone();
-    transaction_instructions.extend(route_execution.instructions.iter().cloned());
-    let signer_pubkeys = same_mint_route_signer_pubkeys(fee_payer, delegated_signer);
-    let required_addresses =
-        best_case_lookup_table_addresses(fee_payer, &transaction_instructions, &signer_pubkeys);
-    let missing_addresses =
-        missing_lookup_table_addresses(&required_addresses, &lookup_table_accounts);
-
-    Ok(RouteLookupTableCoverage {
-        scope: scope.to_owned(),
-        lookup_table_accounts,
+    instructions: &[Instruction],
+    blockhash: Hash,
+    signers: &[&dyn Signer],
+) -> Result<CompiledLookupTableBundle, Box<dyn Error>> {
+    let legacy_records =
+        legacy_route_lookup_table_records(client, options, scope, &fee_payer.to_string()).await?;
+    let (legacy_candidates, legacy_accounts, mut legacy_failures) =
+        verify_legacy_lookup_table_candidates(rpc, legacy_records, observed_slot_u64);
+    let (legacy_tables, legacy_missing) = minimal_verified_table_bundle(
         required_addresses,
-        missing_addresses,
+        &legacy_candidates,
+        LOOKUP_TABLE_RESOLVER_EXACT_SEARCH_LIMIT,
+    )?;
+    let mut legacy = compile_lookup_table_bundle(
+        rpc,
+        LookupTableBundleKind::Legacy,
+        legacy_tables,
+        legacy_missing,
+        required_addresses.clone(),
+        legacy_accounts,
+        fee_payer,
+        instructions,
+        blockhash,
+        signers,
+    );
+    legacy.verification_failures.append(&mut legacy_failures);
+    Ok(legacy)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn resolve_and_compile_reusable_lookup_table_bundle(
+    client: &NeonSqlClient,
+    rpc: &RpcClient,
+    options: &CliOptions,
+    vault: &SelectedVault,
+    required_addresses: &BTreeSet<String>,
+    observed_slot: i64,
+    observed_slot_u64: u64,
+    fee_payer: Pubkey,
+    instructions: &[Instruction],
+    blockhash: Hash,
+    signers: &[&dyn Signer],
+) -> Result<CompiledLookupTableBundle, Box<dyn Error>> {
+    let reusable_resolution = client
+        .resolve_reusable_lookup_table_bundle(
+            &options.cluster,
+            vault.id,
+            required_addresses.clone(),
+            observed_slot,
+            LOOKUP_TABLE_RESOLVER_EXACT_SEARCH_LIMIT,
+        )
+        .await?;
+    let (reusable_candidates, reusable_accounts, mut reusable_failures) =
+        verify_reusable_lookup_table_candidates(rpc, reusable_resolution.tables, observed_slot_u64);
+    let (reusable_tables, reusable_missing_after_rpc) = minimal_verified_table_bundle(
+        required_addresses,
+        &reusable_candidates,
+        LOOKUP_TABLE_RESOLVER_EXACT_SEARCH_LIMIT,
+    )?;
+    let reusable_missing = reusable_resolution
+        .missing_addresses
+        .union(&reusable_missing_after_rpc)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut reusable = compile_lookup_table_bundle(
+        rpc,
+        LookupTableBundleKind::Reusable,
+        reusable_tables,
+        reusable_missing,
+        required_addresses.clone(),
+        reusable_accounts,
+        fee_payer,
+        instructions,
+        blockhash,
+        signers,
+    );
+    reusable
+        .verification_failures
+        .append(&mut reusable_failures);
+    Ok(reusable)
+}
+
+fn unavailable_legacy_lookup_table_bundle(
+    required_addresses: &BTreeSet<String>,
+    code: &'static str,
+    reason: impl Into<String>,
+    is_error: bool,
+) -> CompiledLookupTableBundle {
+    let reason = reason.into();
+    CompiledLookupTableBundle {
+        domain: ResolvedLookupTableBundle {
+            kind: LookupTableBundleKind::Legacy,
+            tables: Vec::new(),
+            required_addresses: required_addresses.clone(),
+            missing_addresses: required_addresses.clone(),
+            packet_fits: false,
+            simulation_succeeded: false,
+        },
+        transaction: None,
+        transaction_packet: None,
+        simulation_units_consumed: None,
+        simulation_error: is_error.then(|| reason.clone()),
+        verification_failures: vec![json!({
+            "stage": "resolver",
+            "code": code,
+            "reason": reason,
+        })],
+    }
+}
+
+fn unavailable_reusable_lookup_table_bundle(
+    required_addresses: &BTreeSet<String>,
+    code: &'static str,
+    reason: impl Into<String>,
+    is_error: bool,
+) -> CompiledLookupTableBundle {
+    let reason = reason.into();
+    CompiledLookupTableBundle {
+        domain: ResolvedLookupTableBundle {
+            kind: LookupTableBundleKind::Reusable,
+            tables: Vec::new(),
+            required_addresses: required_addresses.clone(),
+            missing_addresses: required_addresses.clone(),
+            packet_fits: false,
+            simulation_succeeded: false,
+        },
+        transaction: None,
+        transaction_packet: None,
+        simulation_units_consumed: None,
+        simulation_error: is_error.then(|| reason.clone()),
+        verification_failures: vec![json!({
+            "stage": "resolver",
+            "code": code,
+            "reason": reason,
+        })],
+    }
+}
+
+fn safe_lookup_table_resolution_error(error: &dyn std::fmt::Display) -> String {
+    safe_same_mint_operational_error(error)
+}
+
+fn safe_same_mint_operational_error(error: &dyn std::fmt::Display) -> String {
+    redacted_external_error(&error.to_string())
+}
+
+fn safe_same_mint_operational_error_with_context(
+    context: &str,
+    error: &dyn std::fmt::Display,
+) -> String {
+    redacted_external_error(&format!("{context}: {error}"))
+}
+
+fn same_mint_fatal_error_payload(error: &dyn std::fmt::Display) -> Value {
+    json!({
+        "event": "same_mint_route_worker_fatal",
+        "error": safe_same_mint_operational_error(error),
     })
 }
 
-fn ensure_route_lookup_table_coverage(
+fn same_mint_decision_failure_reason(stable_code: &str, error: &dyn std::fmt::Display) -> String {
+    safe_same_mint_operational_error_with_context(stable_code, error)
+}
+
+fn same_mint_readiness_rpc_failure(error: &dyn std::fmt::Display) -> String {
+    safe_same_mint_operational_error_with_context("simulation_rpc_failed", error)
+}
+
+async fn resolve_route_lookup_tables(
+    client: &NeonSqlClient,
+    rpc: &RpcClient,
+    options: &CliOptions,
+    vault: &SelectedVault,
+    source_reserve: &str,
+    target_reserve: &str,
+    route_kind: &str,
     scope: &str,
-    missing_lookup_addresses: &[Pubkey],
-) -> Result<(), Box<dyn Error>> {
-    if missing_lookup_addresses.is_empty() {
-        return Ok(());
+    fee_payer: Pubkey,
+    instructions: &[Instruction],
+    manifest: &LookupTableManifest,
+    signers: &[&dyn Signer],
+) -> Result<RuntimeLookupTableResolution, Box<dyn Error>> {
+    guard_lookup_table_mutations(instructions, "route lookup-table resolution")?;
+    manifest.validate_against_instructions(fee_payer, instructions)?;
+
+    let observed_slot_u64 = rpc.get_slot()?;
+    let observed_slot = i64::try_from(observed_slot_u64)?;
+    let required_addresses = manifest
+        .lookup_eligible_addresses()
+        .into_iter()
+        .map(|address| address.to_string())
+        .collect::<BTreeSet<_>>();
+    let requirements_fingerprint = control_plane_lookup_table_manifest_hash(manifest);
+    let route_fingerprint = stable_fingerprint(&[
+        route_kind,
+        &options.cluster,
+        &vault.id.as_i64().to_string(),
+        source_reserve,
+        target_reserve,
+    ]);
+    let rollout = client
+        .effective_lookup_table_rollout(&options.cluster, vault.id)
+        .await?;
+    let blockhash = rpc.get_latest_blockhash()?;
+    let legacy_attempt =
+        attempt_legacy_resolution(rollout.rollout_mode, rollout.force_legacy, || {
+            resolve_and_compile_legacy_lookup_table_bundle(
+                client,
+                rpc,
+                options,
+                scope,
+                &required_addresses,
+                observed_slot_u64,
+                fee_payer,
+                instructions,
+                blockhash,
+                signers,
+            )
+        })
+        .await;
+    let legacy_resolution_state = legacy_attempt.state();
+    let mut legacy_resolution_error_code = None;
+    let (mut legacy, legacy_selection_candidate) = match legacy_attempt {
+        LookupTableResolverAttempt::Skipped { reason } => (
+            unavailable_legacy_lookup_table_bundle(
+                &required_addresses,
+                "legacy_resolution_skipped",
+                reason,
+                false,
+            ),
+            None,
+        ),
+        LookupTableResolverAttempt::Resolved(bundle) => {
+            let selection_candidate = Some(bundle.domain.clone());
+            (bundle, selection_candidate)
+        }
+        LookupTableResolverAttempt::Failed(error) => {
+            let detail = safe_lookup_table_resolution_error(error.as_ref());
+            legacy_resolution_error_code = Some("legacy_resolution_failed");
+            let bundle = unavailable_legacy_lookup_table_bundle(
+                &required_addresses,
+                "legacy_resolution_failed",
+                detail,
+                true,
+            );
+            let selection_candidate = Some(bundle.domain.clone());
+            (bundle, selection_candidate)
+        }
+    };
+
+    let reusable_attempt =
+        attempt_reusable_resolution(rollout.rollout_mode, rollout.force_legacy, || {
+            resolve_and_compile_reusable_lookup_table_bundle(
+                client,
+                rpc,
+                options,
+                vault,
+                &required_addresses,
+                observed_slot,
+                observed_slot_u64,
+                fee_payer,
+                instructions,
+                blockhash,
+                signers,
+            )
+        })
+        .await;
+    let reusable_resolution_state = reusable_attempt.state();
+    let mut reusable_resolution_error_code = None;
+    let (mut reusable, reusable_selection_candidate) = match reusable_attempt {
+        LookupTableResolverAttempt::Skipped { reason } => (
+            unavailable_reusable_lookup_table_bundle(
+                &required_addresses,
+                "reusable_resolution_skipped",
+                reason,
+                false,
+            ),
+            None,
+        ),
+        LookupTableResolverAttempt::Resolved(bundle) => {
+            let selection_candidate = Some(bundle.domain.clone());
+            (bundle, selection_candidate)
+        }
+        LookupTableResolverAttempt::Failed(error) => {
+            let detail = safe_lookup_table_resolution_error(error.as_ref());
+            reusable_resolution_error_code = Some("reusable_resolution_failed");
+            let bundle = unavailable_reusable_lookup_table_bundle(
+                &required_addresses,
+                "reusable_resolution_failed",
+                detail,
+                true,
+            );
+            let selection_candidate = Some(bundle.domain.clone());
+            (bundle, selection_candidate)
+        }
+    };
+
+    let mut legacy_evidence = compiled_lookup_table_bundle_json(&legacy);
+    if let Some(fields) = legacy_evidence.as_object_mut() {
+        fields.insert("resolutionState".to_owned(), json!(legacy_resolution_state));
+        if let Some(code) = legacy_resolution_error_code {
+            fields.insert("resolutionErrorCode".to_owned(), json!(code));
+        }
     }
-    Err(format!(
-        "lookup_table_coverage_missing: route scope {} is missing {} required address(es): {}",
-        scope,
-        missing_lookup_addresses.len(),
-        pubkeys_json(missing_lookup_addresses).join(", ")
+    let mut reusable_evidence = compiled_lookup_table_bundle_json(&reusable);
+    if let Some(fields) = reusable_evidence.as_object_mut() {
+        fields.insert(
+            "resolutionState".to_owned(),
+            json!(reusable_resolution_state),
+        );
+        if let Some(code) = reusable_resolution_error_code {
+            fields.insert("resolutionErrorCode".to_owned(), json!(code));
+        }
+    }
+    let legacy_table_ids = legacy
+        .domain
+        .tables
+        .iter()
+        .map(|table| table.table_id)
+        .collect::<Vec<_>>();
+    let legacy_missing_addresses = legacy.domain.missing_addresses.clone();
+    let legacy_packet_fits = legacy
+        .transaction_packet
+        .as_ref()
+        .map(|packet| packet.fits_packet_data_size);
+    let reusable_table_ids = reusable
+        .domain
+        .tables
+        .iter()
+        .map(|table| table.table_id)
+        .collect::<Vec<_>>();
+    let reusable_missing_addresses = reusable.domain.missing_addresses.clone();
+    let reusable_ready = reusable.domain.ready();
+    let reusable_compiled_message_size = reusable
+        .transaction_packet
+        .as_ref()
+        .map(|packet| packet.packet_size_bytes);
+    let reusable_packet_fits = reusable
+        .transaction_packet
+        .as_ref()
+        .map(|packet| packet.fits_packet_data_size);
+    let reusable_simulation_units_consumed = reusable.simulation_units_consumed;
+    let reusable_simulation_error = reusable.simulation_error.clone();
+    let selection = select_lookup_table_bundle(ResolverSelectionInput {
+        rollout_mode: rollout.rollout_mode,
+        force_legacy: rollout.force_legacy,
+        legacy: legacy_selection_candidate,
+        reusable: reusable_selection_candidate,
+    });
+    let (selection_kind, fallback_reason, blocker, selected_kind) = match selection {
+        ResolverSelection::Execute(bundle) => {
+            let fallback_reason = if rollout.force_legacy {
+                Some("force-legacy control selected the legacy bundle".to_owned())
+            } else if rollout.rollout_mode == LookupTableRolloutMode::PreferReusable
+                && bundle.kind == LookupTableBundleKind::Legacy
+            {
+                Some(if reusable_resolution_state == "failed" {
+                    "reusable resolver failed; selected verified legacy fallback".to_owned()
+                } else {
+                    "reusable bundle was not send-ready; selected verified legacy fallback"
+                        .to_owned()
+                })
+            } else {
+                None
+            };
+            let selection_kind = match bundle.kind {
+                LookupTableBundleKind::Legacy => LookupTableSelectionKind::Legacy,
+                LookupTableBundleKind::Reusable => LookupTableSelectionKind::Reusable,
+            };
+            (selection_kind, fallback_reason, None, Some(bundle.kind))
+        }
+        ResolverSelection::Shadow { execute, .. } => (
+            LookupTableSelectionKind::Legacy,
+            Some(if reusable_resolution_state == "failed" {
+                "shadow rollout executes verified legacy; reusable resolver error recorded"
+                    .to_owned()
+            } else {
+                "shadow rollout executes verified legacy while recording reusable evidence"
+                    .to_owned()
+            }),
+            None,
+            Some(execute.kind),
+        ),
+        ResolverSelection::Blocked { reason } => (
+            LookupTableSelectionKind::Blocked,
+            None,
+            Some(reason.to_owned()),
+            None,
+        ),
+    };
+
+    let selected_bundle = match selected_kind {
+        Some(LookupTableBundleKind::Legacy) => Some(legacy.domain.clone()),
+        Some(LookupTableBundleKind::Reusable) => Some(reusable.domain.clone()),
+        None => None,
+    };
+    let selected_table_ids = selected_bundle
+        .as_ref()
+        .map(|bundle| bundle.tables.iter().map(|table| table.table_id).collect())
+        .unwrap_or_else(Vec::new);
+    let (active_binding_fingerprint, active_binding_id) =
+        if selected_kind == Some(LookupTableBundleKind::Reusable) {
+            active_lookup_table_binding_fingerprint(client, vault.id, &selected_table_ids).await?
+        } else {
+            (stable_fingerprint(&["legacy", "no-reusable-binding"]), None)
+        };
+    let selection_fingerprint = selected_bundle.as_ref().map(|bundle| {
+        let mut parts = vec![
+            requirements_fingerprint.clone(),
+            active_binding_fingerprint.clone(),
+            match bundle.kind {
+                LookupTableBundleKind::Legacy => "legacy".to_owned(),
+                LookupTableBundleKind::Reusable => "reusable".to_owned(),
+            },
+        ];
+        for table in &bundle.tables {
+            parts.push(format!(
+                "{}:{}:{}:{}:{}",
+                table.table_id,
+                table.table_address,
+                table.mutation_epoch,
+                table.usable_prefix_len,
+                table.address_hash
+            ));
+        }
+        stable_fingerprint_owned(&parts)
+    });
+    let route_lease_reference = selection_fingerprint
+        .as_ref()
+        .map(|fingerprint| format!("route-resolution:{fingerprint}"));
+
+    let selected = match selected_kind {
+        Some(LookupTableBundleKind::Legacy) => Some(&mut legacy),
+        Some(LookupTableBundleKind::Reusable) => Some(&mut reusable),
+        None => None,
+    };
+    let (selected_transaction, selected_transaction_packet, selected_simulation_units_consumed) =
+        if let Some(selected) = selected {
+            (
+                selected.transaction.take(),
+                selected.transaction_packet.take(),
+                selected.simulation_units_consumed,
+            )
+        } else {
+            (None, None, None)
+        };
+
+    let evidence = json!({
+        "mode": "active_reusable_resolver",
+        "cluster": options.cluster,
+        "scope": scope,
+        "routeFingerprint": route_fingerprint,
+        "requirementsFingerprint": requirements_fingerprint,
+        "observedSlot": observed_slot,
+        "rollout": {
+            "mode": rollout.rollout_mode.as_str(),
+            "forceLegacy": rollout.force_legacy,
+            "globalReason": rollout.global.as_ref().and_then(|control| control.reason.clone()),
+            "vaultReason": rollout.vault.as_ref().and_then(|control| control.reason.clone()),
+        },
+        "selection": {
+            "kind": selection_kind.as_str(),
+            "fallbackReason": fallback_reason,
+            "blocker": blocker,
+            "fingerprint": selection_fingerprint,
+            "activeBindingFingerprint": active_binding_fingerprint,
+            "tableIds": selected_table_ids,
+        },
+        "requiredAddresses": required_addresses.iter().cloned().collect::<Vec<_>>(),
+        "legacy": legacy_evidence,
+        "reusable": reusable_evidence,
+        "typedManifest": lookup_table_manifest_json(manifest),
+    });
+
+    Ok(RuntimeLookupTableResolution {
+        rollout,
+        route_fingerprint,
+        requirements_fingerprint,
+        selection_fingerprint,
+        route_lease_reference,
+        active_binding_fingerprint,
+        active_binding_id,
+        selection_kind,
+        fallback_reason,
+        blocker,
+        selected_bundle,
+        selected_transaction,
+        selected_transaction_packet,
+        selected_simulation_units_consumed,
+        legacy_table_ids,
+        legacy_missing_addresses,
+        legacy_packet_fits,
+        reusable_table_ids,
+        required_addresses,
+        reusable_missing_addresses,
+        reusable_ready,
+        reusable_compiled_message_size,
+        reusable_packet_fits,
+        reusable_simulation_units_consumed,
+        reusable_simulation_error,
+        observed_slot,
+        evidence,
+    })
+}
+
+async fn legacy_route_lookup_table_records(
+    client: &NeonSqlClient,
+    options: &CliOptions,
+    scope: &str,
+    authority: &str,
+) -> Result<Vec<RouteLookupTable>, Box<dyn Error>> {
+    let mut records = client
+        .durable_route_lookup_tables(&options.cluster, scope, authority)
+        .await?;
+    let configured_addresses = lookup_table_pubkeys_from_options(options)?
+        .into_iter()
+        .map(|address| address.to_string())
+        .collect::<Vec<_>>();
+    if !configured_addresses.is_empty() {
+        let rows = loyal_yield_orchestrator::sqlx::query_scalar::<_, Value>(
+            r#"
+            SELECT to_jsonb(route_table)
+            FROM loyal_yield.route_lookup_tables route_table
+            WHERE route_table.cluster = $1
+              AND route_table.authority = $2
+              AND route_table.table_address = ANY($3)
+              AND route_table.family_id IS NULL
+              AND route_table.durable = TRUE
+              AND route_table.status IN ('active', 'warming', 'usable')
+            ORDER BY route_table.updated_at DESC, route_table.id DESC
+            "#,
+        )
+        .bind(&options.cluster)
+        .bind(authority)
+        .bind(&configured_addresses)
+        .fetch_all(client.pool())
+        .await?;
+        for row in rows {
+            records.push(serde_json::from_value(row).map_err(|error| {
+                format!("registered legacy lookup-table row could not be decoded: {error}")
+            })?);
+        }
+    }
+    records.sort_by_key(|record| record.id);
+    records.dedup_by_key(|record| record.id);
+    Ok(records)
+}
+
+fn verify_legacy_lookup_table_candidates(
+    rpc: &RpcClient,
+    records: Vec<RouteLookupTable>,
+    observed_slot: u64,
+) -> (
+    Vec<ResolverTableCandidate>,
+    BTreeMap<i64, AddressLookupTableAccount>,
+    Vec<Value>,
+) {
+    let mut candidates = Vec::new();
+    let mut accounts = BTreeMap::new();
+    let mut failures = Vec::new();
+    for record in records {
+        let table_id = record.id;
+        let table_address = record.table_address.clone();
+        let ordered_prefix = match serde_json::from_value::<Vec<String>>(record.addresses.clone()) {
+            Ok(addresses) => addresses,
+            Err(error) => {
+                failures.push(json!({
+                    "tableId": table_id,
+                    "tableAddress": table_address,
+                    "reason": format!("legacy DB address list is invalid: {error}"),
+                }));
+                continue;
+            }
+        };
+        let persisted_prefix_verified = record.durable
+            && record.address_count >= 0
+            && record.address_count as usize == ordered_prefix.len()
+            && record.deactivated_slot.is_none();
+        let mut candidate = ResolverTableCandidate {
+            table_id,
+            table_address: record.table_address,
+            expected_authority: record.authority,
+            family_id: None,
+            allocation_kind: None,
+            generation: 0,
+            shard_index: 0,
+            ordered_usable_prefix: ordered_prefix.clone(),
+            ordered_durable_addresses: ordered_prefix.clone(),
+            addresses: ordered_prefix.iter().cloned().collect(),
+            usable_prefix_len: u16::try_from(ordered_prefix.len()).unwrap_or(u16::MAX),
+            address_hash: ordered_lookup_table_address_hash(&ordered_prefix),
+            mutation_epoch: 0,
+            last_verified_slot: record.warmup_slot.or(record.last_extended_slot),
+            lifecycle: LookupTableLifecycle::Active,
+            persisted_prefix_verified,
+            rpc_verified: false,
+            usable: persisted_prefix_verified,
+        };
+        match verify_lookup_table_candidate(rpc, &mut candidate, observed_slot) {
+            Ok(account) => {
+                accounts.insert(table_id, account);
+            }
+            Err(reason) => {
+                candidate.rpc_verified = false;
+                candidate.usable = false;
+                failures.push(json!({
+                    "tableId": table_id,
+                    "tableAddress": candidate.table_address,
+                    "reason": safe_same_mint_operational_error(&reason),
+                }));
+            }
+        }
+        candidates.push(candidate);
+    }
+    (candidates, accounts, failures)
+}
+
+fn verify_reusable_lookup_table_candidates(
+    rpc: &RpcClient,
+    raw_candidates: Vec<ResolverTableCandidate>,
+    observed_slot: u64,
+) -> (
+    Vec<ResolverTableCandidate>,
+    BTreeMap<i64, AddressLookupTableAccount>,
+    Vec<Value>,
+) {
+    let mut candidates = Vec::new();
+    let mut accounts = BTreeMap::new();
+    let mut failures = Vec::new();
+    for mut candidate in raw_candidates {
+        let table_id = candidate.table_id;
+        match verify_lookup_table_candidate(rpc, &mut candidate, observed_slot) {
+            Ok(account) => {
+                accounts.insert(table_id, account);
+            }
+            Err(reason) => {
+                candidate.rpc_verified = false;
+                candidate.usable = false;
+                failures.push(json!({
+                    "tableId": table_id,
+                    "tableAddress": candidate.table_address,
+                    "reason": safe_same_mint_operational_error(&reason),
+                }));
+            }
+        }
+        candidates.push(candidate);
+    }
+    (candidates, accounts, failures)
+}
+
+fn verify_lookup_table_candidate(
+    rpc: &RpcClient,
+    candidate: &mut ResolverTableCandidate,
+    observed_slot: u64,
+) -> Result<AddressLookupTableAccount, String> {
+    if !candidate.persisted_prefix_verified || !candidate.usable {
+        return Err("persisted lookup-table prefix is not verified/usable".to_owned());
+    }
+    let table_key = Pubkey::from_str(&candidate.table_address)
+        .map_err(|error| format!("table address is not a public key: {error}"))?;
+    let account = rpc
+        .get_account_with_commitment(&table_key, CommitmentConfig::confirmed())
+        .map_err(|error| {
+            safe_same_mint_operational_error_with_context("rpc_lookup_table_load_failed", &error)
+        })?
+        .value
+        .ok_or_else(|| "lookup-table account is missing on RPC".to_owned())?;
+    if account.owner != address_lookup_table_program::id() {
+        return Err(format!(
+            "lookup-table owner {} does not match {}",
+            account.owner,
+            address_lookup_table_program::id()
+        ));
+    }
+    let table = AddressLookupTable::deserialize(&account.data)
+        .map_err(|error| format!("lookup-table account decode failed: {error}"))?;
+    let expected_authority = Pubkey::from_str(&candidate.expected_authority)
+        .map_err(|error| format!("expected authority is not a public key: {error}"))?;
+    if table.meta.authority != Some(expected_authority) {
+        return Err(format!(
+            "lookup-table authority {:?} does not match expected {}",
+            table.meta.authority, expected_authority
+        ));
+    }
+    if table.meta.deactivation_slot != u64::MAX {
+        return Err(format!(
+            "lookup table is deactivating/deactivated at slot {}",
+            table.meta.deactivation_slot
+        ));
+    }
+    if usize::from(candidate.usable_prefix_len) != candidate.ordered_usable_prefix.len() {
+        return Err("persisted usable prefix length does not match ordered prefix".to_owned());
+    }
+    if !candidate
+        .ordered_durable_addresses
+        .starts_with(&candidate.ordered_usable_prefix)
+    {
+        return Err("durable lookup-table membership does not extend the usable prefix".to_owned());
+    }
+    let chain_addresses = table.addresses.iter().copied().collect::<Vec<_>>();
+    let usable_prefix_len = if observed_slot > table.meta.last_extended_slot {
+        chain_addresses.len()
+    } else if observed_slot == table.meta.last_extended_slot {
+        usize::from(table.meta.last_extended_slot_start_index)
+    } else {
+        0
+    };
+    let expected_prefix = candidate
+        .ordered_usable_prefix
+        .iter()
+        .map(|address| {
+            Pubkey::from_str(address)
+                .map_err(|error| format!("persisted prefix address is invalid: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if expected_prefix.len() > usable_prefix_len {
+        return Err(format!(
+            "persisted prefix has {} addresses but only {} are warm at observed slot {}",
+            expected_prefix.len(),
+            usable_prefix_len,
+            observed_slot
+        ));
+    }
+    if chain_addresses.get(..expected_prefix.len()) != Some(expected_prefix.as_slice()) {
+        return Err("RPC ordered prefix differs from persisted ordered usable prefix".to_owned());
+    }
+    let chain_address_strings = chain_addresses
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let persisted_full_matches =
+        ordered_lookup_table_address_hash(&chain_address_strings) == candidate.address_hash;
+    let anticipated_durable_full_matches =
+        chain_address_strings == candidate.ordered_durable_addresses;
+    if !persisted_full_matches && !anticipated_durable_full_matches {
+        return Err(
+            "RPC full ordered membership matches neither persisted state nor the exact durable pending suffix"
+                .to_owned(),
+        );
+    }
+    candidate.rpc_verified = true;
+    candidate.usable = true;
+    candidate.addresses = candidate.ordered_usable_prefix.iter().cloned().collect();
+    Ok(AddressLookupTableAccount {
+        key: table_key,
+        addresses: expected_prefix,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_lookup_table_bundle(
+    rpc: &RpcClient,
+    kind: LookupTableBundleKind,
+    mut tables: Vec<ResolverTableCandidate>,
+    mut missing_addresses: BTreeSet<String>,
+    required_addresses: BTreeSet<String>,
+    account_by_table_id: BTreeMap<i64, AddressLookupTableAccount>,
+    fee_payer: Pubkey,
+    instructions: &[Instruction],
+    blockhash: Hash,
+    signers: &[&dyn Signer],
+) -> CompiledLookupTableBundle {
+    let mut lookup_table_accounts = tables
+        .iter()
+        .filter_map(|table| account_by_table_id.get(&table.table_id).cloned())
+        .collect::<Vec<_>>();
+    let mut transaction = None;
+    let mut transaction_packet = None;
+    let mut simulation_units_consumed = None;
+    let mut simulation_error = None;
+    let mut verification_failures = Vec::new();
+
+    if missing_addresses.is_empty() {
+        match compile_versioned_transaction(
+            fee_payer,
+            instructions,
+            &lookup_table_accounts,
+            blockhash,
+            signers,
+        ) {
+            Ok(mut compiled) => {
+                let contributing = contributing_lookup_table_keys(&compiled);
+                tables.retain(|table| {
+                    Pubkey::from_str(&table.table_address)
+                        .is_ok_and(|address| contributing.contains(&address))
+                });
+                lookup_table_accounts.retain(|account| contributing.contains(&account.key));
+                match compile_versioned_transaction(
+                    fee_payer,
+                    instructions,
+                    &lookup_table_accounts,
+                    blockhash,
+                    signers,
+                ) {
+                    Ok(recompiled) => compiled = recompiled,
+                    Err(error) => {
+                        simulation_error = Some(format!(
+                        "v0 recompilation after zero-contribution table removal failed: {error}"
+                    ))
+                    }
+                }
+                let covered = loaded_lookup_table_addresses(&compiled, &lookup_table_accounts);
+                missing_addresses = required_addresses.difference(&covered).cloned().collect();
+                if missing_addresses.is_empty() && simulation_error.is_none() {
+                    match transaction_packet_summary(&compiled, &lookup_table_accounts) {
+                        Ok(packet) => {
+                            if packet.fits_packet_data_size {
+                                match rpc.simulate_transaction(&compiled) {
+                                    Ok(simulation) => {
+                                        simulation_units_consumed = simulation.value.units_consumed;
+                                        if let Some(error) = simulation.value.err {
+                                            simulation_error = Some(format!(
+                                                "simulation failed: {error:?}; logs: {}",
+                                                simulation
+                                                    .value
+                                                    .logs
+                                                    .unwrap_or_default()
+                                                    .join(" | ")
+                                            ));
+                                        }
+                                    }
+                                    Err(error) => {
+                                        simulation_error =
+                                            Some(same_mint_readiness_rpc_failure(&error));
+                                    }
+                                }
+                            } else {
+                                simulation_error = Some(format!(
+                                    "serialized v0 transaction is {} bytes; packet limit is {}",
+                                    packet.packet_size_bytes, packet.packet_data_size_bytes
+                                ));
+                            }
+                            transaction_packet = Some(packet);
+                            transaction = Some(compiled);
+                        }
+                        Err(error) => {
+                            simulation_error =
+                                Some(format!("transaction packet measurement failed: {error}"));
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                simulation_error = Some(format!("v0 compilation failed: {error}"));
+            }
+        }
+    }
+    if let Some(error) = simulation_error.as_ref() {
+        verification_failures.push(json!({ "reason": error }));
+    }
+    let packet_fits = transaction_packet
+        .as_ref()
+        .is_some_and(|packet| packet.fits_packet_data_size);
+    let simulation_succeeded = transaction.is_some()
+        && packet_fits
+        && simulation_error.is_none()
+        && missing_addresses.is_empty();
+    CompiledLookupTableBundle {
+        domain: ResolvedLookupTableBundle {
+            kind,
+            tables,
+            required_addresses,
+            missing_addresses,
+            packet_fits,
+            simulation_succeeded,
+        },
+        transaction,
+        transaction_packet,
+        simulation_units_consumed,
+        simulation_error,
+        verification_failures,
+    }
+}
+
+fn contributing_lookup_table_keys(transaction: &VersionedTransaction) -> BTreeSet<Pubkey> {
+    match &transaction.message {
+        VersionedMessage::V0(message) => message
+            .address_table_lookups
+            .iter()
+            .map(|lookup| lookup.account_key)
+            .collect(),
+        VersionedMessage::Legacy(_) => BTreeSet::new(),
+    }
+}
+
+fn loaded_lookup_table_addresses(
+    transaction: &VersionedTransaction,
+    lookup_table_accounts: &[AddressLookupTableAccount],
+) -> BTreeSet<String> {
+    let VersionedMessage::V0(message) = &transaction.message else {
+        return BTreeSet::new();
+    };
+    let accounts = lookup_table_accounts
+        .iter()
+        .map(|account| (account.key, account))
+        .collect::<BTreeMap<_, _>>();
+    message
+        .address_table_lookups
+        .iter()
+        .filter_map(|lookup| {
+            accounts
+                .get(&lookup.account_key)
+                .copied()
+                .map(|account| (lookup, account))
+        })
+        .flat_map(|(lookup, account)| {
+            lookup
+                .writable_indexes
+                .iter()
+                .chain(lookup.readonly_indexes.iter())
+                .filter_map(|index| account.addresses.get(usize::from(*index)))
+        })
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn compiled_lookup_table_bundle_json(bundle: &CompiledLookupTableBundle) -> Value {
+    json!({
+        "kind": match bundle.domain.kind {
+            LookupTableBundleKind::Legacy => "legacy",
+            LookupTableBundleKind::Reusable => "reusable",
+        },
+        "ready": bundle.domain.ready(),
+        "packetFits": bundle.domain.packet_fits,
+        "simulationSucceeded": bundle.domain.simulation_succeeded,
+        "simulationUnitsConsumed": bundle.simulation_units_consumed,
+        "simulationError": bundle.simulation_error,
+        "requiredAddressCount": bundle.domain.required_addresses.len(),
+        "missingAddresses": bundle.domain.missing_addresses.iter().cloned().collect::<Vec<_>>(),
+        "tables": bundle.domain.tables.iter().map(|table| json!({
+            "tableId": table.table_id,
+            "tableAddress": table.table_address,
+            "familyId": table.family_id,
+            "allocationKind": table.allocation_kind.map(|kind| kind.as_str()),
+            "generation": table.generation,
+            "shardIndex": table.shard_index,
+            "usablePrefixLength": table.usable_prefix_len,
+            "mutationEpoch": table.mutation_epoch,
+            "addressHash": table.address_hash,
+            "lastVerifiedSlot": table.last_verified_slot,
+            "persistedPrefixVerified": table.persisted_prefix_verified,
+            "rpcVerified": table.rpc_verified,
+            "contributesToCompiledMessage": true,
+        })).collect::<Vec<_>>(),
+        "transaction": bundle.transaction_packet.as_ref().map(transaction_packet_json),
+        "verificationFailures": bundle.verification_failures,
+    })
+}
+
+async fn active_lookup_table_binding_fingerprint(
+    client: &NeonSqlClient,
+    vault_id: VaultId,
+    selected_table_ids: &[i64],
+) -> Result<(String, Option<i64>), Box<dyn Error>> {
+    if selected_table_ids.is_empty() {
+        return Ok((
+            stable_fingerprint(&["reusable", "no-selected-tables"]),
+            None,
+        ));
+    }
+    let rows = loyal_yield_orchestrator::sqlx::query(
+        r#"
+        SELECT id, route_lookup_table_id, manifest_id, binding_ordinal,
+               lifecycle_state, active_from_slot, active_until_slot
+        FROM loyal_yield.lookup_table_vault_bindings
+        WHERE vault_id = $1 AND lifecycle_state = 'active'
+          AND route_lookup_table_id = ANY($2)
+        ORDER BY route_lookup_table_id, binding_ordinal, id
+        "#,
     )
-    .into())
+    .bind(vault_id.as_i64())
+    .bind(selected_table_ids)
+    .fetch_all(client.pool())
+    .await?;
+    let mut parts = vec![format!("vault:{}", vault_id.as_i64())];
+    let mut binding_ids = Vec::new();
+    for row in rows {
+        let id: i64 = row.try_get("id")?;
+        binding_ids.push(id);
+        parts.push(format!(
+            "{}:{}:{}:{}:{}:{:?}:{:?}",
+            id,
+            row.try_get::<i64, _>("route_lookup_table_id")?,
+            row.try_get::<i64, _>("manifest_id")?,
+            row.try_get::<i32, _>("binding_ordinal")?,
+            row.try_get::<String, _>("lifecycle_state")?,
+            row.try_get::<Option<i64>, _>("active_from_slot")?,
+            row.try_get::<Option<i64>, _>("active_until_slot")?,
+        ));
+    }
+    let binding_id = (binding_ids.len() == 1).then_some(binding_ids[0]);
+    Ok((stable_fingerprint_owned(&parts), binding_id))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LookupTablePersistencePolicy {
+    readiness_best_effort: bool,
+    acquire_route_lease: bool,
+    request_provisioning: bool,
+}
+
+const fn lookup_table_persistence_policy(
+    force_legacy: bool,
+    acquire_route_lease: bool,
+    request_provisioning: bool,
+) -> LookupTablePersistencePolicy {
+    if force_legacy {
+        LookupTablePersistencePolicy {
+            readiness_best_effort: true,
+            acquire_route_lease: false,
+            request_provisioning: false,
+        }
+    } else {
+        LookupTablePersistencePolicy {
+            readiness_best_effort: false,
+            acquire_route_lease,
+            request_provisioning,
+        }
+    }
+}
+
+async fn persist_route_lookup_table_resolution(
+    client: &NeonSqlClient,
+    options: &CliOptions,
+    vault: &SelectedVault,
+    source_reserve: &str,
+    target_reserve: &str,
+    route_kind: &str,
+    manifest: &LookupTableManifest,
+    resolution: &RuntimeLookupTableResolution,
+    acquire_route_lease: bool,
+    request_provisioning: bool,
+) -> Result<(), Box<dyn Error>> {
+    let persistence_policy = lookup_table_persistence_policy(
+        resolution.rollout.force_legacy,
+        acquire_route_lease,
+        request_provisioning,
+    );
+    let selected_table_ids = resolution.selected_table_ids();
+    let selected_table_count = i32::try_from(selected_table_ids.len())?;
+    let required_count = i32::try_from(resolution.required_addresses.len())?;
+    let reusable_missing_count = i32::try_from(resolution.reusable_missing_addresses.len())?;
+    let packet_size = resolution
+        .reusable_compiled_message_size
+        .map(i32::try_from)
+        .transpose()?;
+    let simulation_state = if resolution.reusable_compiled_message_size.is_none() {
+        LookupTableSimulationState::NotRun
+    } else if resolution.reusable_simulation_error.is_none() {
+        LookupTableSimulationState::Succeeded
+    } else {
+        LookupTableSimulationState::Failed
+    };
+    let shared_family_id = resolution.selected_bundle.as_ref().and_then(|bundle| {
+        bundle
+            .tables
+            .iter()
+            .find(|table| table.allocation_kind == Some(LookupTableAllocationKind::SharedMarket))
+            .and_then(|table| table.family_id)
+    });
+    let readiness_result = client
+        .upsert_lookup_table_readiness(LookupTableReadinessRecord {
+            cluster: options.cluster.clone(),
+            vault_id: vault.id,
+            route_fingerprint: resolution.route_fingerprint.clone(),
+            requirements_fingerprint: resolution.requirements_fingerprint.clone(),
+            route_kind: route_kind.to_owned(),
+            source_reserve: Some(source_reserve.to_owned()),
+            target_reserve: Some(target_reserve.to_owned()),
+            manifest_id: None,
+            shared_family_id,
+            vault_binding_id: resolution.active_binding_id,
+            readiness_state: if resolution.reusable_ready {
+                LookupTableReadinessStatus::Ready
+            } else {
+                LookupTableReadinessStatus::Incomplete
+            },
+            required_address_count: required_count,
+            covered_address_count: required_count - reusable_missing_count,
+            missing_addresses: json!(resolution
+                .reusable_missing_addresses
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()),
+            legacy_table_ids: resolution.legacy_table_ids.clone(),
+            reusable_table_ids: resolution.reusable_table_ids.clone(),
+            compiled_message_size: packet_size,
+            packet_limit: Some(i32::try_from(PACKET_DATA_SIZE)?),
+            observed_slot: Some(resolution.observed_slot),
+            observed_at: Utc::now(),
+            selection_kind: Some(resolution.selection_kind),
+            fallback_reason: resolution
+                .fallback_reason
+                .clone()
+                .or_else(|| resolution.blocker.clone()),
+            rollout_mode: Some(resolution.rollout.rollout_mode),
+            selected_table_ids: selected_table_ids.clone(),
+            selected_table_count: Some(selected_table_count),
+            packet_fits: resolution.reusable_packet_fits,
+            simulation_state: Some(simulation_state),
+            simulation_units_consumed: resolution
+                .reusable_simulation_units_consumed
+                .map(i64::try_from)
+                .transpose()?,
+            simulation_error: resolution.reusable_simulation_error.clone(),
+            updated_at: Utc::now(),
+        })
+        .await;
+    if persistence_policy.readiness_best_effort {
+        if readiness_result.is_err() {
+            eprintln!(
+                "{}",
+                json!({
+                    "event": "force_legacy_lookup_table_readiness_write_failed",
+                    "cluster": options.cluster,
+                    "vaultId": vault.id.as_i64(),
+                    "routeFingerprint": resolution.route_fingerprint,
+                    "continuesVerifiedLegacySend": true,
+                })
+            );
+        }
+    } else {
+        readiness_result?;
+    }
+
+    if persistence_policy.request_provisioning && !resolution.reusable_missing_addresses.is_empty()
+    {
+        client
+            .upsert_lookup_table_provisioning_request(LookupTableProvisioningRequestUpsert {
+                cluster: options.cluster.clone(),
+                vault_id: vault.id,
+                route_fingerprint: resolution.route_fingerprint.clone(),
+                requirements_fingerprint: resolution.requirements_fingerprint.clone(),
+                shared_manifest_id: None,
+                vault_manifest_id: None,
+                desired_shared_hash: Some(shared_market_manifest_hash(manifest)),
+                desired_vault_hash: Some(vault_manifest_hash(manifest)),
+                shared_addresses: shared_market_manifest_addresses(manifest),
+                vault_addresses: vault_manifest_addresses(manifest),
+            })
+            .await?;
+    }
+
+    if persistence_policy.acquire_route_lease {
+        resolution.require_ready()?;
+        client
+            .upsert_lookup_table_usage_leases(LookupTableUsageLeaseBundle {
+                cluster: options.cluster.clone(),
+                lease_kind: LookupTableUsageLeaseKind::RouteResolution,
+                reference_key: resolution
+                    .route_lease_reference
+                    .clone()
+                    .ok_or("route lookup-table lease reference is missing")?,
+                route_lookup_table_ids: selected_table_ids,
+                vault_id: Some(vault.id),
+                binding_id: resolution.active_binding_id,
+                route_fingerprint: Some(resolution.route_fingerprint.clone()),
+                requirements_fingerprint: Some(resolution.requirements_fingerprint.clone()),
+                expires_at: Utc::now() + ChronoDuration::minutes(LOOKUP_TABLE_ROUTE_LEASE_MINUTES),
+            })
+            .await?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepare_route_lookup_table_phase(
+    client: &NeonSqlClient,
+    rpc: &RpcClient,
+    options: &CliOptions,
+    vault: &SelectedVault,
+    source_reserve: &str,
+    target_reserve: &str,
+    route_kind: &'static str,
+    scope: String,
+    fee_payer: Pubkey,
+    instructions: Vec<Instruction>,
+    manifest: LookupTableManifest,
+    signers: &[&dyn Signer],
+    acquire_route_lease: bool,
+) -> Result<RouteLookupTablePhase, Box<dyn Error>> {
+    let resolution = resolve_route_lookup_tables(
+        client,
+        rpc,
+        options,
+        vault,
+        source_reserve,
+        target_reserve,
+        route_kind,
+        &scope,
+        fee_payer,
+        &instructions,
+        &manifest,
+        signers,
+    )
+    .await?;
+    persist_route_lookup_table_resolution(
+        client,
+        options,
+        vault,
+        source_reserve,
+        target_reserve,
+        route_kind,
+        &manifest,
+        &resolution,
+        acquire_route_lease,
+        true,
+    )
+    .await?;
+    Ok(RouteLookupTablePhase {
+        route_kind,
+        scope,
+        source_reserve: source_reserve.to_owned(),
+        target_reserve: target_reserve.to_owned(),
+        instructions,
+        manifest,
+        resolution,
+    })
+}
+
+async fn submit_route_lookup_table_phase(
+    client: &NeonSqlClient,
+    rpc: &RpcClient,
+    options: &CliOptions,
+    vault: &SelectedVault,
+    phase: &RouteLookupTablePhase,
+    signers: &[&dyn Signer],
+    prepared_reference_prefix: &str,
+) -> Result<SubmittedLookupTablePhase, Box<dyn Error>> {
+    let selection_fingerprint = phase
+        .resolution
+        .selection_fingerprint
+        .as_deref()
+        .ok_or("predecision lookup-table selection fingerprint is missing")?;
+    let prepared_lease_reference = format!("{prepared_reference_prefix}:{selection_fingerprint}");
+    let result = async {
+        let mut presend = resolve_route_lookup_tables_immediately_before_send(
+            client,
+            rpc,
+            options,
+            vault,
+            phase,
+            &phase.instructions,
+            &phase.manifest,
+            signers,
+            &prepared_lease_reference,
+        )
+        .await?;
+        let transaction = presend
+            .selected_transaction
+            .take()
+            .ok_or("pre-send lookup-table resolution is missing the compiled transaction")?;
+        let transaction_packet = presend
+            .selected_transaction_packet
+            .take()
+            .ok_or("pre-send lookup-table resolution is missing packet evidence")?;
+        let simulation_units_consumed = presend.selected_simulation_units_consumed;
+        let lookup_table_resolution = presend.evidence.clone();
+        let submitted_slot = i64::try_from(rpc.get_slot()?)?;
+        let signature = rpc.send_and_confirm_transaction(&transaction)?.to_string();
+        let confirmed_slot = i64::try_from(rpc.get_slot()?)?;
+        Ok::<_, Box<dyn Error>>(SubmittedLookupTablePhase {
+            signature,
+            submitted_slot,
+            confirmed_slot,
+            simulation_units_consumed,
+            transaction_packet,
+            lookup_table_resolution,
+        })
+    }
+    .await;
+    release_route_lookup_table_phase_leases(client, phase, Some(&prepared_lease_reference)).await;
+    result
+}
+
+fn ensure_lookup_table_resolution_unchanged(
+    predecision: &RuntimeLookupTableResolution,
+    presend: &RuntimeLookupTableResolution,
+) -> Result<(), Box<dyn Error>> {
+    predecision.require_ready()?;
+    presend.require_ready()?;
+    if predecision.route_fingerprint != presend.route_fingerprint
+        || predecision.requirements_fingerprint != presend.requirements_fingerprint
+        || predecision.selection_kind != presend.selection_kind
+        || predecision.selection_fingerprint != presend.selection_fingerprint
+        || predecision.active_binding_fingerprint != presend.active_binding_fingerprint
+        || predecision.selected_table_ids() != presend.selected_table_ids()
+    {
+        return Err(
+            "lookup-table selection, usable prefix, mutation epoch, or active binding changed between predecision and pre-send"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+async fn resolve_route_lookup_tables_immediately_before_send(
+    client: &NeonSqlClient,
+    rpc: &RpcClient,
+    options: &CliOptions,
+    vault: &SelectedVault,
+    predecision: &RouteLookupTablePhase,
+    instructions: &[Instruction],
+    manifest: &LookupTableManifest,
+    signers: &[&dyn Signer],
+    prepared_lease_reference: &str,
+) -> Result<RuntimeLookupTableResolution, Box<dyn Error>> {
+    let presend = resolve_route_lookup_tables(
+        client,
+        rpc,
+        options,
+        vault,
+        &predecision.source_reserve,
+        &predecision.target_reserve,
+        predecision.route_kind,
+        &predecision.scope,
+        signers
+            .first()
+            .ok_or("route pre-send signer set is empty")?
+            .pubkey(),
+        instructions,
+        manifest,
+        signers,
+    )
+    .await?;
+    persist_route_lookup_table_resolution(
+        client,
+        options,
+        vault,
+        &predecision.source_reserve,
+        &predecision.target_reserve,
+        predecision.route_kind,
+        manifest,
+        &presend,
+        false,
+        false,
+    )
+    .await?;
+    ensure_lookup_table_resolution_unchanged(&predecision.resolution, &presend)?;
+    let selected_table_ids = presend.selected_table_ids();
+    let route_lease_reference = predecision
+        .resolution
+        .route_lease_reference
+        .as_deref()
+        .ok_or("predecision route lease reference is missing")?;
+    let expires_at = Utc::now() + ChronoDuration::minutes(LOOKUP_TABLE_PREPARED_LEASE_MINUTES);
+    client
+        .validate_lookup_table_usage_leases(
+            LookupTableUsageLeaseKind::RouteResolution,
+            route_lease_reference,
+            &selected_table_ids,
+            &presend.requirements_fingerprint,
+            expires_at,
+        )
+        .await?;
+    client
+        .upsert_lookup_table_usage_leases(LookupTableUsageLeaseBundle {
+            cluster: options.cluster.clone(),
+            lease_kind: LookupTableUsageLeaseKind::PreparedTransaction,
+            reference_key: prepared_lease_reference.to_owned(),
+            route_lookup_table_ids: selected_table_ids.clone(),
+            vault_id: Some(vault.id),
+            binding_id: presend.active_binding_id,
+            route_fingerprint: Some(presend.route_fingerprint.clone()),
+            requirements_fingerprint: Some(presend.requirements_fingerprint.clone()),
+            expires_at,
+        })
+        .await?;
+    client
+        .validate_lookup_table_usage_leases(
+            LookupTableUsageLeaseKind::PreparedTransaction,
+            prepared_lease_reference,
+            &selected_table_ids,
+            &presend.requirements_fingerprint,
+            Utc::now() + ChronoDuration::minutes(4),
+        )
+        .await?;
+    if presend.selection_kind == LookupTableSelectionKind::Reusable {
+        let (binding_fingerprint, _) =
+            active_lookup_table_binding_fingerprint(client, vault.id, &selected_table_ids).await?;
+        if binding_fingerprint != presend.active_binding_fingerprint {
+            return Err(
+                "active reusable lookup-table binding changed immediately before send".into(),
+            );
+        }
+    }
+    presend.require_ready()?;
+    Ok(presend)
+}
+
+async fn release_route_lookup_table_phase_leases(
+    client: &NeonSqlClient,
+    phase: &RouteLookupTablePhase,
+    prepared_lease_reference: Option<&str>,
+) {
+    if let Some(reference) = prepared_lease_reference {
+        let _ = client
+            .release_lookup_table_usage_leases(
+                LookupTableUsageLeaseKind::PreparedTransaction,
+                reference,
+            )
+            .await;
+    }
+    release_route_resolution_lease(client, &phase.resolution).await;
+}
+
+async fn release_idle_lookup_table_phase_leases(
+    client: &NeonSqlClient,
+    setup: Option<&RouteLookupTablePhase>,
+    deposit: Option<&RouteLookupTablePhase>,
+) {
+    if let Some(phase) = setup {
+        release_route_lookup_table_phase_leases(client, phase, None).await;
+    }
+    if let Some(phase) = deposit {
+        release_route_lookup_table_phase_leases(client, phase, None).await;
+    }
+}
+
+fn stable_fingerprint(parts: &[&str]) -> String {
+    let parts = parts
+        .iter()
+        .map(|part| (*part).to_owned())
+        .collect::<Vec<_>>();
+    stable_fingerprint_owned(&parts)
+}
+
+fn stable_fingerprint_owned(parts: &[String]) -> String {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn ordered_lookup_table_address_hash(addresses: &[String]) -> String {
+    stable_fingerprint_owned(addresses)
 }
 
 fn lookup_table_pubkeys_from_options(options: &CliOptions) -> Result<Vec<Pubkey>, Box<dyn Error>> {
@@ -5928,9 +7839,8 @@ async fn lookup_table_pubkeys_for_scope(
     authority: Pubkey,
 ) -> Result<Vec<Pubkey>, Box<dyn Error>> {
     let mut pubkeys = lookup_table_pubkeys_from_options(options)?;
-    let cluster = route_lookup_table_cluster(&options.rpc_url);
     let records = client
-        .durable_route_lookup_tables(&cluster, scope, &authority.to_string())
+        .durable_route_lookup_tables(&options.cluster, scope, &authority.to_string())
         .await?;
     for record in records {
         pubkeys.push(Pubkey::from_str(&record.table_address).map_err(|error| {
@@ -5945,26 +7855,6 @@ async fn lookup_table_pubkeys_for_scope(
     Ok(pubkeys)
 }
 
-fn route_lookup_table_cluster(rpc_url: &str) -> String {
-    if rpc_url.contains("devnet") {
-        "devnet".to_owned()
-    } else if rpc_url.contains("testnet") {
-        "testnet".to_owned()
-    } else if rpc_url.contains("localhost") || rpc_url.contains("127.0.0.1") {
-        "localnet".to_owned()
-    } else {
-        "mainnet-beta".to_owned()
-    }
-}
-
-fn same_mint_route_lookup_table_scope(vault: &SelectedVault, reserve_move: &ReserveMove) -> String {
-    same_mint_route_lookup_table_scope_for_reserves(
-        vault,
-        &reserve_move.source_reserve,
-        &reserve_move.target_reserve,
-    )
-}
-
 fn same_mint_route_lookup_table_scope_for_reserves(
     vault: &SelectedVault,
     source_reserve: &str,
@@ -5974,64 +7864,6 @@ fn same_mint_route_lookup_table_scope_for_reserves(
         "same_mint_kamino:{}:{}:{}:{}",
         vault.settings, vault.vault_index, source_reserve, target_reserve
     )
-}
-
-fn route_lookup_table_address_hash(addresses: &[Pubkey]) -> String {
-    let mut ordered = addresses
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    ordered.sort();
-    let mut hasher = Sha256::new();
-    for address in ordered {
-        hasher.update(address.as_bytes());
-        hasher.update([0]);
-    }
-    format!("{:x}", hasher.finalize())
-}
-
-fn lookup_table_addresses_json(addresses: &[Pubkey]) -> Value {
-    json!(addresses
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>())
-}
-
-async fn record_durable_lookup_table(
-    client: &NeonSqlClient,
-    options: &CliOptions,
-    scope: &str,
-    table_address: Pubkey,
-    authority: Pubkey,
-    payer: Pubkey,
-    addresses: &[Pubkey],
-    create_signature: Option<String>,
-    extend_signatures: Value,
-    last_extended_slot: Option<i64>,
-    warmup_slot: Option<i64>,
-    status: &str,
-    notes: Option<String>,
-) -> Result<(), Box<dyn Error>> {
-    client
-        .upsert_route_lookup_table(RouteLookupTableUpsert {
-            cluster: route_lookup_table_cluster(&options.rpc_url),
-            scope: scope.to_owned(),
-            table_address: table_address.to_string(),
-            authority: authority.to_string(),
-            payer: payer.to_string(),
-            status: status.to_owned(),
-            durable: true,
-            address_count: i32::try_from(addresses.len())?,
-            address_hash: route_lookup_table_address_hash(addresses),
-            addresses: lookup_table_addresses_json(addresses),
-            create_signature,
-            extend_signatures,
-            last_extended_slot,
-            warmup_slot,
-            notes,
-        })
-        .await?;
-    Ok(())
 }
 
 fn parse_lookup_table_list(raw: &str) -> Result<Vec<Pubkey>, String> {
@@ -6084,11 +7916,7 @@ fn best_case_single_lookup_table_packet_summary(
     blockhash: Hash,
     signers: &[&dyn Signer],
 ) -> Result<Option<TransactionPacketSummary>, Box<dyn Error>> {
-    let signer_pubkeys = signers
-        .iter()
-        .map(|signer| signer.pubkey())
-        .collect::<Vec<_>>();
-    let lookup_addresses = best_case_lookup_table_addresses(payer, instructions, &signer_pubkeys);
+    let lookup_addresses = best_case_lookup_table_addresses(payer, instructions);
     if lookup_addresses.is_empty() {
         return Ok(None);
     }
@@ -6114,33 +7942,8 @@ fn best_case_single_lookup_table_packet_summary(
     Ok(Some(summary))
 }
 
-fn best_case_lookup_table_addresses(
-    payer: Pubkey,
-    instructions: &[Instruction],
-    signer_pubkeys: &[Pubkey],
-) -> Vec<Pubkey> {
-    let mut static_required = vec![payer];
-    static_required.extend_from_slice(signer_pubkeys);
-    static_required.sort();
-    static_required.dedup();
-
-    let mut addresses = Vec::new();
-    for instruction in instructions {
-        for account in &instruction.accounts {
-            if !account.is_signer {
-                push_lookup_candidate(&mut addresses, &static_required, account.pubkey);
-            }
-        }
-    }
-    addresses.sort();
-    addresses.dedup();
-    addresses
-}
-
-fn push_lookup_candidate(addresses: &mut Vec<Pubkey>, static_required: &[Pubkey], pubkey: Pubkey) {
-    if !static_required.binary_search(&pubkey).is_ok() {
-        addresses.push(pubkey);
-    }
+fn best_case_lookup_table_addresses(payer: Pubkey, instructions: &[Instruction]) -> Vec<Pubkey> {
+    compiler_lookup_eligible_addresses(payer, instructions)
 }
 
 fn transaction_packet_summary(
@@ -7767,7 +9570,7 @@ fn execution_preflight_blockers(
                 ));
             }
         }
-        Err(error) => blockers.push(error.to_string()),
+        Err(error) => blockers.push(safe_same_mint_operational_error(error.as_ref())),
     }
     match chain_position_for_reserve(chain_preview, &reserve_move.target_reserve) {
         Ok(target) => {
@@ -7782,7 +9585,7 @@ fn execution_preflight_blockers(
                 }
             }
         }
-        Err(error) => blockers.push(error.to_string()),
+        Err(error) => blockers.push(safe_same_mint_operational_error(error.as_ref())),
     }
     if let Some(policy_preflight) = policy_preflight {
         let mut missing = Vec::new();
@@ -7816,32 +9619,23 @@ fn execution_preflight_blockers(
 }
 
 fn writes_current_positions_from_chain(options: &CliOptions) -> bool {
-    options.execute && options.reconcile_from_chain && !options.provision_route_lookup_table
+    options.execute && options.reconcile_from_chain
 }
 
 fn writes_current_positions_from_user_seed(options: &CliOptions) -> bool {
-    options.execute && options.seed_from_user_position && !options.provision_route_lookup_table
+    options.execute && options.seed_from_user_position
 }
 
 fn uses_chain_preview_positions(options: &CliOptions, has_chain_preview: bool) -> bool {
-    has_chain_preview
-        && options.reconcile_from_chain
-        && (!options.execute || options.provision_route_lookup_table)
+    has_chain_preview && options.reconcile_from_chain && !options.execute
 }
 
 fn same_mint_route_fee_payer_pubkey(options: &CliOptions) -> Result<Pubkey, Box<dyn Error>> {
-    if options.optimization_cycle || options.provision_route_lookup_table {
+    if options.optimization_cycle {
         Ok(policy_keypair_from_env()?.pubkey())
     } else {
         Ok(solana_testing_keypair_from_env()?.pubkey())
     }
-}
-
-fn same_mint_route_signer_pubkeys(fee_payer: Pubkey, delegated_signer: Pubkey) -> Vec<Pubkey> {
-    let mut signer_pubkeys = vec![fee_payer, delegated_signer];
-    signer_pubkeys.sort();
-    signer_pubkeys.dedup();
-    signer_pubkeys
 }
 
 fn same_mint_route_signers<'a>(
@@ -7859,9 +9653,14 @@ fn build_program_interaction_policy_execution_instruction(
     policy: Pubkey,
     signer_pubkey: Pubkey,
     account_index: u8,
-    instruction: Instruction,
+    instruction: YieldRouteInstruction,
     instruction_constraint_index: u8,
-) -> (Instruction, usize, usize, usize) {
+) -> Result<(YieldRouteInstruction, usize, usize, usize), Box<dyn Error>> {
+    guard_lookup_table_mutations(
+        std::slice::from_ref(instruction.instruction()),
+        "raw Squads program-interaction inner instruction",
+    )?;
+    let (instruction, mut requirements) = instruction.into_parts();
     let mut transaction_accounts = Vec::new();
     let compiled_instruction =
         compile_squads_inner_instruction(&mut transaction_accounts, instruction);
@@ -7873,12 +9672,13 @@ fn build_program_interaction_policy_execution_instruction(
         vec![instruction_constraint_index],
         transaction_accounts.clone(),
     );
-    (
-        outer_instruction.clone(),
+    requirements.add_policy(policy);
+    Ok((
+        YieldRouteInstruction::new(outer_instruction.clone(), requirements),
         1,
         transaction_accounts.len(),
         outer_instruction.accounts.len(),
-    )
+    ))
 }
 
 fn planned_source_collateral_amount(
@@ -7904,6 +9704,80 @@ fn planned_source_collateral_amount(
         .into());
     }
     Ok(source_collateral_amount)
+}
+
+fn same_mint_outer_lookup_table_requirements(
+    vault: &SelectedVault,
+) -> Result<YieldRouteLookupTableRequirements, Box<dyn Error>> {
+    let mut requirements = YieldRouteLookupTableRequirements::new(
+        Pubkey::from_str(&vault.settings)?,
+        Pubkey::from_str(&vault.vault_pubkey)?,
+    );
+    requirements.add_policy(Pubkey::from_str(&vault.policy_account)?);
+    if let Some(setup_policy_account) = vault.setup_policy_account.as_deref() {
+        requirements.add_policy(Pubkey::from_str(setup_policy_account)?);
+    }
+    requirements.add_infrastructure_accounts([
+        spl_token::ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+        solana_sdk::sysvar::instructions::id(),
+        solana_sdk::sysvar::rent::id(),
+        system_program::ID,
+        Pubkey::default(),
+    ]);
+
+    Ok(requirements)
+}
+
+fn route_lookup_table_manifest(
+    fee_payer: Pubkey,
+    instructions: &[Instruction],
+    vault: &SelectedVault,
+    builder_requirements: &YieldRouteLookupTableRequirements,
+    extra_vault_token_accounts: &[Pubkey],
+) -> Result<LookupTableManifest, Box<dyn Error>> {
+    let mut requirements = same_mint_outer_lookup_table_requirements(vault)?;
+    requirements.merge(builder_requirements)?;
+    for address in extra_vault_token_accounts {
+        requirements.add_vault_token_account(*address);
+    }
+    requirements
+        .manifest(fee_payer, instructions)
+        .map_err(|error| format!("route ALT manifest is invalid: {error}").into())
+}
+
+fn policy_lookup_table_manifest(
+    fee_payer: Pubkey,
+    instructions: &[Instruction],
+    vault: &SelectedVault,
+    action_setups: &[&YieldRouteActionSetup],
+    extra_policy_accounts: &[Pubkey],
+) -> Result<LookupTableManifest, Box<dyn Error>> {
+    let mut requirements = YieldRouteLookupTableRequirements::new(
+        Pubkey::from_str(&vault.settings)?,
+        Pubkey::from_str(&vault.vault_pubkey)?,
+    );
+    requirements.add_policy(Pubkey::from_str(&vault.policy_account)?);
+    if let Some(setup_policy) = vault.setup_policy_account.as_deref() {
+        requirements.add_policy(Pubkey::from_str(setup_policy)?);
+    }
+    for setup in action_setups {
+        requirements.merge(setup.lookup_table_requirements())?;
+    }
+    for policy in extra_policy_accounts {
+        requirements.add_policy(*policy);
+    }
+    requirements.add_infrastructure_accounts([
+        system_program::ID,
+        spl_token::ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+        solana_sdk::sysvar::instructions::id(),
+        solana_sdk::sysvar::rent::id(),
+        Pubkey::default(),
+    ]);
+    requirements
+        .manifest(fee_payer, instructions)
+        .map_err(|error| format!("policy ALT manifest is invalid: {error}").into())
 }
 
 fn build_route_execution_plan(
@@ -8019,10 +9893,10 @@ fn build_route_execution_plan(
         vault_liquidity_ata,
         route_liquidity_amount,
     )?;
-    let source_instruction_program = source_instruction.program_id.to_string();
-    let target_instruction_program = target_instruction.program_id.to_string();
-    let source_instruction_discriminator = source_instruction.data[..8].to_vec();
-    let target_instruction_discriminator = target_instruction.data[..8].to_vec();
+    let source_instruction_program = source_instruction.instruction().program_id.to_string();
+    let target_instruction_program = target_instruction.instruction().program_id.to_string();
+    let source_instruction_discriminator = source_instruction.instruction().data[..8].to_vec();
+    let target_instruction_discriminator = target_instruction.instruction().data[..8].to_vec();
     let instruction_constraint_indexes =
         route_instruction_constraint_indexes(vault, policy_preflight)?;
     let withdraw_instruction_constraint_index = instruction_constraint_indexes
@@ -8035,8 +9909,8 @@ fn build_route_execution_plan(
         .ok_or("route policy is missing deposit instruction constraint index")?;
     let policy_constraint_validation = policy_preflight.map(|policy_preflight| {
         let route = [
-            (KAMINO_WITHDRAW_ROUTE_STEP, &source_instruction),
-            (KAMINO_DEPOSIT_ROUTE_STEP, &target_instruction),
+            (KAMINO_WITHDRAW_ROUTE_STEP, source_instruction.instruction()),
+            (KAMINO_DEPOSIT_ROUTE_STEP, target_instruction.instruction()),
         ];
         validate_route_policy_constraints(
             &policy_preflight.decoded,
@@ -8056,7 +9930,7 @@ fn build_route_execution_plan(
         account_index,
         source_instruction,
         withdraw_instruction_constraint_index,
-    );
+    )?;
     let (
         deposit_outer_instruction,
         deposit_inner_count,
@@ -8068,16 +9942,16 @@ fn build_route_execution_plan(
         account_index,
         target_instruction,
         deposit_instruction_constraint_index,
-    );
+    )?;
 
-    let mut pre_instructions = refresh_positions
+    let mut routed_pre_instructions = refresh_positions
         .iter()
         .map(|position| kamino_refresh_reserve_instruction(position))
         .collect::<Result<Vec<_>, _>>()?;
-    pre_instructions.extend(source_farm_init_instruction);
-    pre_instructions.push(source_refresh_instruction);
+    routed_pre_instructions.extend(source_farm_init_instruction);
+    routed_pre_instructions.push(source_refresh_instruction);
 
-    let mut protected_and_public_instructions = vec![withdraw_outer_instruction];
+    let mut routed_protected_and_public_instructions = vec![withdraw_outer_instruction];
     let mut route_steps = vec![KAMINO_WITHDRAW_ROUTE_STEP];
     let mut inner_instruction_count = withdraw_inner_count;
     let mut transaction_account_count = withdraw_transaction_account_count;
@@ -8089,12 +9963,11 @@ fn build_route_execution_plan(
     let mut setup_instruction_discriminator = None;
 
     if target.obligation_exists {
-        pre_instructions.extend(target_farm_init_instruction);
-        pre_instructions.push(target_refresh_instruction);
-        protected_and_public_instructions.push(kamino_refresh_obligation_for_reserves_instruction(
-            target,
-            &[target.reserve.as_str()],
-        )?);
+        routed_pre_instructions.extend(target_farm_init_instruction);
+        routed_pre_instructions.push(target_refresh_instruction);
+        routed_protected_and_public_instructions.push(
+            kamino_refresh_obligation_for_reserves_instruction(target, &[target.reserve.as_str()])?,
+        );
         route_steps.push(KAMINO_REFRESH_OBLIGATION_ROUTE_STEP);
     } else {
         let (init_policy, init_index) =
@@ -8106,8 +9979,8 @@ fn build_route_execution_plan(
             "setup_policy"
         };
         let init_instruction = kamino_init_obligation_instruction(vault_pubkey, target)?;
-        setup_instruction_program = Some(init_instruction.program_id.to_string());
-        setup_instruction_discriminator = Some(init_instruction.data[..8].to_vec());
+        setup_instruction_program = Some(init_instruction.instruction().program_id.to_string());
+        setup_instruction_discriminator = Some(init_instruction.instruction().data[..8].to_vec());
         let (
             init_outer_instruction,
             init_inner_count,
@@ -8119,10 +9992,10 @@ fn build_route_execution_plan(
             account_index,
             init_instruction,
             init_index,
-        );
-        protected_and_public_instructions.push(init_outer_instruction);
-        protected_and_public_instructions.extend(target_farm_init_instruction);
-        protected_and_public_instructions.push(target_refresh_instruction);
+        )?;
+        routed_protected_and_public_instructions.push(init_outer_instruction);
+        routed_protected_and_public_instructions.extend(target_farm_init_instruction);
+        routed_protected_and_public_instructions.push(target_refresh_instruction);
         route_steps.push(KAMINO_INIT_OBLIGATION_ROUTE_STEP);
         route_steps.push(KAMINO_REFRESH_OBLIGATION_ROUTE_STEP);
         inner_instruction_count += init_inner_count;
@@ -8142,15 +10015,34 @@ fn build_route_execution_plan(
         });
     }
 
-    protected_and_public_instructions.push(deposit_outer_instruction);
+    routed_protected_and_public_instructions.push(deposit_outer_instruction);
     route_steps.push(KAMINO_DEPOSIT_ROUTE_STEP);
     inner_instruction_count += deposit_inner_count;
     transaction_account_count += deposit_transaction_account_count;
     outer_account_count += deposit_outer_account_count;
 
+    let mut instruction_plan = YieldRouteInstructionPlan::with_outer_context(
+        same_mint_outer_lookup_table_requirements(vault)?,
+    );
+    let mut pre_instructions = Vec::with_capacity(routed_pre_instructions.len());
+    for routed_instruction in routed_pre_instructions {
+        pre_instructions.push(routed_instruction.instruction().clone());
+        instruction_plan.push(routed_instruction)?;
+    }
+    let mut protected_and_public_instructions =
+        Vec::with_capacity(routed_protected_and_public_instructions.len());
+    for routed_instruction in routed_protected_and_public_instructions {
+        protected_and_public_instructions.push(routed_instruction.instruction().clone());
+        instruction_plan.push(routed_instruction)?;
+    }
+    let lookup_table_manifest = instruction_plan
+        .manifest(fee_payer)
+        .map_err(|error| format!("same-mint route ALT manifest is invalid: {error}"))?;
+
     Ok(RouteExecutionPlan {
         pre_instructions,
         instructions: protected_and_public_instructions,
+        lookup_table_manifest,
         preview: RouteExecutionPreview {
             policy_account: policy_account.to_string(),
             setup_policy_account,
@@ -8222,10 +10114,14 @@ fn build_initial_reserve_deposit_policy_plan(
         vault_liquidity_ata,
         amount,
     )?;
+    guard_lookup_table_mutations(
+        std::slice::from_ref(deposit_instruction.instruction()),
+        "raw initial-deposit policy inner instruction",
+    )?;
     let instruction_constraint_indexes =
         initial_deposit_instruction_constraint_indexes(policy_preflight)?;
     let policy_constraint_validation = policy_preflight.map(|policy_preflight| {
-        let route = [(KAMINO_DEPOSIT_ROUTE_STEP, &deposit_instruction)];
+        let route = [(KAMINO_DEPOSIT_ROUTE_STEP, deposit_instruction.instruction())];
         validate_route_policy_constraints(
             &policy_preflight.decoded,
             &instruction_constraint_indexes,
@@ -8242,21 +10138,22 @@ fn build_initial_reserve_deposit_policy_plan(
         }
     }
 
-    let deposit_instruction_program = deposit_instruction.program_id.to_string();
-    let deposit_instruction_discriminator = deposit_instruction.data[..8].to_vec();
+    let deposit_instruction_program = deposit_instruction.instruction().program_id.to_string();
+    let deposit_instruction_discriminator = deposit_instruction.instruction().data[..8].to_vec();
     let setup_instruction_program = farm_init_instruction
         .as_ref()
-        .map(|instruction| instruction.program_id.to_string());
+        .map(|instruction| instruction.instruction().program_id.to_string());
     let setup_instruction_discriminator = farm_init_instruction
         .as_ref()
-        .map(|instruction| instruction.data[..8].to_vec());
+        .map(|instruction| instruction.instruction().data[..8].to_vec());
     let has_farm_init = farm_init_instruction.is_some();
-    let mut pre_instructions = vec![reserve_refresh_instruction];
+    let mut routed_pre_instructions = vec![reserve_refresh_instruction];
     if let Some(farm_init_instruction) = farm_init_instruction {
-        pre_instructions.push(farm_init_instruction);
+        routed_pre_instructions.push(farm_init_instruction);
     }
-    pre_instructions.push(refresh_instruction);
+    routed_pre_instructions.push(refresh_instruction);
 
+    let (deposit_instruction, mut deposit_requirements) = deposit_instruction.into_parts();
     let mut transaction_accounts = Vec::new();
     let deposit_compiled =
         compile_squads_inner_instruction(&mut transaction_accounts, deposit_instruction);
@@ -8269,10 +10166,26 @@ fn build_initial_reserve_deposit_policy_plan(
         instruction_constraint_indexes.clone(),
         transaction_accounts.clone(),
     );
+    deposit_requirements.add_policy(policy_account);
+    let mut instruction_plan = YieldRouteInstructionPlan::with_outer_context(
+        same_mint_outer_lookup_table_requirements(vault)?,
+    );
+    for instruction in routed_pre_instructions {
+        instruction_plan.push(instruction)?;
+    }
+    instruction_plan.push(YieldRouteInstruction::new(
+        outer_instruction.clone(),
+        deposit_requirements,
+    ))?;
+    let (mut planned_instructions, lookup_table_requirements) = instruction_plan.into_parts();
+    let instruction = planned_instructions
+        .pop()
+        .ok_or("initial-deposit route plan omitted policy instruction")?;
 
     Ok(InitialDepositPolicyPlan {
-        pre_instructions,
-        instruction: outer_instruction.clone(),
+        pre_instructions: planned_instructions,
+        instruction,
+        lookup_table_requirements,
         preview: InitialDepositPolicyPreview {
             policy_account: policy_account.to_string(),
             signer: signer_pubkey.to_string(),
@@ -8340,13 +10253,20 @@ fn build_full_main_usdc_withdraw_policy_plan(
         vault_liquidity_ata,
         withdraw.amount_raw,
     )?;
+    guard_lookup_table_mutations(
+        std::slice::from_ref(withdraw_instruction.instruction()),
+        "raw full-withdraw policy inner instruction",
+    )?;
     let instruction_constraint_indexes =
         full_withdraw_instruction_constraint_indexes(policy_preflight)?;
     let policy_constraint_validation = policy_preflight.map(|policy_preflight| {
         validate_route_policy_constraints(
             &policy_preflight.decoded,
             &instruction_constraint_indexes,
-            &[(KAMINO_WITHDRAW_ROUTE_STEP, &withdraw_instruction)],
+            &[(
+                KAMINO_WITHDRAW_ROUTE_STEP,
+                withdraw_instruction.instruction(),
+            )],
         )
     });
     if let Some(validation) = policy_constraint_validation.as_ref() {
@@ -8359,8 +10279,9 @@ fn build_full_main_usdc_withdraw_policy_plan(
         }
     }
 
-    let withdraw_instruction_program = withdraw_instruction.program_id.to_string();
-    let withdraw_instruction_discriminator = withdraw_instruction.data[..8].to_vec();
+    let withdraw_instruction_program = withdraw_instruction.instruction().program_id.to_string();
+    let withdraw_instruction_discriminator = withdraw_instruction.instruction().data[..8].to_vec();
+    let (withdraw_instruction, mut withdraw_requirements) = withdraw_instruction.into_parts();
     let mut transaction_accounts = Vec::new();
     let withdraw_compiled =
         compile_squads_inner_instruction(&mut transaction_accounts, withdraw_instruction);
@@ -8373,10 +10294,25 @@ fn build_full_main_usdc_withdraw_policy_plan(
         instruction_constraint_indexes.clone(),
         transaction_accounts.clone(),
     );
+    withdraw_requirements.add_policy(policy_account);
+    let mut instruction_plan = YieldRouteInstructionPlan::with_outer_context(
+        same_mint_outer_lookup_table_requirements(vault)?,
+    );
+    instruction_plan.push(reserve_refresh_instruction)?;
+    instruction_plan.push(refresh_instruction)?;
+    instruction_plan.push(YieldRouteInstruction::new(
+        outer_instruction.clone(),
+        withdraw_requirements,
+    ))?;
+    let (mut planned_instructions, lookup_table_requirements) = instruction_plan.into_parts();
+    let instruction = planned_instructions
+        .pop()
+        .ok_or("full-withdraw route plan omitted policy instruction")?;
 
     Ok(FullWithdrawPolicyPlan {
-        pre_instructions: vec![reserve_refresh_instruction, refresh_instruction],
-        instruction: outer_instruction.clone(),
+        pre_instructions: planned_instructions,
+        instruction,
+        lookup_table_requirements,
         preview: FullWithdrawPolicyPreview {
             policy_account: policy_account.to_string(),
             signer: signer_pubkey.to_string(),
@@ -8399,6 +10335,44 @@ async fn execute_prepared_same_mint_route(
     vault: &SelectedVault,
     decision: &PreparedSameMintDecision,
     route_execution: &RouteExecutionPlan,
+    predecision_lookup_tables: &RuntimeLookupTableResolution,
+) -> Result<RouteExecutionSubmitResult, Box<dyn Error>> {
+    let prepared_lease_reference = format!(
+        "same-mint-decision:{}:{}",
+        decision.id.as_i64(),
+        predecision_lookup_tables
+            .selection_fingerprint
+            .as_deref()
+            .ok_or("predecision lookup-table selection fingerprint is missing")?
+    );
+    let result = execute_prepared_same_mint_route_inner(
+        client,
+        options,
+        vault,
+        decision,
+        route_execution,
+        predecision_lookup_tables,
+        &prepared_lease_reference,
+    )
+    .await;
+    let _ = client
+        .release_lookup_table_usage_leases(
+            LookupTableUsageLeaseKind::PreparedTransaction,
+            &prepared_lease_reference,
+        )
+        .await;
+    release_route_resolution_lease(client, predecision_lookup_tables).await;
+    result
+}
+
+async fn execute_prepared_same_mint_route_inner(
+    client: &NeonSqlClient,
+    options: &CliOptions,
+    vault: &SelectedVault,
+    decision: &PreparedSameMintDecision,
+    route_execution: &RouteExecutionPlan,
+    predecision_lookup_tables: &RuntimeLookupTableResolution,
+    prepared_lease_reference: &str,
 ) -> Result<RouteExecutionSubmitResult, Box<dyn Error>> {
     let rpc =
         RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
@@ -8430,65 +10404,106 @@ async fn execute_prepared_same_mint_route(
         )
         .into());
     }
+    let mut transaction_instructions = route_execution.pre_instructions.clone();
+    transaction_instructions.extend(route_execution.instructions.iter().cloned());
+    guard_lookup_table_mutations(&transaction_instructions, "route execution")?;
+    let transaction_signers = same_mint_route_signers(fee_payer, &signer);
     let lookup_table_scope = same_mint_route_lookup_table_scope_for_reserves(
         vault,
         &decision.source_reserve,
         &decision.target_reserve,
     );
-    let lookup_table_coverage = route_lookup_table_reuse_coverage(
+    let mut presend_lookup_tables = resolve_route_lookup_tables(
         client,
         &rpc,
         options,
+        vault,
+        &decision.source_reserve,
+        &decision.target_reserve,
+        "same_mint_kamino",
         &lookup_table_scope,
         fee_payer.pubkey(),
-        signer.pubkey(),
-        route_execution,
+        &transaction_instructions,
+        &route_execution.lookup_table_manifest,
+        &transaction_signers,
     )
     .await?;
-    let lookup_table_provisioning =
-        lookup_table_coverage.reuse_only_json(options, fee_payer.pubkey());
-    ensure_route_lookup_table_coverage(
-        &lookup_table_coverage.scope,
-        &lookup_table_coverage.missing_addresses,
-    )?;
-    let lookup_table_accounts = lookup_table_coverage.lookup_table_accounts;
-    let mut transaction_instructions = route_execution.pre_instructions.clone();
-    transaction_instructions.extend(route_execution.instructions.iter().cloned());
-    guard_lookup_table_mutations(
-        &transaction_instructions,
-        AltInstructionMode::RejectProvisioning,
-        "route execution",
-    )?;
-    let transaction_signers = same_mint_route_signers(fee_payer, &signer);
-
-    let blockhash = rpc.get_latest_blockhash()?;
-    let transaction = compile_versioned_transaction(
-        fee_payer.pubkey(),
-        &transaction_instructions,
-        &lookup_table_accounts,
-        blockhash,
-        &transaction_signers,
-    )?;
-    let transaction_packet = transaction_packet_summary(&transaction, &lookup_table_accounts)?;
-    if !transaction_packet.fits_packet_data_size {
-        return Err(format!(
-            "route transaction is too large for one packet: {} > {} bytes",
-            transaction_packet.packet_size_bytes, transaction_packet.packet_data_size_bytes
+    persist_route_lookup_table_resolution(
+        client,
+        options,
+        vault,
+        &decision.source_reserve,
+        &decision.target_reserve,
+        "same_mint_kamino",
+        &route_execution.lookup_table_manifest,
+        &presend_lookup_tables,
+        false,
+        false,
+    )
+    .await?;
+    ensure_lookup_table_resolution_unchanged(predecision_lookup_tables, &presend_lookup_tables)?;
+    let selected_table_ids = presend_lookup_tables.selected_table_ids();
+    let route_lease_reference = predecision_lookup_tables
+        .route_lease_reference
+        .as_deref()
+        .ok_or("predecision route lookup-table lease reference is missing")?;
+    let prepared_lease_expires_at =
+        Utc::now() + ChronoDuration::minutes(LOOKUP_TABLE_PREPARED_LEASE_MINUTES);
+    client
+        .validate_lookup_table_usage_leases(
+            LookupTableUsageLeaseKind::RouteResolution,
+            route_lease_reference,
+            &selected_table_ids,
+            &presend_lookup_tables.requirements_fingerprint,
+            prepared_lease_expires_at,
         )
-        .into());
+        .await?;
+    client
+        .upsert_lookup_table_usage_leases(LookupTableUsageLeaseBundle {
+            cluster: options.cluster.clone(),
+            lease_kind: LookupTableUsageLeaseKind::PreparedTransaction,
+            reference_key: prepared_lease_reference.to_owned(),
+            route_lookup_table_ids: selected_table_ids.clone(),
+            vault_id: Some(vault.id),
+            binding_id: presend_lookup_tables.active_binding_id,
+            route_fingerprint: Some(presend_lookup_tables.route_fingerprint.clone()),
+            requirements_fingerprint: Some(presend_lookup_tables.requirements_fingerprint.clone()),
+            expires_at: prepared_lease_expires_at,
+        })
+        .await?;
+    client
+        .validate_lookup_table_usage_leases(
+            LookupTableUsageLeaseKind::PreparedTransaction,
+            prepared_lease_reference,
+            &selected_table_ids,
+            &presend_lookup_tables.requirements_fingerprint,
+            Utc::now() + ChronoDuration::minutes(4),
+        )
+        .await?;
+    if presend_lookup_tables.selection_kind == LookupTableSelectionKind::Reusable {
+        let (binding_fingerprint_now, _) =
+            active_lookup_table_binding_fingerprint(client, vault.id, &selected_table_ids).await?;
+        if binding_fingerprint_now != presend_lookup_tables.active_binding_fingerprint {
+            return Err(
+                "active reusable lookup-table binding changed immediately before send".into(),
+            );
+        }
     }
+    presend_lookup_tables.require_ready()?;
+    let lookup_table_resolution = presend_lookup_tables.evidence.clone();
+    let transaction = presend_lookup_tables
+        .selected_transaction
+        .take()
+        .ok_or("pre-send lookup-table resolution did not return a signed transaction")?;
+    let transaction_packet = presend_lookup_tables
+        .selected_transaction_packet
+        .take()
+        .ok_or("pre-send lookup-table resolution did not return packet evidence")?;
+    let simulation_units_consumed = presend_lookup_tables.selected_simulation_units_consumed;
 
     client
         .advance_decision(decision.id, DecisionAdvance::StartSimulation)
         .await?;
-    let simulation = rpc.simulate_transaction(&transaction)?;
-    if let Some(error) = simulation.value.err.as_ref() {
-        return Err(format!(
-            "route simulation failed: {error:?}; logs: {}",
-            simulation.value.logs.as_deref().unwrap_or(&[]).join(" | ")
-        )
-        .into());
-    }
     client
         .advance_decision(decision.id, DecisionAdvance::SimulationReady)
         .await?;
@@ -8535,11 +10550,25 @@ async fn execute_prepared_same_mint_route(
         signature,
         submitted_slot,
         confirmed_slot,
-        simulation_units_consumed: simulation.value.units_consumed,
+        simulation_units_consumed,
         transaction_packet,
-        lookup_table_provisioning,
+        lookup_table_resolution,
         confirmed,
     })
+}
+
+async fn release_route_resolution_lease(
+    client: &NeonSqlClient,
+    resolution: &RuntimeLookupTableResolution,
+) {
+    if let Some(reference) = resolution.route_lease_reference.as_deref() {
+        let _ = client
+            .release_lookup_table_usage_leases(
+                LookupTableUsageLeaseKind::RouteResolution,
+                reference,
+            )
+            .await;
+    }
 }
 
 fn validate_route_policy_constraints(
@@ -8714,12 +10743,72 @@ fn compare_policy_values<T: PartialOrd + PartialEq>(
     }
 }
 
+fn kamino_position_instruction_requirements(
+    position: &ChainPositionSummary,
+) -> Result<YieldRouteLookupTableRequirements, Box<dyn Error>> {
+    let market = Pubkey::from_str(&position.market)?;
+    let mut reserve_accounts = KaminoReserveLookupTableAccounts::new(
+        market,
+        Pubkey::from_str(&position.reserve)?,
+        Pubkey::from_str(&position.liquidity_mint)?,
+    );
+    reserve_accounts.market_authorities =
+        vec![lending_market_authority(&KLEND_PROGRAM_ID, &market).0];
+    reserve_accounts.liquidity_supply = Some(Pubkey::from_str(&position.reserve_liquidity_supply)?);
+    reserve_accounts.collateral_mint = Some(Pubkey::from_str(&position.collateral_mint)?);
+    reserve_accounts.collateral_supply =
+        Some(Pubkey::from_str(&position.reserve_collateral_supply)?);
+    reserve_accounts.oracles = [
+        position.pyth_oracle.as_deref(),
+        position.switchboard_price_oracle.as_deref(),
+        position.switchboard_twap_oracle.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(Pubkey::from_str)
+    .collect::<Result<Vec<_>, _>>()?;
+    reserve_accounts.scope_prices = position
+        .scope_prices
+        .as_deref()
+        .map(Pubkey::from_str)
+        .transpose()?;
+    reserve_accounts.reserve_farm_state = position
+        .collateral_farm
+        .as_deref()
+        .map(Pubkey::from_str)
+        .transpose()?;
+    reserve_accounts.obligation_reserves = position
+        .obligation_deposit_reserves
+        .iter()
+        .chain(position.obligation_borrow_reserves.iter())
+        .map(|reserve| Pubkey::from_str(reserve))
+        .collect::<Result<Vec<_>, _>>()?;
+    reserve_accounts.infrastructure = vec![
+        KLEND_PROGRAM_ID,
+        FARMS_PROGRAM_ID,
+        Pubkey::from_str(&position.liquidity_token_program)?,
+        solana_sdk::sysvar::instructions::id(),
+        solana_sdk::sysvar::rent::id(),
+        system_program::ID,
+        Pubkey::default(),
+    ];
+
+    let mut requirements = YieldRouteLookupTableRequirements::default();
+    requirements.add_kamino_reserve(reserve_accounts);
+    requirements.add_obligation(Pubkey::from_str(&position.obligation)?);
+    requirements.add_vault_token_account(Pubkey::from_str(&position.vault_liquidity_ata)?);
+    if let Some(farm_user_state) = position.collateral_farm_user_state.as_deref() {
+        requirements.add_farm_user_state(Pubkey::from_str(farm_user_state)?);
+    }
+    Ok(requirements)
+}
+
 fn kamino_withdraw_instruction(
     vault: Pubkey,
     source: &ChainPositionSummary,
     vault_liquidity_ata: Pubkey,
     amount: u64,
-) -> Result<Instruction, Box<dyn Error>> {
+) -> Result<YieldRouteInstruction, Box<dyn Error>> {
     let reserve = Pubkey::from_str(&source.reserve)?;
     let market = Pubkey::from_str(&source.market)?;
     let liquidity_mint = Pubkey::from_str(&source.liquidity_mint)?;
@@ -8739,27 +10828,30 @@ fn kamino_withdraw_instruction(
         &Pubkey::default(),
     );
 
-    Ok(
-        withdraw_obligation_collateral_and_redeem_reserve_collateral_v2(
-            WithdrawObligationCollateralAndRedeemReserveCollateralV2Accounts {
-                owner: vault,
-                obligation: obligation_account,
-                lending_market: market,
-                lending_market_authority,
-                withdraw_reserve: reserve,
-                reserve_liquidity_mint: liquidity_mint,
-                reserve_source_collateral: reserve_collateral_supply,
-                reserve_collateral_mint: collateral_mint,
-                reserve_liquidity_supply,
-                user_destination_liquidity: vault_liquidity_ata,
-                placeholder_user_destination_collateral: None,
-                liquidity_token_program,
-                obligation_farm_user_state,
-                reserve_farm_state,
-            },
-            amount,
-        ),
-    )
+    let instruction = withdraw_obligation_collateral_and_redeem_reserve_collateral_v2(
+        WithdrawObligationCollateralAndRedeemReserveCollateralV2Accounts {
+            owner: vault,
+            obligation: obligation_account,
+            lending_market: market,
+            lending_market_authority,
+            withdraw_reserve: reserve,
+            reserve_liquidity_mint: liquidity_mint,
+            reserve_source_collateral: reserve_collateral_supply,
+            reserve_collateral_mint: collateral_mint,
+            reserve_liquidity_supply,
+            user_destination_liquidity: vault_liquidity_ata,
+            placeholder_user_destination_collateral: None,
+            liquidity_token_program,
+            obligation_farm_user_state,
+            reserve_farm_state,
+        },
+        amount,
+    );
+    let mut requirements = kamino_position_instruction_requirements(source)?;
+    requirements.add_vault_account(vault);
+    requirements.add_obligation(obligation_account);
+    requirements.add_vault_token_account(vault_liquidity_ata);
+    Ok(YieldRouteInstruction::new(instruction, requirements))
 }
 
 fn kamino_deposit_to_obligation_instruction(
@@ -8767,7 +10859,7 @@ fn kamino_deposit_to_obligation_instruction(
     target: &ChainPositionSummary,
     vault_liquidity_ata: Pubkey,
     amount: u64,
-) -> Result<Instruction, Box<dyn Error>> {
+) -> Result<YieldRouteInstruction, Box<dyn Error>> {
     let reserve = Pubkey::from_str(&target.reserve)?;
     let market = Pubkey::from_str(&target.market)?;
     let liquidity_mint = Pubkey::from_str(&target.liquidity_mint)?;
@@ -8787,7 +10879,7 @@ fn kamino_deposit_to_obligation_instruction(
         &Pubkey::default(),
     );
 
-    Ok(deposit_reserve_liquidity_and_obligation_collateral_v2(
+    let instruction = deposit_reserve_liquidity_and_obligation_collateral_v2(
         DepositReserveLiquidityAndObligationCollateralV2Accounts {
             owner: vault,
             obligation: obligation_account,
@@ -8805,13 +10897,18 @@ fn kamino_deposit_to_obligation_instruction(
             reserve_farm_state,
         },
         amount,
-    ))
+    );
+    let mut requirements = kamino_position_instruction_requirements(target)?;
+    requirements.add_vault_account(vault);
+    requirements.add_obligation(obligation_account);
+    requirements.add_vault_token_account(vault_liquidity_ata);
+    Ok(YieldRouteInstruction::new(instruction, requirements))
 }
 
 fn kamino_refresh_reserve_instruction(
     position: &ChainPositionSummary,
-) -> Result<Instruction, Box<dyn Error>> {
-    Ok(refresh_reserve(RefreshReserveAccounts {
+) -> Result<YieldRouteInstruction, Box<dyn Error>> {
+    let instruction = refresh_reserve(RefreshReserveAccounts {
         reserve: Pubkey::from_str(&position.reserve)?,
         lending_market: Pubkey::from_str(&position.market)?,
         pyth_oracle: optional_pubkey_from_string(position.pyth_oracle.as_deref())?,
@@ -8822,14 +10919,18 @@ fn kamino_refresh_reserve_instruction(
             position.switchboard_twap_oracle.as_deref(),
         )?,
         scope_prices: optional_pubkey_from_string(position.scope_prices.as_deref())?,
-    }))
+    });
+    Ok(YieldRouteInstruction::new(
+        instruction,
+        kamino_position_instruction_requirements(position)?,
+    ))
 }
 
 fn kamino_init_obligation_collateral_farm_instruction(
     payer: Pubkey,
     owner: Pubkey,
     position: &ChainPositionSummary,
-) -> Result<Option<Instruction>, Box<dyn Error>> {
+) -> Result<Option<YieldRouteInstruction>, Box<dyn Error>> {
     let Some(reserve_farm_state) = &position.collateral_farm else {
         return Ok(None);
     };
@@ -8859,15 +10960,19 @@ fn kamino_init_obligation_collateral_farm_instruction(
         .into());
     }
 
-    Ok(Some(kamino_init_obligation_farm_instruction(
-        KaminoInitObligationFarm {
-            payer,
-            owner,
-            lending_market,
-            reserve: Pubkey::from_str(&position.reserve)?,
-            reserve_farm_state,
-        },
-    )))
+    let instruction = kamino_init_obligation_farm_instruction(KaminoInitObligationFarm {
+        payer,
+        owner,
+        lending_market,
+        reserve: Pubkey::from_str(&position.reserve)?,
+        reserve_farm_state,
+    });
+    let mut requirements = kamino_position_instruction_requirements(position)?;
+    requirements.add_vault_account(owner);
+    requirements.add_obligation(obligation);
+    requirements.add_kamino_farm(reserve_farm_state, derived_obligation_farm);
+    requirements.add_infrastructure_accounts([FARMS_PROGRAM_ID, system_program::ID]);
+    Ok(Some(YieldRouteInstruction::new(instruction, requirements)))
 }
 
 fn optional_pubkey_from_string(value: Option<&str>) -> Result<Option<Pubkey>, Box<dyn Error>> {
@@ -8892,7 +10997,7 @@ fn collateral_farm_accounts(
 
 fn kamino_refresh_obligation_instruction(
     position: &ChainPositionSummary,
-) -> Result<Instruction, Box<dyn Error>> {
+) -> Result<YieldRouteInstruction, Box<dyn Error>> {
     let remaining_reserves = position
         .obligation_deposit_reserves
         .iter()
@@ -8906,7 +11011,7 @@ fn kamino_refresh_obligation_instruction(
 fn kamino_refresh_obligation_for_reserves_instruction(
     position: &ChainPositionSummary,
     reserves: &[&str],
-) -> Result<Instruction, Box<dyn Error>> {
+) -> Result<YieldRouteInstruction, Box<dyn Error>> {
     let lending_market = Pubkey::from_str(&position.market)?;
     let obligation = Pubkey::from_str(&position.obligation)?;
     let remaining_accounts = reserves
@@ -8918,19 +11023,25 @@ fn kamino_refresh_obligation_for_reserves_instruction(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(refresh_obligation(
+    let instruction = refresh_obligation(
         RefreshObligationAccounts {
             lending_market,
             obligation,
         },
         remaining_accounts,
-    ))
+    );
+    let mut requirements = kamino_position_instruction_requirements(position)?;
+    requirements.add_obligation(obligation);
+    for reserve in reserves {
+        requirements.add_shared_reserve(Pubkey::from_str(reserve)?);
+    }
+    Ok(YieldRouteInstruction::new(instruction, requirements))
 }
 
 fn kamino_init_obligation_instruction(
     vault: Pubkey,
     target: &ChainPositionSummary,
-) -> Result<Instruction, Box<dyn Error>> {
+) -> Result<YieldRouteInstruction, Box<dyn Error>> {
     let market = Pubkey::from_str(&target.market)?;
     let seed1 = Pubkey::default();
     let seed2 = Pubkey::default();
@@ -8938,7 +11049,7 @@ fn kamino_init_obligation_instruction(
         obligation(&KLEND_PROGRAM_ID, 0, 0, &vault, &market, &seed1, &seed2);
     let (owner_user_metadata, _) = user_metadata(&KLEND_PROGRAM_ID, &vault);
 
-    Ok(init_obligation(
+    let instruction = init_obligation(
         InitObligationAccounts {
             obligation_owner: vault,
             fee_payer: vault,
@@ -8949,7 +11060,17 @@ fn kamino_init_obligation_instruction(
             owner_user_metadata,
         },
         InitObligationArgs { tag: 0, id: 0 },
-    ))
+    );
+    let mut requirements = kamino_position_instruction_requirements(target)?;
+    requirements.add_vault_account(vault);
+    requirements.add_obligation(obligation_account);
+    requirements.add_metadata(owner_user_metadata);
+    requirements.add_infrastructure_accounts([
+        system_program::ID,
+        solana_sdk::sysvar::rent::id(),
+        Pubkey::default(),
+    ]);
+    Ok(YieldRouteInstruction::new(instruction, requirements))
 }
 
 fn route_instruction_constraint_indexes(
@@ -9731,6 +11852,16 @@ async fn load_active_decision(
         .transpose()
 }
 
+fn validate_alt_cluster(cluster: &str) -> Result<(), String> {
+    if matches!(cluster, "mainnet-beta" | "devnet" | "testnet" | "localnet") {
+        Ok(())
+    } else {
+        Err(format!(
+            "YIELD_ALT_CLUSTER/--cluster must be mainnet-beta, devnet, testnet, or localnet; got {cluster:?}"
+        ))
+    }
+}
+
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, String> {
     let mut settings = None;
     let mut vault_index = None;
@@ -9753,8 +11884,6 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     let mut reconcile_current_positions = false;
     let mut reconcile_reserves = Vec::new();
     let mut seed_from_user_position = false;
-    let mut provision_lookup_table = false;
-    let mut provision_route_lookup_table = false;
     let mut expected_source_snapshot_id = None;
     let mut expected_liquidity_mint = None;
     let mut expected_amount_raw = None;
@@ -9765,6 +11894,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     let mut expected_source_apy_bps = None;
     let mut expected_target_apy_bps = None;
     let mut expected_edge_bps = None;
+    let mut cluster = env::var("YIELD_ALT_CLUSTER").ok();
     let mut rpc_url = env::var("SOLANA_RPC_URL").unwrap_or_else(|_| DEFAULT_SOLANA_RPC_URL.into());
     let mut lookup_tables = Vec::new();
     let mut iter = args.into_iter();
@@ -9906,8 +12036,6 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
                 }
             }
             "--seed-from-user-position" => seed_from_user_position = true,
-            "--provision-lookup-table" => provision_lookup_table = true,
-            "--provision-route-lookup-table" => provision_route_lookup_table = true,
             "--expected-source-snapshot-id" => {
                 let raw = iter
                     .next()
@@ -9996,6 +12124,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
             "--rpc-url" => {
                 rpc_url = iter.next().ok_or("--rpc-url requires a value")?;
             }
+            "--cluster" => {
+                cluster = Some(iter.next().ok_or("--cluster requires a value")?);
+            }
             "--lookup-table" => {
                 let raw = iter.next().ok_or("--lookup-table requires a public key")?;
                 lookup_tables.push(
@@ -10027,60 +12158,18 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
         setup_obligation_reserve.is_some(),
         reconcile_current_positions,
         e2e_deposit_amount_raw.is_some(),
-        provision_route_lookup_table,
     ]
     .into_iter()
     .filter(|selected| *selected)
     .count();
     if selected_special_modes > 1 {
         return Err(
-            "--update-policy, --deposit-main-usdc/--deposit-reserve, --deposit-idle-vault-reserve, --setup-obligation-reserve, --full-withdraw-reserve, --reconcile-current-positions, --e2e-main-prime-main, and --provision-route-lookup-table are mutually exclusive"
+            "--update-policy, --deposit-main-usdc/--deposit-reserve, --deposit-idle-vault-reserve, --setup-obligation-reserve, --full-withdraw-reserve, --reconcile-current-positions, and --e2e-main-prime-main are mutually exclusive"
                 .to_owned(),
         );
     }
     if update_active_policy && !update_policy {
         return Err("--update-active-policy requires --update-policy".to_owned());
-    }
-    if provision_lookup_table && !update_policy {
-        return Err(
-            "--provision-lookup-table requires --update-policy; use --provision-route-lookup-table for route ALT provisioning".to_owned(),
-        );
-    }
-    if provision_lookup_table && optimization_cycle {
-        return Err(
-            "--provision-lookup-table cannot be combined with --optimization-cycle".to_owned(),
-        );
-    }
-    if provision_route_lookup_table {
-        if !reconcile_from_chain {
-            return Err(
-                "--provision-route-lookup-table requires --reconcile-from-chain".to_owned(),
-            );
-        }
-        if source_reserve.is_none() || target_reserve.is_none() {
-            return Err(
-                "--provision-route-lookup-table requires explicit --source-reserve and --target-reserve"
-                    .to_owned(),
-            );
-        }
-        if optimization_cycle {
-            return Err(
-                "--provision-route-lookup-table is setup-only and cannot be combined with --optimization-cycle"
-                    .to_owned(),
-            );
-        }
-        if seed_from_user_position {
-            return Err(
-                "--provision-route-lookup-table cannot be combined with --seed-from-user-position"
-                    .to_owned(),
-            );
-        }
-        if provision_lookup_table {
-            return Err(
-                "choose either --provision-lookup-table or --provision-route-lookup-table"
-                    .to_owned(),
-            );
-        }
     }
     if source_reserve.is_some() != target_reserve.is_some() {
         return Err("--source-reserve and --target-reserve must be provided together".to_owned());
@@ -10155,6 +12244,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
             );
         }
     }
+    let cluster = cluster.ok_or("YIELD_ALT_CLUSTER or --cluster is required")?;
+    validate_alt_cluster(&cluster)?;
     Ok(CliOptions {
         settings: settings.ok_or("--settings is required")?,
         vault_index: vault_index.ok_or("--vault-index is required")?,
@@ -10177,8 +12268,6 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
         reconcile_current_positions,
         reconcile_reserves,
         seed_from_user_position,
-        provision_lookup_table,
-        provision_route_lookup_table,
         expected_source_snapshot_id,
         expected_liquidity_mint,
         expected_amount_raw,
@@ -10189,6 +12278,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
         expected_source_apy_bps,
         expected_target_apy_bps,
         expected_edge_bps,
+        cluster,
         rpc_url,
         lookup_tables,
     })
@@ -10667,7 +12757,40 @@ fn inline_missing_obligation_setup_json(setup: &InlineMissingObligationSetupPrev
     })
 }
 
-fn route_execution_preview_json(preview: &RouteExecutionPreview) -> Value {
+fn lookup_table_manifest_hash(hash_input: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(hash_input))
+}
+
+fn lookup_table_manifest_json(manifest: &LookupTableManifest) -> Value {
+    json!({
+        "version": 1,
+        "canonicalHash": lookup_table_manifest_hash(&manifest.canonical_hash_input()),
+        "sharedMarketHash": lookup_table_manifest_hash(&manifest.shared_market_hash_input()),
+        "vaultHash": lookup_table_manifest_hash(&manifest.vault_hash_input()),
+        "compilerUniverseAddressCount": manifest.must_remain_static().len()
+            + manifest.shared_market().len()
+            + manifest.vault().len(),
+        "lookupEligibleAddressCount": manifest.shared_market().len() + manifest.vault().len(),
+        "mustRemainStatic": manifest.must_remain_static().iter().map(|requirement| json!({
+            "address": requirement.address.to_string(),
+            "access": requirement.access.as_str(),
+            "reasons": requirement.reasons.iter().map(|reason| reason.as_str()).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "sharedMarket": manifest.shared_market().iter().map(|requirement| json!({
+            "address": requirement.address.to_string(),
+            "access": requirement.access.as_str(),
+            "roles": requirement.roles.iter().map(|role| role.as_str()).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "vault": manifest.vault().iter().map(|requirement| json!({
+            "address": requirement.address.to_string(),
+            "access": requirement.access.as_str(),
+            "roles": requirement.roles.iter().map(|role| role.as_str()).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn route_execution_preview_json(plan: &RouteExecutionPlan) -> Value {
+    let preview = &plan.preview;
     json!({
         "kind": "squads_program_interaction_same_mint",
         "policyAccount": preview.policy_account,
@@ -10690,6 +12813,7 @@ fn route_execution_preview_json(preview: &RouteExecutionPreview) -> Value {
         "targetInstructionDiscriminator": preview.target_instruction_discriminator,
         "routeSteps": &preview.route_steps,
         "refreshReserves": &preview.refresh_reserves,
+        "lookupTableManifest": lookup_table_manifest_json(&plan.lookup_table_manifest),
     })
 }
 
@@ -11016,6 +13140,63 @@ fn same_mint_input_json(input: &SameMintRebalanceInput) -> Value {
 mod tests {
     use super::*;
 
+    const CREDENTIAL_BEARING_RPC_ERROR: &str = "sendTransaction failed with HTTP 401 Unauthorized at https://user:password@example.test/private/path?api-key=query-secret access_token=header-secret";
+
+    fn assert_safe_operational_error(value: &str) {
+        assert!(value.contains("sendTransaction"));
+        assert!(value.contains("HTTP 401 Unauthorized"));
+        assert!(value.len() <= 512);
+        for secret in [
+            "user",
+            "password",
+            "private/path",
+            "api-key",
+            "query-secret",
+            "access_token",
+            "header-secret",
+        ] {
+            assert!(
+                !value.contains(secret),
+                "operational error leaked {secret}: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn same_mint_fatal_log_payload_never_contains_rpc_credentials() {
+        let payload = same_mint_fatal_error_payload(&CREDENTIAL_BEARING_RPC_ERROR);
+        assert_eq!(payload["event"], "same_mint_route_worker_fatal");
+        assert_safe_operational_error(payload["error"].as_str().unwrap());
+    }
+
+    #[test]
+    fn same_mint_readiness_blocker_never_contains_rpc_credentials() {
+        let blocker = same_mint_readiness_rpc_failure(&CREDENTIAL_BEARING_RPC_ERROR);
+        assert!(blocker.starts_with("simulation_rpc_failed:"));
+        assert_safe_operational_error(&blocker);
+    }
+
+    #[test]
+    fn same_mint_persisted_failure_reason_never_contains_rpc_credentials() {
+        let reason = same_mint_decision_failure_reason(
+            "route_execution_failed",
+            &CREDENTIAL_BEARING_RPC_ERROR,
+        );
+        assert!(reason.starts_with("route_execution_failed:"));
+        assert_safe_operational_error(&reason);
+    }
+
+    #[test]
+    fn same_mint_startup_rejects_default_mainnet_rpc_for_explicit_devnet() {
+        let mainnet_genesis =
+            Hash::from_str("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d").unwrap();
+
+        let error = validate_same_mint_rpc_genesis("devnet", mainnet_genesis).unwrap_err();
+
+        assert!(error.contains("mismatched RPC"));
+        assert!(validate_same_mint_rpc_genesis("mainnet-beta", mainnet_genesis).is_ok());
+    }
+
     fn test_chain_position(
         collateral_amount: u64,
         redeemable_liquidity_amount: u64,
@@ -11100,8 +13281,6 @@ mod tests {
             reconcile_current_positions: false,
             reconcile_reserves: Vec::new(),
             seed_from_user_position: false,
-            provision_lookup_table: false,
-            provision_route_lookup_table: false,
             expected_source_snapshot_id,
             expected_liquidity_mint: Some("mint".to_owned()),
             expected_amount_raw: Some(480_000_000),
@@ -11114,91 +13293,452 @@ mod tests {
             expected_source_apy_bps: Some(100),
             expected_target_apy_bps: Some(200),
             expected_edge_bps: Some(100),
+            cluster: "localnet".to_owned(),
             rpc_url: "http://localhost:8899".to_owned(),
             lookup_tables: Vec::new(),
         }
     }
 
     #[test]
-    fn rejects_lookup_table_provisioning_during_optimization_cycle() {
+    fn deferred_simulation_coverage_respects_every_rollout_mode_and_force_legacy() {
+        assert!(deferred_simulation_coverage_ready(
+            LookupTableRolloutMode::Legacy,
+            false,
+            true,
+            false,
+        ));
+        assert!(!deferred_simulation_coverage_ready(
+            LookupTableRolloutMode::Shadow,
+            false,
+            false,
+            true,
+        ));
+        assert!(deferred_simulation_coverage_ready(
+            LookupTableRolloutMode::PreferReusable,
+            false,
+            false,
+            true,
+        ));
+        assert!(deferred_simulation_coverage_ready(
+            LookupTableRolloutMode::PreferReusable,
+            false,
+            true,
+            false,
+        ));
+        assert!(!deferred_simulation_coverage_ready(
+            LookupTableRolloutMode::ReusableOnly,
+            false,
+            true,
+            false,
+        ));
+        assert!(deferred_simulation_coverage_ready(
+            LookupTableRolloutMode::ReusableOnly,
+            false,
+            false,
+            true,
+        ));
+        assert!(!deferred_simulation_coverage_ready(
+            LookupTableRolloutMode::ReusableOnly,
+            true,
+            false,
+            true,
+        ));
+    }
+
+    #[tokio::test]
+    async fn reusable_resolution_errors_are_bypassed_or_fail_closed_for_every_rollout_mode() {
+        let required_address = Pubkey::new_unique().to_string();
+        let required_addresses = BTreeSet::from([required_address.clone()]);
+        let complete_legacy = ResolvedLookupTableBundle {
+            kind: LookupTableBundleKind::Legacy,
+            tables: Vec::new(),
+            required_addresses: BTreeSet::new(),
+            missing_addresses: BTreeSet::new(),
+            packet_fits: true,
+            simulation_succeeded: true,
+        };
+        let incomplete_reusable = ResolvedLookupTableBundle {
+            kind: LookupTableBundleKind::Reusable,
+            tables: Vec::new(),
+            required_addresses: required_addresses.clone(),
+            missing_addresses: required_addresses,
+            packet_fits: false,
+            simulation_succeeded: false,
+        };
+        let policies = [
+            (LookupTableRolloutMode::ReusableOnly, true, "skipped"),
+            (LookupTableRolloutMode::Legacy, false, "skipped"),
+            (LookupTableRolloutMode::Shadow, false, "failed"),
+            (LookupTableRolloutMode::PreferReusable, false, "failed"),
+            (LookupTableRolloutMode::ReusableOnly, false, "failed"),
+        ];
+
+        for failure in [
+            "malformed reusable resolver row",
+            "too many reusable resolver candidates",
+        ] {
+            for (rollout_mode, force_legacy, expected_state) in policies {
+                let called = std::cell::Cell::new(false);
+                let attempt = attempt_reusable_resolution(rollout_mode, force_legacy, || {
+                    called.set(true);
+                    async move { Err::<(), &'static str>(failure) }
+                })
+                .await;
+                assert_eq!(attempt.state(), expected_state, "{failure}");
+                assert_eq!(called.get(), expected_state == "failed", "{failure}");
+
+                let reusable = match attempt {
+                    LookupTableResolverAttempt::Skipped { .. } => None,
+                    LookupTableResolverAttempt::Resolved(()) => unreachable!(),
+                    LookupTableResolverAttempt::Failed(error) => {
+                        assert_eq!(error, failure);
+                        Some(incomplete_reusable.clone())
+                    }
+                };
+                let selection = select_lookup_table_bundle(ResolverSelectionInput {
+                    rollout_mode,
+                    force_legacy,
+                    legacy: Some(complete_legacy.clone()),
+                    reusable,
+                });
+
+                match (rollout_mode, force_legacy, selection) {
+                    (_, true, ResolverSelection::Execute(bundle))
+                    | (LookupTableRolloutMode::Legacy, false, ResolverSelection::Execute(bundle))
+                    | (
+                        LookupTableRolloutMode::PreferReusable,
+                        false,
+                        ResolverSelection::Execute(bundle),
+                    ) => assert_eq!(bundle.kind, LookupTableBundleKind::Legacy, "{failure}"),
+                    (
+                        LookupTableRolloutMode::Shadow,
+                        false,
+                        ResolverSelection::Shadow { execute, .. },
+                    ) => assert_eq!(execute.kind, LookupTableBundleKind::Legacy, "{failure}"),
+                    (
+                        LookupTableRolloutMode::ReusableOnly,
+                        false,
+                        ResolverSelection::Blocked { .. },
+                    ) => {}
+                    unexpected => {
+                        panic!("unexpected resolver selection for {failure}: {unexpected:?}")
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_resolution_errors_are_bypassed_or_fail_closed_for_every_rollout_mode() {
+        let required_address = Pubkey::new_unique().to_string();
+        let required_addresses = BTreeSet::from([required_address.clone()]);
+        let incomplete_legacy = ResolvedLookupTableBundle {
+            kind: LookupTableBundleKind::Legacy,
+            tables: Vec::new(),
+            required_addresses: required_addresses.clone(),
+            missing_addresses: required_addresses.clone(),
+            packet_fits: false,
+            simulation_succeeded: false,
+        };
+        let complete_reusable = ResolvedLookupTableBundle {
+            kind: LookupTableBundleKind::Reusable,
+            tables: Vec::new(),
+            required_addresses: BTreeSet::new(),
+            missing_addresses: BTreeSet::new(),
+            packet_fits: true,
+            simulation_succeeded: true,
+        };
+        let incomplete_reusable = ResolvedLookupTableBundle {
+            kind: LookupTableBundleKind::Reusable,
+            tables: Vec::new(),
+            required_addresses: required_addresses.clone(),
+            missing_addresses: required_addresses,
+            packet_fits: false,
+            simulation_succeeded: false,
+        };
+        let policies = [
+            (LookupTableRolloutMode::ReusableOnly, false, "skipped"),
+            (LookupTableRolloutMode::PreferReusable, false, "failed"),
+            (LookupTableRolloutMode::Shadow, false, "failed"),
+            (LookupTableRolloutMode::Legacy, false, "failed"),
+            (LookupTableRolloutMode::PreferReusable, true, "failed"),
+        ];
+
+        for failure in [
+            "malformed legacy resolver row",
+            "too many legacy resolver candidates",
+        ] {
+            for (rollout_mode, force_legacy, expected_state) in policies {
+                let called = std::cell::Cell::new(false);
+                let attempt = attempt_legacy_resolution(rollout_mode, force_legacy, || {
+                    called.set(true);
+                    async move { Err::<(), &'static str>(failure) }
+                })
+                .await;
+                assert_eq!(attempt.state(), expected_state, "{failure}");
+                assert_eq!(called.get(), expected_state == "failed", "{failure}");
+
+                let legacy = match attempt {
+                    LookupTableResolverAttempt::Skipped { .. } => None,
+                    LookupTableResolverAttempt::Resolved(()) => unreachable!(),
+                    LookupTableResolverAttempt::Failed(error) => {
+                        assert_eq!(error, failure);
+                        Some(incomplete_legacy.clone())
+                    }
+                };
+                let selection = select_lookup_table_bundle(ResolverSelectionInput {
+                    rollout_mode,
+                    force_legacy,
+                    legacy: legacy.clone(),
+                    reusable: Some(complete_reusable.clone()),
+                });
+
+                match (rollout_mode, force_legacy, selection) {
+                    (
+                        LookupTableRolloutMode::ReusableOnly
+                        | LookupTableRolloutMode::PreferReusable,
+                        false,
+                        ResolverSelection::Execute(bundle),
+                    ) => assert_eq!(bundle.kind, LookupTableBundleKind::Reusable, "{failure}"),
+                    (_, _, ResolverSelection::Blocked { .. }) => {}
+                    unexpected => {
+                        panic!("unexpected resolver selection for {failure}: {unexpected:?}")
+                    }
+                }
+
+                if rollout_mode == LookupTableRolloutMode::PreferReusable && !force_legacy {
+                    assert!(matches!(
+                        select_lookup_table_bundle(ResolverSelectionInput {
+                            rollout_mode,
+                            force_legacy,
+                            legacy,
+                            reusable: Some(incomplete_reusable.clone()),
+                        }),
+                        ResolverSelection::Blocked { .. }
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn force_legacy_persistence_is_best_effort_and_skips_reusable_control_plane_writes() {
+        assert_eq!(
+            lookup_table_persistence_policy(true, true, true),
+            LookupTablePersistencePolicy {
+                readiness_best_effort: true,
+                acquire_route_lease: false,
+                request_provisioning: false,
+            }
+        );
+        assert_eq!(
+            lookup_table_persistence_policy(false, true, true),
+            LookupTablePersistencePolicy {
+                readiness_best_effort: false,
+                acquire_route_lease: true,
+                request_provisioning: true,
+            }
+        );
+    }
+
+    #[test]
+    fn remaining_lane_manifests_cover_policy_setup_deposit_and_cleanup_accounts() {
+        let settings = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let delegated = solana_sdk::signature::Keypair::new();
+        let vault_pubkey = Pubkey::new_unique();
+        let policy = Pubkey::new_unique();
+        let reserve = Pubkey::new_unique();
+        let market = Pubkey::new_unique();
+        let liquidity_supply = Pubkey::new_unique();
+        let collateral_mint = Pubkey::new_unique();
+        let collateral_supply = Pubkey::new_unique();
+        let metadata = user_metadata(&KLEND_PROGRAM_ID, &vault_pubkey).0;
+        let obligation = obligation(
+            &KLEND_PROGRAM_ID,
+            0,
+            0,
+            &vault_pubkey,
+            &market,
+            &Pubkey::default(),
+            &Pubkey::default(),
+        )
+        .0;
+        let vault_ata = Pubkey::new_unique();
+        let wallet_ata = derive_associated_token_address(&authority, &USDC_MINT, &spl_token::ID);
+        let selected_vault = SelectedVault {
+            id: VaultId(1),
+            settings: settings.to_string(),
+            authority: authority.to_string(),
+            policy_seed: 7,
+            vault_index: 0,
+            vault_pubkey: vault_pubkey.to_string(),
+            policy_account: policy.to_string(),
+            setup_policy_account: None,
+            setup_policy_seed: None,
+            delegated_signers: vec![delegated.pubkey().to_string()],
+            threshold: 1,
+            route_modes: vec![SAME_MINT_ROUTE_MODE.to_owned()],
+            stable_mints: vec![USDC_MINT.to_string()],
+            kamino_markets: vec![market.to_string()],
+            kamino_liquidity_mints: vec![USDC_MINT.to_string()],
+            swap_lanes: Value::Array(Vec::new()),
+        };
+        let preview = ChainReconcilePreview {
+            observed_slot: 42,
+            vault_user_metadata: metadata.to_string(),
+            vault_user_metadata_exists: true,
+            positions: vec![ChainPositionSummary {
+                reserve: reserve.to_string(),
+                market: market.to_string(),
+                liquidity_mint: USDC_MINT.to_string(),
+                liquidity_token_program: spl_token::ID.to_string(),
+                reserve_liquidity_supply: liquidity_supply.to_string(),
+                collateral_mint: collateral_mint.to_string(),
+                reserve_collateral_supply: collateral_supply.to_string(),
+                collateral_farm: None,
+                collateral_farm_user_state: None,
+                collateral_farm_user_state_exists: false,
+                pyth_oracle: None,
+                switchboard_price_oracle: None,
+                switchboard_twap_oracle: None,
+                scope_prices: None,
+                obligation: obligation.to_string(),
+                obligation_exists: false,
+                obligation_deposit_reserves: Vec::new(),
+                obligation_borrow_reserves: Vec::new(),
+                amount_raw: 1,
+                redeemable_liquidity_amount_raw: 1,
+                vault_liquidity_ata: vault_ata.to_string(),
+                vault_liquidity_token_account_exists: true,
+                vault_liquidity_amount_raw: 1,
+            }],
+        };
+        let target = &preview.positions[0];
+
+        let policy_instruction = remove_policy_instruction(settings, authority, policy);
+        let policy_manifest = policy_lookup_table_manifest(
+            authority,
+            std::slice::from_ref(&policy_instruction),
+            &selected_vault,
+            &[],
+            &[policy],
+        )
+        .expect("policy operation should have complete typed provenance");
+        assert!(policy_manifest
+            .vault()
+            .iter()
+            .any(|requirement| requirement.address == settings));
+        assert!(policy_manifest
+            .vault()
+            .iter()
+            .any(|requirement| requirement.address == policy));
+
+        let setup_plan = init_obligation_execution_instructions(
+            policy,
+            0,
+            vault_pubkey,
+            target,
+            0,
+            &delegated,
+            &[],
+        )
+        .expect("setup instructions should build");
+        let setup_manifest = route_lookup_table_manifest(
+            delegated.pubkey(),
+            setup_plan.instructions(),
+            &selected_vault,
+            setup_plan.lookup_table_requirements(),
+            &[],
+        )
+        .expect("setup operation should have complete typed provenance");
+        assert!(setup_manifest
+            .vault()
+            .iter()
+            .any(|requirement| requirement.address == obligation));
+
+        let deposit_inner =
+            kamino_deposit_to_obligation_instruction(vault_pubkey, target, vault_ata, 1)
+                .expect("deposit instruction should build");
+        let (deposit_outer, _, _, _) = build_program_interaction_policy_execution_instruction(
+            policy,
+            delegated.pubkey(),
+            0,
+            deposit_inner,
+            0,
+        )
+        .expect("deposit policy wrapper should build");
+        let deposit_manifest = route_lookup_table_manifest(
+            delegated.pubkey(),
+            std::slice::from_ref(deposit_outer.instruction()),
+            &selected_vault,
+            deposit_outer.lookup_table_requirements(),
+            &[],
+        )
+        .expect("deposit operation should have complete typed provenance");
+        assert!(deposit_manifest
+            .shared_market()
+            .iter()
+            .any(|requirement| requirement.address == reserve));
+
+        let recovery_plan = vault_usdc_recovery_instructions(
+            settings,
+            authority,
+            vault_pubkey,
+            0,
+            wallet_ata,
+            vault_ata,
+            1,
+        )
+        .expect("cleanup instructions should build");
+        let recovery_manifest = route_lookup_table_manifest(
+            authority,
+            recovery_plan.instructions(),
+            &selected_vault,
+            recovery_plan.lookup_table_requirements(),
+            &[wallet_ata],
+        )
+        .expect("cleanup operation should have complete typed provenance");
+        assert!(recovery_manifest
+            .vault()
+            .iter()
+            .any(|requirement| requirement.address == wallet_ata));
+        assert!(recovery_manifest
+            .vault()
+            .iter()
+            .any(|requirement| requirement.address == vault_ata));
+    }
+
+    #[test]
+    fn accepts_explicit_alt_cluster() {
+        let options = parse_args(vec![
+            "--settings".to_owned(),
+            Pubkey::new_unique().to_string(),
+            "--vault-index".to_owned(),
+            "1".to_owned(),
+            "--update-policy".to_owned(),
+            "--cluster".to_owned(),
+            "devnet".to_owned(),
+        ])
+        .expect("explicit ALT cluster should parse");
+
+        assert_eq!(options.cluster, "devnet");
+    }
+
+    #[test]
+    fn rejects_invalid_alt_cluster() {
         let error = parse_args(vec![
             "--settings".to_owned(),
             Pubkey::new_unique().to_string(),
             "--vault-index".to_owned(),
             "1".to_owned(),
             "--update-policy".to_owned(),
-            "--provision-lookup-table".to_owned(),
-            "--optimization-cycle".to_owned(),
+            "--cluster".to_owned(),
+            "https://api.mainnet-beta.solana.com".to_owned(),
         ])
         .unwrap_err();
 
-        assert_eq!(
-            error,
-            "--provision-lookup-table cannot be combined with --optimization-cycle"
-        );
-    }
-
-    #[test]
-    fn accepts_explicit_route_lookup_table_provisioning_mode() {
-        let source_reserve = Pubkey::new_unique();
-        let target_reserve = Pubkey::new_unique();
-
-        let options = parse_args(vec![
-            "--settings".to_owned(),
-            Pubkey::new_unique().to_string(),
-            "--vault-index".to_owned(),
-            "1".to_owned(),
-            "--provision-route-lookup-table".to_owned(),
-            "--reconcile-from-chain".to_owned(),
-            "--source-reserve".to_owned(),
-            source_reserve.to_string(),
-            "--target-reserve".to_owned(),
-            target_reserve.to_string(),
-        ])
-        .expect("explicit route ALT provisioning mode should parse");
-
-        assert!(options.provision_route_lookup_table);
-        assert!(!options.optimization_cycle);
-        assert_eq!(options.source_reserve, Some(source_reserve.to_string()));
-        assert_eq!(options.target_reserve, Some(target_reserve.to_string()));
-    }
-
-    #[test]
-    fn rejects_route_lookup_table_provisioning_with_user_position_seed() {
-        let source_reserve = Pubkey::new_unique();
-        let target_reserve = Pubkey::new_unique();
-
-        let error = parse_args(vec![
-            "--settings".to_owned(),
-            Pubkey::new_unique().to_string(),
-            "--vault-index".to_owned(),
-            "1".to_owned(),
-            "--provision-route-lookup-table".to_owned(),
-            "--reconcile-from-chain".to_owned(),
-            "--seed-from-user-position".to_owned(),
-            "--source-reserve".to_owned(),
-            source_reserve.to_string(),
-            "--target-reserve".to_owned(),
-            target_reserve.to_string(),
-        ])
-        .unwrap_err();
-
-        assert_eq!(
-            error,
-            "--provision-route-lookup-table cannot be combined with --seed-from-user-position"
-        );
-    }
-
-    #[test]
-    fn route_lookup_table_provisioning_execute_does_not_write_current_positions() {
-        let mut options = test_cli_options(true, true, Some(1));
-        options.optimization_cycle = false;
-        options.provision_route_lookup_table = true;
-        options.seed_from_user_position = true;
-
-        assert!(!writes_current_positions_from_chain(&options));
-        assert!(!writes_current_positions_from_user_seed(&options));
-        assert!(uses_chain_preview_positions(&options, true));
+        assert!(error.contains("must be mainnet-beta, devnet, testnet, or localnet"));
     }
 
     #[test]
@@ -11213,124 +13753,308 @@ mod tests {
     }
 
     #[test]
-    fn rejects_lookup_table_mutations_outside_provisioning_mode() {
-        let authority = Pubkey::new_unique();
-        let payer = Pubkey::new_unique();
-        let (create_instruction, lookup_table_address) =
-            address_lookup_table_instruction::create_lookup_table(authority, payer, 42);
-        let extend_instruction = address_lookup_table_instruction::extend_lookup_table(
-            lookup_table_address,
-            authority,
-            Some(payer),
-            vec![Pubkey::new_unique()],
-        );
+    fn rejects_all_lookup_table_mutations_in_route_transactions() {
+        let variants = [
+            (
+                "create",
+                address_lookup_table_instruction::ProgramInstruction::CreateLookupTable {
+                    recent_slot: 42,
+                    bump_seed: 1,
+                },
+            ),
+            (
+                "extend",
+                address_lookup_table_instruction::ProgramInstruction::ExtendLookupTable {
+                    new_addresses: vec![Pubkey::new_unique()],
+                },
+            ),
+            (
+                "freeze",
+                address_lookup_table_instruction::ProgramInstruction::FreezeLookupTable,
+            ),
+            (
+                "deactivate",
+                address_lookup_table_instruction::ProgramInstruction::DeactivateLookupTable,
+            ),
+            (
+                "close",
+                address_lookup_table_instruction::ProgramInstruction::CloseLookupTable,
+            ),
+        ];
 
-        let create_error = guard_lookup_table_mutations(
-            &[create_instruction.clone()],
-            AltInstructionMode::RejectProvisioning,
-            "route execution",
-        )
-        .unwrap_err()
-        .to_string();
-        let extend_error = guard_lookup_table_mutations(
-            &[extend_instruction.clone()],
-            AltInstructionMode::RejectProvisioning,
-            "route execution",
-        )
-        .unwrap_err()
-        .to_string();
+        for (kind, variant) in variants {
+            let instruction = Instruction {
+                program_id: address_lookup_table_program::id(),
+                accounts: Vec::new(),
+                data: bincode::serialize(&variant).expect("ALT variant should serialize"),
+            };
+            let error = guard_lookup_table_mutations(&[instruction], "route execution")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(&format!("Address Lookup Table {kind} instruction")),
+                "unexpected error for {kind}: {error}"
+            );
+        }
 
-        assert!(create_error.contains("Address Lookup Table create instruction"));
-        assert!(extend_error.contains("Address Lookup Table extend instruction"));
-        guard_lookup_table_mutations(
-            &[create_instruction, extend_instruction],
-            AltInstructionMode::AllowProvisioning,
-            "route provisioning",
-        )
-        .expect("explicit provisioning mode should allow ALT mutations");
-    }
-
-    #[test]
-    fn route_lookup_table_address_hash_is_order_independent() {
-        let first = Pubkey::new_unique();
-        let second = Pubkey::new_unique();
-        let third = Pubkey::new_unique();
-
-        let ordered_hash = route_lookup_table_address_hash(&[first, second, third]);
-        let shuffled_hash = route_lookup_table_address_hash(&[third, first, second]);
-
-        assert_eq!(ordered_hash, shuffled_hash);
-    }
-
-    #[test]
-    fn lookup_table_missing_coverage_fails_closed() {
-        let missing = vec![Pubkey::new_unique(), Pubkey::new_unique()];
-
-        let error = ensure_route_lookup_table_coverage("same_mint_kamino:test", &missing)
+        let malformed = Instruction {
+            program_id: address_lookup_table_program::id(),
+            accounts: Vec::new(),
+            data: vec![0xff, 0x01, 0x02],
+        };
+        let error = guard_lookup_table_mutations(&[malformed.clone()], "route execution")
             .unwrap_err()
             .to_string();
+        assert!(error.contains("Address Lookup Table unknown instruction"));
 
-        assert!(error.starts_with(
-            "lookup_table_coverage_missing: route scope same_mint_kamino:test is missing 2 required address(es): "
-        ));
-        assert!(error.contains(&missing[0].to_string()));
-        assert!(error.contains(&missing[1].to_string()));
-        ensure_route_lookup_table_coverage("same_mint_kamino:test", &[])
-            .expect("complete lookup-table coverage should pass");
+        let error = build_program_interaction_policy_execution_instruction(
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            0,
+            YieldRouteInstruction::new(malformed, YieldRouteLookupTableRequirements::default()),
+            0,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("raw Squads program-interaction inner instruction rejected")
+                && error.contains("Address Lookup Table unknown instruction"),
+            "unexpected nested-mutation error: {error}"
+        );
     }
 
     #[test]
-    fn route_lookup_table_reuse_json_reports_missing_coverage() {
-        let missing = Pubkey::new_unique();
-        let fee_payer = Pubkey::new_unique();
-        let fee_payer_string = fee_payer.to_string();
-        let mut options = test_cli_options(true, true, Some(1));
-        options.rpc_url = "https://api.mainnet-beta.solana.com".to_owned();
-        let coverage = RouteLookupTableCoverage {
-            scope: "same_mint_kamino:test".to_owned(),
-            lookup_table_accounts: Vec::new(),
-            required_addresses: vec![missing],
-            missing_addresses: vec![missing],
+    fn compiler_lookup_eligibility_keeps_all_required_static_keys_out_of_alts() {
+        let payer = Pubkey::new_unique();
+        let signer = Pubkey::new_unique();
+        let nonce = Pubkey::new_unique();
+        let invoked_program = Pubkey::new_unique();
+        let lookup_eligible = Pubkey::new_unique();
+        let nonce_instruction = Instruction {
+            program_id: system_program::ID,
+            accounts: vec![
+                AccountMeta::new(nonce, false),
+                AccountMeta::new_readonly(signer, true),
+            ],
+            data: vec![4, 0, 0, 0],
+        };
+        let route_instruction = Instruction {
+            program_id: invoked_program,
+            accounts: vec![
+                AccountMeta::new_readonly(invoked_program, false),
+                AccountMeta::new_readonly(signer, true),
+                AccountMeta::new(lookup_eligible, false),
+            ],
+            data: Vec::new(),
         };
 
-        let json = coverage.reuse_only_json(&options, fee_payer);
-
         assert_eq!(
-            json.get("status").and_then(Value::as_str),
-            Some("lookup_table_coverage_missing")
-        );
-        assert_eq!(json.get("execute").and_then(Value::as_bool), Some(true));
-        assert_eq!(
-            json.get("missingBeforeProvisionCount")
-                .and_then(Value::as_u64),
-            Some(1)
-        );
-        assert_eq!(
-            json.get("scope").and_then(Value::as_str),
-            Some("same_mint_kamino:test")
-        );
-        assert_eq!(
-            json.get("authority").and_then(Value::as_str),
-            Some(fee_payer_string.as_str())
+            best_case_lookup_table_addresses(payer, &[nonce_instruction, route_instruction],),
+            vec![lookup_eligible]
         );
     }
 
     #[test]
-    fn lookup_table_warmup_slot_uses_ready_slot() {
-        assert_eq!(
-            lookup_table_warmup_slot(&json!({
-                "lastExtendedSlot": 10,
-                "readySlot": 11,
-                "ready": true
-            })),
-            Some(11)
-        );
-        assert_eq!(
-            lookup_table_warmup_slot(&json!({
-                "usableSlot": 12
-            })),
-            Some(12)
-        );
+    fn reusable_alt_compiler_evidence_covers_missing_obligation_and_farm_route_variants() {
+        struct Variant {
+            name: &'static str,
+            missing_obligation: bool,
+            collateral_farm: bool,
+        }
+        let variants = [
+            Variant {
+                name: "existing_obligation_no_farm",
+                missing_obligation: false,
+                collateral_farm: false,
+            },
+            Variant {
+                name: "missing_obligation_no_farm",
+                missing_obligation: true,
+                collateral_farm: false,
+            },
+            Variant {
+                name: "missing_obligation_with_farm",
+                missing_obligation: true,
+                collateral_farm: true,
+            },
+        ];
+
+        for variant in variants {
+            let payer_keypair = solana_sdk::signature::Keypair::new();
+            let signer_keypair = solana_sdk::signature::Keypair::new();
+            let payer = payer_keypair.pubkey();
+            let signer = signer_keypair.pubkey();
+            let market = Pubkey::new_unique();
+            let reserve = Pubkey::new_unique();
+            let vault = Pubkey::new_unique();
+            let obligation = Pubkey::new_unique();
+            let farm_state = Pubkey::new_unique();
+            let farm_user_state = Pubkey::new_unique();
+            let mut requirements = YieldRouteLookupTableRequirements::default();
+            requirements.add_vault_account(vault);
+            let mut reserve_accounts =
+                KaminoReserveLookupTableAccounts::new(market, reserve, Pubkey::new_unique());
+            if variant.collateral_farm {
+                reserve_accounts.reserve_farm_state = Some(farm_state);
+            }
+            requirements.add_kamino_reserve(reserve_accounts);
+            let mut instructions = vec![Instruction {
+                program_id: KLEND_PROGRAM_ID,
+                accounts: vec![
+                    AccountMeta::new_readonly(signer, true),
+                    AccountMeta::new_readonly(market, false),
+                    AccountMeta::new(reserve, false),
+                    AccountMeta::new(vault, false),
+                ],
+                data: vec![1],
+            }];
+            if variant.missing_obligation {
+                requirements.add_obligation(obligation);
+                instructions.push(Instruction {
+                    program_id: KLEND_PROGRAM_ID,
+                    accounts: vec![
+                        AccountMeta::new_readonly(signer, true),
+                        AccountMeta::new(vault, false),
+                        AccountMeta::new(obligation, false),
+                        AccountMeta::new_readonly(market, false),
+                    ],
+                    data: vec![2],
+                });
+            }
+            if variant.collateral_farm {
+                requirements.add_farm_user_state(farm_user_state);
+                instructions.push(Instruction {
+                    program_id: FARMS_PROGRAM_ID,
+                    accounts: vec![
+                        AccountMeta::new_readonly(signer, true),
+                        AccountMeta::new_readonly(farm_state, false),
+                        AccountMeta::new(farm_user_state, false),
+                        AccountMeta::new_readonly(reserve, false),
+                        AccountMeta::new(vault, false),
+                    ],
+                    data: vec![3],
+                });
+            }
+
+            let manifest = requirements
+                .manifest(payer, &instructions)
+                .unwrap_or_else(|error| panic!("{} manifest failed: {error}", variant.name));
+            let lookup_table_accounts = vec![
+                AddressLookupTableAccount {
+                    key: Pubkey::new_unique(),
+                    addresses: manifest
+                        .shared_market()
+                        .iter()
+                        .map(|requirement| requirement.address)
+                        .collect(),
+                },
+                AddressLookupTableAccount {
+                    key: Pubkey::new_unique(),
+                    addresses: manifest
+                        .vault()
+                        .iter()
+                        .map(|requirement| requirement.address)
+                        .collect(),
+                },
+            ];
+            let message = v0::Message::try_compile(
+                &payer,
+                &instructions,
+                &lookup_table_accounts,
+                Hash::new_unique(),
+            )
+            .unwrap_or_else(|error| panic!("{} v0 compile failed: {error}", variant.name));
+            let loaded_count = message
+                .address_table_lookups
+                .iter()
+                .map(|lookup| lookup.writable_indexes.len() + lookup.readonly_indexes.len())
+                .sum::<usize>();
+            assert_eq!(
+                loaded_count,
+                manifest.lookup_eligible_addresses().len(),
+                "{} did not load the complete typed manifest",
+                variant.name
+            );
+            assert_eq!(
+                message.address_table_lookups.len(),
+                2,
+                "{} did not contribute both shared and vault tables",
+                variant.name
+            );
+            assert!(
+                message.address_table_lookups.iter().all(|lookup| {
+                    !lookup.writable_indexes.is_empty() || !lookup.readonly_indexes.is_empty()
+                }),
+                "{} retained a zero-contribution table",
+                variant.name
+            );
+            assert!(
+                message.account_keys.len() + loaded_count <= 256,
+                "{} exceeds the v0 unique-key limit",
+                variant.name
+            );
+            assert!(
+                message.account_keys.contains(&payer),
+                "{} lost payer",
+                variant.name
+            );
+            assert!(
+                message.account_keys.contains(&signer),
+                "{} lost signer",
+                variant.name
+            );
+            assert!(
+                message.account_keys.contains(&KLEND_PROGRAM_ID),
+                "{} moved invoked KLend program into an ALT",
+                variant.name
+            );
+            if variant.collateral_farm {
+                assert!(
+                    message.account_keys.contains(&FARMS_PROGRAM_ID),
+                    "{} moved invoked farms program into an ALT",
+                    variant.name
+                );
+            }
+            let transaction = VersionedTransaction::try_new(
+                VersionedMessage::V0(message),
+                &[&payer_keypair, &signer_keypair],
+            )
+            .unwrap_or_else(|error| panic!("{} signing failed: {error}", variant.name));
+            let loaded = loaded_lookup_table_addresses(&transaction, &lookup_table_accounts);
+            let required = manifest
+                .lookup_eligible_addresses()
+                .into_iter()
+                .map(|address| address.to_string())
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                loaded, required,
+                "{} exact ALT coverage drifted",
+                variant.name
+            );
+            let packet = transaction_packet_summary(&transaction, &lookup_table_accounts)
+                .unwrap_or_else(|error| {
+                    panic!("{} packet measurement failed: {error}", variant.name)
+                });
+            assert!(
+                packet.fits_packet_data_size && packet.packet_size_bytes < 1232,
+                "{} packet is {} bytes",
+                variant.name,
+                packet.packet_size_bytes
+            );
+        }
+    }
+
+    #[test]
+    fn reusable_alt_ordered_hash_detects_reordering() {
+        let first = Pubkey::new_unique().to_string();
+        let second = Pubkey::new_unique().to_string();
+        let third = Pubkey::new_unique().to_string();
+
+        let ordered_hash =
+            ordered_lookup_table_address_hash(&[first.clone(), second.clone(), third.clone()]);
+        let shuffled_hash = ordered_lookup_table_address_hash(&[third, first, second]);
+
+        assert_ne!(ordered_hash, shuffled_hash);
     }
 
     #[test]
@@ -11422,8 +14146,8 @@ mod tests {
 
 fn print_help() {
     println!(
-         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--provision-lookup-table] [--provision-route-lookup-table] [--deposit-main-usdc <AMOUNT_RAW> | --deposit-reserve <RESERVE> <AMOUNT_RAW> | --deposit-idle-vault-reserve <RESERVE> <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--lookup-table <PUBKEY>...] [--execute]\n\n\
-         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and optionally YIELD_ROUTE_LOOKUP_TABLES from the environment. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and POLICY_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for live same-mint route execution; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses POLICY_KEYPAIR as fee payer and delegated signer, reuses durable lookup-table coverage, and fails before route send if coverage is missing. Add --provision-route-lookup-table with explicit source/target reserves plus --reconcile-from-chain for route lookup-table setup; it uses POLICY_KEYPAIR as the lookup-table authority and payer, cannot be combined with --optimization-cycle or --seed-from-user-position, and exits without writing a rebalance decision or sending the route. Add --deposit-idle-vault-reserve for router-owned USDC already inside the vault; execute mode requires expected idle token account, observed slot/time, mint, amount, target APY, and edge, uses POLICY_KEYPAIR as fee payer/delegated signer for target obligation setup when needed and for deposit, and does not read SOLANA_TESTING_PK. Add --provision-lookup-table only with --update-policy for durable policy lookup-table setup. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and POLICY_KEYPAIR for the policy deposit; --deposit-reserve allows choosing a non-Main Safe USDC reserve when Main is already the APY winner. Full withdraw mode uses POLICY_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
+         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> --cluster <mainnet-beta|devnet|testnet|localnet> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--deposit-main-usdc <AMOUNT_RAW> | --deposit-reserve <RESERVE> <AMOUNT_RAW> | --deposit-idle-vault-reserve <RESERVE> <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--lookup-table <PUBKEY>...] [--execute]\n\n\
+         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, requires YIELD_ALT_CLUSTER or --cluster, and optionally reads YIELD_ROUTE_LOOKUP_TABLES for legacy measurement/fallback. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and POLICY_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Policy create/update, obligation setup, initial/idle policy deposits, same-mint moves, full withdrawal, wallet recovery, and policy cleanup all use the same Neon rollout, typed-manifest, readiness, usage-lease, fresh-RPC, exact-v0, and immediate pre-send resolver path. The wallet-to-vault funding transaction is deliberately ALT-free. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for live same-mint route execution; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses POLICY_KEYPAIR as fee payer and delegated signer, resolves the effective legacy/shadow/reusable rollout from Neon, fresh-verifies every selected ALT against RPC, compiles and simulates the exact v0 transaction, and fails before the decision or send when readiness or leases are invalid. Missing reusable coverage records an idempotent provisioning request for the dedicated provisioner; this route process never creates or extends ALTs. Add --deposit-idle-vault-reserve for router-owned USDC already inside the vault; execute mode requires expected idle token account, observed slot/time, mint, amount, target APY, and edge, uses POLICY_KEYPAIR as fee payer/delegated signer for target obligation setup when needed and for deposit, and does not read SOLANA_TESTING_PK. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and POLICY_KEYPAIR for the policy deposit; --deposit-reserve allows choosing a non-Main Safe USDC reserve when Main is already the APY winner. Full withdraw mode uses POLICY_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
          op run --env-file=.env.1password -- bun run same-mint:swap -- --settings <PUBKEY> --vault-index 1 --reconcile-from-chain --seed-from-user-position"
     );
 }

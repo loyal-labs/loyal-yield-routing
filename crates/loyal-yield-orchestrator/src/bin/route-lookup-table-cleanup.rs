@@ -8,10 +8,17 @@ use std::{
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use loyal_yield_orchestrator::{
-    keypair_from_string, NeonSqlClient, NeonSqlConfig, YIELD_ROUTER_KEYPAIR_ENV,
+    keypair_from_string,
+    rpc_safety::{
+        redacted_external_error, redacted_rpc_endpoint, validate_rpc_endpoint,
+        validate_rpc_genesis_hash,
+    },
+    LookupTableCleanupProtection, LookupTableLifecycle, LookupTableOperationEnqueue,
+    LookupTableOperationKind, NeonSqlClient, NeonSqlConfig, YIELD_ROUTER_KEYPAIR_ENV,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::address_lookup_table::{
     instruction as address_lookup_table_instruction, program as address_lookup_table_program,
@@ -22,7 +29,6 @@ use solana_sdk::{
     packet::PACKET_DATA_SIZE, pubkey::Pubkey, signature::Signer, transaction::Transaction,
 };
 
-const DEFAULT_SOLANA_RPC_URL: &str = "https://api.mainnet-beta.solana.com";
 const AFFECTED_POLICY_AUTHORITY: &str = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5";
 const AUDITED_KEYPAIR_ENVS: &[&str] = &[
     "YIELD_ROUTER_KEYPAIR",
@@ -33,6 +39,7 @@ const AUDITED_KEYPAIR_ENVS: &[&str] = &[
 
 #[derive(Debug)]
 struct Options {
+    cluster: String,
     rpc_url: String,
     authorities: Vec<Pubkey>,
     tables: Vec<Pubkey>,
@@ -58,6 +65,7 @@ struct Candidate {
     owner: Pubkey,
     authority: Option<Pubkey>,
     address_count: usize,
+    addresses: Vec<Pubkey>,
     deactivation_slot: u64,
     last_extended_slot: u64,
 }
@@ -186,13 +194,45 @@ impl TraceLog {
     }
 }
 
+fn safe_cleanup_operational_error(error: &dyn std::fmt::Display) -> String {
+    redacted_external_error(&error.to_string())
+}
+
+fn safe_cleanup_operational_error_with_context(
+    context: &str,
+    error: &dyn std::fmt::Display,
+) -> String {
+    redacted_external_error(&format!("{context}: {error}"))
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() {
+    if let Err(error) = run().await {
+        eprintln!(
+            "{}",
+            json!({
+                "event": "alt_cleanup_fatal",
+                "error": safe_cleanup_operational_error(error.as_ref()),
+            })
+        );
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), Box<dyn Error>> {
     let options = parse_args(env::args().skip(1))?;
+    validate_rpc_endpoint(&options.rpc_url)?;
+    let database_url = env::var("NEON_DATABASE_URL")
+        .map_err(|_| "NEON_DATABASE_URL is required for binding-aware ALT cleanup")?;
+    let database = NeonSqlClient::connect(NeonSqlConfig::new(database_url)).await?;
+    database
+        .require_schema_migration(17, "reusable_route_lookup_tables")
+        .await?;
     let trace = TraceLog::new(options.trace_timing);
     trace.event(
         "cleanup.start",
         json!({
+            "cluster": options.cluster,
             "execute": options.execute,
             "scanProgramAccounts": options.scan_program_accounts,
             "scanHistory": options.scan_history,
@@ -203,8 +243,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     let rpc =
         RpcClient::new_with_commitment(options.rpc_url.clone(), CommitmentConfig::confirmed());
+    let observed_genesis_hash = rpc
+        .get_genesis_hash()
+        .map_err(|_| "failed to read genesis hash from configured ALT cleanup RPC endpoint")?;
+    validate_rpc_genesis_hash(&options.cluster, observed_genesis_hash).map_err(|error| {
+        format!("refusing ALT cleanup read or mutation against mismatched RPC: {error}")
+    })?;
     let phase_started = Instant::now();
-    let protected = protected_tables().await?;
+    let protected = protected_legacy_tables(&database).await?;
     trace.finish(
         "cleanup.protected_tables",
         phase_started,
@@ -303,16 +349,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         phase_started,
         json!({ "currentSlot": current_slot }),
     );
-    let signer = if options.execute {
-        Some(load_authority_signer(&options)?)
-    } else {
-        None
-    };
-    let recipient = options
-        .recipient
-        .or_else(|| signer.as_ref().map(|signer| signer.pubkey()));
+    let mut signer: Option<Box<dyn Signer>> = None;
     let mut rows = Vec::new();
     let mut planned_cleanups = Vec::new();
+    let mut queued_operation_count = 0_usize;
     let mut total_reclaimable = 0_u64;
     let mut total_reclaimed = 0_u64;
 
@@ -331,25 +371,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 rows.push(json!({
                     "table": table_address.to_string(),
                     "action": "skip",
-                    "reason": format!("fetch_or_decode_failed: {error}"),
+                    "reason": safe_cleanup_operational_error_with_context(
+                        "fetch_or_decode_failed",
+                        &error,
+                    ),
                 }));
                 continue;
             }
         };
-        let authority_matches = candidate
-            .authority
-            .is_some_and(|authority| options.authorities.contains(&authority));
-        let protected_reason = if protected_all.contains(&candidate.table_address) {
-            Some("durable_registry_env_or_allowlist")
+        let registered_protection = database
+            .lookup_table_cleanup_protection(&options.cluster, &candidate.table_address.to_string())
+            .await?;
+        let manually_protected = protected_all.contains(&candidate.table_address);
+        let (action, reason) = if manually_protected {
+            ("skip", "legacy_registry_env_or_manual_allowlist".to_owned())
+        } else if let Some(protection) = registered_protection.as_ref() {
+            classify_registered_candidate(&candidate, protection, &options.cluster, current_slot)
         } else {
-            None
+            let authority_matches = candidate
+                .authority
+                .is_some_and(|authority| options.authorities.contains(&authority));
+            classify_candidate(&candidate, authority_matches, None, current_slot)
         };
-        let (action, reason) = classify_candidate(
-            &candidate,
-            authority_matches,
-            protected_reason,
-            current_slot,
-        );
         if matches!(action, "deactivate" | "close") {
             total_reclaimable = total_reclaimable.saturating_add(candidate.lamports);
         }
@@ -359,52 +402,110 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .map(|event| history_event_json(event, &protected_all))
             .collect::<Vec<_>>();
 
-        let execution = Value::Null;
+        let mut execution = Value::Null;
         if options.execute && matches!(action, "deactivate" | "close") {
-            let row_index = rows.len();
-            let signer = signer
-                .as_ref()
-                .ok_or("--execute requires an authority signer")?;
-            let authority = candidate
-                .authority
-                .ok_or("candidate had no authority during execute")?;
-            if signer.pubkey() != authority {
-                return Err(format!(
-                    "authority signer {} does not match table {} authority {}",
-                    signer.pubkey(),
-                    candidate.table_address,
-                    authority
-                )
-                .into());
-            }
-            if action == "deactivate" {
-                let instruction = address_lookup_table_instruction::deactivate_lookup_table(
-                    candidate.table_address,
-                    signer.pubkey(),
-                );
-                planned_cleanups.push(PlannedCleanup {
-                    row_index,
-                    table_address: candidate.table_address,
-                    kind: "deactivate_lookup_table",
-                    instruction,
-                    recipient: None,
-                    reclaimed_lamports: 0,
+            if let Some(protection) = registered_protection.as_ref() {
+                let operation_kind = if action == "deactivate" {
+                    LookupTableOperationKind::Deactivate
+                } else {
+                    LookupTableOperationKind::Close
+                };
+                let operation = database
+                    .enqueue_lookup_table_operation(LookupTableOperationEnqueue {
+                        idempotency_key: format!(
+                            "cleanup:{}:{}:{}:{}",
+                            options.cluster,
+                            protection.table_id,
+                            operation_kind.as_str(),
+                            protection.mutation_epoch
+                        ),
+                        family_id: protection.family_id,
+                        route_lookup_table_id: Some(protection.table_id),
+                        manifest_id: None,
+                        binding_id: None,
+                        operation_kind,
+                        target_generation: None,
+                        target_shard_ordinal: None,
+                        operation_context: json!({
+                            "source": "route_lookup_table_cleanup",
+                            "cluster": options.cluster,
+                            "table": candidate.table_address.to_string(),
+                            "expectedAuthority": protection.expected_authority,
+                            "expectedAddressHash": protection.address_hash,
+                            "expectedMutationEpoch": protection.mutation_epoch,
+                            "closeRecipient": options.recipient.map(|recipient| recipient.to_string()),
+                            "expectedReclaimedRentLamports": if action == "close" {
+                                Some(candidate.lamports.to_string())
+                            } else {
+                                None
+                            },
+                        }),
+                        mutation_epoch: protection.mutation_epoch,
+                        estimated_fee_lamports: None,
+                        estimated_rent_lamports: None,
+                        addresses: Vec::new(),
+                    })
+                    .await?;
+                queued_operation_count += 1;
+                execution = json!({
+                    "boundary": "dedicated_provisioner",
+                    "queuedOperationId": operation.id,
+                    "operationState": operation.operation_state.as_str(),
+                    "operationKind": operation.operation_kind.as_str(),
+                    "sendsTransactionHere": false,
                 });
             } else {
-                let recipient = recipient.ok_or("--recipient is required for close execution")?;
-                let instruction = address_lookup_table_instruction::close_lookup_table(
-                    candidate.table_address,
-                    signer.pubkey(),
-                    recipient,
-                );
-                planned_cleanups.push(PlannedCleanup {
-                    row_index,
-                    table_address: candidate.table_address,
-                    kind: "close_lookup_table",
-                    instruction,
-                    recipient: Some(recipient),
-                    reclaimed_lamports: candidate.lamports,
-                });
+                if signer.is_none() {
+                    signer = Some(load_authority_signer(&options)?);
+                }
+                let signer = signer
+                    .as_ref()
+                    .ok_or("legacy cleanup authority signer was not loaded")?;
+                let authority = candidate
+                    .authority
+                    .ok_or("candidate had no authority during execute")?;
+                if signer.pubkey() != authority {
+                    return Err(format!(
+                        "authority signer {} does not match table {} authority {}",
+                        signer.pubkey(),
+                        candidate.table_address,
+                        authority
+                    )
+                    .into());
+                }
+                let row_index = rows.len();
+                if action == "deactivate" {
+                    let instruction = address_lookup_table_instruction::deactivate_lookup_table(
+                        candidate.table_address,
+                        signer.pubkey(),
+                    );
+                    planned_cleanups.push(PlannedCleanup {
+                        row_index,
+                        table_address: candidate.table_address,
+                        kind: "deactivate_lookup_table",
+                        instruction,
+                        recipient: None,
+                        reclaimed_lamports: 0,
+                    });
+                } else {
+                    let recipient = options
+                        .recipient
+                        .or_else(|| Some(signer.pubkey()))
+                        .ok_or("--recipient is required for close execution")?;
+                    let instruction = address_lookup_table_instruction::close_lookup_table(
+                        candidate.table_address,
+                        signer.pubkey(),
+                        recipient,
+                    );
+                    planned_cleanups.push(PlannedCleanup {
+                        row_index,
+                        table_address: candidate.table_address,
+                        kind: "close_lookup_table",
+                        instruction,
+                        recipient: Some(recipient),
+                        reclaimed_lamports: candidate.lamports,
+                    });
+                }
             }
         }
 
@@ -419,6 +520,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "deactivationSlot": candidate.deactivation_slot,
             "action": action,
             "reason": reason,
+            "registeredControlPlane": registered_protection.as_ref().map(cleanup_protection_json),
             "historyEvents": candidate_history,
             "execution": execution,
         }));
@@ -429,6 +531,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         json!({
             "rowCount": rows.len(),
             "plannedExecutionCount": planned_cleanups.len(),
+            "queuedOperationCount": queued_operation_count,
         }),
     );
 
@@ -458,11 +561,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "{}",
         serde_json::to_string_pretty(&json!({
             "status": if options.execute { "lookup_table_cleanup_execute" } else { "lookup_table_cleanup_dry_run" },
+            "cluster": options.cluster,
             "execute": options.execute,
             "simulateBeforeSubmit": options.simulate_before_submit,
             "bundleSize": options.bundle_size,
             "traceTiming": options.trace_timing,
-            "rpcUrl": redacted_rpc_url(&options.rpc_url),
+            "rpcUrl": redacted_rpc_endpoint(&options.rpc_url),
             "authorities": options.authorities.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "includeEnvAuthorities": options.include_env_authorities,
             "scanProgramAccounts": options.scan_program_accounts,
@@ -477,6 +581,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "totalReclaimableLamports": total_reclaimable.to_string(),
             "totalReclaimedLamports": total_reclaimed.to_string(),
             "plannedExecutionCount": planned_cleanups.len(),
+            "queuedProvisionerOperationCount": queued_operation_count,
+            "registeredMutationBoundary": "dedicated_provisioner",
+            "legacyDirectExecutionCount": planned_cleanups.len(),
             "historyEventCount": history_events.len(),
             "historyEvents": history_events.iter().map(|event| history_event_json(event, &protected_all)).collect::<Vec<_>>(),
             "candidates": rows,
@@ -488,7 +595,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn Error>> {
-    let mut rpc_url = env::var("SOLANA_RPC_URL").unwrap_or_else(|_| DEFAULT_SOLANA_RPC_URL.into());
+    parse_args_with_env(args, |name| env::var(name).ok())
+}
+
+fn parse_args_with_env<F>(
+    args: impl IntoIterator<Item = String>,
+    read_env: F,
+) -> Result<Options, Box<dyn Error>>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let mut cluster = read_env("YIELD_ALT_CLUSTER");
+    let mut rpc_url = read_env("SOLANA_RPC_URL").filter(|value| !value.trim().is_empty());
     let mut authorities = vec![Pubkey::from_str(AFFECTED_POLICY_AUTHORITY)?];
     let mut tables = Vec::new();
     let mut allowlist = Vec::new();
@@ -507,7 +625,10 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--rpc-url" => rpc_url = iter.next().ok_or("--rpc-url requires a value")?,
+            "--cluster" => cluster = Some(iter.next().ok_or("--cluster requires a value")?),
+            "--rpc-url" => {
+                rpc_url = Some(iter.next().ok_or("--rpc-url requires a value")?);
+            }
             "--authority" => authorities.push(parse_pubkey_arg(&arg, iter.next())?),
             "--table" => tables.push(parse_pubkey_arg(&arg, iter.next())?),
             "--allowlist" => allowlist.push(parse_pubkey_arg(&arg, iter.next())?),
@@ -556,7 +677,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: route-lookup-table-cleanup [--authority <PUBKEY>...] [--include-env-authorities] [--table <PUBKEY>...] [--allowlist <PUBKEY>...] [--recipient <PUBKEY>] [--authority-key-env <ENV>] [--scan-program-accounts] [--scan-history] [--history-limit <N>] [--min-slot <SLOT>] [--simulate-before-submit] [--bundle-size <N>] [--trace-timing] [--execute]\n\nDry-run is the default. Reads SOLANA_RPC_URL, optional NEON_DATABASE_URL, optional YIELD_ROUTE_LOOKUP_TABLES, and by default YIELD_ROUTER_KEYPAIR for execute. --simulate-before-submit simulates each signed cleanup transaction immediately before submit. --bundle-size groups up to N close/deactivate lookup-table instructions that use the same authority signer into one transaction. --trace-timing emits timestamped phase duration logs to stderr. --include-env-authorities derives public keys from present YIELD_ROUTER_KEYPAIR, POLICY_KEYPAIR, DEPLOYMENT_PK, and SOLANA_TESTING_PK values without printing secrets."
+                    "Usage: route-lookup-table-cleanup --cluster <CLUSTER> --rpc-url <URL> [--authority <PUBKEY>...] [--include-env-authorities] [--table <PUBKEY>...] [--allowlist <PUBKEY>...] [--recipient <PUBKEY>] [--authority-key-env <ENV>] [--scan-program-accounts] [--scan-history] [--history-limit <N>] [--min-slot <SLOT>] [--simulate-before-submit] [--bundle-size <N>] [--trace-timing] [--execute]\n\nDry-run is the default. Every mode requires explicit YIELD_ALT_CLUSTER/--cluster, SOLANA_RPC_URL/--rpc-url, and NEON_DATABASE_URL. The RPC genesis hash is verified against the explicit cluster before any chain read or mutation. Execute uses YIELD_ROUTER_KEYPAIR only for unregistered legacy cleanup; registered reusable tables enqueue durable cleanup operations for the dedicated provisioner. --simulate-before-submit simulates each signed legacy cleanup transaction immediately before submit. --bundle-size groups up to N legacy close/deactivate instructions that use the same authority signer into one transaction. --trace-timing emits timestamped phase duration logs to stderr. --include-env-authorities derives public keys from present YIELD_ROUTER_KEYPAIR, POLICY_KEYPAIR, DEPLOYMENT_PK, and SOLANA_TESTING_PK values without printing secrets."
                 );
                 std::process::exit(0);
             }
@@ -568,7 +689,21 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
     }
     authorities.sort();
     authorities.dedup();
+    let cluster = cluster.ok_or("YIELD_ALT_CLUSTER or --cluster is required")?;
+    if !matches!(
+        cluster.as_str(),
+        "mainnet-beta" | "devnet" | "testnet" | "localnet"
+    ) {
+        return Err(format!(
+            "YIELD_ALT_CLUSTER/--cluster must be mainnet-beta, devnet, testnet, or localnet; got {cluster:?}"
+        )
+        .into());
+    }
+    let rpc_url = rpc_url
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("SOLANA_RPC_URL or --rpc-url is required for every cleanup mode")?;
     Ok(Options {
+        cluster,
         rpc_url,
         authorities,
         tables,
@@ -586,13 +721,6 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
         bundle_size,
         trace_timing,
     })
-}
-
-fn redacted_rpc_url(rpc_url: &str) -> String {
-    match rpc_url.split_once('?') {
-        Some((prefix, _)) => format!("{prefix}?<redacted>"),
-        None => rpc_url.to_owned(),
-    }
 }
 
 fn env_authority_pubkeys() -> Result<Vec<Pubkey>, Box<dyn Error>> {
@@ -654,12 +782,12 @@ fn unix_timestamp_ms() -> u128 {
         .unwrap_or_default()
 }
 
-async fn protected_tables() -> Result<BTreeSet<Pubkey>, Box<dyn Error>> {
-    let Ok(database_url) = env::var("NEON_DATABASE_URL") else {
-        return Ok(BTreeSet::new());
-    };
-    let client = NeonSqlClient::connect(NeonSqlConfig::new(database_url)).await?;
-    let addresses = client.protected_route_lookup_table_addresses().await?;
+async fn protected_legacy_tables(
+    client: &NeonSqlClient,
+) -> Result<BTreeSet<Pubkey>, Box<dyn Error>> {
+    let addresses = client
+        .protected_legacy_route_lookup_table_addresses()
+        .await?;
     parse_pubkey_set(addresses)
 }
 
@@ -1136,14 +1264,15 @@ fn load_candidates(
                     "cleanup.candidate_accounts.batch_fallback",
                     json!({
                         "batchSize": chunk.len(),
-                        "error": error.to_string(),
+                        "error": safe_cleanup_operational_error(&error),
                         "mode": "get_account_per_table",
                     }),
                 );
                 for table_address in chunk {
                     out.push((
                         *table_address,
-                        load_candidate(rpc, *table_address).map_err(|error| error.to_string()),
+                        load_candidate(rpc, *table_address)
+                            .map_err(|error| safe_cleanup_operational_error(error.as_ref())),
                     ));
                 }
             }
@@ -1167,6 +1296,7 @@ fn candidate_from_account(table_address: Pubkey, account: &Account) -> Result<Ca
         owner: account.owner,
         authority: table.meta.authority,
         address_count: table.addresses.len(),
+        addresses: table.addresses.to_vec(),
         deactivation_slot: table.meta.deactivation_slot,
         last_extended_slot: table.meta.last_extended_slot,
     })
@@ -1209,6 +1339,113 @@ fn classify_candidate(
         "close",
         "deactivated_orphan_table_cooldown_elapsed".to_owned(),
     )
+}
+
+fn classify_registered_candidate(
+    candidate: &Candidate,
+    protection: &LookupTableCleanupProtection,
+    expected_cluster: &str,
+    current_slot: u64,
+) -> (&'static str, String) {
+    let mut drift = Vec::new();
+    if protection.cluster != expected_cluster {
+        drift.push(format!(
+            "cluster_expected_{expected_cluster}_observed_{}",
+            protection.cluster
+        ));
+    }
+    if candidate.owner != address_lookup_table_program::id() {
+        drift.push("owner_mismatch".to_owned());
+    }
+    match Pubkey::from_str(&protection.expected_authority) {
+        Ok(expected_authority) if candidate.authority == Some(expected_authority) => {}
+        Ok(_) => drift.push("authority_mismatch".to_owned()),
+        Err(_) => drift.push("invalid_database_authority".to_owned()),
+    }
+    if i32::try_from(candidate.address_count).ok() != Some(protection.address_count) {
+        drift.push("address_count_mismatch".to_owned());
+    }
+    if ordered_candidate_address_hash(&candidate.addresses) != protection.address_hash {
+        drift.push("address_prefix_or_order_hash_mismatch".to_owned());
+    }
+    let chain_is_active = candidate.deactivation_slot == u64::MAX;
+    match protection.desired_state {
+        LookupTableLifecycle::Active
+        | LookupTableLifecycle::Standby
+        | LookupTableLifecycle::Retiring
+            if !chain_is_active =>
+        {
+            drift.push("database_active_chain_deactivated".to_owned());
+        }
+        LookupTableLifecycle::Deactivated if chain_is_active => {
+            drift.push("database_deactivated_chain_active".to_owned());
+        }
+        LookupTableLifecycle::Closed => {
+            drift.push("database_closed_chain_account_exists".to_owned());
+        }
+        _ => {}
+    }
+    if !drift.is_empty() {
+        return (
+            "skip",
+            format!("registered_database_chain_drift: {}", drift.join(",")),
+        );
+    }
+    if protection.can_deactivate {
+        return (
+            "deactivate",
+            "registered_retiring_table_has_zero_protected_references".to_owned(),
+        );
+    }
+    if protection.can_close {
+        if current_slot <= estimate_last_valid_slot(candidate.deactivation_slot) {
+            return (
+                "defer",
+                format!(
+                    "registered_table_cooldown_until_at_least_{}",
+                    estimate_last_valid_slot(candidate.deactivation_slot)
+                ),
+            );
+        }
+        return (
+            "close",
+            "registered_deactivated_table_cooldown_elapsed".to_owned(),
+        );
+    }
+    (
+        "skip",
+        format!(
+            "registered_table_protected: {}",
+            protection.protection_reasons.join(",")
+        ),
+    )
+}
+
+fn ordered_candidate_address_hash(addresses: &[Pubkey]) -> String {
+    let mut hasher = Sha256::new();
+    for address in addresses {
+        let address = address.to_string();
+        hasher.update((address.len() as u64).to_le_bytes());
+        hasher.update(address.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn cleanup_protection_json(protection: &LookupTableCleanupProtection) -> Value {
+    json!({
+        "cluster": protection.cluster,
+        "tableId": protection.table_id,
+        "familyId": protection.family_id,
+        "expectedAuthority": protection.expected_authority,
+        "addressCount": protection.address_count,
+        "addressHash": protection.address_hash,
+        "mutationEpoch": protection.mutation_epoch,
+        "desiredState": protection.desired_state.as_str(),
+        "acceptingAllocations": protection.accepting_allocations,
+        "canDeactivate": protection.can_deactivate,
+        "canClose": protection.can_close,
+        "protectionReasons": protection.protection_reasons,
+    })
 }
 
 fn lookup_table_status(candidate: &Candidate, current_slot: u64) -> &'static str {
@@ -1411,7 +1648,7 @@ async fn record_deactivated(table_address: &Pubkey, slot: u64, signature: &str) 
         Err(error) => {
             return json!({
                 "status": "failed",
-                "error": error.to_string(),
+                "error": safe_cleanup_operational_error(&error),
             });
         }
     };
@@ -1420,7 +1657,7 @@ async fn record_deactivated(table_address: &Pubkey, slot: u64, signature: &str) 
         Err(error) => {
             return json!({
                 "status": "failed",
-                "error": error.to_string(),
+                "error": safe_cleanup_operational_error(&error),
             });
         }
     };
@@ -1431,7 +1668,7 @@ async fn record_deactivated(table_address: &Pubkey, slot: u64, signature: &str) 
         Ok(_) => json!({ "status": "recorded" }),
         Err(error) => json!({
             "status": "failed",
-            "error": error.to_string(),
+            "error": safe_cleanup_operational_error(&error),
         }),
     }
 }
@@ -1453,7 +1690,7 @@ async fn record_closed(
         Err(error) => {
             return json!({
                 "status": "failed",
-                "error": error.to_string(),
+                "error": safe_cleanup_operational_error(&error),
             });
         }
     };
@@ -1462,7 +1699,7 @@ async fn record_closed(
         Err(error) => {
             return json!({
                 "status": "failed",
-                "error": error.to_string(),
+                "error": safe_cleanup_operational_error(&error),
             });
         }
     };
@@ -1478,7 +1715,7 @@ async fn record_closed(
         Ok(_) => json!({ "status": "recorded" }),
         Err(error) => json!({
             "status": "failed",
-            "error": error.to_string(),
+            "error": safe_cleanup_operational_error(&error),
         }),
     }
 }
@@ -1487,6 +1724,32 @@ async fn record_closed(
 mod tests {
     use super::*;
 
+    #[test]
+    fn alt_cleanup_caught_rpc_errors_never_expose_endpoint_credentials() {
+        let safe = safe_cleanup_operational_error_with_context(
+            "get_multiple_accounts_failed",
+            &"HTTP 429 from https://user:password@example.test/private/path?api-key=query-secret access_token=header-secret",
+        );
+
+        assert!(safe.starts_with("get_multiple_accounts_failed:"));
+        assert!(safe.contains("HTTP 429"));
+        assert!(safe.len() <= 512);
+        for secret in [
+            "user",
+            "password",
+            "private/path",
+            "api-key",
+            "query-secret",
+            "access_token",
+            "header-secret",
+        ] {
+            assert!(
+                !safe.contains(secret),
+                "cleanup error leaked {secret}: {safe}"
+            );
+        }
+    }
+
     fn candidate(authority: Pubkey, deactivation_slot: u64) -> Candidate {
         Candidate {
             table_address: Pubkey::new_unique(),
@@ -1494,9 +1757,127 @@ mod tests {
             owner: address_lookup_table_program::id(),
             authority: Some(authority),
             address_count: 3,
+            addresses: vec![
+                Pubkey::new_unique(),
+                Pubkey::new_unique(),
+                Pubkey::new_unique(),
+            ],
             deactivation_slot,
             last_extended_slot: 0,
         }
+    }
+
+    fn registered_protection(
+        candidate: &Candidate,
+        desired_state: LookupTableLifecycle,
+        can_deactivate: bool,
+        can_close: bool,
+        protection_reasons: Vec<String>,
+    ) -> LookupTableCleanupProtection {
+        LookupTableCleanupProtection {
+            cluster: "localnet".to_owned(),
+            table_id: 7,
+            family_id: 3,
+            table_address: candidate.table_address.to_string(),
+            expected_authority: candidate.authority.unwrap().to_string(),
+            address_count: candidate.address_count as i32,
+            address_hash: ordered_candidate_address_hash(&candidate.addresses),
+            mutation_epoch: 11,
+            desired_state,
+            accepting_allocations: false,
+            can_deactivate,
+            can_close,
+            protection_reasons,
+        }
+    }
+
+    #[test]
+    fn registered_cleanup_deactivates_only_after_zero_reference_readback() {
+        let candidate = candidate(Pubkey::new_unique(), u64::MAX);
+        let protection = registered_protection(
+            &candidate,
+            LookupTableLifecycle::Retiring,
+            true,
+            false,
+            Vec::new(),
+        );
+
+        let (action, reason) =
+            classify_registered_candidate(&candidate, &protection, "localnet", 100);
+
+        assert_eq!(action, "deactivate");
+        assert_eq!(
+            reason,
+            "registered_retiring_table_has_zero_protected_references"
+        );
+    }
+
+    #[test]
+    fn registered_cleanup_skips_live_binding() {
+        let candidate = candidate(Pubkey::new_unique(), u64::MAX);
+        let protection = registered_protection(
+            &candidate,
+            LookupTableLifecycle::Retiring,
+            false,
+            false,
+            vec!["live_binding".to_owned()],
+        );
+
+        let (action, reason) =
+            classify_registered_candidate(&candidate, &protection, "localnet", 100);
+
+        assert_eq!(action, "skip");
+        assert_eq!(reason, "registered_table_protected: live_binding");
+    }
+
+    #[test]
+    fn registered_cleanup_fails_closed_on_authority_or_prefix_drift() {
+        let mut candidate = candidate(Pubkey::new_unique(), u64::MAX);
+        let protection = registered_protection(
+            &candidate,
+            LookupTableLifecycle::Retiring,
+            true,
+            false,
+            Vec::new(),
+        );
+        candidate.authority = Some(Pubkey::new_unique());
+        candidate.addresses.reverse();
+
+        let (action, reason) =
+            classify_registered_candidate(&candidate, &protection, "localnet", 100);
+
+        assert_eq!(action, "skip");
+        assert!(reason.contains("authority_mismatch"));
+        assert!(reason.contains("address_prefix_or_order_hash_mismatch"));
+    }
+
+    #[test]
+    fn registered_cleanup_waits_for_cooldown_before_close() {
+        let deactivation_slot = 10;
+        let candidate = candidate(Pubkey::new_unique(), deactivation_slot);
+        let protection = registered_protection(
+            &candidate,
+            LookupTableLifecycle::Deactivated,
+            false,
+            true,
+            Vec::new(),
+        );
+
+        let (defer_action, _) = classify_registered_candidate(
+            &candidate,
+            &protection,
+            "localnet",
+            estimate_last_valid_slot(deactivation_slot),
+        );
+        let (close_action, _) = classify_registered_candidate(
+            &candidate,
+            &protection,
+            "localnet",
+            estimate_last_valid_slot(deactivation_slot) + 1,
+        );
+
+        assert_eq!(defer_action, "defer");
+        assert_eq!(close_action, "close");
     }
 
     #[test]
@@ -1569,20 +1950,71 @@ mod tests {
     }
 
     #[test]
-    fn alt_cleanup_redacts_rpc_query_string() {
+    fn alt_cleanup_redacts_every_credential_bearing_rpc_url_component() {
         assert_eq!(
-            redacted_rpc_url("https://mainnet.helius-rpc.com/?api-key=secret"),
-            "https://mainnet.helius-rpc.com/?<redacted>"
+            redacted_rpc_endpoint(
+                "https://user:password@mainnet.helius-rpc.com/private/path?api-key=secret"
+            ),
+            "https://mainnet.helius-rpc.com"
         );
         assert_eq!(
-            redacted_rpc_url("http://localhost:8899"),
+            redacted_rpc_endpoint("https://example.quiknode.pro/path-token/"),
+            "https://example.quiknode.pro"
+        );
+        assert_eq!(
+            redacted_rpc_endpoint("http://localhost:8899"),
             "http://localhost:8899"
         );
     }
 
     #[test]
+    fn alt_cleanup_every_mode_requires_an_explicit_rpc_endpoint() {
+        let dry_run_error =
+            parse_args_with_env(vec!["--cluster".to_owned(), "localnet".to_owned()], |_| {
+                None
+            })
+            .expect_err("dry-run must not inherit an implicit mainnet endpoint");
+        assert!(dry_run_error
+            .to_string()
+            .contains("required for every cleanup mode"));
+
+        let error = parse_args_with_env(
+            vec![
+                "--cluster".to_owned(),
+                "localnet".to_owned(),
+                "--execute".to_owned(),
+            ],
+            |_| None,
+        )
+        .expect_err("execute must not inherit the implicit mainnet endpoint");
+
+        assert!(error
+            .to_string()
+            .contains("required for every cleanup mode"));
+
+        let blank_error = parse_args_with_env(
+            vec![
+                "--cluster".to_owned(),
+                "localnet".to_owned(),
+                "--execute".to_owned(),
+                "--rpc-url".to_owned(),
+                " ".to_owned(),
+            ],
+            |name| (name == "SOLANA_RPC_URL").then(|| "http://localhost:8899".to_owned()),
+        )
+        .expect_err("blank CLI RPC must not fall back to the environment");
+        assert!(blank_error
+            .to_string()
+            .contains("required for every cleanup mode"));
+    }
+
+    #[test]
     fn alt_cleanup_parses_execute_safety_options() {
         let options = parse_args(vec![
+            "--cluster".to_owned(),
+            "localnet".to_owned(),
+            "--rpc-url".to_owned(),
+            "http://localhost:8899".to_owned(),
             "--execute".to_owned(),
             "--simulate-before-submit".to_owned(),
             "--bundle-size".to_owned(),
@@ -1599,15 +2031,26 @@ mod tests {
 
     #[test]
     fn alt_cleanup_disables_trace_timing_by_default() {
-        let options = parse_args(Vec::<String>::new()).expect("default cleanup options parse");
+        let options = parse_args(vec![
+            "--cluster".to_owned(),
+            "localnet".to_owned(),
+            "--rpc-url".to_owned(),
+            "http://localhost:8899".to_owned(),
+        ])
+        .expect("default cleanup options parse");
 
         assert!(!options.trace_timing);
     }
 
     #[test]
     fn alt_cleanup_rejects_zero_bundle_size() {
-        let error = parse_args(vec!["--bundle-size".to_owned(), "0".to_owned()])
-            .expect_err("zero bundle size should be rejected");
+        let error = parse_args(vec![
+            "--cluster".to_owned(),
+            "localnet".to_owned(),
+            "--bundle-size".to_owned(),
+            "0".to_owned(),
+        ])
+        .expect_err("zero bundle size should be rejected");
 
         assert_eq!(error.to_string(), "--bundle-size must be at least 1");
     }

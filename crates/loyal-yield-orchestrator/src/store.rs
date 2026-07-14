@@ -167,6 +167,44 @@ impl NeonSqlClient {
         &self.pool
     }
 
+    pub async fn require_schema_migration(
+        &self,
+        version: i64,
+        name: &str,
+    ) -> Result<(), OrchestratorError> {
+        let ledger_exists: bool =
+            sqlx::query_scalar("SELECT to_regclass('loyal_yield.schema_migrations') IS NOT NULL")
+                .fetch_one(&self.pool)
+                .await?;
+        if !ledger_exists {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "database schema is not initialized; run the dedicated migration command before starting this process (required migration {version} {name})"
+            )));
+        }
+
+        let applied: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM loyal_yield.schema_migrations
+                WHERE version = $1
+                  AND name = $2
+            )
+            "#,
+        )
+        .bind(version)
+        .bind(name)
+        .fetch_one(&self.pool)
+        .await?;
+        if !applied {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "required database migration {version} {name} is not applied; run the dedicated migration command before starting this process"
+            )));
+        }
+
+        Ok(())
+    }
+
     pub async fn acquire_route_lookup_table_provisioning_lock(
         &self,
         cluster: &str,
@@ -309,6 +347,26 @@ impl NeonSqlClient {
             FROM loyal_yield.route_lookup_tables
             WHERE durable = TRUE
               AND status NOT IN ('closed')
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn protected_legacy_route_lookup_table_addresses(
+        &self,
+    ) -> Result<Vec<String>, OrchestratorError> {
+        if !route_lookup_tables_relation_exists(&self.pool).await? {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT table_address
+            FROM loyal_yield.route_lookup_tables
+            WHERE durable = TRUE
+              AND status NOT IN ('closed')
+              AND family_id IS NULL
             "#,
         )
         .fetch_all(&self.pool)

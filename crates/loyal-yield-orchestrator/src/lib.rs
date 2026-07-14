@@ -1,4 +1,6 @@
 mod domain;
+pub mod lookup_tables;
+pub mod rpc_safety;
 mod signer;
 mod store;
 mod types;
@@ -7,10 +9,12 @@ pub use domain::{
     route_amount_evidence, route_amount_evidence_from_metadata, state_transition,
     AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
+pub use lookup_tables::*;
 pub use signer::{
     keypair_from_env, keypair_from_hex, keypair_from_string, policy_keypair_from_env,
-    solana_testing_keypair_from_env, yield_router_keypair_from_env, PolicySignerError,
-    POLICY_KEYPAIR_ENV, SOLANA_TESTING_PK_ENV, YIELD_ROUTER_KEYPAIR_ENV,
+    solana_testing_keypair_from_env, yield_alt_manager_keypair_from_env,
+    yield_router_keypair_from_env, PolicySignerError, POLICY_KEYPAIR_ENV, SOLANA_TESTING_PK_ENV,
+    YIELD_ALT_MANAGER_KEYPAIR_ENV, YIELD_ROUTER_KEYPAIR_ENV,
 };
 pub use store::{NeonSqlClient, OrchestratorStore, RouteLookupTableProvisioningLock};
 pub use types::*;

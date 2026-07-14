@@ -27,6 +27,7 @@ const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 15;
 const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
 const DEFAULT_MAX_CANDIDATE_AGE_SECONDS: i64 = 6 * 60 * 60;
 const MIN_E2E_AMOUNT_RAW: u64 = 1_000_000;
+const ALT_CLUSTER_ENV: &str = "YIELD_ALT_CLUSTER";
 
 #[derive(Debug, Clone)]
 struct Options {
@@ -77,9 +78,21 @@ struct ConfirmedDecision {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_args(env::args().skip(1))?;
+    let cluster = env::var(ALT_CLUSTER_ENV)
+        .map_err(|_| "YIELD_ALT_CLUSTER is required; cluster is never inferred from an RPC URL")?;
+    if !matches!(
+        cluster.as_str(),
+        "mainnet-beta" | "devnet" | "testnet" | "localnet"
+    ) {
+        return Err(format!(
+            "YIELD_ALT_CLUSTER must be mainnet-beta, devnet, testnet, or localnet; got {cluster:?}"
+        )
+        .into());
+    }
     log_event(
         "start",
         json!({
+            "cluster": cluster,
             "execute": options.execute,
             "settings": options.settings,
             "vaultIndex": options.vault_index,
@@ -208,7 +221,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .connect(&neon_url)
         .await?;
     NeonSqlClient::from_pool(pool.clone())
-        .apply_migrations()
+        .require_schema_migration(17, "reusable_route_lookup_tables")
         .await?;
     log_event("db_readback_start", json!({ "label": "before_setup" }));
     let before_setup = db_readback(&pool, &options).await?;
@@ -478,7 +491,6 @@ fn phase_commands(options: &Options, precondition: &EdgePrecondition) -> Vec<Vec
             options.vault_index.to_string(),
             "--update-policy".to_owned(),
             "--update-active-policy".to_owned(),
-            "--provision-lookup-table".to_owned(),
             "--execute".to_owned(),
         ],
         deposit_reserve_command(options, &precondition.source.reserve),
@@ -1705,5 +1717,5 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
 }
 
 fn usage() -> &'static str {
-    "Usage: same-mint-monitor-e2e --settings <PUBKEY> [--vault-index <N>] --amount-raw <U64> [--poll-interval-seconds <SECONDS>] [--timeout-seconds <SECONDS>] [--max-candidate-age-seconds <SECONDS>] [--execute]"
+    "Usage: same-mint-monitor-e2e --settings <PUBKEY> [--vault-index <N>] --amount-raw <U64> [--poll-interval-seconds <SECONDS>] [--timeout-seconds <SECONDS>] [--max-candidate-age-seconds <SECONDS>] [--execute]\n\nRequires explicit YIELD_ALT_CLUSTER for every child route phase. The E2E is reuse-only and never provisions or mutates an Address Lookup Table inline."
 }

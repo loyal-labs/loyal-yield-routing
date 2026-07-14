@@ -1,0 +1,3390 @@
+//! Crash-safe reusable Address Lookup Table provisioner/reconciler.
+//!
+//! This binary is intentionally the only normal worker allowed to create or
+//! extend reusable route lookup tables. Dry-run is the default. A signer is
+//! loaded only after `--execute` has passed all CLI and control-plane gates.
+
+use std::{collections::BTreeSet, env, error::Error, fmt, str::FromStr, time::Duration};
+
+use chrono::Utc;
+use loyal_yield_orchestrator::{
+    persisted_lookup_table_success_accounting, reconcile_lookup_table_operation,
+    rpc_safety::{redacted_external_error, validate_rpc_endpoint, validate_rpc_genesis_hash},
+    yield_alt_manager_keypair_from_env, AtomicVaultAllocationResult, LeasedLookupTableOperation,
+    LegacyLookupTableRetirementRequest, LookupTableAllocationKind, LookupTableChainState,
+    LookupTableFamilyKind, LookupTableFamilyRecord, LookupTableFamilyState,
+    LookupTableFamilyUpsert, LookupTableLifecycle, LookupTableMembershipAddress,
+    LookupTableOperationAdvance, LookupTableOperationKind, LookupTableOperationLease,
+    LookupTableOperationStatus, LookupTableProvisioningPlanPolicy,
+    LookupTableProvisioningRequestRecord, LookupTableProvisioningRequestStatus,
+    LookupTableReconciliationDecision, LookupTableReconciliationObservation,
+    LookupTableRolloutMode, LookupTableSignatureState, LookupTableVaultBindingRecord,
+    NeonSqlClient, NeonSqlConfig, PackedShardPolicy, SignedLookupTableTransaction, VaultId,
+    POLICY_KEYPAIR_ENV, SOLANA_TESTING_PK_ENV, YIELD_ROUTER_KEYPAIR_ENV,
+};
+use serde::Serialize;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use solana_client::rpc_client::RpcClient;
+use solana_sdk::{
+    account::Account,
+    address_lookup_table::{
+        instruction as alt_instruction, program as alt_program,
+        state::{estimate_last_valid_slot, AddressLookupTable, LOOKUP_TABLE_META_SIZE},
+    },
+    commitment_config::CommitmentConfig,
+    hash::Hash,
+    packet::PACKET_DATA_SIZE,
+    pubkey::Pubkey,
+    signature::{Keypair, Signature, Signer},
+    slot_hashes::MAX_ENTRIES as SLOT_HASHES_MAX_ENTRIES,
+    transaction::Transaction,
+};
+
+const DATABASE_URL_ENV: &str = "NEON_DATABASE_URL";
+const RPC_URL_ENV: &str = "SOLANA_RPC_URL";
+const CLUSTER_ENV: &str = "YIELD_ALT_CLUSTER";
+const PAUSED_ENV: &str = "YIELD_ALT_PROVISIONING_PAUSED";
+const MAX_LAMPORTS_ENV: &str = "YIELD_ALT_MAX_LAMPORTS";
+const LARGEST_ATOMIC_EXPANSION_ENV: &str = "YIELD_ALT_LARGEST_ATOMIC_EXPANSION";
+const DEFAULT_MAX_OPERATIONS: usize = 8;
+const DEFAULT_ADDRESS_CHUNK: usize = 20;
+const MAX_ADDRESS_CHUNK: usize = 20;
+const DEFAULT_LEASE_SECONDS: u64 = 120;
+const DEFAULT_RATE_LIMIT_MS: u64 = 1_000;
+const MAX_RATE_LIMIT_MS: u64 = 60_000;
+const MAX_OPERATIONS_PER_BATCH: usize = 100;
+const DEFAULT_RETRY_SECONDS: i64 = 30;
+const DEFAULT_MAX_ATTEMPTS: i32 = 5;
+const EXPIRED_TRANSACTION_RETRY_CODE: &str = "expired_transaction_not_observed";
+const DEFAULT_SAFETY_MARGIN: u16 = 16;
+const DEFAULT_VAULT_GROWTH_RESERVATION: u16 = 8;
+const DEFAULT_MAX_VAULT_COHORT: u16 = 16;
+const PLANNER_VERSION: &str = "reusable-alt-provisioner-v1";
+const DEFAULT_SHARED_FAMILY_NAME: &str = "stable-market";
+const DEFAULT_VAULT_FAMILY_NAME: &str = "vault-shards";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunMode {
+    DryRun,
+    ReconcileOnly,
+    Execute,
+}
+
+impl RunMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::DryRun => "dry_run",
+            Self::ReconcileOnly => "reconcile_only",
+            Self::Execute => "execute",
+        }
+    }
+
+    const fn may_sign(self) -> bool {
+        matches!(self, Self::Execute)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdminAction {
+    None,
+    BootstrapFamilies,
+    RollbackFamily(i64),
+    RollbackBinding(i64),
+    FinalizeRollbacks(i64),
+    RetireLegacy(Pubkey),
+    ForceLegacy,
+    ClearForceLegacy,
+    SetRolloutMode(LookupTableRolloutMode),
+}
+
+#[derive(Debug, Clone)]
+struct Options {
+    cluster: String,
+    rpc_url: Option<String>,
+    database_url: String,
+    mode: RunMode,
+    status_only: bool,
+    paused: bool,
+    watch: bool,
+    max_operations: usize,
+    max_attempts: i32,
+    address_chunk: usize,
+    max_lamports: u64,
+    lease_seconds: u64,
+    rate_limit_ms: u64,
+    concurrency: usize,
+    safety_margin: u16,
+    largest_atomic_expansion: Option<u16>,
+    vault_growth_reservation: u16,
+    max_vault_cohort: u16,
+    worker_id: String,
+    admin_action: AdminAction,
+    admin_write: bool,
+    admin_reason: Option<String>,
+    admin_updated_by: Option<String>,
+    admin_manager_pubkey: Option<Pubkey>,
+    catalog_version: Option<String>,
+    shared_family_name: String,
+    vault_family_name: String,
+    admin_vault_id: Option<VaultId>,
+    admin_observed_slot: Option<i64>,
+    admin_expected_authority: Option<Pubkey>,
+    admin_expected_address_hash: Option<String>,
+    admin_expected_address_count: Option<i32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Budget {
+    limit: u64,
+    selected: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BudgetExhausted {
+    current: u64,
+    requested: u64,
+    limit: u64,
+}
+
+impl fmt::Display for BudgetExhausted {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "operation requests {} lamports with {} already selected, above configured limit {}",
+            self.requested, self.current, self.limit
+        )
+    }
+}
+
+impl Error for BudgetExhausted {}
+
+impl Budget {
+    const fn exhausted(&self) -> bool {
+        self.selected >= self.limit
+    }
+
+    fn reserve(&mut self, lamports: u64) -> Result<(), BudgetExhausted> {
+        let selected = self.selected.checked_add(lamports).ok_or(BudgetExhausted {
+            current: self.selected,
+            requested: lamports,
+            limit: self.limit,
+        })?;
+        if selected > self.limit {
+            return Err(BudgetExhausted {
+                current: self.selected,
+                requested: lamports,
+                limit: self.limit,
+            });
+        }
+        self.selected = selected;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OperationBatchResult {
+    processed: usize,
+    budget_exhausted: bool,
+}
+
+const fn should_continue_worker(watch: bool, batch: OperationBatchResult) -> bool {
+    watch && !batch.budget_exhausted
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeasedOperationOutcome {
+    Processed,
+    BudgetExhausted(BudgetExhausted),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FamilyOperationGate {
+    AllowMutation,
+    ReadOnlyVerification,
+    Defer {
+        code: &'static str,
+        detail: &'static str,
+    },
+}
+
+const fn family_operation_gate(
+    family_state: LookupTableFamilyState,
+    operation_kind: LookupTableOperationKind,
+) -> FamilyOperationGate {
+    if matches!(operation_kind, LookupTableOperationKind::Verify) {
+        return FamilyOperationGate::ReadOnlyVerification;
+    }
+    match family_state {
+        LookupTableFamilyState::Active => FamilyOperationGate::AllowMutation,
+        LookupTableFamilyState::Paused => FamilyOperationGate::Defer {
+            code: "family_paused",
+            detail: "family is paused; unsigned ALT mutation was not attempted",
+        },
+        LookupTableFamilyState::Retiring
+            if matches!(
+                operation_kind,
+                LookupTableOperationKind::Deactivate | LookupTableOperationKind::Close
+            ) =>
+        {
+            FamilyOperationGate::AllowMutation
+        }
+        LookupTableFamilyState::Retiring => FamilyOperationGate::Defer {
+            code: "family_retiring_growth_blocked",
+            detail: "family is retiring; unsigned ALT growth mutation was not attempted",
+        },
+        LookupTableFamilyState::Retired => FamilyOperationGate::Defer {
+            code: "family_retired",
+            detail: "family is retired; unsigned ALT mutation was not attempted",
+        },
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubmissionStage {
+    Built,
+    Simulated,
+    Persisted,
+    Broadcast,
+}
+
+/// Small testable gate that makes persistence-before-broadcast an executable
+/// invariant rather than a comment around two I/O calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SubmissionGate {
+    stage: SubmissionStage,
+}
+
+impl SubmissionGate {
+    fn built() -> Self {
+        Self {
+            stage: SubmissionStage::Built,
+        }
+    }
+
+    fn simulated(&mut self) -> Result<(), String> {
+        if self.stage != SubmissionStage::Built {
+            return Err("simulation must follow transaction construction".to_owned());
+        }
+        self.stage = SubmissionStage::Simulated;
+        Ok(())
+    }
+
+    fn persisted(&mut self) -> Result<(), String> {
+        if self.stage != SubmissionStage::Simulated {
+            return Err("signed metadata may be persisted only after simulation".to_owned());
+        }
+        self.stage = SubmissionStage::Persisted;
+        Ok(())
+    }
+
+    fn broadcast(&mut self) -> Result<(), String> {
+        if self.stage != SubmissionStage::Persisted {
+            return Err("broadcast is forbidden before signed metadata is durable".to_owned());
+        }
+        self.stage = SubmissionStage::Broadcast;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ChainTable {
+    account: Option<Account>,
+    authority: Option<Pubkey>,
+    addresses: Vec<Pubkey>,
+    deactivation_slot: Option<u64>,
+    last_extended_slot: Option<u64>,
+    last_extended_start_index: Option<u8>,
+}
+
+#[derive(Debug)]
+struct BuiltMutation {
+    transaction: Transaction,
+    recent_blockhash: Hash,
+    last_valid_block_height: u64,
+    expected_fee_lamports: u64,
+    expected_rent_lamports: u64,
+    reclaimed_rent_lamports: u64,
+    packet_size: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OperationReport {
+    event: &'static str,
+    cluster: String,
+    mode: &'static str,
+    operation_id: i64,
+    operation_kind: String,
+    table: Option<String>,
+    address_count: usize,
+    selected_budget_lamports: u64,
+    expected_fee_lamports: Option<u64>,
+    expected_rent_lamports: Option<u64>,
+    simulation: &'static str,
+    result: String,
+}
+
+#[tokio::main]
+async fn main() {
+    if let Err(error) = run().await {
+        eprintln!(
+            "{}",
+            json!({
+                "event": "alt_provisioner_fatal",
+                "error": redacted_external_error(&error.to_string()),
+            })
+        );
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), Box<dyn Error>> {
+    let options = parse_args(env::args().skip(1), |name| env::var(name).ok())?;
+    if let Some(rpc_url) = options.rpc_url.as_deref() {
+        validate_rpc_endpoint(rpc_url)?;
+    }
+    let client = NeonSqlClient::connect(
+        NeonSqlConfig::new(options.database_url.clone())
+            .with_max_connections(options.concurrency as u32 + 1),
+    )
+    .await?;
+    client
+        .require_schema_migration(17, "reusable_route_lookup_tables")
+        .await?;
+
+    apply_admin_action(&client, &options).await?;
+    emit_status(&client, &options).await?;
+    if options.status_only || !matches!(options.admin_action, AdminAction::None) {
+        return Ok(());
+    }
+    if options.paused {
+        println!(
+            "{}",
+            json!({
+                "event": "alt_provisioner_paused",
+                "cluster": options.cluster,
+                "mode": options.mode.as_str(),
+                "reason": "provisioning pause is active"
+            })
+        );
+        return Ok(());
+    }
+    if options.mode == RunMode::DryRun {
+        emit_dry_run_queue(&client, &options).await?;
+        return Ok(());
+    }
+
+    let rpc_url = options
+        .rpc_url
+        .as_ref()
+        .ok_or("SOLANA_RPC_URL or --rpc-url is required for reconciliation/execution")?;
+    let rpc = RpcClient::new_with_commitment(rpc_url.clone(), CommitmentConfig::confirmed());
+    let observed_genesis_hash = rpc
+        .get_genesis_hash()
+        .map_err(|_| "failed to read genesis hash from configured reusable ALT RPC endpoint")?;
+    validate_rpc_genesis_hash(&options.cluster, observed_genesis_hash).map_err(|error| {
+        format!("refusing reusable ALT reconciliation/mutation against mismatched RPC: {error}")
+    })?;
+    let signer = if options.mode.may_sign() {
+        Some(load_manager_signer()?)
+    } else {
+        None
+    };
+
+    let mut budget = Budget {
+        limit: options.max_lamports,
+        selected: 0,
+    };
+    loop {
+        let batch =
+            run_operation_batch(&client, &rpc, signer.as_ref(), &options, &mut budget).await?;
+        if !should_continue_worker(options.watch, batch) {
+            break;
+        }
+        if batch.processed == 0 {
+            tokio::time::sleep(Duration::from_millis(options.rate_limit_ms.max(250))).await;
+        }
+    }
+    Ok(())
+}
+
+async fn run_operation_batch(
+    client: &NeonSqlClient,
+    rpc: &RpcClient,
+    signer: Option<&Keypair>,
+    options: &Options,
+    budget: &mut Budget,
+) -> Result<OperationBatchResult, Box<dyn Error>> {
+    let mut processed = 0;
+    if options.mode == RunMode::Execute && budget.exhausted() {
+        println!(
+            "{}",
+            json!({
+                "event": "alt_provisioner_batch_budget_exhausted",
+                "cluster": options.cluster,
+                "budgetLimitLamports": budget.limit.to_string(),
+                "selectedBudgetLamports": budget.selected.to_string(),
+                "attemptConsumed": false,
+                "transactionsSent": false,
+                "workerExitsSuccessfully": true,
+            })
+        );
+        return Ok(OperationBatchResult {
+            processed,
+            budget_exhausted: true,
+        });
+    }
+    if options.mode == RunMode::Execute {
+        processed += usize::from(plan_next_provisioning_request(client, rpc, options).await?);
+    }
+    for index in 0..options.max_operations {
+        let lease_expires_at =
+            Utc::now() + chrono::Duration::seconds(i64::try_from(options.lease_seconds)?);
+        let Some(leased) = client
+            .lease_next_lookup_table_operation(
+                &options.cluster,
+                &options.worker_id,
+                lease_expires_at,
+                options.mode == RunMode::ReconcileOnly,
+            )
+            .await?
+        else {
+            break;
+        };
+        let failure_snapshot = leased.clone();
+        match process_leased_operation(client, rpc, signer, options, budget, leased).await {
+            Ok(LeasedOperationOutcome::Processed) => {}
+            Ok(LeasedOperationOutcome::BudgetExhausted(exhausted)) => {
+                let lease = operation_lease(&failure_snapshot)?;
+                let detail = exhausted.to_string();
+                let recorded = client
+                    .defer_unsigned_lookup_table_operation_without_attempt(
+                        failure_snapshot.operation.id,
+                        &lease,
+                        Utc::now() + chrono::Duration::seconds(DEFAULT_RETRY_SECONDS),
+                        "batch_budget_exhausted",
+                        &detail,
+                    )
+                    .await?;
+                processed += 1;
+                println!(
+                    "{}",
+                    json!({
+                        "event": "alt_provisioner_batch_budget_exhausted",
+                        "cluster": options.cluster,
+                        "operationId": recorded.id,
+                        "operationKind": recorded.operation_kind.as_str(),
+                        "operationState": recorded.operation_state.as_str(),
+                        "attemptCount": recorded.attempt_count,
+                        "budgetLimitLamports": exhausted.limit.to_string(),
+                        "selectedBudgetLamports": exhausted.current.to_string(),
+                        "requestedBudgetLamports": exhausted.requested.to_string(),
+                        "retryAt": recorded.next_attempt_at,
+                        "attemptConsumed": false,
+                        "transactionsSent": false,
+                        "workerExitsSuccessfully": true,
+                    })
+                );
+                return Ok(OperationBatchResult {
+                    processed,
+                    budget_exhausted: true,
+                });
+            }
+            Err(error) => {
+                let detail = safe_error(&error.to_string());
+                let lease = operation_lease(&failure_snapshot)?;
+                let retry_at = Utc::now() + chrono::Duration::seconds(DEFAULT_RETRY_SECONDS);
+                let recorded = client
+                    .record_lookup_table_operation_attempt_failure(
+                        failure_snapshot.operation.id,
+                        &lease,
+                        retry_at,
+                        options.max_attempts,
+                        "operation_attempt_failed",
+                        &detail,
+                    )
+                    .await?;
+                println!(
+                    "{}",
+                    json!({
+                        "event": "alt_provisioner_attempt_failure",
+                        "cluster": options.cluster,
+                        "operationId": recorded.id,
+                        "operationKind": recorded.operation_kind.as_str(),
+                        "operationState": recorded.operation_state.as_str(),
+                        "attemptCount": recorded.attempt_count,
+                        "maxAttempts": options.max_attempts,
+                        "errorCode": recorded.error_code,
+                        "errorDetail": detail,
+                        "retryAt": recorded.next_attempt_at,
+                        "signedIdentityPersisted": recorded.transaction_signature.is_some(),
+                        "sendState": if recorded.transaction_signature.is_some() {
+                            "must_reconcile"
+                        } else {
+                            "not_signed"
+                        },
+                    })
+                );
+            }
+        }
+        processed += 1;
+        if index + 1 < options.max_operations && options.rate_limit_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(options.rate_limit_ms)).await;
+        }
+    }
+    Ok(OperationBatchResult {
+        processed,
+        budget_exhausted: false,
+    })
+}
+
+async fn plan_next_provisioning_request(
+    client: &NeonSqlClient,
+    rpc: &RpcClient,
+    options: &Options,
+) -> Result<bool, Box<dyn Error>> {
+    let lease_expires_at =
+        Utc::now() + chrono::Duration::seconds(i64::try_from(options.lease_seconds)?);
+    let Some(request) = client
+        .lease_next_lookup_table_provisioning_request(
+            &options.cluster,
+            &options.worker_id,
+            lease_expires_at,
+        )
+        .await?
+    else {
+        return Ok(false);
+    };
+    let lease = provisioning_request_lease(&request)?;
+    let recent_slot = rpc.get_slot_with_commitment(CommitmentConfig::finalized())?;
+    let families = client
+        .active_lookup_table_families(&options.cluster)
+        .await?;
+    let vault_family = families
+        .iter()
+        .find(|family| family.kind == LookupTableFamilyKind::VaultShards)
+        .ok_or("cluster has no active vault-shards ALT family")?;
+    let shared_family = families
+        .iter()
+        .find(|family| family.kind == LookupTableFamilyKind::SharedMarket)
+        .ok_or("cluster has no active shared-market ALT family")?;
+    let plan = client
+        .plan_lookup_table_provisioning_request(
+            &options.cluster,
+            request.id,
+            &lease,
+            LookupTableProvisioningPlanPolicy {
+                vault_policy: PackedShardPolicy {
+                    hard_capacity: u16::try_from(vault_family.hard_capacity)?,
+                    largest_atomic_expansion: u16::try_from(vault_family.largest_atomic_expansion)?,
+                    safety_margin: u16::try_from(vault_family.safety_margin)?,
+                    per_vault_growth_reservation: options.vault_growth_reservation,
+                    max_vault_cohort: options.max_vault_cohort,
+                },
+                shared_shard_capacity: u16::try_from(shared_family.allocation_high_water)?,
+                max_extension_addresses: options.address_chunk,
+                operation_context: json!({
+                    "planner": PLANNER_VERSION,
+                    "recent_slot": recent_slot,
+                    "request_id": request.id,
+                    "requirements_fingerprint": request.requirements_fingerprint,
+                }),
+                estimated_fee_lamports: None,
+                estimated_rent_lamports: None,
+            },
+        )
+        .await;
+    match plan {
+        Ok(plan) => {
+            let generation_activated = if shared_family.active_generation
+                != Some(plan.shared_target_generation)
+                && plan.shared_operations.is_empty()
+                && shared_generation_is_ready(
+                    client,
+                    shared_family.id,
+                    plan.shared_target_generation,
+                )
+                .await?
+            {
+                client
+                    .activate_lookup_table_family_generation(
+                        shared_family.id,
+                        plan.shared_target_generation,
+                        Utc::now() + chrono::Duration::hours(24),
+                    )
+                    .await?;
+                true
+            } else {
+                false
+            };
+            let (vault_operation_count, binding_activated) = match &plan.vault_allocation {
+                AtomicVaultAllocationResult::NotRequired
+                | AtomicVaultAllocationResult::Existing { .. } => (0, false),
+                AtomicVaultAllocationResult::BindingReserved { operations, .. }
+                    if operations.is_empty() =>
+                {
+                    let AtomicVaultAllocationResult::BindingReserved { binding, .. } =
+                        &plan.vault_allocation
+                    else {
+                        unreachable!()
+                    };
+                    (
+                        0,
+                        activate_binding_if_ready(client, binding, recent_slot).await?,
+                    )
+                }
+                AtomicVaultAllocationResult::BindingReserved { operations, .. }
+                | AtomicVaultAllocationResult::CreateQueued { operations, .. } => {
+                    (operations.len(), false)
+                }
+            };
+            println!(
+                "{}",
+                json!({
+                    "event": "alt_provisioner_request",
+                    "cluster": options.cluster,
+                    "mode": options.mode.as_str(),
+                    "requestId": request.id,
+                    "vaultId": request.vault_id.as_i64(),
+                    "status": plan.request.request_status.as_str(),
+                    "sharedTargetGeneration": plan.shared_target_generation,
+                    "sharedOperationCount": plan.shared_operations.len(),
+                    "vaultOperationCount": vault_operation_count,
+                    "bindingActivated": binding_activated,
+                    "generationActivated": generation_activated,
+                    "transactionsSent": false,
+                })
+            );
+        }
+        Err(error) => {
+            let detail = safe_error(&error.to_string());
+            client
+                .advance_lookup_table_provisioning_request(
+                    request.id,
+                    &lease,
+                    LookupTableProvisioningRequestStatus::Failed,
+                    Some(Utc::now() + chrono::Duration::seconds(DEFAULT_RETRY_SECONDS)),
+                    Some("planning_failed"),
+                    Some(&detail),
+                )
+                .await?;
+            println!(
+                "{}",
+                json!({
+                    "event": "alt_provisioner_request",
+                    "cluster": options.cluster,
+                    "mode": options.mode.as_str(),
+                    "requestId": request.id,
+                    "vaultId": request.vault_id.as_i64(),
+                    "status": "failed",
+                    "errorCode": "planning_failed",
+                    "transactionsSent": false,
+                })
+            );
+        }
+    }
+    Ok(true)
+}
+
+async fn activate_binding_if_ready(
+    client: &NeonSqlClient,
+    binding: &LookupTableVaultBindingRecord,
+    observed_slot: u64,
+) -> Result<bool, Box<dyn Error>> {
+    let table = client
+        .reusable_lookup_table(binding.route_lookup_table_id)
+        .await?
+        .ok_or("binding references a missing reusable lookup table")?;
+    if table.desired_state != LookupTableLifecycle::Active
+        || table.usable_address_count != table.address_count
+        || table.last_verified_slot.is_none()
+    {
+        return Ok(false);
+    }
+    let manifest = client
+        .lookup_table_manifest(binding.manifest_id)
+        .await?
+        .ok_or("binding references a missing sealed manifest")?;
+    if manifest.sealed_at.is_none() {
+        return Err("binding manifest is not sealed".into());
+    }
+    let membership = client
+        .lookup_table_membership(table.id)
+        .await?
+        .into_iter()
+        .map(|row| row.address)
+        .collect::<BTreeSet<_>>();
+    let required = manifest
+        .addresses
+        .iter()
+        .map(|row| row.address.clone())
+        .collect::<BTreeSet<_>>();
+    if !required.is_subset(&membership) {
+        return Ok(false);
+    }
+    client
+        .flip_lookup_table_binding_head(
+            binding.id,
+            i64::try_from(observed_slot)?,
+            Utc::now() + chrono::Duration::hours(24),
+        )
+        .await?;
+    Ok(true)
+}
+
+async fn shared_generation_is_ready(
+    client: &NeonSqlClient,
+    family_id: i64,
+    generation: i32,
+) -> Result<bool, Box<dyn Error>> {
+    let ready = loyal_yield_orchestrator::sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT count(*) > 0
+           AND bool_and(desired_state = 'active'
+                        AND usable_address_count = address_count
+                        AND last_verified_slot IS NOT NULL)
+           AND NOT EXISTS (
+                SELECT 1 FROM loyal_yield.lookup_table_operations operation
+                WHERE operation.family_id = $1
+                  AND operation.target_generation = $2
+                  AND operation.operation_state NOT IN ('complete', 'permanent_failure', 'cancelled')
+           )
+        FROM loyal_yield.route_lookup_tables
+        WHERE family_id = $1 AND generation = $2
+        "#,
+    )
+    .bind(family_id)
+    .bind(generation)
+    .fetch_one(client.pool())
+    .await?;
+    Ok(ready)
+}
+
+fn provisioning_request_lease(
+    request: &LookupTableProvisioningRequestRecord,
+) -> Result<LookupTableOperationLease, Box<dyn Error>> {
+    LookupTableOperationLease::new(
+        request
+            .lease_owner
+            .clone()
+            .ok_or("leased provisioning request has no owner")?,
+        request.fencing_token,
+        request
+            .lease_expires_at
+            .ok_or("leased provisioning request has no expiry")?,
+    )
+    .map_err(Into::into)
+}
+
+async fn process_leased_operation(
+    client: &NeonSqlClient,
+    rpc: &RpcClient,
+    signer: Option<&Keypair>,
+    options: &Options,
+    budget: &mut Budget,
+    mut leased: LeasedLookupTableOperation,
+) -> Result<LeasedOperationOutcome, Box<dyn Error>> {
+    let lease = operation_lease(&leased)?;
+    let family = client
+        .lookup_table_family_by_id(leased.operation.family_id)
+        .await?
+        .ok_or_else(|| {
+            format!(
+                "operation {} belongs to missing family {}",
+                leased.operation.id, leased.operation.family_id
+            )
+        })?;
+    if family.cluster != options.cluster {
+        return Err(format!(
+            "operation {} family cluster {} does not match worker cluster {}",
+            leased.operation.id, family.cluster, options.cluster
+        )
+        .into());
+    }
+
+    let persisted_membership = match leased.operation.route_lookup_table_id {
+        Some(table_id) => client.lookup_table_membership(table_id).await?,
+        None => Vec::new(),
+    };
+    let chain = load_chain_table(rpc, leased.physical_table.as_ref())?;
+    if requires_chain_first_reconciliation(
+        has_unreconciled_persisted_signature(&leased),
+        chain_effect_is_possible(&leased, &chain),
+    ) {
+        if reconcile_existing_operation(
+            client,
+            rpc,
+            options,
+            &lease,
+            &leased,
+            &persisted_membership,
+            &chain,
+        )
+        .await?
+        {
+            return Ok(LeasedOperationOutcome::Processed);
+        }
+    }
+
+    if options.mode == RunMode::ReconcileOnly {
+        emit_operation_report(
+            options,
+            &leased,
+            budget.selected,
+            None,
+            None,
+            "not_run",
+            "no_known_chain_effect",
+        );
+        return Ok(LeasedOperationOutcome::Processed);
+    }
+    match family_operation_gate(family.desired_state, leased.operation.operation_kind) {
+        FamilyOperationGate::AllowMutation => {}
+        FamilyOperationGate::ReadOnlyVerification => {
+            return Err("read-only Verify operation escaped mandatory chain reconciliation".into())
+        }
+        FamilyOperationGate::Defer { code, detail } => {
+            let recorded = client
+                .defer_unsigned_lookup_table_operation_without_attempt(
+                    leased.operation.id,
+                    &lease,
+                    Utc::now() + chrono::Duration::seconds(DEFAULT_RETRY_SECONDS),
+                    code,
+                    detail,
+                )
+                .await?;
+            println!(
+                "{}",
+                json!({
+                    "event": "alt_provisioner_family_operation_deferred",
+                    "cluster": options.cluster,
+                    "familyId": family.id,
+                    "familyState": family.desired_state.as_str(),
+                    "operationId": recorded.id,
+                    "operationKind": recorded.operation_kind.as_str(),
+                    "operationState": recorded.operation_state.as_str(),
+                    "attemptCount": recorded.attempt_count,
+                    "errorCode": code,
+                    "retryAt": recorded.next_attempt_at,
+                    "attemptConsumed": false,
+                    "transactionsSent": false,
+                })
+            );
+            return Ok(LeasedOperationOutcome::Processed);
+        }
+    }
+    validate_chunk(&leased, options.address_chunk)?;
+    let signer = signer.ok_or("execute mode reached mutation planning without a manager signer")?;
+    validate_manager_boundary(signer, &family, leased.physical_table.as_ref())?;
+    validate_manager_independence_from_control_plane(client, signer.pubkey()).await?;
+    prepare_cleanup_lifecycle(client, rpc, &mut leased).await?;
+    validate_cleanup_mutation_at_signing(client, options, &leased).await?;
+
+    if matches!(
+        leased.operation.operation_kind,
+        LookupTableOperationKind::Create | LookupTableOperationKind::Rollover
+    ) && leased.physical_table.is_some()
+        && chain.account.is_none()
+        && leased.operation.transaction_signature.is_none()
+    {
+        let reserved_recent_slot = create_recent_slot(&leased.operation.operation_context)?;
+        let finalized_slot = rpc.get_slot_with_commitment(CommitmentConfig::finalized())?;
+        if create_recent_slot_has_expired(reserved_recent_slot, finalized_slot) {
+            leased = client
+                .refresh_leased_lookup_table_create_reservation(
+                    leased.operation.id,
+                    &lease,
+                    finalized_slot,
+                )
+                .await?;
+            println!(
+                "{}",
+                json!({
+                    "event": "alt_create_reservation_refreshed",
+                    "cluster": options.cluster,
+                    "operationId": leased.operation.id,
+                    "operationKind": leased.operation.operation_kind.as_str(),
+                    "table": leased.physical_table.as_ref().map(|table| &table.table_address),
+                    "recentSlot": finalized_slot,
+                    "transactionsSent": false,
+                })
+            );
+        }
+    }
+
+    let chain = load_chain_table(rpc, leased.physical_table.as_ref())?;
+    let built =
+        build_signed_mutation(rpc, signer, &family, &leased, &persisted_membership, &chain)?;
+    let selected = built
+        .expected_fee_lamports
+        .checked_add(built.expected_rent_lamports)
+        .ok_or("operation spend estimate overflow")?;
+    if let Err(exhausted) = budget.reserve(selected) {
+        return Ok(LeasedOperationOutcome::BudgetExhausted(exhausted));
+    }
+
+    let mut gate = SubmissionGate::built();
+    let simulation = rpc.simulate_transaction(&built.transaction)?;
+    if let Some(error) = simulation.value.err.as_ref() {
+        return Err(format!(
+            "ALT operation {} simulation failed: {error:?}; logs={}",
+            leased.operation.id,
+            simulation.value.logs.unwrap_or_default().join(" | ")
+        )
+        .into());
+    }
+    gate.simulated()?;
+
+    let signature = built
+        .transaction
+        .signatures
+        .first()
+        .ok_or("signed ALT transaction has no signature")?
+        .to_string();
+    let message_hash = hash_bytes(&bincode::serialize(&built.transaction.message)?);
+    client
+        .persist_signed_lookup_table_transaction(
+            leased.operation.id,
+            &lease,
+            SignedLookupTableTransaction {
+                transaction_signature: signature.clone(),
+                message_hash,
+                recent_blockhash: built.recent_blockhash.to_string(),
+                last_valid_block_height: i64::try_from(built.last_valid_block_height)?,
+                estimated_fee_lamports: i64::try_from(built.expected_fee_lamports)?,
+                estimated_rent_lamports: i64::try_from(built.expected_rent_lamports)?,
+                estimated_reclaimed_rent_lamports: i64::try_from(built.reclaimed_rent_lamports)?,
+            },
+        )
+        .await?;
+    gate.persisted()?;
+
+    gate.broadcast()?;
+    let send_result = rpc.send_transaction(&built.transaction);
+    let observed_slot =
+        i64::try_from(rpc.get_slot_with_commitment(CommitmentConfig::confirmed())?)?;
+    match send_result {
+        Ok(returned_signature) => {
+            if returned_signature.to_string() != signature {
+                return Err(
+                    "RPC returned a signature different from the durably persisted signature"
+                        .into(),
+                );
+            }
+            client
+                .advance_lookup_table_operation(
+                    leased.operation.id,
+                    &lease,
+                    LookupTableOperationAdvance {
+                        expected_state: LookupTableOperationStatus::Signed,
+                        next_state: LookupTableOperationStatus::Submitted,
+                        observed_slot: Some(observed_slot),
+                        error_code: None,
+                        error_detail: None,
+                        // The signed estimates are already durable. They become
+                        // actual accounting only after finalized signature
+                        // evidence and an exact finalized chain effect.
+                        actual_fee_lamports: None,
+                        actual_rent_lamports: None,
+                        reclaimed_rent_lamports: None,
+                    },
+                )
+                .await?;
+            emit_operation_report(
+                options,
+                &leased,
+                budget.selected,
+                Some(built.expected_fee_lamports),
+                Some(built.expected_rent_lamports),
+                "succeeded",
+                &format!("submitted_packet_bytes_{}", built.packet_size),
+            );
+        }
+        Err(error) => {
+            // The RPC result is ambiguous. The signed identity is already
+            // durable, so the next lease must inspect that signature and the
+            // physical table instead of blindly constructing another send.
+            let detail = safe_error(&error.to_string());
+            client
+                .advance_lookup_table_operation(
+                    leased.operation.id,
+                    &lease,
+                    LookupTableOperationAdvance {
+                        expected_state: LookupTableOperationStatus::Signed,
+                        next_state: LookupTableOperationStatus::NeedsReconcile,
+                        observed_slot: Some(observed_slot),
+                        error_code: Some("ambiguous_send".to_owned()),
+                        error_detail: Some(detail),
+                        actual_fee_lamports: None,
+                        actual_rent_lamports: None,
+                        reclaimed_rent_lamports: None,
+                    },
+                )
+                .await?;
+            emit_operation_report(
+                options,
+                &leased,
+                budget.selected,
+                Some(built.expected_fee_lamports),
+                Some(built.expected_rent_lamports),
+                "succeeded",
+                "ambiguous_send_needs_reconcile",
+            );
+        }
+    }
+    Ok(LeasedOperationOutcome::Processed)
+}
+
+async fn reconcile_existing_operation(
+    client: &NeonSqlClient,
+    rpc: &RpcClient,
+    options: &Options,
+    lease: &LookupTableOperationLease,
+    leased: &LeasedLookupTableOperation,
+    persisted_membership: &[LookupTableMembershipAddress],
+    chain: &ChainTable,
+) -> Result<bool, Box<dyn Error>> {
+    let signature_state = load_signature_state(rpc, leased)?;
+    let current_height = rpc.get_block_height()?;
+    let finalized_slot = rpc.get_slot_with_commitment(CommitmentConfig::finalized())?;
+    let chain_state = classify_chain_state(leased, persisted_membership, chain)?;
+    let usable_after_slot_reached = chain
+        .last_extended_slot
+        .is_none_or(|last_extended_slot| finalized_slot > last_extended_slot);
+    let observation = LookupTableReconciliationObservation {
+        operation_kind: leased.operation.operation_kind,
+        persisted_status: leased.operation.operation_state,
+        signature_state,
+        chain_state,
+        chain_observed_finalized: true,
+        blockhash_expired: leased
+            .operation
+            .last_valid_block_height
+            .is_some_and(|height| current_height > height as u64),
+        usable_after_slot_reached,
+    };
+    let decision = reconcile_lookup_table_operation(&observation);
+    let result = match decision {
+        LookupTableReconciliationDecision::WaitForSignature => "wait_for_signature",
+        LookupTableReconciliationDecision::WaitForFinalization => "wait_for_finalization",
+        LookupTableReconciliationDecision::WaitForUsableSlot => "wait_for_usable_slot",
+        LookupTableReconciliationDecision::AdvanceTo(next) => {
+            if next != LookupTableOperationStatus::Reconciled {
+                return Err(format!("unsupported reconciliation target {next}").into());
+            }
+            let accounting = if leased.operation.operation_kind == LookupTableOperationKind::Verify
+            {
+                None
+            } else {
+                if signature_state != LookupTableSignatureState::Finalized {
+                    return Err(
+                        "mutation reconciliation cannot promote accounting without a finalized persisted signature"
+                            .into(),
+                    );
+                }
+                Some(persisted_lookup_table_success_accounting(
+                    &leased.operation,
+                )?)
+            };
+            reconcile_physical_membership(
+                client,
+                leased,
+                persisted_membership,
+                chain,
+                finalized_slot,
+            )
+            .await?;
+            let mut current = leased.operation.operation_state;
+            for next_state in reconciliation_transition_path(current)? {
+                client
+                    .advance_lookup_table_operation(
+                        leased.operation.id,
+                        lease,
+                        LookupTableOperationAdvance {
+                            expected_state: current,
+                            next_state,
+                            observed_slot: Some(i64::try_from(finalized_slot)?),
+                            error_code: None,
+                            error_detail: None,
+                            actual_fee_lamports: accounting
+                                .as_ref()
+                                .map(|value| value.actual_fee_lamports),
+                            actual_rent_lamports: accounting
+                                .as_ref()
+                                .map(|value| value.actual_rent_lamports),
+                            reclaimed_rent_lamports: accounting
+                                .as_ref()
+                                .map(|value| value.reclaimed_rent_lamports),
+                        },
+                    )
+                    .await?;
+                current = next_state;
+            }
+            if current != LookupTableOperationStatus::Reconciled {
+                return Err("reconciliation path did not reach reconciled".into());
+            }
+            client
+                .advance_lookup_table_operation(
+                    leased.operation.id,
+                    lease,
+                    LookupTableOperationAdvance {
+                        expected_state: current,
+                        next_state: LookupTableOperationStatus::Complete,
+                        observed_slot: Some(i64::try_from(finalized_slot)?),
+                        error_code: None,
+                        error_detail: None,
+                        actual_fee_lamports: accounting
+                            .as_ref()
+                            .map(|value| value.actual_fee_lamports),
+                        actual_rent_lamports: accounting
+                            .as_ref()
+                            .map(|value| value.actual_rent_lamports),
+                        reclaimed_rent_lamports: accounting
+                            .as_ref()
+                            .map(|value| value.reclaimed_rent_lamports),
+                    },
+                )
+                .await?;
+            "reconciled_complete"
+        }
+        LookupTableReconciliationDecision::MarkCompleteFromChain => {
+            let accounting = if leased.operation.operation_kind == LookupTableOperationKind::Verify
+            {
+                None
+            } else {
+                if signature_state != LookupTableSignatureState::Finalized {
+                    return Err(
+                        "mutation reconciliation cannot complete accounting without a finalized persisted signature"
+                            .into(),
+                    );
+                }
+                Some(persisted_lookup_table_success_accounting(
+                    &leased.operation,
+                )?)
+            };
+            client
+                .advance_lookup_table_operation(
+                    leased.operation.id,
+                    lease,
+                    LookupTableOperationAdvance {
+                        expected_state: leased.operation.operation_state,
+                        next_state: LookupTableOperationStatus::Complete,
+                        observed_slot: Some(i64::try_from(finalized_slot)?),
+                        error_code: None,
+                        error_detail: None,
+                        actual_fee_lamports: accounting
+                            .as_ref()
+                            .map(|value| value.actual_fee_lamports),
+                        actual_rent_lamports: accounting
+                            .as_ref()
+                            .map(|value| value.actual_rent_lamports),
+                        reclaimed_rent_lamports: accounting
+                            .as_ref()
+                            .map(|value| value.reclaimed_rent_lamports),
+                    },
+                )
+                .await?;
+            "complete_from_chain"
+        }
+        LookupTableReconciliationDecision::RetryWithFreshTransaction => {
+            client
+                .retry_lookup_table_operation(
+                    leased.operation.id,
+                    lease,
+                    leased.operation.operation_state,
+                    Utc::now() + chrono::Duration::seconds(DEFAULT_RETRY_SECONDS),
+                    EXPIRED_TRANSACTION_RETRY_CODE,
+                    "persisted signature was absent after blockhash expiry and physical state was unchanged",
+                )
+                .await?;
+            "retry_with_fresh_transaction"
+        }
+        LookupTableReconciliationDecision::NeedsManualReconcile { reason } => {
+            client
+                .advance_lookup_table_operation(
+                    leased.operation.id,
+                    lease,
+                    LookupTableOperationAdvance {
+                        expected_state: leased.operation.operation_state,
+                        next_state: LookupTableOperationStatus::NeedsReconcile,
+                        observed_slot: Some(i64::try_from(finalized_slot)?),
+                        error_code: Some("chain_drift".to_owned()),
+                        error_detail: Some(reason.to_owned()),
+                        actual_fee_lamports: None,
+                        actual_rent_lamports: None,
+                        reclaimed_rent_lamports: None,
+                    },
+                )
+                .await?;
+            "manual_reconcile_required"
+        }
+        LookupTableReconciliationDecision::PermanentFailure { reason } => {
+            client
+                .advance_lookup_table_operation(
+                    leased.operation.id,
+                    lease,
+                    LookupTableOperationAdvance {
+                        expected_state: leased.operation.operation_state,
+                        next_state: LookupTableOperationStatus::PermanentFailure,
+                        observed_slot: Some(i64::try_from(finalized_slot)?),
+                        error_code: Some("transaction_failed".to_owned()),
+                        error_detail: Some(reason.to_owned()),
+                        actual_fee_lamports: None,
+                        actual_rent_lamports: None,
+                        reclaimed_rent_lamports: None,
+                    },
+                )
+                .await?;
+            "permanent_failure"
+        }
+    };
+    emit_operation_report(options, leased, 0, None, None, "not_run", result);
+    // Every reconciliation decision ends this lease's work. In particular a
+    // retry decision releases the lease into retry_wait; the stale lease must
+    // never be reused to sign immediately in this process.
+    Ok(true)
+}
+
+async fn reconcile_physical_membership(
+    client: &NeonSqlClient,
+    leased: &LeasedLookupTableOperation,
+    persisted: &[LookupTableMembershipAddress],
+    chain: &ChainTable,
+    observed_slot: u64,
+) -> Result<(), Box<dyn Error>> {
+    let Some(table) = leased.physical_table.as_ref() else {
+        if leased.operation.operation_kind == LookupTableOperationKind::Close {
+            return Ok(());
+        }
+        return Err("reconciled lookup-table mutation has no physical table record".into());
+    };
+    if matches!(
+        leased.operation.operation_kind,
+        LookupTableOperationKind::Create
+            | LookupTableOperationKind::Extend
+            | LookupTableOperationKind::Rollover
+            | LookupTableOperationKind::Verify
+    ) {
+        let start = usize::from(chain.last_extended_start_index.unwrap_or_default());
+        let added_slot = chain.last_extended_slot.unwrap_or(observed_slot);
+        let now = Utc::now();
+        let addresses = chain
+            .addresses
+            .iter()
+            .enumerate()
+            .map(|(ordinal, address)| {
+                if let Some(existing) = persisted
+                    .get(ordinal)
+                    .filter(|row| row.address == address.to_string())
+                {
+                    let mut existing = existing.clone();
+                    existing.last_verified_slot = i64::try_from(observed_slot).unwrap_or(i64::MAX);
+                    existing.last_verified_at = now;
+                    existing
+                } else {
+                    let slot = if ordinal >= start {
+                        added_slot
+                    } else {
+                        observed_slot
+                    };
+                    LookupTableMembershipAddress {
+                        address: address.to_string(),
+                        ordinal: ordinal as i32,
+                        added_operation_id: Some(leased.operation.id),
+                        added_slot: i64::try_from(slot).unwrap_or(i64::MAX),
+                        usable_after_slot: i64::try_from(slot.saturating_add(1))
+                            .unwrap_or(i64::MAX),
+                        last_verified_slot: i64::try_from(observed_slot).unwrap_or(i64::MAX),
+                        last_verified_at: now,
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+        let updated = client
+            .replace_confirmed_lookup_table_membership(
+                table.id,
+                table.mutation_epoch,
+                table.mutation_epoch + 1,
+                i64::try_from(observed_slot)?,
+                addresses,
+            )
+            .await?;
+        let next_state = match updated.desired_state {
+            LookupTableLifecycle::Preparing | LookupTableLifecycle::Warming => {
+                LookupTableLifecycle::Active
+            }
+            state => state,
+        };
+        let accepting_allocations = updated.accepting_allocations
+            && updated.allocation_kind != LookupTableAllocationKind::DedicatedVault;
+        client
+            .mark_reusable_lookup_table_verification(
+                updated.id,
+                updated.mutation_epoch,
+                updated.desired_state,
+                next_state,
+                accepting_allocations,
+                i32::try_from(chain.addresses.len())?,
+                i64::try_from(observed_slot)?,
+            )
+            .await?;
+    } else if leased.operation.operation_kind == LookupTableOperationKind::Deactivate {
+        client
+            .mark_reusable_lookup_table_verification(
+                table.id,
+                table.mutation_epoch,
+                table.desired_state,
+                LookupTableLifecycle::Deactivated,
+                false,
+                0,
+                i64::try_from(observed_slot)?,
+            )
+            .await?;
+    } else if leased.operation.operation_kind == LookupTableOperationKind::Close {
+        client
+            .mark_reusable_lookup_table_verification(
+                table.id,
+                table.mutation_epoch,
+                table.desired_state,
+                LookupTableLifecycle::Closed,
+                false,
+                0,
+                i64::try_from(observed_slot)?,
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+fn build_signed_mutation(
+    rpc: &RpcClient,
+    signer: &Keypair,
+    _family: &LookupTableFamilyRecord,
+    leased: &LeasedLookupTableOperation,
+    persisted: &[LookupTableMembershipAddress],
+    chain: &ChainTable,
+) -> Result<BuiltMutation, Box<dyn Error>> {
+    let _mutation_path = provisioner_mutation_path(leased.operation.operation_kind)
+        .ok_or("verify operations reconcile chain state and never build a mutation")?;
+    let (recent_blockhash, last_valid_block_height) =
+        rpc.get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())?;
+    let authority = signer.pubkey();
+    let mut reclaimed_rent_lamports = 0;
+    let table_address = leased
+        .physical_table
+        .as_ref()
+        .map(|table| Pubkey::from_str(&table.table_address))
+        .transpose()?
+        .unwrap_or_else(Pubkey::default);
+    if matches!(
+        leased.operation.operation_kind,
+        LookupTableOperationKind::Deactivate | LookupTableOperationKind::Close
+    ) {
+        validate_cleanup_chain_identity(leased, persisted, chain)?;
+    }
+    let instructions = match leased.operation.operation_kind {
+        LookupTableOperationKind::Create | LookupTableOperationKind::Rollover => {
+            let recent_slot = create_recent_slot(&leased.operation.operation_context)?;
+            let (create, derived) =
+                alt_instruction::create_lookup_table(authority, authority, recent_slot);
+            if derived != table_address {
+                return Err(
+                    "durable create address does not match the ALT program derivation".into(),
+                );
+            }
+            let mut instructions = vec![create];
+            if !leased.addresses.is_empty() {
+                let addresses = parse_addresses(&leased.addresses)?;
+                instructions.push(alt_instruction::extend_lookup_table(
+                    derived,
+                    authority,
+                    Some(authority),
+                    addresses,
+                ));
+            }
+            instructions
+        }
+        LookupTableOperationKind::Extend => {
+            validate_append_only(persisted, chain, &leased.addresses)?;
+            vec![alt_instruction::extend_lookup_table(
+                table_address,
+                authority,
+                Some(authority),
+                parse_addresses(&leased.addresses)?,
+            )]
+        }
+        LookupTableOperationKind::Deactivate => vec![alt_instruction::deactivate_lookup_table(
+            table_address,
+            authority,
+        )],
+        LookupTableOperationKind::Close => {
+            let account = chain
+                .account
+                .as_ref()
+                .ok_or("cannot close a missing lookup table")?;
+            let deactivation_slot = chain
+                .deactivation_slot
+                .ok_or("cannot close lookup table before deactivation")?;
+            let current_slot = rpc.get_slot_with_commitment(CommitmentConfig::finalized())?;
+            if deactivation_slot == u64::MAX
+                || current_slot <= estimate_last_valid_slot(deactivation_slot)
+            {
+                return Err("lookup-table close cooldown has not elapsed".into());
+            }
+            reclaimed_rent_lamports = account.lamports;
+            let recipient =
+                close_recipient(&leased.operation.operation_context)?.unwrap_or(authority);
+            vec![alt_instruction::close_lookup_table(
+                table_address,
+                authority,
+                recipient,
+            )]
+        }
+        LookupTableOperationKind::Verify => unreachable!("guarded by provisioner_mutation_path"),
+    };
+    let transaction = Transaction::new_signed_with_payer(
+        &instructions,
+        Some(&authority),
+        &[signer],
+        recent_blockhash,
+    );
+    let packet_size = bincode::serialize(&transaction)?.len();
+    if packet_size > PACKET_DATA_SIZE {
+        return Err(format!(
+            "serialized ALT mutation is {packet_size} bytes, above the Solana packet limit {PACKET_DATA_SIZE}"
+        )
+        .into());
+    }
+    let expected_fee_lamports = rpc.get_fee_for_message(&transaction.message)?;
+    let final_address_count = match leased.operation.operation_kind {
+        LookupTableOperationKind::Create | LookupTableOperationKind::Rollover => {
+            leased.addresses.len()
+        }
+        LookupTableOperationKind::Extend => persisted.len() + leased.addresses.len(),
+        _ => chain.addresses.len(),
+    };
+    let desired_rent = if matches!(
+        leased.operation.operation_kind,
+        LookupTableOperationKind::Create
+            | LookupTableOperationKind::Rollover
+            | LookupTableOperationKind::Extend
+    ) {
+        rpc.get_minimum_balance_for_rent_exemption(
+            LOOKUP_TABLE_META_SIZE + final_address_count.saturating_mul(32),
+        )?
+    } else {
+        0
+    };
+    let current_lamports = chain.account.as_ref().map_or(0, |account| account.lamports);
+    Ok(BuiltMutation {
+        transaction,
+        recent_blockhash,
+        last_valid_block_height,
+        expected_fee_lamports,
+        expected_rent_lamports: desired_rent.saturating_sub(current_lamports),
+        reclaimed_rent_lamports,
+        packet_size,
+    })
+}
+
+fn validate_append_only(
+    persisted: &[LookupTableMembershipAddress],
+    chain: &ChainTable,
+    extension: &[String],
+) -> Result<(), Box<dyn Error>> {
+    let persisted_addresses = persisted
+        .iter()
+        .map(|row| Pubkey::from_str(&row.address))
+        .collect::<Result<Vec<_>, _>>()?;
+    if chain.addresses != persisted_addresses {
+        return Err("on-chain ALT does not exactly match the durable ordered prefix".into());
+    }
+    let extension = parse_addresses(extension)?;
+    let existing = chain.addresses.iter().copied().collect::<BTreeSet<_>>();
+    let mut seen = BTreeSet::new();
+    if extension
+        .iter()
+        .any(|address| existing.contains(address) || !seen.insert(*address))
+    {
+        return Err("extend operation is not a genuinely missing, duplicate-free suffix".into());
+    }
+    if chain.addresses.len().saturating_add(extension.len()) > 256 {
+        return Err("extend operation would exceed the ALT hard capacity".into());
+    }
+    Ok(())
+}
+
+fn validate_cleanup_chain_identity(
+    leased: &LeasedLookupTableOperation,
+    persisted: &[LookupTableMembershipAddress],
+    chain: &ChainTable,
+) -> Result<(), Box<dyn Error>> {
+    let table = leased
+        .physical_table
+        .as_ref()
+        .ok_or("cleanup operation has no physical lookup table")?;
+    let account = chain
+        .account
+        .as_ref()
+        .ok_or("cleanup operation lookup table is missing")?;
+    if account.owner != alt_program::id()
+        || chain.authority.map(|authority| authority.to_string()) != Some(table.authority.clone())
+    {
+        return Err("cleanup operation ALT owner or authority drifted".into());
+    }
+    let persisted_pubkeys = persisted
+        .iter()
+        .map(|row| Pubkey::from_str(&row.address))
+        .collect::<Result<Vec<_>, _>>()?;
+    if chain.addresses != persisted_pubkeys {
+        return Err("cleanup operation ALT ordered address prefix drifted".into());
+    }
+    let persisted_strings = persisted
+        .iter()
+        .map(|row| row.address.clone())
+        .collect::<Vec<_>>();
+    if ordered_address_hash(&persisted_strings) != table.address_hash {
+        return Err("cleanup operation durable address hash drifted".into());
+    }
+    Ok(())
+}
+
+fn ordered_address_hash(addresses: &[String]) -> String {
+    let mut hasher = Sha256::new();
+    for address in addresses {
+        hasher.update((address.len() as u64).to_le_bytes());
+        hasher.update(address.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn load_chain_table(
+    rpc: &RpcClient,
+    physical: Option<&loyal_yield_orchestrator::ReusableLookupTableRecord>,
+) -> Result<ChainTable, Box<dyn Error>> {
+    let Some(physical) = physical else {
+        return Ok(ChainTable {
+            account: None,
+            authority: None,
+            addresses: Vec::new(),
+            deactivation_slot: None,
+            last_extended_slot: None,
+            last_extended_start_index: None,
+        });
+    };
+    let address = Pubkey::from_str(&physical.table_address)?;
+    let account = rpc
+        .get_account_with_commitment(&address, CommitmentConfig::finalized())?
+        .value;
+    let Some(account) = account else {
+        return Ok(ChainTable {
+            account: None,
+            authority: None,
+            addresses: Vec::new(),
+            deactivation_slot: None,
+            last_extended_slot: None,
+            last_extended_start_index: None,
+        });
+    };
+    if account.owner != alt_program::id() {
+        return Ok(ChainTable {
+            account: Some(account),
+            authority: None,
+            addresses: Vec::new(),
+            deactivation_slot: None,
+            last_extended_slot: None,
+            last_extended_start_index: None,
+        });
+    }
+    let table = AddressLookupTable::deserialize(&account.data)
+        .map_err(|error| format!("failed to deserialize ALT {address}: {error:?}"))?;
+    let authority = table.meta.authority;
+    let addresses = table.addresses.to_vec();
+    let deactivation_slot = table.meta.deactivation_slot;
+    let last_extended_slot = table.meta.last_extended_slot;
+    let last_extended_start_index = table.meta.last_extended_slot_start_index;
+    Ok(ChainTable {
+        account: Some(account),
+        authority,
+        addresses,
+        deactivation_slot: Some(deactivation_slot),
+        last_extended_slot: Some(last_extended_slot),
+        last_extended_start_index: Some(last_extended_start_index),
+    })
+}
+
+fn classify_chain_state(
+    leased: &LeasedLookupTableOperation,
+    persisted: &[LookupTableMembershipAddress],
+    chain: &ChainTable,
+) -> Result<LookupTableChainState, Box<dyn Error>> {
+    let kind = leased.operation.operation_kind;
+    if kind == LookupTableOperationKind::Close {
+        return Ok(if chain.account.is_none() {
+            LookupTableChainState::ExactMatch
+        } else {
+            LookupTableChainState::Missing
+        });
+    }
+    let Some(account) = chain.account.as_ref() else {
+        return Ok(LookupTableChainState::Missing);
+    };
+    if account.owner != alt_program::id() {
+        return Ok(LookupTableChainState::AuthorityDrift);
+    }
+    let physical = leased
+        .physical_table
+        .as_ref()
+        .ok_or("chain account exists without physical table metadata")?;
+    if chain.authority.map(|key| key.to_string()) != Some(physical.authority.clone()) {
+        return Ok(LookupTableChainState::AuthorityDrift);
+    }
+    let active = chain.deactivation_slot == Some(u64::MAX);
+    if matches!(
+        kind,
+        LookupTableOperationKind::Create
+            | LookupTableOperationKind::Extend
+            | LookupTableOperationKind::Rollover
+            | LookupTableOperationKind::Verify
+    ) && !active
+    {
+        return Ok(LookupTableChainState::LifecycleDrift);
+    }
+    if kind == LookupTableOperationKind::Deactivate {
+        return Ok(if active {
+            LookupTableChainState::Missing
+        } else {
+            LookupTableChainState::ExactMatch
+        });
+    }
+    let mut expected = persisted
+        .iter()
+        .map(|row| Pubkey::from_str(&row.address))
+        .collect::<Result<Vec<_>, _>>()?;
+    if matches!(
+        kind,
+        LookupTableOperationKind::Create
+            | LookupTableOperationKind::Extend
+            | LookupTableOperationKind::Rollover
+    ) {
+        expected.extend(parse_addresses(&leased.addresses)?);
+    }
+    if chain.addresses == expected {
+        return Ok(LookupTableChainState::ExactMatch);
+    }
+    let old_prefix = persisted
+        .iter()
+        .map(|row| Pubkey::from_str(&row.address))
+        .collect::<Result<Vec<_>, _>>()?;
+    if chain.addresses == old_prefix {
+        return Ok(LookupTableChainState::Missing);
+    }
+    Ok(LookupTableChainState::PrefixDrift)
+}
+
+fn load_signature_state(
+    rpc: &RpcClient,
+    leased: &LeasedLookupTableOperation,
+) -> Result<LookupTableSignatureState, Box<dyn Error>> {
+    let Some(signature) = leased.operation.transaction_signature.as_deref() else {
+        return Ok(LookupTableSignatureState::Unknown);
+    };
+    let signature = Signature::from_str(signature)?;
+    let status = rpc
+        .get_signature_statuses_with_history(&[signature])?
+        .value
+        .into_iter()
+        .next()
+        .flatten();
+    let Some(status) = status else {
+        return Ok(LookupTableSignatureState::NotFound);
+    };
+    if status.err.is_some() {
+        return Ok(LookupTableSignatureState::Failed);
+    }
+    if status.satisfies_commitment(CommitmentConfig::finalized()) {
+        Ok(LookupTableSignatureState::Finalized)
+    } else if status.satisfies_commitment(CommitmentConfig::confirmed()) {
+        Ok(LookupTableSignatureState::Confirmed)
+    } else {
+        Ok(LookupTableSignatureState::Processed)
+    }
+}
+
+fn chain_effect_is_possible(leased: &LeasedLookupTableOperation, chain: &ChainTable) -> bool {
+    match leased.operation.operation_kind {
+        LookupTableOperationKind::Create | LookupTableOperationKind::Rollover => {
+            chain.account.is_some()
+        }
+        LookupTableOperationKind::Extend => leased
+            .physical_table
+            .as_ref()
+            .is_some_and(|table| chain.addresses.len() > table.address_count as usize),
+        LookupTableOperationKind::Deactivate => chain.deactivation_slot != Some(u64::MAX),
+        LookupTableOperationKind::Close => chain.account.is_none(),
+        LookupTableOperationKind::Verify => true,
+    }
+}
+
+fn requires_chain_first_reconciliation(
+    has_persisted_signature: bool,
+    chain_effect_is_possible: bool,
+) -> bool {
+    has_persisted_signature || chain_effect_is_possible
+}
+
+fn has_unreconciled_persisted_signature(leased: &LeasedLookupTableOperation) -> bool {
+    persisted_signature_requires_chain_reconciliation(
+        leased.operation.transaction_signature.as_deref(),
+        leased.operation.error_code.as_deref(),
+    )
+}
+
+fn persisted_signature_requires_chain_reconciliation(
+    transaction_signature: Option<&str>,
+    error_code: Option<&str>,
+) -> bool {
+    transaction_signature.is_some() && error_code != Some(EXPIRED_TRANSACTION_RETRY_CODE)
+}
+
+fn reconciliation_transition_path(
+    from: LookupTableOperationStatus,
+) -> Result<Vec<LookupTableOperationStatus>, String> {
+    use LookupTableOperationStatus as Status;
+    let path = match from {
+        Status::Leased => vec![Status::NeedsReconcile, Status::Reconciled],
+        Status::Signed => vec![
+            Status::Submitted,
+            Status::Confirmed,
+            Status::Finalized,
+            Status::Reconciled,
+        ],
+        Status::Submitted => vec![Status::Confirmed, Status::Finalized, Status::Reconciled],
+        Status::Confirmed => vec![Status::Finalized, Status::Reconciled],
+        Status::Finalized | Status::NeedsReconcile => vec![Status::Reconciled],
+        Status::Reconciled => Vec::new(),
+        other => {
+            return Err(format!(
+                "operation in {other} cannot advance through finalized reconciliation"
+            ))
+        }
+    };
+    Ok(path)
+}
+
+fn provisioner_mutation_path(kind: LookupTableOperationKind) -> Option<&'static str> {
+    match kind {
+        LookupTableOperationKind::Create | LookupTableOperationKind::Rollover => Some("create"),
+        LookupTableOperationKind::Extend => Some("extend"),
+        LookupTableOperationKind::Deactivate => Some("deactivate"),
+        LookupTableOperationKind::Close => Some("close"),
+        LookupTableOperationKind::Verify => None,
+    }
+}
+
+fn validate_manager_boundary(
+    manager: &Keypair,
+    family: &LookupTableFamilyRecord,
+    physical: Option<&loyal_yield_orchestrator::ReusableLookupTableRecord>,
+) -> Result<(), Box<dyn Error>> {
+    let manager_pubkey = manager.pubkey().to_string();
+    if family.provisioning_authority != manager_pubkey || family.payer != manager_pubkey {
+        return Err("dedicated ALT manager does not match the family's authority and payer".into());
+    }
+    if let Some(table) = physical {
+        if table.authority != manager_pubkey || table.payer != manager_pubkey {
+            return Err(
+                "dedicated ALT manager does not match physical table authority/payer".into(),
+            );
+        }
+    }
+    let configured_route_fee_payers = [
+        YIELD_ROUTER_KEYPAIR_ENV,
+        POLICY_KEYPAIR_ENV,
+        SOLANA_TESTING_PK_ENV,
+    ]
+    .into_iter()
+    .filter_map(|name| {
+        loyal_yield_orchestrator::keypair_from_env(name)
+            .ok()
+            .map(|keypair| (name, keypair.pubkey()))
+    })
+    .collect::<Vec<_>>();
+    validate_manager_independence(manager.pubkey(), &configured_route_fee_payers)?;
+    Ok(())
+}
+
+fn validate_manager_independence(
+    manager: Pubkey,
+    configured_route_fee_payers: &[(&str, Pubkey)],
+) -> Result<(), Box<dyn Error>> {
+    if let Some((name, _)) = configured_route_fee_payers
+        .iter()
+        .find(|(_, route_fee_payer)| *route_fee_payer == manager)
+    {
+        return Err(format!(
+            "YIELD_ALT_MANAGER_KEYPAIR must be independent of configured route fee payer {name}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+async fn validate_manager_independence_from_control_plane(
+    client: &NeonSqlClient,
+    manager: Pubkey,
+) -> Result<(), Box<dyn Error>> {
+    let manager = manager.to_string();
+    let overlaps_route_identity = client
+        .lookup_table_manager_identity_overlaps_control_plane(&manager)
+        .await?;
+    if overlaps_route_identity {
+        return Err(
+            "ALT manager authority/payer overlaps a durable route signer, authority, wallet, or legacy route payer"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+async fn validate_cleanup_mutation_at_signing(
+    client: &NeonSqlClient,
+    options: &Options,
+    leased: &LeasedLookupTableOperation,
+) -> Result<(), Box<dyn Error>> {
+    let kind = leased.operation.operation_kind;
+    if !matches!(
+        kind,
+        LookupTableOperationKind::Deactivate | LookupTableOperationKind::Close
+    ) {
+        return Ok(());
+    }
+    let table = leased
+        .physical_table
+        .as_ref()
+        .ok_or("cleanup operation has no physical lookup table")?;
+    let protection = client
+        .lookup_table_cleanup_protection_for_operation(
+            &options.cluster,
+            &table.table_address,
+            leased.operation.id,
+        )
+        .await?
+        .ok_or("cleanup operation table is not registered in this cluster")?;
+    let expected_authority =
+        context_string(&leased.operation.operation_context, "expectedAuthority")?;
+    let expected_hash = context_string(&leased.operation.operation_context, "expectedAddressHash")?;
+    let expected_epoch = leased
+        .operation
+        .operation_context
+        .get("expectedMutationEpoch")
+        .and_then(Value::as_i64)
+        .ok_or("cleanup operation lacks expectedMutationEpoch")?;
+    if protection.table_id != table.id
+        || protection.expected_authority != expected_authority
+        || table.authority != expected_authority
+        || protection.address_hash != expected_hash
+        || table.address_hash != expected_hash
+        || protection.mutation_epoch != expected_epoch
+        || table.mutation_epoch != expected_epoch
+        || leased.operation.mutation_epoch != expected_epoch
+    {
+        return Err("cleanup operation metadata changed after it was queued".into());
+    }
+    let reasons = &protection.protection_reasons;
+    let allowed = match kind {
+        LookupTableOperationKind::Deactivate => {
+            reasons.is_empty()
+                && matches!(
+                    protection.desired_state,
+                    LookupTableLifecycle::Active
+                        | LookupTableLifecycle::Standby
+                        | LookupTableLifecycle::Retiring
+                )
+        }
+        LookupTableOperationKind::Close => {
+            reasons.is_empty() && protection.desired_state == LookupTableLifecycle::Deactivated
+        }
+        _ => unreachable!(),
+    };
+    if !allowed {
+        return Err(format!(
+            "cleanup action {} became protected before signing: {}",
+            kind,
+            reasons.join(",")
+        )
+        .into());
+    }
+    Ok(())
+}
+
+async fn prepare_cleanup_lifecycle(
+    client: &NeonSqlClient,
+    rpc: &RpcClient,
+    leased: &mut LeasedLookupTableOperation,
+) -> Result<(), Box<dyn Error>> {
+    if leased.operation.operation_kind != LookupTableOperationKind::Deactivate {
+        return Ok(());
+    }
+    let table = leased
+        .physical_table
+        .as_ref()
+        .ok_or("deactivate operation has no physical lookup table")?;
+    let next_state = match table.desired_state {
+        LookupTableLifecycle::Active | LookupTableLifecycle::Standby => {
+            LookupTableLifecycle::Retiring
+        }
+        LookupTableLifecycle::Retiring => return Ok(()),
+        state => {
+            return Err(format!("cannot prepare {state} lookup table for deactivation").into())
+        }
+    };
+    let verified_slot =
+        i64::try_from(rpc.get_slot_with_commitment(CommitmentConfig::finalized())?)?;
+    let updated = client
+        .mark_reusable_lookup_table_verification(
+            table.id,
+            table.mutation_epoch,
+            table.desired_state,
+            next_state,
+            false,
+            table.usable_address_count,
+            verified_slot,
+        )
+        .await?;
+    leased.physical_table = Some(updated);
+    Ok(())
+}
+
+fn context_string(context: &Value, field: &str) -> Result<String, Box<dyn Error>> {
+    context
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| format!("operation context lacks {field}").into())
+}
+
+fn close_recipient(context: &Value) -> Result<Option<Pubkey>, Box<dyn Error>> {
+    context
+        .get("closeRecipient")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(Pubkey::from_str)
+        .transpose()
+        .map_err(Into::into)
+}
+
+fn load_manager_signer() -> Result<Keypair, Box<dyn Error>> {
+    yield_alt_manager_keypair_from_env().map_err(Into::into)
+}
+
+fn operation_lease(
+    leased: &LeasedLookupTableOperation,
+) -> Result<LookupTableOperationLease, Box<dyn Error>> {
+    LookupTableOperationLease::new(
+        leased
+            .operation
+            .lease_owner
+            .clone()
+            .ok_or("leased operation has no lease owner")?,
+        leased.operation.fencing_token,
+        leased
+            .operation
+            .lease_expires_at
+            .ok_or("leased operation has no expiry")?,
+    )
+    .map_err(Into::into)
+}
+
+fn validate_chunk(
+    leased: &LeasedLookupTableOperation,
+    configured_chunk: usize,
+) -> Result<(), Box<dyn Error>> {
+    if matches!(
+        leased.operation.operation_kind,
+        LookupTableOperationKind::Create
+            | LookupTableOperationKind::Extend
+            | LookupTableOperationKind::Rollover
+    ) && leased.addresses.len() > configured_chunk
+    {
+        return Err(format!(
+            "operation {} has {} addresses but the configured one-transaction chunk is {}",
+            leased.operation.id,
+            leased.addresses.len(),
+            configured_chunk
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn create_recent_slot(context: &Value) -> Result<u64, Box<dyn Error>> {
+    context
+        .get("recent_slot")
+        .or_else(|| context.get("recentSlot"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            "create operation is missing durable operation_context.recent_slot; refusing a non-deterministic retry"
+                .into()
+        })
+}
+
+fn create_recent_slot_has_expired(reserved_recent_slot: u64, finalized_slot: u64) -> bool {
+    finalized_slot.saturating_sub(reserved_recent_slot) >= SLOT_HASHES_MAX_ENTRIES as u64
+}
+
+fn parse_addresses(addresses: &[String]) -> Result<Vec<Pubkey>, Box<dyn Error>> {
+    addresses
+        .iter()
+        .map(|address| Pubkey::from_str(address).map_err(Into::into))
+        .collect()
+}
+
+fn hash_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+fn safe_error(error: &str) -> String {
+    redacted_external_error(error)
+}
+
+fn emit_operation_report(
+    options: &Options,
+    leased: &LeasedLookupTableOperation,
+    selected_budget_lamports: u64,
+    expected_fee_lamports: Option<u64>,
+    expected_rent_lamports: Option<u64>,
+    simulation: &'static str,
+    result: &str,
+) {
+    let report = OperationReport {
+        event: "alt_provisioner_operation",
+        cluster: options.cluster.clone(),
+        mode: options.mode.as_str(),
+        operation_id: leased.operation.id,
+        operation_kind: leased.operation.operation_kind.to_string(),
+        table: leased
+            .physical_table
+            .as_ref()
+            .map(|table| table.table_address.clone()),
+        address_count: leased.addresses.len(),
+        selected_budget_lamports,
+        expected_fee_lamports,
+        expected_rent_lamports,
+        simulation,
+        result: result.to_owned(),
+    };
+    println!(
+        "{}",
+        serde_json::to_string(&report).expect("report serializes")
+    );
+}
+
+async fn emit_status(client: &NeonSqlClient, options: &Options) -> Result<(), Box<dyn Error>> {
+    let snapshot = client
+        .lookup_table_control_plane_snapshot(&options.cluster)
+        .await?;
+    println!(
+        "{}",
+        json!({
+            "event": "alt_provisioner_status",
+            "cluster": options.cluster,
+            "mode": options.mode.as_str(),
+            "paused": options.paused,
+            "maxOperations": options.max_operations,
+            "maxAttempts": options.max_attempts,
+            "addressChunk": options.address_chunk,
+            "maxLamports": options.max_lamports.to_string(),
+            "rateLimitMs": options.rate_limit_ms,
+            "concurrency": options.concurrency,
+            "safetyMargin": options.safety_margin,
+            "largestAtomicExpansion": options.largest_atomic_expansion,
+            "vaultGrowthReservation": options.vault_growth_reservation,
+            "maxVaultCohort": options.max_vault_cohort,
+            "snapshot": snapshot,
+        })
+    );
+    Ok(())
+}
+
+async fn emit_dry_run_queue(
+    client: &NeonSqlClient,
+    options: &Options,
+) -> Result<(), Box<dyn Error>> {
+    let rows = loyal_yield_orchestrator::sqlx::query_scalar::<_, Value>(
+        r#"
+        SELECT COALESCE(jsonb_agg(jsonb_build_object(
+            'operationId', operation.id,
+            'kind', operation.operation_kind,
+            'state', operation.operation_state,
+            'table', route_table.table_address,
+            'addressCount', (SELECT count(*) FROM loyal_yield.lookup_table_operation_addresses a WHERE a.operation_id = operation.id),
+            'estimatedFeeLamports', operation.estimated_fee_lamports,
+            'estimatedRentLamports', operation.estimated_rent_lamports,
+            'attemptCount', operation.attempt_count
+        ) ORDER BY operation.created_at, operation.id), '[]'::jsonb)
+        FROM loyal_yield.lookup_table_operations operation
+        JOIN loyal_yield.lookup_table_families family ON family.id = operation.family_id
+        LEFT JOIN loyal_yield.route_lookup_tables route_table ON route_table.id = operation.route_lookup_table_id
+        WHERE family.cluster = $1
+          AND operation.operation_state NOT IN ('complete', 'permanent_failure', 'cancelled')
+        "#,
+    )
+    .bind(&options.cluster)
+    .fetch_one(client.pool())
+    .await?;
+    println!(
+        "{}",
+        json!({
+            "event": "alt_provisioner_dry_run",
+            "cluster": options.cluster,
+            "mode": options.mode.as_str(),
+            "operations": rows,
+            "signerLoaded": false,
+            "databaseWrites": false,
+            "transactionsSent": false,
+        })
+    );
+    Ok(())
+}
+
+async fn apply_admin_action(
+    client: &NeonSqlClient,
+    options: &Options,
+) -> Result<(), Box<dyn Error>> {
+    if matches!(options.admin_action, AdminAction::None) {
+        return Ok(());
+    }
+    if !options.admin_write {
+        return Err("control-plane changes require --admin-write".into());
+    }
+    let reason = options
+        .admin_reason
+        .as_deref()
+        .ok_or("control-plane changes require --reason")?;
+    let updated_by = options
+        .admin_updated_by
+        .as_deref()
+        .ok_or("control-plane changes require --updated-by")?;
+    if options.admin_action == AdminAction::BootstrapFamilies {
+        let manager_pubkey = options.admin_manager_pubkey.expect("validated by parser");
+        validate_manager_independence_from_control_plane(client, manager_pubkey).await?;
+        let manager = manager_pubkey.to_string();
+        let catalog_version = options
+            .catalog_version
+            .as_deref()
+            .expect("validated by parser");
+        let mut families = Vec::new();
+        for input in bootstrap_family_inputs(options)? {
+            families.push(client.create_or_validate_lookup_table_family(input).await?);
+        }
+        println!(
+            "{}",
+            json!({
+                "event": "alt_families_bootstrapped",
+                "cluster": options.cluster,
+                "familyIds": families.iter().map(|family| family.id).collect::<Vec<_>>(),
+                "authority": manager,
+                "catalogVersion": catalog_version,
+                "reason": reason,
+                "updatedBy": updated_by,
+                "signerLoaded": false,
+            })
+        );
+        return Ok(());
+    }
+    if let AdminAction::RollbackFamily(family_id) = options.admin_action {
+        let family_cluster = loyal_yield_orchestrator::sqlx::query_scalar::<_, String>(
+            "SELECT cluster FROM loyal_yield.lookup_table_families WHERE id = $1",
+        )
+        .bind(family_id)
+        .fetch_optional(client.pool())
+        .await?
+        .ok_or("rollback family was not found")?;
+        if family_cluster != options.cluster {
+            return Err("rollback family does not belong to the explicit cluster".into());
+        }
+        let family = client
+            .rollback_lookup_table_family_generation(family_id)
+            .await?;
+        println!(
+            "{}",
+            json!({
+                "event": "alt_family_generation_rolled_back",
+                "cluster": options.cluster,
+                "familyId": family.id,
+                "activeGeneration": family.active_generation,
+                "previousGeneration": family.previous_generation,
+                "reason": reason,
+                "updatedBy": updated_by,
+                "signerLoaded": false,
+            })
+        );
+        return Ok(());
+    }
+    if let AdminAction::RollbackBinding(binding_id) = options.admin_action {
+        let binding_cluster = loyal_yield_orchestrator::sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT family.cluster
+            FROM loyal_yield.lookup_table_vault_bindings binding
+            JOIN loyal_yield.lookup_table_families family ON family.id = binding.family_id
+            WHERE binding.id = $1
+            "#,
+        )
+        .bind(binding_id)
+        .fetch_optional(client.pool())
+        .await?
+        .ok_or("rollback binding was not found")?;
+        if binding_cluster != options.cluster {
+            return Err("rollback binding does not belong to the explicit cluster".into());
+        }
+        let observed_slot = options
+            .admin_observed_slot
+            .ok_or("--rollback-binding requires --observed-slot")?;
+        let rollback = client
+            .rollback_lookup_table_binding_head(binding_id, observed_slot)
+            .await?;
+        println!(
+            "{}",
+            json!({
+                "event": "alt_vault_binding_rolled_back",
+                "cluster": options.cluster,
+                "activeBindingId": rollback.active.id,
+                "predecessorBindingId": rollback.predecessor.as_ref().map(|binding| binding.id),
+                "observedSlot": observed_slot,
+                "reason": reason,
+                "updatedBy": updated_by,
+                "signerLoaded": false,
+            })
+        );
+        return Ok(());
+    }
+    if let AdminAction::FinalizeRollbacks(family_id) = options.admin_action {
+        let family_cluster = loyal_yield_orchestrator::sqlx::query_scalar::<_, String>(
+            "SELECT cluster FROM loyal_yield.lookup_table_families WHERE id = $1",
+        )
+        .bind(family_id)
+        .fetch_optional(client.pool())
+        .await?
+        .ok_or("rollback-finalization family was not found")?;
+        if family_cluster != options.cluster {
+            return Err(
+                "rollback-finalization family does not belong to the explicit cluster".into(),
+            );
+        }
+        let finalized = client
+            .finalize_expired_lookup_table_rollbacks(family_id)
+            .await?;
+        println!(
+            "{}",
+            json!({
+                "event": "alt_rollbacks_finalized",
+                "cluster": options.cluster,
+                "familyId": finalized.family_id,
+                "clearedPreviousGeneration": finalized.cleared_previous_generation,
+                "retiredBindingIds": finalized.retired_binding_ids,
+                "retiringTableIds": finalized.retiring_table_ids,
+                "releasedReservedCapacity": finalized.released_reserved_capacity,
+                "reason": reason,
+                "updatedBy": updated_by,
+                "signerLoaded": false,
+            })
+        );
+        return Ok(());
+    }
+    if let AdminAction::RetireLegacy(table_address) = options.admin_action {
+        let retired = client
+            .retire_legacy_route_lookup_table(LegacyLookupTableRetirementRequest {
+                cluster: options.cluster.clone(),
+                table_address: table_address.to_string(),
+                expected_authority: options
+                    .admin_expected_authority
+                    .expect("validated by parser")
+                    .to_string(),
+                expected_address_hash: options
+                    .admin_expected_address_hash
+                    .clone()
+                    .expect("validated by parser"),
+                expected_address_count: options
+                    .admin_expected_address_count
+                    .expect("validated by parser"),
+            })
+            .await?;
+        println!(
+            "{}",
+            json!({
+                "event": "alt_legacy_table_retired",
+                "cluster": retired.cluster,
+                "tableId": retired.table_id,
+                "table": retired.table_address,
+                "authority": retired.authority,
+                "addressHash": retired.address_hash,
+                "addressCount": retired.address_count,
+                "previousStatus": retired.previous_status,
+                "status": retired.status,
+                "durable": retired.durable,
+                "reason": reason,
+                "updatedBy": updated_by,
+                "signerLoaded": false,
+                "transactionsSent": false,
+            })
+        );
+        return Ok(());
+    }
+    let control = match options.admin_action {
+        AdminAction::None
+        | AdminAction::BootstrapFamilies
+        | AdminAction::RollbackFamily(_)
+        | AdminAction::RollbackBinding(_)
+        | AdminAction::FinalizeRollbacks(_)
+        | AdminAction::RetireLegacy(_) => {
+            unreachable!()
+        }
+        AdminAction::ForceLegacy => {
+            client
+                .set_lookup_table_force_legacy(&options.cluster, true, Some(reason), updated_by)
+                .await?
+        }
+        AdminAction::ClearForceLegacy => {
+            client
+                .set_lookup_table_force_legacy(&options.cluster, false, Some(reason), updated_by)
+                .await?
+        }
+        AdminAction::SetRolloutMode(mode) => {
+            client
+                .set_lookup_table_rollout_mode(
+                    &options.cluster,
+                    options.admin_vault_id,
+                    mode,
+                    Some(reason),
+                    updated_by,
+                )
+                .await?
+        }
+    };
+    println!(
+        "{}",
+        json!({
+            "event": "alt_rollout_control_updated",
+            "cluster": options.cluster,
+            "rolloutMode": control.rollout_mode.as_str(),
+            "forceLegacy": control.force_legacy,
+            "vaultId": control.vault_id.map(VaultId::as_i64),
+            "updatedBy": control.updated_by,
+        })
+    );
+    Ok(())
+}
+
+fn bootstrap_family_inputs(
+    options: &Options,
+) -> Result<Vec<LookupTableFamilyUpsert>, Box<dyn Error>> {
+    let manager = options
+        .admin_manager_pubkey
+        .ok_or("--bootstrap-families requires --manager-pubkey")?
+        .to_string();
+    let catalog_version = options
+        .catalog_version
+        .as_deref()
+        .ok_or("--bootstrap-families requires --catalog-version")?;
+    let largest_atomic_expansion = options.largest_atomic_expansion.ok_or(
+        "--bootstrap-families requires --largest-atomic-expansion from measured catalog evidence",
+    )?;
+    let high_water = 256_i32
+        .checked_sub(i32::from(largest_atomic_expansion))
+        .and_then(|value| value.checked_sub(i32::from(options.safety_margin)))
+        .ok_or("bootstrap capacity policy underflow")?;
+    if high_water <= 0 {
+        return Err("bootstrap capacity policy leaves no allocation headroom".into());
+    }
+    Ok([
+        (
+            options.shared_family_name.clone(),
+            LookupTableFamilyKind::SharedMarket,
+        ),
+        (
+            options.vault_family_name.clone(),
+            LookupTableFamilyKind::VaultShards,
+        ),
+    ]
+    .into_iter()
+    .map(|(logical_name, kind)| LookupTableFamilyUpsert {
+        cluster: options.cluster.clone(),
+        logical_name,
+        kind,
+        desired_state: LookupTableFamilyState::Active,
+        planner_version: PLANNER_VERSION.to_owned(),
+        catalog_version: catalog_version.to_owned(),
+        active_generation: Some(1),
+        previous_generation: None,
+        rollback_until: None,
+        provisioning_authority: manager.clone(),
+        payer: manager.clone(),
+        hard_capacity: 256,
+        allocation_high_water: high_water,
+        largest_atomic_expansion: i32::from(largest_atomic_expansion),
+        safety_margin: i32::from(options.safety_margin),
+    })
+    .collect())
+}
+
+fn parse_args<I, S, F>(args: I, read_env: F) -> Result<Options, Box<dyn Error>>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+    F: Fn(&str) -> Option<String>,
+{
+    let mut cluster = None;
+    let mut rpc_url = None;
+    let mut mode = RunMode::DryRun;
+    let mut mode_explicit = false;
+    let mut status_only = false;
+    let mut paused = read_env(PAUSED_ENV).as_deref().is_some_and(parse_truthy);
+    let mut watch = false;
+    let mut max_operations = DEFAULT_MAX_OPERATIONS;
+    let mut max_attempts = DEFAULT_MAX_ATTEMPTS;
+    let mut address_chunk = DEFAULT_ADDRESS_CHUNK;
+    let mut max_lamports = read_env(MAX_LAMPORTS_ENV)
+        .map(|value| value.parse::<u64>())
+        .transpose()?
+        .unwrap_or_default();
+    let mut budget_was_explicit = read_env(MAX_LAMPORTS_ENV).is_some();
+    let mut lease_seconds = DEFAULT_LEASE_SECONDS;
+    let mut rate_limit_ms = DEFAULT_RATE_LIMIT_MS;
+    let mut concurrency = 1usize;
+    let mut safety_margin = DEFAULT_SAFETY_MARGIN;
+    let mut largest_atomic_expansion = read_env(LARGEST_ATOMIC_EXPANSION_ENV)
+        .map(|value| value.parse::<u16>())
+        .transpose()?;
+    let mut vault_growth_reservation = DEFAULT_VAULT_GROWTH_RESERVATION;
+    let mut max_vault_cohort = DEFAULT_MAX_VAULT_COHORT;
+    let mut worker_id = default_worker_id();
+    let mut admin_action = AdminAction::None;
+    let mut admin_write = false;
+    let mut admin_reason = None;
+    let mut admin_updated_by = None;
+    let mut admin_manager_pubkey = None;
+    let mut catalog_version = None;
+    let mut shared_family_name = DEFAULT_SHARED_FAMILY_NAME.to_owned();
+    let mut vault_family_name = DEFAULT_VAULT_FAMILY_NAME.to_owned();
+    let mut admin_vault_id = None;
+    let mut admin_observed_slot = None;
+    let mut admin_expected_authority = None;
+    let mut admin_expected_address_hash = None;
+    let mut admin_expected_address_count = None;
+    let mut args = args.into_iter().map(Into::into);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--cluster" => cluster = Some(next_value(&mut args, "--cluster")?),
+            "--rpc-url" => rpc_url = Some(next_value(&mut args, "--rpc-url")?),
+            "--execute" => set_mode(&mut mode, &mut mode_explicit, RunMode::Execute)?,
+            "--reconcile-only" => set_mode(&mut mode, &mut mode_explicit, RunMode::ReconcileOnly)?,
+            "--status" => status_only = true,
+            "--pause" => paused = true,
+            "--watch" => watch = true,
+            "--max-operations" => {
+                max_operations = next_value(&mut args, "--max-operations")?.parse()?
+            }
+            "--max-attempts" => max_attempts = next_value(&mut args, "--max-attempts")?.parse()?,
+            "--address-chunk" => {
+                address_chunk = next_value(&mut args, "--address-chunk")?.parse()?
+            }
+            "--max-lamports" => {
+                max_lamports = next_value(&mut args, "--max-lamports")?.parse()?;
+                budget_was_explicit = true;
+            }
+            "--lease-seconds" => {
+                lease_seconds = next_value(&mut args, "--lease-seconds")?.parse()?
+            }
+            "--rate-limit-ms" => {
+                rate_limit_ms = next_value(&mut args, "--rate-limit-ms")?.parse()?
+            }
+            "--concurrency" => concurrency = next_value(&mut args, "--concurrency")?.parse()?,
+            "--safety-margin" => {
+                safety_margin = next_value(&mut args, "--safety-margin")?.parse()?
+            }
+            "--largest-atomic-expansion" => {
+                largest_atomic_expansion =
+                    Some(next_value(&mut args, "--largest-atomic-expansion")?.parse()?)
+            }
+            "--vault-growth-reservation" => {
+                vault_growth_reservation =
+                    next_value(&mut args, "--vault-growth-reservation")?.parse()?
+            }
+            "--max-vault-cohort" => {
+                max_vault_cohort = next_value(&mut args, "--max-vault-cohort")?.parse()?
+            }
+            "--worker-id" => worker_id = next_value(&mut args, "--worker-id")?,
+            "--force-legacy" => set_admin_action(&mut admin_action, AdminAction::ForceLegacy)?,
+            "--bootstrap-families" => {
+                set_admin_action(&mut admin_action, AdminAction::BootstrapFamilies)?
+            }
+            "--rollback-family" => {
+                let family_id = next_value(&mut args, "--rollback-family")?.parse()?;
+                set_admin_action(&mut admin_action, AdminAction::RollbackFamily(family_id))?
+            }
+            "--rollback-binding" => {
+                let binding_id = next_value(&mut args, "--rollback-binding")?.parse()?;
+                set_admin_action(&mut admin_action, AdminAction::RollbackBinding(binding_id))?
+            }
+            "--finalize-rollbacks" => {
+                let family_id = next_value(&mut args, "--finalize-rollbacks")?.parse()?;
+                set_admin_action(&mut admin_action, AdminAction::FinalizeRollbacks(family_id))?
+            }
+            "--retire-legacy" => {
+                let table = Pubkey::from_str(&next_value(&mut args, "--retire-legacy")?)?;
+                set_admin_action(&mut admin_action, AdminAction::RetireLegacy(table))?
+            }
+            "--clear-force-legacy" => {
+                set_admin_action(&mut admin_action, AdminAction::ClearForceLegacy)?
+            }
+            "--set-rollout-mode" => {
+                let value = next_value(&mut args, "--set-rollout-mode")?;
+                set_admin_action(
+                    &mut admin_action,
+                    AdminAction::SetRolloutMode(LookupTableRolloutMode::from_str(&value)?),
+                )?;
+            }
+            "--admin-write" => admin_write = true,
+            "--reason" => admin_reason = Some(next_value(&mut args, "--reason")?),
+            "--updated-by" => admin_updated_by = Some(next_value(&mut args, "--updated-by")?),
+            "--manager-pubkey" => {
+                admin_manager_pubkey = Some(Pubkey::from_str(&next_value(
+                    &mut args,
+                    "--manager-pubkey",
+                )?)?)
+            }
+            "--catalog-version" => {
+                catalog_version = Some(next_value(&mut args, "--catalog-version")?)
+            }
+            "--shared-family-name" => {
+                shared_family_name = next_value(&mut args, "--shared-family-name")?
+            }
+            "--vault-family-name" => {
+                vault_family_name = next_value(&mut args, "--vault-family-name")?
+            }
+            "--vault-id" => {
+                admin_vault_id = Some(VaultId(next_value(&mut args, "--vault-id")?.parse()?))
+            }
+            "--observed-slot" => {
+                admin_observed_slot = Some(next_value(&mut args, "--observed-slot")?.parse()?)
+            }
+            "--expected-authority" => {
+                admin_expected_authority = Some(Pubkey::from_str(&next_value(
+                    &mut args,
+                    "--expected-authority",
+                )?)?)
+            }
+            "--expected-address-hash" => {
+                admin_expected_address_hash =
+                    Some(next_value(&mut args, "--expected-address-hash")?)
+            }
+            "--expected-address-count" => {
+                admin_expected_address_count =
+                    Some(next_value(&mut args, "--expected-address-count")?.parse()?)
+            }
+            "--help" | "-h" => return Err(usage().into()),
+            other => return Err(format!("unknown argument {other:?}\n{}", usage()).into()),
+        }
+    }
+
+    let cluster = cluster
+        .or_else(|| read_env(CLUSTER_ENV))
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(
+            "--cluster or YIELD_ALT_CLUSTER is required; cluster is never inferred from a URL",
+        )?;
+    validate_cluster(&cluster)?;
+    let database_url = read_env(DATABASE_URL_ENV)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("NEON_DATABASE_URL is required")?;
+    let rpc_url = rpc_url
+        .or_else(|| read_env(RPC_URL_ENV))
+        .filter(|value| !value.trim().is_empty());
+    if mode != RunMode::DryRun && rpc_url.is_none() {
+        return Err("--reconcile-only/--execute requires SOLANA_RPC_URL or --rpc-url".into());
+    }
+    if mode == RunMode::Execute && (!budget_was_explicit || max_lamports == 0) {
+        return Err(
+            "--execute requires a positive explicit --max-lamports or YIELD_ALT_MAX_LAMPORTS"
+                .into(),
+        );
+    }
+    if max_operations == 0 || max_operations > MAX_OPERATIONS_PER_BATCH {
+        return Err(
+            format!("--max-operations must be between 1 and {MAX_OPERATIONS_PER_BATCH}").into(),
+        );
+    }
+    if !(1..=100).contains(&max_attempts) {
+        return Err("--max-attempts must be between 1 and 100".into());
+    }
+    if address_chunk == 0 || address_chunk > MAX_ADDRESS_CHUNK {
+        return Err(format!("--address-chunk must be between 1 and {MAX_ADDRESS_CHUNK}").into());
+    }
+    if lease_seconds < 30 {
+        return Err("--lease-seconds must be at least 30".into());
+    }
+    if concurrency != 1 {
+        return Err(
+            "--concurrency currently must be 1; fenced ALT mutations are serialized".into(),
+        );
+    }
+    if rate_limit_ms > MAX_RATE_LIMIT_MS {
+        return Err(format!("--rate-limit-ms cannot exceed {MAX_RATE_LIMIT_MS}").into());
+    }
+    if max_vault_cohort == 0 {
+        return Err("--max-vault-cohort must be positive".into());
+    }
+    if largest_atomic_expansion.is_some_and(|value| value == 0 || value >= 256) {
+        return Err("--largest-atomic-expansion must be between 1 and 255".into());
+    }
+    if worker_id.trim().is_empty() || worker_id.len() > 128 {
+        return Err("--worker-id must contain 1-128 characters".into());
+    }
+    if !matches!(admin_action, AdminAction::None)
+        && (mode != RunMode::DryRun || watch || status_only)
+    {
+        return Err(
+            "rollout control writes cannot be combined with worker execution/status flags".into(),
+        );
+    }
+    if admin_action == AdminAction::BootstrapFamilies
+        && (admin_manager_pubkey.is_none()
+            || catalog_version.is_none()
+            || largest_atomic_expansion.is_none())
+    {
+        return Err("--bootstrap-families requires --manager-pubkey, --catalog-version, and --largest-atomic-expansion from measured catalog evidence".into());
+    }
+    if admin_vault_id.is_some() && !matches!(admin_action, AdminAction::SetRolloutMode(_)) {
+        return Err("--vault-id is supported only with --set-rollout-mode".into());
+    }
+    if admin_vault_id.is_some_and(|vault_id| vault_id.as_i64() <= 0) {
+        return Err("--vault-id must be a positive database ID".into());
+    }
+    if matches!(admin_action, AdminAction::RollbackBinding(_)) != admin_observed_slot.is_some() {
+        return Err("--rollback-binding and --observed-slot must be provided together".into());
+    }
+    let retiring_legacy = matches!(admin_action, AdminAction::RetireLegacy(_));
+    let has_all_legacy_fences = admin_expected_authority.is_some()
+        && admin_expected_address_hash.is_some()
+        && admin_expected_address_count.is_some();
+    let has_any_legacy_fence = admin_expected_authority.is_some()
+        || admin_expected_address_hash.is_some()
+        || admin_expected_address_count.is_some();
+    if (retiring_legacy && !has_all_legacy_fences) || (!retiring_legacy && has_any_legacy_fence) {
+        return Err("--retire-legacy requires --expected-authority, --expected-address-hash, and --expected-address-count; those fencing flags are valid only with --retire-legacy".into());
+    }
+    if let Some(hash) = admin_expected_address_hash.as_deref() {
+        if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("--expected-address-hash must be a 64-character hexadecimal hash".into());
+        }
+    }
+    if admin_expected_address_count.is_some_and(|count| !(0..=256).contains(&count)) {
+        return Err("--expected-address-count must be between 0 and 256".into());
+    }
+
+    Ok(Options {
+        cluster,
+        rpc_url,
+        database_url,
+        mode,
+        status_only,
+        paused,
+        watch,
+        max_operations,
+        max_attempts,
+        address_chunk,
+        max_lamports,
+        lease_seconds,
+        rate_limit_ms,
+        concurrency,
+        safety_margin,
+        largest_atomic_expansion,
+        vault_growth_reservation,
+        max_vault_cohort,
+        worker_id,
+        admin_action,
+        admin_write,
+        admin_reason,
+        admin_updated_by,
+        admin_manager_pubkey,
+        catalog_version,
+        shared_family_name,
+        vault_family_name,
+        admin_vault_id,
+        admin_observed_slot,
+        admin_expected_authority,
+        admin_expected_address_hash,
+        admin_expected_address_count,
+    })
+}
+
+fn set_mode(
+    current: &mut RunMode,
+    explicit: &mut bool,
+    next: RunMode,
+) -> Result<(), Box<dyn Error>> {
+    if *explicit && *current != next {
+        return Err("--execute and --reconcile-only are mutually exclusive".into());
+    }
+    *current = next;
+    *explicit = true;
+    Ok(())
+}
+
+fn set_admin_action(current: &mut AdminAction, next: AdminAction) -> Result<(), Box<dyn Error>> {
+    if !matches!(current, AdminAction::None) {
+        return Err("only one rollout control action may be requested".into());
+    }
+    *current = next;
+    Ok(())
+}
+
+fn next_value<I>(args: &mut I, flag: &str) -> Result<String, Box<dyn Error>>
+where
+    I: Iterator<Item = String>,
+{
+    args.next()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("{flag} requires a value").into())
+}
+
+fn validate_cluster(cluster: &str) -> Result<(), Box<dyn Error>> {
+    if cluster.len() > 64
+        || !cluster
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("cluster must be a 1-64 character explicit identifier".into());
+    }
+    Ok(())
+}
+
+fn parse_truthy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn default_worker_id() -> String {
+    format!("alt-provisioner-{}", std::process::id())
+}
+
+fn usage() -> &'static str {
+    "Usage: route-lookup-table-provisioner --cluster <CLUSTER> [--status|--reconcile-only|--execute] [--pause] [--watch] [--max-operations <N>] [--max-attempts <1..100>] [--address-chunk <1..20>] [--max-lamports <LAMPORTS>] [--lease-seconds <N>] [--rate-limit-ms <N>] [--concurrency 1] [--safety-margin <N>] [--vault-growth-reservation <N>] [--max-vault-cohort <N>] [--worker-id <ID>]\n\nDry-run is the default and never loads a signer or writes. Reconcile-only may update durable reconciliation state but never signs or sends. Execute requires YIELD_ALT_MANAGER_KEYPAIR plus an explicit positive lamport budget. Reads NEON_DATABASE_URL, SOLANA_RPC_URL, and explicit YIELD_ALT_CLUSTER; cluster is never inferred from the RPC URL. Admin controls require --admin-write --reason <TEXT> --updated-by <ID>: --force-legacy, --clear-force-legacy, --set-rollout-mode <MODE> [--vault-id <DB_ID>], --rollback-family <FAMILY_ID>, --rollback-binding <ACTIVE_BINDING_ID> --observed-slot <SLOT>, --finalize-rollbacks <FAMILY_ID>, --retire-legacy <TABLE> --expected-authority <PUBKEY> --expected-address-hash <HASH> --expected-address-count <N>, or --bootstrap-families --manager-pubkey <PUBKEY> --catalog-version <VERSION> --largest-atomic-expansion <MEASURED_COUNT> [--safety-margin <N>] [--shared-family-name <NAME>] [--vault-family-name <NAME>]. The largest atomic expansion is catalog evidence and is independent of the transaction address chunk. Force-legacy remains global. Administrative lifecycle changes consume public control-plane metadata and never load a signer."
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env_map<'a>(values: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            values
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        }
+    }
+
+    fn base_env() -> [(&'static str, &'static str); 3] {
+        [
+            (CLUSTER_ENV, "mainnet-beta"),
+            (DATABASE_URL_ENV, "postgresql://redacted"),
+            (RPC_URL_ENV, "https://rpc.invalid"),
+        ]
+    }
+
+    #[test]
+    fn reusable_alt_dry_run_is_default_and_has_no_signing_authority_requirement() {
+        let options = parse_args(Vec::<String>::new(), env_map(&base_env())).unwrap();
+        assert_eq!(options.mode, RunMode::DryRun);
+        assert!(!options.mode.may_sign());
+        assert_eq!(options.max_lamports, 0);
+    }
+
+    #[test]
+    fn reusable_alt_reconcile_only_does_not_enable_signing() {
+        let options = parse_args(["--reconcile-only"], env_map(&base_env())).unwrap();
+        assert_eq!(options.mode, RunMode::ReconcileOnly);
+        assert!(!options.mode.may_sign());
+    }
+
+    #[test]
+    fn reusable_alt_mutation_modes_require_an_explicit_rpc_endpoint() {
+        let values = [
+            (CLUSTER_ENV, "devnet"),
+            (DATABASE_URL_ENV, "postgresql://redacted"),
+        ];
+        let reconcile_error =
+            parse_args(["--reconcile-only"], env_map(&values)).expect_err("RPC is required");
+        assert!(reconcile_error
+            .to_string()
+            .contains("requires SOLANA_RPC_URL"));
+
+        let execute_error = parse_args(["--execute", "--max-lamports", "1"], env_map(&values))
+            .expect_err("RPC is required");
+        assert!(execute_error
+            .to_string()
+            .contains("requires SOLANA_RPC_URL"));
+
+        let blank_error = parse_args(
+            ["--execute", "--max-lamports", "1", "--rpc-url", " "],
+            env_map(&base_env()),
+        )
+        .expect_err("blank explicit RPC must not fall back to another endpoint");
+        assert_eq!(blank_error.to_string(), "--rpc-url requires a value");
+    }
+
+    #[test]
+    fn reusable_alt_execute_is_the_only_mode_allowed_to_load_a_signer() {
+        assert!(!RunMode::DryRun.may_sign());
+        assert!(!RunMode::ReconcileOnly.may_sign());
+        assert!(RunMode::Execute.may_sign());
+    }
+
+    #[test]
+    fn reusable_alt_manager_is_distinct_from_every_configured_route_fee_payer() {
+        let manager = Pubkey::new_unique();
+        let policy = Pubkey::new_unique();
+        validate_manager_independence(
+            manager,
+            &[
+                (YIELD_ROUTER_KEYPAIR_ENV, Pubkey::new_unique()),
+                (POLICY_KEYPAIR_ENV, policy),
+                (SOLANA_TESTING_PK_ENV, Pubkey::new_unique()),
+            ],
+        )
+        .expect("independent ALT manager should pass");
+
+        let error = validate_manager_independence(
+            manager,
+            &[
+                (POLICY_KEYPAIR_ENV, policy),
+                (SOLANA_TESTING_PK_ENV, manager),
+            ],
+        )
+        .expect_err("matching any route fee payer must fail");
+        assert!(error.to_string().contains(SOLANA_TESTING_PK_ENV));
+    }
+
+    #[test]
+    fn reusable_alt_execute_requires_explicit_positive_budget() {
+        let error = parse_args(["--execute"], env_map(&base_env())).unwrap_err();
+        assert!(error.to_string().contains("positive explicit"));
+
+        let options = parse_args(
+            ["--execute", "--max-lamports", "1000000"],
+            env_map(&base_env()),
+        )
+        .unwrap();
+        assert_eq!(options.mode, RunMode::Execute);
+        assert_eq!(options.max_lamports, 1_000_000);
+    }
+
+    #[test]
+    fn reusable_alt_cluster_is_explicit_and_not_inferred_from_rpc_url() {
+        let values = [
+            (DATABASE_URL_ENV, "postgresql://redacted"),
+            (RPC_URL_ENV, "https://mainnet.example.invalid"),
+        ];
+        let error = parse_args(Vec::<String>::new(), env_map(&values)).unwrap_err();
+        assert!(error.to_string().contains("never inferred"));
+    }
+
+    #[test]
+    fn reusable_alt_chunks_and_concurrency_are_bounded() {
+        let chunk_error = parse_args(["--address-chunk", "21"], env_map(&base_env())).unwrap_err();
+        assert!(chunk_error.to_string().contains("between 1 and 20"));
+        let concurrency_error =
+            parse_args(["--concurrency", "2"], env_map(&base_env())).unwrap_err();
+        assert!(concurrency_error.to_string().contains("serialized"));
+
+        let rate_error =
+            parse_args(["--rate-limit-ms", "60001"], env_map(&base_env())).unwrap_err();
+        assert!(rate_error.to_string().contains("cannot exceed"));
+    }
+
+    #[test]
+    fn reusable_alt_pause_gate_is_independent_of_route_execution() {
+        let mut values = base_env().to_vec();
+        values.push((PAUSED_ENV, "true"));
+        let options = parse_args(Vec::<String>::new(), env_map(&values)).unwrap();
+        assert!(options.paused);
+        assert_eq!(options.mode, RunMode::DryRun);
+    }
+
+    #[test]
+    fn reusable_alt_budget_is_cumulative_and_fails_before_overspend() {
+        let mut budget = Budget {
+            limit: 100,
+            selected: 0,
+        };
+        assert!(!budget.exhausted());
+        budget.reserve(40).unwrap();
+        budget.reserve(60).unwrap();
+        assert_eq!(budget.selected, 100);
+        assert!(budget.exhausted());
+        let exhausted = budget.reserve(1).unwrap_err();
+        assert_eq!(
+            exhausted,
+            BudgetExhausted {
+                current: 100,
+                requested: 1,
+                limit: 100,
+            }
+        );
+        assert_eq!(budget.selected, 100);
+        assert!(!should_continue_worker(
+            true,
+            OperationBatchResult {
+                processed: 1,
+                budget_exhausted: true,
+            }
+        ));
+        assert!(should_continue_worker(
+            true,
+            OperationBatchResult {
+                processed: 1,
+                budget_exhausted: false,
+            }
+        ));
+    }
+
+    #[test]
+    fn reusable_alt_family_state_gates_only_new_mutations() {
+        for state in [
+            LookupTableFamilyState::Active,
+            LookupTableFamilyState::Paused,
+            LookupTableFamilyState::Retiring,
+            LookupTableFamilyState::Retired,
+        ] {
+            assert_eq!(
+                family_operation_gate(state, LookupTableOperationKind::Verify),
+                FamilyOperationGate::ReadOnlyVerification,
+                "Verify must remain a read-only reconciliation path in {state}"
+            );
+        }
+
+        assert_eq!(
+            family_operation_gate(
+                LookupTableFamilyState::Active,
+                LookupTableOperationKind::Create
+            ),
+            FamilyOperationGate::AllowMutation
+        );
+        for kind in [
+            LookupTableOperationKind::Deactivate,
+            LookupTableOperationKind::Close,
+        ] {
+            assert_eq!(
+                family_operation_gate(LookupTableFamilyState::Retiring, kind),
+                FamilyOperationGate::AllowMutation
+            );
+        }
+        for kind in [
+            LookupTableOperationKind::Create,
+            LookupTableOperationKind::Extend,
+            LookupTableOperationKind::Rollover,
+        ] {
+            assert!(matches!(
+                family_operation_gate(LookupTableFamilyState::Retiring, kind),
+                FamilyOperationGate::Defer {
+                    code: "family_retiring_growth_blocked",
+                    ..
+                }
+            ));
+        }
+        for state in [
+            LookupTableFamilyState::Paused,
+            LookupTableFamilyState::Retired,
+        ] {
+            for kind in [
+                LookupTableOperationKind::Create,
+                LookupTableOperationKind::Extend,
+                LookupTableOperationKind::Rollover,
+                LookupTableOperationKind::Deactivate,
+                LookupTableOperationKind::Close,
+            ] {
+                assert!(matches!(
+                    family_operation_gate(state, kind),
+                    FamilyOperationGate::Defer { .. }
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn reusable_alt_submission_gate_forbids_broadcast_before_persistence() {
+        let mut gate = SubmissionGate::built();
+        assert!(gate.broadcast().is_err());
+        gate.simulated().unwrap();
+        assert!(gate.broadcast().is_err());
+        gate.persisted().unwrap();
+        gate.broadcast().unwrap();
+        assert_eq!(gate.stage, SubmissionStage::Broadcast);
+    }
+
+    #[test]
+    fn reusable_alt_known_signature_forces_chain_first_reconciliation() {
+        assert!(requires_chain_first_reconciliation(true, false));
+        assert!(requires_chain_first_reconciliation(false, true));
+        assert!(!requires_chain_first_reconciliation(false, false));
+    }
+
+    #[test]
+    fn reusable_alt_expired_unobserved_signature_allows_a_fresh_transaction() {
+        assert!(persisted_signature_requires_chain_reconciliation(
+            Some("old-signature"),
+            None,
+        ));
+        assert!(!persisted_signature_requires_chain_reconciliation(
+            Some("old-signature"),
+            Some(EXPIRED_TRANSACTION_RETRY_CODE),
+        ));
+        assert!(!persisted_signature_requires_chain_reconciliation(
+            None,
+            Some(EXPIRED_TRANSACTION_RETRY_CODE),
+        ));
+    }
+
+    #[test]
+    fn reusable_alt_submitted_success_recovery_uses_every_legal_state() {
+        assert_eq!(
+            reconciliation_transition_path(LookupTableOperationStatus::Submitted).unwrap(),
+            vec![
+                LookupTableOperationStatus::Confirmed,
+                LookupTableOperationStatus::Finalized,
+                LookupTableOperationStatus::Reconciled,
+            ]
+        );
+        assert_eq!(
+            reconciliation_transition_path(LookupTableOperationStatus::NeedsReconcile).unwrap(),
+            vec![LookupTableOperationStatus::Reconciled]
+        );
+    }
+
+    #[test]
+    fn reusable_alt_mutation_paths_include_rollover_and_cleanup() {
+        assert_eq!(
+            provisioner_mutation_path(LookupTableOperationKind::Create),
+            Some("create")
+        );
+        assert_eq!(
+            provisioner_mutation_path(LookupTableOperationKind::Rollover),
+            Some("create")
+        );
+        assert_eq!(
+            provisioner_mutation_path(LookupTableOperationKind::Extend),
+            Some("extend")
+        );
+        assert_eq!(
+            provisioner_mutation_path(LookupTableOperationKind::Deactivate),
+            Some("deactivate")
+        );
+        assert_eq!(
+            provisioner_mutation_path(LookupTableOperationKind::Close),
+            Some("close")
+        );
+        assert_eq!(
+            provisioner_mutation_path(LookupTableOperationKind::Verify),
+            None
+        );
+    }
+
+    #[test]
+    fn reusable_alt_chain_drift_is_not_treated_as_retryable_absence() {
+        let observation = LookupTableReconciliationObservation {
+            operation_kind: LookupTableOperationKind::Extend,
+            persisted_status: LookupTableOperationStatus::NeedsReconcile,
+            signature_state: LookupTableSignatureState::NotFound,
+            chain_state: LookupTableChainState::PrefixDrift,
+            chain_observed_finalized: true,
+            blockhash_expired: true,
+            usable_after_slot_reached: true,
+        };
+        assert!(matches!(
+            reconcile_lookup_table_operation(&observation),
+            LookupTableReconciliationDecision::NeedsManualReconcile { .. }
+        ));
+    }
+
+    #[test]
+    fn reusable_alt_ambiguous_missing_signature_retries_only_after_expiry() {
+        let mut observation = LookupTableReconciliationObservation {
+            operation_kind: LookupTableOperationKind::Extend,
+            persisted_status: LookupTableOperationStatus::NeedsReconcile,
+            signature_state: LookupTableSignatureState::NotFound,
+            chain_state: LookupTableChainState::Missing,
+            chain_observed_finalized: true,
+            blockhash_expired: false,
+            usable_after_slot_reached: true,
+        };
+        assert_eq!(
+            reconcile_lookup_table_operation(&observation),
+            LookupTableReconciliationDecision::WaitForSignature
+        );
+        observation.blockhash_expired = true;
+        assert_eq!(
+            reconcile_lookup_table_operation(&observation),
+            LookupTableReconciliationDecision::RetryWithFreshTransaction
+        );
+    }
+
+    #[test]
+    fn reusable_alt_logs_strip_urls_and_bound_error_length() {
+        let error = format!("rpc https://secret.example/path failed {}", "x".repeat(600));
+        let safe = safe_error(&error);
+        assert!(!safe.contains("://"));
+        assert!(safe.len() <= 512);
+    }
+
+    #[test]
+    fn reusable_alt_structured_report_is_redacted_and_budgeted() {
+        let report = OperationReport {
+            event: "alt_provisioner_operation",
+            cluster: "mainnet-beta".to_owned(),
+            mode: "execute",
+            operation_id: 7,
+            operation_kind: "extend".to_owned(),
+            table: Some(Pubkey::new_unique().to_string()),
+            address_count: 20,
+            selected_budget_lamports: 50_000,
+            expected_fee_lamports: Some(5_000),
+            expected_rent_lamports: Some(45_000),
+            simulation: "succeeded",
+            result: "submitted".to_owned(),
+        };
+        let encoded = serde_json::to_string(&report).unwrap();
+        assert!(encoded.contains("selectedBudgetLamports"));
+        assert!(encoded.contains("simulation"));
+        assert!(!encoded.contains("databaseUrl"));
+        assert!(!encoded.contains("signedTransaction"));
+        assert!(!encoded.contains("://"));
+    }
+
+    #[test]
+    fn reusable_alt_execute_and_reconcile_only_are_mutually_exclusive() {
+        let error = parse_args(
+            ["--execute", "--reconcile-only", "--max-lamports", "1"],
+            env_map(&base_env()),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn reusable_alt_admin_changes_require_an_explicit_write_gate() {
+        let error = parse_args(["--force-legacy"], env_map(&base_env())).unwrap();
+        assert!(!error.admin_write);
+        assert!(matches!(error.admin_action, AdminAction::ForceLegacy));
+    }
+
+    #[test]
+    fn reusable_alt_per_vault_rollout_control_is_distinct_from_global_force_legacy() {
+        let canary = parse_args(
+            [
+                "--set-rollout-mode",
+                "shadow",
+                "--vault-id",
+                "42",
+                "--admin-write",
+                "--reason",
+                "canary",
+                "--updated-by",
+                "operator",
+            ],
+            env_map(&base_env()),
+        )
+        .unwrap();
+        assert_eq!(canary.admin_vault_id, Some(VaultId(42)));
+        assert!(matches!(
+            canary.admin_action,
+            AdminAction::SetRolloutMode(LookupTableRolloutMode::Shadow)
+        ));
+
+        let global_force_error =
+            parse_args(["--force-legacy", "--vault-id", "42"], env_map(&base_env())).unwrap_err();
+        assert!(global_force_error
+            .to_string()
+            .contains("only with --set-rollout-mode"));
+    }
+
+    #[test]
+    fn reusable_alt_generation_and_binding_rollbacks_are_admin_only_and_signer_free() {
+        let family = parse_args(
+            [
+                "--rollback-family",
+                "7",
+                "--admin-write",
+                "--reason",
+                "rollback",
+                "--updated-by",
+                "operator",
+            ],
+            env_map(&base_env()),
+        )
+        .unwrap();
+        assert_eq!(family.admin_action, AdminAction::RollbackFamily(7));
+        assert!(!family.mode.may_sign());
+
+        let binding = parse_args(
+            [
+                "--rollback-binding",
+                "9",
+                "--observed-slot",
+                "123",
+                "--admin-write",
+                "--reason",
+                "rollback",
+                "--updated-by",
+                "operator",
+            ],
+            env_map(&base_env()),
+        )
+        .unwrap();
+        assert_eq!(binding.admin_action, AdminAction::RollbackBinding(9));
+        assert_eq!(binding.admin_observed_slot, Some(123));
+        assert!(!binding.mode.may_sign());
+
+        let finalize = parse_args(
+            [
+                "--finalize-rollbacks",
+                "7",
+                "--admin-write",
+                "--reason",
+                "retire expired rollback references",
+                "--updated-by",
+                "operator",
+            ],
+            env_map(&base_env()),
+        )
+        .unwrap();
+        assert_eq!(finalize.admin_action, AdminAction::FinalizeRollbacks(7));
+        assert!(!finalize.mode.may_sign());
+    }
+
+    #[test]
+    fn reusable_alt_legacy_retirement_requires_complete_expected_metadata_fence() {
+        let table = Pubkey::new_unique().to_string();
+        let authority = Pubkey::new_unique().to_string();
+        let args = vec![
+            "--retire-legacy".to_owned(),
+            table.clone(),
+            "--expected-authority".to_owned(),
+            authority.clone(),
+            "--expected-address-hash".to_owned(),
+            "a".repeat(64),
+            "--expected-address-count".to_owned(),
+            "42".to_owned(),
+            "--admin-write".to_owned(),
+            "--reason".to_owned(),
+            "legacy migration complete".to_owned(),
+            "--updated-by".to_owned(),
+            "operator".to_owned(),
+        ];
+        let options = parse_args(args, env_map(&base_env())).unwrap();
+        assert_eq!(
+            options.admin_action,
+            AdminAction::RetireLegacy(Pubkey::from_str(&table).unwrap())
+        );
+        assert_eq!(
+            options.admin_expected_authority,
+            Some(Pubkey::from_str(&authority).unwrap())
+        );
+        assert_eq!(options.admin_expected_address_count, Some(42));
+        assert!(!options.mode.may_sign());
+
+        let missing_fence =
+            parse_args(["--retire-legacy", &table], env_map(&base_env())).unwrap_err();
+        assert!(missing_fence
+            .to_string()
+            .contains("requires --expected-authority"));
+    }
+
+    #[test]
+    fn reusable_alt_family_bootstrap_uses_public_metadata_without_signer_mode() {
+        let manager = Pubkey::new_unique().to_string();
+        let options = parse_args(
+            [
+                "--bootstrap-families",
+                "--manager-pubkey",
+                &manager,
+                "--catalog-version",
+                "stable-v1",
+                "--largest-atomic-expansion",
+                "27",
+                "--safety-margin",
+                "11",
+                "--address-chunk",
+                "3",
+                "--admin-write",
+                "--reason",
+                "initial bootstrap",
+                "--updated-by",
+                "operator",
+            ],
+            env_map(&base_env()),
+        )
+        .unwrap();
+        assert_eq!(options.admin_action, AdminAction::BootstrapFamilies);
+        assert_eq!(options.mode, RunMode::DryRun);
+        assert!(!options.mode.may_sign());
+        assert_eq!(options.admin_manager_pubkey.unwrap().to_string(), manager);
+        let first = bootstrap_family_inputs(&options).unwrap();
+        let retry = bootstrap_family_inputs(&options).unwrap();
+        assert_eq!(first, retry);
+        assert_eq!(first.len(), 2);
+        assert!(first.iter().all(|family| {
+            family.largest_atomic_expansion == 27
+                && family.safety_margin == 11
+                && family.allocation_high_water == 218
+        }));
+    }
+
+    #[test]
+    fn reusable_alt_cleanup_context_requires_fresh_identity_fields() {
+        let context = json!({
+            "expectedAuthority": Pubkey::new_unique().to_string(),
+            "expectedAddressHash": "abc123",
+            "expectedMutationEpoch": 7,
+            "closeRecipient": Pubkey::new_unique().to_string(),
+        });
+        assert!(!context_string(&context, "expectedAuthority")
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            context_string(&context, "expectedAddressHash").unwrap(),
+            "abc123"
+        );
+        assert_eq!(
+            context.get("expectedMutationEpoch").and_then(Value::as_i64),
+            Some(7)
+        );
+        assert!(close_recipient(&context).unwrap().is_some());
+        assert!(context_string(&json!({}), "expectedAddressHash").is_err());
+    }
+
+    #[test]
+    fn reusable_alt_create_reservation_refreshes_at_slot_hash_expiry_boundary() {
+        let recent_slot = 10_000;
+        let last_usable_slot = recent_slot + SLOT_HASHES_MAX_ENTRIES as u64 - 1;
+        assert!(!create_recent_slot_has_expired(
+            recent_slot,
+            last_usable_slot
+        ));
+        assert!(create_recent_slot_has_expired(
+            recent_slot,
+            last_usable_slot + 1
+        ));
+        assert!(!create_recent_slot_has_expired(
+            recent_slot,
+            recent_slot - 1
+        ));
+    }
+}

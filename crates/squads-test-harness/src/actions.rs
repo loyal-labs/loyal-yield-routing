@@ -1,9 +1,10 @@
 //! Test-harness adapters for the `loyal-actions` SDK.
 
 use loyal_actions::{
-    CrossMintRoute, JupiterSwapContract, LoyalActionContext, LoyalActionError, LoyalActionStep,
-    Result, SameMintRoute, SwapLane, YieldRouteActionInstruction, YieldRouteActionSetup,
-    YieldRouteUniverse, JUPITER_DEFAULT_MAX_SLIPPAGE_BPS, JUPITER_V6_PROGRAM_ID,
+    CrossMintRoute, JupiterSwapContract, LookupTableManifestError, LoyalActionContext,
+    LoyalActionError, LoyalActionStep, Result, SameMintRoute, SwapLane,
+    YieldRouteActionInstruction, YieldRouteActionSetup, YieldRouteInstruction, YieldRouteUniverse,
+    JUPITER_DEFAULT_MAX_SLIPPAGE_BPS, JUPITER_V6_PROGRAM_ID,
 };
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
@@ -15,7 +16,8 @@ use crate::{
     execute_loyal_action_jupiter_swap, execute_loyal_action_step,
     execute_squads_program_interaction_instruction, mock_jupiter_stable_exact_in_swap_data,
     mock_jupiter_stable_reserve_token_account, FundedSquadsTestContext,
-    MockKaminoReserveTokenAccounts, SquadsCompiledInstruction, MOCK_JUPITER_STABLE_EXACT_IN,
+    MockKaminoReserveTokenAccounts, MockKaminoRoutePart, SquadsCompiledInstruction,
+    MOCK_JUPITER_STABLE_EXACT_IN,
 };
 
 use crate::execution::{compile_inner_instruction, merge_compiled_instructions};
@@ -155,6 +157,19 @@ impl KaminoAction {
     ) -> Instruction {
         execute_loyal_action_step(self.step, signer, vault_index, instructions, accounts)
     }
+
+    pub fn build_with_lookup_table_requirements(
+        self,
+        signer: Pubkey,
+        vault_index: u8,
+        part: MockKaminoRoutePart,
+    ) -> YieldRouteInstruction {
+        let (instructions, accounts, requirements) = part.into_parts();
+        YieldRouteInstruction::new(
+            self.build(signer, vault_index, instructions, accounts),
+            requirements,
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -191,6 +206,29 @@ impl SameMintRouteAction {
                 },
             ],
         )
+    }
+
+    pub fn build_with_lookup_table_requirements(
+        self,
+        signer: Pubkey,
+        vault_index: u8,
+        withdraw: MockKaminoRoutePart,
+        deposit: MockKaminoRoutePart,
+    ) -> std::result::Result<YieldRouteInstruction, LookupTableManifestError> {
+        let (withdraw_instructions, withdraw_accounts, mut requirements) = withdraw.into_parts();
+        let (deposit_instructions, deposit_accounts, deposit_requirements) = deposit.into_parts();
+        requirements.merge(&deposit_requirements)?;
+        Ok(YieldRouteInstruction::new(
+            self.build(
+                signer,
+                vault_index,
+                withdraw_instructions,
+                withdraw_accounts,
+                deposit_instructions,
+                deposit_accounts,
+            ),
+            requirements,
+        ))
     }
 }
 

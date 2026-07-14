@@ -176,7 +176,8 @@ the Vercel UI or another non-echoing secret path. The Preview branch `staging`
 path and verified by env-name readback.
 
 The light worker image contains the Rust projector/trigger/realtime binaries,
-same-mint monitor/executor binaries, `route-lookup-table-cleanup`, Bun
+same-mint monitor/executor binaries, `route-lookup-table-provisioner`,
+`route-lookup-table-cleanup`, Bun
 production dependencies, and `scripts/execute-autodeposit-policy.ts`.
 `loyal-yield-realtime` runs from the same immutable image as a Render Web
 Service with command `/usr/local/bin/loyal-yield-realtime`, health path

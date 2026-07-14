@@ -1,4 +1,5 @@
 use crate::ids::*;
+use crate::lookup_tables::YieldRouteLookupTableRequirements;
 use crate::protocols::{
     jupiter_constraint, kamino_deposit_reserve_liquidity_constraint,
     kamino_deposit_reserve_liquidity_market_mint_constraint, kamino_init_obligation_constraint,
@@ -208,11 +209,16 @@ pub struct YieldRouteActionSetup {
     pub instructions: Vec<Instruction>,
     steps: YieldRouteSteps,
     pub spec: YieldRouteActionSpec,
+    lookup_table_requirements: YieldRouteLookupTableRequirements,
 }
 
 impl YieldRouteActionSetup {
     pub fn steps(&self) -> YieldRouteSteps {
         self.steps
+    }
+
+    pub fn lookup_table_requirements(&self) -> &YieldRouteLookupTableRequirements {
+        &self.lookup_table_requirements
     }
 
     pub fn withdraw_step(&self) -> Result<LoyalActionStep> {
@@ -258,11 +264,16 @@ pub struct YieldRouteActionInstruction {
     pub instruction: Instruction,
     steps: YieldRouteSteps,
     pub spec: YieldRouteActionSpec,
+    lookup_table_requirements: YieldRouteLookupTableRequirements,
 }
 
 impl YieldRouteActionInstruction {
     pub fn steps(&self) -> YieldRouteSteps {
         self.steps
+    }
+
+    pub fn lookup_table_requirements(&self) -> &YieldRouteLookupTableRequirements {
+        &self.lookup_table_requirements
     }
 
     pub fn jupiter_swap_step(&self) -> Result<LoyalActionStep> {
@@ -399,6 +410,7 @@ pub fn update_all_in_one_market_mint_yield_route_action(
     };
 
     setup_from_parts(
+        context,
         RouteTopology::AllInOne,
         universe,
         swap_lanes,
@@ -417,7 +429,13 @@ pub fn create_same_mint_market_mint_yield_route_action(
     let constraints = same_mint_market_mint_constraints(context.vault, &universe)?;
     let policy = derive_action_account(&context.settings, seed).0;
     let instruction = action_instruction(context, seed, constraints.clone())?;
-    same_mint_market_mint_setup(universe, policy, vec![instruction], constraints.len())
+    same_mint_market_mint_setup(
+        context,
+        universe,
+        policy,
+        vec![instruction],
+        constraints.len(),
+    )
 }
 
 pub fn update_same_mint_market_mint_yield_route_action(
@@ -435,7 +453,13 @@ pub fn update_same_mint_market_mint_yield_route_action(
         account_index,
         constraints.clone(),
     )?;
-    same_mint_market_mint_setup(universe, policy, vec![instruction], constraints.len())
+    same_mint_market_mint_setup(
+        context,
+        universe,
+        policy,
+        vec![instruction],
+        constraints.len(),
+    )
 }
 
 pub fn create_init_obligation_yield_route_action(
@@ -449,7 +473,13 @@ pub fn create_init_obligation_yield_route_action(
     let constraints = init_obligation_setup_constraints(context.vault, &universe);
     let policy = derive_action_account(&context.settings, seed).0;
     let instruction = action_instruction(context, seed, constraints.clone())?;
-    init_obligation_setup(universe, policy, vec![instruction], constraints.len())
+    init_obligation_setup(
+        context,
+        universe,
+        policy,
+        vec![instruction],
+        constraints.len(),
+    )
 }
 
 pub fn update_init_obligation_yield_route_action(
@@ -470,7 +500,13 @@ pub fn update_init_obligation_yield_route_action(
         account_index,
         constraints.clone(),
     )?;
-    init_obligation_setup(universe, policy, vec![instruction], constraints.len())
+    init_obligation_setup(
+        context,
+        universe,
+        policy,
+        vec![instruction],
+        constraints.len(),
+    )
 }
 
 fn init_obligation_setup_constraints(
@@ -509,6 +545,7 @@ fn same_mint_market_mint_constraints(
 }
 
 fn same_mint_market_mint_setup(
+    context: LoyalActionContext,
     universe: YieldRouteUniverse,
     policy: Pubkey,
     instructions: Vec<Instruction>,
@@ -526,6 +563,7 @@ fn same_mint_market_mint_setup(
     };
 
     setup_from_parts(
+        context,
         RouteTopology::AllInOne,
         universe,
         Vec::new(),
@@ -537,6 +575,7 @@ fn same_mint_market_mint_setup(
 }
 
 fn init_obligation_setup(
+    context: LoyalActionContext,
     universe: YieldRouteUniverse,
     policy: Pubkey,
     instructions: Vec<Instruction>,
@@ -549,6 +588,7 @@ fn init_obligation_setup(
     };
 
     setup_from_parts(
+        context,
         RouteTopology::AllInOne,
         universe,
         Vec::new(),
@@ -659,6 +699,7 @@ pub fn create_swap_yield_route_action(
         account,
         instruction,
         steps,
+        lookup_table_requirements: action_lookup_table_requirements(context, accounts),
         spec: YieldRouteActionSpec {
             topology: RouteTopology::SwapOnly,
             universe: YieldRouteUniverse::new(stable_mints, vec![], vec![]),
@@ -907,6 +948,7 @@ fn setup(
     constraint_count: usize,
 ) -> Result<YieldRouteActionSetup> {
     setup_from_parts(
+        plan.context,
         plan.topology,
         plan.universe,
         plan.swap_lanes,
@@ -918,6 +960,7 @@ fn setup(
 }
 
 fn setup_from_parts(
+    context: LoyalActionContext,
     topology: RouteTopology,
     universe: YieldRouteUniverse,
     swap_lanes: Vec<SwapLane>,
@@ -926,6 +969,7 @@ fn setup_from_parts(
     steps: YieldRouteSteps,
     constraint_count: usize,
 ) -> Result<YieldRouteActionSetup> {
+    let lookup_table_requirements = action_lookup_table_requirements(context, accounts);
     Ok(YieldRouteActionSetup {
         accounts,
         spec: YieldRouteActionSpec {
@@ -938,7 +982,21 @@ fn setup_from_parts(
         },
         instructions,
         steps,
+        lookup_table_requirements,
     })
+}
+
+fn action_lookup_table_requirements(
+    context: LoyalActionContext,
+    accounts: YieldRouteActionAccounts,
+) -> YieldRouteLookupTableRequirements {
+    let mut requirements = YieldRouteLookupTableRequirements::new(context.settings, context.vault);
+    for account in [accounts.withdraw, accounts.swap, accounts.deposit] {
+        requirements.add_action_account(account);
+        requirements.add_policy(account);
+    }
+    requirements.add_infrastructure(solana_sdk::system_program::ID);
+    requirements
 }
 
 fn coalesce_steps<const N: usize>(steps: [LoyalActionStep; N]) -> Result<LoyalActionRoute<N>> {
@@ -1129,6 +1187,43 @@ mod tests {
         assert_eq!(universe.stable_mints, vec![stable]);
         assert_eq!(universe.kamino_markets, vec![market]);
         assert_eq!(universe.kamino_liquidity_mints, vec![mint]);
+    }
+
+    #[test]
+    fn action_setup_emits_typed_lookup_requirements_with_its_instructions() {
+        let context = context();
+        let setup =
+            create_all_in_one_market_mint_yield_route_action(context, universe(), Vec::new())
+                .expect("build action setup");
+        let requirements = setup.lookup_table_requirements();
+
+        assert!(requirements
+            .provenance()
+            .vault_roles(&context.settings)
+            .is_some_and(|roles| roles.contains(&crate::VaultRole::Settings)));
+        assert!(requirements
+            .provenance()
+            .vault_roles(&context.vault)
+            .is_some_and(|roles| roles.contains(&crate::VaultRole::Vault)));
+        assert!(requirements
+            .provenance()
+            .vault_roles(&setup.accounts.withdraw)
+            .is_some_and(|roles| {
+                roles.contains(&crate::VaultRole::ActionAccount)
+                    && roles.contains(&crate::VaultRole::Policy)
+            }));
+
+        let manifest = requirements
+            .manifest(context.authority, &setup.instructions)
+            .expect("action-owned requirements should exactly classify setup instructions");
+        assert!(manifest
+            .vault()
+            .iter()
+            .any(|requirement| requirement.address == context.settings));
+        assert!(manifest
+            .vault()
+            .iter()
+            .any(|requirement| requirement.address == setup.accounts.withdraw));
     }
 
     #[test]

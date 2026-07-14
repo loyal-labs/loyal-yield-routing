@@ -6,12 +6,14 @@
 mod actions;
 mod detection;
 mod ids;
+pub mod lookup_tables;
 mod protocols;
 mod squads;
 
 pub use actions::*;
 pub use detection::*;
 pub use ids::*;
+pub use lookup_tables::*;
 pub use loyal_hub_abi as hub_abi;
 pub use protocols::{
     derive_kamino_lending_market_authority, derive_kamino_obligation,
