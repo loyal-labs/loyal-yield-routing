@@ -856,8 +856,7 @@ pub async fn load_lookup_table_alert_snapshot(
                 + (SELECT count(*)
                    FROM loyal_yield.lookup_table_route_readiness_current readiness
                    WHERE readiness.cluster = $1
-                     AND (readiness.selection_kind = 'legacy'
-                          OR readiness.fallback_reason IS NOT NULL))
+                     AND readiness.selection_kind = 'legacy')
                 + CASE WHEN NOT EXISTS (
                     SELECT 1 FROM loyal_yield.lookup_table_rollout_controls control
                     WHERE control.cluster = $1
