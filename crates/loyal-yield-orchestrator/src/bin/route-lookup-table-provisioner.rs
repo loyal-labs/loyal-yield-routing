@@ -1837,10 +1837,25 @@ async fn reconcile_physical_membership(
                 addresses,
             )
             .await?;
+        let accepting_allocations = updated.accepting_allocations
+            && updated.allocation_kind != LookupTableAllocationKind::DedicatedVault;
+        let updated = if updated.desired_state == LookupTableLifecycle::Preparing {
+            client
+                .mark_reusable_lookup_table_verification(
+                    updated.id,
+                    updated.mutation_epoch,
+                    LookupTableLifecycle::Preparing,
+                    LookupTableLifecycle::Warming,
+                    accepting_allocations,
+                    i32::try_from(chain.addresses.len())?,
+                    i64::try_from(observed_slot)?,
+                )
+                .await?
+        } else {
+            updated
+        };
         let next_state = match updated.desired_state {
-            LookupTableLifecycle::Preparing | LookupTableLifecycle::Warming => {
-                LookupTableLifecycle::Active
-            }
+            LookupTableLifecycle::Warming => LookupTableLifecycle::Active,
             state => state,
         };
         let accepting_allocations = updated.accepting_allocations
