@@ -109,6 +109,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0017_reusable_route_lookup_tables.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 18,
+        name: "earn_activity_realtime",
+        sql: include_str!("../../migrations/0018_earn_activity_realtime.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -1348,6 +1354,14 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
             "mark_autodeposit_execution_failed",
             "autodeposit failure transition",
         ),
+        (
+            "emit_autodeposit_configuration_realtime_event",
+            "autodeposit configuration realtime",
+        ),
+        (
+            "emit_rebalance_confirmation_realtime_event",
+            "rebalance confirmation realtime",
+        ),
     ] {
         let exists: bool = sqlx::query_scalar(
             r#"
@@ -1380,6 +1394,14 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         (
             "earn_deposit_onboarding_attempts",
             "earn_deposit_onboarding_attempts_realtime_event",
+        ),
+        (
+            "balance_sweep_targets",
+            "balance_sweep_targets_configuration_realtime_event",
+        ),
+        (
+            "rebalance_decisions",
+            "rebalance_decisions_confirmation_realtime_event",
         ),
     ] {
         let relation_exists: bool = sqlx::query_scalar(
@@ -1854,5 +1876,29 @@ mod tests {
         assert_ne!(execution_sql.as_ref(), migration.sql);
         assert_eq!(migration.checksum(), checksum(migration.sql));
         assert_ne!(migration.checksum(), checksum(execution_sql.as_ref()));
+    }
+
+    #[test]
+    fn earn_activity_migration_has_scoped_deduped_wakeups() {
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 18)
+            .expect("migration 18 exists");
+
+        for required in [
+            "earn.autodeposit.configuration.changed",
+            "earn.rebalance.confirmed",
+            "OLD.lifecycle_status IS DISTINCT FROM NEW.lifecycle_status",
+            "OLD.status::text = 'confirmed'",
+            "OLD.post_snapshot_id IS NOT NULL",
+            "p_payload => '{}'::jsonb",
+            "balance_sweep_targets_configuration_realtime_event",
+            "rebalance_decisions_confirmation_realtime_event",
+        ] {
+            assert!(
+                migration.sql.contains(required),
+                "migration 18 is missing {required}"
+            );
+        }
     }
 }

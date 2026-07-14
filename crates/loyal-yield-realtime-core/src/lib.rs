@@ -18,8 +18,10 @@ pub const DEFAULT_MAX_TOKEN_LIFETIME_SECONDS: i64 = 5 * 60;
 pub const SCOPE_AUTODEPOSIT: &str = "autodeposit";
 pub const SCOPE_EARN: &str = "earn";
 pub const SCOPE_ONBOARDING: &str = "onboarding";
+pub const EVENT_AUTODEPOSIT_CONFIGURATION_CHANGED: &str = "earn.autodeposit.configuration.changed";
 pub const EVENT_AUTODEPOSIT_EXECUTION_CHANGED: &str = "earn.autodeposit.execution.changed";
 pub const EVENT_EARN_POSITION_CHANGED: &str = "earn.position.changed";
+pub const EVENT_EARN_REBALANCE_CONFIRMED: &str = "earn.rebalance.confirmed";
 pub const EVENT_EARN_TRANSACTION_RECORDED: &str = "earn.transaction.recorded";
 pub const EVENT_EARN_ONBOARDING_CHANGED: &str = "earn.onboarding.changed";
 
