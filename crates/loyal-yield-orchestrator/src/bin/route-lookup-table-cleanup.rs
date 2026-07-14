@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 use solana_client::{
     client_error::{ClientError, ClientErrorKind},
     rpc_client::RpcClient,
-    rpc_config::{RpcSendTransactionConfig, RpcSimulateTransactionConfig},
+    rpc_config::{RpcAccountInfoConfig, RpcSendTransactionConfig, RpcSimulateTransactionConfig},
     rpc_custom_error::JSON_RPC_SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED,
     rpc_request::RpcError as SolanaRpcError,
 };
@@ -152,6 +152,7 @@ struct RegisteredCleanupEnqueueSummary {
 struct CleanupTransactionResult {
     attempt_id: i64,
     signature: String,
+    finalized_slot: u64,
     simulation: Value,
     transaction_packet: CleanupTransactionPacket,
     estimated_fee_lamports: u64,
@@ -2379,10 +2380,7 @@ async fn reconcile_pending_legacy_cleanup_attempts(
                     .as_deref()
                     .map(Pubkey::from_str)
                     .transpose()?
-                    .map(|recipient| {
-                        rpc.get_balance_with_commitment(&recipient, CommitmentConfig::finalized())
-                            .map(|response| response.value)
-                    })
+                    .map(|recipient| finalized_account_lamports(rpc, &recipient, observed_slot))
                     .transpose()?
                     .map(i64::try_from)
                     .transpose()?;
@@ -2509,6 +2507,7 @@ async fn execute_planned_cleanups(
         let mut execution = json!({
             "attemptId": result.attempt_id,
             "signature": result.signature.clone(),
+            "finalizedSlot": result.finalized_slot.to_string(),
             "kind": cleanup.kind,
             "batchIndex": batch_index,
             "batchInstructionIndex": 0,
@@ -2525,10 +2524,16 @@ async fn execute_planned_cleanups(
             "simulation": result.simulation.clone(),
         });
         let (observed_slot, reclaimed_lamports) = if let Some(recipient) = cleanup.recipient {
-            let post_close = rpc.get_account_with_commitment(
-                &cleanup.table_address,
-                CommitmentConfig::finalized(),
-            )?;
+            let post_close = retry_minimum_context_slot(|| {
+                rpc.get_account_with_config(
+                    &cleanup.table_address,
+                    RpcAccountInfoConfig {
+                        commitment: Some(CommitmentConfig::finalized()),
+                        min_context_slot: Some(result.finalized_slot),
+                        ..RpcAccountInfoConfig::default()
+                    },
+                )
+            })?;
             if post_close.value.is_some() {
                 return Err(format!(
                     "closed ALT {} still exists at finalized commitment",
@@ -2540,7 +2545,7 @@ async fn execute_planned_cleanups(
             execution["recipient"] = json!(recipient.to_string());
             execution["reclaimedLamports"] = json!(cleanup.reclaimed_lamports.to_string());
             (
-                i64::try_from(rpc.get_slot_with_commitment(CommitmentConfig::finalized())?)?,
+                i64::try_from(result.finalized_slot)?,
                 Some(i64::try_from(cleanup.reclaimed_lamports)?),
             )
         } else {
@@ -2662,10 +2667,7 @@ async fn send_cleanup_instruction_batch(
     let simulation = simulate_cleanup_transaction(rpc, &transaction, minimum_context_slot)?;
     let estimated_fee_lamports = rpc.get_fee_for_message(&transaction.message)?;
     let recipient_balance_before = close_recipient
-        .map(|recipient| {
-            rpc.get_balance_with_commitment(&recipient, CommitmentConfig::finalized())
-                .map(|response| response.value)
-        })
+        .map(|recipient| finalized_account_lamports(rpc, &recipient, minimum_context_slot))
         .transpose()?;
     let attempt = database
         .prepare_legacy_lookup_table_cleanup_attempt(LegacyLookupTableCleanupAttemptPrepare {
@@ -2798,12 +2800,9 @@ async fn send_cleanup_instruction_batch(
         )
         .into());
     }
-    require_finalized_signature(rpc, &signature)?;
+    let finalized_slot = require_finalized_signature(rpc, &signature)?;
     let recipient_balance_after = close_recipient
-        .map(|recipient| {
-            rpc.get_balance_with_commitment(&recipient, CommitmentConfig::finalized())
-                .map(|response| response.value)
-        })
+        .map(|recipient| finalized_account_lamports(rpc, &recipient, finalized_slot))
         .transpose()?;
     let minimum_net_recipient_increase_lamports =
         expected_refund_lamports.saturating_sub(estimated_fee_lamports);
@@ -2819,6 +2818,7 @@ async fn send_cleanup_instruction_batch(
     Ok(CleanupTransactionResult {
         attempt_id: attempt.id,
         signature: signature.to_string(),
+        finalized_slot,
         simulation,
         transaction_packet,
         estimated_fee_lamports,
@@ -2833,7 +2833,7 @@ async fn send_cleanup_instruction_batch(
 fn require_finalized_signature(
     rpc: &RpcClient,
     signature: &Signature,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<u64, Box<dyn Error>> {
     let status = rpc
         .get_signature_statuses_with_history(&[*signature])?
         .value
@@ -2841,13 +2841,13 @@ fn require_finalized_signature(
         .next()
         .flatten()
         .ok_or("cleanup signature was not found after finalized confirmation")?;
-    if let Some(error) = status.err {
+    if let Some(error) = status.err.as_ref() {
         return Err(format!("cleanup transaction finalized with error: {error:?}").into());
     }
     if !status.satisfies_commitment(CommitmentConfig::finalized()) {
         return Err("cleanup transaction did not reach finalized commitment".into());
     }
-    Ok(())
+    Ok(status.slot)
 }
 
 fn revalidate_cleanup_chain_evidence(
@@ -2955,6 +2955,24 @@ fn retry_minimum_context_slot<T>(
         }
     }
     unreachable!("minimum-context retry loop always returns on its final attempt")
+}
+
+fn finalized_account_lamports(
+    rpc: &RpcClient,
+    address: &Pubkey,
+    minimum_context_slot: u64,
+) -> Result<u64, Box<dyn Error>> {
+    let account = retry_minimum_context_slot(|| {
+        rpc.get_account_with_config(
+            address,
+            RpcAccountInfoConfig {
+                commitment: Some(CommitmentConfig::finalized()),
+                min_context_slot: Some(minimum_context_slot),
+                ..RpcAccountInfoConfig::default()
+            },
+        )
+    })?;
+    Ok(account.value.map_or(0, |account| account.lamports))
 }
 
 fn is_minimum_context_slot_not_reached(error: &ClientError) -> bool {
