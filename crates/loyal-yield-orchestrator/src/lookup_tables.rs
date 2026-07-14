@@ -5905,7 +5905,54 @@ impl NeonSqlClient {
                 "max extension addresses must be positive".to_owned(),
             ));
         }
+
+        for attempt in 1..=LOOKUP_TABLE_DB_CONCURRENCY_MAX_ATTEMPTS {
+            match self
+                .plan_lookup_table_provisioning_request_once(
+                    cluster,
+                    request_id,
+                    lease,
+                    policy.clone(),
+                )
+                .await
+            {
+                Ok(plan) => return Ok(plan),
+                Err(error) => {
+                    let Some(sqlstate) = retryable_lookup_table_database_conflict(&error) else {
+                        return Err(error);
+                    };
+                    if attempt == LOOKUP_TABLE_DB_CONCURRENCY_MAX_ATTEMPTS {
+                        return Err(error);
+                    }
+                    log_lookup_table_database_retry(
+                        "plan_lookup_table_provisioning_request",
+                        sqlstate,
+                        attempt,
+                    );
+                    sleep_for_lookup_table_database_retry(attempt).await;
+                }
+            }
+        }
+        unreachable!("bounded lookup-table database retry returns on its final attempt")
+    }
+
+    async fn plan_lookup_table_provisioning_request_once(
+        &self,
+        cluster: &str,
+        request_id: i64,
+        lease: &LookupTableOperationLease,
+        policy: LookupTableProvisioningPlanPolicy,
+    ) -> Result<LookupTableProvisioningPlan, OrchestratorError> {
         let mut tx = self.pool().begin().await?;
+        // Planning can touch request, catalog, family, binding, and physical
+        // table rows. Take the rollout lock first so all reusable-v2 mutation
+        // paths use the same cluster-scoped lock order.
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-rollout:' || $1, 0))",
+        )
+        .bind(cluster)
+        .execute(&mut *tx)
+        .await?;
         let request_row = sqlx::query(
             r#"
             SELECT * FROM loyal_yield.lookup_table_provisioning_requests
