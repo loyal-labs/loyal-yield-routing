@@ -1713,8 +1713,9 @@ fn load_candidates(
         }
         for (table_address, account) in chunk.iter().copied().zip(response.value) {
             let candidate = match account {
-                Some(account) => candidate_from_account(table_address, &account).map(Some),
                 None => Ok(None),
+                Some(account) if absent_or_closed_account(Some(&account)) => Ok(None),
+                Some(account) => candidate_from_account(table_address, &account).map(Some),
             };
             candidates.insert(table_address, candidate);
         }
@@ -1750,6 +1751,13 @@ fn candidate_from_account(table_address: Pubkey, account: &Account) -> Result<Ca
         deactivation_slot: table.meta.deactivation_slot,
         last_extended_slot: table.meta.last_extended_slot,
     })
+}
+
+fn absent_or_closed_account(account: Option<&Account>) -> bool {
+    match account {
+        None => true,
+        Some(account) => account.lamports == 0 && account.data.is_empty(),
+    }
 }
 
 #[cfg(test)]
@@ -2263,7 +2271,7 @@ fn load_legacy_cleanup_chain_effect(
     let account = rpc
         .get_account_with_commitment(&table_address, CommitmentConfig::finalized())?
         .value;
-    let Some(account) = account else {
+    if absent_or_closed_account(account.as_ref()) {
         return Ok(
             if attempt.operation_kind == LookupTableOperationKind::Close {
                 LegacyCleanupChainEffect::Applied { observed_slot }
@@ -2271,7 +2279,8 @@ fn load_legacy_cleanup_chain_effect(
                 LegacyCleanupChainEffect::Drifted
             },
         );
-    };
+    }
+    let account = account.expect("non-closed cleanup account must be present");
     let candidate = candidate_from_account(table_address, &account)
         .map_err(|error| format!("legacy cleanup recovery decode failed: {error}"))?;
     if candidate.owner != address_lookup_table_program::id()
@@ -2534,7 +2543,7 @@ async fn execute_planned_cleanups(
                     },
                 )
             })?;
-            if post_close.value.is_some() {
+            if !absent_or_closed_account(post_close.value.as_ref()) {
                 return Err(format!(
                     "closed ALT {} still exists at finalized commitment",
                     cleanup.table_address
