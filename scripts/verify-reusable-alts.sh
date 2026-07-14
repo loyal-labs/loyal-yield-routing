@@ -18,7 +18,8 @@ git diff --exit-code HEAD -- crates/loyal-yield-orchestrator/migrations/0017_reu
 for migration in \
   crates/loyal-yield-orchestrator/migrations/0018_earn_activity_realtime.sql \
   crates/loyal-yield-orchestrator/migrations/0019_legacy_lookup_table_imports.sql \
-  crates/loyal-yield-orchestrator/migrations/0020_demand_driven_shared_market_catalog.sql; do
+  crates/loyal-yield-orchestrator/migrations/0020_demand_driven_shared_market_catalog.sql \
+  crates/loyal-yield-orchestrator/migrations/0021_reusable_alt_production_controls.sql; do
   if [[ ! -f "$migration" ]]; then
     echo "required ordered migration is missing: $migration" >&2
     exit 1
@@ -51,7 +52,8 @@ if [[ "${REUSABLE_ALT_VERIFY_EXACT_COMMIT:-0}" == "1" ]]; then
   for migration in \
     crates/loyal-yield-orchestrator/migrations/0018_earn_activity_realtime.sql \
     crates/loyal-yield-orchestrator/migrations/0019_legacy_lookup_table_imports.sql \
-    crates/loyal-yield-orchestrator/migrations/0020_demand_driven_shared_market_catalog.sql; do
+    crates/loyal-yield-orchestrator/migrations/0020_demand_driven_shared_market_catalog.sql \
+    crates/loyal-yield-orchestrator/migrations/0021_reusable_alt_production_controls.sql; do
     if ! git cat-file -e "HEAD:$migration"; then
       echo "exact commit does not contain required migration: $migration" >&2
       exit 1
@@ -123,7 +125,10 @@ echo "checking durable budget, physical-drift, and cutover wiring"
 for required_provisioner_call in \
   reserve_lookup_table_cluster_budget \
   report_shared_market_physical_drift \
-  reusable_only_cutover_preflight; do
+  reusable_only_cutover_preflight \
+  grant_lookup_table_provisioner_broadcast_permit \
+  resolve_lookup_table_provisioner_broadcast_permit \
+  activate_reusable_only_cutover; do
   if ! rg -q -- "$required_provisioner_call" \
     crates/loyal-yield-orchestrator/src/bin/route-lookup-table-provisioner.rs; then
     echo "provisioner is missing required durable safety wiring: $required_provisioner_call" >&2
@@ -131,10 +136,25 @@ for required_provisioner_call in \
   fi
 done
 
+if rg -q -- "with_lookup_table_provisioner_broadcast_fence" \
+  crates/loyal-yield-orchestrator/src; then
+  echo "provisioner still holds a database fence closure across broadcast" >&2
+  exit 1
+fi
+
 echo "checking mandatory legacy-refund execution guards"
 for required_cleanup_guard in \
   expected_fleet_count \
   expected_fleet_hash \
+  imported_legacy_lookup_table_cleanup_fleet \
+  registered_lookup_table_cleanup_inventory \
+  enqueue_registered_cleanups \
+  reserve_legacy_lookup_table_cleanup_budget \
+  run_after_cleanup_budget_approval \
+  get_multiple_accounts_with_commitment \
+  next_before \
+  RpcSendTransactionConfig \
+  CommitmentLevel::Finalized \
   require_finalized_signature \
   minimum_net_recipient_increase_lamports \
   revalidate_cleanup_chain_evidence; do
@@ -144,6 +164,11 @@ for required_cleanup_guard in \
     exit 1
   fi
 done
+if rg -q -- 'get_program_accounts|getProgramAccountsV2' \
+  crates/loyal-yield-orchestrator/src/bin/route-lookup-table-cleanup.rs; then
+  echo "legacy cleanup restored forbidden whole-program ALT discovery" >&2
+  exit 1
+fi
 
 echo "running full reusable ALT implementation tests"
 NO_DNA=1 cargo test -p loyal-actions
@@ -171,6 +196,14 @@ NO_DNA=1 bun run yield:migrate
 NO_DNA=1 bun run yield:migrate:check
 NO_DNA=1 bun run verify:reusable-alts:schema
 REUSABLE_ALT_DB_VERIFY_ISOLATED=1 NO_DNA=1 bun run verify:reusable-alts:db
+
+echo "running isolated durable alert and cleanup budget/crash regressions"
+REUSABLE_ALT_ALERT_DB_VERIFY_ISOLATED=1 NO_DNA=1 \
+  cargo test -p loyal-yield-orchestrator --test lookup_table_alerts_db \
+    durable_incident_and_outbox_lifecycle_is_idempotent -- --ignored --exact
+REUSABLE_ALT_CLEANUP_DB_VERIFY_ISOLATED=1 NO_DNA=1 \
+  cargo test -p loyal-yield-orchestrator --test lookup_table_cleanup_db \
+    cleanup_budget_and_crash_fences_share_v2_cluster_accounting -- --ignored --exact
 
 echo "reapplying migration runner to prove idempotency"
 NO_DNA=1 bun run yield:migrate

@@ -1,5 +1,7 @@
 use std::{borrow::Cow, env, error::Error, str::FromStr};
 
+#[cfg(test)]
+use loyal_yield_orchestrator::LookupTableAlertCondition;
 use sha2::{Digest, Sha256};
 use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -125,6 +127,12 @@ const MIGRATIONS: &[Migration] = &[
         version: 20,
         name: "demand_driven_shared_market_catalog",
         sql: include_str!("../../migrations/0020_demand_driven_shared_market_catalog.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 21,
+        name: "reusable_alt_production_controls",
+        sql: include_str!("../../migrations/0021_reusable_alt_production_controls.sql"),
         expected_checksum: None,
     },
 ];
@@ -351,6 +359,14 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "lookup_table_operation_addresses",
         "lookup_table_route_readiness_current",
         "lookup_table_rollout_controls",
+        "lookup_table_provisioner_controls",
+        "lookup_table_provisioner_broadcast_permits",
+        "lookup_table_precutover_probe_runs",
+        "lookup_table_alert_rules",
+        "lookup_table_alert_incidents",
+        "lookup_table_alert_deliveries",
+        "lookup_table_legacy_cleanup_attempts",
+        "lookup_table_legacy_cleanup_budget_reservations",
         "vault_idle_token_balances_current",
         "realtime_events",
         "realtime_configuration",
@@ -587,6 +603,250 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         (
             "lookup_table_shared_market_physical_drifts",
             "resolution_state",
+        ),
+        ("lookup_table_provisioner_controls", "cluster"),
+        ("lookup_table_provisioner_controls", "paused"),
+        ("lookup_table_provisioner_controls", "reason"),
+        ("lookup_table_provisioner_controls", "updated_by"),
+        ("lookup_table_provisioner_controls", "control_epoch"),
+        ("lookup_table_provisioner_controls", "created_at"),
+        ("lookup_table_provisioner_controls", "updated_at"),
+        ("lookup_table_provisioner_broadcast_permits", "id"),
+        ("lookup_table_provisioner_broadcast_permits", "cluster"),
+        ("lookup_table_provisioner_broadcast_permits", "operation_id"),
+        (
+            "lookup_table_provisioner_broadcast_permits",
+            "fencing_token",
+        ),
+        (
+            "lookup_table_provisioner_broadcast_permits",
+            "control_epoch",
+        ),
+        (
+            "lookup_table_provisioner_broadcast_permits",
+            "transaction_signature",
+        ),
+        ("lookup_table_provisioner_broadcast_permits", "message_hash"),
+        ("lookup_table_provisioner_broadcast_permits", "permit_state"),
+        (
+            "lookup_table_provisioner_broadcast_permits",
+            "resolution_detail",
+        ),
+        ("lookup_table_provisioner_broadcast_permits", "granted_at"),
+        ("lookup_table_provisioner_broadcast_permits", "resolved_at"),
+        ("lookup_table_provisioner_broadcast_permits", "created_at"),
+        ("lookup_table_provisioner_broadcast_permits", "updated_at"),
+        ("lookup_table_precutover_probe_runs", "id"),
+        ("lookup_table_precutover_probe_runs", "probe_token"),
+        ("lookup_table_precutover_probe_runs", "cluster"),
+        ("lookup_table_precutover_probe_runs", "vault_id"),
+        ("lookup_table_precutover_probe_runs", "catalog_revision_id"),
+        ("lookup_table_precutover_probe_runs", "shared_manifest_id"),
+        (
+            "lookup_table_precutover_probe_runs",
+            "route_lookup_table_id",
+        ),
+        ("lookup_table_precutover_probe_runs", "shared_table_address"),
+        ("lookup_table_precutover_probe_runs", "shared_authority"),
+        (
+            "lookup_table_precutover_probe_runs",
+            "shared_mutation_epoch",
+        ),
+        (
+            "lookup_table_precutover_probe_runs",
+            "provisioner_control_epoch",
+        ),
+        (
+            "lookup_table_precutover_probe_runs",
+            "requirements_fingerprint",
+        ),
+        ("lookup_table_precutover_probe_runs", "finalized_slot"),
+        (
+            "lookup_table_precutover_probe_runs",
+            "finalized_last_extended_slot",
+        ),
+        (
+            "lookup_table_precutover_probe_runs",
+            "finalized_address_hash",
+        ),
+        (
+            "lookup_table_precutover_probe_runs",
+            "finalized_address_count",
+        ),
+        (
+            "lookup_table_precutover_probe_runs",
+            "finalized_shared_exact",
+        ),
+        (
+            "lookup_table_precutover_probe_runs",
+            "synthetic_drift_evidence_hash",
+        ),
+        ("lookup_table_precutover_probe_runs", "drift_signal_count"),
+        (
+            "lookup_table_precutover_probe_runs",
+            "drift_provisioning_request_count",
+        ),
+        (
+            "lookup_table_precutover_probe_runs",
+            "duplicate_request_attempt_count",
+        ),
+        (
+            "lookup_table_precutover_probe_runs",
+            "distinct_request_count",
+        ),
+        ("lookup_table_precutover_probe_runs", "decision_count"),
+        ("lookup_table_precutover_probe_runs", "binding_count"),
+        ("lookup_table_precutover_probe_runs", "operation_count"),
+        (
+            "lookup_table_precutover_probe_runs",
+            "rollback_residue_count",
+        ),
+        (
+            "lookup_table_precutover_probe_runs",
+            "catalog_head_restored",
+        ),
+        ("lookup_table_precutover_probe_runs", "signer_loaded"),
+        ("lookup_table_precutover_probe_runs", "transactions_sent"),
+        ("lookup_table_precutover_probe_runs", "result"),
+        ("lookup_table_precutover_probe_runs", "created_at"),
+        ("lookup_table_alert_rules", "rule_key"),
+        ("lookup_table_alert_rules", "rule_version"),
+        ("lookup_table_alert_rules", "enabled"),
+        ("lookup_table_alert_rules", "severity"),
+        ("lookup_table_alert_rules", "description"),
+        ("lookup_table_alert_rules", "configuration"),
+        ("lookup_table_alert_rules", "created_at"),
+        ("lookup_table_alert_rules", "updated_at"),
+        ("lookup_table_alert_incidents", "id"),
+        ("lookup_table_alert_incidents", "cluster"),
+        ("lookup_table_alert_incidents", "policy_pubkey"),
+        ("lookup_table_alert_incidents", "alert_condition"),
+        ("lookup_table_alert_incidents", "scope_key"),
+        ("lookup_table_alert_incidents", "incident_status"),
+        ("lookup_table_alert_incidents", "severity"),
+        ("lookup_table_alert_incidents", "fingerprint"),
+        ("lookup_table_alert_incidents", "summary"),
+        ("lookup_table_alert_incidents", "details"),
+        ("lookup_table_alert_incidents", "first_observed_at"),
+        ("lookup_table_alert_incidents", "opened_at"),
+        ("lookup_table_alert_incidents", "last_observed_at"),
+        ("lookup_table_alert_incidents", "last_notified_at"),
+        ("lookup_table_alert_incidents", "occurrence_count"),
+        ("lookup_table_alert_incidents", "revision"),
+        ("lookup_table_alert_incidents", "resolved_at"),
+        ("lookup_table_alert_incidents", "created_at"),
+        ("lookup_table_alert_incidents", "updated_at"),
+        ("lookup_table_alert_deliveries", "id"),
+        ("lookup_table_alert_deliveries", "incident_id"),
+        ("lookup_table_alert_deliveries", "incident_revision"),
+        ("lookup_table_alert_deliveries", "alert_condition"),
+        ("lookup_table_alert_deliveries", "event_kind"),
+        ("lookup_table_alert_deliveries", "idempotency_key"),
+        ("lookup_table_alert_deliveries", "cluster"),
+        ("lookup_table_alert_deliveries", "policy_pubkey"),
+        ("lookup_table_alert_deliveries", "payload"),
+        ("lookup_table_alert_deliveries", "delivery_state"),
+        ("lookup_table_alert_deliveries", "delivered_via"),
+        ("lookup_table_alert_deliveries", "attempt_count"),
+        ("lookup_table_alert_deliveries", "max_attempts"),
+        ("lookup_table_alert_deliveries", "next_attempt_at"),
+        ("lookup_table_alert_deliveries", "lease_owner"),
+        ("lookup_table_alert_deliveries", "lease_expires_at"),
+        ("lookup_table_alert_deliveries", "fencing_token"),
+        ("lookup_table_alert_deliveries", "http_status"),
+        ("lookup_table_alert_deliveries", "last_error"),
+        ("lookup_table_alert_deliveries", "delivered_at"),
+        ("lookup_table_alert_deliveries", "created_at"),
+        ("lookup_table_alert_deliveries", "updated_at"),
+        ("lookup_table_legacy_cleanup_attempts", "id"),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "route_lookup_table_id",
+        ),
+        ("lookup_table_legacy_cleanup_attempts", "cluster"),
+        ("lookup_table_legacy_cleanup_attempts", "table_address"),
+        ("lookup_table_legacy_cleanup_attempts", "operation_kind"),
+        ("lookup_table_legacy_cleanup_attempts", "attempt_number"),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "authorization_token",
+        ),
+        ("lookup_table_legacy_cleanup_attempts", "expected_authority"),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "expected_address_count",
+        ),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "expected_address_hash",
+        ),
+        ("lookup_table_legacy_cleanup_attempts", "close_recipient"),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "expected_reclaimed_lamports",
+        ),
+        ("lookup_table_legacy_cleanup_attempts", "attempt_state"),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "transaction_signature",
+        ),
+        ("lookup_table_legacy_cleanup_attempts", "message_hash"),
+        ("lookup_table_legacy_cleanup_attempts", "recent_blockhash"),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "last_valid_block_height",
+        ),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "estimated_fee_lamports",
+        ),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "recipient_balance_before",
+        ),
+        ("lookup_table_legacy_cleanup_attempts", "submitted_at"),
+        ("lookup_table_legacy_cleanup_attempts", "finalized_slot"),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "recipient_balance_after",
+        ),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "actual_reclaimed_lamports",
+        ),
+        ("lookup_table_legacy_cleanup_attempts", "error_code"),
+        ("lookup_table_legacy_cleanup_attempts", "error_detail"),
+        ("lookup_table_legacy_cleanup_attempts", "created_at"),
+        ("lookup_table_legacy_cleanup_attempts", "updated_at"),
+        ("lookup_table_legacy_cleanup_budget_reservations", "id"),
+        (
+            "lookup_table_legacy_cleanup_budget_reservations",
+            "legacy_cleanup_attempt_id",
+        ),
+        ("lookup_table_legacy_cleanup_budget_reservations", "cluster"),
+        (
+            "lookup_table_legacy_cleanup_budget_reservations",
+            "estimated_fee_lamports",
+        ),
+        (
+            "lookup_table_legacy_cleanup_budget_reservations",
+            "estimated_rent_lamports",
+        ),
+        (
+            "lookup_table_legacy_cleanup_budget_reservations",
+            "reserved_lamports",
+        ),
+        (
+            "lookup_table_legacy_cleanup_budget_reservations",
+            "reserved_at",
+        ),
+        (
+            "lookup_table_legacy_cleanup_budget_reservations",
+            "reserved_until",
+        ),
+        (
+            "lookup_table_legacy_cleanup_budget_reservations",
+            "created_at",
         ),
         ("lookup_table_cluster_budget_reservations", "id"),
         ("lookup_table_cluster_budget_reservations", "cluster"),
@@ -993,6 +1253,190 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
             "lookup_table_shared_market_physical_drift_resolution_check",
         ),
         (
+            "lookup_table_provisioner_controls",
+            "lookup_table_provisioner_controls_epoch_check",
+        ),
+        (
+            "lookup_table_provisioner_controls",
+            "lookup_table_provisioner_controls_text_check",
+        ),
+        (
+            "lookup_table_provisioner_broadcast_permits",
+            "lookup_table_provisioner_broadcast_permits_identity_unique",
+        ),
+        (
+            "lookup_table_provisioner_broadcast_permits",
+            "lookup_table_provisioner_broadcast_permits_identity_check",
+        ),
+        (
+            "lookup_table_provisioner_broadcast_permits",
+            "lookup_table_provisioner_broadcast_permits_state_check",
+        ),
+        (
+            "lookup_table_precutover_probe_runs",
+            "lookup_table_precutover_probe_identity_check",
+        ),
+        (
+            "lookup_table_precutover_probe_runs",
+            "lookup_table_precutover_probe_pass_check",
+        ),
+        (
+            "lookup_table_alert_rules",
+            "lookup_table_alert_rules_key_check",
+        ),
+        (
+            "lookup_table_alert_rules",
+            "lookup_table_alert_rules_version_check",
+        ),
+        (
+            "lookup_table_alert_rules",
+            "lookup_table_alert_rules_severity_check",
+        ),
+        (
+            "lookup_table_alert_rules",
+            "lookup_table_alert_rules_configuration_check",
+        ),
+        (
+            "lookup_table_alert_rules",
+            "lookup_table_alert_rules_text_check",
+        ),
+        (
+            "lookup_table_alert_incidents",
+            "lookup_table_alert_incidents_identity_unique",
+        ),
+        (
+            "lookup_table_alert_incidents",
+            "lookup_table_alert_incidents_id_condition_unique",
+        ),
+        (
+            "lookup_table_alert_incidents",
+            "lookup_table_alert_incidents_rule_fkey",
+        ),
+        (
+            "lookup_table_alert_incidents",
+            "lookup_table_alert_incidents_condition_check",
+        ),
+        (
+            "lookup_table_alert_incidents",
+            "lookup_table_alert_incidents_status_check",
+        ),
+        (
+            "lookup_table_alert_incidents",
+            "lookup_table_alert_incidents_severity_check",
+        ),
+        (
+            "lookup_table_alert_incidents",
+            "lookup_table_alert_incidents_fingerprint_check",
+        ),
+        (
+            "lookup_table_alert_incidents",
+            "lookup_table_alert_incidents_details_check",
+        ),
+        (
+            "lookup_table_alert_incidents",
+            "lookup_table_alert_incidents_text_check",
+        ),
+        (
+            "lookup_table_alert_incidents",
+            "lookup_table_alert_incidents_counter_check",
+        ),
+        (
+            "lookup_table_alert_incidents",
+            "lookup_table_alert_incidents_time_check",
+        ),
+        (
+            "lookup_table_alert_deliveries",
+            "lookup_table_alert_deliveries_idempotency_key_unique",
+        ),
+        (
+            "lookup_table_alert_deliveries",
+            "lookup_table_alert_deliveries_incident_revision_unique",
+        ),
+        (
+            "lookup_table_alert_deliveries",
+            "lookup_table_alert_deliveries_rule_fkey",
+        ),
+        (
+            "lookup_table_alert_deliveries",
+            "lookup_table_alert_deliveries_incident_fkey",
+        ),
+        (
+            "lookup_table_alert_deliveries",
+            "lookup_table_alert_deliveries_event_check",
+        ),
+        (
+            "lookup_table_alert_deliveries",
+            "lookup_table_alert_deliveries_state_check",
+        ),
+        (
+            "lookup_table_alert_deliveries",
+            "lookup_table_alert_deliveries_channel_check",
+        ),
+        (
+            "lookup_table_alert_deliveries",
+            "lookup_table_alert_deliveries_payload_check",
+        ),
+        (
+            "lookup_table_alert_deliveries",
+            "lookup_table_alert_deliveries_identity_check",
+        ),
+        (
+            "lookup_table_alert_deliveries",
+            "lookup_table_alert_deliveries_counter_check",
+        ),
+        (
+            "lookup_table_alert_deliveries",
+            "lookup_table_alert_deliveries_lease_check",
+        ),
+        (
+            "lookup_table_alert_deliveries",
+            "lookup_table_alert_deliveries_completion_check",
+        ),
+        (
+            "lookup_table_alert_deliveries",
+            "lookup_table_alert_deliveries_http_check",
+        ),
+        (
+            "lookup_table_alert_deliveries",
+            "lookup_table_alert_deliveries_text_check",
+        ),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "lookup_table_legacy_cleanup_attempt_identity_unique",
+        ),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "lookup_table_legacy_cleanup_attempt_kind_check",
+        ),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "lookup_table_legacy_cleanup_attempt_state_check",
+        ),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "lookup_table_legacy_cleanup_attempt_identity_check",
+        ),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "lookup_table_legacy_cleanup_attempt_refund_shape_check",
+        ),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "lookup_table_legacy_cleanup_attempt_signed_shape_check",
+        ),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "lookup_table_legacy_cleanup_attempt_completion_check",
+        ),
+        (
+            "lookup_table_legacy_cleanup_budget_reservations",
+            "lookup_table_legacy_cleanup_budget_attempt_unique",
+        ),
+        (
+            "lookup_table_legacy_cleanup_budget_reservations",
+            "lookup_table_legacy_cleanup_budget_amount_check",
+        ),
+        (
             "lookup_table_cluster_budget_reservations",
             "lookup_table_cluster_budget_operation_fence_unique",
         ),
@@ -1273,6 +1717,26 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
             "lookup_table_shared_market_physical_drifts",
             "route_lookup_table_id",
         ),
+        ("lookup_table_precutover_probe_runs", "vault_id"),
+        ("lookup_table_precutover_probe_runs", "catalog_revision_id"),
+        ("lookup_table_precutover_probe_runs", "shared_manifest_id"),
+        (
+            "lookup_table_precutover_probe_runs",
+            "route_lookup_table_id",
+        ),
+        ("lookup_table_provisioner_broadcast_permits", "operation_id"),
+        ("lookup_table_provisioner_broadcast_permits", "cluster"),
+        ("lookup_table_alert_incidents", "alert_condition"),
+        ("lookup_table_alert_deliveries", "incident_id"),
+        ("lookup_table_alert_deliveries", "alert_condition"),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "route_lookup_table_id",
+        ),
+        (
+            "lookup_table_legacy_cleanup_budget_reservations",
+            "legacy_cleanup_attempt_id",
+        ),
         ("lookup_table_cluster_budget_reservations", "operation_id"),
     ] {
         let exists: bool = sqlx::query_scalar(
@@ -1306,11 +1770,20 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "lookup_table_shared_catalog_revision_family_idx",
         "lookup_table_shared_market_physical_drift_open_idx",
         "lookup_table_cluster_budget_active_idx",
+        "lookup_table_provisioner_broadcast_permits_active_idx",
+        "lookup_table_provisioner_broadcast_permits_cluster_active_idx",
         "lookup_table_vault_bindings_one_active_idx",
         "lookup_table_usage_leases_active_table_idx",
         "lookup_table_provisioning_requests_work_queue_idx",
         "lookup_table_rollout_controls_global_idx",
         "lookup_table_rollout_controls_vault_idx",
+        "lookup_table_alert_rules_enabled_idx",
+        "lookup_table_alert_incidents_open_idx",
+        "lookup_table_alert_deliveries_work_idx",
+        "lookup_table_alert_deliveries_incident_idx",
+        "lookup_table_legacy_cleanup_attempt_active_unique",
+        "lookup_table_legacy_cleanup_attempt_recovery_idx",
+        "lookup_table_legacy_cleanup_budget_active_idx",
     ] {
         let exists: bool =
             sqlx::query_scalar("SELECT to_regclass(format('loyal_yield.%I', $1)) IS NOT NULL")
@@ -1355,8 +1828,25 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
             "lookup_table_shared_market_physical_drift_immutable",
         ),
         (
+            "lookup_table_precutover_probe_runs",
+            "lookup_table_precutover_probe_runs_immutable",
+        ),
+        ("lookup_table_alert_rules", "lookup_table_alert_rules_guard"),
+        (
+            "lookup_table_alert_incidents",
+            "lookup_table_alert_incidents_guard",
+        ),
+        (
             "lookup_table_cluster_budget_reservations",
             "lookup_table_cluster_budget_reservations_immutable",
+        ),
+        (
+            "lookup_table_legacy_cleanup_budget_reservations",
+            "lookup_table_legacy_cleanup_budget_reservations_immutable",
+        ),
+        (
+            "lookup_table_legacy_cleanup_attempts",
+            "lookup_table_legacy_cleanup_attempt_budget_guard",
         ),
         ("lookup_table_manifests", "lookup_table_manifests_immutable"),
         (
@@ -1394,6 +1884,31 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         if !exists {
             return Err(format!("missing trigger loyal_yield.{relation}.{trigger}").into());
         }
+    }
+    let alert_rule_keys: Vec<String> = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(array_agg(rule_key ORDER BY rule_key), '{}'::TEXT[])
+        FROM loyal_yield.lookup_table_alert_rules
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    let expected_alert_rule_keys = vec![
+        "authority_prefix_drift".to_owned(),
+        "capacity_headroom".to_owned(),
+        "cleanup_anomalies".to_owned(),
+        "fallback_use".to_owned(),
+        "missing_coverage".to_owned(),
+        "operation_backlog".to_owned(),
+        "orphaned_tables".to_owned(),
+        "provisioning_budget".to_owned(),
+        "readiness_regression".to_owned(),
+    ];
+    if alert_rule_keys != expected_alert_rule_keys {
+        return Err(
+            "reusable ALT alert rule catalog must contain exactly the nine durable rule identities"
+                .into(),
+        );
     }
     let yield_deposits_exist: bool = sqlx::query_scalar(
         "SELECT to_regclass('loyal_yield.user_yield_position_deposits') IS NOT NULL",
@@ -1753,20 +2268,18 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
 }
 
 async fn verify_reusable_alts(pool: &PgPool) -> Result<(), Box<dyn Error>> {
-    let migration_applied: bool = sqlx::query_scalar(
+    let migrations_applied: bool = sqlx::query_scalar(
         r#"
-        SELECT EXISTS (
-            SELECT 1
-            FROM loyal_yield.schema_migrations
-            WHERE version = 20
-              AND name = 'demand_driven_shared_market_catalog'
-        )
+        SELECT count(*) = 2
+        FROM loyal_yield.schema_migrations
+        WHERE (version = 20 AND name = 'demand_driven_shared_market_catalog')
+           OR (version = 21 AND name = 'reusable_alt_production_controls')
         "#,
     )
     .fetch_one(pool)
     .await?;
-    if !migration_applied {
-        return Err("migration 20 demand_driven_shared_market_catalog is not recorded".into());
+    if !migrations_applied {
+        return Err("migrations 20 demand_driven_shared_market_catalog and 21 reusable_alt_production_controls must both be recorded".into());
     }
 
     let invalid_shared_catalogs: i64 = sqlx::query_scalar(
@@ -2308,6 +2821,7 @@ mod tests {
             (18, "earn_activity_realtime"),
             (19, "legacy_lookup_table_imports"),
             (20, "demand_driven_shared_market_catalog"),
+            (21, "reusable_alt_production_controls"),
         ] {
             assert_eq!(
                 MIGRATIONS
@@ -2383,6 +2897,95 @@ mod tests {
             assert!(
                 migration.sql.contains(required),
                 "migration 18 is missing {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn reusable_alt_alert_migration_has_durable_exact_condition_outbox_contract() {
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 21)
+            .expect("migration 21 exists");
+
+        for required in [
+            "lookup_table_alert_rules",
+            "enabled BOOLEAN NOT NULL DEFAULT TRUE",
+            "rule_version BIGINT NOT NULL DEFAULT 1",
+            "lookup_table_alert_rules_enabled_idx",
+            "lookup_table_alert_rules_guard",
+            "lookup_table_alert_incidents",
+            "lookup_table_alert_deliveries",
+            "lookup_table_alert_incidents_identity_unique",
+            "lookup_table_alert_incidents_id_condition_unique",
+            "lookup_table_alert_incidents_rule_fkey",
+            "lookup_table_alert_deliveries_idempotency_key_unique",
+            "lookup_table_alert_deliveries_incident_revision_unique",
+            "lookup_table_alert_deliveries_rule_fkey",
+            "lookup_table_alert_deliveries_incident_fkey",
+            "'pending', 'leased', 'retry_wait', 'delivered', 'dead_letter'",
+            "'webhook', 'render_failure'",
+        ] {
+            assert!(
+                migration.sql.contains(required),
+                "migration 21 is missing {required}"
+            );
+        }
+        for condition in LookupTableAlertCondition::ALL {
+            assert!(
+                migration.sql.contains(&format!("'{}'", condition.as_str())),
+                "migration 21 is missing {}",
+                condition.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn reusable_alt_production_control_migration_has_pause_and_immutable_probe_contract() {
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 21)
+            .expect("migration 21 exists");
+
+        for required in [
+            "lookup_table_provisioner_controls",
+            "control_epoch BIGINT NOT NULL DEFAULT 0",
+            "lookup_table_precutover_probe_runs",
+            "shared_table_address TEXT NOT NULL",
+            "shared_authority TEXT NOT NULL",
+            "shared_mutation_epoch BIGINT NOT NULL",
+            "provisioner_control_epoch BIGINT NOT NULL",
+            "lookup_table_provisioner_broadcast_permits",
+            "lookup_table_provisioner_broadcast_permits_active_idx",
+            "lookup_table_provisioner_broadcast_permits_cluster_active_idx",
+            "No database transaction is held while",
+            "finalized_last_extended_slot BIGINT NOT NULL",
+            "lookup_table_precutover_probe_pass_check",
+            "drift_provisioning_request_count = 0",
+            "duplicate_request_attempt_count = 2",
+            "distinct_request_count = 1",
+            "decision_count = 0",
+            "binding_count = 0",
+            "operation_count = 0",
+            "rollback_residue_count = 0",
+            "NOT signer_loaded",
+            "NOT transactions_sent",
+            "lookup_table_precutover_probe_runs_immutable",
+            "lookup_table_legacy_cleanup_attempts",
+            "lookup_table_legacy_cleanup_attempt_active_unique",
+            "lookup_table_legacy_cleanup_attempt_recovery_idx",
+            "transaction_signature TEXT UNIQUE",
+            "actual_reclaimed_lamports = expected_reclaimed_lamports",
+            "lookup_table_legacy_cleanup_budget_reservations",
+            "lookup_table_legacy_cleanup_budget_attempt_unique",
+            "lookup_table_legacy_cleanup_budget_active_idx",
+            "lookup_table_legacy_cleanup_budget_reservations_immutable",
+            "lookup_table_legacy_cleanup_attempt_budget_guard",
+            "legacy cleanup signing requires an exact durable cluster budget reservation",
+        ] {
+            assert!(
+                migration.sql.contains(required),
+                "migration 21 is missing {required}"
             );
         }
     }

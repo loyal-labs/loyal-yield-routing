@@ -14,8 +14,8 @@ use loyal_yield_orchestrator::sqlx::Row;
 use loyal_yield_orchestrator::{
     enabled_stable_mints_from_env, policy_keypair_from_env, route_amount_evidence,
     solana_testing_keypair_from_env, CurrentIdleTokenBalance, CurrentReservePosition, ManagedVault,
-    NeonSqlClient, NeonSqlConfig, PolicyId, RoutePolicy, VaultId, ACTIVE_DECISION_STATUSES,
-    SOLANA_TESTING_PK_ENV,
+    NeonSqlClient, NeonSqlConfig, PolicyId, RoutePolicy, SupportedKaminoReserve, VaultId,
+    ACTIVE_DECISION_STATUSES, SOLANA_TESTING_PK_ENV,
 };
 use loyal_yield_router::timescale::{
     SupportedReserveLatestRow, TimescaleRouterClient, TimescaleRouterClientConfig,
@@ -155,16 +155,36 @@ async fn run_once(
     neon: &NeonSqlClient,
     timescale: &TimescaleRouterClient,
 ) -> Result<Value, Box<dyn Error>> {
-    let candidates = load_safe_stable_candidates(timescale, &options.enabled_mints).await?;
+    // Keep exit visibility and entry eligibility separate. Known reserves may only supply
+    // reconciliation/source identities; the safe latest rows remain the sole target input.
+    let (candidates, known_reserves) = tokio::try_join!(
+        load_safe_stable_candidates(timescale, &options.enabled_mints),
+        load_known_stable_reserves(timescale, &options.enabled_mints),
+    )?;
     if options.all_active_vaults {
-        return run_fleet_once(options, optimizer_signer, neon, &candidates).await;
+        return run_fleet_once(
+            options,
+            optimizer_signer,
+            neon,
+            &candidates,
+            &known_reserves,
+        )
+        .await;
     }
 
     let vault = resolve_vault(neon, authority, options).await?;
     let idle_balance = neon
         .current_idle_token_balance(vault.vault.id, &USDC_MINT.to_string())
         .await?;
-    run_vault_once(options, vault, neon, &candidates, idle_balance).await
+    run_vault_once(
+        options,
+        vault,
+        neon,
+        &candidates,
+        &known_reserves,
+        idle_balance,
+    )
+    .await
 }
 
 async fn run_fleet_once(
@@ -172,6 +192,7 @@ async fn run_fleet_once(
     optimizer_signer: Option<Pubkey>,
     neon: &NeonSqlClient,
     candidates: &[SupportedReserveLatestRow],
+    known_reserves: &[SupportedKaminoReserve],
 ) -> Result<Value, Box<dyn Error>> {
     let optimizer_signer = optimizer_signer.ok_or("POLICY_KEYPAIR signer was not loaded")?;
     let delegated_signer = optimizer_signer.to_string();
@@ -200,16 +221,24 @@ async fn run_fleet_once(
             for vault in vaults {
                 let vault_identity = vault_json(&vault);
                 let idle_balance = idle_balances.get(&vault.vault.id.as_i64()).cloned();
-                let result =
-                    match run_vault_once(options, vault, neon, candidates, idle_balance).await {
-                        Ok(result) => result,
-                        Err(error) => json!({
-                            "status": "vault_error",
-                            "execute": options.execute,
-                            "vault": vault_identity,
-                            "error": error.to_string(),
-                        }),
-                    };
+                let result = match run_vault_once(
+                    options,
+                    vault,
+                    neon,
+                    candidates,
+                    known_reserves,
+                    idle_balance,
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(error) => json!({
+                        "status": "vault_error",
+                        "execute": options.execute,
+                        "vault": vault_identity,
+                        "error": error.to_string(),
+                    }),
+                };
                 idle_priority_count += usize::from(
                     result
                         .get("plannedIdleVaultDeposit")
@@ -231,7 +260,9 @@ async fn run_fleet_once(
         "scanMaxVaultId": scan_max_vault_id,
         "fleetPageSize": options.fleet_page_size,
         "candidateCount": candidates.len(),
+        "knownSourceReserveCount": known_reserves.len(),
         "candidateCountsByMint": candidate_counts_by_mint(candidates),
+        "knownSourceReserveCountsByMint": known_reserve_counts_by_mint(known_reserves),
         "skippedMints": skipped_mints(&options.enabled_mints, candidates),
         "pollIntervalSeconds": options.poll_interval_seconds,
         "rebalanceCooldownSeconds": options.rebalance_cooldown_seconds,
@@ -249,6 +280,7 @@ async fn run_vault_once(
     vault: ResolvedVault,
     neon: &NeonSqlClient,
     candidates: &[SupportedReserveLatestRow],
+    known_reserves: &[SupportedKaminoReserve],
     idle_balance: Option<CurrentIdleTokenBalance>,
 ) -> Result<Value, Box<dyn Error>> {
     let candidate_counts = candidate_counts_by_mint(candidates);
@@ -275,6 +307,8 @@ async fn run_vault_once(
     }
     let policy_candidates =
         policy_eligible_candidates(&vault.policy, candidates, &options.enabled_mints);
+    let catalog_policy_source_reserves =
+        policy_eligible_source_reserves(&vault.policy, known_reserves, &options.enabled_mints);
     let active_decisions = active_decision_count(neon, vault.vault.id).await?;
     if active_decisions > 0 {
         return Ok(json!({
@@ -292,6 +326,13 @@ async fn run_vault_once(
             "rebalanceCooldownSeconds": options.rebalance_cooldown_seconds,
         }));
     }
+    let persisted_positions_before_reconcile = neon.current_positions(vault.vault.id).await?;
+    let policy_source_reserves = retain_persisted_policy_sources(
+        &vault.policy,
+        &options.enabled_mints,
+        catalog_policy_source_reserves,
+        &persisted_positions_before_reconcile,
+    );
 
     let freshest_cutoff = Utc::now() - Duration::seconds(options.max_candidate_age_seconds);
     let (fresh_candidates, stale_candidate_count) =
@@ -304,7 +345,7 @@ async fn run_vault_once(
     if let Ok(Some(planned_idle_deposit)) = idle_plan.as_ref() {
         if options.execute {
             let execution =
-                execute_idle_vault_deposit(&vault, planned_idle_deposit, &policy_candidates)?;
+                execute_idle_vault_deposit(&vault, planned_idle_deposit, &policy_source_reserves)?;
             let active_decision_count_after = active_decision_count(neon, vault.vault.id).await?;
             let execution_status = route_execution_status(&execution);
             if !execution.success || execution_status != "idle_vault_deposit_executed" {
@@ -400,7 +441,7 @@ async fn run_vault_once(
         }));
     }
 
-    let reconcile = reconcile_current_positions_for_vault(&vault, &policy_candidates)?;
+    let reconcile = reconcile_current_positions_for_vault(&vault, &policy_source_reserves)?;
     if !reconcile.success {
         return Ok(json!({
             "status": "reconcile_failed",
@@ -418,11 +459,12 @@ async fn run_vault_once(
         }));
     }
     let positions = neon.current_positions(vault.vault.id).await?;
-    let policy_positions = policy_eligible_positions(&positions, &policy_candidates);
+    let policy_positions = policy_eligible_positions(&positions, &policy_source_reserves);
 
     let plan = if fresh_candidates.is_empty() {
         Err("no_eligible_fresh_candidate_data".to_owned())
     } else {
+        // Never widen this target argument to the source/reconciliation universe.
         plan_move(&policy_positions, &fresh_candidates, options.min_edge_bps)
     };
     let (status, skip_reason) =
@@ -586,7 +628,7 @@ fn execute_planned_move(
 fn execute_idle_vault_deposit(
     vault: &ResolvedVault,
     plan: &PlannedIdleVaultDeposit,
-    policy_candidates: &[SupportedReserveLatestRow],
+    policy_source_reserves: &[SupportedKaminoReserve],
 ) -> Result<RouteExecutionOutput, Box<dyn Error>> {
     let binary = same_mint_reserve_swap_binary()?;
     let current_exe = env::current_exe()?;
@@ -629,7 +671,7 @@ fn execute_idle_vault_deposit(
         .arg(plan.edge_bps.to_string())
         .arg("--reconcile-from-chain")
         .arg("--execute");
-    for reserve in idle_deposit_post_reconcile_reserves(&plan.idle.mint, policy_candidates) {
+    for reserve in idle_deposit_post_reconcile_reserves(policy_source_reserves) {
         command.arg("--reconcile-reserve").arg(reserve);
     }
 
@@ -654,16 +696,15 @@ fn execute_idle_vault_deposit(
 }
 
 fn idle_deposit_post_reconcile_reserves(
-    mint: &str,
-    policy_candidates: &[SupportedReserveLatestRow],
+    policy_source_reserves: &[SupportedKaminoReserve],
 ) -> Vec<String> {
     let mut reserves = Vec::new();
-    for candidate in policy_candidates
-        .iter()
-        .filter(|candidate| candidate.liquidity_mint == mint)
-    {
-        if !reserves.iter().any(|reserve| reserve == &candidate.reserve) {
-            reserves.push(candidate.reserve.clone());
+    for source_reserve in policy_source_reserves {
+        if !reserves
+            .iter()
+            .any(|reserve| reserve == &source_reserve.reserve)
+        {
+            reserves.push(source_reserve.reserve.clone());
         }
     }
     reserves
@@ -679,9 +720,9 @@ fn same_mint_reserve_swap_binary() -> Result<PathBuf, Box<dyn Error>> {
 
 fn reconcile_current_positions_for_vault(
     vault: &ResolvedVault,
-    policy_candidates: &[SupportedReserveLatestRow],
+    policy_source_reserves: &[SupportedKaminoReserve],
 ) -> Result<ReconcileOutput, Box<dyn Error>> {
-    let reserves = reconcile_reserves_for_candidates(policy_candidates);
+    let reserves = reconcile_reserves_for_source_universe(policy_source_reserves);
     if reserves.len() < 2 {
         return Err(
             "chain reconciliation requires at least two policy-eligible reserves with the same liquidity mint".into(),
@@ -740,10 +781,12 @@ fn reconcile_current_positions_for_vault(
     })
 }
 
-fn reconcile_reserves_for_candidates(candidates: &[SupportedReserveLatestRow]) -> Vec<String> {
+fn reconcile_reserves_for_source_universe(
+    source_reserves: &[SupportedKaminoReserve],
+) -> Vec<String> {
     let mut same_mint_pair = Vec::new();
-    'outer: for source in candidates {
-        for target in candidates {
+    'outer: for source in source_reserves {
+        for target in source_reserves {
             if source.reserve != target.reserve && source.liquidity_mint == target.liquidity_mint {
                 same_mint_pair.push(source.reserve.clone());
                 same_mint_pair.push(target.reserve.clone());
@@ -761,9 +804,12 @@ fn reconcile_reserves_for_candidates(candidates: &[SupportedReserveLatestRow]) -
             reserves.push(reserve);
         }
     }
-    for candidate in candidates {
-        if !reserves.iter().any(|reserve| reserve == &candidate.reserve) {
-            reserves.push(candidate.reserve.clone());
+    for source_reserve in source_reserves {
+        if !reserves
+            .iter()
+            .any(|reserve| reserve == &source_reserve.reserve)
+        {
+            reserves.push(source_reserve.reserve.clone());
         }
     }
     reserves
@@ -816,6 +862,36 @@ async fn load_safe_stable_candidates(
     Ok(rows)
 }
 
+async fn load_known_stable_reserves(
+    timescale: &TimescaleRouterClient,
+    enabled_mints: &[String],
+) -> Result<Vec<SupportedKaminoReserve>, Box<dyn Error>> {
+    if enabled_mints.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // This is the source/reconciliation universe, not the target universe. Inactive or
+    // no-longer-safe rows must remain visible so an existing on-chain position can exit them.
+    let rows = loyal_yield_orchestrator::sqlx::query_as::<_, SupportedKaminoReserve>(
+        r#"
+        SELECT sr.market,
+               sr.liquidity_mint,
+               sr.reserve,
+               sr.market_name,
+               sr.symbol,
+               sr.updated_at
+        FROM kamino.supported_reserves sr
+        WHERE sr.liquidity_mint = ANY($1::TEXT[])
+        ORDER BY sr.market, sr.liquidity_mint, sr.reserve
+        "#,
+    )
+    .bind(enabled_mints.to_vec())
+    .fetch_all(timescale.pool())
+    .await?;
+
+    Ok(rows)
+}
+
 fn policy_eligible_candidates(
     policy: &RoutePolicy,
     candidates: &[SupportedReserveLatestRow],
@@ -828,33 +904,103 @@ fn policy_eligible_candidates(
     candidates
         .iter()
         .filter(|candidate| {
-            enabled.contains(candidate.liquidity_mint.as_str())
-                && candidate.market.as_ref().is_some_and(|market| {
-                    policy
-                        .kamino_markets
-                        .iter()
-                        .any(|allowed_market| allowed_market == market)
-                })
-                && policy
-                    .stable_mints
-                    .iter()
-                    .any(|mint| mint == &candidate.liquidity_mint)
-                && policy
-                    .kamino_liquidity_mints
-                    .iter()
-                    .any(|mint| mint == &candidate.liquidity_mint)
+            candidate.market.as_ref().is_some_and(|market| {
+                policy_allows_reserve(policy, &enabled, market, &candidate.liquidity_mint)
+            })
         })
         .cloned()
         .collect()
 }
 
+fn policy_eligible_source_reserves(
+    policy: &RoutePolicy,
+    known_reserves: &[SupportedKaminoReserve],
+    enabled_mints: &[String],
+) -> Vec<SupportedKaminoReserve> {
+    let enabled = enabled_mints
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    known_reserves
+        .iter()
+        .filter(|reserve| {
+            policy_allows_reserve(policy, &enabled, &reserve.market, &reserve.liquidity_mint)
+        })
+        .cloned()
+        .collect()
+}
+
+fn retain_persisted_policy_sources(
+    policy: &RoutePolicy,
+    enabled_mints: &[String],
+    catalog_sources: Vec<SupportedKaminoReserve>,
+    persisted_positions: &[CurrentReservePosition],
+) -> Vec<SupportedKaminoReserve> {
+    let enabled = enabled_mints
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut sources = catalog_sources
+        .into_iter()
+        .map(|source| (source.reserve.clone(), source))
+        .collect::<BTreeMap<_, _>>();
+
+    // Persisted valued positions are a retention fence. A reserve can disappear from the
+    // mutable Timescale catalog after funds were deposited, but it must stay in chain
+    // reconciliation until the holding is observed at zero.
+    for position in persisted_positions
+        .iter()
+        .filter(|position| position.has_value || position.amount_raw > 0)
+    {
+        let Some(market) = position.market.as_deref() else {
+            continue;
+        };
+        if !policy_allows_reserve(policy, &enabled, market, &position.liquidity_mint) {
+            continue;
+        }
+        sources
+            .entry(position.reserve.clone())
+            .or_insert_with(|| SupportedKaminoReserve {
+                market: market.to_owned(),
+                liquidity_mint: position.liquidity_mint.clone(),
+                reserve: position.reserve.clone(),
+                market_name: None,
+                symbol: None,
+                updated_at: position.observed_at,
+            });
+    }
+
+    sources.into_values().collect()
+}
+
+fn policy_allows_reserve(
+    policy: &RoutePolicy,
+    enabled_mints: &BTreeSet<&str>,
+    market: &str,
+    liquidity_mint: &str,
+) -> bool {
+    enabled_mints.contains(liquidity_mint)
+        && policy
+            .kamino_markets
+            .iter()
+            .any(|allowed_market| allowed_market == market)
+        && policy
+            .stable_mints
+            .iter()
+            .any(|mint| mint == liquidity_mint)
+        && policy
+            .kamino_liquidity_mints
+            .iter()
+            .any(|mint| mint == liquidity_mint)
+}
+
 fn policy_eligible_positions(
     positions: &[CurrentReservePosition],
-    policy_candidates: &[SupportedReserveLatestRow],
+    policy_source_reserves: &[SupportedKaminoReserve],
 ) -> Vec<CurrentReservePosition> {
-    let eligible_reserves = policy_candidates
+    let eligible_reserves = policy_source_reserves
         .iter()
-        .map(|candidate| candidate.reserve.as_str())
+        .map(|reserve| reserve.reserve.as_str())
         .collect::<BTreeSet<_>>();
     positions
         .iter()
@@ -1449,6 +1595,14 @@ fn candidate_counts_by_mint(candidates: &[SupportedReserveLatestRow]) -> BTreeMa
     counts
 }
 
+fn known_reserve_counts_by_mint(reserves: &[SupportedKaminoReserve]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for reserve in reserves {
+        *counts.entry(reserve.liquidity_mint.clone()).or_insert(0) += 1;
+    }
+    counts
+}
+
 fn skipped_mints(
     enabled_mints: &[String],
     candidates: &[SupportedReserveLatestRow],
@@ -1733,4 +1887,193 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
 
 fn usage() -> &'static str {
     "Usage: same-mint-yield-monitor [--once] [--execute] [--all-active-vaults | --settings <PUBKEY> --vault-index <N>] [--fleet-page-size <COUNT>] [--poll-interval-seconds <SECONDS>] [--rebalance-cooldown-seconds <SECONDS>] [--max-candidate-age-seconds <SECONDS>] [--min-edge-bps <BPS>] [--min-idle-deposit-raw <RAW>]\n\nDry-run is the default. Fleet mode reads POLICY_KEYPAIR for DB discovery, pages active vaults in batches of 50 by default, and never reads SOLANA_TESTING_PK. Explicit --settings/--vault-index mode does not read SOLANA_TESTING_PK. No-arg authority discovery mode is local dry-run/setup only and reads SOLANA_TESTING_PK. Live fleet execution passes idle-vault deposits through same-mint-reserve-swap, which reads POLICY_KEYPAIR as the delegated policy signer and transaction fee payer. Set EARN_ROUTER_ENABLED_STABLE_MINTS to a comma-separated subset of supported stable mint addresses for staged rollout. Idle-vault deposit routing is USDC-only and defaults to a 1_000_000 raw-unit threshold. The same-vault rebalance cooldown defaults to 300 seconds; pass --rebalance-cooldown-seconds 0 only for local/test disable."
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use loyal_yield_orchestrator::SnapshotId;
+
+    const MINT: &str = "enabled-stable-mint";
+    const ALLOWED_MARKET: &str = "allowed-market";
+    const UNSAFE_SOURCE: &str = "unsafe-or-inactive-held-source";
+    const SAFE_TARGET: &str = "safe-active-target";
+
+    fn policy() -> RoutePolicy {
+        RoutePolicy {
+            id: PolicyId(1),
+            settings: "settings".to_owned(),
+            authority: "authority".to_owned(),
+            policy_seed: 1,
+            policy_account: "policy-account".to_owned(),
+            vault_index: 0,
+            vault_pubkey: "vault".to_owned(),
+            delegated_signers: Vec::new(),
+            threshold: 1,
+            route_modes: vec![SAME_MINT_ROUTE_MODE.to_owned()],
+            stable_mints: vec![MINT.to_owned()],
+            kamino_markets: vec![ALLOWED_MARKET.to_owned()],
+            kamino_liquidity_mints: vec![MINT.to_owned()],
+            universe_preset: None,
+            risk_profile: Some("safe".to_owned()),
+            swap_lanes: json!({}),
+            active: true,
+            first_seen_at: Utc::now(),
+            last_seen_at: Utc::now(),
+            last_seen_slot: 1,
+            last_seen_signature: "signature".to_owned(),
+        }
+    }
+
+    fn known_reserve(reserve: &str, market: &str, mint: &str) -> SupportedKaminoReserve {
+        SupportedKaminoReserve {
+            market: market.to_owned(),
+            liquidity_mint: mint.to_owned(),
+            reserve: reserve.to_owned(),
+            market_name: None,
+            symbol: None,
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn safe_target(reserve: &str) -> SupportedReserveLatestRow {
+        SupportedReserveLatestRow {
+            observed_at: Utc::now(),
+            slot: 100,
+            reserve: reserve.to_owned(),
+            market: Some(ALLOWED_MARKET.to_owned()),
+            market_name: None,
+            liquidity_mint: MINT.to_owned(),
+            symbol: None,
+            supply_apy: 0.02,
+            borrow_apy: 0.03,
+            total_supply_usd_estimate: 1_000_000.0,
+            reserve_last_update_stale: false,
+        }
+    }
+
+    fn held_position(reserve: &str, supply_apy_bps: Option<i64>) -> CurrentReservePosition {
+        CurrentReservePosition {
+            vault_id: VaultId(1),
+            reserve: reserve.to_owned(),
+            market: Some(ALLOWED_MARKET.to_owned()),
+            liquidity_mint: MINT.to_owned(),
+            amount_raw: 1_000_000,
+            has_value: true,
+            supply_apy_bps,
+            borrow_apy_bps: None,
+            snapshot_id: SnapshotId(1),
+            observed_slot: 100,
+            observed_at: Utc::now(),
+            planning_metadata: json!({
+                "amount_semantics": "redeemable_liquidity_amount",
+            }),
+        }
+    }
+
+    #[test]
+    fn held_source_missing_from_timescale_can_move_to_safe_target() {
+        let policy = policy();
+        let enabled_mints = vec![MINT.to_owned()];
+        let catalog_sources = policy_eligible_source_reserves(
+            &policy,
+            &[known_reserve(SAFE_TARGET, ALLOWED_MARKET, MINT)],
+            &enabled_mints,
+        );
+        let held_source = held_position(UNSAFE_SOURCE, Some(25));
+        let source_universe = retain_persisted_policy_sources(
+            &policy,
+            &enabled_mints,
+            catalog_sources,
+            std::slice::from_ref(&held_source),
+        );
+        let targets =
+            policy_eligible_candidates(&policy, &[safe_target(SAFE_TARGET)], &enabled_mints);
+        let sources = policy_eligible_positions(&[held_source], &source_universe);
+
+        let plan = plan_move(&sources, &targets, 1)
+            .expect("held source has supported amount semantics")
+            .expect("safe target has a positive same-mint edge");
+
+        assert_eq!(plan.source.reserve, UNSAFE_SOURCE);
+        assert_eq!(plan.target.reserve, SAFE_TARGET);
+        assert_eq!(plan.edge_bps, 175);
+        assert!(source_universe
+            .iter()
+            .any(|reserve| reserve.reserve == UNSAFE_SOURCE));
+    }
+
+    #[test]
+    fn timescale_missing_source_is_released_after_chain_observed_zero() {
+        let policy = policy();
+        let enabled_mints = vec![MINT.to_owned()];
+        let catalog_sources = policy_eligible_source_reserves(
+            &policy,
+            &[known_reserve(SAFE_TARGET, ALLOWED_MARKET, MINT)],
+            &enabled_mints,
+        );
+        let mut observed_zero = held_position(UNSAFE_SOURCE, Some(25));
+        observed_zero.amount_raw = 0;
+        observed_zero.has_value = false;
+
+        let source_universe = retain_persisted_policy_sources(
+            &policy,
+            &enabled_mints,
+            catalog_sources,
+            &[observed_zero],
+        );
+
+        assert!(source_universe
+            .iter()
+            .all(|reserve| reserve.reserve != UNSAFE_SOURCE));
+        assert!(source_universe
+            .iter()
+            .any(|reserve| reserve.reserve == SAFE_TARGET));
+    }
+
+    #[test]
+    fn source_universe_never_expands_target_eligibility() {
+        let policy = policy();
+        let enabled_mints = vec![MINT.to_owned()];
+        let source_universe = policy_eligible_source_reserves(
+            &policy,
+            &[
+                known_reserve(UNSAFE_SOURCE, ALLOWED_MARKET, MINT),
+                known_reserve(SAFE_TARGET, ALLOWED_MARKET, MINT),
+            ],
+            &enabled_mints,
+        );
+        let targets =
+            policy_eligible_candidates(&policy, &[safe_target(SAFE_TARGET)], &enabled_mints);
+
+        assert!(source_universe
+            .iter()
+            .any(|reserve| reserve.reserve == UNSAFE_SOURCE));
+        assert!(targets
+            .iter()
+            .all(|candidate| candidate.reserve != UNSAFE_SOURCE));
+
+        let plan = plan_move(&[held_position(UNSAFE_SOURCE, None)], &targets, 1)
+            .expect("held source has supported amount semantics")
+            .expect("safe target has a positive same-mint edge");
+        assert_eq!(plan.target.reserve, SAFE_TARGET);
+    }
+
+    #[test]
+    fn source_universe_still_enforces_policy_market_and_mint_boundaries() {
+        let policy = policy();
+        let enabled_mints = vec![MINT.to_owned()];
+        let source_universe = policy_eligible_source_reserves(
+            &policy,
+            &[
+                known_reserve(UNSAFE_SOURCE, ALLOWED_MARKET, MINT),
+                known_reserve("wrong-market", "not-allowed", MINT),
+                known_reserve("wrong-mint", ALLOWED_MARKET, "not-enabled"),
+            ],
+            &enabled_mints,
+        );
+
+        assert_eq!(source_universe.len(), 1);
+        assert_eq!(source_universe[0].reserve, UNSAFE_SOURCE);
+    }
 }

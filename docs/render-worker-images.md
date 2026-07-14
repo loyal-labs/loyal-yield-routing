@@ -179,7 +179,7 @@ path and verified by env-name readback.
 The light worker image contains the Rust projector/trigger/realtime binaries,
 same-mint monitor/executor binaries, `route-lookup-table-provisioner`,
 `route-lookup-table-shared-catalog`, `route-lookup-table-legacy-import`,
-`route-lookup-table-cleanup`, Bun
+`route-lookup-table-cleanup`, `route-lookup-table-alert-monitor`, Bun
 production dependencies, and `scripts/execute-autodeposit-policy.ts`.
 `loyal-yield-realtime` runs from the same immutable image as a Render Web
 Service with command `/usr/local/bin/loyal-yield-realtime`, health path
@@ -209,7 +209,8 @@ The durable-v2 ALT production order is strict:
 
 1. Apply and verify migrations `0017`, `0018_earn_activity_realtime`,
    `0019_legacy_lookup_table_imports`, and
-   `0020_demand_driven_shared_market_catalog`.
+   `0020_demand_driven_shared_market_catalog`, then
+   `0021_reusable_alt_production_controls`.
 2. Import legacy ALTs for audit/refund accounting, bootstrap both v2 families,
    publish the complete signerless shared catalog, and run the provisioner
    until the exact shared generation is finalized, warm, and active. Keep

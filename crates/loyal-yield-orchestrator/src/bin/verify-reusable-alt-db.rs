@@ -46,6 +46,9 @@ async fn main() -> VerifyResult<()> {
     client
         .require_schema_migration(20, "demand_driven_shared_market_catalog")
         .await?;
+    client
+        .require_schema_migration(21, "reusable_alt_production_controls")
+        .await?;
     verify_independent_sql_invariants(&pool).await?;
 
     let run = format!("{}-{}", std::process::id(), Utc::now().timestamp_micros());
@@ -56,7 +59,17 @@ async fn main() -> VerifyResult<()> {
 
     verify_shared_market_catalog_control_plane(&client, &run).await?;
     passed.push(
-        "vault-independent shared catalog head, finalized physical-drift rollover, rollback-safe revisions, exact activation, and fenced direct cutover",
+        "vault-independent shared catalog head, finalized physical-drift rollover, signerless rollback-only probe, rollback-safe revisions, exact activation, and fenced direct cutover",
+    );
+
+    verify_shared_catalog_revision_and_operation_fences(&client, &run).await?;
+    passed.push(
+        "metadata-only shared revisions, append-stable expansion, stale-operation cancellation, and signed broadcast fencing",
+    );
+
+    verify_request_fairness_and_table_serialization(&client, &run).await?;
+    passed.push(
+        "provisioning-request fairness, terminal-demand parking, mutation-epoch permits, and same-table operation serialization",
     );
 
     verify_durable_cluster_budget(&client, &run).await?;
@@ -404,6 +417,11 @@ async fn verify_shared_market_catalog_control_plane(
         )
         .await?;
     let stale_cutover_preflight = client.reusable_only_cutover_preflight(&cluster).await?;
+    let stale_cutover_observation = finalized_shared_observation(
+        &stale_cutover_preflight,
+        90_002,
+        stale_cutover_preflight.physical_last_extended_slot,
+    );
     let drifted_addresses = stale_cutover_preflight.ordered_addresses.clone();
     let drift_report = client
         .report_shared_market_physical_drift(SharedMarketPhysicalDriftReport {
@@ -430,6 +448,7 @@ async fn verify_shared_market_catalog_control_plane(
             && client
                 .activate_reusable_only_cutover(
                     &stale_cutover_preflight,
+                    &stale_cutover_observation,
                     "must reject stale finalized evidence",
                     "isolated-db-verifier",
                 )
@@ -480,10 +499,154 @@ async fn verify_shared_market_catalog_control_plane(
             && persisted_drift_state == "resolved",
         "shared physical drift replacement did not activate and resolve its durable evidence",
     )?;
+    let durable_pause = client
+        .set_lookup_table_provisioner_pause(
+            &cluster,
+            true,
+            "isolated pre-cutover drain",
+            "isolated-db-verifier",
+        )
+        .await?;
+    let probe_preflight = client.reusable_only_cutover_preflight(&cluster).await?;
+    let probe_cutover_observation = finalized_shared_observation(
+        &probe_preflight,
+        90_004,
+        probe_preflight.physical_last_extended_slot,
+    );
+    ensure(
+        client
+            .activate_reusable_only_cutover(
+                &probe_preflight,
+                &probe_cutover_observation,
+                "must reject cutover without immutable probe",
+                "isolated-db-verifier",
+            )
+            .await
+            .is_err(),
+        "reusable-only cutover succeeded without an immutable exact PASS probe",
+    )?;
+    let probe_token = ordered_address_hash(&[format!("precutover-probe-token-{run}")]);
+    let requirements_fingerprint =
+        ordered_address_hash(&[format!("precutover-probe-requirements-{run}")]);
+    let mut synthetic_drift_addresses = probe_preflight.ordered_addresses.clone();
+    synthetic_drift_addresses
+        .pop()
+        .ok_or_else(|| io::Error::other("shared probe fixture requires one address"))?;
+    let probe_vault_addresses = typed_addresses(
+        LookupTableManifestSubject::Vault,
+        1,
+        "precutover-probe-vault",
+    );
+    let probe_audit = client
+        .run_lookup_table_precutover_probe(LookupTablePrecutoverProbe {
+            probe_token: probe_token.clone(),
+            provisioner_control_epoch: durable_pause.control_epoch,
+            finalized_slot: 90_004,
+            finalized_addresses: probe_preflight.ordered_addresses.clone(),
+            drift_report: SharedMarketPhysicalDriftReport {
+                cluster: cluster.clone(),
+                catalog_revision_id: probe_preflight.catalog_revision_id,
+                family_id: probe_preflight.shared_family_id,
+                route_lookup_table_id: probe_preflight.physical_table_id,
+                expected_mutation_epoch: probe_preflight.physical_mutation_epoch,
+                expected_table_address: probe_preflight.physical_table_address.clone(),
+                expected_authority: probe_preflight.physical_authority.clone(),
+                observed_slot: 90_004,
+                observed_table_present: true,
+                observed_authority: Some(probe_preflight.physical_authority.clone()),
+                observed_active: true,
+                observed_last_extended_slot: Some(probe_preflight.physical_last_extended_slot),
+                observed_warm: true,
+                observed_addresses: synthetic_drift_addresses,
+                reason: format!("precutover-probe-synthetic-drift:{probe_token}"),
+                reported_by: "route-lookup-table-provisioner:precutover-probe".to_owned(),
+            },
+            provisioning_request: LookupTableProvisioningRequestUpsert {
+                cluster: cluster.clone(),
+                vault_id,
+                route_fingerprint: format!("precutover-probe-route-{run}"),
+                requirements_fingerprint: requirements_fingerprint.clone(),
+                shared_manifest_id: Some(probe_preflight.manifest_id),
+                vault_manifest_id: None,
+                desired_shared_hash: Some(probe_preflight.manifest_hash.clone()),
+                desired_vault_hash: Some(lookup_table_manifest_address_records_hash(
+                    &probe_vault_addresses,
+                )),
+                shared_addresses: Vec::new(),
+                vault_addresses: probe_vault_addresses,
+            },
+        })
+        .await?;
+    let probe_residue: i64 = loyal_yield_orchestrator::sqlx::query_scalar(
+        r#"
+        SELECT
+            (SELECT count(*) FROM loyal_yield.lookup_table_shared_market_physical_drifts
+             WHERE evidence_hash = $1)
+          + (SELECT count(*) FROM loyal_yield.lookup_table_provisioning_requests
+             WHERE requirements_fingerprint = $2)
+        "#,
+    )
+    .bind(&probe_audit.synthetic_drift_evidence_hash)
+    .bind(&requirements_fingerprint)
+    .fetch_one(client.pool())
+    .await?;
+    let immutable_probe_update = loyal_yield_orchestrator::sqlx::query(
+        "UPDATE loyal_yield.lookup_table_precutover_probe_runs SET result = 'fail' WHERE id = $1",
+    )
+    .bind(probe_audit.id)
+    .execute(client.pool())
+    .await;
+    ensure(
+        probe_audit.result == "pass"
+            && probe_audit.shared_table_address == probe_preflight.physical_table_address
+            && probe_audit.shared_authority == probe_preflight.physical_authority
+            && probe_audit.shared_mutation_epoch == probe_preflight.physical_mutation_epoch
+            && probe_audit.finalized_slot == 90_004
+            && probe_audit.finalized_last_extended_slot
+                == probe_preflight.physical_last_extended_slot
+            && probe_audit.finalized_address_hash == probe_preflight.ordered_address_hash
+            && usize::try_from(probe_audit.finalized_address_count)?
+                == probe_preflight.ordered_addresses.len()
+            && probe_audit.finalized_shared_exact
+            && probe_audit.drift_signal_count == 1
+            && probe_audit.drift_provisioning_request_count == 0
+            && probe_audit.duplicate_request_attempt_count == 2
+            && probe_audit.distinct_request_count == 1
+            && probe_audit.decision_count == 0
+            && probe_audit.binding_count == 0
+            && probe_audit.operation_count == 0
+            && probe_audit.rollback_residue_count == 0
+            && probe_audit.catalog_head_restored
+            && !probe_audit.signer_loaded
+            && !probe_audit.transactions_sent
+            && probe_residue == 0
+            && immutable_probe_update.is_err(),
+        "rollback-only pre-cutover probe did not preserve exact signerless zero-residue evidence",
+    )?;
     let cutover_preflight = client.reusable_only_cutover_preflight(&cluster).await?;
+    let cutover_observation = finalized_shared_observation(
+        &cutover_preflight,
+        90_005,
+        cutover_preflight.physical_last_extended_slot,
+    );
+    let mut wrong_finalized_observation = cutover_observation.clone();
+    wrong_finalized_observation.authority = unique_pubkey("wrong-cutover-authority").to_string();
+    ensure(
+        client
+            .activate_reusable_only_cutover(
+                &cutover_preflight,
+                &wrong_finalized_observation,
+                "must reject wrong finalized identity",
+                "isolated-db-verifier",
+            )
+            .await
+            .is_err(),
+        "reusable-only cutover accepted a finalized observation with the wrong authority",
+    )?;
     let cutover = client
         .activate_reusable_only_cutover(
             &cutover_preflight,
+            &cutover_observation,
             "isolated demand-driven direct cutover",
             "isolated-db-verifier",
         )
@@ -739,6 +902,775 @@ async fn verify_shared_market_catalog_control_plane(
     )
 }
 
+async fn verify_shared_catalog_revision_and_operation_fences(
+    client: &NeonSqlClient,
+    run: &str,
+) -> VerifyResult<()> {
+    let cluster = format!("db-verify-shared-revision-fences-{run}");
+    let authority = unique_pubkey("shared-revision-fence-authority").to_string();
+    let (shared_family, _vault_family) = create_families(client, &cluster, &authority, 40).await?;
+    let base_addresses = normalize_catalog_addresses([typed_addresses(
+        LookupTableManifestSubject::SharedMarket,
+        2,
+        "shared-revision-base",
+    )]);
+    let active_v1 =
+        publish_and_activate_shared_catalog(client, &cluster, base_addresses.clone(), run, 110_000)
+            .await?;
+    let active_generation = active_v1
+        .active_generation
+        .ok_or_else(|| io::Error::other("shared revision fixture has no active generation"))?;
+    let operation_count_before_metadata: i64 = loyal_yield_orchestrator::sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.lookup_table_operations WHERE family_id = $1",
+    )
+    .bind(shared_family.id)
+    .fetch_one(client.pool())
+    .await?;
+
+    let desired_set_hash = lookup_table_manifest_address_records_hash(&base_addresses);
+    let metadata_head = client
+        .upsert_shared_market_catalog(SharedMarketCatalogUpsert {
+            cluster: cluster.clone(),
+            catalog_version: shared_family.catalog_version.clone(),
+            desired_set_hash: desired_set_hash.clone(),
+            enabled_mints_hash: ordered_address_hash(&[format!(
+                "metadata-only-enabled-mints-{run}"
+            )]),
+            reserve_set_hash: active_v1.reserve_set_hash.clone(),
+            addresses: base_addresses.clone(),
+            source_slot: Some(110_001),
+            source_observed_at: Some(Utc::now()),
+            source_metadata: json!({
+                "source": "isolated_db_verifier",
+                "case": "metadata_only_revision",
+                "run": run,
+            }),
+            reason: "isolated metadata-only shared eligibility revision".to_owned(),
+            updated_by: "verify-reusable-alt-db".to_owned(),
+        })
+        .await?;
+    let metadata_plan = client
+        .plan_shared_market_catalog_head(
+            &cluster,
+            metadata_head.catalog_revision_id,
+            shared_catalog_policy(110_001),
+        )
+        .await?;
+    ensure(
+        metadata_head.catalog_revision == active_v1.catalog_revision + 1
+            && metadata_head.manifest_id == active_v1.manifest_id
+            && metadata_head.catalog_revision_id != active_v1.catalog_revision_id
+            && metadata_plan.shared_target_generation == active_generation
+            && metadata_plan.shared_operations.is_empty(),
+        "metadata-only shared eligibility revision changed physical ALT identity or queued a mutation",
+    )?;
+    let active_metadata = client
+        .reconcile_shared_market_catalog_head(
+            &cluster,
+            metadata_head.catalog_revision_id,
+            shared_catalog_policy(110_001),
+            Utc::now() + Duration::hours(1),
+        )
+        .await?;
+    let operation_count_after_metadata: i64 = loyal_yield_orchestrator::sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.lookup_table_operations WHERE family_id = $1",
+    )
+    .bind(shared_family.id)
+    .fetch_one(client.pool())
+    .await?;
+    ensure(
+        active_metadata.readiness_state == SharedMarketCatalogReadiness::Active
+            && active_metadata.active_generation == Some(active_generation)
+            && operation_count_after_metadata == operation_count_before_metadata,
+        "metadata-only shared revision did not reactivate without ALT work",
+    )?;
+
+    let regressed_publication = client
+        .upsert_shared_market_catalog(SharedMarketCatalogUpsert {
+            cluster: cluster.clone(),
+            catalog_version: shared_family.catalog_version.clone(),
+            desired_set_hash: desired_set_hash.clone(),
+            enabled_mints_hash: ordered_address_hash(&[format!(
+                "metadata-regressed-enabled-mints-{run}"
+            )]),
+            reserve_set_hash: active_metadata.reserve_set_hash.clone(),
+            addresses: base_addresses.clone(),
+            source_slot: Some(109_999),
+            source_observed_at: Some(Utc::now()),
+            source_metadata: json!({"source": "isolated_db_verifier", "run": run}),
+            reason: "must reject regressed shared catalog source slot".to_owned(),
+            updated_by: "verify-reusable-alt-db".to_owned(),
+        })
+        .await;
+    let head_after_regression = client
+        .shared_market_catalog_head(&cluster)
+        .await?
+        .ok_or_else(|| io::Error::other("shared catalog disappeared after rejected regression"))?;
+    ensure(
+        regressed_publication.is_err()
+            && head_after_regression.catalog_revision_id == active_metadata.catalog_revision_id,
+        "shared catalog accepted a source-slot regression or changed its head on rejection",
+    )?;
+
+    // The new account is lexicographically earlier than every existing
+    // account, but the approved catalog order appends it after the retained
+    // physical prefix. The durable ALT must therefore extend in place.
+    let lexicographically_earlier = Pubkey::default().to_string();
+    ensure(
+        base_addresses
+            .iter()
+            .all(|address| lexicographically_earlier < address.address),
+        "append-stable fixture did not choose a lexicographically earlier address",
+    )?;
+    let mut append_stable_addresses = base_addresses.clone();
+    append_stable_addresses.push(LookupTableManifestAddressRecord {
+        address: lexicographically_earlier.clone(),
+        ordinal: i32::try_from(append_stable_addresses.len())?,
+        semantic_class: LookupTableManifestSubject::SharedMarket,
+        account_role: "append_stable_lexicographically_earlier".to_owned(),
+        is_writable: false,
+    });
+    let append_head = publish_shared_catalog_with_metadata(
+        client,
+        &cluster,
+        append_stable_addresses,
+        run,
+        110_002,
+        "append-stable-earlier",
+    )
+    .await?;
+    let append_plan = client
+        .plan_shared_market_catalog_head(
+            &cluster,
+            append_head.catalog_revision_id,
+            shared_catalog_policy(110_002),
+        )
+        .await?;
+    let append_operation = append_plan
+        .shared_operations
+        .first()
+        .ok_or_else(|| io::Error::other("append-stable revision queued no extension"))?;
+    let (_, append_operation_addresses) = client
+        .lookup_table_operation_with_addresses(append_operation.id)
+        .await?
+        .ok_or_else(|| io::Error::other("append-stable operation disappeared"))?;
+    ensure(
+        append_plan.shared_target_generation == active_generation
+            && append_plan.shared_operations.len() == 1
+            && append_operation.operation_kind == LookupTableOperationKind::Extend
+            && append_operation_addresses == vec![lexicographically_earlier],
+        "append-stable catalog replaced the durable shared ALT or queued the wrong suffix",
+    )?;
+
+    let stale_unsigned_lease = client
+        .lease_next_lookup_table_operation(
+            &cluster,
+            "shared-stale-unsigned",
+            Utc::now() + Duration::minutes(5),
+            false,
+        )
+        .await?
+        .ok_or_else(|| io::Error::other("append-stable operation was not leaseable"))?;
+    ensure(
+        stale_unsigned_lease.operation.id == append_operation.id,
+        "unexpected operation won the stale unsigned shared lease",
+    )?;
+    let stale_unsigned_fence = operation_lease(&stale_unsigned_lease.operation)?;
+    let mut replacement_addresses = base_addresses.clone();
+    replacement_addresses.push(LookupTableManifestAddressRecord {
+        address: unique_pubkey("shared-stale-unsigned-replacement").to_string(),
+        ordinal: i32::try_from(replacement_addresses.len())?,
+        semantic_class: LookupTableManifestSubject::SharedMarket,
+        account_role: "shared_stale_unsigned_replacement".to_owned(),
+        is_writable: false,
+    });
+    let replacement_head = force_advance_shared_catalog_head_for_race_fixture(
+        client,
+        &append_head,
+        replacement_addresses,
+        run,
+        110_003,
+        "unsigned-head-race",
+    )
+    .await?;
+    let cancelled = client
+        .fence_leased_shared_market_operation_before_signing(
+            &cluster,
+            append_operation.id,
+            &stale_unsigned_fence,
+        )
+        .await?;
+    let cancelled_operation = match cancelled {
+        LookupTableSharedMarketOperationFenceResult::Cancelled { operation, reason }
+            if !reason.is_empty() =>
+        {
+            operation
+        }
+        LookupTableSharedMarketOperationFenceResult::Cancelled { .. } => {
+            return fail("stale unsigned shared operation had no durable fence reason")
+        }
+        LookupTableSharedMarketOperationFenceResult::Current => {
+            return fail("stale unsigned shared operation remained signable")
+        }
+    };
+    ensure(
+        cancelled_operation.operation_state == LookupTableOperationStatus::Cancelled
+            && cancelled_operation.transaction_signature.is_none(),
+        "stale unsigned shared operation was not cancelled before signing",
+    )?;
+
+    let replacement_plan = client
+        .plan_shared_market_catalog_head(
+            &cluster,
+            replacement_head.catalog_revision_id,
+            shared_catalog_policy(110_003),
+        )
+        .await?;
+    let replacement_operation = replacement_plan
+        .shared_operations
+        .first()
+        .ok_or_else(|| io::Error::other("replacement shared head queued no operation"))?;
+    ensure(
+        replacement_plan.shared_target_generation == active_generation
+            && replacement_plan.shared_operations.len() == 1
+            && replacement_operation.operation_kind == LookupTableOperationKind::Extend,
+        "current replacement catalog did not retain the append-compatible generation",
+    )?;
+    let signed_lease = client
+        .lease_next_lookup_table_operation(
+            &cluster,
+            "shared-stale-signed",
+            Utc::now() + Duration::minutes(5),
+            false,
+        )
+        .await?
+        .ok_or_else(|| io::Error::other("replacement shared operation was not leaseable"))?;
+    ensure(
+        signed_lease.operation.id == replacement_operation.id,
+        "unexpected operation won the signed shared stale-head lease",
+    )?;
+    let signed_fence = operation_lease(&signed_lease.operation)?;
+    ensure(
+        matches!(
+            client
+                .fence_leased_shared_market_operation_before_signing(
+                    &cluster,
+                    replacement_operation.id,
+                    &signed_fence,
+                )
+                .await?,
+            LookupTableSharedMarketOperationFenceResult::Current
+        ),
+        "current shared operation failed its before-sign fence",
+    )?;
+    let persisted_signed = client
+        .persist_signed_lookup_table_transaction(
+            replacement_operation.id,
+            &signed_fence,
+            SignedLookupTableTransaction {
+                transaction_signature: format!("shared-stale-signed-signature-{run}"),
+                message_hash: ordered_address_hash(&[format!("shared-stale-signed-message-{run}")]),
+                recent_blockhash: format!("shared-stale-signed-blockhash-{run}"),
+                last_valid_block_height: 9_000_000,
+                estimated_fee_lamports: 5_000,
+                estimated_rent_lamports: 1_000_000,
+                estimated_reclaimed_rent_lamports: 0,
+            },
+        )
+        .await?;
+    let mut successor_addresses = base_addresses;
+    successor_addresses.push(LookupTableManifestAddressRecord {
+        address: unique_pubkey("shared-stale-signed-successor").to_string(),
+        ordinal: i32::try_from(successor_addresses.len())?,
+        semantic_class: LookupTableManifestSubject::SharedMarket,
+        account_role: "shared_stale_signed_successor".to_owned(),
+        is_writable: true,
+    });
+    force_advance_shared_catalog_head_for_race_fixture(
+        client,
+        &replacement_head,
+        successor_addresses,
+        run,
+        110_004,
+        "signed-head-race",
+    )
+    .await?;
+    let permit_result = client
+        .grant_lookup_table_provisioner_broadcast_permit(
+            &cluster,
+            replacement_operation.id,
+            &signed_fence,
+            Utc::now() + Duration::minutes(1),
+        )
+        .await?;
+    let fenced_signed_operation = match permit_result {
+        LookupTableProvisionerBroadcastPermitResult::Fenced {
+            operation,
+            error_code,
+            error_detail,
+            ..
+        } if error_code == "stale_shared_market_catalog_before_broadcast"
+            && !error_detail.is_empty() =>
+        {
+            operation
+        }
+        LookupTableProvisionerBroadcastPermitResult::Fenced { .. } => {
+            return fail("signed stale shared operation used the wrong broadcast fence")
+        }
+        LookupTableProvisionerBroadcastPermitResult::Paused { .. } => {
+            return fail("signed stale shared operation reached pause instead of identity fencing")
+        }
+        LookupTableProvisionerBroadcastPermitResult::Granted { .. } => {
+            return fail("signed stale shared operation received a broadcast permit")
+        }
+    };
+    let active_permit_count: i64 = loyal_yield_orchestrator::sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.lookup_table_provisioner_broadcast_permits WHERE operation_id = $1 AND resolved_at IS NULL",
+    )
+    .bind(replacement_operation.id)
+    .fetch_one(client.pool())
+    .await?;
+    ensure(
+        persisted_signed.operation_state == LookupTableOperationStatus::Signed
+            && fenced_signed_operation.operation_state
+                == LookupTableOperationStatus::NeedsReconcile
+            && fenced_signed_operation.transaction_signature
+                == persisted_signed.transaction_signature
+            && active_permit_count == 0,
+        "signed stale shared operation lost reconciliation identity or persisted a permit",
+    )
+}
+
+async fn verify_request_fairness_and_table_serialization(
+    client: &NeonSqlClient,
+    run: &str,
+) -> VerifyResult<()> {
+    let cluster = format!("db-verify-request-fairness-{run}");
+    let authority = unique_pubkey("request-fairness-authority").to_string();
+    let (_shared_family, _vault_family) = create_families(client, &cluster, &authority, 40).await?;
+    let shared_addresses = normalize_catalog_addresses([typed_addresses(
+        LookupTableManifestSubject::SharedMarket,
+        1,
+        "request-fairness-shared",
+    )]);
+    let active_catalog = publish_and_activate_shared_catalog(
+        client,
+        &cluster,
+        shared_addresses.clone(),
+        run,
+        120_000,
+    )
+    .await?;
+    let vault_a = create_vault(client, &format!("request-fairness-a-{run}"), 52).await?;
+    let vault_b = create_vault(client, &format!("request-fairness-b-{run}"), 53).await?;
+    let vault_c = create_vault(client, &format!("request-fairness-c-{run}"), 54).await?;
+    let request_input = |vault_id: VaultId, label: &str| {
+        let vault_addresses = typed_addresses(
+            LookupTableManifestSubject::Vault,
+            1,
+            &format!("request-fairness-vault-{label}"),
+        );
+        LookupTableProvisioningRequestUpsert {
+            cluster: cluster.clone(),
+            vault_id,
+            route_fingerprint: format!("request-fairness-route-{label}-{run}"),
+            requirements_fingerprint: format!("request-fairness-requirements-{label}-{run}"),
+            shared_manifest_id: Some(active_catalog.manifest_id),
+            vault_manifest_id: None,
+            desired_shared_hash: Some(lookup_table_manifest_address_records_hash(
+                &shared_addresses,
+            )),
+            desired_vault_hash: Some(lookup_table_manifest_address_records_hash(&vault_addresses)),
+            shared_addresses: shared_addresses.clone(),
+            vault_addresses,
+        }
+    };
+    let input_a = request_input(vault_a, "a");
+    let input_b = request_input(vault_b, "b");
+    let request_a = client
+        .upsert_lookup_table_provisioning_request(input_a.clone())
+        .await?;
+    let request_b = client
+        .upsert_lookup_table_provisioning_request(input_b)
+        .await?;
+    loyal_yield_orchestrator::sqlx::query(
+        r#"
+        UPDATE loyal_yield.lookup_table_provisioning_requests
+        SET updated_at = CASE id
+                WHEN $1 THEN now() - interval '2 hours'
+                WHEN $2 THEN now() - interval '1 hour'
+                ELSE updated_at
+            END
+        WHERE id IN ($1, $2)
+        "#,
+    )
+    .bind(request_a.id)
+    .bind(request_b.id)
+    .execute(client.pool())
+    .await?;
+    let first_lease = client
+        .lease_next_lookup_table_provisioning_request(
+            &cluster,
+            "request-fairness-first",
+            Utc::now() + Duration::minutes(5),
+        )
+        .await?
+        .ok_or_else(|| io::Error::other("oldest provisioning request was not leaseable"))?;
+    ensure(
+        first_lease.id == request_a.id,
+        "provisioning request lease did not begin with the oldest updated_at",
+    )?;
+    let first_fence = request_lease(&first_lease)?;
+    client
+        .advance_lookup_table_provisioning_request(
+            request_a.id,
+            &first_fence,
+            LookupTableProvisioningRequestStatus::Queued,
+            Some(Utc::now() - Duration::seconds(1)),
+            None,
+            None,
+        )
+        .await?;
+    let second_lease = client
+        .lease_next_lookup_table_provisioning_request(
+            &cluster,
+            "request-fairness-second",
+            Utc::now() + Duration::minutes(5),
+        )
+        .await?
+        .ok_or_else(|| io::Error::other("second provisioning request was not leaseable"))?;
+    ensure(
+        second_lease.id == request_b.id,
+        "updated_at rotation immediately re-leased one request and starved later demand",
+    )?;
+    let second_fence = request_lease(&second_lease)?;
+    client
+        .advance_lookup_table_provisioning_request(
+            request_b.id,
+            &second_fence,
+            LookupTableProvisioningRequestStatus::Queued,
+            Some(Utc::now() + Duration::hours(1)),
+            None,
+            None,
+        )
+        .await?;
+
+    let planning_a = client
+        .lease_next_lookup_table_provisioning_request(
+            &cluster,
+            "request-terminal-plan",
+            Utc::now() + Duration::minutes(5),
+        )
+        .await?
+        .ok_or_else(|| io::Error::other("rotated first request was not leaseable"))?;
+    ensure(
+        planning_a.id == request_a.id,
+        "rotated first request did not become leaseable after later demand ran",
+    )?;
+    let planning_a_fence = request_lease(&planning_a)?;
+    let first_plan = client
+        .plan_lookup_table_provisioning_request(
+            &cluster,
+            request_a.id,
+            &planning_a_fence,
+            plan_policy(120_001),
+        )
+        .await?;
+    let terminal_candidate = match &first_plan.vault_allocation {
+        AtomicVaultAllocationResult::CreateQueued { operations, .. }
+        | AtomicVaultAllocationResult::BindingReserved { operations, .. } => operations
+            .first()
+            .cloned()
+            .ok_or_else(|| io::Error::other("request plan queued no vault operation"))?,
+        AtomicVaultAllocationResult::Existing { .. } | AtomicVaultAllocationResult::NotRequired => {
+            return fail("new vault demand unexpectedly required no provisioning operation")
+        }
+    };
+    let terminal_operation_lease = client
+        .lease_next_lookup_table_operation(
+            &cluster,
+            "request-terminal-operation",
+            Utc::now() + Duration::minutes(5),
+            false,
+        )
+        .await?
+        .ok_or_else(|| io::Error::other("terminal candidate operation was not leaseable"))?;
+    ensure(
+        terminal_operation_lease.operation.id == terminal_candidate.id,
+        "unexpected operation won the terminal request fixture lease",
+    )?;
+    let terminal_operation_fence = operation_lease(&terminal_operation_lease.operation)?;
+    client
+        .advance_lookup_table_operation(
+            terminal_candidate.id,
+            &terminal_operation_fence,
+            LookupTableOperationAdvance {
+                expected_state: LookupTableOperationStatus::Leased,
+                next_state: LookupTableOperationStatus::PermanentFailure,
+                observed_slot: None,
+                error_code: Some("isolated_terminal_operation".to_owned()),
+                error_detail: Some("isolated verifier terminal operation".to_owned()),
+                actual_fee_lamports: None,
+                actual_rent_lamports: None,
+                reclaimed_rent_lamports: None,
+            },
+        )
+        .await?;
+    loyal_yield_orchestrator::sqlx::query(
+        "UPDATE loyal_yield.lookup_table_provisioning_requests SET next_attempt_at = now() - interval '1 second' WHERE id = $1",
+    )
+    .bind(request_a.id)
+    .execute(client.pool())
+    .await?;
+    let terminal_request_lease = client
+        .lease_next_lookup_table_provisioning_request(
+            &cluster,
+            "request-terminal-replan",
+            Utc::now() + Duration::minutes(5),
+        )
+        .await?
+        .ok_or_else(|| io::Error::other("terminal request was not re-leaseable for diagnosis"))?;
+    ensure(
+        terminal_request_lease.id == request_a.id,
+        "wrong request won the terminal-operation replan lease",
+    )?;
+    let terminal_request_fence = request_lease(&terminal_request_lease)?;
+    let terminal_plan = client
+        .plan_lookup_table_provisioning_request(
+            &cluster,
+            request_a.id,
+            &terminal_request_fence,
+            plan_policy(120_002),
+        )
+        .await?;
+    ensure(
+        terminal_plan.request.request_status == LookupTableProvisioningRequestStatus::Failed
+            && terminal_plan.request.error_code.as_deref()
+                == Some("terminal_lookup_table_operation")
+            && terminal_plan.request.next_attempt_at.is_none(),
+        "terminal lookup-table operation did not park its exact provisioning request",
+    )?;
+    let duplicate_terminal = client
+        .upsert_lookup_table_provisioning_request(input_a)
+        .await?;
+    ensure(
+        duplicate_terminal.id == request_a.id
+            && duplicate_terminal.request_status == LookupTableProvisioningRequestStatus::Failed
+            && duplicate_terminal.error_code.as_deref() == Some("terminal_lookup_table_operation")
+            && duplicate_terminal.next_attempt_at.is_none(),
+        "duplicate demand revived a request parked by a terminal operation",
+    )?;
+    let input_c = request_input(vault_c, "c");
+    let request_c = client
+        .upsert_lookup_table_provisioning_request(input_c)
+        .await?;
+    let later_demand = client
+        .lease_next_lookup_table_provisioning_request(
+            &cluster,
+            "request-fairness-later-demand",
+            Utc::now() + Duration::minutes(5),
+        )
+        .await?
+        .ok_or_else(|| io::Error::other("later demand was starved by terminal request"))?;
+    ensure(
+        later_demand.id == request_c.id,
+        "terminal request or delayed earlier demand starved a new provisioning request",
+    )?;
+
+    let serial_cluster = format!("db-verify-table-serialization-{run}");
+    let serial_authority = unique_pubkey("table-serialization-authority").to_string();
+    let (_serial_shared, serial_vault_family) =
+        create_families(client, &serial_cluster, &serial_authority, 40).await?;
+    let serial_table = insert_table(
+        client,
+        &serial_cluster,
+        &serial_vault_family,
+        LookupTableAllocationKind::VaultShard,
+        0,
+        0,
+        LookupTableLifecycle::Active,
+        true,
+        unique_pubkey("table-serialization-table").to_string(),
+    )
+    .await?;
+    let first_operation = client
+        .enqueue_lookup_table_operation(LookupTableOperationEnqueue {
+            idempotency_key: format!("table-serialization-first-{run}"),
+            family_id: serial_vault_family.id,
+            route_lookup_table_id: Some(serial_table.id),
+            manifest_id: None,
+            binding_id: None,
+            operation_kind: LookupTableOperationKind::Extend,
+            target_generation: None,
+            target_shard_ordinal: None,
+            operation_context: json!({"source": "isolated_db_verifier"}),
+            mutation_epoch: serial_table.mutation_epoch,
+            estimated_fee_lamports: Some(5_000),
+            estimated_rent_lamports: Some(1_000_000),
+            addresses: vec![unique_pubkey("table-serialization-first-address").to_string()],
+        })
+        .await?;
+    let second_operation = client
+        .enqueue_lookup_table_operation(LookupTableOperationEnqueue {
+            idempotency_key: format!("table-serialization-second-{run}"),
+            family_id: serial_vault_family.id,
+            route_lookup_table_id: Some(serial_table.id),
+            manifest_id: None,
+            binding_id: None,
+            operation_kind: LookupTableOperationKind::Extend,
+            target_generation: None,
+            target_shard_ordinal: None,
+            operation_context: json!({"source": "isolated_db_verifier"}),
+            mutation_epoch: serial_table.mutation_epoch,
+            estimated_fee_lamports: Some(5_000),
+            estimated_rent_lamports: Some(1_000_000),
+            addresses: vec![unique_pubkey("table-serialization-second-address").to_string()],
+        })
+        .await?;
+    let first_operation_lease = client
+        .lease_next_lookup_table_operation(
+            &serial_cluster,
+            "table-serialization-first",
+            Utc::now() + Duration::minutes(5),
+            false,
+        )
+        .await?
+        .ok_or_else(|| io::Error::other("first same-table operation was not leaseable"))?;
+    ensure(
+        first_operation_lease.operation.id == first_operation.id
+            && client
+                .lease_next_lookup_table_operation(
+                    &serial_cluster,
+                    "table-serialization-second",
+                    Utc::now() + Duration::minutes(5),
+                    false,
+                )
+                .await?
+                .is_none(),
+        "same-table operation queue leased a successor before its predecessor completed",
+    )?;
+    let first_operation_fence = operation_lease(&first_operation_lease.operation)?;
+    let signed_first = client
+        .persist_signed_lookup_table_transaction(
+            first_operation.id,
+            &first_operation_fence,
+            SignedLookupTableTransaction {
+                transaction_signature: format!("table-serialization-signature-{run}"),
+                message_hash: ordered_address_hash(&[format!("table-serialization-message-{run}")]),
+                recent_blockhash: format!("table-serialization-blockhash-{run}"),
+                last_valid_block_height: 9_100_000,
+                estimated_fee_lamports: 5_000,
+                estimated_rent_lamports: 1_000_000,
+                estimated_reclaimed_rent_lamports: 0,
+            },
+        )
+        .await?;
+    loyal_yield_orchestrator::sqlx::query(
+        "UPDATE loyal_yield.route_lookup_tables SET mutation_epoch = mutation_epoch + 1 WHERE id = $1",
+    )
+    .bind(serial_table.id)
+    .execute(client.pool())
+    .await?;
+    let mutation_fence = client
+        .grant_lookup_table_provisioner_broadcast_permit(
+            &serial_cluster,
+            first_operation.id,
+            &first_operation_fence,
+            Utc::now() - Duration::seconds(1),
+        )
+        .await?;
+    let fenced_first = match mutation_fence {
+        LookupTableProvisionerBroadcastPermitResult::Fenced {
+            operation,
+            error_code,
+            ..
+        } if error_code == "lookup_table_identity_changed_before_broadcast" => operation,
+        LookupTableProvisionerBroadcastPermitResult::Fenced { .. } => {
+            return fail("mutation-epoch drift used the wrong broadcast fence")
+        }
+        LookupTableProvisionerBroadcastPermitResult::Paused { .. } => {
+            return fail("mutation-epoch drift reached pause before identity fencing")
+        }
+        LookupTableProvisionerBroadcastPermitResult::Granted { .. } => {
+            return fail("mutation-epoch drift received a broadcast permit")
+        }
+    };
+    let mutation_permit_count: i64 = loyal_yield_orchestrator::sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.lookup_table_provisioner_broadcast_permits WHERE operation_id = $1 AND resolved_at IS NULL",
+    )
+    .bind(first_operation.id)
+    .fetch_one(client.pool())
+    .await?;
+    ensure(
+        signed_first.operation_state == LookupTableOperationStatus::Signed
+            && fenced_first.operation_state == LookupTableOperationStatus::NeedsReconcile
+            && fenced_first.transaction_signature == signed_first.transaction_signature
+            && mutation_permit_count == 0,
+        "mutation-epoch permit fence lost signed identity or persisted a permit",
+    )?;
+    let reconcile_lease = client
+        .lease_next_lookup_table_operation(
+            &serial_cluster,
+            "table-serialization-reconcile",
+            Utc::now() + Duration::minutes(5),
+            true,
+        )
+        .await?
+        .ok_or_else(|| io::Error::other("fenced predecessor was not reconciliation-leaseable"))?;
+    ensure(
+        reconcile_lease.operation.id == first_operation.id,
+        "same-table successor bypassed a fenced predecessor awaiting reconciliation",
+    )?;
+    let reconcile_fence = operation_lease(&reconcile_lease.operation)?;
+    client
+        .advance_lookup_table_operation(
+            first_operation.id,
+            &reconcile_fence,
+            LookupTableOperationAdvance {
+                expected_state: LookupTableOperationStatus::NeedsReconcile,
+                next_state: LookupTableOperationStatus::Cancelled,
+                observed_slot: None,
+                error_code: Some("isolated_reconciliation_cancel".to_owned()),
+                error_detail: Some("isolated verifier releases serialized successor".to_owned()),
+                actual_fee_lamports: None,
+                actual_rent_lamports: None,
+                reclaimed_rent_lamports: None,
+            },
+        )
+        .await?;
+    let successor_lease = client
+        .lease_next_lookup_table_operation(
+            &serial_cluster,
+            "table-serialization-successor",
+            Utc::now() + Duration::minutes(5),
+            false,
+        )
+        .await?
+        .ok_or_else(|| io::Error::other("same-table successor did not unblock"))?;
+    ensure(
+        successor_lease.operation.id == second_operation.id,
+        "same-table serialization unblocked the wrong operation",
+    )?;
+    let successor_fence = operation_lease(&successor_lease.operation)?;
+    client
+        .advance_lookup_table_operation(
+            second_operation.id,
+            &successor_fence,
+            LookupTableOperationAdvance {
+                expected_state: LookupTableOperationStatus::Leased,
+                next_state: LookupTableOperationStatus::Cancelled,
+                observed_slot: None,
+                error_code: Some("isolated_fixture_complete".to_owned()),
+                error_detail: Some("isolated verifier completed serialization fixture".to_owned()),
+                actual_fee_lamports: None,
+                actual_rent_lamports: None,
+                reclaimed_rent_lamports: None,
+            },
+        )
+        .await?;
+    Ok(())
+}
+
 async fn verify_durable_cluster_budget(client: &NeonSqlClient, run: &str) -> VerifyResult<()> {
     let cluster = format!("db-verify-durable-budget-{run}");
     let authority = unique_pubkey("durable-budget-authority").to_string();
@@ -835,9 +1767,9 @@ async fn verify_durable_cluster_budget(client: &NeonSqlClient, run: &str) -> Ver
         "concurrent cluster budget reservations did not produce exactly one winner",
     )?;
     let (winner, winner_operation, winner_lease) = if result_a.approved {
-        (result_a, leased_a.operation.id, lease_a)
+        (result_a, leased_a.operation.id, lease_a.clone())
     } else {
-        (result_b, leased_b.operation.id, lease_b)
+        (result_b, leased_b.operation.id, lease_b.clone())
     };
     ensure(
         winner.charged_lamports == 60
@@ -885,6 +1817,130 @@ async fn verify_durable_cluster_budget(client: &NeonSqlClient, run: &str) -> Ver
     ensure(
         persisted_count == 1,
         "denied concurrent budget attempt persisted a reservation",
+    )?;
+
+    // The final network handoff is a durable, short-transaction permit. This
+    // exercises both serializations: grant commits before a later pause, while
+    // an already-committed pause prevents a second grant without sending.
+    let signed_a = client
+        .persist_signed_lookup_table_transaction(
+            leased_a.operation.id,
+            &lease_a,
+            SignedLookupTableTransaction {
+                transaction_signature: format!("broadcast-permit-signature-a-{run}"),
+                message_hash: ordered_address_hash(&[format!("broadcast-permit-message-a-{run}")]),
+                recent_blockhash: format!("broadcast-permit-blockhash-a-{run}"),
+                last_valid_block_height: 500,
+                estimated_fee_lamports: 30,
+                estimated_rent_lamports: 30,
+                estimated_reclaimed_rent_lamports: 0,
+            },
+        )
+        .await?;
+    let signed_b = client
+        .persist_signed_lookup_table_transaction(
+            leased_b.operation.id,
+            &lease_b,
+            SignedLookupTableTransaction {
+                transaction_signature: format!("broadcast-permit-signature-b-{run}"),
+                message_hash: ordered_address_hash(&[format!("broadcast-permit-message-b-{run}")]),
+                recent_blockhash: format!("broadcast-permit-blockhash-b-{run}"),
+                last_valid_block_height: 500,
+                estimated_fee_lamports: 30,
+                estimated_rent_lamports: 30,
+                estimated_reclaimed_rent_lamports: 0,
+            },
+        )
+        .await?;
+    ensure(
+        signed_a.operation_state == LookupTableOperationStatus::Signed
+            && signed_b.operation_state == LookupTableOperationStatus::Signed,
+        "broadcast-permit fixture did not persist both signed identities",
+    )?;
+    client
+        .set_lookup_table_provisioner_pause(
+            &cluster,
+            false,
+            "permit grant race fixture",
+            "isolated-db-verifier",
+        )
+        .await?;
+    let granted = client
+        .grant_lookup_table_provisioner_broadcast_permit(
+            &cluster,
+            leased_a.operation.id,
+            &lease_a,
+            Utc::now() + Duration::minutes(1),
+        )
+        .await?;
+    let granted_permit = match granted {
+        LookupTableProvisionerBroadcastPermitResult::Granted { permit, .. } => permit,
+        LookupTableProvisionerBroadcastPermitResult::Paused { .. } => {
+            return fail("unpaused broadcast-permit grant was unexpectedly paused")
+        }
+        LookupTableProvisionerBroadcastPermitResult::Fenced { .. } => {
+            return fail("stable broadcast-permit fixture was unexpectedly identity-fenced")
+        }
+    };
+    let paused = client
+        .set_lookup_table_provisioner_pause(
+            &cluster,
+            true,
+            "pause wins after one durable grant",
+            "isolated-db-verifier",
+        )
+        .await?;
+    let denied = client
+        .grant_lookup_table_provisioner_broadcast_permit(
+            &cluster,
+            leased_b.operation.id,
+            &lease_b,
+            Utc::now() + Duration::minutes(1),
+        )
+        .await?;
+    let denied_operation = match denied {
+        LookupTableProvisionerBroadcastPermitResult::Paused { operation, .. } => operation,
+        LookupTableProvisionerBroadcastPermitResult::Granted { .. } => {
+            return fail("paused cluster granted a fresh broadcast permit")
+        }
+        LookupTableProvisionerBroadcastPermitResult::Fenced { .. } => {
+            return fail("pause fixture reached identity fencing before the pause gate")
+        }
+    };
+    let active_before_recovery: i64 = loyal_yield_orchestrator::sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.lookup_table_provisioner_broadcast_permits WHERE cluster = $1 AND resolved_at IS NULL",
+    )
+    .bind(&cluster)
+    .fetch_one(client.pool())
+    .await?;
+    ensure(
+        paused.paused
+            && active_before_recovery == 1
+            && denied_operation.operation_state == LookupTableOperationStatus::NeedsReconcile
+            && denied_operation.transaction_signature == signed_b.transaction_signature,
+        "pause/grant serialization lost the pre-granted crash window or authorized a post-pause send",
+    )?;
+    client
+        .resolve_lookup_table_provisioner_broadcast_permit(
+            granted_permit.id,
+            leased_a.operation.id,
+            &lease_a,
+            LookupTableProvisionerBroadcastResolution::NeedsReconcile {
+                observed_slot: None,
+                error_code: "db_verifier_crash_before_outcome_record".to_owned(),
+                error_detail: "durable permit survived the send/outcome crash window".to_owned(),
+            },
+        )
+        .await?;
+    let active_after_recovery: i64 = loyal_yield_orchestrator::sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.lookup_table_provisioner_broadcast_permits WHERE cluster = $1 AND resolved_at IS NULL",
+    )
+    .bind(&cluster)
+    .fetch_one(client.pool())
+    .await?;
+    ensure(
+        active_after_recovery == 0,
+        "durable broadcast-permit recovery did not drain the crash-visible permit",
     )
 }
 
@@ -1145,6 +2201,12 @@ async fn verify_nonempty_eventual_satisfaction_and_requeue(
         .await?
         .active;
 
+    loyal_yield_orchestrator::sqlx::query(
+        "UPDATE loyal_yield.lookup_table_provisioning_requests SET next_attempt_at = now() - interval '1 second' WHERE id = $1",
+    )
+    .bind(request.id)
+    .execute(client.pool())
+    .await?;
     let retry = client
         .lease_next_lookup_table_provisioning_request(
             &cluster,
@@ -1453,7 +2515,11 @@ async fn verify_atomic_and_concurrent_planning(
     let authority = unique_pubkey("plan-authority").to_string();
     let (shared_family, vault_family) = create_families(client, &cluster, &authority, 40).await?;
     let vault_id = create_vault(client, &format!("plan-{run}"), 1).await?;
-    let shared_addresses = typed_addresses(LookupTableManifestSubject::SharedMarket, 2, "market");
+    let shared_addresses = normalize_catalog_addresses([typed_addresses(
+        LookupTableManifestSubject::SharedMarket,
+        2,
+        "market",
+    )]);
     publish_shared_catalog(client, &cluster, shared_addresses.clone(), run, 1_999).await?;
     let vault_addresses = typed_addresses(LookupTableManifestSubject::Vault, 3, "vault");
     let input = LookupTableProvisioningRequestUpsert {
@@ -1571,6 +2637,12 @@ async fn verify_atomic_and_concurrent_planning(
         "table, binding, reservation accounting, and outbox were not atomically linked",
     )?;
 
+    loyal_yield_orchestrator::sqlx::query(
+        "UPDATE loyal_yield.lookup_table_provisioning_requests SET next_attempt_at = now() - interval '1 second' WHERE id = $1",
+    )
+    .bind(request.id)
+    .execute(client.pool())
+    .await?;
     let counts_before = plan_counts(client, &cluster).await?;
     let retry = client
         .lease_next_lookup_table_provisioning_request(
@@ -2056,7 +3128,7 @@ async fn verify_canonical_vault_route_cohorts(
     .fetch_one(client.pool())
     .await?;
     loyal_yield_orchestrator::sqlx::query(
-        "UPDATE loyal_yield.lookup_table_provisioning_requests SET request_status = 'requested', satisfied_at = NULL WHERE id = $1",
+        "UPDATE loyal_yield.lookup_table_provisioning_requests SET request_status = 'requested', satisfied_at = NULL, next_attempt_at = NULL WHERE id = $1",
     )
     .bind(request_a.id)
     .execute(client.pool())
@@ -2176,9 +3248,43 @@ async fn materialize_table_manifest(
         .await?
         .ok_or_else(|| io::Error::other("table manifest disappeared during materialization"))?;
     loyal_yield_orchestrator::sqlx::query(
-        "UPDATE loyal_yield.lookup_table_operations SET operation_state = 'cancelled' WHERE route_lookup_table_id = $1 AND operation_state NOT IN ('complete', 'permanent_failure', 'cancelled')",
+        r#"
+        UPDATE loyal_yield.lookup_table_operations
+        SET operation_state = 'complete',
+            transaction_signature = COALESCE(
+                transaction_signature,
+                'db-verifier-materialized-signature-' || id::TEXT
+            ),
+            message_hash = COALESCE(
+                message_hash,
+                'db-verifier-materialized-message-' || id::TEXT
+            ),
+            recent_blockhash = COALESCE(
+                recent_blockhash,
+                'db-verifier-materialized-blockhash-' || id::TEXT
+            ),
+            last_valid_block_height = COALESCE(last_valid_block_height, $2 + 100),
+            submitted_slot = COALESCE(submitted_slot, $2),
+            submitted_at = COALESCE(submitted_at, now()),
+            confirmed_slot = COALESCE(confirmed_slot, $2),
+            confirmed_at = COALESCE(confirmed_at, now()),
+            finalized_slot = COALESCE(finalized_slot, $2),
+            finalized_at = COALESCE(finalized_at, now()),
+            reconciled_slot = COALESCE(reconciled_slot, $2),
+            reconciled_at = COALESCE(reconciled_at, now()),
+            completed_at = COALESCE(completed_at, now()),
+            actual_fee_lamports = COALESCE(actual_fee_lamports, estimated_fee_lamports, 0),
+            actual_rent_lamports = COALESCE(actual_rent_lamports, estimated_rent_lamports, 0),
+            reclaimed_rent_lamports = COALESCE(reclaimed_rent_lamports, 0),
+            error_code = NULL, error_detail = NULL,
+            lease_owner = NULL, lease_expires_at = NULL,
+            updated_at = now()
+        WHERE route_lookup_table_id = $1
+          AND operation_state NOT IN ('complete', 'permanent_failure', 'cancelled')
+        "#,
     )
     .bind(table_id)
+    .bind(observed_slot)
     .execute(client.pool())
     .await?;
     let membership = manifest
@@ -2230,6 +3336,13 @@ async fn materialize_table_manifest(
             observed_slot,
         )
         .await?;
+    loyal_yield_orchestrator::sqlx::query(
+        "UPDATE loyal_yield.route_lookup_tables SET last_extended_slot = $2 WHERE id = $1",
+    )
+    .bind(table.id)
+    .bind(observed_slot - 1)
+    .execute(client.pool())
+    .await?;
     Ok(())
 }
 
@@ -3997,6 +5110,8 @@ async fn verify_rollout_controls(client: &NeonSqlClient, run: &str) -> VerifyRes
 
 async fn verify_legacy_import_audit(client: &NeonSqlClient, run: &str) -> VerifyResult<()> {
     let cluster = format!("db-verify-legacy-import-{run}");
+    let deactivate_signature = format!("db-verifier-deactivate-signature-{run}");
+    let close_signature = format!("db-verifier-close-signature-{run}");
     for ordinal in 0..2 {
         let addresses = vec![
             unique_pubkey(&format!("legacy-import-{ordinal}-a")).to_string(),
@@ -4290,14 +5405,75 @@ async fn verify_legacy_import_audit(client: &NeonSqlClient, run: &str) -> Verify
             .is_err(),
         "legacy cleanup accepted a stale authorization token",
     )?;
-    let authorization = client
-        .begin_legacy_lookup_table_cleanup_authorization(
+    let deactivate_attempt = client
+        .prepare_legacy_lookup_table_cleanup_attempt(LegacyLookupTableCleanupAttemptPrepare {
+            cluster: cluster.clone(),
+            table_address: cleanup_source.table_address.clone(),
+            expected_authorization_token: deactivate_protection.authorization_token.clone(),
+            operation_kind: LookupTableOperationKind::Deactivate,
+            expected_authority: cleanup_source.authority.clone(),
+            expected_address_count: cleanup_source.address_count,
+            expected_address_hash: cleanup_source.address_hash.clone(),
+            close_recipient: None,
+            expected_reclaimed_lamports: None,
+        })
+        .await?;
+    ensure(
+        deactivate_attempt.attempt_state == LegacyLookupTableCleanupAttemptState::Prepared
+            && deactivate_attempt.transaction_signature.is_none(),
+        "legacy cleanup did not persist intent before its signed identity",
+    )?;
+    let deactivate_budget = client
+        .reserve_legacy_lookup_table_cleanup_budget(
             &cluster,
-            &cleanup_source.table_address,
-            &deactivate_protection.authorization_token,
-            LookupTableOperationKind::Deactivate,
+            deactivate_attempt.id,
+            LookupTableClusterBudgetPolicy {
+                max_lamports: 100_000_000,
+                rolling_window_seconds: 86_400,
+            },
+            5_000,
+            0,
         )
         .await?;
+    ensure(
+        deactivate_budget.approved
+            && !deactivate_budget.replayed
+            && deactivate_budget.legacy_cleanup_attempt_id == deactivate_attempt.id
+            && deactivate_budget.requested_lamports == 5_000,
+        "legacy cleanup did not reserve the shared rolling budget before signing",
+    )?;
+    let deactivate_attempt = client
+        .persist_signed_legacy_lookup_table_cleanup_attempt(
+            deactivate_attempt.id,
+            SignedLegacyLookupTableCleanupAttempt {
+                transaction_signature: deactivate_signature.clone(),
+                message_hash: "1".repeat(64),
+                recent_blockhash: format!("db-verifier-deactivate-blockhash-{run}"),
+                last_valid_block_height: 500,
+                estimated_fee_lamports: 5_000,
+                recipient_balance_before: None,
+            },
+        )
+        .await?;
+    let replayed_deactivate_attempt = client
+        .prepare_legacy_lookup_table_cleanup_attempt(LegacyLookupTableCleanupAttemptPrepare {
+            cluster: cluster.clone(),
+            table_address: cleanup_source.table_address.clone(),
+            expected_authorization_token: deactivate_protection.authorization_token.clone(),
+            operation_kind: LookupTableOperationKind::Deactivate,
+            expected_authority: cleanup_source.authority.clone(),
+            expected_address_count: cleanup_source.address_count,
+            expected_address_hash: cleanup_source.address_hash.clone(),
+            close_recipient: None,
+            expected_reclaimed_lamports: None,
+        })
+        .await?;
+    ensure(
+        replayed_deactivate_attempt.id == deactivate_attempt.id
+            && replayed_deactivate_attempt.transaction_signature
+                == deactivate_attempt.transaction_signature,
+        "legacy cleanup replay did not preserve one durable signed identity",
+    )?;
     ensure(
         client
             .set_lookup_table_rollout_mode(
@@ -4311,17 +5487,24 @@ async fn verify_legacy_import_audit(client: &NeonSqlClient, run: &str) -> Verify
             .is_err(),
         "rollout reversal bypassed the durable legacy cleanup fence",
     )?;
-    authorization
-        .record_finalized(VerifiedLegacyLookupTableCleanup {
-            cluster: cluster.clone(),
-            table_address: cleanup_source.table_address.clone(),
-            expected_authorization_token: deactivate_protection.authorization_token.clone(),
-            operation_kind: LookupTableOperationKind::Deactivate,
-            transaction_signature: "db-verifier-deactivate-signature".to_owned(),
-            observed_slot: 150,
-            close_recipient: None,
-            reclaimed_lamports: None,
-        })
+    client
+        .mark_legacy_lookup_table_cleanup_attempt_needs_reconcile(
+            deactivate_attempt.id,
+            &deactivate_signature,
+            "db_verifier_crash_after_send",
+            "simulate crash after send before finalized database record",
+        )
+        .await?;
+    client
+        .complete_legacy_lookup_table_cleanup_attempt(
+            deactivate_attempt.id,
+            FinalizedLegacyLookupTableCleanupAttempt {
+                transaction_signature: deactivate_signature,
+                finalized_slot: 150,
+                recipient_balance_after: None,
+                actual_reclaimed_lamports: None,
+            },
+        )
         .await?;
     client
         .set_lookup_table_rollout_mode(
@@ -4355,7 +5538,7 @@ async fn verify_legacy_import_audit(client: &NeonSqlClient, run: &str) -> Verify
                 table_address: cleanup_source.table_address.clone(),
                 expected_authorization_token: close_protection.authorization_token.clone(),
                 operation_kind: LookupTableOperationKind::Close,
-                transaction_signature: "db-verifier-invalid-close".to_owned(),
+                transaction_signature: format!("db-verifier-invalid-close-{run}"),
                 observed_slot: 200,
                 close_recipient: Some(unique_pubkey("wrong-refund-recipient").to_string()),
                 reclaimed_lamports: Some(1),
@@ -4378,7 +5561,7 @@ async fn verify_legacy_import_audit(client: &NeonSqlClient, run: &str) -> Verify
             table_address: cleanup_source.table_address.clone(),
             expected_authorization_token: close_protection.authorization_token,
             operation_kind: LookupTableOperationKind::Close,
-            transaction_signature: "db-verifier-close-signature".to_owned(),
+            transaction_signature: close_signature,
             observed_slot: 201,
             close_recipient: Some(cleanup_source.authority.clone()),
             reclaimed_lamports: Some(1_234_567),
@@ -5083,6 +6266,137 @@ async fn publish_shared_catalog(
         .await?)
 }
 
+async fn publish_shared_catalog_with_metadata(
+    client: &NeonSqlClient,
+    cluster: &str,
+    addresses: Vec<LookupTableManifestAddressRecord>,
+    run: &str,
+    source_slot: i64,
+    case: &str,
+) -> VerifyResult<SharedMarketCatalogHeadRecord> {
+    let desired_set_hash = lookup_table_manifest_address_records_hash(&addresses);
+    let ordered_addresses = addresses
+        .iter()
+        .map(|address| address.address.clone())
+        .collect::<Vec<_>>();
+    Ok(client
+        .upsert_shared_market_catalog(SharedMarketCatalogUpsert {
+            cluster: cluster.to_owned(),
+            catalog_version: "db-verifier-catalog-v1".to_owned(),
+            desired_set_hash,
+            enabled_mints_hash: ordered_address_hash(&[
+                format!("enabled-mints-{case}-{run}"),
+                ordered_address_hash(&ordered_addresses),
+            ]),
+            reserve_set_hash: ordered_address_hash(&[
+                format!("reserve-set-{case}-{run}"),
+                ordered_address_hash(&ordered_addresses),
+            ]),
+            addresses,
+            source_slot: Some(source_slot),
+            source_observed_at: Some(Utc::now()),
+            source_metadata: json!({
+                "source": "isolated_db_verifier",
+                "case": case,
+                "run": run,
+            }),
+            reason: format!("isolated reusable ALT database verification: {case}"),
+            updated_by: "verify-reusable-alt-db".to_owned(),
+        })
+        .await?)
+}
+
+/// Advances the immutable catalog audit head without the normal drained-family
+/// writer gate so the isolated verifier can deterministically reproduce the
+/// narrow head-change races defended by the before-sign and before-broadcast
+/// transactions. Production code must use `upsert_shared_market_catalog`.
+async fn force_advance_shared_catalog_head_for_race_fixture(
+    client: &NeonSqlClient,
+    previous: &SharedMarketCatalogHeadRecord,
+    addresses: Vec<LookupTableManifestAddressRecord>,
+    run: &str,
+    source_slot: i64,
+    case: &str,
+) -> VerifyResult<SharedMarketCatalogHeadRecord> {
+    let planner_version: String = loyal_yield_orchestrator::sqlx::query_scalar(
+        "SELECT planner_version FROM loyal_yield.lookup_table_families WHERE id = $1",
+    )
+    .bind(previous.family_id)
+    .fetch_one(client.pool())
+    .await?;
+    let desired_set_hash = lookup_table_manifest_address_records_hash(&addresses);
+    let manifest = client
+        .persist_lookup_table_manifest(LookupTableManifestWrite {
+            family_id: previous.family_id,
+            subject_kind: LookupTableManifestSubject::SharedMarket,
+            subject_key: format!("shared-market-catalog:{}", previous.catalog_version),
+            vault_id: None,
+            desired_set_hash: desired_set_hash.clone(),
+            source_slot: Some(source_slot),
+            planner_version,
+            catalog_version: previous.catalog_version.clone(),
+            addresses: addresses.clone(),
+        })
+        .await?;
+    let ordered_addresses = addresses
+        .iter()
+        .map(|address| address.address.clone())
+        .collect::<Vec<_>>();
+    let catalog_revision_id: i64 = loyal_yield_orchestrator::sqlx::query_scalar(
+        r#"
+        INSERT INTO loyal_yield.lookup_table_shared_market_catalog_revisions
+            (family_id, manifest_id, catalog_revision, catalog_version,
+             desired_set_hash, enabled_mints_hash, reserve_set_hash,
+             address_count, source_slot, source_observed_at,
+             source_metadata, reason, updated_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(),
+                $10, $11, 'verify-reusable-alt-db')
+        RETURNING id
+        "#,
+    )
+    .bind(previous.family_id)
+    .bind(manifest.id)
+    .bind(previous.catalog_revision + 1)
+    .bind(&previous.catalog_version)
+    .bind(&desired_set_hash)
+    .bind(ordered_address_hash(&[
+        format!("race-enabled-mints-{case}-{run}"),
+        ordered_address_hash(&ordered_addresses),
+    ]))
+    .bind(ordered_address_hash(&[
+        format!("race-reserve-set-{case}-{run}"),
+        ordered_address_hash(&ordered_addresses),
+    ]))
+    .bind(i32::try_from(addresses.len())?)
+    .bind(source_slot)
+    .bind(json!({
+        "source": "isolated_db_verifier_race_fixture",
+        "case": case,
+        "run": run,
+    }))
+    .bind(format!("isolated catalog head race fixture: {case}"))
+    .fetch_one(client.pool())
+    .await?;
+    loyal_yield_orchestrator::sqlx::query(
+        r#"
+        UPDATE loyal_yield.lookup_table_shared_market_catalog_heads
+        SET catalog_revision_id = $2, target_generation = NULL,
+            readiness_state = 'pending', activated_at = NULL,
+            updated_at = now()
+        WHERE family_id = $1 AND catalog_revision_id = $3
+        "#,
+    )
+    .bind(previous.family_id)
+    .bind(catalog_revision_id)
+    .bind(previous.catalog_revision_id)
+    .execute(client.pool())
+    .await?;
+    client
+        .shared_market_catalog_head(&previous.cluster)
+        .await?
+        .ok_or_else(|| io::Error::other("forced shared catalog race head disappeared").into())
+}
+
 fn shared_catalog_policy(slot: i64) -> SharedMarketCatalogPlanPolicy {
     SharedMarketCatalogPlanPolicy {
         shared_shard_capacity: 40,
@@ -5422,6 +6736,7 @@ fn cleanup_operation(
             "cluster": cluster,
             "table": table.table_address,
             "expectedAuthority": table.authority,
+            "expectedAddressCount": table.address_count,
             "expectedAddressHash": table.address_hash,
             "expectedMutationEpoch": table.mutation_epoch,
         }),
@@ -5487,6 +6802,25 @@ async fn insert_legacy_fixture(
             expected_address_count: 0,
         },
     ))
+}
+
+fn finalized_shared_observation(
+    preflight: &ReusableOnlyCutoverPreflight,
+    observed_slot: i64,
+    last_extended_slot: i64,
+) -> FinalizedSharedTableObservation {
+    FinalizedSharedTableObservation {
+        cluster: preflight.cluster.clone(),
+        physical_table_id: preflight.physical_table_id,
+        table_address: preflight.physical_table_address.clone(),
+        authority: preflight.physical_authority.clone(),
+        mutation_epoch: preflight.physical_mutation_epoch,
+        observed_slot,
+        last_extended_slot,
+        ordered_address_hash: preflight.ordered_address_hash.clone(),
+        address_count: preflight.physical_address_count,
+        ordered_addresses: preflight.ordered_addresses.clone(),
+    }
 }
 
 fn ensure(condition: bool, message: impl Into<String>) -> VerifyResult<()> {

@@ -49,6 +49,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp /app/target/release/same-mint-monitor-e2e /usr/local/bin/same-mint-monitor-e2e \
     && cp /app/target/release/route-lookup-table-shared-catalog /usr/local/bin/route-lookup-table-shared-catalog \
     && cp /app/target/release/route-lookup-table-provisioner /usr/local/bin/route-lookup-table-provisioner \
+    && cp /app/target/release/route-lookup-table-alert-monitor /usr/local/bin/route-lookup-table-alert-monitor \
     && cp /app/target/release/route-lookup-table-legacy-import /usr/local/bin/route-lookup-table-legacy-import \
     && cp /app/target/release/route-lookup-table-cleanup /usr/local/bin/route-lookup-table-cleanup
 
@@ -83,6 +84,7 @@ COPY --from=builder /usr/local/bin/same-mint-yield-monitor /usr/local/bin/same-m
 COPY --from=builder /usr/local/bin/same-mint-monitor-e2e /usr/local/bin/same-mint-monitor-e2e
 COPY --from=builder /usr/local/bin/route-lookup-table-shared-catalog /usr/local/bin/route-lookup-table-shared-catalog
 COPY --from=builder /usr/local/bin/route-lookup-table-provisioner /usr/local/bin/route-lookup-table-provisioner
+COPY --from=builder /usr/local/bin/route-lookup-table-alert-monitor /usr/local/bin/route-lookup-table-alert-monitor
 COPY --from=builder /usr/local/bin/route-lookup-table-legacy-import /usr/local/bin/route-lookup-table-legacy-import
 COPY --from=builder /usr/local/bin/route-lookup-table-cleanup /usr/local/bin/route-lookup-table-cleanup
 

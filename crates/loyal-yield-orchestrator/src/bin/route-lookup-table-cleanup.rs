@@ -1,35 +1,41 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     env,
     error::Error,
     str::FromStr,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-#[cfg(test)]
-use loyal_yield_orchestrator::LookupTableLifecycle;
 use loyal_yield_orchestrator::{
     keypair_from_string,
     rpc_safety::{
         redacted_external_error, redacted_rpc_endpoint, validate_rpc_endpoint,
         validate_rpc_genesis_hash,
     },
-    LegacyLookupTableCleanupProtection, LookupTableCleanupProtection, LookupTableOperationKind,
-    NeonSqlClient, NeonSqlConfig, VerifiedLegacyLookupTableCleanup, POLICY_KEYPAIR_ENV,
+    FinalizedLegacyLookupTableCleanupAttempt, ImportedLegacyLookupTableCleanupRecord,
+    LegacyLookupTableCleanupAttemptPrepare, LegacyLookupTableCleanupAttemptRecord,
+    LegacyLookupTableCleanupAttemptState, LegacyLookupTableCleanupBudgetReservation,
+    LegacyLookupTableCleanupProtection, LookupTableCleanupProtection,
+    LookupTableClusterBudgetPolicy, LookupTableLifecycle, LookupTableOperationEnqueue,
+    LookupTableOperationKind, LookupTableOperationStatus, NeonSqlClient, NeonSqlConfig,
+    ReusableLookupTableRecord, SignedLegacyLookupTableCleanupAttempt, POLICY_KEYPAIR_ENV,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use solana_client::rpc_client::RpcClient;
+use solana_client::{
+    rpc_client::RpcClient,
+    rpc_config::{RpcSendTransactionConfig, RpcSimulateTransactionConfig},
+};
 use solana_sdk::address_lookup_table::{
     instruction as address_lookup_table_instruction, program as address_lookup_table_program,
     state::{estimate_last_valid_slot, AddressLookupTable},
 };
 use solana_sdk::{
     account::Account,
-    commitment_config::CommitmentConfig,
+    commitment_config::{CommitmentConfig, CommitmentLevel},
     instruction::Instruction,
+    message::Message,
     packet::PACKET_DATA_SIZE,
     pubkey::Pubkey,
     signature::{Signature, Signer},
@@ -65,6 +71,8 @@ struct Options {
     trace_timing: bool,
     expected_fleet_count: Option<usize>,
     expected_fleet_hash: Option<String>,
+    max_lamports: Option<i64>,
+    budget_window_seconds: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -91,6 +99,23 @@ struct HistoryEvent {
     new_address_count: Option<usize>,
 }
 
+#[derive(Clone, Debug)]
+struct AuthorityHistoryEvidence {
+    authority: Pubkey,
+    page_count: usize,
+    signature_count: usize,
+    oldest_slot: Option<u64>,
+    boundary_reached: bool,
+    exhausted: bool,
+}
+
+#[derive(Clone, Debug)]
+struct HistoryScanEvidence {
+    events: Vec<HistoryEvent>,
+    authorities: Vec<AuthorityHistoryEvidence>,
+    mutation_set_hash: String,
+}
+
 #[derive(Debug)]
 struct PlannedCleanup {
     row_index: usize,
@@ -106,7 +131,21 @@ struct PlannedCleanup {
 }
 
 #[derive(Debug)]
+struct PlannedRegisteredCleanup {
+    row_index: usize,
+    protection: LookupTableCleanupProtection,
+    operation_kind: LookupTableOperationKind,
+}
+
+#[derive(Debug, Default)]
+struct RegisteredCleanupEnqueueSummary {
+    operation_count: usize,
+    queued_count: usize,
+}
+
+#[derive(Debug)]
 struct CleanupTransactionResult {
+    attempt_id: i64,
     signature: String,
     simulation: Value,
     transaction_packet: CleanupTransactionPacket,
@@ -115,6 +154,45 @@ struct CleanupTransactionResult {
     recipient_balance_after: Option<u64>,
     expected_refund_lamports: u64,
     minimum_net_recipient_increase_lamports: u64,
+    budget_reservation: LegacyLookupTableCleanupBudgetReservation,
+}
+
+#[derive(Debug)]
+struct FinalizedCandidateFleet {
+    candidates: BTreeMap<Pubkey, Result<Option<Candidate>, String>>,
+    minimum_context_slot: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyCleanupChainEffect {
+    Unchanged,
+    Applied { observed_slot: u64 },
+    Drifted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PersistedCleanupSignatureState {
+    FinalizedSuccess { slot: u64 },
+    FinalizedFailure(String),
+    Pending,
+    NotFound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyCleanupRecoveryDecision {
+    Wait,
+    Complete { observed_slot: u64 },
+    ExpireAndRetry,
+    PermanentFailure,
+    ManualReconcile,
+}
+
+#[derive(Debug, Default)]
+struct LegacyCleanupRecoverySummary {
+    rows: Vec<Value>,
+    completed_count: usize,
+    waiting_count: usize,
+    expired_count: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -131,36 +209,6 @@ struct RpcResponse {
 
 #[derive(Debug, Deserialize)]
 struct RpcError {
-    code: i64,
-    message: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProgramAccountsV2Response {
-    result: Option<ProgramAccountsV2Result>,
-    error: Option<ProgramAccountsV2Error>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProgramAccountsV2Result {
-    accounts: Vec<ProgramAccountsV2Account>,
-    #[serde(rename = "paginationKey")]
-    pagination_key: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProgramAccountsV2Account {
-    pubkey: String,
-    account: ProgramAccountsV2AccountData,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProgramAccountsV2AccountData {
-    data: Value,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProgramAccountsV2Error {
     code: i64,
     message: String,
 }
@@ -244,7 +292,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .map_err(|_| "NEON_DATABASE_URL is required for binding-aware ALT cleanup")?;
     let database = NeonSqlClient::connect(NeonSqlConfig::new(database_url)).await?;
     database
-        .require_schema_migration(19, "legacy_lookup_table_imports")
+        .require_schema_migration(21, "reusable_alt_production_controls")
         .await?;
     let trace = TraceLog::new(options.trace_timing);
     trace.event(
@@ -267,21 +315,6 @@ async fn run() -> Result<(), Box<dyn Error>> {
     validate_rpc_genesis_hash(&options.cluster, observed_genesis_hash).map_err(|error| {
         format!("refusing ALT cleanup read or mutation against mismatched RPC: {error}")
     })?;
-    let signer = if options.execute {
-        let signer = load_authority_signer(&options)?;
-        let expected_policy = Pubkey::from_str(AFFECTED_POLICY_AUTHORITY)?;
-        if signer.pubkey() != expected_policy {
-            return Err(format!(
-                "POLICY_KEYPAIR pubkey {} does not match the standard policy authority {}",
-                signer.pubkey(),
-                expected_policy
-            )
-            .into());
-        }
-        Some(signer)
-    } else {
-        None
-    };
     let phase_started = Instant::now();
     let protected = protected_legacy_tables(&database).await?;
     trace.finish(
@@ -292,9 +325,12 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let phase_started = Instant::now();
     let env_tables = route_lookup_tables_from_env()?;
     let manual_allowlist = options.allowlist.iter().copied().collect::<BTreeSet<_>>();
-    let mut protected_all = protected;
-    protected_all.extend(env_tables.iter().copied());
-    protected_all.extend(manual_allowlist.iter().copied());
+    let protected_all = effective_cleanup_protected_tables(
+        protected,
+        &env_tables,
+        &manual_allowlist,
+        options.execute,
+    );
     trace.finish(
         "cleanup.allowlist",
         phase_started,
@@ -302,77 +338,66 @@ async fn run() -> Result<(), Box<dyn Error>> {
             "envTableCount": env_tables.len(),
             "manualAllowlistCount": manual_allowlist.len(),
             "protectedTableCount": protected_all.len(),
+            "executeIgnoresEnvironmentProtection": options.execute,
         }),
     );
 
-    let mut table_addresses = options.tables.clone();
-    normalize_table_addresses(&mut table_addresses, options.limit);
-    let history_events = if options.scan_history
-        && remaining_table_limit(options.limit, table_addresses.len()) != Some(0)
-    {
-        let phase_started = Instant::now();
-        let table_limit = remaining_table_limit(options.limit, table_addresses.len());
-        let events = discover_tables_by_history(
-            &options.rpc_url,
-            &options.authorities,
-            &options,
-            table_limit,
-            &trace,
-        )
+    let mut imported_fleet = database
+        .imported_legacy_lookup_table_cleanup_fleet(&options.cluster)
         .await?;
+    let registered_cleanup_inventory = database
+        .registered_lookup_table_cleanup_inventory(&options.cluster)
+        .await?;
+    let inventory_fleet_hash = approved_imported_legacy_fleet_hash(&imported_fleet);
+    let mut table_addresses = imported_fleet
+        .iter()
+        .map(|record| Pubkey::from_str(&record.source.table_address))
+        .collect::<Result<Vec<_>, _>>()?;
+    table_addresses.extend(
+        registered_cleanup_inventory
+            .iter()
+            .map(|record| Pubkey::from_str(&record.table_address))
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    table_addresses.sort();
+    table_addresses.dedup();
+    let history_authorities = imported_fleet
+        .iter()
+        .map(|record| Pubkey::from_str(&record.source.authority))
+        .collect::<Result<BTreeSet<_>, _>>()?
+        .into_iter()
+        .collect::<Vec<_>>();
+    let history_scan = if options.scan_history {
+        let phase_started = Instant::now();
+        let evidence =
+            discover_tables_by_history(&options.rpc_url, &history_authorities, &options, &trace)
+                .await?;
         trace.finish(
             "cleanup.scan_history",
             phase_started,
             json!({
-                "eventCount": events.len(),
-                "tableLimit": table_limit,
+                "eventCount": evidence.events.len(),
+                "authorityCount": evidence.authorities.len(),
+                "mutationSetHash": evidence.mutation_set_hash,
             }),
         );
-        add_table_addresses(
-            &mut table_addresses,
-            events.iter().map(|event| event.table_address),
-            options.limit,
-        );
-        events
+        evidence
     } else {
-        if options.scan_history {
-            trace.event(
-                "cleanup.scan_history.skip",
-                json!({ "reason": "candidate_limit_already_reached" }),
-            );
+        HistoryScanEvidence {
+            events: Vec::new(),
+            authorities: Vec::new(),
+            mutation_set_hash: history_mutation_set_hash(&[]),
         }
-        Vec::new()
     };
-    if options.scan_program_accounts {
-        match remaining_table_limit(options.limit, table_addresses.len()) {
-            Some(0) => trace.event(
-                "cleanup.scan_program_accounts.skip",
-                json!({ "reason": "candidate_limit_already_reached" }),
-            ),
-            remaining => {
-                let phase_started = Instant::now();
-                let discovered = discover_tables_by_program_scan(
-                    &rpc,
-                    &options.rpc_url,
-                    &options.authorities,
-                    remaining.unwrap_or(options.limit),
-                )
-                .await?;
-                trace.finish(
-                    "cleanup.scan_program_accounts",
-                    phase_started,
-                    json!({
-                        "discoveredCount": discovered.len(),
-                        "remainingLimit": remaining,
-                    }),
-                );
-                add_table_addresses(&mut table_addresses, discovered, options.limit);
-            }
-        }
-    }
+    let history_events = history_scan.events.clone();
     trace.event(
         "cleanup.discovery.complete",
-        json!({ "candidateAddressCount": table_addresses.len() }),
+        json!({
+            "candidateAddressCount": table_addresses.len(),
+            "inventorySource": "immutable_imported_database_fleet",
+            "inventoryFleetHash": inventory_fleet_hash,
+            "registeredV2RetirementCount": registered_cleanup_inventory.len(),
+        }),
     );
 
     let phase_started = Instant::now();
@@ -382,43 +407,53 @@ async fn run() -> Result<(), Box<dyn Error>> {
         phase_started,
         json!({ "currentSlot": current_slot }),
     );
-    let mut rows = Vec::new();
+    let mut recovery_summary = if options.execute {
+        reconcile_pending_legacy_cleanup_attempts(&database, &rpc, &options, &history_events)
+            .await?
+    } else {
+        LegacyCleanupRecoverySummary::default()
+    };
+    if options.execute {
+        imported_fleet = database
+            .imported_legacy_lookup_table_cleanup_fleet(&options.cluster)
+            .await?;
+        if approved_imported_legacy_fleet_hash(&imported_fleet) != inventory_fleet_hash {
+            return Err("imported legacy fleet identity changed during cleanup recovery".into());
+        }
+        verify_imported_cleanup_history(&imported_fleet, &history_scan, options.min_slot)?;
+    }
+    let mut rows = std::mem::take(&mut recovery_summary.rows);
     let mut planned_cleanups = Vec::new();
-    let queued_operation_count = 0_usize;
+    let mut planned_registered_cleanups = Vec::new();
+    let mut registered_enqueue_summary = RegisteredCleanupEnqueueSummary::default();
     let mut total_reclaimable = 0_u64;
-    let mut total_reclaimed = 0_u64;
+    let mut reclaimed_this_run = 0_u64;
 
     let phase_started = Instant::now();
-    let loaded_candidates = load_candidates(&rpc, &table_addresses, &trace)?;
-    let mut classified_v2_tables = BTreeSet::new();
-    for (table_address, loaded) in &loaded_candidates {
-        if loaded.is_ok()
-            && database
-                .lookup_table_cleanup_protection(&options.cluster, &table_address.to_string())
-                .await?
-                .is_some()
-        {
-            classified_v2_tables.insert(*table_address);
-        }
+    let loaded_fleet = load_candidates(&rpc, &table_addresses, &trace)?;
+    if loaded_fleet.candidates.len() != table_addresses.len() {
+        return Err(
+            "finalized RPC inventory did not account for every database cleanup table".into(),
+        );
     }
     let policy_authority = Pubkey::from_str(AFFECTED_POLICY_AUTHORITY)?;
-    let legacy_inventory = loaded_candidates
-        .iter()
-        .filter_map(|(_, loaded)| loaded.as_ref().ok())
-        .filter(|candidate| {
-            candidate.owner == address_lookup_table_program::id()
-                && candidate.authority == Some(policy_authority)
-                && !classified_v2_tables.contains(&candidate.table_address)
-        })
-        .collect::<Vec<_>>();
-    let inventory_fleet_hash = approved_policy_fleet_hash(&legacy_inventory);
+    if options.execute
+        && imported_fleet
+            .iter()
+            .any(|record| record.source.authority != policy_authority.to_string())
+    {
+        return Err(
+            "imported cleanup fleet contains an authority other than the standard POLICY_KEYPAIR"
+                .into(),
+        );
+    }
     if options
         .expected_fleet_count
-        .is_some_and(|expected| expected != legacy_inventory.len())
+        .is_some_and(|expected| expected != imported_fleet.len())
     {
         return Err(format!(
-            "policy legacy fleet has {} extant tables, but --expected-fleet-count is {}",
-            legacy_inventory.len(),
+            "imported legacy fleet has {} tables, but --expected-fleet-count is {}",
+            imported_fleet.len(),
             options.expected_fleet_count.expect("checked Some")
         )
         .into());
@@ -434,17 +469,29 @@ async fn run() -> Result<(), Box<dyn Error>> {
         "cleanup.candidate_accounts",
         phase_started,
         json!({
-            "accountCount": loaded_candidates.len(),
-            "legacyFleetCount": legacy_inventory.len(),
-            "excludedV2TableCount": classified_v2_tables.len(),
+            "accountCount": loaded_fleet.candidates.len(),
+            "legacyFleetCount": imported_fleet.len(),
+            "registeredV2RetirementCount": registered_cleanup_inventory.len(),
+            "finalizedMinimumContextSlot": loaded_fleet.minimum_context_slot,
             "inventoryFleetHash": inventory_fleet_hash,
         }),
     );
     let phase_started = Instant::now();
-    for (table_address, loaded_candidate) in &loaded_candidates {
+    for imported in &imported_fleet {
+        let table_address = Pubkey::from_str(&imported.source.table_address)?;
+        let loaded_candidate = loaded_fleet
+            .candidates
+            .get(&table_address)
+            .ok_or("imported cleanup table was omitted from finalized RPC batch")?;
         let candidate = match loaded_candidate {
-            Ok(candidate) => candidate,
+            Ok(Some(candidate)) => candidate,
             Err(error) => {
+                if options.execute {
+                    return Err(format!(
+                        "imported cleanup table {table_address} failed finalized decode: {error}"
+                    )
+                    .into());
+                }
                 rows.push(json!({
                     "table": table_address.to_string(),
                     "action": "skip",
@@ -452,31 +499,86 @@ async fn run() -> Result<(), Box<dyn Error>> {
                         "fetch_or_decode_failed",
                         &error,
                     ),
+                    "importedControlPlane": imported_cleanup_record_json(imported),
+                }));
+                continue;
+            }
+            Ok(None) => {
+                let candidate_history = history_events
+                    .iter()
+                    .filter(|event| event.table_address == table_address)
+                    .map(|event| history_event_json(event, &protected_all))
+                    .collect::<Vec<_>>();
+                if imported.source.status != "closed" {
+                    if options.execute {
+                        return Err(format!(
+                            "imported cleanup table {table_address} is absent at finalized commitment but database status is {}",
+                            imported.source.status
+                        )
+                        .into());
+                    }
+                    rows.push(json!({
+                        "table": table_address.to_string(),
+                        "status": imported.source.status,
+                        "action": "skip",
+                        "reason": "imported_table_absent_before_durable_close_evidence",
+                        "importedControlPlane": imported_cleanup_record_json(imported),
+                        "historyEvents": candidate_history,
+                    }));
+                    continue;
+                }
+                rows.push(json!({
+                    "table": table_address.to_string(),
+                    "status": "closed",
+                    "action": "complete",
+                    "reason": "closed_imported_table_retained_in_durable_fleet_evidence",
+                    "lamportsReclaimable": "0",
+                    "importedControlPlane": imported_cleanup_record_json(imported),
+                    "historyEvents": candidate_history,
+                    "execution": {
+                        "transactionsSent": false,
+                        "closedSignatureVerifiedInFinalizedHistory": options.execute,
+                    },
                 }));
                 continue;
             }
         };
-        let registered_protection = database
-            .lookup_table_cleanup_protection(&options.cluster, &candidate.table_address.to_string())
-            .await?;
-        let legacy_protection = if registered_protection.is_none() {
-            database
-                .legacy_lookup_table_cleanup_protection(
-                    &options.cluster,
-                    &candidate.table_address.to_string(),
+        let exact_import_identity = candidate.owner == address_lookup_table_program::id()
+            && candidate.authority.map(|value| value.to_string())
+                == Some(imported.source.authority.clone())
+            && candidate.address_count == usize::try_from(imported.source.address_count)?
+            && ordered_candidate_address_hash(&candidate.addresses) == imported.source.address_hash
+            && candidate
+                .addresses
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                == imported.source.addresses;
+        if !exact_import_identity || imported.source.status == "closed" {
+            if options.execute {
+                return Err(format!(
+                    "imported cleanup table {} finalized chain identity/lifecycle drifted from immutable evidence",
+                    candidate.table_address
                 )
-                .await?
-        } else {
-            None
-        };
+                .into());
+            }
+            rows.push(json!({
+                "table": candidate.table_address.to_string(),
+                "action": "skip",
+                "reason": "legacy_import_chain_identity_or_lifecycle_drift",
+                "importedControlPlane": imported_cleanup_record_json(imported),
+            }));
+            continue;
+        }
+        let legacy_protection = database
+            .legacy_lookup_table_cleanup_protection(
+                &options.cluster,
+                &candidate.table_address.to_string(),
+            )
+            .await?;
         let manually_protected = protected_all.contains(&candidate.table_address);
         let (action, reason) = if manually_protected {
             ("skip", "legacy_registry_env_or_manual_allowlist".to_owned())
-        } else if registered_protection.is_some() {
-            (
-                "skip",
-                "classified_v2_table_use_dedicated_provisioner".to_owned(),
-            )
         } else if let Some(protection) = legacy_protection.as_ref() {
             classify_imported_legacy_candidate(candidate, protection, current_slot)
         } else {
@@ -492,8 +594,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
             .collect::<Vec<_>>();
 
         let execution = Value::Null;
-        if options.execute && matches!(action, "deactivate" | "close") {
-            if registered_protection.is_none() {
+        if matches!(action, "deactivate" | "close") {
+            let row_index = rows.len();
+            if options.execute {
                 let authorization = require_retired_imported_legacy_cleanup_authorization(
                     &database,
                     &options.cluster,
@@ -502,26 +605,20 @@ async fn run() -> Result<(), Box<dyn Error>> {
                     legacy_protection.as_ref(),
                 )
                 .await?;
-                let signer = signer
-                    .as_ref()
-                    .ok_or("POLICY_KEYPAIR was not loaded for cleanup execute")?;
                 let authority = candidate
                     .authority
                     .ok_or("candidate had no authority during execute")?;
-                if signer.pubkey() != authority {
+                if authority != policy_authority {
                     return Err(format!(
-                        "authority signer {} does not match table {} authority {}",
-                        signer.pubkey(),
-                        candidate.table_address,
-                        authority
+                        "table {} authority {} does not match standard policy authority {}",
+                        candidate.table_address, authority, policy_authority,
                     )
                     .into());
                 }
-                let row_index = rows.len();
                 if action == "deactivate" {
                     let instruction = address_lookup_table_instruction::deactivate_lookup_table(
                         candidate.table_address,
-                        signer.pubkey(),
+                        policy_authority,
                     );
                     planned_cleanups.push(PlannedCleanup {
                         row_index,
@@ -536,15 +633,15 @@ async fn run() -> Result<(), Box<dyn Error>> {
                         expected_cleanup_authorization_token: authorization.authorization_token,
                     });
                 } else {
-                    let recipient = options.recipient.unwrap_or_else(|| signer.pubkey());
-                    if recipient != signer.pubkey() {
+                    let recipient = options.recipient.unwrap_or(policy_authority);
+                    if recipient != policy_authority {
                         return Err(
                             "close recipient must equal the POLICY_KEYPAIR public key".into()
                         );
                     }
                     let instruction = address_lookup_table_instruction::close_lookup_table(
                         candidate.table_address,
-                        signer.pubkey(),
+                        policy_authority,
                         recipient,
                     );
                     planned_cleanups.push(PlannedCleanup {
@@ -574,11 +671,128 @@ async fn run() -> Result<(), Box<dyn Error>> {
             "deactivationSlot": candidate.deactivation_slot,
             "action": action,
             "reason": reason,
-            "registeredControlPlane": registered_protection.as_ref().map(cleanup_protection_json),
+            "importedControlPlane": imported_cleanup_record_json(imported),
             "legacyCleanupProtection": legacy_protection.as_ref().map(legacy_cleanup_protection_json),
             "historyEvents": candidate_history,
             "execution": execution,
         }));
+    }
+    for registered in &registered_cleanup_inventory {
+        let table_address = Pubkey::from_str(&registered.table_address)?;
+        let candidate_history = history_events
+            .iter()
+            .filter(|event| event.table_address == table_address)
+            .map(|event| history_event_json(event, &protected_all))
+            .collect::<Vec<_>>();
+        let loaded_candidate = loaded_fleet
+            .candidates
+            .get(&table_address)
+            .ok_or("registered v2 cleanup table was omitted from finalized RPC batch")?;
+        let candidate = match loaded_candidate {
+            Err(error) => {
+                rows.push(json!({
+                    "table": table_address.to_string(),
+                    "action": "skip",
+                    "reason": safe_cleanup_operational_error_with_context(
+                        "registered_v2_fetch_or_decode_failed",
+                        error,
+                    ),
+                    "registeredControlPlane": registered_cleanup_record_json(registered),
+                    "historyEvents": candidate_history,
+                }));
+                continue;
+            }
+            Ok(None) => {
+                rows.push(json!({
+                    "table": table_address.to_string(),
+                    "status": registered.desired_state.as_str(),
+                    "action": if registered.desired_state == LookupTableLifecycle::Closed { "complete" } else { "skip" },
+                    "reason": if registered.desired_state == LookupTableLifecycle::Closed {
+                        "registered_v2_closed_account_absence_verified"
+                    } else {
+                        "registered_v2_account_absent_before_provisioner_reconciliation"
+                    },
+                    "registeredControlPlane": registered_cleanup_record_json(registered),
+                    "historyEvents": candidate_history,
+                    "execution": {
+                        "mode": "provisioner_queue",
+                        "signerLoaded": false,
+                        "transactionsSent": false,
+                    },
+                }));
+                continue;
+            }
+            Ok(Some(candidate)) => candidate,
+        };
+        let protection = database
+            .lookup_table_cleanup_protection(&options.cluster, &registered.table_address)
+            .await?;
+        let (action, reason) = if let Some(protection) = protection.as_ref() {
+            if protection.expected_authority != policy_authority.to_string() {
+                (
+                    "skip",
+                    "registered_table_nonstandard_policy_authority".to_owned(),
+                )
+            } else {
+                classify_registered_candidate(candidate, protection, &options.cluster, current_slot)
+            }
+        } else {
+            (
+                "skip",
+                "registered_v2_cleanup_protection_missing".to_owned(),
+            )
+        };
+        if matches!(action, "deactivate" | "close") {
+            total_reclaimable = total_reclaimable.saturating_add(candidate.lamports);
+            if let Some(protection) = protection.as_ref() {
+                planned_registered_cleanups.push(PlannedRegisteredCleanup {
+                    row_index: rows.len(),
+                    protection: protection.clone(),
+                    operation_kind: if action == "deactivate" {
+                        LookupTableOperationKind::Deactivate
+                    } else {
+                        LookupTableOperationKind::Close
+                    },
+                });
+            }
+        }
+        rows.push(json!({
+            "table": candidate.table_address.to_string(),
+            "owner": candidate.owner.to_string(),
+            "authority": candidate.authority.map(|authority| authority.to_string()),
+            "status": lookup_table_status(candidate, current_slot),
+            "addressCount": candidate.address_count,
+            "lamportsReclaimable": candidate.lamports.to_string(),
+            "lastExtendedSlot": candidate.last_extended_slot,
+            "deactivationSlot": candidate.deactivation_slot,
+            "action": action,
+            "reason": reason,
+            "registeredControlPlane": registered_cleanup_record_json(registered),
+            "cleanupProtection": protection.as_ref().map(cleanup_protection_json),
+            "historyEvents": candidate_history,
+            "execution": Value::Null,
+        }));
+    }
+    if options.execute && !planned_registered_cleanups.is_empty() {
+        let enqueue_started = Instant::now();
+        registered_enqueue_summary = enqueue_registered_cleanups(
+            &database,
+            &options,
+            &planned_registered_cleanups,
+            &mut rows,
+        )
+        .await?;
+        trace.finish(
+            "cleanup.enqueue_registered",
+            enqueue_started,
+            json!({
+                "plannedOperationCount": planned_registered_cleanups.len(),
+                "operationCount": registered_enqueue_summary.operation_count,
+                "queuedCount": registered_enqueue_summary.queued_count,
+                "signerLoaded": false,
+                "transactionsSent": false,
+            }),
+        );
     }
     trace.finish(
         "cleanup.candidates",
@@ -586,22 +800,34 @@ async fn run() -> Result<(), Box<dyn Error>> {
         json!({
             "rowCount": rows.len(),
             "plannedExecutionCount": planned_cleanups.len(),
-            "queuedOperationCount": queued_operation_count,
+            "plannedProvisionerOperationCount": planned_registered_cleanups.len(),
+            "queuedOperationCount": registered_enqueue_summary.queued_count,
         }),
     );
 
     if options.execute && !planned_cleanups.is_empty() {
         let phase_started = Instant::now();
-        let signer = signer.as_ref().ok_or("--execute requires POLICY_KEYPAIR")?;
-        total_reclaimed = execute_planned_cleanups(
-            &database,
-            &rpc,
-            &options,
-            signer.as_ref(),
-            &planned_cleanups,
-            &mut rows,
-        )
-        .await?;
+        let signer = load_authority_signer(&options)?;
+        let expected_policy = Pubkey::from_str(AFFECTED_POLICY_AUTHORITY)?;
+        if signer.pubkey() != expected_policy {
+            return Err(format!(
+                "POLICY_KEYPAIR pubkey {} does not match the standard policy authority {}",
+                signer.pubkey(),
+                expected_policy
+            )
+            .into());
+        }
+        reclaimed_this_run = reclaimed_this_run.saturating_add(
+            execute_planned_cleanups(
+                &database,
+                &rpc,
+                &options,
+                signer.as_ref(),
+                &planned_cleanups,
+                &mut rows,
+            )
+            .await?,
+        );
         trace.finish(
             "cleanup.execute",
             phase_started,
@@ -609,10 +835,14 @@ async fn run() -> Result<(), Box<dyn Error>> {
         );
     }
 
+    let total_reclaimed = u64::try_from(
+        database
+            .cumulative_legacy_lookup_table_refunds(&options.cluster)
+            .await?,
+    )?;
     let phase_started = Instant::now();
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&json!({
+    let report_chunks = [
+        json!({
             "status": if options.execute { "lookup_table_cleanup_execute" } else { "lookup_table_cleanup_dry_run" },
             "cluster": options.cluster,
             "execute": options.execute,
@@ -628,28 +858,129 @@ async fn run() -> Result<(), Box<dyn Error>> {
             "minSlot": options.min_slot,
             "explicitTableCount": options.tables.len(),
             "protectedTableCount": protected_all.len(),
-            "legacyFleetCount": legacy_inventory.len(),
+        }),
+        json!({
+            "legacyFleetCount": imported_fleet.len(),
+            "registeredV2RetirementCount": registered_cleanup_inventory.len(),
             "inventoryFleetHash": inventory_fleet_hash,
-            "excludedV2TableCount": classified_v2_tables.len(),
+            "inventorySource": "immutable_imported_database_fleet",
+            "finalizedMinimumAccountContextSlot": loaded_fleet.minimum_context_slot,
             "expectedFleetCount": options.expected_fleet_count,
             "expectedFleetHash": options.expected_fleet_hash,
+            "maxLamports": options.max_lamports,
+            "budgetWindowSeconds": options.budget_window_seconds,
             "feesRecoverable": false,
             "feeNote": "ALT account rent can be reclaimed after close; transaction fees are not recoverable.",
             "currentSlot": current_slot,
             "totalReclaimableLamports": total_reclaimable.to_string(),
             "totalReclaimedLamports": total_reclaimed.to_string(),
+            "reclaimedThisRunLamports": reclaimed_this_run.to_string(),
+            "recoveredLegacyCleanupCount": recovery_summary.completed_count,
+            "waitingLegacyCleanupCount": recovery_summary.waiting_count,
+            "expiredLegacyCleanupAttemptCount": recovery_summary.expired_count,
+        }),
+        json!({
             "plannedExecutionCount": planned_cleanups.len(),
-            "queuedProvisionerOperationCount": queued_operation_count,
+            "plannedProvisionerOperationCount": planned_registered_cleanups.len(),
+            "provisionerOperationCount": registered_enqueue_summary.operation_count,
+            "queuedProvisionerOperationCount": registered_enqueue_summary.queued_count,
             "registeredMutationBoundary": "dedicated_provisioner",
             "legacyDirectExecutionCount": planned_cleanups.len(),
             "historyEventCount": history_events.len(),
+            "historyMutationSetHash": history_scan.mutation_set_hash,
+            "historyAuthorities": history_scan.authorities.iter().map(authority_history_evidence_json).collect::<Vec<_>>(),
             "historyEvents": history_events.iter().map(|event| history_event_json(event, &protected_all)).collect::<Vec<_>>(),
             "candidates": rows,
-        }))?
-    );
+        }),
+    ];
+    let mut report = Map::new();
+    for chunk in report_chunks {
+        report.extend(
+            chunk
+                .as_object()
+                .ok_or("cleanup report chunk was not an object")?
+                .clone(),
+        );
+    }
+    println!("{}", serde_json::to_string_pretty(&Value::Object(report))?);
     trace.finish("cleanup.output", phase_started, json!({}));
     trace.event("cleanup.done", json!({}));
     Ok(())
+}
+
+async fn enqueue_registered_cleanups(
+    database: &NeonSqlClient,
+    options: &Options,
+    planned: &[PlannedRegisteredCleanup],
+    rows: &mut [Value],
+) -> Result<RegisteredCleanupEnqueueSummary, Box<dyn Error>> {
+    let policy_pubkey = Pubkey::from_str(AFFECTED_POLICY_AUTHORITY)?;
+    let mut summary = RegisteredCleanupEnqueueSummary::default();
+    for cleanup in planned {
+        let protection = &cleanup.protection;
+        let idempotency_key = format!(
+            "registered-alt-cleanup:{}:{}:{}:{}",
+            options.cluster,
+            protection.table_id,
+            protection.mutation_epoch,
+            cleanup.operation_kind.as_str(),
+        );
+        let mut operation_context = json!({
+            "source": "route-lookup-table-cleanup",
+            "cluster": options.cluster,
+            "table": protection.table_address,
+            "expectedAuthority": protection.expected_authority,
+            "expectedAddressCount": protection.address_count,
+            "expectedAddressHash": protection.address_hash,
+            "expectedMutationEpoch": protection.mutation_epoch,
+        });
+        if cleanup.operation_kind == LookupTableOperationKind::Close {
+            operation_context
+                .as_object_mut()
+                .expect("cleanup operation context is an object")
+                .insert(
+                    "closeRecipient".to_owned(),
+                    Value::String(policy_pubkey.to_string()),
+                );
+        }
+        let operation = database
+            .enqueue_lookup_table_operation(LookupTableOperationEnqueue {
+                idempotency_key: idempotency_key.clone(),
+                family_id: protection.family_id,
+                route_lookup_table_id: Some(protection.table_id),
+                manifest_id: None,
+                binding_id: None,
+                operation_kind: cleanup.operation_kind,
+                target_generation: None,
+                target_shard_ordinal: None,
+                operation_context,
+                mutation_epoch: protection.mutation_epoch,
+                estimated_fee_lamports: None,
+                estimated_rent_lamports: None,
+                addresses: Vec::new(),
+            })
+            .await?;
+        summary.operation_count += 1;
+        summary.queued_count +=
+            usize::from(operation.operation_state == LookupTableOperationStatus::Queued);
+        let row = rows
+            .get_mut(cleanup.row_index)
+            .and_then(Value::as_object_mut)
+            .ok_or("registered cleanup result row disappeared before enqueue reporting")?;
+        row.insert(
+            "execution".to_owned(),
+            json!({
+                "mode": "provisioner_queue",
+                "operationId": operation.id,
+                "idempotencyKey": idempotency_key,
+                "operationKind": operation.operation_kind.as_str(),
+                "operationState": operation.operation_state.as_str(),
+                "signerLoaded": false,
+                "transactionsSent": false,
+            }),
+        );
+    }
+    Ok(summary)
 }
 
 async fn require_retired_imported_legacy_cleanup_authorization(
@@ -704,6 +1035,19 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
     parse_args_with_env(args, |name| env::var(name).ok())
 }
 
+fn effective_cleanup_protected_tables(
+    mut database_protected: BTreeSet<Pubkey>,
+    environment_tables: &BTreeSet<Pubkey>,
+    manual_allowlist: &BTreeSet<Pubkey>,
+    execute: bool,
+) -> BTreeSet<Pubkey> {
+    if !execute {
+        database_protected.extend(environment_tables.iter().copied());
+        database_protected.extend(manual_allowlist.iter().copied());
+    }
+    database_protected
+}
+
 fn parse_args_with_env<F>(
     args: impl IntoIterator<Item = String>,
     read_env: F,
@@ -730,6 +1074,8 @@ where
     let mut trace_timing = false;
     let mut expected_fleet_count = None;
     let mut expected_fleet_hash = None;
+    let mut max_lamports = None;
+    let mut budget_window_seconds = None;
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -760,6 +1106,22 @@ where
                 expected_fleet_hash = Some(
                     iter.next()
                         .ok_or("--expected-fleet-hash requires a value")?,
+                );
+            }
+            "--max-lamports" => {
+                max_lamports = Some(
+                    iter.next()
+                        .ok_or("--max-lamports requires a value")?
+                        .parse()
+                        .map_err(|_| "--max-lamports must be an i64")?,
+                );
+            }
+            "--budget-window-seconds" => {
+                budget_window_seconds = Some(
+                    iter.next()
+                        .ok_or("--budget-window-seconds requires a value")?
+                        .parse()
+                        .map_err(|_| "--budget-window-seconds must be an i64")?,
                 );
             }
             "--bundle-size" => {
@@ -799,7 +1161,7 @@ where
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: route-lookup-table-cleanup --cluster <CLUSTER> --rpc-url <URL> [--table <PUBKEY>...] [--allowlist <PUBKEY>...] [--recipient <POLICY_PUBKEY>] [--scan-program-accounts] [--scan-history] [--history-limit <N>] [--min-slot <SLOT>] [--bundle-size 1] [--trace-timing] [--expected-fleet-count <N> --expected-fleet-hash <HASH> --execute]\n\nDry-run is the default. Every mode requires explicit YIELD_ALT_CLUSTER/--cluster, SOLANA_RPC_URL/--rpc-url, and NEON_DATABASE_URL. The RPC genesis hash is verified against the explicit cluster before any chain read or mutation. Execute always loads the standard POLICY_KEYPAIR, requires exhaustive program-account plus history discovery, requires the approved policy-authority legacy fleet count/hash, simulates every transaction, waits for finalization, and permits close refunds only to the policy signer. Classified v2 tables are never mutated by this command. Execute requires --bundle-size 1 so each mutation holds a dedicated database authorization fence through finalization. --trace-timing emits timestamped phase duration logs to stderr."
+                    "Usage: route-lookup-table-cleanup --cluster <CLUSTER> --rpc-url <URL> [--dry-run|--execute] [--recipient <POLICY_PUBKEY>] [--authority-key-env POLICY_KEYPAIR] [--scan-history] [--history-limit <PAGE_SIZE>] [--min-slot <APPROVED_BOUNDARY>] [--simulate-before-submit] [--bundle-size 1] [--trace-timing] [--expected-fleet-count <N> --expected-fleet-hash <HASH>] [--max-lamports <POSITIVE_LAMPORTS> --budget-window-seconds <SECONDS>]\n\nDry-run is the default. Legacy cleanup inventory is the complete immutable imported fleet in Neon, including already closed tables; registered v2 retirement is a separate DB-native inventory that only enqueues provisioner operations. Whole-program scans and ad-hoc table subsets are rejected. Every mode requires explicit YIELD_ALT_CLUSTER/--cluster, SOLANA_RPC_URL/--rpc-url, and NEON_DATABASE_URL. Execute requires the approved imported fleet count/hash, a positive history boundary, finalized paginated signer history, and explicit positive rolling budget fences. Each familyless legacy mutation uses the standard POLICY_KEYPAIR, finalized simulation/preflight, and one durable cluster-budget reservation before signing. Close rent is refunded only to the policy signer."
                 );
                 std::process::exit(0);
             }
@@ -830,6 +1192,21 @@ where
     {
         return Err("--expected-fleet-hash must be a 64-character hexadecimal hash".into());
     }
+    if scan_program_accounts {
+        return Err(
+            "--scan-program-accounts is removed; cleanup inventory is the immutable imported database fleet"
+                .into(),
+        );
+    }
+    if !tables.is_empty() {
+        return Err(
+            "--table subsets are rejected; cleanup must account for the complete imported database fleet"
+                .into(),
+        );
+    }
+    if !(1..=1_000).contains(&history_limit) {
+        return Err("--history-limit is a page size and must be between 1 and 1000".into());
+    }
     if execute {
         let policy = Pubkey::from_str(AFFECTED_POLICY_AUTHORITY)?;
         if recipient.is_some_and(|value| value != policy) {
@@ -844,11 +1221,28 @@ where
         if include_env_authorities || authorities.iter().any(|authority| *authority != policy) {
             return Err("--execute only permits the standard policy authority inventory".into());
         }
+        if !allowlist.is_empty() {
+            return Err(
+                "--execute rejects --allowlist; an approved imported-legacy fleet cannot be silently withheld from refund"
+                    .into(),
+            );
+        }
         if expected_fleet_count.is_none() || expected_fleet_hash.is_none() {
             return Err(
                 "--execute requires --expected-fleet-count and --expected-fleet-hash from an approved dry run"
                     .into(),
             );
+        }
+        if min_slot.is_none_or(|slot| slot == 0) {
+            return Err(
+                "--execute requires a positive --min-slot approved history boundary".into(),
+            );
+        }
+        if max_lamports.is_none_or(|value| value <= 0) {
+            return Err("--execute requires positive --max-lamports".into());
+        }
+        if budget_window_seconds.is_none_or(|value| !(1..=31_536_000).contains(&value)) {
+            return Err("--execute requires --budget-window-seconds between 1 and 31536000".into());
         }
         if bundle_size != 1 {
             return Err(
@@ -856,7 +1250,7 @@ where
                     .into(),
             );
         }
-        scan_program_accounts = true;
+        scan_program_accounts = false;
         scan_history = true;
         limit = 0;
         simulate_before_submit = true;
@@ -881,6 +1275,8 @@ where
         trace_timing,
         expected_fleet_count,
         expected_fleet_hash,
+        max_lamports,
+        budget_window_seconds,
     })
 }
 
@@ -898,38 +1294,6 @@ fn env_authority_pubkeys() -> Result<Vec<Pubkey>, Box<dyn Error>> {
 fn parse_pubkey_arg(flag: &str, value: Option<String>) -> Result<Pubkey, Box<dyn Error>> {
     let raw = value.ok_or_else(|| format!("{flag} requires a public key"))?;
     Pubkey::from_str(&raw).map_err(|_| format!("{flag} value {raw:?} is not a public key").into())
-}
-
-fn normalize_table_addresses(table_addresses: &mut Vec<Pubkey>, limit: usize) {
-    let mut seen = BTreeSet::new();
-    table_addresses.retain(|address| seen.insert(*address));
-    if limit > 0 && table_addresses.len() > limit {
-        table_addresses.truncate(limit);
-    }
-}
-
-fn add_table_addresses(
-    table_addresses: &mut Vec<Pubkey>,
-    addresses: impl IntoIterator<Item = Pubkey>,
-    limit: usize,
-) {
-    let mut seen = table_addresses.iter().copied().collect::<BTreeSet<_>>();
-    for address in addresses {
-        if seen.insert(address) {
-            table_addresses.push(address);
-            if limit > 0 && table_addresses.len() >= limit {
-                break;
-            }
-        }
-    }
-}
-
-fn remaining_table_limit(limit: usize, current_count: usize) -> Option<usize> {
-    if limit == 0 {
-        None
-    } else {
-        Some(limit.saturating_sub(current_count))
-    }
 }
 
 fn duration_ms(duration: Duration) -> u128 {
@@ -976,223 +1340,142 @@ fn parse_pubkey_set(
     Ok(set)
 }
 
-async fn discover_tables_by_program_scan(
-    rpc: &RpcClient,
-    rpc_url: &str,
-    authorities: &[Pubkey],
-    limit: usize,
-) -> Result<Vec<Pubkey>, Box<dyn Error>> {
-    let accounts = match rpc.get_program_accounts(&address_lookup_table_program::id()) {
-        Ok(accounts) => accounts,
-        Err(error) => {
-            return discover_tables_by_program_scan_v2(rpc_url, authorities, limit)
-                .await
-                .map_err(|fallback_error| {
-                    format!(
-                        "getProgramAccounts failed ({error}); getProgramAccountsV2 fallback failed ({fallback_error})"
-                    )
-                    .into()
-                });
-        }
-    };
-    let mut tables = Vec::new();
-    for (table_address, account) in accounts {
-        let Ok(table) = AddressLookupTable::deserialize(&account.data) else {
-            continue;
-        };
-        if table
-            .meta
-            .authority
-            .is_some_and(|authority| authorities.contains(&authority))
-        {
-            tables.push(table_address);
-            if limit > 0 && tables.len() >= limit {
-                break;
-            }
-        }
-    }
-    Ok(tables)
-}
-
-async fn discover_tables_by_program_scan_v2(
-    rpc_url: &str,
-    authorities: &[Pubkey],
-    limit: usize,
-) -> Result<Vec<Pubkey>, Box<dyn Error>> {
-    let http = reqwest::Client::new();
-    let mut pagination_key: Option<String> = None;
-    let mut tables = Vec::new();
-
-    loop {
-        let mut config = json!({
-            "encoding": "base64",
-            "limit": 1000,
-        });
-        if let Some(key) = pagination_key.as_ref() {
-            config["paginationKey"] = json!(key);
-        }
-        let response = http
-            .post(rpc_url)
-            .json(&json!({
-                "jsonrpc": "2.0",
-                "id": "route-lookup-table-cleanup",
-                "method": "getProgramAccountsV2",
-                "params": [
-                    address_lookup_table_program::id().to_string(),
-                    config,
-                ],
-            }))
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<ProgramAccountsV2Response>()
-            .await?;
-        if let Some(error) = response.error {
-            return Err(format!(
-                "getProgramAccountsV2 returned {}: {}",
-                error.code, error.message
-            )
-            .into());
-        }
-        let result = response
-            .result
-            .ok_or("getProgramAccountsV2 response did not include result")?;
-        let account_count = result.accounts.len();
-        for account in result.accounts {
-            let table_address = Pubkey::from_str(&account.pubkey)?;
-            let Some(data) = decode_program_account_data(&account.account.data)? else {
-                continue;
-            };
-            let Ok(table) = AddressLookupTable::deserialize(&data) else {
-                continue;
-            };
-            if table
-                .meta
-                .authority
-                .is_some_and(|authority| authorities.contains(&authority))
-            {
-                tables.push(table_address);
-                if limit > 0 && tables.len() >= limit {
-                    return Ok(tables);
-                }
-            }
-        }
-        pagination_key = result.pagination_key;
-        if pagination_key.is_none() || account_count == 0 {
-            break;
-        }
-    }
-
-    Ok(tables)
-}
-
-fn decode_program_account_data(data: &Value) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
-    let Some(items) = data.as_array() else {
-        return Ok(None);
-    };
-    let Some(encoded) = items.first().and_then(Value::as_str) else {
-        return Ok(None);
-    };
-    let encoding = items.get(1).and_then(Value::as_str).unwrap_or("base64");
-    if encoding != "base64" {
-        return Err(format!("unsupported getProgramAccountsV2 account encoding {encoding}").into());
-    }
-    Ok(Some(BASE64.decode(encoded)?))
-}
-
 async fn discover_tables_by_history(
     rpc_url: &str,
     authorities: &[Pubkey],
     options: &Options,
-    table_limit: Option<usize>,
     trace: &TraceLog,
-) -> Result<Vec<HistoryEvent>, Box<dyn Error>> {
+) -> Result<HistoryScanEvidence, Box<dyn Error>> {
     let http = reqwest::Client::new();
     let mut events = Vec::new();
-    let mut seen_tables = BTreeSet::new();
-    if table_limit == Some(0) || options.history_limit == 0 {
-        return Ok(events);
-    }
+    let mut authority_evidence = Vec::new();
     for authority in authorities {
-        let phase_started = Instant::now();
-        let signatures = rpc_call(
-            &http,
-            rpc_url,
-            "getSignaturesForAddress",
-            json!([
-                authority.to_string(),
-                {
-                    "limit": options.history_limit,
-                }
-            ]),
-        )
-        .await?;
-        let Some(signatures) = signatures.as_array() else {
-            continue;
-        };
-        trace.finish(
-            "cleanup.scan_history.signatures",
-            phase_started,
-            json!({
-                "authority": authority.to_string(),
-                "signatureCount": signatures.len(),
-                "requestedLimit": options.history_limit,
-            }),
-        );
-        for entry in signatures {
-            if table_limit.is_some_and(|limit| seen_tables.len() >= limit) {
-                trace.event(
-                    "cleanup.scan_history.limit_reached",
-                    json!({ "uniqueTableCount": seen_tables.len() }),
-                );
-                break;
-            }
-            let Some(signature) = entry.get("signature").and_then(Value::as_str) else {
-                continue;
-            };
-            let Some(slot) = entry.get("slot").and_then(Value::as_u64) else {
-                continue;
-            };
-            if options.min_slot.is_some_and(|min_slot| slot < min_slot) {
-                continue;
-            }
-            let block_time = entry.get("blockTime").and_then(Value::as_i64);
+        let mut before = None::<String>;
+        let mut page_count = 0_usize;
+        let mut signature_count = 0_usize;
+        let mut oldest_slot = None::<u64>;
+        let mut boundary_reached = false;
+        let mut exhausted = false;
+        let mut seen_cursors = BTreeSet::new();
+        loop {
             let phase_started = Instant::now();
-            let transaction = rpc_call(
+            let mut config = json!({
+                "limit": options.history_limit,
+                "commitment": "finalized",
+            });
+            if let Some(before) = before.as_ref() {
+                config
+                    .as_object_mut()
+                    .expect("history config is an object")
+                    .insert("before".to_owned(), Value::String(before.clone()));
+            }
+            let signatures = rpc_call(
                 &http,
                 rpc_url,
-                "getTransaction",
-                json!([
-                    signature,
-                    {
-                        "encoding": "json",
-                        "maxSupportedTransactionVersion": 0,
-                    }
-                ]),
+                "getSignaturesForAddress",
+                json!([authority.to_string(), config]),
             )
             .await?;
-            let parsed_events = lookup_table_events_from_transaction(
-                signature,
-                slot,
-                block_time,
-                &transaction,
-                authorities,
+            let signatures = signatures.as_array().ok_or(
+                "getSignaturesForAddress result was not an array during cleanup evidence scan",
             )?;
-            for event in parsed_events {
-                seen_tables.insert(event.table_address);
-                events.push(event);
-            }
+            page_count += 1;
             trace.finish(
-                "cleanup.scan_history.transaction",
+                "cleanup.scan_history.signatures_page",
                 phase_started,
                 json!({
-                    "signature": signature,
-                    "slot": slot,
-                    "eventCount": events.len(),
-                    "uniqueTableCount": seen_tables.len(),
+                    "authority": authority.to_string(),
+                    "page": page_count,
+                    "signatureCount": signatures.len(),
+                    "pageSize": options.history_limit,
+                    "before": before,
                 }),
             );
+            if signatures.is_empty() {
+                exhausted = true;
+                break;
+            }
+            let next_before = signatures
+                .last()
+                .and_then(|entry| entry.get("signature"))
+                .and_then(Value::as_str)
+                .ok_or("history page ended without a signature cursor")?
+                .to_owned();
+            if before.as_deref() == Some(next_before.as_str())
+                || !seen_cursors.insert(next_before.clone())
+            {
+                return Err(format!(
+                    "finalized signer history pagination made no progress for {authority}"
+                )
+                .into());
+            }
+            for entry in signatures {
+                let signature = entry
+                    .get("signature")
+                    .and_then(Value::as_str)
+                    .ok_or("history entry omitted signature")?;
+                let slot = entry
+                    .get("slot")
+                    .and_then(Value::as_u64)
+                    .ok_or("history entry omitted slot")?;
+                signature_count += 1;
+                oldest_slot = Some(oldest_slot.map_or(slot, |oldest| oldest.min(slot)));
+                if options.min_slot.is_some_and(|min_slot| slot < min_slot) {
+                    boundary_reached = true;
+                    continue;
+                }
+                let block_time = entry.get("blockTime").and_then(Value::as_i64);
+                let phase_started = Instant::now();
+                let transaction = rpc_call(
+                    &http,
+                    rpc_url,
+                    "getTransaction",
+                    json!([
+                        signature,
+                        {
+                            "encoding": "json",
+                            "commitment": "finalized",
+                            "maxSupportedTransactionVersion": 0,
+                        }
+                    ]),
+                )
+                .await?;
+                if transaction.is_null() {
+                    return Err(format!(
+                        "finalized transaction {signature} at slot {slot} was unavailable inside the approved history boundary"
+                    )
+                    .into());
+                }
+                events.extend(lookup_table_events_from_transaction(
+                    signature,
+                    slot,
+                    block_time,
+                    &transaction,
+                    authorities,
+                )?);
+                trace.finish(
+                    "cleanup.scan_history.transaction",
+                    phase_started,
+                    json!({
+                        "signature": signature,
+                        "slot": slot,
+                        "eventCount": events.len(),
+                    }),
+                );
+            }
+            if boundary_reached {
+                break;
+            }
+            before = Some(next_before);
         }
+        authority_evidence.push(AuthorityHistoryEvidence {
+            authority: *authority,
+            page_count,
+            signature_count,
+            oldest_slot,
+            boundary_reached,
+            exhausted,
+        });
     }
     events.sort_by(|left, right| {
         right
@@ -1206,7 +1489,12 @@ async fn discover_tables_by_history(
             && left.kind == right.kind
             && left.table_address == right.table_address
     });
-    Ok(events)
+    let mutation_set_hash = history_mutation_set_hash(&events);
+    Ok(HistoryScanEvidence {
+        events,
+        authorities: authority_evidence,
+        mutation_set_hash,
+    })
 }
 
 async fn rpc_call(
@@ -1406,44 +1694,39 @@ fn history_event_classification(
 fn load_candidates(
     rpc: &RpcClient,
     table_addresses: &[Pubkey],
-    trace: &TraceLog,
-) -> Result<Vec<(Pubkey, Result<Candidate, String>)>, Box<dyn Error>> {
-    let mut out = Vec::new();
+    _trace: &TraceLog,
+) -> Result<FinalizedCandidateFleet, Box<dyn Error>> {
+    let mut candidates = BTreeMap::new();
+    let mut minimum_context_slot = u64::MAX;
     for chunk in table_addresses.chunks(100) {
-        match rpc.get_multiple_accounts(chunk) {
-            Ok(accounts) => {
-                for (table_address, account) in chunk.iter().copied().zip(accounts) {
-                    let candidate = match account {
-                        Some(account) => candidate_from_account(table_address, &account),
-                        None => Err(format!("AccountNotFound: pubkey={table_address}")),
-                    };
-                    out.push((table_address, candidate));
-                }
-            }
-            Err(error) => {
-                trace.event(
-                    "cleanup.candidate_accounts.batch_fallback",
-                    json!({
-                        "batchSize": chunk.len(),
-                        "error": safe_cleanup_operational_error(&error),
-                        "mode": "get_account_per_table",
-                    }),
-                );
-                for table_address in chunk {
-                    out.push((
-                        *table_address,
-                        load_candidate(rpc, *table_address)
-                            .map_err(|error| safe_cleanup_operational_error(error.as_ref())),
-                    ));
-                }
-            }
+        let response =
+            rpc.get_multiple_accounts_with_commitment(chunk, CommitmentConfig::finalized())?;
+        minimum_context_slot = minimum_context_slot.min(response.context.slot);
+        if response.value.len() != chunk.len() {
+            return Err("finalized getMultipleAccounts returned a partial cleanup batch".into());
+        }
+        for (table_address, account) in chunk.iter().copied().zip(response.value) {
+            let candidate = match account {
+                Some(account) => candidate_from_account(table_address, &account).map(Some),
+                None => Ok(None),
+            };
+            candidates.insert(table_address, candidate);
         }
     }
-    Ok(out)
+    if minimum_context_slot == u64::MAX {
+        minimum_context_slot = rpc.get_slot_with_commitment(CommitmentConfig::finalized())?;
+    }
+    Ok(FinalizedCandidateFleet {
+        candidates,
+        minimum_context_slot,
+    })
 }
 
 fn load_candidate(rpc: &RpcClient, table_address: Pubkey) -> Result<Candidate, Box<dyn Error>> {
-    let account = rpc.get_account(&table_address)?;
+    let account = rpc
+        .get_account_with_commitment(&table_address, CommitmentConfig::finalized())?
+        .value
+        .ok_or_else(|| format!("AccountNotFound: pubkey={table_address}"))?;
     candidate_from_account(table_address, &account).map_err(Into::into)
 }
 
@@ -1503,7 +1786,6 @@ fn classify_candidate(
     )
 }
 
-#[cfg(test)]
 fn classify_registered_candidate(
     candidate: &Candidate,
     protection: &LookupTableCleanupProtection,
@@ -1516,6 +1798,9 @@ fn classify_registered_candidate(
             "cluster_expected_{expected_cluster}_observed_{}",
             protection.cluster
         ));
+    }
+    if protection.table_address != candidate.table_address.to_string() {
+        drift.push("table_address_mismatch".to_owned());
     }
     if candidate.owner != address_lookup_table_program::id() {
         drift.push("owner_mismatch".to_owned());
@@ -1594,19 +1879,32 @@ fn ordered_candidate_address_hash(addresses: &[Pubkey]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn approved_policy_fleet_hash(candidates: &[&Candidate]) -> String {
-    let mut candidates = candidates.to_vec();
-    candidates.sort_by_key(|candidate| candidate.table_address);
-    let mut parts = vec!["legacy-alt-policy-fleet-v1".to_owned()];
-    for candidate in candidates {
+fn approved_imported_legacy_fleet_hash(fleet: &[ImportedLegacyLookupTableCleanupRecord]) -> String {
+    let mut fleet = fleet.to_vec();
+    fleet.sort_by_key(|record| record.source.id);
+    let mut parts = vec!["legacy-alt-imported-fleet-v2".to_owned()];
+    for record in fleet {
         parts.extend([
-            candidate.table_address.to_string(),
-            candidate
-                .authority
-                .map_or_else(String::new, |value| value.to_string()),
-            candidate.address_count.to_string(),
-            ordered_candidate_address_hash(&candidate.addresses),
+            record.source.id.to_string(),
+            record.source.cluster,
+            record.source.scope,
+            record.source.table_address,
+            record.source.authority,
+            record.source.address_count.to_string(),
+            record.source.address_hash,
+            record
+                .source
+                .legacy_kind
+                .map_or_else(String::new, |kind| kind.as_str().to_owned()),
+            record
+                .source
+                .legacy_import_run_id
+                .unwrap_or_default()
+                .to_string(),
+            record.import_fingerprint,
+            record.import_verified_slot.to_string(),
         ]);
+        parts.extend(record.source.addresses);
     }
     let mut hasher = Sha256::new();
     for part in parts {
@@ -1614,6 +1912,156 @@ fn approved_policy_fleet_hash(candidates: &[&Candidate]) -> String {
         hasher.update(part.as_bytes());
     }
     format!("{:x}", hasher.finalize())
+}
+
+fn imported_cleanup_record_json(record: &ImportedLegacyLookupTableCleanupRecord) -> Value {
+    json!({
+        "tableId": record.source.id,
+        "scope": record.source.scope,
+        "status": record.source.status,
+        "durable": record.source.durable,
+        "authority": record.source.authority,
+        "addressCount": record.source.address_count,
+        "addressHash": record.source.address_hash,
+        "legacyKind": record.source.legacy_kind.map(|kind| kind.as_str()),
+        "legacyImportRunId": record.source.legacy_import_run_id,
+        "importFingerprint": record.import_fingerprint,
+        "importVerifiedSlot": record.import_verified_slot,
+        "deactivatedSlot": record.deactivated_slot,
+        "deactivateSignature": record.deactivate_signature,
+        "closedSignature": record.closed_signature,
+        "closeRecipient": record.close_recipient,
+        "reclaimedLamports": record.reclaimed_lamports,
+    })
+}
+
+fn registered_cleanup_record_json(record: &ReusableLookupTableRecord) -> Value {
+    json!({
+        "tableId": record.id,
+        "familyId": record.family_id,
+        "allocationKind": record.allocation_kind.as_str(),
+        "generation": record.generation,
+        "shardOrdinal": record.shard_ordinal,
+        "desiredState": record.desired_state.as_str(),
+        "acceptingAllocations": record.accepting_allocations,
+        "expectedAuthority": record.authority,
+        "addressCount": record.address_count,
+        "addressHash": record.address_hash,
+        "mutationEpoch": record.mutation_epoch,
+        "rollbackUntil": record.rollback_until,
+    })
+}
+
+fn history_mutation_set_hash(events: &[HistoryEvent]) -> String {
+    let mut events = events.to_vec();
+    events.sort_by(|left, right| {
+        left.slot
+            .cmp(&right.slot)
+            .then_with(|| left.signature.cmp(&right.signature))
+            .then_with(|| left.kind.cmp(right.kind))
+            .then_with(|| left.table_address.cmp(&right.table_address))
+    });
+    let mut hasher = Sha256::new();
+    for part in std::iter::once("legacy-alt-finalized-mutation-set-v1".to_owned()).chain(
+        events.into_iter().flat_map(|event| {
+            [
+                event.signature,
+                event.slot.to_string(),
+                event.kind.to_owned(),
+                event.table_address.to_string(),
+                event
+                    .authority
+                    .map_or_else(String::new, |value| value.to_string()),
+                event
+                    .payer_or_recipient
+                    .map_or_else(String::new, |value| value.to_string()),
+            ]
+        }),
+    ) {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn authority_history_evidence_json(evidence: &AuthorityHistoryEvidence) -> Value {
+    json!({
+        "authority": evidence.authority.to_string(),
+        "pageCount": evidence.page_count,
+        "signatureCount": evidence.signature_count,
+        "oldestSlot": evidence.oldest_slot,
+        "boundaryReached": evidence.boundary_reached,
+        "exhausted": evidence.exhausted,
+        "completeToBoundaryOrExhaustion": evidence.boundary_reached || evidence.exhausted,
+    })
+}
+
+fn verify_imported_cleanup_history(
+    fleet: &[ImportedLegacyLookupTableCleanupRecord],
+    history: &HistoryScanEvidence,
+    min_slot: Option<u64>,
+) -> Result<(), Box<dyn Error>> {
+    let min_slot = min_slot
+        .filter(|slot| *slot > 0)
+        .ok_or("execute history verification requires a positive approved minimum slot")?;
+    let expected_authorities = fleet
+        .iter()
+        .map(|record| Pubkey::from_str(&record.source.authority))
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    let observed_authorities = history
+        .authorities
+        .iter()
+        .map(|evidence| evidence.authority)
+        .collect::<BTreeSet<_>>();
+    if expected_authorities != observed_authorities
+        || history
+            .authorities
+            .iter()
+            .any(|evidence| !evidence.boundary_reached && !evidence.exhausted)
+    {
+        return Err(
+            "finalized signer history did not prove every imported authority to the approved boundary or exhaustion"
+                .into(),
+        );
+    }
+    for record in fleet {
+        let table = Pubkey::from_str(&record.source.table_address)?;
+        let authority = Pubkey::from_str(&record.source.authority)?;
+        for (kind, signature) in [
+            ("deactivate", record.deactivate_signature.as_deref()),
+            ("close", record.closed_signature.as_deref()),
+        ] {
+            let Some(signature) = signature else {
+                continue;
+            };
+            let exact_event = history.events.iter().any(|event| {
+                event.signature == signature
+                    && event.slot >= min_slot
+                    && event.kind == kind
+                    && event.table_address == table
+                    && event.authority == Some(authority)
+                    && (kind != "close" || event.payer_or_recipient == Some(authority))
+            });
+            if !exact_event {
+                return Err(format!(
+                    "stored {kind} signature for imported table {table} was not proven in finalized paginated history at or after slot {min_slot}"
+                )
+                .into());
+            }
+        }
+        if record.source.status == "closed"
+            && (record.deactivate_signature.is_none()
+                || record.closed_signature.is_none()
+                || record.close_recipient.as_deref() != Some(record.source.authority.as_str())
+                || record.reclaimed_lamports.is_none_or(|value| value <= 0))
+        {
+            return Err(format!(
+                "closed imported table {table} lacks complete durable mutation/refund evidence"
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 fn cleanup_protection_json(protection: &LookupTableCleanupProtection) -> Value {
@@ -1714,6 +2162,261 @@ fn lookup_table_status(candidate: &Candidate, current_slot: u64) -> &'static str
     }
 }
 
+fn legacy_cleanup_recovery_decision(
+    signature_state: &PersistedCleanupSignatureState,
+    chain_effect: LegacyCleanupChainEffect,
+    blockhash_expired: bool,
+) -> LegacyCleanupRecoveryDecision {
+    match signature_state {
+        PersistedCleanupSignatureState::FinalizedFailure(_) => {
+            LegacyCleanupRecoveryDecision::PermanentFailure
+        }
+        PersistedCleanupSignatureState::Pending => LegacyCleanupRecoveryDecision::Wait,
+        PersistedCleanupSignatureState::FinalizedSuccess { slot } => match chain_effect {
+            LegacyCleanupChainEffect::Applied { observed_slot } => {
+                LegacyCleanupRecoveryDecision::Complete {
+                    observed_slot: observed_slot.max(*slot),
+                }
+            }
+            LegacyCleanupChainEffect::Unchanged | LegacyCleanupChainEffect::Drifted => {
+                LegacyCleanupRecoveryDecision::ManualReconcile
+            }
+        },
+        PersistedCleanupSignatureState::NotFound => match chain_effect {
+            LegacyCleanupChainEffect::Unchanged if blockhash_expired => {
+                LegacyCleanupRecoveryDecision::ExpireAndRetry
+            }
+            LegacyCleanupChainEffect::Unchanged => LegacyCleanupRecoveryDecision::Wait,
+            LegacyCleanupChainEffect::Applied { .. } | LegacyCleanupChainEffect::Drifted => {
+                LegacyCleanupRecoveryDecision::ManualReconcile
+            }
+        },
+    }
+}
+
+fn history_proves_persisted_cleanup_signature(
+    attempt: &LegacyLookupTableCleanupAttemptRecord,
+    history_events: &[HistoryEvent],
+) -> Option<u64> {
+    let signature = attempt.transaction_signature.as_deref()?;
+    let table = Pubkey::from_str(&attempt.table_address).ok()?;
+    let authority = Pubkey::from_str(&attempt.expected_authority).ok()?;
+    history_events
+        .iter()
+        .find(|event| {
+            event.signature == signature
+                && event.table_address == table
+                && event.kind == attempt.operation_kind.as_str()
+                && event.authority == Some(authority)
+                && (attempt.operation_kind != LookupTableOperationKind::Close
+                    || event.payer_or_recipient == Some(authority))
+        })
+        .map(|event| event.slot)
+}
+
+fn load_persisted_cleanup_signature_state(
+    rpc: &RpcClient,
+    attempt: &LegacyLookupTableCleanupAttemptRecord,
+    history_events: &[HistoryEvent],
+) -> Result<PersistedCleanupSignatureState, Box<dyn Error>> {
+    let signature = Signature::from_str(
+        attempt
+            .transaction_signature
+            .as_deref()
+            .ok_or("legacy cleanup recovery attempt has no durable signature")?,
+    )?;
+    let status = rpc
+        .get_signature_statuses_with_history(&[signature])?
+        .value
+        .into_iter()
+        .next()
+        .flatten();
+    if let Some(status) = status {
+        if !status.satisfies_commitment(CommitmentConfig::finalized()) {
+            return Ok(PersistedCleanupSignatureState::Pending);
+        }
+        if let Some(error) = status.err {
+            return Ok(PersistedCleanupSignatureState::FinalizedFailure(format!(
+                "{error:?}"
+            )));
+        }
+        return Ok(PersistedCleanupSignatureState::FinalizedSuccess { slot: status.slot });
+    }
+    if let Some(slot) = history_proves_persisted_cleanup_signature(attempt, history_events) {
+        return Ok(PersistedCleanupSignatureState::FinalizedSuccess { slot });
+    }
+    Ok(PersistedCleanupSignatureState::NotFound)
+}
+
+fn load_legacy_cleanup_chain_effect(
+    rpc: &RpcClient,
+    attempt: &LegacyLookupTableCleanupAttemptRecord,
+    observed_slot: u64,
+) -> Result<LegacyCleanupChainEffect, Box<dyn Error>> {
+    let table_address = Pubkey::from_str(&attempt.table_address)?;
+    let account = rpc
+        .get_account_with_commitment(&table_address, CommitmentConfig::finalized())?
+        .value;
+    let Some(account) = account else {
+        return Ok(
+            if attempt.operation_kind == LookupTableOperationKind::Close {
+                LegacyCleanupChainEffect::Applied { observed_slot }
+            } else {
+                LegacyCleanupChainEffect::Drifted
+            },
+        );
+    };
+    let candidate = candidate_from_account(table_address, &account)
+        .map_err(|error| format!("legacy cleanup recovery decode failed: {error}"))?;
+    if candidate.owner != address_lookup_table_program::id()
+        || candidate.authority.map(|value| value.to_string())
+            != Some(attempt.expected_authority.clone())
+        || i32::try_from(candidate.address_count)? != attempt.expected_address_count
+        || ordered_candidate_address_hash(&candidate.addresses) != attempt.expected_address_hash
+    {
+        return Ok(LegacyCleanupChainEffect::Drifted);
+    }
+    Ok(match attempt.operation_kind {
+        LookupTableOperationKind::Deactivate if candidate.deactivation_slot != u64::MAX => {
+            LegacyCleanupChainEffect::Applied {
+                observed_slot: candidate.deactivation_slot,
+            }
+        }
+        LookupTableOperationKind::Deactivate | LookupTableOperationKind::Close => {
+            LegacyCleanupChainEffect::Unchanged
+        }
+        _ => LegacyCleanupChainEffect::Drifted,
+    })
+}
+
+async fn reconcile_pending_legacy_cleanup_attempts(
+    database: &NeonSqlClient,
+    rpc: &RpcClient,
+    options: &Options,
+    history_events: &[HistoryEvent],
+) -> Result<LegacyCleanupRecoverySummary, Box<dyn Error>> {
+    let attempts = database
+        .pending_legacy_lookup_table_cleanup_attempts(&options.cluster)
+        .await?;
+    let mut summary = LegacyCleanupRecoverySummary::default();
+    let current_height = i64::try_from(rpc.get_block_height()?)?;
+    let finalized_slot = rpc.get_slot_with_commitment(CommitmentConfig::finalized())?;
+    for attempt in attempts {
+        if attempt.attempt_state == LegacyLookupTableCleanupAttemptState::Prepared {
+            summary.waiting_count += 1;
+            summary.rows.push(json!({
+                "table": attempt.table_address,
+                "action": "recover",
+                "reason": "durable_prepared_attempt_can_resume_before_signing",
+                "execution": {
+                    "attemptId": attempt.id,
+                    "attemptNumber": attempt.attempt_number,
+                    "attemptState": attempt.attempt_state.as_str(),
+                    "transactionsSent": false,
+                },
+            }));
+            continue;
+        }
+        let signature = attempt
+            .transaction_signature
+            .clone()
+            .ok_or("non-prepared legacy cleanup attempt lacks durable signature")?;
+        let signature_state =
+            load_persisted_cleanup_signature_state(rpc, &attempt, history_events)?;
+        let chain_effect = load_legacy_cleanup_chain_effect(rpc, &attempt, finalized_slot)?;
+        let blockhash_expired = attempt
+            .last_valid_block_height
+            .is_some_and(|height| current_height > height);
+        let decision =
+            legacy_cleanup_recovery_decision(&signature_state, chain_effect, blockhash_expired);
+        let mut row = json!({
+            "table": attempt.table_address,
+            "action": "recover",
+            "reason": format!("legacy_cleanup_recovery_{decision:?}").to_lowercase(),
+            "execution": {
+                "attemptId": attempt.id,
+                "attemptNumber": attempt.attempt_number,
+                "attemptState": attempt.attempt_state.as_str(),
+                "signaturePersisted": true,
+                "transactionsSent": false,
+            },
+        });
+        match decision {
+            LegacyCleanupRecoveryDecision::Wait => {
+                summary.waiting_count += 1;
+            }
+            LegacyCleanupRecoveryDecision::ExpireAndRetry => {
+                database
+                    .expire_unobserved_legacy_lookup_table_cleanup_attempt(
+                        attempt.id,
+                        &signature,
+                        current_height,
+                    )
+                    .await?;
+                summary.expired_count += 1;
+                row["execution"]["attemptState"] = json!("expired");
+            }
+            LegacyCleanupRecoveryDecision::PermanentFailure => {
+                let detail = match signature_state {
+                    PersistedCleanupSignatureState::FinalizedFailure(ref detail) => detail,
+                    _ => "persisted cleanup transaction failed",
+                };
+                database
+                    .fail_legacy_lookup_table_cleanup_attempt_permanently(
+                        attempt.id, &signature, detail,
+                    )
+                    .await?;
+                row["execution"]["attemptState"] = json!("permanent_failure");
+            }
+            LegacyCleanupRecoveryDecision::Complete { observed_slot } => {
+                let recipient_balance_after = attempt
+                    .close_recipient
+                    .as_deref()
+                    .map(Pubkey::from_str)
+                    .transpose()?
+                    .map(|recipient| {
+                        rpc.get_balance_with_commitment(&recipient, CommitmentConfig::finalized())
+                            .map(|response| response.value)
+                    })
+                    .transpose()?
+                    .map(i64::try_from)
+                    .transpose()?;
+                database
+                    .complete_legacy_lookup_table_cleanup_attempt(
+                        attempt.id,
+                        FinalizedLegacyLookupTableCleanupAttempt {
+                            transaction_signature: signature,
+                            finalized_slot: i64::try_from(observed_slot)?,
+                            recipient_balance_after,
+                            actual_reclaimed_lamports: attempt.expected_reclaimed_lamports,
+                        },
+                    )
+                    .await?;
+                summary.completed_count += 1;
+                row["execution"]["attemptState"] = json!("complete");
+                row["execution"]["recoveredFromDurableSignature"] = json!(true);
+            }
+            LegacyCleanupRecoveryDecision::ManualReconcile => {
+                database
+                    .mark_legacy_lookup_table_cleanup_attempt_needs_reconcile(
+                        attempt.id,
+                        &signature,
+                        "chain_history_mismatch",
+                        "persisted cleanup signature and finalized chain/history do not prove one attributable effect",
+                    )
+                    .await?;
+                return Err(format!(
+                    "legacy cleanup attempt {} requires manual reconciliation; no resend was attempted",
+                    attempt.id
+                )
+                .into());
+            }
+        }
+        summary.rows.push(row);
+    }
+    Ok(summary)
+}
+
 fn load_authority_signer(options: &Options) -> Result<Box<dyn Signer>, Box<dyn Error>> {
     let env_name = options
         .authority_key_env
@@ -1732,7 +2435,12 @@ async fn execute_planned_cleanups(
     rows: &mut [Value],
 ) -> Result<u64, Box<dyn Error>> {
     let mut total_reclaimed = 0_u64;
-    preflight_cleanup_batches_fit_packet(rpc, signer, planned_cleanups, options.bundle_size)?;
+    preflight_cleanup_batches_fit_packet(
+        rpc,
+        signer.pubkey(),
+        planned_cleanups,
+        options.bundle_size,
+    )?;
     for (batch_index, batch) in planned_cleanups.chunks(options.bundle_size).enumerate() {
         let cleanup = batch
             .first()
@@ -1782,13 +2490,19 @@ async fn execute_planned_cleanups(
             return Err("cleanup batch contains multiple close recipients".into());
         }
         let result = send_cleanup_instruction_batch(
+            database,
             rpc,
+            options,
             signer,
             &instructions,
+            cleanup,
+            operation_kind,
             close_recipient,
             expected_refund_lamports,
-        )?;
+        )
+        .await?;
         let mut execution = json!({
+            "attemptId": result.attempt_id,
             "signature": result.signature.clone(),
             "kind": cleanup.kind,
             "batchIndex": batch_index,
@@ -1802,54 +2516,59 @@ async fn execute_planned_cleanups(
             "expectedBatchRefundLamports": result.expected_refund_lamports.to_string(),
             "minimumNetRecipientIncreaseLamports": result.minimum_net_recipient_increase_lamports.to_string(),
             "refundProven": result.expected_refund_lamports == 0 || result.recipient_balance_after.is_some(),
+            "budgetReservation": result.budget_reservation,
             "simulation": result.simulation.clone(),
         });
-        let (observed_slot, close_recipient, reclaimed_lamports) =
-            if let Some(recipient) = cleanup.recipient {
-                let post_close = rpc.get_account_with_commitment(
-                    &cleanup.table_address,
-                    CommitmentConfig::finalized(),
-                )?;
-                if post_close.value.is_some() {
-                    return Err(format!(
-                        "closed ALT {} still exists at finalized commitment",
-                        cleanup.table_address
-                    )
-                    .into());
-                }
-                total_reclaimed = total_reclaimed.saturating_add(cleanup.reclaimed_lamports);
-                execution["recipient"] = json!(recipient.to_string());
-                execution["reclaimedLamports"] = json!(cleanup.reclaimed_lamports.to_string());
-                (
-                    i64::try_from(rpc.get_slot_with_commitment(CommitmentConfig::finalized())?)?,
-                    Some(recipient.to_string()),
-                    Some(i64::try_from(cleanup.reclaimed_lamports)?),
+        let (observed_slot, reclaimed_lamports) = if let Some(recipient) = cleanup.recipient {
+            let post_close = rpc.get_account_with_commitment(
+                &cleanup.table_address,
+                CommitmentConfig::finalized(),
+            )?;
+            if post_close.value.is_some() {
+                return Err(format!(
+                    "closed ALT {} still exists at finalized commitment",
+                    cleanup.table_address
                 )
-            } else {
-                let reloaded = load_candidate(rpc, cleanup.table_address)?;
-                if reloaded.deactivation_slot == u64::MAX {
-                    return Err(format!(
-                        "deactivated ALT {} remains active at finalized commitment",
-                        cleanup.table_address
-                    )
-                    .into());
-                }
-                execution["actualDeactivationSlot"] = json!(reloaded.deactivation_slot.to_string());
-                (i64::try_from(reloaded.deactivation_slot)?, None, None)
-            };
-        authorization
-            .record_finalized(VerifiedLegacyLookupTableCleanup {
-                cluster: options.cluster.clone(),
-                table_address: cleanup.table_address.to_string(),
-                expected_authorization_token: cleanup.expected_cleanup_authorization_token.clone(),
-                operation_kind,
-                transaction_signature: result.signature.clone(),
-                observed_slot,
-                close_recipient,
-                reclaimed_lamports,
-            })
+                .into());
+            }
+            total_reclaimed = total_reclaimed.saturating_add(cleanup.reclaimed_lamports);
+            execution["recipient"] = json!(recipient.to_string());
+            execution["reclaimedLamports"] = json!(cleanup.reclaimed_lamports.to_string());
+            (
+                i64::try_from(rpc.get_slot_with_commitment(CommitmentConfig::finalized())?)?,
+                Some(i64::try_from(cleanup.reclaimed_lamports)?),
+            )
+        } else {
+            let reloaded = load_candidate(rpc, cleanup.table_address)?;
+            if reloaded.deactivation_slot == u64::MAX {
+                return Err(format!(
+                    "deactivated ALT {} remains active at finalized commitment",
+                    cleanup.table_address
+                )
+                .into());
+            }
+            execution["actualDeactivationSlot"] = json!(reloaded.deactivation_slot.to_string());
+            (i64::try_from(reloaded.deactivation_slot)?, None)
+        };
+        database
+            .complete_legacy_lookup_table_cleanup_attempt(
+                result.attempt_id,
+                FinalizedLegacyLookupTableCleanupAttempt {
+                    transaction_signature: result.signature.clone(),
+                    finalized_slot: observed_slot,
+                    recipient_balance_after: result
+                        .recipient_balance_after
+                        .map(i64::try_from)
+                        .transpose()?,
+                    actual_reclaimed_lamports: reclaimed_lamports,
+                },
+            )
             .await?;
-        execution["databaseRecord"] = json!({ "status": "fenced_recorded" });
+        drop(authorization);
+        execution["databaseRecord"] = json!({
+            "status": "durable_attempt_completed",
+            "attemptId": result.attempt_id,
+        });
         set_candidate_execution(rows, cleanup.row_index, execution)?;
     }
     Ok(total_reclaimed)
@@ -1857,22 +2576,17 @@ async fn execute_planned_cleanups(
 
 fn preflight_cleanup_batches_fit_packet(
     rpc: &RpcClient,
-    signer: &dyn Signer,
+    payer: Pubkey,
     planned_cleanups: &[PlannedCleanup],
     bundle_size: usize,
 ) -> Result<(), Box<dyn Error>> {
-    let blockhash = rpc.get_latest_blockhash()?;
+    let (blockhash, _) = rpc.get_latest_blockhash_with_commitment(CommitmentConfig::finalized())?;
     for (batch_index, batch) in planned_cleanups.chunks(bundle_size).enumerate() {
         let instructions = batch
             .iter()
             .map(|cleanup| cleanup.instruction.clone())
             .collect::<Vec<_>>();
-        let transaction = Transaction::new_signed_with_payer(
-            &instructions,
-            Some(&signer.pubkey()),
-            &[signer],
-            blockhash,
-        );
+        let transaction = unsigned_cleanup_transaction(&instructions, payer, blockhash);
         ensure_cleanup_transaction_fits_packet(&transaction).map_err(|error| {
             format!(
                 "cleanup batch {batch_index} with {} instruction(s) is too large: {error}",
@@ -1881,6 +2595,32 @@ fn preflight_cleanup_batches_fit_packet(
         })?;
     }
     Ok(())
+}
+
+fn unsigned_cleanup_transaction(
+    instructions: &[Instruction],
+    payer: Pubkey,
+    blockhash: solana_sdk::hash::Hash,
+) -> Transaction {
+    let message = Message::new_with_blockhash(instructions, Some(&payer), &blockhash);
+    let required_signatures = usize::from(message.header.num_required_signatures);
+    let mut transaction = Transaction::new_unsigned(message);
+    transaction.signatures = vec![Signature::default(); required_signatures];
+    transaction
+}
+
+fn run_after_cleanup_budget_approval<T>(
+    reservation: &LegacyLookupTableCleanupBudgetReservation,
+    action: impl FnOnce() -> Result<T, Box<dyn Error>>,
+) -> Result<T, Box<dyn Error>> {
+    if !reservation.approved {
+        return Err(format!(
+            "legacy cleanup attempt {} exceeded the shared cluster rolling budget before signing",
+            reservation.legacy_cleanup_attempt_id
+        )
+        .into());
+    }
+    action()
 }
 
 fn set_candidate_execution(
@@ -1898,21 +2638,21 @@ fn set_candidate_execution(
     Ok(())
 }
 
-fn send_cleanup_instruction_batch(
+async fn send_cleanup_instruction_batch(
+    database: &NeonSqlClient,
     rpc: &RpcClient,
+    options: &Options,
     signer: &dyn Signer,
     instructions: &[Instruction],
+    cleanup: &PlannedCleanup,
+    operation_kind: LookupTableOperationKind,
     close_recipient: Option<Pubkey>,
     expected_refund_lamports: u64,
 ) -> Result<CleanupTransactionResult, Box<dyn Error>> {
-    let blockhash = rpc.get_latest_blockhash()?;
-    let transaction = Transaction::new_signed_with_payer(
-        instructions,
-        Some(&signer.pubkey()),
-        &[signer],
-        blockhash,
-    );
-    let transaction_packet = ensure_cleanup_transaction_fits_packet(&transaction)?;
+    let (blockhash, last_valid_block_height) =
+        rpc.get_latest_blockhash_with_commitment(CommitmentConfig::finalized())?;
+    let mut transaction = unsigned_cleanup_transaction(instructions, signer.pubkey(), blockhash);
+    ensure_cleanup_transaction_fits_packet(&transaction)?;
     let simulation = simulate_cleanup_transaction(rpc, &transaction)?;
     let estimated_fee_lamports = rpc.get_fee_for_message(&transaction.message)?;
     let recipient_balance_before = close_recipient
@@ -1921,10 +2661,135 @@ fn send_cleanup_instruction_batch(
                 .map(|response| response.value)
         })
         .transpose()?;
-    let signature = rpc.send_and_confirm_transaction_with_spinner_and_commitment(
+    let attempt = database
+        .prepare_legacy_lookup_table_cleanup_attempt(LegacyLookupTableCleanupAttemptPrepare {
+            cluster: options.cluster.clone(),
+            table_address: cleanup.table_address.to_string(),
+            expected_authorization_token: cleanup.expected_cleanup_authorization_token.clone(),
+            operation_kind,
+            expected_authority: cleanup.expected_authority.to_string(),
+            expected_address_count: i32::try_from(cleanup.expected_address_count)?,
+            expected_address_hash: cleanup.expected_address_hash.clone(),
+            close_recipient: close_recipient.map(|recipient| recipient.to_string()),
+            expected_reclaimed_lamports: (expected_refund_lamports > 0)
+                .then(|| i64::try_from(expected_refund_lamports))
+                .transpose()?,
+        })
+        .await?;
+    if attempt.attempt_state != LegacyLookupTableCleanupAttemptState::Prepared {
+        return Err(format!(
+            "legacy cleanup attempt {} is {}; reconcile it before any fresh broadcast",
+            attempt.id, attempt.attempt_state,
+        )
+        .into());
+    }
+    let budget_reservation = database
+        .reserve_legacy_lookup_table_cleanup_budget(
+            &options.cluster,
+            attempt.id,
+            LookupTableClusterBudgetPolicy {
+                max_lamports: options
+                    .max_lamports
+                    .ok_or("execute cleanup requires --max-lamports")?,
+                rolling_window_seconds: options
+                    .budget_window_seconds
+                    .ok_or("execute cleanup requires --budget-window-seconds")?,
+            },
+            i64::try_from(estimated_fee_lamports)?,
+            0,
+        )
+        .await?;
+    run_after_cleanup_budget_approval(&budget_reservation, || {
+        transaction
+            .try_sign(&[signer], blockhash)
+            .map_err(|error| error.into())
+    })?;
+    let transaction_packet = ensure_cleanup_transaction_fits_packet(&transaction)?;
+    let signature = transaction
+        .signatures
+        .first()
+        .ok_or("signed cleanup transaction has no signature")?
+        .to_owned();
+    let message_hash = {
+        let mut hasher = Sha256::new();
+        hasher.update(bincode::serialize(&transaction.message)?);
+        format!("{:x}", hasher.finalize())
+    };
+    database
+        .persist_signed_legacy_lookup_table_cleanup_attempt(
+            attempt.id,
+            SignedLegacyLookupTableCleanupAttempt {
+                transaction_signature: signature.to_string(),
+                message_hash,
+                recent_blockhash: blockhash.to_string(),
+                last_valid_block_height: i64::try_from(last_valid_block_height)?,
+                estimated_fee_lamports: i64::try_from(estimated_fee_lamports)?,
+                recipient_balance_before: recipient_balance_before
+                    .map(i64::try_from)
+                    .transpose()?,
+            },
+        )
+        .await?;
+    let returned_signature = match rpc.send_transaction_with_config(
         &transaction,
-        CommitmentConfig::finalized(),
-    )?;
+        RpcSendTransactionConfig {
+            skip_preflight: false,
+            preflight_commitment: Some(CommitmentLevel::Finalized),
+            max_retries: Some(0),
+            min_context_slot: Some(rpc.get_slot_with_commitment(CommitmentConfig::finalized())?),
+            ..RpcSendTransactionConfig::default()
+        },
+    ) {
+        Ok(signature) => signature,
+        Err(error) => {
+            database
+                .mark_legacy_lookup_table_cleanup_attempt_needs_reconcile(
+                    attempt.id,
+                    &signature.to_string(),
+                    "ambiguous_send",
+                    &safe_cleanup_operational_error(&error),
+                )
+                .await?;
+            return Err(format!(
+                "legacy cleanup send result is ambiguous; durable attempt {} must reconcile",
+                attempt.id
+            )
+            .into());
+        }
+    };
+    if returned_signature != signature {
+        database
+            .mark_legacy_lookup_table_cleanup_attempt_needs_reconcile(
+                attempt.id,
+                &signature.to_string(),
+                "signature_mismatch",
+                "RPC returned a different signature from the durable signed identity",
+            )
+            .await?;
+        return Err(
+            "cleanup RPC returned a signature different from the durable signed identity".into(),
+        );
+    }
+    database
+        .mark_legacy_lookup_table_cleanup_attempt_submitted(attempt.id, &signature.to_string())
+        .await?;
+    if let Err(error) =
+        rpc.confirm_transaction_with_spinner(&signature, &blockhash, CommitmentConfig::finalized())
+    {
+        database
+            .mark_legacy_lookup_table_cleanup_attempt_needs_reconcile(
+                attempt.id,
+                &signature.to_string(),
+                "confirmation_ambiguous",
+                &safe_cleanup_operational_error(&error),
+            )
+            .await?;
+        return Err(format!(
+            "legacy cleanup confirmation is ambiguous; durable attempt {} must reconcile",
+            attempt.id
+        )
+        .into());
+    }
     require_finalized_signature(rpc, &signature)?;
     let recipient_balance_after = close_recipient
         .map(|recipient| {
@@ -1944,6 +2809,7 @@ fn send_cleanup_instruction_batch(
         }
     }
     Ok(CleanupTransactionResult {
+        attempt_id: attempt.id,
         signature: signature.to_string(),
         simulation,
         transaction_packet,
@@ -1952,6 +2818,7 @@ fn send_cleanup_instruction_batch(
         recipient_balance_after,
         expected_refund_lamports,
         minimum_net_recipient_increase_lamports,
+        budget_reservation,
     })
 }
 
@@ -2037,7 +2904,16 @@ fn simulate_cleanup_transaction(
     rpc: &RpcClient,
     transaction: &Transaction,
 ) -> Result<Value, Box<dyn Error>> {
-    let simulation = rpc.simulate_transaction(transaction)?;
+    let simulation = rpc.simulate_transaction_with_config(
+        transaction,
+        RpcSimulateTransactionConfig {
+            sig_verify: false,
+            replace_recent_blockhash: false,
+            commitment: Some(CommitmentConfig::finalized()),
+            min_context_slot: Some(rpc.get_slot_with_commitment(CommitmentConfig::finalized())?),
+            ..RpcSimulateTransactionConfig::default()
+        },
+    )?;
     let logs = simulation.value.logs.clone().unwrap_or_default();
     if let Some(error) = simulation.value.err.as_ref() {
         return Err(format!(
@@ -2354,18 +3230,113 @@ mod tests {
             "a".repeat(64),
             "--bundle-size".to_owned(),
             "1".to_owned(),
+            "--min-slot".to_owned(),
+            "123".to_owned(),
+            "--max-lamports".to_owned(),
+            "50000".to_owned(),
+            "--budget-window-seconds".to_owned(),
+            "3600".to_owned(),
             "--trace-timing".to_owned(),
         ])
         .expect("cleanup safety options should parse");
 
         assert!(options.execute);
         assert!(options.simulate_before_submit);
-        assert!(options.scan_program_accounts);
+        assert!(!options.scan_program_accounts);
         assert!(options.scan_history);
         assert_eq!(options.limit, 0);
+        assert_eq!(options.min_slot, Some(123));
+        assert_eq!(options.max_lamports, Some(50_000));
+        assert_eq!(options.budget_window_seconds, Some(3_600));
         assert_eq!(options.expected_fleet_count, Some(31));
         assert_eq!(options.bundle_size, 1);
         assert!(options.trace_timing);
+    }
+
+    #[test]
+    fn alt_cleanup_execute_rejects_manual_allowlist_and_ignores_environment_protection() {
+        let protected = Pubkey::new_unique();
+        let environment_table = Pubkey::new_unique();
+        let manual_table = Pubkey::new_unique();
+        let effective = effective_cleanup_protected_tables(
+            BTreeSet::from([protected]),
+            &BTreeSet::from([environment_table]),
+            &BTreeSet::from([manual_table]),
+            true,
+        );
+        assert_eq!(effective, BTreeSet::from([protected]));
+
+        let error = parse_args(vec![
+            "--cluster".to_owned(),
+            "localnet".to_owned(),
+            "--rpc-url".to_owned(),
+            "http://localhost:8899".to_owned(),
+            "--execute".to_owned(),
+            "--allowlist".to_owned(),
+            manual_table.to_string(),
+            "--expected-fleet-count".to_owned(),
+            "1".to_owned(),
+            "--expected-fleet-hash".to_owned(),
+            "a".repeat(64),
+        ])
+        .expect_err("execute allowlist must not suppress an approved legacy refund");
+        assert!(error.to_string().contains("rejects --allowlist"));
+
+        let dry_run = effective_cleanup_protected_tables(
+            BTreeSet::from([protected]),
+            &BTreeSet::from([environment_table]),
+            &BTreeSet::from([manual_table]),
+            false,
+        );
+        assert_eq!(dry_run.len(), 3);
+    }
+
+    #[test]
+    fn alt_cleanup_durable_recovery_covers_every_broadcast_crash_window() {
+        assert_eq!(
+            legacy_cleanup_recovery_decision(
+                &PersistedCleanupSignatureState::NotFound,
+                LegacyCleanupChainEffect::Unchanged,
+                false,
+            ),
+            LegacyCleanupRecoveryDecision::Wait,
+            "crash after signed persistence but before send must not resend before expiry",
+        );
+        assert_eq!(
+            legacy_cleanup_recovery_decision(
+                &PersistedCleanupSignatureState::NotFound,
+                LegacyCleanupChainEffect::Unchanged,
+                true,
+            ),
+            LegacyCleanupRecoveryDecision::ExpireAndRetry,
+            "an absent signature may be replaced only after expiry and unchanged chain state",
+        );
+        assert_eq!(
+            legacy_cleanup_recovery_decision(
+                &PersistedCleanupSignatureState::FinalizedSuccess { slot: 50 },
+                LegacyCleanupChainEffect::Applied { observed_slot: 50 },
+                false,
+            ),
+            LegacyCleanupRecoveryDecision::Complete { observed_slot: 50 },
+            "crash after finalized send but before DB record must complete from durable identity",
+        );
+        assert_eq!(
+            legacy_cleanup_recovery_decision(
+                &PersistedCleanupSignatureState::NotFound,
+                LegacyCleanupChainEffect::Applied { observed_slot: 50 },
+                true,
+            ),
+            LegacyCleanupRecoveryDecision::ManualReconcile,
+            "an unattributed chain effect must never be treated as this attempt or resent",
+        );
+        assert_eq!(
+            legacy_cleanup_recovery_decision(
+                &PersistedCleanupSignatureState::FinalizedFailure("failed".to_owned()),
+                LegacyCleanupChainEffect::Unchanged,
+                false,
+            ),
+            LegacyCleanupRecoveryDecision::PermanentFailure,
+        );
     }
 
     #[test]
@@ -2408,10 +3379,166 @@ mod tests {
             "a".repeat(64),
             "--bundle-size".to_owned(),
             "2".to_owned(),
+            "--min-slot".to_owned(),
+            "123".to_owned(),
+            "--max-lamports".to_owned(),
+            "50000".to_owned(),
+            "--budget-window-seconds".to_owned(),
+            "3600".to_owned(),
         ])
         .expect_err("multi-table execute cannot share one legacy authorization fence");
 
         assert!(error.to_string().contains("database authorization fence"));
+    }
+
+    #[test]
+    fn alt_cleanup_budget_denial_never_invokes_signing_action() {
+        let reservation = LegacyLookupTableCleanupBudgetReservation {
+            approved: false,
+            replayed: false,
+            reservation_id: None,
+            cluster: "localnet".to_owned(),
+            legacy_cleanup_attempt_id: 7,
+            estimated_fee_lamports: 5_000,
+            estimated_rent_lamports: 0,
+            requested_lamports: 5_000,
+            spent_lamports: 0,
+            reserved_lamports: 50_000,
+            charged_lamports: 50_000,
+            remaining_lamports: 0,
+            window_ends_at: chrono::Utc::now(),
+        };
+        let mut signer_invoked = false;
+
+        let error = run_after_cleanup_budget_approval(&reservation, || {
+            signer_invoked = true;
+            Ok(())
+        })
+        .expect_err("denied cleanup budget must stop before signing");
+
+        assert!(!signer_invoked);
+        assert!(error.to_string().contains("before signing"));
+    }
+
+    fn imported_cleanup_record(
+        table: Pubkey,
+        authority: Pubkey,
+    ) -> ImportedLegacyLookupTableCleanupRecord {
+        ImportedLegacyLookupTableCleanupRecord {
+            source: loyal_yield_orchestrator::LegacyLookupTableImportSource {
+                id: 1,
+                cluster: "localnet".to_owned(),
+                scope: "legacy".to_owned(),
+                table_address: table.to_string(),
+                authority: authority.to_string(),
+                status: "closed".to_owned(),
+                durable: false,
+                address_count: 0,
+                address_hash: format!("{:x}", Sha256::new().finalize()),
+                addresses: Vec::new(),
+                legacy_kind: Some(loyal_yield_orchestrator::LegacyLookupTableKind::LegacyRoute),
+                legacy_import_run_id: Some(9),
+                last_extended_slot: Some(10),
+                last_extended_start_index: Some(0),
+                last_verified_slot: Some(10),
+                last_verified_at: Some(chrono::Utc::now()),
+            },
+            import_fingerprint: "a".repeat(64),
+            import_verified_slot: 10,
+            deactivated_slot: Some(20),
+            deactivate_signature: Some("deactivate-signature".to_owned()),
+            closed_signature: Some("close-signature".to_owned()),
+            close_recipient: Some(authority.to_string()),
+            reclaimed_lamports: Some(1_000),
+        }
+    }
+
+    #[test]
+    fn alt_cleanup_closed_fleet_history_is_complete_and_hash_is_lifecycle_stable() {
+        let table = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let closed = imported_cleanup_record(table, authority);
+        let history = HistoryScanEvidence {
+            events: vec![
+                HistoryEvent {
+                    signature: "deactivate-signature".to_owned(),
+                    slot: 20,
+                    block_time: None,
+                    kind: "deactivate",
+                    table_address: table,
+                    authority: Some(authority),
+                    payer_or_recipient: None,
+                    new_address_count: None,
+                },
+                HistoryEvent {
+                    signature: "close-signature".to_owned(),
+                    slot: 40,
+                    block_time: None,
+                    kind: "close",
+                    table_address: table,
+                    authority: Some(authority),
+                    payer_or_recipient: Some(authority),
+                    new_address_count: None,
+                },
+            ],
+            authorities: vec![AuthorityHistoryEvidence {
+                authority,
+                page_count: 2,
+                signature_count: 2,
+                oldest_slot: Some(9),
+                boundary_reached: true,
+                exhausted: false,
+            }],
+            mutation_set_hash: "b".repeat(64),
+        };
+        verify_imported_cleanup_history(std::slice::from_ref(&closed), &history, Some(10))
+            .expect("closed mutation history is attributable and complete");
+
+        let mut pre_cleanup = closed.clone();
+        pre_cleanup.source.status = "retiring".to_owned();
+        pre_cleanup.deactivated_slot = None;
+        pre_cleanup.deactivate_signature = None;
+        pre_cleanup.closed_signature = None;
+        pre_cleanup.close_recipient = None;
+        pre_cleanup.reclaimed_lamports = None;
+        assert_eq!(
+            approved_imported_legacy_fleet_hash(&[closed.clone()]),
+            approved_imported_legacy_fleet_hash(&[pre_cleanup]),
+            "immutable fleet approval must survive partial cleanup retries"
+        );
+
+        let incomplete = HistoryScanEvidence {
+            events: history.events[..1].to_vec(),
+            ..history
+        };
+        assert!(verify_imported_cleanup_history(&[closed], &incomplete, Some(10)).is_err());
+    }
+
+    #[test]
+    fn alt_cleanup_rejects_non_database_inventory_sources() {
+        let table = Pubkey::new_unique();
+        let program_scan_error = parse_args(vec![
+            "--cluster".to_owned(),
+            "localnet".to_owned(),
+            "--rpc-url".to_owned(),
+            "http://localhost:8899".to_owned(),
+            "--scan-program-accounts".to_owned(),
+        ])
+        .expect_err("whole-program cleanup discovery must stay removed");
+        assert!(program_scan_error
+            .to_string()
+            .contains("immutable imported database fleet"));
+
+        let subset_error = parse_args(vec![
+            "--cluster".to_owned(),
+            "localnet".to_owned(),
+            "--rpc-url".to_owned(),
+            "http://localhost:8899".to_owned(),
+            "--table".to_owned(),
+            table.to_string(),
+        ])
+        .expect_err("partial table inventory must stay rejected");
+        assert!(subset_error.to_string().contains("complete imported"));
     }
 
     #[test]

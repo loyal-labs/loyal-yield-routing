@@ -16,6 +16,10 @@ DECLARE
     invalid_shared_catalogs BIGINT;
     invalid_shared_physical_drifts BIGINT;
     invalid_budget_reservations BIGINT;
+    invalid_legacy_cleanup_attempts BIGINT;
+    invalid_legacy_cleanup_budget_reservations BIGINT;
+    invalid_broadcast_permits BIGINT;
+    invalid_precutover_probes BIGINT;
 BEGIN
     IF NOT EXISTS (
         SELECT 1
@@ -24,6 +28,15 @@ BEGIN
           AND name = 'demand_driven_shared_market_catalog'
     ) THEN
         RAISE EXCEPTION 'migration 20 demand_driven_shared_market_catalog is not recorded';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM loyal_yield.schema_migrations
+        WHERE version = 21
+          AND name = 'reusable_alt_production_controls'
+    ) THEN
+        RAISE EXCEPTION 'migration 21 reusable_alt_production_controls is not recorded';
     END IF;
 
     SELECT array_agg(required_relation ORDER BY required_relation)
@@ -36,6 +49,8 @@ BEGIN
         'lookup_table_shared_market_catalog_heads',
         'lookup_table_shared_market_physical_drifts',
         'lookup_table_cluster_budget_reservations',
+        'lookup_table_legacy_cleanup_attempts',
+        'lookup_table_legacy_cleanup_budget_reservations',
         'lookup_table_manifests',
         'lookup_table_manifest_addresses',
         'lookup_table_vault_desired_heads',
@@ -47,7 +62,10 @@ BEGIN
         'lookup_table_operation_addresses',
         'lookup_table_addresses',
         'lookup_table_route_readiness_current',
-        'lookup_table_rollout_controls'
+        'lookup_table_rollout_controls',
+        'lookup_table_provisioner_controls',
+        'lookup_table_provisioner_broadcast_permits',
+        'lookup_table_precutover_probe_runs'
     ]) AS required_relation
     WHERE to_regclass('loyal_yield.' || required_relation) IS NULL;
 
@@ -159,6 +177,36 @@ BEGIN
         ('lookup_table_cluster_budget_reservations', 'reserved_lamports'),
         ('lookup_table_cluster_budget_reservations', 'reserved_at'),
         ('lookup_table_cluster_budget_reservations', 'reserved_until'),
+        ('lookup_table_legacy_cleanup_attempts', 'route_lookup_table_id'),
+        ('lookup_table_legacy_cleanup_attempts', 'cluster'),
+        ('lookup_table_legacy_cleanup_attempts', 'table_address'),
+        ('lookup_table_legacy_cleanup_attempts', 'operation_kind'),
+        ('lookup_table_legacy_cleanup_attempts', 'attempt_state'),
+        ('lookup_table_legacy_cleanup_attempts', 'transaction_signature'),
+        ('lookup_table_legacy_cleanup_attempts', 'estimated_fee_lamports'),
+        ('lookup_table_legacy_cleanup_attempts', 'finalized_slot'),
+        ('lookup_table_legacy_cleanup_attempts', 'actual_reclaimed_lamports'),
+        ('lookup_table_legacy_cleanup_budget_reservations', 'legacy_cleanup_attempt_id'),
+        ('lookup_table_legacy_cleanup_budget_reservations', 'cluster'),
+        ('lookup_table_legacy_cleanup_budget_reservations', 'estimated_fee_lamports'),
+        ('lookup_table_legacy_cleanup_budget_reservations', 'estimated_rent_lamports'),
+        ('lookup_table_legacy_cleanup_budget_reservations', 'reserved_lamports'),
+        ('lookup_table_legacy_cleanup_budget_reservations', 'reserved_at'),
+        ('lookup_table_legacy_cleanup_budget_reservations', 'reserved_until'),
+        ('lookup_table_provisioner_controls', 'paused'),
+        ('lookup_table_provisioner_controls', 'control_epoch'),
+        ('lookup_table_provisioner_broadcast_permits', 'operation_id'),
+        ('lookup_table_provisioner_broadcast_permits', 'fencing_token'),
+        ('lookup_table_provisioner_broadcast_permits', 'control_epoch'),
+        ('lookup_table_provisioner_broadcast_permits', 'transaction_signature'),
+        ('lookup_table_provisioner_broadcast_permits', 'message_hash'),
+        ('lookup_table_provisioner_broadcast_permits', 'permit_state'),
+        ('lookup_table_provisioner_broadcast_permits', 'granted_at'),
+        ('lookup_table_provisioner_broadcast_permits', 'resolved_at'),
+        ('lookup_table_precutover_probe_runs', 'provisioner_control_epoch'),
+        ('lookup_table_precutover_probe_runs', 'finalized_slot'),
+        ('lookup_table_precutover_probe_runs', 'finalized_address_hash'),
+        ('lookup_table_precutover_probe_runs', 'finalized_address_count'),
         ('lookup_table_families', 'hard_capacity'),
         ('lookup_table_families', 'largest_atomic_expansion'),
         ('lookup_table_families', 'safety_margin'),
@@ -455,6 +503,100 @@ BEGIN
     END IF;
 
     SELECT count(*)
+    INTO invalid_legacy_cleanup_budget_reservations
+    FROM loyal_yield.lookup_table_legacy_cleanup_budget_reservations reservation
+    JOIN loyal_yield.lookup_table_legacy_cleanup_attempts attempt
+      ON attempt.id = reservation.legacy_cleanup_attempt_id
+    WHERE attempt.cluster <> reservation.cluster
+       OR reservation.reserved_lamports
+            <> reservation.estimated_fee_lamports + reservation.estimated_rent_lamports
+       OR reservation.reserved_lamports <= 0
+       OR reservation.estimated_fee_lamports < 0
+       OR reservation.estimated_rent_lamports < 0
+       OR reservation.reserved_until <= reservation.reserved_at;
+
+    IF invalid_legacy_cleanup_budget_reservations <> 0 THEN
+        RAISE EXCEPTION 'invalid legacy cleanup cluster budget reservation row(s): %',
+            invalid_legacy_cleanup_budget_reservations;
+    END IF;
+
+    SELECT count(*)
+    INTO invalid_legacy_cleanup_attempts
+    FROM loyal_yield.lookup_table_legacy_cleanup_attempts attempt
+    JOIN loyal_yield.route_lookup_tables route_table
+      ON route_table.id = attempt.route_lookup_table_id
+    WHERE route_table.family_id IS NOT NULL
+       OR route_table.legacy_import_run_id IS NULL
+       OR route_table.cluster <> attempt.cluster
+       OR route_table.table_address <> attempt.table_address
+       OR (
+           attempt.attempt_state IN ('signed', 'submitted', 'needs_reconcile', 'complete')
+           AND NOT EXISTS (
+               SELECT 1
+               FROM loyal_yield.lookup_table_legacy_cleanup_budget_reservations reservation
+               WHERE reservation.legacy_cleanup_attempt_id = attempt.id
+                 AND reservation.cluster = attempt.cluster
+                 AND reservation.estimated_fee_lamports = attempt.estimated_fee_lamports
+                 AND reservation.reserved_lamports =
+                     attempt.estimated_fee_lamports + reservation.estimated_rent_lamports
+           )
+       );
+
+    IF invalid_legacy_cleanup_attempts <> 0 THEN
+        RAISE EXCEPTION 'invalid durable legacy cleanup attempt row(s): %',
+            invalid_legacy_cleanup_attempts;
+    END IF;
+
+    SELECT count(*)
+    INTO invalid_broadcast_permits
+    FROM loyal_yield.lookup_table_provisioner_broadcast_permits permit
+    JOIN loyal_yield.lookup_table_operations operation
+      ON operation.id = permit.operation_id
+    JOIN loyal_yield.lookup_table_families family ON family.id = operation.family_id
+    WHERE family.cluster <> permit.cluster
+       OR permit.fencing_token > operation.fencing_token
+       OR permit.control_epoch < 0
+       OR (
+           permit.resolved_at IS NULL
+           AND (
+               permit.permit_state <> 'granted'
+               OR operation.operation_state <> 'signed'
+               OR permit.transaction_signature <> operation.transaction_signature
+               OR permit.message_hash <> operation.message_hash
+           )
+       )
+       OR (permit.resolved_at IS NOT NULL AND permit.permit_state = 'granted');
+
+    IF invalid_broadcast_permits <> 0 THEN
+        RAISE EXCEPTION 'invalid durable broadcast permit row(s): %',
+            invalid_broadcast_permits;
+    END IF;
+
+    SELECT count(*)
+    INTO invalid_precutover_probes
+    FROM loyal_yield.lookup_table_precutover_probe_runs probe
+    JOIN loyal_yield.lookup_table_shared_market_catalog_revisions revision
+      ON revision.id = probe.catalog_revision_id
+    JOIN loyal_yield.lookup_table_manifests manifest
+      ON manifest.id = probe.shared_manifest_id
+    JOIN loyal_yield.route_lookup_tables route_table
+      ON route_table.id = probe.route_lookup_table_id
+    WHERE revision.manifest_id <> probe.shared_manifest_id
+       OR manifest.family_id <> revision.family_id
+       OR route_table.family_id <> revision.family_id
+       OR route_table.table_address <> probe.shared_table_address
+       OR route_table.authority <> probe.shared_authority
+       OR probe.provisioner_control_epoch < 0
+       OR probe.finalized_slot <= probe.finalized_last_extended_slot
+       OR probe.finalized_address_hash !~ '^[0-9a-f]{64}$'
+       OR probe.result <> 'pass';
+
+    IF invalid_precutover_probes <> 0 THEN
+        RAISE EXCEPTION 'invalid immutable pre-cutover probe row(s): %',
+            invalid_precutover_probes;
+    END IF;
+
+    SELECT count(*)
     INTO inconsistent_reservations
     FROM loyal_yield.route_lookup_tables route_table
     LEFT JOIN (
@@ -727,6 +869,27 @@ SELECT json_build_object(
             )
         )
         FROM loyal_yield.lookup_table_cluster_budget_reservations
+    ),
+    'legacyCleanupBudgetReservations', (
+        SELECT json_build_object(
+            'total', count(*),
+            'active', count(*) FILTER (WHERE reserved_until > now()),
+            'activeReservedLamports', COALESCE(
+                sum(reserved_lamports) FILTER (WHERE reserved_until > now()),
+                0
+            )
+        )
+        FROM loyal_yield.lookup_table_legacy_cleanup_budget_reservations
+    ),
+    'broadcastPermits', (
+        SELECT json_build_object(
+            'total', count(*),
+            'active', count(*) FILTER (WHERE resolved_at IS NULL)
+        )
+        FROM loyal_yield.lookup_table_provisioner_broadcast_permits
+    ),
+    'precutoverProbeRuns', (
+        SELECT count(*) FROM loyal_yield.lookup_table_precutover_probe_runs
     ),
     'lamports', (
         SELECT json_build_object(

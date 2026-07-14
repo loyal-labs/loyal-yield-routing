@@ -276,6 +276,18 @@ string_enum! {
     }
 }
 
+string_enum! {
+    pub enum LegacyLookupTableCleanupAttemptState, "legacy lookup-table cleanup attempt state" {
+        Prepared => "prepared",
+        Signed => "signed",
+        Submitted => "submitted",
+        NeedsReconcile => "needs_reconcile",
+        Expired => "expired",
+        Complete => "complete",
+        PermanentFailure => "permanent_failure"
+    }
+}
+
 impl LookupTableOperationStatus {
     pub fn can_transition_to(self, next: Self) -> bool {
         self == next
@@ -630,17 +642,20 @@ fn shared_market_connection_weight(
 
 fn next_shared_market_mutation(
     table_exists: bool,
-    desired: &BTreeSet<String>,
-    confirmed: &BTreeSet<String>,
-    pending: &BTreeSet<String>,
+    desired: &[String],
+    confirmed: &[String],
+    pending: &[String],
     max_extension_addresses: usize,
 ) -> Option<(LookupTableOperationKind, Vec<String>)> {
     if !pending.is_empty() {
         return None;
     }
-    let occupied = confirmed.union(pending).cloned().collect::<BTreeSet<_>>();
+    if !ordered_prefix_matches(confirmed, desired) {
+        return None;
+    }
     let missing = desired
-        .difference(&occupied)
+        .iter()
+        .skip(confirmed.len())
         .take(max_extension_addresses)
         .cloned()
         .collect::<Vec<_>>();
@@ -655,6 +670,29 @@ fn next_shared_market_mutation(
         },
         missing,
     ))
+}
+
+fn ordered_prefix_matches(prefix: &[String], desired: &[String]) -> bool {
+    prefix.len() <= desired.len()
+        && prefix
+            .iter()
+            .zip(desired.iter())
+            .all(|(actual, expected)| actual == expected)
+}
+
+fn ordered_confirmed_and_pending_match(
+    confirmed: &[String],
+    pending: &[String],
+    desired: &[String],
+) -> bool {
+    if confirmed.len().saturating_add(pending.len()) > desired.len() {
+        return false;
+    }
+    confirmed
+        .iter()
+        .chain(pending.iter())
+        .zip(desired.iter())
+        .all(|(actual, expected)| actual == expected)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -765,7 +803,7 @@ pub enum PackedVaultAllocation {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct PackedShardScore {
     new_address_count: usize,
-    projected_capacity_commitment: u16,
+    projected_residual_headroom: u16,
     bound_vault_count: u16,
     generation: i32,
     shard_index: i32,
@@ -859,12 +897,14 @@ pub fn allocate_packed_vault_manifest(
 
             let projected_occupied = u16::try_from(projected_occupied).ok()?;
             let projected_capacity_commitment = u16::try_from(projected_commitment).ok()?;
+            let projected_residual_headroom =
+                candidate_high_water.checked_sub(projected_capacity_commitment)?;
             let reserved_capacity = u16::try_from(reserved_capacity).ok()?;
             let reservation_delta = u16::try_from(reservation_delta).ok()?;
             Some((
                 PackedShardScore {
                     new_address_count: missing_addresses.len(),
-                    projected_capacity_commitment,
+                    projected_residual_headroom,
                     bound_vault_count: projected_bound_vault_count,
                     generation: candidate.generation,
                     shard_index: candidate.shard_index,
@@ -965,6 +1005,7 @@ pub struct LookupTableOperationIntent {
     pub kind: LookupTableOperationKind,
     pub generation: i32,
     pub shard_index: i32,
+    pub mutation_epoch: i64,
     pub desired_address_hash: String,
     pub addresses: Vec<String>,
 }
@@ -987,6 +1028,7 @@ pub fn operation_idempotency_key(intent: &LookupTableOperationIntent) -> String 
         intent.kind.as_str(),
         &intent.generation.to_string(),
         &intent.shard_index.to_string(),
+        &intent.mutation_epoch.to_string(),
         intent.desired_address_hash.as_str(),
     ] {
         hasher.update((value.len() as u64).to_le_bytes());
@@ -1052,6 +1094,11 @@ pub fn reconcile_lookup_table_operation(
     use LookupTableOperationStatus as Status;
     use LookupTableReconciliationDecision as Decision;
     use LookupTableSignatureState as Signature;
+
+    if observation.signature_state == Signature::Finalized && !observation.chain_observed_finalized
+    {
+        return Decision::WaitForFinalization;
+    }
 
     if matches!(
         observation.chain_state,
@@ -1573,6 +1620,62 @@ pub struct SharedMarketPhysicalDriftRecord {
     pub created_at: DateTime<Utc>,
 }
 
+/// Signerless production-connected exercise of the real reusable-ALT drift
+/// and demand-request store paths. The implementation rolls every exercised
+/// control-plane mutation back and persists only an immutable PASS audit row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookupTablePrecutoverProbe {
+    pub probe_token: String,
+    /// Exact durable paused-control epoch observed before finalized RPC and
+    /// rechecked under a row lock by the rollback-only database exercise.
+    pub provisioner_control_epoch: i64,
+    pub finalized_slot: i64,
+    /// Exact finalized on-chain order after owner/authority/lifecycle/warmth
+    /// validation by the provisioner.
+    pub finalized_addresses: Vec<String>,
+    /// Deliberately mismatched observation passed through the production drift
+    /// reporter inside the rollback-only transaction.
+    pub drift_report: SharedMarketPhysicalDriftReport,
+    /// Typed missing-vault request passed twice through the production request
+    /// upsert inside that same transaction.
+    pub provisioning_request: LookupTableProvisioningRequestUpsert,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LookupTablePrecutoverProbeRecord {
+    pub id: i64,
+    pub probe_token: String,
+    pub cluster: String,
+    pub vault_id: VaultId,
+    pub catalog_revision_id: i64,
+    pub shared_manifest_id: i64,
+    pub route_lookup_table_id: i64,
+    pub shared_table_address: String,
+    pub shared_authority: String,
+    pub shared_mutation_epoch: i64,
+    pub provisioner_control_epoch: i64,
+    pub requirements_fingerprint: String,
+    pub finalized_slot: i64,
+    pub finalized_last_extended_slot: i64,
+    pub finalized_address_hash: String,
+    pub finalized_address_count: i32,
+    pub finalized_shared_exact: bool,
+    pub synthetic_drift_evidence_hash: String,
+    pub drift_signal_count: i32,
+    pub drift_provisioning_request_count: i32,
+    pub duplicate_request_attempt_count: i32,
+    pub distinct_request_count: i32,
+    pub decision_count: i32,
+    pub binding_count: i32,
+    pub operation_count: i32,
+    pub rollback_residue_count: i32,
+    pub catalog_head_restored: bool,
+    pub signer_loaded: bool,
+    pub transactions_sent: bool,
+    pub result: String,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LookupTableClusterBudgetPolicy {
     pub max_lamports: i64,
@@ -1587,6 +1690,23 @@ pub struct LookupTableClusterBudgetReservation {
     pub cluster: String,
     pub operation_id: i64,
     pub fencing_token: i64,
+    pub estimated_fee_lamports: i64,
+    pub estimated_rent_lamports: i64,
+    pub requested_lamports: i64,
+    pub spent_lamports: i64,
+    pub reserved_lamports: i64,
+    pub charged_lamports: i64,
+    pub remaining_lamports: i64,
+    pub window_ends_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyLookupTableCleanupBudgetReservation {
+    pub approved: bool,
+    pub replayed: bool,
+    pub reservation_id: Option<i64>,
+    pub cluster: String,
+    pub legacy_cleanup_attempt_id: i64,
     pub estimated_fee_lamports: i64,
     pub estimated_rent_lamports: i64,
     pub requested_lamports: i64,
@@ -1616,9 +1736,28 @@ pub struct ReusableOnlyCutoverPreflight {
     pub physical_table_address: String,
     pub physical_authority: String,
     pub physical_mutation_epoch: i64,
+    pub physical_last_extended_slot: i64,
     pub physical_last_verified_slot: i64,
     pub physical_address_count: i32,
     pub physical_usable_address_count: i32,
+}
+
+/// Exact finalized RPC evidence for the shared physical table. The caller
+/// obtains this only after checking genesis hash, owner, authority, lifecycle,
+/// warmth, and ordered membership. Cutover rechecks every field against the
+/// concurrently locked database preflight before changing rollout state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinalizedSharedTableObservation {
+    pub cluster: String,
+    pub physical_table_id: i64,
+    pub table_address: String,
+    pub authority: String,
+    pub mutation_epoch: i64,
+    pub observed_slot: i64,
+    pub last_extended_slot: i64,
+    pub ordered_address_hash: String,
+    pub address_count: i32,
+    pub ordered_addresses: Vec<String>,
 }
 
 pub fn shared_market_manifest_addresses(
@@ -1926,6 +2065,77 @@ pub struct LookupTableRolloutControl {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LookupTableProvisionerControlRecord {
+    pub cluster: String,
+    pub paused: bool,
+    pub reason: String,
+    pub updated_by: String,
+    pub control_epoch: i64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LookupTableProvisionerBroadcastPermitRecord {
+    pub id: i64,
+    pub cluster: String,
+    pub operation_id: i64,
+    pub fencing_token: i64,
+    pub control_epoch: i64,
+    pub transaction_signature: String,
+    pub message_hash: String,
+    pub permit_state: String,
+    pub resolution_detail: Option<String>,
+    pub granted_at: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Result of the short, durable handoff immediately before broadcast. A grant
+/// is committed before the caller performs network I/O. A pause result retains
+/// the signed identity for reconciliation and never authorizes a send.
+#[derive(Debug)]
+pub enum LookupTableProvisionerBroadcastPermitResult {
+    Paused {
+        control: LookupTableProvisionerControlRecord,
+        operation: LookupTableOperationRecord,
+    },
+    Fenced {
+        control: LookupTableProvisionerControlRecord,
+        operation: LookupTableOperationRecord,
+        error_code: String,
+        error_detail: String,
+    },
+    Granted {
+        control: LookupTableProvisionerControlRecord,
+        operation: LookupTableOperationRecord,
+        permit: LookupTableProvisionerBroadcastPermitRecord,
+    },
+}
+
+#[derive(Debug)]
+pub enum LookupTableSharedMarketOperationFenceResult {
+    Current,
+    Cancelled {
+        operation: LookupTableOperationRecord,
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LookupTableProvisionerBroadcastResolution {
+    Submitted {
+        observed_slot: i64,
+    },
+    NeedsReconcile {
+        observed_slot: Option<i64>,
+        error_code: String,
+        error_detail: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectiveLookupTableRollout {
     pub rollout_mode: LookupTableRolloutMode,
@@ -1942,6 +2152,10 @@ pub struct ReusableOnlyCutoverResult {
     pub shared_generation: i32,
     pub vault_family_id: i64,
     pub aligned_vault_control_count: i64,
+    pub provisioner_control_epoch: i64,
+    pub finalized_observed_slot: i64,
+    pub finalized_address_hash: String,
+    pub finalized_address_count: i32,
     pub global_control: LookupTableRolloutControl,
 }
 
@@ -2093,6 +2307,68 @@ pub struct VerifiedLegacyLookupTableCleanup {
     pub reclaimed_lamports: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyLookupTableCleanupAttemptPrepare {
+    pub cluster: String,
+    pub table_address: String,
+    pub expected_authorization_token: String,
+    pub operation_kind: LookupTableOperationKind,
+    pub expected_authority: String,
+    pub expected_address_count: i32,
+    pub expected_address_hash: String,
+    pub close_recipient: Option<String>,
+    pub expected_reclaimed_lamports: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedLegacyLookupTableCleanupAttempt {
+    pub transaction_signature: String,
+    pub message_hash: String,
+    pub recent_blockhash: String,
+    pub last_valid_block_height: i64,
+    pub estimated_fee_lamports: i64,
+    pub recipient_balance_before: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinalizedLegacyLookupTableCleanupAttempt {
+    pub transaction_signature: String,
+    pub finalized_slot: i64,
+    pub recipient_balance_after: Option<i64>,
+    pub actual_reclaimed_lamports: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyLookupTableCleanupAttemptRecord {
+    pub id: i64,
+    pub route_lookup_table_id: i64,
+    pub cluster: String,
+    pub table_address: String,
+    pub operation_kind: LookupTableOperationKind,
+    pub attempt_number: i32,
+    pub authorization_token: String,
+    pub expected_authority: String,
+    pub expected_address_count: i32,
+    pub expected_address_hash: String,
+    pub close_recipient: Option<String>,
+    pub expected_reclaimed_lamports: Option<i64>,
+    pub attempt_state: LegacyLookupTableCleanupAttemptState,
+    pub transaction_signature: Option<String>,
+    pub message_hash: Option<String>,
+    pub recent_blockhash: Option<String>,
+    pub last_valid_block_height: Option<i64>,
+    pub estimated_fee_lamports: Option<i64>,
+    pub recipient_balance_before: Option<i64>,
+    pub submitted_at: Option<DateTime<Utc>>,
+    pub finalized_slot: Option<i64>,
+    pub recipient_balance_after: Option<i64>,
+    pub actual_reclaimed_lamports: Option<i64>,
+    pub error_code: Option<String>,
+    pub error_detail: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Short-lived cleanup authorization. Retirement plus database triggers form
 /// the durable nonblocking fence while the chain transaction finalizes.
 pub struct LegacyLookupTableCleanupAuthorization {
@@ -2170,6 +2446,33 @@ pub struct LegacyLookupTableImportSource {
     pub last_extended_start_index: Option<i32>,
     pub last_verified_slot: Option<i64>,
     pub last_verified_at: Option<DateTime<Utc>>,
+}
+
+impl LegacyLookupTableImportSource {
+    fn familyless_import_identity_is_valid(&self) -> bool {
+        usize::try_from(self.address_count).ok() == Some(self.addresses.len())
+            && self.addresses.len() <= usize::from(LOOKUP_TABLE_HARD_CAPACITY)
+            && is_sha256_hex(&self.address_hash)
+            && ordered_address_hash(&self.addresses) == self.address_hash
+            && Pubkey::from_str(&self.table_address).is_ok()
+            && Pubkey::from_str(&self.authority).is_ok()
+            && self.legacy_import_run_id.is_some()
+    }
+}
+
+/// Complete immutable import identity plus mutable cleanup evidence. Cleanup
+/// inventory is sourced from these rows even after the physical ALT is closed
+/// and therefore absent from finalized RPC account scans.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportedLegacyLookupTableCleanupRecord {
+    pub source: LegacyLookupTableImportSource,
+    pub import_fingerprint: String,
+    pub import_verified_slot: i64,
+    pub deactivated_slot: Option<i64>,
+    pub deactivate_signature: Option<String>,
+    pub closed_signature: Option<String>,
+    pub close_recipient: Option<String>,
+    pub reclaimed_lamports: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2263,8 +2566,8 @@ struct ClusterBudgetUsage {
     spent_lamports: i64,
     reserved_lamports: i64,
     charged_lamports: i64,
-    operation_reserved_lamports: i64,
-    operation_actual_lamports: i64,
+    subject_reserved_lamports: i64,
+    subject_actual_lamports: i64,
     window_ends_at: Option<DateTime<Utc>>,
 }
 
@@ -2484,6 +2787,29 @@ fn provisioning_request_is_satisfied(
         )
 }
 
+fn terminal_provisioning_operation<'a>(
+    shared_operations: &'a [LookupTableOperationRecord],
+    vault_allocation: &'a AtomicVaultAllocationResult,
+) -> Option<&'a LookupTableOperationRecord> {
+    let vault_operations = match vault_allocation {
+        AtomicVaultAllocationResult::BindingReserved { operations, .. }
+        | AtomicVaultAllocationResult::CreateQueued { operations, .. } => operations.as_slice(),
+        AtomicVaultAllocationResult::Existing { .. } | AtomicVaultAllocationResult::NotRequired => {
+            &[]
+        }
+    };
+    shared_operations
+        .iter()
+        .chain(vault_operations.iter())
+        .find(|operation| {
+            matches!(
+                operation.operation_state,
+                LookupTableOperationStatus::PermanentFailure
+                    | LookupTableOperationStatus::Cancelled
+            )
+        })
+}
+
 fn validate_lookup_table_family_bootstrap(
     family: &LookupTableFamilyRecord,
     input: &LookupTableFamilyUpsert,
@@ -2618,13 +2944,15 @@ async fn classify_active_vault_binding_in_connection(
 async fn load_cluster_budget_usage_in_connection(
     tx: &mut sqlx::PgConnection,
     cluster: &str,
-    operation_id: i64,
+    subject_kind: &str,
+    subject_id: i64,
     now: DateTime<Utc>,
 ) -> Result<ClusterBudgetUsage, OrchestratorError> {
     let row = sqlx::query(
         r#"
-        WITH per_operation AS (
-            SELECT operation.id,
+        WITH v2_per_operation AS (
+            SELECT 'operation'::TEXT AS subject_kind,
+                   operation.id AS subject_id,
                    COALESCE(sum(reservation.reserved_lamports), 0)::BIGINT
                        AS reserved_lamports,
                    (COALESCE(operation.actual_fee_lamports, 0)
@@ -2635,26 +2963,48 @@ async fn load_cluster_budget_usage_in_connection(
             JOIN loyal_yield.lookup_table_operations operation
               ON operation.id = reservation.operation_id
             WHERE reservation.cluster = $1
-              AND reservation.reserved_until > $3
+              AND reservation.reserved_until > $4
               AND operation.operation_state <> 'cancelled'
             GROUP BY operation.id, operation.actual_fee_lamports,
                      operation.actual_rent_lamports
+        ),
+        legacy_per_attempt AS (
+            SELECT 'legacy_cleanup'::TEXT AS subject_kind,
+                   attempt.id AS subject_id,
+                   COALESCE(sum(reservation.reserved_lamports), 0)::BIGINT
+                       AS reserved_lamports,
+                   0::BIGINT AS actual_lamports,
+                   min(reservation.reserved_until) AS window_ends_at
+            FROM loyal_yield.lookup_table_legacy_cleanup_budget_reservations reservation
+            JOIN loyal_yield.lookup_table_legacy_cleanup_attempts attempt
+              ON attempt.id = reservation.legacy_cleanup_attempt_id
+            WHERE reservation.cluster = $1
+              AND reservation.reserved_until > $4
+            GROUP BY attempt.id
+        ),
+        per_subject AS (
+            SELECT * FROM v2_per_operation
+            UNION ALL
+            SELECT * FROM legacy_per_attempt
         )
         SELECT COALESCE(sum(actual_lamports), 0)::BIGINT AS spent_lamports,
                COALESCE(sum(GREATEST(reserved_lamports - actual_lamports, 0)), 0)::BIGINT
                    AS reserved_lamports,
                COALESCE(sum(GREATEST(reserved_lamports, actual_lamports)), 0)::BIGINT
                    AS charged_lamports,
-               COALESCE(max(reserved_lamports) FILTER (WHERE id = $2), 0)::BIGINT
-                   AS operation_reserved_lamports,
-               COALESCE(max(actual_lamports) FILTER (WHERE id = $2), 0)::BIGINT
-                   AS operation_actual_lamports,
+               COALESCE(max(reserved_lamports) FILTER (
+                   WHERE subject_kind = $2 AND subject_id = $3
+               ), 0)::BIGINT AS subject_reserved_lamports,
+               COALESCE(max(actual_lamports) FILTER (
+                   WHERE subject_kind = $2 AND subject_id = $3
+               ), 0)::BIGINT AS subject_actual_lamports,
                min(window_ends_at) AS window_ends_at
-        FROM per_operation
+        FROM per_subject
         "#,
     )
     .bind(cluster)
-    .bind(operation_id)
+    .bind(subject_kind)
+    .bind(subject_id)
     .bind(now)
     .fetch_one(&mut *tx)
     .await?;
@@ -2662,8 +3012,8 @@ async fn load_cluster_budget_usage_in_connection(
         spent_lamports: row.try_get("spent_lamports")?,
         reserved_lamports: row.try_get("reserved_lamports")?,
         charged_lamports: row.try_get("charged_lamports")?,
-        operation_reserved_lamports: row.try_get("operation_reserved_lamports")?,
-        operation_actual_lamports: row.try_get("operation_actual_lamports")?,
+        subject_reserved_lamports: row.try_get("subject_reserved_lamports")?,
+        subject_actual_lamports: row.try_get("subject_actual_lamports")?,
         window_ends_at: row.try_get("window_ends_at")?,
     })
 }
@@ -2860,6 +3210,27 @@ impl NeonSqlClient {
         row.as_ref().map(reusable_lookup_table_from_row).transpose()
     }
 
+    /// Database-native v2 retirement inventory. The cleanup command uses this
+    /// separately from the immutable imported-legacy fleet and only enqueues
+    /// provisioner-owned lifecycle operations for these registered tables.
+    pub async fn registered_lookup_table_cleanup_inventory(
+        &self,
+        cluster: &str,
+    ) -> Result<Vec<ReusableLookupTableRecord>, OrchestratorError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT * FROM loyal_yield.route_lookup_tables
+            WHERE cluster = $1 AND family_id IS NOT NULL
+              AND desired_state IN ('retiring', 'deactivated', 'closed')
+            ORDER BY id
+            "#,
+        )
+        .bind(cluster)
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter().map(reusable_lookup_table_from_row).collect()
+    }
+
     pub async fn persist_lookup_table_manifest(
         &self,
         mut input: LookupTableManifestWrite,
@@ -3039,18 +3410,58 @@ impl NeonSqlClient {
             if current.catalog_version == input.catalog_version
                 && current.desired_set_hash == input.desired_set_hash
             {
-                if current.enabled_mints_hash != input.enabled_mints_hash
-                    || current.reserve_set_hash != input.reserve_set_hash
-                    || current.addresses != input.addresses
-                {
+                if current.addresses != input.addresses {
                     return Err(OrchestratorError::StoreInvariant(format!(
                         "shared-market catalog head {} has conflicting normalized identity",
                         current.catalog_revision_id
                     )));
                 }
-                tx.commit().await?;
-                return Ok(current.clone());
+                if current.enabled_mints_hash == input.enabled_mints_hash
+                    && current.reserve_set_hash == input.reserve_set_hash
+                {
+                    tx.commit().await?;
+                    return Ok(current.clone());
+                }
             }
+            if current.source_slot.is_some() && input.source_slot < current.source_slot {
+                return Err(OrchestratorError::StoreInvariant(format!(
+                    "shared-market catalog source slot regressed from {:?} to {:?}",
+                    current.source_slot, input.source_slot
+                )));
+            }
+        }
+        let in_flight_shared_mutation_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT count(*)::BIGINT
+            FROM loyal_yield.lookup_table_operations
+            WHERE family_id = $1
+              AND operation_kind IN ('create', 'extend', 'rollover')
+              AND operation_state NOT IN (
+                  'complete', 'permanent_failure', 'cancelled'
+              )
+            "#,
+        )
+        .bind(family.id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let active_shared_permit_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT count(*)::BIGINT
+            FROM loyal_yield.lookup_table_provisioner_broadcast_permits permit
+            JOIN loyal_yield.lookup_table_operations operation
+              ON operation.id = permit.operation_id
+            WHERE operation.family_id = $1 AND permit.resolved_at IS NULL
+            "#,
+        )
+        .bind(family.id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if current.is_some()
+            && (in_flight_shared_mutation_count != 0 || active_shared_permit_count != 0)
+        {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "shared-market catalog publication requires a drained family; found {in_flight_shared_mutation_count} nonterminal mutation(s) and {active_shared_permit_count} active broadcast permit(s)"
+            )));
         }
 
         let manifest = persist_lookup_table_manifest_in_tx(
@@ -3131,6 +3542,12 @@ impl NeonSqlClient {
             .execute(&mut *tx)
             .await?;
         }
+        cancel_superseded_unsigned_shared_market_operations_in_connection(
+            &mut tx,
+            family.id,
+            manifest.id,
+        )
+        .await?;
         let head = load_shared_market_catalog_head_in_connection(
             &mut tx,
             &input.cluster,
@@ -3242,216 +3659,10 @@ impl NeonSqlClient {
         &self,
         input: SharedMarketPhysicalDriftReport,
     ) -> Result<SharedMarketPhysicalDriftRecord, OrchestratorError> {
-        if input.cluster.trim().is_empty()
-            || input.reason.trim().is_empty()
-            || input.reported_by.trim().is_empty()
-            || input.observed_slot < 0
-            || input.expected_mutation_epoch < 0
-            || input
-                .observed_last_extended_slot
-                .is_some_and(|slot| slot < 0)
-            || input.observed_addresses.len() > usize::from(LOOKUP_TABLE_HARD_CAPACITY)
-            || (!input.observed_table_present
-                && (input.observed_authority.is_some()
-                    || input.observed_active
-                    || input.observed_last_extended_slot.is_some()
-                    || input.observed_warm
-                    || !input.observed_addresses.is_empty()))
-            || (input.observed_warm && input.observed_last_extended_slot.is_none())
-        {
-            return Err(OrchestratorError::StoreInvariant(
-                "shared-market physical drift report is malformed".to_owned(),
-            ));
-        }
-        let mut observed_seen = BTreeSet::new();
-        if input
-            .observed_addresses
-            .iter()
-            .any(|address| !observed_seen.insert(address) || Pubkey::from_str(address).is_err())
-        {
-            return Err(OrchestratorError::StoreInvariant(
-                "shared-market physical drift addresses must be valid, unique pubkeys in finalized order"
-                    .to_owned(),
-            ));
-        }
-        let observed_hash = ordered_address_hash(&input.observed_addresses);
+        let observed_hash = validate_shared_market_physical_drift_report(&input)?;
         let mut tx = self.pool().begin().await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('shared-alt-drift:' || $1, 0))")
-            .bind(&input.cluster)
-            .execute(&mut *tx)
-            .await?;
-        let catalog = load_shared_market_catalog_head_in_connection(
-            &mut tx,
-            &input.cluster,
-            SharedMarketCatalogHeadLock::Update,
-        )
-        .await?
-        .ok_or_else(|| {
-            OrchestratorError::StoreInvariant(
-                "shared-market physical drift has no current catalog head".to_owned(),
-            )
-        })?;
-        if catalog.catalog_revision_id != input.catalog_revision_id
-            || catalog.family_id != input.family_id
-            || catalog.readiness_state != SharedMarketCatalogReadiness::Active
-            || catalog.active_generation != catalog.target_generation
-        {
-            return Err(OrchestratorError::StoreInvariant(
-                "shared-market physical drift report lost its active catalog fence".to_owned(),
-            ));
-        }
-        let table_row = sqlx::query(
-            r#"
-            SELECT * FROM loyal_yield.route_lookup_tables
-            WHERE id = $1 AND family_id = $2 AND generation = $3
-              AND allocation_kind = 'shared_market'
-            FOR UPDATE
-            "#,
-        )
-        .bind(input.route_lookup_table_id)
-        .bind(input.family_id)
-        .bind(catalog.active_generation)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| {
-            stale_store_update("shared-market physical table", input.route_lookup_table_id)
-        })?;
-        let table = reusable_lookup_table_from_row(&table_row)?;
-        if table.cluster != input.cluster
-            || table.table_address != input.expected_table_address
-            || table.authority != input.expected_authority
-            || table.mutation_epoch != input.expected_mutation_epoch
-        {
-            return Err(OrchestratorError::StoreInvariant(
-                "shared-market physical drift report lost its table/mutation fence".to_owned(),
-            ));
-        }
-        let expected_addresses = sqlx::query_scalar::<_, String>(
-            r#"
-            SELECT address FROM loyal_yield.lookup_table_addresses
-            WHERE route_lookup_table_id = $1 ORDER BY ordinal
-            "#,
-        )
-        .bind(table.id)
-        .fetch_all(&mut *tx)
-        .await?;
-        let is_drift = !input.observed_table_present
-            || input.observed_authority.as_deref() != Some(table.authority.as_str())
-            || !input.observed_active
-            || !input.observed_warm
-            || input.observed_addresses != expected_addresses
-            || input.observed_addresses
-                != catalog
-                    .addresses
-                    .iter()
-                    .map(|row| row.address.clone())
-                    .collect::<Vec<_>>();
-        if !is_drift {
-            return Err(OrchestratorError::StoreInvariant(
-                "shared-market physical drift report matches the exact active catalog".to_owned(),
-            ));
-        }
-        let observed_present = input.observed_table_present.to_string();
-        let observed_active = input.observed_active.to_string();
-        let observed_last_extended_slot = input
-            .observed_last_extended_slot
-            .map(|slot| slot.to_string())
-            .unwrap_or_default();
-        let observed_warm = input.observed_warm.to_string();
-        let observed_slot = input.observed_slot.to_string();
-        let expected_epoch = input.expected_mutation_epoch.to_string();
-        let evidence_hash = hash_length_prefixed_values(
-            [
-                input.cluster.as_str(),
-                &input.catalog_revision_id.to_string(),
-                &input.family_id.to_string(),
-                &input.route_lookup_table_id.to_string(),
-                expected_epoch.as_str(),
-                input.expected_table_address.as_str(),
-                input.expected_authority.as_str(),
-                observed_slot.as_str(),
-                observed_present.as_str(),
-                input.observed_authority.as_deref().unwrap_or(""),
-                observed_active.as_str(),
-                observed_last_extended_slot.as_str(),
-                observed_warm.as_str(),
-                observed_hash.as_str(),
-                input.reason.as_str(),
-                input.reported_by.as_str(),
-            ]
-            .into_iter()
-            .chain(input.observed_addresses.iter().map(String::as_str)),
-        );
-        let observed_json = serde_json::to_value(&input.observed_addresses).map_err(|error| {
-            OrchestratorError::StoreInvariant(format!(
-                "shared-market physical drift addresses cannot be serialized: {error}"
-            ))
-        })?;
-        let inserted_id = sqlx::query_scalar::<_, i64>(
-            r#"
-            INSERT INTO loyal_yield.lookup_table_shared_market_physical_drifts
-                (evidence_hash, cluster, family_id, catalog_revision_id,
-                 route_lookup_table_id, expected_mutation_epoch,
-                 expected_table_address, expected_authority, observed_slot,
-                 observed_table_present, observed_authority, observed_active,
-                 observed_last_extended_slot, observed_warm,
-                 observed_address_hash, observed_addresses, reason, reported_by)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                    $13, $14, $15, $16, $17, $18)
-            ON CONFLICT (evidence_hash) DO NOTHING
-            RETURNING id
-            "#,
-        )
-        .bind(&evidence_hash)
-        .bind(&input.cluster)
-        .bind(input.family_id)
-        .bind(input.catalog_revision_id)
-        .bind(input.route_lookup_table_id)
-        .bind(input.expected_mutation_epoch)
-        .bind(&input.expected_table_address)
-        .bind(&input.expected_authority)
-        .bind(input.observed_slot)
-        .bind(input.observed_table_present)
-        .bind(&input.observed_authority)
-        .bind(input.observed_active)
-        .bind(input.observed_last_extended_slot)
-        .bind(input.observed_warm)
-        .bind(&observed_hash)
-        .bind(observed_json)
-        .bind(&input.reason)
-        .bind(&input.reported_by)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let drift_id = if let Some(id) = inserted_id {
-            id
-        } else {
-            sqlx::query_scalar::<_, i64>(
-                "SELECT id FROM loyal_yield.lookup_table_shared_market_physical_drifts WHERE evidence_hash = $1",
-            )
-            .bind(&evidence_hash)
-            .fetch_one(&mut *tx)
-            .await?
-        };
-        sqlx::query(
-            r#"
-            UPDATE loyal_yield.lookup_table_shared_market_catalog_heads
-            SET readiness_state = 'provisioning', activated_at = NULL,
-                updated_at = now()
-            WHERE family_id = $1 AND catalog_revision_id = $2
-              AND target_generation IS NOT NULL
-            "#,
-        )
-        .bind(input.family_id)
-        .bind(input.catalog_revision_id)
-        .execute(&mut *tx)
-        .await?;
-        let row = sqlx::query(
-            "SELECT * FROM loyal_yield.lookup_table_shared_market_physical_drifts WHERE id = $1",
-        )
-        .bind(drift_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        let drift = shared_market_physical_drift_from_row(&row)?;
+        let drift =
+            report_shared_market_physical_drift_in_tx(&mut tx, &input, &observed_hash).await?;
         tx.commit().await?;
         Ok(drift)
     }
@@ -3576,6 +3787,10 @@ mod reusable_alt_tests {
         values.iter().map(|value| (*value).to_owned()).collect()
     }
 
+    fn ordered_addresses(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
     fn packed_policy() -> PackedShardPolicy {
         PackedShardPolicy {
             hard_capacity: 16,
@@ -3666,20 +3881,78 @@ mod reusable_alt_tests {
 
     #[test]
     fn reusable_alt_rollover_target_continues_with_bounded_suffix_extensions() {
-        let desired = addresses(&["a", "b", "c", "d"]);
-        let confirmed = addresses(&["a", "b"]);
+        let desired = ordered_addresses(&["a", "b", "c", "d"]);
+        let confirmed = ordered_addresses(&["a", "b"]);
         let (kind, missing) =
-            next_shared_market_mutation(true, &desired, &confirmed, &BTreeSet::new(), 1).unwrap();
+            next_shared_market_mutation(true, &desired, &confirmed, &[], 1).unwrap();
         assert_eq!(kind, LookupTableOperationKind::Extend);
         assert_eq!(missing, vec!["c".to_owned()]);
-        assert!(
-            next_shared_market_mutation(true, &desired, &confirmed, &addresses(&["c"]), 1,)
-                .is_none()
-        );
-        let (kind, _) =
-            next_shared_market_mutation(false, &desired, &BTreeSet::new(), &BTreeSet::new(), 1)
-                .unwrap();
+        assert!(next_shared_market_mutation(
+            true,
+            &desired,
+            &confirmed,
+            &ordered_addresses(&["c"]),
+            1,
+        )
+        .is_none());
+        let (kind, _) = next_shared_market_mutation(false, &desired, &[], &[], 1).unwrap();
         assert_eq!(kind, LookupTableOperationKind::Create);
+    }
+
+    #[test]
+    fn reusable_alt_shared_order_requires_an_exact_prefix() {
+        let desired = ordered_addresses(&["a", "b", "c"]);
+        assert!(ordered_confirmed_and_pending_match(
+            &ordered_addresses(&["a"]),
+            &ordered_addresses(&["b"]),
+            &desired,
+        ));
+        assert!(!ordered_confirmed_and_pending_match(
+            &ordered_addresses(&["b", "c"]),
+            &[],
+            &desired,
+        ));
+        assert!(!ordered_confirmed_and_pending_match(
+            &ordered_addresses(&["a", "c"]),
+            &[],
+            &desired,
+        ));
+        assert!(next_shared_market_mutation(
+            true,
+            &desired,
+            &ordered_addresses(&["b", "c"]),
+            &[],
+            1,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn reusable_alt_shared_insertion_before_existing_prefix_forces_replacement() {
+        let original = ordered_addresses(&["b", "c"]);
+        let inserted_before = ordered_addresses(&["a", "b", "c"]);
+        let removed_or_reordered = ordered_addresses(&["c"]);
+        assert!(!ordered_confirmed_and_pending_match(
+            &original,
+            &[],
+            &inserted_before,
+        ));
+        assert!(!ordered_confirmed_and_pending_match(
+            &original,
+            &[],
+            &removed_or_reordered,
+        ));
+    }
+
+    #[test]
+    fn reusable_alt_shared_append_stable_catalog_extends_same_generation() {
+        let confirmed = ordered_addresses(&["b", "c"]);
+        let append_stable_catalog = ordered_addresses(&["b", "c", "a"]);
+        let (kind, missing) =
+            next_shared_market_mutation(true, &append_stable_catalog, &confirmed, &[], 20)
+                .expect("append-stable catalog should extend its durable physical prefix");
+        assert_eq!(kind, LookupTableOperationKind::Extend);
+        assert_eq!(missing, vec!["a".to_owned()]);
     }
 
     #[test]
@@ -3729,6 +4002,32 @@ mod reusable_alt_tests {
             PackedVaultAllocation::ReserveExistingShard {
                 table_id: 10,
                 reservation_delta: 0,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn reusable_alt_allocator_best_fits_equal_overlap_into_fuller_shard() {
+        let fuller = packed_candidate();
+        let mut emptier = fuller.clone();
+        emptier.table_id = 20;
+        emptier.shard_index = 1;
+        emptier.reserved_address_count = 2;
+        emptier.bound_vault_count = 0;
+
+        let allocation = allocate_packed_vault_manifest(
+            &allocation_request(),
+            &[emptier, fuller],
+            packed_policy(),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            allocation,
+            PackedVaultAllocation::ReserveExistingShard {
+                table_id: 10,
+                projected_capacity_commitment: 10,
                 ..
             }
         ));
@@ -3799,6 +4098,7 @@ mod reusable_alt_tests {
             kind: LookupTableOperationKind::Extend,
             generation: 2,
             shard_index: 0,
+            mutation_epoch: 0,
             desired_address_hash: "manifest".to_owned(),
             addresses: vec!["b".to_owned(), "a".to_owned(), "a".to_owned()],
         };
@@ -3806,6 +4106,9 @@ mod reusable_alt_tests {
         first.addresses.reverse();
         assert_eq!(first_key, first.idempotency_key());
         first.desired_address_hash = "changed".to_owned();
+        assert_ne!(first_key, first.idempotency_key());
+        first.desired_address_hash = "manifest".to_owned();
+        first.mutation_epoch = 1;
         assert_ne!(first_key, first.idempotency_key());
     }
 
@@ -3872,6 +4175,40 @@ mod reusable_alt_tests {
             LookupTableReconciliationDecision::NeedsManualReconcile {
                 reason: "lookup-table verification did not find the expected finalized table state",
             }
+        );
+    }
+
+    #[test]
+    fn reusable_alt_finalized_signature_waits_for_a_nonstale_physical_context() {
+        let stale_physical_observation = LookupTableReconciliationObservation {
+            operation_kind: LookupTableOperationKind::Extend,
+            persisted_status: LookupTableOperationStatus::Submitted,
+            signature_state: LookupTableSignatureState::Finalized,
+            chain_state: LookupTableChainState::Missing,
+            chain_observed_finalized: false,
+            blockhash_expired: true,
+            usable_after_slot_reached: true,
+        };
+        assert_eq!(
+            reconcile_lookup_table_operation(&stale_physical_observation),
+            LookupTableReconciliationDecision::WaitForFinalization
+        );
+        let stale_prefix = LookupTableReconciliationObservation {
+            chain_state: LookupTableChainState::PrefixDrift,
+            ..stale_physical_observation.clone()
+        };
+        assert_eq!(
+            reconcile_lookup_table_operation(&stale_prefix),
+            LookupTableReconciliationDecision::WaitForFinalization
+        );
+        let caught_up = LookupTableReconciliationObservation {
+            chain_state: LookupTableChainState::ExactMatch,
+            chain_observed_finalized: true,
+            ..stale_physical_observation
+        };
+        assert_eq!(
+            reconcile_lookup_table_operation(&caught_up),
+            LookupTableReconciliationDecision::AdvanceTo(LookupTableOperationStatus::Reconciled)
         );
     }
 
@@ -4474,6 +4811,22 @@ impl NeonSqlClient {
                         table,
                         persisted_addresses,
                     } => {
+                        if let Some(operation) = terminal_lookup_table_binding_operation_in_tx(
+                            tx,
+                            binding.id,
+                            request.manifest_id,
+                            table.id,
+                        )
+                        .await?
+                        {
+                            return Ok(AtomicVaultAllocationResult::BindingReserved {
+                                allocation: PackedVaultAllocation::KeepExisting {
+                                    table_id: table.id,
+                                },
+                                binding: binding.clone(),
+                                operations: vec![operation],
+                            });
+                        }
                         let pending_rows = sqlx::query(
                             r#"
                             SELECT * FROM loyal_yield.lookup_table_operations
@@ -4562,6 +4915,24 @@ impl NeonSqlClient {
             .first()
             .map(lookup_table_binding_from_row)
             .transpose()?;
+        if let Some(binding) = &current_reservation {
+            if let Some(operation) = terminal_lookup_table_binding_operation_in_tx(
+                tx,
+                binding.id,
+                request.manifest_id,
+                binding.route_lookup_table_id,
+            )
+            .await?
+            {
+                return Ok(AtomicVaultAllocationResult::BindingReserved {
+                    allocation: PackedVaultAllocation::KeepExisting {
+                        table_id: binding.route_lookup_table_id,
+                    },
+                    binding: binding.clone(),
+                    operations: vec![operation],
+                });
+            }
+        }
 
         let physical_rows = sqlx::query(
             r#"
@@ -4775,6 +5146,7 @@ impl NeonSqlClient {
                 kind: reservation.operation_kind,
                 generation: reservation.generation,
                 shard_index: reservation.shard_ordinal,
+                mutation_epoch: table.mutation_epoch,
                 desired_address_hash: desired_set_hash.clone(),
                 addresses: chunk.clone(),
             };
@@ -4901,6 +5273,7 @@ impl NeonSqlClient {
                 kind: LookupTableOperationKind::Extend,
                 generation: table.generation,
                 shard_index: table.shard_ordinal,
+                mutation_epoch: table.mutation_epoch,
                 desired_address_hash: desired_set_hash,
                 addresses: chunk.clone(),
             };
@@ -5384,13 +5757,31 @@ impl NeonSqlClient {
             pending_operation_count,
             &vault_allocation,
         );
+        let terminal_operation =
+            terminal_provisioning_operation(&shared_operations, &vault_allocation);
+        let terminal_error_detail = terminal_operation.map(|operation| {
+            format!(
+                "lookup-table operation {} reached terminal state {} and requires operator repair",
+                operation.id, operation.operation_state
+            )
+        });
+        let queued_retry_at = Utc::now() + chrono::Duration::seconds(5);
         let request_row = sqlx::query(
             r#"
             UPDATE loyal_yield.lookup_table_provisioning_requests
-            SET request_status = CASE WHEN $4 THEN 'satisfied' ELSE 'queued' END,
-                satisfied_at = CASE WHEN $4 THEN now() ELSE satisfied_at END,
-                lease_owner = NULL,
-                lease_expires_at = NULL, error_code = NULL, error_detail = NULL,
+            SET request_status = CASE
+                    WHEN $5::BOOLEAN THEN 'failed'
+                    WHEN $4::BOOLEAN THEN 'satisfied'
+                    ELSE 'queued'
+                END,
+                satisfied_at = CASE WHEN $4 AND NOT $5 THEN now() ELSE satisfied_at END,
+                next_attempt_at = CASE
+                    WHEN $5 OR $4 THEN NULL
+                    ELSE $7
+                END,
+                lease_owner = NULL, lease_expires_at = NULL,
+                error_code = CASE WHEN $5 THEN 'terminal_lookup_table_operation' ELSE NULL END,
+                error_detail = CASE WHEN $5 THEN $6 ELSE NULL END,
                 updated_at = now()
             WHERE id = $1 AND request_status = 'planning'
               AND lease_owner = $2 AND fencing_token = $3
@@ -5401,6 +5792,9 @@ impl NeonSqlClient {
         .bind(&lease.owner)
         .bind(lease.fencing_token)
         .bind(request_satisfied)
+        .bind(terminal_operation.is_some())
+        .bind(terminal_error_detail)
+        .bind(queued_retry_at)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| {
@@ -5464,68 +5858,32 @@ impl NeonSqlClient {
                 catalog.addresses.len()
             )));
         }
-        let cohorts = vec![SharedMarketRouteCohort {
-            cohort_key: format!("catalog:{}", catalog.catalog_revision_id),
+        // The shared catalog is deliberately one durable ALT. Its approved
+        // order is append-stable across revisions, so preserve that order
+        // exactly instead of routing it through the generic BTreeSet shard
+        // planner (which would turn a lexicographically earlier discovery into
+        // a needless replacement generation).
+        let shard_plan = vec![SharedMarketShardPlan {
+            shard_ordinal: 0,
             addresses: catalog
                 .addresses
                 .iter()
                 .map(|row| row.address.clone())
                 .collect(),
         }];
-        let shard_plan =
-            plan_shared_market_shards(&cohorts, shard_capacity).map_err(domain_store_error)?;
-        let active_generation = family.active_generation.unwrap_or_default();
-        let physical_rows = sqlx::query(
-            r#"
-            SELECT * FROM loyal_yield.route_lookup_tables
-            WHERE family_id = $1 AND generation = $2
-              AND allocation_kind = 'shared_market'
-              AND desired_state NOT IN ('deactivated', 'closed', 'failed')
-            ORDER BY shard_ordinal FOR UPDATE
-            "#,
+        // Signed work keeps its identity and may only be reconciled; the
+        // before-sign and before-broadcast head fences prevent it from
+        // mutating a newer catalog revision.
+        cancel_superseded_unsigned_shared_market_operations_in_connection(
+            tx,
+            family_id,
+            catalog.manifest_id,
         )
-        .bind(family_id)
-        .bind(active_generation)
-        .fetch_all(&mut *tx)
         .await?;
-        let mut physical = physical_rows
-            .iter()
-            .map(reusable_lookup_table_from_row)
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut confirmed = BTreeMap::<i32, BTreeSet<String>>::new();
-        let mut pending = BTreeMap::<i32, BTreeSet<String>>::new();
-        for table in &physical {
-            confirmed.insert(
-                table.shard_ordinal,
-                sqlx::query_scalar::<_, String>(
-                    "SELECT address FROM loyal_yield.lookup_table_addresses WHERE route_lookup_table_id = $1 ORDER BY ordinal",
-                )
-                .bind(table.id)
-                .fetch_all(&mut *tx)
-                .await?
-                .into_iter()
-                .collect(),
-            );
-            pending.insert(
-                table.shard_ordinal,
-                sqlx::query_scalar::<_, String>(
-                    r#"
-                    SELECT address.address
-                    FROM loyal_yield.lookup_table_operations operation
-                    JOIN loyal_yield.lookup_table_operation_addresses address
-                      ON address.operation_id = operation.id
-                    WHERE operation.route_lookup_table_id = $1
-                      AND operation.operation_state NOT IN ('complete', 'permanent_failure', 'cancelled')
-                    ORDER BY address.ordinal
-                    "#,
-                )
-                .bind(table.id)
-                .fetch_all(&mut *tx)
-                .await?
-                .into_iter()
-                .collect(),
-            );
-        }
+
+        let active_generation = family.active_generation.unwrap_or_default();
+        let mut planning_state =
+            load_shared_market_generation_planning_state(tx, family_id, active_generation).await?;
         let has_open_physical_drift: bool = sqlx::query_scalar(
             r#"
             SELECT EXISTS (
@@ -5546,96 +5904,88 @@ impl NeonSqlClient {
         .fetch_one(&mut *tx)
         .await?;
         let requires_rollover = has_open_physical_drift
-            || physical.len() > shard_plan.len()
-            || physical.iter().any(|table| {
-                let desired = shard_plan
-                    .get(table.shard_ordinal as usize)
-                    .map(|shard| shard.addresses.iter().cloned().collect::<BTreeSet<_>>())
-                    .unwrap_or_default();
-                !confirmed
-                    .get(&table.shard_ordinal)
-                    .cloned()
-                    .unwrap_or_default()
-                    .is_subset(&desired)
-            });
-        let target_generation = if requires_rollover {
-            active_generation.saturating_add(1)
-        } else {
-            active_generation
-        };
+            || !shared_market_generation_is_order_compatible(&planning_state, &shard_plan);
+        let mut target_generation = active_generation;
         if requires_rollover {
-            let target_rows = sqlx::query(
+            let max_generation: i32 = sqlx::query_scalar(
                 r#"
-                SELECT * FROM loyal_yield.route_lookup_tables
-                WHERE family_id = $1 AND generation = $2
-                  AND allocation_kind = 'shared_market'
-                  AND desired_state NOT IN ('deactivated', 'closed', 'failed')
-                ORDER BY shard_ordinal FOR UPDATE
+                SELECT COALESCE(max(generation), -1)::INTEGER
+                FROM loyal_yield.route_lookup_tables
+                WHERE family_id = $1 AND generation IS NOT NULL
                 "#,
             )
             .bind(family_id)
-            .bind(target_generation)
-            .fetch_all(&mut *tx)
+            .fetch_one(&mut *tx)
             .await?;
-            physical = target_rows
-                .iter()
-                .map(reusable_lookup_table_from_row)
-                .collect::<Result<Vec<_>, _>>()?;
-            confirmed.clear();
-            pending.clear();
-            for table in &physical {
-                confirmed.insert(
-                    table.shard_ordinal,
-                    sqlx::query_scalar::<_, String>(
-                        "SELECT address FROM loyal_yield.lookup_table_addresses WHERE route_lookup_table_id = $1 ORDER BY ordinal",
+            let planned_candidate = catalog
+                .target_generation
+                .filter(|generation| *generation != active_generation);
+            if let Some(candidate_generation) = planned_candidate {
+                let candidate_state = load_shared_market_generation_planning_state(
+                    tx,
+                    family_id,
+                    candidate_generation,
+                )
+                .await?;
+                if candidate_state.all_table_count
+                    == i64::try_from(candidate_state.physical.len()).unwrap_or(-1)
+                    && shared_market_generation_is_order_compatible(&candidate_state, &shard_plan)
+                {
+                    target_generation = candidate_generation;
+                    planning_state = candidate_state;
+                } else {
+                    target_generation = max_generation.checked_add(1).ok_or_else(|| {
+                        OrchestratorError::StoreInvariant(
+                            "shared-market generation counter overflowed".to_owned(),
+                        )
+                    })?;
+                    planning_state = SharedMarketGenerationPlanningState::empty();
+                }
+            } else {
+                // A newly published head deliberately skips every old partial
+                // successor. Reusing active+1 can append an obsolete catalog
+                // after an A -> B head change, so allocate strictly above the
+                // complete historical generation range.
+                target_generation = max_generation.checked_add(1).ok_or_else(|| {
+                    OrchestratorError::StoreInvariant(
+                        "shared-market generation counter overflowed".to_owned(),
                     )
-                    .bind(table.id)
-                    .fetch_all(&mut *tx)
-                    .await?
-                    .into_iter()
-                    .collect(),
-                );
-                pending.insert(
-                    table.shard_ordinal,
-                    sqlx::query_scalar::<_, String>(
-                        r#"
-                        SELECT address.address
-                        FROM loyal_yield.lookup_table_operations operation
-                        JOIN loyal_yield.lookup_table_operation_addresses address
-                          ON address.operation_id = operation.id
-                        WHERE operation.route_lookup_table_id = $1
-                          AND operation.operation_state NOT IN ('complete', 'permanent_failure', 'cancelled')
-                        ORDER BY address.ordinal
-                        "#,
-                    )
-                    .bind(table.id)
-                    .fetch_all(&mut *tx)
-                    .await?
-                    .into_iter()
-                    .collect(),
-                );
+                })?;
+                planning_state = SharedMarketGenerationPlanningState::empty();
             }
         }
         let mut operations = Vec::new();
         for shard in shard_plan {
-            let existing_table = physical
+            let existing_table = planning_state
+                .physical
                 .iter()
                 .find(|table| table.shard_ordinal == shard.shard_ordinal)
                 .cloned();
-            let desired = shard.addresses.iter().cloned().collect::<BTreeSet<_>>();
             let confirmed_addresses = existing_table
                 .as_ref()
-                .and_then(|table| confirmed.get(&table.shard_ordinal))
+                .and_then(|table| planning_state.confirmed.get(&table.shard_ordinal))
                 .cloned()
                 .unwrap_or_default();
             let pending_addresses = existing_table
                 .as_ref()
-                .and_then(|table| pending.get(&table.shard_ordinal))
+                .and_then(|table| planning_state.pending.get(&table.shard_ordinal))
                 .cloned()
                 .unwrap_or_default();
+            let nonterminal_operation_count = existing_table
+                .as_ref()
+                .and_then(|table| {
+                    planning_state
+                        .nonterminal_operation_count
+                        .get(&table.shard_ordinal)
+                })
+                .copied()
+                .unwrap_or_default();
+            if nonterminal_operation_count != 0 {
+                continue;
+            }
             let Some((kind, missing)) = next_shared_market_mutation(
                 existing_table.is_some(),
-                &desired,
+                &shard.addresses,
                 &confirmed_addresses,
                 &pending_addresses,
                 max_extension_addresses,
@@ -5665,6 +6015,7 @@ impl NeonSqlClient {
                 kind,
                 generation: target_generation,
                 shard_index: shard.shard_ordinal,
+                mutation_epoch: table.mutation_epoch,
                 desired_address_hash: shard_hash,
                 addresses: missing.clone(),
             };
@@ -6904,6 +7255,134 @@ impl NeonSqlClient {
             .collect()
     }
 
+    /// Returns the immutable imported legacy fleet that cleanup must account
+    /// for, including rows whose physical ALT has already been closed. This is
+    /// deliberately a database inventory rather than an ALT-program scan: the
+    /// import run and per-table evidence are the durable boundary, while RPC is
+    /// used later to verify the current finalized lifecycle of every member.
+    pub async fn imported_legacy_lookup_table_cleanup_fleet(
+        &self,
+        cluster: &str,
+    ) -> Result<Vec<ImportedLegacyLookupTableCleanupRecord>, OrchestratorError> {
+        if cluster.trim().is_empty() {
+            return Err(OrchestratorError::StoreInvariant(
+                "legacy cleanup fleet requires a cluster".to_owned(),
+            ));
+        }
+        let expected_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT count(*)
+            FROM loyal_yield.route_lookup_tables
+            WHERE cluster = $1 AND family_id IS NULL
+              AND legacy_import_run_id IS NOT NULL
+            "#,
+        )
+        .bind(cluster)
+        .fetch_one(self.pool())
+        .await?;
+        let rows = sqlx::query(
+            r#"
+            SELECT table_record.id, table_record.cluster, table_record.scope,
+                   table_record.table_address, table_record.authority,
+                   table_record.status, table_record.durable,
+                   table_record.address_count, table_record.address_hash,
+                   table_record.addresses, table_record.legacy_kind,
+                   table_record.legacy_import_run_id,
+                   table_record.last_extended_slot,
+                   table_record.last_extended_start_index,
+                   table_record.last_verified_slot,
+                   table_record.last_verified_at,
+                   table_record.deactivated_slot,
+                   table_record.deactivate_signature,
+                   table_record.closed_signature,
+                   table_record.close_recipient,
+                   table_record.reclaimed_lamports,
+                   import_run.cluster AS import_cluster,
+                   import_run.legacy_kind AS import_legacy_kind,
+                   import_run.import_fingerprint,
+                   import_run.verified_slot AS import_verified_slot,
+                   evidence.table_address AS evidence_table_address,
+                   evidence.scope AS evidence_scope,
+                   evidence.expected_authority AS evidence_expected_authority,
+                   evidence.observed_authority AS evidence_observed_authority,
+                   evidence.observed_owner AS evidence_observed_owner,
+                   evidence.address_count AS evidence_address_count,
+                   evidence.address_hash AS evidence_address_hash,
+                   evidence.addresses AS evidence_addresses,
+                   evidence.verified_slot AS evidence_verified_slot
+            FROM loyal_yield.route_lookup_tables table_record
+            JOIN loyal_yield.lookup_table_legacy_import_runs import_run
+              ON import_run.id = table_record.legacy_import_run_id
+            JOIN loyal_yield.lookup_table_legacy_import_evidence evidence
+              ON evidence.import_run_id = table_record.legacy_import_run_id
+             AND evidence.route_lookup_table_id = table_record.id
+            WHERE table_record.cluster = $1
+              AND table_record.family_id IS NULL
+              AND table_record.legacy_import_run_id IS NOT NULL
+            ORDER BY table_record.id
+            "#,
+        )
+        .bind(cluster)
+        .fetch_all(self.pool())
+        .await?;
+        if i64::try_from(rows.len()).ok() != Some(expected_count) {
+            return Err(OrchestratorError::StoreInvariant(
+                "imported legacy cleanup fleet is missing immutable import evidence".to_owned(),
+            ));
+        }
+        rows.iter()
+            .map(|row| {
+                let source = legacy_lookup_table_import_source_from_row(row)?;
+                let evidence_addresses =
+                    serde_json::from_value::<Vec<String>>(row.try_get("evidence_addresses")?)
+                        .map_err(|error| {
+                            OrchestratorError::StoreInvariant(format!(
+                                "legacy cleanup import evidence addresses are invalid: {error}"
+                            ))
+                        })?;
+                let import_fingerprint: String = row.try_get("import_fingerprint")?;
+                let import_verified_slot: i64 = row.try_get("import_verified_slot")?;
+                let legacy_kind = source.legacy_kind.ok_or_else(|| {
+                    OrchestratorError::StoreInvariant(
+                        "imported legacy cleanup row has no legacy kind".to_owned(),
+                    )
+                })?;
+                let identity_matches = source.cluster == cluster
+                    && source.familyless_import_identity_is_valid()
+                    && row.try_get::<String, _>("import_cluster")? == cluster
+                    && row.try_get::<String, _>("import_legacy_kind")? == legacy_kind.as_str()
+                    && is_sha256_hex(&import_fingerprint)
+                    && import_verified_slot >= 0
+                    && row.try_get::<String, _>("evidence_table_address")? == source.table_address
+                    && row.try_get::<String, _>("evidence_scope")? == source.scope
+                    && row.try_get::<String, _>("evidence_expected_authority")? == source.authority
+                    && row.try_get::<String, _>("evidence_observed_authority")? == source.authority
+                    && row.try_get::<String, _>("evidence_observed_owner")?
+                        == address_lookup_table_program::id().to_string()
+                    && row.try_get::<i32, _>("evidence_address_count")? == source.address_count
+                    && row.try_get::<String, _>("evidence_address_hash")? == source.address_hash
+                    && evidence_addresses == source.addresses
+                    && row.try_get::<i64, _>("evidence_verified_slot")? == import_verified_slot;
+                if !identity_matches {
+                    return Err(OrchestratorError::StoreInvariant(format!(
+                        "imported legacy cleanup identity drifted for {}",
+                        source.table_address
+                    )));
+                }
+                Ok(ImportedLegacyLookupTableCleanupRecord {
+                    source,
+                    import_fingerprint,
+                    import_verified_slot,
+                    deactivated_slot: row.try_get("deactivated_slot")?,
+                    deactivate_signature: row.try_get("deactivate_signature")?,
+                    closed_signature: row.try_get("closed_signature")?,
+                    close_recipient: row.try_get("close_recipient")?,
+                    reclaimed_lamports: row.try_get("reclaimed_lamports")?,
+                })
+            })
+            .collect()
+    }
+
     /// Persists a successful fleet verification in one transaction. The RPC
     /// phase happens before this method is called; this transaction locks and
     /// rechecks the entire eligible fleet so a concurrent registry change
@@ -7394,198 +7873,380 @@ impl NeonSqlClient {
         Ok(retirement)
     }
 
-    pub async fn upsert_lookup_table_provisioning_request(
+    /// Exercises the production drift reporter and provisioning-request
+    /// upsert against production-connected state without loading a signer or
+    /// committing demand. All exercised writes share one repeatable-read
+    /// transaction, are rolled back to a savepoint, and only the immutable
+    /// PASS audit row commits while the exact paused control row remains
+    /// locked.
+    pub async fn run_lookup_table_precutover_probe(
         &self,
-        mut input: LookupTableProvisioningRequestUpsert,
-    ) -> Result<LookupTableProvisioningRequestRecord, OrchestratorError> {
-        if input.shared_manifest_id.is_none()
-            && input
-                .desired_shared_hash
-                .as_deref()
-                .unwrap_or_default()
-                .is_empty()
-            || input.vault_manifest_id.is_none()
-                && input
-                    .desired_vault_hash
-                    .as_deref()
-                    .unwrap_or_default()
-                    .is_empty()
+        mut input: LookupTablePrecutoverProbe,
+    ) -> Result<LookupTablePrecutoverProbeRecord, OrchestratorError> {
+        if !is_sha256_hex(&input.probe_token)
+            || input.provisioner_control_epoch < 0
+            || input.finalized_slot < 0
+            || input.finalized_addresses.is_empty()
+            || input.finalized_addresses.len() > usize::from(LOOKUP_TABLE_HARD_CAPACITY)
+            || input.provisioning_request.vault_id.as_i64() <= 0
+            || !is_sha256_hex(&input.provisioning_request.requirements_fingerprint)
+            || input.drift_report.observed_slot != input.finalized_slot
+            || !input.drift_report.observed_table_present
+            || !input.drift_report.observed_active
+            || !input.drift_report.observed_warm
+            || input.drift_report.observed_authority.is_none()
+            || input.drift_report.observed_last_extended_slot.is_none()
+            || input.drift_report.reason
+                != format!("precutover-probe-synthetic-drift:{}", input.probe_token)
+            || input.drift_report.reported_by != "route-lookup-table-provisioner:precutover-probe"
+            || input.provisioning_request.cluster != input.drift_report.cluster
+            || input.provisioning_request.shared_manifest_id.is_none()
+            || input.provisioning_request.vault_manifest_id.is_some()
+            || !input.provisioning_request.shared_addresses.is_empty()
+            || input.provisioning_request.vault_addresses.len() != 1
         {
             return Err(OrchestratorError::StoreInvariant(
-                "provisioning request requires shared and vault manifest identity".to_owned(),
+                "pre-cutover probe input is malformed or not signerless synthetic demand"
+                    .to_owned(),
             ));
         }
-        input
-            .shared_addresses
-            .sort_by_key(|address| address.ordinal);
-        input.vault_addresses.sort_by_key(|address| address.ordinal);
-        validate_request_addresses(
-            &input.shared_addresses,
-            LookupTableManifestSubject::SharedMarket,
-            input.shared_manifest_id.is_none(),
-        )?;
-        validate_request_addresses(
-            &input.vault_addresses,
-            LookupTableManifestSubject::Vault,
-            input.vault_manifest_id.is_none(),
-        )?;
-        let shared_set = input
-            .shared_addresses
-            .iter()
-            .map(|address| &address.address)
-            .collect::<BTreeSet<_>>();
+        let mut finalized_seen = BTreeSet::new();
         if input
-            .vault_addresses
+            .finalized_addresses
             .iter()
-            .any(|address| shared_set.contains(&address.address))
+            .any(|address| !finalized_seen.insert(address) || Pubkey::from_str(address).is_err())
         {
             return Err(OrchestratorError::StoreInvariant(
-                "provisioning request address classes must be disjoint".to_owned(),
+                "pre-cutover probe finalized addresses must be valid unique pubkeys in exact order"
+                    .to_owned(),
+            ));
+        }
+        if input.finalized_addresses.len() != input.drift_report.observed_addresses.len() + 1
+            || input.finalized_addresses[..input.drift_report.observed_addresses.len()]
+                != input.drift_report.observed_addresses
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "pre-cutover probe synthetic drift must remove exactly the final shared address"
+                    .to_owned(),
+            ));
+        }
+        let observed_hash = validate_shared_market_physical_drift_report(&input.drift_report)?;
+        validate_lookup_table_provisioning_request(&mut input.provisioning_request)?;
+        let finalized_address_hash = ordered_address_hash(&input.finalized_addresses);
+        let finalized_address_count =
+            i32::try_from(input.finalized_addresses.len()).map_err(|_| {
+                OrchestratorError::StoreInvariant(
+                    "pre-cutover probe finalized address count exceeds PostgreSQL INTEGER"
+                        .to_owned(),
+                )
+            })?;
+        let shared_manifest_id = input
+            .provisioning_request
+            .shared_manifest_id
+            .expect("validated above");
+        let finalized_last_extended_slot = input
+            .drift_report
+            .observed_last_extended_slot
+            .expect("validated signerless finalized observation above");
+        if finalized_last_extended_slot >= input.finalized_slot {
+            return Err(OrchestratorError::StoreInvariant(
+                "pre-cutover probe finalized shared table is not warm".to_owned(),
             ));
         }
 
         let mut tx = self.pool().begin().await?;
-        let inserted_id = sqlx::query_scalar::<_, i64>(
-            r#"
-            INSERT INTO loyal_yield.lookup_table_provisioning_requests
-                (cluster, vault_id, route_fingerprint, requirements_fingerprint,
-                 shared_manifest_id, vault_manifest_id, desired_shared_hash,
-                 desired_vault_hash, desired_shared_address_count,
-                 desired_vault_address_count, request_status)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'requested')
-            ON CONFLICT (cluster, vault_id, requirements_fingerprint) DO NOTHING
-            RETURNING id
-            "#,
-        )
-        .bind(&input.cluster)
-        .bind(input.vault_id.as_i64())
-        .bind(&input.route_fingerprint)
-        .bind(&input.requirements_fingerprint)
-        .bind(input.shared_manifest_id)
-        .bind(input.vault_manifest_id)
-        .bind(&input.desired_shared_hash)
-        .bind(&input.desired_vault_hash)
-        .bind(input.shared_addresses.len() as i32)
-        .bind(input.vault_addresses.len() as i32)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let request_id = if let Some(request_id) = inserted_id {
-            let addresses = input
-                .shared_addresses
-                .iter()
-                .chain(input.vault_addresses.iter())
-                .collect::<Vec<_>>();
-            if !addresses.is_empty() {
-                let mut query = QueryBuilder::<Postgres>::new(
-                    "INSERT INTO loyal_yield.lookup_table_provisioning_request_addresses (request_id, address, semantic_class, ordinal, account_role, is_writable) ",
-                );
-                query.push_values(addresses, |mut row, address| {
-                    row.push_bind(request_id)
-                        .push_bind(&address.address)
-                        .push_bind(address.semantic_class.as_str())
-                        .push_bind(address.ordinal)
-                        .push_bind(&address.account_role)
-                        .push_bind(address.is_writable);
-                });
-                query.build().execute(&mut *tx).await?;
-            }
-            sqlx::query(
-                "UPDATE loyal_yield.lookup_table_provisioning_requests SET sealed_at = now(), updated_at = now() WHERE id = $1",
-            )
-            .bind(request_id)
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             .execute(&mut *tx)
             .await?;
-            request_id
-        } else {
-            let existing_row = sqlx::query(
-                r#"
-                SELECT * FROM loyal_yield.lookup_table_provisioning_requests
-                WHERE cluster = $1 AND vault_id = $2 AND requirements_fingerprint = $3
-                FOR UPDATE
-                "#,
-            )
-            .bind(&input.cluster)
-            .bind(input.vault_id.as_i64())
-            .bind(&input.requirements_fingerprint)
-            .fetch_one(&mut *tx)
-            .await?;
-            let existing = lookup_table_provisioning_request_from_row(&existing_row)?;
-            // `requirements_fingerprint` is the durable identity. Multiple
-            // route shapes can require the exact same immutable address set;
-            // retain the first route fingerprint as audit provenance without
-            // making it own a second physical allocation.
-            if existing.shared_manifest_id != input.shared_manifest_id
-                && input.shared_manifest_id.is_some()
-                || existing.vault_manifest_id != input.vault_manifest_id
-                    && input.vault_manifest_id.is_some()
-                || existing.desired_shared_hash != input.desired_shared_hash
-                    && input.desired_shared_hash.is_some()
-                || existing.desired_vault_hash != input.desired_vault_hash
-                    && input.desired_vault_hash.is_some()
-            {
-                return Err(OrchestratorError::StoreInvariant(format!(
-                    "sealed provisioning request {} idempotency collision has different content",
-                    existing.id
-                )));
-            }
-            let persisted_rows = sqlx::query(
-                r#"
-                SELECT address, semantic_class, ordinal, account_role, is_writable
-                FROM loyal_yield.lookup_table_provisioning_request_addresses
-                WHERE request_id = $1
-                ORDER BY semantic_class, ordinal
-                "#,
-            )
-            .bind(existing.id)
-            .fetch_all(&mut *tx)
-            .await?;
-            let persisted = persisted_rows
-                .iter()
-                .map(lookup_table_manifest_address_from_row)
-                .collect::<Result<Vec<_>, _>>()?;
-            let mut expected = input
-                .shared_addresses
-                .iter()
-                .chain(input.vault_addresses.iter())
-                .cloned()
-                .collect::<Vec<_>>();
-            expected.sort_by_key(|address| (address.semantic_class, address.ordinal));
-            if !expected.is_empty() && persisted != expected {
-                return Err(OrchestratorError::StoreInvariant(format!(
-                    "sealed provisioning request {} idempotency collision has different addresses",
-                    existing.id
-                )));
-            }
-            if matches!(
-                existing.request_status,
-                LookupTableProvisioningRequestStatus::Failed
-                    | LookupTableProvisioningRequestStatus::Cancelled
-                    | LookupTableProvisioningRequestStatus::Satisfied
-            ) {
-                sqlx::query(
-                    r#"
-                    UPDATE loyal_yield.lookup_table_provisioning_requests
-                    SET request_status = 'requested', requested_at = now(),
-                        lease_owner = NULL, lease_expires_at = NULL,
-                        next_attempt_at = NULL, error_code = NULL, error_detail = NULL,
-                        satisfied_at = NULL,
-                        updated_at = now()
-                    WHERE id = $1
-                    "#,
-                )
-                .bind(existing.id)
-                .execute(&mut *tx)
-                .await?;
-            }
-            existing.id
-        };
-        let row = sqlx::query(
-            "SELECT * FROM loyal_yield.lookup_table_provisioning_requests WHERE id = $1",
+        let control_row = sqlx::query(
+            "SELECT * FROM loyal_yield.lookup_table_provisioner_controls WHERE cluster = $1 FOR UPDATE",
         )
-        .bind(request_id)
+        .bind(&input.drift_report.cluster)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "pre-cutover probe requires a durable cluster pause".to_owned(),
+            )
+        })?;
+        let control = lookup_table_provisioner_control_from_row(&control_row)?;
+        if !control.paused || control.control_epoch != input.provisioner_control_epoch {
+            return Err(OrchestratorError::StoreInvariant(
+                "pre-cutover probe durable pause epoch changed after finalized RPC verification"
+                    .to_owned(),
+            ));
+        }
+        let active_broadcast_permit_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT count(*)::BIGINT
+            FROM loyal_yield.lookup_table_provisioner_broadcast_permits
+            WHERE cluster = $1 AND resolved_at IS NULL
+            "#,
+        )
+        .bind(&input.drift_report.cluster)
         .fetch_one(&mut *tx)
         .await?;
-        let request = lookup_table_provisioning_request_from_row(&row)?;
+        let in_flight_mutation_count = lookup_table_in_flight_mutation_count_in_connection(
+            &mut tx,
+            &input.drift_report.cluster,
+        )
+        .await?;
+        if active_broadcast_permit_count != 0 || in_flight_mutation_count != 0 {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "pre-cutover probe requires a drained durable pause; active permits={active_broadcast_permit_count}, in-flight mutations={in_flight_mutation_count}"
+            )));
+        }
+        let catalog_before = load_shared_market_catalog_head_in_connection(
+            &mut tx,
+            &input.drift_report.cluster,
+            SharedMarketCatalogHeadLock::Update,
+        )
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "pre-cutover probe requires an active shared-market catalog head".to_owned(),
+            )
+        })?;
+        if catalog_before.catalog_revision_id != input.drift_report.catalog_revision_id
+            || catalog_before.family_id != input.drift_report.family_id
+            || catalog_before.manifest_id != shared_manifest_id
+            || catalog_before.readiness_state != SharedMarketCatalogReadiness::Active
+            || catalog_before.active_generation != catalog_before.target_generation
+            || input
+                .provisioning_request
+                .desired_shared_hash
+                .as_deref()
+                .is_some_and(|hash| hash != catalog_before.desired_set_hash)
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "pre-cutover probe lost its exact active shared catalog fence".to_owned(),
+            ));
+        }
+        let catalog_addresses = catalog_before
+            .addresses
+            .iter()
+            .map(|address| address.address.clone())
+            .collect::<Vec<_>>();
+        let physical_row =
+            sqlx::query("SELECT * FROM loyal_yield.route_lookup_tables WHERE id = $1 FOR UPDATE")
+                .bind(input.drift_report.route_lookup_table_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| {
+                    OrchestratorError::StoreInvariant(
+                        "pre-cutover probe finalized shared physical table disappeared".to_owned(),
+                    )
+                })?;
+        let physical = reusable_lookup_table_from_row(&physical_row)?;
+        let physical_last_extended_slot: Option<i64> =
+            physical_row.try_get("last_extended_slot")?;
+        let physical_addresses = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT address
+            FROM loyal_yield.lookup_table_addresses
+            WHERE route_lookup_table_id = $1
+            ORDER BY ordinal
+            "#,
+        )
+        .bind(input.drift_report.route_lookup_table_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        if physical.cluster != input.drift_report.cluster
+            || physical.family_id != input.drift_report.family_id
+            || physical.table_address != input.drift_report.expected_table_address
+            || physical.authority != input.drift_report.expected_authority
+            || physical.mutation_epoch != input.drift_report.expected_mutation_epoch
+            || physical_last_extended_slot != Some(finalized_last_extended_slot)
+            || physical.address_count != finalized_address_count
+            || physical.usable_address_count != finalized_address_count
+            || physical.address_hash != finalized_address_hash
+            || physical
+                .last_verified_slot
+                .is_none_or(|slot| slot > input.finalized_slot)
+            || catalog_addresses != input.finalized_addresses
+            || physical_addresses != input.finalized_addresses
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "pre-cutover probe finalized shared proof does not match exact DB catalog/table order"
+                    .to_owned(),
+            ));
+        }
+        let vault_active: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM loyal_yield.managed_vaults WHERE id = $1 AND active)",
+        )
+        .bind(input.provisioning_request.vault_id.as_i64())
+        .fetch_one(&mut *tx)
+        .await?;
+        if !vault_active {
+            return Err(OrchestratorError::StoreInvariant(
+                "pre-cutover probe vault is missing or inactive".to_owned(),
+            ));
+        }
+        let existing_probe_request_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT count(*)::BIGINT
+            FROM loyal_yield.lookup_table_provisioning_requests
+            WHERE cluster = $1 AND vault_id = $2 AND requirements_fingerprint = $3
+            "#,
+        )
+        .bind(&input.provisioning_request.cluster)
+        .bind(input.provisioning_request.vault_id.as_i64())
+        .bind(&input.provisioning_request.requirements_fingerprint)
+        .fetch_one(&mut *tx)
+        .await?;
+        if existing_probe_request_count != 0 {
+            return Err(OrchestratorError::StoreInvariant(
+                "pre-cutover probe requirements fingerprint is not fresh".to_owned(),
+            ));
+        }
+
+        sqlx::query("SAVEPOINT lookup_table_precutover_exercise")
+            .execute(&mut *tx)
+            .await?;
+        let before = lookup_table_probe_counts(&mut tx).await?;
+        let drift =
+            report_shared_market_physical_drift_in_tx(&mut tx, &input.drift_report, &observed_hash)
+                .await?;
+        let after_drift = lookup_table_probe_counts(&mut tx).await?;
+        let first_request =
+            upsert_lookup_table_provisioning_request_in_tx(&mut tx, &input.provisioning_request)
+                .await?;
+        let second_request =
+            upsert_lookup_table_provisioning_request_in_tx(&mut tx, &input.provisioning_request)
+                .await?;
+        let after_requests = lookup_table_probe_counts(&mut tx).await?;
+        let drift_signal_count = after_requests.drifts - before.drifts;
+        let drift_provisioning_request_count = after_drift.requests - before.requests;
+        let distinct_request_count = after_requests.requests - before.requests;
+        let decision_count = after_requests.decisions - before.decisions;
+        let binding_count = after_requests.bindings - before.bindings;
+        let operation_count = after_requests.operations - before.operations;
+        let in_tx_passed = first_request.id == second_request.id
+            && drift_signal_count == 1
+            && drift_provisioning_request_count == 0
+            && distinct_request_count == 1
+            && decision_count == 0
+            && binding_count == 0
+            && operation_count == 0;
+        if !in_tx_passed {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "pre-cutover probe transaction failed invariants: drift={drift_signal_count}, drift_requests={drift_provisioning_request_count}, requests={distinct_request_count}, decisions={decision_count}, bindings={binding_count}, operations={operation_count}, duplicate_same_id={}",
+                first_request.id == second_request.id,
+            )));
+        }
+
+        sqlx::query("ROLLBACK TO SAVEPOINT lookup_table_precutover_exercise")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("RELEASE SAVEPOINT lookup_table_precutover_exercise")
+            .execute(&mut *tx)
+            .await?;
+
+        let rollback_residue_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT
+                (SELECT count(*) FROM loyal_yield.lookup_table_shared_market_physical_drifts
+                 WHERE evidence_hash = $1)
+              + (SELECT count(*) FROM loyal_yield.lookup_table_provisioning_requests
+                 WHERE cluster = $2 AND vault_id = $3 AND requirements_fingerprint = $4)
+            "#,
+        )
+        .bind(&drift.evidence_hash)
+        .bind(&input.provisioning_request.cluster)
+        .bind(input.provisioning_request.vault_id.as_i64())
+        .bind(&input.provisioning_request.requirements_fingerprint)
+        .fetch_one(&mut *tx)
+        .await?;
+        let catalog_after = load_shared_market_catalog_head_in_connection(
+            &mut tx,
+            &input.drift_report.cluster,
+            SharedMarketCatalogHeadLock::Update,
+        )
+        .await?;
+        let catalog_head_restored = catalog_after.as_ref() == Some(&catalog_before);
+        if rollback_residue_count != 0 || !catalog_head_restored {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "pre-cutover probe rollback verification failed: residue={rollback_residue_count}, catalog_head_restored={catalog_head_restored}"
+            )));
+        }
+
+        let row = sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.lookup_table_precutover_probe_runs
+                (probe_token, cluster, vault_id, catalog_revision_id,
+                 shared_manifest_id, route_lookup_table_id,
+                 shared_table_address, shared_authority, shared_mutation_epoch,
+                 provisioner_control_epoch, requirements_fingerprint,
+                 finalized_slot, finalized_last_extended_slot,
+                 finalized_address_hash, finalized_address_count,
+                 finalized_shared_exact, synthetic_drift_evidence_hash,
+                 drift_signal_count, drift_provisioning_request_count,
+                 duplicate_request_attempt_count, distinct_request_count,
+                 decision_count, binding_count, operation_count,
+                 rollback_residue_count, catalog_head_restored,
+                 signer_loaded, transactions_sent, result)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                    $11, $12, $13, $14, $15, TRUE, $16, $17, $18, 2,
+                    $19, $20, $21, $22, $23, $24, FALSE, FALSE, 'pass')
+            RETURNING *
+            "#,
+        )
+        .bind(&input.probe_token)
+        .bind(&input.drift_report.cluster)
+        .bind(input.provisioning_request.vault_id.as_i64())
+        .bind(input.drift_report.catalog_revision_id)
+        .bind(shared_manifest_id)
+        .bind(input.drift_report.route_lookup_table_id)
+        .bind(&input.drift_report.expected_table_address)
+        .bind(&input.drift_report.expected_authority)
+        .bind(input.drift_report.expected_mutation_epoch)
+        .bind(input.provisioner_control_epoch)
+        .bind(&input.provisioning_request.requirements_fingerprint)
+        .bind(input.finalized_slot)
+        .bind(finalized_last_extended_slot)
+        .bind(&finalized_address_hash)
+        .bind(finalized_address_count)
+        .bind(&drift.evidence_hash)
+        .bind(i32::try_from(drift_signal_count).map_err(|_| {
+            OrchestratorError::StoreInvariant("probe drift count exceeds INTEGER".to_owned())
+        })?)
+        .bind(
+            i32::try_from(drift_provisioning_request_count).map_err(|_| {
+                OrchestratorError::StoreInvariant(
+                    "probe drift request count exceeds INTEGER".to_owned(),
+                )
+            })?,
+        )
+        .bind(i32::try_from(distinct_request_count).map_err(|_| {
+            OrchestratorError::StoreInvariant("probe request count exceeds INTEGER".to_owned())
+        })?)
+        .bind(i32::try_from(decision_count).map_err(|_| {
+            OrchestratorError::StoreInvariant("probe decision count exceeds INTEGER".to_owned())
+        })?)
+        .bind(i32::try_from(binding_count).map_err(|_| {
+            OrchestratorError::StoreInvariant("probe binding count exceeds INTEGER".to_owned())
+        })?)
+        .bind(i32::try_from(operation_count).map_err(|_| {
+            OrchestratorError::StoreInvariant("probe operation count exceeds INTEGER".to_owned())
+        })?)
+        .bind(i32::try_from(rollback_residue_count).map_err(|_| {
+            OrchestratorError::StoreInvariant("probe residue count exceeds INTEGER".to_owned())
+        })?)
+        .bind(catalog_head_restored)
+        .fetch_one(&mut *tx)
+        .await?;
+        let audit = lookup_table_precutover_probe_from_row(&row)?;
+        tx.commit().await?;
+        Ok(audit)
+    }
+
+    pub async fn upsert_lookup_table_provisioning_request(
+        &self,
+        mut input: LookupTableProvisioningRequestUpsert,
+    ) -> Result<LookupTableProvisioningRequestRecord, OrchestratorError> {
+        validate_lookup_table_provisioning_request(&mut input)?;
+        let mut tx = self.pool().begin().await?;
+        let request = upsert_lookup_table_provisioning_request_in_tx(&mut tx, &input).await?;
         tx.commit().await?;
         Ok(request)
     }
@@ -7602,9 +8263,16 @@ impl NeonSqlClient {
                 SELECT id FROM loyal_yield.lookup_table_provisioning_requests
                 WHERE cluster = $1
                   AND request_status IN ('requested', 'queued', 'failed', 'planning')
-                  AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+                  AND (
+                      (request_status = 'failed'
+                       AND next_attempt_at IS NOT NULL
+                       AND next_attempt_at <= now())
+                      OR
+                      (request_status <> 'failed'
+                       AND (next_attempt_at IS NULL OR next_attempt_at <= now()))
+                  )
                   AND (request_status <> 'planning' OR lease_expires_at <= now())
-                ORDER BY requested_at, id
+                ORDER BY updated_at, id
                 FOR UPDATE SKIP LOCKED LIMIT 1
             )
             UPDATE loyal_yield.lookup_table_provisioning_requests request
@@ -7868,6 +8536,772 @@ impl NeonSqlClient {
         };
         tx.commit().await?;
         Ok(Some(protection))
+    }
+
+    pub async fn prepare_legacy_lookup_table_cleanup_attempt(
+        &self,
+        input: LegacyLookupTableCleanupAttemptPrepare,
+    ) -> Result<LegacyLookupTableCleanupAttemptRecord, OrchestratorError> {
+        if input.cluster.trim().is_empty()
+            || input.table_address.trim().is_empty()
+            || input.expected_authority.trim().is_empty()
+            || !is_sha256_hex(&input.expected_authorization_token)
+            || !is_sha256_hex(&input.expected_address_hash)
+            || !(0..=i32::from(LOOKUP_TABLE_HARD_CAPACITY)).contains(&input.expected_address_count)
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "legacy cleanup attempt requires complete immutable identity fences".to_owned(),
+            ));
+        }
+        match input.operation_kind {
+            LookupTableOperationKind::Deactivate => {
+                if input.close_recipient.is_some() || input.expected_reclaimed_lamports.is_some() {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "legacy deactivation attempt cannot contain refund fields".to_owned(),
+                    ));
+                }
+            }
+            LookupTableOperationKind::Close => {
+                if input.close_recipient.as_deref() != Some(input.expected_authority.as_str())
+                    || input
+                        .expected_reclaimed_lamports
+                        .is_none_or(|value| value <= 0)
+                {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "legacy close attempt must refund positive rent to its expected authority"
+                            .to_owned(),
+                    ));
+                }
+            }
+            _ => {
+                return Err(OrchestratorError::StoreInvariant(
+                    "legacy cleanup attempts only support deactivate or close".to_owned(),
+                ));
+            }
+        }
+        let protection = self
+            .legacy_lookup_table_cleanup_protection(&input.cluster, &input.table_address)
+            .await?
+            .ok_or_else(|| {
+                OrchestratorError::StoreInvariant(
+                    "legacy cleanup attempt target was not found".to_owned(),
+                )
+            })?;
+        let authorized = match input.operation_kind {
+            LookupTableOperationKind::Deactivate => protection.can_deactivate,
+            LookupTableOperationKind::Close => protection.can_close,
+            _ => false,
+        };
+        if !authorized
+            || protection.authorization_token != input.expected_authorization_token
+            || protection.expected_authority != input.expected_authority
+            || protection.address_count != input.expected_address_count
+            || protection.address_hash != input.expected_address_hash
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "legacy cleanup attempt authorization is stale or not actionable".to_owned(),
+            ));
+        }
+
+        let mut tx = self.pool().begin().await?;
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('legacy-alt-cleanup:' || $1 || ':' || $2, 0))",
+        )
+        .bind(&input.cluster)
+        .bind(&input.table_address)
+        .execute(&mut *tx)
+        .await?;
+        let route_row = sqlx::query(
+            r#"
+            SELECT id, status, durable, family_id, legacy_import_run_id,
+                   authority, address_count, address_hash
+            FROM loyal_yield.route_lookup_tables
+            WHERE cluster = $1 AND table_address = $2
+            FOR UPDATE
+            "#,
+        )
+        .bind(&input.cluster)
+        .bind(&input.table_address)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "legacy cleanup attempt target disappeared".to_owned(),
+            )
+        })?;
+        let table_id: i64 = route_row.try_get("id")?;
+        let expected_status = match input.operation_kind {
+            LookupTableOperationKind::Deactivate => "retiring",
+            LookupTableOperationKind::Close => "deactivated",
+            _ => unreachable!("validated above"),
+        };
+        if route_row.try_get::<String, _>("status")? != expected_status
+            || route_row.try_get::<bool, _>("durable")?
+            || route_row.try_get::<Option<i64>, _>("family_id")?.is_some()
+            || route_row
+                .try_get::<Option<i64>, _>("legacy_import_run_id")?
+                .is_none()
+            || route_row.try_get::<String, _>("authority")? != input.expected_authority
+            || route_row.try_get::<i32, _>("address_count")? != input.expected_address_count
+            || route_row.try_get::<String, _>("address_hash")? != input.expected_address_hash
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "legacy cleanup attempt lost its exact retired registry fence".to_owned(),
+            ));
+        }
+        if let Some(row) = sqlx::query(
+            r#"
+            SELECT * FROM loyal_yield.lookup_table_legacy_cleanup_attempts
+            WHERE route_lookup_table_id = $1 AND operation_kind = $2
+              AND attempt_state IN ('prepared', 'signed', 'submitted', 'needs_reconcile')
+            ORDER BY attempt_number DESC
+            LIMIT 1
+            FOR UPDATE
+            "#,
+        )
+        .bind(table_id)
+        .bind(input.operation_kind.as_str())
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            let existing = legacy_lookup_table_cleanup_attempt_from_row(&row)?;
+            if existing.authorization_token != input.expected_authorization_token
+                || existing.expected_authority != input.expected_authority
+                || existing.expected_address_count != input.expected_address_count
+                || existing.expected_address_hash != input.expected_address_hash
+                || existing.close_recipient != input.close_recipient
+                || existing.expected_reclaimed_lamports != input.expected_reclaimed_lamports
+            {
+                return Err(OrchestratorError::StoreInvariant(
+                    "active legacy cleanup attempt conflicts with the requested immutable fences"
+                        .to_owned(),
+                ));
+            }
+            tx.commit().await?;
+            return Ok(existing);
+        }
+        let attempt_number: i32 = sqlx::query_scalar(
+            r#"
+            SELECT COALESCE(max(attempt_number), 0) + 1
+            FROM loyal_yield.lookup_table_legacy_cleanup_attempts
+            WHERE route_lookup_table_id = $1 AND operation_kind = $2
+            "#,
+        )
+        .bind(table_id)
+        .bind(input.operation_kind.as_str())
+        .fetch_one(&mut *tx)
+        .await?;
+        let row = sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.lookup_table_legacy_cleanup_attempts
+                (route_lookup_table_id, cluster, table_address, operation_kind,
+                 attempt_number, authorization_token, expected_authority,
+                 expected_address_count, expected_address_hash, close_recipient,
+                 expected_reclaimed_lamports, attempt_state)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'prepared')
+            RETURNING *
+            "#,
+        )
+        .bind(table_id)
+        .bind(&input.cluster)
+        .bind(&input.table_address)
+        .bind(input.operation_kind.as_str())
+        .bind(attempt_number)
+        .bind(&input.expected_authorization_token)
+        .bind(&input.expected_authority)
+        .bind(input.expected_address_count)
+        .bind(&input.expected_address_hash)
+        .bind(&input.close_recipient)
+        .bind(input.expected_reclaimed_lamports)
+        .fetch_one(&mut *tx)
+        .await?;
+        let attempt = legacy_lookup_table_cleanup_attempt_from_row(&row)?;
+        tx.commit().await?;
+        Ok(attempt)
+    }
+
+    /// Reserves the simulated worst-case fee and rent for a familyless legacy
+    /// cleanup attempt before any signer is invoked. Legacy and reusable-v2
+    /// reservations serialize on the same cluster advisory lock and are summed
+    /// by the same rolling-window accounting query.
+    pub async fn reserve_legacy_lookup_table_cleanup_budget(
+        &self,
+        cluster: &str,
+        legacy_cleanup_attempt_id: i64,
+        policy: LookupTableClusterBudgetPolicy,
+        estimated_fee_lamports: i64,
+        estimated_rent_lamports: i64,
+    ) -> Result<LegacyLookupTableCleanupBudgetReservation, OrchestratorError> {
+        if cluster.trim().is_empty()
+            || legacy_cleanup_attempt_id <= 0
+            || policy.max_lamports <= 0
+            || !(1..=31_536_000).contains(&policy.rolling_window_seconds)
+            || estimated_fee_lamports < 0
+            || estimated_rent_lamports < 0
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "legacy cleanup cluster budget requires a positive attempt, limit/window, and nonnegative simulated accounting"
+                    .to_owned(),
+            ));
+        }
+        let requested_lamports = estimated_fee_lamports
+            .checked_add(estimated_rent_lamports)
+            .ok_or_else(|| {
+                OrchestratorError::StoreInvariant(
+                    "legacy cleanup cluster budget request overflowed lamports".to_owned(),
+                )
+            })?;
+        if requested_lamports <= 0 {
+            return Err(OrchestratorError::StoreInvariant(
+                "legacy cleanup cluster budget requires a positive simulated reservation"
+                    .to_owned(),
+            ));
+        }
+
+        let mut tx = self.pool().begin().await?;
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-budget:' || $1, 0))",
+        )
+        .bind(cluster)
+        .execute(&mut *tx)
+        .await?;
+        let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await?;
+        let attempt_row = sqlx::query(
+            "SELECT * FROM loyal_yield.lookup_table_legacy_cleanup_attempts WHERE id = $1 FOR UPDATE",
+        )
+        .bind(legacy_cleanup_attempt_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            stale_store_update(
+                "legacy cleanup budget attempt",
+                legacy_cleanup_attempt_id,
+            )
+        })?;
+        let attempt = legacy_lookup_table_cleanup_attempt_from_row(&attempt_row)?;
+        if attempt.cluster != cluster
+            || attempt.attempt_state != LegacyLookupTableCleanupAttemptState::Prepared
+        {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "legacy cleanup attempt {legacy_cleanup_attempt_id} is not a prepared attempt in cluster {cluster}"
+            )));
+        }
+
+        let existing = sqlx::query(
+            r#"
+            SELECT id, estimated_fee_lamports, estimated_rent_lamports,
+                   reserved_lamports, reserved_until
+            FROM loyal_yield.lookup_table_legacy_cleanup_budget_reservations
+            WHERE legacy_cleanup_attempt_id = $1
+            "#,
+        )
+        .bind(legacy_cleanup_attempt_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(existing) = existing {
+            let reserved_until: DateTime<Utc> = existing.try_get("reserved_until")?;
+            if existing.try_get::<i64, _>("estimated_fee_lamports")? != estimated_fee_lamports
+                || existing.try_get::<i64, _>("estimated_rent_lamports")? != estimated_rent_lamports
+                || existing.try_get::<i64, _>("reserved_lamports")? != requested_lamports
+            {
+                return Err(OrchestratorError::StoreInvariant(format!(
+                    "legacy cleanup attempt {legacy_cleanup_attempt_id} budget fence was replayed with different accounting"
+                )));
+            }
+            if reserved_until <= now {
+                return Err(OrchestratorError::StoreInvariant(format!(
+                    "legacy cleanup attempt {legacy_cleanup_attempt_id} budget reservation expired before signing"
+                )));
+            }
+            let usage = load_cluster_budget_usage_in_connection(
+                &mut tx,
+                cluster,
+                "legacy_cleanup",
+                legacy_cleanup_attempt_id,
+                now,
+            )
+            .await?;
+            let result = LegacyLookupTableCleanupBudgetReservation {
+                approved: true,
+                replayed: true,
+                reservation_id: Some(existing.try_get("id")?),
+                cluster: cluster.to_owned(),
+                legacy_cleanup_attempt_id,
+                estimated_fee_lamports,
+                estimated_rent_lamports,
+                requested_lamports,
+                spent_lamports: usage.spent_lamports,
+                reserved_lamports: usage.reserved_lamports,
+                charged_lamports: usage.charged_lamports,
+                remaining_lamports: policy.max_lamports.saturating_sub(usage.charged_lamports),
+                window_ends_at: reserved_until,
+            };
+            tx.commit().await?;
+            return Ok(result);
+        }
+
+        let usage = load_cluster_budget_usage_in_connection(
+            &mut tx,
+            cluster,
+            "legacy_cleanup",
+            legacy_cleanup_attempt_id,
+            now,
+        )
+        .await?;
+        let current_subject_charge = usage
+            .subject_reserved_lamports
+            .max(usage.subject_actual_lamports);
+        let prospective_subject_charge = usage
+            .subject_reserved_lamports
+            .checked_add(requested_lamports)
+            .ok_or_else(|| {
+                OrchestratorError::StoreInvariant(
+                    "legacy cleanup cluster budget subject reservation overflowed".to_owned(),
+                )
+            })?
+            .max(usage.subject_actual_lamports);
+        let prospective_charge = usage
+            .charged_lamports
+            .checked_add(prospective_subject_charge - current_subject_charge)
+            .ok_or_else(|| {
+                OrchestratorError::StoreInvariant(
+                    "legacy cleanup cluster budget total overflowed".to_owned(),
+                )
+            })?;
+        let requested_window_end: DateTime<Utc> = sqlx::query_scalar(
+            "SELECT $1::timestamptz + ($2::double precision * interval '1 second')",
+        )
+        .bind(now)
+        .bind(policy.rolling_window_seconds)
+        .fetch_one(&mut *tx)
+        .await?;
+        if prospective_charge > policy.max_lamports {
+            let result = LegacyLookupTableCleanupBudgetReservation {
+                approved: false,
+                replayed: false,
+                reservation_id: None,
+                cluster: cluster.to_owned(),
+                legacy_cleanup_attempt_id,
+                estimated_fee_lamports,
+                estimated_rent_lamports,
+                requested_lamports,
+                spent_lamports: usage.spent_lamports,
+                reserved_lamports: usage.reserved_lamports,
+                charged_lamports: usage.charged_lamports,
+                remaining_lamports: policy.max_lamports.saturating_sub(usage.charged_lamports),
+                window_ends_at: usage.window_ends_at.unwrap_or(requested_window_end),
+            };
+            tx.commit().await?;
+            return Ok(result);
+        }
+
+        let reservation_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO loyal_yield.lookup_table_legacy_cleanup_budget_reservations
+                (legacy_cleanup_attempt_id, cluster, estimated_fee_lamports,
+                 estimated_rent_lamports, reserved_lamports, reserved_at,
+                 reserved_until)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id
+            "#,
+        )
+        .bind(legacy_cleanup_attempt_id)
+        .bind(cluster)
+        .bind(estimated_fee_lamports)
+        .bind(estimated_rent_lamports)
+        .bind(requested_lamports)
+        .bind(now)
+        .bind(requested_window_end)
+        .fetch_one(&mut *tx)
+        .await?;
+        let usage = load_cluster_budget_usage_in_connection(
+            &mut tx,
+            cluster,
+            "legacy_cleanup",
+            legacy_cleanup_attempt_id,
+            now,
+        )
+        .await?;
+        let result = LegacyLookupTableCleanupBudgetReservation {
+            approved: true,
+            replayed: false,
+            reservation_id: Some(reservation_id),
+            cluster: cluster.to_owned(),
+            legacy_cleanup_attempt_id,
+            estimated_fee_lamports,
+            estimated_rent_lamports,
+            requested_lamports,
+            spent_lamports: usage.spent_lamports,
+            reserved_lamports: usage.reserved_lamports,
+            charged_lamports: usage.charged_lamports,
+            remaining_lamports: policy.max_lamports.saturating_sub(usage.charged_lamports),
+            window_ends_at: usage.window_ends_at.unwrap_or(requested_window_end),
+        };
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    pub async fn persist_signed_legacy_lookup_table_cleanup_attempt(
+        &self,
+        attempt_id: i64,
+        input: SignedLegacyLookupTableCleanupAttempt,
+    ) -> Result<LegacyLookupTableCleanupAttemptRecord, OrchestratorError> {
+        if attempt_id <= 0
+            || input.transaction_signature.trim().is_empty()
+            || !is_sha256_hex(&input.message_hash)
+            || input.recent_blockhash.trim().is_empty()
+            || input.last_valid_block_height < 0
+            || input.estimated_fee_lamports < 0
+            || input
+                .recipient_balance_before
+                .is_some_and(|value| value < 0)
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "signed legacy cleanup attempt metadata is incomplete".to_owned(),
+            ));
+        }
+        let row = sqlx::query(
+            r#"
+            UPDATE loyal_yield.lookup_table_legacy_cleanup_attempts
+            SET attempt_state = 'signed', transaction_signature = $2,
+                message_hash = $3, recent_blockhash = $4,
+                last_valid_block_height = $5, estimated_fee_lamports = $6,
+                recipient_balance_before = $7, error_code = NULL,
+                error_detail = NULL, updated_at = now()
+            WHERE id = $1 AND attempt_state = 'prepared'
+              AND transaction_signature IS NULL
+            RETURNING *
+            "#,
+        )
+        .bind(attempt_id)
+        .bind(&input.transaction_signature)
+        .bind(&input.message_hash)
+        .bind(&input.recent_blockhash)
+        .bind(input.last_valid_block_height)
+        .bind(input.estimated_fee_lamports)
+        .bind(input.recipient_balance_before)
+        .fetch_optional(self.pool())
+        .await?
+        .ok_or_else(|| stale_store_update("legacy cleanup prepared attempt", attempt_id))?;
+        legacy_lookup_table_cleanup_attempt_from_row(&row)
+    }
+
+    pub async fn mark_legacy_lookup_table_cleanup_attempt_submitted(
+        &self,
+        attempt_id: i64,
+        expected_signature: &str,
+    ) -> Result<LegacyLookupTableCleanupAttemptRecord, OrchestratorError> {
+        let row = sqlx::query(
+            r#"
+            UPDATE loyal_yield.lookup_table_legacy_cleanup_attempts
+            SET attempt_state = 'submitted', submitted_at = COALESCE(submitted_at, now()),
+                error_code = NULL, error_detail = NULL, updated_at = now()
+            WHERE id = $1 AND attempt_state = 'signed' AND transaction_signature = $2
+            RETURNING *
+            "#,
+        )
+        .bind(attempt_id)
+        .bind(expected_signature)
+        .fetch_optional(self.pool())
+        .await?
+        .ok_or_else(|| stale_store_update("legacy cleanup signed attempt", attempt_id))?;
+        legacy_lookup_table_cleanup_attempt_from_row(&row)
+    }
+
+    pub async fn mark_legacy_lookup_table_cleanup_attempt_needs_reconcile(
+        &self,
+        attempt_id: i64,
+        expected_signature: &str,
+        error_code: &str,
+        error_detail: &str,
+    ) -> Result<LegacyLookupTableCleanupAttemptRecord, OrchestratorError> {
+        if error_code.trim().is_empty() {
+            return Err(OrchestratorError::StoreInvariant(
+                "legacy cleanup reconciliation error code is required".to_owned(),
+            ));
+        }
+        let row = sqlx::query(
+            r#"
+            UPDATE loyal_yield.lookup_table_legacy_cleanup_attempts
+            SET attempt_state = 'needs_reconcile', error_code = $3,
+                error_detail = $4, updated_at = now()
+            WHERE id = $1 AND attempt_state IN ('signed', 'submitted', 'needs_reconcile')
+              AND transaction_signature = $2
+            RETURNING *
+            "#,
+        )
+        .bind(attempt_id)
+        .bind(expected_signature)
+        .bind(error_code)
+        .bind(error_detail.chars().take(500).collect::<String>())
+        .fetch_optional(self.pool())
+        .await?
+        .ok_or_else(|| stale_store_update("legacy cleanup reconciling attempt", attempt_id))?;
+        legacy_lookup_table_cleanup_attempt_from_row(&row)
+    }
+
+    pub async fn expire_unobserved_legacy_lookup_table_cleanup_attempt(
+        &self,
+        attempt_id: i64,
+        expected_signature: &str,
+        observed_block_height: i64,
+    ) -> Result<LegacyLookupTableCleanupAttemptRecord, OrchestratorError> {
+        if observed_block_height < 0 {
+            return Err(OrchestratorError::StoreInvariant(
+                "legacy cleanup expiry height must not be negative".to_owned(),
+            ));
+        }
+        let row = sqlx::query(
+            r#"
+            UPDATE loyal_yield.lookup_table_legacy_cleanup_attempts
+            SET attempt_state = 'expired', error_code = 'signed_transaction_expired_unobserved',
+                error_detail = 'persisted signature was absent after blockhash expiry and chain state was unchanged',
+                updated_at = now()
+            WHERE id = $1
+              AND attempt_state IN ('signed', 'submitted', 'needs_reconcile')
+              AND transaction_signature = $2
+              AND last_valid_block_height < $3
+            RETURNING *
+            "#,
+        )
+        .bind(attempt_id)
+        .bind(expected_signature)
+        .bind(observed_block_height)
+        .fetch_optional(self.pool())
+        .await?
+        .ok_or_else(|| stale_store_update("legacy cleanup expiring attempt", attempt_id))?;
+        legacy_lookup_table_cleanup_attempt_from_row(&row)
+    }
+
+    pub async fn fail_legacy_lookup_table_cleanup_attempt_permanently(
+        &self,
+        attempt_id: i64,
+        expected_signature: &str,
+        error_detail: &str,
+    ) -> Result<LegacyLookupTableCleanupAttemptRecord, OrchestratorError> {
+        let row = sqlx::query(
+            r#"
+            UPDATE loyal_yield.lookup_table_legacy_cleanup_attempts
+            SET attempt_state = 'permanent_failure', error_code = 'finalized_transaction_failed',
+                error_detail = $3, updated_at = now()
+            WHERE id = $1
+              AND attempt_state IN ('signed', 'submitted', 'needs_reconcile')
+              AND transaction_signature = $2
+            RETURNING *
+            "#,
+        )
+        .bind(attempt_id)
+        .bind(expected_signature)
+        .bind(error_detail.chars().take(500).collect::<String>())
+        .fetch_optional(self.pool())
+        .await?
+        .ok_or_else(|| stale_store_update("legacy cleanup failed attempt", attempt_id))?;
+        legacy_lookup_table_cleanup_attempt_from_row(&row)
+    }
+
+    pub async fn complete_legacy_lookup_table_cleanup_attempt(
+        &self,
+        attempt_id: i64,
+        input: FinalizedLegacyLookupTableCleanupAttempt,
+    ) -> Result<LegacyLookupTableCleanupAttemptRecord, OrchestratorError> {
+        if attempt_id <= 0
+            || input.transaction_signature.trim().is_empty()
+            || input.finalized_slot < 0
+            || input.recipient_balance_after.is_some_and(|value| value < 0)
+            || input
+                .actual_reclaimed_lamports
+                .is_some_and(|value| value <= 0)
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "finalized legacy cleanup attempt evidence is incomplete".to_owned(),
+            ));
+        }
+        let mut tx = self.pool().begin().await?;
+        let row = sqlx::query(
+            "SELECT * FROM loyal_yield.lookup_table_legacy_cleanup_attempts WHERE id = $1 FOR UPDATE",
+        )
+        .bind(attempt_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| stale_store_update("legacy cleanup attempt", attempt_id))?;
+        let attempt = legacy_lookup_table_cleanup_attempt_from_row(&row)?;
+        if attempt.attempt_state == LegacyLookupTableCleanupAttemptState::Complete {
+            if attempt.transaction_signature.as_deref() == Some(&input.transaction_signature)
+                && attempt.finalized_slot == Some(input.finalized_slot)
+                && attempt.recipient_balance_after == input.recipient_balance_after
+                && attempt.actual_reclaimed_lamports == input.actual_reclaimed_lamports
+            {
+                tx.commit().await?;
+                return Ok(attempt);
+            }
+            return Err(OrchestratorError::StoreInvariant(
+                "completed legacy cleanup evidence cannot be changed".to_owned(),
+            ));
+        }
+        if !matches!(
+            attempt.attempt_state,
+            LegacyLookupTableCleanupAttemptState::Signed
+                | LegacyLookupTableCleanupAttemptState::Submitted
+                | LegacyLookupTableCleanupAttemptState::NeedsReconcile
+        ) || attempt.transaction_signature.as_deref() != Some(&input.transaction_signature)
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "legacy cleanup finalization does not match a durable signed attempt".to_owned(),
+            ));
+        }
+        let (expected_status, updated) = match attempt.operation_kind {
+            LookupTableOperationKind::Deactivate => {
+                if input.recipient_balance_after.is_some()
+                    || input.actual_reclaimed_lamports.is_some()
+                {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "legacy deactivation cannot finalize refund evidence".to_owned(),
+                    ));
+                }
+                (
+                    "retiring",
+                    sqlx::query(
+                        r#"
+                        UPDATE loyal_yield.route_lookup_tables
+                        SET status = 'deactivated', deactivated_slot = $2,
+                            deactivate_signature = $3, updated_at = now()
+                        WHERE id = $1 AND status = 'retiring' AND durable = FALSE
+                          AND family_id IS NULL AND authority = $4
+                          AND address_count = $5 AND address_hash = $6
+                        "#,
+                    )
+                    .bind(attempt.route_lookup_table_id)
+                    .bind(input.finalized_slot)
+                    .bind(&input.transaction_signature)
+                    .bind(&attempt.expected_authority)
+                    .bind(attempt.expected_address_count)
+                    .bind(&attempt.expected_address_hash)
+                    .execute(&mut *tx)
+                    .await?,
+                )
+            }
+            LookupTableOperationKind::Close => {
+                let before = attempt.recipient_balance_before.ok_or_else(|| {
+                    OrchestratorError::StoreInvariant(
+                        "legacy close signed attempt lacks recipient balance before".to_owned(),
+                    )
+                })?;
+                let after = input.recipient_balance_after.ok_or_else(|| {
+                    OrchestratorError::StoreInvariant(
+                        "legacy close finalization lacks recipient balance after".to_owned(),
+                    )
+                })?;
+                let reclaimed = input.actual_reclaimed_lamports.ok_or_else(|| {
+                    OrchestratorError::StoreInvariant(
+                        "legacy close finalization lacks reclaimed rent".to_owned(),
+                    )
+                })?;
+                let expected_reclaimed = attempt.expected_reclaimed_lamports.ok_or_else(|| {
+                    OrchestratorError::StoreInvariant(
+                        "legacy close attempt lacks expected reclaimed rent".to_owned(),
+                    )
+                })?;
+                let fee = attempt.estimated_fee_lamports.unwrap_or_default();
+                if reclaimed != expected_reclaimed
+                    || after < before.saturating_add(expected_reclaimed.saturating_sub(fee))
+                {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "legacy close recipient balances do not prove the exact cumulative refund"
+                            .to_owned(),
+                    ));
+                }
+                (
+                    "deactivated",
+                    sqlx::query(
+                        r#"
+                        UPDATE loyal_yield.route_lookup_tables
+                        SET status = 'closed', closed_signature = $2,
+                            close_recipient = $3, reclaimed_lamports = $4,
+                            updated_at = now()
+                        WHERE id = $1 AND status = 'deactivated' AND durable = FALSE
+                          AND family_id IS NULL AND authority = $5
+                          AND address_count = $6 AND address_hash = $7
+                        "#,
+                    )
+                    .bind(attempt.route_lookup_table_id)
+                    .bind(&input.transaction_signature)
+                    .bind(&attempt.close_recipient)
+                    .bind(reclaimed)
+                    .bind(&attempt.expected_authority)
+                    .bind(attempt.expected_address_count)
+                    .bind(&attempt.expected_address_hash)
+                    .execute(&mut *tx)
+                    .await?,
+                )
+            }
+            _ => unreachable!("attempt table restricts operation kind"),
+        };
+        if updated.rows_affected() != 1 {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "legacy cleanup {expected_status} registry row changed before recovery finalization"
+            )));
+        }
+        let row = sqlx::query(
+            r#"
+            UPDATE loyal_yield.lookup_table_legacy_cleanup_attempts
+            SET attempt_state = 'complete', finalized_slot = $2,
+                recipient_balance_after = $3, actual_reclaimed_lamports = $4,
+                error_code = NULL, error_detail = NULL, updated_at = now()
+            WHERE id = $1
+              AND attempt_state IN ('signed', 'submitted', 'needs_reconcile')
+              AND transaction_signature = $5
+            RETURNING *
+            "#,
+        )
+        .bind(attempt_id)
+        .bind(input.finalized_slot)
+        .bind(input.recipient_balance_after)
+        .bind(input.actual_reclaimed_lamports)
+        .bind(&input.transaction_signature)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| stale_store_update("legacy cleanup finalizing attempt", attempt_id))?;
+        let attempt = legacy_lookup_table_cleanup_attempt_from_row(&row)?;
+        tx.commit().await?;
+        Ok(attempt)
+    }
+
+    pub async fn pending_legacy_lookup_table_cleanup_attempts(
+        &self,
+        cluster: &str,
+    ) -> Result<Vec<LegacyLookupTableCleanupAttemptRecord>, OrchestratorError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT * FROM loyal_yield.lookup_table_legacy_cleanup_attempts
+            WHERE cluster = $1
+              AND attempt_state IN ('prepared', 'signed', 'submitted', 'needs_reconcile')
+            ORDER BY created_at, id
+            "#,
+        )
+        .bind(cluster)
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter()
+            .map(legacy_lookup_table_cleanup_attempt_from_row)
+            .collect()
+    }
+
+    pub async fn cumulative_legacy_lookup_table_refunds(
+        &self,
+        cluster: &str,
+    ) -> Result<i64, OrchestratorError> {
+        Ok(sqlx::query_scalar(
+            r#"
+            SELECT COALESCE(sum(actual_reclaimed_lamports), 0)::BIGINT
+            FROM loyal_yield.lookup_table_legacy_cleanup_attempts
+            WHERE cluster = $1 AND operation_kind = 'close' AND attempt_state = 'complete'
+            "#,
+        )
+        .bind(cluster)
+        .fetch_one(self.pool())
+        .await?)
     }
 
     /// Performs the short, immediate pre-sign authorization read. Retirement
@@ -8334,7 +9768,7 @@ impl SharedMarketCatalogHeadLock {
     const fn clause(self) -> &'static str {
         match self {
             Self::None => "",
-            Self::Update => " FOR UPDATE OF family, head",
+            Self::Update => " FOR UPDATE OF head",
         }
     }
 }
@@ -8352,6 +9786,25 @@ async fn load_shared_market_catalog_head_from_connection(
     cluster: &str,
     lock: SharedMarketCatalogHeadLock,
 ) -> Result<Option<SharedMarketCatalogHeadRecord>, OrchestratorError> {
+    if lock == SharedMarketCatalogHeadLock::Update {
+        // Shared catalog mutations use one global lock order everywhere:
+        // family -> head -> physical table -> operation/permit. Acquiring the
+        // family separately avoids relying on a join executor's row-lock order
+        // and prevents publish/plan/permit deadlocks.
+        sqlx::query(
+            r#"
+            SELECT id
+            FROM loyal_yield.lookup_table_families
+            WHERE cluster = $1 AND kind = 'shared_market'
+              AND desired_state = 'active'
+            ORDER BY id
+            FOR UPDATE
+            "#,
+        )
+        .bind(cluster)
+        .fetch_all(&mut *connection)
+        .await?;
+    }
     let sql = format!(
         r#"
         SELECT family.id AS family_id, family.cluster,
@@ -8485,16 +9938,285 @@ struct SharedMarketCatalogGenerationEvidence {
     extra_addresses: Vec<String>,
 }
 
+#[derive(Debug, Default)]
+struct SharedMarketGenerationPlanningState {
+    physical: Vec<ReusableLookupTableRecord>,
+    confirmed: BTreeMap<i32, Vec<String>>,
+    pending: BTreeMap<i32, Vec<String>>,
+    nonterminal_operation_count: BTreeMap<i32, i64>,
+    all_table_count: i64,
+}
+
+impl SharedMarketGenerationPlanningState {
+    fn empty() -> Self {
+        Self::default()
+    }
+}
+
+async fn cancel_superseded_unsigned_shared_market_operations_in_connection(
+    tx: &mut sqlx::PgConnection,
+    family_id: i64,
+    current_manifest_id: i64,
+) -> Result<u64, OrchestratorError> {
+    let cancelled = sqlx::query(
+        r#"
+        UPDATE loyal_yield.lookup_table_operations
+        SET operation_state = 'cancelled', next_attempt_at = NULL,
+            error_code = 'superseded_shared_market_catalog',
+            error_detail = 'unsigned shared-market operation belongs to a superseded catalog manifest',
+            lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
+        WHERE family_id = $1
+          AND manifest_id IS DISTINCT FROM $2
+          AND operation_kind IN ('create', 'extend', 'rollover')
+          AND (
+              operation_state IN ('queued', 'retry_wait')
+              OR (
+                  operation_state = 'leased'
+                  AND lease_expires_at <= now()
+              )
+          )
+          AND transaction_signature IS NULL
+          AND message_hash IS NULL
+          AND recent_blockhash IS NULL
+          AND last_valid_block_height IS NULL
+        "#,
+    )
+    .bind(family_id)
+    .bind(current_manifest_id)
+    .execute(&mut *tx)
+    .await?;
+    Ok(cancelled.rows_affected())
+}
+
+async fn load_shared_market_generation_planning_state(
+    tx: &mut sqlx::PgConnection,
+    family_id: i64,
+    generation: i32,
+) -> Result<SharedMarketGenerationPlanningState, OrchestratorError> {
+    let all_table_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT count(*)::BIGINT
+        FROM loyal_yield.route_lookup_tables
+        WHERE family_id = $1 AND generation = $2
+          AND allocation_kind = 'shared_market'
+        "#,
+    )
+    .bind(family_id)
+    .bind(generation)
+    .fetch_one(&mut *tx)
+    .await?;
+    let rows = sqlx::query(
+        r#"
+        SELECT * FROM loyal_yield.route_lookup_tables
+        WHERE family_id = $1 AND generation = $2
+          AND allocation_kind = 'shared_market'
+          AND desired_state NOT IN ('deactivated', 'closed', 'failed')
+        ORDER BY shard_ordinal FOR UPDATE
+        "#,
+    )
+    .bind(family_id)
+    .bind(generation)
+    .fetch_all(&mut *tx)
+    .await?;
+    let physical = rows
+        .iter()
+        .map(reusable_lookup_table_from_row)
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut confirmed = BTreeMap::new();
+    let mut pending = BTreeMap::new();
+    let mut nonterminal_operation_count = BTreeMap::new();
+    for table in &physical {
+        confirmed.insert(
+            table.shard_ordinal,
+            sqlx::query_scalar::<_, String>(
+                r#"
+                SELECT address
+                FROM loyal_yield.lookup_table_addresses
+                WHERE route_lookup_table_id = $1
+                ORDER BY ordinal
+                "#,
+            )
+            .bind(table.id)
+            .fetch_all(&mut *tx)
+            .await?,
+        );
+        pending.insert(
+            table.shard_ordinal,
+            sqlx::query_scalar::<_, String>(
+                r#"
+                SELECT address.address
+                FROM loyal_yield.lookup_table_operations operation
+                JOIN loyal_yield.lookup_table_operation_addresses address
+                  ON address.operation_id = operation.id
+                WHERE operation.route_lookup_table_id = $1
+                  AND operation.operation_state NOT IN (
+                      'complete', 'permanent_failure', 'cancelled'
+                  )
+                ORDER BY operation.created_at, operation.id, address.ordinal
+                "#,
+            )
+            .bind(table.id)
+            .fetch_all(&mut *tx)
+            .await?,
+        );
+        nonterminal_operation_count.insert(
+            table.shard_ordinal,
+            sqlx::query_scalar::<_, i64>(
+                r#"
+                SELECT count(*)::BIGINT
+                FROM loyal_yield.lookup_table_operations
+                WHERE route_lookup_table_id = $1
+                  AND operation_state NOT IN (
+                      'complete', 'permanent_failure', 'cancelled'
+                  )
+                "#,
+            )
+            .bind(table.id)
+            .fetch_one(&mut *tx)
+            .await?,
+        );
+    }
+    Ok(SharedMarketGenerationPlanningState {
+        physical,
+        confirmed,
+        pending,
+        nonterminal_operation_count,
+        all_table_count,
+    })
+}
+
+fn shared_market_generation_is_order_compatible(
+    state: &SharedMarketGenerationPlanningState,
+    shard_plan: &[SharedMarketShardPlan],
+) -> bool {
+    state.physical.len() <= shard_plan.len()
+        && state.physical.iter().all(|table| {
+            let Some(desired) = shard_plan
+                .iter()
+                .find(|shard| shard.shard_ordinal == table.shard_ordinal)
+                .map(|shard| shard.addresses.as_slice())
+            else {
+                return false;
+            };
+            let confirmed = state
+                .confirmed
+                .get(&table.shard_ordinal)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let pending = state
+                .pending
+                .get(&table.shard_ordinal)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            ordered_confirmed_and_pending_match(confirmed, pending, desired)
+        })
+}
+
+async fn shared_market_operation_head_fence_detail(
+    tx: &mut sqlx::PgConnection,
+    catalog: &SharedMarketCatalogHeadRecord,
+    operation: &LookupTableOperationRecord,
+    table: &ReusableLookupTableRecord,
+) -> Result<Option<String>, OrchestratorError> {
+    if !matches!(
+        operation.operation_kind,
+        LookupTableOperationKind::Create
+            | LookupTableOperationKind::Extend
+            | LookupTableOperationKind::Rollover
+    ) {
+        return Ok(None);
+    }
+    if operation.family_id != catalog.family_id
+        || operation.manifest_id != Some(catalog.manifest_id)
+        || operation.route_lookup_table_id != Some(table.id)
+        || table.family_id != catalog.family_id
+        || table.cluster != catalog.cluster
+        || table.allocation_kind != LookupTableAllocationKind::SharedMarket
+        || catalog.target_generation != Some(table.generation)
+        || operation.mutation_epoch != table.mutation_epoch
+        || (matches!(
+            operation.operation_kind,
+            LookupTableOperationKind::Create | LookupTableOperationKind::Rollover
+        ) && (operation.target_generation != Some(table.generation)
+            || operation.target_shard_ordinal != Some(table.shard_ordinal)))
+    {
+        return Ok(Some(
+            "shared-market operation lost its current catalog, generation, table, or mutation-epoch identity"
+                .to_owned(),
+        ));
+    }
+    let confirmed = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT address
+        FROM loyal_yield.lookup_table_addresses
+        WHERE route_lookup_table_id = $1
+        ORDER BY ordinal
+        "#,
+    )
+    .bind(table.id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let operation_addresses = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT address
+        FROM loyal_yield.lookup_table_operation_addresses
+        WHERE operation_id = $1
+        ORDER BY ordinal
+        "#,
+    )
+    .bind(operation.id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let desired = catalog
+        .addresses
+        .iter()
+        .map(|address| address.address.clone())
+        .collect::<Vec<_>>();
+    let older_nonterminal_exists: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM loyal_yield.lookup_table_operations predecessor
+            WHERE predecessor.route_lookup_table_id = $1
+              AND predecessor.id <> $2
+              AND predecessor.operation_state NOT IN (
+                  'complete', 'permanent_failure', 'cancelled'
+              )
+              AND (predecessor.created_at, predecessor.id) < ($3, $2)
+        )
+        "#,
+    )
+    .bind(table.id)
+    .bind(operation.id)
+    .bind(operation.created_at)
+    .fetch_one(&mut *tx)
+    .await?;
+    let table_count_matches = usize::try_from(table.address_count).ok() == Some(confirmed.len());
+    if older_nonterminal_exists
+        || operation_addresses.is_empty()
+        || !table_count_matches
+        || !ordered_prefix_matches(&confirmed, &desired)
+        || !ordered_confirmed_and_pending_match(&confirmed, &operation_addresses, &desired)
+    {
+        return Ok(Some(
+            "shared-market operation is not the unique next ordered suffix of the current physical prefix"
+                .to_owned(),
+        ));
+    }
+    Ok(None)
+}
+
 async fn shared_market_catalog_generation_evidence_in_connection(
     tx: &mut sqlx::PgConnection,
     family_id: i64,
     generation: Option<i32>,
     catalog_addresses: &[LookupTableManifestAddressRecord],
 ) -> Result<SharedMarketCatalogGenerationEvidence, OrchestratorError> {
-    let desired = catalog_addresses
+    let desired_ordered = catalog_addresses
         .iter()
         .map(|row| row.address.clone())
-        .collect::<BTreeSet<_>>();
+        .collect::<Vec<_>>();
+    let desired = desired_ordered.iter().cloned().collect::<BTreeSet<_>>();
     let Some(generation) = generation else {
         return Ok(SharedMarketCatalogGenerationEvidence {
             ready: false,
@@ -8521,22 +10243,24 @@ async fn shared_market_catalog_generation_evidence_in_connection(
         .iter()
         .map(|row| row.try_get::<i64, _>("id"))
         .collect::<Result<Vec<_>, _>>()?;
-    let physical = if table_ids.is_empty() {
-        BTreeSet::new()
+    let physical_ordered = if table_ids.is_empty() {
+        Vec::new()
     } else {
         sqlx::query_scalar::<_, String>(
             r#"
-            SELECT address FROM loyal_yield.lookup_table_addresses
-            WHERE route_lookup_table_id = ANY($1)
-            ORDER BY address
+            SELECT address.address
+            FROM loyal_yield.lookup_table_addresses address
+            JOIN loyal_yield.route_lookup_tables route_table
+              ON route_table.id = address.route_lookup_table_id
+            WHERE address.route_lookup_table_id = ANY($1)
+            ORDER BY route_table.shard_ordinal, address.ordinal
             "#,
         )
         .bind(&table_ids)
         .fetch_all(&mut *tx)
         .await?
-        .into_iter()
-        .collect::<BTreeSet<_>>()
     };
+    let physical = physical_ordered.iter().cloned().collect::<BTreeSet<_>>();
     let pending_operation_count: i64 = sqlx::query_scalar(
         r#"
         SELECT count(*) FROM loyal_yield.lookup_table_operations
@@ -8573,7 +10297,7 @@ async fn shared_market_catalog_generation_evidence_in_connection(
                     .is_some()
         });
     Ok(SharedMarketCatalogGenerationEvidence {
-        ready: rows_ready && pending_operation_count == 0 && physical == desired,
+        ready: rows_ready && pending_operation_count == 0 && physical_ordered == desired_ordered,
         missing_addresses: desired.difference(&physical).cloned().collect(),
         extra_addresses: physical.difference(&desired).cloned().collect(),
     })
@@ -8632,6 +10356,7 @@ async fn load_reusable_only_cutover_preflight_in_connection(
     }
     let table = reusable_lookup_table_from_row(&rows[0])?;
     let durable: bool = rows[0].try_get("durable")?;
+    let physical_last_extended_slot: Option<i64> = rows[0].try_get("last_extended_slot")?;
     let ordered_addresses = sqlx::query_scalar::<_, String>(
         "SELECT address FROM loyal_yield.lookup_table_addresses WHERE route_lookup_table_id = $1 ORDER BY ordinal",
     )
@@ -8646,6 +10371,7 @@ async fn load_reusable_only_cutover_preflight_in_connection(
     let ordered_hash = ordered_address_hash(&ordered_addresses);
     if !durable
         || table.legacy_status != "usable"
+        || physical_last_extended_slot.is_none()
         || table.last_verified_slot.is_none()
         || table.address_count != table.usable_address_count
         || table.address_count != i32::try_from(ordered_addresses.len()).unwrap_or(-1)
@@ -8672,10 +10398,39 @@ async fn load_reusable_only_cutover_preflight_in_connection(
         physical_table_address: table.table_address,
         physical_authority: table.authority,
         physical_mutation_epoch: table.mutation_epoch,
+        physical_last_extended_slot: physical_last_extended_slot.unwrap_or_default(),
         physical_last_verified_slot: table.last_verified_slot.unwrap_or_default(),
         physical_address_count: table.address_count,
         physical_usable_address_count: table.usable_address_count,
     })
+}
+
+async fn lookup_table_in_flight_mutation_count_in_connection(
+    tx: &mut sqlx::PgConnection,
+    cluster: &str,
+) -> Result<i64, OrchestratorError> {
+    Ok(sqlx::query_scalar(
+        r#"
+        SELECT count(*)::BIGINT
+        FROM loyal_yield.lookup_table_operations operation
+        JOIN loyal_yield.lookup_table_families family
+          ON family.id = operation.family_id
+        WHERE family.cluster = $1
+          AND (
+              operation.operation_state IN (
+                  'leased', 'signed', 'submitted', 'confirmed', 'finalized',
+                  'reconciled', 'needs_reconcile'
+              )
+              OR (
+                  operation.operation_state = 'retry_wait'
+                  AND operation.transaction_signature IS NOT NULL
+              )
+          )
+        "#,
+    )
+    .bind(cluster)
+    .fetch_one(&mut *tx)
+    .await?)
 }
 
 async fn update_shared_market_catalog_plan_state_in_connection(
@@ -9337,6 +11092,33 @@ fn hash_length_prefixed_values<'a>(values: impl IntoIterator<Item = &'a str>) ->
     format!("{:x}", hasher.finalize())
 }
 
+async fn terminal_lookup_table_binding_operation_in_tx(
+    tx: &mut sqlx::PgConnection,
+    binding_id: i64,
+    manifest_id: i64,
+    route_lookup_table_id: i64,
+) -> Result<Option<LookupTableOperationRecord>, OrchestratorError> {
+    let row = sqlx::query(
+        r#"
+        SELECT * FROM loyal_yield.lookup_table_operations
+        WHERE binding_id = $1
+          AND manifest_id = $2
+          AND route_lookup_table_id = $3
+          AND operation_state IN ('permanent_failure', 'cancelled')
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(binding_id)
+    .bind(manifest_id)
+    .bind(route_lookup_table_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    row.as_ref()
+        .map(lookup_table_operation_from_row)
+        .transpose()
+}
+
 pub fn lookup_table_manifest_address_records_hash(
     addresses: &[LookupTableManifestAddressRecord],
 ) -> String {
@@ -9441,6 +11223,13 @@ async fn enqueue_lookup_table_operation_in_tx(
     .bind(operation_id)
     .fetch_all(&mut *tx)
     .await?;
+    let planner_context_is_refreshable = input.manifest_id.is_some()
+        && matches!(
+            input.operation_kind,
+            LookupTableOperationKind::Create
+                | LookupTableOperationKind::Extend
+                | LookupTableOperationKind::Rollover
+        );
     if operation.family_id != input.family_id
         || operation.route_lookup_table_id != input.route_lookup_table_id
         || operation.manifest_id != input.manifest_id
@@ -9448,6 +11237,8 @@ async fn enqueue_lookup_table_operation_in_tx(
         || operation.operation_kind != input.operation_kind
         || operation.target_generation != input.target_generation
         || operation.target_shard_ordinal != input.target_shard_ordinal
+        || (!planner_context_is_refreshable
+            && operation.operation_context != input.operation_context)
         || operation.mutation_epoch != input.mutation_epoch
         || persisted_addresses != addresses
     {
@@ -9801,6 +11592,80 @@ fn lookup_table_rollout_from_row(
     })
 }
 
+fn lookup_table_provisioner_control_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<LookupTableProvisionerControlRecord, OrchestratorError> {
+    Ok(LookupTableProvisionerControlRecord {
+        cluster: row.try_get("cluster")?,
+        paused: row.try_get("paused")?,
+        reason: row.try_get("reason")?,
+        updated_by: row.try_get("updated_by")?,
+        control_epoch: row.try_get("control_epoch")?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+    })
+}
+
+fn lookup_table_provisioner_broadcast_permit_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<LookupTableProvisionerBroadcastPermitRecord, OrchestratorError> {
+    Ok(LookupTableProvisionerBroadcastPermitRecord {
+        id: row.try_get("id")?,
+        cluster: row.try_get("cluster")?,
+        operation_id: row.try_get("operation_id")?,
+        fencing_token: row.try_get("fencing_token")?,
+        control_epoch: row.try_get("control_epoch")?,
+        transaction_signature: row.try_get("transaction_signature")?,
+        message_hash: row.try_get("message_hash")?,
+        permit_state: row.try_get("permit_state")?,
+        resolution_detail: row.try_get("resolution_detail")?,
+        granted_at: row.try_get("granted_at")?,
+        resolved_at: row.try_get("resolved_at")?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+    })
+}
+
+fn legacy_lookup_table_cleanup_attempt_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<LegacyLookupTableCleanupAttemptRecord, OrchestratorError> {
+    Ok(LegacyLookupTableCleanupAttemptRecord {
+        id: row.try_get("id")?,
+        route_lookup_table_id: row.try_get("route_lookup_table_id")?,
+        cluster: row.try_get("cluster")?,
+        table_address: row.try_get("table_address")?,
+        operation_kind: parse_store_enum(
+            "legacy lookup-table cleanup operation kind",
+            row.try_get("operation_kind")?,
+        )?,
+        attempt_number: row.try_get("attempt_number")?,
+        authorization_token: row.try_get("authorization_token")?,
+        expected_authority: row.try_get("expected_authority")?,
+        expected_address_count: row.try_get("expected_address_count")?,
+        expected_address_hash: row.try_get("expected_address_hash")?,
+        close_recipient: row.try_get("close_recipient")?,
+        expected_reclaimed_lamports: row.try_get("expected_reclaimed_lamports")?,
+        attempt_state: parse_store_enum(
+            "legacy lookup-table cleanup attempt state",
+            row.try_get("attempt_state")?,
+        )?,
+        transaction_signature: row.try_get("transaction_signature")?,
+        message_hash: row.try_get("message_hash")?,
+        recent_blockhash: row.try_get("recent_blockhash")?,
+        last_valid_block_height: row.try_get("last_valid_block_height")?,
+        estimated_fee_lamports: row.try_get("estimated_fee_lamports")?,
+        recipient_balance_before: row.try_get("recipient_balance_before")?,
+        submitted_at: row.try_get("submitted_at")?,
+        finalized_slot: row.try_get("finalized_slot")?,
+        recipient_balance_after: row.try_get("recipient_balance_after")?,
+        actual_reclaimed_lamports: row.try_get("actual_reclaimed_lamports")?,
+        error_code: row.try_get("error_code")?,
+        error_detail: row.try_get("error_detail")?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+    })
+}
+
 fn lookup_table_usage_lease_from_row(
     row: &sqlx::postgres::PgRow,
 ) -> Result<LookupTableUsageLeaseRecord, OrchestratorError> {
@@ -9817,6 +11682,499 @@ fn lookup_table_usage_lease_from_row(
         expires_at: row.try_get("expires_at")?,
         released_at: row.try_get("released_at")?,
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LookupTableProbeCounts {
+    drifts: i64,
+    requests: i64,
+    decisions: i64,
+    bindings: i64,
+    operations: i64,
+}
+
+async fn lookup_table_probe_counts(
+    tx: &mut sqlx::PgConnection,
+) -> Result<LookupTableProbeCounts, OrchestratorError> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            (SELECT count(*)::BIGINT FROM loyal_yield.lookup_table_shared_market_physical_drifts) AS drifts,
+            (SELECT count(*)::BIGINT FROM loyal_yield.lookup_table_provisioning_requests) AS requests,
+            (SELECT count(*)::BIGINT FROM loyal_yield.rebalance_decisions) AS decisions,
+            (SELECT count(*)::BIGINT FROM loyal_yield.lookup_table_vault_bindings) AS bindings,
+            (SELECT count(*)::BIGINT FROM loyal_yield.lookup_table_operations) AS operations
+        "#,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    Ok(LookupTableProbeCounts {
+        drifts: row.try_get("drifts")?,
+        requests: row.try_get("requests")?,
+        decisions: row.try_get("decisions")?,
+        bindings: row.try_get("bindings")?,
+        operations: row.try_get("operations")?,
+    })
+}
+
+fn lookup_table_precutover_probe_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<LookupTablePrecutoverProbeRecord, OrchestratorError> {
+    Ok(LookupTablePrecutoverProbeRecord {
+        id: row.try_get("id")?,
+        probe_token: row.try_get("probe_token")?,
+        cluster: row.try_get("cluster")?,
+        vault_id: VaultId(row.try_get("vault_id")?),
+        catalog_revision_id: row.try_get("catalog_revision_id")?,
+        shared_manifest_id: row.try_get("shared_manifest_id")?,
+        route_lookup_table_id: row.try_get("route_lookup_table_id")?,
+        shared_table_address: row.try_get("shared_table_address")?,
+        shared_authority: row.try_get("shared_authority")?,
+        shared_mutation_epoch: row.try_get("shared_mutation_epoch")?,
+        provisioner_control_epoch: row.try_get("provisioner_control_epoch")?,
+        requirements_fingerprint: row.try_get("requirements_fingerprint")?,
+        finalized_slot: row.try_get("finalized_slot")?,
+        finalized_last_extended_slot: row.try_get("finalized_last_extended_slot")?,
+        finalized_address_hash: row.try_get("finalized_address_hash")?,
+        finalized_address_count: row.try_get("finalized_address_count")?,
+        finalized_shared_exact: row.try_get("finalized_shared_exact")?,
+        synthetic_drift_evidence_hash: row.try_get("synthetic_drift_evidence_hash")?,
+        drift_signal_count: row.try_get("drift_signal_count")?,
+        drift_provisioning_request_count: row.try_get("drift_provisioning_request_count")?,
+        duplicate_request_attempt_count: row.try_get("duplicate_request_attempt_count")?,
+        distinct_request_count: row.try_get("distinct_request_count")?,
+        decision_count: row.try_get("decision_count")?,
+        binding_count: row.try_get("binding_count")?,
+        operation_count: row.try_get("operation_count")?,
+        rollback_residue_count: row.try_get("rollback_residue_count")?,
+        catalog_head_restored: row.try_get("catalog_head_restored")?,
+        signer_loaded: row.try_get("signer_loaded")?,
+        transactions_sent: row.try_get("transactions_sent")?,
+        result: row.try_get("result")?,
+        created_at: row.try_get("created_at")?,
+    })
+}
+
+fn validate_shared_market_physical_drift_report(
+    input: &SharedMarketPhysicalDriftReport,
+) -> Result<String, OrchestratorError> {
+    if input.cluster.trim().is_empty()
+        || input.reason.trim().is_empty()
+        || input.reported_by.trim().is_empty()
+        || input.observed_slot < 0
+        || input.expected_mutation_epoch < 0
+        || input
+            .observed_last_extended_slot
+            .is_some_and(|slot| slot < 0)
+        || input.observed_addresses.len() > usize::from(LOOKUP_TABLE_HARD_CAPACITY)
+        || (!input.observed_table_present
+            && (input.observed_authority.is_some()
+                || input.observed_active
+                || input.observed_last_extended_slot.is_some()
+                || input.observed_warm
+                || !input.observed_addresses.is_empty()))
+        || (input.observed_warm && input.observed_last_extended_slot.is_none())
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "shared-market physical drift report is malformed".to_owned(),
+        ));
+    }
+    let mut observed_seen = BTreeSet::new();
+    if input
+        .observed_addresses
+        .iter()
+        .any(|address| !observed_seen.insert(address) || Pubkey::from_str(address).is_err())
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "shared-market physical drift addresses must be valid, unique pubkeys in finalized order"
+                .to_owned(),
+        ));
+    }
+    Ok(ordered_address_hash(&input.observed_addresses))
+}
+
+fn validate_lookup_table_provisioning_request(
+    input: &mut LookupTableProvisioningRequestUpsert,
+) -> Result<(), OrchestratorError> {
+    if input.shared_manifest_id.is_none()
+        && input
+            .desired_shared_hash
+            .as_deref()
+            .unwrap_or_default()
+            .is_empty()
+        || input.vault_manifest_id.is_none()
+            && input
+                .desired_vault_hash
+                .as_deref()
+                .unwrap_or_default()
+                .is_empty()
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "provisioning request requires shared and vault manifest identity".to_owned(),
+        ));
+    }
+    input
+        .shared_addresses
+        .sort_by_key(|address| address.ordinal);
+    input.vault_addresses.sort_by_key(|address| address.ordinal);
+    validate_request_addresses(
+        &input.shared_addresses,
+        LookupTableManifestSubject::SharedMarket,
+        input.shared_manifest_id.is_none(),
+    )?;
+    validate_request_addresses(
+        &input.vault_addresses,
+        LookupTableManifestSubject::Vault,
+        input.vault_manifest_id.is_none(),
+    )?;
+    let shared_set = input
+        .shared_addresses
+        .iter()
+        .map(|address| &address.address)
+        .collect::<BTreeSet<_>>();
+    if input
+        .vault_addresses
+        .iter()
+        .any(|address| shared_set.contains(&address.address))
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "provisioning request address classes must be disjoint".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+async fn report_shared_market_physical_drift_in_tx(
+    tx: &mut sqlx::PgConnection,
+    input: &SharedMarketPhysicalDriftReport,
+    observed_hash: &str,
+) -> Result<SharedMarketPhysicalDriftRecord, OrchestratorError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('shared-alt-drift:' || $1, 0))")
+        .bind(&input.cluster)
+        .execute(&mut *tx)
+        .await?;
+    let catalog = load_shared_market_catalog_head_in_connection(
+        &mut *tx,
+        &input.cluster,
+        SharedMarketCatalogHeadLock::Update,
+    )
+    .await?
+    .ok_or_else(|| {
+        OrchestratorError::StoreInvariant(
+            "shared-market physical drift has no current catalog head".to_owned(),
+        )
+    })?;
+    if catalog.catalog_revision_id != input.catalog_revision_id
+        || catalog.family_id != input.family_id
+        || catalog.readiness_state != SharedMarketCatalogReadiness::Active
+        || catalog.active_generation != catalog.target_generation
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "shared-market physical drift report lost its active catalog fence".to_owned(),
+        ));
+    }
+    let table_row = sqlx::query(
+        r#"
+        SELECT * FROM loyal_yield.route_lookup_tables
+        WHERE id = $1 AND family_id = $2 AND generation = $3
+          AND allocation_kind = 'shared_market'
+        FOR UPDATE
+        "#,
+    )
+    .bind(input.route_lookup_table_id)
+    .bind(input.family_id)
+    .bind(catalog.active_generation)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| {
+        stale_store_update("shared-market physical table", input.route_lookup_table_id)
+    })?;
+    let table = reusable_lookup_table_from_row(&table_row)?;
+    if table.cluster != input.cluster
+        || table.table_address != input.expected_table_address
+        || table.authority != input.expected_authority
+        || table.mutation_epoch != input.expected_mutation_epoch
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "shared-market physical drift report lost its table/mutation fence".to_owned(),
+        ));
+    }
+    let expected_addresses = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT address FROM loyal_yield.lookup_table_addresses
+        WHERE route_lookup_table_id = $1 ORDER BY ordinal
+        "#,
+    )
+    .bind(table.id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let is_drift = !input.observed_table_present
+        || input.observed_authority.as_deref() != Some(table.authority.as_str())
+        || !input.observed_active
+        || !input.observed_warm
+        || input.observed_addresses != expected_addresses
+        || input.observed_addresses
+            != catalog
+                .addresses
+                .iter()
+                .map(|row| row.address.clone())
+                .collect::<Vec<_>>();
+    if !is_drift {
+        return Err(OrchestratorError::StoreInvariant(
+            "shared-market physical drift report matches the exact active catalog".to_owned(),
+        ));
+    }
+    let observed_present = input.observed_table_present.to_string();
+    let observed_active = input.observed_active.to_string();
+    let observed_last_extended_slot = input
+        .observed_last_extended_slot
+        .map(|slot| slot.to_string())
+        .unwrap_or_default();
+    let observed_warm = input.observed_warm.to_string();
+    let observed_slot = input.observed_slot.to_string();
+    let expected_epoch = input.expected_mutation_epoch.to_string();
+    let evidence_hash = hash_length_prefixed_values(
+        [
+            input.cluster.as_str(),
+            &input.catalog_revision_id.to_string(),
+            &input.family_id.to_string(),
+            &input.route_lookup_table_id.to_string(),
+            expected_epoch.as_str(),
+            input.expected_table_address.as_str(),
+            input.expected_authority.as_str(),
+            observed_slot.as_str(),
+            observed_present.as_str(),
+            input.observed_authority.as_deref().unwrap_or(""),
+            observed_active.as_str(),
+            observed_last_extended_slot.as_str(),
+            observed_warm.as_str(),
+            observed_hash,
+            input.reason.as_str(),
+            input.reported_by.as_str(),
+        ]
+        .into_iter()
+        .chain(input.observed_addresses.iter().map(String::as_str)),
+    );
+    let observed_json = serde_json::to_value(&input.observed_addresses).map_err(|error| {
+        OrchestratorError::StoreInvariant(format!(
+            "shared-market physical drift addresses cannot be serialized: {error}"
+        ))
+    })?;
+    let inserted_id = sqlx::query_scalar::<_, i64>(
+        r#"
+        INSERT INTO loyal_yield.lookup_table_shared_market_physical_drifts
+            (evidence_hash, cluster, family_id, catalog_revision_id,
+             route_lookup_table_id, expected_mutation_epoch,
+             expected_table_address, expected_authority, observed_slot,
+             observed_table_present, observed_authority, observed_active,
+             observed_last_extended_slot, observed_warm,
+             observed_address_hash, observed_addresses, reason, reported_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                $13, $14, $15, $16, $17, $18)
+        ON CONFLICT (evidence_hash) DO NOTHING
+        RETURNING id
+        "#,
+    )
+    .bind(&evidence_hash)
+    .bind(&input.cluster)
+    .bind(input.family_id)
+    .bind(input.catalog_revision_id)
+    .bind(input.route_lookup_table_id)
+    .bind(input.expected_mutation_epoch)
+    .bind(&input.expected_table_address)
+    .bind(&input.expected_authority)
+    .bind(input.observed_slot)
+    .bind(input.observed_table_present)
+    .bind(&input.observed_authority)
+    .bind(input.observed_active)
+    .bind(input.observed_last_extended_slot)
+    .bind(input.observed_warm)
+    .bind(observed_hash)
+    .bind(observed_json)
+    .bind(&input.reason)
+    .bind(&input.reported_by)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let drift_id = if let Some(id) = inserted_id {
+        id
+    } else {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT id FROM loyal_yield.lookup_table_shared_market_physical_drifts WHERE evidence_hash = $1",
+        )
+        .bind(&evidence_hash)
+        .fetch_one(&mut *tx)
+        .await?
+    };
+    sqlx::query(
+        r#"
+        UPDATE loyal_yield.lookup_table_shared_market_catalog_heads
+        SET readiness_state = 'provisioning', activated_at = NULL,
+            updated_at = now()
+        WHERE family_id = $1 AND catalog_revision_id = $2
+          AND target_generation IS NOT NULL
+        "#,
+    )
+    .bind(input.family_id)
+    .bind(input.catalog_revision_id)
+    .execute(&mut *tx)
+    .await?;
+    let row = sqlx::query(
+        "SELECT * FROM loyal_yield.lookup_table_shared_market_physical_drifts WHERE id = $1",
+    )
+    .bind(drift_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    shared_market_physical_drift_from_row(&row)
+}
+
+async fn upsert_lookup_table_provisioning_request_in_tx(
+    tx: &mut sqlx::PgConnection,
+    input: &LookupTableProvisioningRequestUpsert,
+) -> Result<LookupTableProvisioningRequestRecord, OrchestratorError> {
+    let inserted_id = sqlx::query_scalar::<_, i64>(
+        r#"
+        INSERT INTO loyal_yield.lookup_table_provisioning_requests
+            (cluster, vault_id, route_fingerprint, requirements_fingerprint,
+             shared_manifest_id, vault_manifest_id, desired_shared_hash,
+             desired_vault_hash, desired_shared_address_count,
+             desired_vault_address_count, request_status)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'requested')
+        ON CONFLICT (cluster, vault_id, requirements_fingerprint) DO NOTHING
+        RETURNING id
+        "#,
+    )
+    .bind(&input.cluster)
+    .bind(input.vault_id.as_i64())
+    .bind(&input.route_fingerprint)
+    .bind(&input.requirements_fingerprint)
+    .bind(input.shared_manifest_id)
+    .bind(input.vault_manifest_id)
+    .bind(&input.desired_shared_hash)
+    .bind(&input.desired_vault_hash)
+    .bind(input.shared_addresses.len() as i32)
+    .bind(input.vault_addresses.len() as i32)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let request_id = if let Some(request_id) = inserted_id {
+        let addresses = input
+            .shared_addresses
+            .iter()
+            .chain(input.vault_addresses.iter())
+            .collect::<Vec<_>>();
+        if !addresses.is_empty() {
+            let mut query = QueryBuilder::<Postgres>::new(
+                "INSERT INTO loyal_yield.lookup_table_provisioning_request_addresses (request_id, address, semantic_class, ordinal, account_role, is_writable) ",
+            );
+            query.push_values(addresses, |mut row, address| {
+                row.push_bind(request_id)
+                    .push_bind(&address.address)
+                    .push_bind(address.semantic_class.as_str())
+                    .push_bind(address.ordinal)
+                    .push_bind(&address.account_role)
+                    .push_bind(address.is_writable);
+            });
+            query.build().execute(&mut *tx).await?;
+        }
+        sqlx::query(
+            "UPDATE loyal_yield.lookup_table_provisioning_requests SET sealed_at = now(), updated_at = now() WHERE id = $1",
+        )
+        .bind(request_id)
+        .execute(&mut *tx)
+        .await?;
+        request_id
+    } else {
+        let existing_row = sqlx::query(
+            r#"
+            SELECT * FROM loyal_yield.lookup_table_provisioning_requests
+            WHERE cluster = $1 AND vault_id = $2 AND requirements_fingerprint = $3
+            FOR UPDATE
+            "#,
+        )
+        .bind(&input.cluster)
+        .bind(input.vault_id.as_i64())
+        .bind(&input.requirements_fingerprint)
+        .fetch_one(&mut *tx)
+        .await?;
+        let existing = lookup_table_provisioning_request_from_row(&existing_row)?;
+        // `requirements_fingerprint` is the durable identity. Multiple route
+        // shapes can require the exact same immutable address set; retain the
+        // first route fingerprint as audit provenance without allocating twice.
+        if existing.shared_manifest_id != input.shared_manifest_id
+            && input.shared_manifest_id.is_some()
+            || existing.vault_manifest_id != input.vault_manifest_id
+                && input.vault_manifest_id.is_some()
+            || existing.desired_shared_hash != input.desired_shared_hash
+                && input.desired_shared_hash.is_some()
+            || existing.desired_vault_hash != input.desired_vault_hash
+                && input.desired_vault_hash.is_some()
+        {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "sealed provisioning request {} idempotency collision has different content",
+                existing.id
+            )));
+        }
+        let persisted_rows = sqlx::query(
+            r#"
+            SELECT address, semantic_class, ordinal, account_role, is_writable
+            FROM loyal_yield.lookup_table_provisioning_request_addresses
+            WHERE request_id = $1
+            ORDER BY semantic_class, ordinal
+            "#,
+        )
+        .bind(existing.id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let persisted = persisted_rows
+            .iter()
+            .map(lookup_table_manifest_address_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut expected = input
+            .shared_addresses
+            .iter()
+            .chain(input.vault_addresses.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        expected.sort_by_key(|address| (address.semantic_class, address.ordinal));
+        if !expected.is_empty() && persisted != expected {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "sealed provisioning request {} idempotency collision has different addresses",
+                existing.id
+            )));
+        }
+        let terminal_operation_failure = existing.request_status
+            == LookupTableProvisioningRequestStatus::Failed
+            && existing.error_code.as_deref() == Some("terminal_lookup_table_operation");
+        if !terminal_operation_failure
+            && matches!(
+                existing.request_status,
+                LookupTableProvisioningRequestStatus::Failed
+                    | LookupTableProvisioningRequestStatus::Cancelled
+                    | LookupTableProvisioningRequestStatus::Satisfied
+            )
+        {
+            sqlx::query(
+                r#"
+                UPDATE loyal_yield.lookup_table_provisioning_requests
+                SET request_status = 'requested', requested_at = now(),
+                    lease_owner = NULL, lease_expires_at = NULL,
+                    next_attempt_at = NULL, error_code = NULL, error_detail = NULL,
+                    satisfied_at = NULL,
+                    updated_at = now()
+                WHERE id = $1
+                "#,
+            )
+            .bind(existing.id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        existing.id
+    };
+    let row =
+        sqlx::query("SELECT * FROM loyal_yield.lookup_table_provisioning_requests WHERE id = $1")
+            .bind(request_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    lookup_table_provisioning_request_from_row(&row)
 }
 
 fn lookup_table_provisioning_request_from_row(
@@ -9929,6 +12287,13 @@ impl NeonSqlClient {
             .lookup_table_operation_with_addresses(operation_id)
             .await?
             .ok_or_else(|| stale_store_update("lookup-table operation", operation_id))?;
+        let planner_context_is_refreshable = input.manifest_id.is_some()
+            && matches!(
+                input.operation_kind,
+                LookupTableOperationKind::Create
+                    | LookupTableOperationKind::Extend
+                    | LookupTableOperationKind::Rollover
+            );
         if operation.family_id != input.family_id
             || operation.operation_kind != input.operation_kind
             || operation.route_lookup_table_id != input.route_lookup_table_id
@@ -9936,9 +12301,13 @@ impl NeonSqlClient {
             || operation.binding_id != input.binding_id
             || operation.target_generation != input.target_generation
             || operation.target_shard_ordinal != input.target_shard_ordinal
+            || (!planner_context_is_refreshable
+                && operation.operation_context != input.operation_context)
             || operation.mutation_epoch != input.mutation_epoch
-            || operation.estimated_fee_lamports != input.estimated_fee_lamports
-            || operation.estimated_rent_lamports != input.estimated_rent_lamports
+            || (!planner_context_is_refreshable
+                && operation.estimated_fee_lamports != input.estimated_fee_lamports)
+            || (!planner_context_is_refreshable
+                && operation.estimated_rent_lamports != input.estimated_rent_lamports)
             || addresses != input.addresses
         {
             return Err(OrchestratorError::StoreInvariant(format!(
@@ -10000,6 +12369,20 @@ impl NeonSqlClient {
                   )
                   AND (lease_expires_at IS NULL OR lease_expires_at <= now())
                   AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+                  AND (
+                      operation.route_lookup_table_id IS NULL
+                      OR NOT EXISTS (
+                          SELECT 1
+                          FROM loyal_yield.lookup_table_operations predecessor
+                          WHERE predecessor.route_lookup_table_id = operation.route_lookup_table_id
+                            AND predecessor.id <> operation.id
+                            AND predecessor.operation_state NOT IN (
+                                'complete', 'permanent_failure', 'cancelled'
+                            )
+                            AND (predecessor.created_at, predecessor.id)
+                                < (operation.created_at, operation.id)
+                      )
+                  )
                 ORDER BY
                     CASE operation.operation_state
                         WHEN 'needs_reconcile' THEN 0
@@ -10370,9 +12753,14 @@ impl NeonSqlClient {
                     "lookup-table operation {operation_id} budget fence was replayed with different accounting"
                 )));
             }
-            let usage =
-                load_cluster_budget_usage_in_connection(&mut tx, cluster, operation_id, now)
-                    .await?;
+            let usage = load_cluster_budget_usage_in_connection(
+                &mut tx,
+                cluster,
+                "operation",
+                operation_id,
+                now,
+            )
+            .await?;
             let window_ends_at: DateTime<Utc> = existing.try_get("reserved_until")?;
             let result = LookupTableClusterBudgetReservation {
                 approved: true,
@@ -10394,20 +12782,26 @@ impl NeonSqlClient {
             return Ok(result);
         }
 
-        let usage =
-            load_cluster_budget_usage_in_connection(&mut tx, cluster, operation_id, now).await?;
+        let usage = load_cluster_budget_usage_in_connection(
+            &mut tx,
+            cluster,
+            "operation",
+            operation_id,
+            now,
+        )
+        .await?;
         let current_operation_charge = usage
-            .operation_reserved_lamports
-            .max(usage.operation_actual_lamports);
+            .subject_reserved_lamports
+            .max(usage.subject_actual_lamports);
         let prospective_operation_charge = usage
-            .operation_reserved_lamports
+            .subject_reserved_lamports
             .checked_add(requested_lamports)
             .ok_or_else(|| {
                 OrchestratorError::StoreInvariant(
                     "lookup-table cluster budget operation reservation overflowed".to_owned(),
                 )
             })?
-            .max(usage.operation_actual_lamports);
+            .max(usage.subject_actual_lamports);
         let prospective_charge = usage
             .charged_lamports
             .checked_add(prospective_operation_charge - current_operation_charge)
@@ -10464,8 +12858,14 @@ impl NeonSqlClient {
         .bind(requested_window_end)
         .fetch_one(&mut *tx)
         .await?;
-        let usage =
-            load_cluster_budget_usage_in_connection(&mut tx, cluster, operation_id, now).await?;
+        let usage = load_cluster_budget_usage_in_connection(
+            &mut tx,
+            cluster,
+            "operation",
+            operation_id,
+            now,
+        )
+        .await?;
         let result = LookupTableClusterBudgetReservation {
             approved: true,
             replayed: false,
@@ -10606,10 +13006,20 @@ impl NeonSqlClient {
                     "cleanup operation context lacks expectedMutationEpoch".to_owned(),
                 )
             })?;
+        let expected_address_count = input
+            .operation_context
+            .get("expectedAddressCount")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| {
+                OrchestratorError::StoreInvariant(
+                    "cleanup operation context lacks expectedAddressCount".to_owned(),
+                )
+            })?;
         if input.mutation_epoch != expected_epoch
             || table.mutation_epoch != expected_epoch
             || table.authority != expected_authority
             || table.address_hash != expected_hash
+            || i64::from(table.address_count) != expected_address_count
             || input
                 .operation_context
                 .get("cluster")
@@ -10732,6 +13142,7 @@ impl NeonSqlClient {
             .transition_to(advance.next_state)
             .map_err(domain_store_error)?;
         let terminal = advance.next_state.is_terminal();
+        let mut tx = self.pool().begin().await?;
         let row = sqlx::query(
             r#"
             UPDATE loyal_yield.lookup_table_operations
@@ -10773,10 +13184,35 @@ impl NeonSqlClient {
         .bind(advance.actual_fee_lamports)
         .bind(advance.actual_rent_lamports)
         .bind(advance.reclaimed_rent_lamports)
-        .fetch_optional(self.pool())
+        .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| stale_fenced_operation(operation_id))?;
-        lookup_table_operation_from_row(&row)
+        let operation = lookup_table_operation_from_row(&row)?;
+        let permit_state = match advance.next_state {
+            LookupTableOperationStatus::Submitted => "submitted",
+            LookupTableOperationStatus::NeedsReconcile => "needs_reconcile",
+            LookupTableOperationStatus::PermanentFailure
+            | LookupTableOperationStatus::Cancelled => "failed",
+            _ => "reconciled",
+        };
+        sqlx::query(
+            r#"
+            UPDATE loyal_yield.lookup_table_provisioner_broadcast_permits
+            SET permit_state = $2,
+                resolution_detail = COALESCE($3, 'operation advanced through durable reconciliation'),
+                resolved_at = now(), updated_at = now()
+            WHERE operation_id = $1 AND resolved_at IS NULL
+              AND transaction_signature = $4
+            "#,
+        )
+        .bind(operation_id)
+        .bind(permit_state)
+        .bind(operation.error_detail.as_deref())
+        .bind(operation.transaction_signature.as_deref().unwrap_or_default())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(operation)
     }
 
     pub async fn retry_lookup_table_operation(
@@ -10791,6 +13227,7 @@ impl NeonSqlClient {
         expected_state
             .transition_to(LookupTableOperationStatus::RetryWait)
             .map_err(domain_store_error)?;
+        let mut tx = self.pool().begin().await?;
         let row = sqlx::query(
             r#"
             UPDATE loyal_yield.lookup_table_operations
@@ -10854,10 +13291,25 @@ impl NeonSqlClient {
         .bind(error_code)
         .bind(error_detail)
         .bind(expected_state.as_str())
-        .fetch_optional(self.pool())
+        .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| stale_fenced_operation(operation_id))?;
-        lookup_table_operation_from_row(&row)
+        let operation = lookup_table_operation_from_row(&row)?;
+        sqlx::query(
+            r#"
+            UPDATE loyal_yield.lookup_table_provisioner_broadcast_permits
+            SET permit_state = 'expired',
+                resolution_detail = $2,
+                resolved_at = now(), updated_at = now()
+            WHERE operation_id = $1 AND resolved_at IS NULL
+            "#,
+        )
+        .bind(operation_id)
+        .bind(error_detail.chars().take(500).collect::<String>())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(operation)
     }
 
     /// Records one worker attempt without ever crossing the durable signing
@@ -10950,11 +13402,31 @@ impl NeonSqlClient {
         .bind(next_state.as_str())
         .bind(retry_at)
         .bind(code)
-        .bind(bounded_detail)
+        .bind(&bounded_detail)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| stale_fenced_operation(operation_id))?;
         let operation = lookup_table_operation_from_row(&row)?;
+        if signed_or_later {
+            let permit_state = if next_state == LookupTableOperationStatus::PermanentFailure {
+                "failed"
+            } else {
+                "needs_reconcile"
+            };
+            sqlx::query(
+                r#"
+                UPDATE loyal_yield.lookup_table_provisioner_broadcast_permits
+                SET permit_state = $2, resolution_detail = $3,
+                    resolved_at = now(), updated_at = now()
+                WHERE operation_id = $1 AND resolved_at IS NULL
+                "#,
+            )
+            .bind(operation_id)
+            .bind(permit_state)
+            .bind(&bounded_detail)
+            .execute(&mut *tx)
+            .await?;
+        }
         tx.commit().await?;
         Ok(operation)
     }
@@ -11013,6 +13485,51 @@ impl NeonSqlClient {
                 "lookup-table operation {operation_id} is signed, stale, or not an unsigned leased attempt"
             ))
         })?;
+        lookup_table_operation_from_row(&row)
+    }
+
+    /// Releases a reconciliation lease while preserving the exact signed
+    /// identity and state. The lease TTL is crash fencing, not a normal poll
+    /// interval; known wait decisions schedule a short bounded retry instead
+    /// of idling until the lease expires.
+    pub async fn defer_lookup_table_reconciliation_poll(
+        &self,
+        operation_id: i64,
+        lease: &LookupTableOperationLease,
+        next_attempt_at: DateTime<Utc>,
+        detail: &str,
+    ) -> Result<LookupTableOperationRecord, OrchestratorError> {
+        let bounded_detail = detail.chars().take(500).collect::<String>();
+        let row = sqlx::query(
+            r#"
+            UPDATE loyal_yield.lookup_table_operations
+            SET next_attempt_at = $4,
+                error_detail = $5,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                updated_at = now()
+            WHERE id = $1
+              AND operation_state IN (
+                  'signed', 'submitted', 'confirmed', 'finalized',
+                  'reconciled', 'needs_reconcile'
+              )
+              AND lease_owner = $2 AND fencing_token = $3
+              AND lease_expires_at > now()
+              AND transaction_signature IS NOT NULL
+              AND message_hash IS NOT NULL
+              AND recent_blockhash IS NOT NULL
+              AND last_valid_block_height IS NOT NULL
+            RETURNING *
+            "#,
+        )
+        .bind(operation_id)
+        .bind(&lease.owner)
+        .bind(lease.fencing_token)
+        .bind(next_attempt_at)
+        .bind(bounded_detail)
+        .fetch_optional(self.pool())
+        .await?
+        .ok_or_else(|| stale_fenced_operation(operation_id))?;
         lookup_table_operation_from_row(&row)
     }
 
@@ -11528,13 +14045,30 @@ impl NeonSqlClient {
     pub async fn activate_reusable_only_cutover(
         &self,
         expected_preflight: &ReusableOnlyCutoverPreflight,
+        finalized_observation: &FinalizedSharedTableObservation,
         reason: &str,
         updated_by: &str,
     ) -> Result<ReusableOnlyCutoverResult, OrchestratorError> {
         let cluster = expected_preflight.cluster.as_str();
-        if cluster.trim().is_empty() || reason.trim().is_empty() || updated_by.trim().is_empty() {
+        if cluster.trim().is_empty()
+            || reason.trim().is_empty()
+            || updated_by.trim().is_empty()
+            || finalized_observation.cluster != cluster
+            || finalized_observation.physical_table_id <= 0
+            || finalized_observation.mutation_epoch < 0
+            || finalized_observation.observed_slot < 0
+            || finalized_observation.last_extended_slot < 0
+            || finalized_observation.last_extended_slot >= finalized_observation.observed_slot
+            || finalized_observation.address_count <= 0
+            || !is_sha256_hex(&finalized_observation.ordered_address_hash)
+            || usize::try_from(finalized_observation.address_count).ok()
+                != Some(finalized_observation.ordered_addresses.len())
+            || ordered_address_hash(&finalized_observation.ordered_addresses)
+                != finalized_observation.ordered_address_hash
+        {
             return Err(OrchestratorError::StoreInvariant(
-                "reusable-only cutover requires cluster, reason, and operator identity".to_owned(),
+                "reusable-only cutover requires valid cluster, operator, and exact finalized shared-table evidence"
+                    .to_owned(),
             ));
         }
         let mut tx = self.pool().begin().await?;
@@ -11544,6 +14078,42 @@ impl NeonSqlClient {
         .bind(cluster)
         .execute(&mut *tx)
         .await?;
+        let provisioner_control_row = sqlx::query(
+            "SELECT * FROM loyal_yield.lookup_table_provisioner_controls WHERE cluster = $1 FOR UPDATE",
+        )
+        .bind(cluster)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "reusable-only cutover requires a durable provisioner pause".to_owned(),
+            )
+        })?;
+        let provisioner_control =
+            lookup_table_provisioner_control_from_row(&provisioner_control_row)?;
+        if !provisioner_control.paused {
+            return Err(OrchestratorError::StoreInvariant(
+                "reusable-only cutover requires the durable provisioner pause to remain active"
+                    .to_owned(),
+            ));
+        }
+        let active_broadcast_permit_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT count(*)::BIGINT
+            FROM loyal_yield.lookup_table_provisioner_broadcast_permits
+            WHERE cluster = $1 AND resolved_at IS NULL
+            "#,
+        )
+        .bind(cluster)
+        .fetch_one(&mut *tx)
+        .await?;
+        let in_flight_mutation_count =
+            lookup_table_in_flight_mutation_count_in_connection(&mut tx, cluster).await?;
+        if active_broadcast_permit_count != 0 || in_flight_mutation_count != 0 {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "reusable-only cutover requires a drained pause; active permits={active_broadcast_permit_count}, in-flight mutations={in_flight_mutation_count}"
+            )));
+        }
         let current_preflight =
             load_reusable_only_cutover_preflight_in_connection(&mut tx, cluster).await?;
         if current_preflight != *expected_preflight {
@@ -11551,6 +14121,85 @@ impl NeonSqlClient {
                 "reusable-only cutover preflight evidence changed after finalized RPC verification"
                     .to_owned(),
             ));
+        }
+        if finalized_observation.physical_table_id != current_preflight.physical_table_id
+            || finalized_observation.table_address != current_preflight.physical_table_address
+            || finalized_observation.authority != current_preflight.physical_authority
+            || finalized_observation.mutation_epoch != current_preflight.physical_mutation_epoch
+            || finalized_observation.last_extended_slot
+                != current_preflight.physical_last_extended_slot
+            || finalized_observation.observed_slot < current_preflight.physical_last_verified_slot
+            || finalized_observation.ordered_address_hash != current_preflight.ordered_address_hash
+            || finalized_observation.address_count != current_preflight.physical_address_count
+            || finalized_observation.address_count
+                != current_preflight.physical_usable_address_count
+            || finalized_observation.ordered_addresses != current_preflight.ordered_addresses
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "reusable-only cutover finalized RPC observation does not match the locked shared-table identity"
+                    .to_owned(),
+            ));
+        }
+        let probe_row = sqlx::query(
+            r#"
+            SELECT *
+            FROM loyal_yield.lookup_table_precutover_probe_runs
+            WHERE cluster = $1
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            FOR SHARE
+            "#,
+        )
+        .bind(cluster)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "reusable-only cutover requires an immutable successful pre-cutover probe"
+                    .to_owned(),
+            )
+        })?;
+        let probe = lookup_table_precutover_probe_from_row(&probe_row)?;
+        if probe.result != "pass"
+            || probe.provisioner_control_epoch != provisioner_control.control_epoch
+            || probe.catalog_revision_id != current_preflight.catalog_revision_id
+            || probe.shared_manifest_id != current_preflight.manifest_id
+            || probe.route_lookup_table_id != current_preflight.physical_table_id
+            || probe.shared_table_address != current_preflight.physical_table_address
+            || probe.shared_authority != current_preflight.physical_authority
+            || probe.shared_mutation_epoch != current_preflight.physical_mutation_epoch
+            || probe.finalized_address_hash != current_preflight.ordered_address_hash
+            || probe.finalized_address_count != current_preflight.physical_address_count
+            || probe.finalized_last_extended_slot != finalized_observation.last_extended_slot
+            || probe.finalized_slot > finalized_observation.observed_slot
+            || !probe.finalized_shared_exact
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "reusable-only cutover pre-cutover probe is absent, stale, or does not match the exact finalized shared-table evidence"
+                    .to_owned(),
+            ));
+        }
+        let mutation_after_probe_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT
+                (SELECT count(*)::BIGINT
+                 FROM loyal_yield.lookup_table_operations operation
+                 JOIN loyal_yield.lookup_table_families family
+                   ON family.id = operation.family_id
+                 WHERE family.cluster = $1 AND operation.updated_at > $2)
+              + (SELECT count(*)::BIGINT
+                 FROM loyal_yield.lookup_table_provisioner_broadcast_permits permit
+                 WHERE permit.cluster = $1 AND permit.updated_at > $2)
+            "#,
+        )
+        .bind(cluster)
+        .bind(probe.created_at)
+        .fetch_one(&mut *tx)
+        .await?;
+        if mutation_after_probe_count != 0 {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "reusable-only cutover observed {mutation_after_probe_count} ALT operation or permit mutation(s) after the successful probe"
+            )));
         }
         let catalog = load_shared_market_catalog_head_in_connection(
             &mut tx,
@@ -11666,10 +14315,619 @@ impl NeonSqlClient {
                     "aligned vault rollout control count exceeds i64".to_owned(),
                 )
             })?,
+            provisioner_control_epoch: provisioner_control.control_epoch,
+            finalized_observed_slot: finalized_observation.observed_slot,
+            finalized_address_hash: finalized_observation.ordered_address_hash.clone(),
+            finalized_address_count: finalized_observation.address_count,
             global_control,
         };
         tx.commit().await?;
         Ok(result)
+    }
+
+    pub async fn lookup_table_provisioner_control(
+        &self,
+        cluster: &str,
+    ) -> Result<Option<LookupTableProvisionerControlRecord>, OrchestratorError> {
+        let row = sqlx::query(
+            "SELECT * FROM loyal_yield.lookup_table_provisioner_controls WHERE cluster = $1",
+        )
+        .bind(cluster)
+        .fetch_optional(self.pool())
+        .await?;
+        row.as_ref()
+            .map(lookup_table_provisioner_control_from_row)
+            .transpose()
+    }
+
+    /// Rechecks the exact shared catalog/table suffix in a short transaction
+    /// immediately before simulation and signing. A superseded unsigned lease
+    /// is cancelled without consuming RPC budget; signed identities are never
+    /// accepted by this gate and remain reconciliation-only.
+    pub async fn fence_leased_shared_market_operation_before_signing(
+        &self,
+        cluster: &str,
+        operation_id: i64,
+        lease: &LookupTableOperationLease,
+    ) -> Result<LookupTableSharedMarketOperationFenceResult, OrchestratorError> {
+        let mut tx = self.pool().begin().await?;
+        let catalog = load_shared_market_catalog_head_in_connection(
+            &mut tx,
+            cluster,
+            SharedMarketCatalogHeadLock::Update,
+        )
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(format!(
+                "cluster {cluster:?} has no current shared-market catalog head"
+            ))
+        })?;
+        let operation_row = sqlx::query(
+            r#"
+            SELECT operation.*
+            FROM loyal_yield.lookup_table_operations operation
+            JOIN loyal_yield.lookup_table_families family
+              ON family.id = operation.family_id
+            WHERE operation.id = $1 AND family.id = $2
+              AND family.cluster = $3 AND family.kind = 'shared_market'
+              AND operation.operation_state = 'leased'
+              AND operation.lease_owner = $4
+              AND operation.fencing_token = $5
+              AND operation.lease_expires_at > now()
+              AND operation.transaction_signature IS NULL
+              AND operation.message_hash IS NULL
+              AND operation.recent_blockhash IS NULL
+              AND operation.last_valid_block_height IS NULL
+            FOR UPDATE OF operation
+            "#,
+        )
+        .bind(operation_id)
+        .bind(catalog.family_id)
+        .bind(cluster)
+        .bind(&lease.owner)
+        .bind(lease.fencing_token)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| stale_fenced_operation(operation_id))?;
+        let operation = lookup_table_operation_from_row(&operation_row)?;
+        if !matches!(
+            operation.operation_kind,
+            LookupTableOperationKind::Create
+                | LookupTableOperationKind::Extend
+                | LookupTableOperationKind::Rollover
+        ) {
+            tx.commit().await?;
+            return Ok(LookupTableSharedMarketOperationFenceResult::Current);
+        }
+        let table_id = operation.route_lookup_table_id.ok_or_else(|| {
+            OrchestratorError::StoreInvariant(format!(
+                "shared-market operation {operation_id} has no physical table"
+            ))
+        })?;
+        let table_row = sqlx::query(
+            r#"
+            SELECT * FROM loyal_yield.route_lookup_tables
+            WHERE id = $1 AND family_id = $2 AND cluster = $3
+            FOR UPDATE
+            "#,
+        )
+        .bind(table_id)
+        .bind(catalog.family_id)
+        .bind(cluster)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| stale_store_update("shared-market physical table", table_id))?;
+        let table = reusable_lookup_table_from_row(&table_row)?;
+        let Some(reason) =
+            shared_market_operation_head_fence_detail(&mut tx, &catalog, &operation, &table)
+                .await?
+        else {
+            tx.commit().await?;
+            return Ok(LookupTableSharedMarketOperationFenceResult::Current);
+        };
+        let row = sqlx::query(
+            r#"
+            UPDATE loyal_yield.lookup_table_operations
+            SET operation_state = 'cancelled', next_attempt_at = NULL,
+                error_code = 'stale_shared_market_catalog_before_signing',
+                error_detail = $4, lease_owner = NULL,
+                lease_expires_at = NULL, updated_at = now()
+            WHERE id = $1 AND operation_state = 'leased'
+              AND lease_owner = $2 AND fencing_token = $3
+              AND lease_expires_at > now()
+              AND transaction_signature IS NULL
+              AND message_hash IS NULL
+              AND recent_blockhash IS NULL
+              AND last_valid_block_height IS NULL
+            RETURNING *
+            "#,
+        )
+        .bind(operation_id)
+        .bind(&lease.owner)
+        .bind(lease.fencing_token)
+        .bind(&reason)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| stale_fenced_operation(operation_id))?;
+        let operation = lookup_table_operation_from_row(&row)?;
+        tx.commit().await?;
+        Ok(LookupTableSharedMarketOperationFenceResult::Cancelled { operation, reason })
+    }
+
+    /// Atomically grants one durable permit for an already-persisted signed
+    /// identity. This transaction commits before the caller performs RPC I/O.
+    /// Pause administration locks the same control row, so a pause either wins
+    /// and prevents the grant or observes an unresolved permit as in-flight.
+    pub async fn grant_lookup_table_provisioner_broadcast_permit(
+        &self,
+        cluster: &str,
+        operation_id: i64,
+        lease: &LookupTableOperationLease,
+        retry_at: DateTime<Utc>,
+    ) -> Result<LookupTableProvisionerBroadcastPermitResult, OrchestratorError> {
+        if cluster.trim().is_empty() || operation_id <= 0 {
+            return Err(OrchestratorError::StoreInvariant(
+                "lookup-table broadcast permit requires a cluster and positive operation id"
+                    .to_owned(),
+            ));
+        }
+        let mut tx = self.pool().begin().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.lookup_table_provisioner_controls
+                (cluster, paused, reason, updated_by, control_epoch)
+            VALUES ($1, FALSE, 'implicit unpaused provisioner control', $2, 0)
+            ON CONFLICT (cluster) DO NOTHING
+            "#,
+        )
+        .bind(cluster)
+        .bind(&lease.owner)
+        .execute(&mut *tx)
+        .await?;
+        let control_row = sqlx::query(
+            "SELECT * FROM loyal_yield.lookup_table_provisioner_controls WHERE cluster = $1 FOR UPDATE",
+        )
+        .bind(cluster)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "lookup-table broadcast permit lost its provisioner control row".to_owned(),
+            )
+        })?;
+        let control = lookup_table_provisioner_control_from_row(&control_row)?;
+        let operation_family_row = sqlx::query(
+            r#"
+            SELECT family.id, family.kind
+            FROM loyal_yield.lookup_table_operations operation
+            JOIN loyal_yield.lookup_table_families family
+              ON family.id = operation.family_id
+            WHERE operation.id = $1 AND family.cluster = $2
+            "#,
+        )
+        .bind(operation_id)
+        .bind(cluster)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| stale_store_update("lookup-table operation", operation_id))?;
+        let family_id: i64 = operation_family_row.try_get("id")?;
+        let family_kind: LookupTableFamilyKind = parse_store_enum(
+            "lookup-table family kind",
+            operation_family_row.try_get("kind")?,
+        )?;
+        let shared_catalog = if family_kind == LookupTableFamilyKind::SharedMarket {
+            Some(
+                load_shared_market_catalog_head_in_connection(
+                    &mut tx,
+                    cluster,
+                    SharedMarketCatalogHeadLock::Update,
+                )
+                .await?
+                .ok_or_else(|| {
+                    OrchestratorError::StoreInvariant(format!(
+                        "cluster {cluster:?} has no current shared-market catalog head"
+                    ))
+                })?,
+            )
+        } else {
+            None
+        };
+        let family_row = sqlx::query(
+            "SELECT * FROM loyal_yield.lookup_table_families WHERE id = $1 AND cluster = $2 FOR SHARE",
+        )
+        .bind(family_id)
+        .bind(cluster)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| stale_store_update("lookup-table family", family_id))?;
+        let family = lookup_table_family_from_row(&family_row)?;
+        if family.kind != family_kind {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "lookup-table operation {operation_id} family kind changed during permit fencing"
+            )));
+        }
+        let operation_row = sqlx::query(
+            r#"
+            SELECT operation.*
+            FROM loyal_yield.lookup_table_operations operation
+            JOIN loyal_yield.lookup_table_families family
+              ON family.id = operation.family_id
+            WHERE operation.id = $1 AND family.cluster = $2
+            FOR UPDATE OF operation
+            "#,
+        )
+        .bind(operation_id)
+        .bind(cluster)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| stale_store_update("lookup-table operation", operation_id))?;
+        let operation = lookup_table_operation_from_row(&operation_row)?;
+        if operation.operation_state != LookupTableOperationStatus::Signed
+            || operation.lease_owner.as_deref() != Some(lease.owner.as_str())
+            || operation.fencing_token != lease.fencing_token
+            || operation
+                .lease_expires_at
+                .is_none_or(|expires_at| expires_at <= Utc::now())
+            || operation.transaction_signature.is_none()
+            || operation.message_hash.is_none()
+            || operation.recent_blockhash.is_none()
+            || operation.last_valid_block_height.is_none()
+        {
+            return Err(stale_fenced_operation(operation_id));
+        }
+        let operation_signature = operation
+            .transaction_signature
+            .clone()
+            .ok_or_else(|| stale_fenced_operation(operation_id))?;
+        let operation_message_hash = operation
+            .message_hash
+            .clone()
+            .ok_or_else(|| stale_fenced_operation(operation_id))?;
+        if control.paused {
+            let bounded_reason = control.reason.chars().take(500).collect::<String>();
+            let operation_row = sqlx::query(
+                r#"
+                UPDATE loyal_yield.lookup_table_operations
+                SET operation_state = 'needs_reconcile',
+                    next_attempt_at = $4,
+                    error_code = 'cluster_provisioner_paused_before_broadcast',
+                    error_detail = $5,
+                    operation_context = jsonb_set(
+                        operation_context,
+                        '{lastBroadcastPauseFence}',
+                        jsonb_build_object(
+                            'controlEpoch', $6::BIGINT,
+                            'updatedBy', $7::TEXT,
+                            'observedAt', now()
+                        ),
+                        TRUE
+                    ),
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = now()
+                WHERE id = $1 AND operation_state = 'signed'
+                  AND lease_owner = $2 AND fencing_token = $3
+                  AND lease_expires_at > now()
+                  AND transaction_signature IS NOT NULL
+                  AND message_hash IS NOT NULL
+                  AND recent_blockhash IS NOT NULL
+                  AND last_valid_block_height IS NOT NULL
+                RETURNING *
+                "#,
+            )
+            .bind(operation_id)
+            .bind(&lease.owner)
+            .bind(lease.fencing_token)
+            .bind(retry_at)
+            .bind(bounded_reason)
+            .bind(control.control_epoch)
+            .bind(&control.updated_by)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| stale_fenced_operation(operation_id))?;
+            let operation = lookup_table_operation_from_row(&operation_row)?;
+            tx.commit().await?;
+            return Ok(LookupTableProvisionerBroadcastPermitResult::Paused { control, operation });
+        }
+        let mut fence = None::<(&str, String)>;
+        if matches!(
+            operation.operation_kind,
+            LookupTableOperationKind::Create
+                | LookupTableOperationKind::Extend
+                | LookupTableOperationKind::Rollover
+                | LookupTableOperationKind::Deactivate
+                | LookupTableOperationKind::Close
+        ) {
+            let table_id = operation.route_lookup_table_id.ok_or_else(|| {
+                OrchestratorError::StoreInvariant(format!(
+                    "mutating lookup-table operation {operation_id} has no physical table"
+                ))
+            })?;
+            let table_row = sqlx::query(
+                r#"
+                SELECT * FROM loyal_yield.route_lookup_tables
+                WHERE id = $1 FOR UPDATE
+                "#,
+            )
+            .bind(table_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| stale_store_update("reusable lookup table", table_id))?;
+            let table = reusable_lookup_table_from_row(&table_row)?;
+            if operation.family_id != family.id
+                || operation.route_lookup_table_id != Some(table.id)
+                || table.family_id != family.id
+                || table.cluster != cluster
+                || table.authority != family.provisioning_authority
+                || table.payer != family.payer
+                || operation.mutation_epoch != table.mutation_epoch
+            {
+                fence = Some((
+                    "lookup_table_identity_changed_before_broadcast",
+                    "mutating operation lost its cluster, family, authority, payer, table, or mutation-epoch identity"
+                        .to_owned(),
+                ));
+            } else if let Some(catalog) = shared_catalog.as_ref() {
+                if let Some(detail) =
+                    shared_market_operation_head_fence_detail(&mut tx, catalog, &operation, &table)
+                        .await?
+                {
+                    fence = Some(("stale_shared_market_catalog_before_broadcast", detail));
+                }
+            }
+        }
+        if let Some((error_code, error_detail)) = fence {
+            let operation_row = sqlx::query(
+                r#"
+                UPDATE loyal_yield.lookup_table_operations
+                SET operation_state = 'needs_reconcile', next_attempt_at = $4,
+                    error_code = $5, error_detail = $6,
+                    lease_owner = NULL, lease_expires_at = NULL,
+                    updated_at = now()
+                WHERE id = $1 AND operation_state = 'signed'
+                  AND lease_owner = $2 AND fencing_token = $3
+                  AND lease_expires_at > now()
+                  AND transaction_signature IS NOT NULL
+                  AND message_hash IS NOT NULL
+                  AND recent_blockhash IS NOT NULL
+                  AND last_valid_block_height IS NOT NULL
+                RETURNING *
+                "#,
+            )
+            .bind(operation_id)
+            .bind(&lease.owner)
+            .bind(lease.fencing_token)
+            .bind(retry_at)
+            .bind(error_code)
+            .bind(&error_detail)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| stale_fenced_operation(operation_id))?;
+            let operation = lookup_table_operation_from_row(&operation_row)?;
+            tx.commit().await?;
+            return Ok(LookupTableProvisionerBroadcastPermitResult::Fenced {
+                control,
+                operation,
+                error_code: error_code.to_owned(),
+                error_detail,
+            });
+        }
+        let permit_row = sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.lookup_table_provisioner_broadcast_permits
+                (cluster, operation_id, fencing_token, control_epoch,
+                 transaction_signature, message_hash)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (operation_id, fencing_token) DO NOTHING
+            RETURNING *
+            "#,
+        )
+        .bind(cluster)
+        .bind(operation_id)
+        .bind(lease.fencing_token)
+        .bind(control.control_epoch)
+        .bind(&operation_signature)
+        .bind(&operation_message_hash)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let permit_row = match permit_row {
+            Some(row) => row,
+            None => sqlx::query(
+                r#"
+                SELECT *
+                FROM loyal_yield.lookup_table_provisioner_broadcast_permits
+                WHERE operation_id = $1 AND fencing_token = $2
+                FOR UPDATE
+                "#,
+            )
+            .bind(operation_id)
+            .bind(lease.fencing_token)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| stale_fenced_operation(operation_id))?,
+        };
+        let permit = lookup_table_provisioner_broadcast_permit_from_row(&permit_row)?;
+        if permit.cluster != cluster
+            || permit.control_epoch != control.control_epoch
+            || permit.transaction_signature != operation_signature
+            || permit.message_hash != operation_message_hash
+            || permit.permit_state != "granted"
+            || permit.resolved_at.is_some()
+        {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "lookup-table operation {operation_id} has conflicting or consumed broadcast-permit identity"
+            )));
+        }
+        tx.commit().await?;
+        Ok(LookupTableProvisionerBroadcastPermitResult::Granted {
+            control,
+            operation,
+            permit,
+        })
+    }
+
+    /// Resolves the durable permit and hands it to the operation state machine
+    /// in one short transaction after the RPC send attempt returns. If the
+    /// process crashes before this handoff, the unresolved permit remains a
+    /// cutover blocker and reconciliation inspects the persisted signature.
+    pub async fn resolve_lookup_table_provisioner_broadcast_permit(
+        &self,
+        permit_id: i64,
+        operation_id: i64,
+        lease: &LookupTableOperationLease,
+        resolution: LookupTableProvisionerBroadcastResolution,
+    ) -> Result<LookupTableOperationRecord, OrchestratorError> {
+        if permit_id <= 0 || operation_id <= 0 {
+            return Err(OrchestratorError::StoreInvariant(
+                "broadcast-permit resolution requires positive identities".to_owned(),
+            ));
+        }
+        let (next_state, observed_slot, error_code, error_detail, permit_state) = match resolution {
+            LookupTableProvisionerBroadcastResolution::Submitted { observed_slot } => (
+                LookupTableOperationStatus::Submitted,
+                Some(observed_slot),
+                None,
+                None,
+                "submitted",
+            ),
+            LookupTableProvisionerBroadcastResolution::NeedsReconcile {
+                observed_slot,
+                error_code,
+                error_detail,
+            } => (
+                LookupTableOperationStatus::NeedsReconcile,
+                observed_slot,
+                Some(error_code),
+                Some(error_detail),
+                "needs_reconcile",
+            ),
+        };
+        LookupTableOperationStatus::Signed
+            .transition_to(next_state)
+            .map_err(domain_store_error)?;
+        let mut tx = self.pool().begin().await?;
+        let permit_row = sqlx::query(
+            r#"
+            SELECT * FROM loyal_yield.lookup_table_provisioner_broadcast_permits
+            WHERE id = $1 AND operation_id = $2 FOR UPDATE
+            "#,
+        )
+        .bind(permit_id)
+        .bind(operation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| stale_store_update("lookup-table broadcast permit", permit_id))?;
+        let permit = lookup_table_provisioner_broadcast_permit_from_row(&permit_row)?;
+        if permit.fencing_token != lease.fencing_token
+            || permit.permit_state != "granted"
+            || permit.resolved_at.is_some()
+        {
+            return Err(stale_store_update(
+                "active lookup-table broadcast permit",
+                permit_id,
+            ));
+        }
+        let bounded_detail =
+            error_detail.map(|detail| detail.chars().take(500).collect::<String>());
+        let operation_row = sqlx::query(
+            r#"
+            UPDATE loyal_yield.lookup_table_operations
+            SET operation_state = $4,
+                submitted_slot = CASE WHEN $4 = 'submitted' THEN COALESCE($5, submitted_slot) ELSE submitted_slot END,
+                submitted_at = CASE WHEN $4 = 'submitted' THEN COALESCE(submitted_at, now()) ELSE submitted_at END,
+                error_code = $6,
+                error_detail = $7,
+                next_attempt_at = now() + interval '2 seconds',
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                updated_at = now()
+            WHERE id = $1 AND operation_state = 'signed'
+              AND lease_owner = $2 AND fencing_token = $3
+              AND lease_expires_at > now()
+              AND transaction_signature = $8 AND message_hash = $9
+            RETURNING *
+            "#,
+        )
+        .bind(operation_id)
+        .bind(&lease.owner)
+        .bind(lease.fencing_token)
+        .bind(next_state.as_str())
+        .bind(observed_slot)
+        .bind(error_code.as_deref())
+        .bind(bounded_detail.as_deref())
+        .bind(&permit.transaction_signature)
+        .bind(&permit.message_hash)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| stale_fenced_operation(operation_id))?;
+        sqlx::query(
+            r#"
+            UPDATE loyal_yield.lookup_table_provisioner_broadcast_permits
+            SET permit_state = $2, resolution_detail = $3,
+                resolved_at = now(), updated_at = now()
+            WHERE id = $1 AND permit_state = 'granted' AND resolved_at IS NULL
+            "#,
+        )
+        .bind(permit_id)
+        .bind(permit_state)
+        .bind(bounded_detail)
+        .execute(&mut *tx)
+        .await?;
+        let operation = lookup_table_operation_from_row(&operation_row)?;
+        tx.commit().await?;
+        Ok(operation)
+    }
+
+    pub async fn set_lookup_table_provisioner_pause(
+        &self,
+        cluster: &str,
+        paused: bool,
+        reason: &str,
+        updated_by: &str,
+    ) -> Result<LookupTableProvisionerControlRecord, OrchestratorError> {
+        if cluster.trim().is_empty() || reason.trim().is_empty() || updated_by.trim().is_empty() {
+            return Err(OrchestratorError::StoreInvariant(
+                "provisioner pause control requires non-empty cluster, reason, and updated_by"
+                    .to_owned(),
+            ));
+        }
+        let mut tx = self.pool().begin().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.lookup_table_provisioner_controls
+                (cluster, paused, reason, updated_by, control_epoch)
+            VALUES ($1, FALSE, 'provisioner control initialized', $2, 0)
+            ON CONFLICT (cluster) DO NOTHING
+            "#,
+        )
+        .bind(cluster)
+        .bind(updated_by)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "SELECT cluster FROM loyal_yield.lookup_table_provisioner_controls WHERE cluster = $1 FOR UPDATE",
+        )
+        .bind(cluster)
+        .fetch_one(&mut *tx)
+        .await?;
+        let row = sqlx::query(
+            r#"
+            UPDATE loyal_yield.lookup_table_provisioner_controls
+            SET paused = $2, reason = $3, updated_by = $4,
+                control_epoch = control_epoch + 1, updated_at = now()
+            WHERE cluster = $1
+            RETURNING *
+            "#,
+        )
+        .bind(cluster)
+        .bind(paused)
+        .bind(reason)
+        .bind(updated_by)
+        .fetch_one(&mut *tx)
+        .await?;
+        let control = lookup_table_provisioner_control_from_row(&row)?;
+        tx.commit().await?;
+        Ok(control)
     }
 
     pub async fn upsert_lookup_table_rollout_control(

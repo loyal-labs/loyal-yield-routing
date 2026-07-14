@@ -1,4 +1,5 @@
 mod domain;
+pub mod lookup_table_alerts;
 pub mod lookup_tables;
 pub mod rpc_safety;
 mod shared_market_catalog;
@@ -11,6 +12,7 @@ pub use domain::{
     route_amount_evidence, route_amount_evidence_from_metadata, state_transition,
     AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
+pub use lookup_table_alerts::*;
 pub use lookup_tables::*;
 pub use shared_market_catalog::{
     decode_kamino_reserve_account, derive_shared_market_catalog,
