@@ -204,15 +204,36 @@ projects:
                 value: warn,balance_sweep_autodeposit_trigger=info
 
           - type: worker
-            name: loyal-same-mint-yield-monitor
+            name: loyal-fleet-opportunity-planner
             runtime: image
             region: oregon
-            plan: starter
+            plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-02081d6fe666bd76969a56a3a6f678ac7f95b37b
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-b1ad5b1a968911effd09e06db94c49f12051ee05
             preDeployCommand: /usr/local/bin/yield-migrations --apply
-            dockerCommand: /usr/local/bin/same-mint-yield-monitor --all-active-vaults --execute --poll-interval-seconds 300 --rebalance-cooldown-seconds 300
+            dockerCommand: /usr/local/bin/fleet-opportunity-planner --poll-interval-seconds 1 --full-sweep-interval-seconds 30 --dirty-batch-size 256 --max-opportunities-per-wave 128
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: TIMESCALEDB_URL
+                sync: false
+              - key: YIELD_ALT_CLUSTER
+                value: mainnet-beta
+              - key: RUST_LOG
+                value: warn,fleet_opportunity_planner=info
+
+          - type: worker
+            name: loyal-fleet-route-revalidator
+            runtime: image
+            region: oregon
+            plan: standard
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-b1ad5b1a968911effd09e06db94c49f12051ee05
+            preDeployCommand: /usr/local/bin/yield-migrations --apply
+            dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-worker revalidate --concurrency 16 --fused-execute-concurrency 8 --poll-interval-milliseconds 250
             maxShutdownDelaySeconds: 60
             envVars:
               - key: NEON_DATABASE_URL
@@ -221,10 +242,110 @@ projects:
                 sync: false
               - key: SOLANA_RPC_URL
                 sync: false
+              - key: YIELD_ALT_CLUSTER
+                value: mainnet-beta
               - key: POLICY_KEYPAIR
                 sync: false
+              - key: YIELD_ROUTE_FEE_PAYER_KEYPAIRS
+                sync: false
               - key: RUST_LOG
-                value: warn,same_mint_yield_monitor=info
+                value: warn,same_mint_reserve_swap=info
+
+          - type: worker
+            name: loyal-fleet-route-executor
+            runtime: image
+            region: oregon
+            plan: standard
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-b1ad5b1a968911effd09e06db94c49f12051ee05
+            preDeployCommand: /usr/local/bin/yield-migrations --apply
+            dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-worker execute --concurrency 8 --poll-interval-milliseconds 250
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: TIMESCALEDB_URL
+                sync: false
+              - key: SOLANA_RPC_URL
+                sync: false
+              - key: YIELD_ALT_CLUSTER
+                value: mainnet-beta
+              - key: POLICY_KEYPAIR
+                sync: false
+              - key: YIELD_ROUTE_FEE_PAYER_KEYPAIRS
+                sync: false
+              - key: RUST_LOG
+                value: warn,same_mint_reserve_swap=info
+
+          - type: worker
+            name: loyal-fleet-route-confirmer
+            runtime: image
+            region: oregon
+            plan: starter
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-b1ad5b1a968911effd09e06db94c49f12051ee05
+            preDeployCommand: /usr/local/bin/yield-migrations --apply
+            dockerCommand: /usr/local/bin/fleet-route-confirmer --execute --batch-size 128 --broadcast-concurrency 16 --poll-interval-milliseconds 1000
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: SOLANA_RPC_URL
+                sync: false
+              - key: YIELD_ALT_CLUSTER
+                value: mainnet-beta
+              - key: RUST_LOG
+                value: warn,fleet_route_confirmer=info
+
+          - type: worker
+            name: loyal-fleet-route-reconciler
+            runtime: image
+            region: oregon
+            plan: starter
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-b1ad5b1a968911effd09e06db94c49f12051ee05
+            preDeployCommand: /usr/local/bin/yield-migrations --apply
+            dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-reconciler --concurrency 16 --batch-size 32 --poll-interval-milliseconds 250
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: SOLANA_RPC_URL
+                sync: false
+              - key: YIELD_ALT_CLUSTER
+                value: mainnet-beta
+              - key: RUST_LOG
+                value: warn,same_mint_reserve_swap=info
+
+          - type: worker
+            name: loyal-route-lookup-table-provisioner
+            runtime: image
+            region: oregon
+            plan: starter
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-b1ad5b1a968911effd09e06db94c49f12051ee05
+            preDeployCommand: /usr/local/bin/yield-migrations --apply
+            dockerCommand: /usr/local/bin/route-lookup-table-provisioner --execute --watch --max-operations 32 --concurrency 8 --rate-limit-ms 250
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: SOLANA_RPC_URL
+                sync: false
+              - key: YIELD_ALT_CLUSTER
+                value: mainnet-beta
+              - key: POLICY_KEYPAIR
+                sync: false
+              - key: YIELD_ALT_MAX_LAMPORTS
+                sync: false
+              - key: YIELD_ALT_BUDGET_WINDOW_SECONDS
+                value: "86400"
+              - key: RUST_LOG
+                value: warn,route_lookup_table_provisioner=info
 
       - name: staging
         services:
