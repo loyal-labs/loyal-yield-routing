@@ -8,7 +8,10 @@ use loyal_yield_router::timescale::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Instant,
+};
 use thiserror::Error;
 
 const SAME_MINT_ROUTE_MODE: &str = "same_mint_kamino";
@@ -380,6 +383,9 @@ pub struct ObservedFleetOpportunity {
 pub struct FleetObservationStats {
     pub market_read_count: u32,
     pub neon_read_count: u32,
+    pub market_read_micros: u64,
+    pub neon_read_micros: u64,
+    pub projection_micros: u64,
     pub rpc_read_count: u32,
     pub child_process_count: u32,
     /// Authoritative denominator: every active managed vault whose active
@@ -492,17 +498,37 @@ pub async fn observe_fleet_opportunities_without_queue_schema(
 ) -> Result<FleetObservationResult, FleetObservationError> {
     let captured_at = Utc::now();
     let validated = ValidatedConfig::new(config, delegated_signer)?;
-    let market_epoch =
-        load_market_epoch(timescale, config, &validated.enabled_mints, captured_at).await?;
-    let source_set = load_fleet_sources_without_queue_schema(
-        neon,
-        delegated_signer,
-        &validated.enabled_mints,
-        config.rebalance_cooldown_seconds,
-        captured_at,
+    let market_started = Instant::now();
+    let source_started = Instant::now();
+    let ((market_epoch, market_read_micros), (source_set, neon_read_micros)) = tokio::try_join!(
+        async {
+            Ok::<_, FleetObservationError>((
+                load_market_epoch(timescale, config, &validated.enabled_mints, captured_at).await?,
+                elapsed_micros(market_started),
+            ))
+        },
+        async {
+            Ok::<_, FleetObservationError>((
+                load_fleet_sources_without_queue_schema(
+                    neon,
+                    delegated_signer,
+                    &validated.enabled_mints,
+                    config.rebalance_cooldown_seconds,
+                    captured_at,
+                )
+                .await?,
+                elapsed_micros(source_started),
+            ))
+        },
+    )?;
+    build_timed_observation_result(
+        market_epoch,
+        source_set,
+        &validated,
+        config,
+        market_read_micros,
+        neon_read_micros,
     )
-    .await?;
-    build_observation_result(market_epoch, source_set, &validated, config)
 }
 
 /// Observes one durable dirty cohort while retaining a fleet-wide committed
@@ -563,19 +589,59 @@ async fn observe_fleet_opportunities_at_scope(
     vault_ids: Option<&[i64]>,
 ) -> Result<FleetObservationResult, FleetObservationError> {
     let validated = ValidatedConfig::new(config, delegated_signer)?;
-    let market_epoch =
-        load_market_epoch(timescale, config, &validated.enabled_mints, captured_at).await?;
-    let source_set = load_fleet_sources(
-        neon,
-        &config.cluster,
-        delegated_signer,
-        &validated.enabled_mints,
-        config.rebalance_cooldown_seconds,
-        captured_at,
-        vault_ids,
+    let market_started = Instant::now();
+    let source_started = Instant::now();
+    let ((market_epoch, market_read_micros), (source_set, neon_read_micros)) = tokio::try_join!(
+        async {
+            Ok::<_, FleetObservationError>((
+                load_market_epoch(timescale, config, &validated.enabled_mints, captured_at).await?,
+                elapsed_micros(market_started),
+            ))
+        },
+        async {
+            Ok::<_, FleetObservationError>((
+                load_fleet_sources(
+                    neon,
+                    &config.cluster,
+                    delegated_signer,
+                    &validated.enabled_mints,
+                    config.rebalance_cooldown_seconds,
+                    captured_at,
+                    vault_ids,
+                )
+                .await?,
+                elapsed_micros(source_started),
+            ))
+        },
+    )?;
+    build_timed_observation_result(
+        market_epoch,
+        source_set,
+        &validated,
+        config,
+        market_read_micros,
+        neon_read_micros,
     )
-    .await?;
-    build_observation_result(market_epoch, source_set, &validated, config)
+}
+
+fn elapsed_micros(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
+
+fn build_timed_observation_result(
+    market_epoch: ImmutableMarketEpoch,
+    source_set: FleetSourceSet,
+    validated: &ValidatedConfig,
+    config: &FleetObservationConfig,
+    market_read_micros: u64,
+    neon_read_micros: u64,
+) -> Result<FleetObservationResult, FleetObservationError> {
+    let projection_started = Instant::now();
+    let mut result = build_observation_result(market_epoch, source_set, validated, config)?;
+    result.stats.market_read_micros = market_read_micros;
+    result.stats.neon_read_micros = neon_read_micros;
+    result.stats.projection_micros = elapsed_micros(projection_started);
+    Ok(result)
 }
 
 async fn load_market_epoch(
@@ -593,6 +659,10 @@ async fn load_market_epoch(
             min_supply_apy: Some(config.minimum_supply_apy),
             max_supply_apy: Some(config.maximum_supply_apy),
             stale: Some(false),
+            observed_after: Some(
+                captured_at - Duration::seconds(config.maximum_market_age_seconds),
+            ),
+            observed_before_or_at: Some(captured_at),
             limit: None,
         })
         .await

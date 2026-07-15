@@ -9,6 +9,7 @@ node_modules
 .turbo
 dist
 coverage
+data
 *.log
 .DS_Store
 tmp

@@ -758,6 +758,20 @@ async fn run_live_once(
     };
     let elapsed_micros = started.elapsed().as_micros();
     let material_frontier_fingerprint = observation.market_epoch.material_frontier_fingerprint();
+    let observed_opportunity_epoch_ids = observation
+        .opportunities
+        .iter()
+        .map(|opportunity| opportunity.economics.optimizer_epoch_id)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let selected_opportunity_epoch_ids = wave
+        .selected
+        .iter()
+        .map(|item| item.opportunity.optimizer_epoch_id)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
     let evidence = PlanningEvidence {
         optimizer_epoch_key: observation.market_epoch.fingerprint.clone(),
         material_frontier_fingerprint: material_frontier_fingerprint.clone(),
@@ -791,6 +805,9 @@ async fn run_live_once(
     "childProcessesSpawned": 0,
     "epochFingerprint": observation.market_epoch.fingerprint,
     "epochExpiresAt": observation.market_epoch.expires_at,
+    "marketEpochOptimizerId": observation.market_epoch.optimizer_epoch_id,
+    "observedOpportunityEpochIds": observed_opportunity_epoch_ids,
+    "selectedOpportunityEpochIds": selected_opportunity_epoch_ids,
     "marketReserveCount": observation.market_epoch.reserves.len(),
     "fleetCompleteness": fleet_completeness,
     "committedTargetInflowReserveCount": observation.stats.committed_target_inflow_reserve_count,

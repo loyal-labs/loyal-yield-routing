@@ -14,8 +14,8 @@ use loyal_yield_orchestrator::fleet_orchestration::{
     local_hardware_description, run_deterministic_benchmark, ControlledRuntimeEvidence,
     FleetWorkerRole, RuntimeAltEvidence, RuntimeDatabaseExecutionEvidence,
     RuntimeDiscoveryEvidence, RuntimeEvidenceFoundationV1, RuntimeEvidenceV1,
-    RuntimeExecutionEvidence, RuntimeSourceBinding, RuntimeTransactionProbeEvidence,
-    RuntimeWiringEvidence,
+    RuntimeExecutionEvidence, RuntimePlannerEpochProof, RuntimeSourceBinding,
+    RuntimeTransactionProbeEvidence, RuntimeWiringEvidence,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -68,6 +68,9 @@ struct PlannerOutput {
     child_processes_spawned: u64,
     epoch_fingerprint: String,
     epoch_expires_at: DateTime<Utc>,
+    market_epoch_optimizer_id: i64,
+    observed_opportunity_epoch_ids: Vec<i64>,
+    selected_opportunity_epoch_ids: Vec<i64>,
     observation_and_planning_micros: u64,
     fleet_completeness: PlannerFleetCompleteness,
     top_value_cohort: Vec<PlannerTopValueItem>,
@@ -323,6 +326,33 @@ fn active_outcomes_match(
     expected == actual
 }
 
+fn epoch_ids_match_market(ids: &[i64], market_epoch_optimizer_id: i64) -> bool {
+    ids.len() <= 1
+        && ids
+            .iter()
+            .all(|epoch_id| *epoch_id == market_epoch_optimizer_id)
+}
+
+fn planner_epoch_proof(run: &PlannerOutput) -> RuntimePlannerEpochProof {
+    RuntimePlannerEpochProof {
+        market_epoch_optimizer_id: run.market_epoch_optimizer_id,
+        observed_opportunity_epoch_ids: run.observed_opportunity_epoch_ids.clone(),
+        selected_opportunity_epoch_ids: run.selected_opportunity_epoch_ids.clone(),
+    }
+}
+
+fn planner_epoch_proof_passes(proof: &RuntimePlannerEpochProof) -> bool {
+    proof.market_epoch_optimizer_id > 0
+        && epoch_ids_match_market(
+            &proof.observed_opportunity_epoch_ids,
+            proof.market_epoch_optimizer_id,
+        )
+        && epoch_ids_match_market(
+            &proof.selected_opportunity_epoch_ids,
+            proof.market_epoch_optimizer_id,
+        )
+}
+
 fn positive_epoch_id(fingerprint: &str) -> i64 {
     let mut folded = 0xcbf29ce484222325u64;
     for byte in fingerprint.bytes() {
@@ -352,11 +382,22 @@ fn run_read_only_planner(
             output.stdout.len(),
         )
     })?;
+    let epoch_proof = planner_epoch_proof(&parsed);
+    let observed_opportunity_vaults = parsed
+        .fleet_completeness
+        .vault_outcomes_by_reason
+        .get("opportunity_observed")
+        .copied()
+        .unwrap_or_default();
     if parsed.status != "planned"
         || parsed.mode != "live_read_only"
         || parsed.mutating
         || parsed.planning_scope != "full_fleet"
         || parsed.epoch_fingerprint.is_empty()
+        || parsed.epoch_expires_at <= Utc::now()
+        || !planner_epoch_proof_passes(&epoch_proof)
+        || (observed_opportunity_vaults > 0
+            && epoch_proof.observed_opportunity_epoch_ids.is_empty())
         || !parsed.fleet_completeness.complete_vault_accounting
         || !active_outcomes_match(
             &parsed
@@ -392,13 +433,11 @@ fn collect_discovery(
     for _ in 0..PLANNING_ROUNDS {
         runs.push(run_read_only_planner(repository_root, planner_binary)?);
     }
-    let first = runs.first().ok_or("planner produced no samples")?;
-    if runs.iter().any(|run| {
-        run.epoch_fingerprint != first.epoch_fingerprint
-            || run.epoch_expires_at != first.epoch_expires_at
-    }) {
-        return Err("immutable market epoch changed during collection; rerun the sample".into());
-    }
+    let final_run = runs.last().ok_or("planner produced no samples")?;
+    let planning_sample_epoch_proofs = runs.iter().map(planner_epoch_proof).collect::<Vec<_>>();
+    let one_immutable_epoch = planning_sample_epoch_proofs
+        .iter()
+        .all(planner_epoch_proof_passes);
 
     let mut planning_micros = runs
         .iter()
@@ -433,7 +472,6 @@ fn collect_discovery(
     // Queue state may advance while the read-only samples run. Report the
     // final complete partition (closest to capturedAt) while using every run
     // for the latency distribution and immutable-epoch check.
-    let final_run = runs.last().ok_or("planner produced no final sample")?;
     let completeness = &final_run.fleet_completeness;
     let eligible_current_vaults = i64_count(
         completeness.eligible_managed_vaults,
@@ -466,9 +504,13 @@ fn collect_discovery(
             &completeness.active_opportunity_vaults_excluded_by_state,
             "active exclusion count",
         )?,
-        optimizer_epoch_id: positive_epoch_id(&first.epoch_fingerprint),
+        // Each independent read-only sample is internally bound to one
+        // immutable epoch. Live samples may legitimately advance to a newer
+        // epoch; the artifact records the final complete, non-expired one.
+        optimizer_epoch_id: positive_epoch_id(&final_run.epoch_fingerprint),
         epoch_expires_at: final_run.epoch_expires_at,
-        one_immutable_epoch: true,
+        one_immutable_epoch,
+        planning_sample_epoch_proofs,
         planning_sample_count: u64::try_from(runs.len()).unwrap_or(u64::MAX),
         planning_p95_milliseconds: planning_p95_micros.div_ceil(1_000),
         replay_vault_count: u64::try_from(replay.input_count).unwrap_or(u64::MAX),

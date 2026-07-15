@@ -61,6 +61,7 @@ pub struct RuntimeDiscoveryEvidence {
     pub optimizer_epoch_id: i64,
     pub epoch_expires_at: DateTime<Utc>,
     pub one_immutable_epoch: bool,
+    pub planning_sample_epoch_proofs: Vec<RuntimePlannerEpochProof>,
     pub planning_sample_count: u64,
     pub planning_p95_milliseconds: u64,
     pub replay_vault_count: u64,
@@ -68,6 +69,14 @@ pub struct RuntimeDiscoveryEvidence {
     pub economically_ordered: bool,
     pub top_cohort_has_no_nonconflicting_priority_inversion: bool,
     pub child_route_or_reconcile_processes_spawned: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimePlannerEpochProof {
+    pub market_epoch_optimizer_id: i64,
+    pub observed_opportunity_epoch_ids: Vec<i64>,
+    pub selected_opportunity_epoch_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,8 +89,11 @@ pub struct RuntimeAltEvidence {
     pub ready_jobs_claimed: u64,
     pub waiting_alt_jobs: u64,
     pub waiting_alt_decisions: u64,
+    pub claim_latency_gate_clock: String,
     pub ready_claim_baseline_p95_micros: u64,
     pub ready_claim_cold_p95_micros: u64,
+    pub ready_claim_baseline_client_p95_micros: u64,
+    pub ready_claim_cold_client_p95_micros: u64,
     pub durable_coverage_wakeup_rows: u64,
     pub affected_jobs_promoted: u64,
     pub unaffected_jobs_promoted: u64,
@@ -100,6 +112,7 @@ pub struct RuntimeExecutionEvidence {
     pub overlapping_lane_limit_violations: u64,
     pub physical_writable_key_congestion_visible: bool,
     pub expired_lease_reclaimed_with_higher_fence: bool,
+    pub mixed_runnable_and_expired_claims_full_and_disjoint: bool,
     pub fleet_wide_exclusive_route_leases: u64,
     pub identical_byte_rebroadcast_attempts: u64,
     pub rebroadcast_byte_mismatches: u64,
@@ -120,6 +133,10 @@ pub struct RuntimeExecutionEvidence {
     pub bounded_ranked_failover: bool,
     pub low_balance_limits_enforced: bool,
     pub atomic_immutable_spend_reservation: bool,
+    pub target_capacity_concurrent_admission_bounded: bool,
+    pub pre_send_target_capacity_released: bool,
+    pub reconciled_capacity_strict_telemetry_fence: bool,
+    pub preexisting_newer_telemetry_release: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -130,12 +147,17 @@ pub struct RuntimeDatabaseExecutionEvidence {
     pub overlapping_lane_limit_violations: u64,
     pub physical_writable_key_congestion_visible: bool,
     pub expired_lease_reclaimed_with_higher_fence: bool,
+    pub mixed_runnable_and_expired_claims_full_and_disjoint: bool,
     pub fleet_wide_exclusive_route_leases: u64,
     pub replacement_before_expiry_and_absence_proof: u64,
     pub ambiguous_or_stale_replacement_movements: u64,
     pub reciprocal_authority_separation: bool,
     pub low_balance_limits_enforced: bool,
     pub atomic_immutable_spend_reservation: bool,
+    pub target_capacity_concurrent_admission_bounded: bool,
+    pub pre_send_target_capacity_released: bool,
+    pub reconciled_capacity_strict_telemetry_fence: bool,
+    pub preexisting_newer_telemetry_release: bool,
     pub database_deadlocks: u64,
 }
 
@@ -171,6 +193,8 @@ impl RuntimeExecutionEvidence {
                 .physical_writable_key_congestion_visible,
             expired_lease_reclaimed_with_higher_fence: database
                 .expired_lease_reclaimed_with_higher_fence,
+            mixed_runnable_and_expired_claims_full_and_disjoint: database
+                .mixed_runnable_and_expired_claims_full_and_disjoint,
             fleet_wide_exclusive_route_leases: database.fleet_wide_exclusive_route_leases,
             identical_byte_rebroadcast_attempts: transaction.identical_byte_rebroadcast_attempts,
             rebroadcast_byte_mismatches: transaction.rebroadcast_byte_mismatches,
@@ -198,6 +222,12 @@ impl RuntimeExecutionEvidence {
             bounded_ranked_failover: transaction.bounded_ranked_failover,
             low_balance_limits_enforced: database.low_balance_limits_enforced,
             atomic_immutable_spend_reservation: database.atomic_immutable_spend_reservation,
+            target_capacity_concurrent_admission_bounded: database
+                .target_capacity_concurrent_admission_bounded,
+            pre_send_target_capacity_released: database.pre_send_target_capacity_released,
+            reconciled_capacity_strict_telemetry_fence: database
+                .reconciled_capacity_strict_telemetry_fence,
+            preexisting_newer_telemetry_release: database.preexisting_newer_telemetry_release,
         }
     }
 }

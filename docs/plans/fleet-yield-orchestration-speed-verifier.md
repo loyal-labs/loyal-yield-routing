@@ -462,16 +462,23 @@ schemaVersion, headCommit, runtimeSourceDigestSha256, capturedAt, hardware
 discovery:
   fleetSize, eligibleCurrentVaults, accountedVaults,
   vaultOutcomesByReason, activeExclusionsByState, optimizerEpochId,
-  epochExpiresAt, oneImmutableEpoch, planningSampleCount,
+  epochExpiresAt, oneImmutableEpoch, planningSampleEpochProofs,
+  planningSampleCount,
   planningP95Milliseconds, replayVaultCount, replayMilliseconds,
   economicallyOrdered, topCohortHasNoNonconflictingPriorityInversion,
   childRouteOrReconcileProcessesSpawned
 
+planningSampleEpochProofs[]:
+  marketEpochOptimizerId, observedOpportunityEpochIds,
+  selectedOpportunityEpochIds
+
 alt:
   typedProvisionerDryRunPlans, reusableV2Plans,
   legacyOrExactRouteAltPlans, readyJobsSeeded, readyJobsClaimed, waitingAltJobs,
-  waitingAltDecisions, readyClaimBaselineP95Micros,
-  readyClaimColdP95Micros, durableCoverageWakeupRows,
+  waitingAltDecisions, claimLatencyGateClock,
+  readyClaimBaselineP95Micros, readyClaimColdP95Micros,
+  readyClaimBaselineClientP95Micros, readyClaimColdClientP95Micros,
+  durableCoverageWakeupRows,
   affectedJobsPromoted, unaffectedJobsPromoted,
   additionalFleetCycleRequired,
   normalReadinessGlobalRolloutLockAcquisitions,
@@ -482,6 +489,7 @@ execution:
   duplicateActiveVaultMovements, nonoverlappingConcurrentLeases,
   overlappingLaneLimitViolations, physicalWritableKeyCongestionVisible,
   expiredLeaseReclaimedWithHigherFence,
+  mixedRunnableAndExpiredClaimsFullAndDisjoint,
   fleetWideExclusiveRouteLeases, identicalByteRebroadcastAttempts,
   rebroadcastByteMismatches, replacementBeforeExpiryAndAbsenceProof,
   ambiguousOrStaleReplacementMovements, postConfirmReads,
@@ -492,7 +500,11 @@ execution:
   finalPacketSimulationFeeAndHashesMatch,
   setupIdleAndFarmInitUsePolicyPayer, shardRegistryKeypairMatch,
   reciprocalAuthoritySeparation, boundedRankedFailover,
-  lowBalanceLimitsEnforced, atomicImmutableSpendReservation
+  lowBalanceLimitsEnforced, atomicImmutableSpendReservation,
+  targetCapacityConcurrentAdmissionBounded,
+  preSendTargetCapacityReleased,
+  reconciledCapacityStrictTelemetryFence,
+  preexistingNewerTelemetryRelease
 
 replay:
   routeSampleCount, warmHighValueSubmissionP95Milliseconds,
@@ -507,19 +519,27 @@ replay:
 wiring:
   probedContainerImageReference, localContainerImageId,
   runnableRoleProbeExitCodes,
-  recoveryPollIntervalMilliseconds, stuckStageDetectionMilliseconds
+  recoveryPollIntervalMilliseconds, healthObservationIntervalMilliseconds,
+  stuckStageDetectionMilliseconds
 ```
 
 The verifier recomputes completeness totals, backlog effects, and every numeric
 threshold from these measurements. The wiring maps must contain exactly the six
 durable roles and the six stuck stages named in Check 7; every local-container
-probe must exit zero and every stuck stage must be detected within the recorded
-recovery-poll interval. The probed image reference must exactly equal the one
-immutable GHCR `light-workers:sha-<commit>` reference shared by all six
-production Blueprint roles; probing an unrelated local image is FAIL. A
+probe must exit zero and every stuck stage must be detected within the
+recorded health-observation interval. The probed image reference must exactly
+equal the one immutable GHCR `light-workers:sha-<commit>` reference shared by
+all six production Blueprint roles; probing an unrelated local image is FAIL. A
 complete source-bound artifact can move Checks 2, 4,
 5, 6, and the runtime portion of 7 to PASS; absence leaves them `NOT RUN`, and
 invalid or threshold-breaking measurements produce `FAIL`.
+
+The seven live planning latency samples may observe successively newer market
+epochs; requiring the market to stop updating during measurement would test a
+frozen feed, not planner correctness. Every sample must carry its market epoch
+ID plus the distinct observed and selected opportunity epoch IDs, all of which
+must match. The artifact records the final complete, non-expired epoch with the
+p95 across all samples.
 
 Secret-backed read-only checks must use:
 
@@ -564,20 +584,24 @@ reason in this document before changing implementation.
 
 ## Latest Evidence Run: 2026-07-15
 
-This is the literal current verdict, not a deployment claim:
+The table below records the last complete source-bound run, not a deployment
+claim. Current runtime-source changes supersede it until the new immutable
+image and post-build complete artifact are verified; during that interval the
+literal current implementation verdict is `NOT RUN`.
 
 | Check | Verdict | Evidence / first missing invariant |
 | --- | --- | --- |
 | 1. Repository and migration integrity | PASS | The dedicated runner applied and checked migrations 1-27 in a fresh PostgreSQL database. The source-aware verifier passed the migration ledger, rolled-back reapplication, changed/untracked whitespace, non-printing credential scan, `cargo fmt --all -- --check`, orchestrator all-bin check, router check, and `git diff --check`. |
-| 2. Fast complete discovery | NOT RUN | Seven deterministic 10,000-vault planning rounds completed at 59.525ms p95, remained economically ordered, and spawned zero child processes. A fresh source-bound artifact still must prove live current-fleet completeness, epoch freshness, top-cohort conflict ordering, and live planning p95. |
+| 2. Fast complete discovery | PASS | A fresh source-bound read-only artifact accounted for all 3,022 eligible current vaults in mutually exclusive outcomes. Seven live samples measured 1.927s p95, the 10,000-vault replay took 61ms, economic/top-cohort ordering passed, and zero child route/reconcile processes were spawned. The freshness-bounded Timescale query used typed source columns and runtime chunk exclusion instead of the historical latest-view scan. |
 | 3. Economic behavior | PASS | Deterministic notional, edge, lost-yield, starvation, dust/cost, fee-cap, material-frontier, and concurrent target-capacity invariants passed. Three simultaneous $100 admissions against $250 of headroom admitted two and rejected only the excess contender without a telemetry-fence false rejection. |
-| 4. ALT head-of-line isolation | NOT RUN | Every isolated database subcheck passed. With 4,096 ready jobs and 10,000 `waiting_alt` jobs, PostgreSQL statement p95 was 2.933ms baseline versus 2.722ms cold (0ppm regression); all ready work drained, cold work remained untouched, catalog predicates excluded cold/active-lease rows, and runnable index reads stayed below the derived MVCC self-churn ceiling. Source-bound reusable-v2 provisioner and independent physical-ALT lane evidence is still uncollected. |
-| 5. Execution concurrency and crash safety | NOT RUN | Every isolated database subcheck passed, including mixed runnable/expired `SKIP LOCKED` claims, 64 semantic lanes, physical writable congestion, fenced reclaim, exact signed handoff, immutable retries, capacity release fences, and zero deadlocks. Controlled RPC evidence for identical-byte rebroadcast, final sharded transaction identity, real standard `POLICY_KEYPAIR` signatures, and slot-fenced reconciliation remains uncollected. |
-| 6. Performance, value, and price | NOT RUN | No production-like send/confirm/yield-unlock/fee replay was authorized or run. |
-| 7. Production wiring and feedback loop | FAIL | The light-worker recipe contains all owning binaries and the functional health/reconnect fixtures pass, but `render.yaml` still runs the serial five-minute executing monitor and declares none of the six durable roles. A locally built immutable candidate image, six least-privilege service declarations, serial execution removal, and bound role probes are required. |
+| 4. ALT head-of-line isolation | PASS | The source-bound artifact drained all 4,096 ready jobs while leaving 10,000 `waiting_alt` jobs decision-free. PostgreSQL statement p95 was 4.257ms baseline versus 3.723ms cold (0ppm positive regression); reusable-v2-only planning, one-row durable targeted wakeup, two independent physical ALT lanes, lane-exact indexes, zero normal global-lock acquisitions, and zero stale-fence commits passed. |
+| 5. Execution concurrency and crash safety | PASS | Isolated DB plus controlled-RPC evidence passed 64 nonoverlapping leases, physical writable congestion, full/disjoint mixed runnable-expired claims, higher-fence reclaim, exact-byte rebroadcast, ambiguity blocking, slot-fenced reconciliation, target-capacity admission/release fences, and zero duplicate movements/deadlocks. The standard `POLICY_KEYPAIR` signed policy execution and remained ALT authority/payer; fee-only shard identity and budget gates passed. |
+| 6. Performance, value, and price | PASS | The controlled 10,000-route replay measured 2.331s warm high-value submission p95 and 23.930s confirmation p95. It submitted 100% of recoverable yield dollars/hour inside both two and ten minutes, observed a 162ppm maximum fee fraction under the 50,000ppm cap, and produced zero negative-value routes, duplicates, or deadlocks; ALT backlog changed warm p95 by 0ppm. This is implementation replay evidence, not real production movement evidence. |
+| 7. Production wiring and feedback loop | PASS | `render.yaml` declares six distinct least-privilege durable roles on one immutable image reference and no serial executing monitor. The locally built candidate image ID `sha256:b4665feb5d4b85d273f5e7b0270b629a3a0f79fe55f013e96b21458c665f1e49` passed all six network-disabled role probes. Durable recovery polls every 250ms; all six stuck stages were detected in 500ms, within the declared 1,000ms health interval. |
 
-Current scoped result: `IMPLEMENTATION: FAIL`; `DEPLOYMENT: NOT RUN`;
-`PRODUCTION PERFORMANCE: NOT RUN`; `END STATE: FAIL`.
+Last complete scoped result: `IMPLEMENTATION: PASS`; `DEPLOYMENT: NOT RUN`;
+`PRODUCTION PERFORMANCE: NOT RUN`; `END STATE: NOT RUN`. Current post-change
+result: `IMPLEMENTATION: NOT RUN` pending the post-build complete artifact.
 Deployment remains `NOT RUN` in the executable verifier because registry,
 Render, and production database observations are deliberately outside local
 implementation evidence. No production migration, deployment, transaction

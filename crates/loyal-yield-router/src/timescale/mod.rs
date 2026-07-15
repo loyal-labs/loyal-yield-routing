@@ -103,23 +103,58 @@ impl TimescaleRouterClient {
         &self,
         query: SupportedReserveLatestQuery,
     ) -> sqlx::Result<Vec<SupportedReserveLatestRow>> {
+        let SupportedReserveLatestQuery {
+            risk_baskets,
+            liquidity_mint,
+            markets,
+            min_supply_usd,
+            min_supply_apy,
+            max_supply_apy,
+            stale,
+            observed_after,
+            observed_before_or_at,
+            limit,
+        } = query;
         let mut builder = QueryBuilder::<Postgres>::new(format!(
             "SELECT l.observed_at, l.slot, l.reserve, l.market, l.market_name, \
              l.liquidity_mint, l.symbol, l.mint_decimals, l.market_price_usd, \
              l.supply_apy, l.borrow_apy, \
              l.total_supply_usd_estimate, l.reserve_last_update_stale \
              FROM {} sr \
-             JOIN {} l ON l.reserve = sr.reserve \
+             JOIN (SELECT DISTINCT ON (reserve) \
+                        observed_at, event_id, slot, reserve, market, market_name, \
+                        liquidity_mint, symbol, mint_decimals, market_price_usd, \
+                        supply_apy, borrow_apy, total_supply_usd_estimate, \
+                        reserve_last_update_stale \
+                   FROM {}",
+            self.qualified(SUPPORTED_RESERVES_TABLE),
+            self.qualified(RESERVE_UPDATES_TABLE)
+        ));
+        let has_observed_after = observed_after.is_some();
+        if let Some(observed_after) = observed_after {
+            builder
+                .push(" WHERE observed_at >= ")
+                .push_bind(observed_after);
+        }
+        if let Some(observed_before_or_at) = observed_before_or_at {
+            builder
+                .push(if has_observed_after {
+                    " AND observed_at <= "
+                } else {
+                    " WHERE observed_at <= "
+                })
+                .push_bind(observed_before_or_at);
+        }
+        builder.push(
+            " ORDER BY reserve, event_id DESC) l ON l.reserve = sr.reserve \
                 AND l.market = sr.market \
                 AND l.liquidity_mint = sr.liquidity_mint \
              WHERE sr.active = true",
-            self.qualified(SUPPORTED_RESERVES_TABLE),
-            self.qualified(LATEST_RESERVE_UPDATES_VIEW)
-        ));
+        );
 
-        if !query.risk_baskets.is_empty() {
+        if !risk_baskets.is_empty() {
             builder.push(" AND (");
-            for (index, risk_basket) in query.risk_baskets.iter().enumerate() {
+            for (index, risk_basket) in risk_baskets.iter().enumerate() {
                 if index > 0 {
                     builder.push(" OR ");
                 }
@@ -129,40 +164,38 @@ impl TimescaleRouterClient {
             }
             builder.push(")");
         }
-        if let Some(liquidity_mint) = query.liquidity_mint {
+        if let Some(liquidity_mint) = liquidity_mint {
             builder
                 .push(" AND sr.liquidity_mint = ")
                 .push_bind(liquidity_mint);
         }
-        if !query.markets.is_empty() {
-            builder
-                .push(" AND sr.market = ANY(")
-                .push_bind(query.markets);
+        if !markets.is_empty() {
+            builder.push(" AND sr.market = ANY(").push_bind(markets);
             builder.push(")");
         }
-        if let Some(stale) = query.stale {
+        if let Some(stale) = stale {
             builder
                 .push(" AND l.reserve_last_update_stale = ")
                 .push_bind(stale);
         }
-        if let Some(min_supply_usd) = query.min_supply_usd {
+        if let Some(min_supply_usd) = min_supply_usd {
             builder
                 .push(" AND l.total_supply_usd_estimate > ")
                 .push_bind(min_supply_usd);
         }
-        if let Some(min_supply_apy) = query.min_supply_apy {
+        if let Some(min_supply_apy) = min_supply_apy {
             builder
                 .push(" AND l.supply_apy >= ")
                 .push_bind(min_supply_apy);
         }
-        if let Some(max_supply_apy) = query.max_supply_apy {
+        if let Some(max_supply_apy) = max_supply_apy {
             builder
                 .push(" AND l.supply_apy < ")
                 .push_bind(max_supply_apy);
         }
 
         builder.push(" ORDER BY l.supply_apy DESC, l.observed_at DESC, l.reserve ASC");
-        if let Some(limit) = query.limit {
+        if let Some(limit) = limit {
             builder.push(" LIMIT ").push_bind(limit_i64(limit));
         }
 
@@ -337,6 +370,12 @@ pub struct SupportedReserveLatestQuery {
     pub min_supply_apy: Option<f64>,
     pub max_supply_apy: Option<f64>,
     pub stale: Option<bool>,
+    /// Limits the candidate history before selecting the latest row per
+    /// reserve. This enables Timescale chunk exclusion for freshness-bound
+    /// consumers without allowing an older row to pass later quality filters.
+    pub observed_after: Option<DateTime<Utc>>,
+    /// Excludes future-dated observations from a captured snapshot.
+    pub observed_before_or_at: Option<DateTime<Utc>>,
     pub limit: Option<usize>,
 }
 

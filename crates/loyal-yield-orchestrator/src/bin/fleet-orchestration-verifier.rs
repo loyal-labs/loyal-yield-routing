@@ -158,6 +158,7 @@ struct RuntimeDiscoveryEvidence {
     optimizer_epoch_id: i64,
     epoch_expires_at: DateTime<Utc>,
     one_immutable_epoch: bool,
+    planning_sample_epoch_proofs: Vec<RuntimePlannerEpochProof>,
     planning_sample_count: u64,
     planning_p95_milliseconds: u64,
     replay_vault_count: u64,
@@ -165,6 +166,14 @@ struct RuntimeDiscoveryEvidence {
     economically_ordered: bool,
     top_cohort_has_no_nonconflicting_priority_inversion: bool,
     child_route_or_reconcile_processes_spawned: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RuntimePlannerEpochProof {
+    market_epoch_optimizer_id: i64,
+    observed_opportunity_epoch_ids: Vec<i64>,
+    selected_opportunity_epoch_ids: Vec<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -177,8 +186,11 @@ struct RuntimeAltEvidence {
     ready_jobs_claimed: u64,
     waiting_alt_jobs: u64,
     waiting_alt_decisions: u64,
+    claim_latency_gate_clock: String,
     ready_claim_baseline_p95_micros: u64,
     ready_claim_cold_p95_micros: u64,
+    ready_claim_baseline_client_p95_micros: u64,
+    ready_claim_cold_client_p95_micros: u64,
     durable_coverage_wakeup_rows: u64,
     affected_jobs_promoted: u64,
     unaffected_jobs_promoted: u64,
@@ -197,6 +209,7 @@ struct RuntimeExecutionEvidence {
     overlapping_lane_limit_violations: u64,
     physical_writable_key_congestion_visible: bool,
     expired_lease_reclaimed_with_higher_fence: bool,
+    mixed_runnable_and_expired_claims_full_and_disjoint: bool,
     fleet_wide_exclusive_route_leases: u64,
     identical_byte_rebroadcast_attempts: u64,
     rebroadcast_byte_mismatches: u64,
@@ -217,6 +230,10 @@ struct RuntimeExecutionEvidence {
     bounded_ranked_failover: bool,
     low_balance_limits_enforced: bool,
     atomic_immutable_spend_reservation: bool,
+    target_capacity_concurrent_admission_bounded: bool,
+    pre_send_target_capacity_released: bool,
+    reconciled_capacity_strict_telemetry_fence: bool,
+    preexisting_newer_telemetry_release: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1273,6 +1290,40 @@ fn runtime_discovery_subcheck(evidence: &RuntimeEvidenceV1) -> Subcheck {
         })
         .map(|(_, count)| *count)
         .sum::<u64>();
+    let epoch_proofs_are_complete = evidence.discovery.planning_sample_epoch_proofs.len()
+        == usize::try_from(evidence.discovery.planning_sample_count).unwrap_or(usize::MAX)
+        && evidence
+            .discovery
+            .planning_sample_epoch_proofs
+            .iter()
+            .all(|proof| {
+                proof.market_epoch_optimizer_id > 0
+                    && proof.observed_opportunity_epoch_ids.len() <= 1
+                    && proof
+                        .observed_opportunity_epoch_ids
+                        .iter()
+                        .all(|epoch_id| *epoch_id == proof.market_epoch_optimizer_id)
+                    && proof.selected_opportunity_epoch_ids.len() <= 1
+                    && proof
+                        .selected_opportunity_epoch_ids
+                        .iter()
+                        .all(|epoch_id| *epoch_id == proof.market_epoch_optimizer_id)
+            });
+    let final_epoch_proof_matches = evidence
+        .discovery
+        .planning_sample_epoch_proofs
+        .last()
+        .is_some_and(|proof| {
+            proof.market_epoch_optimizer_id == evidence.discovery.optimizer_epoch_id
+                && (evidence
+                    .discovery
+                    .vault_outcomes_by_reason
+                    .get("opportunity_observed")
+                    .copied()
+                    .unwrap_or_default()
+                    == 0
+                    || !proof.observed_opportunity_epoch_ids.is_empty())
+        });
     let passed = evidence.discovery.fleet_size > 0
         && evidence.discovery.eligible_current_vaults > 0
         && evidence.discovery.fleet_size >= evidence.discovery.eligible_current_vaults
@@ -1281,6 +1332,8 @@ fn runtime_discovery_subcheck(evidence: &RuntimeEvidenceV1) -> Subcheck {
         && active_exclusion_count == active_outcome_count
         && evidence.discovery.optimizer_epoch_id > 0
         && evidence.discovery.one_immutable_epoch
+        && epoch_proofs_are_complete
+        && final_epoch_proof_matches
         && evidence.discovery.epoch_expires_at > evidence.captured_at
         && evidence.discovery.planning_sample_count > 0
         && evidence.discovery.planning_p95_milliseconds < 5_000
@@ -1316,8 +1369,11 @@ fn runtime_alt_subcheck(evidence: &RuntimeEvidenceV1) -> Subcheck {
         && evidence.alt.ready_jobs_claimed == evidence.alt.ready_jobs_seeded
         && evidence.alt.waiting_alt_jobs >= 10_000
         && evidence.alt.waiting_alt_decisions == 0
+        && evidence.alt.claim_latency_gate_clock == "postgres_statement_elapsed"
         && baseline > 0
         && cold_effect_ppm < 50_000
+        && evidence.alt.ready_claim_baseline_client_p95_micros > 0
+        && evidence.alt.ready_claim_cold_client_p95_micros > 0
         && evidence.alt.affected_jobs_promoted > 0
         && evidence.alt.durable_coverage_wakeup_rows >= evidence.alt.affected_jobs_promoted
         && evidence.alt.unaffected_jobs_promoted == 0
@@ -1347,6 +1403,7 @@ fn runtime_execution_subcheck(evidence: &RuntimeEvidenceV1) -> Subcheck {
         && execution.overlapping_lane_limit_violations == 0
         && execution.physical_writable_key_congestion_visible
         && execution.expired_lease_reclaimed_with_higher_fence
+        && execution.mixed_runnable_and_expired_claims_full_and_disjoint
         && execution.fleet_wide_exclusive_route_leases == 0
         && execution.identical_byte_rebroadcast_attempts >= 2
         && execution.rebroadcast_byte_mismatches == 0
@@ -1366,7 +1423,11 @@ fn runtime_execution_subcheck(evidence: &RuntimeEvidenceV1) -> Subcheck {
         && execution.reciprocal_authority_separation
         && execution.bounded_ranked_failover
         && execution.low_balance_limits_enforced
-        && execution.atomic_immutable_spend_reservation;
+        && execution.atomic_immutable_spend_reservation
+        && execution.target_capacity_concurrent_admission_bounded
+        && execution.pre_send_target_capacity_released
+        && execution.reconciled_capacity_strict_telemetry_fence
+        && execution.preexisting_newer_telemetry_release;
     subcheck(
         "bound_controlled_rpc_evidence_meets_replay_signer_and_reconciliation_gates",
         passed,
