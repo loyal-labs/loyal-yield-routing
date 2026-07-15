@@ -476,7 +476,7 @@ async fn run_vault_once(
             .ok()
             .and_then(Option::as_ref)
             .expect("matched planned move");
-        let execution = execute_planned_move(&vault, planned_move)?;
+        let execution = execute_planned_move(&vault, planned_move, &policy_source_reserves)?;
         let active_decision_count_after = active_decision_count(neon, vault.vault.id).await?;
         let positions_after = neon.current_positions(vault.vault.id).await?;
         if !execution.success {
@@ -561,6 +561,7 @@ async fn run_vault_once(
 fn execute_planned_move(
     vault: &ResolvedVault,
     planned_move: &PlannedMonitorMove,
+    policy_source_reserves: &[SupportedKaminoReserve],
 ) -> Result<RouteExecutionOutput, Box<dyn Error>> {
     let binary = same_mint_reserve_swap_binary()?;
     let current_exe = env::current_exe()?;
@@ -579,7 +580,7 @@ fn execute_planned_move(
         ]);
         fallback
     };
-    let output = command
+    command
         .arg("--settings")
         .arg(&vault.vault.settings)
         .arg("--vault-index")
@@ -604,8 +605,11 @@ fn execute_planned_move(
         .arg(planned_move.edge_bps.to_string())
         .arg("--optimization-cycle")
         .arg("--reconcile-from-chain")
-        .arg("--execute")
-        .output()?;
+        .arg("--execute");
+    for reserve in reconcile_reserves_for_source_universe(policy_source_reserves) {
+        command.arg("--reconcile-reserve").arg(reserve);
+    }
+    let output = command.output()?;
     let stdout_text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     let stdout_json = if stdout_text.is_empty() {
         None
@@ -2075,5 +2079,18 @@ mod tests {
 
         assert_eq!(source_universe.len(), 1);
         assert_eq!(source_universe[0].reserve, UNSAFE_SOURCE);
+    }
+
+    #[test]
+    fn planned_move_execution_reconciles_full_policy_source_universe() {
+        let source_universe = vec![
+            known_reserve("source", ALLOWED_MARKET, MINT),
+            known_reserve("target", ALLOWED_MARKET, MINT),
+            known_reserve("preserved", ALLOWED_MARKET, MINT),
+        ];
+
+        let reserves = reconcile_reserves_for_source_universe(&source_universe);
+
+        assert_eq!(reserves, vec!["source", "target", "preserved"]);
     }
 }

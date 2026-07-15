@@ -239,6 +239,36 @@ fn reconcile_reserves_for_move(options: &CliOptions, reserve_move: &ReserveMove)
     reserves
 }
 
+fn same_mint_execution_reconcile_reserves(
+    options: &CliOptions,
+    reserve_move: &ReserveMove,
+    current_positions: &[PositionSummary],
+) -> Vec<String> {
+    let mut reserves = reconcile_reserves_for_move(options, reserve_move);
+    for position in current_positions {
+        push_unique_string(&mut reserves, position.reserve.clone());
+    }
+    reserves
+}
+
+fn same_mint_post_confirm_reconcile_reserves(
+    source_reserve: &str,
+    target_reserve: &str,
+    execution_reconcile_reserves: &[String],
+    current_positions: &[PositionSummary],
+) -> Vec<String> {
+    let mut reserves = Vec::new();
+    push_unique_string(&mut reserves, source_reserve.to_owned());
+    push_unique_string(&mut reserves, target_reserve.to_owned());
+    for reserve in execution_reconcile_reserves {
+        push_unique_string(&mut reserves, reserve.clone());
+    }
+    for position in current_positions {
+        push_unique_string(&mut reserves, position.reserve.clone());
+    }
+    reserves
+}
+
 fn push_unique_string(values: &mut Vec<String>, value: String) {
     if !values.iter().any(|existing| existing == &value) {
         values.push(value);
@@ -623,6 +653,11 @@ struct RouteExecutionPlan {
     instructions: Vec<Instruction>,
     lookup_table_manifest: LookupTableManifest,
     preview: RouteExecutionPreview,
+}
+
+struct PreparedSameMintRouteExecution<'a> {
+    plan: &'a RouteExecutionPlan,
+    reconcile_reserves: &'a [String],
 }
 
 #[derive(Debug)]
@@ -1042,7 +1077,16 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .await?
         .ok_or("no active managed vault found for settings and vault index")?;
     validate_vault_policy(&vault)?;
-    let reconcile_reserves = reconcile_reserves_for_move(&options, &reserve_move);
+    let current_positions_for_reconcile = if options.execute && options.reconcile_from_chain {
+        load_position_summaries(&client, vault.id).await?
+    } else {
+        Vec::new()
+    };
+    let reconcile_reserves = same_mint_execution_reconcile_reserves(
+        &options,
+        &reserve_move,
+        &current_positions_for_reconcile,
+    );
 
     let requires_chain_preview = options.reconcile_from_chain
         || options.initial_deposit_amount_raw.is_some()
@@ -1562,6 +1606,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             &vault,
             &execution_decision,
             &route_execution,
+            &reconcile_reserves,
             predecision_lookup_tables,
         )
         .await
@@ -9916,6 +9961,7 @@ async fn execute_prepared_same_mint_route(
     vault: &SelectedVault,
     decision: &PreparedSameMintDecision,
     route_execution: &RouteExecutionPlan,
+    execution_reconcile_reserves: &[String],
     predecision_lookup_tables: &RuntimeLookupTableResolution,
 ) -> Result<RouteExecutionSubmitResult, Box<dyn Error>> {
     let prepared_lease_reference = format!(
@@ -9926,12 +9972,16 @@ async fn execute_prepared_same_mint_route(
             .as_deref()
             .ok_or("predecision lookup-table selection fingerprint is missing")?
     );
+    let execution = PreparedSameMintRouteExecution {
+        plan: route_execution,
+        reconcile_reserves: execution_reconcile_reserves,
+    };
     let result = execute_prepared_same_mint_route_inner(
         client,
         options,
         vault,
         decision,
-        route_execution,
+        execution,
         predecision_lookup_tables,
         &prepared_lease_reference,
     )
@@ -9951,10 +10001,14 @@ async fn execute_prepared_same_mint_route_inner(
     options: &CliOptions,
     vault: &SelectedVault,
     decision: &PreparedSameMintDecision,
-    route_execution: &RouteExecutionPlan,
+    execution: PreparedSameMintRouteExecution<'_>,
     predecision_lookup_tables: &RuntimeLookupTableResolution,
     prepared_lease_reference: &str,
 ) -> Result<RouteExecutionSubmitResult, Box<dyn Error>> {
+    let PreparedSameMintRouteExecution {
+        plan: route_execution,
+        reconcile_reserves: execution_reconcile_reserves,
+    } = execution;
     let rpc =
         RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
     let signer = policy_keypair_from_env()?;
@@ -10105,10 +10159,13 @@ async fn execute_prepared_same_mint_route_inner(
     client
         .advance_decision(decision.id, DecisionAdvance::StartConfirmation)
         .await?;
-    let post_reconcile_reserves = vec![
-        decision.source_reserve.clone(),
-        decision.target_reserve.clone(),
-    ];
+    let current_positions = load_position_summaries(client, decision.vault_id).await?;
+    let post_reconcile_reserves = same_mint_post_confirm_reconcile_reserves(
+        &decision.source_reserve,
+        &decision.target_reserve,
+        execution_reconcile_reserves,
+        &current_positions,
+    );
     let post_reconcile_preview =
         load_chain_reconcile_preview(&options.rpc_url, vault, &post_reconcile_reserves)?;
     let post_reconcile_state = chain_preview_reconciled_state(&post_reconcile_preview)?;
@@ -12887,6 +12944,54 @@ mod tests {
             cluster: "localnet".to_owned(),
             rpc_url: "http://localhost:8899".to_owned(),
         }
+    }
+
+    fn test_position_summary(reserve: &str) -> PositionSummary {
+        PositionSummary {
+            reserve: reserve.to_owned(),
+            liquidity_mint: "mint".to_owned(),
+            amount_raw: 10,
+            has_value: true,
+            snapshot_id: SnapshotId(1),
+            supply_apy_bps: None,
+            planning_metadata: json!({
+                "amount_semantics": ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+            }),
+        }
+    }
+
+    #[test]
+    fn same_mint_execution_keeps_current_reserves_in_both_reconcile_passes() {
+        let mut options = test_cli_options(true, true, Some(1));
+        options.reconcile_reserves = vec!["policy-reserve".to_owned()];
+        let reserve_move = ReserveMove {
+            source_reserve: "source-reserve".to_owned(),
+            target_reserve: "target-reserve".to_owned(),
+        };
+        let current_positions = vec![test_position_summary("preserved-reserve")];
+
+        let execution_reserves =
+            same_mint_execution_reconcile_reserves(&options, &reserve_move, &current_positions);
+        assert_eq!(
+            execution_reserves,
+            vec![
+                "source-reserve",
+                "target-reserve",
+                "policy-reserve",
+                "preserved-reserve",
+            ]
+        );
+
+        let post_confirm_reserves = same_mint_post_confirm_reconcile_reserves(
+            &reserve_move.source_reserve,
+            &reserve_move.target_reserve,
+            &["source-reserve".to_owned(), "target-reserve".to_owned()],
+            &current_positions,
+        );
+        assert_eq!(
+            post_confirm_reserves,
+            vec!["source-reserve", "target-reserve", "preserved-reserve"]
+        );
     }
 
     #[test]
