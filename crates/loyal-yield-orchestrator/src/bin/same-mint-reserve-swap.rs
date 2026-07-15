@@ -4,7 +4,13 @@ use std::{
     convert::TryInto,
     env,
     error::Error,
+    panic::{catch_unwind, AssertUnwindSafe},
     str::FromStr,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant},
 };
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -53,45 +59,70 @@ use loyal_yield_orchestrator::sqlx::{
     PgPool, Row,
 };
 use loyal_yield_orchestrator::{
+    fleet_orchestration::{
+        evaluate_fresh_route_economics, fleet_stage_health_report, fleet_worker_role_probe,
+        maximum_target_inflight_usd_micros, observe_market_epoch, outer_task_failure_recovery,
+        projected_target_apy_bps, DurablePgWakeupEvent, DurablePgWakeupListener, EconomicPolicy,
+        FleetObservationConfig, FleetWorkerRole, FreshRouteEconomicsInput, ImmutableMarketEpoch,
+        OpportunityInput, OuterTaskFailureKind, RebalanceOpportunityAdvance,
+        RebalanceOpportunityClaimKind, RebalanceOpportunityLease, RebalanceOpportunityRecord,
+        RebalanceOpportunityState, RouteFeePayerKind, RouteFeePayerShardConfig, RouteFeePolicy,
+        SignedRouteSubmissionAdvance, SignedRouteSubmissionInput, SignedRouteSubmissionLease,
+        SignedRouteSubmissionState, TargetCapacityObservation, TargetCapacityReservationInput,
+    },
     lookup_table_manifest_hash as control_plane_lookup_table_manifest_hash,
     minimal_verified_table_bundle, policy_keypair_from_env, route_amount_evidence_from_metadata,
+    route_fee_payer_keypairs_from_env,
     rpc_safety::{redacted_external_error, validate_rpc_endpoint, validate_rpc_genesis_hash},
     shared_market_manifest_addresses, shared_market_manifest_hash, solana_testing_keypair_from_env,
-    vault_manifest_addresses, vault_manifest_hash, ConfirmSameMintRebalanceInput,
-    CurrentIdleTokenBalance, DecisionAdvance, DecisionId, DecisionStatus,
-    EffectiveLookupTableRollout, IdleVaultDepositDecisionInput, LookupTableAllocationKind,
-    LookupTableProvisioningRequestUpsert, LookupTableReadinessRecord, LookupTableReadinessStatus,
-    LookupTableRolloutMode, LookupTableSelectionKind, LookupTableSimulationState,
-    LookupTableUsageLeaseBundle, LookupTableUsageLeaseKind, NeonSqlClient, PlanOutcomeStatus,
-    PolicyMatchInput, RebalanceDecision, ReconciledReservePosition, ReconciledVaultState,
-    ResolvedLookupTableBundle, ResolverTableCandidate, SameMintRebalanceInput,
-    SameMintRebalanceResult, SharedMarketCatalogRouteValidation,
-    SharedMarketCatalogRouteValidationState, SnapshotId, VaultId,
-    AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+    standard_policy_keypair_from_env, vault_manifest_addresses, vault_manifest_hash,
+    ConfirmSameMintRebalanceInput, CurrentIdleTokenBalance, DecisionAdvance, DecisionId,
+    DecisionStatus, EffectiveLookupTableRollout, IdleVaultDepositDecisionInput,
+    LookupTableAllocationKind, LookupTableProvisioningRequestUpsert, LookupTableReadinessRecord,
+    LookupTableReadinessStatus, LookupTableRolloutMode, LookupTableSelectionKind,
+    LookupTableSimulationState, LookupTableUsageLeaseBundle, LookupTableUsageLeaseKind,
+    NeonSqlClient, NeonSqlConfig, PlanOutcomeStatus, PolicyMatchInput, RebalanceDecision,
+    ReconciledReservePosition, ReconciledVaultState, ResolvedLookupTableBundle,
+    ResolverTableCandidate, SameMintRebalanceInput, SameMintRebalanceResult,
+    SharedMarketCatalogRouteValidation, SharedMarketCatalogRouteValidationState, SnapshotId,
+    VaultId, AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
+    ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
+use loyal_yield_router::timescale::{TimescaleRouterClient, TimescaleRouterClientConfig};
 use num_bigint::BigUint;
 use num_traits::{ToPrimitive, Zero};
+use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use solana_client::rpc_client::RpcClient;
+use solana_client::{
+    rpc_client::RpcClient, rpc_config::RpcAccountInfoConfig, rpc_request::RpcRequest,
+};
+use solana_rpc_client::mock_sender::MocksMap;
 #[allow(deprecated)]
 use solana_sdk::address_lookup_table::{
     instruction as address_lookup_table_instruction, program as address_lookup_table_program,
     state::AddressLookupTable,
 };
 #[allow(deprecated)]
+use solana_sdk::compute_budget::ComputeBudgetInstruction;
+#[allow(deprecated)]
 use solana_sdk::system_instruction;
 #[allow(deprecated)]
 use solana_sdk::system_program;
 use solana_sdk::{
+    account::Account,
     commitment_config::CommitmentConfig,
     hash::Hash,
     instruction::{AccountMeta, Instruction},
     message::{v0, AddressLookupTableAccount, VersionedMessage},
     packet::PACKET_DATA_SIZE,
     pubkey::Pubkey,
-    signature::Signer,
+    signature::{Keypair, Signature, Signer},
     transaction::VersionedTransaction,
+};
+use tokio::{
+    sync::{Mutex as AsyncMutex, Notify, Semaphore},
+    task::JoinSet,
 };
 
 const KAMINO_PRIME_USDC_RESERVE: &str = "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu";
@@ -118,6 +149,27 @@ const SAFE_RISK_PROFILE: &str = "safe";
 const LOOKUP_TABLE_RESOLVER_EXACT_SEARCH_LIMIT: usize = 16;
 const LOOKUP_TABLE_ROUTE_LEASE_MINUTES: i64 = 10;
 const LOOKUP_TABLE_PREPARED_LEASE_MINUTES: i64 = 5;
+const DEFAULT_FLEET_WORKER_POLL_MILLISECONDS: u64 = 250;
+const FLEET_HEALTH_OBSERVATION_INTERVAL_MILLISECONDS: u64 = 1_000;
+const DEFAULT_FLEET_WORKER_LEASE_SECONDS: i64 = 120;
+const DEFAULT_FLEET_REVALIDATE_CONCURRENCY: usize = 16;
+const MAX_FEE_PAYER_SHARD_CANDIDATES: usize = 16;
+const RPC_MULTIPLE_ACCOUNTS_LIMIT: usize = 100;
+const SHARED_RESERVE_CACHE_TTL: Duration = Duration::from_millis(500);
+const POLICY_ACCOUNT_CACHE_TTL: Duration = Duration::from_secs(1);
+const FEE_PAYER_BALANCE_CACHE_TTL: Duration = Duration::from_millis(250);
+const SHARED_RESERVE_CACHE_MAX_ENTRIES: usize = 512;
+const POLICY_ACCOUNT_CACHE_MAX_ENTRIES: usize = 8_192;
+const FEE_PAYER_BALANCE_CACHE_MAX_ENTRIES: usize = 256;
+const DEFAULT_FLEET_EXECUTE_CONCURRENCY: usize = 8;
+const DEFAULT_FLEET_RECONCILE_CONCURRENCY: usize = 16;
+const DEFAULT_FLEET_RECONCILE_BATCH_SIZE: i64 = 32;
+/// Cross-process admission cap, not a claim of physical transaction
+/// independence. Each route also owns a vault-specific semantic key. Exact
+/// writable evidence exposes the real Solana ceilings: a common fee payer or
+/// peak Kamino reserve can still serialize transactions across different DB
+/// lanes.
+const FLEET_SHARED_WRITE_LANE_COUNT: i64 = 64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Direction {
     MainToPrime,
@@ -252,6 +304,381 @@ fn full_withdraw_reserve(options: &CliOptions) -> String {
         .unwrap_or_else(|| KAMINO_MAIN_USDC_RESERVE.to_string())
 }
 
+/// Queue-facing execution mode. Revalidation performs every route-build,
+/// reusable-ALT, packet, and simulation check, but stops before decision
+/// creation and transaction submission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SameMintRouteExecutionMode {
+    Revalidate,
+    /// Revalidate once, then continue with the same fresh route only when the
+    /// worker already owns an immediately available execution permit and can
+    /// atomically upgrade the durable lease/conflict fence.
+    RevalidateAndExecute,
+    Execute,
+}
+
+/// The queue represents invested reserve moves and router-owned idle USDC in
+/// one value-prioritized stream. The source kind makes the evidence contract
+/// explicit while retaining the existing same-mint CLI implementation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SameMintRouteSourceKind {
+    ReservePosition,
+    IdleVaultUsdc,
+}
+
+/// Explicit in-process handoff for a planned same-mint opportunity. Keeping
+/// the complete monitor evidence here removes process-global argv from the
+/// execution boundary without weakening the executor's drift checks.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SameMintRouteExecutionRequest {
+    pub mode: SameMintRouteExecutionMode,
+    pub opportunity_id: i64,
+    pub optimizer_epoch_id: i64,
+    pub optimizer_market_slot: i64,
+    pub lease_owner: String,
+    pub fencing_token: i64,
+    pub source_kind: SameMintRouteSourceKind,
+    pub settings: String,
+    pub vault_index: i16,
+    pub source_reserve: Option<String>,
+    pub target_reserve: String,
+    pub expected_source_snapshot_id: Option<i64>,
+    pub expected_idle_token_account: Option<String>,
+    pub expected_idle_observed_slot: Option<i64>,
+    pub expected_idle_observed_at: Option<DateTime<Utc>>,
+    pub expected_liquidity_mint: String,
+    pub expected_amount_raw: i64,
+    pub expected_route_amount_semantics: String,
+    pub expected_source_apy_bps: i64,
+    /// Raw target APY from the immutable market epoch before the planner's
+    /// capacity haircut. The runtime uses it only to preserve that haircut
+    /// while comparing a new market snapshot with the durable plan.
+    pub expected_observed_target_apy_bps: i64,
+    pub expected_target_apy_bps: i64,
+    pub expected_edge_bps: i64,
+    pub principal_usd_micros: i64,
+    pub confidence_ppm: u32,
+    pub expected_service_millis: u64,
+    pub holding_horizon_seconds: u64,
+    pub estimated_execution_cost_usd_micros: i64,
+    pub expected_cost_lamports: i64,
+    /// Execute claims bind the payer selected by the preceding revalidation so
+    /// the canonical typed-manifest fingerprint cannot change underneath the
+    /// opportunity fence. Revalidation claims intentionally leave this empty.
+    pub expected_route_fee_payer: Option<String>,
+    pub cluster: String,
+    pub rpc_url: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SameMintRouteExecutionState {
+    Ready,
+    WaitingAlt,
+    SubmissionQueued,
+    Executed,
+    Retry,
+    Terminal,
+}
+
+#[derive(Clone, Debug)]
+struct FleetWorkerOptions {
+    claim_kind: RebalanceOpportunityClaimKind,
+    cluster: String,
+    rpc_url: String,
+    owner: String,
+    concurrency: usize,
+    fused_execute_concurrency: usize,
+    lease_seconds: i64,
+    poll_interval_milliseconds: u64,
+    once: bool,
+}
+
+#[derive(Clone, Debug)]
+struct FleetReconcilerOptions {
+    cluster: String,
+    rpc_url: String,
+    owner: String,
+    concurrency: usize,
+    batch_size: i64,
+    lease_seconds: i64,
+    poll_interval_milliseconds: u64,
+    once: bool,
+}
+
+#[derive(Debug)]
+struct FleetWorkerTaskResult {
+    lease: RebalanceOpportunityLease,
+    outcome: SameMintRouteExecutionOutcome,
+}
+
+#[derive(Debug)]
+struct FleetReconcilerTaskResult {
+    lease: SignedRouteSubmissionLease,
+    outcome: FleetReconcilerTaskOutcome,
+}
+
+#[derive(Debug)]
+enum FleetReconcilerTaskOutcome {
+    Completed(bool),
+    Failed {
+        kind: OuterTaskFailureKind,
+        error: String,
+    },
+}
+
+type FusedExecutionLeaseState = Arc<Mutex<Option<RebalanceOpportunityLease>>>;
+
+/// Structured state transition consumed by a persistent queue worker. CLI
+/// output remains unchanged; callers never need to capture or parse stdout.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SameMintRouteExecutionOutcome {
+    pub state: SameMintRouteExecutionState,
+    pub opportunity_id: i64,
+    pub source_kind: SameMintRouteSourceKind,
+    pub settings: String,
+    pub vault_index: i16,
+    pub source_reserve: Option<String>,
+    pub target_reserve: String,
+    pub writes_decision: bool,
+    pub sends_transactions: bool,
+    pub reason: Option<String>,
+    pub route_fingerprint: Option<String>,
+    pub requirements_fingerprint: Option<String>,
+    pub provisioning_request_id: Option<i64>,
+    pub readiness_evidence: Option<Value>,
+    /// Exact writable pubkeys derived from the built instructions, including
+    /// the selected fee payer. This is immutable audit evidence.
+    pub writable_account_keys: Vec<String>,
+    /// One vault-exclusive key plus one bounded DB admission lane. This does
+    /// not hide physical writable overlap: the exact account list above still
+    /// exposes common fee-payer and reserve serialization on Solana.
+    pub conflict_account_keys: Vec<String>,
+}
+
+#[derive(Debug)]
+struct InProcessRouteResult {
+    state: SameMintRouteExecutionState,
+    reason: Option<String>,
+    route_fingerprint: Option<String>,
+    requirements_fingerprint: Option<String>,
+    provisioning_request_id: Option<i64>,
+    readiness_evidence: Option<Value>,
+    writable_account_keys: Vec<String>,
+    conflict_account_keys: Vec<String>,
+}
+
+#[derive(Clone)]
+struct SameMintRouteRuntime {
+    rpc: Arc<RpcClient>,
+    client: NeonSqlClient,
+    pool: PgPool,
+    timescale: Option<TimescaleRouterClient>,
+    rpc_cache: Arc<SameMintRouteRpcCache>,
+    market_epoch_cache: Arc<AsyncMutex<BTreeMap<String, CachedMarketEpoch>>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CurrentRouteMarketEconomics {
+    source_apy_bps: i64,
+    capacity_adjusted_target_apy_bps: i64,
+    edge_bps: i64,
+    fee_cap_lamports: i64,
+    capacity_reservation: TargetCapacityReservationInput,
+}
+
+#[derive(Clone)]
+struct CachedRpcValue<T> {
+    value: T,
+    context_slot: u64,
+    optimizer_epoch_id: Option<i64>,
+    observed_at: DateTime<Utc>,
+    fetched_at: Instant,
+}
+
+#[derive(Clone)]
+struct CachedMarketEpoch {
+    epoch: ImmutableMarketEpoch,
+    fetched_at: Instant,
+}
+
+impl<T> CachedRpcValue<T> {
+    fn is_fresh_for(
+        &self,
+        optimizer_epoch_id: Option<i64>,
+        min_context_slot: Option<u64>,
+        ttl: Duration,
+    ) -> bool {
+        optimizer_epoch_id.is_none_or(|epoch| self.optimizer_epoch_id == Some(epoch))
+            && min_context_slot.is_none_or(|slot| self.context_slot >= slot)
+            && self.fetched_at.elapsed() <= ttl
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ReserveSummaryCacheKey {
+    reserve: Pubkey,
+    optimizer_epoch_id: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ReserveSummaryFlightKey {
+    reserve: Pubkey,
+    optimizer_epoch_id: Option<i64>,
+    min_context_slot: Option<u64>,
+}
+
+#[derive(Default)]
+struct ReserveSummaryFlight {
+    completed: AtomicBool,
+    notify: Notify,
+}
+
+impl ReserveSummaryFlight {
+    async fn wait(&self) {
+        loop {
+            if self.completed.load(Ordering::Acquire) {
+                return;
+            }
+            let notified = self.notify.notified();
+            if self.completed.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    fn complete(&self) {
+        self.completed.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+}
+
+#[derive(Default)]
+struct ReserveSummaryCacheState {
+    values: BTreeMap<ReserveSummaryCacheKey, CachedRpcValue<KaminoReserveSummary>>,
+    in_flight: BTreeMap<ReserveSummaryFlightKey, Arc<ReserveSummaryFlight>>,
+}
+
+#[derive(Default)]
+struct ReserveSummaryCache {
+    // Keep ownership bookkeeping synchronous and tiny. A leader performs no
+    // await after claiming flights until it has removed and completed them, so
+    // task cancellation cannot strand a flight. Followers still wait
+    // asynchronously on the per-key Notify below.
+    state: Mutex<ReserveSummaryCacheState>,
+}
+
+#[derive(Default)]
+struct SameMintRouteRpcCache {
+    reserve_summaries: ReserveSummaryCache,
+    policy_accounts: Mutex<BTreeMap<Pubkey, CachedRpcValue<DecodedPolicyAccount>>>,
+    fee_payer_balances: Mutex<BTreeMap<Pubkey, CachedRpcValue<Option<u64>>>>,
+}
+
+fn purge_ttl_cache<K: Ord + Clone, T>(
+    cache: &mut BTreeMap<K, CachedRpcValue<T>>,
+    ttl: Duration,
+    maximum_entries: usize,
+) {
+    cache.retain(|_, entry| entry.fetched_at.elapsed() <= ttl);
+    while cache.len() > maximum_entries {
+        let Some(oldest_key) = cache
+            .iter()
+            .min_by_key(|(_, entry)| entry.fetched_at)
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        cache.remove(&oldest_key);
+    }
+}
+
+impl SameMintRouteRuntime {
+    async fn new(
+        rpc_url: &str,
+        cluster: &str,
+        client: NeonSqlClient,
+        require_current_market: bool,
+    ) -> Result<Self, Box<dyn Error>> {
+        validate_rpc_endpoint(rpc_url)?;
+        let rpc = Arc::new(RpcClient::new_with_commitment(
+            rpc_url.to_owned(),
+            CommitmentConfig::confirmed(),
+        ));
+        let observed_genesis_hash = rpc.get_genesis_hash().map_err(|_| {
+            "failed to read genesis hash from configured same-mint route RPC endpoint"
+        })?;
+        validate_same_mint_rpc_genesis(cluster, observed_genesis_hash)?;
+        client
+            .require_schema_migration(20, "demand_driven_shared_market_catalog")
+            .await?;
+        let timescale = if require_current_market {
+            let timescale_url =
+                env::var("TIMESCALEDB_URL").map_err(|_| "TIMESCALEDB_URL must be set")?;
+            Some(
+                TimescaleRouterClient::connect(
+                    TimescaleRouterClientConfig::new(timescale_url)
+                        .with_schema("kamino")
+                        .with_max_connections(4),
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let pool = client.pool().clone();
+        Ok(Self {
+            rpc,
+            client,
+            pool,
+            timescale,
+            rpc_cache: Arc::new(SameMintRouteRpcCache::default()),
+            market_epoch_cache: Arc::new(AsyncMutex::new(BTreeMap::new())),
+        })
+    }
+
+    /// One stampede-safe immutable market read serves a short worker wave.
+    /// Holding the async mutex across the miss is intentional: thousands of
+    /// concurrent revalidators must not all issue the same Timescale query.
+    async fn current_market_epoch(
+        &self,
+        config: &FleetObservationConfig,
+    ) -> Result<ImmutableMarketEpoch, Box<dyn Error>> {
+        const MARKET_EPOCH_CACHE_TTL: Duration = Duration::from_millis(250);
+        let mut mints = config.enabled_mints.clone();
+        mints.sort();
+        mints.dedup();
+        let key = format!("{}:{}", config.cluster, mints.join(","));
+        let mut cache = self.market_epoch_cache.lock().await;
+        if let Some(cached) = cache.get(&key) {
+            if cached.fetched_at.elapsed() <= MARKET_EPOCH_CACHE_TTL
+                && cached.epoch.expires_at > Utc::now()
+            {
+                return Ok(cached.epoch.clone());
+            }
+        }
+        let timescale = self
+            .timescale
+            .as_ref()
+            .ok_or("queue route is missing its current market snapshot client")?;
+        let epoch = observe_market_epoch(timescale, config).await?;
+        cache.insert(
+            key,
+            CachedMarketEpoch {
+                epoch: epoch.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
+        cache.retain(|_, entry| entry.fetched_at.elapsed() <= MARKET_EPOCH_CACHE_TTL);
+        Ok(epoch)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CliOptions {
     settings: String,
@@ -270,6 +697,8 @@ struct CliOptions {
     setup_obligation_reserve: Option<String>,
     e2e_deposit_amount_raw: Option<u64>,
     execute: bool,
+    prepare_only: bool,
+    fused_execute: bool,
     optimization_cycle: bool,
     reconcile_from_chain: bool,
     reconcile_current_positions: bool,
@@ -283,10 +712,285 @@ struct CliOptions {
     expected_idle_observed_slot: Option<i64>,
     expected_idle_observed_at: Option<DateTime<Utc>>,
     expected_source_apy_bps: Option<i64>,
+    expected_observed_target_apy_bps: Option<i64>,
     expected_target_apy_bps: Option<i64>,
     expected_edge_bps: Option<i64>,
+    principal_usd_micros: Option<i64>,
+    confidence_ppm: Option<u32>,
+    expected_service_millis: Option<u64>,
+    holding_horizon_seconds: Option<u64>,
+    estimated_execution_cost_usd_micros: Option<i64>,
+    expected_cost_lamports: Option<i64>,
+    current_economic_fee_cap_lamports: Option<i64>,
+    expected_route_fee_payer: Option<String>,
+    optimizer_epoch_id: Option<i64>,
+    optimizer_market_slot: Option<i64>,
+    opportunity_id: Option<i64>,
+    opportunity_lease_owner: Option<String>,
+    opportunity_fencing_token: Option<i64>,
     cluster: String,
     rpc_url: String,
+}
+
+impl CliOptions {
+    fn route_runtime_active(&self) -> bool {
+        self.execute || self.prepare_only
+    }
+}
+
+impl SameMintRouteExecutionRequest {
+    fn validate(&self) -> Result<(), String> {
+        for (label, value) in [
+            ("settings", &self.settings),
+            ("target reserve", &self.target_reserve),
+            ("liquidity mint", &self.expected_liquidity_mint),
+        ] {
+            Pubkey::from_str(value)
+                .map_err(|_| format!("same-mint in-process {label} must be a public key"))?;
+        }
+        if self.opportunity_id <= 0
+            || self.optimizer_epoch_id <= 0
+            || self.optimizer_market_slot < 0
+            || self.fencing_token <= 0
+            || self.lease_owner.trim().is_empty()
+        {
+            return Err(
+                "same-mint in-process opportunity, optimizer epoch, lease owner, and fencing token are required"
+                    .to_owned(),
+            );
+        }
+        if self.expected_amount_raw <= 0
+            || self.expected_route_amount_semantics.trim().is_empty()
+            || self.expected_edge_bps <= 0
+            || self.expected_cost_lamports < 0
+        {
+            return Err(
+                "same-mint in-process expected amount, semantics, and edge must be positive"
+                    .to_owned(),
+            );
+        }
+        if self
+            .expected_target_apy_bps
+            .checked_sub(self.expected_source_apy_bps)
+            != Some(self.expected_edge_bps)
+        {
+            return Err(
+                "same-mint in-process APY evidence does not equal the expected edge".to_owned(),
+            );
+        }
+        if self.expected_observed_target_apy_bps < self.expected_target_apy_bps {
+            return Err(
+                "same-mint in-process capacity-adjusted target APY exceeds its observed target APY"
+                    .to_owned(),
+            );
+        }
+        if self.principal_usd_micros <= 0
+            || self.confidence_ppm == 0
+            || self.confidence_ppm > 1_000_000
+            || self.expected_service_millis == 0
+            || self.holding_horizon_seconds == 0
+            || self.estimated_execution_cost_usd_micros < 0
+        {
+            return Err(
+                "same-mint in-process current-market economics evidence is invalid".to_owned(),
+            );
+        }
+        match self.source_kind {
+            SameMintRouteSourceKind::ReservePosition => {
+                let source_reserve = self
+                    .source_reserve
+                    .as_deref()
+                    .ok_or("same-mint reserve-position request requires a source reserve")?;
+                Pubkey::from_str(source_reserve).map_err(|_| {
+                    "same-mint in-process source reserve must be a public key".to_owned()
+                })?;
+                if source_reserve == self.target_reserve {
+                    return Err(
+                        "same-mint in-process source and target reserves must differ".to_owned(),
+                    );
+                }
+                if self.expected_source_snapshot_id.is_none_or(|id| id <= 0) {
+                    return Err(
+                        "same-mint reserve-position request requires a positive source snapshot"
+                            .to_owned(),
+                    );
+                }
+                if self.expected_route_amount_semantics
+                    != ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY
+                {
+                    return Err(format!(
+                        "same-mint reserve-position request requires {ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY} amount semantics"
+                    ));
+                }
+                if self.expected_idle_token_account.is_some()
+                    || self.expected_idle_observed_slot.is_some()
+                    || self.expected_idle_observed_at.is_some()
+                {
+                    return Err(
+                        "same-mint reserve-position request cannot carry idle-vault evidence"
+                            .to_owned(),
+                    );
+                }
+            }
+            SameMintRouteSourceKind::IdleVaultUsdc => {
+                if self.source_reserve.is_some() || self.expected_source_snapshot_id.is_some() {
+                    return Err(
+                        "idle-vault request must not carry a reserve source or source snapshot"
+                            .to_owned(),
+                    );
+                }
+                if self.expected_source_apy_bps != 0
+                    || self.expected_route_amount_semantics != "idle_vault_liquidity"
+                {
+                    return Err(
+                        "idle-vault request requires zero source APY and idle_vault_liquidity semantics"
+                            .to_owned(),
+                    );
+                }
+                let idle_token_account = self
+                    .expected_idle_token_account
+                    .as_deref()
+                    .ok_or("idle-vault request requires the observed idle token account")?;
+                Pubkey::from_str(idle_token_account).map_err(|_| {
+                    "idle-vault observed token account must be a public key".to_owned()
+                })?;
+                if self
+                    .expected_idle_observed_slot
+                    .is_none_or(|slot| slot <= 0)
+                    || self.expected_idle_observed_at.is_none()
+                {
+                    return Err(
+                        "idle-vault request requires positive observed slot and observed time"
+                            .to_owned(),
+                    );
+                }
+            }
+        }
+        validate_alt_cluster(&self.cluster)?;
+        if let Some(fee_payer) = self.expected_route_fee_payer.as_deref() {
+            Pubkey::from_str(fee_payer)
+                .map_err(|_| "expected route fee payer must be a public key".to_owned())?;
+        }
+        Ok(())
+    }
+
+    fn as_cli_options(&self) -> Result<CliOptions, String> {
+        self.validate()?;
+        let idle_vault_deposit = self.source_kind == SameMintRouteSourceKind::IdleVaultUsdc;
+        Ok(CliOptions {
+            settings: self.settings.clone(),
+            vault_index: self.vault_index,
+            direction: Direction::MainToPrime,
+            source_reserve: self.source_reserve.clone(),
+            target_reserve: (!idle_vault_deposit).then(|| self.target_reserve.clone()),
+            update_policy: false,
+            update_active_policy: false,
+            initial_deposit_reserve: None,
+            initial_deposit_amount_raw: None,
+            idle_vault_deposit_reserve: idle_vault_deposit.then(|| self.target_reserve.clone()),
+            idle_vault_deposit_amount_raw: idle_vault_deposit.then_some(
+                u64::try_from(self.expected_amount_raw).map_err(|_| {
+                    "idle-vault request amount does not fit an unsigned raw amount".to_owned()
+                })?,
+            ),
+            full_withdraw_main_usdc: false,
+            full_withdraw_reserve: None,
+            setup_obligation_reserve: None,
+            e2e_deposit_amount_raw: None,
+            execute: self.mode == SameMintRouteExecutionMode::Execute,
+            prepare_only: matches!(
+                self.mode,
+                SameMintRouteExecutionMode::Revalidate
+                    | SameMintRouteExecutionMode::RevalidateAndExecute
+            ),
+            fused_execute: self.mode == SameMintRouteExecutionMode::RevalidateAndExecute,
+            optimization_cycle: true,
+            reconcile_from_chain: true,
+            reconcile_current_positions: false,
+            reconcile_reserves: Vec::new(),
+            seed_from_user_position: false,
+            expected_source_snapshot_id: self.expected_source_snapshot_id,
+            expected_liquidity_mint: Some(self.expected_liquidity_mint.clone()),
+            expected_amount_raw: Some(self.expected_amount_raw),
+            expected_route_amount_semantics: Some(self.expected_route_amount_semantics.clone()),
+            expected_idle_token_account: self.expected_idle_token_account.clone(),
+            expected_idle_observed_slot: self.expected_idle_observed_slot,
+            expected_idle_observed_at: self.expected_idle_observed_at,
+            expected_source_apy_bps: Some(self.expected_source_apy_bps),
+            expected_observed_target_apy_bps: Some(self.expected_observed_target_apy_bps),
+            expected_target_apy_bps: Some(self.expected_target_apy_bps),
+            expected_edge_bps: Some(self.expected_edge_bps),
+            principal_usd_micros: Some(self.principal_usd_micros),
+            confidence_ppm: Some(self.confidence_ppm),
+            expected_service_millis: Some(self.expected_service_millis),
+            holding_horizon_seconds: Some(self.holding_horizon_seconds),
+            estimated_execution_cost_usd_micros: Some(self.estimated_execution_cost_usd_micros),
+            expected_cost_lamports: Some(self.expected_cost_lamports),
+            current_economic_fee_cap_lamports: None,
+            expected_route_fee_payer: self.expected_route_fee_payer.clone(),
+            optimizer_epoch_id: Some(self.optimizer_epoch_id),
+            optimizer_market_slot: Some(self.optimizer_market_slot),
+            opportunity_id: Some(self.opportunity_id),
+            opportunity_lease_owner: Some(self.lease_owner.clone()),
+            opportunity_fencing_token: Some(self.fencing_token),
+            cluster: self.cluster.clone(),
+            rpc_url: self.rpc_url.clone(),
+        })
+    }
+
+    fn outcome(
+        &self,
+        state: SameMintRouteExecutionState,
+        reason: Option<String>,
+    ) -> SameMintRouteExecutionOutcome {
+        SameMintRouteExecutionOutcome {
+            state,
+            opportunity_id: self.opportunity_id,
+            source_kind: self.source_kind,
+            settings: self.settings.clone(),
+            vault_index: self.vault_index,
+            source_reserve: self.source_reserve.clone(),
+            target_reserve: self.target_reserve.clone(),
+            writes_decision: matches!(
+                state,
+                SameMintRouteExecutionState::SubmissionQueued
+                    | SameMintRouteExecutionState::Executed
+            ),
+            sends_transactions: state == SameMintRouteExecutionState::Executed,
+            reason,
+            route_fingerprint: None,
+            requirements_fingerprint: None,
+            provisioning_request_id: None,
+            readiness_evidence: None,
+            writable_account_keys: Vec::new(),
+            conflict_account_keys: Vec::new(),
+        }
+    }
+
+    fn outcome_from_run(&self, result: InProcessRouteResult) -> SameMintRouteExecutionOutcome {
+        SameMintRouteExecutionOutcome {
+            state: result.state,
+            opportunity_id: self.opportunity_id,
+            source_kind: self.source_kind,
+            settings: self.settings.clone(),
+            vault_index: self.vault_index,
+            source_reserve: self.source_reserve.clone(),
+            target_reserve: self.target_reserve.clone(),
+            writes_decision: matches!(
+                result.state,
+                SameMintRouteExecutionState::SubmissionQueued
+                    | SameMintRouteExecutionState::Executed
+            ),
+            sends_transactions: result.state == SameMintRouteExecutionState::Executed,
+            reason: result.reason,
+            route_fingerprint: result.route_fingerprint,
+            requirements_fingerprint: result.requirements_fingerprint,
+            provisioning_request_id: result.provisioning_request_id,
+            readiness_evidence: result.readiness_evidence,
+            writable_account_keys: result.writable_account_keys,
+            conflict_account_keys: result.conflict_account_keys,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -353,6 +1057,16 @@ struct ChainReconcilePreview {
     vault_user_metadata: String,
     vault_user_metadata_exists: bool,
     positions: Vec<ChainPositionSummary>,
+    rpc_account_reads: FleetRpcAccountReadEvidence,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FleetRpcAccountReadEvidence {
+    reserve_batch_requests: usize,
+    reserve_cache_hits: usize,
+    vault_batch_requests: usize,
+    policy_cache_hit: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -588,16 +1302,39 @@ struct InlineMissingObligationSetupPreview {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct RouteFeePayerSelection {
+    pubkey: Pubkey,
+    kind: RouteFeePayerKind,
+    reason: String,
+    mature_route: bool,
+    observed_balance_lamports: Option<i64>,
+    observed_balance_slot: Option<i64>,
+    observed_balance_at: Option<DateTime<Utc>>,
+    shard: Option<RouteFeePayerShardConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FeePayerBalanceObservation {
+    lamports: u64,
+    context_slot: u64,
+    observed_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct RouteExecutionPreview {
     policy_account: String,
     setup_policy_account: Option<String>,
     fee_payer: String,
+    fee_payer_kind: RouteFeePayerKind,
+    fee_payer_selection: RouteFeePayerSelection,
     signer: String,
     account_index: u8,
     instruction_constraint_indexes: Vec<u8>,
     init_instruction_constraint_index: Option<u8>,
     policy_constraint_validation: Option<PolicyConstraintValidation>,
     missing_obligation_setup: Option<InlineMissingObligationSetupPreview>,
+    source_farm_setup_required: bool,
+    target_farm_setup_required: bool,
     setup_instruction_program: Option<String>,
     setup_instruction_discriminator: Option<Vec<u8>>,
     route_steps: Vec<&'static str>,
@@ -642,8 +1379,31 @@ struct CompiledLookupTableBundle {
     transaction: Option<VersionedTransaction>,
     transaction_packet: Option<TransactionPacketSummary>,
     simulation_units_consumed: Option<u64>,
+    compute_unit_limit: Option<u32>,
+    priority_fee_micro_lamports: Option<u64>,
+    compiled_fee_lamports: Option<u64>,
     simulation_error: Option<String>,
     verification_failures: Vec<Value>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TransactionFeeBudget {
+    max_total_fee_lamports: u64,
+    recent_priority_fee_micro_lamports: u64,
+}
+
+struct BudgetedFleetTransaction {
+    transaction: VersionedTransaction,
+    packet: TransactionPacketSummary,
+    simulation_units_consumed: u64,
+    compute_unit_limit: u32,
+    priority_fee_micro_lamports: u64,
+    compiled_fee_lamports: u64,
+}
+
+struct QueueSignedRouteHandoff {
+    lease: RebalanceOpportunityLease,
+    submission: SignedRouteSubmissionInput,
 }
 
 #[derive(Debug)]
@@ -661,8 +1421,13 @@ struct RuntimeLookupTableResolution {
     selected_transaction: Option<VersionedTransaction>,
     selected_transaction_packet: Option<TransactionPacketSummary>,
     selected_simulation_units_consumed: Option<u64>,
+    selected_compiled_fee_lamports: Option<u64>,
+    recent_blockhash: Hash,
+    last_valid_block_height: i64,
     reusable_table_ids: Vec<i64>,
     required_addresses: BTreeSet<String>,
+    writable_account_keys: Vec<String>,
+    conflict_account_keys: Vec<String>,
     reusable_missing_addresses: BTreeSet<String>,
     reusable_ready: bool,
     reusable_compiled_message_size: Option<usize>,
@@ -733,6 +1498,133 @@ impl RuntimeLookupTableResolution {
             )
             .into())
         }
+    }
+}
+
+fn in_process_route_result(
+    state: SameMintRouteExecutionState,
+    reason: Option<String>,
+    resolution: Option<&RuntimeLookupTableResolution>,
+    provisioning_request_id: Option<i64>,
+) -> InProcessRouteResult {
+    InProcessRouteResult {
+        state,
+        reason,
+        route_fingerprint: resolution.map(|value| value.route_fingerprint.clone()),
+        requirements_fingerprint: resolution.map(|value| value.requirements_fingerprint.clone()),
+        provisioning_request_id,
+        readiness_evidence: resolution.map(|value| value.evidence.clone()),
+        writable_account_keys: resolution
+            .map(|value| value.writable_account_keys.clone())
+            .unwrap_or_default(),
+        conflict_account_keys: resolution
+            .map(|value| value.conflict_account_keys.clone())
+            .unwrap_or_default(),
+    }
+}
+
+fn idle_route_fingerprints(
+    setup: Option<&RouteLookupTablePhase>,
+    deposit: Option<&RouteLookupTablePhase>,
+) -> Option<(String, String)> {
+    let phases = [setup, deposit].into_iter().flatten().collect::<Vec<_>>();
+    match phases.as_slice() {
+        [] => None,
+        [phase] => Some((
+            phase.resolution.route_fingerprint.clone(),
+            phase.resolution.requirements_fingerprint.clone(),
+        )),
+        phases => Some((
+            stable_fingerprint_owned(
+                &phases
+                    .iter()
+                    .map(|phase| {
+                        format!(
+                            "{}:{}",
+                            phase.route_kind, phase.resolution.route_fingerprint
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            stable_fingerprint_owned(
+                &phases
+                    .iter()
+                    .map(|phase| {
+                        format!(
+                            "{}:{}",
+                            phase.route_kind, phase.resolution.requirements_fingerprint
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        )),
+    }
+}
+
+fn idle_in_process_route_result(
+    state: SameMintRouteExecutionState,
+    reason: Option<String>,
+    setup: Option<&RouteLookupTablePhase>,
+    setup_request_id: Option<i64>,
+    deposit: Option<&RouteLookupTablePhase>,
+    deposit_request_id: Option<i64>,
+) -> InProcessRouteResult {
+    let waiting_phase = (state == SameMintRouteExecutionState::WaitingAlt)
+        .then(|| {
+            [(setup, setup_request_id), (deposit, deposit_request_id)]
+                .into_iter()
+                .find_map(|(phase, request_id)| {
+                    let phase = phase?;
+                    phase.resolution.blocker.as_ref()?;
+                    Some((phase, request_id))
+                })
+        })
+        .flatten();
+    let (route_fingerprint, requirements_fingerprint, provisioning_request_id) =
+        if let Some((phase, request_id)) = waiting_phase {
+            (
+                Some(phase.resolution.route_fingerprint.clone()),
+                Some(phase.resolution.requirements_fingerprint.clone()),
+                request_id,
+            )
+        } else {
+            let fingerprints = idle_route_fingerprints(setup, deposit);
+            (
+                fingerprints.as_ref().map(|value| value.0.clone()),
+                fingerprints.map(|value| value.1),
+                None,
+            )
+        };
+    InProcessRouteResult {
+        state,
+        reason,
+        route_fingerprint,
+        requirements_fingerprint,
+        provisioning_request_id,
+        readiness_evidence: Some(json!({
+            "setup": setup.map(|phase| json!({
+                "provisioningRequestId": setup_request_id,
+                "resolution": phase.resolution.evidence.clone(),
+            })),
+            "deposit": deposit.map(|phase| json!({
+                "provisioningRequestId": deposit_request_id,
+                "resolution": phase.resolution.evidence.clone(),
+            })),
+        })),
+        writable_account_keys: [setup, deposit]
+            .into_iter()
+            .flatten()
+            .flat_map(|phase| phase.resolution.writable_account_keys.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+        conflict_account_keys: [setup, deposit]
+            .into_iter()
+            .flatten()
+            .flat_map(|phase| phase.resolution.conflict_account_keys.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
     }
 }
 
@@ -970,7 +1862,63 @@ async fn main() {
 }
 
 async fn run() -> Result<(), Box<dyn Error>> {
-    let options = match parse_args(env::args().skip(1)) {
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    if matches!(
+        args.as_slice(),
+        [flag] if flag == "--fleet-controlled-transaction-probe"
+    ) {
+        println!(
+            "{}",
+            serde_json::to_string(&fleet_controlled_transaction_probe()?)?
+        );
+        return Ok(());
+    }
+    let role_probe = match args.as_slice() {
+        [fleet_worker, lane, role_probe]
+            if fleet_worker == "--fleet-worker"
+                && lane == "revalidate"
+                && role_probe == "--role-probe" =>
+        {
+            Some(FleetWorkerRole::Revalidator)
+        }
+        [fleet_worker, lane, role_probe]
+            if fleet_worker == "--fleet-worker"
+                && lane == "execute"
+                && role_probe == "--role-probe" =>
+        {
+            Some(FleetWorkerRole::Executor)
+        }
+        [fleet_reconciler, role_probe]
+            if fleet_reconciler == "--fleet-reconciler" && role_probe == "--role-probe" =>
+        {
+            Some(FleetWorkerRole::Reconciler)
+        }
+        _ => None,
+    };
+    if let Some(role) = role_probe {
+        println!("{}", fleet_worker_role_probe(role));
+        return Ok(());
+    }
+    if matches!(
+        args.as_slice(),
+        [flag] if flag == "--fleet-rpc-hot-path-model"
+            || flag == "--fleet-rpc-hot-path-benchmark"
+    ) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&fleet_rpc_hot_path_model())?
+        );
+        return Ok(());
+    }
+    if args.first().is_some_and(|arg| arg == "--fleet-reconciler") {
+        let options = parse_fleet_reconciler_options(args.into_iter().skip(1))?;
+        return run_fleet_reconciler(options).await;
+    }
+    if args.first().is_some_and(|arg| arg == "--fleet-worker") {
+        let options = parse_fleet_worker_options(args.into_iter().skip(1))?;
+        return run_fleet_worker(options).await;
+    }
+    let options = match parse_args(args) {
         Ok(value) => value,
         Err(message) if message == "help" => {
             print_help();
@@ -978,13 +1926,2774 @@ async fn run() -> Result<(), Box<dyn Error>> {
         }
         Err(message) => return Err(message.into()),
     };
-    validate_rpc_endpoint(&options.rpc_url)?;
-    let rpc =
-        RpcClient::new_with_commitment(options.rpc_url.clone(), CommitmentConfig::confirmed());
-    let observed_genesis_hash = rpc
-        .get_genesis_hash()
-        .map_err(|_| "failed to read genesis hash from configured same-mint route RPC endpoint")?;
-    validate_same_mint_rpc_genesis(&options.cluster, observed_genesis_hash)?;
+    let execute = options.execute;
+    let prepare_only = options.prepare_only;
+    if let Some(result) = run_with_options(options).await? {
+        if execute
+            && matches!(
+                result.state,
+                SameMintRouteExecutionState::WaitingAlt
+                    | SameMintRouteExecutionState::Retry
+                    | SameMintRouteExecutionState::Terminal
+            )
+        {
+            return Err(result
+                .reason
+                .unwrap_or_else(|| "same-mint route execution did not become executable".to_owned())
+                .into());
+        }
+        if !execute && !prepare_only {
+            debug_assert!(!matches!(
+                result.state,
+                SameMintRouteExecutionState::SubmissionQueued
+                    | SameMintRouteExecutionState::Executed
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn controlled_rpc_response(slot: u64, value: Value) -> Value {
+    json!({
+        "context": {
+            "slot": slot,
+        },
+        "value": value,
+    })
+}
+
+fn fleet_controlled_transaction_probe() -> Result<Value, Box<dyn Error>> {
+    // This is intentionally the real mounted policy signer. The probe never
+    // serializes, logs, or returns either its secret material or public key.
+    let policy = standard_policy_keypair_from_env()?;
+    let policy_pubkey = policy.pubkey();
+
+    // Exercise the same bounded rendezvous ordering used by the production
+    // fee-payer selector. The highest-ranked fixture is treated as unhealthy,
+    // so the signed route proves bounded failover to the next mounted shard.
+    let mut shard_keypairs = (0..MAX_FEE_PAYER_SHARD_CANDIDATES.saturating_add(2))
+        .map(|_| Keypair::new())
+        .collect::<Vec<_>>();
+    let mounted_shard_pubkeys = shard_keypairs
+        .iter()
+        .map(Signer::pubkey)
+        .collect::<BTreeSet<_>>();
+    let registry_shard_pubkeys = mounted_shard_pubkeys.clone();
+    let ranked_shards = bounded_ranked_fee_payer_pubkeys(
+        "controlled",
+        "controlled-vault",
+        mounted_shard_pubkeys.iter().copied().collect(),
+    );
+    let first_ranked_shard = *ranked_shards
+        .first()
+        .ok_or("controlled fee-payer ranking produced no primary shard")?;
+    let selected_shard_pubkey = *ranked_shards
+        .get(1)
+        .ok_or("controlled fee-payer ranking produced no failover shard")?;
+    let selected_shard_index = shard_keypairs
+        .iter()
+        .position(|keypair| keypair.pubkey() == selected_shard_pubkey)
+        .ok_or("controlled failover shard has no mounted keypair")?;
+    let fee_payer = shard_keypairs.swap_remove(selected_shard_index);
+    let shard_registry_keypair_match = registry_shard_pubkeys.contains(&fee_payer.pubkey())
+        && mounted_shard_pubkeys.contains(&fee_payer.pubkey())
+        && fee_payer.pubkey() != policy_pubkey;
+    let bounded_ranked_failover = mounted_shard_pubkeys.len() > MAX_FEE_PAYER_SHARD_CANDIDATES
+        && ranked_shards.len() == MAX_FEE_PAYER_SHARD_CANDIDATES
+        && first_ranked_shard != fee_payer.pubkey();
+
+    let loaded_writable = Pubkey::new_unique();
+    let loaded_readonly = Pubkey::new_unique();
+    let route_instruction = Instruction {
+        program_id: Pubkey::new_unique(),
+        accounts: vec![
+            AccountMeta::new_readonly(policy_pubkey, true),
+            AccountMeta::new(loaded_writable, false),
+            AccountMeta::new_readonly(loaded_readonly, false),
+        ],
+        data: b"loyal-controlled-fleet-route-v1".to_vec(),
+    };
+    let route_instructions = vec![route_instruction];
+    let manifest_addresses =
+        compiler_lookup_eligible_addresses(fee_payer.pubkey(), &route_instructions);
+    if manifest_addresses.is_empty() {
+        return Err("controlled route produced no ALT-eligible addresses".into());
+    }
+    let lookup_table_accounts = vec![AddressLookupTableAccount {
+        key: Pubkey::new_unique(),
+        addresses: manifest_addresses.clone(),
+    }];
+
+    let expected_base_fee_lamports = 5_000u64;
+    let expected_compiled_fee_lamports = 6_000u64;
+    let expected_simulation_units = 175_000u64;
+    let confirmed_slot = 7_000u64;
+    let mut compilation_mocks = MocksMap::default();
+    compilation_mocks.insert(
+        RpcRequest::GetFeeForMessage,
+        controlled_rpc_response(confirmed_slot, json!(expected_base_fee_lamports)),
+    );
+    compilation_mocks.insert(
+        RpcRequest::GetFeeForMessage,
+        controlled_rpc_response(confirmed_slot, json!(expected_compiled_fee_lamports)),
+    );
+    compilation_mocks.insert(
+        RpcRequest::GetFeeForMessage,
+        controlled_rpc_response(confirmed_slot, json!(expected_compiled_fee_lamports)),
+    );
+    compilation_mocks.insert(
+        RpcRequest::SimulateTransaction,
+        controlled_rpc_response(
+            confirmed_slot,
+            json!({
+                "err": null,
+                "logs": [],
+                "accounts": null,
+                "unitsConsumed": expected_simulation_units,
+                "loadedAccountsDataSize": null,
+                "returnData": null,
+                "innerInstructions": null,
+                "replacementBlockhash": null,
+            }),
+        ),
+    );
+    compilation_mocks.insert(
+        RpcRequest::GetMultipleAccounts,
+        controlled_rpc_response(confirmed_slot, json!([null])),
+    );
+    compilation_mocks.insert(
+        RpcRequest::GetMultipleAccounts,
+        controlled_rpc_response(confirmed_slot.saturating_sub(1), json!([null])),
+    );
+    let controlled_rpc =
+        RpcClient::new_mock_with_mocks_map("controlled-no-external-network", compilation_mocks);
+
+    let signers = same_mint_route_signers(&fee_payer, &policy);
+    let compiled = compile_budgeted_fleet_transaction(
+        &controlled_rpc,
+        fee_payer.pubkey(),
+        &route_instructions,
+        &lookup_table_accounts,
+        Hash::new_unique(),
+        &signers,
+        150_000,
+        TransactionFeeBudget {
+            max_total_fee_lamports: 50_000,
+            recent_priority_fee_micro_lamports: 100_000,
+        },
+    )?;
+    let transaction = &compiled.transaction;
+    let signer_count = usize::from(transaction.message.header().num_required_signatures);
+    let static_signers = transaction
+        .message
+        .static_account_keys()
+        .iter()
+        .take(signer_count)
+        .copied()
+        .collect::<Vec<_>>();
+    let signature_results = transaction.verify_with_results();
+    let shard_is_final_fee_payer = static_signers.first() == Some(&fee_payer.pubkey())
+        && compiled.packet.fee_payer == fee_payer.pubkey().to_string();
+    let policy_is_second_static_signer = static_signers.get(1) == Some(&policy_pubkey);
+    let route_signatures_valid = signer_count == 2
+        && signature_results.len() == signer_count
+        && signature_results.iter().all(|verified| *verified);
+
+    let VersionedMessage::V0(message) = &transaction.message else {
+        return Err("controlled route did not compile as a v0 transaction".into());
+    };
+    let mut loaded_writable_addresses = BTreeSet::new();
+    let mut loaded_readonly_addresses = BTreeSet::new();
+    for lookup in &message.address_table_lookups {
+        let table = lookup_table_accounts
+            .iter()
+            .find(|table| table.key == lookup.account_key)
+            .ok_or("compiled transaction referenced an unknown controlled ALT")?;
+        for index in &lookup.writable_indexes {
+            loaded_writable_addresses.insert(
+                *table
+                    .addresses
+                    .get(usize::from(*index))
+                    .ok_or("compiled writable ALT index exceeded controlled manifest")?,
+            );
+        }
+        for index in &lookup.readonly_indexes {
+            loaded_readonly_addresses.insert(
+                *table
+                    .addresses
+                    .get(usize::from(*index))
+                    .ok_or("compiled readonly ALT index exceeded controlled manifest")?,
+            );
+        }
+    }
+    let loaded_addresses = loaded_writable_addresses
+        .union(&loaded_readonly_addresses)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let expected_manifest_addresses = manifest_addresses.iter().copied().collect::<BTreeSet<_>>();
+    let final_manifest_and_alt_coverage_match = loaded_addresses == expected_manifest_addresses
+        && loaded_writable_addresses.contains(&loaded_writable)
+        && loaded_readonly_addresses.contains(&loaded_readonly)
+        && compiled.packet.address_table_lookup_count == lookup_table_accounts.len()
+        && compiled.packet.loaded_writable_address_count == loaded_writable_addresses.len()
+        && compiled.packet.loaded_readonly_address_count == loaded_readonly_addresses.len();
+
+    let signed_transaction_bytes = bincode::serialize(transaction)?;
+    let signed_transaction_hash = Sha256::digest(&signed_transaction_bytes);
+    let message_bytes = bincode::serialize(&transaction.message)?;
+    let message_hash = Sha256::digest(&message_bytes);
+    let persisted_transaction: VersionedTransaction =
+        bincode::deserialize(&signed_transaction_bytes)?;
+    let persisted_packet =
+        transaction_packet_summary(&persisted_transaction, &lookup_table_accounts)?;
+    let persisted_transaction_hash = Sha256::digest(bincode::serialize(&persisted_transaction)?);
+    let persisted_message_hash =
+        Sha256::digest(bincode::serialize(&persisted_transaction.message)?);
+    let verified_compiled_fee = versioned_message_fee(&controlled_rpc, &transaction.message)?;
+    let final_packet_simulation_fee_and_hashes_match = compiled.packet.fits_packet_data_size
+        && persisted_packet.packet_size_bytes == compiled.packet.packet_size_bytes
+        && persisted_packet.packet_data_size_bytes == compiled.packet.packet_data_size_bytes
+        && persisted_packet.address_table_lookup_count
+            == compiled.packet.address_table_lookup_count
+        && compiled.simulation_units_consumed == expected_simulation_units
+        && compiled.compiled_fee_lamports == expected_compiled_fee_lamports
+        && verified_compiled_fee == compiled.compiled_fee_lamports
+        && signed_transaction_hash == persisted_transaction_hash
+        && message_hash == persisted_message_hash
+        && persisted_transaction
+            .verify_with_results()
+            .iter()
+            .all(|verified| *verified);
+
+    // Standard reusable ALT mutation instructions must keep POLICY_KEYPAIR as
+    // both the table authority and payer. This transaction stays local and is
+    // never submitted, but it uses the production v0 compiler and signer path.
+    let (alt_create_instruction, _) = address_lookup_table_instruction::create_lookup_table(
+        policy_pubkey,
+        policy_pubkey,
+        confirmed_slot,
+    );
+    let alt_create_transaction = compile_versioned_transaction(
+        policy_pubkey,
+        std::slice::from_ref(&alt_create_instruction),
+        &[],
+        Hash::new_unique(),
+        &[&policy],
+    )?;
+    let alt_create_signatures_valid = alt_create_transaction
+        .verify_with_results()
+        .iter()
+        .all(|verified| *verified);
+    let alt_mutation_authorized_and_paid_by_policy =
+        alt_create_transaction.message.static_account_keys().first() == Some(&policy_pubkey)
+            && alt_create_instruction
+                .accounts
+                .get(1)
+                .is_some_and(|account| account.pubkey == policy_pubkey)
+            && alt_create_instruction
+                .accounts
+                .get(2)
+                .is_some_and(|account| account.pubkey == policy_pubkey && account.is_signer)
+            && alt_create_signatures_valid;
+
+    let expected_signature = *transaction
+        .signatures
+        .first()
+        .ok_or("controlled signed transaction has no fee-payer signature")?;
+    let mut send_mocks = MocksMap::default();
+    send_mocks.insert(
+        RpcRequest::SendTransaction,
+        json!(expected_signature.to_string()),
+    );
+    send_mocks.insert(
+        RpcRequest::SendTransaction,
+        json!(expected_signature.to_string()),
+    );
+    let send_rpc = RpcClient::new_mock_with_mocks_map("controlled-no-external-network", send_mocks);
+    let mut identical_byte_rebroadcast_attempts = 0u64;
+    let mut rebroadcast_byte_mismatches = 0u64;
+    for _ in 0..2 {
+        let replay: VersionedTransaction = bincode::deserialize(&signed_transaction_bytes)?;
+        if bincode::serialize(&replay)? != signed_transaction_bytes {
+            rebroadcast_byte_mismatches = rebroadcast_byte_mismatches.saturating_add(1);
+        }
+        let submitted_signature = send_rpc.send_transaction(&replay)?;
+        if submitted_signature != expected_signature {
+            return Err(
+                "controlled mock sender changed the persisted transaction signature".into(),
+            );
+        }
+        identical_byte_rebroadcast_attempts = identical_byte_rebroadcast_attempts.saturating_add(1);
+    }
+
+    // Production account batching must accept a post-confirmation read at the
+    // confirmed slot and reject an RPC response that violates minContextSlot.
+    let controlled_read_key = Pubkey::new_unique();
+    let (post_confirm_accounts, post_confirm_requests) = get_multiple_accounts_batched(
+        &controlled_rpc,
+        &[controlled_read_key],
+        Some(confirmed_slot),
+    )?;
+    let post_confirm_read_valid = post_confirm_requests == 1
+        && post_confirm_accounts.len() == 1
+        && post_confirm_accounts[0].1 >= confirmed_slot;
+    let stale_context_rejected = get_multiple_accounts_batched(
+        &controlled_rpc,
+        &[controlled_read_key],
+        Some(confirmed_slot),
+    )
+    .is_err();
+    let post_confirm_reads = u64::from(post_confirm_read_valid);
+    let min_context_slot_violations = u64::from(!stale_context_rejected);
+
+    let policy_execution_signed_by_policy_keypair =
+        route_signatures_valid && policy_is_second_static_signer;
+    let setup_idle_and_farm_init_use_policy_payer =
+        fee_only_shard_allowed_for_scope(FleetRouteFeePayerScope::MatureSameMint)
+            && [
+                FleetRouteFeePayerScope::ObligationSetup,
+                FleetRouteFeePayerScope::IdleVault,
+                FleetRouteFeePayerScope::FarmInit,
+            ]
+            .into_iter()
+            .all(|scope| {
+                let selected = if fee_only_shard_allowed_for_scope(scope) {
+                    fee_payer.pubkey()
+                } else {
+                    policy_pubkey
+                };
+                selected == policy_pubkey
+            });
+
+    if !shard_registry_keypair_match
+        || !bounded_ranked_failover
+        || !shard_is_final_fee_payer
+        || !policy_execution_signed_by_policy_keypair
+        || !final_manifest_and_alt_coverage_match
+        || !final_packet_simulation_fee_and_hashes_match
+        || !alt_mutation_authorized_and_paid_by_policy
+        || identical_byte_rebroadcast_attempts != 2
+        || rebroadcast_byte_mismatches != 0
+        || post_confirm_reads != 1
+        || min_context_slot_violations != 0
+        || !setup_idle_and_farm_init_use_policy_payer
+    {
+        return Err("controlled transaction probe invariant failed".into());
+    }
+
+    Ok(json!({
+        "schemaVersion": 1,
+        "event": "fleet_transaction_runtime_probe",
+        "externalNetworkAccessed": false,
+        "productionTransactionSent": false,
+        "execution": {
+            "identicalByteRebroadcastAttempts": identical_byte_rebroadcast_attempts,
+            "rebroadcastByteMismatches": rebroadcast_byte_mismatches,
+            "postConfirmReads": post_confirm_reads,
+            "minContextSlotViolations": min_context_slot_violations,
+            "policyExecutionSignedByPolicyKeypair": policy_execution_signed_by_policy_keypair,
+            "altMutationsAuthorizedAndPaidByPolicyKeypair": alt_mutation_authorized_and_paid_by_policy,
+            "shardedRouteFixtures": 1,
+            "shardIsFinalFeePayer": shard_is_final_fee_payer,
+            "policyIsSecondStaticSigner": policy_is_second_static_signer,
+            "finalManifestAndAltCoverageMatch": final_manifest_and_alt_coverage_match,
+            "finalPacketSimulationFeeAndHashesMatch": final_packet_simulation_fee_and_hashes_match,
+            "setupIdleAndFarmInitUsePolicyPayer": setup_idle_and_farm_init_use_policy_payer,
+            "shardRegistryKeypairMatch": shard_registry_keypair_match,
+            "boundedRankedFailover": bounded_ranked_failover,
+        },
+    }))
+}
+
+fn rpc_batch_request_count(account_count: usize) -> usize {
+    account_count.div_ceil(RPC_MULTIPLE_ACCOUNTS_LIMIT)
+}
+
+fn fleet_rpc_hot_path_model() -> Value {
+    // Deterministic normal case: a mature two-reserve route, up to one farm
+    // account per reserve, two reusable ALTs, and the full 16-payer shard set.
+    let reserve_accounts = 2usize;
+    let vault_accounts = 2 + (2 * 3); // metadata + policy + ATA/obligation/farm per reserve
+    let lookup_table_accounts = 2usize;
+    let fee_payer_accounts = MAX_FEE_PAYER_SHARD_CANDIDATES;
+    let warm_account_read_requests =
+        rpc_batch_request_count(vault_accounts) + rpc_batch_request_count(lookup_table_accounts);
+    let cold_account_read_requests = warm_account_read_requests
+        + rpc_batch_request_count(reserve_accounts)
+        + rpc_batch_request_count(fee_payer_accounts);
+    // These calls preserve final safety and price correctness: slot, priority
+    // fee sample, blockhash, measurement simulation, final budgeted simulation,
+    // baseline fee, and final compiled fee.
+    let safety_and_price_requests = 7usize;
+    let warm_total_requests = warm_account_read_requests + safety_and_price_requests;
+    let cold_total_requests = cold_account_read_requests + safety_and_price_requests;
+    let maximum_admission_balance_refresh_requests = 1usize;
+    json!({
+        "status": "INFORMATIONAL",
+        "evidenceKind": "static_request_model_not_runtime_instrumentation",
+        "scenario": "mature_two_reserve_route_two_reusable_alts",
+        "accountReadRequests": {
+            "warmWorker": warm_account_read_requests,
+            "coldWorker": cold_account_read_requests,
+            "legacyEquivalent": 13,
+        },
+        "totalRpcRequests": {
+            "warmWorkerBeforeConditionalAdmissionRefresh": warm_total_requests,
+            "coldWorkerBeforeConditionalAdmissionRefresh": cold_total_requests,
+            "warmWorkerMaximum": warm_total_requests + maximum_admission_balance_refresh_requests,
+            "coldWorkerMaximum": cold_total_requests + maximum_admission_balance_refresh_requests,
+            "conditionalBoundPayerAdmissionRefreshMaximum": maximum_admission_balance_refresh_requests,
+            "retainedSafetyAndPriceRequests": safety_and_price_requests,
+        },
+        "cacheFreshnessMilliseconds": {
+            "sharedReserve": SHARED_RESERVE_CACHE_TTL.as_millis(),
+            "policy": POLICY_ACCOUNT_CACHE_TTL.as_millis(),
+            "feePayerBalance": FEE_PAYER_BALANCE_CACHE_TTL.as_millis(),
+        },
+        "invariants": [
+            "vault and obligation state is never cached",
+            "cache hits require the exact optimizer epoch when present",
+            "minContextSlot rejects cache entries older than reconciliation fences",
+            "the final budgeted transaction is still simulated",
+        ],
+    })
+}
+
+fn parse_fleet_worker_options(
+    args: impl IntoIterator<Item = String>,
+) -> Result<FleetWorkerOptions, Box<dyn Error>> {
+    let mut args = args.into_iter();
+    let lane = args
+        .next()
+        .ok_or("--fleet-worker requires revalidate or execute")?;
+    let claim_kind = match lane.as_str() {
+        "revalidate" => RebalanceOpportunityClaimKind::Revalidate,
+        "execute" => RebalanceOpportunityClaimKind::Execute,
+        _ => return Err("--fleet-worker requires revalidate or execute".into()),
+    };
+    let mut cluster = env::var("YIELD_ALT_CLUSTER").unwrap_or_else(|_| "mainnet-beta".to_owned());
+    let mut rpc_url = env::var("SOLANA_RPC_URL").unwrap_or_else(|_| DEFAULT_SOLANA_RPC_URL.into());
+    let mut owner = None;
+    let mut concurrency = match claim_kind {
+        RebalanceOpportunityClaimKind::Revalidate => DEFAULT_FLEET_REVALIDATE_CONCURRENCY,
+        RebalanceOpportunityClaimKind::Execute => DEFAULT_FLEET_EXECUTE_CONCURRENCY,
+    };
+    let mut fused_execute_concurrency = match claim_kind {
+        RebalanceOpportunityClaimKind::Revalidate => DEFAULT_FLEET_EXECUTE_CONCURRENCY,
+        RebalanceOpportunityClaimKind::Execute => 0,
+    };
+    let mut lease_seconds = DEFAULT_FLEET_WORKER_LEASE_SECONDS;
+    let mut poll_interval_milliseconds = DEFAULT_FLEET_WORKER_POLL_MILLISECONDS;
+    let mut once = false;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--cluster" => cluster = args.next().ok_or("--cluster requires a value")?,
+            "--rpc-url" => rpc_url = args.next().ok_or("--rpc-url requires a value")?,
+            "--owner" => owner = Some(args.next().ok_or("--owner requires a value")?),
+            "--concurrency" => {
+                concurrency = args
+                    .next()
+                    .ok_or("--concurrency requires a value")?
+                    .parse()?;
+            }
+            "--fused-execute-concurrency" => {
+                fused_execute_concurrency = args
+                    .next()
+                    .ok_or("--fused-execute-concurrency requires a value")?
+                    .parse()?;
+            }
+            "--lease-seconds" => {
+                lease_seconds = args
+                    .next()
+                    .ok_or("--lease-seconds requires a value")?
+                    .parse()?;
+            }
+            "--poll-interval-milliseconds" => {
+                poll_interval_milliseconds = args
+                    .next()
+                    .ok_or("--poll-interval-milliseconds requires a value")?
+                    .parse()?;
+            }
+            "--once" => once = true,
+            other => return Err(format!("unknown fleet-worker argument: {other}").into()),
+        }
+    }
+    validate_alt_cluster(&cluster)?;
+    validate_rpc_endpoint(&rpc_url)?;
+    if concurrency == 0 || concurrency > 128 {
+        return Err("fleet worker concurrency must be in 1..=128".into());
+    }
+    if fused_execute_concurrency > 128 {
+        return Err("fused execute concurrency must be in 0..=128".into());
+    }
+    if claim_kind == RebalanceOpportunityClaimKind::Execute && fused_execute_concurrency != 0 {
+        return Err("the execute lane cannot enable fused revalidate execution".into());
+    }
+    if lease_seconds < 30 || lease_seconds > 900 {
+        return Err("fleet worker lease seconds must be in 30..=900".into());
+    }
+    if poll_interval_milliseconds == 0 || poll_interval_milliseconds > 60_000 {
+        return Err("fleet worker poll interval must be in 1..=60000 milliseconds".into());
+    }
+    let owner = owner.unwrap_or_else(|| {
+        format!(
+            "same-mint-{}-{}-{}",
+            claim_kind.as_str(),
+            std::process::id(),
+            env::var("HOSTNAME").unwrap_or_else(|_| "local".to_owned())
+        )
+    });
+    if owner.trim().is_empty() {
+        return Err("fleet worker owner must be nonempty".into());
+    }
+    Ok(FleetWorkerOptions {
+        claim_kind,
+        cluster,
+        rpc_url,
+        owner,
+        concurrency,
+        fused_execute_concurrency,
+        lease_seconds,
+        poll_interval_milliseconds,
+        once,
+    })
+}
+
+fn parse_fleet_reconciler_options(
+    args: impl IntoIterator<Item = String>,
+) -> Result<FleetReconcilerOptions, Box<dyn Error>> {
+    let mut cluster = env::var("YIELD_ALT_CLUSTER").unwrap_or_else(|_| "mainnet-beta".to_owned());
+    let mut rpc_url = env::var("SOLANA_RPC_URL").unwrap_or_else(|_| DEFAULT_SOLANA_RPC_URL.into());
+    let mut owner = None;
+    let mut concurrency = DEFAULT_FLEET_RECONCILE_CONCURRENCY;
+    let mut batch_size = DEFAULT_FLEET_RECONCILE_BATCH_SIZE;
+    let mut lease_seconds = DEFAULT_FLEET_WORKER_LEASE_SECONDS;
+    let mut poll_interval_milliseconds = DEFAULT_FLEET_WORKER_POLL_MILLISECONDS;
+    let mut once = false;
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--cluster" => cluster = args.next().ok_or("--cluster requires a value")?,
+            "--rpc-url" => rpc_url = args.next().ok_or("--rpc-url requires a value")?,
+            "--owner" => owner = Some(args.next().ok_or("--owner requires a value")?),
+            "--concurrency" => {
+                concurrency = args
+                    .next()
+                    .ok_or("--concurrency requires a value")?
+                    .parse()?;
+            }
+            "--batch-size" => {
+                batch_size = args
+                    .next()
+                    .ok_or("--batch-size requires a value")?
+                    .parse()?;
+            }
+            "--lease-seconds" => {
+                lease_seconds = args
+                    .next()
+                    .ok_or("--lease-seconds requires a value")?
+                    .parse()?;
+            }
+            "--poll-interval-milliseconds" => {
+                poll_interval_milliseconds = args
+                    .next()
+                    .ok_or("--poll-interval-milliseconds requires a value")?
+                    .parse()?;
+            }
+            "--once" => once = true,
+            other => return Err(format!("unknown fleet-reconciler argument: {other}").into()),
+        }
+    }
+    validate_alt_cluster(&cluster)?;
+    validate_rpc_endpoint(&rpc_url)?;
+    if concurrency == 0 || concurrency > 128 {
+        return Err("fleet reconciler concurrency must be in 1..=128".into());
+    }
+    if !(1..=256).contains(&batch_size) {
+        return Err("fleet reconciler batch size must be in 1..=256".into());
+    }
+    if lease_seconds < 30 || lease_seconds > 900 {
+        return Err("fleet reconciler lease seconds must be in 30..=900".into());
+    }
+    if poll_interval_milliseconds == 0 || poll_interval_milliseconds > 60_000 {
+        return Err("fleet reconciler poll interval must be in 1..=60000 milliseconds".into());
+    }
+    let owner = owner.unwrap_or_else(|| {
+        format!(
+            "same-mint-reconciler-{}-{}",
+            std::process::id(),
+            env::var("HOSTNAME").unwrap_or_else(|_| "local".to_owned())
+        )
+    });
+    if owner.trim().is_empty() {
+        return Err("fleet reconciler owner must be nonempty".into());
+    }
+    Ok(FleetReconcilerOptions {
+        cluster,
+        rpc_url,
+        owner,
+        concurrency,
+        batch_size,
+        lease_seconds,
+        poll_interval_milliseconds,
+        once,
+    })
+}
+
+async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Error>> {
+    let database_url =
+        env::var("NEON_DATABASE_URL").map_err(|_| "NEON_DATABASE_URL must be set")?;
+    let max_connections = u32::try_from(options.concurrency)
+        .unwrap_or(128)
+        .saturating_mul(3)
+        .saturating_add(4)
+        .min(128);
+    let client = NeonSqlClient::connect(
+        NeonSqlConfig::new(database_url).with_max_connections(max_connections),
+    )
+    .await?;
+    client
+        .require_schema_migration(24, "fleet_route_confirmer")
+        .await?;
+    client
+        .require_schema_migration(25, "fee_only_route_payer_shards")
+        .await?;
+    client
+        .require_schema_migration(26, "target_capacity_reservations")
+        .await?;
+    client
+        .require_schema_migration(27, "rebalance_opportunity_attempt_generations")
+        .await?;
+    // Validate the standard signer once at startup. Individual route builds
+    // re-read and match it to the active policy before signing.
+    let delegated_signer = standard_policy_keypair_from_env()?.pubkey().to_string();
+    let (fee_payer_keypool_state, mounted_fee_payer_pubkeys) =
+        match route_fee_payer_keypairs_from_env() {
+            Ok(keypairs) if keypairs.is_empty() => ("unconfigured", BTreeSet::new()),
+            Ok(keypairs) => (
+                "valid",
+                keypairs
+                    .iter()
+                    .map(|keypair| keypair.pubkey().to_string())
+                    .collect::<BTreeSet<_>>(),
+            ),
+            Err(_) => ("invalid", BTreeSet::new()),
+        };
+    let route_runtime = Arc::new(
+        SameMintRouteRuntime::new(&options.rpc_url, &options.cluster, client.clone(), true).await?,
+    );
+    let fused_execute_slots = Arc::new(Semaphore::new(options.fused_execute_concurrency));
+    let mut wakeup_listener = DurablePgWakeupListener::new("loyal_yield_rebalance_wakeup")?;
+    let mut tasks = JoinSet::<FleetWorkerTaskResult>::new();
+    let mut claimed = 0u64;
+    let mut completed = 0u64;
+    let mut failed = 0u64;
+    let mut outbox_acknowledged = 0u64;
+    let mut fused_execute_permits = 0u64;
+    let mut fused_execute_promotions = 0u64;
+    let mut last_outbox_ack = None::<tokio::time::Instant>;
+    let mut health_interval = tokio::time::interval(Duration::from_millis(
+        FLEET_HEALTH_OBSERVATION_INTERVAL_MILLISECONDS,
+    ));
+    health_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    health_interval.tick().await;
+
+    loop {
+        if options.claim_kind == RebalanceOpportunityClaimKind::Revalidate
+            && last_outbox_ack.is_none_or(|last| last.elapsed() >= Duration::from_secs(1))
+        {
+            outbox_acknowledged = outbox_acknowledged.saturating_add(
+                client
+                    .acknowledge_promoted_alt_outbox_batch(&options.cluster, 1024)
+                    .await?,
+            );
+            last_outbox_ack = Some(tokio::time::Instant::now());
+        }
+        while tasks.len() < options.concurrency {
+            let lease_expires_at = Utc::now() + ChronoDuration::seconds(options.lease_seconds);
+            let claim_capacity = i64::try_from(options.concurrency - tasks.len())?;
+            let leases = client
+                .lease_rebalance_opportunity_batch(
+                    &options.cluster,
+                    &options.owner,
+                    options.claim_kind,
+                    claim_capacity,
+                    lease_expires_at,
+                )
+                .await?;
+            if leases.is_empty() {
+                break;
+            }
+            claimed = claimed.saturating_add(u64::try_from(leases.len())?);
+            for lease in leases {
+                let fused_execute_permit =
+                    if lease.claim_kind == RebalanceOpportunityClaimKind::Revalidate {
+                        fused_execute_slots.clone().try_acquire_owned().ok()
+                    } else {
+                        None
+                    };
+                if fused_execute_permit.is_some() {
+                    fused_execute_permits = fused_execute_permits.saturating_add(1);
+                }
+                let mut request = same_mint_request_from_opportunity(
+                    &lease,
+                    &options.rpc_url,
+                    options.claim_kind,
+                )
+                .map_err(|error| error.to_string());
+                if fused_execute_permit.is_some() {
+                    if let Ok(request) = &mut request {
+                        request.mode = SameMintRouteExecutionMode::RevalidateAndExecute;
+                    }
+                }
+                let fallback_lease = lease.clone();
+                let fallback_request = request.as_ref().ok().cloned();
+                let worker_client = client.clone();
+                let worker_runtime = route_runtime.clone();
+                let fused_lease_state: FusedExecutionLeaseState = Arc::new(Mutex::new(None));
+                let task_fused_lease_state = fused_lease_state.clone();
+                let runtime_handle = tokio::runtime::Handle::current();
+                // Route construction uses the synchronous Solana client and
+                // keeps non-Send signer references across awaits. Catch every
+                // task-local failure so an expected conflict or malformed job
+                // is fenced back to its queue immediately instead of waiting
+                // for the full crash-recovery TTL.
+                tasks.spawn_blocking(move || {
+                    let _fused_execute_permit = fused_execute_permit;
+                    let attempt = catch_unwind(AssertUnwindSafe(
+                        || -> Result<SameMintRouteExecutionOutcome, String> {
+                            runtime_handle.block_on(async move {
+                                let request = request?;
+                                let conflict_keys = request_conflict_account_keys(&lease)?;
+                                if lease.claim_kind == RebalanceOpportunityClaimKind::Execute {
+                                    if conflict_keys.is_empty() {
+                                        return Err(
+                                            "ready opportunity is missing revalidated semantic conflict keys"
+                                                .to_owned(),
+                                        );
+                                    }
+                                    worker_client
+                                        .acquire_route_account_conflict_leases(
+                                            &lease,
+                                            &conflict_keys,
+                                            lease.expires_at,
+                                        )
+                                        .await
+                                        .map_err(|error| error.to_string())?;
+                                }
+                                let outcome = execute_same_mint_route_with_runtime(
+                                    request,
+                                    &worker_runtime,
+                                    Some(&task_fused_lease_state),
+                                )
+                                .await;
+                                Ok(outcome)
+                            })
+                        },
+                    ));
+                    let effective_lease = fused_lease_state
+                        .lock()
+                        .ok()
+                        .and_then(|promoted| promoted.clone())
+                        .unwrap_or(fallback_lease);
+                    match attempt {
+                        Ok(Ok(outcome)) => FleetWorkerTaskResult {
+                            lease: effective_lease,
+                            outcome,
+                        },
+                        Ok(Err(error)) => fleet_worker_retry_result(
+                            effective_lease,
+                            fallback_request.as_ref(),
+                            error,
+                        ),
+                        Err(_) => fleet_worker_retry_result(
+                            effective_lease,
+                            fallback_request.as_ref(),
+                            "fleet route task panicked before its fenced transition".to_owned(),
+                        ),
+                    }
+                });
+            }
+        }
+
+        if tasks.is_empty() {
+            if options.once {
+                emit_fleet_worker_health(
+                    &client,
+                    &options,
+                    &delegated_signer,
+                    fee_payer_keypool_state,
+                    &mounted_fee_payer_pubkeys,
+                    claimed,
+                    completed,
+                    failed,
+                    outbox_acknowledged,
+                    fused_execute_permits,
+                    fused_execute_promotions,
+                    wakeup_listener.is_connected(),
+                )
+                .await?;
+                break;
+            }
+            let listener_connected = wakeup_listener.is_connected();
+            tokio::select! {
+                _ = wait_for_rebalance_wakeup(
+                    &mut wakeup_listener,
+                    &client,
+                    Duration::from_millis(options.poll_interval_milliseconds),
+                    options.claim_kind,
+                ) => {}
+                _ = health_interval.tick() => {
+                    emit_fleet_worker_health(
+                        &client,
+                        &options,
+                        &delegated_signer,
+                        fee_payer_keypool_state,
+                        &mounted_fee_payer_pubkeys,
+                        claimed,
+                        completed,
+                        failed,
+                        outbox_acknowledged,
+                        fused_execute_permits,
+                        fused_execute_promotions,
+                        listener_connected,
+                    ).await?;
+                }
+            }
+            continue;
+        }
+
+        let task = tokio::select! {
+            task = tasks.join_next() => task,
+            _ = health_interval.tick() => {
+                emit_fleet_worker_health(
+                    &client,
+                    &options,
+                    &delegated_signer,
+                    fee_payer_keypool_state,
+                    &mounted_fee_payer_pubkeys,
+                    claimed,
+                    completed,
+                    failed,
+                    outbox_acknowledged,
+                    fused_execute_permits,
+                    fused_execute_promotions,
+                    wakeup_listener.is_connected(),
+                ).await?;
+                continue;
+            }
+        }
+        .ok_or("fleet worker task set unexpectedly became empty")?;
+        match task {
+            Ok(result) => {
+                if options.claim_kind == RebalanceOpportunityClaimKind::Revalidate
+                    && result.lease.claim_kind == RebalanceOpportunityClaimKind::Execute
+                {
+                    fused_execute_promotions = fused_execute_promotions.saturating_add(1);
+                }
+                match finish_fleet_worker_task(&client, result).await {
+                    Ok(()) => completed = completed.saturating_add(1),
+                    Err(error) => {
+                        failed = failed.saturating_add(1);
+                        eprintln!(
+                            "{}",
+                            serde_json::to_string(&json!({
+                                "status": "fleet_worker_transition_failed",
+                                "lane": options.claim_kind.as_str(),
+                                "error": redacted_external_error(&error.to_string()),
+                            }))?
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                failed = failed.saturating_add(1);
+                eprintln!(
+                    "{}",
+                    serde_json::to_string(&json!({
+                        "status": "fleet_worker_join_failed",
+                        "lane": options.claim_kind.as_str(),
+                        "error": redacted_external_error(&error.to_string()),
+                    }))?
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn wait_for_rebalance_wakeup(
+    listener: &mut DurablePgWakeupListener,
+    client: &NeonSqlClient,
+    recovery_poll: Duration,
+    claim_kind: RebalanceOpportunityClaimKind,
+) {
+    match listener.wait(client.pool(), recovery_poll).await {
+        DurablePgWakeupEvent::Notification | DurablePgWakeupEvent::RecoveryPollElapsed => {}
+        DurablePgWakeupEvent::Reconnected => {
+            eprintln!(
+                "{}",
+                json!({
+                    "status": "fleet_worker_wakeup_listener_reconnected",
+                    "lane": claim_kind.as_str(),
+                    "immediateDurableScan": true,
+                })
+            );
+        }
+        DurablePgWakeupEvent::Disconnected { error, retry_after } => {
+            eprintln!(
+                "{}",
+                json!({
+                    "status": "fleet_worker_wakeup_listener_disconnected",
+                    "lane": claim_kind.as_str(),
+                    "error": redacted_external_error(&error),
+                    "durablePollingActive": true,
+                    "immediateDurableScan": true,
+                    "retryBackoffMilliseconds": retry_after.as_millis(),
+                })
+            );
+        }
+        DurablePgWakeupEvent::ReconnectFailed { error, retry_after } => {
+            eprintln!(
+                "{}",
+                json!({
+                    "status": "fleet_worker_wakeup_listener_reconnect_failed",
+                    "lane": claim_kind.as_str(),
+                    "error": redacted_external_error(&error),
+                    "durablePollingActive": true,
+                    "immediateDurableScan": true,
+                    "retryBackoffMilliseconds": retry_after.as_millis(),
+                })
+            );
+        }
+    }
+}
+
+async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box<dyn Error>> {
+    let database_url =
+        env::var("NEON_DATABASE_URL").map_err(|_| "NEON_DATABASE_URL must be set")?;
+    let max_connections = u32::try_from(options.concurrency)
+        .unwrap_or(128)
+        .saturating_mul(2)
+        .saturating_add(4)
+        .min(128);
+    let client = NeonSqlClient::connect(
+        NeonSqlConfig::new(database_url).with_max_connections(max_connections),
+    )
+    .await?;
+    client
+        .require_schema_migration(24, "fleet_route_confirmer")
+        .await?;
+    client
+        .require_schema_migration(25, "fee_only_route_payer_shards")
+        .await?;
+    client
+        .require_schema_migration(26, "target_capacity_reservations")
+        .await?;
+    client
+        .require_schema_migration(27, "rebalance_opportunity_attempt_generations")
+        .await?;
+    let mut wakeup_listener =
+        DurablePgWakeupListener::new("loyal_yield_route_reconciliation_wakeup")?;
+    let runtime = Arc::new(
+        SameMintRouteRuntime::new(&options.rpc_url, &options.cluster, client.clone(), false)
+            .await?,
+    );
+    let mut completed = 0u64;
+    let mut deferred = 0u64;
+    let mut outer_task_failure_count = 0u64;
+    let mut outer_task_panic_count = 0u64;
+    let mut outer_task_join_failure_count = 0u64;
+    let mut outer_task_fenced_deferral_count = 0u64;
+    let mut outer_task_fenced_deferral_failure_count = 0u64;
+    let mut first_outer_task_error = None::<String>;
+    let mut health_interval = tokio::time::interval(Duration::from_millis(
+        FLEET_HEALTH_OBSERVATION_INTERVAL_MILLISECONDS,
+    ));
+    health_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    health_interval.tick().await;
+
+    loop {
+        let leases = client
+            .lease_reconciliation_pending_signed_route_submissions(
+                &options.cluster,
+                &options.owner,
+                options.batch_size,
+                Utc::now() + ChronoDuration::seconds(options.lease_seconds),
+            )
+            .await?;
+        let claimed = leases.len();
+        let mut tasks = JoinSet::new();
+        let mut pending = leases.into_iter();
+        loop {
+            while tasks.len() < options.concurrency {
+                let Some(lease) = pending.next() else {
+                    break;
+                };
+                let fallback_lease = lease.clone();
+                let task_runtime = runtime.clone();
+                let runtime_handle = tokio::runtime::Handle::current();
+                tasks.spawn_blocking(move || {
+                    let attempt = catch_unwind(AssertUnwindSafe(|| {
+                        runtime_handle
+                            .block_on(reconcile_signed_route_submission(task_runtime, lease))
+                    }));
+                    let outcome = match attempt {
+                        Ok(Ok(completed)) => FleetReconcilerTaskOutcome::Completed(completed),
+                        Ok(Err(error)) => FleetReconcilerTaskOutcome::Failed {
+                            kind: OuterTaskFailureKind::ReturnedError,
+                            error,
+                        },
+                        Err(_) => FleetReconcilerTaskOutcome::Failed {
+                            kind: OuterTaskFailureKind::Panicked,
+                            error: "fleet reconciler task panicked before its fenced transition"
+                                .to_owned(),
+                        },
+                    };
+                    FleetReconcilerTaskResult {
+                        lease: fallback_lease,
+                        outcome,
+                    }
+                });
+            }
+            let result = tokio::select! {
+                result = tasks.join_next() => result,
+                _ = health_interval.tick() => {
+                    emit_fleet_reconciler_health(
+                        &client,
+                        &options,
+                        claimed,
+                        completed,
+                        deferred,
+                        outer_task_failure_count,
+                        outer_task_panic_count,
+                        outer_task_join_failure_count,
+                        outer_task_fenced_deferral_count,
+                        outer_task_fenced_deferral_failure_count,
+                        first_outer_task_error.as_deref(),
+                        wakeup_listener.is_connected(),
+                    )
+                    .await?;
+                    continue;
+                }
+            };
+            let Some(result) = result else {
+                break;
+            };
+            match result {
+                Ok(FleetReconcilerTaskResult {
+                    outcome: FleetReconcilerTaskOutcome::Completed(true),
+                    ..
+                }) => completed = completed.saturating_add(1),
+                Ok(FleetReconcilerTaskResult {
+                    outcome: FleetReconcilerTaskOutcome::Completed(false),
+                    ..
+                }) => deferred = deferred.saturating_add(1),
+                Ok(FleetReconcilerTaskResult {
+                    lease,
+                    outcome: FleetReconcilerTaskOutcome::Failed { kind, error },
+                }) => {
+                    outer_task_failure_count = outer_task_failure_count.saturating_add(1);
+                    if kind == OuterTaskFailureKind::Panicked {
+                        outer_task_panic_count = outer_task_panic_count.saturating_add(1);
+                    }
+                    let redacted_error = redacted_external_error(&error);
+                    if first_outer_task_error.is_none() {
+                        eprintln!(
+                            "{}",
+                            json!({
+                                "status": "fleet_reconciler_outer_task_failure",
+                                "kind": kind,
+                                "error": redacted_error,
+                                "fencedRecoveryAttempted": true,
+                            })
+                        );
+                        first_outer_task_error = Some(redacted_error);
+                    }
+                    let recovery = outer_task_failure_recovery(kind, true);
+                    if let Some(advance) = recovery.fenced_deferred_advance(Utc::now()) {
+                        match client
+                            .advance_signed_route_submission(&lease, advance)
+                            .await
+                        {
+                            Ok(_) => {
+                                deferred = deferred.saturating_add(1);
+                                outer_task_fenced_deferral_count =
+                                    outer_task_fenced_deferral_count.saturating_add(1);
+                            }
+                            Err(error) => {
+                                outer_task_fenced_deferral_failure_count =
+                                    outer_task_fenced_deferral_failure_count.saturating_add(1);
+                                eprintln!(
+                                    "{}",
+                                    json!({
+                                        "status": "fleet_reconciler_outer_task_fenced_deferral_failed",
+                                        "kind": kind,
+                                        "error": redacted_external_error(&error.to_string()),
+                                        "leaseRetainedUntil": lease.expires_at,
+                                    })
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    outer_task_failure_count = outer_task_failure_count.saturating_add(1);
+                    outer_task_join_failure_count = outer_task_join_failure_count.saturating_add(1);
+                    let redacted_error = redacted_external_error(&error.to_string());
+                    if first_outer_task_error.is_none() {
+                        eprintln!(
+                            "{}",
+                            json!({
+                                "status": "fleet_reconciler_outer_task_join_failure",
+                                "kind": OuterTaskFailureKind::JoinFailure,
+                                "error": redacted_error,
+                                "fencedRecoveryAttempted": false,
+                                "reason": "lease unavailable after join failure",
+                            })
+                        );
+                        first_outer_task_error = Some(redacted_error);
+                    }
+                }
+            }
+        }
+
+        emit_fleet_reconciler_health(
+            &client,
+            &options,
+            claimed,
+            completed,
+            deferred,
+            outer_task_failure_count,
+            outer_task_panic_count,
+            outer_task_join_failure_count,
+            outer_task_fenced_deferral_count,
+            outer_task_fenced_deferral_failure_count,
+            first_outer_task_error.as_deref(),
+            wakeup_listener.is_connected(),
+        )
+        .await?;
+        if options.once {
+            break;
+        }
+        if claimed == 0 {
+            wait_for_reconciliation_wakeup(
+                &mut wakeup_listener,
+                &client,
+                Duration::from_millis(options.poll_interval_milliseconds),
+            )
+            .await;
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn emit_fleet_reconciler_health(
+    client: &NeonSqlClient,
+    options: &FleetReconcilerOptions,
+    claimed: usize,
+    completed: u64,
+    deferred: u64,
+    outer_task_failure_count: u64,
+    outer_task_panic_count: u64,
+    outer_task_join_failure_count: u64,
+    outer_task_fenced_deferral_count: u64,
+    outer_task_fenced_deferral_failure_count: u64,
+    first_outer_task_error: Option<&str>,
+    wakeup_listener_connected: bool,
+) -> Result<(), Box<dyn Error>> {
+    let status = client.fleet_orchestration_status(&options.cluster).await?;
+    let observed_at = Utc::now();
+    let stage_health = fleet_stage_health_report(
+        &status,
+        options.poll_interval_milliseconds,
+        FLEET_HEALTH_OBSERVATION_INTERVAL_MILLISECONDS,
+        observed_at,
+    )
+    .ok();
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "status": "fleet_reconciler_healthy",
+            "cluster": options.cluster,
+            "owner": options.owner,
+            "concurrency": options.concurrency,
+            "claimed": claimed,
+            "completed": completed,
+            "deferred": deferred,
+            "wakeupListenerConnected": wakeup_listener_connected,
+            "durableRecoveryPollMilliseconds": options.poll_interval_milliseconds,
+            "healthObservationIntervalMilliseconds": FLEET_HEALTH_OBSERVATION_INTERVAL_MILLISECONDS,
+            "outerTaskFailureCount": outer_task_failure_count,
+            "outerTaskPanicCount": outer_task_panic_count,
+            "outerTaskJoinFailureCount": outer_task_join_failure_count,
+            "outerTaskFencedDeferralCount": outer_task_fenced_deferral_count,
+            "outerTaskFencedDeferralFailureCount": outer_task_fenced_deferral_failure_count,
+            "firstOuterTaskError": first_outer_task_error,
+            "queue": status,
+            "stageHealth": stage_health,
+            "observedAt": observed_at,
+        }))?
+    );
+    Ok(())
+}
+
+async fn wait_for_reconciliation_wakeup(
+    listener: &mut DurablePgWakeupListener,
+    client: &NeonSqlClient,
+    recovery_poll: Duration,
+) {
+    match listener.wait(client.pool(), recovery_poll).await {
+        DurablePgWakeupEvent::Notification | DurablePgWakeupEvent::RecoveryPollElapsed => {}
+        DurablePgWakeupEvent::Reconnected => {
+            eprintln!(
+                "{}",
+                json!({
+                    "status": "fleet_reconciler_wakeup_listener_reconnected",
+                    "immediateDurableScan": true,
+                })
+            );
+        }
+        DurablePgWakeupEvent::Disconnected { error, retry_after } => {
+            eprintln!(
+                "{}",
+                json!({
+                    "status": "fleet_reconciler_wakeup_listener_disconnected",
+                    "error": redacted_external_error(&error),
+                    "durablePollingActive": true,
+                    "immediateDurableScan": true,
+                    "retryBackoffMilliseconds": retry_after.as_millis(),
+                })
+            );
+        }
+        DurablePgWakeupEvent::ReconnectFailed { error, retry_after } => {
+            eprintln!(
+                "{}",
+                json!({
+                    "status": "fleet_reconciler_wakeup_listener_reconnect_failed",
+                    "error": redacted_external_error(&error),
+                    "durablePollingActive": true,
+                    "immediateDurableScan": true,
+                    "retryBackoffMilliseconds": retry_after.as_millis(),
+                })
+            );
+        }
+    }
+}
+
+async fn reconcile_signed_route_submission(
+    runtime: Arc<SameMintRouteRuntime>,
+    lease: SignedRouteSubmissionLease,
+) -> Result<bool, String> {
+    if matches!(
+        lease.submission.state,
+        SignedRouteSubmissionState::ExpiryCheckPending
+            | SignedRouteSubmissionState::EffectAmbiguous
+    ) {
+        let recovering_ambiguous =
+            lease.submission.state == SignedRouteSubmissionState::EffectAmbiguous;
+        let result = inspect_expired_route(&runtime, &lease).await;
+        return match result {
+            Ok(ExpiredRouteCheckOutcome::EffectAbsent { observed_slot }) => {
+                let observed_block_height = lease
+                    .submission
+                    .expiry_observed_block_height
+                    .ok_or_else(|| {
+                        "expiry-check submission is missing observed block height".to_owned()
+                    })?;
+                runtime
+                    .client
+                    .advance_signed_route_submission(
+                        &lease,
+                        SignedRouteSubmissionAdvance::Expired {
+                            checked_at: Utc::now(),
+                            observed_block_height,
+                            signature_history_absent: true,
+                            effect_absence_proved: true,
+                        },
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                println!(
+                    "{}",
+                    json!({
+                        "status": "fleet_expired_route_effect_absent",
+                        "submissionId": lease.submission.id,
+                        "effectCheckSlot": observed_slot,
+                    })
+                );
+                Ok(true)
+            }
+            Ok(ExpiredRouteCheckOutcome::Confirmed { slot }) => {
+                runtime
+                    .client
+                    .advance_signed_route_submission(
+                        &lease,
+                        SignedRouteSubmissionAdvance::Confirmed {
+                            checked_at: Utc::now(),
+                            confirmed_slot: slot,
+                        },
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                runtime
+                    .client
+                    .advance_signed_route_submission(
+                        &lease,
+                        SignedRouteSubmissionAdvance::ReconciliationPending,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                println!(
+                    "{}",
+                    json!({
+                        "status": "fleet_expired_route_late_confirmation",
+                        "submissionId": lease.submission.id,
+                        "confirmedSlot": slot,
+                    })
+                );
+                Ok(true)
+            }
+            Ok(ExpiredRouteCheckOutcome::ConfirmedFailure { slot, detail }) => runtime
+                .client
+                .advance_signed_route_submission(
+                    &lease,
+                    SignedRouteSubmissionAdvance::Failed {
+                        checked_at: Utc::now(),
+                        confirmed_slot: Some(slot),
+                        error_detail: detail,
+                    },
+                )
+                .await
+                .map(|_| true)
+                .map_err(|error| error.to_string()),
+            Ok(ExpiredRouteCheckOutcome::SeenUnconfirmed { detail }) => runtime
+                .client
+                .advance_signed_route_submission(
+                    &lease,
+                    SignedRouteSubmissionAdvance::Deferred {
+                        checked_at: Utc::now(),
+                        next_poll_at: Utc::now() + ChronoDuration::seconds(2),
+                        error_detail: Some(detail),
+                    },
+                )
+                .await
+                .map(|_| false)
+                .map_err(|error| error.to_string()),
+            Ok(ExpiredRouteCheckOutcome::EffectAmbiguous { detail }) => {
+                if recovering_ambiguous {
+                    runtime
+                        .client
+                        .advance_signed_route_submission(
+                            &lease,
+                            SignedRouteSubmissionAdvance::Deferred {
+                                checked_at: Utc::now(),
+                                next_poll_at: Utc::now() + ChronoDuration::seconds(30),
+                                error_detail: Some(detail),
+                            },
+                        )
+                        .await
+                        .map(|_| false)
+                        .map_err(|error| error.to_string())
+                } else {
+                    runtime
+                        .client
+                        .advance_signed_route_submission(
+                            &lease,
+                            SignedRouteSubmissionAdvance::EffectAmbiguous {
+                                checked_at: Utc::now(),
+                                error_detail: detail.clone(),
+                            },
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    println!(
+                        "{}",
+                        json!({
+                            "status": "fleet_expired_route_effect_quarantined",
+                            "submissionId": lease.submission.id,
+                            "sharedLaneReleased": true,
+                            "vaultConflictRetained": true,
+                            "automaticRecoverySeconds": 30,
+                            "reason": detail,
+                        })
+                    );
+                    Ok(true)
+                }
+            }
+            Err(error) => {
+                let detail = safe_same_mint_operational_error(error.as_ref());
+                runtime
+                    .client
+                    .advance_signed_route_submission(
+                        &lease,
+                        SignedRouteSubmissionAdvance::Deferred {
+                            checked_at: Utc::now(),
+                            next_poll_at: Utc::now() + ChronoDuration::seconds(2),
+                            error_detail: Some(detail.clone()),
+                        },
+                    )
+                    .await
+                    .map_err(|advance_error| {
+                        format!("expiry effect-check defer failed after {detail}: {advance_error}")
+                    })?;
+                Ok(false)
+            }
+        };
+    }
+    let result = reconcile_same_mint_submission_effect(&runtime, &lease).await;
+    match result {
+        Ok(reconciled_slot) => runtime
+            .client
+            .advance_signed_route_submission(
+                &lease,
+                SignedRouteSubmissionAdvance::Reconciled { reconciled_slot },
+            )
+            .await
+            .map(|_| true)
+            .map_err(|error| error.to_string()),
+        Err(error) => {
+            let detail = safe_same_mint_operational_error(error.as_ref());
+            runtime
+                .client
+                .advance_signed_route_submission(
+                    &lease,
+                    SignedRouteSubmissionAdvance::Deferred {
+                        checked_at: Utc::now(),
+                        next_poll_at: Utc::now() + ChronoDuration::seconds(1),
+                        error_detail: Some(detail.clone()),
+                    },
+                )
+                .await
+                .map_err(|advance_error| {
+                    format!("reconciliation defer failed after {detail}: {advance_error}")
+                })?;
+            Ok(false)
+        }
+    }
+}
+
+enum ExpiredRouteCheckOutcome {
+    EffectAbsent { observed_slot: i64 },
+    Confirmed { slot: i64 },
+    ConfirmedFailure { slot: i64, detail: String },
+    SeenUnconfirmed { detail: String },
+    EffectAmbiguous { detail: String },
+}
+
+async fn inspect_expired_route(
+    runtime: &SameMintRouteRuntime,
+    lease: &SignedRouteSubmissionLease,
+) -> Result<ExpiredRouteCheckOutcome, Box<dyn Error>> {
+    let submission = &lease.submission;
+    if !matches!(
+        submission.state,
+        SignedRouteSubmissionState::ExpiryCheckPending
+            | SignedRouteSubmissionState::EffectAmbiguous
+    ) {
+        return Err("effect-absence verifier received a non-recovery submission".into());
+    }
+    let effect_check_slot = submission
+        .effect_check_slot
+        .ok_or("expiry-check submission is missing its finalized slot")?;
+    let signature = Signature::from_str(&submission.transaction_signature)
+        .map_err(|_| "expiry-check submission has an invalid signature")?;
+    let statuses = runtime
+        .rpc
+        .get_signature_statuses_with_history(&[signature])?;
+    if let Some(status) = statuses.value.into_iter().next().flatten() {
+        let slot = i64::try_from(status.slot)?;
+        if status.satisfies_commitment(CommitmentConfig::confirmed()) {
+            return match status.err {
+                Some(error) => Ok(ExpiredRouteCheckOutcome::ConfirmedFailure {
+                    slot,
+                    detail: safe_same_mint_operational_error(&format!(
+                        "late_confirmed_transaction_error:{error:?}"
+                    )),
+                }),
+                None => Ok(ExpiredRouteCheckOutcome::Confirmed { slot }),
+            };
+        }
+        return Ok(ExpiredRouteCheckOutcome::SeenUnconfirmed {
+            detail: safe_same_mint_operational_error(&format!(
+                "late_signature_seen_below_confirmed_commitment_at_slot_{slot}:{:?}",
+                status.err
+            )),
+        });
+    }
+
+    let opportunity = runtime
+        .client
+        .rebalance_opportunity(submission.opportunity_id)
+        .await?
+        .ok_or("expiry-check opportunity no longer exists")?;
+    let vault = reconciliation_vault(runtime, &opportunity).await?;
+    let minimum_slot = u64::try_from(effect_check_slot)?;
+    let route_kind = opportunity
+        .execution_plan
+        .get("kind")
+        .and_then(Value::as_str);
+    match route_kind {
+        Some("same_mint") => {
+            let source_reserve = opportunity
+                .source_reserve
+                .as_deref()
+                .ok_or("same-mint expiry check has no source reserve")?;
+            let source_snapshot_id = opportunity
+                .source_snapshot_id
+                .ok_or("same-mint expiry check has no source snapshot")?;
+            let rows = sqlx::query(
+                r#"
+                SELECT reserve, liquidity_mint, amount_raw
+                FROM loyal_yield.vault_position_snapshot_positions
+                WHERE snapshot_id = $1 AND reserve IN ($2, $3)
+                "#,
+            )
+            .bind(source_snapshot_id.as_i64())
+            .bind(source_reserve)
+            .bind(&opportunity.target_reserve)
+            .fetch_all(&runtime.pool)
+            .await?;
+            let pre_source = rows
+                .iter()
+                .find(|row| {
+                    row.try_get::<String, _>("reserve").ok().as_deref() == Some(source_reserve)
+                })
+                .ok_or("source snapshot is missing the expiry-check source reserve")?;
+            let pre_source_amount: i64 = pre_source.try_get("amount_raw")?;
+            let pre_source_mint: String = pre_source.try_get("liquidity_mint")?;
+            let pre_target_amount = rows
+                .iter()
+                .find(|row| {
+                    row.try_get::<String, _>("reserve").ok().as_deref()
+                        == Some(opportunity.target_reserve.as_str())
+                })
+                .map(|row| row.try_get::<i64, _>("amount_raw"))
+                .transpose()?
+                .unwrap_or_default();
+            let preview = load_chain_reconcile_preview_from_runtime(
+                runtime,
+                &vault,
+                &[
+                    source_reserve.to_owned(),
+                    opportunity.target_reserve.clone(),
+                ],
+                Some(minimum_slot),
+                Some(opportunity.optimizer_epoch_id),
+                false,
+            )
+            .await?;
+            let source = chain_position_for_reserve(&preview, source_reserve)?;
+            let target = chain_position_for_reserve(&preview, &opportunity.target_reserve)?;
+            if preview.observed_slot < effect_check_slot
+                || source.liquidity_mint != pre_source_mint
+                || target.liquidity_mint != opportunity.liquidity_mint
+                || i64::try_from(source.amount_raw)? != pre_source_amount
+                || i64::try_from(target.amount_raw)? != pre_target_amount
+            {
+                return Ok(ExpiredRouteCheckOutcome::EffectAmbiguous {
+                    detail: "expired_same_mint_route_effect_present_or_chain_state_ambiguous"
+                        .to_owned(),
+                });
+            }
+            Ok(ExpiredRouteCheckOutcome::EffectAbsent {
+                observed_slot: preview.observed_slot,
+            })
+        }
+        Some("idle_vault_deposit") => {
+            let idle_token_account = Pubkey::from_str(&required_plan_string(
+                &opportunity.execution_plan,
+                "idle_token_account",
+            )?)?;
+            let liquidity_mint = Pubkey::from_str(&opportunity.liquidity_mint)?;
+            let (idle_amount, idle_account_exists) = load_spl_token_account_amount_at_or_after(
+                runtime.rpc.as_ref(),
+                &idle_token_account,
+                &liquidity_mint,
+                Some(minimum_slot),
+            )?;
+            if !idle_account_exists || i64::try_from(idle_amount)? != opportunity.amount_raw {
+                return Ok(ExpiredRouteCheckOutcome::EffectAmbiguous {
+                    detail: "expired_idle_deposit_effect_present_or_chain_state_ambiguous"
+                        .to_owned(),
+                });
+            }
+            Ok(ExpiredRouteCheckOutcome::EffectAbsent {
+                observed_slot: effect_check_slot,
+            })
+        }
+        other => Err(format!("unsupported expiry effect-check route kind {other:?}").into()),
+    }
+}
+
+async fn reconcile_same_mint_submission_effect(
+    runtime: &SameMintRouteRuntime,
+    lease: &SignedRouteSubmissionLease,
+) -> Result<i64, Box<dyn Error>> {
+    let submission = &lease.submission;
+    if submission.state != SignedRouteSubmissionState::ReconciliationPending {
+        return Err("reconciler received a submission outside reconciliation_pending".into());
+    }
+    let confirmed_slot = submission
+        .confirmed_slot
+        .ok_or("reconciliation_pending submission is missing confirmed_slot")?;
+    let decision_id = submission
+        .decision_id
+        .ok_or("reconciliation_pending submission is missing decision_id")?;
+    let decision_state = load_decision_reconciliation_state(&runtime.pool, decision_id).await?;
+    if decision_state.status == DecisionStatus::Confirmed {
+        if decision_state.signature.as_deref() != Some(&submission.transaction_signature)
+            || decision_state.confirmed_slot != Some(confirmed_slot)
+            || decision_state.post_snapshot_id.is_none()
+        {
+            return Err("confirmed decision does not match its durable signed submission".into());
+        }
+        return Ok(decision_state.reconciled_slot.unwrap_or(confirmed_slot));
+    }
+    if decision_state.status != DecisionStatus::Confirming {
+        return Err(format!(
+            "decision {} is {}, expected confirming",
+            decision_id.as_i64(),
+            decision_state.status.as_str()
+        )
+        .into());
+    }
+    let opportunity = runtime
+        .client
+        .rebalance_opportunity(submission.opportunity_id)
+        .await?
+        .ok_or("signed submission opportunity no longer exists")?;
+    if opportunity.decision_id != Some(decision_id) {
+        return Err("signed submission, opportunity, and decision identities diverged".into());
+    }
+    match opportunity
+        .execution_plan
+        .get("kind")
+        .and_then(Value::as_str)
+    {
+        Some("same_mint") => {
+            reconcile_reserve_submission_effect(
+                runtime,
+                submission,
+                decision_id,
+                confirmed_slot,
+                &opportunity,
+            )
+            .await
+        }
+        Some("idle_vault_deposit") => {
+            reconcile_idle_submission_effect(runtime, decision_id, confirmed_slot, &opportunity)
+                .await
+        }
+        other => Err(format!("unsupported reconciliation route kind {other:?}").into()),
+    }
+}
+
+async fn reconciliation_vault(
+    runtime: &SameMintRouteRuntime,
+    opportunity: &RebalanceOpportunityRecord,
+) -> Result<SelectedVault, Box<dyn Error>> {
+    let settings = required_plan_string(&opportunity.execution_plan, "settings")?;
+    let vault_index = i16::try_from(required_plan_i64(
+        &opportunity.execution_plan,
+        "vault_index",
+    )?)?;
+    let vault = load_active_vault(&runtime.pool, &settings, vault_index)
+        .await?
+        .ok_or("reconciliation vault is no longer active")?;
+    validate_vault_policy(&vault)?;
+    if vault.id != opportunity.vault_id {
+        return Err("reconciliation vault does not match opportunity vault".into());
+    }
+    Ok(vault)
+}
+
+async fn reconcile_reserve_submission_effect(
+    runtime: &SameMintRouteRuntime,
+    submission: &loyal_yield_orchestrator::fleet_orchestration::SignedRouteSubmissionRecord,
+    decision_id: DecisionId,
+    confirmed_slot: i64,
+    opportunity: &RebalanceOpportunityRecord,
+) -> Result<i64, Box<dyn Error>> {
+    let decision =
+        load_prepared_same_mint_decision(&runtime.pool, decision_id, DecisionStatus::Confirming)
+            .await?;
+    if opportunity.vault_id != decision.vault_id
+        || opportunity.source_reserve.as_deref() != Some(&decision.source_reserve)
+        || opportunity.target_reserve != decision.target_reserve
+    {
+        return Err("reserve opportunity and decision identities diverged".into());
+    }
+    let vault = reconciliation_vault(runtime, opportunity).await?;
+
+    let current = runtime.client.current_positions(decision.vault_id).await?;
+    if let Some((snapshot_id, observed_slot)) =
+        post_effect_current_snapshot(&decision, &current, confirmed_slot)?
+    {
+        runtime
+            .client
+            .confirm_same_mint_rebalance(ConfirmSameMintRebalanceInput {
+                decision_id,
+                signature: submission.transaction_signature.clone(),
+                submitted_slot: submission.submitted_slot,
+                confirmed_slot,
+                observed_at: Some(Utc::now()),
+                post_snapshot_id: Some(snapshot_id),
+            })
+            .await?;
+        return Ok(observed_slot);
+    }
+
+    let current_slot = current
+        .iter()
+        .map(|position| position.observed_slot)
+        .max()
+        .unwrap_or_default();
+    let minimum_slot = confirmed_slot.max(current_slot.saturating_add(1));
+    let post_preview = load_chain_reconcile_preview_from_runtime(
+        runtime,
+        &vault,
+        &[
+            decision.source_reserve.clone(),
+            decision.target_reserve.clone(),
+        ],
+        Some(u64::try_from(minimum_slot)?),
+        Some(opportunity.optimizer_epoch_id),
+        false,
+    )
+    .await?;
+    let post_state = chain_preview_reconciled_state(&post_preview)?;
+    ensure_post_confirm_chain_reconcile_state(&decision, &post_state)?;
+    let snapshot = runtime
+        .client
+        .reconcile_vault(decision.vault_id, post_state)
+        .await?;
+    runtime
+        .client
+        .confirm_same_mint_rebalance(ConfirmSameMintRebalanceInput {
+            decision_id,
+            signature: submission.transaction_signature.clone(),
+            submitted_slot: submission.submitted_slot,
+            confirmed_slot,
+            observed_at: Some(Utc::now()),
+            post_snapshot_id: Some(snapshot.id),
+        })
+        .await?;
+    Ok(snapshot.observed_slot)
+}
+
+async fn reconcile_idle_submission_effect(
+    runtime: &SameMintRouteRuntime,
+    decision_id: DecisionId,
+    confirmed_slot: i64,
+    opportunity: &RebalanceOpportunityRecord,
+) -> Result<i64, Box<dyn Error>> {
+    if opportunity.source_reserve.is_some() {
+        return Err("idle opportunity unexpectedly carries a source reserve".into());
+    }
+    let vault = reconciliation_vault(runtime, opportunity).await?;
+    let idle_token_account =
+        required_plan_string(&opportunity.execution_plan, "idle_token_account")?;
+    let current = runtime.client.current_positions(vault.id).await?;
+    let current_idle = runtime
+        .client
+        .current_idle_token_balance(vault.id, &opportunity.liquidity_mint)
+        .await?;
+    let expected_idle_after = current_idle
+        .as_ref()
+        .map(|balance| balance.amount_raw.saturating_sub(opportunity.amount_raw))
+        .unwrap_or_default()
+        .max(0);
+    if let (Some(target), Some(idle)) = (
+        current
+            .iter()
+            .find(|position| position.reserve == opportunity.target_reserve),
+        current_idle.as_ref(),
+    ) {
+        if target.observed_slot >= confirmed_slot
+            && idle.observed_slot >= confirmed_slot
+            && target.amount_raw > 0
+            && idle.amount_raw <= expected_idle_after
+        {
+            runtime
+                .client
+                .advance_decision(
+                    decision_id,
+                    DecisionAdvance::Confirm {
+                        slot: Some(confirmed_slot),
+                        post_snapshot_id: Some(target.snapshot_id),
+                    },
+                )
+                .await?;
+            return Ok(target.observed_slot.min(idle.observed_slot));
+        }
+    }
+
+    let current_slot = current
+        .iter()
+        .map(|position| position.observed_slot)
+        .chain(current_idle.iter().map(|balance| balance.observed_slot))
+        .max()
+        .unwrap_or_default();
+    let minimum_slot = confirmed_slot.max(current_slot.saturating_add(1));
+    let mut reserves = current
+        .iter()
+        .map(|position| position.reserve.clone())
+        .collect::<Vec<_>>();
+    push_unique_string(&mut reserves, opportunity.target_reserve.clone());
+    let preview = load_chain_reconcile_preview_from_runtime(
+        runtime,
+        &vault,
+        &reserves,
+        Some(u64::try_from(minimum_slot)?),
+        Some(opportunity.optimizer_epoch_id),
+        false,
+    )
+    .await?;
+    let target = chain_position_for_reserve(&preview, &opportunity.target_reserve)?;
+    if target.liquidity_mint != opportunity.liquidity_mint || target.amount_raw == 0 {
+        return Err(
+            "confirmed idle deposit effect is not yet visible in the target reserve".into(),
+        );
+    }
+    if target.vault_liquidity_ata != idle_token_account
+        || i64::try_from(target.vault_liquidity_amount_raw)? > expected_idle_after
+    {
+        return Err("confirmed idle deposit effect is not yet visible in the idle ATA".into());
+    }
+    let snapshot = runtime
+        .client
+        .reconcile_vault(vault.id, chain_preview_reconciled_state(&preview)?)
+        .await?;
+    runtime
+        .client
+        .record_current_idle_token_balance(CurrentIdleTokenBalance {
+            vault_id: vault.id,
+            mint: opportunity.liquidity_mint.clone(),
+            amount_raw: i64::try_from(target.vault_liquidity_amount_raw)?,
+            owner: vault.vault_pubkey.clone(),
+            token_account: idle_token_account,
+            observed_slot: preview.observed_slot,
+            observed_at: Utc::now(),
+            source_commitment: "confirmed".to_owned(),
+            updated_at: Utc::now(),
+        })
+        .await?;
+    runtime
+        .client
+        .advance_decision(
+            decision_id,
+            DecisionAdvance::Confirm {
+                slot: Some(confirmed_slot),
+                post_snapshot_id: Some(snapshot.id),
+            },
+        )
+        .await?;
+    Ok(snapshot.observed_slot)
+}
+
+struct DecisionReconciliationState {
+    status: DecisionStatus,
+    signature: Option<String>,
+    confirmed_slot: Option<i64>,
+    post_snapshot_id: Option<SnapshotId>,
+    reconciled_slot: Option<i64>,
+}
+
+async fn load_decision_reconciliation_state(
+    pool: &PgPool,
+    decision_id: DecisionId,
+) -> Result<DecisionReconciliationState, Box<dyn Error>> {
+    let row = loyal_yield_orchestrator::sqlx::query(
+        r#"
+        SELECT
+            decision.status::TEXT AS status,
+            decision.signature,
+            decision.confirmed_slot,
+            decision.post_snapshot_id,
+            snapshot.observed_slot AS reconciled_slot
+        FROM loyal_yield.rebalance_decisions decision
+        LEFT JOIN loyal_yield.vault_position_snapshots snapshot
+          ON snapshot.id = decision.post_snapshot_id
+        WHERE decision.id = $1
+        "#,
+    )
+    .bind(decision_id.as_i64())
+    .fetch_one(pool)
+    .await?;
+    let status_text: String = row.try_get("status")?;
+    let status = DecisionStatus::parse(&status_text)
+        .ok_or_else(|| format!("unknown decision status {status_text:?}"))?;
+    Ok(DecisionReconciliationState {
+        status,
+        signature: row.try_get("signature")?,
+        confirmed_slot: row.try_get("confirmed_slot")?,
+        post_snapshot_id: row
+            .try_get::<Option<i64>, _>("post_snapshot_id")?
+            .map(SnapshotId),
+        reconciled_slot: row.try_get("reconciled_slot")?,
+    })
+}
+
+fn post_effect_current_snapshot(
+    decision: &PreparedSameMintDecision,
+    positions: &[loyal_yield_orchestrator::CurrentReservePosition],
+    confirmed_slot: i64,
+) -> Result<Option<(SnapshotId, i64)>, Box<dyn Error>> {
+    let Some(source) = positions
+        .iter()
+        .find(|position| position.reserve == decision.source_reserve)
+    else {
+        return Ok(None);
+    };
+    let Some(target) = positions
+        .iter()
+        .find(|position| position.reserve == decision.target_reserve)
+    else {
+        return Ok(None);
+    };
+    if source.observed_slot < confirmed_slot
+        || target.observed_slot < confirmed_slot
+        || source.snapshot_id != target.snapshot_id
+    {
+        return Ok(None);
+    }
+    if source.liquidity_mint != decision.liquidity_mint
+        || target.liquidity_mint != decision.liquidity_mint
+    {
+        return Err("post-confirm current positions changed liquidity mint".into());
+    }
+    if source.amount_raw != 0 || target.amount_raw <= 0 {
+        return Ok(None);
+    }
+    Ok(Some((source.snapshot_id, source.observed_slot)))
+}
+
+fn same_mint_request_from_opportunity(
+    lease: &RebalanceOpportunityLease,
+    rpc_url: &str,
+    claim_kind: RebalanceOpportunityClaimKind,
+) -> Result<SameMintRouteExecutionRequest, Box<dyn Error>> {
+    let opportunity = &lease.opportunity;
+    let plan = &opportunity.execution_plan;
+    let settings = required_plan_string(plan, "settings")?;
+    let vault_index = i16::try_from(required_plan_i64(plan, "vault_index")?)?;
+    let source_kind = match required_plan_string(plan, "source_kind")?.as_str() {
+        "reserve_position" => SameMintRouteSourceKind::ReservePosition,
+        "idle_vault_usdc" => SameMintRouteSourceKind::IdleVaultUsdc,
+        other => return Err(format!("unsupported fleet source_kind {other:?}").into()),
+    };
+    let expected_idle_observed_at = optional_plan_datetime(plan, "source_observed_at")?;
+    Ok(SameMintRouteExecutionRequest {
+        mode: match claim_kind {
+            RebalanceOpportunityClaimKind::Revalidate => SameMintRouteExecutionMode::Revalidate,
+            RebalanceOpportunityClaimKind::Execute => SameMintRouteExecutionMode::Execute,
+        },
+        opportunity_id: opportunity.id,
+        optimizer_epoch_id: opportunity.optimizer_epoch_id,
+        optimizer_market_slot: required_plan_i64(plan, "optimizer_market_slot")?,
+        lease_owner: lease.owner.clone(),
+        fencing_token: lease.fencing_token,
+        source_kind,
+        settings,
+        vault_index,
+        source_reserve: opportunity.source_reserve.clone(),
+        target_reserve: opportunity.target_reserve.clone(),
+        expected_source_snapshot_id: opportunity.source_snapshot_id.map(SnapshotId::as_i64),
+        expected_idle_token_account: optional_plan_string(plan, "idle_token_account"),
+        expected_idle_observed_slot: optional_plan_i64(plan, "source_observed_slot"),
+        expected_idle_observed_at,
+        expected_liquidity_mint: opportunity.liquidity_mint.clone(),
+        expected_amount_raw: opportunity.amount_raw,
+        expected_route_amount_semantics: required_plan_string(plan, "route_amount_semantics")?,
+        expected_source_apy_bps: opportunity.source_apy_bps,
+        expected_observed_target_apy_bps: required_plan_i64(plan, "observed_target_apy_bps")?,
+        expected_target_apy_bps: opportunity.target_apy_bps,
+        expected_edge_bps: opportunity.estimated_edge_bps,
+        principal_usd_micros: opportunity.principal_usd_micros,
+        confidence_ppm: u32::try_from(required_plan_i64(plan, "confidence_ppm")?)?,
+        expected_service_millis: u64::try_from(required_plan_i64(
+            plan,
+            "expected_service_millis",
+        )?)?,
+        holding_horizon_seconds: u64::try_from(required_plan_i64(
+            plan,
+            "holding_horizon_seconds",
+        )?)?,
+        estimated_execution_cost_usd_micros: required_plan_i64(
+            plan,
+            "estimated_execution_cost_usd_micros",
+        )?,
+        expected_cost_lamports: opportunity.estimated_cost_lamports,
+        expected_route_fee_payer: (claim_kind == RebalanceOpportunityClaimKind::Execute)
+            .then(|| optional_plan_string(plan, "route_fee_payer"))
+            .flatten(),
+        cluster: opportunity.cluster.clone(),
+        rpc_url: rpc_url.to_owned(),
+    })
+}
+
+fn required_plan_string(plan: &Value, field: &str) -> Result<String, Box<dyn Error>> {
+    plan.get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| format!("opportunity execution_plan.{field} is required").into())
+}
+
+fn optional_plan_string(plan: &Value, field: &str) -> Option<String> {
+    plan.get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn required_plan_i64(plan: &Value, field: &str) -> Result<i64, Box<dyn Error>> {
+    plan.get(field)
+        .and_then(Value::as_i64)
+        .ok_or_else(|| format!("opportunity execution_plan.{field} is required").into())
+}
+
+fn optional_plan_i64(plan: &Value, field: &str) -> Option<i64> {
+    plan.get(field).and_then(Value::as_i64)
+}
+
+fn optional_plan_datetime(
+    plan: &Value,
+    field: &str,
+) -> Result<Option<DateTime<Utc>>, Box<dyn Error>> {
+    optional_plan_string(plan, field)
+        .map(|value| {
+            DateTime::parse_from_rfc3339(&value)
+                .map(|value| value.with_timezone(&Utc))
+                .map_err(|error| format!("invalid execution_plan.{field}: {error}").into())
+        })
+        .transpose()
+}
+
+fn request_conflict_account_keys(lease: &RebalanceOpportunityLease) -> Result<Vec<String>, String> {
+    let Some(values) = lease
+        .opportunity
+        .execution_plan
+        .get("conflict_account_keys")
+        .and_then(Value::as_array)
+    else {
+        return Ok(Vec::new());
+    };
+    let mut keys = values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|key| !key.trim().is_empty())
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| "semantic conflict keys must be nonempty strings".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    keys.sort();
+    keys.dedup();
+    Ok(keys)
+}
+
+fn fleet_worker_retry_result(
+    lease: RebalanceOpportunityLease,
+    request: Option<&SameMintRouteExecutionRequest>,
+    error: String,
+) -> FleetWorkerTaskResult {
+    let reason = safe_same_mint_operational_error(&error);
+    let outcome = request.map_or_else(
+        || {
+            let plan = &lease.opportunity.execution_plan;
+            SameMintRouteExecutionOutcome {
+                state: SameMintRouteExecutionState::Retry,
+                opportunity_id: lease.opportunity.id,
+                source_kind: if lease.opportunity.source_reserve.is_some() {
+                    SameMintRouteSourceKind::ReservePosition
+                } else {
+                    SameMintRouteSourceKind::IdleVaultUsdc
+                },
+                settings: optional_plan_string(plan, "settings").unwrap_or_default(),
+                vault_index: optional_plan_i64(plan, "vault_index")
+                    .and_then(|value| i16::try_from(value).ok())
+                    .unwrap_or_default(),
+                source_reserve: lease.opportunity.source_reserve.clone(),
+                target_reserve: lease.opportunity.target_reserve.clone(),
+                writes_decision: false,
+                sends_transactions: false,
+                reason: Some(reason.clone()),
+                route_fingerprint: lease.opportunity.route_fingerprint.clone(),
+                requirements_fingerprint: lease.opportunity.requirements_fingerprint.clone(),
+                provisioning_request_id: None,
+                readiness_evidence: None,
+                writable_account_keys: Vec::new(),
+                conflict_account_keys: Vec::new(),
+            }
+        },
+        |request| request.outcome(SameMintRouteExecutionState::Retry, Some(reason.clone())),
+    );
+    FleetWorkerTaskResult { lease, outcome }
+}
+
+async fn finish_fleet_worker_task(
+    client: &NeonSqlClient,
+    result: FleetWorkerTaskResult,
+) -> Result<(), Box<dyn Error>> {
+    let FleetWorkerTaskResult { lease, outcome } = result;
+    if lease.claim_kind == RebalanceOpportunityClaimKind::Execute
+        && matches!(
+            outcome.state,
+            SameMintRouteExecutionState::SubmissionQueued | SameMintRouteExecutionState::Executed
+        )
+    {
+        let current = client
+            .rebalance_opportunity(lease.opportunity.id)
+            .await?
+            .ok_or("executed opportunity disappeared")?;
+        if current.state != RebalanceOpportunityState::DecisionCreated {
+            return Err(format!(
+                "executed opportunity {} is {}, expected decision_created",
+                current.id,
+                current.state.as_str()
+            )
+            .into());
+        }
+        return Ok(());
+    }
+
+    let (next_state, available_at, reason, provisioning_request_id) =
+        match (lease.claim_kind, outcome.state) {
+            (RebalanceOpportunityClaimKind::Revalidate, SameMintRouteExecutionState::Ready) => {
+                (RebalanceOpportunityState::Ready, None, None, None)
+            }
+            (_, SameMintRouteExecutionState::WaitingAlt) => (
+                RebalanceOpportunityState::WaitingAlt,
+                None,
+                outcome.reason.clone(),
+                outcome.provisioning_request_id,
+            ),
+            (RebalanceOpportunityClaimKind::Revalidate, SameMintRouteExecutionState::Retry) => (
+                RebalanceOpportunityState::Revalidate,
+                Some(Utc::now() + ChronoDuration::seconds(2)),
+                outcome.reason.clone(),
+                None,
+            ),
+            (RebalanceOpportunityClaimKind::Execute, SameMintRouteExecutionState::Retry)
+                if outcome.reason.as_deref().is_some_and(|reason| {
+                    reason.contains("fee_payer_reselection_required")
+                        || reason.contains("target capacity telemetry changed")
+                }) =>
+            {
+                (
+                    RebalanceOpportunityState::Revalidate,
+                    Some(Utc::now() + ChronoDuration::milliseconds(250)),
+                    outcome.reason.clone(),
+                    None,
+                )
+            }
+            (RebalanceOpportunityClaimKind::Execute, SameMintRouteExecutionState::Retry)
+                if outcome
+                    .reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("target capacity")) =>
+            {
+                (
+                    RebalanceOpportunityState::Revalidate,
+                    Some(Utc::now() + ChronoDuration::seconds(2)),
+                    outcome.reason.clone(),
+                    None,
+                )
+            }
+            (RebalanceOpportunityClaimKind::Execute, SameMintRouteExecutionState::Retry) => (
+                RebalanceOpportunityState::Ready,
+                Some(Utc::now() + ChronoDuration::seconds(2)),
+                outcome.reason.clone(),
+                None,
+            ),
+            (_, SameMintRouteExecutionState::Terminal) => (
+                RebalanceOpportunityState::Failed,
+                None,
+                Some(
+                    outcome
+                        .reason
+                        .clone()
+                        .unwrap_or_else(|| "route preflight failed terminally".to_owned()),
+                ),
+                None,
+            ),
+            (RebalanceOpportunityClaimKind::Execute, SameMintRouteExecutionState::Ready) => (
+                RebalanceOpportunityState::Ready,
+                Some(Utc::now() + ChronoDuration::seconds(1)),
+                Some("execute lane returned ready without execution".to_owned()),
+                None,
+            ),
+            (RebalanceOpportunityClaimKind::Revalidate, SameMintRouteExecutionState::Executed) => {
+                return Err("revalidation lane unexpectedly executed a route".into());
+            }
+            (
+                RebalanceOpportunityClaimKind::Revalidate,
+                SameMintRouteExecutionState::SubmissionQueued,
+            ) => return Err("revalidation lane unexpectedly queued a signed route".into()),
+            (
+                RebalanceOpportunityClaimKind::Execute,
+                SameMintRouteExecutionState::SubmissionQueued,
+            ) => unreachable!("queued routes return after decision linkage validation"),
+            (RebalanceOpportunityClaimKind::Execute, SameMintRouteExecutionState::Executed) => {
+                unreachable!("executed queue routes return after decision linkage validation")
+            }
+        };
+    let mut execution_plan = lease.opportunity.execution_plan.clone();
+    let object = execution_plan
+        .as_object_mut()
+        .ok_or("opportunity execution plan is not an object")?;
+    if !outcome.writable_account_keys.is_empty() {
+        object.insert(
+            "exact_writable_account_keys".to_owned(),
+            json!(outcome.writable_account_keys),
+        );
+    }
+    if !outcome.conflict_account_keys.is_empty() {
+        object.insert(
+            "conflict_account_keys".to_owned(),
+            json!(outcome.conflict_account_keys),
+        );
+    }
+    if let Some(readiness) = outcome.readiness_evidence.clone() {
+        if let Some(fee_payer) = readiness.get("feePayer").and_then(Value::as_str) {
+            object.insert("route_fee_payer".to_owned(), json!(fee_payer));
+        }
+        object.insert("alt_readiness".to_owned(), readiness);
+    }
+    client
+        .advance_rebalance_opportunity(
+            lease.opportunity.id,
+            &lease,
+            RebalanceOpportunityAdvance {
+                next_state,
+                available_at,
+                decision_id: None,
+                reason,
+                route_fingerprint: outcome.route_fingerprint,
+                requirements_fingerprint: outcome.requirements_fingerprint,
+                execution_plan: Some(execution_plan),
+                provisioning_request_id,
+            },
+        )
+        .await?;
+    Ok(())
+}
+
+async fn emit_fleet_worker_health(
+    client: &NeonSqlClient,
+    options: &FleetWorkerOptions,
+    delegated_signer: &str,
+    keypool_state: &str,
+    mounted_fee_payer_pubkeys: &BTreeSet<String>,
+    claimed: u64,
+    completed: u64,
+    failed: u64,
+    outbox_acknowledged: u64,
+    fused_execute_permits: u64,
+    fused_execute_promotions: u64,
+    wakeup_listener_connected: bool,
+) -> Result<(), Box<dyn Error>> {
+    let status = client.fleet_orchestration_status(&options.cluster).await?;
+    let observed_at = Utc::now();
+    let stage_health = fleet_stage_health_report(
+        &status,
+        options.poll_interval_milliseconds,
+        FLEET_HEALTH_OBSERVATION_INTERVAL_MILLISECONDS,
+        observed_at,
+    )
+    .ok();
+    let enabled_shards = client
+        .enabled_route_fee_payer_shards(&options.cluster)
+        .await;
+    let authority_status = client
+        .route_fee_payer_authority_status(&options.cluster, delegated_signer)
+        .await;
+    let enabled_shard_count = enabled_shards.as_ref().map_or(0, Vec::len);
+    let database_authority_conflict_count = enabled_shards.as_ref().map_or(0, |shards| {
+        shards
+            .iter()
+            .filter(|shard| !shard.database_authority_separation_passes)
+            .count()
+    });
+    let policy_key_conflict_count = enabled_shards.as_ref().map_or(0, |shards| {
+        shards
+            .iter()
+            .filter(|shard| shard.fee_payer == delegated_signer)
+            .count()
+    });
+    let exact_mounted_shard_count = enabled_shards.as_ref().map_or(0, |shards| {
+        shards
+            .iter()
+            .filter(|shard| mounted_fee_payer_pubkeys.contains(&shard.fee_payer))
+            .count()
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "status": "fleet_worker_healthy",
+            "lane": options.claim_kind.as_str(),
+            "cluster": options.cluster,
+            "owner": options.owner,
+            "policySigner": delegated_signer,
+            "feePayerSharding": {
+                "policyFallbackAvailable": true,
+                "keypoolState": keypool_state,
+                "mountedKeyCount": mounted_fee_payer_pubkeys.len(),
+                "registryAvailable": enabled_shards.is_ok(),
+                "enabledShardCount": enabled_shard_count,
+                "exactMountedConfiguredShardCount": exact_mounted_shard_count,
+                "databaseAltAuthorityConflictCount": database_authority_conflict_count,
+                "policyKeyConflictCount": policy_key_conflict_count,
+                "authoritySeparationPasses": database_authority_conflict_count == 0
+                    && policy_key_conflict_count == 0
+                    && authority_status.as_ref().is_ok_and(|status| status.policy_authority_and_payer_match()),
+                "assignment": "ranked_rendezvous_cluster_vault_pubkey",
+                "maximumCandidatesPerRoute": MAX_FEE_PAYER_SHARD_CANDIDATES,
+                "eligibleRouteClass": "mature_queue_same_mint_only",
+                "manifestBinding": "revalidate_payer_then_execute_exact",
+                "authorityProof": {
+                    "delegatedPolicySigner": delegated_signer,
+                    "databaseProofAvailable": authority_status.is_ok(),
+                    "reusableFamilyCount": authority_status.as_ref().ok().map(|status| status.reusable_family_count),
+                    "reusableFamilyPolicyMismatchCount": authority_status.as_ref().ok().map(|status| status.reusable_family_policy_mismatch_count),
+                    "reusableTableCount": authority_status.as_ref().ok().map(|status| status.reusable_table_count),
+                    "reusableTablePolicyMismatchCount": authority_status.as_ref().ok().map(|status| status.reusable_table_policy_mismatch_count),
+                    "policyIsReusableAltAuthorityAndPayer": authority_status.as_ref().is_ok_and(|status| status.policy_authority_and_payer_match()),
+                    "setupFarmAndRentPayer": delegated_signer,
+                    "feeOnlyShardHasPolicyAuthority": false,
+                    "feeOnlyShardHasReusableAltAuthority": false,
+                    "feeOnlyShardMayFundSetupFarmOrRent": false,
+                },
+            },
+            "concurrency": options.concurrency,
+            "fusedExecuteConcurrency": options.fused_execute_concurrency,
+            "claimed": claimed,
+            "completed": completed,
+            "failed": failed,
+            "altWakeupsAcknowledged": outbox_acknowledged,
+            "fusedExecutePermits": fused_execute_permits,
+            "fusedExecutePromotions": fused_execute_promotions,
+            "wakeupListenerConnected": wakeup_listener_connected,
+            "durableRecoveryPollMilliseconds": options.poll_interval_milliseconds,
+            "healthObservationIntervalMilliseconds": FLEET_HEALTH_OBSERVATION_INTERVAL_MILLISECONDS,
+            "queue": status,
+            "stageHealth": stage_health,
+            "observedAt": observed_at,
+        }))?
+    );
+    Ok(())
+}
+
+/// Runs a queue-planned route entirely inside the current process. The
+/// persistent worker supplies typed evidence directly; argv and child-process
+/// stdout are not part of this contract.
+pub async fn execute_same_mint_route_in_process(
+    request: SameMintRouteExecutionRequest,
+) -> SameMintRouteExecutionOutcome {
+    let options = match request.as_cli_options() {
+        Ok(options) => options,
+        Err(reason) => {
+            return request.outcome(SameMintRouteExecutionState::Terminal, Some(reason));
+        }
+    };
+    let database_url = match env::var("NEON_DATABASE_URL") {
+        Ok(value) => value,
+        Err(_) => {
+            return request.outcome(
+                SameMintRouteExecutionState::Terminal,
+                Some("NEON_DATABASE_URL must be set".to_owned()),
+            )
+        }
+    };
+    let client = match NeonSqlClient::connect(NeonSqlConfig::new(database_url)).await {
+        Ok(value) => value,
+        Err(error) => {
+            return request.outcome(
+                SameMintRouteExecutionState::Retry,
+                Some(safe_same_mint_operational_error(&error)),
+            )
+        }
+    };
+    let runtime =
+        match SameMintRouteRuntime::new(&options.rpc_url, &options.cluster, client, true).await {
+            Ok(value) => value,
+            Err(error) => {
+                return request.outcome(
+                    SameMintRouteExecutionState::Retry,
+                    Some(safe_same_mint_operational_error(error.as_ref())),
+                )
+            }
+        };
+    execute_same_mint_route_with_runtime(request, &runtime, None).await
+}
+
+async fn execute_same_mint_route_with_runtime(
+    request: SameMintRouteExecutionRequest,
+    runtime: &SameMintRouteRuntime,
+    fused_lease_state: Option<&FusedExecutionLeaseState>,
+) -> SameMintRouteExecutionOutcome {
+    let options = match request.as_cli_options() {
+        Ok(options) => options,
+        Err(reason) => {
+            return request.outcome(SameMintRouteExecutionState::Terminal, Some(reason));
+        }
+    };
+    match run_with_runtime(options, runtime, fused_lease_state).await {
+        Ok(Some(result)) => request.outcome_from_run(result),
+        Ok(None) => request.outcome(
+            SameMintRouteExecutionState::Terminal,
+            Some("same-mint in-process request completed outside the route boundary".to_owned()),
+        ),
+        Err(error) => {
+            let reason = safe_same_mint_operational_error(error.as_ref());
+            request.outcome(classify_in_process_execution_error(&reason), Some(reason))
+        }
+    }
+}
+
+fn classify_in_process_execution_error(reason: &str) -> SameMintRouteExecutionState {
+    let reason = reason.to_ascii_lowercase();
+    if reason.contains("complete reusable alt coverage")
+        || reason.contains("reusable alt coverage") && reason.contains("incomplete")
+        || reason.contains("lookup-table coverage") && reason.contains("missing")
+    {
+        SameMintRouteExecutionState::WaitingAlt
+    } else if [
+        "active decision",
+        "blockhash",
+        "connection",
+        "database",
+        "deadlock",
+        "fee_payer_reselection_required",
+        "lease",
+        "rate limit",
+        "rpc",
+        "serialization",
+        "stale rpc",
+        "target capacity",
+        "temporar",
+        "timeout",
+    ]
+    .iter()
+    .any(|retryable| reason.contains(retryable))
+    {
+        SameMintRouteExecutionState::Retry
+    } else {
+        SameMintRouteExecutionState::Terminal
+    }
+}
+
+/// Re-read the durable queue lease instead of trusting the lease object that
+/// originally woke the worker. Queue identity is deliberately absent for the
+/// legacy CLI/admin paths; a partially populated identity fails closed.
+async fn require_current_opportunity_fence(
+    client: &NeonSqlClient,
+    options: &CliOptions,
+    vault: &SelectedVault,
+    expected_fingerprints: Option<(&str, &str)>,
+) -> Result<Option<RebalanceOpportunityRecord>, Box<dyn Error>> {
+    let (opportunity_id, owner, fencing_token) = match (
+        options.opportunity_id,
+        options.opportunity_lease_owner.as_deref(),
+        options.opportunity_fencing_token,
+    ) {
+        (None, None, None) => return Ok(None),
+        (Some(opportunity_id), Some(owner), Some(fencing_token)) => {
+            (opportunity_id, owner, fencing_token)
+        }
+        _ => {
+            return Err(
+                "queue route execution has a partial opportunity lease identity and is fenced"
+                    .into(),
+            )
+        }
+    };
+    let current = client
+        .rebalance_opportunity(opportunity_id)
+        .await?
+        .ok_or_else(|| format!("rebalance opportunity {opportunity_id} no longer exists"))?;
+    let claim_kind = if options.execute {
+        RebalanceOpportunityClaimKind::Execute
+    } else if options.prepare_only {
+        RebalanceOpportunityClaimKind::Revalidate
+    } else {
+        return Err("queue opportunity identity is only valid for execute or revalidate".into());
+    };
+    let lease = RebalanceOpportunityLease {
+        opportunity: current.clone(),
+        claim_kind,
+        owner: owner.to_owned(),
+        fencing_token,
+        expires_at: current
+            .lease_expires_at
+            .ok_or("rebalance opportunity is missing its lease expiry")?,
+    };
+    let current = client.validate_rebalance_opportunity_lease(&lease).await?;
+    if current.expires_at <= Utc::now() {
+        return Err(format!("rebalance opportunity {opportunity_id} has expired").into());
+    }
+
+    let expected_target = options
+        .idle_vault_deposit_reserve
+        .as_deref()
+        .or(options.target_reserve.as_deref())
+        .ok_or("queue route is missing its target reserve")?;
+    let expected_amount = options
+        .expected_amount_raw
+        .ok_or("queue route is missing its expected amount")?;
+    let expected_mint = options
+        .expected_liquidity_mint
+        .as_deref()
+        .ok_or("queue route is missing its expected liquidity mint")?;
+    let expected_source_apy = options
+        .expected_source_apy_bps
+        .ok_or("queue route is missing its expected source APY")?;
+    let expected_target_apy = options
+        .expected_target_apy_bps
+        .ok_or("queue route is missing its expected target APY")?;
+    let expected_edge = options
+        .expected_edge_bps
+        .ok_or("queue route is missing its expected edge")?;
+    let evidence_matches = current.cluster == options.cluster
+        && current.vault_id == vault.id
+        && current.source_snapshot_id.map(SnapshotId::as_i64)
+            == options.expected_source_snapshot_id
+        && current.source_reserve.as_deref() == options.source_reserve.as_deref()
+        && current.target_reserve == expected_target
+        && current.liquidity_mint == expected_mint
+        && current.amount_raw == expected_amount
+        && current.source_apy_bps == expected_source_apy
+        && current.target_apy_bps == expected_target_apy
+        && current.estimated_edge_bps == expected_edge;
+    if !evidence_matches {
+        return Err(format!(
+            "rebalance opportunity {opportunity_id} evidence changed while leased; worker is fenced"
+        )
+        .into());
+    }
+    if let Some((route_fingerprint, requirements_fingerprint)) = expected_fingerprints {
+        if current.route_fingerprint.as_deref() != Some(route_fingerprint)
+            || current.requirements_fingerprint.as_deref() != Some(requirements_fingerprint)
+        {
+            return Err(format!(
+                "rebalance opportunity {opportunity_id} exact route/requirements fingerprints changed while leased; worker is fenced"
+            )
+            .into());
+        }
+    }
+    Ok(Some(current))
+}
+
+async fn run_with_options(
+    options: CliOptions,
+) -> Result<Option<InProcessRouteResult>, Box<dyn Error>> {
+    let database_url =
+        env::var("NEON_DATABASE_URL").map_err(|_| "NEON_DATABASE_URL must be set")?;
+    let client = NeonSqlClient::from_pool(connect(&database_url).await?);
+    let require_current_market = options.opportunity_id.is_some();
+    let runtime = SameMintRouteRuntime::new(
+        &options.rpc_url,
+        &options.cluster,
+        client,
+        require_current_market,
+    )
+    .await?;
+    run_with_runtime(options, &runtime, None).await
+}
+
+/// Queue work must not reuse its durable APYs as if they were a fresh market
+/// observation. Read the same immutable Timescale snapshot shape as the
+/// planner, preserve the planner's already-admitted capacity haircut, and
+/// recompute the route edge from current source/target APYs. Legacy admin and
+/// dry-run CLI paths have no opportunity identity and retain their existing
+/// non-mutating behavior.
+async fn load_current_route_market_economics(
+    runtime: &SameMintRouteRuntime,
+    options: &CliOptions,
+    vault: &SelectedVault,
+    reserve_move: &ReserveMove,
+) -> Result<Option<CurrentRouteMarketEconomics>, Box<dyn Error>> {
+    if options.opportunity_id.is_none() {
+        return Ok(None);
+    }
+    let liquidity_mint = options
+        .expected_liquidity_mint
+        .as_ref()
+        .ok_or("queue route is missing its expected liquidity mint")?;
+    let config = FleetObservationConfig {
+        cluster: options.cluster.clone(),
+        enabled_mints: vec![liquidity_mint.clone()],
+        ..FleetObservationConfig::default()
+    };
+    let epoch = runtime.current_market_epoch(&config).await?;
+    if epoch.expires_at <= Utc::now() {
+        return Err("current immutable market snapshot is already expired".into());
+    }
+    let target = epoch
+        .reserves
+        .iter()
+        .find(|reserve| {
+            reserve.reserve == reserve_move.target_reserve
+                && reserve.liquidity_mint == *liquidity_mint
+        })
+        .ok_or_else(|| {
+            format!(
+                "current immutable market snapshot is missing target reserve {}",
+                reserve_move.target_reserve
+            )
+        })?;
+    let source_apy_bps = if options.idle_vault_deposit_amount_raw.is_some() {
+        0
+    } else {
+        epoch
+            .reserves
+            .iter()
+            .find(|reserve| {
+                reserve.reserve == reserve_move.source_reserve
+                    && reserve.liquidity_mint == *liquidity_mint
+            })
+            .map(|reserve| reserve.supply_apy_bps)
+            .ok_or_else(|| {
+                format!(
+                    "current immutable market snapshot is missing source reserve {}",
+                    reserve_move.source_reserve
+                )
+            })?
+    };
+    let durable_observed_target_apy_bps = options
+        .expected_observed_target_apy_bps
+        .ok_or("queue route is missing its raw observed target APY")?;
+    let durable_capacity_adjusted_target_apy_bps = options
+        .expected_target_apy_bps
+        .ok_or("queue route is missing its capacity-adjusted target APY")?;
+    if durable_capacity_adjusted_target_apy_bps > durable_observed_target_apy_bps {
+        return Err("queue route has invalid durable target-capacity evidence".into());
+    }
+    let opportunity_id = options
+        .opportunity_id
+        .ok_or("queue route is missing its opportunity identity")?;
+    let optimizer_epoch_id = options
+        .optimizer_epoch_id
+        .ok_or("queue route is missing its optimizer epoch")?;
+    let principal_usd_micros = options
+        .principal_usd_micros
+        .ok_or("queue route is missing its normalized principal")?;
+    let capacity_observation = TargetCapacityObservation {
+        cluster: options.cluster.clone(),
+        target_reserve: reserve_move.target_reserve.clone(),
+        liquidity_mint: liquidity_mint.clone(),
+        observed_supply_usd_micros: target.total_supply_usd_micros,
+        observed_slot: target.slot,
+        maximum_inflight_usd_micros: maximum_target_inflight_usd_micros(
+            target.total_supply_usd_micros,
+        ),
+    };
+    let capacity_projection = runtime
+        .client
+        .observe_target_capacity(capacity_observation)
+        .await?;
+    let projected_inflow_usd_micros = capacity_projection
+        .committed_inflow_usd_micros
+        .checked_add(principal_usd_micros)
+        .ok_or("target capacity projection overflowed")?;
+    if projected_inflow_usd_micros > capacity_projection.observation.maximum_inflight_usd_micros {
+        return Err(format!(
+            "current target capacity is exhausted: requested {}, committed {}, maximum {} USD micros",
+            principal_usd_micros,
+            capacity_projection.committed_inflow_usd_micros,
+            capacity_projection.observation.maximum_inflight_usd_micros
+        )
+        .into());
+    }
+    let projected_target_apy_bps = projected_target_apy_bps(
+        target.supply_apy_bps,
+        target.total_supply_usd_micros,
+        projected_inflow_usd_micros,
+    )?;
+    let economic_opportunity = OpportunityInput {
+        opportunity_id,
+        optimizer_epoch_id,
+        vault_id: vault.id.as_i64(),
+        tenant_id: vault.authority.clone(),
+        source_snapshot_id: options
+            .expected_source_snapshot_id
+            .unwrap_or(opportunity_id)
+            .max(1),
+        observed_slot: options.optimizer_market_slot.unwrap_or(1).max(1),
+        mint: liquidity_mint.clone(),
+        source_reserve: if options.idle_vault_deposit_amount_raw.is_some() {
+            "idle-vault-usdc".to_owned()
+        } else {
+            reserve_move.source_reserve.clone()
+        },
+        target_reserve: reserve_move.target_reserve.clone(),
+        notional_usd_micros: principal_usd_micros,
+        source_net_apy_bps: source_apy_bps,
+        target_net_apy_bps: target.supply_apy_bps,
+        confidence_ppm: options
+            .confidence_ppm
+            .ok_or("queue route is missing its confidence")?,
+        expected_service_millis: options
+            .expected_service_millis
+            .ok_or("queue route is missing its expected service time")?,
+        holding_horizon_seconds: options
+            .holding_horizon_seconds
+            .ok_or("queue route is missing its holding horizon")?,
+        estimated_execution_cost_usd_micros: options
+            .estimated_execution_cost_usd_micros
+            .ok_or("queue route is missing its estimated execution cost")?,
+        age_seconds: 0,
+        fairness_credit: 0,
+        writable_conflict_keys: Vec::new(),
+    };
+    let economic_policy = EconomicPolicy::default();
+    let fee_policy = RouteFeePolicy::default();
+    let economics = evaluate_fresh_route_economics(FreshRouteEconomicsInput {
+        opportunity: economic_opportunity.clone(),
+        // Validate current projected dilution through the same economic gate.
+        // The original durable evidence was checked above; it is not reused as
+        // if it described today's outstanding inflow.
+        durable_observed_target_apy_bps: target.supply_apy_bps,
+        durable_capacity_adjusted_target_apy_bps: projected_target_apy_bps,
+        current_source_apy_bps: source_apy_bps,
+        current_observed_target_apy_bps: target.supply_apy_bps,
+        economic_policy: economic_policy.clone(),
+        fee_policy,
+    })
+    .map_err(|reason| {
+        format!(
+            "current immutable market snapshot {} makes route economically ineligible: {reason:?}",
+            epoch.fingerprint
+        )
+    })?;
+    Ok(Some(CurrentRouteMarketEconomics {
+        source_apy_bps,
+        capacity_adjusted_target_apy_bps: economics.current_capacity_adjusted_target_apy_bps,
+        edge_bps: economics.score.capacity_adjusted_net_edge_bps,
+        fee_cap_lamports: economics.fee_budget.cap_lamports,
+        capacity_reservation: TargetCapacityReservationInput {
+            projection: capacity_projection,
+            principal_usd_micros,
+            economic_opportunity,
+            current_observed_target_apy_bps: target.supply_apy_bps,
+            economic_policy,
+            fee_policy,
+        },
+    }))
+}
+
+async fn run_with_runtime(
+    mut options: CliOptions,
+    runtime: &SameMintRouteRuntime,
+    fused_lease_state: Option<&FusedExecutionLeaseState>,
+) -> Result<Option<InProcessRouteResult>, Box<dyn Error>> {
+    let rpc = runtime.rpc.clone();
+    let pool = runtime.pool.clone();
+    let client = runtime.client.clone();
     let reserve_move = if let Some(reserve) = &options.idle_vault_deposit_reserve {
         ReserveMove {
             source_reserve: reserve.clone(),
@@ -993,17 +4702,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
     } else {
         ReserveMove::from_options(&options)?
     };
-    let database_url =
-        env::var("NEON_DATABASE_URL").map_err(|_| "NEON_DATABASE_URL must be set")?;
-    let pool = connect(&database_url).await?;
-    let client = NeonSqlClient::from_pool(pool.clone());
-    client
-        .require_schema_migration(20, "demand_driven_shared_market_catalog")
-        .await?;
-
     if let Some(amount_raw) = options.e2e_deposit_amount_raw {
         run_lifecycle_e2e_flow(&options, amount_raw)?;
-        return Ok(());
+        return Ok(None);
     }
 
     if options.update_policy {
@@ -1035,13 +4736,22 @@ async fn run() -> Result<(), Box<dyn Error>> {
         };
         validate_vault_policy(&vault)?;
         run_policy_update_flow(&options, &client, &vault).await?;
-        return Ok(());
+        return Ok(None);
     }
 
     let vault = load_active_vault(&pool, &options.settings, options.vault_index)
         .await?
         .ok_or("no active managed vault found for settings and vault index")?;
     validate_vault_policy(&vault)?;
+    let current_market =
+        load_current_route_market_economics(runtime, &options, &vault, &reserve_move).await?;
+    if let Some(current) = current_market.as_ref() {
+        options.current_economic_fee_cap_lamports = Some(
+            current
+                .fee_cap_lamports
+                .min(options.expected_cost_lamports.unwrap_or(i64::MAX)),
+        );
+    }
     let reconcile_reserves = reconcile_reserves_for_move(&options, &reserve_move);
 
     let requires_chain_preview = options.reconcile_from_chain
@@ -1051,21 +4761,32 @@ async fn run() -> Result<(), Box<dyn Error>> {
         || options.full_withdraw_reserve.is_some()
         || options.setup_obligation_reserve.is_some()
         || options.reconcile_current_positions;
+    let optimizer_min_context_slot = options
+        .optimizer_market_slot
+        .map(u64::try_from)
+        .transpose()?;
     let chain_preview = if requires_chain_preview {
-        Some(load_chain_reconcile_preview(
-            &options.rpc_url,
-            &vault,
-            &reconcile_reserves,
-        )?)
+        Some(
+            load_chain_reconcile_preview_from_runtime(
+                runtime,
+                &vault,
+                &reconcile_reserves,
+                optimizer_min_context_slot,
+                options.optimizer_epoch_id,
+                true,
+            )
+            .await?,
+        )
     } else {
         None
     };
     let policy_preflight = if let Some(preview) = &chain_preview {
-        Some(load_policy_account_preflight(
-            &options.rpc_url,
+        Some(load_policy_account_preflight_from_runtime(
+            runtime,
             &vault,
             preview,
             &reserve_move,
+            options.optimizer_epoch_id,
         )?)
     } else {
         None
@@ -1080,26 +4801,28 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 .ok_or("reconcile current positions requires chain preview")?,
         )
         .await?;
-        return Ok(());
+        return Ok(None);
     }
     if let Some(amount_raw) = options.idle_vault_deposit_amount_raw {
         let deposit_reserve = options
             .idle_vault_deposit_reserve
-            .as_deref()
+            .clone()
             .ok_or("idle vault deposit reserve is required")?;
-        run_idle_vault_deposit_flow(
-            &options,
+        let result = run_idle_vault_deposit_flow(
+            &mut options,
             &client,
             &vault,
+            current_market.as_ref(),
             chain_preview
                 .as_ref()
                 .ok_or("idle vault deposit requires chain preview")?,
             policy_preflight.as_ref(),
-            deposit_reserve,
+            &deposit_reserve,
             amount_raw,
+            fused_lease_state,
         )
         .await?;
-        return Ok(());
+        return Ok(result);
     }
     if let Some(amount_raw) = options.initial_deposit_amount_raw {
         let deposit_reserve = options
@@ -1118,7 +4841,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             amount_raw,
         )
         .await?;
-        return Ok(());
+        return Ok(None);
     }
     if let Some(setup_reserve) = &options.setup_obligation_reserve {
         run_setup_obligation_flow(
@@ -1132,7 +4855,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             policy_preflight.as_ref(),
         )
         .await?;
-        return Ok(());
+        return Ok(None);
     }
     if options.full_withdraw_main_usdc || options.full_withdraw_reserve.is_some() {
         let withdraw_reserve = full_withdraw_reserve(&options);
@@ -1147,9 +4870,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
             &withdraw_reserve,
         )
         .await?;
-        return Ok(());
+        return Ok(None);
     }
-    if options.execute {
+    if options.route_runtime_active() {
         if let Some(reason) = execution_preflight_blocker(
             chain_preview.as_ref(),
             policy_preflight.as_ref(),
@@ -1160,7 +4883,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 "{}",
                 serde_json::to_string_pretty(&json!({
                     "status": "execution_preflight_blocked",
-                    "reason": reason,
+                    "reason": reason.clone(),
                     "writesDecision": false,
                     "writesCurrentPositions": false,
                     "picksUpExecution": false,
@@ -1174,7 +4897,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
                     "missingObligationSetup": Value::Null,
                 }))?
             );
-            return Err("same-mint execution preflight blocked before DB writes".into());
+            return Err(format!(
+                "same-mint execution preflight blocked before DB writes: {reason}"
+            )
+            .into());
         }
     }
     let mut db_positions = load_position_summaries(&client, vault.id).await?;
@@ -1236,7 +4962,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let pre_reconcile_positions = if using_chain_preview_positions {
         chain_preview
             .as_ref()
-            .map(preview_position_summaries)
+            .map(|preview| preview_position_summaries(preview, options.expected_source_snapshot_id))
             .unwrap_or_default()
     } else if using_seed_preview_positions {
         let seed = user_position_seed
@@ -1254,9 +4980,13 @@ async fn run() -> Result<(), Box<dyn Error>> {
         vault.id,
         &pre_reconcile_positions,
         active_decision,
+        current_market.as_ref(),
     ) {
         Ok(value) => value,
         Err(blocker) => {
+            let blocker_error = format!(
+                "same-mint execution prerequisite failed before DB command write: {blocker:?}"
+            );
             let report = blocker_report(
                 &options,
                 &reserve_move,
@@ -1269,32 +4999,31 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 blocker,
             );
             println!("{}", serde_json::to_string_pretty(&report)?);
-            if options.execute {
-                return Err(
-                    "same-mint execution prerequisite failed before DB command write".into(),
-                );
+            if options.route_runtime_active() {
+                return Err(blocker_error.into());
             }
-            return Ok(());
+            return Ok(None);
         }
     };
-    let route_fee_payer = if chain_preview.is_some() {
-        Some(same_mint_route_fee_payer_pubkey(&options)?)
+    let route_fee_payer = if let Some(preview) = chain_preview.as_ref() {
+        Some(
+            select_same_mint_route_fee_payer(runtime, &options, &vault, preview, &reserve_move)
+                .await?,
+        )
     } else {
         None
     };
     let (route_execution, route_build_error) = if let Some(preview) = &chain_preview {
-        let route_rpc = RpcClient::new_with_commitment(
-            options.rpc_url.to_owned(),
-            CommitmentConfig::confirmed(),
-        );
         match build_route_execution_plan(
-            Some(&route_rpc),
+            Some(&rpc),
             &vault,
             preview,
             &reserve_move,
             &pre_reconcile_input,
             policy_preflight.as_ref(),
-            route_fee_payer.expect("chain preview implies route fee payer"),
+            route_fee_payer
+                .as_ref()
+                .expect("chain preview implies route fee payer"),
         ) {
             Ok(plan) => (Some(plan), None),
             Err(error) if !options.execute => (
@@ -1324,6 +5053,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     }
     let mut route_lookup_table_resolution: Option<RuntimeLookupTableResolution> = None;
     let mut route_lookup_table_evidence: Option<Value> = None;
+    let mut provisioning_request_id = None;
     if let Some(route_execution) = &route_execution {
         let mut transaction_instructions = route_execution.pre_instructions.clone();
         transaction_instructions.extend(route_execution.instructions.iter().cloned());
@@ -1333,20 +5063,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
             execution_preflight_blockers.push(safe_same_mint_operational_error(&error));
         }
         let fee_payer = Pubkey::from_str(&route_execution.preview.fee_payer)?;
-        let route_rpc = RpcClient::new_with_commitment(
-            options.rpc_url.to_owned(),
-            CommitmentConfig::confirmed(),
-        );
         let delegated_signer = policy_keypair_from_env()?;
-        let admin_fee_payer = if options.optimization_cycle {
-            None
-        } else {
-            Some(solana_testing_keypair_from_env()?)
-        };
-        let fee_payer_signer: &dyn Signer = admin_fee_payer
-            .as_ref()
-            .map(|signer| signer as &dyn Signer)
-            .unwrap_or(&delegated_signer);
+        let fee_payer_signer = same_mint_route_fee_payer_from_env(&options, fee_payer)?;
         if fee_payer_signer.pubkey() != fee_payer {
             return Err(format!(
                 "runtime lookup-table fee payer {} does not match prepared fee payer {}",
@@ -1355,15 +5073,18 @@ async fn run() -> Result<(), Box<dyn Error>> {
             )
             .into());
         }
-        let transaction_signers = same_mint_route_signers(fee_payer_signer, &delegated_signer);
+        let transaction_signers = same_mint_route_signers(&fee_payer_signer, &delegated_signer);
         let lookup_table_scope = same_mint_route_lookup_table_scope_for_reserves(
             &vault,
             &reserve_move.source_reserve,
             &reserve_move.target_reserve,
         );
+        if options.route_runtime_active() {
+            require_current_opportunity_fence(&client, &options, &vault, None).await?;
+        }
         let resolution = resolve_route_lookup_tables(
             &client,
-            &route_rpc,
+            &rpc,
             &options,
             &vault,
             &reserve_move.source_reserve,
@@ -1376,10 +5097,21 @@ async fn run() -> Result<(), Box<dyn Error>> {
             &transaction_signers,
         )
         .await?;
-        if options.execute {
-            let acquire_route_lease =
-                resolution.blocker.is_none() && execution_preflight_blockers.is_empty();
-            persist_route_lookup_table_resolution(
+        if options.route_runtime_active() {
+            require_current_opportunity_fence(
+                &client,
+                &options,
+                &vault,
+                options.execute.then_some((
+                    resolution.route_fingerprint.as_str(),
+                    resolution.requirements_fingerprint.as_str(),
+                )),
+            )
+            .await?;
+            let acquire_route_lease = (options.execute || options.fused_execute)
+                && resolution.blocker.is_none()
+                && execution_preflight_blockers.is_empty();
+            provisioning_request_id = persist_route_lookup_table_resolution(
                 &client,
                 &options,
                 &vault,
@@ -1404,7 +5136,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let execution_preflight_blocker_reason = execution_preflight_blockers.first().cloned();
     let would_execute_route =
         route_execution.is_some() && execution_preflight_blocker_reason.is_none();
-    if options.execute {
+    if options.route_runtime_active() {
         if let Some(reason) = &execution_preflight_blocker_reason {
             println!(
                 "{}",
@@ -1429,16 +5161,104 @@ async fn run() -> Result<(), Box<dyn Error>> {
                     "missingObligationSetup": inline_missing_obligation_setup.clone(),
                 }))?
             );
-            return Err("same-mint execution preflight blocked before decision write".into());
+            return Ok(Some(in_process_route_result(
+                classify_in_process_execution_error(reason),
+                Some(reason.clone()),
+                route_lookup_table_resolution.as_ref(),
+                provisioning_request_id,
+            )));
+        }
+    }
+
+    if options.fused_execute && would_execute_route {
+        let resolution = route_lookup_table_resolution
+            .as_ref()
+            .ok_or("fused same-mint route is missing exact lookup-table resolution")?;
+        let current = require_current_opportunity_fence(&client, &options, &vault, None)
+            .await?
+            .ok_or("fused same-mint route is missing its durable opportunity")?;
+        let lease_owner = current
+            .lease_owner
+            .clone()
+            .ok_or("fused same-mint route is missing its revalidation lease owner")?;
+        let lease_expires_at = current
+            .lease_expires_at
+            .ok_or("fused same-mint route is missing its revalidation lease expiry")?;
+        let revalidation_lease = RebalanceOpportunityLease {
+            opportunity: current.clone(),
+            claim_kind: RebalanceOpportunityClaimKind::Revalidate,
+            owner: lease_owner,
+            fencing_token: current.fencing_token,
+            expires_at: lease_expires_at,
+        };
+        let mut execution_plan = current.execution_plan.clone();
+        let fields = execution_plan
+            .as_object_mut()
+            .ok_or("fused same-mint opportunity execution plan is not an object")?;
+        fields.insert(
+            "exact_writable_account_keys".to_owned(),
+            json!(resolution.writable_account_keys),
+        );
+        fields.insert(
+            "conflict_account_keys".to_owned(),
+            json!(resolution.conflict_account_keys),
+        );
+        fields.insert(
+            "route_fee_payer".to_owned(),
+            json!(route_execution
+                .as_ref()
+                .map(|plan| plan.preview.fee_payer.as_str())),
+        );
+        fields.insert("alt_readiness".to_owned(), resolution.evidence.clone());
+
+        let promotion = client
+            .try_promote_revalidation_lease_to_execute(
+                &revalidation_lease,
+                &resolution.route_fingerprint,
+                &resolution.requirements_fingerprint,
+                &execution_plan,
+                &resolution.conflict_account_keys,
+            )
+            .await;
+        let promoted = match promotion {
+            Ok(promoted) => promoted,
+            Err(error) => {
+                release_route_resolution_lease(&client, resolution).await;
+                return Err(error.into());
+            }
+        };
+        if let Some(promoted) = promoted {
+            let state = fused_lease_state
+                .ok_or("fused same-mint execution requires worker-owned promotion state")?;
+            *state
+                .lock()
+                .map_err(|_| "fused same-mint promotion state lock was poisoned")? =
+                Some(promoted.clone());
+            options.execute = true;
+            options.prepare_only = false;
+            options.fused_execute = false;
+            options.opportunity_fencing_token = Some(promoted.fencing_token);
+        } else {
+            // A semantic lock was not immediately available. Drop only the
+            // short-lived ALT route-resolution lease and publish normal
+            // durable `ready`; no prepared transaction crosses this boundary.
+            release_route_resolution_lease(&client, resolution).await;
         }
     }
 
     if !options.execute {
+        let report_status = if options.prepare_only {
+            "ready"
+        } else {
+            "dry_run"
+        };
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
-                "status": "dry_run",
+                "status": report_status,
                 "writesDecision": false,
+                "persistsReadiness": options.prepare_only,
+                "provisioningRequestId": provisioning_request_id,
                 "wouldWriteDecision": execution_preflight_blocker_reason.is_none(),
                 "wouldBuildRoute": route_execution.is_some(),
                 "wouldExecuteRoute": would_execute_route,
@@ -1468,9 +5288,100 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 }
             }))?
         );
-        return Ok(());
+        return if options.prepare_only {
+            Ok(Some(in_process_route_result(
+                SameMintRouteExecutionState::Ready,
+                None,
+                route_lookup_table_resolution.as_ref(),
+                provisioning_request_id,
+            )))
+        } else {
+            Ok(None)
+        };
     }
 
+    let executable_lookup_tables = route_lookup_table_resolution
+        .as_ref()
+        .ok_or("same-mint execute route is missing exact lookup-table resolution")?;
+    let current_opportunity = require_current_opportunity_fence(
+        &client,
+        &options,
+        &vault,
+        Some((
+            executable_lookup_tables.route_fingerprint.as_str(),
+            executable_lookup_tables.requirements_fingerprint.as_str(),
+        )),
+    )
+    .await?;
+    if let Some(current) = current_opportunity {
+        let executable_route = route_execution
+            .as_ref()
+            .ok_or("same-mint queue handoff is missing its exact route plan")?;
+        let handoff = prepare_queue_signed_route_handoff(
+            &client,
+            Some(runtime),
+            &options,
+            current,
+            executable_lookup_tables,
+            executable_route.preview.fee_payer_selection.mature_route
+                && executable_route.preview.missing_obligation_setup.is_none()
+                && !executable_route.preview.source_farm_setup_required
+                && !executable_route.preview.target_farm_setup_required,
+            executable_route
+                .preview
+                .fee_payer_selection
+                .observed_balance_lamports,
+            executable_route
+                .preview
+                .fee_payer_selection
+                .observed_balance_slot,
+            executable_route
+                .preview
+                .fee_payer_selection
+                .observed_balance_at,
+        )
+        .await?;
+        let (prepared, submission) = client
+            .prepare_same_mint_rebalance_with_signed_submission(
+                pre_reconcile_input.clone(),
+                &handoff.lease,
+                current_market
+                    .as_ref()
+                    .ok_or("queue route is missing its target capacity reservation")?
+                    .capacity_reservation
+                    .clone(),
+                handoff.submission,
+            )
+            .await?;
+        let decision_id = prepared
+            .decision_id
+            .filter(|_| prepared.status == DecisionStatus::Planned)
+            .ok_or("atomic same-mint fleet handoff did not create a planned decision")?;
+        if submission.decision_id != Some(decision_id) {
+            return Err("atomic same-mint fleet handoff returned an unlinked submission".into());
+        }
+        release_route_resolution_lease(&client, executable_lookup_tables).await;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "status": "submission_queued",
+                "writesDecision": true,
+                "persistsSignedBytes": true,
+                "atomicSignedDecisionHandoff": true,
+                "sendsTransactions": false,
+                "opportunityId": options.opportunity_id,
+                "decisionId": decision_id.as_i64(),
+                "submissionId": submission.id,
+                "signature": submission.transaction_signature,
+            }))?
+        );
+        return Ok(Some(in_process_route_result(
+            SameMintRouteExecutionState::SubmissionQueued,
+            None,
+            route_lookup_table_resolution.as_ref(),
+            provisioning_request_id,
+        )));
+    }
     let prepared = client
         .prepare_same_mint_rebalance(pre_reconcile_input.clone())
         .await?;
@@ -1481,26 +5392,29 @@ async fn run() -> Result<(), Box<dyn Error>> {
         let predecision_lookup_tables = route_lookup_table_resolution
             .as_ref()
             .ok_or("planned same-mint route is missing predecision lookup-table resolution")?;
-        let execution_decision = match load_prepared_same_mint_decision(&pool, decision_id).await {
-            Ok(value) => value,
-            Err(error) => {
-                let reason = same_mint_decision_failure_reason("decision_load_failed", &error);
-                let _ = client
-                    .advance_decision(
-                        decision_id,
-                        DecisionAdvance::Fail {
-                            reason: reason.clone(),
-                        },
+        let execution_decision =
+            match load_prepared_same_mint_decision(&pool, decision_id, DecisionStatus::Planned)
+                .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    let reason = same_mint_decision_failure_reason("decision_load_failed", &error);
+                    let _ = client
+                        .advance_decision(
+                            decision_id,
+                            DecisionAdvance::Fail {
+                                reason: reason.clone(),
+                            },
+                        )
+                        .await;
+                    release_route_resolution_lease(&client, predecision_lookup_tables).await;
+                    return Err(format!(
+                        "same-mint route execution failed after decision {}: {reason}",
+                        decision_id.as_i64()
                     )
-                    .await;
-                release_route_resolution_lease(&client, predecision_lookup_tables).await;
-                return Err(format!(
-                    "same-mint route execution failed after decision {}: {reason}",
-                    decision_id.as_i64()
-                )
-                .into());
-            }
-        };
+                    .into());
+                }
+            };
         if let Err(error) = validate_execution_decision_route(&execution_decision, &reserve_move) {
             let reason =
                 same_mint_decision_failure_reason("decision_route_validation_failed", &error);
@@ -1523,18 +5437,16 @@ async fn run() -> Result<(), Box<dyn Error>> {
         let chain_reconcile = chain_preview
             .as_ref()
             .ok_or("--execute requires --reconcile-from-chain route execution plan")?;
-        let route_rpc = RpcClient::new_with_commitment(
-            options.rpc_url.to_owned(),
-            CommitmentConfig::confirmed(),
-        );
         let route_execution = match build_route_execution_plan(
-            Some(&route_rpc),
+            Some(&rpc),
             &vault,
             chain_reconcile,
             &reserve_move,
             &execution_input,
             policy_preflight.as_ref(),
-            same_mint_route_fee_payer_pubkey(&options)?,
+            route_fee_payer
+                .as_ref()
+                .ok_or("route execution is missing its prepared fee payer")?,
         ) {
             Ok(value) => value,
             Err(error) => {
@@ -1627,7 +5539,12 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 }
             }))?
         );
-        return Ok(());
+        return Ok(Some(in_process_route_result(
+            SameMintRouteExecutionState::Executed,
+            None,
+            route_lookup_table_resolution.as_ref(),
+            provisioning_request_id,
+        )));
     }
 
     if let Some(resolution) = route_lookup_table_resolution.as_ref() {
@@ -3534,14 +7451,16 @@ async fn run_initial_reserve_deposit_flow(
 }
 
 async fn run_idle_vault_deposit_flow(
-    options: &CliOptions,
+    options: &mut CliOptions,
     client: &NeonSqlClient,
     vault: &SelectedVault,
+    current_market: Option<&CurrentRouteMarketEconomics>,
     initial_preview: &ChainReconcilePreview,
     policy_preflight: Option<&PolicyAccountPreflight>,
     deposit_reserve: &str,
     amount_raw: u64,
-) -> Result<(), Box<dyn Error>> {
+    fused_lease_state: Option<&FusedExecutionLeaseState>,
+) -> Result<Option<InProcessRouteResult>, Box<dyn Error>> {
     if amount_raw == 0 {
         return Err("idle vault deposit amount must be greater than 0".into());
     }
@@ -3732,6 +7651,7 @@ async fn run_idle_vault_deposit_flow(
         }
     }
 
+    let atomic_queue_setup = setup_obligation_before_deposit && options.opportunity_id.is_some();
     let mut predicted_deposit_preview = initial_preview.clone();
     if setup_obligation_before_deposit {
         let predicted_position = predicted_deposit_preview
@@ -3764,63 +7684,78 @@ async fn run_idle_vault_deposit_flow(
     let mut deposit_lookup_table_phase: Option<RouteLookupTablePhase> = None;
     let transaction_signers = vec![&signer as &dyn Signer];
 
-    if let Some(setup) = missing_obligation_setup_plan.as_ref() {
-        let manifest = route_lookup_table_manifest(
-            signer.pubkey(),
-            &setup.instructions,
-            vault,
-            &setup.lookup_table_requirements,
-            &[],
-        )?;
-        let scope = format!(
-            "idle_vault_deposit_setup:{}:{}:{}",
-            vault.settings, vault.vault_index, deposit_reserve
-        );
-        let resolution = resolve_route_lookup_tables(
-            client,
-            &rpc,
-            options,
-            vault,
-            deposit_reserve,
-            deposit_reserve,
-            "idle_vault_deposit_setup",
-            &scope,
-            signer.pubkey(),
-            &setup.instructions,
-            &manifest,
-            &transaction_signers,
-        )
-        .await?;
-        if let Some(blocker) = resolution.blocker.as_ref() {
-            blockers.push(IdleVaultDepositBlocker::lookup_table(format!(
-                "idle setup lookup-table resolver blocked: {blocker}"
-            )));
+    if options.route_runtime_active() {
+        require_current_opportunity_fence(client, options, vault, None).await?;
+    }
+
+    if !atomic_queue_setup {
+        if let Some(setup) = missing_obligation_setup_plan.as_ref() {
+            let manifest = route_lookup_table_manifest(
+                signer.pubkey(),
+                &setup.instructions,
+                vault,
+                &setup.lookup_table_requirements,
+                &[],
+            )?;
+            let scope = format!(
+                "idle_vault_deposit_setup:{}:{}:{}",
+                vault.settings, vault.vault_index, deposit_reserve
+            );
+            let resolution = resolve_route_lookup_tables(
+                client,
+                &rpc,
+                options,
+                vault,
+                deposit_reserve,
+                deposit_reserve,
+                "idle_vault_deposit_setup",
+                &scope,
+                signer.pubkey(),
+                &setup.instructions,
+                &manifest,
+                &transaction_signers,
+            )
+            .await?;
+            if let Some(blocker) = resolution.blocker.as_ref() {
+                blockers.push(IdleVaultDepositBlocker::lookup_table(format!(
+                    "idle setup lookup-table resolver blocked: {blocker}"
+                )));
+            }
+            setup_lookup_table_phase = Some(RouteLookupTablePhase {
+                route_kind: "idle_vault_deposit_setup",
+                scope,
+                source_reserve: deposit_reserve.to_owned(),
+                target_reserve: deposit_reserve.to_owned(),
+                instructions: setup.instructions.clone(),
+                manifest,
+                resolution,
+            });
         }
-        setup_lookup_table_phase = Some(RouteLookupTablePhase {
-            route_kind: "idle_vault_deposit_setup",
-            scope,
-            source_reserve: deposit_reserve.to_owned(),
-            target_reserve: deposit_reserve.to_owned(),
-            instructions: setup.instructions.clone(),
-            manifest,
-            resolution,
-        });
     }
 
     if let Some(plan) = dry_run_policy_plan.as_ref() {
-        let mut instructions = plan.pre_instructions.clone();
+        let mut instructions = Vec::new();
+        let mut requirements = plan.lookup_table_requirements.clone();
+        if atomic_queue_setup {
+            let setup = missing_obligation_setup_plan
+                .as_ref()
+                .ok_or("atomic idle setup plan disappeared")?;
+            instructions.extend(setup.instructions.iter().cloned());
+            requirements.merge(&setup.lookup_table_requirements)?;
+        }
+        instructions.extend(plan.pre_instructions.iter().cloned());
         instructions.push(plan.instruction.clone());
-        let manifest = route_lookup_table_manifest(
-            signer.pubkey(),
-            &instructions,
-            vault,
-            &plan.lookup_table_requirements,
-            &[],
-        )?;
+        let manifest =
+            route_lookup_table_manifest(signer.pubkey(), &instructions, vault, &requirements, &[])?;
         let scope = format!(
             "idle_vault_deposit:{}:{}:{}",
             vault.settings, vault.vault_index, deposit_reserve
         );
+        let route_kind = if atomic_queue_setup {
+            "idle_vault_deposit_atomic_setup"
+        } else {
+            "idle_vault_deposit"
+        };
         let resolution = resolve_route_lookup_tables(
             client,
             &rpc,
@@ -3828,7 +7763,7 @@ async fn run_idle_vault_deposit_flow(
             vault,
             deposit_reserve,
             deposit_reserve,
-            "idle_vault_deposit",
+            route_kind,
             &scope,
             signer.pubkey(),
             &instructions,
@@ -3842,7 +7777,7 @@ async fn run_idle_vault_deposit_flow(
             )));
         }
         deposit_lookup_table_phase = Some(RouteLookupTablePhase {
-            route_kind: "idle_vault_deposit",
+            route_kind,
             scope,
             source_reserve: deposit_reserve.to_owned(),
             target_reserve: deposit_reserve.to_owned(),
@@ -3852,16 +7787,29 @@ async fn run_idle_vault_deposit_flow(
         });
     }
 
-    if options.execute {
-        let acquire_leases = blockers.is_empty();
-        for phase in [
+    let mut setup_provisioning_request_id = None;
+    let mut deposit_provisioning_request_id = None;
+    if options.route_runtime_active() {
+        let exact_fingerprints = idle_route_fingerprints(
             setup_lookup_table_phase.as_ref(),
             deposit_lookup_table_phase.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            persist_route_lookup_table_resolution(
+        );
+        require_current_opportunity_fence(
+            client,
+            options,
+            vault,
+            if options.execute {
+                exact_fingerprints
+                    .as_ref()
+                    .map(|(route, requirements)| (route.as_str(), requirements.as_str()))
+            } else {
+                None
+            },
+        )
+        .await?;
+        let acquire_leases = blockers.is_empty();
+        if let Some(phase) = setup_lookup_table_phase.as_ref() {
+            setup_provisioning_request_id = persist_route_lookup_table_resolution(
                 client,
                 options,
                 vault,
@@ -3870,7 +7818,22 @@ async fn run_idle_vault_deposit_flow(
                 phase.route_kind,
                 &phase.manifest,
                 &phase.resolution,
-                acquire_leases,
+                (options.execute || options.fused_execute) && acquire_leases,
+                true,
+            )
+            .await?;
+        }
+        if let Some(phase) = deposit_lookup_table_phase.as_ref() {
+            deposit_provisioning_request_id = persist_route_lookup_table_resolution(
+                client,
+                options,
+                vault,
+                &phase.source_reserve,
+                &phase.target_reserve,
+                phase.route_kind,
+                &phase.manifest,
+                &phase.resolution,
+                (options.execute || options.fused_execute) && acquire_leases,
                 true,
             )
             .await?;
@@ -3879,11 +7842,107 @@ async fn run_idle_vault_deposit_flow(
     let idle_lookup_table_evidence = json!({
         "setup": setup_lookup_table_phase
             .as_ref()
-            .map(|phase| phase.resolution.evidence.clone()),
+            .map(|phase| json!({
+                "provisioningRequestId": setup_provisioning_request_id,
+                "resolution": phase.resolution.evidence.clone(),
+            })),
         "deposit": deposit_lookup_table_phase
             .as_ref()
-            .map(|phase| phase.resolution.evidence.clone()),
+            .map(|phase| json!({
+                "provisioningRequestId": deposit_provisioning_request_id,
+                "resolution": phase.resolution.evidence.clone(),
+        })),
     });
+
+    if options.fused_execute && blockers.is_empty() {
+        let exact_fingerprints = idle_route_fingerprints(
+            setup_lookup_table_phase.as_ref(),
+            deposit_lookup_table_phase.as_ref(),
+        )
+        .ok_or("fused idle vault route did not produce exact route fingerprints")?;
+        let current = require_current_opportunity_fence(client, options, vault, None)
+            .await?
+            .ok_or("fused idle vault route is missing its durable opportunity")?;
+        let lease_owner = current
+            .lease_owner
+            .clone()
+            .ok_or("fused idle vault route is missing its revalidation lease owner")?;
+        let lease_expires_at = current
+            .lease_expires_at
+            .ok_or("fused idle vault route is missing its revalidation lease expiry")?;
+        let revalidation_lease = RebalanceOpportunityLease {
+            opportunity: current.clone(),
+            claim_kind: RebalanceOpportunityClaimKind::Revalidate,
+            owner: lease_owner,
+            fencing_token: current.fencing_token,
+            expires_at: lease_expires_at,
+        };
+        let ready_evidence = idle_in_process_route_result(
+            SameMintRouteExecutionState::Ready,
+            None,
+            setup_lookup_table_phase.as_ref(),
+            setup_provisioning_request_id,
+            deposit_lookup_table_phase.as_ref(),
+            deposit_provisioning_request_id,
+        );
+        let conflict_account_keys = ready_evidence.conflict_account_keys.clone();
+        let mut execution_plan = current.execution_plan.clone();
+        let fields = execution_plan
+            .as_object_mut()
+            .ok_or("fused idle vault opportunity execution plan is not an object")?;
+        fields.insert(
+            "exact_writable_account_keys".to_owned(),
+            json!(ready_evidence.writable_account_keys),
+        );
+        fields.insert(
+            "conflict_account_keys".to_owned(),
+            json!(&conflict_account_keys),
+        );
+        fields.insert(
+            "alt_readiness".to_owned(),
+            ready_evidence.readiness_evidence.unwrap_or(Value::Null),
+        );
+        let promotion = client
+            .try_promote_revalidation_lease_to_execute(
+                &revalidation_lease,
+                &exact_fingerprints.0,
+                &exact_fingerprints.1,
+                &execution_plan,
+                &conflict_account_keys,
+            )
+            .await;
+        let promoted = match promotion {
+            Ok(promoted) => promoted,
+            Err(error) => {
+                release_idle_lookup_table_phase_leases(
+                    client,
+                    setup_lookup_table_phase.as_ref(),
+                    deposit_lookup_table_phase.as_ref(),
+                )
+                .await;
+                return Err(error.into());
+            }
+        };
+        if let Some(promoted) = promoted {
+            let state = fused_lease_state
+                .ok_or("fused idle vault execution requires worker-owned promotion state")?;
+            *state
+                .lock()
+                .map_err(|_| "fused idle vault promotion state lock was poisoned")? =
+                Some(promoted.clone());
+            options.execute = true;
+            options.prepare_only = false;
+            options.fused_execute = false;
+            options.opportunity_fencing_token = Some(promoted.fencing_token);
+        } else {
+            release_idle_lookup_table_phase_leases(
+                client,
+                setup_lookup_table_phase.as_ref(),
+                deposit_lookup_table_phase.as_ref(),
+            )
+            .await;
+        }
+    }
 
     let idle_decision_input = if options.execute {
         Some(IdleVaultDepositDecisionInput {
@@ -3898,13 +7957,17 @@ async fn run_idle_vault_deposit_flow(
             idle_observed_at: options.expected_idle_observed_at.ok_or(
                 "--deposit-idle-vault-reserve --execute requires --expected-idle-observed-at",
             )?,
-            target_apy_bps: options.expected_target_apy_bps.ok_or(
-                "--deposit-idle-vault-reserve --execute requires --expected-target-apy-bps",
-            )?,
-            estimated_edge_bps: options
-                .expected_edge_bps
+            target_apy_bps: current_market
+                .map(|market| market.capacity_adjusted_target_apy_bps)
+                .or(options.expected_target_apy_bps)
+                .ok_or(
+                    "--deposit-idle-vault-reserve --execute requires --expected-target-apy-bps",
+                )?,
+            estimated_edge_bps: current_market
+                .map(|market| market.edge_bps)
+                .or(options.expected_edge_bps)
                 .ok_or("--deposit-idle-vault-reserve --execute requires --expected-edge-bps")?,
-            estimated_cost_lamports: 0,
+            estimated_cost_lamports: options.expected_cost_lamports.unwrap_or_default(),
             setup_obligation_before_deposit,
             setup_obligation_policy: setup_obligation_policy.clone(),
             setup_obligation_policy_source: setup_obligation_policy_source.clone(),
@@ -3913,6 +7976,48 @@ async fn run_idle_vault_deposit_flow(
     } else {
         None
     };
+
+    if options.prepare_only {
+        let blocker_reason = (!blockers.is_empty())
+            .then(|| idle_vault_deposit_blocker_messages(&blockers).join("; "));
+        let state = if idle_vault_deposit_requires_lookup_table_provisioning(&blockers) {
+            SameMintRouteExecutionState::WaitingAlt
+        } else if idle_vault_deposit_has_only_source_sync_blockers(&blockers) {
+            SameMintRouteExecutionState::Retry
+        } else if blockers.is_empty() {
+            SameMintRouteExecutionState::Ready
+        } else {
+            SameMintRouteExecutionState::Terminal
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "status": match state {
+                    SameMintRouteExecutionState::Ready => "ready",
+                    SameMintRouteExecutionState::WaitingAlt => "idle_vault_deposit_lookup_table_deferred",
+                    SameMintRouteExecutionState::Retry => "idle_vault_deposit_revalidate_retry",
+                    SameMintRouteExecutionState::Terminal => "idle_vault_deposit_preflight_blocked",
+                    SameMintRouteExecutionState::SubmissionQueued => "idle_vault_deposit_submission_queued",
+                    SameMintRouteExecutionState::Executed => "idle_vault_deposit_executed",
+                },
+                "writesDecision": false,
+                "writesCurrentPositions": false,
+                "sendsTransactions": false,
+                "reason": blocker_reason,
+                "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, &deposit_position, amount_raw, db_idle.as_ref(), options),
+                "preflightBlockers": idle_vault_deposit_blocker_messages(&blockers),
+                "lookupTableResolution": idle_lookup_table_evidence.clone(),
+            }))?
+        );
+        return Ok(Some(idle_in_process_route_result(
+            state,
+            blocker_reason,
+            setup_lookup_table_phase.as_ref(),
+            setup_provisioning_request_id,
+            deposit_lookup_table_phase.as_ref(),
+            deposit_provisioning_request_id,
+        )));
+    }
 
     if !options.execute {
         println!(
@@ -3940,7 +8045,7 @@ async fn run_idle_vault_deposit_flow(
                 "postConfirmReconcileReserves": idle_deposit_post_reconcile_reserves(options, deposit_reserve),
             }))?
         );
-        return Ok(());
+        return Ok(None);
     }
 
     if idle_vault_deposit_requires_lookup_table_provisioning(&blockers) {
@@ -3966,6 +8071,16 @@ async fn run_idle_vault_deposit_flow(
                 "lookupTableResolution": idle_lookup_table_evidence.clone(),
             }))?
         );
+        if options.opportunity_id.is_some() {
+            return Ok(Some(idle_in_process_route_result(
+                SameMintRouteExecutionState::WaitingAlt,
+                Some(blocker_reason),
+                setup_lookup_table_phase.as_ref(),
+                setup_provisioning_request_id,
+                deposit_lookup_table_phase.as_ref(),
+                deposit_provisioning_request_id,
+            )));
+        }
         return Err(blocker_reason.into());
     }
 
@@ -4008,7 +8123,21 @@ async fn run_idle_vault_deposit_flow(
                     "lookupTableResolution": idle_lookup_table_evidence.clone(),
                 }))?
             );
-            return Ok(());
+            return if options.opportunity_id.is_some() {
+                Ok(Some(idle_in_process_route_result(
+                    SameMintRouteExecutionState::Retry,
+                    Some(
+                        "idle vault source reconciliation conflicted with a newer observation"
+                            .to_owned(),
+                    ),
+                    setup_lookup_table_phase.as_ref(),
+                    setup_provisioning_request_id,
+                    deposit_lookup_table_phase.as_ref(),
+                    deposit_provisioning_request_id,
+                )))
+            } else {
+                Ok(None)
+            };
         }
         println!(
             "{}",
@@ -4029,7 +8158,20 @@ async fn run_idle_vault_deposit_flow(
                 "lookupTableResolution": idle_lookup_table_evidence.clone(),
             }))?
         );
-        return Ok(());
+        return if options.opportunity_id.is_some() {
+            Ok(Some(idle_in_process_route_result(
+                SameMintRouteExecutionState::Retry,
+                Some(
+                    "idle vault source evidence was refreshed; re-plan before execution".to_owned(),
+                ),
+                setup_lookup_table_phase.as_ref(),
+                setup_provisioning_request_id,
+                deposit_lookup_table_phase.as_ref(),
+                deposit_provisioning_request_id,
+            )))
+        } else {
+            Ok(None)
+        };
     }
 
     if !blockers.is_empty() {
@@ -4040,6 +8182,16 @@ async fn run_idle_vault_deposit_flow(
         );
         let mut blocked_decision = None;
         let mut blocked_decision_skip_reason = None;
+        if options.opportunity_id.is_some() {
+            return Ok(Some(idle_in_process_route_result(
+                SameMintRouteExecutionState::Terminal,
+                Some(blocker_reason),
+                setup_lookup_table_phase.as_ref(),
+                setup_provisioning_request_id,
+                deposit_lookup_table_phase.as_ref(),
+                deposit_provisioning_request_id,
+            )));
+        }
         if let Some(input) = idle_decision_input.clone() {
             let planned = client
                 .record_idle_vault_deposit_decision(vault.id, input)
@@ -4089,6 +8241,94 @@ async fn run_idle_vault_deposit_flow(
 
     let idle_decision_input =
         idle_decision_input.ok_or("idle vault deposit decision input was not built")?;
+    let exact_idle_fingerprints = idle_route_fingerprints(
+        setup_lookup_table_phase.as_ref(),
+        deposit_lookup_table_phase.as_ref(),
+    )
+    .ok_or("idle vault deposit did not produce exact route fingerprints")?;
+    let current_opportunity = require_current_opportunity_fence(
+        client,
+        options,
+        vault,
+        Some((
+            exact_idle_fingerprints.0.as_str(),
+            exact_idle_fingerprints.1.as_str(),
+        )),
+    )
+    .await?;
+    let queue_handoff = if let Some(current) = current_opportunity {
+        let phase = deposit_lookup_table_phase
+            .as_ref()
+            .ok_or("queue idle deposit is missing its atomic transaction phase")?;
+        Some(
+            prepare_queue_signed_route_handoff(
+                client,
+                None,
+                options,
+                current,
+                &phase.resolution,
+                fee_only_shard_allowed_for_scope(FleetRouteFeePayerScope::IdleVault),
+                None,
+                None,
+                None,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    if let Some(handoff) = queue_handoff {
+        let (planned, submission) = client
+            .record_idle_vault_deposit_decision_with_signed_submission(
+                vault.id,
+                idle_decision_input.clone(),
+                &handoff.lease,
+                current_market
+                    .ok_or("queue idle route is missing its target capacity reservation")?
+                    .capacity_reservation
+                    .clone(),
+                handoff.submission,
+            )
+            .await?;
+        let decision = match planned.status {
+            PlanOutcomeStatus::Planned(decision) if decision.status == DecisionStatus::Planned => {
+                decision
+            }
+            _ => return Err("atomic idle fleet handoff did not create a planned decision".into()),
+        };
+        if submission.decision_id != Some(decision.id) {
+            return Err("atomic idle fleet handoff returned an unlinked submission".into());
+        }
+        release_idle_lookup_table_phase_leases(
+            client,
+            setup_lookup_table_phase.as_ref(),
+            deposit_lookup_table_phase.as_ref(),
+        )
+        .await;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "status": "idle_vault_deposit_submission_queued",
+                "writesDecision": true,
+                "persistsSignedBytes": true,
+                "atomicSignedDecisionHandoff": true,
+                "sendsTransactions": false,
+                "opportunityId": options.opportunity_id,
+                "decisionId": decision.id.as_i64(),
+                "submissionId": submission.id,
+                "signature": submission.transaction_signature,
+                "atomicSetup": atomic_queue_setup,
+            }))?
+        );
+        return Ok(Some(idle_in_process_route_result(
+            SameMintRouteExecutionState::SubmissionQueued,
+            None,
+            setup_lookup_table_phase.as_ref(),
+            setup_provisioning_request_id,
+            deposit_lookup_table_phase.as_ref(),
+            deposit_provisioning_request_id,
+        )));
+    }
     let planned = client
         .record_idle_vault_deposit_decision(vault.id, idle_decision_input)
         .await?;
@@ -4137,7 +8377,51 @@ async fn run_idle_vault_deposit_flow(
         return Err("idle vault deposit was not planned because a terminal matching decision already exists".into());
     }
 
-    if setup_obligation_before_deposit {
+    if let Some(opportunity_id) = options.opportunity_id {
+        let semantic_key = route_submission_semantic_key(opportunity_id);
+        let submission = client
+            .signed_route_submission_by_semantic_key(&semantic_key)
+            .await?
+            .ok_or("decision-linked idle queue submission disappeared")?;
+        if submission.decision_id != Some(decision.id) {
+            return Err(format!(
+                "signed idle queue submission {} is not linked to decision {}",
+                submission.id,
+                decision.id.as_i64()
+            )
+            .into());
+        }
+        release_idle_lookup_table_phase_leases(
+            client,
+            setup_lookup_table_phase.as_ref(),
+            deposit_lookup_table_phase.as_ref(),
+        )
+        .await;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "status": "idle_vault_deposit_submission_queued",
+                "writesDecision": true,
+                "persistsSignedBytes": true,
+                "sendsTransactions": false,
+                "opportunityId": opportunity_id,
+                "decisionId": decision.id.as_i64(),
+                "submissionId": submission.id,
+                "signature": submission.transaction_signature,
+                "atomicSetup": atomic_queue_setup,
+            }))?
+        );
+        return Ok(Some(idle_in_process_route_result(
+            SameMintRouteExecutionState::SubmissionQueued,
+            None,
+            setup_lookup_table_phase.as_ref(),
+            setup_provisioning_request_id,
+            deposit_lookup_table_phase.as_ref(),
+            deposit_provisioning_request_id,
+        )));
+    }
+
+    if setup_obligation_before_deposit && !atomic_queue_setup {
         let setup_phase = setup_lookup_table_phase
             .as_ref()
             .ok_or("idle deposit setup lookup-table phase was not prepared")?;
@@ -4147,6 +8431,16 @@ async fn run_idle_vault_deposit_flow(
             setup_phase.resolution.requirements_fingerprint
         );
         let setup_result = match async {
+            require_current_opportunity_fence(
+                client,
+                options,
+                vault,
+                Some((
+                    exact_idle_fingerprints.0.as_str(),
+                    exact_idle_fingerprints.1.as_str(),
+                )),
+            )
+            .await?;
             let mut presend = resolve_route_lookup_tables_immediately_before_send(
                 client,
                 &rpc,
@@ -4167,6 +8461,16 @@ async fn run_idle_vault_deposit_flow(
                 .selected_transaction_packet
                 .take()
                 .ok_or("idle setup resolver did not return packet evidence")?;
+            require_current_opportunity_fence(
+                client,
+                options,
+                vault,
+                Some((
+                    exact_idle_fingerprints.0.as_str(),
+                    exact_idle_fingerprints.1.as_str(),
+                )),
+            )
+            .await?;
             let submitted_slot = i64::try_from(rpc.get_slot()?)?;
             let signature = rpc.send_and_confirm_transaction(&transaction)?.to_string();
             let confirmed_slot = i64::try_from(rpc.get_slot()?)?;
@@ -4317,6 +8621,17 @@ async fn run_idle_vault_deposit_flow(
             return Err(reason.into());
         }
     }
+    if atomic_queue_setup {
+        // The queue path keeps setup + deposit in one vault-local atomic v0
+        // transaction. This removes an intermediate ambiguous-send boundary
+        // and lets the same durable signed-submission lifecycle cover first
+        // deposits as well as already-initialized obligations.
+        active_preview = predicted_deposit_preview.clone();
+        missing_obligation_setup_result = Some(json!({
+            "mode": "atomic_with_deposit",
+            "broadcastedSeparately": false,
+        }));
+    }
     let active_policy_preflight = reloaded_policy_preflight.as_ref().or(policy_preflight);
     let active_deposit_position = chain_position_for_reserve(&active_preview, deposit_reserve)?;
     let policy_plan = match build_initial_reserve_deposit_policy_plan(
@@ -4351,6 +8666,16 @@ async fn run_idle_vault_deposit_flow(
     };
     let mut policy_instructions = policy_plan.pre_instructions.clone();
     policy_instructions.push(policy_plan.instruction.clone());
+    let mut actual_deposit_requirements = policy_plan.lookup_table_requirements.clone();
+    if atomic_queue_setup {
+        let setup = missing_obligation_setup_plan
+            .as_ref()
+            .ok_or("atomic idle setup plan disappeared before final build")?;
+        let mut combined = setup.instructions.clone();
+        combined.extend(policy_instructions);
+        policy_instructions = combined;
+        actual_deposit_requirements.merge(&setup.lookup_table_requirements)?;
+    }
     let deposit_phase = deposit_lookup_table_phase
         .as_ref()
         .ok_or("idle deposit lookup-table phase was not prepared")?;
@@ -4358,7 +8683,7 @@ async fn run_idle_vault_deposit_flow(
         signer.pubkey(),
         &policy_instructions,
         vault,
-        &policy_plan.lookup_table_requirements,
+        &actual_deposit_requirements,
         &[],
     )?;
     let prepared_lease_reference = format!(
@@ -4366,6 +8691,16 @@ async fn run_idle_vault_deposit_flow(
         decision.id.as_i64(),
         deposit_phase.resolution.requirements_fingerprint
     );
+    require_current_opportunity_fence(
+        client,
+        options,
+        vault,
+        Some((
+            exact_idle_fingerprints.0.as_str(),
+            exact_idle_fingerprints.1.as_str(),
+        )),
+    )
+    .await?;
     let mut presend_lookup_tables = match resolve_route_lookup_tables_immediately_before_send(
         client,
         &rpc,
@@ -4412,6 +8747,16 @@ async fn run_idle_vault_deposit_flow(
         .ok_or("idle deposit resolver did not return packet evidence")?;
     let policy_simulation_units_consumed = presend_lookup_tables.selected_simulation_units_consumed;
     let final_lookup_table_evidence = presend_lookup_tables.evidence.clone();
+    require_current_opportunity_fence(
+        client,
+        options,
+        vault,
+        Some((
+            exact_idle_fingerprints.0.as_str(),
+            exact_idle_fingerprints.1.as_str(),
+        )),
+    )
+    .await?;
     client
         .advance_decision(decision.id, DecisionAdvance::StartSimulation)
         .await?;
@@ -4419,6 +8764,16 @@ async fn run_idle_vault_deposit_flow(
         .advance_decision(decision.id, DecisionAdvance::SimulationReady)
         .await?;
 
+    require_current_opportunity_fence(
+        client,
+        options,
+        vault,
+        Some((
+            exact_idle_fingerprints.0.as_str(),
+            exact_idle_fingerprints.1.as_str(),
+        )),
+    )
+    .await?;
     let submitted_slot = i64::try_from(rpc.get_slot()?)?;
     let signature = match rpc.send_and_confirm_transaction(&policy_transaction) {
         Ok(signature) => signature,
@@ -4464,8 +8819,12 @@ async fn run_idle_vault_deposit_flow(
     let post_confirm = async {
         let post_reconcile_reserves =
             idle_deposit_post_reconcile_reserves(options, deposit_reserve);
-        let post_preview =
-            load_chain_reconcile_preview(&options.rpc_url, vault, &post_reconcile_reserves)?;
+        let post_preview = load_chain_reconcile_preview_with_min_context(
+            &options.rpc_url,
+            vault,
+            &post_reconcile_reserves,
+            Some(u64::try_from(confirmed_slot)?),
+        )?;
         let post_reconcile_state = chain_preview_reconciled_state(&post_preview)?;
         let post_snapshot = client
             .reconcile_vault(vault.id, post_reconcile_state)
@@ -4564,7 +8923,18 @@ async fn run_idle_vault_deposit_flow(
         }))?
     );
 
-    Ok(())
+    if options.opportunity_id.is_some() {
+        Ok(Some(idle_in_process_route_result(
+            SameMintRouteExecutionState::Executed,
+            None,
+            setup_lookup_table_phase.as_ref(),
+            setup_provisioning_request_id,
+            deposit_lookup_table_phase.as_ref(),
+            deposit_provisioning_request_id,
+        )))
+    } else {
+        Ok(None)
+    }
 }
 
 fn idle_deposit_post_reconcile_reserves(
@@ -6137,7 +10507,8 @@ fn build_signed_transaction(
     simulation_skip_reason: Option<String>,
 ) -> Result<PolicyTransactionBuild, Box<dyn Error>> {
     guard_lookup_table_mutations(instructions, operation_label)?;
-    let blockhash = rpc.get_latest_blockhash()?;
+    let (blockhash, _last_valid_block_height) =
+        rpc.get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())?;
     let transaction = compile_versioned_transaction(
         payer,
         instructions,
@@ -6364,6 +10735,7 @@ async fn resolve_and_compile_reusable_lookup_table_bundle(
     instructions: &[Instruction],
     blockhash: Hash,
     signers: &[&dyn Signer],
+    fee_budget: Option<TransactionFeeBudget>,
 ) -> Result<CompiledLookupTableBundle, Box<dyn Error>> {
     let reusable_resolution = client
         .resolve_reusable_lookup_table_bundle(
@@ -6396,6 +10768,7 @@ async fn resolve_and_compile_reusable_lookup_table_bundle(
         instructions,
         blockhash,
         signers,
+        fee_budget,
     );
     reusable
         .verification_failures
@@ -6421,6 +10794,9 @@ fn unavailable_reusable_lookup_table_bundle(
         transaction: None,
         transaction_packet: None,
         simulation_units_consumed: None,
+        compute_unit_limit: None,
+        priority_fee_micro_lamports: None,
+        compiled_fee_lamports: None,
         simulation_error: is_error.then(|| reason.clone()),
         verification_failures: vec![json!({
             "stage": "resolver",
@@ -6484,6 +10860,9 @@ async fn resolve_route_lookup_tables(
         .into_iter()
         .map(|address| address.to_string())
         .collect::<BTreeSet<_>>();
+    let writable_account_keys = exact_writable_account_keys(fee_payer, instructions);
+    let conflict_account_keys = semantic_route_conflict_keys(vault);
+    let fee_budget = fleet_transaction_fee_budget(rpc, options, &writable_account_keys)?;
     let requirements_fingerprint = control_plane_lookup_table_manifest_hash(manifest);
     let route_fingerprint = stable_fingerprint(&[
         route_kind,
@@ -6503,7 +10882,8 @@ async fn resolve_route_lookup_tables(
         .await?;
     let shared_catalog_covered =
         shared_catalog_validation.state == SharedMarketCatalogRouteValidationState::Covered;
-    let blockhash = rpc.get_latest_blockhash()?;
+    let (blockhash, last_valid_block_height) =
+        rpc.get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())?;
     let mut reusable_resolution_error_code = None;
     let (mut reusable, reusable_resolution_state) =
         match resolve_and_compile_reusable_lookup_table_bundle(
@@ -6518,6 +10898,7 @@ async fn resolve_route_lookup_tables(
             instructions,
             blockhash,
             signers,
+            fee_budget,
         )
         .await
         {
@@ -6611,21 +10992,27 @@ async fn resolve_route_lookup_tables(
         .map(|fingerprint| format!("route-resolution:{fingerprint}"));
 
     let selected = blocker.is_none().then_some(&mut reusable);
-    let (selected_transaction, selected_transaction_packet, selected_simulation_units_consumed) =
-        if let Some(selected) = selected {
-            (
-                selected.transaction.take(),
-                selected.transaction_packet.take(),
-                selected.simulation_units_consumed,
-            )
-        } else {
-            (None, None, None)
-        };
+    let (
+        selected_transaction,
+        selected_transaction_packet,
+        selected_simulation_units_consumed,
+        selected_compiled_fee_lamports,
+    ) = if let Some(selected) = selected {
+        (
+            selected.transaction.take(),
+            selected.transaction_packet.take(),
+            selected.simulation_units_consumed,
+            selected.compiled_fee_lamports,
+        )
+    } else {
+        (None, None, None, None)
+    };
 
     let evidence = json!({
         "mode": "active_reusable_resolver",
         "cluster": options.cluster,
         "scope": scope,
+        "feePayer": fee_payer.to_string(),
         "routeFingerprint": route_fingerprint,
         "requirementsFingerprint": requirements_fingerprint,
         "observedSlot": observed_slot,
@@ -6643,6 +11030,8 @@ async fn resolve_route_lookup_tables(
             "tableIds": selected_table_ids,
         },
         "requiredAddresses": required_addresses.iter().cloned().collect::<Vec<_>>(),
+        "writableAccountKeys": writable_account_keys,
+        "conflictAccountKeys": conflict_account_keys,
         "reusable": reusable_evidence,
         "sharedMarketCatalog": shared_market_catalog_validation_json(&shared_catalog_validation),
         "typedManifest": lookup_table_manifest_json(manifest),
@@ -6661,8 +11050,13 @@ async fn resolve_route_lookup_tables(
         selected_transaction,
         selected_transaction_packet,
         selected_simulation_units_consumed,
+        selected_compiled_fee_lamports,
+        recent_blockhash: blockhash,
+        last_valid_block_height: i64::try_from(last_valid_block_height)?,
         reusable_table_ids,
         required_addresses,
+        writable_account_keys,
+        conflict_account_keys,
         reusable_missing_addresses,
         reusable_ready,
         reusable_compiled_message_size,
@@ -6675,6 +11069,297 @@ async fn resolve_route_lookup_tables(
     })
 }
 
+fn exact_writable_account_keys(fee_payer: Pubkey, instructions: &[Instruction]) -> Vec<String> {
+    let mut writable = BTreeSet::from([fee_payer.to_string()]);
+    for instruction in instructions {
+        for account in &instruction.accounts {
+            if account.is_writable {
+                writable.insert(account.pubkey.to_string());
+            }
+        }
+    }
+    writable.into_iter().collect()
+}
+
+fn semantic_route_conflict_keys(vault: &SelectedVault) -> Vec<String> {
+    let lane = vault.id.as_i64().rem_euclid(FLEET_SHARED_WRITE_LANE_COUNT);
+    let mut keys = vec![
+        format!("vault-write:{}", vault.vault_pubkey),
+        format!("fleet-shared-write-lane:{lane:02}"),
+    ];
+    keys.sort_unstable();
+    keys
+}
+
+fn fleet_transaction_fee_budget(
+    rpc: &RpcClient,
+    options: &CliOptions,
+    writable_account_keys: &[String],
+) -> Result<Option<TransactionFeeBudget>, String> {
+    if options.opportunity_id.is_none() {
+        return Ok(None);
+    }
+    let expected_cost_lamports = options
+        .expected_cost_lamports
+        .ok_or_else(|| "fleet opportunity is missing its durable fee cap".to_owned())?;
+    let current_economic_fee_cap_lamports = options
+        .current_economic_fee_cap_lamports
+        .ok_or_else(|| "fleet opportunity is missing its fresh economic fee cap".to_owned())?;
+    let effective_cost_lamports = expected_cost_lamports.min(current_economic_fee_cap_lamports);
+    let max_total_fee_lamports = u64::try_from(effective_cost_lamports)
+        .map_err(|_| "fleet opportunity has a negative effective fee cap".to_owned())?;
+    if max_total_fee_lamports == 0 {
+        return Err("fleet opportunity effective fee cap is zero".to_owned());
+    }
+    let addresses = writable_account_keys
+        .iter()
+        .filter_map(|key| Pubkey::from_str(key).ok())
+        .take(128)
+        .collect::<Vec<_>>();
+    let mut recent = rpc
+        .get_recent_prioritization_fees(&addresses)
+        .map_err(|error| {
+            format!(
+                "recent prioritization fee sampling failed: {}",
+                same_mint_readiness_rpc_failure(&error)
+            )
+        })?
+        .into_iter()
+        .map(|fee| fee.prioritization_fee)
+        .collect::<Vec<_>>();
+    recent.sort_unstable();
+    let recent_priority_fee_micro_lamports = if recent.is_empty() {
+        0
+    } else {
+        let index = (recent.len() * 75).div_ceil(100).saturating_sub(1);
+        recent[index]
+    };
+    Ok(Some(TransactionFeeBudget {
+        max_total_fee_lamports,
+        recent_priority_fee_micro_lamports,
+    }))
+}
+
+async fn prepare_queue_signed_route_handoff(
+    client: &NeonSqlClient,
+    route_runtime: Option<&SameMintRouteRuntime>,
+    options: &CliOptions,
+    current: RebalanceOpportunityRecord,
+    resolution: &RuntimeLookupTableResolution,
+    fee_only_shard_allowed: bool,
+    observed_fee_payer_balance_lamports: Option<i64>,
+    observed_fee_payer_balance_slot: Option<i64>,
+    observed_fee_payer_balance_at: Option<DateTime<Utc>>,
+) -> Result<QueueSignedRouteHandoff, Box<dyn Error>> {
+    let (owner, fencing_token, expires_at) = match (
+        options.opportunity_lease_owner.as_deref(),
+        options.opportunity_fencing_token,
+        current.lease_expires_at,
+    ) {
+        (Some(owner), Some(fencing_token), Some(expires_at)) => {
+            (owner.to_owned(), fencing_token, expires_at)
+        }
+        _ => return Err("queue signing requires a complete live execute lease".into()),
+    };
+    let lease = RebalanceOpportunityLease {
+        opportunity: current.clone(),
+        claim_kind: RebalanceOpportunityClaimKind::Execute,
+        owner: owner.clone(),
+        fencing_token,
+        expires_at,
+    };
+    client.validate_rebalance_opportunity_lease(&lease).await?;
+    if resolution.writable_account_keys.is_empty() || resolution.conflict_account_keys.is_empty() {
+        return Err("signed route has incomplete writable/conflict evidence".into());
+    }
+    let transaction = resolution
+        .selected_transaction
+        .as_ref()
+        .ok_or("queue signing requires an exact selected transaction")?;
+    let actual_fee_lamports = i64::try_from(
+        resolution
+            .selected_compiled_fee_lamports
+            .ok_or("signed route is missing its simulation-verified compiled fee")?,
+    )?;
+    if actual_fee_lamports > current.estimated_cost_lamports {
+        return Err(format!(
+            "compiled route fee {actual_fee_lamports} lamports exceeds economic cap {}",
+            current.estimated_cost_lamports
+        )
+        .into());
+    }
+    let signed_transaction = bincode::serialize(transaction)?;
+    let signed_transaction_hash = format!("{:x}", Sha256::digest(&signed_transaction));
+    let message_hash = format!(
+        "{:x}",
+        Sha256::digest(bincode::serialize(&transaction.message)?)
+    );
+    let transaction_signature = transaction
+        .signatures
+        .first()
+        .ok_or("signed route transaction has no signature")?
+        .to_string();
+    let fee_payer = transaction
+        .message
+        .static_account_keys()
+        .first()
+        .ok_or("signed route transaction has no fee payer")?
+        .to_string();
+    let policy_fee_payer = policy_keypair_from_env()?.pubkey().to_string();
+    let signer_count = usize::from(transaction.message.header().num_required_signatures);
+    let static_signers = transaction
+        .message
+        .static_account_keys()
+        .iter()
+        .take(signer_count)
+        .map(ToString::to_string)
+        .collect::<BTreeSet<_>>();
+    if !static_signers.contains(&policy_fee_payer) {
+        return Err("fleet route is missing POLICY_KEYPAIR as delegated policy signer".into());
+    }
+    let (fee_payer_kind, selected_fee_payer_observation) = if fee_payer == policy_fee_payer {
+        (RouteFeePayerKind::Policy, None)
+    } else {
+        if !fee_only_shard_allowed {
+            return Err(
+                "fee-only route payer is forbidden for setup, farm, rent, or idle work".into(),
+            );
+        }
+        let fee_payer_pubkey = Pubkey::from_str(&fee_payer)?;
+        if !route_fee_payer_keypairs_from_env()?
+            .iter()
+            .any(|keypair| keypair.pubkey() == fee_payer_pubkey)
+        {
+            return Err("fleet route fee payer has no exact mounted shard keypair".into());
+        }
+        let lamports = u64::try_from(
+            observed_fee_payer_balance_lamports
+                .ok_or("fleet route shard is missing its batched balance observation")?,
+        )?;
+        let context_slot = u64::try_from(
+            observed_fee_payer_balance_slot
+                .ok_or("fleet route shard is missing its balance observation context slot")?,
+        )?;
+        (
+            RouteFeePayerKind::FeeOnlyShard,
+            Some(FeePayerBalanceObservation {
+                lamports,
+                context_slot,
+                observed_at: observed_fee_payer_balance_at
+                    .ok_or("fleet route shard is missing its balance observation time")?,
+            }),
+        )
+    };
+    client
+        .acquire_route_account_conflict_leases(
+            &lease,
+            &resolution.conflict_account_keys,
+            expires_at,
+        )
+        .await?;
+    let selection_fingerprint = resolution
+        .selection_fingerprint
+        .clone()
+        .ok_or("signed route has no ALT selection fingerprint")?;
+    let selected_bundle = resolution
+        .selected_bundle
+        .as_ref()
+        .ok_or("signed route has no selected ALT bundle")?;
+    let mutation_epochs = json!({
+        "tables": selected_bundle.tables.iter().map(|table| json!({
+            "tableId": table.table_id,
+            "tableAddress": table.table_address,
+            "mutationEpoch": table.mutation_epoch,
+            "usablePrefixLen": table.usable_prefix_len,
+            "addressHash": table.address_hash,
+        })).collect::<Vec<_>>()
+    });
+    let semantic_key = route_submission_semantic_key(current.id);
+    client
+        .upsert_lookup_table_usage_leases(LookupTableUsageLeaseBundle {
+            cluster: current.cluster.clone(),
+            lease_kind: LookupTableUsageLeaseKind::PreparedTransaction,
+            reference_key: semantic_key.clone(),
+            route_lookup_table_ids: resolution.selected_table_ids(),
+            vault_id: Some(current.vault_id),
+            binding_id: resolution.active_binding_id,
+            route_fingerprint: current.route_fingerprint.clone(),
+            requirements_fingerprint: current.requirements_fingerprint.clone(),
+            expires_at: Utc::now() + ChronoDuration::minutes(LOOKUP_TABLE_PREPARED_LEASE_MINUTES),
+        })
+        .await?;
+    // Keep the balance snapshot that selected the shard all the way through
+    // compilation, but refresh it immediately before locked DB admission when
+    // build/lease work consumed most of the two-second admission window. The
+    // refresh is normally avoided; if needed it targets only the bound payer
+    // and preserves the optimizer's minimum context slot.
+    let admission_fee_payer_observation = match selected_fee_payer_observation {
+        Some(observation) if observation.observed_at < Utc::now() - ChronoDuration::seconds(1) => {
+            let runtime = route_runtime
+                .ok_or("fleet route shard admission refresh is missing its persistent runtime")?;
+            let fee_payer_pubkey = Pubkey::from_str(&fee_payer)?;
+            load_cached_fee_payer_balances(
+                runtime,
+                &[fee_payer_pubkey],
+                options.optimizer_epoch_id,
+                options
+                    .optimizer_market_slot
+                    .map(u64::try_from)
+                    .transpose()?,
+            )?
+            .remove(&fee_payer_pubkey)
+            .ok_or("fleet route shard payer is not a funded system account at admission")?
+            .into()
+        }
+        observation => observation,
+    };
+    let (fee_payer_balance_lamports, fee_payer_balance_slot, fee_payer_balance_observed_at) =
+        admission_fee_payer_observation
+            .map(|observation| {
+                Ok::<_, Box<dyn Error>>((
+                    Some(i64::try_from(observation.lamports)?),
+                    Some(i64::try_from(observation.context_slot)?),
+                    Some(observation.observed_at),
+                ))
+            })
+            .transpose()?
+            .unwrap_or((None, None, None));
+    Ok(QueueSignedRouteHandoff {
+        lease,
+        submission: SignedRouteSubmissionInput {
+            cluster: current.cluster,
+            semantic_key,
+            opportunity_id: current.id,
+            decision_id: None,
+            signed_transaction,
+            signed_transaction_hash,
+            message_hash,
+            transaction_signature,
+            recent_blockhash: resolution.recent_blockhash.to_string(),
+            last_valid_block_height: resolution.last_valid_block_height,
+            source_snapshot_id: current.source_snapshot_id,
+            optimizer_epoch_id: current.optimizer_epoch_id,
+            alt_requirements_fingerprint: resolution.requirements_fingerprint.clone(),
+            alt_selection_fingerprint: selection_fingerprint,
+            alt_mutation_epochs: mutation_epochs,
+            fee_payer,
+            fee_payer_kind,
+            fee_payer_balance_lamports,
+            fee_payer_balance_slot,
+            fee_payer_balance_observed_at,
+            compiled_fee_lamports: actual_fee_lamports,
+            writable_account_keys: resolution.writable_account_keys.clone(),
+            conflict_account_keys: resolution.conflict_account_keys.clone(),
+            executor_owner: owner,
+            executor_fencing_token: fencing_token,
+        },
+    })
+}
+
+fn route_submission_semantic_key(opportunity_id: i64) -> String {
+    format!("fleet-opportunity:{opportunity_id}")
+}
+
 fn verify_reusable_lookup_table_candidates(
     rpc: &RpcClient,
     raw_candidates: Vec<ResolverTableCandidate>,
@@ -6684,12 +11369,39 @@ fn verify_reusable_lookup_table_candidates(
     BTreeMap<i64, AddressLookupTableAccount>,
     Vec<Value>,
 ) {
+    let table_keys = raw_candidates
+        .iter()
+        .filter_map(|candidate| Pubkey::from_str(&candidate.table_address).ok())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let fetched = get_multiple_accounts_batched(rpc, &table_keys, Some(observed_slot));
+    let fetched_error = fetched.as_ref().err().map(|error| {
+        safe_same_mint_operational_error_with_context("rpc_lookup_table_batch_load_failed", error)
+    });
+    let mut account_by_key = BTreeMap::new();
+    if let Ok((values, _)) = fetched {
+        for (key, (account, _)) in table_keys.into_iter().zip(values) {
+            account_by_key.insert(key, account);
+        }
+    }
     let mut candidates = Vec::new();
     let mut accounts = BTreeMap::new();
     let mut failures = Vec::new();
     for mut candidate in raw_candidates {
         let table_id = candidate.table_id;
-        match verify_lookup_table_candidate(rpc, &mut candidate, observed_slot) {
+        let verified = match Pubkey::from_str(&candidate.table_address) {
+            Ok(table_key) => match fetched_error.as_deref() {
+                Some(error) => Err(error.to_owned()),
+                None => verify_lookup_table_candidate_account(
+                    &mut candidate,
+                    observed_slot,
+                    account_by_key.get(&table_key).and_then(Option::as_ref),
+                ),
+            },
+            Err(error) => Err(format!("table address is not a public key: {error}")),
+        };
+        match verified {
             Ok(account) => {
                 accounts.insert(table_id, account);
             }
@@ -6708,23 +11420,17 @@ fn verify_reusable_lookup_table_candidates(
     (candidates, accounts, failures)
 }
 
-fn verify_lookup_table_candidate(
-    rpc: &RpcClient,
+fn verify_lookup_table_candidate_account(
     candidate: &mut ResolverTableCandidate,
     observed_slot: u64,
+    account: Option<&Account>,
 ) -> Result<AddressLookupTableAccount, String> {
     if !candidate.persisted_prefix_verified || !candidate.usable {
         return Err("persisted lookup-table prefix is not verified/usable".to_owned());
     }
     let table_key = Pubkey::from_str(&candidate.table_address)
         .map_err(|error| format!("table address is not a public key: {error}"))?;
-    let account = rpc
-        .get_account_with_commitment(&table_key, CommitmentConfig::confirmed())
-        .map_err(|error| {
-            safe_same_mint_operational_error_with_context("rpc_lookup_table_load_failed", &error)
-        })?
-        .value
-        .ok_or_else(|| "lookup-table account is missing on RPC".to_owned())?;
+    let account = account.ok_or_else(|| "lookup-table account is missing on RPC".to_owned())?;
     if account.owner != address_lookup_table_program::id() {
         return Err(format!(
             "lookup-table owner {} does not match {}",
@@ -6808,6 +11514,108 @@ fn verify_lookup_table_candidate(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn compile_budgeted_fleet_transaction(
+    rpc: &RpcClient,
+    fee_payer: Pubkey,
+    instructions: &[Instruction],
+    lookup_table_accounts: &[AddressLookupTableAccount],
+    blockhash: Hash,
+    signers: &[&dyn Signer],
+    measured_units: u64,
+    budget: TransactionFeeBudget,
+) -> Result<BudgetedFleetTransaction, String> {
+    let padded_units = measured_units
+        .saturating_mul(115)
+        .div_ceil(100)
+        .saturating_add(10_000)
+        .clamp(100_000, 1_400_000);
+    let compute_unit_limit = u32::try_from(padded_units)
+        .map_err(|_| "measured compute limit exceeds Solana's u32 instruction field".to_owned())?;
+
+    // Reserve the base signature/message fee first. The economic opportunity
+    // cap is a hard ceiling; congestion may raise priority bidding only inside
+    // the remaining budget.
+    let baseline = compile_versioned_transaction(
+        fee_payer,
+        instructions,
+        lookup_table_accounts,
+        blockhash,
+        signers,
+    )
+    .map_err(|error| format!("baseline fee compilation failed: {error}"))?;
+    let base_fee = versioned_message_fee(rpc, &baseline.message)
+        .map_err(|error| format!("baseline fee lookup failed: {error}"))?;
+    let priority_budget_lamports = budget.max_total_fee_lamports.saturating_sub(base_fee);
+    let capped_micro_lamports = u64::try_from(
+        u128::from(priority_budget_lamports)
+            .saturating_mul(1_000_000)
+            .checked_div(u128::from(compute_unit_limit))
+            .unwrap_or_default(),
+    )
+    .unwrap_or(u64::MAX);
+    let priority_fee_micro_lamports = budget
+        .recent_priority_fee_micro_lamports
+        .min(capped_micro_lamports);
+
+    #[allow(deprecated)]
+    let mut budgeted_instructions = vec![
+        ComputeBudgetInstruction::set_compute_unit_limit(compute_unit_limit),
+        ComputeBudgetInstruction::set_compute_unit_price(priority_fee_micro_lamports),
+    ];
+    budgeted_instructions.extend_from_slice(instructions);
+    let transaction = compile_versioned_transaction(
+        fee_payer,
+        &budgeted_instructions,
+        lookup_table_accounts,
+        blockhash,
+        signers,
+    )
+    .map_err(|error| format!("budgeted v0 compilation failed: {error}"))?;
+    let packet = transaction_packet_summary(&transaction, lookup_table_accounts)
+        .map_err(|error| format!("budgeted packet measurement failed: {error}"))?;
+    if !packet.fits_packet_data_size {
+        return Err(format!(
+            "budgeted v0 transaction is {} bytes; packet limit is {}",
+            packet.packet_size_bytes, packet.packet_data_size_bytes
+        ));
+    }
+    let simulation = rpc
+        .simulate_transaction(&transaction)
+        .map_err(|error| same_mint_readiness_rpc_failure(&error))?;
+    if let Some(error) = simulation.value.err {
+        return Err(format!(
+            "budgeted simulation failed: {error:?}; logs: {}",
+            simulation.value.logs.unwrap_or_default().join(" | ")
+        ));
+    }
+    let simulation_units_consumed = simulation.value.units_consumed.unwrap_or(measured_units);
+    let compiled_fee_lamports = versioned_message_fee(rpc, &transaction.message)
+        .map_err(|error| format!("budgeted fee lookup failed: {error}"))?;
+    if compiled_fee_lamports > budget.max_total_fee_lamports {
+        return Err(format!(
+            "budgeted route fee {compiled_fee_lamports} exceeds economic cap {}",
+            budget.max_total_fee_lamports
+        ));
+    }
+    Ok(BudgetedFleetTransaction {
+        transaction,
+        packet,
+        simulation_units_consumed,
+        compute_unit_limit,
+        priority_fee_micro_lamports,
+        compiled_fee_lamports,
+    })
+}
+
+fn versioned_message_fee(rpc: &RpcClient, message: &VersionedMessage) -> Result<u64, String> {
+    match message {
+        VersionedMessage::Legacy(message) => rpc.get_fee_for_message(message),
+        VersionedMessage::V0(message) => rpc.get_fee_for_message(message),
+    }
+    .map_err(|error| error.to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn compile_lookup_table_bundle(
     rpc: &RpcClient,
     mut tables: Vec<ResolverTableCandidate>,
@@ -6818,6 +11626,7 @@ fn compile_lookup_table_bundle(
     instructions: &[Instruction],
     blockhash: Hash,
     signers: &[&dyn Signer],
+    fee_budget: Option<TransactionFeeBudget>,
 ) -> CompiledLookupTableBundle {
     let mut lookup_table_accounts = tables
         .iter()
@@ -6826,6 +11635,9 @@ fn compile_lookup_table_bundle(
     let mut transaction = None;
     let mut transaction_packet = None;
     let mut simulation_units_consumed = None;
+    let mut compute_unit_limit = None;
+    let mut priority_fee_micro_lamports = None;
+    let mut compiled_fee_lamports = None;
     let mut simulation_error = None;
     let mut verification_failures = Vec::new();
 
@@ -6862,7 +11674,7 @@ fn compile_lookup_table_bundle(
                 missing_addresses = required_addresses.difference(&covered).cloned().collect();
                 if missing_addresses.is_empty() && simulation_error.is_none() {
                     match transaction_packet_summary(&compiled, &lookup_table_accounts) {
-                        Ok(packet) => {
+                        Ok(mut packet) => {
                             if packet.fits_packet_data_size {
                                 match rpc.simulate_transaction(&compiled) {
                                     Ok(simulation) => {
@@ -6881,6 +11693,46 @@ fn compile_lookup_table_bundle(
                                     Err(error) => {
                                         simulation_error =
                                             Some(same_mint_readiness_rpc_failure(&error));
+                                    }
+                                }
+                                if simulation_error.is_none() {
+                                    match (fee_budget, simulation_units_consumed) {
+                                        (Some(budget), Some(units_consumed)) => {
+                                            match compile_budgeted_fleet_transaction(
+                                                rpc,
+                                                fee_payer,
+                                                instructions,
+                                                &lookup_table_accounts,
+                                                blockhash,
+                                                signers,
+                                                units_consumed,
+                                                budget,
+                                            ) {
+                                                Ok(budgeted) => {
+                                                    compiled = budgeted.transaction;
+                                                    packet = budgeted.packet;
+                                                    simulation_units_consumed =
+                                                        Some(budgeted.simulation_units_consumed);
+                                                    compute_unit_limit =
+                                                        Some(budgeted.compute_unit_limit);
+                                                    priority_fee_micro_lamports =
+                                                        Some(budgeted.priority_fee_micro_lamports);
+                                                    compiled_fee_lamports =
+                                                        Some(budgeted.compiled_fee_lamports);
+                                                }
+                                                Err(error) => simulation_error = Some(error),
+                                            }
+                                        }
+                                        (Some(_), None) => {
+                                            simulation_error = Some(
+                                                "fleet simulation omitted unitsConsumed; refusing to sign without a measured compute budget"
+                                                    .to_owned(),
+                                            );
+                                        }
+                                        (None, _) => {
+                                            compiled_fee_lamports =
+                                                versioned_message_fee(rpc, &compiled.message).ok();
+                                        }
                                     }
                                 }
                             } else {
@@ -6925,6 +11777,9 @@ fn compile_lookup_table_bundle(
         transaction,
         transaction_packet,
         simulation_units_consumed,
+        compute_unit_limit,
+        priority_fee_micro_lamports,
+        compiled_fee_lamports,
         simulation_error,
         verification_failures,
     }
@@ -6979,6 +11834,9 @@ fn compiled_lookup_table_bundle_json(bundle: &CompiledLookupTableBundle) -> Valu
         "packetFits": bundle.domain.packet_fits,
         "simulationSucceeded": bundle.domain.simulation_succeeded,
         "simulationUnitsConsumed": bundle.simulation_units_consumed,
+        "computeUnitLimit": bundle.compute_unit_limit,
+        "priorityFeeMicroLamports": bundle.priority_fee_micro_lamports,
+        "compiledFeeLamports": bundle.compiled_fee_lamports,
         "simulationError": bundle.simulation_error,
         "requiredAddressCount": bundle.domain.required_addresses.len(),
         "missingAddresses": bundle.domain.missing_addresses.iter().cloned().collect::<Vec<_>>(),
@@ -7074,7 +11932,7 @@ async fn persist_route_lookup_table_resolution(
     resolution: &RuntimeLookupTableResolution,
     acquire_route_lease: bool,
     request_provisioning: bool,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<Option<i64>, Box<dyn Error>> {
     let selected_table_ids = resolution.selected_table_ids();
     let selected_table_count = i32::try_from(selected_table_ids.len())?;
     let required_count = i32::try_from(resolution.required_addresses.len())?;
@@ -7148,26 +12006,31 @@ async fn persist_route_lookup_table_resolution(
         .map(|address| address.address)
         .filter(|address| resolution.reusable_missing_addresses.contains(address))
         .collect::<BTreeSet<_>>();
-    if request_provisioning
+    let provisioning_request_id = if request_provisioning
         && reusable_runtime_enabled(&resolution.rollout)
         && resolution.shared_catalog_covered
         && !missing_vault_addresses.is_empty()
     {
-        client
-            .upsert_lookup_table_provisioning_request(LookupTableProvisioningRequestUpsert {
-                cluster: options.cluster.clone(),
-                vault_id: vault.id,
-                route_fingerprint: resolution.route_fingerprint.clone(),
-                requirements_fingerprint: resolution.requirements_fingerprint.clone(),
-                shared_manifest_id: None,
-                vault_manifest_id: None,
-                desired_shared_hash: Some(shared_market_manifest_hash(manifest)),
-                desired_vault_hash: Some(vault_manifest_hash(manifest)),
-                shared_addresses: shared_market_manifest_addresses(manifest),
-                vault_addresses: vault_manifest_addresses(manifest),
-            })
-            .await?;
-    }
+        Some(
+            client
+                .upsert_lookup_table_provisioning_request(LookupTableProvisioningRequestUpsert {
+                    cluster: options.cluster.clone(),
+                    vault_id: vault.id,
+                    route_fingerprint: resolution.route_fingerprint.clone(),
+                    requirements_fingerprint: resolution.requirements_fingerprint.clone(),
+                    shared_manifest_id: None,
+                    vault_manifest_id: None,
+                    desired_shared_hash: Some(shared_market_manifest_hash(manifest)),
+                    desired_vault_hash: Some(vault_manifest_hash(manifest)),
+                    shared_addresses: shared_market_manifest_addresses(manifest),
+                    vault_addresses: vault_manifest_addresses(manifest),
+                })
+                .await?
+                .id,
+        )
+    } else {
+        None
+    };
 
     if acquire_route_lease {
         resolution.require_ready()?;
@@ -7188,7 +12051,7 @@ async fn persist_route_lookup_table_resolution(
             })
             .await?;
     }
-    Ok(())
+    Ok(provisioning_request_id)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7690,6 +12553,7 @@ async fn load_position_summaries(
 async fn load_prepared_same_mint_decision(
     pool: &PgPool,
     decision_id: DecisionId,
+    expected_status: DecisionStatus,
 ) -> Result<PreparedSameMintDecision, Box<dyn Error>> {
     let row = loyal_yield_orchestrator::sqlx::query(
         r#"
@@ -7719,11 +12583,12 @@ async fn load_prepared_same_mint_decision(
     .await?;
 
     let status: String = row.try_get("status")?;
-    if DecisionStatus::parse(&status) != Some(DecisionStatus::Planned) {
+    if DecisionStatus::parse(&status) != Some(expected_status) {
         return Err(format!(
-            "decision {} is {}, expected planned before execution",
+            "decision {} is {}, expected {}",
             decision_id.as_i64(),
-            status
+            status,
+            expected_status.as_str(),
         )
         .into());
     }
@@ -8295,12 +13160,581 @@ fn load_chain_reconcile_preview(
     vault: &SelectedVault,
     reserves: &[String],
 ) -> Result<ChainReconcilePreview, Box<dyn Error>> {
+    load_chain_reconcile_preview_with_min_context(rpc_url, vault, reserves, None)
+}
+
+fn load_chain_reconcile_preview_with_min_context(
+    rpc_url: &str,
+    vault: &SelectedVault,
+    reserves: &[String],
+    min_context_slot: Option<u64>,
+) -> Result<ChainReconcilePreview, Box<dyn Error>> {
     let rpc = RpcClient::new_with_commitment(rpc_url.to_owned(), CommitmentConfig::confirmed());
-    let observed_slot = i64::try_from(rpc.get_slot()?)?;
+    load_chain_reconcile_preview_from_rpc(&rpc, vault, reserves, min_context_slot)
+}
+
+fn get_multiple_accounts_batched(
+    rpc: &RpcClient,
+    pubkeys: &[Pubkey],
+    min_context_slot: Option<u64>,
+) -> Result<(Vec<(Option<Account>, u64)>, usize), Box<dyn Error>> {
+    let mut values = Vec::with_capacity(pubkeys.len());
+    let mut requests = 0usize;
+    for chunk in pubkeys.chunks(RPC_MULTIPLE_ACCOUNTS_LIMIT) {
+        let response = rpc.get_multiple_accounts_with_config(
+            chunk,
+            RpcAccountInfoConfig {
+                commitment: Some(CommitmentConfig::confirmed()),
+                min_context_slot,
+                ..RpcAccountInfoConfig::default()
+            },
+        )?;
+        if response.value.len() != chunk.len() {
+            return Err(format!(
+                "getMultipleAccounts returned {} values for {} requested accounts",
+                response.value.len(),
+                chunk.len()
+            )
+            .into());
+        }
+        let context_slot = response.context.slot;
+        if let Some(minimum) = min_context_slot {
+            if context_slot < minimum {
+                return Err(format!(
+                    "getMultipleAccounts context slot {context_slot} is older than required minContextSlot {minimum}"
+                )
+                .into());
+            }
+        }
+        values.extend(
+            response
+                .value
+                .into_iter()
+                .map(|account| (account, context_slot)),
+        );
+        requests = requests.saturating_add(1);
+    }
+    Ok((values, requests))
+}
+
+async fn load_cached_reserve_summaries(
+    runtime: &SameMintRouteRuntime,
+    reserves: &[Pubkey],
+    min_context_slot: Option<u64>,
+    optimizer_epoch_id: Option<i64>,
+    evidence: &mut FleetRpcAccountReadEvidence,
+) -> Result<BTreeMap<Pubkey, (KaminoReserveSummary, u64)>, Box<dyn Error>> {
+    let mut loaded = BTreeMap::new();
+    let requested = reserves.iter().copied().collect::<BTreeSet<_>>();
+    while loaded.len() < requested.len() {
+        let mut leader_claims = Vec::new();
+        let mut wait_for = None;
+        {
+            let mut state = runtime
+                .rpc_cache
+                .reserve_summaries
+                .state
+                .lock()
+                .map_err(|_| "shared reserve-summary cache lock was poisoned")?;
+            purge_ttl_cache(
+                &mut state.values,
+                SHARED_RESERVE_CACHE_TTL,
+                SHARED_RESERVE_CACHE_MAX_ENTRIES,
+            );
+            for reserve in &requested {
+                if loaded.contains_key(reserve) {
+                    continue;
+                }
+                let cache_key = ReserveSummaryCacheKey {
+                    reserve: *reserve,
+                    optimizer_epoch_id,
+                };
+                if let Some(entry) = state.values.get(&cache_key).filter(|entry| {
+                    entry.is_fresh_for(
+                        optimizer_epoch_id,
+                        min_context_slot,
+                        SHARED_RESERVE_CACHE_TTL,
+                    )
+                }) {
+                    loaded.insert(*reserve, (entry.value.clone(), entry.context_slot));
+                    evidence.reserve_cache_hits = evidence.reserve_cache_hits.saturating_add(1);
+                    continue;
+                }
+
+                let key = ReserveSummaryFlightKey {
+                    reserve: *reserve,
+                    optimizer_epoch_id,
+                    min_context_slot,
+                };
+                if let Some(flight) = state.in_flight.get(&key) {
+                    if wait_for.is_none() {
+                        wait_for = Some(flight.clone());
+                    }
+                } else {
+                    let flight = Arc::new(ReserveSummaryFlight::default());
+                    state.in_flight.insert(key, flight.clone());
+                    leader_claims.push((key, flight));
+                }
+            }
+        }
+
+        if !leader_claims.is_empty() {
+            let missing = leader_claims
+                .iter()
+                .map(|(key, _)| key.reserve)
+                .collect::<Vec<_>>();
+            let fetched = match catch_unwind(AssertUnwindSafe(
+                || -> Result<(Vec<(Pubkey, KaminoReserveSummary, u64)>, usize), Box<dyn Error>> {
+                    let (accounts, requests) = get_multiple_accounts_batched(
+                        runtime.rpc.as_ref(),
+                        &missing,
+                        min_context_slot,
+                    )?;
+                    let mut fetched = Vec::with_capacity(missing.len());
+                    for (reserve, (account, context_slot)) in missing.iter().copied().zip(accounts)
+                    {
+                        let account = account
+                            .ok_or_else(|| format!("reserve account {reserve} does not exist"))?;
+                        let summary = decode_kamino_reserve_summary(&reserve, &account)?;
+                        fetched.push((reserve, summary, context_slot));
+                    }
+                    Ok((fetched, requests))
+                },
+            )) {
+                Ok(result) => result,
+                Err(_) => Err("shared reserve-summary RPC batch panicked".into()),
+            };
+
+            let observed_at = Utc::now();
+            let fetched_at = Instant::now();
+            let mut state = runtime
+                .rpc_cache
+                .reserve_summaries
+                .state
+                .lock()
+                .map_err(|_| "shared reserve-summary cache lock was poisoned")?;
+            for (key, flight) in &leader_claims {
+                if state
+                    .in_flight
+                    .get(key)
+                    .is_some_and(|current| Arc::ptr_eq(current, flight))
+                {
+                    state.in_flight.remove(key);
+                }
+            }
+            if let Ok((values, _)) = &fetched {
+                for (reserve, summary, context_slot) in values {
+                    state.values.insert(
+                        ReserveSummaryCacheKey {
+                            reserve: *reserve,
+                            optimizer_epoch_id,
+                        },
+                        CachedRpcValue {
+                            value: summary.clone(),
+                            context_slot: *context_slot,
+                            optimizer_epoch_id,
+                            observed_at,
+                            fetched_at,
+                        },
+                    );
+                    loaded.insert(*reserve, (summary.clone(), *context_slot));
+                }
+                purge_ttl_cache(
+                    &mut state.values,
+                    SHARED_RESERVE_CACHE_TTL,
+                    SHARED_RESERVE_CACHE_MAX_ENTRIES,
+                );
+            }
+            drop(state);
+            for (_, flight) in leader_claims {
+                flight.complete();
+            }
+            let (_, requests) = fetched?;
+            evidence.reserve_batch_requests =
+                evidence.reserve_batch_requests.saturating_add(requests);
+            continue;
+        }
+
+        if let Some(flight) = wait_for {
+            flight.wait().await;
+            continue;
+        }
+
+        return Err("shared reserve-summary cache made no progress".into());
+    }
+    Ok(loaded)
+}
+
+fn cached_policy_account(
+    runtime: &SameMintRouteRuntime,
+    policy_account: &Pubkey,
+    min_context_slot: Option<u64>,
+    optimizer_epoch_id: Option<i64>,
+) -> Result<Option<DecodedPolicyAccount>, Box<dyn Error>> {
+    let mut cache = runtime
+        .rpc_cache
+        .policy_accounts
+        .lock()
+        .map_err(|_| "policy RPC cache lock was poisoned")?;
+    purge_ttl_cache(
+        &mut cache,
+        POLICY_ACCOUNT_CACHE_TTL,
+        POLICY_ACCOUNT_CACHE_MAX_ENTRIES,
+    );
+    Ok(cache
+        .get(policy_account)
+        .filter(|entry| {
+            entry.is_fresh_for(
+                optimizer_epoch_id,
+                min_context_slot,
+                POLICY_ACCOUNT_CACHE_TTL,
+            )
+        })
+        .map(|entry| entry.value.clone()))
+}
+
+fn cache_policy_account(
+    runtime: &SameMintRouteRuntime,
+    policy_account: Pubkey,
+    account: &Account,
+    context_slot: u64,
+    optimizer_epoch_id: Option<i64>,
+) -> Result<(), Box<dyn Error>> {
+    if account.owner != SQUADS_SMART_ACCOUNT_PROGRAM_ID || account.executable {
+        return Err(format!(
+            "policy account {policy_account} must be a non-executable account owned by {}",
+            SQUADS_SMART_ACCOUNT_PROGRAM_ID
+        )
+        .into());
+    }
+    let decoded = decode_squads_policy_account(&account.data).map_err(|error| {
+        format!("failed to decode Squads policy account {policy_account}: {error}")
+    })?;
+    let mut cache = runtime
+        .rpc_cache
+        .policy_accounts
+        .lock()
+        .map_err(|_| "policy RPC cache lock was poisoned")?;
+    purge_ttl_cache(
+        &mut cache,
+        POLICY_ACCOUNT_CACHE_TTL,
+        POLICY_ACCOUNT_CACHE_MAX_ENTRIES,
+    );
+    cache.insert(
+        policy_account,
+        CachedRpcValue {
+            value: decoded,
+            context_slot,
+            optimizer_epoch_id,
+            observed_at: Utc::now(),
+            fetched_at: Instant::now(),
+        },
+    );
+    purge_ttl_cache(
+        &mut cache,
+        POLICY_ACCOUNT_CACHE_TTL,
+        POLICY_ACCOUNT_CACHE_MAX_ENTRIES,
+    );
+    Ok(())
+}
+
+async fn load_chain_reconcile_preview_from_runtime(
+    runtime: &SameMintRouteRuntime,
+    vault: &SelectedVault,
+    reserves: &[String],
+    min_context_slot: Option<u64>,
+    optimizer_epoch_id: Option<i64>,
+    include_policy: bool,
+) -> Result<ChainReconcilePreview, Box<dyn Error>> {
     let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
     let (vault_user_metadata, _) = user_metadata(&KLEND_PROGRAM_ID, &vault_pubkey);
-    let vault_user_metadata_exists =
-        account_exists_with_owner(&rpc, &vault_user_metadata, &KLEND_PROGRAM_ID)?;
+    let policy_account = include_policy
+        .then(|| Pubkey::from_str(&vault.policy_account))
+        .transpose()?;
+    let mut evidence = FleetRpcAccountReadEvidence::default();
+    let policy_is_cached = match policy_account {
+        Some(policy) => {
+            cached_policy_account(runtime, &policy, min_context_slot, optimizer_epoch_id)?.is_some()
+        }
+        None => false,
+    };
+    evidence.policy_cache_hit = policy_is_cached;
+
+    let mut reserve_pubkeys = Vec::with_capacity(reserves.len());
+    for reserve in reserves {
+        let pubkey = Pubkey::from_str(reserve)
+            .map_err(|_| format!("reconcile reserve {reserve} must be a public key"))?;
+        if !reserve_pubkeys.contains(&pubkey) {
+            reserve_pubkeys.push(pubkey);
+        }
+    }
+    let mut positions = Vec::with_capacity(reserve_pubkeys.len());
+    let mut processed = BTreeSet::new();
+    let mut observed_slots = Vec::new();
+    let mut vault_user_metadata_exists = false;
+    let mut first_round = true;
+
+    while processed.len() < reserve_pubkeys.len() {
+        let round_reserves = reserve_pubkeys
+            .iter()
+            .copied()
+            .filter(|reserve| !processed.contains(reserve))
+            .collect::<Vec<_>>();
+        let summaries = load_cached_reserve_summaries(
+            runtime,
+            &round_reserves,
+            min_context_slot,
+            optimizer_epoch_id,
+            &mut evidence,
+        )
+        .await?;
+
+        let mut derived = Vec::with_capacity(round_reserves.len());
+        let mut account_keys = BTreeSet::new();
+        if first_round {
+            account_keys.insert(vault_user_metadata);
+            if let Some(policy) = policy_account.filter(|_| !policy_is_cached) {
+                account_keys.insert(policy);
+            }
+        }
+        for reserve in &round_reserves {
+            let summary = summaries
+                .get(reserve)
+                .ok_or("shared reserve batch omitted a requested reserve")?
+                .0
+                .clone();
+            let vault_liquidity_ata = derive_associated_token_address(
+                &vault_pubkey,
+                &summary.liquidity_mint,
+                &spl_token::ID,
+            );
+            let (obligation_account, _) = obligation(
+                &KLEND_PROGRAM_ID,
+                0,
+                0,
+                &vault_pubkey,
+                &summary.market,
+                &Pubkey::default(),
+                &Pubkey::default(),
+            );
+            let farm_user_state = summary
+                .collateral_farm
+                .map(|farm| farms_user_state(&farm, &obligation_account).0);
+            // Re-read the reserve in the same RPC response as its dependent
+            // obligation and token accounts. The cache is only an address-
+            // derivation accelerator; mutable exchange-rate evidence comes
+            // from this coherent batch.
+            account_keys.insert(*reserve);
+            account_keys.insert(vault_liquidity_ata);
+            account_keys.insert(obligation_account);
+            if let Some(farm_user_state) = farm_user_state {
+                account_keys.insert(farm_user_state);
+            }
+            derived.push((
+                *reserve,
+                summary,
+                vault_liquidity_ata,
+                obligation_account,
+                farm_user_state,
+            ));
+        }
+        let account_keys = account_keys.into_iter().collect::<Vec<_>>();
+        let (account_values, requests) =
+            get_multiple_accounts_batched(runtime.rpc.as_ref(), &account_keys, min_context_slot)?;
+        if requests != 1 {
+            return Err(
+                "chain reconciliation dependent accounts exceed one getMultipleAccounts context"
+                    .into(),
+            );
+        }
+        evidence.vault_batch_requests = evidence.vault_batch_requests.saturating_add(requests);
+        let mut accounts = BTreeMap::new();
+        for (key, (account, slot)) in account_keys.into_iter().zip(account_values) {
+            observed_slots.push(slot);
+            accounts.insert(key, (account, slot));
+        }
+        if first_round {
+            vault_user_metadata_exists = account_exists_with_owner_from_account(
+                accounts
+                    .get(&vault_user_metadata)
+                    .and_then(|(account, _)| account.as_ref()),
+                &vault_user_metadata,
+                &KLEND_PROGRAM_ID,
+            )?;
+            if let Some(policy) = policy_account.filter(|_| !policy_is_cached) {
+                let (account, context_slot) = accounts
+                    .get(&policy)
+                    .ok_or("policy account was omitted from the vault account batch")?;
+                let account = account
+                    .as_ref()
+                    .ok_or_else(|| format!("policy account {policy} does not exist"))?;
+                cache_policy_account(runtime, policy, account, *context_slot, optimizer_epoch_id)?;
+            }
+        }
+
+        let mut refreshed_reserves = Vec::with_capacity(derived.len());
+        let mut identity_drift = None;
+        for (reserve, cached_summary, _, _, _) in &mut derived {
+            let (account, context_slot) = accounts
+                .get(reserve)
+                .ok_or("dependent account batch omitted its reserve")?;
+            let account = account
+                .as_ref()
+                .ok_or_else(|| format!("reserve account {reserve} does not exist"))?;
+            let refreshed_summary = decode_kamino_reserve_summary(reserve, account)?;
+            if !cached_summary.derivation_identity_matches(&refreshed_summary) {
+                identity_drift = Some(*reserve);
+            }
+            *cached_summary = refreshed_summary.clone();
+            refreshed_reserves.push((*reserve, refreshed_summary, *context_slot));
+        }
+        {
+            let observed_at = Utc::now();
+            let fetched_at = Instant::now();
+            let mut state = runtime
+                .rpc_cache
+                .reserve_summaries
+                .state
+                .lock()
+                .map_err(|_| "shared reserve-summary cache lock was poisoned")?;
+            purge_ttl_cache(
+                &mut state.values,
+                SHARED_RESERVE_CACHE_TTL,
+                SHARED_RESERVE_CACHE_MAX_ENTRIES,
+            );
+            for (reserve, summary, context_slot) in refreshed_reserves {
+                state.values.insert(
+                    ReserveSummaryCacheKey {
+                        reserve,
+                        optimizer_epoch_id,
+                    },
+                    CachedRpcValue {
+                        value: summary,
+                        context_slot,
+                        optimizer_epoch_id,
+                        observed_at,
+                        fetched_at,
+                    },
+                );
+            }
+            purge_ttl_cache(
+                &mut state.values,
+                SHARED_RESERVE_CACHE_TTL,
+                SHARED_RESERVE_CACHE_MAX_ENTRIES,
+            );
+        }
+        if let Some(reserve) = identity_drift {
+            return Err(format!(
+                "reserve {reserve} address-derivation identity changed during coherent account read; retry with the refreshed cache"
+            )
+            .into());
+        }
+
+        for (reserve, summary, vault_liquidity_ata, obligation_account, farm_user_state) in derived
+        {
+            let (vault_liquidity_amount_raw, vault_liquidity_token_account_exists) =
+                decode_spl_token_account_amount(
+                    accounts
+                        .get(&vault_liquidity_ata)
+                        .and_then(|(account, _)| account.as_ref()),
+                    &vault_liquidity_ata,
+                    &summary.liquidity_mint,
+                )?;
+            let obligation_summary = decode_kamino_obligation_summary(
+                accounts
+                    .get(&obligation_account)
+                    .and_then(|(account, _)| account.as_ref()),
+                &obligation_account,
+                &vault_pubkey,
+                &summary.market,
+                &reserve,
+            )?;
+            append_missing_obligation_reserve_pubkeys(
+                &mut reserve_pubkeys,
+                &obligation_summary,
+                &obligation_account,
+            )?;
+            let collateral_farm_user_state_exists = match farm_user_state {
+                Some(farm_user_state) => account_exists_with_owner_from_account(
+                    accounts
+                        .get(&farm_user_state)
+                        .and_then(|(account, _)| account.as_ref()),
+                    &farm_user_state,
+                    &FARMS_PROGRAM_ID,
+                )?,
+                None => false,
+            };
+            let redeemable_liquidity_amount_raw = collateral_to_redeemable_liquidity_amount(
+                summary.collateral_total_supply,
+                &summary.total_liquidity_scaled,
+                obligation_summary.reserve_deposited_amount_raw,
+            )?;
+            positions.push(ChainPositionSummary {
+                reserve: reserve.to_string(),
+                market: summary.market.to_string(),
+                liquidity_mint: summary.liquidity_mint.to_string(),
+                liquidity_token_program: summary.liquidity_token_program.to_string(),
+                reserve_liquidity_supply: summary.liquidity_supply.to_string(),
+                collateral_mint: summary.collateral_mint.to_string(),
+                reserve_collateral_supply: summary.collateral_supply.to_string(),
+                collateral_farm: summary.collateral_farm.map(|farm| farm.to_string()),
+                collateral_farm_user_state: farm_user_state.map(|state| state.to_string()),
+                collateral_farm_user_state_exists,
+                pyth_oracle: summary.pyth_oracle.map(|oracle| oracle.to_string()),
+                switchboard_price_oracle: summary
+                    .switchboard_price_oracle
+                    .map(|oracle| oracle.to_string()),
+                switchboard_twap_oracle: summary
+                    .switchboard_twap_oracle
+                    .map(|oracle| oracle.to_string()),
+                scope_prices: summary.scope_prices.map(|account| account.to_string()),
+                obligation: obligation_account.to_string(),
+                obligation_exists: obligation_summary.exists,
+                obligation_deposit_reserves: obligation_summary.deposit_reserves,
+                obligation_borrow_reserves: obligation_summary.borrow_reserves,
+                amount_raw: obligation_summary.reserve_deposited_amount_raw,
+                redeemable_liquidity_amount_raw,
+                vault_liquidity_ata: vault_liquidity_ata.to_string(),
+                vault_liquidity_token_account_exists,
+                vault_liquidity_amount_raw,
+            });
+            processed.insert(reserve);
+        }
+        first_round = false;
+    }
+
+    let observed_slot = observed_slots
+        .into_iter()
+        .min()
+        .or(min_context_slot)
+        .ok_or("batched chain reconcile returned no account context slot")?;
+    Ok(ChainReconcilePreview {
+        observed_slot: i64::try_from(observed_slot)?,
+        vault_user_metadata: vault_user_metadata.to_string(),
+        vault_user_metadata_exists,
+        positions,
+        rpc_account_reads: evidence,
+    })
+}
+
+fn load_chain_reconcile_preview_from_rpc(
+    rpc: &RpcClient,
+    vault: &SelectedVault,
+    reserves: &[String],
+    min_context_slot: Option<u64>,
+) -> Result<ChainReconcilePreview, Box<dyn Error>> {
+    let observed_slot = i64::try_from(match min_context_slot {
+        Some(slot) => slot,
+        None => rpc.get_slot()?,
+    })?;
+    let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
+    let (vault_user_metadata, _) = user_metadata(&KLEND_PROGRAM_ID, &vault_pubkey);
+    let vault_user_metadata_exists = account_exists_with_owner_at_or_after(
+        &rpc,
+        &vault_user_metadata,
+        &KLEND_PROGRAM_ID,
+        min_context_slot,
+    )?;
     let mut reserve_pubkeys = Vec::with_capacity(reserves.len());
     for reserve in reserves {
         let pubkey = Pubkey::from_str(reserve)
@@ -8315,17 +13749,19 @@ fn load_chain_reconcile_preview(
     while reserve_index < reserve_pubkeys.len() {
         let reserve = reserve_pubkeys[reserve_index];
         reserve_index += 1;
-        let reserve_summary = load_kamino_reserve_summary(&rpc, &reserve)?;
+        let reserve_summary =
+            load_kamino_reserve_summary_at_or_after(&rpc, &reserve, min_context_slot)?;
         let vault_liquidity_ata = derive_associated_token_address(
             &vault_pubkey,
             &reserve_summary.liquidity_mint,
             &spl_token::ID,
         );
         let (vault_liquidity_amount_raw, vault_liquidity_token_account_exists) =
-            load_spl_token_account_amount(
+            load_spl_token_account_amount_at_or_after(
                 &rpc,
                 &vault_liquidity_ata,
                 &reserve_summary.liquidity_mint,
+                min_context_slot,
             )?;
 
         let collateral_mint = reserve_summary.collateral_mint;
@@ -8338,12 +13774,13 @@ fn load_chain_reconcile_preview(
             &Pubkey::default(),
             &Pubkey::default(),
         );
-        let obligation_summary = load_kamino_obligation_summary(
+        let obligation_summary = load_kamino_obligation_summary_at_or_after(
             &rpc,
             &obligation_account,
             &vault_pubkey,
             &reserve_summary.market,
             &reserve,
+            min_context_slot,
         )?;
         append_missing_obligation_reserve_pubkeys(
             &mut reserve_pubkeys,
@@ -8353,7 +13790,12 @@ fn load_chain_reconcile_preview(
         let (collateral_farm_user_state, collateral_farm_user_state_exists) =
             if let Some(collateral_farm) = reserve_summary.collateral_farm {
                 let (farm_user_state, _) = farms_user_state(&collateral_farm, &obligation_account);
-                let exists = account_exists_with_owner(&rpc, &farm_user_state, &FARMS_PROGRAM_ID)?;
+                let exists = account_exists_with_owner_at_or_after(
+                    &rpc,
+                    &farm_user_state,
+                    &FARMS_PROGRAM_ID,
+                    min_context_slot,
+                )?;
                 (Some(farm_user_state.to_string()), exists)
             } else {
                 (None, false)
@@ -8403,6 +13845,7 @@ fn load_chain_reconcile_preview(
         vault_user_metadata: vault_user_metadata.to_string(),
         vault_user_metadata_exists,
         positions,
+        rpc_account_reads: FleetRpcAccountReadEvidence::default(),
     })
 }
 
@@ -8435,10 +13878,19 @@ fn load_policy_account_preflight(
     preview: &ChainReconcilePreview,
     reserve_move: &ReserveMove,
 ) -> Result<PolicyAccountPreflight, Box<dyn Error>> {
+    let rpc = RpcClient::new_with_commitment(rpc_url.to_owned(), CommitmentConfig::confirmed());
+    load_policy_account_preflight_from_rpc(&rpc, vault, preview, reserve_move)
+}
+
+fn load_policy_account_preflight_from_rpc(
+    rpc: &RpcClient,
+    vault: &SelectedVault,
+    preview: &ChainReconcilePreview,
+    reserve_move: &ReserveMove,
+) -> Result<PolicyAccountPreflight, Box<dyn Error>> {
     let source = chain_position_for_reserve(preview, &reserve_move.source_reserve)?;
     let target = chain_position_for_reserve(preview, &reserve_move.target_reserve)?;
     let policy_account = Pubkey::from_str(&vault.policy_account)?;
-    let rpc = RpcClient::new_with_commitment(rpc_url.to_owned(), CommitmentConfig::confirmed());
     let account = rpc.get_account(&policy_account)?;
     let decoded = decode_squads_policy_account(&account.data).map_err(|error| {
         format!(
@@ -8446,6 +13898,61 @@ fn load_policy_account_preflight(
             vault.policy_account
         )
     })?;
+
+    Ok(PolicyAccountPreflight {
+        policy_account: vault.policy_account.clone(),
+        source_market: source.market.clone(),
+        target_market: target.market.clone(),
+        decoded,
+    })
+}
+
+fn load_policy_account_preflight_from_runtime(
+    runtime: &SameMintRouteRuntime,
+    vault: &SelectedVault,
+    preview: &ChainReconcilePreview,
+    reserve_move: &ReserveMove,
+    optimizer_epoch_id: Option<i64>,
+) -> Result<PolicyAccountPreflight, Box<dyn Error>> {
+    let source = chain_position_for_reserve(preview, &reserve_move.source_reserve)?;
+    let target = chain_position_for_reserve(preview, &reserve_move.target_reserve)?;
+    let policy_account = Pubkey::from_str(&vault.policy_account)?;
+    let min_context_slot = Some(u64::try_from(preview.observed_slot)?);
+    let decoded = if let Some(decoded) = cached_policy_account(
+        runtime,
+        &policy_account,
+        min_context_slot,
+        optimizer_epoch_id,
+    )? {
+        decoded
+    } else {
+        let (accounts, _) = get_multiple_accounts_batched(
+            runtime.rpc.as_ref(),
+            &[policy_account],
+            min_context_slot,
+        )?;
+        let (account, context_slot) = accounts
+            .into_iter()
+            .next()
+            .ok_or("policy account batch returned no value")?;
+        let account = account
+            .as_ref()
+            .ok_or_else(|| format!("policy account {policy_account} does not exist"))?;
+        cache_policy_account(
+            runtime,
+            policy_account,
+            account,
+            context_slot,
+            optimizer_epoch_id,
+        )?;
+        cached_policy_account(
+            runtime,
+            &policy_account,
+            min_context_slot,
+            optimizer_epoch_id,
+        )?
+        .ok_or("policy cache fill did not retain the decoded account")?
+    };
 
     Ok(PolicyAccountPreflight {
         policy_account: vault.policy_account.clone(),
@@ -9200,7 +14707,12 @@ fn execution_preflight_blockers(
 }
 
 fn writes_current_positions_from_chain(options: &CliOptions) -> bool {
-    options.execute && options.reconcile_from_chain
+    // Queue execution treats the persisted source snapshot as the immutable
+    // decision identity and validates it against a fresh chain preview. A
+    // pre-decision reconcile would manufacture a successor snapshot that no
+    // longer matches the fenced opportunity; projection happens only after
+    // confirmation. Legacy/admin CLI execution retains its existing write.
+    options.execute && options.reconcile_from_chain && options.opportunity_id.is_none()
 }
 
 fn writes_current_positions_from_user_seed(options: &CliOptions) -> bool {
@@ -9208,15 +14720,372 @@ fn writes_current_positions_from_user_seed(options: &CliOptions) -> bool {
 }
 
 fn uses_chain_preview_positions(options: &CliOptions, has_chain_preview: bool) -> bool {
-    has_chain_preview && options.reconcile_from_chain && !options.execute
+    has_chain_preview
+        && options.reconcile_from_chain
+        && (!options.execute || options.opportunity_id.is_some())
 }
 
-fn same_mint_route_fee_payer_pubkey(options: &CliOptions) -> Result<Pubkey, Box<dyn Error>> {
-    if options.optimization_cycle {
-        Ok(policy_keypair_from_env()?.pubkey())
-    } else {
-        Ok(solana_testing_keypair_from_env()?.pubkey())
+fn load_cached_fee_payer_balances(
+    runtime: &SameMintRouteRuntime,
+    fee_payers: &[Pubkey],
+    optimizer_epoch_id: Option<i64>,
+    min_context_slot: Option<u64>,
+) -> Result<BTreeMap<Pubkey, FeePayerBalanceObservation>, Box<dyn Error>> {
+    let mut observations = BTreeMap::new();
+    let mut missing = Vec::new();
+    {
+        let mut cache = runtime
+            .rpc_cache
+            .fee_payer_balances
+            .lock()
+            .map_err(|_| "fee-payer balance RPC cache lock was poisoned")?;
+        purge_ttl_cache(
+            &mut cache,
+            FEE_PAYER_BALANCE_CACHE_TTL,
+            FEE_PAYER_BALANCE_CACHE_MAX_ENTRIES,
+        );
+        for fee_payer in fee_payers {
+            if let Some(entry) = cache.get(fee_payer).filter(|entry| {
+                entry.is_fresh_for(
+                    optimizer_epoch_id,
+                    min_context_slot,
+                    FEE_PAYER_BALANCE_CACHE_TTL,
+                )
+            }) {
+                if let Some(lamports) = entry.value {
+                    observations.insert(
+                        *fee_payer,
+                        FeePayerBalanceObservation {
+                            lamports,
+                            context_slot: entry.context_slot,
+                            observed_at: entry.observed_at,
+                        },
+                    );
+                }
+            } else {
+                missing.push(*fee_payer);
+            }
+        }
     }
+    if !missing.is_empty() {
+        let (accounts, _) =
+            get_multiple_accounts_batched(runtime.rpc.as_ref(), &missing, min_context_slot)?;
+        let observed_at = Utc::now();
+        let fetched_at = Instant::now();
+        let mut fetched = Vec::with_capacity(missing.len());
+        for (fee_payer, (account, context_slot)) in missing.into_iter().zip(accounts) {
+            let balance = account.and_then(|account| {
+                (account.owner == system_program::ID && !account.executable)
+                    .then_some(account.lamports)
+            });
+            if let Some(lamports) = balance {
+                observations.insert(
+                    fee_payer,
+                    FeePayerBalanceObservation {
+                        lamports,
+                        context_slot,
+                        observed_at,
+                    },
+                );
+            }
+            fetched.push((fee_payer, balance, context_slot));
+        }
+        let mut cache = runtime
+            .rpc_cache
+            .fee_payer_balances
+            .lock()
+            .map_err(|_| "fee-payer balance RPC cache lock was poisoned")?;
+        purge_ttl_cache(
+            &mut cache,
+            FEE_PAYER_BALANCE_CACHE_TTL,
+            FEE_PAYER_BALANCE_CACHE_MAX_ENTRIES,
+        );
+        for (fee_payer, balance, context_slot) in fetched {
+            cache.insert(
+                fee_payer,
+                CachedRpcValue {
+                    value: balance,
+                    context_slot,
+                    optimizer_epoch_id,
+                    observed_at,
+                    fetched_at,
+                },
+            );
+        }
+        purge_ttl_cache(
+            &mut cache,
+            FEE_PAYER_BALANCE_CACHE_TTL,
+            FEE_PAYER_BALANCE_CACHE_MAX_ENTRIES,
+        );
+    }
+    Ok(observations)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FleetRouteFeePayerScope {
+    MatureSameMint,
+    ObligationSetup,
+    IdleVault,
+    FarmInit,
+}
+
+fn fee_only_shard_allowed_for_scope(scope: FleetRouteFeePayerScope) -> bool {
+    scope == FleetRouteFeePayerScope::MatureSameMint
+}
+
+fn same_mint_route_fee_payer_scope(
+    preview: &ChainReconcilePreview,
+    reserve_move: &ReserveMove,
+) -> Result<FleetRouteFeePayerScope, Box<dyn Error>> {
+    let source = chain_position_for_reserve(preview, &reserve_move.source_reserve)?;
+    let target = chain_position_for_reserve(preview, &reserve_move.target_reserve)?;
+    if !source.obligation_exists || !target.obligation_exists {
+        return Ok(FleetRouteFeePayerScope::ObligationSetup);
+    }
+    let farm_is_ready = |position: &ChainPositionSummary| {
+        position.collateral_farm.is_none() || position.collateral_farm_user_state_exists
+    };
+    if !farm_is_ready(source) || !farm_is_ready(target) {
+        return Ok(FleetRouteFeePayerScope::FarmInit);
+    }
+    Ok(FleetRouteFeePayerScope::MatureSameMint)
+}
+
+fn fee_payer_rendezvous_score(cluster: &str, vault_pubkey: &str, fee_payer: &Pubkey) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(cluster.as_bytes());
+    hasher.update([0]);
+    hasher.update(vault_pubkey.as_bytes());
+    hasher.update([0]);
+    hasher.update(fee_payer.as_ref());
+    hasher.finalize().into()
+}
+
+fn bounded_ranked_fee_payer_pubkeys(
+    cluster: &str,
+    vault_pubkey: &str,
+    mut fee_payers: Vec<Pubkey>,
+) -> Vec<Pubkey> {
+    fee_payers.sort_by(|left, right| {
+        fee_payer_rendezvous_score(cluster, vault_pubkey, right)
+            .cmp(&fee_payer_rendezvous_score(cluster, vault_pubkey, left))
+            .then_with(|| left.to_string().cmp(&right.to_string()))
+    });
+    fee_payers.truncate(MAX_FEE_PAYER_SHARD_CANDIDATES);
+    fee_payers
+}
+
+async fn select_same_mint_route_fee_payer(
+    runtime: &SameMintRouteRuntime,
+    options: &CliOptions,
+    vault: &SelectedVault,
+    preview: &ChainReconcilePreview,
+    reserve_move: &ReserveMove,
+) -> Result<RouteFeePayerSelection, Box<dyn Error>> {
+    let policy_pubkey = policy_keypair_from_env()?.pubkey();
+    let route_scope = same_mint_route_fee_payer_scope(preview, reserve_move)?;
+    let mature_route = fee_only_shard_allowed_for_scope(route_scope);
+    let expected_fee_payer = options
+        .expected_route_fee_payer
+        .as_deref()
+        .map(Pubkey::from_str)
+        .transpose()?;
+    let expected_shard = expected_fee_payer.filter(|pubkey| *pubkey != policy_pubkey);
+    let policy_fallback = |reason: &str| RouteFeePayerSelection {
+        pubkey: policy_pubkey,
+        kind: RouteFeePayerKind::Policy,
+        reason: reason.to_owned(),
+        mature_route,
+        observed_balance_lamports: None,
+        observed_balance_slot: None,
+        observed_balance_at: None,
+        shard: None,
+    };
+    if !options.optimization_cycle {
+        return Ok(RouteFeePayerSelection {
+            pubkey: solana_testing_keypair_from_env()?.pubkey(),
+            kind: RouteFeePayerKind::Policy,
+            reason: "admin_testing_fee_payer".to_owned(),
+            mature_route,
+            observed_balance_lamports: None,
+            observed_balance_slot: None,
+            observed_balance_at: None,
+            shard: None,
+        });
+    }
+    // Only the durable fleet queue receives fee-only shards. Legacy/admin
+    // optimization remains a single-POLICY fallback path.
+    if options.opportunity_id.is_none() {
+        return Ok(policy_fallback("not_queue_backed"));
+    }
+    if options.execute && expected_fee_payer.is_none() {
+        return Ok(policy_fallback("legacy_unbound_ready_route"));
+    }
+    if expected_fee_payer == Some(policy_pubkey) {
+        return Ok(policy_fallback("durable_revalidation_policy_binding"));
+    }
+    if !fee_only_shard_allowed_for_scope(route_scope) {
+        if expected_shard.is_some() {
+            return Err(
+                "fee_payer_reselection_required: bound shard route is no longer mature".into(),
+            );
+        }
+        return Ok(policy_fallback("route_requires_obligation_or_farm_setup"));
+    }
+    let fee_payer_keypairs = match route_fee_payer_keypairs_from_env() {
+        Ok(keypairs) if !keypairs.is_empty() => keypairs,
+        Ok(_) if expected_shard.is_some() => {
+            return Err(
+                "fee_payer_reselection_required: bound shard keypool is unconfigured".into(),
+            );
+        }
+        Ok(_) => return Ok(policy_fallback("fee_payer_keypool_unconfigured")),
+        Err(_) if expected_shard.is_some() => {
+            return Err("fee_payer_reselection_required: bound shard keypool is invalid".into());
+        }
+        Err(_) => return Ok(policy_fallback("fee_payer_keypool_invalid")),
+    };
+    let policy_pubkey_string = policy_pubkey.to_string();
+    let (enabled_shards, authority_status) = tokio::join!(
+        runtime
+            .client
+            .enabled_route_fee_payer_shards(&options.cluster),
+        runtime
+            .client
+            .route_fee_payer_authority_status(&options.cluster, &policy_pubkey_string),
+    );
+    if !authority_status
+        .as_ref()
+        .is_ok_and(|status| status.policy_authority_and_payer_match())
+    {
+        if expected_shard.is_some() {
+            return Err(
+                "fee_payer_reselection_required: reusable ALT authority proof failed".into(),
+            );
+        }
+        return Ok(policy_fallback("policy_alt_authority_proof_failed"));
+    }
+    let enabled_shards = match enabled_shards {
+        Ok(shards) => shards,
+        Err(_) if expected_shard.is_some() => {
+            return Err("fee_payer_reselection_required: shard registry unavailable".into());
+        }
+        Err(_) => return Ok(policy_fallback("fee_payer_registry_unavailable")),
+    };
+    let mounted_pubkeys = fee_payer_keypairs
+        .iter()
+        .map(Signer::pubkey)
+        .collect::<BTreeSet<_>>();
+    let eligible = enabled_shards
+        .into_iter()
+        .filter_map(|shard| {
+            let pubkey = Pubkey::from_str(&shard.fee_payer).ok()?;
+            (shard.database_authority_separation_passes
+                && pubkey != policy_pubkey
+                && expected_shard.is_none_or(|expected| expected == pubkey)
+                && mounted_pubkeys.contains(&pubkey))
+            .then_some((pubkey, shard))
+        })
+        .collect::<Vec<_>>();
+    if eligible.is_empty() {
+        if expected_shard.is_some() {
+            return Err("fee_payer_reselection_required: bound shard is no longer eligible".into());
+        }
+        return Ok(policy_fallback("no_exact_registry_keypair_match"));
+    }
+    let ranked_pubkeys = bounded_ranked_fee_payer_pubkeys(
+        &options.cluster,
+        &vault.vault_pubkey,
+        eligible.iter().map(|(pubkey, _)| *pubkey).collect(),
+    );
+    let mut eligible_by_pubkey = eligible.into_iter().collect::<BTreeMap<_, _>>();
+    let candidates = ranked_pubkeys
+        .into_iter()
+        .filter_map(|pubkey| {
+            eligible_by_pubkey
+                .remove(&pubkey)
+                .map(|shard| (pubkey, shard))
+        })
+        .collect::<Vec<_>>();
+    let candidate_pubkeys = candidates
+        .iter()
+        .map(|(pubkey, _)| *pubkey)
+        .collect::<Vec<_>>();
+    let candidate_balances = match load_cached_fee_payer_balances(
+        runtime,
+        &candidate_pubkeys,
+        options.optimizer_epoch_id,
+        options
+            .optimizer_market_slot
+            .map(u64::try_from)
+            .transpose()?,
+    ) {
+        Ok(balances) => balances,
+        Err(_) if expected_shard.is_some() => {
+            return Err("bound fee-payer shard balance RPC is temporarily unavailable".into());
+        }
+        Err(_) => return Ok(policy_fallback("ranked_shard_balance_rpc_unavailable")),
+    };
+    for (assigned_pubkey, assigned_shard) in candidates {
+        let preflight_fee_lamports = options
+            .expected_cost_lamports
+            .unwrap_or(assigned_shard.maximum_transaction_fee_lamports)
+            .max(0);
+        if preflight_fee_lamports > assigned_shard.maximum_transaction_fee_lamports
+            || assigned_shard
+                .current_window_reserved_lamports
+                .checked_add(preflight_fee_lamports)
+                .is_none_or(|spend| spend > assigned_shard.maximum_window_spend_lamports)
+        {
+            continue;
+        }
+        let Some(balance_observation) = candidate_balances.get(&assigned_pubkey) else {
+            continue;
+        };
+        let observed_balance_lamports = i64::try_from(balance_observation.lamports)?;
+        if observed_balance_lamports < assigned_shard.minimum_balance_lamports
+            || observed_balance_lamports.saturating_sub(preflight_fee_lamports)
+                < assigned_shard.minimum_balance_lamports
+            || observed_balance_lamports > assigned_shard.maximum_balance_lamports
+        {
+            continue;
+        }
+        return Ok(RouteFeePayerSelection {
+            pubkey: assigned_pubkey,
+            kind: RouteFeePayerKind::FeeOnlyShard,
+            reason: "ranked_rendezvous_mature_route_shard".to_owned(),
+            mature_route,
+            observed_balance_lamports: Some(observed_balance_lamports),
+            observed_balance_slot: Some(i64::try_from(balance_observation.context_slot)?),
+            observed_balance_at: Some(balance_observation.observed_at),
+            shard: Some(assigned_shard),
+        });
+    }
+    if expected_shard.is_some() {
+        Err("fee_payer_reselection_required: bound shard is no longer healthy".into())
+    } else {
+        Ok(policy_fallback("no_healthy_ranked_shard"))
+    }
+}
+
+fn same_mint_route_fee_payer_from_env(
+    options: &CliOptions,
+    expected_fee_payer: Pubkey,
+) -> Result<Keypair, Box<dyn Error>> {
+    if !options.optimization_cycle {
+        let keypair = solana_testing_keypair_from_env()?;
+        return (keypair.pubkey() == expected_fee_payer)
+            .then_some(keypair)
+            .ok_or_else(|| "admin fee payer does not match prepared route".into());
+    }
+    let policy = policy_keypair_from_env()?;
+    if policy.pubkey() == expected_fee_payer {
+        return Ok(policy);
+    }
+    route_fee_payer_keypairs_from_env()?
+        .into_iter()
+        .find(|keypair| keypair.pubkey() == expected_fee_payer)
+        .ok_or_else(|| "prepared fee-only route payer is not mounted".into())
 }
 
 fn same_mint_route_signers<'a>(
@@ -9368,8 +15237,9 @@ fn build_route_execution_plan(
     reserve_move: &ReserveMove,
     input: &SameMintRebalanceInput,
     policy_preflight: Option<&PolicyAccountPreflight>,
-    fee_payer: Pubkey,
+    fee_payer_selection: &RouteFeePayerSelection,
 ) -> Result<RouteExecutionPlan, Box<dyn Error>> {
+    let fee_payer = fee_payer_selection.pubkey;
     let policy_account = Pubkey::from_str(&vault.policy_account)?;
     let signer_pubkey = policy_keypair_from_env()?.pubkey();
     if let Some(policy_preflight) = policy_preflight {
@@ -9460,6 +15330,8 @@ fn build_route_execution_plan(
         kamino_init_obligation_collateral_farm_instruction(fee_payer, vault_pubkey, source)?;
     let target_farm_init_instruction =
         kamino_init_obligation_collateral_farm_instruction(fee_payer, vault_pubkey, target)?;
+    let source_farm_setup_required = source_farm_init_instruction.is_some();
+    let target_farm_setup_required = target_farm_init_instruction.is_some();
     let source_refresh_instruction = kamino_refresh_obligation_instruction(source)?;
     let target_refresh_instruction = kamino_refresh_obligation_instruction(target)?;
     let source_instruction = kamino_withdraw_instruction(
@@ -9602,6 +15474,17 @@ fn build_route_execution_plan(
     transaction_account_count += deposit_transaction_account_count;
     outer_account_count += deposit_outer_account_count;
 
+    if fee_payer_selection.kind == RouteFeePayerKind::FeeOnlyShard
+        && (!fee_payer_selection.mature_route
+            || source_farm_setup_required
+            || target_farm_setup_required
+            || missing_obligation_setup.is_some())
+    {
+        return Err(
+            "fee-only route payer cannot fund obligation, farm, setup, or rent work".into(),
+        );
+    }
+
     let mut instruction_plan = YieldRouteInstructionPlan::with_outer_context(
         same_mint_outer_lookup_table_requirements(vault)?,
     );
@@ -9628,12 +15511,16 @@ fn build_route_execution_plan(
             policy_account: policy_account.to_string(),
             setup_policy_account,
             fee_payer: fee_payer.to_string(),
+            fee_payer_kind: fee_payer_selection.kind,
+            fee_payer_selection: fee_payer_selection.clone(),
             signer: signer_pubkey.to_string(),
             account_index,
             instruction_constraint_indexes,
             init_instruction_constraint_index,
             policy_constraint_validation,
             missing_obligation_setup,
+            source_farm_setup_required,
+            target_farm_setup_required,
             setup_instruction_program,
             setup_instruction_discriminator,
             route_steps,
@@ -9958,15 +15845,6 @@ async fn execute_prepared_same_mint_route_inner(
     let rpc =
         RpcClient::new_with_commitment(options.rpc_url.to_owned(), CommitmentConfig::confirmed());
     let signer = policy_keypair_from_env()?;
-    let admin_fee_payer = if options.optimization_cycle {
-        None
-    } else {
-        Some(solana_testing_keypair_from_env()?)
-    };
-    let fee_payer: &dyn Signer = admin_fee_payer
-        .as_ref()
-        .map(|keypair| keypair as &dyn Signer)
-        .unwrap_or(&signer);
     let expected_signer = Pubkey::from_str(&route_execution.preview.signer)?;
     if signer.pubkey() != expected_signer {
         return Err(format!(
@@ -9977,6 +15855,7 @@ async fn execute_prepared_same_mint_route_inner(
         .into());
     }
     let expected_fee_payer = Pubkey::from_str(&route_execution.preview.fee_payer)?;
+    let fee_payer = same_mint_route_fee_payer_from_env(options, expected_fee_payer)?;
     if fee_payer.pubkey() != expected_fee_payer {
         return Err(format!(
             "route fee payer {} does not match prepared route fee payer {}",
@@ -9988,12 +15867,22 @@ async fn execute_prepared_same_mint_route_inner(
     let mut transaction_instructions = route_execution.pre_instructions.clone();
     transaction_instructions.extend(route_execution.instructions.iter().cloned());
     guard_lookup_table_mutations(&transaction_instructions, "route execution")?;
-    let transaction_signers = same_mint_route_signers(fee_payer, &signer);
+    let transaction_signers = same_mint_route_signers(&fee_payer, &signer);
     let lookup_table_scope = same_mint_route_lookup_table_scope_for_reserves(
         vault,
         &decision.source_reserve,
         &decision.target_reserve,
     );
+    require_current_opportunity_fence(
+        client,
+        options,
+        vault,
+        Some((
+            predecision_lookup_tables.route_fingerprint.as_str(),
+            predecision_lookup_tables.requirements_fingerprint.as_str(),
+        )),
+    )
+    .await?;
     let mut presend_lookup_tables = resolve_route_lookup_tables(
         client,
         &rpc,
@@ -10082,6 +15971,16 @@ async fn execute_prepared_same_mint_route_inner(
         .ok_or("pre-send lookup-table resolution did not return packet evidence")?;
     let simulation_units_consumed = presend_lookup_tables.selected_simulation_units_consumed;
 
+    require_current_opportunity_fence(
+        client,
+        options,
+        vault,
+        Some((
+            presend_lookup_tables.route_fingerprint.as_str(),
+            presend_lookup_tables.requirements_fingerprint.as_str(),
+        )),
+    )
+    .await?;
     client
         .advance_decision(decision.id, DecisionAdvance::StartSimulation)
         .await?;
@@ -10089,6 +15988,16 @@ async fn execute_prepared_same_mint_route_inner(
         .advance_decision(decision.id, DecisionAdvance::SimulationReady)
         .await?;
 
+    require_current_opportunity_fence(
+        client,
+        options,
+        vault,
+        Some((
+            presend_lookup_tables.route_fingerprint.as_str(),
+            presend_lookup_tables.requirements_fingerprint.as_str(),
+        )),
+    )
+    .await?;
     let submitted_slot = i64::try_from(rpc.get_slot()?)?;
     let signature = rpc.send_and_confirm_transaction(&transaction)?;
     let confirmed_slot = i64::try_from(rpc.get_slot()?)?;
@@ -10109,8 +16018,12 @@ async fn execute_prepared_same_mint_route_inner(
         decision.source_reserve.clone(),
         decision.target_reserve.clone(),
     ];
-    let post_reconcile_preview =
-        load_chain_reconcile_preview(&options.rpc_url, vault, &post_reconcile_reserves)?;
+    let post_reconcile_preview = load_chain_reconcile_preview_with_min_context(
+        &options.rpc_url,
+        vault,
+        &post_reconcile_reserves,
+        Some(u64::try_from(confirmed_slot)?),
+    )?;
     let post_reconcile_state = chain_preview_reconciled_state(&post_reconcile_preview)?;
     ensure_post_confirm_chain_reconcile_state(decision, &post_reconcile_state)?;
     let post_snapshot = client
@@ -10793,7 +16706,10 @@ fn decoded_instruction_index(
     Ok(index)
 }
 
-fn preview_position_summaries(preview: &ChainReconcilePreview) -> Vec<PositionSummary> {
+fn preview_position_summaries(
+    preview: &ChainReconcilePreview,
+    expected_source_snapshot_id: Option<i64>,
+) -> Vec<PositionSummary> {
     preview
         .positions
         .iter()
@@ -10802,7 +16718,10 @@ fn preview_position_summaries(preview: &ChainReconcilePreview) -> Vec<PositionSu
             liquidity_mint: position.liquidity_mint.clone(),
             amount_raw: i64::try_from(position.amount_raw).unwrap_or(i64::MAX),
             has_value: position.amount_raw > 0,
-            snapshot_id: SnapshotId(0),
+            // A prepare-only queue pass must retain the immutable DB snapshot
+            // it is revalidating. The live chain preview refreshes amount and
+            // account evidence, but it does not itself create a DB snapshot.
+            snapshot_id: SnapshotId(expected_source_snapshot_id.unwrap_or_default()),
             supply_apy_bps: None,
             planning_metadata: json!({
                 "source": "chain_reconcile_preview",
@@ -10821,7 +16740,7 @@ fn preview_position_summaries(preview: &ChainReconcilePreview) -> Vec<PositionSu
         .collect()
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct KaminoReserveSummary {
     market: Pubkey,
     liquidity_mint: Pubkey,
@@ -10838,11 +16757,52 @@ struct KaminoReserveSummary {
     total_liquidity_scaled: BigUint,
 }
 
+impl KaminoReserveSummary {
+    fn derivation_identity_matches(&self, other: &Self) -> bool {
+        self.market == other.market
+            && self.liquidity_mint == other.liquidity_mint
+            && self.liquidity_token_program == other.liquidity_token_program
+            && self.liquidity_supply == other.liquidity_supply
+            && self.collateral_mint == other.collateral_mint
+            && self.collateral_supply == other.collateral_supply
+            && self.collateral_farm == other.collateral_farm
+            && self.pyth_oracle == other.pyth_oracle
+            && self.switchboard_price_oracle == other.switchboard_price_oracle
+            && self.switchboard_twap_oracle == other.switchboard_twap_oracle
+            && self.scope_prices == other.scope_prices
+    }
+}
+
 fn load_kamino_reserve_summary(
     rpc: &RpcClient,
     reserve: &Pubkey,
 ) -> Result<KaminoReserveSummary, Box<dyn Error>> {
-    let account = rpc.get_account(reserve)?;
+    load_kamino_reserve_summary_at_or_after(rpc, reserve, None)
+}
+
+fn load_kamino_reserve_summary_at_or_after(
+    rpc: &RpcClient,
+    reserve: &Pubkey,
+    min_context_slot: Option<u64>,
+) -> Result<KaminoReserveSummary, Box<dyn Error>> {
+    let response = rpc.get_account_with_config(
+        reserve,
+        RpcAccountInfoConfig {
+            commitment: Some(CommitmentConfig::confirmed()),
+            min_context_slot,
+            ..RpcAccountInfoConfig::default()
+        },
+    )?;
+    let account = response
+        .value
+        .ok_or_else(|| format!("reserve account {reserve} does not exist"))?;
+    decode_kamino_reserve_summary(reserve, &account)
+}
+
+fn decode_kamino_reserve_summary(
+    reserve: &Pubkey,
+    account: &Account,
+) -> Result<KaminoReserveSummary, Box<dyn Error>> {
     if account.owner != KLEND_PROGRAM_ID {
         return Err(format!(
             "reserve {reserve} is owned by {}, expected live Kamino lend program {}",
@@ -10967,9 +16927,49 @@ fn load_kamino_obligation_summary(
     expected_market: &Pubkey,
     reserve: &Pubkey,
 ) -> Result<KaminoObligationSummary, Box<dyn Error>> {
-    let response =
-        rpc.get_account_with_commitment(obligation_account, CommitmentConfig::confirmed())?;
-    let Some(account) = response.value else {
+    load_kamino_obligation_summary_at_or_after(
+        rpc,
+        obligation_account,
+        expected_owner,
+        expected_market,
+        reserve,
+        None,
+    )
+}
+
+fn load_kamino_obligation_summary_at_or_after(
+    rpc: &RpcClient,
+    obligation_account: &Pubkey,
+    expected_owner: &Pubkey,
+    expected_market: &Pubkey,
+    reserve: &Pubkey,
+    min_context_slot: Option<u64>,
+) -> Result<KaminoObligationSummary, Box<dyn Error>> {
+    let response = rpc.get_account_with_config(
+        obligation_account,
+        RpcAccountInfoConfig {
+            commitment: Some(CommitmentConfig::confirmed()),
+            min_context_slot,
+            ..RpcAccountInfoConfig::default()
+        },
+    )?;
+    decode_kamino_obligation_summary(
+        response.value.as_ref(),
+        obligation_account,
+        expected_owner,
+        expected_market,
+        reserve,
+    )
+}
+
+fn decode_kamino_obligation_summary(
+    account: Option<&Account>,
+    obligation_account: &Pubkey,
+    expected_owner: &Pubkey,
+    expected_market: &Pubkey,
+    reserve: &Pubkey,
+) -> Result<KaminoObligationSummary, Box<dyn Error>> {
+    let Some(account) = account else {
         return Ok(KaminoObligationSummary {
             exists: false,
             reserve_deposited_amount_raw: 0,
@@ -11077,8 +17077,32 @@ fn load_spl_token_account_amount(
     token_account: &Pubkey,
     expected_mint: &Pubkey,
 ) -> Result<(u64, bool), Box<dyn Error>> {
-    let response = rpc.get_account_with_commitment(token_account, CommitmentConfig::confirmed())?;
-    let Some(account) = response.value else {
+    load_spl_token_account_amount_at_or_after(rpc, token_account, expected_mint, None)
+}
+
+fn load_spl_token_account_amount_at_or_after(
+    rpc: &RpcClient,
+    token_account: &Pubkey,
+    expected_mint: &Pubkey,
+    min_context_slot: Option<u64>,
+) -> Result<(u64, bool), Box<dyn Error>> {
+    let response = rpc.get_account_with_config(
+        token_account,
+        RpcAccountInfoConfig {
+            commitment: Some(CommitmentConfig::confirmed()),
+            min_context_slot,
+            ..RpcAccountInfoConfig::default()
+        },
+    )?;
+    decode_spl_token_account_amount(response.value.as_ref(), token_account, expected_mint)
+}
+
+fn decode_spl_token_account_amount(
+    account: Option<&Account>,
+    token_account: &Pubkey,
+    expected_mint: &Pubkey,
+) -> Result<(u64, bool), Box<dyn Error>> {
+    let Some(account) = account else {
         return Ok((0, false));
     };
     if account.owner != spl_token::ID {
@@ -11200,8 +17224,32 @@ fn account_exists_with_owner(
     pubkey: &Pubkey,
     expected_owner: &Pubkey,
 ) -> Result<bool, Box<dyn Error>> {
-    let response = rpc.get_account_with_commitment(pubkey, CommitmentConfig::confirmed())?;
-    let Some(account) = response.value else {
+    account_exists_with_owner_at_or_after(rpc, pubkey, expected_owner, None)
+}
+
+fn account_exists_with_owner_at_or_after(
+    rpc: &RpcClient,
+    pubkey: &Pubkey,
+    expected_owner: &Pubkey,
+    min_context_slot: Option<u64>,
+) -> Result<bool, Box<dyn Error>> {
+    let response = rpc.get_account_with_config(
+        pubkey,
+        RpcAccountInfoConfig {
+            commitment: Some(CommitmentConfig::confirmed()),
+            min_context_slot,
+            ..RpcAccountInfoConfig::default()
+        },
+    )?;
+    account_exists_with_owner_from_account(response.value.as_ref(), pubkey, expected_owner)
+}
+
+fn account_exists_with_owner_from_account(
+    account: Option<&Account>,
+    pubkey: &Pubkey,
+    expected_owner: &Pubkey,
+) -> Result<bool, Box<dyn Error>> {
+    let Some(account) = account else {
         return Ok(false);
     };
     if account.owner != *expected_owner {
@@ -11460,6 +17508,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     let mut setup_obligation_reserve = None;
     let mut e2e_deposit_amount_raw = None;
     let mut execute = false;
+    let mut prepare_only = false;
     let mut optimization_cycle = false;
     let mut reconcile_from_chain = false;
     let mut reconcile_current_positions = false;
@@ -11473,8 +17522,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     let mut expected_idle_observed_slot = None;
     let mut expected_idle_observed_at = None;
     let mut expected_source_apy_bps = None;
+    let expected_observed_target_apy_bps = None;
     let mut expected_target_apy_bps = None;
     let mut expected_edge_bps = None;
+    let principal_usd_micros = None;
+    let confidence_ppm = None;
+    let expected_service_millis = None;
+    let holding_horizon_seconds = None;
+    let estimated_execution_cost_usd_micros = None;
     let mut cluster = env::var("YIELD_ALT_CLUSTER").ok();
     let mut rpc_url = env::var("SOLANA_RPC_URL").unwrap_or_else(|_| DEFAULT_SOLANA_RPC_URL.into());
     let mut iter = args.into_iter();
@@ -11603,6 +17658,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
                 idle_vault_deposit_amount_raw = Some(amount);
             }
             "--execute" => execute = true,
+            "--prepare-only" => prepare_only = true,
             "--optimization-cycle" => optimization_cycle = true,
             "--reconcile-from-chain" => reconcile_from_chain = true,
             "--reconcile-current-positions" => reconcile_current_positions = true,
@@ -11759,6 +17815,12 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     if reconcile_current_positions && (execute || seed_from_user_position) {
         return Err("--reconcile-current-positions cannot be combined with --execute or --seed-from-user-position".to_owned());
     }
+    if prepare_only && execute {
+        return Err("--prepare-only cannot be combined with --execute".to_owned());
+    }
+    if prepare_only && !optimization_cycle {
+        return Err("--prepare-only requires --optimization-cycle".to_owned());
+    }
     if idle_vault_deposit_amount_raw.is_some() {
         if !reconcile_from_chain {
             return Err("--deposit-idle-vault-reserve requires --reconcile-from-chain".to_owned());
@@ -11784,8 +17846,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
         }
     }
     if optimization_cycle {
-        if !execute {
-            return Err("--optimization-cycle requires --execute".to_owned());
+        if !execute && !prepare_only {
+            return Err("--optimization-cycle requires --execute or --prepare-only".to_owned());
         }
         if !reconcile_from_chain {
             return Err("--optimization-cycle requires --reconcile-from-chain".to_owned());
@@ -11837,6 +17899,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
         setup_obligation_reserve,
         e2e_deposit_amount_raw,
         execute,
+        prepare_only,
+        fused_execute: false,
         optimization_cycle,
         reconcile_from_chain,
         reconcile_current_positions,
@@ -11850,8 +17914,22 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
         expected_idle_observed_slot,
         expected_idle_observed_at,
         expected_source_apy_bps,
+        expected_observed_target_apy_bps,
         expected_target_apy_bps,
         expected_edge_bps,
+        principal_usd_micros,
+        confidence_ppm,
+        expected_service_millis,
+        holding_horizon_seconds,
+        estimated_execution_cost_usd_micros,
+        expected_cost_lamports: None,
+        current_economic_fee_cap_lamports: None,
+        expected_route_fee_payer: None,
+        optimizer_epoch_id: None,
+        optimizer_market_slot: None,
+        opportunity_id: None,
+        opportunity_lease_owner: None,
+        opportunity_fencing_token: None,
         cluster,
         rpc_url,
     })
@@ -11878,6 +17956,7 @@ fn build_same_mint_input(
     vault_id: VaultId,
     positions: &[PositionSummary],
     active_decision: Option<(i64, String)>,
+    current_market: Option<&CurrentRouteMarketEconomics>,
 ) -> Result<SameMintRebalanceInput, PlanBlocker> {
     if let Some((decision_id, status)) = active_decision {
         return Err(PlanBlocker::ActiveDecision {
@@ -11921,12 +18000,12 @@ fn build_same_mint_input(
                     .map(ToOwned::to_owned),
             })?;
 
-    let source_apy_bps = options
-        .expected_source_apy_bps
+    let source_apy_bps = current_market
+        .map(|market| market.source_apy_bps)
         .or(source.supply_apy_bps)
         .unwrap_or_default();
-    let target_apy_bps = options
-        .expected_target_apy_bps
+    let target_apy_bps = current_market
+        .map(|market| market.capacity_adjusted_target_apy_bps)
         .or(target.supply_apy_bps)
         .unwrap_or_default();
     let input = SameMintRebalanceInput {
@@ -11945,10 +18024,10 @@ fn build_same_mint_input(
         expected_source_snapshot_id: source.snapshot_id,
         source_apy_bps,
         target_apy_bps,
-        estimated_edge_bps: options
-            .expected_edge_bps
+        estimated_edge_bps: current_market
+            .map(|market| market.edge_bps)
             .unwrap_or(target_apy_bps - source_apy_bps),
-        estimated_cost_lamports: 0,
+        estimated_cost_lamports: options.expected_cost_lamports.unwrap_or_default(),
         dry_run: !options.execute,
     };
     validate_monitor_expectations(options, &input)?;
@@ -11994,28 +18073,34 @@ fn validate_monitor_expectations(
             )));
         }
     }
-    if let Some(expected) = options.expected_source_apy_bps {
-        if input.source_apy_bps != expected {
-            return Err(PlanBlocker::MonitorPlanDrift(format!(
-                "expected source_apy_bps {expected}, got {}",
-                input.source_apy_bps
-            )));
+    // Queue routes have already recomputed the complete economic gate from one
+    // fresh immutable market epoch. Their durable APYs describe the planned
+    // route/capacity policy, not an equality constraint on ordinary market
+    // ticks. Legacy monitor CLI calls still retain their exact drift contract.
+    if options.current_economic_fee_cap_lamports.is_none() {
+        if let Some(expected) = options.expected_source_apy_bps {
+            if input.source_apy_bps != expected {
+                return Err(PlanBlocker::MonitorPlanDrift(format!(
+                    "expected source_apy_bps {expected}, got {}",
+                    input.source_apy_bps
+                )));
+            }
         }
-    }
-    if let Some(expected) = options.expected_target_apy_bps {
-        if input.target_apy_bps != expected {
-            return Err(PlanBlocker::MonitorPlanDrift(format!(
-                "expected target_apy_bps {expected}, got {}",
-                input.target_apy_bps
-            )));
+        if let Some(expected) = options.expected_target_apy_bps {
+            if input.target_apy_bps != expected {
+                return Err(PlanBlocker::MonitorPlanDrift(format!(
+                    "expected target_apy_bps {expected}, got {}",
+                    input.target_apy_bps
+                )));
+            }
         }
-    }
-    if let Some(expected) = options.expected_edge_bps {
-        if input.estimated_edge_bps != expected {
-            return Err(PlanBlocker::MonitorPlanDrift(format!(
-                "expected estimated_edge_bps {expected}, got {}",
-                input.estimated_edge_bps
-            )));
+        if let Some(expected) = options.expected_edge_bps {
+            if input.estimated_edge_bps != expected {
+                return Err(PlanBlocker::MonitorPlanDrift(format!(
+                    "expected estimated_edge_bps {expected}, got {}",
+                    input.estimated_edge_bps
+                )));
+            }
         }
     }
     Ok(())
@@ -12187,6 +18272,7 @@ fn chain_reconcile_preview_json(preview: &ChainReconcilePreview) -> Value {
         "observedSlot": preview.observed_slot,
         "vaultUserMetadata": preview.vault_user_metadata,
         "vaultUserMetadataExists": preview.vault_user_metadata_exists,
+        "rpcAccountReads": preview.rpc_account_reads,
         "positions": preview.positions.iter().map(chain_position_json).collect::<Vec<_>>(),
     })
 }
@@ -12369,12 +18455,27 @@ fn route_execution_preview_json(plan: &RouteExecutionPlan) -> Value {
         "policyAccount": preview.policy_account,
         "setupPolicyAccount": preview.setup_policy_account,
         "feePayer": preview.fee_payer,
+        "feePayerKind": preview.fee_payer_kind.as_str(),
+        "feePayerSelection": route_fee_payer_selection_json(&preview.fee_payer_selection),
+        "feePayerAuthorityProof": {
+            "delegatedPolicySigner": preview.signer,
+            "reusableAltAuthorityAndPayer": preview.signer,
+            "setupFarmAndRentPayer": if preview.fee_payer_kind == RouteFeePayerKind::FeeOnlyShard {
+                preview.signer.clone()
+            } else {
+                preview.fee_payer.clone()
+            },
+            "routeFeePayer": preview.fee_payer,
+            "routeFeeOnly": preview.fee_payer_kind == RouteFeePayerKind::FeeOnlyShard,
+        },
         "signer": preview.signer,
         "accountIndex": preview.account_index,
         "instructionConstraintIndexes": preview.instruction_constraint_indexes,
         "initInstructionConstraintIndex": preview.init_instruction_constraint_index,
         "policyConstraintValidation": preview.policy_constraint_validation.as_ref().map(policy_constraint_validation_json),
         "missingObligationSetup": preview.missing_obligation_setup.as_ref().map(inline_missing_obligation_setup_json),
+        "sourceFarmSetupRequired": preview.source_farm_setup_required,
+        "targetFarmSetupRequired": preview.target_farm_setup_required,
         "innerInstructionCount": preview.inner_instruction_count,
         "transactionAccountCount": preview.transaction_account_count,
         "outerAccountCount": preview.outer_account_count,
@@ -12387,6 +18488,26 @@ fn route_execution_preview_json(plan: &RouteExecutionPlan) -> Value {
         "routeSteps": &preview.route_steps,
         "refreshReserves": &preview.refresh_reserves,
         "lookupTableManifest": lookup_table_manifest_json(&plan.lookup_table_manifest),
+    })
+}
+
+fn route_fee_payer_selection_json(selection: &RouteFeePayerSelection) -> Value {
+    json!({
+        "feePayer": selection.pubkey.to_string(),
+        "kind": selection.kind.as_str(),
+        "reason": selection.reason,
+        "matureRoute": selection.mature_route,
+        "observedBalanceLamports": selection.observed_balance_lamports,
+        "observedBalanceSlot": selection.observed_balance_slot,
+        "observedBalanceAt": selection.observed_balance_at,
+        "durableBudget": selection.shard.as_ref().map(|shard| json!({
+            "minimumBalanceLamports": shard.minimum_balance_lamports,
+            "maximumBalanceLamports": shard.maximum_balance_lamports,
+            "rollingWindowSeconds": shard.rolling_window_seconds,
+            "maximumWindowSpendLamports": shard.maximum_window_spend_lamports,
+            "maximumTransactionFeeLamports": shard.maximum_transaction_fee_lamports,
+            "currentWindowReservedLamports": shard.current_window_reserved_lamports,
+        })),
     })
 }
 
@@ -12867,6 +18988,8 @@ mod tests {
             setup_obligation_reserve: None,
             e2e_deposit_amount_raw: None,
             execute,
+            prepare_only: false,
+            fused_execute: false,
             optimization_cycle: true,
             reconcile_from_chain,
             reconcile_current_positions: false,
@@ -12882,8 +19005,22 @@ mod tests {
             expected_idle_observed_slot: None,
             expected_idle_observed_at: None,
             expected_source_apy_bps: Some(100),
+            expected_observed_target_apy_bps: None,
             expected_target_apy_bps: Some(200),
             expected_edge_bps: Some(100),
+            principal_usd_micros: None,
+            confidence_ppm: None,
+            expected_service_millis: None,
+            holding_horizon_seconds: None,
+            estimated_execution_cost_usd_micros: None,
+            expected_cost_lamports: Some(5_000),
+            current_economic_fee_cap_lamports: None,
+            expected_route_fee_payer: None,
+            optimizer_epoch_id: None,
+            optimizer_market_slot: None,
+            opportunity_id: None,
+            opportunity_lease_owner: None,
+            opportunity_fencing_token: None,
             cluster: "localnet".to_owned(),
             rpc_url: "http://localhost:8899".to_owned(),
         }
@@ -12992,6 +19129,7 @@ mod tests {
             observed_slot: 42,
             vault_user_metadata: metadata.to_string(),
             vault_user_metadata_exists: true,
+            rpc_account_reads: FleetRpcAccountReadEvidence::default(),
             positions: vec![ChainPositionSummary {
                 reserve: reserve.to_string(),
                 market: market.to_string(),
@@ -13550,8 +19688,8 @@ mod tests {
 
 fn print_help() {
     println!(
-         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> --cluster <mainnet-beta|devnet|testnet|localnet> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--deposit-main-usdc <AMOUNT_RAW> | --deposit-reserve <RESERVE> <AMOUNT_RAW> | --deposit-idle-vault-reserve <RESERVE> <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--execute]\n\n\
-         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and requires YIELD_ALT_CLUSTER or --cluster. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and POLICY_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Policy create/update, obligation setup, initial/idle policy deposits, same-mint moves, full withdrawal, wallet recovery, and policy cleanup all use the same Neon rollout, typed-manifest, readiness, usage-lease, fresh-RPC, exact-v0, and immediate pre-send resolver path. The wallet-to-vault funding transaction is deliberately ALT-free. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for live same-mint route execution; that mode requires explicit source/target reserves plus --reconcile-from-chain --execute, uses POLICY_KEYPAIR as fee payer and delegated signer, requires reusable_only rollout state with force_legacy disabled, fresh-verifies every selected reusable ALT against RPC, compiles and simulates the exact v0 transaction, and fails before the decision or send when readiness or leases are invalid. Missing reusable coverage records an idempotent provisioning request for the dedicated provisioner; this route process never creates or extends ALTs. Legacy, shadow, prefer_reusable, and force_legacy control states fail closed because legacy ALT resolution has been removed. Add --deposit-idle-vault-reserve for router-owned USDC already inside the vault; execute mode requires expected idle token account, observed slot/time, mint, amount, target APY, and edge, uses POLICY_KEYPAIR as fee payer/delegated signer for target obligation setup when needed and for deposit, and does not read SOLANA_TESTING_PK. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and POLICY_KEYPAIR for the policy deposit; --deposit-reserve allows choosing a non-Main Safe USDC reserve when Main is already the APY winner. Full withdraw mode uses POLICY_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
+         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> --cluster <mainnet-beta|devnet|testnet|localnet> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--deposit-main-usdc <AMOUNT_RAW> | --deposit-reserve <RESERVE> <AMOUNT_RAW> | --deposit-idle-vault-reserve <RESERVE> <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--execute | --prepare-only]\n\n\
+         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and requires YIELD_ALT_CLUSTER or --cluster. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and POLICY_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Policy create/update, obligation setup, initial/idle policy deposits, same-mint moves, full withdrawal, wallet recovery, and policy cleanup all use the same Neon rollout, typed-manifest, readiness, usage-lease, fresh-RPC, exact-v0, and immediate pre-send resolver path. The wallet-to-vault funding transaction is deliberately ALT-free. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for same-mint route work; it requires explicit source/target reserves plus --reconcile-from-chain and either --execute or --prepare-only. --prepare-only builds and simulates the exact route and persists reusable readiness/provisioning demand without creating a rebalance decision, acquiring a route lease, or sending a transaction. --execute uses POLICY_KEYPAIR as fee payer and delegated signer, requires reusable_only rollout state with force_legacy disabled, fresh-verifies every selected reusable ALT against RPC, compiles and simulates the exact v0 transaction, and fails before the decision or send when readiness or leases are invalid. Missing reusable coverage records an idempotent provisioning request for the dedicated provisioner; this route process never creates or extends ALTs. Legacy, shadow, prefer_reusable, and force_legacy control states fail closed because legacy ALT resolution has been removed. Add --deposit-idle-vault-reserve for router-owned USDC already inside the vault; execute mode requires expected idle token account, observed slot/time, mint, amount, target APY, and edge, uses POLICY_KEYPAIR as fee payer/delegated signer for target obligation setup when needed and for deposit, and does not read SOLANA_TESTING_PK. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and POLICY_KEYPAIR for the policy deposit; --deposit-reserve allows choosing a non-Main Safe USDC reserve when Main is already the APY winner. Full withdraw mode uses POLICY_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
          op run --env-file=.env.1password -- bun run same-mint:swap -- --settings <PUBKEY> --vault-index 1 --reconcile-from-chain --seed-from-user-position"
     );
 }

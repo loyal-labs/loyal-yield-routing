@@ -1945,6 +1945,8 @@ mod tests {
             market_name: None,
             liquidity_mint: MINT.to_owned(),
             symbol: None,
+            mint_decimals: 6,
+            market_price_usd: 1.0,
             supply_apy: 0.02,
             borrow_apy: 0.03,
             total_supply_usd_estimate: 1_000_000.0,

@@ -4,12 +4,14 @@
 //! extend reusable route lookup tables. Dry-run is the default. A signer is
 //! loaded only after `--execute` has passed all CLI and control-plane gates.
 
-use std::{collections::BTreeSet, env, error::Error, fmt, str::FromStr, time::Duration};
+use std::{collections::BTreeSet, env, error::Error, fmt, str::FromStr, sync::Arc, time::Duration};
 
 use chrono::Utc;
 use loyal_yield_orchestrator::{
-    finalized_shared_table_bundle_hash, lookup_table_manifest_address_records_hash,
-    persisted_lookup_table_success_accounting, reconcile_lookup_table_operation,
+    finalized_shared_table_bundle_hash,
+    fleet_orchestration::{fleet_worker_role_probe, FleetWorkerRole},
+    lookup_table_manifest_address_records_hash, persisted_lookup_table_success_accounting,
+    reconcile_lookup_table_operation,
     rpc_safety::{redacted_external_error, validate_rpc_endpoint, validate_rpc_genesis_hash},
     AtomicVaultAllocationResult, FinalizedSharedTableObservation,
     FinalizedSharedTableShardObservation, LeasedLookupTableOperation,
@@ -27,7 +29,7 @@ use loyal_yield_orchestrator::{
     LookupTableVaultBindingRecord, NeonSqlClient, NeonSqlConfig, OrchestratorError,
     PackedShardPolicy, ReusableOnlyCutoverPreflight, SharedMarketCatalogPlanPolicy,
     SharedMarketCatalogReadiness, SharedMarketPhysicalDriftReport, SignedLookupTableTransaction,
-    VaultId, POLICY_KEYPAIR_ENV,
+    VaultId, STANDARD_POLICY_AUTHORITY,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -47,6 +49,7 @@ use solana_sdk::{
     slot_hashes::MAX_ENTRIES as SLOT_HASHES_MAX_ENTRIES,
     transaction::Transaction,
 };
+use tokio::task::JoinSet;
 
 const DATABASE_URL_ENV: &str = "NEON_DATABASE_URL";
 const RPC_URL_ENV: &str = "SOLANA_RPC_URL";
@@ -59,9 +62,11 @@ const DEFAULT_MAX_OPERATIONS: usize = 8;
 const DEFAULT_ADDRESS_CHUNK: usize = 20;
 const MAX_ADDRESS_CHUNK: usize = 20;
 const DEFAULT_LEASE_SECONDS: u64 = 120;
-const DEFAULT_RATE_LIMIT_MS: u64 = 1_000;
+const DEFAULT_RATE_LIMIT_MS: u64 = 250;
+const DEFAULT_CONCURRENCY: usize = 8;
 const MAX_RATE_LIMIT_MS: u64 = 60_000;
 const MAX_OPERATIONS_PER_BATCH: usize = 100;
+const MAX_CONCURRENCY: usize = 32;
 const DEFAULT_RETRY_SECONDS: i64 = 30;
 const DEFAULT_MAX_ATTEMPTS: i32 = 5;
 const DEFAULT_BUDGET_WINDOW_SECONDS: i64 = 86_400;
@@ -74,7 +79,6 @@ const DEFAULT_MAX_VAULT_COHORT: u16 = 16;
 const PLANNER_VERSION: &str = "reusable-alt-provisioner-v1";
 const DEFAULT_SHARED_FAMILY_NAME: &str = "stable-market";
 const DEFAULT_VAULT_FAMILY_NAME: &str = "vault-shards";
-const STANDARD_POLICY_AUTHORITY: &str = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RunMode {
@@ -220,6 +224,13 @@ const fn should_continue_worker(watch: bool, batch: OperationBatchResult) -> boo
 enum LeasedOperationOutcome {
     Processed,
     BudgetExhausted(BudgetExhausted),
+}
+
+#[derive(Debug)]
+struct OperationTaskCompletion {
+    failure_snapshot: LeasedLookupTableOperation,
+    selected_budget_lamports: u64,
+    result: Result<LeasedOperationOutcome, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -405,6 +416,13 @@ struct OperationReport {
 
 #[tokio::main]
 async fn main() {
+    if env::args().skip(1).eq(["--role-probe"]) {
+        println!(
+            "{}",
+            fleet_worker_role_probe(FleetWorkerRole::PriorityProvisioner)
+        );
+        return;
+    }
     if env::args()
         .skip(1)
         .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
@@ -436,6 +454,12 @@ async fn run() -> Result<(), Box<dyn Error>> {
     .await?;
     client
         .require_schema_migration(21, "reusable_alt_production_controls")
+        .await?;
+    client
+        .require_schema_migration(23, "value_priority_rebalance_queue")
+        .await?;
+    client
+        .require_schema_migration(27, "rebalance_opportunity_attempt_generations")
         .await?;
 
     if options.precutover_probe {
@@ -469,7 +493,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .rpc_url
         .as_ref()
         .ok_or("SOLANA_RPC_URL or --rpc-url is required for reconciliation/execution")?;
-    let rpc = RpcClient::new_with_commitment(rpc_url.clone(), CommitmentConfig::confirmed());
+    let rpc = Arc::new(RpcClient::new_with_commitment(
+        rpc_url.clone(),
+        CommitmentConfig::confirmed(),
+    ));
     let observed_genesis_hash = rpc
         .get_genesis_hash()
         .map_err(|_| "failed to read genesis hash from configured reusable ALT RPC endpoint")?;
@@ -521,7 +548,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             }
         }
         if options.mode.may_sign() && signer.is_none() {
-            signer = Some(load_manager_signer()?);
+            signer = Some(Arc::new(load_manager_signer()?));
         }
         let batch =
             run_operation_batch(&client, &rpc, signer.as_ref(), &options, &mut budget).await?;
@@ -539,115 +566,203 @@ async fn run() -> Result<(), Box<dyn Error>> {
 
 async fn run_operation_batch(
     client: &NeonSqlClient,
-    rpc: &RpcClient,
-    signer: Option<&Keypair>,
+    rpc: &Arc<RpcClient>,
+    signer: Option<&Arc<Keypair>>,
     options: &Options,
     budget: &mut Budget,
 ) -> Result<OperationBatchResult, Box<dyn Error>> {
     let mut processed = 0;
     if options.mode == RunMode::Execute {
-        processed += usize::from(reconcile_shared_market_catalog(client, rpc, options).await?);
-        processed += usize::from(plan_next_provisioning_request(client, rpc, options).await?);
+        processed +=
+            usize::from(reconcile_shared_market_catalog(client, rpc.as_ref(), options).await?);
     }
-    for index in 0..options.max_operations {
+
+    // Admit one live, economically ranked request every batch before draining
+    // the existing physical-operation backlog. Otherwise a continuous queue of
+    // old/zero-consumer mutations can prevent a newly valuable request from
+    // ever entering the operation priority order at all.
+    let mut planning_attempts = 0usize;
+    if options.mode == RunMode::Execute {
+        planning_attempts += 1;
+        if plan_next_provisioning_request(client, rpc.as_ref(), options).await? {
+            processed += 1;
+        }
+    }
+
+    let mut tasks = JoinSet::<OperationTaskCompletion>::new();
+    let mut launched = 0usize;
+    let mut budget_exhausted = false;
+    while launched < options.max_operations && !budget_exhausted {
+        if tasks.len() >= options.concurrency {
+            let completion = tasks
+                .join_next()
+                .await
+                .ok_or("ALT provisioner task set unexpectedly became empty")??;
+            processed += 1;
+            budget_exhausted = finish_operation_task(client, options, budget, completion)
+                .await?
+                .is_some();
+            continue;
+        }
+
         let lease_expires_at =
             Utc::now() + chrono::Duration::seconds(i64::try_from(options.lease_seconds)?);
-        let Some(leased) = client
+        let leased = client
             .lease_next_lookup_table_operation(
                 &options.cluster,
                 &options.worker_id,
                 lease_expires_at,
                 options.mode == RunMode::ReconcileOnly,
             )
-            .await?
-        else {
+            .await?;
+        let Some(leased) = leased else {
+            // Do not make ALT filling a head-of-line blocker: keep already
+            // leased physical tables running while the coordinator seals the
+            // next highest-value provisioning request. Planning is bounded
+            // and transactionally serialized; resulting per-table operations
+            // are then eligible for the parallel execution lanes above.
+            if options.mode == RunMode::Execute && planning_attempts < options.max_operations {
+                planning_attempts += 1;
+                if plan_next_provisioning_request(client, rpc.as_ref(), options).await? {
+                    processed += 1;
+                    continue;
+                }
+            }
             break;
         };
         let failure_snapshot = leased.clone();
-        match process_leased_operation(client, rpc, signer, options, budget, leased).await {
-            Ok(LeasedOperationOutcome::Processed) => {}
-            Ok(LeasedOperationOutcome::BudgetExhausted(exhausted)) => {
-                let lease = operation_lease(&failure_snapshot)?;
-                let detail = exhausted.to_string();
-                let recorded = client
-                    .defer_unsigned_lookup_table_operation_without_attempt(
-                        failure_snapshot.operation.id,
-                        &lease,
-                        Utc::now() + chrono::Duration::seconds(DEFAULT_RETRY_SECONDS),
-                        "batch_budget_exhausted",
-                        &detail,
-                    )
-                    .await?;
-                processed += 1;
-                println!(
-                    "{}",
-                    json!({
-                        "event": "alt_provisioner_batch_budget_exhausted",
-                        "cluster": options.cluster,
-                        "operationId": recorded.id,
-                        "operationKind": recorded.operation_kind.as_str(),
-                        "operationState": recorded.operation_state.as_str(),
-                        "attemptCount": recorded.attempt_count,
-                        "budgetLimitLamports": exhausted.limit.to_string(),
-                        "selectedBudgetLamports": exhausted.current.to_string(),
-                        "requestedBudgetLamports": exhausted.requested.to_string(),
-                        "retryAt": recorded.next_attempt_at,
-                        "attemptConsumed": false,
-                        "transactionsSent": false,
-                        "workerKeepsWatching": options.watch,
-                    })
-                );
-                return Ok(OperationBatchResult {
-                    processed,
-                    budget_exhausted: true,
-                });
+        let task_client = client.clone();
+        let task_rpc = Arc::clone(rpc);
+        let task_signer = signer.cloned();
+        let task_options = options.clone();
+        let runtime_handle = tokio::runtime::Handle::current();
+        tasks.spawn_blocking(move || {
+            let mut task_budget = Budget {
+                limit: task_options.max_lamports,
+                selected: 0,
+            };
+            let result = runtime_handle
+                .block_on(process_leased_operation(
+                    &task_client,
+                    task_rpc.as_ref(),
+                    task_signer.as_deref(),
+                    &task_options,
+                    &mut task_budget,
+                    leased,
+                ))
+                .map_err(|error| error.to_string());
+            OperationTaskCompletion {
+                failure_snapshot,
+                selected_budget_lamports: task_budget.selected,
+                result,
             }
-            Err(error) => {
-                let detail = safe_error(&error.to_string());
-                let lease = operation_lease(&failure_snapshot)?;
-                let retry_at = Utc::now() + chrono::Duration::seconds(DEFAULT_RETRY_SECONDS);
-                let recorded = client
-                    .record_lookup_table_operation_attempt_failure(
-                        failure_snapshot.operation.id,
-                        &lease,
-                        retry_at,
-                        options.max_attempts,
-                        "operation_attempt_failed",
-                        &detail,
-                    )
-                    .await?;
-                println!(
-                    "{}",
-                    json!({
-                        "event": "alt_provisioner_attempt_failure",
-                        "cluster": options.cluster,
-                        "operationId": recorded.id,
-                        "operationKind": recorded.operation_kind.as_str(),
-                        "operationState": recorded.operation_state.as_str(),
-                        "attemptCount": recorded.attempt_count,
-                        "maxAttempts": options.max_attempts,
-                        "errorCode": recorded.error_code,
-                        "errorDetail": detail,
-                        "retryAt": recorded.next_attempt_at,
-                        "signedIdentityPersisted": recorded.transaction_signature.is_some(),
-                        "sendState": if recorded.transaction_signature.is_some() {
-                            "must_reconcile"
-                        } else {
-                            "not_signed"
-                        },
-                    })
-                );
-            }
-        }
-        processed += 1;
-        if index + 1 < options.max_operations && options.rate_limit_ms > 0 {
+        });
+        launched += 1;
+        // Preserve the configured global RPC pacing as a minimum interval
+        // between starts, while allowing slower calls for independent tables
+        // to overlap up to the explicit concurrency bound.
+        if launched < options.max_operations && options.rate_limit_ms > 0 {
             tokio::time::sleep(Duration::from_millis(options.rate_limit_ms)).await;
+        }
+    }
+
+    // A budget denial stops new claims, but every operation already leased by
+    // this batch must finish its fenced transition before the batch returns.
+    while let Some(completion) = tasks.join_next().await {
+        let completion = completion?;
+        processed += 1;
+        if finish_operation_task(client, options, budget, completion)
+            .await?
+            .is_some()
+        {
+            budget_exhausted = true;
         }
     }
     Ok(OperationBatchResult {
         processed,
-        budget_exhausted: false,
+        budget_exhausted,
     })
+}
+
+async fn finish_operation_task(
+    client: &NeonSqlClient,
+    options: &Options,
+    budget: &mut Budget,
+    completion: OperationTaskCompletion,
+) -> Result<Option<BudgetExhausted>, Box<dyn Error>> {
+    budget.selected = budget.selected.max(completion.selected_budget_lamports);
+    match completion.result {
+        Ok(LeasedOperationOutcome::Processed) => Ok(None),
+        Ok(LeasedOperationOutcome::BudgetExhausted(exhausted)) => {
+            let lease = operation_lease(&completion.failure_snapshot)?;
+            let detail = exhausted.to_string();
+            let recorded = client
+                .defer_unsigned_lookup_table_operation_without_attempt(
+                    completion.failure_snapshot.operation.id,
+                    &lease,
+                    Utc::now() + chrono::Duration::seconds(DEFAULT_RETRY_SECONDS),
+                    "batch_budget_exhausted",
+                    &detail,
+                )
+                .await?;
+            println!(
+                "{}",
+                json!({
+                    "event": "alt_provisioner_batch_budget_exhausted",
+                    "cluster": options.cluster,
+                    "operationId": recorded.id,
+                    "operationKind": recorded.operation_kind.as_str(),
+                    "operationState": recorded.operation_state.as_str(),
+                    "attemptCount": recorded.attempt_count,
+                    "budgetLimitLamports": exhausted.limit.to_string(),
+                    "selectedBudgetLamports": exhausted.current.to_string(),
+                    "requestedBudgetLamports": exhausted.requested.to_string(),
+                    "retryAt": recorded.next_attempt_at,
+                    "attemptConsumed": false,
+                    "transactionsSent": false,
+                    "workerKeepsWatching": options.watch,
+                })
+            );
+            Ok(Some(exhausted))
+        }
+        Err(error) => {
+            let detail = safe_error(&error);
+            let lease = operation_lease(&completion.failure_snapshot)?;
+            let retry_at = Utc::now() + chrono::Duration::seconds(DEFAULT_RETRY_SECONDS);
+            let recorded = client
+                .record_lookup_table_operation_attempt_failure(
+                    completion.failure_snapshot.operation.id,
+                    &lease,
+                    retry_at,
+                    options.max_attempts,
+                    "operation_attempt_failed",
+                    &detail,
+                )
+                .await?;
+            println!(
+                "{}",
+                json!({
+                    "event": "alt_provisioner_attempt_failure",
+                    "cluster": options.cluster,
+                    "operationId": recorded.id,
+                    "operationKind": recorded.operation_kind.as_str(),
+                    "operationState": recorded.operation_state.as_str(),
+                    "attemptCount": recorded.attempt_count,
+                    "maxAttempts": options.max_attempts,
+                    "errorCode": recorded.error_code,
+                    "errorDetail": detail,
+                    "retryAt": recorded.next_attempt_at,
+                    "signedIdentityPersisted": recorded.transaction_signature.is_some(),
+                    "sendState": if recorded.transaction_signature.is_some() {
+                        "must_reconcile"
+                    } else {
+                        "not_signed"
+                    },
+                })
+            );
+            Ok(None)
+        }
+    }
 }
 
 async fn reconcile_shared_market_catalog(
@@ -2649,11 +2764,12 @@ fn policy_close_recipient(context: &Value, authority: Pubkey) -> Result<Pubkey, 
 }
 
 fn load_manager_signer() -> Result<Keypair, Box<dyn Error>> {
-    loyal_yield_orchestrator::keypair_from_env(alt_authority_signer_env()).map_err(Into::into)
+    loyal_yield_orchestrator::standard_policy_keypair_from_env().map_err(Into::into)
 }
 
+#[cfg(test)]
 const fn alt_authority_signer_env() -> &'static str {
-    POLICY_KEYPAIR_ENV
+    "POLICY_KEYPAIR"
 }
 
 fn operation_lease(
@@ -3588,7 +3704,7 @@ where
         .unwrap_or(DEFAULT_BUDGET_WINDOW_SECONDS);
     let mut lease_seconds = DEFAULT_LEASE_SECONDS;
     let mut rate_limit_ms = DEFAULT_RATE_LIMIT_MS;
-    let mut concurrency = 1usize;
+    let mut concurrency = DEFAULT_CONCURRENCY;
     let mut safety_margin = DEFAULT_SAFETY_MARGIN;
     let mut largest_atomic_expansion = read_env(LARGEST_ATOMIC_EXPANSION_ENV)
         .map(|value| value.parse::<u16>())
@@ -3823,10 +3939,8 @@ where
     if lease_seconds < 30 {
         return Err("--lease-seconds must be at least 30".into());
     }
-    if concurrency != 1 {
-        return Err(
-            "--concurrency currently must be 1; fenced ALT mutations are serialized".into(),
-        );
+    if !(1..=MAX_CONCURRENCY).contains(&concurrency) {
+        return Err(format!("--concurrency must be between 1 and {MAX_CONCURRENCY}").into());
     }
     if rate_limit_ms > MAX_RATE_LIMIT_MS {
         return Err(format!("--rate-limit-ms cannot exceed {MAX_RATE_LIMIT_MS}").into());
@@ -3982,7 +4096,7 @@ fn default_worker_id() -> String {
 }
 
 fn usage() -> &'static str {
-    "Usage: route-lookup-table-provisioner --cluster <CLUSTER> [--status|--provisioner-pause-status|--reconcile-only|--execute|--precutover-probe --probe-vault-id <DB_ID>] [--watch] [--max-operations <N>] [--max-attempts <1..100>] [--address-chunk <1..20>] [--max-lamports <LAMPORTS>] [--budget-window-seconds <60..31536000>] [--lease-seconds <N>] [--rate-limit-ms <N>] [--concurrency 1] [--safety-margin <N>] [--vault-growth-reservation <N>] [--max-vault-cohort <N>] [--worker-id <ID>]\n\nDry-run is the default and never loads a signer or writes. --precutover-probe requires a durable cluster pause, proves the complete exact shared ALT bundle at finalized RPC, executes the real drift/request paths in a rollback-only transaction, and commits only an immutable PASS audit row for that paused control epoch; it cannot be combined with worker/admin modes and never loads POLICY_KEYPAIR or sends. Reconcile-only may update durable reconciliation state but never signs or sends. Execute uses the standard POLICY_KEYPAIR as ALT authority/payer and requires an explicit positive PostgreSQL-backed rolling-window lamport budget that survives worker restarts. Every send first commits an exact broadcast permit in a short database transaction; no transaction or advisory lock crosses RPC. Reads NEON_DATABASE_URL, SOLANA_RPC_URL, and explicit YIELD_ALT_CLUSTER; cluster is never inferred from the RPC URL. The local YIELD_ALT_PROVISIONING_PAUSED environment gate remains an emergency process stop. Durable cluster pause controls are --set-provisioner-pause or --clear-provisioner-pause; read them with --provisioner-pause-status. Admin controls require --admin-write --reason <TEXT> --updated-by <ID>: --set-provisioner-pause, --clear-provisioner-pause, --activate-reusable-only (requires the paused/drained current exact PASS probe, fresh-verifies every shard in the exact active shared ALT bundle at finalized RPC, then atomically fences that evidence and aligns every rollout override), --force-legacy, --clear-force-legacy, --set-rollout-mode <MODE> [--vault-id <DB_ID>], --rollback-family <FAMILY_ID>, --rollback-binding <ACTIVE_BINDING_ID> --observed-slot <SLOT>, --finalize-rollbacks <FAMILY_ID>, --retire-legacy <TABLE> --expected-authority <PUBKEY> --expected-address-hash <HASH> --expected-address-count <N>, or --bootstrap-families --policy-pubkey <POLICY_PUBKEY> --catalog-version <VERSION> --largest-atomic-expansion <MEASURED_COUNT> [--safety-margin <N>] [--shared-family-name <NAME>] [--vault-family-name <NAME>]. Bootstrap rejects any policy identity other than the repo standard authority. The largest atomic expansion is catalog evidence and is independent of the transaction address chunk. Force-legacy remains global. Administrative lifecycle changes consume public control-plane metadata and never load a signer."
+    "Usage: route-lookup-table-provisioner --cluster <CLUSTER> [--status|--provisioner-pause-status|--reconcile-only|--execute|--precutover-probe --probe-vault-id <DB_ID>] [--watch] [--max-operations <N>] [--max-attempts <1..100>] [--address-chunk <1..20>] [--max-lamports <LAMPORTS>] [--budget-window-seconds <60..31536000>] [--lease-seconds <N>] [--rate-limit-ms <N>] [--concurrency <1..32>] [--safety-margin <N>] [--vault-growth-reservation <N>] [--max-vault-cohort <N>] [--worker-id <ID>]\n\nDry-run is the default and never loads a signer or writes. --precutover-probe requires a durable cluster pause, proves the complete exact shared ALT bundle at finalized RPC, executes the real drift/request paths in a rollback-only transaction, and commits only an immutable PASS audit row for that paused control epoch; it cannot be combined with worker/admin modes and never loads POLICY_KEYPAIR or sends. Reconcile-only may update durable reconciliation state but never signs or sends. Execute uses the standard POLICY_KEYPAIR as ALT authority/payer and requires an explicit positive PostgreSQL-backed rolling-window lamport budget that survives worker restarts. Bounded concurrency overlaps only independently fenced physical ALT tables; predecessor operations for one table remain serialized in the database. Every send first commits an exact broadcast permit in a short database transaction; no transaction or advisory lock crosses RPC. Reads NEON_DATABASE_URL, SOLANA_RPC_URL, and explicit YIELD_ALT_CLUSTER; cluster is never inferred from the RPC URL. The local YIELD_ALT_PROVISIONING_PAUSED environment gate remains an emergency process stop. Durable cluster pause controls are --set-provisioner-pause or --clear-provisioner-pause; read them with --provisioner-pause-status. Admin controls require --admin-write --reason <TEXT> --updated-by <ID>: --set-provisioner-pause, --clear-provisioner-pause, --activate-reusable-only (requires the paused/drained current exact PASS probe, fresh-verifies every shard in the exact active shared ALT bundle at finalized RPC, then atomically fences that evidence and aligns every rollout override), --force-legacy, --clear-force-legacy, --set-rollout-mode <MODE> [--vault-id <DB_ID>], --rollback-family <FAMILY_ID>, --rollback-binding <ACTIVE_BINDING_ID> --observed-slot <SLOT>, --finalize-rollbacks <FAMILY_ID>, --retire-legacy <TABLE> --expected-authority <PUBKEY> --expected-address-hash <HASH> --expected-address-count <N>, or --bootstrap-families --policy-pubkey <POLICY_PUBKEY> --catalog-version <VERSION> --largest-atomic-expansion <MEASURED_COUNT> [--safety-margin <N>] [--shared-family-name <NAME>] [--vault-family-name <NAME>]. Bootstrap rejects any policy identity other than the repo standard authority. The largest atomic expansion is catalog evidence and is independent of the transaction address chunk. Force-legacy remains global. Administrative lifecycle changes consume public control-plane metadata and never load a signer."
 }
 
 #[cfg(test)]
@@ -4142,7 +4256,10 @@ mod tests {
 
     #[test]
     fn reusable_alt_mutations_use_the_standard_policy_authority() {
-        assert_eq!(alt_authority_signer_env(), POLICY_KEYPAIR_ENV);
+        assert_eq!(
+            alt_authority_signer_env(),
+            loyal_yield_orchestrator::POLICY_KEYPAIR_ENV
+        );
     }
 
     #[test]
@@ -4173,9 +4290,11 @@ mod tests {
     fn reusable_alt_chunks_and_concurrency_are_bounded() {
         let chunk_error = parse_args(["--address-chunk", "21"], env_map(&base_env())).unwrap_err();
         assert!(chunk_error.to_string().contains("between 1 and 20"));
+        let concurrent = parse_args(["--concurrency", "2"], env_map(&base_env())).unwrap();
+        assert_eq!(concurrent.concurrency, 2);
         let concurrency_error =
-            parse_args(["--concurrency", "2"], env_map(&base_env())).unwrap_err();
-        assert!(concurrency_error.to_string().contains("serialized"));
+            parse_args(["--concurrency", "33"], env_map(&base_env())).unwrap_err();
+        assert!(concurrency_error.to_string().contains("between 1 and 32"));
 
         let rate_error =
             parse_args(["--rate-limit-ms", "60001"], env_map(&base_env())).unwrap_err();

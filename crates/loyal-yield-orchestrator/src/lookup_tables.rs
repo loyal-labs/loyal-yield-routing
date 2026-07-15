@@ -19,6 +19,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     str::FromStr,
+    sync::atomic::{AtomicU64, Ordering},
 };
 use thiserror::Error;
 
@@ -26,6 +27,28 @@ pub const LOOKUP_TABLE_HARD_CAPACITY: u16 = 256;
 pub const SHARED_MARKET_LOGICAL_CATALOG_MAX_ADDRESSES: usize = 10_000;
 const LOOKUP_TABLE_DB_CONCURRENCY_MAX_ATTEMPTS: usize = 3;
 const LOOKUP_TABLE_DB_CONCURRENCY_RETRY_BASE_MILLIS: u64 = 50;
+static LOOKUP_TABLE_ROLLOUT_LOCK_ACQUISITIONS: AtomicU64 = AtomicU64::new(0);
+
+/// Process-local telemetry for proving that normal demand-driven readiness
+/// does not acquire the cluster-wide rollout administration fence.
+///
+/// This counter intentionally measures successful lock acquisitions only. It
+/// is not a distributed metric and must not be used to coordinate work.
+pub fn lookup_table_rollout_lock_acquisition_count() -> u64 {
+    LOOKUP_TABLE_ROLLOUT_LOCK_ACQUISITIONS.load(Ordering::Relaxed)
+}
+
+async fn acquire_lookup_table_rollout_lock(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    cluster: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-rollout:' || $1, 0))")
+        .bind(cluster)
+        .execute(&mut **tx)
+        .await?;
+    LOOKUP_TABLE_ROLLOUT_LOCK_ACQUISITIONS.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum LookupTableDomainError {
@@ -4980,9 +5003,9 @@ mod reusable_alt_tests {
 }
 
 impl NeonSqlClient {
-    /// Locks the family and candidate rows, re-runs allocation from durable
-    /// reservations, and writes the binding plus one exact-transaction outbox
-    /// operation before releasing the transaction.
+    /// Shares immutable family policy and locks candidate rows, re-runs
+    /// allocation from durable reservations, and writes the binding plus one
+    /// exact-transaction outbox operation before releasing the transaction.
     pub async fn allocate_vault_binding_and_queue_operation(
         &self,
         request: AtomicVaultAllocationRequest,
@@ -5006,7 +5029,7 @@ impl NeonSqlClient {
             ));
         }
         let family_row = sqlx::query(
-            "SELECT * FROM loyal_yield.lookup_table_families WHERE id = $1 AND cluster = $2 FOR UPDATE",
+            "SELECT * FROM loyal_yield.lookup_table_families WHERE id = $1 AND cluster = $2 FOR SHARE",
         )
         .bind(request.family_id)
         .bind(&request.cluster)
@@ -5944,15 +5967,11 @@ impl NeonSqlClient {
         policy: LookupTableProvisioningPlanPolicy,
     ) -> Result<LookupTableProvisioningPlan, OrchestratorError> {
         let mut tx = self.pool().begin().await?;
-        // Planning can touch request, catalog, family, binding, and physical
-        // table rows. Take the rollout lock first so all reusable-v2 mutation
-        // paths use the same cluster-scoped lock order.
-        sqlx::query(
-            "SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-rollout:' || $1, 0))",
-        )
-        .bind(cluster)
-        .execute(&mut *tx)
-        .await?;
+        // Normal demand-driven planning must not take the cluster rollout
+        // lock: unrelated vault families and physical tables need to make
+        // progress independently. The shared head is consumed optimistically;
+        // vault-family/table locks remain canonical, while the rollout lock is
+        // reserved for catalog publication, cutover, pause, and retirement.
         let request_row = sqlx::query(
             r#"
             SELECT * FROM loyal_yield.lookup_table_provisioning_requests
@@ -5998,7 +6017,7 @@ impl NeonSqlClient {
         let catalog = load_shared_market_catalog_head_in_connection(
             &mut tx,
             cluster,
-            SharedMarketCatalogHeadLock::Update,
+            SharedMarketCatalogHeadLock::None,
         )
         .await?
         .ok_or_else(|| {
@@ -6023,24 +6042,15 @@ impl NeonSqlClient {
                 semantic_mismatches.len()
             )));
         }
-        let (shared_target_generation, shared_operations) = self
-            .plan_shared_market_operations_in_connection(
-                &mut *tx,
-                cluster,
-                &catalog,
-                policy.shared_shard_capacity,
-                policy.max_extension_addresses,
-                policy.operation_context.clone(),
-                policy.estimated_fee_lamports,
-                policy.estimated_rent_lamports,
-            )
-            .await?;
-        update_shared_market_catalog_plan_state_in_connection(
-            &mut tx,
-            &catalog,
-            shared_target_generation,
-        )
-        .await?;
+        // Shared-family/head mutation belongs to the dedicated catalog
+        // reconciler. A normal vault request consumes this snapshot and locks
+        // only vault-family/table rows, allowing unrelated cold vaults to plan
+        // independently while a staging shared revision warms.
+        let shared_target_generation = catalog
+            .target_generation
+            .or(catalog.active_generation)
+            .unwrap_or_default();
+        let shared_operations = Vec::new();
 
         // Shared drift is fenced above before deriving or allocating any vault
         // desired state. A catalog/code mismatch cannot consume shard capacity.
@@ -6076,7 +6086,7 @@ impl NeonSqlClient {
         .into_iter()
         .collect::<BTreeSet<_>>();
         let vault_family_row =
-            sqlx::query("SELECT * FROM loyal_yield.lookup_table_families WHERE id = $1 FOR UPDATE")
+            sqlx::query("SELECT * FROM loyal_yield.lookup_table_families WHERE id = $1 FOR SHARE")
                 .bind(vault_family_id)
                 .fetch_one(&mut *tx)
                 .await?;
@@ -6133,6 +6143,12 @@ impl NeonSqlClient {
                 "shared-market catalog head disappeared during route planning".to_owned(),
             )
         })?;
+        if refreshed_catalog.catalog_revision_id != catalog.catalog_revision_id {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "shared-market catalog head changed from revision {} to {} during vault request planning",
+                catalog.catalog_revision_id, refreshed_catalog.catalog_revision_id
+            )));
+        }
         let shared_evidence = shared_market_catalog_generation_evidence_in_connection(
             &mut tx,
             refreshed_catalog.family_id,
@@ -7451,22 +7467,17 @@ impl NeonSqlClient {
         bundle: LookupTableUsageLeaseBundle,
     ) -> Result<Vec<LookupTableUsageLeaseRecord>, OrchestratorError> {
         let mut tx = self.pool().begin().await?;
-        // Migration 0019's reference guard takes this same cluster lock in the
-        // lease trigger. Take it before any physical-table row lock so route
-        // persistence and provisioner mutations share one lock order.
-        sqlx::query(
-            "SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-rollout:' || $1, 0))",
-        )
-        .bind(&bundle.cluster)
-        .execute(&mut *tx)
-        .await?;
+        // Route persistence is intentionally independent across physical
+        // tables. Lock the selected rows in canonical id order so cleanup or
+        // mutation of one table cannot race a new lease without serializing
+        // unrelated routes across the cluster.
         let locked_tables = sqlx::query(
             r#"
             SELECT id, family_id, allocation_kind, desired_state, status
             FROM loyal_yield.route_lookup_tables
             WHERE id = ANY($1) AND cluster = $2
             ORDER BY id
-            FOR UPDATE
+            FOR SHARE
             "#,
         )
         .bind(&bundle.route_lookup_table_ids)
@@ -8181,12 +8192,7 @@ impl NeonSqlClient {
         input: LegacyLookupTableRetirementRequest,
     ) -> Result<LegacyLookupTableRetirement, OrchestratorError> {
         let mut tx = self.pool().begin().await?;
-        sqlx::query(
-            "SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-rollout:' || $1, 0))",
-        )
-        .bind(&input.cluster)
-        .execute(&mut *tx)
-        .await?;
+        acquire_lookup_table_rollout_lock(&mut tx, &input.cluster).await?;
         let row = sqlx::query(
             r#"
             SELECT * FROM loyal_yield.route_lookup_tables
@@ -8769,20 +8775,52 @@ impl NeonSqlClient {
         let row = sqlx::query(
             r#"
             WITH candidate AS (
-                SELECT id FROM loyal_yield.lookup_table_provisioning_requests
-                WHERE cluster = $1
-                  AND request_status IN ('requested', 'queued', 'failed', 'planning')
+                SELECT request.id
+                FROM loyal_yield.lookup_table_provisioning_requests request
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COALESCE(sum(opportunity.annual_yield_gain_usd_micros), 0)::NUMERIC
+                            AS aggregate_annual_yield,
+                        COALESCE(sum(opportunity.economic_priority), 0)::NUMERIC
+                            AS aggregate_priority,
+                        count(*)::BIGINT AS consumer_count
+                    FROM loyal_yield.lookup_table_provisioning_request_consumers consumer
+                    JOIN loyal_yield.rebalance_opportunities opportunity
+                      ON opportunity.id = consumer.opportunity_id
+                    WHERE consumer.provisioning_request_id = request.id
+                      AND opportunity.opportunity_state = 'waiting_alt'
+                      AND opportunity.expires_at > now()
+                ) live_priority ON TRUE
+                WHERE request.cluster = $1
+                  AND request.request_status IN ('requested', 'queued', 'failed', 'planning')
                   AND (
-                      (request_status = 'failed'
-                       AND next_attempt_at IS NOT NULL
-                       AND next_attempt_at <= now())
+                      (request.request_status = 'failed'
+                       AND request.next_attempt_at IS NOT NULL
+                       AND request.next_attempt_at <= now())
                       OR
-                      (request_status <> 'failed'
-                       AND (next_attempt_at IS NULL OR next_attempt_at <= now()))
+                      (request.request_status <> 'failed'
+                       AND (request.next_attempt_at IS NULL OR request.next_attempt_at <= now()))
                   )
-                  AND (request_status <> 'planning' OR lease_expires_at <= now())
-                ORDER BY updated_at, id
-                FOR UPDATE SKIP LOCKED LIMIT 1
+                  AND (
+                      request.request_status <> 'planning'
+                      OR request.lease_expires_at <= now()
+                  )
+                -- Rank live aggregate yield unlocked per still-required
+                -- address. Stored priority is observability only and cannot
+                -- go stale enough to waste the physical ALT mutation lane.
+                ORDER BY
+                    live_priority.aggregate_annual_yield
+                        / GREATEST(
+                            1,
+                            request.desired_shared_address_count
+                                + request.desired_vault_address_count
+                        ) DESC,
+                    live_priority.aggregate_priority DESC,
+                    live_priority.consumer_count DESC,
+                    request.updated_at,
+                    request.requested_at,
+                    request.id
+                FOR UPDATE OF request SKIP LOCKED LIMIT 1
             )
             UPDATE loyal_yield.lookup_table_provisioning_requests request
             SET request_status = 'planning', lease_owner = $2, lease_expires_at = $3,
@@ -11474,15 +11512,15 @@ async fn resolve_or_persist_vault_aggregate_manifest_in_tx(
     request: &LookupTableProvisioningRequestRecord,
     source_slot: Option<i64>,
 ) -> Result<LookupTableManifestRecord, OrchestratorError> {
-    // The family row is the serialization point for aggregate revisions. Two
-    // disjoint route cohorts planned concurrently therefore cannot publish
-    // competing partial desired sets.
+    // Aggregate revisions serialize per vault, not per family. Different
+    // vaults can therefore seal demand concurrently while two cohorts for the
+    // same vault cannot publish competing partial desired sets.
     let family_rows = sqlx::query(
         r#"
         SELECT * FROM loyal_yield.lookup_table_families
         WHERE cluster = $1 AND kind = 'vault_shards' AND desired_state = 'active'
         ORDER BY logical_name, id
-        FOR UPDATE
+        FOR SHARE
         "#,
     )
     .bind(cluster)
@@ -11495,6 +11533,20 @@ async fn resolve_or_persist_vault_aggregate_manifest_in_tx(
         )));
     }
     let family = lookup_table_family_from_row(&family_rows[0])?;
+    sqlx::query(
+        r#"
+        SELECT pg_advisory_xact_lock(
+            hashtextextended(
+                'reusable-alt-vault-manifest:' || $1::TEXT || ':' || $2::TEXT,
+                0
+            )
+        )
+        "#,
+    )
+    .bind(family.id)
+    .bind(request.vault_id.as_i64())
+    .execute(&mut *tx)
+    .await?;
 
     let request_cohort_count: i64 = sqlx::query_scalar(
         r#"
@@ -13132,22 +13184,48 @@ impl NeonSqlClient {
                 SELECT operation.id
                 FROM loyal_yield.lookup_table_operations operation
                 JOIN loyal_yield.lookup_table_families family ON family.id = operation.family_id
+                LEFT JOIN loyal_yield.lookup_table_provisioning_requests priority_request
+                  ON priority_request.id = CASE
+                      WHEN operation.operation_context->>'request_id' ~ '^[0-9]{1,18}$'
+                          THEN (operation.operation_context->>'request_id')::BIGINT
+                      ELSE NULL
+                  END
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COALESCE(sum(opportunity.annual_yield_gain_usd_micros), 0)::NUMERIC
+                            AS aggregate_annual_yield,
+                        COALESCE(sum(opportunity.economic_priority), 0)::NUMERIC
+                            AS aggregate_priority,
+                        count(*)::BIGINT AS consumer_count
+                    FROM loyal_yield.lookup_table_provisioning_request_consumers consumer
+                    JOIN loyal_yield.rebalance_opportunities opportunity
+                      ON opportunity.id = consumer.opportunity_id
+                    WHERE consumer.provisioning_request_id = priority_request.id
+                      AND opportunity.opportunity_state = 'waiting_alt'
+                      AND opportunity.expires_at > now()
+                ) live_priority ON priority_request.id IS NOT NULL
                 WHERE family.cluster = $1
-                  AND operation_state NOT IN ('complete', 'permanent_failure', 'cancelled')
+                  AND operation.operation_state NOT IN ('complete', 'permanent_failure', 'cancelled')
                   AND (
-                      NOT $4 OR operation_state IN (
+                      NOT $4 OR operation.operation_state IN (
                           'signed', 'submitted', 'confirmed', 'finalized',
                           'reconciled', 'needs_reconcile'
                       ) OR (
-                          operation_state = 'leased'
-                          AND transaction_signature IS NOT NULL
+                          operation.operation_state = 'leased'
+                          AND operation.transaction_signature IS NOT NULL
                       ) OR (
-                          operation_kind = 'verify'
-                          AND operation_state IN ('queued', 'retry_wait', 'leased')
+                          operation.operation_kind = 'verify'
+                          AND operation.operation_state IN ('queued', 'retry_wait', 'leased')
                       )
                   )
-                  AND (lease_expires_at IS NULL OR lease_expires_at <= now())
-                  AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+                  AND (
+                      operation.lease_expires_at IS NULL
+                      OR operation.lease_expires_at <= now()
+                  )
+                  AND (
+                      operation.next_attempt_at IS NULL
+                      OR operation.next_attempt_at <= now()
+                  )
                   AND (
                       operation.route_lookup_table_id IS NULL
                       OR NOT EXISTS (
@@ -13174,9 +13252,21 @@ impl NeonSqlClient {
                         WHEN 'retry_wait' THEN 7
                         ELSE 8
                     END,
+                    -- Shared-market mutations unlock every dependent route,
+                    -- so they are the fleet-wide prerequisite ahead of the
+                    -- per-request economic order used for vault shards.
+                    CASE WHEN family.kind = 'shared_market' THEN 0 ELSE 1 END,
+                    COALESCE(live_priority.aggregate_annual_yield, 0)
+                        / GREATEST(
+                            1,
+                            COALESCE(priority_request.desired_shared_address_count, 0)
+                                + COALESCE(priority_request.desired_vault_address_count, 0)
+                        ) DESC,
+                    COALESCE(live_priority.aggregate_priority, 0) DESC,
+                    COALESCE(live_priority.consumer_count, 0) DESC,
                     operation.created_at,
                     operation.id
-                FOR UPDATE SKIP LOCKED
+                FOR UPDATE OF operation SKIP LOCKED
                 LIMIT 1
             )
             UPDATE loyal_yield.lookup_table_operations operation
@@ -14681,16 +14771,10 @@ impl NeonSqlClient {
         input: LookupTableReadinessRecord,
     ) -> Result<LookupTableReadinessRecord, OrchestratorError> {
         let mut tx = self.pool().begin().await?;
-        // The readiness trigger takes this rollout lock even for reusable-v2
-        // rows. Acquire it before sharing physical rows, matching provisioner
-        // and cleanup transactions and removing the row -> advisory inversion.
-        sqlx::query(
-            "SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-rollout:' || $1, 0))",
-        )
-        .bind(&input.cluster)
-        .execute(&mut *tx)
-        .await?;
         if !input.selected_table_ids.is_empty() {
+            // Readiness writes are a fleet hot path. Serialize only against
+            // lifecycle changes to the selected physical tables, in canonical
+            // id order, instead of taking the cluster-wide rollout lock.
             let selected_rows = sqlx::query(
                 r#"
                 SELECT id, cluster, status, durable, family_id, desired_state
@@ -14885,12 +14969,7 @@ impl NeonSqlClient {
         let finalized_addresses =
             validate_finalized_shared_table_observation(finalized_observation)?;
         let mut tx = self.pool().begin().await?;
-        sqlx::query(
-            "SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-rollout:' || $1, 0))",
-        )
-        .bind(cluster)
-        .execute(&mut *tx)
-        .await?;
+        acquire_lookup_table_rollout_lock(&mut tx, cluster).await?;
         let provisioner_control_row = sqlx::query(
             "SELECT * FROM loyal_yield.lookup_table_provisioner_controls WHERE cluster = $1 FOR UPDATE",
         )
@@ -15772,12 +15851,7 @@ impl NeonSqlClient {
         updated_by: &str,
     ) -> Result<LookupTableRolloutControl, OrchestratorError> {
         let mut tx = self.pool().begin().await?;
-        sqlx::query(
-            "SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-rollout:' || $1, 0))",
-        )
-        .bind(cluster)
-        .execute(&mut *tx)
-        .await?;
+        acquire_lookup_table_rollout_lock(&mut tx, cluster).await?;
         let row = if let Some(vault_id) = vault_id {
             sqlx::query(
                 r#"
@@ -15839,12 +15913,7 @@ impl NeonSqlClient {
         updated_by: &str,
     ) -> Result<LookupTableRolloutControl, OrchestratorError> {
         let mut tx = self.pool().begin().await?;
-        sqlx::query(
-            "SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-rollout:' || $1, 0))",
-        )
-        .bind(cluster)
-        .execute(&mut *tx)
-        .await?;
+        acquire_lookup_table_rollout_lock(&mut tx, cluster).await?;
         let row = sqlx::query(
             r#"
             INSERT INTO loyal_yield.lookup_table_rollout_controls
@@ -15879,12 +15948,7 @@ impl NeonSqlClient {
         updated_by: &str,
     ) -> Result<LookupTableRolloutControl, OrchestratorError> {
         let mut tx = self.pool().begin().await?;
-        sqlx::query(
-            "SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-rollout:' || $1, 0))",
-        )
-        .bind(cluster)
-        .execute(&mut *tx)
-        .await?;
+        acquire_lookup_table_rollout_lock(&mut tx, cluster).await?;
         let row = if let Some(vault_id) = vault_id {
             sqlx::query(
                 r#"

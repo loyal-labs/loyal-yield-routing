@@ -2,6 +2,10 @@ use crate::domain::{
     draft_same_mint_decision, route_amount_evidence, state_transition, PlannedDecision,
     AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
+use crate::fleet_orchestration::{
+    RebalanceOpportunityLease, SignedRouteSubmissionInput, SignedRouteSubmissionRecord,
+    TargetCapacityReservationInput,
+};
 use crate::types::*;
 use crate::{OrchestratorError, ACTIVE_DECISION_STATUSES};
 use chrono::{DateTime, Utc};
@@ -92,7 +96,7 @@ struct ManagedVaultRow {
     last_seen_at: DateTime<Utc>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, sqlx::FromRow)]
 struct SnapshotRow {
     id: i64,
     vault_id: i64,
@@ -1023,6 +1027,63 @@ impl NeonSqlClient {
         let mut tx = self.pool.begin().await?;
         let vault = fetch_managed_vault_for_update(&mut *tx, vault_id).await?;
 
+        // The managed-vault row serializes projectors for this vault. Reject an
+        // older RPC response before changing either the current-snapshot flag
+        // or the materialized positions; post-confirm reconciliation may race
+        // a fresher stream observation and must never move state backwards.
+        let current_snapshot = sqlx::query_as::<_, SnapshotRow>(
+            r#"
+            SELECT
+                id,
+                vault_id,
+                policy_id,
+                observed_slot,
+                observed_at,
+                chain_slot,
+                lock_attempt_id,
+                is_current,
+                context
+            FROM loyal_yield.vault_position_snapshots
+            WHERE vault_id = $1 AND is_current
+            ORDER BY observed_slot DESC, id DESC
+            LIMIT 1
+            FOR UPDATE
+            "#,
+        )
+        .bind(vault_id.as_i64())
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(current) = current_snapshot {
+            if state.observed_slot < current.observed_slot {
+                return Err(OrchestratorError::StaleVaultObservation {
+                    vault_id,
+                    observed_slot: state.observed_slot,
+                    current_slot: current.observed_slot,
+                });
+            }
+            if state.observed_slot == current.observed_slot {
+                let positions = current_positions_for_update(&mut *tx, vault_id).await?;
+                if reconciled_positions_equal(&state.positions, &positions)? {
+                    tx.commit().await?;
+                    return Ok(PositionSnapshot {
+                        id: SnapshotId(current.id),
+                        vault_id: VaultId(current.vault_id),
+                        policy_id: PolicyId(current.policy_id),
+                        observed_slot: current.observed_slot,
+                        observed_at: current.observed_at,
+                        chain_slot: current.chain_slot,
+                        lock_attempt_id: current.lock_attempt_id,
+                        is_current: current.is_current,
+                        context: current.context,
+                    });
+                }
+                return Err(OrchestratorError::ConflictingVaultObservation {
+                    vault_id,
+                    observed_slot: state.observed_slot,
+                });
+            }
+        }
+
         sqlx::query!(
             r#"
             UPDATE loyal_yield.vault_position_snapshots
@@ -1325,6 +1386,97 @@ impl NeonSqlClient {
         Ok(PlanOutcome::planned(vault_id, decision))
     }
 
+    /// Persists the exact signed fleet transaction and creates its movement
+    /// decision in one database transaction. No decision-less signed route is
+    /// externally visible, and any validation/link failure rolls back both.
+    pub async fn record_idle_vault_deposit_decision_with_signed_submission(
+        &self,
+        vault_id: VaultId,
+        input: IdleVaultDepositDecisionInput,
+        opportunity_lease: &RebalanceOpportunityLease,
+        capacity_input: TargetCapacityReservationInput,
+        signed_input: SignedRouteSubmissionInput,
+    ) -> Result<(PlanOutcome, SignedRouteSubmissionRecord), OrchestratorError> {
+        if signed_input.decision_id.is_some() {
+            return Err(OrchestratorError::StoreInvariant(
+                "atomic fleet handoff requires an unlinked signed submission".to_owned(),
+            ));
+        }
+        let mut tx = self.pool.begin().await?;
+        let vault = fetch_managed_vault_for_update(&mut tx, vault_id).await?;
+        if active_decision_exists(&mut tx, vault_id).await? {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "vault {vault_id} acquired an active decision before atomic fleet handoff"
+            )));
+        }
+
+        validate_idle_vault_deposit_decision_input(&input)?;
+        validate_idle_vault_source_for_update(&mut tx, &vault, &input).await?;
+        NeonSqlClient::reserve_target_capacity_in_connection(
+            &mut tx,
+            opportunity_lease,
+            &capacity_input,
+            signed_input.compiled_fee_lamports,
+        )
+        .await?;
+        let execution_plan = idle_vault_deposit_execution_plan(&input);
+        let planned = PlannedDecision {
+            source_snapshot_id: None,
+            source_reserve: None,
+            target_reserve: input.target_reserve,
+            liquidity_mint: Some(input.liquidity_mint.clone()),
+            source_liquidity_mint: input.liquidity_mint.clone(),
+            target_liquidity_mint: input.liquidity_mint,
+            amount_raw: input.amount_raw,
+            source_apy_bps: 0,
+            target_apy_bps: input.target_apy_bps,
+            estimated_edge_bps: input.estimated_edge_bps,
+            route_amount_semantics: ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY.to_owned(),
+            source_amount_semantics: Some("idle_vault".to_owned()),
+            source_collateral_amount_raw: None,
+            redeemable_source_liquidity_amount_raw: None,
+            idle_vault_liquidity_amount_raw: Some(input.amount_raw),
+            decision_reason: DecisionReason::IdleVaultLiquidityAvailable,
+            execution_plan,
+        };
+        let mut submission = NeonSqlClient::persist_signed_route_submission_in_connection(
+            &mut tx,
+            opportunity_lease,
+            &signed_input,
+        )
+        .await?;
+        let row =
+            insert_planned_decision(&mut tx, vault_id, &planned, input.estimated_cost_lamports)
+                .await?;
+        let decision = from_row_to_decision(row)?;
+        if decision.status != DecisionStatus::Planned {
+            return Err(OrchestratorError::StoreInvariant(
+                "atomic idle fleet handoff matched a non-planned decision".to_owned(),
+            ));
+        }
+        let linked_decision_id: Option<i64> = sqlx::query_scalar(
+            "SELECT decision_id FROM loyal_yield.signed_route_submissions WHERE id = $1",
+        )
+        .bind(submission.id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if linked_decision_id != Some(decision.id.as_i64()) {
+            return Err(OrchestratorError::StoreInvariant(
+                "atomic idle fleet handoff did not link its signed submission".to_owned(),
+            ));
+        }
+        NeonSqlClient::attach_target_capacity_reservation_in_connection(
+            &mut tx,
+            opportunity_lease,
+            decision.id,
+            submission.id,
+        )
+        .await?;
+        submission.decision_id = Some(decision.id);
+        tx.commit().await?;
+        Ok((PlanOutcome::planned(vault_id, decision), submission))
+    }
+
     pub async fn prepare_same_mint_rebalance(
         &self,
         input: SameMintRebalanceInput,
@@ -1384,6 +1536,105 @@ impl NeonSqlClient {
             None,
             Some(same_mint_execution_preview(&planned)),
         ))
+    }
+
+    /// Atomic fleet handoff for a fully built same-mint route. The current
+    /// source snapshot is locked and revalidated before the signed bytes and
+    /// decision become visible together.
+    pub async fn prepare_same_mint_rebalance_with_signed_submission(
+        &self,
+        input: SameMintRebalanceInput,
+        opportunity_lease: &RebalanceOpportunityLease,
+        capacity_input: TargetCapacityReservationInput,
+        signed_input: SignedRouteSubmissionInput,
+    ) -> Result<(SameMintRebalanceResult, SignedRouteSubmissionRecord), OrchestratorError> {
+        if signed_input.decision_id.is_some() {
+            return Err(OrchestratorError::StoreInvariant(
+                "atomic fleet handoff requires an unlinked signed submission".to_owned(),
+            ));
+        }
+        let mut tx = self.pool.begin().await?;
+        let vault = fetch_rebalance_input_vault_for_update(&mut tx, &input).await?;
+        let vault_id = vault.id;
+        if active_decision_exists(&mut tx, vault_id).await? {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "vault {vault_id} acquired an active decision before atomic fleet handoff"
+            )));
+        }
+        let positions = current_positions_for_update(&mut tx, vault_id).await?;
+        if let Err(reason) = validate_same_mint_input(&input, &positions) {
+            return Err(OrchestratorError::SameMintRebalanceValidation(reason));
+        }
+
+        NeonSqlClient::reserve_target_capacity_in_connection(
+            &mut tx,
+            opportunity_lease,
+            &capacity_input,
+            signed_input.compiled_fee_lamports,
+        )
+        .await?;
+        let planned = PlannedDecision {
+            source_snapshot_id: Some(input.expected_source_snapshot_id),
+            source_reserve: Some(input.source_reserve.clone()),
+            target_reserve: input.target_reserve.clone(),
+            liquidity_mint: Some(input.liquidity_mint.clone()),
+            source_liquidity_mint: input.liquidity_mint.clone(),
+            target_liquidity_mint: input.liquidity_mint.clone(),
+            amount_raw: input.amount_raw,
+            source_apy_bps: input.source_apy_bps,
+            target_apy_bps: input.target_apy_bps,
+            estimated_edge_bps: input.estimated_edge_bps,
+            route_amount_semantics: input.route_amount_semantics.clone(),
+            source_amount_semantics: input.source_amount_semantics.clone(),
+            source_collateral_amount_raw: input.source_collateral_amount_raw,
+            redeemable_source_liquidity_amount_raw: input.redeemable_source_liquidity_amount_raw,
+            idle_vault_liquidity_amount_raw: input.idle_vault_liquidity_amount_raw,
+            decision_reason: DecisionReason::TargetSupplyApyExceedsSource,
+            execution_plan: same_mint_execution_plan(&input),
+        };
+        let mut submission = NeonSqlClient::persist_signed_route_submission_in_connection(
+            &mut tx,
+            opportunity_lease,
+            &signed_input,
+        )
+        .await?;
+        let row =
+            insert_planned_decision(&mut tx, vault_id, &planned, input.estimated_cost_lamports)
+                .await?;
+        let decision = from_row_to_decision(row)?;
+        if decision.status != DecisionStatus::Planned {
+            return Err(OrchestratorError::StoreInvariant(
+                "atomic same-mint fleet handoff matched a non-planned decision".to_owned(),
+            ));
+        }
+        let linked_decision_id: Option<i64> = sqlx::query_scalar(
+            "SELECT decision_id FROM loyal_yield.signed_route_submissions WHERE id = $1",
+        )
+        .bind(submission.id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if linked_decision_id != Some(decision.id.as_i64()) {
+            return Err(OrchestratorError::StoreInvariant(
+                "atomic same-mint fleet handoff did not link its signed submission".to_owned(),
+            ));
+        }
+        NeonSqlClient::attach_target_capacity_reservation_in_connection(
+            &mut tx,
+            opportunity_lease,
+            decision.id,
+            submission.id,
+        )
+        .await?;
+        submission.decision_id = Some(decision.id);
+        let result = same_mint_result_from_decision(
+            vault_id,
+            input,
+            decision,
+            None,
+            Some(same_mint_execution_preview(&planned)),
+        );
+        tx.commit().await?;
+        Ok((result, submission))
     }
 
     pub async fn prepare_same_mint_rebalance_batch(
@@ -1665,6 +1916,35 @@ impl NeonSqlClient {
         tx.commit().await?;
         Ok(decision)
     }
+}
+
+fn reconciled_positions_equal(
+    incoming: &[ReconciledReservePosition],
+    current: &[CurrentReservePosition],
+) -> Result<bool, OrchestratorError> {
+    if incoming.len() != current.len() {
+        return Ok(false);
+    }
+    for incoming_position in incoming {
+        let Some(current_position) = current
+            .iter()
+            .find(|position| position.reserve == incoming_position.reserve)
+        else {
+            return Ok(false);
+        };
+        let amount_raw = to_i64_amount(incoming_position.amount_raw)?;
+        if current_position.market != incoming_position.market
+            || current_position.liquidity_mint != incoming_position.liquidity_mint
+            || current_position.amount_raw != amount_raw
+            || current_position.has_value != (amount_raw > 0)
+            || current_position.supply_apy_bps != incoming_position.supply_apy_bps
+            || current_position.borrow_apy_bps != incoming_position.borrow_apy_bps
+            || current_position.planning_metadata != incoming_position.planning_metadata
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 struct StoreMigration {
@@ -2564,6 +2844,46 @@ fn validate_idle_vault_deposit_decision_input(
         return Err(OrchestratorError::SameMintRebalanceValidation(
             "idle vault deposit setup obligation rent top-up requires setup to be planned"
                 .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+async fn validate_idle_vault_source_for_update(
+    conn: &mut PgConnection,
+    vault: &ManagedVault,
+    input: &IdleVaultDepositDecisionInput,
+) -> Result<(), OrchestratorError> {
+    let row = sqlx::query(
+        r#"
+        SELECT amount_raw, owner, token_account, observed_slot, observed_at
+        FROM loyal_yield.vault_idle_token_balances_current
+        WHERE vault_id = $1 AND mint = $2
+        FOR UPDATE
+        "#,
+    )
+    .bind(vault.id.as_i64())
+    .bind(&input.liquidity_mint)
+    .fetch_optional(conn)
+    .await?
+    .ok_or_else(|| {
+        OrchestratorError::SameMintRebalanceValidation(
+            "idle vault source disappeared before atomic fleet handoff".to_owned(),
+        )
+    })?;
+    let amount_raw: i64 = row.try_get("amount_raw")?;
+    let owner: String = row.try_get("owner")?;
+    let token_account: String = row.try_get("token_account")?;
+    let observed_slot: i64 = row.try_get("observed_slot")?;
+    let observed_at: DateTime<Utc> = row.try_get("observed_at")?;
+    if amount_raw != input.amount_raw
+        || owner != vault.vault_pubkey
+        || token_account != input.idle_token_account
+        || observed_slot != input.idle_observed_slot
+        || observed_at != input.idle_observed_at
+    {
+        return Err(OrchestratorError::SameMintRebalanceValidation(
+            "idle vault source changed before atomic fleet handoff".to_owned(),
         ));
     }
     Ok(())

@@ -141,10 +141,41 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0022_shared_market_alt_bundles.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 23,
+        name: "value_priority_rebalance_queue",
+        sql: include_str!("../../migrations/0023_value_priority_rebalance_queue.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 24,
+        name: "fleet_route_confirmer",
+        sql: include_str!("../../migrations/0024_fleet_route_confirmer.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 25,
+        name: "fee_only_route_payer_shards",
+        sql: include_str!("../../migrations/0025_fee_only_route_payer_shards.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 26,
+        name: "target_capacity_reservations",
+        sql: include_str!("../../migrations/0026_target_capacity_reservations.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 27,
+        name: "rebalance_opportunity_attempt_generations",
+        sql: include_str!("../../migrations/0027_rebalance_opportunity_attempt_generations.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
 const LEDGER_TABLE: &str = "schema_migrations";
+const MIGRATION_APPLY_ADVISORY_LOCK: i64 = 5_497_570_743_993_490_033;
 
 struct Migration {
     version: i64,
@@ -166,6 +197,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let database_url = env::var("NEON_DATABASE_URL")
         .map_err(|_| "NEON_DATABASE_URL must be set for Yield Neon migrations")?;
     let pool = connect(&database_url).await?;
+    if matches!(mode, Mode::Apply) {
+        // Render starts every role with the same preDeploy command. A
+        // session-level lock plus this binary's one-connection pool keeps
+        // concurrent direct-cutover preDeploys from racing the ledger/DDL.
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(MIGRATION_APPLY_ADVISORY_LOCK)
+            .execute(&pool)
+            .await?;
+    }
 
     if matches!(mode, Mode::Apply) {
         ensure_ledger(&pool).await?;
@@ -198,6 +238,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if matches!(mode, Mode::VerifyReusableAlts) {
             verify_reusable_alts(&pool).await?;
         }
+        if matches!(mode, Mode::Apply) {
+            release_migration_apply_lock(&pool).await?;
+        }
         println!("loyal_yield migrations are up to date");
         return Ok(());
     }
@@ -217,7 +260,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     validate_schema(&pool).await?;
+    release_migration_apply_lock(&pool).await?;
     println!("loyal_yield migrations are up to date");
+    Ok(())
+}
+
+async fn release_migration_apply_lock(pool: &PgPool) -> Result<(), Box<dyn Error>> {
+    let released: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
+        .bind(MIGRATION_APPLY_ADVISORY_LOCK)
+        .fetch_one(pool)
+        .await?;
+    if !released {
+        return Err("yield migration apply advisory lock was not held by this session".into());
+    }
     Ok(())
 }
 
@@ -374,6 +429,16 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "lookup_table_alert_deliveries",
         "lookup_table_legacy_cleanup_attempts",
         "lookup_table_legacy_cleanup_budget_reservations",
+        "optimizer_epochs",
+        "fleet_planning_state",
+        "fleet_planning_clusters",
+        "fleet_planning_dirty_vaults",
+        "rebalance_opportunities",
+        "lookup_table_provisioning_request_consumers",
+        "orchestration_outbox",
+        "signed_route_submissions",
+        "route_account_conflict_leases",
+        "fleet_orchestration_status",
         "vault_idle_token_balances_current",
         "realtime_events",
         "realtime_configuration",
@@ -1180,6 +1245,82 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         ("balance_sweep_executions", "kamino_deposit_signature"),
         ("balance_sweep_executions", "completed_at"),
         ("balance_sweep_executions", "completion_failure_code"),
+        ("lookup_table_provisioning_requests", "economic_priority"),
+        (
+            "lookup_table_provisioning_requests",
+            "active_consumer_count",
+        ),
+        ("rebalance_opportunities", "id"),
+        ("rebalance_opportunities", "cluster"),
+        ("rebalance_opportunities", "idempotency_key"),
+        ("rebalance_opportunities", "vault_id"),
+        ("rebalance_opportunities", "source_snapshot_id"),
+        ("rebalance_opportunities", "optimizer_epoch_id"),
+        ("rebalance_opportunities", "route_fingerprint"),
+        ("rebalance_opportunities", "requirements_fingerprint"),
+        ("rebalance_opportunities", "economic_priority"),
+        ("rebalance_opportunities", "scheduler_priority_anchor"),
+        ("rebalance_opportunities", "opportunity_state"),
+        ("rebalance_opportunities", "state_entered_at"),
+        ("rebalance_opportunities", "ready_at"),
+        ("rebalance_opportunities", "waiting_alt_at"),
+        ("rebalance_opportunities", "available_at"),
+        ("rebalance_opportunities", "expires_at"),
+        ("rebalance_opportunities", "lease_kind"),
+        ("rebalance_opportunities", "lease_owner"),
+        ("rebalance_opportunities", "lease_expires_at"),
+        ("rebalance_opportunities", "fencing_token"),
+        ("rebalance_opportunities", "decision_id"),
+        (
+            "lookup_table_provisioning_request_consumers",
+            "opportunity_id",
+        ),
+        (
+            "lookup_table_provisioning_request_consumers",
+            "provisioning_request_id",
+        ),
+        ("optimizer_epochs", "epoch_key"),
+        ("optimizer_epochs", "market_slot"),
+        ("optimizer_epochs", "market_state"),
+        ("fleet_planning_state", "optimizer_epoch_key"),
+        ("fleet_planning_state", "complete_frontier"),
+        ("fleet_planning_state", "full_sweep_completed_at"),
+        ("fleet_planning_clusters", "cluster"),
+        ("fleet_planning_clusters", "last_seen_at"),
+        ("fleet_planning_dirty_vaults", "vault_id"),
+        ("fleet_planning_dirty_vaults", "reasons"),
+        ("fleet_planning_dirty_vaults", "available_at"),
+        ("fleet_planning_dirty_vaults", "fencing_token"),
+        ("fleet_planning_dirty_vaults", "generation"),
+        ("orchestration_outbox", "dedupe_key"),
+        ("orchestration_outbox", "processed_at"),
+        ("signed_route_submissions", "semantic_key"),
+        ("signed_route_submissions", "signed_transaction"),
+        ("signed_route_submissions", "signed_transaction_hash"),
+        ("signed_route_submissions", "transaction_signature"),
+        ("signed_route_submissions", "optimizer_epoch_id"),
+        ("signed_route_submissions", "alt_mutation_epochs"),
+        ("signed_route_submissions", "writable_account_keys"),
+        ("signed_route_submissions", "conflict_account_keys"),
+        ("signed_route_submissions", "compiled_fee_lamports"),
+        ("signed_route_submissions", "executor_fencing_token"),
+        ("signed_route_submissions", "submission_state"),
+        ("signed_route_submissions", "submission_state_entered_at"),
+        ("signed_route_submissions", "confirmation_available_at"),
+        ("signed_route_submissions", "confirmation_lease_owner"),
+        ("signed_route_submissions", "confirmation_lease_expires_at"),
+        ("signed_route_submissions", "confirmation_fencing_token"),
+        ("signed_route_submissions", "confirmation_attempt_count"),
+        ("signed_route_submissions", "broadcast_count"),
+        ("signed_route_submissions", "last_broadcast_at"),
+        ("signed_route_submissions", "last_status_checked_at"),
+        ("signed_route_submissions", "expiry_observed_block_height"),
+        ("signed_route_submissions", "effect_check_slot"),
+        ("route_account_conflict_leases", "writable_account_key"),
+        ("route_account_conflict_leases", "opportunity_id"),
+        ("route_account_conflict_leases", "fencing_token"),
+        ("route_account_conflict_leases", "expires_at"),
+        ("route_account_conflict_leases", "submission_id"),
     ] {
         let exists: bool = sqlx::query_scalar(
             r#"
@@ -1734,6 +1875,10 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
             "lookup_table_rollout_controls",
             "lookup_table_rollout_controls_mode_check",
         ),
+        (
+            "signed_route_submissions",
+            "signed_route_submissions_confirmation_lease_check",
+        ),
     ] {
         let exists: bool = sqlx::query_scalar(
             r#"
@@ -1823,6 +1968,22 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
             "legacy_cleanup_attempt_id",
         ),
         ("lookup_table_cluster_budget_reservations", "operation_id"),
+        ("rebalance_opportunities", "vault_id"),
+        ("rebalance_opportunities", "source_snapshot_id"),
+        ("rebalance_opportunities", "optimizer_epoch_id"),
+        ("rebalance_opportunities", "decision_id"),
+        (
+            "lookup_table_provisioning_request_consumers",
+            "opportunity_id",
+        ),
+        (
+            "lookup_table_provisioning_request_consumers",
+            "provisioning_request_id",
+        ),
+        ("signed_route_submissions", "opportunity_id"),
+        ("signed_route_submissions", "optimizer_epoch_id"),
+        ("route_account_conflict_leases", "opportunity_id"),
+        ("route_account_conflict_leases", "submission_id"),
     ] {
         let exists: bool = sqlx::query_scalar(
             r#"
@@ -1870,6 +2031,19 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "lookup_table_legacy_cleanup_attempt_active_unique",
         "lookup_table_legacy_cleanup_attempt_recovery_idx",
         "lookup_table_legacy_cleanup_budget_active_idx",
+        "active_rebalance_opportunity_slots_pkey",
+        "rebalance_opportunities_ready_priority_idx",
+        "rebalance_opportunities_expired_lease_idx",
+        "rebalance_opportunities_status_idx",
+        "fleet_planning_dirty_vaults_ready_idx",
+        "lookup_table_provisioning_request_consumers_request_idx",
+        "lookup_table_provisioning_requests_priority_queue_idx",
+        "orchestration_outbox_pending_idx",
+        "signed_route_submissions_state_idx",
+        "signed_route_submissions_confirmation_queue_idx",
+        "signed_route_submissions_one_nonterminal_opportunity_idx",
+        "route_account_conflict_leases_opportunity_idx",
+        "route_account_conflict_leases_submission_idx",
     ] {
         let exists: bool =
             sqlx::query_scalar("SELECT to_regclass(format('loyal_yield.%I', $1)) IS NOT NULL")
@@ -1879,6 +2053,67 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         if !exists {
             return Err(format!("missing index loyal_yield.{index}").into());
         }
+    }
+    let runnable_priority_index: String = sqlx::query_scalar(
+        "SELECT pg_get_indexdef('loyal_yield.rebalance_opportunities_ready_priority_idx'::regclass)",
+    )
+    .fetch_one(pool)
+    .await?;
+    if !runnable_priority_index.contains(
+        "(cluster, opportunity_state, scheduler_priority_anchor DESC, economic_priority DESC, created_at, id)",
+    ) || !runnable_priority_index.contains("'ready'::text")
+        || !runnable_priority_index.contains("'revalidate'::text")
+        || runnable_priority_index.contains("'leased'::text")
+    {
+        return Err(
+            "rebalance runnable-priority index must key exact runnable state and exclude leased rows"
+                .into(),
+        );
+    }
+    let expired_lease_index: String = sqlx::query_scalar(
+        "SELECT pg_get_indexdef('loyal_yield.rebalance_opportunities_expired_lease_idx'::regclass)",
+    )
+    .fetch_one(pool)
+    .await?;
+    if !expired_lease_index.contains("(cluster, lease_kind, lease_expires_at, id)")
+        || !expired_lease_index.contains("opportunity_state = 'leased'::text")
+    {
+        return Err(
+            "rebalance expired-lease index must key lease lane/expiry and contain only leased rows"
+                .into(),
+        );
+    }
+    let obsolete_active_queue_index_exists: bool = sqlx::query_scalar(
+        "SELECT to_regclass('loyal_yield.rebalance_opportunities_one_active_vault_idx') IS NOT NULL",
+    )
+    .fetch_one(pool)
+    .await?;
+    if obsolete_active_queue_index_exists {
+        return Err(
+            "obsolete active-vault queue index reintroduces ALT-cold claim write amplification"
+                .into(),
+        );
+    }
+    let retired_reference_guard: String = sqlx::query_scalar(
+        "SELECT pg_get_functiondef('loyal_yield.guard_retired_legacy_lookup_table_reference()'::regprocedure)",
+    )
+    .fetch_one(pool)
+    .await?;
+    if retired_reference_guard.contains("reusable-alt-rollout:")
+        || !retired_reference_guard.contains("ORDER BY route_table.id")
+        || !retired_reference_guard.contains("FOR SHARE")
+    {
+        return Err("retired legacy reference guard must use canonical physical-table share locks without the rollout advisory lock".into());
+    }
+    let rollout_guard: String = sqlx::query_scalar(
+        "SELECT pg_get_functiondef('loyal_yield.guard_rollout_during_legacy_cleanup()'::regprocedure)",
+    )
+    .fetch_one(pool)
+    .await?;
+    if !rollout_guard.contains("reusable-alt-rollout:")
+        || !rollout_guard.contains("pg_advisory_xact_lock")
+    {
+        return Err("legacy cleanup rollout mutation lost its cluster-wide advisory fence".into());
     }
     for (relation, trigger) in [
         (
@@ -1962,6 +2197,58 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         (
             "lookup_table_provisioning_request_addresses",
             "lookup_table_provisioning_request_addresses_immutable",
+        ),
+        ("optimizer_epochs", "optimizer_epochs_immutable"),
+        (
+            "vault_reserve_positions_current",
+            "vault_reserve_position_fleet_planning_dirty",
+        ),
+        (
+            "vault_idle_token_balances_current",
+            "vault_idle_balance_fleet_planning_dirty",
+        ),
+        ("managed_vaults", "managed_vault_fleet_planning_dirty"),
+        ("route_policies", "route_policy_fleet_planning_dirty"),
+        (
+            "rebalance_decisions",
+            "rebalance_decision_fleet_cooldown_dirty",
+        ),
+        (
+            "lookup_table_provisioning_request_consumers",
+            "lookup_table_request_consumer_priority",
+        ),
+        ("rebalance_opportunities", "rebalance_opportunity_wakeup"),
+        (
+            "lookup_table_provisioning_requests",
+            "lookup_table_request_rebalance_wakeup",
+        ),
+        (
+            "rebalance_opportunities",
+            "rebalance_opportunity_scheduler_priority",
+        ),
+        (
+            "rebalance_opportunities",
+            "rebalance_opportunity_state_entry",
+        ),
+        (
+            "rebalance_decisions",
+            "rebalance_decision_links_execute_opportunity",
+        ),
+        (
+            "signed_route_submissions",
+            "signed_route_submission_finishes_terminal_state",
+        ),
+        (
+            "signed_route_submissions",
+            "signed_route_submission_requires_decision",
+        ),
+        (
+            "signed_route_submissions",
+            "signed_route_submission_evidence_immutable",
+        ),
+        (
+            "signed_route_submissions",
+            "signed_route_submission_state_entered_at",
         ),
     ] {
         let exists: bool = sqlx::query_scalar(

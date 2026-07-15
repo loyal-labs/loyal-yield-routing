@@ -105,7 +105,8 @@ impl TimescaleRouterClient {
     ) -> sqlx::Result<Vec<SupportedReserveLatestRow>> {
         let mut builder = QueryBuilder::<Postgres>::new(format!(
             "SELECT l.observed_at, l.slot, l.reserve, l.market, l.market_name, \
-             l.liquidity_mint, l.symbol, l.supply_apy, l.borrow_apy, \
+             l.liquidity_mint, l.symbol, l.mint_decimals, l.market_price_usd, \
+             l.supply_apy, l.borrow_apy, \
              l.total_supply_usd_estimate, l.reserve_last_update_stale \
              FROM {} sr \
              JOIN {} l ON l.reserve = sr.reserve \
@@ -372,6 +373,8 @@ pub struct SupportedReserveLatestRow {
     pub market_name: Option<String>,
     pub liquidity_mint: String,
     pub symbol: Option<String>,
+    pub mint_decimals: i32,
+    pub market_price_usd: f64,
     pub supply_apy: f64,
     pub borrow_apy: f64,
     pub total_supply_usd_estimate: f64,
@@ -388,6 +391,8 @@ impl<'r> FromRow<'r, PgRow> for SupportedReserveLatestRow {
             market_name: row.try_get("market_name")?,
             liquidity_mint: row.try_get("liquidity_mint")?,
             symbol: row.try_get("symbol")?,
+            mint_decimals: row.try_get("mint_decimals")?,
+            market_price_usd: row.try_get("market_price_usd")?,
             supply_apy: row.try_get("supply_apy")?,
             borrow_apy: row.try_get("borrow_apy")?,
             total_supply_usd_estimate: row.try_get("total_supply_usd_estimate")?,

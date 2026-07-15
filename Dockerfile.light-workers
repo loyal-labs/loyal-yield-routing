@@ -46,6 +46,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp /app/target/release/yield-migrations /usr/local/bin/yield-migrations \
     && cp /app/target/release/same-mint-reserve-swap /usr/local/bin/same-mint-reserve-swap \
     && cp /app/target/release/same-mint-yield-monitor /usr/local/bin/same-mint-yield-monitor \
+    && cp /app/target/release/fleet-opportunity-planner /usr/local/bin/fleet-opportunity-planner \
+    && cp /app/target/release/fleet-orchestration-verifier /usr/local/bin/fleet-orchestration-verifier \
+    && cp /app/target/release/fleet-route-confirmer /usr/local/bin/fleet-route-confirmer \
     && cp /app/target/release/same-mint-monitor-e2e /usr/local/bin/same-mint-monitor-e2e \
     && cp /app/target/release/route-lookup-table-shared-catalog /usr/local/bin/route-lookup-table-shared-catalog \
     && cp /app/target/release/route-lookup-table-provisioner /usr/local/bin/route-lookup-table-provisioner \
@@ -81,6 +84,9 @@ COPY --from=builder /usr/local/bin/loyal-timescale-migrations /usr/local/bin/loy
 COPY --from=builder /usr/local/bin/yield-migrations /usr/local/bin/yield-migrations
 COPY --from=builder /usr/local/bin/same-mint-reserve-swap /usr/local/bin/same-mint-reserve-swap
 COPY --from=builder /usr/local/bin/same-mint-yield-monitor /usr/local/bin/same-mint-yield-monitor
+COPY --from=builder /usr/local/bin/fleet-opportunity-planner /usr/local/bin/fleet-opportunity-planner
+COPY --from=builder /usr/local/bin/fleet-orchestration-verifier /usr/local/bin/fleet-orchestration-verifier
+COPY --from=builder /usr/local/bin/fleet-route-confirmer /usr/local/bin/fleet-route-confirmer
 COPY --from=builder /usr/local/bin/same-mint-monitor-e2e /usr/local/bin/same-mint-monitor-e2e
 COPY --from=builder /usr/local/bin/route-lookup-table-shared-catalog /usr/local/bin/route-lookup-table-shared-catalog
 COPY --from=builder /usr/local/bin/route-lookup-table-provisioner /usr/local/bin/route-lookup-table-provisioner
