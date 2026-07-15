@@ -709,6 +709,7 @@ fn service_blocks(environment: &str) -> Vec<String> {
 fn yaml_scalar<'a>(block: &'a str, key: &str) -> Option<&'a str> {
     block.lines().find_map(|line| {
         let trimmed = line.trim();
+        let trimmed = trimmed.strip_prefix("- ").unwrap_or(trimmed);
         let value = trimmed.strip_prefix(key)?.strip_prefix(':')?.trim();
         (!value.is_empty()).then_some(value.trim_matches(['\'', '"']))
     })
