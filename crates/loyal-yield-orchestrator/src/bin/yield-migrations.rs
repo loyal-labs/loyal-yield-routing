@@ -171,6 +171,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0027_rebalance_opportunity_attempt_generations.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 28,
+        name: "reusable_alt_terminal_repair",
+        sql: include_str!("../../migrations/0028_reusable_alt_terminal_repair.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

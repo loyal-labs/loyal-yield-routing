@@ -1,4 +1,4 @@
-use crate::{NeonSqlClient, OrchestratorError, VaultId};
+use crate::{NeonSqlClient, OrchestratorError, VaultId, STANDARD_POLICY_AUTHORITY};
 use chrono::{DateTime, Utc};
 pub use loyal_actions::{
     compiler_lookup_eligible_addresses, LookupTableAccountAccess, LookupTableAccountProvenance,
@@ -1098,6 +1098,24 @@ pub fn operation_idempotency_key(intent: &LookupTableOperationIntent) -> String 
     format!("{:x}", hasher.finalize())
 }
 
+fn terminal_operation_successor_idempotency_key(
+    predecessor_idempotency_key: &str,
+    predecessor_id: i64,
+    attempt_generation: i64,
+) -> String {
+    let mut hasher = Sha256::new();
+    for value in [
+        "loyal-reusable-alt-terminal-successor",
+        predecessor_idempotency_key,
+        &predecessor_id.to_string(),
+        &attempt_generation.to_string(),
+    ] {
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
 string_enum! {
     pub enum LookupTableSignatureState, "lookup-table signature state" {
         Unknown => "unknown",
@@ -2176,6 +2194,136 @@ pub struct LookupTableOperationRecord {
     pub reclaimed_rent_lamports: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LookupTableTerminalAccountState {
+    Missing,
+    NonLookupTable,
+    ActiveLookupTable,
+}
+
+impl LookupTableTerminalAccountState {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::NonLookupTable => "non_lookup_table",
+            Self::ActiveLookupTable => "active_lookup_table",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LookupTableTerminalNoEffectEvidence {
+    Unsigned,
+    FinalizedFailedSignature {
+        transaction_signature: String,
+        failed_slot: i64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookupTableTerminalChainEvidence {
+    pub observed_slot: i64,
+    pub account_state: LookupTableTerminalAccountState,
+    pub account_owner: Option<String>,
+    pub authority: Option<String>,
+    pub last_extended_slot: Option<i64>,
+    pub ordered_addresses: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LookupTableTerminalRepairCandidate {
+    pub operation: LookupTableOperationRecord,
+    pub operation_addresses: Vec<String>,
+    pub unresolved_terminal_siblings: Vec<LookupTableOperationRecord>,
+    pub physical_table: ReusableLookupTableRecord,
+    pub persisted_membership: Vec<LookupTableMembershipAddress>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookupTableTerminalSiblingEvidence {
+    pub operation_id: i64,
+    pub no_effect: LookupTableTerminalNoEffectEvidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookupTableTerminalRepairRequest {
+    pub cluster: String,
+    pub operation_id: i64,
+    pub expected_control_epoch: i64,
+    pub expected_policy_authority: String,
+    pub chain: LookupTableTerminalChainEvidence,
+    pub no_effect: LookupTableTerminalNoEffectEvidence,
+    pub sibling_no_effect: Vec<LookupTableTerminalSiblingEvidence>,
+    pub reason: String,
+    pub updated_by: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LookupTableTerminalRepairResult {
+    pub repair_id: i64,
+    pub repair_kind: String,
+    pub root_operation_id: i64,
+    pub route_lookup_table_id: i64,
+    pub successor_operation_id: Option<i64>,
+    pub superseded_operation_ids: Vec<i64>,
+    pub failed_binding_ids: Vec<i64>,
+    pub requeued_request_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LookupTableTerminalNoEffectAudit {
+    evidence: &'static str,
+    signature: Option<String>,
+    signature_slot: Option<i64>,
+}
+
+fn validate_lookup_table_terminal_no_effect(
+    operation: &LookupTableOperationRecord,
+    evidence: &LookupTableTerminalNoEffectEvidence,
+    finalized_observed_slot: i64,
+) -> Result<LookupTableTerminalNoEffectAudit, OrchestratorError> {
+    match evidence {
+        LookupTableTerminalNoEffectEvidence::Unsigned => {
+            if operation.transaction_signature.is_some()
+                || operation.message_hash.is_some()
+                || operation.recent_blockhash.is_some()
+                || operation.last_valid_block_height.is_some()
+            {
+                return Err(OrchestratorError::StoreInvariant(format!(
+                    "unsigned terminal ALT repair evidence conflicts with signed operation {}",
+                    operation.id
+                )));
+            }
+            Ok(LookupTableTerminalNoEffectAudit {
+                evidence: "unsigned",
+                signature: None,
+                signature_slot: None,
+            })
+        }
+        LookupTableTerminalNoEffectEvidence::FinalizedFailedSignature {
+            transaction_signature,
+            failed_slot,
+        } => {
+            if *failed_slot < 0
+                || *failed_slot > finalized_observed_slot
+                || operation.transaction_signature.as_deref()
+                    != Some(transaction_signature.as_str())
+            {
+                return Err(OrchestratorError::StoreInvariant(format!(
+                    "failed-signature ALT repair evidence conflicts with durable operation {} or finalized slot",
+                    operation.id
+                )));
+            }
+            Ok(LookupTableTerminalNoEffectAudit {
+                evidence: "finalized_failed_signature",
+                signature: Some(transaction_signature.clone()),
+                signature_slot: Some(*failed_slot),
+            })
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -5309,6 +5457,18 @@ impl NeonSqlClient {
             WHERE family_id = $1
               AND allocation_kind IN ('vault_shard', 'dedicated_vault')
               AND desired_state IN ('preparing', 'warming', 'active')
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM loyal_yield.lookup_table_operations failed_create
+                  WHERE failed_create.route_lookup_table_id = route_lookup_tables.id
+                    AND failed_create.operation_kind IN ('create', 'rollover')
+                    AND failed_create.operation_state = 'permanent_failure'
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM loyal_yield.lookup_table_terminal_repair_operations repaired
+                        WHERE repaired.operation_id = failed_create.id
+                    )
+              )
             ORDER BY generation, shard_ordinal, id
             FOR UPDATE
             "#,
@@ -11877,6 +12037,11 @@ async fn terminal_lookup_table_binding_operation_in_tx(
           AND manifest_id = $2
           AND route_lookup_table_id = $3
           AND operation_state IN ('permanent_failure', 'cancelled')
+          AND NOT EXISTS (
+              SELECT 1
+              FROM loyal_yield.lookup_table_terminal_repair_operations repaired
+              WHERE repaired.operation_id = lookup_table_operations.id
+          )
         ORDER BY updated_at DESC, id DESC
         LIMIT 1
         "#,
@@ -13169,6 +13334,869 @@ impl NeonSqlClient {
         .fetch_all(self.pool())
         .await?;
         Ok(Some((operation, addresses)))
+    }
+
+    /// Returns unresolved terminal reusable-ALT dependencies in deterministic
+    /// repair order. Failed create/rollover roots precede failed suffixes so a
+    /// phantom table is quarantined once instead of retrying every dependent
+    /// extension independently.
+    pub async fn lookup_table_terminal_repair_candidates(
+        &self,
+        cluster: &str,
+        limit: i64,
+    ) -> Result<Vec<LookupTableTerminalRepairCandidate>, OrchestratorError> {
+        if cluster.trim().is_empty() || !(1..=100).contains(&limit) {
+            return Err(OrchestratorError::StoreInvariant(
+                "terminal ALT repair requires a cluster and a limit between 1 and 100".to_owned(),
+            ));
+        }
+        let operation_ids = sqlx::query_scalar::<_, i64>(
+            r#"
+            WITH unresolved AS (
+                SELECT
+                    operation.id,
+                    operation.operation_kind,
+                    operation.attempt_generation,
+                    route_table.id AS table_id,
+                    row_number() OVER (
+                        PARTITION BY route_table.id
+                        ORDER BY
+                          CASE WHEN operation.operation_kind IN ('create', 'rollover') THEN 0 ELSE 1 END,
+                          operation.attempt_generation,
+                          operation.id
+                    ) AS table_rank
+                FROM loyal_yield.lookup_table_operations operation
+                JOIN loyal_yield.lookup_table_families family
+                  ON family.id = operation.family_id
+                JOIN loyal_yield.route_lookup_tables route_table
+                  ON route_table.id = operation.route_lookup_table_id
+                WHERE family.cluster = $1
+                  AND operation.operation_state = 'permanent_failure'
+                  AND operation.operation_kind IN ('create', 'rollover', 'extend')
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM loyal_yield.lookup_table_terminal_repair_operations repaired
+                      WHERE repaired.operation_id = operation.id
+                  )
+            )
+            SELECT id
+            FROM unresolved
+            WHERE table_rank = 1
+            ORDER BY
+              CASE WHEN operation_kind IN ('create', 'rollover') THEN 0 ELSE 1 END,
+              table_id,
+              attempt_generation,
+              id
+            LIMIT $2
+            "#,
+        )
+        .bind(cluster)
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+        let mut candidates = Vec::with_capacity(operation_ids.len());
+        for operation_id in operation_ids {
+            let Some((operation, operation_addresses)) = self
+                .lookup_table_operation_with_addresses(operation_id)
+                .await?
+            else {
+                return Err(stale_store_update(
+                    "terminal lookup-table operation",
+                    operation_id,
+                ));
+            };
+            let table_id = operation.route_lookup_table_id.ok_or_else(|| {
+                OrchestratorError::StoreInvariant(format!(
+                    "terminal lookup-table operation {operation_id} has no physical table"
+                ))
+            })?;
+            let physical_table = self
+                .reusable_lookup_table(table_id)
+                .await?
+                .ok_or_else(|| stale_store_update("reusable lookup table", table_id))?;
+            let persisted_membership = self.lookup_table_membership(table_id).await?;
+            let sibling_rows = sqlx::query(
+                r#"
+                SELECT operation.*
+                FROM loyal_yield.lookup_table_operations operation
+                WHERE operation.route_lookup_table_id = $1
+                  AND operation.id <> $2
+                  AND operation.operation_state = 'permanent_failure'
+                  AND operation.operation_kind = 'extend'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM loyal_yield.lookup_table_terminal_repair_operations repaired
+                      WHERE repaired.operation_id = operation.id
+                  )
+                ORDER BY operation.mutation_epoch, operation.attempt_generation, operation.id
+                "#,
+            )
+            .bind(table_id)
+            .bind(operation_id)
+            .fetch_all(self.pool())
+            .await?;
+            let unresolved_terminal_siblings = sibling_rows
+                .iter()
+                .map(lookup_table_operation_from_row)
+                .collect::<Result<Vec<_>, _>>()?;
+            candidates.push(LookupTableTerminalRepairCandidate {
+                operation,
+                operation_addresses,
+                unresolved_terminal_siblings,
+                physical_table,
+                persisted_membership,
+            });
+        }
+        Ok(candidates)
+    }
+
+    /// Repairs one terminal reusable-ALT dependency under a durable cluster
+    /// pause and exact finalized evidence. This method never mutates a terminal
+    /// operation. It either quarantines the empty phantom table and requeues
+    /// affected sealed requests, or inserts one immutable successor operation
+    /// for the exact failed suffix.
+    pub async fn repair_terminal_lookup_table_operation(
+        &self,
+        input: LookupTableTerminalRepairRequest,
+    ) -> Result<LookupTableTerminalRepairResult, OrchestratorError> {
+        if input.cluster.trim().is_empty()
+            || input.operation_id <= 0
+            || input.expected_control_epoch < 0
+            || input.chain.observed_slot < 0
+            || input.reason.trim().is_empty()
+            || input.updated_by.trim().is_empty()
+            || Pubkey::from_str(&input.expected_policy_authority).is_err()
+            || input.expected_policy_authority != STANDARD_POLICY_AUTHORITY
+            || input.chain.ordered_addresses.len() > usize::from(LOOKUP_TABLE_HARD_CAPACITY)
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "terminal ALT repair request is malformed".to_owned(),
+            ));
+        }
+        let mut unique_addresses = BTreeSet::new();
+        if input.chain.ordered_addresses.iter().any(|address| {
+            Pubkey::from_str(address).is_err() || !unique_addresses.insert(address.as_str())
+        }) {
+            return Err(OrchestratorError::StoreInvariant(
+                "terminal ALT repair finalized addresses are malformed or duplicated".to_owned(),
+            ));
+        }
+
+        let mut tx = self.pool().begin().await?;
+        let control_row = sqlx::query(
+            r#"
+            SELECT paused, control_epoch
+            FROM loyal_yield.lookup_table_provisioner_controls
+            WHERE cluster = $1
+            FOR UPDATE
+            "#,
+        )
+        .bind(&input.cluster)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "terminal ALT repair requires an existing durable provisioner control".to_owned(),
+            )
+        })?;
+        let paused: bool = control_row.try_get("paused")?;
+        let control_epoch: i64 = control_row.try_get("control_epoch")?;
+        if !paused || control_epoch != input.expected_control_epoch {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "terminal ALT repair requires paused control epoch {}; observed paused={paused}, epoch={control_epoch}",
+                input.expected_control_epoch
+            )));
+        }
+        let active_permits: i64 = sqlx::query_scalar(
+            r#"
+            SELECT count(*)
+            FROM loyal_yield.lookup_table_provisioner_broadcast_permits
+            WHERE cluster = $1 AND resolved_at IS NULL
+            "#,
+        )
+        .bind(&input.cluster)
+        .fetch_one(&mut *tx)
+        .await?;
+        if active_permits != 0 {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "terminal ALT repair requires zero unresolved broadcast permits; found {active_permits}"
+            )));
+        }
+
+        let identity_row = sqlx::query(
+            r#"
+            SELECT family_id, route_lookup_table_id
+            FROM loyal_yield.lookup_table_operations
+            WHERE id = $1
+            "#,
+        )
+        .bind(input.operation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| stale_store_update("terminal lookup-table operation", input.operation_id))?;
+        let family_id: i64 = identity_row.try_get("family_id")?;
+        let table_id: i64 = identity_row
+            .try_get::<Option<i64>, _>("route_lookup_table_id")?
+            .ok_or_else(|| {
+                OrchestratorError::StoreInvariant(
+                    "terminal lookup-table repair operation has no physical table".to_owned(),
+                )
+            })?;
+
+        // All control-plane mutations use family -> table -> operation locks.
+        let family_row =
+            sqlx::query("SELECT * FROM loyal_yield.lookup_table_families WHERE id = $1 FOR SHARE")
+                .bind(family_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| stale_store_update("lookup-table family", family_id))?;
+        let family = lookup_table_family_from_row(&family_row)?;
+        if family.cluster != input.cluster
+            || family.provisioning_authority != input.expected_policy_authority
+            || family.payer != input.expected_policy_authority
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "terminal ALT repair cluster or standard policy identity drifted".to_owned(),
+            ));
+        }
+        let table_row = sqlx::query(
+            "SELECT * FROM loyal_yield.route_lookup_tables WHERE id = $1 AND family_id = $2 FOR UPDATE",
+        )
+        .bind(table_id)
+        .bind(family_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| stale_store_update("reusable lookup table", table_id))?;
+        let table = reusable_lookup_table_from_row(&table_row)?;
+        if table.cluster != input.cluster
+            || table.authority != input.expected_policy_authority
+            || table.payer != input.expected_policy_authority
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "terminal ALT repair physical table identity drifted".to_owned(),
+            ));
+        }
+        let operation_row = sqlx::query(
+            "SELECT * FROM loyal_yield.lookup_table_operations WHERE id = $1 FOR UPDATE",
+        )
+        .bind(input.operation_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let operation = lookup_table_operation_from_row(&operation_row)?;
+        if operation.operation_state != LookupTableOperationStatus::PermanentFailure
+            || operation.route_lookup_table_id != Some(table.id)
+            || operation.family_id != family.id
+            || operation.mutation_epoch != table.mutation_epoch
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "terminal ALT repair target is no longer the exact failed table mutation"
+                    .to_owned(),
+            ));
+        }
+        let already_repaired: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM loyal_yield.lookup_table_terminal_repair_operations
+                WHERE operation_id = $1
+            )
+            "#,
+        )
+        .bind(operation.id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if already_repaired {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "terminal lookup-table operation {} already has repair lineage",
+                operation.id
+            )));
+        }
+
+        let membership_rows = sqlx::query(
+            r#"
+            SELECT address, ordinal, added_operation_id, added_slot,
+                   usable_after_slot, last_verified_slot, last_verified_at
+            FROM loyal_yield.lookup_table_addresses
+            WHERE route_lookup_table_id = $1
+            ORDER BY ordinal
+            FOR UPDATE
+            "#,
+        )
+        .bind(table.id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let membership = membership_rows
+            .iter()
+            .map(|row| {
+                Ok(LookupTableMembershipAddress {
+                    address: row.try_get("address")?,
+                    ordinal: row.try_get("ordinal")?,
+                    added_operation_id: row.try_get("added_operation_id")?,
+                    added_slot: row.try_get("added_slot")?,
+                    usable_after_slot: row.try_get("usable_after_slot")?,
+                    last_verified_slot: row.try_get("last_verified_slot")?,
+                    last_verified_at: row.try_get("last_verified_at")?,
+                })
+            })
+            .collect::<Result<Vec<_>, OrchestratorError>>()?;
+        let persisted_addresses = membership
+            .iter()
+            .map(|address| address.address.clone())
+            .collect::<Vec<_>>();
+        if table
+            .last_verified_slot
+            .is_some_and(|slot| slot > input.chain.observed_slot)
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "terminal ALT repair finalized observation predates durable table evidence"
+                    .to_owned(),
+            ));
+        }
+
+        let root_no_effect = validate_lookup_table_terminal_no_effect(
+            &operation,
+            &input.no_effect,
+            input.chain.observed_slot,
+        )?;
+
+        let active_usage_leases: i64 = sqlx::query_scalar(
+            r#"
+            SELECT count(*)
+            FROM loyal_yield.lookup_table_usage_leases
+            WHERE route_lookup_table_id = $1
+              AND released_at IS NULL
+              AND expires_at > now()
+            "#,
+        )
+        .bind(table.id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if active_usage_leases != 0 {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "terminal ALT repair requires zero active usage leases; found {active_usage_leases}"
+            )));
+        }
+
+        let operation_rows = sqlx::query(
+            r#"
+            SELECT *
+            FROM loyal_yield.lookup_table_operations
+            WHERE route_lookup_table_id = $1
+            ORDER BY id
+            FOR UPDATE
+            "#,
+        )
+        .bind(table.id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let table_operations = operation_rows
+            .iter()
+            .map(lookup_table_operation_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let is_phantom = matches!(
+            operation.operation_kind,
+            LookupTableOperationKind::Create | LookupTableOperationKind::Rollover
+        );
+        let repair_kind = if is_phantom {
+            if !matches!(
+                input.chain.account_state,
+                LookupTableTerminalAccountState::Missing
+                    | LookupTableTerminalAccountState::NonLookupTable
+            ) || !input.chain.ordered_addresses.is_empty()
+                || input.chain.authority.is_some()
+                || input.chain.last_extended_slot.is_some()
+                || (input.chain.account_state == LookupTableTerminalAccountState::Missing
+                    && input.chain.account_owner.is_some())
+                || (input.chain.account_state == LookupTableTerminalAccountState::NonLookupTable
+                    && input.chain.account_owner.as_deref()
+                        == Some(address_lookup_table_program::id().to_string().as_str()))
+                || !membership.is_empty()
+                || table.address_count != 0
+                || table.usable_address_count != 0
+                || !matches!(
+                    table.desired_state,
+                    LookupTableLifecycle::Preparing
+                        | LookupTableLifecycle::Warming
+                        | LookupTableLifecycle::Failed
+                )
+            {
+                return Err(OrchestratorError::StoreInvariant(
+                    "phantom ALT repair requires a finalized missing/non-ALT account and an empty durable table"
+                        .to_owned(),
+                ));
+            }
+            "quarantine_phantom"
+        } else if operation.operation_kind == LookupTableOperationKind::Extend {
+            if input.chain.account_state != LookupTableTerminalAccountState::ActiveLookupTable
+                || input.chain.account_owner.as_deref()
+                    != Some(address_lookup_table_program::id().to_string().as_str())
+                || input.chain.authority.as_deref() != Some(table.authority.as_str())
+                || !input
+                    .chain
+                    .last_extended_slot
+                    .is_some_and(|slot| slot >= 0 && slot < input.chain.observed_slot)
+                || input.chain.ordered_addresses != persisted_addresses
+                || i32::try_from(persisted_addresses.len()).ok() != Some(table.address_count)
+                || table.usable_address_count != table.address_count
+                || ordered_address_hash(&persisted_addresses) != table.address_hash
+                || matches!(
+                    table.desired_state,
+                    LookupTableLifecycle::Failed
+                        | LookupTableLifecycle::Deactivated
+                        | LookupTableLifecycle::Closed
+                )
+            {
+                return Err(OrchestratorError::StoreInvariant(
+                    "failed suffix repair requires the exact active finalized ALT prefix"
+                        .to_owned(),
+                ));
+            }
+            "retry_suffix"
+        } else {
+            return Err(OrchestratorError::StoreInvariant(
+                "only failed create, rollover, or extend operations are repairable".to_owned(),
+            ));
+        };
+
+        let binding_rows = sqlx::query(
+            r#"
+            SELECT id, manifest_id, lifecycle_state
+            FROM loyal_yield.lookup_table_vault_bindings
+            WHERE route_lookup_table_id = $1
+            ORDER BY id
+            FOR UPDATE
+            "#,
+        )
+        .bind(table.id)
+        .fetch_all(&mut *tx)
+        .await?;
+        if is_phantom
+            && binding_rows.iter().any(|row| {
+                row.try_get::<String, _>("lifecycle_state")
+                    .is_ok_and(|state| matches!(state.as_str(), "active" | "standby" | "retiring"))
+            })
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "phantom ALT repair refuses a table with live/rollback bindings".to_owned(),
+            ));
+        }
+
+        let repaired_operation_ids = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT repaired.operation_id
+            FROM loyal_yield.lookup_table_terminal_repair_operations repaired
+            JOIN loyal_yield.lookup_table_operations operation
+              ON operation.id = repaired.operation_id
+            WHERE operation.route_lookup_table_id = $1
+            "#,
+        )
+        .bind(table.id)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let mut sibling_evidence = BTreeMap::new();
+        for evidence in &input.sibling_no_effect {
+            if evidence.operation_id <= 0
+                || evidence.operation_id == operation.id
+                || sibling_evidence
+                    .insert(evidence.operation_id, evidence.no_effect.clone())
+                    .is_some()
+            {
+                return Err(OrchestratorError::StoreInvariant(
+                    "terminal ALT sibling evidence is duplicated or targets the repair root"
+                        .to_owned(),
+                ));
+            }
+        }
+        let mut superseded_operation_evidence = Vec::new();
+        for dependency in &table_operations {
+            if dependency.id == operation.id {
+                continue;
+            }
+            // Append-only repair lineage makes terminal ancestors historical,
+            // not blockers. If a successor later fails, a new repair may use
+            // it as the root without reopening or re-auditing any ancestor.
+            if repaired_operation_ids.contains(&dependency.id) {
+                continue;
+            }
+            match dependency.operation_state {
+                LookupTableOperationStatus::Complete | LookupTableOperationStatus::Cancelled => {}
+                LookupTableOperationStatus::PermanentFailure
+                    if dependency.operation_kind == LookupTableOperationKind::Extend =>
+                {
+                    let evidence = sibling_evidence.remove(&dependency.id).ok_or_else(|| {
+                        OrchestratorError::StoreInvariant(format!(
+                            "unresolved terminal ALT sibling {} lacks individual no-effect evidence",
+                            dependency.id
+                        ))
+                    })?;
+                    let audit = validate_lookup_table_terminal_no_effect(
+                        dependency,
+                        &evidence,
+                        input.chain.observed_slot,
+                    )?;
+                    superseded_operation_evidence.push((dependency.id, audit));
+                }
+                LookupTableOperationStatus::Queued | LookupTableOperationStatus::RetryWait
+                    if is_phantom
+                        && dependency.transaction_signature.is_none()
+                        && dependency.message_hash.is_none()
+                        && dependency.recent_blockhash.is_none() =>
+                {
+                    sqlx::query(
+                        r#"
+                        UPDATE loyal_yield.lookup_table_operations
+                        SET operation_state = 'cancelled',
+                            error_code = 'phantom_table_quarantined',
+                            error_detail = 'superseded by fenced terminal ALT repair',
+                            lease_owner = NULL,
+                            lease_expires_at = NULL,
+                            next_attempt_at = NULL,
+                            updated_at = now()
+                        WHERE id = $1 AND operation_state IN ('queued', 'retry_wait')
+                        "#,
+                    )
+                    .bind(dependency.id)
+                    .execute(&mut *tx)
+                    .await?;
+                    superseded_operation_evidence.push((
+                        dependency.id,
+                        LookupTableTerminalNoEffectAudit {
+                            evidence: "unsigned",
+                            signature: None,
+                            signature_slot: None,
+                        },
+                    ));
+                }
+                _ => {
+                    return Err(OrchestratorError::StoreInvariant(format!(
+                        "terminal ALT repair found unresolved operation {} in state {}",
+                        dependency.id, dependency.operation_state
+                    )));
+                }
+            }
+        }
+        if !sibling_evidence.is_empty() {
+            return Err(OrchestratorError::StoreInvariant(
+                "terminal ALT sibling evidence references no unresolved same-table dependency"
+                    .to_owned(),
+            ));
+        }
+        let superseded_operation_ids = superseded_operation_evidence
+            .iter()
+            .map(|(operation_id, _)| *operation_id)
+            .collect::<Vec<_>>();
+
+        let operation_addresses = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT address
+            FROM loyal_yield.lookup_table_operation_addresses
+            WHERE operation_id = $1
+            ORDER BY ordinal
+            "#,
+        )
+        .bind(operation.id)
+        .fetch_all(&mut *tx)
+        .await?;
+        if !is_phantom {
+            let persisted = persisted_addresses.iter().collect::<BTreeSet<_>>();
+            let mut suffix = BTreeSet::new();
+            if operation_addresses.is_empty()
+                || operation_addresses.iter().any(|address| {
+                    Pubkey::from_str(address).is_err()
+                        || persisted.contains(address)
+                        || !suffix.insert(address)
+                })
+                || persisted_addresses
+                    .len()
+                    .saturating_add(operation_addresses.len())
+                    > usize::from(LOOKUP_TABLE_HARD_CAPACITY)
+            {
+                return Err(OrchestratorError::StoreInvariant(
+                    "failed ALT suffix is empty, malformed, duplicated, or exceeds capacity"
+                        .to_owned(),
+                ));
+            }
+        }
+        let attempt_generation: i64 = operation_row.try_get("attempt_generation")?;
+        let mut successor_operation_id = None;
+        if !is_phantom {
+            let next_generation = attempt_generation.checked_add(1).ok_or_else(|| {
+                OrchestratorError::StoreInvariant(
+                    "lookup-table operation attempt generation overflow".to_owned(),
+                )
+            })?;
+            let successor_key = terminal_operation_successor_idempotency_key(
+                &operation.idempotency_key,
+                operation.id,
+                next_generation,
+            );
+            let mut successor_context = operation.operation_context.clone();
+            let context = successor_context.as_object_mut().ok_or_else(|| {
+                OrchestratorError::StoreInvariant(
+                    "lookup-table operation context must be an object".to_owned(),
+                )
+            })?;
+            context.insert(
+                "terminalRepairPredecessorId".to_owned(),
+                Value::from(operation.id),
+            );
+            context.insert(
+                "terminalRepairAttemptGeneration".to_owned(),
+                Value::from(next_generation),
+            );
+            let successor_id: i64 = sqlx::query_scalar(
+                r#"
+                INSERT INTO loyal_yield.lookup_table_operations
+                    (idempotency_key, family_id, route_lookup_table_id, manifest_id,
+                     binding_id, operation_kind, operation_state, target_generation,
+                     target_shard_ordinal, operation_context, mutation_epoch,
+                     estimated_fee_lamports, estimated_rent_lamports,
+                     attempt_generation, retry_of_operation_id)
+                VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8, $9, $10,
+                        $11, $12, $13, $14)
+                RETURNING id
+                "#,
+            )
+            .bind(successor_key)
+            .bind(operation.family_id)
+            .bind(operation.route_lookup_table_id)
+            .bind(operation.manifest_id)
+            .bind(operation.binding_id)
+            .bind(operation.operation_kind.as_str())
+            .bind(operation.target_generation)
+            .bind(operation.target_shard_ordinal)
+            .bind(successor_context)
+            .bind(operation.mutation_epoch)
+            .bind(operation.estimated_fee_lamports)
+            .bind(operation.estimated_rent_lamports)
+            .bind(next_generation)
+            .bind(operation.id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !operation_addresses.is_empty() {
+                let mut query = QueryBuilder::<Postgres>::new(
+                    "INSERT INTO loyal_yield.lookup_table_operation_addresses (operation_id, address, ordinal) ",
+                );
+                query.push_values(
+                    operation_addresses.iter().enumerate(),
+                    |mut row, (ordinal, address)| {
+                        row.push_bind(successor_id)
+                            .push_bind(address)
+                            .push_bind(i32::try_from(ordinal).unwrap_or(i32::MAX));
+                    },
+                );
+                query.build().execute(&mut *tx).await?;
+            }
+            successor_operation_id = Some(successor_id);
+        }
+
+        let manifest_ids = binding_rows
+            .iter()
+            .map(|row| row.try_get::<i64, _>("manifest_id"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut affected_operation_ids = vec![operation.id];
+        affected_operation_ids.extend(superseded_operation_ids.iter().copied());
+        let mut request_ids = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT DISTINCT (operation_context->>'request_id')::BIGINT
+            FROM loyal_yield.lookup_table_operations
+            WHERE id = ANY($1)
+              AND operation_context->>'request_id' ~ '^[0-9]{1,18}$'
+            "#,
+        )
+        .bind(&affected_operation_ids)
+        .fetch_all(&mut *tx)
+        .await?;
+        if is_phantom && !manifest_ids.is_empty() {
+            request_ids.extend(
+                sqlx::query_scalar::<_, i64>(
+                    r#"
+                    SELECT id
+                    FROM loyal_yield.lookup_table_provisioning_requests
+                    WHERE vault_manifest_id = ANY($1)
+                      AND request_status NOT IN ('satisfied', 'cancelled')
+                    "#,
+                )
+                .bind(&manifest_ids)
+                .fetch_all(&mut *tx)
+                .await?,
+            );
+        }
+        request_ids.sort_unstable();
+        request_ids.dedup();
+        // Always re-enter through the normal planner lease. For a suffix, the
+        // planner observes the queued immutable successor; for a phantom it
+        // allocates the request onto a healthy packed shard (or a fresh shard
+        // only when no existing shard fits).
+        let next_request_state = "requested";
+        let requeued_request_ids = if request_ids.is_empty() {
+            Vec::new()
+        } else {
+            sqlx::query_scalar::<_, i64>(
+                r#"
+                UPDATE loyal_yield.lookup_table_provisioning_requests
+                SET request_status = $2,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    fencing_token = fencing_token + 1,
+                    attempt_count = 0,
+                    next_attempt_at = now(),
+                    error_code = NULL,
+                    error_detail = NULL,
+                    satisfied_at = NULL,
+                    updated_at = now()
+                WHERE id = ANY($1)
+                  AND request_status NOT IN ('satisfied', 'cancelled')
+                RETURNING id
+                "#,
+            )
+            .bind(&request_ids)
+            .bind(next_request_state)
+            .fetch_all(&mut *tx)
+            .await?
+        };
+
+        let failed_binding_ids = if is_phantom {
+            sqlx::query_scalar::<_, i64>(
+                r#"
+                UPDATE loyal_yield.lookup_table_vault_bindings
+                SET lifecycle_state = 'failed', updated_at = now()
+                WHERE route_lookup_table_id = $1
+                  AND lifecycle_state IN ('preparing', 'warming')
+                RETURNING id
+                "#,
+            )
+            .bind(table.id)
+            .fetch_all(&mut *tx)
+            .await?
+        } else {
+            Vec::new()
+        };
+        if is_phantom {
+            sqlx::query(
+                r#"
+                UPDATE loyal_yield.route_lookup_tables
+                SET desired_state = 'failed',
+                    accepting_allocations = FALSE,
+                    status = 'failed',
+                    notes = concat_ws(E'\n', NULLIF(notes, ''), $2),
+                    updated_at = now()
+                WHERE id = $1
+                "#,
+            )
+            .bind(table.id)
+            .bind(format!(
+                "fenced terminal repair quarantined phantom operation {}",
+                operation.id
+            ))
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        let finalized_address_hash = ordered_address_hash(&input.chain.ordered_addresses);
+        let repair_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO loyal_yield.lookup_table_terminal_repairs
+                (cluster, repair_kind, route_lookup_table_id, root_operation_id,
+                 successor_operation_id, expected_control_epoch,
+                 expected_mutation_epoch, finalized_observed_slot,
+                 finalized_account_state, finalized_account_owner,
+                 finalized_authority, finalized_last_extended_slot,
+                 finalized_address_hash,
+                 finalized_address_count, no_effect_evidence,
+                 no_effect_signature, no_effect_signature_slot, reason, updated_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                    $13, $14, $15, $16, $17, $18, $19)
+            RETURNING id
+            "#,
+        )
+        .bind(&input.cluster)
+        .bind(repair_kind)
+        .bind(table.id)
+        .bind(operation.id)
+        .bind(successor_operation_id)
+        .bind(input.expected_control_epoch)
+        .bind(table.mutation_epoch)
+        .bind(input.chain.observed_slot)
+        .bind(input.chain.account_state.as_str())
+        .bind(&input.chain.account_owner)
+        .bind(&input.chain.authority)
+        .bind(input.chain.last_extended_slot)
+        .bind(finalized_address_hash)
+        .bind(
+            i32::try_from(input.chain.ordered_addresses.len()).map_err(|_| {
+                OrchestratorError::StoreInvariant(
+                    "finalized terminal repair address count overflow".to_owned(),
+                )
+            })?,
+        )
+        .bind(root_no_effect.evidence)
+        .bind(root_no_effect.signature)
+        .bind(root_no_effect.signature_slot)
+        .bind(input.reason.chars().take(500).collect::<String>())
+        .bind(input.updated_by.chars().take(128).collect::<String>())
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.lookup_table_terminal_repair_operations
+                (repair_id, operation_id, disposition)
+            VALUES ($1, $2, 'root')
+            "#,
+        )
+        .bind(repair_id)
+        .bind(operation.id)
+        .execute(&mut *tx)
+        .await?;
+        for (operation_id, evidence) in &superseded_operation_evidence {
+            sqlx::query(
+                r#"
+                INSERT INTO loyal_yield.lookup_table_terminal_repair_operations
+                    (repair_id, operation_id, disposition, no_effect_evidence,
+                     no_effect_signature, no_effect_signature_slot)
+                VALUES ($1, $2, 'superseded_dependency', $3, $4, $5)
+                "#,
+            )
+            .bind(repair_id)
+            .bind(operation_id)
+            .bind(evidence.evidence)
+            .bind(&evidence.signature)
+            .bind(evidence.signature_slot)
+            .execute(&mut *tx)
+            .await?;
+        }
+        for request_id in &requeued_request_ids {
+            sqlx::query(
+                "INSERT INTO loyal_yield.lookup_table_terminal_repair_requests (repair_id, request_id) VALUES ($1, $2)",
+            )
+            .bind(repair_id)
+            .bind(request_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        for binding_id in &failed_binding_ids {
+            sqlx::query(
+                "INSERT INTO loyal_yield.lookup_table_terminal_repair_bindings (repair_id, binding_id) VALUES ($1, $2)",
+            )
+            .bind(repair_id)
+            .bind(binding_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(LookupTableTerminalRepairResult {
+            repair_id,
+            repair_kind: repair_kind.to_owned(),
+            root_operation_id: operation.id,
+            route_lookup_table_id: table.id,
+            successor_operation_id,
+            superseded_operation_ids,
+            failed_binding_ids,
+            requeued_request_ids,
+        })
     }
 
     pub async fn lease_next_lookup_table_operation(
@@ -16277,7 +17305,14 @@ impl NeonSqlClient {
                             min(operation.created_at) FILTER (WHERE operation.operation_state NOT IN ('complete', 'permanent_failure', 'cancelled'))
                         )))::BIGINT, 0),
                         'max_attempt_count', COALESCE(max(operation.attempt_count), 0),
-                        'permanent_failures', count(*) FILTER (WHERE operation.operation_state = 'permanent_failure'),
+                        'permanent_failures', count(*) FILTER (
+                            WHERE operation.operation_state = 'permanent_failure'
+                              AND NOT EXISTS (
+                                  SELECT 1
+                                  FROM loyal_yield.lookup_table_terminal_repair_operations repaired
+                                  WHERE repaired.operation_id = operation.id
+                              )
+                        ),
                         'needs_reconcile', count(*) FILTER (WHERE operation.operation_state = 'needs_reconcile')
                     )
                     FROM loyal_yield.lookup_table_operations operation
@@ -16308,6 +17343,11 @@ impl NeonSqlClient {
                           ON route_table.id = operation.route_lookup_table_id
                         WHERE family.cluster = $1
                           AND operation.operation_state = 'permanent_failure'
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM loyal_yield.lookup_table_terminal_repair_operations repaired
+                              WHERE repaired.operation_id = operation.id
+                          )
                         ORDER BY operation.updated_at DESC
                         LIMIT 100
                     ) recent_terminal_failures
@@ -16340,6 +17380,14 @@ impl NeonSqlClient {
                           ON route_table.id = operation.route_lookup_table_id
                         WHERE family.cluster = $1
                           AND operation.operation_state IN ('needs_reconcile', 'permanent_failure')
+                          AND (
+                              operation.operation_state <> 'permanent_failure'
+                              OR NOT EXISTS (
+                                  SELECT 1
+                                  FROM loyal_yield.lookup_table_terminal_repair_operations repaired
+                                  WHERE repaired.operation_id = operation.id
+                              )
+                          )
                         ORDER BY operation.updated_at DESC
                         LIMIT 100
                     ) recent_drift

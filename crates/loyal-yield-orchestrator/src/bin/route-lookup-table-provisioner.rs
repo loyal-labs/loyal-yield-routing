@@ -20,16 +20,18 @@ use loyal_yield_orchestrator::{
     LookupTableFamilyState, LookupTableFamilyUpsert, LookupTableLifecycle,
     LookupTableManifestAddressRecord, LookupTableManifestSubject, LookupTableMembershipAddress,
     LookupTableOperationAdvance, LookupTableOperationKind, LookupTableOperationLease,
-    LookupTableOperationStatus, LookupTablePrecutoverProbe,
+    LookupTableOperationRecord, LookupTableOperationStatus, LookupTablePrecutoverProbe,
     LookupTableProvisionerBroadcastPermitResult, LookupTableProvisionerBroadcastResolution,
     LookupTableProvisioningPlanPolicy, LookupTableProvisioningRequestRecord,
     LookupTableProvisioningRequestStatus, LookupTableProvisioningRequestUpsert,
     LookupTableReconciliationDecision, LookupTableReconciliationObservation,
     LookupTableRolloutMode, LookupTableSharedMarketOperationFenceResult, LookupTableSignatureState,
-    LookupTableVaultBindingRecord, NeonSqlClient, NeonSqlConfig, OrchestratorError,
-    PackedShardPolicy, ReusableOnlyCutoverPreflight, SharedMarketCatalogPlanPolicy,
-    SharedMarketCatalogReadiness, SharedMarketPhysicalDriftReport, SignedLookupTableTransaction,
-    VaultId, STANDARD_POLICY_AUTHORITY,
+    LookupTableTerminalAccountState, LookupTableTerminalChainEvidence,
+    LookupTableTerminalNoEffectEvidence, LookupTableTerminalRepairRequest,
+    LookupTableTerminalSiblingEvidence, LookupTableVaultBindingRecord, NeonSqlClient,
+    NeonSqlConfig, OrchestratorError, PackedShardPolicy, ReusableOnlyCutoverPreflight,
+    SharedMarketCatalogPlanPolicy, SharedMarketCatalogReadiness, SharedMarketPhysicalDriftReport,
+    SignedLookupTableTransaction, VaultId, STANDARD_POLICY_AUTHORITY,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -119,6 +121,7 @@ enum AdminAction {
     SetRolloutMode(LookupTableRolloutMode),
     SetProvisionerPause,
     ClearProvisionerPause,
+    RepairTerminalOperations,
 }
 
 #[derive(Debug, Clone)]
@@ -460,6 +463,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .await?;
     client
         .require_schema_migration(27, "rebalance_opportunity_attempt_generations")
+        .await?;
+    client
+        .require_schema_migration(28, "reusable_alt_terminal_repair")
         .await?;
 
     if options.precutover_probe {
@@ -1441,13 +1447,79 @@ async fn process_leased_operation(
         .checked_add(built.expected_rent_lamports)
         .ok_or("operation spend estimate overflow")?;
 
+    // A temporarily underfunded standard policy signer is an unavailable
+    // prerequisite, not an execution attempt. Check after the exact fee/rent
+    // build and use the existing no-attempt fenced deferral so a funding gap
+    // cannot manufacture terminal ALT damage.
+    let signer_balance = rpc
+        .get_balance_with_commitment(&signer.pubkey(), CommitmentConfig::confirmed())?
+        .value;
+    if signer_balance < selected {
+        let recorded = client
+            .defer_unsigned_lookup_table_operation_without_attempt(
+                leased.operation.id,
+                &lease,
+                Utc::now() + chrono::Duration::seconds(DEFAULT_RETRY_SECONDS),
+                "policy_signer_funding_unavailable",
+                "standard policy signer balance is below the exact ALT fee and rent requirement",
+            )
+            .await?;
+        println!(
+            "{}",
+            json!({
+                "event": "alt_provisioner_funding_deferred",
+                "cluster": options.cluster,
+                "operationId": recorded.id,
+                "operationKind": recorded.operation_kind.as_str(),
+                "operationState": recorded.operation_state.as_str(),
+                "requiredLamports": selected,
+                "availableLamports": signer_balance,
+                "attemptCount": recorded.attempt_count,
+                "attemptConsumed": false,
+                "transactionsSent": false,
+            })
+        );
+        return Ok(LeasedOperationOutcome::Processed);
+    }
+
     let mut gate = SubmissionGate::built();
     let simulation = rpc.simulate_transaction(&built.transaction)?;
     if let Some(error) = simulation.value.err.as_ref() {
+        let logs = simulation.value.logs.unwrap_or_default();
+        let failure_detail = format!("{error:?}; logs={}", logs.join(" | "));
+        if failure_detail.to_ascii_lowercase().contains("insufficient")
+            && (failure_detail.to_ascii_lowercase().contains("fund")
+                || failure_detail.to_ascii_lowercase().contains("lamport"))
+        {
+            let recorded = client
+                .defer_unsigned_lookup_table_operation_without_attempt(
+                    leased.operation.id,
+                    &lease,
+                    Utc::now() + chrono::Duration::seconds(DEFAULT_RETRY_SECONDS),
+                    "policy_signer_funding_race",
+                    "ALT simulation observed a transient insufficient-funding prerequisite",
+                )
+                .await?;
+            println!(
+                "{}",
+                json!({
+                    "event": "alt_provisioner_funding_deferred",
+                    "cluster": options.cluster,
+                    "operationId": recorded.id,
+                    "operationKind": recorded.operation_kind.as_str(),
+                    "operationState": recorded.operation_state.as_str(),
+                    "requiredLamports": selected,
+                    "availableLamports": signer_balance,
+                    "attemptCount": recorded.attempt_count,
+                    "attemptConsumed": false,
+                    "transactionsSent": false,
+                })
+            );
+            return Ok(LeasedOperationOutcome::Processed);
+        }
         return Err(format!(
-            "ALT operation {} simulation failed: {error:?}; logs={}",
+            "ALT operation {} simulation failed: {failure_detail}",
             leased.operation.id,
-            simulation.value.logs.unwrap_or_default().join(" | ")
         )
         .into());
     }
@@ -3370,6 +3442,10 @@ async fn apply_admin_action(
         );
         return Ok(());
     }
+    if options.admin_action == AdminAction::RepairTerminalOperations {
+        repair_terminal_operations(client, options, reason, updated_by).await?;
+        return Ok(());
+    }
     if options.admin_action == AdminAction::BootstrapFamilies {
         let policy_pubkey = options.admin_policy_pubkey.expect("validated by parser");
         let manager = policy_pubkey.to_string();
@@ -3580,7 +3656,8 @@ async fn apply_admin_action(
         | AdminAction::RetireLegacy(_)
         | AdminAction::ActivateReusableOnly
         | AdminAction::SetProvisionerPause
-        | AdminAction::ClearProvisionerPause => {
+        | AdminAction::ClearProvisionerPause
+        | AdminAction::RepairTerminalOperations => {
             unreachable!()
         }
         AdminAction::ForceLegacy => {
@@ -3617,6 +3694,242 @@ async fn apply_admin_action(
         })
     );
     Ok(())
+}
+
+async fn repair_terminal_operations(
+    client: &NeonSqlClient,
+    options: &Options,
+    reason: &str,
+    updated_by: &str,
+) -> Result<(), Box<dyn Error>> {
+    let control = client
+        .lookup_table_provisioner_control(&options.cluster)
+        .await?
+        .ok_or("terminal ALT repair requires an existing durable provisioner control")?;
+    if !control.paused {
+        return Err("terminal ALT repair requires the durable cluster pause".into());
+    }
+    let signer = load_manager_signer()?;
+    let standard_policy = Pubkey::from_str(STANDARD_POLICY_AUTHORITY)?;
+    if signer.pubkey() != standard_policy {
+        return Err(format!(
+            "POLICY_KEYPAIR must equal the standard policy authority {STANDARD_POLICY_AUTHORITY}"
+        )
+        .into());
+    }
+    let rpc_url = options
+        .rpc_url
+        .as_ref()
+        .ok_or("--repair-terminal-operations requires SOLANA_RPC_URL or --rpc-url")?;
+    validate_rpc_endpoint(rpc_url)?;
+    let rpc = RpcClient::new_with_commitment(rpc_url.clone(), CommitmentConfig::finalized());
+    let observed_genesis_hash = rpc
+        .get_genesis_hash()
+        .map_err(|_| "failed to read genesis hash from terminal ALT repair RPC endpoint")?;
+    validate_rpc_genesis_hash(&options.cluster, observed_genesis_hash)
+        .map_err(|error| format!("refusing terminal ALT repair against mismatched RPC: {error}"))?;
+
+    let candidates = client
+        .lookup_table_terminal_repair_candidates(
+            &options.cluster,
+            i64::try_from(options.max_operations)?,
+        )
+        .await?;
+    let candidate_count = candidates.len();
+    let mut repaired = 0usize;
+    let mut skipped = 0usize;
+    for candidate in candidates {
+        let chain = load_chain_table(&rpc, Some(&candidate.physical_table))?;
+        let account_state = match chain.account.as_ref() {
+            None => LookupTableTerminalAccountState::Missing,
+            Some(account) if account.owner != alt_program::id() => {
+                LookupTableTerminalAccountState::NonLookupTable
+            }
+            Some(_) if chain.deactivation_slot == Some(u64::MAX) && chain.authority.is_some() => {
+                LookupTableTerminalAccountState::ActiveLookupTable
+            }
+            Some(_) => {
+                skipped += 1;
+                println!(
+                    "{}",
+                    json!({
+                        "event": "alt_terminal_repair_skipped",
+                        "cluster": options.cluster,
+                        "operationId": candidate.operation.id,
+                        "tableId": candidate.physical_table.id,
+                        "reason": "finalized ALT lifecycle is not an active repairable prefix",
+                        "transactionsSent": false,
+                    })
+                );
+                continue;
+            }
+        };
+        let Some(no_effect) =
+            finalized_terminal_no_effect_evidence(&rpc, &candidate.operation, chain.observed_slot)?
+        else {
+            skipped += 1;
+            println!(
+                "{}",
+                json!({
+                    "event": "alt_terminal_repair_skipped",
+                    "cluster": options.cluster,
+                    "operationId": candidate.operation.id,
+                    "tableId": candidate.physical_table.id,
+                    "reason": "repair root lacks finalized no-effect evidence",
+                    "transactionsSent": false,
+                })
+            );
+            continue;
+        };
+        let mut sibling_no_effect =
+            Vec::with_capacity(candidate.unresolved_terminal_siblings.len());
+        let mut unsafe_sibling = None;
+        for sibling in &candidate.unresolved_terminal_siblings {
+            match finalized_terminal_no_effect_evidence(&rpc, sibling, chain.observed_slot)? {
+                Some(no_effect) => sibling_no_effect.push(LookupTableTerminalSiblingEvidence {
+                    operation_id: sibling.id,
+                    no_effect,
+                }),
+                None => {
+                    unsafe_sibling = Some(sibling.id);
+                    break;
+                }
+            }
+        }
+        if let Some(sibling_id) = unsafe_sibling {
+            skipped += 1;
+            println!(
+                "{}",
+                json!({
+                    "event": "alt_terminal_repair_skipped",
+                    "cluster": options.cluster,
+                    "operationId": candidate.operation.id,
+                    "tableId": candidate.physical_table.id,
+                    "unsafeSiblingOperationId": sibling_id,
+                    "reason": "terminal sibling lacks individual finalized no-effect evidence",
+                    "transactionsSent": false,
+                })
+            );
+            continue;
+        }
+        let request = LookupTableTerminalRepairRequest {
+            cluster: options.cluster.clone(),
+            operation_id: candidate.operation.id,
+            expected_control_epoch: control.control_epoch,
+            expected_policy_authority: standard_policy.to_string(),
+            chain: LookupTableTerminalChainEvidence {
+                observed_slot: i64::try_from(chain.observed_slot)?,
+                account_state,
+                account_owner: chain
+                    .account
+                    .as_ref()
+                    .map(|account| account.owner.to_string()),
+                authority: chain.authority.map(|authority| authority.to_string()),
+                last_extended_slot: chain.last_extended_slot.map(i64::try_from).transpose()?,
+                ordered_addresses: chain.addresses.iter().map(ToString::to_string).collect(),
+            },
+            no_effect,
+            sibling_no_effect,
+            reason: reason.to_owned(),
+            updated_by: updated_by.to_owned(),
+        };
+        match client.repair_terminal_lookup_table_operation(request).await {
+            Ok(result) => {
+                repaired += 1;
+                println!(
+                    "{}",
+                    json!({
+                        "event": "alt_terminal_operation_repaired",
+                        "cluster": options.cluster,
+                        "repairId": result.repair_id,
+                        "repairKind": result.repair_kind,
+                        "operationId": result.root_operation_id,
+                        "tableId": result.route_lookup_table_id,
+                        "successorOperationId": result.successor_operation_id,
+                        "supersededOperationCount": result.superseded_operation_ids.len(),
+                        "failedBindingCount": result.failed_binding_ids.len(),
+                        "requeuedRequestCount": result.requeued_request_ids.len(),
+                        "finalizedObservedSlot": chain.observed_slot,
+                        "policyAuthority": standard_policy.to_string(),
+                        "signerLoaded": true,
+                        "transactionsSent": false,
+                    })
+                );
+            }
+            Err(error) => {
+                skipped += 1;
+                println!(
+                    "{}",
+                    json!({
+                        "event": "alt_terminal_repair_skipped",
+                        "cluster": options.cluster,
+                        "operationId": candidate.operation.id,
+                        "tableId": candidate.physical_table.id,
+                        "reason": redacted_external_error(&error.to_string()),
+                        "transactionsSent": false,
+                    })
+                );
+            }
+        }
+    }
+    println!(
+        "{}",
+        json!({
+            "event": "alt_terminal_repair_complete",
+            "cluster": options.cluster,
+            "candidateCount": candidate_count,
+            "repairedCount": repaired,
+            "skippedCount": skipped,
+            "limit": options.max_operations,
+            "controlEpoch": control.control_epoch,
+            "durablyPaused": true,
+            "signerLoaded": true,
+            "transactionsSent": false,
+        })
+    );
+    if skipped != 0 {
+        return Err(format!(
+            "terminal ALT repair left {skipped} of {candidate_count} bounded candidates unresolved; inspect the redacted skip events before retrying"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn finalized_terminal_no_effect_evidence(
+    rpc: &RpcClient,
+    operation: &LookupTableOperationRecord,
+    finalized_observed_slot: u64,
+) -> Result<Option<LookupTableTerminalNoEffectEvidence>, Box<dyn Error>> {
+    let Some(signature) = operation.transaction_signature.as_deref() else {
+        if operation.message_hash.is_some()
+            || operation.recent_blockhash.is_some()
+            || operation.last_valid_block_height.is_some()
+        {
+            return Ok(None);
+        }
+        return Ok(Some(LookupTableTerminalNoEffectEvidence::Unsigned));
+    };
+    let signature_value = Signature::from_str(signature)?;
+    let status = rpc
+        .get_signature_statuses_with_history(&[signature_value])?
+        .value
+        .into_iter()
+        .next()
+        .flatten();
+    let Some(status) = status.filter(|status| {
+        status.err.is_some()
+            && status.satisfies_commitment(CommitmentConfig::finalized())
+            && status.slot <= finalized_observed_slot
+    }) else {
+        return Ok(None);
+    };
+    Ok(Some(
+        LookupTableTerminalNoEffectEvidence::FinalizedFailedSignature {
+            transaction_signature: signature.to_owned(),
+            failed_slot: i64::try_from(status.slot)?,
+        },
+    ))
 }
 
 fn bootstrap_family_inputs(
@@ -3810,6 +4123,9 @@ where
             "--clear-provisioner-pause" => {
                 set_admin_action(&mut admin_action, AdminAction::ClearProvisionerPause)?
             }
+            "--repair-terminal-operations" => {
+                set_admin_action(&mut admin_action, AdminAction::RepairTerminalOperations)?
+            }
             "--activate-reusable-only" => {
                 set_admin_action(&mut admin_action, AdminAction::ActivateReusableOnly)?
             }
@@ -3882,6 +4198,12 @@ where
     if admin_action == AdminAction::ActivateReusableOnly && rpc_url.is_none() {
         return Err(
             "--activate-reusable-only requires SOLANA_RPC_URL or --rpc-url for finalized preflight"
+                .into(),
+        );
+    }
+    if admin_action == AdminAction::RepairTerminalOperations && rpc_url.is_none() {
+        return Err(
+            "--repair-terminal-operations requires SOLANA_RPC_URL or --rpc-url for finalized proof"
                 .into(),
         );
     }
@@ -4096,7 +4418,7 @@ fn default_worker_id() -> String {
 }
 
 fn usage() -> &'static str {
-    "Usage: route-lookup-table-provisioner --cluster <CLUSTER> [--status|--provisioner-pause-status|--reconcile-only|--execute|--precutover-probe --probe-vault-id <DB_ID>] [--watch] [--max-operations <N>] [--max-attempts <1..100>] [--address-chunk <1..20>] [--max-lamports <LAMPORTS>] [--budget-window-seconds <60..31536000>] [--lease-seconds <N>] [--rate-limit-ms <N>] [--concurrency <1..32>] [--safety-margin <N>] [--vault-growth-reservation <N>] [--max-vault-cohort <N>] [--worker-id <ID>]\n\nDry-run is the default and never loads a signer or writes. --precutover-probe requires a durable cluster pause, proves the complete exact shared ALT bundle at finalized RPC, executes the real drift/request paths in a rollback-only transaction, and commits only an immutable PASS audit row for that paused control epoch; it cannot be combined with worker/admin modes and never loads POLICY_KEYPAIR or sends. Reconcile-only may update durable reconciliation state but never signs or sends. Execute uses the standard POLICY_KEYPAIR as ALT authority/payer and requires an explicit positive PostgreSQL-backed rolling-window lamport budget that survives worker restarts. Bounded concurrency overlaps only independently fenced physical ALT tables; predecessor operations for one table remain serialized in the database. Every send first commits an exact broadcast permit in a short database transaction; no transaction or advisory lock crosses RPC. Reads NEON_DATABASE_URL, SOLANA_RPC_URL, and explicit YIELD_ALT_CLUSTER; cluster is never inferred from the RPC URL. The local YIELD_ALT_PROVISIONING_PAUSED environment gate remains an emergency process stop. Durable cluster pause controls are --set-provisioner-pause or --clear-provisioner-pause; read them with --provisioner-pause-status. Admin controls require --admin-write --reason <TEXT> --updated-by <ID>: --set-provisioner-pause, --clear-provisioner-pause, --activate-reusable-only (requires the paused/drained current exact PASS probe, fresh-verifies every shard in the exact active shared ALT bundle at finalized RPC, then atomically fences that evidence and aligns every rollout override), --force-legacy, --clear-force-legacy, --set-rollout-mode <MODE> [--vault-id <DB_ID>], --rollback-family <FAMILY_ID>, --rollback-binding <ACTIVE_BINDING_ID> --observed-slot <SLOT>, --finalize-rollbacks <FAMILY_ID>, --retire-legacy <TABLE> --expected-authority <PUBKEY> --expected-address-hash <HASH> --expected-address-count <N>, or --bootstrap-families --policy-pubkey <POLICY_PUBKEY> --catalog-version <VERSION> --largest-atomic-expansion <MEASURED_COUNT> [--safety-margin <N>] [--shared-family-name <NAME>] [--vault-family-name <NAME>]. Bootstrap rejects any policy identity other than the repo standard authority. The largest atomic expansion is catalog evidence and is independent of the transaction address chunk. Force-legacy remains global. Administrative lifecycle changes consume public control-plane metadata and never load a signer."
+    "Usage: route-lookup-table-provisioner --cluster <CLUSTER> [--status|--provisioner-pause-status|--reconcile-only|--execute|--precutover-probe --probe-vault-id <DB_ID>] [--watch] [--max-operations <N>] [--max-attempts <1..100>] [--address-chunk <1..20>] [--max-lamports <LAMPORTS>] [--budget-window-seconds <60..31536000>] [--lease-seconds <N>] [--rate-limit-ms <N>] [--concurrency <1..32>] [--safety-margin <N>] [--vault-growth-reservation <N>] [--max-vault-cohort <N>] [--worker-id <ID>]\n\nDry-run is the default and never loads a signer or writes. --precutover-probe requires a durable cluster pause, proves the complete exact shared ALT bundle at finalized RPC, executes the real drift/request paths in a rollback-only transaction, and commits only an immutable PASS audit row for that paused control epoch; it cannot be combined with worker/admin modes and never loads POLICY_KEYPAIR or sends. Reconcile-only may update durable reconciliation state but never signs or sends. Execute uses the standard POLICY_KEYPAIR as ALT authority/payer and requires an explicit positive PostgreSQL-backed rolling-window lamport budget that survives worker restarts. Bounded concurrency overlaps only independently fenced physical ALT tables; predecessor operations for one table remain serialized in the database. Every send first commits an exact broadcast permit in a short database transaction; no transaction or advisory lock crosses RPC. Reads NEON_DATABASE_URL, SOLANA_RPC_URL, and explicit YIELD_ALT_CLUSTER; cluster is never inferred from the RPC URL. The local YIELD_ALT_PROVISIONING_PAUSED environment gate remains an emergency process stop. Durable cluster pause controls are --set-provisioner-pause or --clear-provisioner-pause; read them with --provisioner-pause-status. Admin controls require --admin-write --reason <TEXT> --updated-by <ID>: --set-provisioner-pause, --clear-provisioner-pause, --repair-terminal-operations [--max-operations <1..100>] (requires the durable pause, finalized RPC, and the standard POLICY_KEYPAIR; quarantines only proven phantom tables or inserts an immutable failed-suffix successor and never sends), --activate-reusable-only (requires the paused/drained current exact PASS probe, fresh-verifies every shard in the exact active shared ALT bundle at finalized RPC, then atomically fences that evidence and aligns every rollout override), --force-legacy, --clear-force-legacy, --set-rollout-mode <MODE> [--vault-id <DB_ID>], --rollback-family <FAMILY_ID>, --rollback-binding <ACTIVE_BINDING_ID> --observed-slot <SLOT>, --finalize-rollbacks <FAMILY_ID>, --retire-legacy <TABLE> --expected-authority <PUBKEY> --expected-address-hash <HASH> --expected-address-count <N>, or --bootstrap-families --policy-pubkey <POLICY_PUBKEY> --catalog-version <VERSION> --largest-atomic-expansion <MEASURED_COUNT> [--safety-margin <N>] [--shared-family-name <NAME>] [--vault-family-name <NAME>]. Bootstrap rejects any policy identity other than the repo standard authority. The largest atomic expansion is catalog evidence and is independent of the transaction address chunk. Force-legacy remains global. Terminal repair is the only administrative action that loads POLICY_KEYPAIR, solely to prove standard policy identity; it never signs or broadcasts."
 }
 
 #[cfg(test)]
