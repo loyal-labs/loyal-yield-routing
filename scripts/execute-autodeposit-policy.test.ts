@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Keypair, type Connection } from "@solana/web3.js";
 
 import {
+  assertSolBalance,
   computeSweepAmount,
   isMissingAutodepositTokenDelegateFailure,
   parseKeypairSecret,
@@ -98,6 +99,47 @@ describe("computeSweepAmount", () => {
       excessRaw: BigInt(150),
       remainingAllowanceRaw: BigInt(0),
     });
+  });
+});
+
+describe("pull fee-payer SOL safety", () => {
+  test("rejects a pull payer below 50,000,000 lamports with its role", async () => {
+    const feePayer = Keypair.generate().publicKey;
+    const connection = {
+      getBalance: async (address: typeof feePayer, commitment: string) => {
+        expect(address.toBase58()).toBe(feePayer.toBase58());
+        expect(commitment).toBe("confirmed");
+        return 49_999_999;
+      },
+    } as unknown as Pick<Connection, "getBalance">;
+
+    await expect(
+      assertSolBalance({
+        connection,
+        feePayer,
+        minimumLamports: 50_000_000,
+        role: "Autodeposit pull fee payer",
+      })
+    ).rejects.toThrow(
+      `Autodeposit pull fee payer ${feePayer.toBase58()} has 49999999 lamports; 50000000 required.`
+    );
+  });
+
+  test("checks the pull payer before preparing or simulating the pull", async () => {
+    const source = await Bun.file(
+      new URL("./execute-autodeposit-policy.ts", import.meta.url)
+    ).text();
+    const balanceCheck = source.indexOf("await assertSolBalance({");
+    const preparePull = source.indexOf(
+      "await client.prepareEarnUsdcAutodepositPull({"
+    );
+    const simulatePull = source.indexOf(
+      "const pullSimulation = await simulatePreparedOperation({"
+    );
+
+    expect(balanceCheck).toBeGreaterThan(-1);
+    expect(balanceCheck).toBeLessThan(preparePull);
+    expect(preparePull).toBeLessThan(simulatePull);
   });
 });
 
