@@ -7,14 +7,17 @@ use std::{
 
 use chrono::{Duration as ChronoDuration, Utc};
 use loyal_yield_orchestrator::fleet_orchestration::{
-    fleet_worker_role_probe, observe_fleet_opportunities, observe_fleet_opportunities_for_vaults,
-    observe_fleet_opportunities_without_queue_schema, observe_market_epoch,
-    plan_capacity_aware_wave, route_fee_budget, run_deterministic_benchmark, CapacityBand,
-    DurablePgWakeupEvent, DurablePgWakeupListener, EconomicPolicy, FleetObservationConfig,
-    FleetPlanningDirtyVaultLease, FleetPlanningStateInput, FleetWorkerRole, MaterialMarketFrontier,
-    ObservedFleetOpportunity, ObservedSourceKind, OptimizerEpochInput, RebalanceOpportunityInput,
-    RouteFeePolicy, TargetCapacityCurve, WaveLimits, MARKET_MATERIAL_CAPACITY_DRIFT_PPM,
-    MARKET_WAKE_PRICE_BUCKET_USD_MICROS,
+    code_owned_stablecoin_valuations, fleet_worker_role_probe, observe_fleet_opportunities,
+    observe_fleet_opportunities_for_vaults, observe_fleet_opportunities_without_queue_schema,
+    observe_market_epoch, plan_capacity_aware_wave, route_fee_budget, run_deterministic_benchmark,
+    CapacityBand, DurablePgWakeupEvent, DurablePgWakeupListener, EconomicPolicy,
+    FleetObservationConfig, FleetPlanningDirtyVaultLease, FleetPlanningStateInput, FleetWorkerRole,
+    MaterialMarketFrontier, ObservedFleetOpportunity, ObservedSourceKind, OptimizerEpochInput,
+    RebalanceOpportunityInput, RouteFeePolicy, TargetCapacityCurve, WaveLimits,
+    MARKET_MATERIAL_CAPACITY_DRIFT_PPM, MARKET_WAKE_PRICE_BUCKET_USD_MICROS,
+    MAXIMUM_CONFIRMED_VERIFICATION_AGE_SECONDS, MAXIMUM_RESERVE_ECONOMIC_SLOT_LAG,
+    MAXIMUM_SUPPORTED_RESERVE_CATALOG_AGE_SECONDS, MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS,
+    RESERVE_ECONOMIC_EXPIRY_MILLIS_PER_SLOT,
 };
 use loyal_yield_orchestrator::{
     enabled_stable_mints_from_env, NeonSqlClient, NeonSqlConfig, OrchestratorError, SnapshotId,
@@ -34,7 +37,7 @@ const DEFAULT_DIRTY_BATCH_SIZE: usize = 256;
 const DIRTY_LEASE_SECONDS: i64 = 60;
 const DEFAULT_QUEUE_CONNECTIONS: u32 = 20;
 const DEFAULT_ESTIMATED_COST_USD_MICROS: i64 = 100_000;
-const PRIORITY_VERSION: &str = "lost-yield-service-capacity-v2";
+const PRIORITY_VERSION: &str = "lost-yield-service-net-reserve-capacity-v3";
 
 #[derive(Debug)]
 struct Options {
@@ -187,17 +190,21 @@ fn run_benchmark(options: &Options) -> Result<Value, Box<dyn Error>> {
     }))
 }
 
-fn live_observation_config(cluster: &str, enabled_mints: Vec<String>) -> FleetObservationConfig {
-    FleetObservationConfig {
+fn live_observation_config(
+    cluster: &str,
+    enabled_mints: Vec<String>,
+) -> Result<FleetObservationConfig, Box<dyn Error>> {
+    let stablecoin_valuations = code_owned_stablecoin_valuations(&enabled_mints)?;
+    Ok(FleetObservationConfig {
         cluster: cluster.to_owned(),
-        // Live price, decimals, and cross-reserve confidence are derived from
-        // the same immutable Timescale epoch as APY and target capacity.
-        stablecoin_valuations: Vec::new(),
+        // Stable notional and reserve capacity use this code-owned contract;
+        // reserve oracle status/time remains evidence but does not size supply.
+        stablecoin_valuations,
         enabled_mints,
         estimated_reserve_move_cost_usd_micros: DEFAULT_ESTIMATED_COST_USD_MICROS,
         estimated_idle_deposit_cost_usd_micros: DEFAULT_ESTIMATED_COST_USD_MICROS,
         ..FleetObservationConfig::default()
-    }
+    })
 }
 
 fn market_wake_policy_evidence() -> Value {
@@ -205,6 +212,11 @@ fn market_wake_policy_evidence() -> Value {
         "probeIntervalSeconds": DEFAULT_MARKET_PROBE_INTERVAL_SECONDS,
         "priceBucketUsdMicros": MARKET_WAKE_PRICE_BUCKET_USD_MICROS,
         "maximumNonmaterialCapacityDriftPpm": MARKET_MATERIAL_CAPACITY_DRIFT_PPM,
+        "catalogMaximumAgeSeconds": MAXIMUM_SUPPORTED_RESERVE_CATALOG_AGE_SECONDS,
+        "confirmedVerificationMaximumAgeSeconds": MAXIMUM_CONFIRMED_VERIFICATION_AGE_SECONDS,
+        "economicMaximumSlotLag": MAXIMUM_RESERVE_ECONOMIC_SLOT_LAG,
+        "economicExpiryMillisPerRemainingSlot": RESERVE_ECONOMIC_EXPIRY_MILLIS_PER_SLOT,
+        "minimumPublicationLifetimeSeconds": MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS,
         "capacityFence": "latest_non_released_reservations_plus_execution_time_target_version",
         "includedFields": [
             "eligible_reserve_set",
@@ -219,17 +231,27 @@ fn market_wake_policy_evidence() -> Value {
 fn capacity_curves(
     observation: &loyal_yield_orchestrator::fleet_orchestration::FleetObservationResult,
 ) -> Vec<TargetCapacityCurve> {
-    let committed = observation
+    let committed_inflows = observation
         .committed_target_inflows
         .iter()
         .map(|flow| (flow.target_reserve.as_str(), flow.principal_usd_micros))
+        .collect::<BTreeMap<_, _>>();
+    let committed_outflows = observation
+        .committed_source_outflows
+        .iter()
+        .map(|flow| (flow.source_reserve.as_str(), flow.principal_usd_micros))
         .collect::<BTreeMap<_, _>>();
     observation
         .market_epoch
         .reserves
         .iter()
         .map(|reserve| {
-            let already_committed = committed
+            let already_committed = committed_inflows
+                .get(reserve.reserve.as_str())
+                .copied()
+                .unwrap_or_default()
+                .max(0);
+            let already_committed_outflow = committed_outflows
                 .get(reserve.reserve.as_str())
                 .copied()
                 .unwrap_or_default()
@@ -240,7 +262,10 @@ fn capacity_curves(
             let two_percent = (reserve.total_supply_usd_micros / 50).max(4_000_000);
             TargetCapacityCurve {
                 target_reserve: reserve.reserve.clone(),
+                observed_supply_usd_micros: reserve.total_supply_usd_micros,
+                observed_net_apy_bps: reserve.supply_apy_bps,
                 already_committed_inflow_usd_micros: already_committed,
+                already_committed_outflow_usd_micros: already_committed_outflow,
                 bands: vec![
                     CapacityBand {
                         // Ceilings are absolute within the epoch. Committed
@@ -304,6 +329,7 @@ fn marginal_supply_apy_bps(
 fn opportunity_execution_plan(
     observed: &ObservedFleetOpportunity,
     optimizer_market_slot: i64,
+    capacity_adjusted_source_apy_bps: i64,
     capacity_adjusted_target_apy_bps: i64,
     fee_cap_lamports: i64,
     fee_tier: &'static str,
@@ -332,11 +358,12 @@ fn opportunity_execution_plan(
         "redeemable_source_liquidity_amount_raw": observed.redeemable_source_liquidity_amount_raw,
         "idle_vault_liquidity_amount_raw": observed.idle_vault_liquidity_amount_raw,
         "idle_token_account": observed.idle_token_account,
-        "source_apy_bps": observed.economics.source_net_apy_bps,
+        "source_apy_bps": capacity_adjusted_source_apy_bps,
+        "observed_source_apy_bps": observed.economics.source_net_apy_bps,
         "observed_target_apy_bps": observed.economics.target_net_apy_bps,
         "target_apy_bps": capacity_adjusted_target_apy_bps,
         "capacity_adjusted_target_apy_bps": capacity_adjusted_target_apy_bps,
-        "estimated_edge_bps": capacity_adjusted_target_apy_bps - observed.economics.source_net_apy_bps,
+        "estimated_edge_bps": capacity_adjusted_target_apy_bps - capacity_adjusted_source_apy_bps,
         "confidence_ppm": observed.economics.confidence_ppm,
         "expected_service_millis": observed.economics.expected_service_millis,
         "holding_horizon_seconds": observed.economics.holding_horizon_seconds,
@@ -502,8 +529,11 @@ async fn run_live_once(
         }
     };
     let observed_micros = started.elapsed().as_micros();
+    let minimum_usable_until =
+        Utc::now() + ChronoDuration::seconds(MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS);
+    let optimizer_envelope_expires_at = observation.market_epoch.optimizer_envelope_expires_at();
     if observation.market_epoch.reserves.is_empty()
-        || observation.market_epoch.expires_at <= observation.market_epoch.captured_at
+        || optimizer_envelope_expires_at <= minimum_usable_until
     {
         return Ok(LivePlanningRun {
             output: json!({
@@ -511,6 +541,9 @@ async fn run_live_once(
                 "mutating": false,
                 "planningScope": if scoped_vault_ids.is_some() { "dirty_cohort" } else { "full_fleet" },
                 "observation": observation.stats,
+                "minimumUsableEpochLifetimeSeconds": MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS,
+                "epochExpiresAt": observation.market_epoch.expires_at,
+                "optimizerEnvelopeExpiresAt": optimizer_envelope_expires_at,
                 "expiredOpportunitiesSwept": expired_opportunities_swept,
                 "elapsedMicros": started.elapsed().as_micros(),
             }),
@@ -638,9 +671,34 @@ async fn run_live_once(
 
     let mut queue_inputs = Vec::with_capacity(wave.selected.len());
     let mut fee_budget_rejected_count = 0usize;
+    let mut mint_lifetime_deferred_count = 0usize;
     let mut queued_notional_usd_micros = 0i128;
     let mut queued_lost_yield_usd_micros_per_hour = 0i128;
     let fee_policy = RouteFeePolicy::default();
+    let publication_minimum_usable_until =
+        Utc::now() + ChronoDuration::seconds(MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS);
+    let optimizer_envelope_expires_at = observation.market_epoch.optimizer_envelope_expires_at();
+    if optimizer_envelope_expires_at <= publication_minimum_usable_until {
+        return Ok(LivePlanningRun {
+            output: json!({
+                "status": "no_fresh_market_epoch",
+                "reason": "insufficient_lifetime_after_planning",
+                "mutating": false,
+                "planningScope": if scoped_vault_ids.is_some() { "dirty_cohort" } else { "full_fleet" },
+                "observation": observation.stats,
+                "minimumUsableEpochLifetimeSeconds": MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS,
+                "epochExpiresAt": observation.market_epoch.expires_at,
+                "optimizerEnvelopeExpiresAt": optimizer_envelope_expires_at,
+                "minimumUsableUntil": publication_minimum_usable_until,
+                "expiredOpportunitiesSwept": expired_opportunities_swept,
+                "observationMicros": observed_micros,
+                "observationAndPlanningMicros": planned_micros,
+                "elapsedMicros": started.elapsed().as_micros(),
+            }),
+            evidence: None,
+            fallback_to_full: scoped_vault_ids.is_some(),
+        });
+    }
     let optimizer_epoch_id = if options.dry_run {
         observation.market_epoch.optimizer_epoch_id
     } else {
@@ -650,7 +708,7 @@ async fn run_live_once(
             epoch_key: durable_epoch.fingerprint.clone(),
             market_slot: durable_epoch.maximum_market_slot.unwrap_or_default(),
             observed_at: durable_epoch.captured_at,
-            expires_at: durable_epoch.expires_at,
+            expires_at: durable_epoch.optimizer_envelope_expires_at(),
             market_state: serde_json::to_value(&durable_epoch)?,
         })
         .await?
@@ -660,8 +718,20 @@ async fn run_live_once(
         let observed = by_id
             .get(&selected.opportunity.opportunity_id)
             .ok_or("selected opportunity disappeared from immutable observation")?;
+        let Some(mint_expires_at) = observation
+            .market_epoch
+            .mint_expires_at(&observed.economics.mint)
+        else {
+            mint_lifetime_deferred_count += 1;
+            continue;
+        };
+        if mint_expires_at <= publication_minimum_usable_until {
+            mint_lifetime_deferred_count += 1;
+            continue;
+        }
         let admitted_target_apy = selected.economics.capacity_adjusted_target_net_apy_bps;
-        let actual_edge = admitted_target_apy - observed.economics.source_net_apy_bps;
+        let admitted_source_apy = selected.economics.capacity_adjusted_source_net_apy_bps;
+        let actual_edge = admitted_target_apy - admitted_source_apy;
         let annual_yield_gain = selected
             .economics
             .lost_yield_usd_micros_per_hour
@@ -703,7 +773,7 @@ async fn run_live_once(
             liquidity_mint: observed.economics.mint.clone(),
             amount_raw: observed.amount_raw,
             principal_usd_micros: observed.economics.notional_usd_micros,
-            source_apy_bps: observed.economics.source_net_apy_bps,
+            source_apy_bps: admitted_source_apy,
             target_apy_bps: admitted_target_apy,
             estimated_edge_bps: actual_edge,
             estimated_cost_lamports: fee_budget.cap_lamports,
@@ -717,13 +787,14 @@ async fn run_live_once(
                     .market_epoch
                     .maximum_market_slot
                     .unwrap_or_default(),
+                admitted_source_apy,
                 selected.economics.capacity_adjusted_target_net_apy_bps,
                 fee_budget.cap_lamports,
                 fee_budget.tier.as_str(),
                 fee_policy,
             ),
             available_at: Utc::now(),
-            expires_at: observation.market_epoch.expires_at,
+            expires_at: mint_expires_at,
             provisioning_request_id: None,
         });
     }
@@ -757,7 +828,8 @@ async fn run_live_once(
     let total_deferred_count = wave
         .deferred
         .len()
-        .saturating_add(publish.deferred_contention);
+        .saturating_add(publish.deferred_contention)
+        .saturating_add(mint_lifetime_deferred_count);
     // This durable denominator is the economically admitted frontier that the
     // queue must drain, not every pre-economic route candidate. Capacity- and
     // fee-rejected candidates are already named outside this frontier.
@@ -794,7 +866,7 @@ async fn run_live_once(
         optimizer_epoch_key: observation.market_epoch.fingerprint.clone(),
         material_frontier_fingerprint: material_frontier_fingerprint.clone(),
         material_frontier: current_material_frontier,
-        optimizer_epoch_expires_at: observation.market_epoch.expires_at,
+        optimizer_epoch_expires_at: optimizer_envelope_expires_at,
         observed_vault_count: observation.stats.eligible_vault_count,
         opportunity_count: i64::try_from(planned_frontier_count).unwrap_or(i64::MAX),
         selected_count: i64::try_from(classified_selected_count).unwrap_or(i64::MAX),
@@ -868,12 +940,21 @@ async fn run_live_once(
             "classifiedSelectedCount".to_owned(),
             json!(classified_selected_count),
         );
+        fields.insert(
+            "optimizerEnvelopeExpiresAt".to_owned(),
+            json!(optimizer_envelope_expires_at),
+        );
+        fields.insert(
+            "mintLifetimeDeferredCount".to_owned(),
+            json!(mint_lifetime_deferred_count),
+        );
         fields.insert("marketWakePolicy".to_owned(), market_wake_policy_evidence());
     }
     Ok(LivePlanningRun {
         output,
         evidence: Some(evidence),
-        fallback_to_full: scoped_vault_ids.is_some() && publish.deferred_contention > 0,
+        fallback_to_full: scoped_vault_ids.is_some()
+            && (publish.deferred_contention > 0 || mint_lifetime_deferred_count > 0),
     })
 }
 
@@ -1009,7 +1090,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // transactions (executor and ALT provisioner).
     let delegated_signer = STANDARD_POLICY_AUTHORITY.to_owned();
     let enabled_mints = enabled_stable_mints_from_env()?;
-    let config = live_observation_config(&options.cluster, enabled_mints);
+    let config = live_observation_config(&options.cluster, enabled_mints)?;
     let neon = NeonSqlClient::connect(
         NeonSqlConfig::new(neon_url).with_max_connections(DEFAULT_QUEUE_CONNECTIONS),
     )
@@ -1050,6 +1131,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     neon.require_schema_migration(27, "rebalance_opportunity_attempt_generations")
+        .await?;
+    neon.require_schema_migration(29, "fleet_commit_lifetime_fences")
+        .await?;
+    neon.require_schema_migration(30, "fused_queue_accrual_binding")
         .await?;
     neon.register_fleet_planning_cluster(&options.cluster)
         .await?;

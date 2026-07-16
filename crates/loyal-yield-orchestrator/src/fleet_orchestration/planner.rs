@@ -72,6 +72,8 @@ pub struct DeferredOpportunity {
 pub struct TargetProjection {
     pub target_reserve: String,
     pub added_inflow_usd_micros: i64,
+    pub added_outflow_usd_micros: i64,
+    pub net_supply_change_usd_micros: i64,
     pub final_target_net_apy_bps: Option<i64>,
     pub capacity_version: u64,
 }
@@ -146,7 +148,8 @@ pub fn plan_capacity_aware_wave(
     let mut candidates = BinaryHeap::with_capacity(opportunities.len());
     let mut rejected = Vec::new();
     for opportunity in opportunities {
-        let (target_apy, target_version) = initial_capacity_apy(&opportunity, &targets)?;
+        let (source_apy, target_apy, source_version, target_version) =
+            projected_candidate_apys(&opportunity, &targets)?;
         let Some(target_apy) = target_apy else {
             rejected.push(RejectedOpportunity {
                 opportunity,
@@ -154,20 +157,19 @@ pub fn plan_capacity_aware_wave(
             });
             continue;
         };
-        match evaluate_economics(
-            &opportunity,
-            policy,
-            target_apy.min(opportunity.target_net_apy_bps),
-        ) {
+        let mut projected_opportunity = opportunity;
+        projected_opportunity.source_net_apy_bps = source_apy;
+        match evaluate_economics(&projected_opportunity, policy, target_apy) {
             Ok(economics) => candidates.push(HeapCandidate {
                 ranked: RankedOpportunity {
-                    opportunity,
+                    opportunity: projected_opportunity,
                     economics,
                 },
+                source_version,
                 target_version,
             }),
             Err(reason) => rejected.push(RejectedOpportunity {
-                opportunity,
+                opportunity: projected_opportunity,
                 reason,
             }),
         }
@@ -199,44 +201,40 @@ pub fn plan_capacity_aware_wave(
             break;
         }
 
-        if let Some(target) = targets.get(&candidate.ranked.opportunity.target_reserve) {
-            if candidate.target_version != target.version {
-                let additional_inflow = target
-                    .projected_inflow_usd_micros
-                    .checked_add(candidate.ranked.opportunity.notional_usd_micros)
-                    .ok_or(PlannerError::ArithmeticOverflow)?;
-                let target_apy =
-                    target
-                        .curve
-                        .target_apy_after(additional_inflow)
-                        .map_err(|reason| PlannerError::InvalidTargetCurve {
-                            target_reserve: target.curve.target_reserve.clone(),
-                            reason,
-                        })?;
-                let Some(target_apy) = target_apy else {
-                    rejected.push(RejectedOpportunity {
-                        opportunity: candidate.ranked.opportunity,
-                        reason: IneligibleReason::TargetCapacityExhausted,
-                    });
-                    continue;
-                };
-                match evaluate_economics(
-                    &candidate.ranked.opportunity,
-                    policy,
-                    target_apy.min(candidate.ranked.opportunity.target_net_apy_bps),
-                ) {
-                    Ok(economics) => {
-                        candidate.ranked.economics = economics;
-                        candidate.target_version = target.version;
-                        candidates.push(candidate);
-                    }
-                    Err(reason) => rejected.push(RejectedOpportunity {
-                        opportunity: candidate.ranked.opportunity,
-                        reason,
-                    }),
-                }
+        let current_source_version = targets
+            .get(&candidate.ranked.opportunity.source_reserve)
+            .map(|reserve| reserve.version)
+            .unwrap_or_default();
+        let current_target_version = targets
+            .get(&candidate.ranked.opportunity.target_reserve)
+            .map(|reserve| reserve.version)
+            .unwrap_or_default();
+        if candidate.source_version != current_source_version
+            || candidate.target_version != current_target_version
+        {
+            let (source_apy, target_apy, source_version, target_version) =
+                projected_candidate_apys(&candidate.ranked.opportunity, &targets)?;
+            let Some(target_apy) = target_apy else {
+                rejected.push(RejectedOpportunity {
+                    opportunity: candidate.ranked.opportunity,
+                    reason: IneligibleReason::TargetCapacityExhausted,
+                });
                 continue;
+            };
+            candidate.ranked.opportunity.source_net_apy_bps = source_apy;
+            match evaluate_economics(&candidate.ranked.opportunity, policy, target_apy) {
+                Ok(economics) => {
+                    candidate.ranked.economics = economics;
+                    candidate.source_version = source_version;
+                    candidate.target_version = target_version;
+                    candidates.push(candidate);
+                }
+                Err(reason) => rejected.push(RejectedOpportunity {
+                    opportunity: candidate.ranked.opportunity,
+                    reason,
+                }),
             }
+            continue;
         }
 
         let next_notional = selected_notional
@@ -288,6 +286,16 @@ pub fn plan_capacity_aware_wave(
                 .checked_add(1)
                 .ok_or(PlannerError::ArithmeticOverflow)?;
         }
+        if let Some(source) = targets.get_mut(&candidate.ranked.opportunity.source_reserve) {
+            source.projected_outflow_usd_micros = source
+                .projected_outflow_usd_micros
+                .checked_add(candidate.ranked.opportunity.notional_usd_micros)
+                .ok_or(PlannerError::ArithmeticOverflow)?;
+            source.version = source
+                .version
+                .checked_add(1)
+                .ok_or(PlannerError::ArithmeticOverflow)?;
+        }
         selected_notional = next_notional;
         selected_vaults.insert(candidate.ranked.opportunity.vault_id);
         *tenant_counts
@@ -320,11 +328,18 @@ pub fn plan_capacity_aware_wave(
         .map(|target| TargetProjection {
             final_target_net_apy_bps: target
                 .curve
-                .target_apy_after(target.projected_inflow_usd_micros)
+                .target_apy_after(
+                    target.projected_inflow_usd_micros,
+                    target.projected_outflow_usd_micros,
+                )
                 .ok()
                 .flatten(),
             target_reserve: target.curve.target_reserve,
             added_inflow_usd_micros: target.projected_inflow_usd_micros,
+            added_outflow_usd_micros: target.projected_outflow_usd_micros,
+            net_supply_change_usd_micros: target
+                .projected_inflow_usd_micros
+                .saturating_sub(target.projected_outflow_usd_micros),
             capacity_version: target.version,
         })
         .collect();
@@ -375,9 +390,12 @@ pub fn deterministic_benchmark_fixture(
             let initial_apy = 850 - i64::try_from(target_index).unwrap_or_default() * 5;
             TargetCapacityCurve {
                 target_reserve: format!("target-{target_index:02}"),
+                observed_supply_usd_micros: 100_000_000_000_000,
+                observed_net_apy_bps: initial_apy,
                 already_committed_inflow_usd_micros: i64::try_from(target_index)
                     .unwrap_or_default()
                     * 25_000_000_000,
+                already_committed_outflow_usd_micros: 0,
                 bands: vec![
                     CapacityBand {
                         cumulative_inflow_usd_micros: 500_000_000_000,
@@ -509,12 +527,14 @@ fn compare_ranked(left: &RankedOpportunity, right: &RankedOpportunity) -> Orderi
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct HeapCandidate {
     ranked: RankedOpportunity,
+    source_version: u64,
     target_version: u64,
 }
 
 impl Ord for HeapCandidate {
     fn cmp(&self, other: &Self) -> Ordering {
         compare_ranked(&self.ranked, &other.ranked)
+            .then_with(|| self.source_version.cmp(&other.source_version))
             .then_with(|| self.target_version.cmp(&other.target_version))
     }
 }
@@ -528,6 +548,7 @@ impl PartialOrd for HeapCandidate {
 struct TargetRuntime {
     curve: TargetCapacityCurve,
     projected_inflow_usd_micros: i64,
+    projected_outflow_usd_micros: i64,
     version: u64,
 }
 
@@ -549,6 +570,7 @@ fn target_runtime_by_reserve(
                 TargetRuntime {
                     curve,
                     projected_inflow_usd_micros: 0,
+                    projected_outflow_usd_micros: 0,
                     version: 0,
                 },
             )
@@ -560,21 +582,46 @@ fn target_runtime_by_reserve(
     Ok(targets)
 }
 
-fn initial_capacity_apy(
+fn projected_candidate_apys(
     opportunity: &OpportunityInput,
     targets: &BTreeMap<String, TargetRuntime>,
-) -> Result<(Option<i64>, u64), PlannerError> {
+) -> Result<(i64, Option<i64>, u64, u64), PlannerError> {
+    let (source_apy, source_version) =
+        if let Some(source) = targets.get(&opportunity.source_reserve) {
+            let source_apy = source
+                .curve
+                .source_apy_after(
+                    source.projected_inflow_usd_micros,
+                    source.projected_outflow_usd_micros,
+                )
+                .map_err(|reason| PlannerError::InvalidTargetCurve {
+                    target_reserve: source.curve.target_reserve.clone(),
+                    reason,
+                })?;
+            (source_apy, source.version)
+        } else {
+            (opportunity.source_net_apy_bps, 0)
+        };
     let Some(target) = targets.get(&opportunity.target_reserve) else {
-        return Ok((Some(opportunity.target_net_apy_bps), 0));
+        return Ok((
+            source_apy,
+            Some(opportunity.target_net_apy_bps),
+            source_version,
+            0,
+        ));
     };
+    let additional_inflow = target
+        .projected_inflow_usd_micros
+        .checked_add(opportunity.notional_usd_micros)
+        .ok_or(PlannerError::ArithmeticOverflow)?;
     let target_apy = target
         .curve
-        .target_apy_after(opportunity.notional_usd_micros)
+        .target_apy_after(additional_inflow, target.projected_outflow_usd_micros)
         .map_err(|reason| PlannerError::InvalidTargetCurve {
             target_reserve: target.curve.target_reserve.clone(),
             reason,
         })?;
-    Ok((target_apy, target.version))
+    Ok((source_apy, target_apy, source_version, target.version))
 }
 
 fn defer_candidate(

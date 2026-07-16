@@ -5,6 +5,7 @@ pub mod cli;
 pub mod source;
 pub mod targets;
 pub mod timescale;
+pub mod verification;
 
 pub use apy::{
     diff_snapshot, snapshot_from_account, snapshot_from_account_at, ReserveDiff, ReserveSnapshot,

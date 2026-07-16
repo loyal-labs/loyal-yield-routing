@@ -27,6 +27,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "split_balance_sweep_ata_streams",
         sql: include_str!("../migrations/0004_split_balance_sweep_ata_streams.sql"),
     },
+    Migration {
+        version: 5,
+        name: "kamino_confirmed_state_verification",
+        sql: include_str!("../migrations/0005_kamino_confirmed_state_verification.sql"),
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal";
@@ -73,6 +78,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     if pending.is_empty() {
+        validate_kamino_market_verification_schema(&pool).await?;
         validate_loyal_ata_schema(&pool).await?;
         println!("loyal_timescale migrations are up to date");
         return Ok(());
@@ -91,8 +97,133 @@ async fn main() -> Result<(), Box<dyn Error>> {
         record_applied(&pool, migration).await?;
     }
 
+    validate_kamino_market_verification_schema(&pool).await?;
     validate_loyal_ata_schema(&pool).await?;
     println!("loyal_timescale migrations are up to date");
+    Ok(())
+}
+
+async fn validate_kamino_market_verification_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
+    for (relation, kind) in [
+        ("reserve_current_states", "r"),
+        ("reserve_confirmed_observation_floors", "r"),
+        ("reserve_confirmed_observation_id_seq", "S"),
+        ("reserve_confirmed_verifications", "r"),
+        ("latest_verified_reserve_updates", "v"),
+    ] {
+        let exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'kamino'
+                  AND c.relname = $1
+                  AND c.relkind = $2::"char"
+            )
+            "#,
+        )
+        .bind(relation)
+        .bind(kind)
+        .fetch_one(pool)
+        .await?;
+        if !exists {
+            return Err(format!("missing Timescale relation kamino.{relation}").into());
+        }
+    }
+
+    let verification_columns: i64 = sqlx::query_scalar(
+        r#"
+        SELECT count(*)
+        FROM information_schema.columns
+        WHERE table_schema = 'kamino'
+          AND table_name = 'reserve_confirmed_verifications'
+          AND column_name = ANY($1)
+        "#,
+    )
+    .bind(&[
+        "reserve",
+        "state_event_id",
+        "account_data_hash",
+        "verified_slot",
+        "verified_at",
+        "commitment",
+        "verification_source",
+    ])
+    .fetch_one(pool)
+    .await?;
+    if verification_columns != 7 {
+        return Err("Kamino confirmed verification table is missing required columns".into());
+    }
+
+    let current_state_columns: i64 = sqlx::query_scalar(
+        r#"
+        SELECT count(*)
+        FROM information_schema.columns
+        WHERE table_schema = 'kamino'
+          AND table_name = 'reserve_current_states'
+          AND column_name = ANY($1)
+        "#,
+    )
+    .bind(&[
+        "reserve",
+        "state_event_id",
+        "account_data_hash",
+        "state_slot",
+        "state_observed_at",
+        "state_source",
+    ])
+    .fetch_one(pool)
+    .await?;
+    if current_state_columns != 6 {
+        return Err("Kamino current reserve state table is missing required columns".into());
+    }
+
+    let observation_floor_columns: i64 = sqlx::query_scalar(
+        r#"
+        SELECT count(*)
+        FROM information_schema.columns
+        WHERE table_schema = 'kamino'
+          AND table_name = 'reserve_confirmed_observation_floors'
+          AND column_name = ANY($1)
+        "#,
+    )
+    .bind(&[
+        "reserve",
+        "floor_slot",
+        "observation_id",
+        "account_data_hash",
+        "state_valid",
+        "source",
+        "source_rank",
+        "observed_at",
+    ])
+    .fetch_one(pool)
+    .await?;
+    if observation_floor_columns != 8 {
+        return Err("Kamino confirmed observation floor table is missing required columns".into());
+    }
+
+    let verified_market_columns: i64 = sqlx::query_scalar(
+        r#"
+        SELECT count(*)
+        FROM information_schema.columns
+        WHERE table_schema = 'kamino'
+          AND table_name = 'latest_verified_reserve_updates'
+          AND column_name = ANY($1)
+        "#,
+    )
+    .bind(&[
+        "reserve_last_update_slot",
+        "reserve_price_status",
+        "market_price_last_updated_ts",
+        "total_supply_amount",
+    ])
+    .fetch_one(pool)
+    .await?;
+    if verified_market_columns != 4 {
+        return Err("Kamino latest verified reserve view is missing economic state columns".into());
+    }
     Ok(())
 }
 

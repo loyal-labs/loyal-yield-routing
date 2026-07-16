@@ -11,6 +11,7 @@ const DEFAULT_SCHEMA: &str = "kamino";
 const DEFAULT_NOTIFY_CHANNEL: &str = "kamino_reserve_updates";
 const RESERVE_UPDATES_TABLE: &str = "reserve_updates";
 const LATEST_RESERVE_UPDATES_VIEW: &str = "latest_reserve_updates";
+const LATEST_VERIFIED_RESERVE_UPDATES_VIEW: &str = "latest_verified_reserve_updates";
 const SUPPORTED_RESERVES_TABLE: &str = "supported_reserves";
 const RESERVE_UPDATE_ROW_COLUMNS: &str = "event_id, observed_at, slot, source, source_commitment, reserve, market, market_name, symbol, liquidity_mint, supply_apy, borrow_apy, utilization, total_supply_usd_estimate, total_borrow_usd_estimate, reserve_last_update_stale, diff_changed, changed_fields, diff_summary";
 const RESERVE_WINDOW_STATS_COLUMNS: &str = "reserve, market, symbol, COUNT(*)::BIGINT AS update_count, AVG(supply_apy) AS avg_supply_apy, MIN(supply_apy) AS min_supply_apy, MAX(supply_apy) AS max_supply_apy, AVG(borrow_apy) AS avg_borrow_apy, AVG(utilization) AS avg_utilization, AVG(total_supply_usd_estimate) AS avg_supply_usd, AVG(total_borrow_usd_estimate) AS avg_borrow_usd, MAX(slot) AS max_slot, MAX(observed_at) AS last_observed_at";
@@ -106,51 +107,43 @@ impl TimescaleRouterClient {
         let SupportedReserveLatestQuery {
             risk_baskets,
             liquidity_mint,
+            liquidity_mints,
             markets,
             min_supply_usd,
             min_supply_apy,
             max_supply_apy,
             stale,
-            observed_after,
-            observed_before_or_at,
+            verified_after,
+            verified_before_or_at,
             limit,
         } = query;
         let mut builder = QueryBuilder::<Postgres>::new(format!(
-            "SELECT l.observed_at, l.slot, l.reserve, l.market, l.market_name, \
+            "SELECT l.event_id AS state_event_id, l.account_data_hash, \
+             l.observed_at AS state_observed_at, l.slot AS state_slot, \
+             l.verified_at, l.verified_slot, l.verification_commitment, \
+             l.verified_at AS observed_at, l.verified_slot AS slot, \
+             l.reserve, l.market, l.market_name, \
              l.liquidity_mint, l.symbol, l.mint_decimals, l.market_price_usd, \
              l.supply_apy, l.borrow_apy, \
              l.total_supply_usd_estimate, l.reserve_last_update_stale \
              FROM {} sr \
-             JOIN (SELECT DISTINCT ON (reserve) \
-                        observed_at, event_id, slot, reserve, market, market_name, \
-                        liquidity_mint, symbol, mint_decimals, market_price_usd, \
-                        supply_apy, borrow_apy, total_supply_usd_estimate, \
-                        reserve_last_update_stale \
-                   FROM {}",
-            self.qualified(SUPPORTED_RESERVES_TABLE),
-            self.qualified(RESERVE_UPDATES_TABLE)
-        ));
-        let has_observed_after = observed_after.is_some();
-        if let Some(observed_after) = observed_after {
-            builder
-                .push(" WHERE observed_at >= ")
-                .push_bind(observed_after);
-        }
-        if let Some(observed_before_or_at) = observed_before_or_at {
-            builder
-                .push(if has_observed_after {
-                    " AND observed_at <= "
-                } else {
-                    " WHERE observed_at <= "
-                })
-                .push_bind(observed_before_or_at);
-        }
-        builder.push(
-            " ORDER BY reserve, event_id DESC) l ON l.reserve = sr.reserve \
+             JOIN {} l ON l.reserve = sr.reserve \
                 AND l.market = sr.market \
                 AND l.liquidity_mint = sr.liquidity_mint \
              WHERE sr.active = true",
-        );
+            self.qualified(SUPPORTED_RESERVES_TABLE),
+            self.qualified(LATEST_VERIFIED_RESERVE_UPDATES_VIEW)
+        ));
+        if let Some(verified_after) = verified_after {
+            builder
+                .push(" AND l.verified_at >= ")
+                .push_bind(verified_after);
+        }
+        if let Some(verified_before_or_at) = verified_before_or_at {
+            builder
+                .push(" AND l.verified_at <= ")
+                .push_bind(verified_before_or_at);
+        }
 
         if !risk_baskets.is_empty() {
             builder.push(" AND (");
@@ -168,6 +161,12 @@ impl TimescaleRouterClient {
             builder
                 .push(" AND sr.liquidity_mint = ")
                 .push_bind(liquidity_mint);
+        }
+        if !liquidity_mints.is_empty() {
+            builder
+                .push(" AND sr.liquidity_mint = ANY(")
+                .push_bind(liquidity_mints)
+                .push(")");
         }
         if !markets.is_empty() {
             builder.push(" AND sr.market = ANY(").push_bind(markets);
@@ -194,7 +193,7 @@ impl TimescaleRouterClient {
                 .push_bind(max_supply_apy);
         }
 
-        builder.push(" ORDER BY l.supply_apy DESC, l.observed_at DESC, l.reserve ASC");
+        builder.push(" ORDER BY l.supply_apy DESC, l.verified_at DESC, l.reserve ASC");
         if let Some(limit) = limit {
             builder.push(" LIMIT ").push_bind(limit_i64(limit));
         }
@@ -203,6 +202,92 @@ impl TimescaleRouterClient {
             .build_query_as::<SupportedReserveLatestRow>()
             .fetch_all(&self.pool)
             .await
+    }
+
+    /// Reads the complete active catalog and its exact confirmed economic
+    /// states from one PostgreSQL REPEATABLE READ snapshot. Callers retain the
+    /// catalog side as an explicit accounting denominator while independently
+    /// excluding a reserve whose exact verified state is unavailable. This
+    /// keeps the exclusion visible without freezing healthy peers for a mint.
+    pub async fn supported_reserve_market_snapshot(
+        &self,
+        query: SupportedReserveMarketSnapshotQuery,
+    ) -> sqlx::Result<SupportedReserveMarketSnapshot> {
+        let SupportedReserveMarketSnapshotQuery {
+            risk_baskets,
+            liquidity_mints,
+        } = query;
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *transaction)
+            .await?;
+        let captured_at =
+            sqlx::query_scalar::<_, DateTime<Utc>>("SELECT transaction_timestamp()::timestamptz")
+                .fetch_one(&mut *transaction)
+                .await?;
+
+        let mut catalog_query = QueryBuilder::<Postgres>::new(format!(
+            "SELECT sr.market, sr.liquidity_mint, sr.reserve, sr.market_name, \
+             sr.symbol, sr.risk_baskets, sr.source, sr.fetched_at \
+             FROM {} sr WHERE sr.active = true",
+            self.qualified(SUPPORTED_RESERVES_TABLE),
+        ));
+        if !liquidity_mints.is_empty() {
+            catalog_query
+                .push(" AND sr.liquidity_mint = ANY(")
+                .push_bind(liquidity_mints.clone())
+                .push(")");
+        }
+        if !risk_baskets.is_empty() {
+            catalog_query.push(" AND (");
+            for (index, risk_basket) in risk_baskets.iter().enumerate() {
+                if index > 0 {
+                    catalog_query.push(" OR ");
+                }
+                catalog_query
+                    .push_bind(risk_basket)
+                    .push(" = ANY(sr.risk_baskets)");
+            }
+            catalog_query.push(")");
+        }
+        catalog_query.push(" ORDER BY sr.liquidity_mint, sr.market, sr.reserve, sr.fetched_at");
+        let catalog = catalog_query
+            .build_query_as::<SupportedReserveCatalogRow>()
+            .fetch_all(&mut *transaction)
+            .await?;
+
+        let mut verified_query = QueryBuilder::<Postgres>::new(format!(
+            "SELECT l.event_id AS state_event_id, l.account_data_hash, \
+             l.observed_at AS state_observed_at, l.slot AS state_slot, \
+             l.verified_at, l.verified_slot, l.verification_commitment, \
+             l.verification_source, l.reserve, l.market, l.market_name, \
+             l.liquidity_mint, l.symbol, l.mint_decimals, \
+             l.reserve_last_update_slot, l.reserve_last_update_stale, \
+             l.reserve_price_status, l.available_amount, l.borrowed_amount, \
+             l.total_supply_amount, l.market_price_usd, \
+             l.market_price_last_updated_ts, l.utilization, l.borrow_apy, \
+             l.supply_apy \
+             FROM {} l WHERE true",
+            self.qualified(LATEST_VERIFIED_RESERVE_UPDATES_VIEW),
+        ));
+        if !liquidity_mints.is_empty() {
+            verified_query
+                .push(" AND l.liquidity_mint = ANY(")
+                .push_bind(liquidity_mints)
+                .push(")");
+        }
+        verified_query.push(" ORDER BY l.liquidity_mint, l.market, l.reserve");
+        let verified_reserves = verified_query
+            .build_query_as::<VerifiedSupportedReserveRow>()
+            .fetch_all(&mut *transaction)
+            .await?;
+
+        transaction.commit().await?;
+        Ok(SupportedReserveMarketSnapshot {
+            captured_at,
+            catalog,
+            verified_reserves,
+        })
     }
 
     pub async fn reserve_history(
@@ -365,17 +450,19 @@ impl TimescaleRouterClient {
 pub struct SupportedReserveLatestQuery {
     pub risk_baskets: Vec<String>,
     pub liquidity_mint: Option<String>,
+    /// Pushes the planner's complete enabled-mint universe into SQL while
+    /// preserving the single-mint convenience filter above.
+    pub liquidity_mints: Vec<String>,
     pub markets: Vec<String>,
     pub min_supply_usd: Option<f64>,
     pub min_supply_apy: Option<f64>,
     pub max_supply_apy: Option<f64>,
     pub stale: Option<bool>,
-    /// Limits the candidate history before selecting the latest row per
-    /// reserve. This enables Timescale chunk exclusion for freshness-bound
-    /// consumers without allowing an older row to pass later quality filters.
-    pub observed_after: Option<DateTime<Utc>>,
-    /// Excludes future-dated observations from a captured snapshot.
-    pub observed_before_or_at: Option<DateTime<Utc>>,
+    /// Bounds confirmed verification time, not the age of unchanged account
+    /// bytes. Exact state identity is enforced by the verified-latest view.
+    pub verified_after: Option<DateTime<Utc>>,
+    /// Excludes future-dated verification watermarks from a captured snapshot.
+    pub verified_before_or_at: Option<DateTime<Utc>>,
     pub limit: Option<usize>,
 }
 
@@ -393,6 +480,111 @@ impl SupportedReserveLatestQuery {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SupportedReserveMarketSnapshotQuery {
+    pub risk_baskets: Vec<String>,
+    pub liquidity_mints: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SupportedReserveMarketSnapshot {
+    pub captured_at: DateTime<Utc>,
+    pub catalog: Vec<SupportedReserveCatalogRow>,
+    pub verified_reserves: Vec<VerifiedSupportedReserveRow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SupportedReserveCatalogRow {
+    pub market: String,
+    pub liquidity_mint: String,
+    pub reserve: String,
+    pub market_name: Option<String>,
+    pub symbol: Option<String>,
+    pub risk_baskets: Vec<String>,
+    pub source: String,
+    pub fetched_at: DateTime<Utc>,
+}
+
+impl<'r> FromRow<'r, PgRow> for SupportedReserveCatalogRow {
+    fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            market: row.try_get("market")?,
+            liquidity_mint: row.try_get("liquidity_mint")?,
+            reserve: row.try_get("reserve")?,
+            market_name: row.try_get("market_name")?,
+            symbol: row.try_get("symbol")?,
+            risk_baskets: row.try_get("risk_baskets")?,
+            source: row.try_get("source")?,
+            fetched_at: row.try_get("fetched_at")?,
+        })
+    }
+}
+
+/// Exact decoded economics whose state identity is already fenced by
+/// `latest_verified_reserve_updates`. Raw reserve supply is retained so the
+/// routing layer can value stablecoin capacity from its code-owned peg instead
+/// of a reserve oracle that may legitimately be old.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct VerifiedSupportedReserveRow {
+    pub state_event_id: i64,
+    pub account_data_hash: String,
+    pub state_observed_at: DateTime<Utc>,
+    pub state_slot: i64,
+    pub verified_at: DateTime<Utc>,
+    pub verified_slot: i64,
+    pub verification_commitment: String,
+    pub verification_source: String,
+    pub reserve: String,
+    pub market: Option<String>,
+    pub market_name: Option<String>,
+    pub liquidity_mint: String,
+    pub symbol: Option<String>,
+    pub mint_decimals: i32,
+    pub reserve_last_update_slot: i64,
+    pub reserve_last_update_stale: bool,
+    pub reserve_price_status: i16,
+    pub available_amount: f64,
+    pub borrowed_amount: f64,
+    pub total_supply_amount: f64,
+    pub market_price_usd: f64,
+    pub market_price_last_updated_ts: i64,
+    pub utilization: f64,
+    pub borrow_apy: f64,
+    pub supply_apy: f64,
+}
+
+impl<'r> FromRow<'r, PgRow> for VerifiedSupportedReserveRow {
+    fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            state_event_id: row.try_get("state_event_id")?,
+            account_data_hash: row.try_get("account_data_hash")?,
+            state_observed_at: row.try_get("state_observed_at")?,
+            state_slot: row.try_get("state_slot")?,
+            verified_at: row.try_get("verified_at")?,
+            verified_slot: row.try_get("verified_slot")?,
+            verification_commitment: row.try_get("verification_commitment")?,
+            verification_source: row.try_get("verification_source")?,
+            reserve: row.try_get("reserve")?,
+            market: row.try_get("market")?,
+            market_name: row.try_get("market_name")?,
+            liquidity_mint: row.try_get("liquidity_mint")?,
+            symbol: row.try_get("symbol")?,
+            mint_decimals: row.try_get("mint_decimals")?,
+            reserve_last_update_slot: row.try_get("reserve_last_update_slot")?,
+            reserve_last_update_stale: row.try_get("reserve_last_update_stale")?,
+            reserve_price_status: row.try_get("reserve_price_status")?,
+            available_amount: row.try_get("available_amount")?,
+            borrowed_amount: row.try_get("borrowed_amount")?,
+            total_supply_amount: row.try_get("total_supply_amount")?,
+            market_price_usd: row.try_get("market_price_usd")?,
+            market_price_last_updated_ts: row.try_get("market_price_last_updated_ts")?,
+            utilization: row.try_get("utilization")?,
+            borrow_apy: row.try_get("borrow_apy")?,
+            supply_apy: row.try_get("supply_apy")?,
+        })
+    }
+}
+
 pub struct ReserveUpdateStream {
     client: TimescaleRouterClient,
     listener: PgListener,
@@ -405,6 +597,15 @@ pub struct ReserveUpdateStream {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SupportedReserveLatestRow {
+    pub state_event_id: i64,
+    pub account_data_hash: String,
+    pub state_observed_at: DateTime<Utc>,
+    pub state_slot: i64,
+    pub verified_at: DateTime<Utc>,
+    pub verified_slot: i64,
+    pub verification_commitment: String,
+    /// Compatibility aliases intentionally carry confirmed verification
+    /// coordinates so existing freshness consumers become verification-based.
     pub observed_at: DateTime<Utc>,
     pub slot: i64,
     pub reserve: String,
@@ -423,6 +624,13 @@ pub struct SupportedReserveLatestRow {
 impl<'r> FromRow<'r, PgRow> for SupportedReserveLatestRow {
     fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
         Ok(Self {
+            state_event_id: row.try_get("state_event_id")?,
+            account_data_hash: row.try_get("account_data_hash")?,
+            state_observed_at: row.try_get("state_observed_at")?,
+            state_slot: row.try_get("state_slot")?,
+            verified_at: row.try_get("verified_at")?,
+            verified_slot: row.try_get("verified_slot")?,
+            verification_commitment: row.try_get("verification_commitment")?,
             observed_at: row.try_get("observed_at")?,
             slot: row.try_get("slot")?,
             reserve: row.try_get("reserve")?,

@@ -1,3 +1,5 @@
+#![recursion_limit = "512"]
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
@@ -19,17 +21,18 @@ use loyal_yield_orchestrator::fleet_orchestration::{
     AuthoritativeConfirmationDecision, AuthoritativePollUrgency, AuthoritativeSignatureStatus,
     CapacityBand, ConfirmationPollTrigger, EconomicPolicy, FleetStuckStage, FleetWorkerRole,
     FreshRouteEconomicsError, FreshRouteEconomicsInput, ImmutableMarketEpoch, IneligibleReason,
-    MarketEpochReserve, MaterialFrontierDisposition, OpportunityInput, RebalanceOpportunityAdvance,
-    RebalanceOpportunityClaimKind, RebalanceOpportunityInput, RebalanceOpportunityLease,
-    RebalanceOpportunityRecord, RebalanceOpportunityState, RouteFeeBudgetError, RouteFeePayerKind,
-    RouteFeePolicy, SignedRouteSubmissionAdvance, SignedRouteSubmissionInput, TargetCapacityCurve,
-    TargetCapacityObservation, TargetCapacityProjection, TargetCapacityReservationInput,
-    WaveLimits,
+    MarketEpochReserve, MarketMintCoverage, MaterialFrontierDisposition, OpportunityInput,
+    RebalanceOpportunityAdvance, RebalanceOpportunityClaimKind, RebalanceOpportunityInput,
+    RebalanceOpportunityLease, RebalanceOpportunityRecord, RebalanceOpportunityState,
+    RouteFeeBudgetError, RouteFeePayerKind, RouteFeePolicy, SignedRouteSubmissionAdvance,
+    SignedRouteSubmissionInput, TargetCapacityCurve, TargetCapacityObservation,
+    TargetCapacityProjection, TargetCapacityReservationInput, WaveLimits,
 };
 use loyal_yield_orchestrator::{
     lookup_table_manifest_address_records_hash, lookup_table_rollout_lock_acquisition_count,
-    AtomicVaultAllocationResult, DecisionAdvance, LookupTableAllocationKind, LookupTableFamilyKind,
-    LookupTableFamilyRecord, LookupTableFamilyState, LookupTableFamilyUpsert, LookupTableLifecycle,
+    supported_stable_mints, AtomicVaultAllocationResult, DecisionAdvance,
+    LookupTableAllocationKind, LookupTableFamilyKind, LookupTableFamilyRecord,
+    LookupTableFamilyState, LookupTableFamilyUpsert, LookupTableLifecycle,
     LookupTableManifestAddressRecord, LookupTableManifestSubject, LookupTableMembershipAddress,
     LookupTableOperationEnqueue, LookupTableOperationKind, LookupTableOperationLease,
     LookupTableOperationRecord, LookupTableProvisionerBroadcastPermitResult,
@@ -46,9 +49,23 @@ use solana_sdk::signature::{Keypair, Signer};
 use sqlx::{postgres::PgConnectOptions, Row};
 
 const TEN_SECONDS_MILLIS: u128 = 10_000;
-const PRODUCTION_EVIDENCE_MAX_AGE: chrono::Duration = chrono::Duration::hours(1);
-const PRODUCTION_EVIDENCE_MAX_FUTURE_SKEW: chrono::Duration = chrono::Duration::minutes(5);
+const PRODUCTION_EVIDENCE_MAX_AGE: chrono::Duration = chrono::Duration::seconds(120);
+const PRODUCTION_EVIDENCE_MAX_FUTURE_SKEW: chrono::Duration = chrono::Duration::seconds(30);
+const PRODUCTION_EVIDENCE_MAX_COLLECTION_SECONDS: i64 = 300;
+const PRODUCTION_COMPONENT_MAX_LAG_SECONDS: i64 = 90;
 const PRODUCTION_CLUSTER: &str = "mainnet-beta";
+const PRODUCTION_RENDER_ENVIRONMENT_ID: &str = "evm-d8kgt4r7uimc73b1ul1g";
+const HEAVY_RENDER_ENVIRONMENT_ID: &str = "evm-d8kgt3a8qa3s7382glc0";
+const KAMINO_MONITOR_SERVICE_ID: &str = "srv-d8h4i9a8pkls73bver00";
+const KAMINO_MONITOR_SERVICE_NAME: &str = "loyal-kamino-reserve-monitor";
+const KAMINO_MONITOR_COMMAND: &str = "/usr/local/bin/kamino-reserve-monitor";
+const KAMINO_MONITOR_PREDEPLOY: &str = "/bin/sh -lc '/usr/local/bin/loyal-timescale-migrations --apply && /usr/local/bin/kamino-reserve-monitor --sync-supported-reserves'";
+const TIMESCALE_MARKET_MIGRATION_VERSION: i64 = 5;
+const TIMESCALE_MARKET_MIGRATION_NAME: &str = "kamino_confirmed_state_verification";
+const MARKET_VERIFICATION_WARNING_SECONDS: i64 = 90;
+const MARKET_EVIDENCE_QUERY_TIMEOUT_MILLISECONDS: i64 = 15_000;
+const SUPPORTED_RESERVE_CATALOG_MAX_AGE_SECONDS: i64 = 300;
+const IMAGE_PROVENANCE_SOURCE: &str = "https://github.com/loyal-labs/loyal-yield-routing";
 const STANDARD_POLICY_PUBKEY: &str = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5";
 const ADDRESS_LOOKUP_TABLE_PROGRAM_ID: &str = "AddressLookupTab1e1111111111111111111111111";
 const MATERIAL_STAGE_MAX_AGE_SECONDS: i64 = 600;
@@ -62,7 +79,7 @@ const PRODUCTION_SERVICE_NAMES: [&str; 6] = [
     "loyal-fleet-route-reconciler",
     "loyal-route-lookup-table-provisioner",
 ];
-const VERIFIED_MIGRATIONS: [(i64, &str, &str); 6] = [
+const VERIFIED_MIGRATIONS: [(i64, &str, &str); 8] = [
     (
         23,
         "value_priority_rebalance_queue",
@@ -92,6 +109,16 @@ const VERIFIED_MIGRATIONS: [(i64, &str, &str); 6] = [
         28,
         "reusable_alt_terminal_repair",
         "0028_reusable_alt_terminal_repair.sql",
+    ),
+    (
+        29,
+        "fleet_commit_lifetime_fences",
+        "0029_fleet_commit_lifetime_fences.sql",
+    ),
+    (
+        30,
+        "fused_queue_accrual_binding",
+        "0030_fused_queue_accrual_binding.sql",
     ),
 ];
 
@@ -142,6 +169,7 @@ struct LocalEvidence {
     head_commit: Option<String>,
     runtime_source_digest_sha256: String,
     production_light_worker_image_reference: Option<String>,
+    production_heavy_worker_image_reference: Option<String>,
 }
 
 struct Cli {
@@ -161,6 +189,7 @@ struct Cli {
 struct ProductionEvidenceV1 {
     schema_version: u32,
     event: String,
+    collection_started_at: DateTime<Utc>,
     collected_at: DateTime<Utc>,
     captured_at: DateTime<Utc>,
     head_commit: Option<String>,
@@ -187,6 +216,9 @@ struct ProductionEvidenceSource {
     repository_head: Option<String>,
     tracked_worktree_dirty: bool,
     render_yaml_sha256: String,
+    collector_compiled_source_sha256: String,
+    collector_checkout_source_sha256: Option<String>,
+    collector_executable_sha256: Option<String>,
     collector_source: String,
 }
 
@@ -194,7 +226,14 @@ struct ProductionEvidenceSource {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProductionMeasurements {
     render: Value,
+    market_data_plane: ProductionMarketDataPlaneMeasurements,
     database: ProductionDatabaseMeasurements,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProductionMarketDataPlaneMeasurements {
+    timescale: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -323,10 +362,39 @@ struct RuntimeExecutionEvidence {
     bounded_ranked_failover: bool,
     low_balance_limits_enforced: bool,
     atomic_immutable_spend_reservation: bool,
+    source_evidence_contract_fixtures: RuntimeSourceEvidenceContractFixtures,
     target_capacity_concurrent_admission_bounded: bool,
     pre_send_target_capacity_released: bool,
     reconciled_capacity_strict_telemetry_fence: bool,
     preexisting_newer_telemetry_release: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RuntimeSourceEvidenceContractFixtures {
+    reserve_position: RuntimeSourceEvidenceContractFixture,
+    idle_vault_usdc: RuntimeSourceEvidenceContractFixture,
+    contaminated_reserve: RuntimeSourceEvidenceContractFixture,
+    mismatched_route_kind: RuntimeSourceEvidenceContractFixture,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RuntimeSourceEvidenceContractFixture {
+    source_kind: String,
+    source_reserve: Option<String>,
+    source_snapshot_id: Option<i64>,
+    execution_plan: Value,
+    projected_evidence: RuntimeProjectedSourceEvidence,
+    validation_error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RuntimeProjectedSourceEvidence {
+    expected_idle_token_account: Option<String>,
+    expected_idle_observed_slot: Option<i64>,
+    expected_idle_observed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -353,6 +421,15 @@ struct RuntimeReplayEvidence {
 struct RuntimeWiringEvidence {
     probed_container_image_reference: String,
     local_container_image_id: String,
+    light_registry_index_digest: String,
+    light_linux_amd64_manifest_digest: String,
+    light_provenance_vcs_revision: String,
+    light_provenance_vcs_source: String,
+    probed_heavy_container_image_reference: String,
+    heavy_registry_index_digest: String,
+    heavy_linux_amd64_manifest_digest: String,
+    heavy_provenance_vcs_revision: String,
+    heavy_provenance_vcs_source: String,
     runnable_role_probe_exit_codes: BTreeMap<String, i32>,
     recovery_poll_interval_milliseconds: u64,
     health_observation_interval_milliseconds: u64,
@@ -685,6 +762,18 @@ fn git_stdout(repository_root: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+fn git_success(repository_root: &Path, args: &[&str]) -> bool {
+    Command::new("git")
+        .args(args)
+        .current_dir(repository_root)
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn sha256_file(path: &Path) -> Option<String> {
+    fs::read(path).ok().map(|bytes| sha256_hex(&bytes))
+}
+
 fn changed_and_untracked_paths(repository_root: &Path) -> Vec<String> {
     let changed = git_stdout(
         repository_root,
@@ -789,13 +878,23 @@ fn high_confidence_secret_kinds(text: &str) -> Vec<&'static str> {
     kinds
 }
 
-fn production_environment(render_yaml: &str) -> Option<&str> {
-    let project_start = render_yaml.find("  - name: loyal-yield-light-workers")?;
+fn project_production_environment<'a>(render_yaml: &'a str, project_name: &str) -> Option<&'a str> {
+    let project_start = render_yaml.find(&format!("  - name: {project_name}"))?;
     let project = &render_yaml[project_start..];
     let production_start = project.find("      - name: production")?;
     let production = &project[production_start..];
-    let staging_start = production.find("      - name: staging");
-    Some(staging_start.map_or(production, |end| &production[..end]))
+    let next_environment = production["      - name: production".len()..]
+        .find("      - name:")
+        .map(|offset| offset + "      - name: production".len());
+    let next_project = production["      - name: production".len()..]
+        .find("  - name:")
+        .map(|offset| offset + "      - name: production".len());
+    let end = next_environment.into_iter().chain(next_project).min();
+    Some(end.map_or(production, |end| &production[..end]))
+}
+
+fn production_environment(render_yaml: &str) -> Option<&str> {
+    project_production_environment(render_yaml, "loyal-yield-light-workers")
 }
 
 fn service_blocks(environment: &str) -> Vec<String> {
@@ -821,7 +920,18 @@ fn yaml_scalar<'a>(block: &'a str, key: &str) -> Option<&'a str> {
         let trimmed = line.trim();
         let trimmed = trimmed.strip_prefix("- ").unwrap_or(trimmed);
         let value = trimmed.strip_prefix(key)?.strip_prefix(':')?.trim();
-        (!value.is_empty()).then_some(value.trim_matches(['\'', '"']))
+        if value.is_empty() {
+            return None;
+        }
+        let bytes = value.as_bytes();
+        let quoted = bytes.len() >= 2
+            && matches!(bytes.first(), Some(b'\'' | b'"'))
+            && bytes.first() == bytes.last();
+        Some(if quoted {
+            &value[1..value.len() - 1]
+        } else {
+            value
+        })
     })
 }
 
@@ -1003,6 +1113,7 @@ fn collect_local_evidence(repository_root: &Path) -> Result<LocalEvidence, Box<d
     wiring_subchecks.push(subcheck(
         "worker_image_workflow_uses_immutable_commit_tags",
         workflow.contains("dockerfile: Dockerfile.light-workers")
+            && workflow.contains("dockerfile: Dockerfile.laserstream-workers")
             && workflow.contains(":sha-${{ github.sha }}"),
         json!({
             "workflow": ".github/workflows/worker-images.yml",
@@ -1144,7 +1255,7 @@ fn collect_local_evidence(repository_root: &Path) -> Result<LocalEvidence, Box<d
                 ],
                 &["SOLANA_TESTING_PK", "YIELD_ROUTER_KEYPAIR"],
                 &[
-                    ("--concurrency", "8"),
+                    ("--concurrency", "4"),
                     ("--poll-interval-milliseconds", "250"),
                 ],
             ),
@@ -1274,6 +1385,10 @@ fn collect_local_evidence(repository_root: &Path) -> Result<LocalEvidence, Box<d
         && validated_image_service_count == required_services.len()
         && matched_block_indexes.len() == required_services.len())
     .then(|| durable_image_references[0].clone());
+    let production_heavy_worker_image_reference =
+        production_expected_kamino_monitor(repository_root)
+            .ok()
+            .map(|service| service.image);
     wiring_subchecks.push(subcheck(
         "production_blueprint_declares_six_distinct_durable_worker_roles",
         missing_or_duplicate_roles.is_empty()
@@ -1322,6 +1437,7 @@ fn collect_local_evidence(repository_root: &Path) -> Result<LocalEvidence, Box<d
         head_commit,
         runtime_source_digest_sha256,
         production_light_worker_image_reference,
+        production_heavy_worker_image_reference,
     })
 }
 
@@ -1529,6 +1645,142 @@ fn runtime_execution_subcheck(evidence: &RuntimeEvidenceV1) -> Subcheck {
     )
 }
 
+fn runtime_source_evidence_contract_subcheck(
+    fixtures: &RuntimeSourceEvidenceContractFixtures,
+) -> Subcheck {
+    const CONTAMINATION_ERROR: &str =
+        "same-mint reserve-position request cannot carry idle-vault evidence";
+    const ROUTE_KIND_MISMATCH_ERROR: &str = "fleet execution_plan.kind \"idle_vault_deposit\" does not match source_kind \"reserve_position\"; expected \"same_mint\"";
+    let reserve = &fixtures.reserve_position;
+    let idle = &fixtures.idle_vault_usdc;
+    let contaminated = &fixtures.contaminated_reserve;
+    let mismatched = &fixtures.mismatched_route_kind;
+
+    let plan_string = |fixture: &RuntimeSourceEvidenceContractFixture, field: &str| {
+        fixture
+            .execution_plan
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(ToOwned::to_owned)
+    };
+    let plan_i64 = |fixture: &RuntimeSourceEvidenceContractFixture, field: &str| {
+        fixture.execution_plan.get(field).and_then(Value::as_i64)
+    };
+    let plan_datetime = |fixture: &RuntimeSourceEvidenceContractFixture, field: &str| {
+        plan_string(fixture, field)
+            .and_then(|value| DateTime::parse_from_rfc3339(&value).ok())
+            .map(|value| value.with_timezone(&Utc))
+    };
+
+    let reserve_passed = reserve.source_kind == "reserve_position"
+        && plan_string(reserve, "kind").as_deref() == Some("same_mint")
+        && plan_string(reserve, "source_kind").as_deref() == Some("reserve_position")
+        && reserve
+            .source_reserve
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        && reserve.source_snapshot_id.is_some_and(|id| id > 0)
+        && plan_i64(reserve, "source_observed_slot").is_some_and(|slot| slot > 0)
+        && plan_datetime(reserve, "source_observed_at").is_some()
+        && plan_string(reserve, "idle_token_account").is_none()
+        && reserve
+            .projected_evidence
+            .expected_idle_token_account
+            .is_none()
+        && reserve
+            .projected_evidence
+            .expected_idle_observed_slot
+            .is_none()
+        && reserve
+            .projected_evidence
+            .expected_idle_observed_at
+            .is_none()
+        && reserve.validation_error.is_none();
+
+    let idle_plan_account = plan_string(idle, "idle_token_account");
+    let idle_plan_slot = plan_i64(idle, "source_observed_slot");
+    let idle_plan_at = plan_datetime(idle, "source_observed_at");
+    let idle_passed = idle.source_kind == "idle_vault_usdc"
+        && plan_string(idle, "kind").as_deref() == Some("idle_vault_deposit")
+        && plan_string(idle, "source_kind").as_deref() == Some("idle_vault_usdc")
+        && idle.source_reserve.is_none()
+        && idle.source_snapshot_id.is_none()
+        && idle_plan_account.is_some()
+        && idle_plan_slot.is_some_and(|slot| slot > 0)
+        && idle_plan_at.is_some()
+        && idle
+            .projected_evidence
+            .expected_idle_token_account
+            .as_deref()
+            == idle_plan_account.as_deref()
+        && idle.projected_evidence.expected_idle_observed_slot == idle_plan_slot
+        && idle.projected_evidence.expected_idle_observed_at == idle_plan_at
+        && idle.validation_error.is_none();
+
+    let contaminated_plan_account = plan_string(contaminated, "idle_token_account");
+    let contaminated_passed = contaminated.source_kind == "reserve_position"
+        && plan_string(contaminated, "kind").as_deref() == Some("same_mint")
+        && plan_string(contaminated, "source_kind").as_deref() == Some("reserve_position")
+        && contaminated
+            .source_reserve
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        && contaminated.source_snapshot_id.is_some_and(|id| id > 0)
+        && plan_i64(contaminated, "source_observed_slot").is_some_and(|slot| slot > 0)
+        && plan_datetime(contaminated, "source_observed_at").is_some()
+        && contaminated_plan_account.is_some()
+        && contaminated
+            .projected_evidence
+            .expected_idle_token_account
+            .as_deref()
+            == contaminated_plan_account.as_deref()
+        && contaminated
+            .projected_evidence
+            .expected_idle_observed_slot
+            .is_none()
+        && contaminated
+            .projected_evidence
+            .expected_idle_observed_at
+            .is_none()
+        && contaminated.validation_error.as_deref() == Some(CONTAMINATION_ERROR);
+
+    let mismatched_passed = mismatched.source_kind == "reserve_position"
+        && plan_string(mismatched, "kind").as_deref() == Some("idle_vault_deposit")
+        && plan_string(mismatched, "source_kind").as_deref() == Some("reserve_position")
+        && mismatched
+            .source_reserve
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        && mismatched.source_snapshot_id.is_some_and(|id| id > 0)
+        && plan_string(mismatched, "idle_token_account").is_none()
+        && mismatched
+            .projected_evidence
+            .expected_idle_token_account
+            .is_none()
+        && mismatched
+            .projected_evidence
+            .expected_idle_observed_slot
+            .is_none()
+        && mismatched
+            .projected_evidence
+            .expected_idle_observed_at
+            .is_none()
+        && mismatched.validation_error.as_deref() == Some(ROUTE_KIND_MISMATCH_ERROR);
+
+    subcheck(
+        "planner_executor_source_evidence_is_kind_scoped",
+        reserve_passed && idle_passed && contaminated_passed && mismatched_passed,
+        json!({
+            "fixtures": fixtures,
+            "reserveContractRecomputed": reserve_passed,
+            "idleContractRecomputed": idle_passed,
+            "crossKindContaminationRejected": contaminated_passed,
+            "routeKindSourceKindMismatchRejected": mismatched_passed,
+        }),
+    )
+}
+
 fn runtime_replay_subcheck(evidence: &RuntimeEvidenceV1) -> Subcheck {
     let replay = &evidence.replay;
     let alt_effect_ppm = replay
@@ -1563,6 +1815,8 @@ fn runtime_replay_subcheck(evidence: &RuntimeEvidenceV1) -> Subcheck {
 fn runtime_wiring_subcheck(
     evidence: &RuntimeEvidenceV1,
     production_light_worker_image_reference: Option<&str>,
+    production_heavy_worker_image_reference: Option<&str>,
+    repository_root: Option<&Path>,
 ) -> Subcheck {
     let required_role_probes = FleetWorkerRole::ALL.map(FleetWorkerRole::as_str);
     let required_stuck_stages = FleetStuckStage::ALL.map(FleetStuckStage::as_str);
@@ -1575,6 +1829,31 @@ fn runtime_wiring_subcheck(
     let health_observation = evidence.wiring.health_observation_interval_milliseconds;
     let probed_image_is_production_candidate = production_light_worker_image_reference
         .is_some_and(|expected| evidence.wiring.probed_container_image_reference == expected);
+    let heavy_image_is_production_candidate = production_heavy_worker_image_reference
+        .is_some_and(|expected| evidence.wiring.probed_heavy_container_image_reference == expected);
+    let light_suffix = image_commit_suffix(&evidence.wiring.probed_container_image_reference);
+    let heavy_suffix = image_commit_suffix(&evidence.wiring.probed_heavy_container_image_reference);
+    let (light_source_bound, light_source_evidence) = repository_root
+        .map(|root| image_source_binding(root, &evidence.wiring.probed_container_image_reference))
+        .unwrap_or((false, json!({"error": "repository root unavailable"})));
+    let (heavy_source_bound, heavy_source_evidence) = repository_root
+        .map(|root| {
+            image_source_binding(
+                root,
+                &evidence.wiring.probed_heavy_container_image_reference,
+            )
+        })
+        .unwrap_or((false, json!({"error": "repository root unavailable"})));
+    let registry_identity_bound = valid_sha256_digest(&evidence.wiring.light_registry_index_digest)
+        && valid_sha256_digest(&evidence.wiring.light_linux_amd64_manifest_digest)
+        && valid_sha256_digest(&evidence.wiring.heavy_registry_index_digest)
+        && valid_sha256_digest(&evidence.wiring.heavy_linux_amd64_manifest_digest)
+        && light_suffix.is_some()
+        && light_suffix == heavy_suffix
+        && Some(evidence.wiring.light_provenance_vcs_revision.as_str()) == light_suffix
+        && Some(evidence.wiring.heavy_provenance_vcs_revision.as_str()) == heavy_suffix
+        && evidence.wiring.light_provenance_vcs_source == IMAGE_PROVENANCE_SOURCE
+        && evidence.wiring.heavy_provenance_vcs_source == IMAGE_PROVENANCE_SOURCE;
     let exact_stuck_stage_set = evidence.wiring.stuck_stage_detection_milliseconds.len()
         == required_stuck_stages.len()
         && recovery_poll > 0
@@ -1590,12 +1869,21 @@ fn runtime_wiring_subcheck(
         "bound_local_container_and_stuck_stage_evidence_meets_feedback_gates",
         !evidence.wiring.local_container_image_id.trim().is_empty()
             && probed_image_is_production_candidate
+            && heavy_image_is_production_candidate
+            && light_source_bound
+            && heavy_source_bound
+            && registry_identity_bound
             && exact_role_set
             && exact_stuck_stage_set,
         json!({
             "evidence": &evidence.wiring,
             "productionLightWorkerImageReference": production_light_worker_image_reference,
+            "productionHeavyWorkerImageReference": production_heavy_worker_image_reference,
             "probedImageIsProductionCandidate": probed_image_is_production_candidate,
+            "heavyImageIsProductionCandidate": heavy_image_is_production_candidate,
+            "registryIdentityBound": registry_identity_bound,
+            "lightSourceBinding": light_source_evidence,
+            "heavySourceBinding": heavy_source_evidence,
             "requiredRoleProbes": required_role_probes,
             "requiredStuckStages": required_stuck_stages,
         }),
@@ -1719,7 +2007,10 @@ fn deterministic_evidence() -> Result<DeterministicEvidence, String> {
         &policy,
         vec![TargetCapacityCurve {
             target_reserve: "target".to_owned(),
+            observed_supply_usd_micros: 10_000_000_000_000,
+            observed_net_apy_bps: 600,
             already_committed_inflow_usd_micros: 0,
+            already_committed_outflow_usd_micros: 0,
             bands: vec![
                 CapacityBand {
                     cumulative_inflow_usd_micros: 100_000_000_000,
@@ -1750,22 +2041,51 @@ fn deterministic_evidence() -> Result<DeterministicEvidence, String> {
     let market_epoch = ImmutableMarketEpoch {
         optimizer_epoch_id: 77,
         fingerprint: "unchanged-market-snapshot".to_owned(),
+        catalog_fingerprint: "unchanged-market-catalog".to_owned(),
         captured_at: market_observed_at + chrono::Duration::seconds(10),
         expires_at: market_observed_at + chrono::Duration::minutes(5),
+        catalog_expires_at: market_observed_at + chrono::Duration::minutes(5),
+        catalog_reserve_count: 1,
         oldest_market_observed_at: Some(market_observed_at),
         newest_market_observed_at: Some(market_observed_at),
         minimum_market_slot: Some(42),
         maximum_market_slot: Some(42),
+        mint_coverage: vec![MarketMintCoverage {
+            mint: "USDC".to_owned(),
+            catalog_reserve_count: 1,
+            verified_reserve_count: 1,
+            eligible_target_reserve_count: 1,
+            complete: true,
+            expires_at: Some(market_observed_at + chrono::Duration::minutes(5)),
+            blockers: Vec::new(),
+        }],
         reserves: vec![MarketEpochReserve {
+            state_event_id: 1,
+            account_data_hash: "00".repeat(32),
+            state_observed_at: market_observed_at,
+            state_slot: 42,
+            verification_commitment: "confirmed".to_owned(),
             reserve: "reserve".to_owned(),
             market: Some("market".to_owned()),
             liquidity_mint: "USDC".to_owned(),
             mint_decimals: 6,
             market_price_usd_micros: 1_000_000,
+            reserve_last_update_slot: 42,
+            economic_slot_lag: 0,
+            economic_expires_at: market_observed_at + chrono::Duration::minutes(5),
+            reserve_last_update_stale: false,
+            reserve_price_status: 0,
+            market_price_last_updated_ts: market_observed_at.timestamp(),
+            available_amount_raw: "1000000000000".to_owned(),
+            borrowed_amount_raw: "0".to_owned(),
+            total_supply_amount_raw: "1000000000000".to_owned(),
+            utilization_ppm: 0,
+            borrow_apy_bps: 0,
             observed_at: market_observed_at,
             slot: 42,
             supply_apy_bps: 500,
             total_supply_usd_micros: 1_000_000_000_000,
+            target_eligible: true,
         }],
     };
     let mut repeated_read = market_epoch.clone();
@@ -4065,7 +4385,19 @@ async fn run_database_checks(
         .rebalance_opportunity(retry_generation_seed.id)
         .await?
         .ok_or("retry-generation seed opportunity disappeared")?;
-    let retry_generation_input = rediscovery_input_for_opportunity(&retry_generation_seed_record);
+    let mut retry_generation_input =
+        rediscovery_input_for_opportunity(&retry_generation_seed_record);
+    let retry_generation_plan = retry_generation_input
+        .execution_plan
+        .as_object_mut()
+        .ok_or("retry-generation execution plan is not an object")?;
+    retry_generation_plan.insert("source_kind".to_owned(), json!("reserve_position"));
+    retry_generation_plan.insert("source_observed_slot".to_owned(), json!(433_191_369));
+    retry_generation_plan.insert(
+        "source_observed_at".to_owned(),
+        json!("2026-07-16T03:11:11Z"),
+    );
+    retry_generation_plan.insert("idle_token_account".to_owned(), Value::Null);
     sqlx::query("DELETE FROM loyal_yield.rebalance_opportunities WHERE id = $1")
         .bind(retry_generation_seed.id)
         .execute(fixture.client.pool())
@@ -4090,7 +4422,10 @@ async fn run_database_checks(
                 next_state: RebalanceOpportunityState::Failed,
                 available_at: None,
                 decision_id: None,
-                reason: Some("synthetic terminal pre-decision no-effect".to_owned()),
+                reason: Some(
+                    "same-mint reserve-position request cannot carry idle-vault evidence"
+                        .to_owned(),
+                ),
                 route_fingerprint: None,
                 requirements_fingerprint: None,
                 execution_plan: None,
@@ -4115,7 +4450,7 @@ async fn run_database_checks(
     let retry_generation_rows = sqlx::query(
         r#"
         SELECT id, idempotency_key, rediscovery_key, attempt_generation,
-               opportunity_state, updated_at
+               opportunity_state, execution_plan, terminal_reason, updated_at
         FROM loyal_yield.rebalance_opportunities
         WHERE rediscovery_key = $1
         ORDER BY attempt_generation, id
@@ -4144,6 +4479,14 @@ async fn run_database_checks(
         .first()
         .ok_or("retry-generation rows disappeared")?
         .try_get::<DateTime<Utc>, _>("updated_at")?;
+    let retry_generation_first_execution_plan = retry_generation_rows
+        .first()
+        .ok_or("retry-generation rows disappeared")?
+        .try_get::<Value, _>("execution_plan")?;
+    let retry_generation_first_terminal_reason = retry_generation_rows
+        .first()
+        .ok_or("retry-generation rows disappeared")?
+        .try_get::<Option<String>, _>("terminal_reason")?;
     let retry_generation_dirty_hint_count: i64 = sqlx::query_scalar(
         r#"
         SELECT count(*)
@@ -4169,6 +4512,19 @@ async fn run_database_checks(
         && retry_generation_idempotency_keys[0] != retry_generation_idempotency_keys[1]
         && retry_generation_first_updated_at == retry_generation_failed.updated_at
         && retry_generation_dirty_hint_count == 1;
+    let source_contract_failed_attempt_and_successor_evidence = retry_generation_concurrency_safe
+        && retry_generation_first_execution_plan == retry_generation_first.execution_plan
+        && retry_generation_first_terminal_reason.as_deref()
+            == Some("same-mint reserve-position request cannot carry idle-vault evidence")
+        && retry_generation_idempotency_keys
+            .first()
+            .map(String::as_str)
+            == Some(retry_generation_first.idempotency_key.as_str())
+        && retry_generation_failed.id == retry_generation_first.id
+        && retry_generation_failed.idempotency_key == retry_generation_first.idempotency_key
+        && retry_generation_failed.rediscovery_key == retry_generation_first.rediscovery_key
+        && retry_generation_failed.attempt_generation == retry_generation_first.attempt_generation
+        && retry_generation_failed.execution_plan == retry_generation_first.execution_plan;
 
     let fused_cluster = fixture.cluster("fused_execute");
     let fused_epoch = fixture.seed_epoch(&fused_cluster).await?;
@@ -4313,72 +4669,600 @@ async fn run_database_checks(
             == conflicted_revalidation.opportunity.requirements_fingerprint
         && conflicted_rows == 0;
 
-    let stale_handoff_cluster = fixture.cluster("stale_handoff");
-    let stale_handoff_epoch = fixture.seed_epoch(&stale_handoff_cluster).await?;
+    let commit_publication_cluster = fixture.cluster("commit_publication");
+    let commit_publication_epoch = fixture.seed_epoch(&commit_publication_cluster).await?;
+    let commit_publication_seed = fixture
+        .seed_opportunity(
+            &commit_publication_cluster,
+            commit_publication_epoch,
+            "commit-publication",
+            "revalidate",
+            926,
+        )
+        .await?;
+    let commit_publication_record = fixture
+        .client
+        .rebalance_opportunity(commit_publication_seed.id)
+        .await?
+        .ok_or("commit-publication seed opportunity disappeared")?;
+    let commit_publication_input = rediscovery_input_for_opportunity(&commit_publication_record);
+    sqlx::query("DELETE FROM loyal_yield.rebalance_opportunities WHERE id = $1")
+        .bind(commit_publication_seed.id)
+        .execute(fixture.client.pool())
+        .await?;
+    sqlx::query(
+        r#"
+        CREATE OR REPLACE FUNCTION loyal_yield.fleet_verifier_force_short_publication_lifetime()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $fixture$
+        BEGIN
+            IF NEW.cluster LIKE 'fleet_verify_%_commit_publication' THEN
+                UPDATE loyal_yield.rebalance_opportunities
+                SET expires_at = clock_timestamp() + interval '30 seconds'
+                WHERE id = NEW.id;
+            END IF;
+            RETURN NULL;
+        END;
+        $fixture$
+        "#,
+    )
+    .execute(fixture.client.pool())
+    .await?;
+    sqlx::query(
+        "DROP TRIGGER IF EXISTS aaa_fleet_verifier_force_short_publication_lifetime ON loyal_yield.rebalance_opportunities",
+    )
+    .execute(fixture.client.pool())
+    .await?;
+    sqlx::query(
+        r#"
+        CREATE CONSTRAINT TRIGGER aaa_fleet_verifier_force_short_publication_lifetime
+        AFTER INSERT ON loyal_yield.rebalance_opportunities
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW
+        EXECUTE FUNCTION loyal_yield.fleet_verifier_force_short_publication_lifetime()
+        "#,
+    )
+    .execute(fixture.client.pool())
+    .await?;
+    let commit_publication_result = fixture
+        .client
+        .upsert_rebalance_opportunity(commit_publication_input.clone())
+        .await;
+    sqlx::query(
+        "DROP TRIGGER IF EXISTS aaa_fleet_verifier_force_short_publication_lifetime ON loyal_yield.rebalance_opportunities",
+    )
+    .execute(fixture.client.pool())
+    .await?;
+    sqlx::query(
+        "DROP FUNCTION IF EXISTS loyal_yield.fleet_verifier_force_short_publication_lifetime()",
+    )
+    .execute(fixture.client.pool())
+    .await?;
+    let commit_publication_error = commit_publication_result
+        .as_ref()
+        .err()
+        .map(ToString::to_string);
+    let commit_publication_rejected_during_commit = commit_publication_error
+        .as_deref()
+        .is_some_and(|error| error.contains("active rebalance opportunity cannot commit"));
+    let commit_publication_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.rebalance_opportunities WHERE cluster = $1 AND vault_id = $2",
+    )
+    .bind(&commit_publication_cluster)
+    .bind(commit_publication_record.vault_id.as_i64())
+    .fetch_one(fixture.client.pool())
+    .await?;
+
+    let commit_lifetime_cluster = fixture.cluster("commit_lifetime");
+    let commit_lifetime_epoch = fixture.seed_epoch(&commit_lifetime_cluster).await?;
     fixture
         .seed_opportunity(
-            &stale_handoff_cluster,
-            stale_handoff_epoch,
-            "stale-handoff",
+            &commit_lifetime_cluster,
+            commit_lifetime_epoch,
+            "commit-lifetime",
             "ready",
             925,
         )
         .await?;
-    let stale_handoff_lease = claim_one(
+    let commit_lifetime_fee_payer = format!("fee-shard:{}:commit-lifetime", fixture.prefix);
+    sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.route_fee_payer_shards
+            (cluster, fee_payer, enabled, minimum_balance_lamports,
+             maximum_balance_lamports, rolling_window_seconds,
+             maximum_window_spend_lamports, maximum_transaction_fee_lamports)
+        VALUES ($1, $2, TRUE, 50000, 200000, 3600, 80000, 50000)
+        "#,
+    )
+    .bind(&commit_lifetime_cluster)
+    .bind(&commit_lifetime_fee_payer)
+    .execute(fixture.client.pool())
+    .await?;
+    let commit_lifetime_lease = claim_one(
         &fixture.client,
-        &stale_handoff_cluster,
-        "stale-handoff-worker",
+        &commit_lifetime_cluster,
+        "commit-lifetime-worker",
         RebalanceOpportunityClaimKind::Execute,
     )
     .await?;
-    let stale_handoff_conflicts = vec![
-        format!("fleet-shared-write-lane:{}:stale-handoff", fixture.prefix),
+    let commit_lifetime_conflicts = vec![
+        format!("fleet-shared-write-lane:{}:commit-lifetime", fixture.prefix),
         format!(
-            "vault-write:{}:{}",
+            "vault-write:{}:{}:commit-lifetime",
             fixture.prefix,
-            stale_handoff_lease.opportunity.vault_id.as_i64()
+            commit_lifetime_lease.opportunity.vault_id.as_i64()
         ),
     ];
     fixture
         .client
         .acquire_route_account_conflict_leases(
-            &stale_handoff_lease,
-            &stale_handoff_conflicts,
+            &commit_lifetime_lease,
+            &commit_lifetime_conflicts,
             Utc::now() + chrono::Duration::minutes(4),
         )
         .await?;
+    // This verifier-only deferred trigger runs first during COMMIT. The
+    // application-level final check has already succeeded, so shortening the
+    // opportunity here proves migration 29 rechecks the DB clock during COMMIT
+    // and rolls back the fully-linked handoff atomically.
     sqlx::query(
-        "UPDATE loyal_yield.rebalance_opportunities SET expires_at = clock_timestamp() - interval '1 millisecond' WHERE id = $1",
+        r#"
+        CREATE OR REPLACE FUNCTION loyal_yield.fleet_verifier_force_short_lifetime()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $fixture$
+        BEGIN
+            IF NEW.semantic_key LIKE 'semantic:fleet_verify_%:commit-lifetime' THEN
+                UPDATE loyal_yield.rebalance_opportunities
+                SET expires_at = clock_timestamp() + interval '30 seconds'
+                WHERE id = NEW.opportunity_id;
+            END IF;
+            RETURN NULL;
+        END;
+        $fixture$
+        "#,
     )
-    .bind(stale_handoff_lease.opportunity.id)
     .execute(fixture.client.pool())
     .await?;
-    let stale_handoff_result = fixture
+    sqlx::query(
+        "DROP TRIGGER IF EXISTS aaa_fleet_verifier_force_short_lifetime ON loyal_yield.signed_route_submissions",
+    )
+    .execute(fixture.client.pool())
+    .await?;
+    sqlx::query(
+        r#"
+        CREATE CONSTRAINT TRIGGER aaa_fleet_verifier_force_short_lifetime
+        AFTER INSERT ON loyal_yield.signed_route_submissions
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW
+        EXECUTE FUNCTION loyal_yield.fleet_verifier_force_short_lifetime()
+        "#,
+    )
+    .execute(fixture.client.pool())
+    .await?;
+    let commit_lifetime_result = fixture
         .client
         .prepare_same_mint_rebalance_with_signed_submission(
-            same_mint_input_for_lease(&stale_handoff_lease)?,
-            &stale_handoff_lease,
-            target_capacity_input_for_lease(fixture, &stale_handoff_lease).await?,
-            signed_input_for_lease(
+            same_mint_input_for_lease(&commit_lifetime_lease)?,
+            &commit_lifetime_lease,
+            target_capacity_input_for_lease(fixture, &commit_lifetime_lease).await?,
+            fee_shard_signed_input_for_lease(
                 fixture,
-                &stale_handoff_lease,
-                stale_handoff_conflicts,
-                "stale-handoff",
+                &commit_lifetime_lease,
+                commit_lifetime_conflicts.clone(),
+                "commit-lifetime",
+                &commit_lifetime_fee_payer,
+                100_000,
+                5_000,
             )
             .await?,
         )
         .await;
-    let stale_handoff_error = stale_handoff_result.as_ref().err().map(ToString::to_string);
-    let stale_handoff_decisions: i64 = sqlx::query_scalar(
+    sqlx::query(
+        "DROP TRIGGER IF EXISTS aaa_fleet_verifier_force_short_lifetime ON loyal_yield.signed_route_submissions",
+    )
+    .execute(fixture.client.pool())
+    .await?;
+    sqlx::query("DROP FUNCTION IF EXISTS loyal_yield.fleet_verifier_force_short_lifetime()")
+        .execute(fixture.client.pool())
+        .await?;
+    let commit_lifetime_error = commit_lifetime_result
+        .as_ref()
+        .err()
+        .map(ToString::to_string);
+    let commit_lifetime_rejected_during_commit = commit_lifetime_error
+        .as_deref()
+        .is_some_and(|error| error.contains("signed route handoff cannot commit"));
+    let commit_lifetime_decisions: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM loyal_yield.rebalance_decisions WHERE vault_id = $1",
     )
-    .bind(stale_handoff_lease.opportunity.vault_id.as_i64())
+    .bind(commit_lifetime_lease.opportunity.vault_id.as_i64())
     .fetch_one(fixture.client.pool())
     .await?;
-    let stale_handoff_submissions: i64 = sqlx::query_scalar(
+    let (
+        commit_lifetime_state,
+        commit_lifetime_owner,
+        commit_lifetime_fence,
+        commit_lifetime_margin_preserved,
+    ): (String, Option<String>, i64, bool) = sqlx::query_as(
+        r#"
+        SELECT opportunity_state, lease_owner, fencing_token,
+               expires_at >= clock_timestamp() + interval '60 seconds'
+        FROM loyal_yield.rebalance_opportunities
+        WHERE id = $1
+        "#,
+    )
+    .bind(commit_lifetime_lease.opportunity.id)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let commit_lifetime_capacity_reservations: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.target_capacity_reservations WHERE opportunity_id = $1",
+    )
+    .bind(commit_lifetime_lease.opportunity.id)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let commit_lifetime_submissions: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM loyal_yield.signed_route_submissions WHERE opportunity_id = $1",
     )
-    .bind(stale_handoff_lease.opportunity.id)
+    .bind(commit_lifetime_lease.opportunity.id)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let commit_lifetime_fee_reservations: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.route_fee_payer_spend_reservations WHERE opportunity_id = $1",
+    )
+    .bind(commit_lifetime_lease.opportunity.id)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let (
+        commit_lifetime_conflict_rows,
+        commit_lifetime_unattached_conflict_rows,
+        commit_lifetime_owned_conflict_rows,
+    ): (i64, i64, i64) = sqlx::query_as(
+        r#"
+        SELECT count(*)::BIGINT,
+               count(*) FILTER (WHERE submission_id IS NULL)::BIGINT,
+               count(*) FILTER (
+                   WHERE lease_owner = $2 AND fencing_token = $3
+               )::BIGINT
+        FROM loyal_yield.route_account_conflict_leases
+        WHERE opportunity_id = $1
+        "#,
+    )
+    .bind(commit_lifetime_lease.opportunity.id)
+    .bind(&commit_lifetime_lease.owner)
+    .bind(commit_lifetime_lease.fencing_token)
+    .fetch_one(fixture.client.pool())
+    .await?;
+
+    // A deferred trigger event whose base row was genuinely deleted later in
+    // the same transaction is cleanup, not publication, and must still commit.
+    let deleted_cleanup_cluster = fixture.cluster("deleted_cleanup");
+    let deleted_cleanup_epoch = fixture.seed_epoch(&deleted_cleanup_cluster).await?;
+    let deleted_cleanup_seed = fixture
+        .seed_opportunity(
+            &deleted_cleanup_cluster,
+            deleted_cleanup_epoch,
+            "deleted-cleanup",
+            "ready",
+            925,
+        )
+        .await?;
+    let mut deleted_cleanup_tx = fixture.client.pool().begin().await?;
+    sqlx::query(
+        "UPDATE loyal_yield.rebalance_opportunities SET opportunity_state = 'revalidate' WHERE id = $1",
+    )
+    .bind(deleted_cleanup_seed.id)
+    .execute(&mut *deleted_cleanup_tx)
+    .await?;
+    sqlx::query("DELETE FROM loyal_yield.rebalance_opportunities WHERE id = $1")
+        .bind(deleted_cleanup_seed.id)
+        .execute(&mut *deleted_cleanup_tx)
+        .await?;
+    let deleted_cleanup_result = deleted_cleanup_tx.commit().await;
+    let deleted_cleanup_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.rebalance_opportunities WHERE id = $1",
+    )
+    .bind(deleted_cleanup_seed.id)
+    .fetch_one(fixture.client.pool())
+    .await?;
+
+    // An active opportunity must not become detached from its immutable epoch
+    // by changing cluster after the application-level publication check. The
+    // deferred trigger must select the base opportunity row and fail closed on
+    // the now-missing reciprocal epoch join.
+    let active_identity_cluster = fixture.cluster("active_epoch_identity");
+    let active_identity_epoch = fixture.seed_epoch(&active_identity_cluster).await?;
+    let active_identity_seed = fixture
+        .seed_opportunity(
+            &active_identity_cluster,
+            active_identity_epoch,
+            "active-epoch-identity",
+            "ready",
+            924,
+        )
+        .await?;
+    let mismatched_active_identity_cluster = format!("{active_identity_cluster}:mismatched");
+    let active_identity_mismatch_result =
+        sqlx::query("UPDATE loyal_yield.rebalance_opportunities SET cluster = $2 WHERE id = $1")
+            .bind(active_identity_seed.id)
+            .bind(&mismatched_active_identity_cluster)
+            .execute(fixture.client.pool())
+            .await;
+    let active_identity_mismatch_error = active_identity_mismatch_result
+        .as_ref()
+        .err()
+        .map(ToString::to_string);
+    let active_identity_mismatch_rejected = active_identity_mismatch_error
+        .as_deref()
+        .is_some_and(|error| error.contains("active rebalance opportunity cannot commit"));
+    let active_identity_cluster_after: String =
+        sqlx::query_scalar("SELECT cluster FROM loyal_yield.rebalance_opportunities WHERE id = $1")
+            .bind(active_identity_seed.id)
+            .fetch_one(fixture.client.pool())
+            .await?;
+
+    // Force a cross-row identity mismatch after the atomic handoff has done all
+    // of its final application checks but before COMMIT. The signed fence must
+    // still find the submission base row and reject the missing reciprocal
+    // opportunity/epoch join instead of treating it as deletion cleanup.
+    let signed_identity_cluster = fixture.cluster("signed_epoch_identity");
+    let signed_identity_epoch = fixture.seed_epoch(&signed_identity_cluster).await?;
+    let signed_identity_now = Utc::now();
+    let signed_identity_wrong_epoch = fixture
+        .client
+        .upsert_optimizer_epoch(
+            loyal_yield_orchestrator::fleet_orchestration::OptimizerEpochInput {
+                cluster: signed_identity_cluster.clone(),
+                epoch_key: format!("{signed_identity_cluster}:wrong-signed-epoch"),
+                market_slot: 10_001,
+                observed_at: signed_identity_now,
+                expires_at: signed_identity_now + chrono::Duration::hours(4),
+                market_state: json!({"fixture": fixture.prefix, "wrongSignedEpoch": true}),
+            },
+        )
+        .await?;
+    fixture
+        .seed_opportunity(
+            &signed_identity_cluster,
+            signed_identity_epoch,
+            "signed-epoch-identity",
+            "ready",
+            923,
+        )
+        .await?;
+    let signed_identity_lease = claim_one(
+        &fixture.client,
+        &signed_identity_cluster,
+        "signed-identity-worker",
+        RebalanceOpportunityClaimKind::Execute,
+    )
+    .await?;
+    let signed_identity_conflicts = vec![
+        format!("fleet-shared-write-lane:{}:signed-identity", fixture.prefix),
+        format!(
+            "vault-write:{}:{}:signed-identity",
+            fixture.prefix,
+            signed_identity_lease.opportunity.vault_id.as_i64()
+        ),
+    ];
+    fixture
+        .client
+        .acquire_route_account_conflict_leases(
+            &signed_identity_lease,
+            &signed_identity_conflicts,
+            Utc::now() + chrono::Duration::minutes(4),
+        )
+        .await?;
+    let signed_identity_trigger_sql = format!(
+        r#"
+        CREATE OR REPLACE FUNCTION loyal_yield.fleet_verifier_force_signed_identity_mismatch()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $fixture$
+        BEGIN
+            IF NEW.semantic_key LIKE 'semantic:fleet_verify_%:signed-epoch-identity' THEN
+                UPDATE loyal_yield.rebalance_opportunities
+                SET optimizer_epoch_id = {}
+                WHERE id = NEW.opportunity_id;
+            END IF;
+            RETURN NULL;
+        END;
+        $fixture$
+        "#,
+        signed_identity_wrong_epoch.id
+    );
+    sqlx::query(&signed_identity_trigger_sql)
+        .execute(fixture.client.pool())
+        .await?;
+    sqlx::query(
+        "DROP TRIGGER IF EXISTS aaa_fleet_verifier_force_signed_identity_mismatch ON loyal_yield.signed_route_submissions",
+    )
+    .execute(fixture.client.pool())
+    .await?;
+    sqlx::query(
+        r#"
+        CREATE CONSTRAINT TRIGGER aaa_fleet_verifier_force_signed_identity_mismatch
+        AFTER INSERT ON loyal_yield.signed_route_submissions
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW
+        EXECUTE FUNCTION loyal_yield.fleet_verifier_force_signed_identity_mismatch()
+        "#,
+    )
+    .execute(fixture.client.pool())
+    .await?;
+    let signed_identity_result = fixture
+        .client
+        .prepare_same_mint_rebalance_with_signed_submission(
+            same_mint_input_for_lease(&signed_identity_lease)?,
+            &signed_identity_lease,
+            target_capacity_input_for_lease(fixture, &signed_identity_lease).await?,
+            signed_input_for_lease(
+                fixture,
+                &signed_identity_lease,
+                signed_identity_conflicts,
+                "signed-epoch-identity",
+            )
+            .await?,
+        )
+        .await;
+    sqlx::query(
+        "DROP TRIGGER IF EXISTS aaa_fleet_verifier_force_signed_identity_mismatch ON loyal_yield.signed_route_submissions",
+    )
+    .execute(fixture.client.pool())
+    .await?;
+    sqlx::query(
+        "DROP FUNCTION IF EXISTS loyal_yield.fleet_verifier_force_signed_identity_mismatch()",
+    )
+    .execute(fixture.client.pool())
+    .await?;
+    let signed_identity_error = signed_identity_result
+        .as_ref()
+        .err()
+        .map(ToString::to_string);
+    let signed_identity_mismatch_rejected = signed_identity_error
+        .as_deref()
+        .is_some_and(|error| error.contains("signed route handoff cannot commit"));
+    let signed_identity_decisions: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.rebalance_decisions WHERE vault_id = $1",
+    )
+    .bind(signed_identity_lease.opportunity.vault_id.as_i64())
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let signed_identity_submissions: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.signed_route_submissions WHERE opportunity_id = $1",
+    )
+    .bind(signed_identity_lease.opportunity.id)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let signed_identity_epoch_after: i64 = sqlx::query_scalar(
+        "SELECT optimizer_epoch_id FROM loyal_yield.rebalance_opportunities WHERE id = $1",
+    )
+    .bind(signed_identity_lease.opportunity.id)
+    .fetch_one(fixture.client.pool())
+    .await?;
+
+    // Once a safely committed transaction has been broadcast, recording the
+    // normal signed -> submitted transition must remain legal even if less than
+    // sixty seconds of opportunity lifetime remain. Terminal cleanup is also
+    // legal, while any terminal -> signed reactivation must re-enter the fence.
+    let state_guard_cluster = fixture.cluster("signed_state_guard");
+    let state_guard_epoch = fixture.seed_epoch(&state_guard_cluster).await?;
+    fixture
+        .seed_opportunity(
+            &state_guard_cluster,
+            state_guard_epoch,
+            "signed-state-guard",
+            "ready",
+            922,
+        )
+        .await?;
+    let state_guard_lease = claim_one(
+        &fixture.client,
+        &state_guard_cluster,
+        "signed-state-worker",
+        RebalanceOpportunityClaimKind::Execute,
+    )
+    .await?;
+    let state_guard_conflicts = vec![
+        format!(
+            "fleet-shared-write-lane:{}:signed-state-guard",
+            fixture.prefix
+        ),
+        format!(
+            "vault-write:{}:{}:signed-state-guard",
+            fixture.prefix,
+            state_guard_lease.opportunity.vault_id.as_i64()
+        ),
+    ];
+    fixture
+        .client
+        .acquire_route_account_conflict_leases(
+            &state_guard_lease,
+            &state_guard_conflicts,
+            Utc::now() + chrono::Duration::minutes(4),
+        )
+        .await?;
+    let (_, state_guard_submission) = fixture
+        .client
+        .prepare_same_mint_rebalance_with_signed_submission(
+            same_mint_input_for_lease(&state_guard_lease)?,
+            &state_guard_lease,
+            target_capacity_input_for_lease(fixture, &state_guard_lease).await?,
+            signed_input_for_lease(
+                fixture,
+                &state_guard_lease,
+                state_guard_conflicts,
+                "signed-state-guard",
+            )
+            .await?,
+        )
+        .await?;
+    sqlx::query(
+        "UPDATE loyal_yield.rebalance_opportunities SET expires_at = clock_timestamp() + interval '30 seconds' WHERE id = $1",
+    )
+    .bind(state_guard_lease.opportunity.id)
+    .execute(fixture.client.pool())
+    .await?;
+    let normal_submitted_result = sqlx::query(
+        r#"
+        UPDATE loyal_yield.signed_route_submissions
+        SET submission_state = 'submitted',
+            submitted_slot = 10001,
+            submitted_at = clock_timestamp(),
+            updated_at = clock_timestamp()
+        WHERE id = $1
+        "#,
+    )
+    .bind(state_guard_submission.id)
+    .execute(fixture.client.pool())
+    .await;
+    let state_after_normal_submission: String = sqlx::query_scalar(
+        "SELECT submission_state FROM loyal_yield.signed_route_submissions WHERE id = $1",
+    )
+    .bind(state_guard_submission.id)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let terminal_cleanup_result = sqlx::query(
+        r#"
+        UPDATE loyal_yield.signed_route_submissions
+        SET submission_state = 'failed',
+            error_detail = 'fleet verifier terminal cleanup',
+            updated_at = clock_timestamp()
+        WHERE id = $1
+        "#,
+    )
+    .bind(state_guard_submission.id)
+    .execute(fixture.client.pool())
+    .await;
+    let reactivation_result = sqlx::query(
+        r#"
+        UPDATE loyal_yield.signed_route_submissions
+        SET submission_state = 'signed',
+            updated_at = clock_timestamp()
+        WHERE id = $1
+        "#,
+    )
+    .bind(state_guard_submission.id)
+    .execute(fixture.client.pool())
+    .await;
+    let reactivation_error = reactivation_result.as_ref().err().map(ToString::to_string);
+    let reactivation_rejected = reactivation_error
+        .as_deref()
+        .is_some_and(|error| error.contains("signed route handoff cannot commit"));
+    let (state_after_reactivation_attempt, opportunity_state_after_terminal_cleanup): (
+        String,
+        String,
+    ) = sqlx::query_as(
+        r#"
+        SELECT submission.submission_state, opportunity.opportunity_state
+        FROM loyal_yield.signed_route_submissions submission
+        JOIN loyal_yield.rebalance_opportunities opportunity
+          ON opportunity.id = submission.opportunity_id
+        WHERE submission.id = $1
+        "#,
+    )
+    .bind(state_guard_submission.id)
     .fetch_one(fixture.client.pool())
     .await?;
 
@@ -5080,6 +5964,7 @@ async fn run_database_checks(
     }
     let semantic_conflicts = vec![
         format!("fleet-shared-write-lane:{}:signed", fixture.prefix),
+        format!("policy-setup-funding:{}:signed", fixture.prefix),
         format!("vault-write:{}:signed", fixture.prefix),
     ];
     fixture
@@ -5204,9 +6089,17 @@ async fn run_database_checks(
             expires_at >= confirmer_reclaimed.expires_at + chrono::Duration::minutes(2)
         });
     let confirmer_fenced = confirmer_reclaimed.fencing_token > confirmer_first.fencing_token;
-    let reconciliation_conflicts = semantic_conflicts
+    let ambiguous_conflicts = semantic_conflicts
         .iter()
         .filter(|key| !key.starts_with("fleet-shared-write-lane:"))
+        .cloned()
+        .collect::<Vec<_>>();
+    let reconciliation_conflicts = semantic_conflicts
+        .iter()
+        .filter(|key| {
+            !key.starts_with("fleet-shared-write-lane:")
+                && !key.starts_with("policy-setup-funding:")
+        })
         .cloned()
         .collect::<Vec<_>>();
     fixture
@@ -5308,8 +6201,9 @@ async fn run_database_checks(
         .acquire_route_account_conflict_leases(
             &ambiguous_replacement_lease,
             &[
-                reconciliation_conflicts
-                    .first()
+                ambiguous_conflicts
+                    .iter()
+                    .find(|key| key.starts_with("vault-write:"))
                     .ok_or("ambiguous fixture has no retained vault conflict")?
                     .clone(),
                 format!("fleet-shared-write-lane:{}:ambiguous-retry", fixture.prefix),
@@ -5931,7 +6825,7 @@ async fn run_database_checks(
     Ok(DatabaseEvidence {
         migration_subchecks: vec![
             subcheck(
-                "isolated_database_migrated_through_27",
+                "isolated_database_migrated_through_29",
                 true,
                 json!({
                     "databaseNameGuard": "fleet_verify",
@@ -5940,6 +6834,8 @@ async fn run_database_checks(
                     "migration25": "fee_only_route_payer_shards",
                     "migration26": "target_capacity_reservations",
                     "migration27": "rebalance_opportunity_attempt_generations",
+                    "migration28": "reusable_alt_terminal_repair",
+                    "migration29": "fleet_commit_lifetime_fences",
                 }),
             ),
             subcheck(
@@ -6174,6 +7070,27 @@ async fn run_database_checks(
                 }),
             ),
             subcheck(
+                "predecision_source_contract_failure_creates_one_immutable_retry_generation",
+                source_contract_failed_attempt_and_successor_evidence,
+                json!({
+                    "historicalTerminalReason": retry_generation_first_terminal_reason,
+                    "failedAttemptId": retry_generation_first.id,
+                    "failedAttemptIdempotencyKey": retry_generation_first.idempotency_key,
+                    "rediscoveryKey": retry_generation_first.rediscovery_key,
+                    "failedAttemptGeneration": retry_generation_first.attempt_generation,
+                    "persistedFailedExecutionPlan": retry_generation_first_execution_plan,
+                    "persistedFailedUpdatedAt": retry_generation_first_updated_at,
+                    "successorId": retry_generation_second_a.id,
+                    "successorGeneration": retry_generation_second_a.attempt_generation,
+                    "concurrentRediscoveryResultIds": [
+                        retry_generation_second_a.id,
+                        retry_generation_second_b.id,
+                    ],
+                    "successorState": retry_generation_second_a.state.as_str(),
+                    "durableRetryDirtyHints": retry_generation_dirty_hint_count,
+                }),
+            ),
+            subcheck(
                 "fused_revalidation_promotes_only_with_immediate_exact_conflicts",
                 fused_promoted.claim_kind == RebalanceOpportunityClaimKind::Execute
                     && fused_promoted.fencing_token > fused_revalidation.fencing_token
@@ -6192,15 +7109,113 @@ async fn run_database_checks(
                 }),
             ),
             subcheck(
-                "expired_opportunity_cannot_cross_atomic_signed_decision_handoff",
-                stale_handoff_result.is_err()
-                    && stale_handoff_decisions == 0
-                    && stale_handoff_submissions == 0,
+                "commit_time_lifetime_fence_rolls_back_active_opportunity_publication",
+                commit_publication_result.is_err()
+                    && commit_publication_rejected_during_commit
+                    && commit_publication_rows == 0,
                 json!({
-                    "handoffRejected": stale_handoff_result.is_err(),
-                    "error": stale_handoff_error,
-                    "decisionRows": stale_handoff_decisions,
-                    "signedSubmissionRows": stale_handoff_submissions,
+                    "publicationRejectedDuringCommit": commit_publication_result.is_err(),
+                    "rejectedByCommitTimeLifetimeFence": commit_publication_rejected_during_commit,
+                    "error": commit_publication_error,
+                    "visibleOpportunityRows": commit_publication_rows,
+                    "cluster": commit_publication_cluster,
+                    "vaultId": commit_publication_record.vault_id.as_i64(),
+                }),
+            ),
+            subcheck(
+                "commit_time_lifetime_fence_rolls_back_fully_linked_signed_handoff",
+                commit_lifetime_result.is_err()
+                    && commit_lifetime_rejected_during_commit
+                    && commit_lifetime_decisions == 0
+                    && commit_lifetime_submissions == 0
+                    && commit_lifetime_capacity_reservations == 0
+                    && commit_lifetime_fee_reservations == 0
+                    && commit_lifetime_conflict_rows
+                        == i64::try_from(commit_lifetime_conflicts.len()).unwrap_or(-1)
+                    && commit_lifetime_unattached_conflict_rows == commit_lifetime_conflict_rows
+                    && commit_lifetime_owned_conflict_rows == commit_lifetime_conflict_rows
+                    && commit_lifetime_margin_preserved
+                    && commit_lifetime_state == "leased"
+                    && commit_lifetime_owner.as_deref()
+                        == Some(commit_lifetime_lease.owner.as_str())
+                    && commit_lifetime_fence == commit_lifetime_lease.fencing_token,
+                json!({
+                    "handoffRejectedDuringCommit": commit_lifetime_result.is_err(),
+                    "rejectedByCommitTimeLifetimeFence": commit_lifetime_rejected_during_commit,
+                    "error": commit_lifetime_error,
+                    "decisionRows": commit_lifetime_decisions,
+                    "signedSubmissionRows": commit_lifetime_submissions,
+                    "targetCapacityReservationRows": commit_lifetime_capacity_reservations,
+                    "feeSpendReservationRows": commit_lifetime_fee_reservations,
+                    "conflictRows": commit_lifetime_conflict_rows,
+                    "unattachedConflictRows": commit_lifetime_unattached_conflict_rows,
+                    "correctlyOwnedConflictRows": commit_lifetime_owned_conflict_rows,
+                    "opportunityRetainedMinimumMargin": commit_lifetime_margin_preserved,
+                    "opportunityStateAfterRollback": commit_lifetime_state,
+                    "leaseOwnerAfterRollback": commit_lifetime_owner,
+                    "fencingTokenAfterRollback": commit_lifetime_fence,
+                }),
+            ),
+            subcheck(
+                "commit_time_fence_allows_actual_row_deletion_cleanup",
+                deleted_cleanup_result.is_ok() && deleted_cleanup_rows == 0,
+                json!({
+                    "deleteCommitted": deleted_cleanup_result.is_ok(),
+                    "visibleOpportunityRows": deleted_cleanup_rows,
+                    "opportunityId": deleted_cleanup_seed.id,
+                }),
+            ),
+            subcheck(
+                "commit_time_active_opportunity_epoch_identity_mismatch_fails_closed",
+                active_identity_mismatch_result.is_err()
+                    && active_identity_mismatch_rejected
+                    && active_identity_cluster_after == active_identity_cluster,
+                json!({
+                    "identityMismatchRejectedDuringCommit": active_identity_mismatch_result.is_err(),
+                    "rejectedByCommitTimeLifetimeFence": active_identity_mismatch_rejected,
+                    "error": active_identity_mismatch_error,
+                    "attemptedCluster": mismatched_active_identity_cluster,
+                    "clusterAfterRollback": active_identity_cluster_after,
+                    "expectedCluster": active_identity_cluster,
+                }),
+            ),
+            subcheck(
+                "commit_time_signed_handoff_identity_mismatch_fails_closed",
+                signed_identity_result.is_err()
+                    && signed_identity_mismatch_rejected
+                    && signed_identity_decisions == 0
+                    && signed_identity_submissions == 0
+                    && signed_identity_epoch_after == signed_identity_epoch,
+                json!({
+                    "identityMismatchRejectedDuringCommit": signed_identity_result.is_err(),
+                    "rejectedByCommitTimeLifetimeFence": signed_identity_mismatch_rejected,
+                    "error": signed_identity_error,
+                    "decisionRows": signed_identity_decisions,
+                    "signedSubmissionRows": signed_identity_submissions,
+                    "attemptedOptimizerEpochId": signed_identity_wrong_epoch.id,
+                    "optimizerEpochIdAfterRollback": signed_identity_epoch_after,
+                    "expectedOptimizerEpochId": signed_identity_epoch,
+                }),
+            ),
+            subcheck(
+                "normal_broadcast_transition_and_terminal_cleanup_remain_legal_but_reactivation_is_fenced",
+                normal_submitted_result.is_ok()
+                    && state_after_normal_submission == "submitted"
+                    && terminal_cleanup_result.is_ok()
+                    && reactivation_result.is_err()
+                    && reactivation_rejected
+                    && state_after_reactivation_attempt == "failed"
+                    && opportunity_state_after_terminal_cleanup == "failed",
+                json!({
+                    "opportunityLifetimeAtNormalTransitionSeconds": 30,
+                    "normalSignedToSubmittedCommitted": normal_submitted_result.is_ok(),
+                    "stateAfterNormalSubmission": state_after_normal_submission,
+                    "terminalCleanupCommitted": terminal_cleanup_result.is_ok(),
+                    "terminalToSignedReactivationRejected": reactivation_result.is_err(),
+                    "rejectedByCommitTimeLifetimeFence": reactivation_rejected,
+                    "reactivationError": reactivation_error,
+                    "stateAfterReactivationAttempt": state_after_reactivation_attempt,
+                    "opportunityStateAfterTerminalCleanup": opportunity_state_after_terminal_cleanup,
                 }),
             ),
             subcheck(
@@ -6379,9 +7394,9 @@ async fn run_database_checks(
                 }),
             ),
             subcheck(
-                "ambiguous_effect_recovery_retains_vault_and_releases_shared_lane",
+                "ambiguous_effect_retains_setup_funding_until_confirmed_handoff",
                 ambiguous.state.as_str() == "effect_ambiguous"
-                    && ambiguous_conflict_keys == reconciliation_conflicts
+                    && ambiguous_conflict_keys == ambiguous_conflicts
                     && ambiguous_replacement_rejected
                     && ambiguous_or_stale_replacement_movements == 0
                     && ambiguous_recovery.submission.state.as_str() == "effect_ambiguous"
@@ -6542,7 +7557,7 @@ async fn migration_repository_checks(
             json!({"migrations": ledger_evidence}),
         ),
         subcheck(
-            "migration_sql_23_through_28_reexecutes_in_rolled_back_transaction",
+            "migration_sql_23_through_29_reexecutes_in_rolled_back_transaction",
             reapply_result.is_ok(),
             json!({
                 "transaction": "ROLLED_BACK",
@@ -6727,6 +7742,7 @@ fn implementation_checks(
         head_commit,
         runtime_source_digest_sha256,
         production_light_worker_image_reference,
+        production_heavy_worker_image_reference,
     ) = local
         .map(|evidence| {
             (
@@ -6736,6 +7752,7 @@ fn implementation_checks(
                 evidence.head_commit,
                 Some(evidence.runtime_source_digest_sha256),
                 evidence.production_light_worker_image_reference,
+                evidence.production_heavy_worker_image_reference,
             )
         })
         .unwrap_or_default();
@@ -6758,12 +7775,17 @@ fn implementation_checks(
     execution_subchecks.extend(database_execution_subchecks);
     if let Some(runtime) = runtime {
         execution_subchecks.push(runtime_execution_subcheck(runtime));
+        execution_subchecks.push(runtime_source_evidence_contract_subcheck(
+            &runtime.execution.source_evidence_contract_fixtures,
+        ));
     }
     let execution_failure = first_failed(&execution_subchecks);
     if let Some(runtime) = runtime {
         wiring_subchecks.push(runtime_wiring_subcheck(
             runtime,
             production_light_worker_image_reference.as_deref(),
+            production_heavy_worker_image_reference.as_deref(),
+            repository_root.as_deref(),
         ));
     }
     let wiring_failure = first_failed(&wiring_subchecks);
@@ -6984,6 +8006,108 @@ fn production_expected_services(
         .collect()
 }
 
+fn production_expected_kamino_monitor(
+    repository_root: &Path,
+) -> Result<ExpectedProductionService, Box<dyn Error>> {
+    let render_yaml = fs::read_to_string(repository_root.join("render.yaml"))?;
+    let production =
+        project_production_environment(&render_yaml, "loyal-yield-laserstream-workers")
+            .ok_or("render.yaml has no loyal-yield-laserstream-workers production environment")?;
+    let matching = service_blocks(production)
+        .into_iter()
+        .filter(|block| yaml_scalar(block, "name") == Some(KAMINO_MONITOR_SERVICE_NAME))
+        .collect::<Vec<_>>();
+    if matching.len() != 1 {
+        return Err(format!(
+            "render.yaml must declare exactly one production service named {KAMINO_MONITOR_SERVICE_NAME}"
+        )
+        .into());
+    }
+    let block = &matching[0];
+    Ok(ExpectedProductionService {
+        name: KAMINO_MONITOR_SERVICE_NAME.to_owned(),
+        image: yaml_scalar(block, "url")
+            .ok_or("Kamino monitor has no image URL")?
+            .to_owned(),
+        command: yaml_scalar(block, "dockerCommand")
+            .ok_or("Kamino monitor has no dockerCommand")?
+            .to_owned(),
+        pre_deploy_command: yaml_scalar(block, "preDeployCommand")
+            .ok_or("Kamino monitor has no preDeployCommand")?
+            .to_owned(),
+        plan: yaml_scalar(block, "plan")
+            .ok_or("Kamino monitor has no plan")?
+            .to_owned(),
+        env_keys: service_env_keys(block)
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+    })
+}
+
+fn image_commit_suffix(image: &str) -> Option<&str> {
+    let suffix = image.rsplit_once(":sha-")?.1;
+    (suffix.len() == 40 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(suffix)
+}
+
+fn valid_sha256_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
+fn image_source_binding(repository_root: &Path, image: &str) -> (bool, Value) {
+    const ALLOWED_POST_IMAGE_PATHS: [&str; 2] = [
+        "render.yaml",
+        "docs/plans/fleet-yield-orchestration-speed-verifier.md",
+    ];
+    let head = git_stdout(repository_root, &["rev-parse", "HEAD"]);
+    let image_commit = image_commit_suffix(image).map(str::to_owned);
+    let object_is_commit = image_commit.as_deref().is_some_and(|commit| {
+        git_success(
+            repository_root,
+            &["cat-file", "-e", &format!("{commit}^{{commit}}")],
+        )
+    });
+    let is_head = image_commit.as_deref() == head.as_deref();
+    let is_ancestor = image_commit.as_deref().is_some_and(|commit| {
+        git_success(
+            repository_root,
+            &["merge-base", "--is-ancestor", commit, "HEAD"],
+        )
+    });
+    let changed_paths = image_commit
+        .as_deref()
+        .filter(|_| object_is_commit && is_ancestor && !is_head)
+        .and_then(|commit| git_stdout(repository_root, &["diff", "--name-only", commit, "HEAD"]))
+        .map(|paths| {
+            paths
+                .lines()
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let changed_paths_allowed = changed_paths
+        .iter()
+        .all(|path| ALLOWED_POST_IMAGE_PATHS.contains(&path.as_str()));
+    let passed = object_is_commit && (is_head || (is_ancestor && changed_paths_allowed));
+    (
+        passed,
+        json!({
+            "image": image,
+            "imageCommit": image_commit,
+            "checkoutHead": head,
+            "imageObjectIsCommit": object_is_commit,
+            "imageCommitIsHead": is_head,
+            "imageCommitIsAncestor": is_ancestor,
+            "postImageChangedPaths": changed_paths,
+            "allowedPostImagePaths": ALLOWED_POST_IMAGE_PATHS,
+            "postImageDiffIsLimitedToPinningFiles": changed_paths_allowed,
+        }),
+    )
+}
+
 fn load_production_evidence(
     path: &Path,
     repository_root: &Path,
@@ -7001,19 +8125,30 @@ fn load_production_evidence(
         return Err("production evidence event is not recognized".into());
     }
     let now = Utc::now();
+    let collection_duration = artifact
+        .captured_at
+        .signed_duration_since(artifact.collection_started_at);
     if artifact.captured_at < now - PRODUCTION_EVIDENCE_MAX_AGE
         || artifact.captured_at > now + PRODUCTION_EVIDENCE_MAX_FUTURE_SKEW
         || artifact.collected_at < now - PRODUCTION_EVIDENCE_MAX_AGE
         || artifact.collected_at > now + PRODUCTION_EVIDENCE_MAX_FUTURE_SKEW
         || artifact.collected_at != artifact.captured_at
+        || collection_duration < chrono::Duration::zero()
+        || collection_duration
+            > chrono::Duration::seconds(PRODUCTION_EVIDENCE_MAX_COLLECTION_SECONDS)
     {
-        return Err("production evidence must be one fresh internally consistent capture from the last hour".into());
+        return Err(
+            "production evidence must be one fresh bounded internally consistent capture".into(),
+        );
     }
     if artifact.scope.cluster != PRODUCTION_CLUSTER {
         return Err(format!("production evidence cluster must be {PRODUCTION_CLUSTER}").into());
     }
-    if !artifact.scope.render_environment_id.starts_with("evm-") {
-        return Err("production evidence has an invalid Render environment ID".into());
+    if artifact.scope.render_environment_id != PRODUCTION_RENDER_ENVIRONMENT_ID {
+        return Err(format!(
+            "production evidence Render environment must be {PRODUCTION_RENDER_ENVIRONMENT_ID}"
+        )
+        .into());
     }
     if artifact.scope.cutover_at.is_none() || !artifact.scope.baseline_path_supplied {
         return Err(
@@ -7050,6 +8185,31 @@ fn load_production_evidence(
     if artifact.source.render_yaml_sha256 != render_yaml_sha256 {
         return Err("production evidence render.yaml digest does not match the checkout".into());
     }
+    let collector_source_path = repository_root
+        .join("crates/loyal-yield-orchestrator/src/bin/fleet-orchestration-production-evidence.rs");
+    let collector_source_sha256 =
+        sha256_file(&collector_source_path).ok_or("cannot hash the production collector source")?;
+    if artifact.source.collector_compiled_source_sha256 != collector_source_sha256
+        || artifact.source.collector_checkout_source_sha256.as_deref()
+            != Some(collector_source_sha256.as_str())
+    {
+        return Err(
+            "production collector executable is not built from the inspected source".into(),
+        );
+    }
+    let collector_executable_path = env::current_exe()?
+        .parent()
+        .ok_or("verifier executable has no parent directory")?
+        .join("fleet-orchestration-production-evidence");
+    let collector_executable_sha256 = sha256_file(&collector_executable_path)
+        .ok_or("production collector executable is not a sibling of the verifier")?;
+    if artifact.source.collector_executable_sha256.as_deref()
+        != Some(collector_executable_sha256.as_str())
+    {
+        return Err(
+            "production evidence was not emitted by the current collector executable".into(),
+        );
+    }
     if artifact
         .measurements
         .render
@@ -7080,6 +8240,68 @@ fn value_bool(value: &Value, key: &str) -> Option<bool> {
 
 fn value_string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(Value::as_str)
+}
+
+fn env_value_fingerprint(nonce: &str, key: &str, value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"loyal-render-env-scope-v1\0");
+    hasher.update((nonce.len() as u64).to_le_bytes());
+    hasher.update(nonce.as_bytes());
+    hasher.update((key.len() as u64).to_le_bytes());
+    hasher.update(key.as_bytes());
+    hasher.update((value.len() as u64).to_le_bytes());
+    hasher.update(value.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn role_scope_value_keys(name: &str, env_keys: &BTreeSet<String>) -> BTreeSet<String> {
+    env_keys
+        .iter()
+        .filter(|key| key.as_str() != "RUST_LOG")
+        .filter(|key| {
+            !matches!(
+                key.as_str(),
+                "HELIUS_API_KEY"
+                    | "LASERSTREAM_ENDPOINT"
+                    | "KAMINO_API_BASE"
+                    | "KAMINO_UPDATE_SOURCE"
+            )
+        })
+        .filter(|key| name != "loyal-fleet-opportunity-planner" || key.as_str() != "POLICY_KEYPAIR")
+        .cloned()
+        .collect()
+}
+
+fn monitor_scope_value_keys(env_keys: &BTreeSet<String>) -> BTreeSet<String> {
+    env_keys
+        .iter()
+        .filter(|key| key.as_str() != "RUST_LOG")
+        .cloned()
+        .collect()
+}
+
+fn expected_env_value(key: &str) -> Option<String> {
+    match key {
+        "YIELD_ALT_CLUSTER" => Some(PRODUCTION_CLUSTER.to_owned()),
+        "KAMINO_UPDATE_SOURCE" => Some("laserstream".to_owned()),
+        _ => env::var(key).ok().filter(|value| !value.trim().is_empty()),
+    }
+}
+
+fn expected_env_fingerprints(
+    nonce: &str,
+    keys: impl IntoIterator<Item = String>,
+) -> Option<BTreeMap<String, String>> {
+    keys.into_iter()
+        .map(|key| {
+            let value = expected_env_value(&key)?;
+            Some((key.clone(), env_value_fingerprint(nonce, &key, &value)))
+        })
+        .collect()
+}
+
+fn reported_env_fingerprints(value: Option<&Value>) -> Option<BTreeMap<String, String>> {
+    serde_json::from_value(value?.clone()).ok()
 }
 
 fn exact_object_keys(value: &Value, expected: &[&str]) -> bool {
@@ -7117,12 +8339,19 @@ fn render_measurement_schema_known(value: &Value) -> bool {
         value,
         &[
             "available",
+            "capturedAt",
             "environmentId",
+            "scopeFingerprintNonce",
             "expectedImageReferences",
             "roles",
             "allRolesMatch",
             "deployDigests",
             "oneImmutableDigest",
+            "heavyEnvironmentId",
+            "marketMonitor",
+            "lightImageCommitSuffix",
+            "laserstreamImageCommitSuffix",
+            "imageCommitSuffixesMatch",
             "serialMonitor",
             "firstFleetSenderDeployStartedAt",
             "serialSuspendedBeforeFleetSenderStarted",
@@ -7151,6 +8380,7 @@ fn render_measurement_schema_known(value: &Value) -> bool {
                         "command",
                         "preDeployCommand",
                         "envKeys",
+                        "envValueFingerprints",
                         "envBoundaryPasses",
                         "envBoundaryFailures",
                         "blueprintEnvKeys",
@@ -7176,6 +8406,48 @@ fn render_measurement_schema_known(value: &Value) -> bool {
                 })
             })
         });
+    let market_monitor_known = value.get("marketMonitor").is_some_and(|monitor| {
+        exact_object_keys(
+            monitor,
+            &[
+                "environmentId",
+                "serviceId",
+                "name",
+                "present",
+                "matches",
+                "type",
+                "suspended",
+                "runtime",
+                "plan",
+                "numInstances",
+                "image",
+                "command",
+                "preDeployCommand",
+                "envKeys",
+                "blueprintEnvKeys",
+                "envValueFingerprints",
+                "envKeyBoundaryExact",
+                "dataScopeVerified",
+                "latestDeploy",
+                "serviceReadError",
+                "deployReadError",
+                "envReadError",
+            ],
+        ) && monitor.get("latestDeploy").is_some_and(|deploy| {
+            exact_object_keys(
+                deploy,
+                &[
+                    "id",
+                    "status",
+                    "imageRef",
+                    "imageDigest",
+                    "registryCredential",
+                    "startedAt",
+                    "finishedAt",
+                ],
+            )
+        })
+    });
     let serial_known = value.get("serialMonitor").is_some_and(|serial| {
         exact_object_keys(
             serial,
@@ -7199,7 +8471,118 @@ fn render_measurement_schema_known(value: &Value) -> bool {
                     .all(|event| exact_object_keys(event, &["type", "timestamp"]))
             })
     });
-    roles_known && serial_known
+    roles_known && market_monitor_known && serial_known
+}
+
+fn market_timescale_measurement_schema_known(value: &Value) -> bool {
+    const TARGET_KEYS: &[&str] = &[
+        "liquidityMint",
+        "eligibleTargetCount",
+        "riskBaskets",
+        "reserve",
+        "market",
+        "supplyApy",
+        "totalSupplyUsdEstimate",
+        "reserveLastUpdateStale",
+        "stateEventId",
+        "accountDataHash",
+        "stateObservedAt",
+        "stateSlot",
+        "verifiedAt",
+        "verifiedSlot",
+        "stateSource",
+        "verificationCommitment",
+        "verificationSource",
+        "observationFloorSlot",
+        "observationFloorObservationId",
+        "observationFloorAccountDataHash",
+        "observationFloorStateValid",
+        "observationFloorSource",
+        "observationFloorSourceRank",
+        "observationFloorObservedAt",
+    ];
+    exact_object_keys(
+        value,
+        &[
+            "available",
+            "capturedAt",
+            "migration",
+            "relations",
+            "enabledStableMints",
+            "activeDistinctSupportedReserveCount",
+            "activeSupportedReserveCatalogRowCount",
+            "duplicateActiveSupportedReserveCount",
+            "nonKaminoApiActiveSupportedReserveCount",
+            "staleActiveSupportedReserveOver300SecondsCount",
+            "oldestActiveSupportedReserveFetchedAt",
+            "oldestActiveSupportedReserveAgeSeconds",
+            "currentPointerCoverageCount",
+            "verificationCoverageCount",
+            "exactLatestViewCoverageCount",
+            "eventHashObservedAtIdentityViolationCount",
+            "verificationStateIdentityViolationCount",
+            "latestViewIdentityViolationCount",
+            "stateSlotGreaterThanVerifiedSlotCount",
+            "immutableTapeExactRowCardinalityViolationCount",
+            "latestViewRowCardinalityViolationCount",
+            "observationFloorCoverageCount",
+            "observationFloorIdentityViolationCount",
+            "observationFloorFutureObservedAtCount",
+            "staleObservationFloorOver90SecondsCount",
+            "invalidObservationFloorStateCount",
+            "currentStateBelowObservationFloorCount",
+            "atOrBelowFloorExactHashAdmissionCount",
+            "verificationAtOrBelowObservationFloorWithoutExactHashCount",
+            "conflictingAtOrBelowFloorRoutableStateCount",
+            "nonConfirmedCommitmentCount",
+            "nonHttpCurrentStateCount",
+            "nonHttpVerificationSourceCount",
+            "futureCurrentStateObservedAtCount",
+            "futureVerificationWatermarkCount",
+            "warningOver90SecondsCount",
+            "hardExpiredOver240SecondsCount",
+            "oldestVerificationAgeSeconds",
+            "coverageQueryMilliseconds",
+            "safeTargetQueryMilliseconds",
+            "topVerifiedSafeTargets",
+            "readError",
+            "pass",
+        ],
+    ) && value.get("migration").is_some_and(|migration| {
+        exact_object_keys(
+            migration,
+            &[
+                "version",
+                "expectedName",
+                "sourceChecksum",
+                "appliedRowCount",
+                "appliedName",
+                "appliedChecksum",
+                "appliedAt",
+            ],
+        )
+    }) && value.get("relations").is_some_and(|relations| {
+        exact_object_keys(
+            relations,
+            &[
+                "migrationLedger",
+                "supportedReserves",
+                "reserveUpdates",
+                "reserveCurrentStates",
+                "reserveConfirmedObservationIdSequence",
+                "reserveConfirmedObservationFloors",
+                "reserveConfirmedVerifications",
+                "latestVerifiedReserveUpdates",
+            ],
+        )
+    }) && value
+        .get("topVerifiedSafeTargets")
+        .and_then(Value::as_array)
+        .is_some_and(|targets| {
+            targets
+                .iter()
+                .all(|target| exact_object_keys(target, TARGET_KEYS))
+        })
 }
 
 fn queue_measurement_schema_known(value: &Value) -> bool {
@@ -7275,6 +8658,7 @@ fn queue_measurement_schema_known(value: &Value) -> bool {
         value,
         &[
             "available",
+            "capturedAt",
             "statusRows",
             "activeDecisionsByStatus",
             "activeDecisionCount",
@@ -7622,7 +9006,7 @@ fn production_migration_subcheck(binding: &ProductionEvidenceBinding) -> Subchec
         }));
     }
     subcheck(
-        "production_migrations_23_through_28_match_repository_bytes",
+        "production_migrations_23_through_29_match_repository_bytes",
         all_match,
         json!({
             "ledgerExists": ledger_exists,
@@ -7633,7 +9017,10 @@ fn production_migration_subcheck(binding: &ProductionEvidenceBinding) -> Subchec
     )
 }
 
-fn production_render_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck {
+fn production_render_subcheck(
+    binding: &ProductionEvidenceBinding,
+    runtime: Option<&RuntimeEvidenceV1>,
+) -> Subcheck {
     let expected = match production_expected_services(&binding.repository_root) {
         Ok(expected) => expected,
         Err(error) => {
@@ -7646,6 +9033,25 @@ fn production_render_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck {
     };
     let render = &binding.artifact.measurements.render;
     let schema_known = render_measurement_schema_known(render);
+    let render_captured_at = value_string(render, "capturedAt")
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc));
+    let capture_is_fresh = render_captured_at.is_some_and(|captured_at| {
+        captured_at >= binding.artifact.collection_started_at
+            && captured_at <= binding.artifact.captured_at
+            && binding
+                .artifact
+                .captured_at
+                .signed_duration_since(captured_at)
+                <= chrono::Duration::seconds(PRODUCTION_COMPONENT_MAX_LAG_SECONDS)
+    });
+    let scope_nonce = value_string(render, "scopeFingerprintNonce").unwrap_or_default();
+    let scope_nonce_valid =
+        scope_nonce.len() == 64 && scope_nonce.bytes().all(|byte| byte.is_ascii_hexdigit());
+    let standard_policy_identity_valid = env::var("POLICY_KEYPAIR")
+        .ok()
+        .and_then(|value| loyal_yield_orchestrator::keypair_from_string(&value).ok())
+        .is_some_and(|keypair| keypair.pubkey().to_string() == STANDARD_POLICY_PUBKEY);
     let roles = render.get("roles").and_then(Value::as_array);
     let mut role_evidence = Vec::new();
     let mut digests = BTreeSet::new();
@@ -7669,6 +9075,12 @@ fn production_render_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck {
                     .map(str::to_owned)
                     .collect::<BTreeSet<_>>()
             });
+        let expected_fingerprints = expected_env_fingerprints(
+            scope_nonce,
+            role_scope_value_keys(&expected_role.name, &expected_role.env_keys),
+        );
+        let reported_fingerprints =
+            role.and_then(|role| reported_env_fingerprints(role.get("envValueFingerprints")));
         let deploy = role.and_then(|role| role.get("latestDeploy"));
         let digest = deploy.and_then(|deploy| value_string(deploy, "imageDigest"));
         if let Some(digest) = digest {
@@ -7699,10 +9111,18 @@ fn production_render_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck {
             && role.and_then(|role| value_string(role, "preDeployCommand"))
                 == Some(expected_role.pre_deploy_command.as_str())
             && live_env.as_ref() == Some(&expected_role.env_keys)
+            && expected_fingerprints.is_some()
+            && reported_fingerprints == expected_fingerprints
+            && role
+                .and_then(|role| value_i64(role, "numInstances"))
+                .is_some_and(|count| count > 0)
             && deploy.and_then(|deploy| value_string(deploy, "status")) == Some("live")
             && deploy.and_then(|deploy| value_string(deploy, "imageRef"))
                 == Some(expected_role.image.as_str())
-            && digest.is_some_and(|digest| digest.starts_with("sha256:"))
+            && digest.is_some_and(valid_sha256_digest)
+            && runtime.is_some_and(|runtime| {
+                digest == Some(runtime.wiring.light_linux_amd64_manifest_digest.as_str())
+            })
             && deploy.and_then(|deploy| value_string(deploy, "registryCredential"))
                 == Some("loyal-ghcr")
             && started_at.is_some();
@@ -7714,6 +9134,7 @@ fn production_render_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck {
             "image": role.and_then(|role| value_string(role, "image")),
             "command": role.and_then(|role| value_string(role, "command")),
             "envKeys": live_env,
+            "envFingerprintsMatchLocalScope": reported_fingerprints == expected_fingerprints,
             "deployDigest": digest,
             "deployStartedAt": started_at,
         }));
@@ -7756,17 +9177,36 @@ fn production_render_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck {
         (true, Some(suspended), Some(sender)) => suspended <= sender,
         _ => false,
     };
-    let passed =
-        all_roles_match && one_image_and_digest && serial_incapable && serial_preceded_senders;
+    let runtime_image_bound = runtime.is_some_and(|runtime| {
+        expected_images.len() == 1
+            && expected_images.contains(runtime.wiring.probed_container_image_reference.as_str())
+            && digests.len() == 1
+            && digests.contains(&runtime.wiring.light_linux_amd64_manifest_digest)
+    });
+    let passed = schema_known
+        && capture_is_fresh
+        && scope_nonce_valid
+        && standard_policy_identity_valid
+        && all_roles_match
+        && one_image_and_digest
+        && runtime_image_bound
+        && serial_incapable
+        && serial_preceded_senders;
     subcheck(
         "six_live_roles_match_clean_blueprint_and_one_digest",
         passed,
         json!({
             "roles": role_evidence,
             "measurementSchemaKnown": schema_known,
+            "renderCapturedAt": render_captured_at,
+            "componentMaximumLagSeconds": PRODUCTION_COMPONENT_MAX_LAG_SECONDS,
+            "captureIsFresh": capture_is_fresh,
+            "scopeFingerprintNonceValid": scope_nonce_valid,
+            "standardPolicyIdentityValid": standard_policy_identity_valid,
             "oneBlueprintImage": expected_images.len() == 1,
             "liveDeployDigests": digests,
             "oneLiveDigest": digests.len() == 1,
+            "runtimeImageDigestAndReferenceBound": runtime_image_bound,
             "serialPresent": serial_present,
             "serialCurrentlyIncapableOfSending": serial_incapable,
             "serialSuspendedAt": latest_serial_suspension,
@@ -7777,6 +9217,464 @@ fn production_render_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck {
                 "oneImmutableDigest": render.get("oneImmutableDigest"),
                 "serialOrdering": render.get("serialSuspendedBeforeFleetSenderStarted"),
                 "pass": render.get("pass"),
+            },
+        }),
+    )
+}
+
+fn production_confirmed_market_data_plane_subcheck(
+    binding: &ProductionEvidenceBinding,
+    runtime: Option<&RuntimeEvidenceV1>,
+) -> Subcheck {
+    let timescale = &binding.artifact.measurements.market_data_plane.timescale;
+    let render = &binding.artifact.measurements.render;
+    let expected_light = production_expected_services(&binding.repository_root);
+    let expected_monitor = production_expected_kamino_monitor(&binding.repository_root);
+    let (Ok(expected_light), Ok(expected_monitor)) = (expected_light, expected_monitor) else {
+        return subcheck(
+            "confirmed_kamino_market_data_plane_is_live_complete_and_fresh",
+            false,
+            json!({"error": "cannot read exact market-data or fleet Blueprint contract"}),
+        );
+    };
+
+    let timescale_schema_known = market_timescale_measurement_schema_known(timescale);
+    let render_schema_known = render_measurement_schema_known(render);
+    let migration = timescale.get("migration").unwrap_or(&Value::Null);
+    let relations = timescale.get("relations").unwrap_or(&Value::Null);
+    let migration_path = binding.repository_root.join(
+        "crates/loyal-timescale-migrations/migrations/0005_kamino_confirmed_state_verification.sql",
+    );
+    let expected_migration_checksum = fs::read(migration_path)
+        .map(|bytes| sha256_hex(&bytes))
+        .unwrap_or_default();
+    let migration_applied_at = migration
+        .get("appliedAt")
+        .and_then(Value::as_str)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc));
+    let migration_matches = !expected_migration_checksum.is_empty()
+        && value_i64(migration, "version") == Some(TIMESCALE_MARKET_MIGRATION_VERSION)
+        && value_string(migration, "expectedName") == Some(TIMESCALE_MARKET_MIGRATION_NAME)
+        && value_string(migration, "sourceChecksum") == Some(expected_migration_checksum.as_str())
+        && value_i64(migration, "appliedRowCount") == Some(1)
+        && value_string(migration, "appliedName") == Some(TIMESCALE_MARKET_MIGRATION_NAME)
+        && value_string(migration, "appliedChecksum") == Some(expected_migration_checksum.as_str())
+        && migration_applied_at.is_some();
+    let relations_complete = [
+        "migrationLedger",
+        "supportedReserves",
+        "reserveUpdates",
+        "reserveCurrentStates",
+        "reserveConfirmedObservationIdSequence",
+        "reserveConfirmedObservationFloors",
+        "reserveConfirmedVerifications",
+        "latestVerifiedReserveUpdates",
+    ]
+    .into_iter()
+    .all(|key| value_bool(relations, key) == Some(true));
+    let market_captured_at = timescale
+        .get("capturedAt")
+        .and_then(Value::as_str)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc));
+    let capture_bound = market_captured_at.is_some_and(|market_captured_at| {
+        market_captured_at >= binding.artifact.collection_started_at
+            && market_captured_at <= binding.artifact.captured_at
+            && binding
+                .artifact
+                .captured_at
+                .signed_duration_since(market_captured_at)
+                <= chrono::Duration::seconds(PRODUCTION_COMPONENT_MAX_LAG_SECONDS)
+            && market_captured_at <= Utc::now() + PRODUCTION_EVIDENCE_MAX_FUTURE_SKEW
+    });
+    let migration_time_bound = migration_applied_at
+        .zip(market_captured_at)
+        .is_some_and(|(applied_at, captured_at)| applied_at <= captured_at);
+
+    let active = value_i64(timescale, "activeDistinctSupportedReserveCount");
+    let catalog_rows = value_i64(timescale, "activeSupportedReserveCatalogRowCount");
+    let oldest_catalog_fetched_at =
+        value_string(timescale, "oldestActiveSupportedReserveFetchedAt")
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&Utc));
+    let oldest_catalog_age = value_i64(timescale, "oldestActiveSupportedReserveAgeSeconds");
+    let catalog_complete_and_fresh = active.is_some_and(|count| count > 0)
+        && catalog_rows == active
+        && value_i64(timescale, "duplicateActiveSupportedReserveCount") == Some(0)
+        && value_i64(timescale, "nonKaminoApiActiveSupportedReserveCount") == Some(0)
+        && value_i64(timescale, "staleActiveSupportedReserveOver300SecondsCount") == Some(0)
+        && oldest_catalog_age
+            .is_some_and(|age| (0..=SUPPORTED_RESERVE_CATALOG_MAX_AGE_SECONDS).contains(&age))
+        && oldest_catalog_fetched_at
+            .zip(market_captured_at)
+            .is_some_and(|(fetched_at, captured_at)| fetched_at <= captured_at);
+    let current = value_i64(timescale, "currentPointerCoverageCount");
+    let verifications = value_i64(timescale, "verificationCoverageCount");
+    let exact_latest = value_i64(timescale, "exactLatestViewCoverageCount");
+    let observation_floors = value_i64(timescale, "observationFloorCoverageCount");
+    let full_active_coverage = active.is_some_and(|count| count > 0)
+        && current == active
+        && verifications == active
+        && observation_floors == active
+        && exact_latest == active;
+    let zero_safety_errors = [
+        "eventHashObservedAtIdentityViolationCount",
+        "verificationStateIdentityViolationCount",
+        "latestViewIdentityViolationCount",
+        "stateSlotGreaterThanVerifiedSlotCount",
+        "immutableTapeExactRowCardinalityViolationCount",
+        "latestViewRowCardinalityViolationCount",
+        "observationFloorIdentityViolationCount",
+        "observationFloorFutureObservedAtCount",
+        "staleObservationFloorOver90SecondsCount",
+        "invalidObservationFloorStateCount",
+        "verificationAtOrBelowObservationFloorWithoutExactHashCount",
+        "conflictingAtOrBelowFloorRoutableStateCount",
+        "nonConfirmedCommitmentCount",
+        "nonHttpCurrentStateCount",
+        "nonHttpVerificationSourceCount",
+        "futureCurrentStateObservedAtCount",
+        "futureVerificationWatermarkCount",
+        "warningOver90SecondsCount",
+        "hardExpiredOver240SecondsCount",
+    ]
+    .into_iter()
+    .all(|key| value_i64(timescale, key) == Some(0));
+    let oldest_age = value_i64(timescale, "oldestVerificationAgeSeconds");
+    let freshness_bounded =
+        oldest_age.is_some_and(|age| (0..=MARKET_VERIFICATION_WARNING_SECONDS).contains(&age));
+    let query_durations_bounded = ["coverageQueryMilliseconds", "safeTargetQueryMilliseconds"]
+        .into_iter()
+        .all(|key| {
+            value_i64(timescale, key).is_some_and(|milliseconds| {
+                (0..=MARKET_EVIDENCE_QUERY_TIMEOUT_MILLISECONDS).contains(&milliseconds)
+            })
+        });
+
+    let enabled_mints = timescale
+        .get("enabledStableMints")
+        .and_then(Value::as_array)
+        .map(|mints| {
+            mints
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let enabled_set = enabled_mints.iter().cloned().collect::<BTreeSet<_>>();
+    let canonical_enabled_mints = supported_stable_mints();
+    let position_enabled_mints = binding
+        .artifact
+        .measurements
+        .database
+        .positions
+        .pointer("/mainUsdcCohort/enabledStableMints")
+        .and_then(Value::as_array)
+        .map(|mints| {
+            mints
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let target_rows = timescale
+        .get("topVerifiedSafeTargets")
+        .and_then(Value::as_array);
+    let target_mints = target_rows
+        .into_iter()
+        .flatten()
+        .filter_map(|target| value_string(target, "liquidityMint"))
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    let targets_exact = enabled_mints == canonical_enabled_mints
+        && position_enabled_mints == canonical_enabled_mints
+        && enabled_set.len() == enabled_mints.len()
+        && target_rows.is_some_and(|rows| rows.len() == enabled_mints.len())
+        && target_mints == enabled_set
+        && target_rows.into_iter().flatten().all(|target| {
+            let verified_at = target
+                .get("verifiedAt")
+                .and_then(Value::as_str)
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.with_timezone(&Utc));
+            let state_observed_at = target
+                .get("stateObservedAt")
+                .and_then(Value::as_str)
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.with_timezone(&Utc));
+            let observation_floor_observed_at = target
+                .get("observationFloorObservedAt")
+                .and_then(Value::as_str)
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.with_timezone(&Utc));
+            let hash = value_string(target, "accountDataHash").unwrap_or_default();
+            let observation_floor_hash = value_string(target, "observationFloorAccountDataHash");
+            let observation_floor_source =
+                value_string(target, "observationFloorSource").unwrap_or_default();
+            let expected_observation_floor_rank = match observation_floor_source {
+                "laserstream_grpc" | "websocket" => Some(1),
+                "http_snapshot" | "http_confirmed_refresh" => Some(2),
+                _ => None,
+            };
+            let observation_floor_state_valid = value_bool(target, "observationFloorStateValid");
+            let observation_floor_identity_valid =
+                value_i64(target, "observationFloorObservationId").is_some_and(|id| id > 0)
+                    && value_i64(target, "observationFloorSlot").is_some_and(|slot| slot >= 0)
+                    && expected_observation_floor_rank.is_some()
+                    && value_i64(target, "observationFloorSourceRank")
+                        == expected_observation_floor_rank
+                    && match observation_floor_state_valid {
+                        Some(true) => observation_floor_hash.is_some_and(|floor_hash| {
+                            floor_hash.len() == 64
+                                && floor_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        }),
+                        Some(false) => observation_floor_hash.is_none(),
+                        None => false,
+                    }
+                    && observation_floor_state_valid == Some(true);
+            let floor_admission_valid = value_i64(target, "verifiedSlot")
+                .zip(value_i64(target, "observationFloorSlot"))
+                .is_some_and(|(verified_slot, floor_slot)| {
+                    verified_slot > floor_slot
+                        || (observation_floor_state_valid == Some(true)
+                            && observation_floor_hash == Some(hash))
+                });
+            value_i64(target, "eligibleTargetCount").is_some_and(|count| count > 0)
+                && target
+                    .get("riskBaskets")
+                    .and_then(Value::as_array)
+                    .is_some_and(|baskets| {
+                        baskets.iter().any(|basket| basket.as_str() == Some("safe"))
+                    })
+                && value_string(target, "reserve").is_some_and(|value| !value.trim().is_empty())
+                && value_string(target, "market").is_some_and(|value| !value.trim().is_empty())
+                && target
+                    .get("supplyApy")
+                    .and_then(Value::as_f64)
+                    .is_some_and(|apy| apy.is_finite() && (0.0..0.5).contains(&apy))
+                && target
+                    .get("totalSupplyUsdEstimate")
+                    .and_then(Value::as_f64)
+                    .is_some_and(|supply| supply.is_finite() && supply > 100_000.0)
+                && value_bool(target, "reserveLastUpdateStale") == Some(false)
+                && value_i64(target, "stateEventId").is_some_and(|id| id > 0)
+                && hash.len() == 64
+                && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && state_observed_at
+                    .zip(market_captured_at)
+                    .is_some_and(|(observed_at, captured_at)| observed_at <= captured_at)
+                && value_i64(target, "stateSlot")
+                    .zip(value_i64(target, "verifiedSlot"))
+                    .is_some_and(|(state, verified)| state >= 0 && state <= verified)
+                && value_string(target, "stateSource").is_some_and(|source| {
+                    matches!(source, "http_snapshot" | "http_confirmed_refresh")
+                })
+                && value_string(target, "verificationCommitment") == Some("confirmed")
+                && value_string(target, "verificationSource").is_some_and(|source| {
+                    matches!(source, "http_snapshot" | "http_confirmed_refresh")
+                })
+                && observation_floor_identity_valid
+                && floor_admission_valid
+                && observation_floor_observed_at
+                    .zip(market_captured_at)
+                    .is_some_and(|(observed_at, captured_at)| {
+                        observed_at <= captured_at
+                            && captured_at.signed_duration_since(observed_at).num_seconds()
+                                <= MARKET_VERIFICATION_WARNING_SECONDS
+                    })
+                && verified_at.is_some_and(|verified_at| {
+                    market_captured_at.is_some_and(|captured_at| {
+                        verified_at <= captured_at
+                            && captured_at.signed_duration_since(verified_at).num_seconds()
+                                <= MARKET_VERIFICATION_WARNING_SECONDS
+                    })
+                })
+        });
+
+    let monitor = render.get("marketMonitor").unwrap_or(&Value::Null);
+    let live_env_keys = monitor
+        .get("envKeys")
+        .and_then(Value::as_array)
+        .map(|keys| {
+            keys.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<BTreeSet<_>>()
+        });
+    let reported_blueprint_env_keys = monitor
+        .get("blueprintEnvKeys")
+        .and_then(Value::as_array)
+        .map(|keys| {
+            keys.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<BTreeSet<_>>()
+        });
+    let required_monitor_env_keys = [
+        "HELIUS_API_KEY",
+        "KAMINO_API_BASE",
+        "KAMINO_UPDATE_SOURCE",
+        "LASERSTREAM_ENDPOINT",
+        "RUST_LOG",
+        "SOLANA_RPC_URL",
+        "TIMESCALEDB_URL",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<BTreeSet<_>>();
+    let scope_nonce = value_string(render, "scopeFingerprintNonce").unwrap_or_default();
+    let expected_monitor_fingerprints = expected_env_fingerprints(
+        scope_nonce,
+        monitor_scope_value_keys(&required_monitor_env_keys),
+    );
+    let reported_monitor_fingerprints =
+        reported_env_fingerprints(monitor.get("envValueFingerprints"));
+    let deploy = monitor.get("latestDeploy").unwrap_or(&Value::Null);
+    let monitor_deploy_started_at = deploy
+        .get("startedAt")
+        .and_then(Value::as_str)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc));
+    let catalog_postdates_monitor_deploy = oldest_catalog_fetched_at
+        .zip(monitor_deploy_started_at)
+        .is_some_and(|(fetched_at, deploy_started_at)| fetched_at >= deploy_started_at);
+    let monitor_exact = value_string(render, "heavyEnvironmentId")
+        == Some(HEAVY_RENDER_ENVIRONMENT_ID)
+        && value_string(monitor, "environmentId") == Some(HEAVY_RENDER_ENVIRONMENT_ID)
+        && value_string(monitor, "serviceId") == Some(KAMINO_MONITOR_SERVICE_ID)
+        && value_string(monitor, "name") == Some(KAMINO_MONITOR_SERVICE_NAME)
+        && value_bool(monitor, "present") == Some(true)
+        && value_string(monitor, "type") == Some("background_worker")
+        && value_string(monitor, "suspended") == Some("not_suspended")
+        && value_string(monitor, "runtime") == Some("image")
+        && value_string(monitor, "plan") == Some(expected_monitor.plan.as_str())
+        && value_i64(monitor, "numInstances").is_some_and(|count| count > 0)
+        && expected_monitor.command == KAMINO_MONITOR_COMMAND
+        && expected_monitor.pre_deploy_command == KAMINO_MONITOR_PREDEPLOY
+        && value_string(monitor, "image") == Some(expected_monitor.image.as_str())
+        && value_string(monitor, "command") == Some(KAMINO_MONITOR_COMMAND)
+        && value_string(monitor, "preDeployCommand") == Some(KAMINO_MONITOR_PREDEPLOY)
+        && expected_monitor.env_keys == required_monitor_env_keys
+        && live_env_keys.as_ref() == Some(&required_monitor_env_keys)
+        && reported_blueprint_env_keys.as_ref() == Some(&required_monitor_env_keys)
+        && expected_monitor_fingerprints.is_some()
+        && reported_monitor_fingerprints == expected_monitor_fingerprints
+        && value_string(deploy, "status") == Some("live")
+        && value_string(deploy, "imageRef") == Some(expected_monitor.image.as_str())
+        && value_string(deploy, "imageDigest").is_some_and(valid_sha256_digest)
+        && runtime.is_some_and(|runtime| {
+            value_string(deploy, "imageDigest")
+                == Some(runtime.wiring.heavy_linux_amd64_manifest_digest.as_str())
+                && runtime.wiring.probed_heavy_container_image_reference == expected_monitor.image
+        })
+        && value_string(deploy, "registryCredential") == Some("loyal-ghcr")
+        && monitor_deploy_started_at.is_some();
+
+    let light_images = expected_light
+        .iter()
+        .map(|service| service.image.as_str())
+        .collect::<BTreeSet<_>>();
+    let light_suffixes = light_images
+        .iter()
+        .filter_map(|image| image_commit_suffix(image))
+        .collect::<BTreeSet<_>>();
+    let light_suffix = (light_suffixes.len() == 1)
+        .then(|| light_suffixes.iter().next().copied())
+        .flatten();
+    let laserstream_suffix = image_commit_suffix(&expected_monitor.image);
+    let light_image = light_images.iter().next().copied().unwrap_or_default();
+    let (light_checkout_bound, light_checkout_binding) =
+        image_source_binding(&binding.repository_root, light_image);
+    let (heavy_checkout_bound, heavy_checkout_binding) =
+        image_source_binding(&binding.repository_root, &expected_monitor.image);
+    let runtime_provenance_bound = runtime.is_some_and(|runtime| {
+        Some(runtime.wiring.light_provenance_vcs_revision.as_str()) == light_suffix
+            && Some(runtime.wiring.heavy_provenance_vcs_revision.as_str()) == laserstream_suffix
+            && runtime.wiring.light_provenance_vcs_source == IMAGE_PROVENANCE_SOURCE
+            && runtime.wiring.heavy_provenance_vcs_source == IMAGE_PROVENANCE_SOURCE
+    });
+    let image_source_bound = light_images.len() == 1
+        && light_images.iter().all(|image| {
+            image.starts_with("ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-")
+        })
+        && expected_monitor
+            .image
+            .starts_with("ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-")
+        && light_suffix.is_some()
+        && light_suffix == laserstream_suffix
+        && light_checkout_bound
+        && heavy_checkout_bound
+        && runtime_provenance_bound
+        && value_string(render, "lightImageCommitSuffix") == light_suffix
+        && value_string(render, "laserstreamImageCommitSuffix") == laserstream_suffix;
+
+    let passed = timescale_schema_known
+        && render_schema_known
+        && value_bool(timescale, "available") == Some(true)
+        && timescale.get("readError").is_some_and(Value::is_null)
+        && capture_bound
+        && migration_matches
+        && migration_time_bound
+        && relations_complete
+        && catalog_complete_and_fresh
+        && catalog_postdates_monitor_deploy
+        && full_active_coverage
+        && zero_safety_errors
+        && freshness_bounded
+        && query_durations_bounded
+        && targets_exact
+        && monitor_exact
+        && image_source_bound;
+    subcheck(
+        "confirmed_kamino_market_data_plane_is_live_complete_and_fresh",
+        passed,
+        json!({
+            "timescaleMeasurementSchemaKnown": timescale_schema_known,
+            "renderMeasurementSchemaKnown": render_schema_known,
+            "repeatableReadCaptureBoundToArtifact": capture_bound,
+            "migrationMatchesRepositoryBytes": migration_matches,
+            "migrationAppliedAtNotFuture": migration_time_bound,
+            "expectedMigrationChecksum": expected_migration_checksum,
+            "relationsComplete": relations_complete,
+            "activeCatalogRows": catalog_rows,
+            "activeCatalogCompleteAndFresh": catalog_complete_and_fresh,
+            "oldestActiveCatalogFetchedAt": oldest_catalog_fetched_at,
+            "oldestActiveCatalogAgeSeconds": oldest_catalog_age,
+            "catalogMaximumAgeSeconds": SUPPORTED_RESERVE_CATALOG_MAX_AGE_SECONDS,
+            "catalogPostdatesMonitorDeploy": catalog_postdates_monitor_deploy,
+            "activeSupportedReserves": active,
+            "currentPointerCoverage": current,
+            "verificationCoverage": verifications,
+            "observationFloorCoverage": observation_floors,
+            "exactLatestViewCoverage": exact_latest,
+            "fullActiveCoverage": full_active_coverage,
+            "zeroIdentitySlotCommitmentSourceFutureAndExpiryErrors": zero_safety_errors,
+            "invalidObservationFloorStateCount": value_i64(timescale, "invalidObservationFloorStateCount"),
+            "currentStateBelowObservationFloorCount": value_i64(timescale, "currentStateBelowObservationFloorCount"),
+            "atOrBelowFloorExactHashAdmissionCount": value_i64(timescale, "atOrBelowFloorExactHashAdmissionCount"),
+            "oldestVerificationAgeSeconds": oldest_age,
+            "freshnessWarningSeconds": MARKET_VERIFICATION_WARNING_SECONDS,
+            "queryDurationsBounded": query_durations_bounded,
+            "queryTimeoutMilliseconds": MARKET_EVIDENCE_QUERY_TIMEOUT_MILLISECONDS,
+            "enabledStableMints": enabled_mints,
+            "canonicalProductionStableMints": canonical_enabled_mints,
+            "positionCohortStableMints": position_enabled_mints,
+            "topVerifiedSafeTargetsExact": targets_exact,
+            "marketMonitorExact": monitor_exact,
+            "lightImageCommitSuffix": light_suffix,
+            "laserstreamImageCommitSuffix": laserstream_suffix,
+            "imageSourceCommitExact": image_source_bound,
+            "lightCheckoutBinding": light_checkout_binding,
+            "heavyCheckoutBinding": heavy_checkout_binding,
+            "runtimeProvenanceBound": runtime_provenance_bound,
+            "embeddedPassesIgnored": {
+                "timescale": timescale.get("pass"),
+                "monitor": monitor.get("matches"),
+                "renderImageSuffixes": render.get("imageCommitSuffixesMatch"),
+                "render": render.get("pass"),
             },
         }),
     )
@@ -7917,13 +9815,17 @@ fn production_alt_mutator_identity_subcheck(binding: &ProductionEvidenceBinding)
     )
 }
 
-fn production_deployment_checks(binding: &ProductionEvidenceBinding) -> Vec<VerifierCheck> {
+fn production_deployment_checks(
+    binding: &ProductionEvidenceBinding,
+    runtime: Option<&RuntimeEvidenceV1>,
+) -> Vec<VerifierCheck> {
     let alt_repair = production_alt_repair_subcheck(binding);
     let alt_failure = (!matches!(alt_repair.verdict, Verdict::Pass)).then_some(alt_repair.name);
     let migration = production_migration_subcheck(binding);
-    let render = production_render_subcheck(binding);
+    let render = production_render_subcheck(binding, runtime);
+    let market_data = production_confirmed_market_data_plane_subcheck(binding, runtime);
     let alt_mutator = production_alt_mutator_identity_subcheck(binding);
-    let cutover_subchecks = vec![migration, render, alt_mutator];
+    let cutover_subchecks = vec![migration, render, market_data, alt_mutator];
     let cutover_failure = first_failed(&cutover_subchecks);
     vec![
         check(
@@ -7962,6 +9864,24 @@ fn status_i64(queue: &Value, key: &str) -> Option<i64> {
     status_metric(queue, key).and_then(Value::as_i64)
 }
 
+fn production_component_capture_is_fresh(
+    binding: &ProductionEvidenceBinding,
+    component: &Value,
+) -> bool {
+    value_string(component, "capturedAt")
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .is_some_and(|captured_at| {
+            captured_at >= binding.artifact.collection_started_at
+                && captured_at <= binding.artifact.captured_at
+                && binding
+                    .artifact
+                    .captured_at
+                    .signed_duration_since(captured_at)
+                    <= chrono::Duration::seconds(PRODUCTION_COMPONENT_MAX_LAG_SECONDS)
+        })
+}
+
 fn production_complete_fleet_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck {
     let queue = &binding.artifact.measurements.database.queue;
     let Some(rows) = queue.get("statusRows").and_then(Value::as_array) else {
@@ -7972,6 +9892,7 @@ fn production_complete_fleet_subcheck(binding: &ProductionEvidenceBinding) -> Su
         );
     };
     let schema_known = queue_measurement_schema_known(queue);
+    let queue_capture_fresh = production_component_capture_is_fresh(binding, queue);
     let aggregate_keys = [
         "full_sweep_age_seconds",
         "complete_frontier",
@@ -8093,7 +10014,8 @@ fn production_complete_fleet_subcheck(binding: &ProductionEvidenceBinding) -> Su
         && status_i64(queue, "current_epoch_principal_usd_micros").is_some_and(|amount| amount > 0)
         && status_i64(queue, "current_epoch_recoverable_yield_usd_micros_per_hour")
             .is_some_and(|gain| gain > 0);
-    let passed = fresh_complete_epoch
+    let passed = queue_capture_fresh
+        && fresh_complete_epoch
         && planner_accounting_exact
         && bounded_stage_ages
         && status_counts_well_formed
@@ -8106,6 +10028,8 @@ fn production_complete_fleet_subcheck(binding: &ProductionEvidenceBinding) -> Su
         json!({
             "statusRowCount": rows.len(),
             "measurementSchemaKnown": schema_known,
+            "queueCaptureFresh": queue_capture_fresh,
+            "componentMaximumLagSeconds": PRODUCTION_COMPONENT_MAX_LAG_SECONDS,
             "freshCompleteEpoch": fresh_complete_epoch,
             "aggregateFieldsConsistentAcrossRows": aggregate_fields_consistent,
             "observedVaultCount": status_i64(queue, "observed_vault_count"),
@@ -8183,6 +10107,7 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
     let schema_known = movement_measurement_schema_known(movement)
         && queue_measurement_schema_known(queue)
         && position_measurement_schema_known(positions);
+    let queue_capture_fresh = production_component_capture_is_fresh(binding, queue);
     let Some(rows) = movement.get("movements").and_then(Value::as_array) else {
         return subcheck(
             "optimizer_movements_are_final_economic_reconciled_and_meet_slos",
@@ -8260,6 +10185,23 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
         let decision_vault_id = value_i64(row, "decisionVaultId");
         let opportunity_optimizer_epoch_id = value_i64(row, "opportunityOptimizerEpochId");
         let submission_optimizer_epoch_id = value_i64(row, "submissionOptimizerEpochId");
+        let optimizer_epoch_fingerprint = value_string(row, "optimizerEpochFingerprint");
+        let optimizer_epoch_expires_at = parse_rfc3339(row.get("optimizerEpochExpiresAt"));
+        let signed_optimizer_epoch_evidence = row
+            .get("submissionOptimizerEpochEvidence")
+            .unwrap_or(&Value::Null);
+        let optimizer_epoch_identity_exact = opportunity_optimizer_epoch_id
+            .is_some_and(|id| id > 0)
+            && submission_optimizer_epoch_id == opportunity_optimizer_epoch_id
+            && value_i64(signed_optimizer_epoch_evidence, "id") == opportunity_optimizer_epoch_id
+            && value_string(signed_optimizer_epoch_evidence, "fingerprint")
+                == optimizer_epoch_fingerprint
+            && parse_rfc3339(signed_optimizer_epoch_evidence.get("expiresAt"))
+                == optimizer_epoch_expires_at
+            && optimizer_epoch_fingerprint.is_some_and(|fingerprint| {
+                fingerprint.len() == 64 && fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+            && optimizer_epoch_expires_at.is_some();
         let source_snapshot_id = value_i64(row, "sourceSnapshotId");
         let source_snapshot_vault_id = value_i64(row, "sourceSnapshotVaultId");
         let pre_target_snapshot_id = value_i64(row, "preTargetSnapshotId");
@@ -8328,8 +10270,8 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
             && vault_id.is_some_and(|id| id > 0)
             && opportunity_decision_id == decision_id
             && decision_vault_id == vault_id
-            && opportunity_optimizer_epoch_id.is_some_and(|id| id > 0)
-            && submission_optimizer_epoch_id == opportunity_optimizer_epoch_id
+            && optimizer_epoch_identity_exact
+            && value_bool(row, "optimizerEpochIdentityExact") == Some(true)
             && value_string(row, "signature").is_some_and(|value| !value.trim().is_empty())
             && route_identity_ok
             && value_string(row, "decisionRouteKind") == decision_plan_kind
@@ -8753,6 +10695,7 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
         && value_i64(queue, "duplicateActiveVaultMovementCount") == Some(0)
         && value_i64(queue, "targetCapacityOversubscriptionCount") == Some(0);
     let passed = schema_known
+        && queue_capture_fresh
         && value_bool(movement, "available") == Some(true)
         && cutover_bound
         && value_bool(movement, "rpcFinalityAvailable") == Some(true)
@@ -8775,6 +10718,8 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
         json!({
             "cutoverBound": cutover_bound,
             "measurementSchemasKnown": schema_known,
+            "queueCaptureFresh": queue_capture_fresh,
+            "componentMaximumLagSeconds": PRODUCTION_COMPONENT_MAX_LAG_SECONDS,
             "submissionRows": rows.len(),
             "rowsWellFormedAndPostCutover": all_rows_well_formed,
             "uniqueSubmissionOpportunityDecisionTuples": unique_identifiers,
@@ -9031,20 +10976,21 @@ async fn run() -> Result<ExitCode, Box<dyn Error>> {
     let mut checks =
         implementation_checks(database_evidence, local_evidence, runtime_evidence.as_ref())?;
     let implementation_verdict = aggregate_verdicts(checks.iter().map(|check| check.verdict));
-    let (deployment_verdict, production_performance_verdict) =
-        if let Some(binding) = production_evidence.as_ref() {
-            let deployment_checks = production_deployment_checks(binding);
-            let production_checks = production_performance_checks(binding);
-            let deployment_verdict =
-                aggregate_verdicts(deployment_checks.iter().map(|check| check.verdict));
-            let production_performance_verdict =
-                aggregate_verdicts(production_checks.iter().map(|check| check.verdict));
-            checks.extend(deployment_checks);
-            checks.extend(production_checks);
-            (deployment_verdict, production_performance_verdict)
-        } else {
-            (Verdict::NotRun, Verdict::NotRun)
-        };
+    let (deployment_verdict, production_performance_verdict) = if let Some(binding) =
+        production_evidence.as_ref()
+    {
+        let deployment_checks = production_deployment_checks(binding, runtime_evidence.as_ref());
+        let production_checks = production_performance_checks(binding);
+        let deployment_verdict =
+            aggregate_verdicts(deployment_checks.iter().map(|check| check.verdict));
+        let production_performance_verdict =
+            aggregate_verdicts(production_checks.iter().map(|check| check.verdict));
+        checks.extend(deployment_checks);
+        checks.extend(production_checks);
+        (deployment_verdict, production_performance_verdict)
+    } else {
+        (Verdict::NotRun, Verdict::NotRun)
+    };
     let end_state_verdict = aggregate_verdicts([
         implementation_verdict,
         deployment_verdict,
@@ -9104,5 +11050,27 @@ async fn main() -> ExitCode {
             eprintln!("{error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use loyal_yield_orchestrator::fleet_orchestration::deterministic_fleet_route_source_contract_fixtures;
+
+    #[test]
+    fn literal_source_evidence_contract_gate_accepts_code_owned_fixtures() {
+        let code_owned = deterministic_fleet_route_source_contract_fixtures().unwrap();
+        let serialized = serde_json::to_value(code_owned).unwrap();
+        let verifier_fixture: RuntimeSourceEvidenceContractFixtures =
+            serde_json::from_value(serialized).unwrap();
+
+        let result = runtime_source_evidence_contract_subcheck(&verifier_fixture);
+
+        assert_eq!(
+            result.name,
+            "planner_executor_source_evidence_is_kind_scoped"
+        );
+        assert_eq!(result.verdict, Verdict::Pass);
     }
 }

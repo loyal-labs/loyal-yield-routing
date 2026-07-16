@@ -61,15 +61,19 @@ use loyal_yield_orchestrator::sqlx::{
 use loyal_yield_orchestrator::{
     enabled_stable_mints_from_env, enabled_stable_mints_hash,
     fleet_orchestration::{
-        evaluate_fresh_route_economics, fleet_stage_health_report, fleet_worker_role_probe,
-        maximum_target_inflight_usd_micros, observe_market_epoch, outer_task_failure_recovery,
-        projected_target_apy_bps, DurablePgWakeupEvent, DurablePgWakeupListener, EconomicPolicy,
-        FleetObservationConfig, FleetWorkerRole, FreshRouteEconomicsInput, ImmutableMarketEpoch,
-        OpportunityInput, OuterTaskFailureKind, RebalanceOpportunityAdvance,
+        code_owned_stablecoin_valuations, evaluate_fresh_route_economics,
+        fleet_stage_health_report, fleet_worker_role_probe, maximum_target_inflight_usd_micros,
+        observe_market_epoch, outer_task_failure_recovery, project_fleet_route_source_evidence,
+        projected_target_apy_bps, validate_fleet_route_kind_binding,
+        validate_fleet_route_source_evidence, DurablePgWakeupEvent, DurablePgWakeupListener,
+        EconomicPolicy, FleetObservationConfig, FleetRouteSourceEvidence,
+        FleetRouteSourceKind as SameMintRouteSourceKind, FleetWorkerRole, FreshRouteEconomicsInput,
+        ImmutableMarketEpoch, OpportunityInput, OuterTaskFailureKind, RebalanceOpportunityAdvance,
         RebalanceOpportunityClaimKind, RebalanceOpportunityLease, RebalanceOpportunityRecord,
         RebalanceOpportunityState, RouteFeePayerKind, RouteFeePayerShardConfig, RouteFeePolicy,
         SignedRouteSubmissionAdvance, SignedRouteSubmissionInput, SignedRouteSubmissionLease,
         SignedRouteSubmissionState, TargetCapacityObservation, TargetCapacityReservationInput,
+        MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS,
     },
     lookup_table_manifest_hash as control_plane_lookup_table_manifest_hash,
     minimal_verified_table_bundle, policy_keypair_from_env, route_amount_evidence_from_metadata,
@@ -87,8 +91,8 @@ use loyal_yield_orchestrator::{
     ResolvedLookupTableBundle, ResolverTableCandidate, SameMintRebalanceInput,
     SameMintRebalanceResult, SharedMarketCatalogReadiness, SharedMarketCatalogRouteValidation,
     SharedMarketCatalogRouteValidationState, SnapshotId, VaultId,
-    AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
-    STANDARD_POLICY_AUTHORITY,
+    AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM,
+    ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY, STANDARD_POLICY_AUTHORITY,
 };
 use loyal_yield_router::timescale::{TimescaleRouterClient, TimescaleRouterClientConfig};
 use num_bigint::BigUint;
@@ -170,6 +174,7 @@ const DEFAULT_FLEET_RECONCILE_CONCURRENCY: usize = 16;
 const DEFAULT_FLEET_RECONCILE_BATCH_SIZE: i64 = 32;
 const DEFAULT_FLEET_POSITION_SWEEP_INTERVAL_SECONDS: u64 = 300;
 const FLEET_POSITION_SWEEP_FAILURE_RETRY_SECONDS: u64 = 5;
+const CURRENT_MARKET_EPOCH_STALE_PREFIX: &str = "current_market_epoch_stale:";
 /// Cross-process admission cap, not a claim of physical transaction
 /// independence. Each route also owns a vault-specific semantic key. Exact
 /// writable evidence exposes the real Solana ceilings: a common fee payer or
@@ -324,16 +329,6 @@ pub enum SameMintRouteExecutionMode {
     Execute,
 }
 
-/// The queue represents invested reserve moves and router-owned idle USDC in
-/// one value-prioritized stream. The source kind makes the evidence contract
-/// explicit while retaining the existing same-mint CLI implementation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SameMintRouteSourceKind {
-    ReservePosition,
-    IdleVaultUsdc,
-}
-
 /// Explicit in-process handoff for a planned same-mint opportunity. Keeping
 /// the complete monitor evidence here removes process-global argv from the
 /// execution boundary without weakening the executor's drift checks.
@@ -387,6 +382,7 @@ pub enum SameMintRouteExecutionState {
     SubmissionQueued,
     Executed,
     Retry,
+    Stale,
     Terminal,
 }
 
@@ -637,6 +633,12 @@ struct SameMintRouteRuntime {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CurrentRouteMarketEconomics {
+    optimizer_epoch_id: i64,
+    optimizer_epoch_fingerprint: String,
+    optimizer_epoch_expires_at: DateTime<Utc>,
+    fresh_market_fingerprint: String,
+    fresh_market_expires_at: DateTime<Utc>,
+    material_frontier_disposition: String,
     source_apy_bps: i64,
     capacity_adjusted_target_apy_bps: i64,
     edge_bps: i64,
@@ -759,8 +761,9 @@ impl SameMintRouteRuntime {
         require_current_market: bool,
     ) -> Result<Self, Box<dyn Error>> {
         validate_rpc_endpoint(rpc_url)?;
-        let rpc = Arc::new(RpcClient::new_with_commitment(
+        let rpc = Arc::new(RpcClient::new_with_timeout_and_commitment(
             rpc_url.to_owned(),
+            Duration::from_secs(10),
             CommitmentConfig::confirmed(),
         ));
         let observed_genesis_hash = rpc.get_genesis_hash().map_err(|_| {
@@ -796,13 +799,15 @@ impl SameMintRouteRuntime {
     }
 
     /// One stampede-safe immutable market read serves a short worker wave.
+    /// This is revalidation evidence, not a new planning epoch: route workers
+    /// must never publish optimizer epochs that supersede sibling work.
     /// Holding the async mutex across the miss is intentional: thousands of
     /// concurrent revalidators must not all issue the same Timescale query.
     async fn current_market_epoch(
         &self,
         config: &FleetObservationConfig,
     ) -> Result<ImmutableMarketEpoch, Box<dyn Error>> {
-        const MARKET_EPOCH_CACHE_TTL: Duration = Duration::from_millis(250);
+        const MARKET_EPOCH_CACHE_TTL: Duration = Duration::from_secs(5);
         let mut mints = config.enabled_mints.clone();
         mints.sort();
         mints.dedup();
@@ -810,7 +815,7 @@ impl SameMintRouteRuntime {
         let mut cache = self.market_epoch_cache.lock().await;
         if let Some(cached) = cache.get(&key) {
             if cached.fetched_at.elapsed() <= MARKET_EPOCH_CACHE_TTL
-                && cached.epoch.expires_at > Utc::now()
+                && cached.epoch.optimizer_envelope_expires_at() > Utc::now()
             {
                 return Ok(cached.epoch.clone());
             }
@@ -819,7 +824,11 @@ impl SameMintRouteRuntime {
             .timescale
             .as_ref()
             .ok_or("queue route is missing its current market snapshot client")?;
-        let epoch = observe_market_epoch(timescale, config).await?;
+        let epoch = observe_market_epoch(timescale, config)
+            .await
+            .map_err(|error| {
+                format!("temporary current full-universe market observation unavailable: {error}")
+            })?;
         cache.insert(
             key,
             CachedMarketEpoch {
@@ -948,6 +957,17 @@ impl SameMintRouteExecutionRequest {
                 "same-mint in-process current-market economics evidence is invalid".to_owned(),
             );
         }
+        let source_evidence = FleetRouteSourceEvidence {
+            expected_idle_token_account: self.expected_idle_token_account.clone(),
+            expected_idle_observed_slot: self.expected_idle_observed_slot,
+            expected_idle_observed_at: self.expected_idle_observed_at,
+        };
+        validate_fleet_route_source_evidence(
+            self.source_kind,
+            self.source_reserve.as_deref(),
+            self.expected_source_snapshot_id,
+            &source_evidence,
+        )?;
         match self.source_kind {
             SameMintRouteSourceKind::ReservePosition => {
                 let source_reserve = self
@@ -962,12 +982,6 @@ impl SameMintRouteExecutionRequest {
                         "same-mint in-process source and target reserves must differ".to_owned(),
                     );
                 }
-                if self.expected_source_snapshot_id.is_none_or(|id| id <= 0) {
-                    return Err(
-                        "same-mint reserve-position request requires a positive source snapshot"
-                            .to_owned(),
-                    );
-                }
                 if self.expected_route_amount_semantics
                     != ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY
                 {
@@ -975,23 +989,8 @@ impl SameMintRouteExecutionRequest {
                         "same-mint reserve-position request requires {ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY} amount semantics"
                     ));
                 }
-                if self.expected_idle_token_account.is_some()
-                    || self.expected_idle_observed_slot.is_some()
-                    || self.expected_idle_observed_at.is_some()
-                {
-                    return Err(
-                        "same-mint reserve-position request cannot carry idle-vault evidence"
-                            .to_owned(),
-                    );
-                }
             }
             SameMintRouteSourceKind::IdleVaultUsdc => {
-                if self.source_reserve.is_some() || self.expected_source_snapshot_id.is_some() {
-                    return Err(
-                        "idle-vault request must not carry a reserve source or source snapshot"
-                            .to_owned(),
-                    );
-                }
                 if self.expected_source_apy_bps != 0
                     || self.expected_route_amount_semantics != "idle_vault_liquidity"
                 {
@@ -1007,16 +1006,6 @@ impl SameMintRouteExecutionRequest {
                 Pubkey::from_str(idle_token_account).map_err(|_| {
                     "idle-vault observed token account must be a public key".to_owned()
                 })?;
-                if self
-                    .expected_idle_observed_slot
-                    .is_none_or(|slot| slot <= 0)
-                    || self.expected_idle_observed_at.is_none()
-                {
-                    return Err(
-                        "idle-vault request requires positive observed slot and observed time"
-                            .to_owned(),
-                    );
-                }
             }
         }
         validate_alt_cluster(&self.cluster)?;
@@ -1255,7 +1244,9 @@ impl IdleVaultDepositBlocker {
         let kind = match classify_route_resolution_blocker(blocker) {
             SameMintRouteExecutionState::WaitingAlt => IdleVaultDepositBlockerKind::LookupTable,
             SameMintRouteExecutionState::Retry => IdleVaultDepositBlockerKind::Retry,
-            SameMintRouteExecutionState::Terminal => IdleVaultDepositBlockerKind::Safety,
+            SameMintRouteExecutionState::Stale | SameMintRouteExecutionState::Terminal => {
+                IdleVaultDepositBlockerKind::Safety
+            }
             SameMintRouteExecutionState::Ready
             | SameMintRouteExecutionState::SubmissionQueued
             | SameMintRouteExecutionState::Executed => IdleVaultDepositBlockerKind::Safety,
@@ -2147,6 +2138,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 result.state,
                 SameMintRouteExecutionState::WaitingAlt
                     | SameMintRouteExecutionState::Retry
+                    | SameMintRouteExecutionState::Stale
                     | SameMintRouteExecutionState::Terminal
             )
         {
@@ -2788,6 +2780,12 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
     client
         .require_schema_migration(27, "rebalance_opportunity_attempt_generations")
         .await?;
+    client
+        .require_schema_migration(29, "fleet_commit_lifetime_fences")
+        .await?;
+    client
+        .require_schema_migration(30, "fused_queue_accrual_binding")
+        .await?;
     // Validate the standard signer once at startup. Individual route builds
     // re-read and match it to the active policy before signing.
     let delegated_signer = standard_policy_keypair_from_env()?.pubkey().to_string();
@@ -3116,6 +3114,12 @@ async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box
         .await?;
     client
         .require_schema_migration(27, "rebalance_opportunity_attempt_generations")
+        .await?;
+    client
+        .require_schema_migration(29, "fleet_commit_lifetime_fences")
+        .await?;
+    client
+        .require_schema_migration(30, "fused_queue_accrual_binding")
         .await?;
     let mut wakeup_listener =
         DurablePgWakeupListener::new("loyal_yield_route_reconciliation_wakeup")?;
@@ -4219,12 +4223,9 @@ async fn inspect_expired_route(
         .ok_or("expiry-check opportunity no longer exists")?;
     let vault = reconciliation_vault(runtime, &opportunity).await?;
     let minimum_slot = u64::try_from(effect_check_slot)?;
-    let route_kind = opportunity
-        .execution_plan
-        .get("kind")
-        .and_then(Value::as_str);
-    match route_kind {
-        Some("same_mint") => {
+    let (source_kind, _) = validated_opportunity_route_source_contract(&opportunity)?;
+    match source_kind {
+        SameMintRouteSourceKind::ReservePosition => {
             let source_reserve = opportunity
                 .source_reserve
                 .as_deref()
@@ -4290,7 +4291,7 @@ async fn inspect_expired_route(
                 observed_slot: preview.observed_slot,
             })
         }
-        Some("idle_vault_deposit") => {
+        SameMintRouteSourceKind::IdleVaultUsdc => {
             let idle_token_account = Pubkey::from_str(&required_plan_string(
                 &opportunity.execution_plan,
                 "idle_token_account",
@@ -4312,7 +4313,6 @@ async fn inspect_expired_route(
                 observed_slot: effect_check_slot,
             })
         }
-        other => Err(format!("unsupported expiry effect-check route kind {other:?}").into()),
     }
 }
 
@@ -4356,12 +4356,8 @@ async fn reconcile_same_mint_submission_effect(
     if opportunity.decision_id != Some(decision_id) {
         return Err("signed submission, opportunity, and decision identities diverged".into());
     }
-    match opportunity
-        .execution_plan
-        .get("kind")
-        .and_then(Value::as_str)
-    {
-        Some("same_mint") => {
+    match validated_opportunity_route_source_contract(&opportunity)?.0 {
+        SameMintRouteSourceKind::ReservePosition => {
             reconcile_reserve_submission_effect(
                 runtime,
                 submission,
@@ -4371,11 +4367,10 @@ async fn reconcile_same_mint_submission_effect(
             )
             .await
         }
-        Some("idle_vault_deposit") => {
+        SameMintRouteSourceKind::IdleVaultUsdc => {
             reconcile_idle_submission_effect(runtime, decision_id, confirmed_slot, &opportunity)
                 .await
         }
-        other => Err(format!("unsupported reconciliation route kind {other:?}").into()),
     }
 }
 
@@ -4668,16 +4663,10 @@ fn same_mint_request_from_opportunity(
     let plan = &opportunity.execution_plan;
     let settings = required_plan_string(plan, "settings")?;
     let vault_index = i16::try_from(required_plan_i64(plan, "vault_index")?)?;
-    let source_kind = match required_plan_string(plan, "source_kind")?.as_str() {
-        "reserve_position" => SameMintRouteSourceKind::ReservePosition,
-        "idle_vault_usdc" => SameMintRouteSourceKind::IdleVaultUsdc,
-        other => return Err(format!("unsupported fleet source_kind {other:?}").into()),
-    };
+    let (source_kind, source_evidence) = validated_opportunity_route_source_contract(opportunity)?;
     // `source_observed_*` is generic planner evidence. It is idle-account
     // evidence only for an idle-vault source; reserve-position routes are
     // fenced by their immutable source snapshot instead.
-    let (expected_idle_token_account, expected_idle_observed_slot, expected_idle_observed_at) =
-        idle_source_observation_evidence(source_kind, plan)?;
     Ok(SameMintRouteExecutionRequest {
         mode: match claim_kind {
             RebalanceOpportunityClaimKind::Revalidate => SameMintRouteExecutionMode::Revalidate,
@@ -4694,9 +4683,9 @@ fn same_mint_request_from_opportunity(
         source_reserve: opportunity.source_reserve.clone(),
         target_reserve: opportunity.target_reserve.clone(),
         expected_source_snapshot_id: opportunity.source_snapshot_id.map(SnapshotId::as_i64),
-        expected_idle_token_account,
-        expected_idle_observed_slot,
-        expected_idle_observed_at,
+        expected_idle_token_account: source_evidence.expected_idle_token_account,
+        expected_idle_observed_slot: source_evidence.expected_idle_observed_slot,
+        expected_idle_observed_at: source_evidence.expected_idle_observed_at,
         expected_liquidity_mint: opportunity.liquidity_mint.clone(),
         expected_amount_raw: opportunity.amount_raw,
         expected_route_amount_semantics: required_plan_string(plan, "route_amount_semantics")?,
@@ -4727,24 +4716,19 @@ fn same_mint_request_from_opportunity(
     })
 }
 
-type IdleSourceObservationEvidence = (Option<String>, Option<i64>, Option<DateTime<Utc>>);
-
-fn idle_source_observation_evidence(
-    source_kind: SameMintRouteSourceKind,
-    plan: &Value,
-) -> Result<IdleSourceObservationEvidence, Box<dyn Error>> {
-    let idle_token_account = optional_plan_string(plan, "idle_token_account");
-    if source_kind == SameMintRouteSourceKind::ReservePosition {
-        // Preserve an explicitly corrupt idle account so request validation
-        // still fails closed; only the generic source timestamp/slot must not
-        // be relabeled as idle evidence.
-        return Ok((idle_token_account, None, None));
-    }
-    Ok((
-        idle_token_account,
-        optional_plan_i64(plan, "source_observed_slot"),
-        optional_plan_datetime(plan, "source_observed_at")?,
-    ))
+fn validated_opportunity_route_source_contract(
+    opportunity: &RebalanceOpportunityRecord,
+) -> Result<(SameMintRouteSourceKind, FleetRouteSourceEvidence), Box<dyn Error>> {
+    let source_kind = validate_fleet_route_kind_binding(&opportunity.execution_plan)?;
+    let source_evidence =
+        project_fleet_route_source_evidence(source_kind, &opportunity.execution_plan)?;
+    validate_fleet_route_source_evidence(
+        source_kind,
+        opportunity.source_reserve.as_deref(),
+        opportunity.source_snapshot_id.map(SnapshotId::as_i64),
+        &source_evidence,
+    )?;
+    Ok((source_kind, source_evidence))
 }
 
 fn required_plan_string(plan: &Value, field: &str) -> Result<String, Box<dyn Error>> {
@@ -4770,19 +4754,6 @@ fn required_plan_i64(plan: &Value, field: &str) -> Result<i64, Box<dyn Error>> {
 
 fn optional_plan_i64(plan: &Value, field: &str) -> Option<i64> {
     plan.get(field).and_then(Value::as_i64)
-}
-
-fn optional_plan_datetime(
-    plan: &Value,
-    field: &str,
-) -> Result<Option<DateTime<Utc>>, Box<dyn Error>> {
-    optional_plan_string(plan, field)
-        .map(|value| {
-            DateTime::parse_from_rfc3339(&value)
-                .map(|value| value.with_timezone(&Utc))
-                .map_err(|error| format!("invalid execution_plan.{field}: {error}").into())
-        })
-        .transpose()
 }
 
 fn request_conflict_account_keys(lease: &RebalanceOpportunityLease) -> Result<Vec<String>, String> {
@@ -4819,7 +4790,11 @@ fn fleet_worker_retry_result(
         || {
             let plan = &lease.opportunity.execution_plan;
             SameMintRouteExecutionOutcome {
-                state: SameMintRouteExecutionState::Retry,
+                // Building the in-process request is pure and performs no RPC
+                // or database work. A failure here is durable route-schema or
+                // identity corruption, not a transient dependency outage; a
+                // retry would hot-loop the same poison row every two seconds.
+                state: SameMintRouteExecutionState::Terminal,
                 opportunity_id: lease.opportunity.id,
                 source_kind: if lease.opportunity.source_reserve.is_some() {
                     SameMintRouteSourceKind::ReservePosition
@@ -4920,6 +4895,12 @@ async fn finish_fleet_worker_task(
             (RebalanceOpportunityClaimKind::Execute, SameMintRouteExecutionState::Retry) => (
                 RebalanceOpportunityState::Ready,
                 Some(Utc::now() + ChronoDuration::seconds(2)),
+                outcome.reason.clone(),
+                None,
+            ),
+            (_, SameMintRouteExecutionState::Stale) => (
+                RebalanceOpportunityState::Stale,
+                None,
                 outcome.reason.clone(),
                 None,
             ),
@@ -5170,7 +5151,9 @@ async fn execute_same_mint_route_with_runtime(
 
 fn classify_in_process_execution_error(reason: &str) -> SameMintRouteExecutionState {
     let reason = reason.to_ascii_lowercase();
-    if reason.contains("complete reusable alt coverage")
+    if reason.starts_with(CURRENT_MARKET_EPOCH_STALE_PREFIX) {
+        SameMintRouteExecutionState::Stale
+    } else if reason.contains("complete reusable alt coverage")
         || reason.contains("reusable alt coverage") && reason.contains("incomplete")
         || reason.contains("lookup-table coverage") && reason.contains("missing")
     {
@@ -5341,6 +5324,52 @@ async fn run_with_options(
 /// recompute the route edge from current source/target APYs. Legacy admin and
 /// dry-run CLI paths have no opportunity identity and retain their existing
 /// non-mutating behavior.
+fn require_current_market_epoch_identity(
+    optimizer_epoch_id: i64,
+    fingerprint: &str,
+    expires_at: DateTime<Utc>,
+    expected_optimizer_epoch_id: i64,
+) -> Result<(), Box<dyn Error>> {
+    if optimizer_epoch_id != expected_optimizer_epoch_id {
+        return Err(format!(
+            "{CURRENT_MARKET_EPOCH_STALE_PREFIX} leased optimizer epoch {expected_optimizer_epoch_id} was superseded by current epoch {optimizer_epoch_id} ({fingerprint})"
+        )
+        .into());
+    }
+    require_market_epoch_lifetime(fingerprint, expires_at)
+}
+
+fn require_market_epoch_lifetime(
+    fingerprint: &str,
+    expires_at: DateTime<Utc>,
+) -> Result<(), Box<dyn Error>> {
+    let minimum_usable_until =
+        Utc::now() + ChronoDuration::seconds(MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS);
+    if expires_at < minimum_usable_until {
+        return Err(format!(
+            "{CURRENT_MARKET_EPOCH_STALE_PREFIX} market evidence {fingerprint} expires at {expires_at}, before minimum signing lifetime {minimum_usable_until}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn require_current_route_market_epoch(
+    current: &CurrentRouteMarketEconomics,
+    expected_optimizer_epoch_id: i64,
+) -> Result<(), Box<dyn Error>> {
+    require_current_market_epoch_identity(
+        current.optimizer_epoch_id,
+        &current.optimizer_epoch_fingerprint,
+        current.optimizer_epoch_expires_at,
+        expected_optimizer_epoch_id,
+    )?;
+    require_market_epoch_lifetime(
+        &current.fresh_market_fingerprint,
+        current.fresh_market_expires_at,
+    )
+}
+
 async fn load_current_route_market_economics(
     runtime: &SameMintRouteRuntime,
     options: &CliOptions,
@@ -5354,14 +5383,74 @@ async fn load_current_route_market_economics(
         .expected_liquidity_mint
         .as_ref()
         .ok_or("queue route is missing its expected liquidity mint")?;
+    let enabled_mints = enabled_stable_mints_from_env()?;
+    if !enabled_mints.iter().any(|mint| mint == liquidity_mint) {
+        return Err(format!(
+            "{CURRENT_MARKET_EPOCH_STALE_PREFIX} route mint {liquidity_mint} is no longer in the planner's enabled universe"
+        )
+        .into());
+    }
     let config = FleetObservationConfig {
         cluster: options.cluster.clone(),
-        enabled_mints: vec![liquidity_mint.clone()],
+        stablecoin_valuations: code_owned_stablecoin_valuations(&enabled_mints)?,
+        enabled_mints,
         ..FleetObservationConfig::default()
     };
+    let optimizer_epoch_id = options
+        .optimizer_epoch_id
+        .ok_or("queue route is missing its optimizer epoch")?;
+    let bound_epoch = runtime
+        .client
+        .optimizer_epoch(&options.cluster, optimizer_epoch_id)
+        .await?
+        .ok_or_else(|| {
+            format!(
+                "{CURRENT_MARKET_EPOCH_STALE_PREFIX} bound optimizer epoch {optimizer_epoch_id} does not exist"
+            )
+        })?;
+    let planned_epoch: ImmutableMarketEpoch = serde_json::from_value(bound_epoch.market_state.clone())
+        .map_err(|error| {
+            format!(
+                "{CURRENT_MARKET_EPOCH_STALE_PREFIX} bound optimizer epoch {optimizer_epoch_id} has invalid market evidence: {error}"
+            )
+        })?;
+    if bound_epoch.epoch_key != planned_epoch.fingerprint
+        || bound_epoch.expires_at != planned_epoch.optimizer_envelope_expires_at()
+    {
+        return Err(format!(
+            "{CURRENT_MARKET_EPOCH_STALE_PREFIX} bound optimizer epoch {optimizer_epoch_id} disagrees with its immutable market evidence"
+        )
+        .into());
+    }
+    require_current_market_epoch_identity(
+        bound_epoch.id,
+        &bound_epoch.epoch_key,
+        bound_epoch.expires_at,
+        optimizer_epoch_id,
+    )?;
+    let planned_mint_expires_at = planned_epoch
+        .mint_expires_at(liquidity_mint)
+        .ok_or_else(|| {
+            format!(
+                "{CURRENT_MARKET_EPOCH_STALE_PREFIX} bound optimizer epoch {optimizer_epoch_id} has no lifetime for route mint {liquidity_mint}"
+            )
+        })?;
+    require_market_epoch_lifetime(&planned_epoch.fingerprint, planned_mint_expires_at)?;
     let epoch = runtime.current_market_epoch(&config).await?;
-    if epoch.expires_at <= Utc::now() {
-        return Err("current immutable market snapshot is already expired".into());
+    let fresh_mint_expires_at = epoch.mint_expires_at(liquidity_mint).ok_or_else(|| {
+        format!(
+            "{CURRENT_MARKET_EPOCH_STALE_PREFIX} current market evidence has no lifetime for route mint {liquidity_mint}"
+        )
+    })?;
+    require_market_epoch_lifetime(&epoch.fingerprint, fresh_mint_expires_at)?;
+    let material_frontier_disposition = planned_epoch
+        .material_market_frontier_for_mint(liquidity_mint)
+        .disposition_against(&epoch.material_market_frontier_for_mint(liquidity_mint));
+    if !material_frontier_disposition.allows_scoped_planning() {
+        return Err(format!(
+            "{CURRENT_MARKET_EPOCH_STALE_PREFIX} bound optimizer epoch {optimizer_epoch_id} has a materially superseded market frontier ({material_frontier_disposition:?})"
+        )
+        .into());
     }
     let target = epoch
         .reserves
@@ -5372,10 +5461,17 @@ async fn load_current_route_market_economics(
         })
         .ok_or_else(|| {
             format!(
-                "current immutable market snapshot is missing target reserve {}",
+                "{CURRENT_MARKET_EPOCH_STALE_PREFIX} current full-universe market epoch is missing target reserve {}",
                 reserve_move.target_reserve
             )
         })?;
+    if !target.target_eligible {
+        return Err(format!(
+            "{CURRENT_MARKET_EPOCH_STALE_PREFIX} current target reserve {} is no longer eligible",
+            reserve_move.target_reserve
+        )
+        .into());
+    }
     let source_apy_bps = if options.idle_vault_deposit_amount_raw.is_some() {
         0
     } else {
@@ -5389,7 +5485,7 @@ async fn load_current_route_market_economics(
             .map(|reserve| reserve.supply_apy_bps)
             .ok_or_else(|| {
                 format!(
-                    "current immutable market snapshot is missing source reserve {}",
+                    "{CURRENT_MARKET_EPOCH_STALE_PREFIX} current full-universe market epoch is missing source reserve {}",
                     reserve_move.source_reserve
                 )
             })?
@@ -5406,9 +5502,6 @@ async fn load_current_route_market_economics(
     let opportunity_id = options
         .opportunity_id
         .ok_or("queue route is missing its opportunity identity")?;
-    let optimizer_epoch_id = options
-        .optimizer_epoch_id
-        .ok_or("queue route is missing its optimizer epoch")?;
     let principal_usd_micros = options
         .principal_usd_micros
         .ok_or("queue route is missing its normalized principal")?;
@@ -5501,6 +5594,12 @@ async fn load_current_route_market_economics(
         )
     })?;
     Ok(Some(CurrentRouteMarketEconomics {
+        optimizer_epoch_id,
+        optimizer_epoch_fingerprint: bound_epoch.epoch_key,
+        optimizer_epoch_expires_at: bound_epoch.expires_at,
+        fresh_market_fingerprint: epoch.fingerprint,
+        fresh_market_expires_at: fresh_mint_expires_at,
+        material_frontier_disposition: format!("{material_frontier_disposition:?}"),
         source_apy_bps,
         capacity_adjusted_target_apy_bps: economics.current_capacity_adjusted_target_apy_bps,
         edge_bps: economics.score.capacity_adjusted_net_edge_bps,
@@ -5912,6 +6011,16 @@ async fn run_with_runtime(
         if options.route_runtime_active() {
             require_current_opportunity_fence(&client, &options, &vault, None).await?;
         }
+        if options.opportunity_id.is_some() {
+            require_current_route_market_epoch(
+                current_market
+                    .as_ref()
+                    .ok_or("queue route is missing its current full-universe market epoch")?,
+                options
+                    .optimizer_epoch_id
+                    .ok_or("queue route is missing its optimizer epoch")?,
+            )?;
+        }
         let mut resolution = resolve_route_lookup_tables(
             &client,
             &rpc,
@@ -6168,6 +6277,10 @@ async fn run_with_runtime(
     )
     .await?;
     if let Some(current) = current_opportunity {
+        let current_market = current_market
+            .as_ref()
+            .ok_or("queue route is missing its target capacity reservation")?;
+        require_current_route_market_epoch(current_market, current.optimizer_epoch_id)?;
         let executable_route = route_execution
             .as_ref()
             .ok_or("same-mint queue handoff is missing its exact route plan")?;
@@ -6176,6 +6289,7 @@ async fn run_with_runtime(
             Some(runtime),
             &options,
             current,
+            current_market,
             executable_lookup_tables,
             executable_route.preview.fee_payer_selection.mature_route
                 && executable_route.preview.missing_obligation_setup.is_none()
@@ -6199,11 +6313,7 @@ async fn run_with_runtime(
             .prepare_same_mint_rebalance_with_signed_submission(
                 pre_reconcile_input.clone(),
                 &handoff.lease,
-                current_market
-                    .as_ref()
-                    .ok_or("queue route is missing its target capacity reservation")?
-                    .capacity_reservation
-                    .clone(),
+                current_market.capacity_reservation.clone(),
                 handoff.submission,
             )
             .await?;
@@ -8883,6 +8993,7 @@ async fn run_idle_vault_deposit_flow(
                     SameMintRouteExecutionState::Ready => "ready",
                     SameMintRouteExecutionState::WaitingAlt => "idle_vault_deposit_lookup_table_deferred",
                     SameMintRouteExecutionState::Retry => "idle_vault_deposit_revalidate_retry",
+                    SameMintRouteExecutionState::Stale => "idle_vault_deposit_epoch_stale",
                     SameMintRouteExecutionState::Terminal => "idle_vault_deposit_preflight_blocked",
                     SameMintRouteExecutionState::SubmissionQueued => "idle_vault_deposit_submission_queued",
                     SameMintRouteExecutionState::Executed => "idle_vault_deposit_executed",
@@ -9179,6 +9290,9 @@ async fn run_idle_vault_deposit_flow(
     )
     .await?;
     let queue_handoff = if let Some(current) = current_opportunity {
+        let current_market =
+            current_market.ok_or("queue idle route is missing its target capacity reservation")?;
+        require_current_route_market_epoch(current_market, current.optimizer_epoch_id)?;
         let phase = deposit_lookup_table_phase
             .as_ref()
             .ok_or("queue idle deposit is missing its atomic transaction phase")?;
@@ -9188,6 +9302,7 @@ async fn run_idle_vault_deposit_flow(
                 None,
                 options,
                 current,
+                current_market,
                 &phase.resolution,
                 fee_only_shard_allowed_for_scope(FleetRouteFeePayerScope::IdleVault),
                 None,
@@ -12095,12 +12210,20 @@ async fn prepare_queue_signed_route_handoff(
     route_runtime: Option<&SameMintRouteRuntime>,
     options: &CliOptions,
     current: RebalanceOpportunityRecord,
+    current_market: &CurrentRouteMarketEconomics,
     resolution: &RuntimeLookupTableResolution,
     fee_only_shard_allowed: bool,
     observed_fee_payer_balance_lamports: Option<i64>,
     observed_fee_payer_balance_slot: Option<i64>,
     observed_fee_payer_balance_at: Option<DateTime<Utc>>,
 ) -> Result<QueueSignedRouteHandoff, Box<dyn Error>> {
+    require_current_route_market_epoch(current_market, current.optimizer_epoch_id)?;
+    if options.optimizer_epoch_id != Some(current_market.optimizer_epoch_id) {
+        return Err(format!(
+            "{CURRENT_MARKET_EPOCH_STALE_PREFIX} route options and current durable optimizer epoch diverged before signed persistence"
+        )
+        .into());
+    }
     let (owner, fencing_token, expires_at) = match (
         options.opportunity_lease_owner.as_deref(),
         options.opportunity_fencing_token,
@@ -12216,6 +12339,16 @@ async fn prepare_queue_signed_route_handoff(
         .as_ref()
         .ok_or("signed route has no selected ALT bundle")?;
     let mutation_epochs = json!({
+        "optimizerEpoch": {
+            "id": current_market.optimizer_epoch_id,
+            "fingerprint": current_market.optimizer_epoch_fingerprint,
+            "expiresAt": current_market.optimizer_epoch_expires_at,
+        },
+        "marketRevalidation": {
+            "fingerprint": current_market.fresh_market_fingerprint,
+            "expiresAt": current_market.fresh_market_expires_at,
+            "materialFrontierDisposition": current_market.material_frontier_disposition,
+        },
         "tables": selected_bundle.tables.iter().map(|table| json!({
             "tableId": table.table_id,
             "tableAddress": table.table_address,
@@ -12288,7 +12421,7 @@ async fn prepare_queue_signed_route_handoff(
             recent_blockhash: resolution.recent_blockhash.to_string(),
             last_valid_block_height: resolution.last_valid_block_height,
             source_snapshot_id: current.source_snapshot_id,
-            optimizer_epoch_id: current.optimizer_epoch_id,
+            optimizer_epoch_id: current_market.optimizer_epoch_id,
             alt_requirements_fingerprint: resolution.requirements_fingerprint.clone(),
             alt_selection_fingerprint: selection_fingerprint,
             alt_mutation_epochs: mutation_epochs,
@@ -19038,7 +19171,13 @@ fn validate_monitor_expectations(
         }
     }
     if let Some(expected) = options.expected_amount_raw {
-        if input.amount_raw != expected {
+        let positive_queue_accrual = options.opportunity_id.is_some()
+            && options.reconcile_from_chain
+            && options.idle_vault_deposit_amount_raw.is_none()
+            && input.amount_raw > expected
+            && i128::from(input.amount_raw - expected) * 1_000_000
+                <= i128::from(expected) * i128::from(MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM);
+        if input.amount_raw != expected && !positive_queue_accrual {
             return Err(PlanBlocker::MonitorPlanDrift(format!(
                 "expected route amount_raw {expected}, got {}",
                 input.amount_raw
@@ -19907,36 +20046,75 @@ mod tests {
         let observed_at = "2026-07-16T03:11:11Z";
         let idle_account = Pubkey::new_unique().to_string();
         let generic_source_plan = json!({
+            "source_kind": "reserve_position",
             "source_observed_slot": 433_191_369,
             "source_observed_at": observed_at,
             "idle_token_account": null,
         });
 
-        let reserve = idle_source_observation_evidence(
+        let reserve = project_fleet_route_source_evidence(
             SameMintRouteSourceKind::ReservePosition,
             &generic_source_plan,
         )
         .unwrap();
-        assert_eq!(reserve, (None, None, None));
+        assert_eq!(reserve.expected_idle_token_account, None);
+        assert_eq!(reserve.expected_idle_observed_slot, None);
+        assert_eq!(reserve.expected_idle_observed_at, None);
+        assert!(validate_fleet_route_source_evidence(
+            SameMintRouteSourceKind::ReservePosition,
+            Some(&Pubkey::new_unique().to_string()),
+            Some(1),
+            &reserve,
+        )
+        .is_ok());
 
         let idle_plan = json!({
+            "source_kind": "idle_vault_usdc",
             "source_observed_slot": 433_191_369,
             "source_observed_at": observed_at,
             "idle_token_account": idle_account,
         });
         let idle =
-            idle_source_observation_evidence(SameMintRouteSourceKind::IdleVaultUsdc, &idle_plan)
+            project_fleet_route_source_evidence(SameMintRouteSourceKind::IdleVaultUsdc, &idle_plan)
                 .unwrap();
-        assert_eq!(idle.0.as_deref(), Some(idle_account.as_str()));
-        assert_eq!(idle.1, Some(433_191_369));
-        assert_eq!(idle.2.unwrap().to_rfc3339(), "2026-07-16T03:11:11+00:00");
+        assert_eq!(
+            idle.expected_idle_token_account.as_deref(),
+            Some(idle_account.as_str())
+        );
+        assert_eq!(idle.expected_idle_observed_slot, Some(433_191_369));
+        assert_eq!(
+            idle.expected_idle_observed_at.unwrap().to_rfc3339(),
+            "2026-07-16T03:11:11+00:00"
+        );
+        assert!(validate_fleet_route_source_evidence(
+            SameMintRouteSourceKind::IdleVaultUsdc,
+            None,
+            None,
+            &idle,
+        )
+        .is_ok());
 
-        let corrupt_reserve =
-            idle_source_observation_evidence(SameMintRouteSourceKind::ReservePosition, &idle_plan)
-                .unwrap();
-        assert_eq!(corrupt_reserve.0.as_deref(), Some(idle_account.as_str()));
-        assert_eq!(corrupt_reserve.1, None);
-        assert_eq!(corrupt_reserve.2, None);
+        let corrupt_reserve = project_fleet_route_source_evidence(
+            SameMintRouteSourceKind::ReservePosition,
+            &idle_plan,
+        )
+        .unwrap();
+        assert_eq!(
+            corrupt_reserve.expected_idle_token_account.as_deref(),
+            Some(idle_account.as_str())
+        );
+        assert_eq!(corrupt_reserve.expected_idle_observed_slot, None);
+        assert_eq!(corrupt_reserve.expected_idle_observed_at, None);
+        assert_eq!(
+            validate_fleet_route_source_evidence(
+                SameMintRouteSourceKind::ReservePosition,
+                Some(&Pubkey::new_unique().to_string()),
+                Some(2),
+                &corrupt_reserve,
+            )
+            .unwrap_err(),
+            "same-mint reserve-position request cannot carry idle-vault evidence"
+        );
     }
 
     fn test_chain_position(

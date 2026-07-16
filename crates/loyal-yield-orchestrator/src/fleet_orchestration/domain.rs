@@ -204,6 +204,7 @@ pub enum IneligibleReason {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EconomicScore {
+    pub capacity_adjusted_source_net_apy_bps: i64,
     pub capacity_adjusted_target_net_apy_bps: i64,
     pub capacity_adjusted_net_edge_bps: i64,
     pub lost_yield_usd_micros_per_hour: i64,
@@ -248,14 +249,25 @@ pub struct CapacityBand {
 #[serde(rename_all = "camelCase")]
 pub struct TargetCapacityCurve {
     pub target_reserve: String,
+    /// Supply and APY from the immutable market epoch. The planner holds
+    /// reserve revenue fixed over one bounded wave and projects APY from the
+    /// resulting net supply change.
+    pub observed_supply_usd_micros: i64,
+    pub observed_net_apy_bps: i64,
     pub already_committed_inflow_usd_micros: i64,
+    /// Durable queued/leased work that will leave this reserve but is not yet
+    /// reflected by the immutable market epoch.
+    pub already_committed_outflow_usd_micros: i64,
     pub bands: Vec<CapacityBand>,
 }
 
 impl TargetCapacityCurve {
     pub fn validate(&self) -> Result<(), CapacityCurveError> {
         if self.target_reserve.is_empty()
+            || self.observed_supply_usd_micros <= 0
+            || !apy_is_bounded(self.observed_net_apy_bps)
             || self.already_committed_inflow_usd_micros < 0
+            || self.already_committed_outflow_usd_micros < 0
             || self.bands.is_empty()
         {
             return Err(CapacityCurveError::InvalidShape);
@@ -266,6 +278,7 @@ impl TargetCapacityCurve {
             if band.cumulative_inflow_usd_micros <= previous_ceiling
                 || !apy_is_bounded(band.target_net_apy_bps)
                 || band.target_net_apy_bps > previous_apy
+                || band.target_net_apy_bps > self.observed_net_apy_bps
             {
                 return Err(CapacityCurveError::InvalidShape);
             }
@@ -275,26 +288,101 @@ impl TargetCapacityCurve {
         if self.already_committed_inflow_usd_micros > previous_ceiling {
             return Err(CapacityCurveError::CommittedFlowExceedsCapacity);
         }
+        self.projected_supply(
+            self.already_committed_inflow_usd_micros,
+            self.already_committed_outflow_usd_micros,
+        )?;
         Ok(())
     }
 
+    /// Conservative target APY after a candidate deposit. Gross inflow picks
+    /// the capacity band exactly as before, so source outflow never creates
+    /// executable inflight headroom. Outflow only raises the band's marginal
+    /// APY by reducing its projected supply denominator.
     pub fn target_apy_after(
         &self,
         additional_inflow_usd_micros: i64,
+        additional_outflow_usd_micros: i64,
     ) -> Result<Option<i64>, CapacityCurveError> {
         self.validate()?;
-        if additional_inflow_usd_micros < 0 {
+        if additional_inflow_usd_micros < 0 || additional_outflow_usd_micros < 0 {
             return Err(CapacityCurveError::InvalidShape);
         }
-        let cumulative = self
+        let cumulative_inflow = self
             .already_committed_inflow_usd_micros
             .checked_add(additional_inflow_usd_micros)
             .ok_or(CapacityCurveError::ArithmeticOverflow)?;
-        Ok(self
+        let cumulative_outflow = self
+            .already_committed_outflow_usd_micros
+            .checked_add(additional_outflow_usd_micros)
+            .ok_or(CapacityCurveError::ArithmeticOverflow)?;
+        let Some(band) = self
             .bands
             .iter()
-            .find(|band| cumulative <= band.cumulative_inflow_usd_micros)
-            .map(|band| band.target_net_apy_bps))
+            .find(|band| cumulative_inflow <= band.cumulative_inflow_usd_micros)
+        else {
+            return Ok(None);
+        };
+        let band_supply = self
+            .observed_supply_usd_micros
+            .checked_add(band.cumulative_inflow_usd_micros)
+            .ok_or(CapacityCurveError::ArithmeticOverflow)?;
+        let projected_band_supply = band_supply
+            .checked_sub(cumulative_outflow)
+            .ok_or(CapacityCurveError::ArithmeticOverflow)?;
+        if projected_band_supply <= 0 {
+            return Err(CapacityCurveError::ProjectedSupplyExhausted);
+        }
+        // Never price a target above the immutable observed APY before the
+        // projected withdrawal is visible on chain. Revalidation requires
+        // capacity adjustment to remain a haircut; a later epoch captures any
+        // realized APY increase. Within that fence, outflow can still restore
+        // APY that gross inflow dilution had consumed.
+        scale_supply_apy(band.target_net_apy_bps, band_supply, projected_band_supply)
+            .map(|apy| Some(apy.min(self.observed_net_apy_bps)))
+    }
+
+    /// Exact marginal APY at the current reserve-wide wave projection. This
+    /// is used for the source side before the candidate's own withdrawal.
+    pub fn source_apy_after(
+        &self,
+        additional_inflow_usd_micros: i64,
+        additional_outflow_usd_micros: i64,
+    ) -> Result<i64, CapacityCurveError> {
+        self.validate()?;
+        if additional_inflow_usd_micros < 0 || additional_outflow_usd_micros < 0 {
+            return Err(CapacityCurveError::InvalidShape);
+        }
+        let cumulative_inflow = self
+            .already_committed_inflow_usd_micros
+            .checked_add(additional_inflow_usd_micros)
+            .ok_or(CapacityCurveError::ArithmeticOverflow)?;
+        let cumulative_outflow = self
+            .already_committed_outflow_usd_micros
+            .checked_add(additional_outflow_usd_micros)
+            .ok_or(CapacityCurveError::ArithmeticOverflow)?;
+        let projected_supply = self.projected_supply(cumulative_inflow, cumulative_outflow)?;
+        scale_supply_apy(
+            self.observed_net_apy_bps,
+            self.observed_supply_usd_micros,
+            projected_supply,
+        )
+    }
+
+    fn projected_supply(
+        &self,
+        cumulative_inflow_usd_micros: i64,
+        cumulative_outflow_usd_micros: i64,
+    ) -> Result<i64, CapacityCurveError> {
+        let projected_supply = self
+            .observed_supply_usd_micros
+            .checked_add(cumulative_inflow_usd_micros)
+            .and_then(|supply| supply.checked_sub(cumulative_outflow_usd_micros))
+            .ok_or(CapacityCurveError::ArithmeticOverflow)?;
+        if projected_supply <= 0 {
+            return Err(CapacityCurveError::ProjectedSupplyExhausted);
+        }
+        Ok(projected_supply)
     }
 }
 
@@ -303,7 +391,27 @@ impl TargetCapacityCurve {
 pub enum CapacityCurveError {
     InvalidShape,
     CommittedFlowExceedsCapacity,
+    ProjectedSupplyExhausted,
     ArithmeticOverflow,
+}
+
+fn scale_supply_apy(
+    base_apy_bps: i64,
+    base_supply_usd_micros: i64,
+    projected_supply_usd_micros: i64,
+) -> Result<i64, CapacityCurveError> {
+    if base_supply_usd_micros <= 0 || projected_supply_usd_micros <= 0 {
+        return Err(CapacityCurveError::ProjectedSupplyExhausted);
+    }
+    let numerator = i128::from(base_apy_bps)
+        .checked_mul(i128::from(base_supply_usd_micros))
+        .ok_or(CapacityCurveError::ArithmeticOverflow)?;
+    let projected = numerator / i128::from(projected_supply_usd_micros);
+    if !(-i128::from(MAX_ABSOLUTE_APY_BPS)..=i128::from(MAX_ABSOLUTE_APY_BPS)).contains(&projected)
+    {
+        return Err(CapacityCurveError::InvalidShape);
+    }
+    i64::try_from(projected).map_err(|_| CapacityCurveError::ArithmeticOverflow)
 }
 
 pub fn evaluate_economics(
@@ -368,6 +476,7 @@ pub fn evaluate_economics(
         .saturating_add(i128::from(fairness_boost));
 
     Ok(EconomicScore {
+        capacity_adjusted_source_net_apy_bps: input.source_net_apy_bps,
         capacity_adjusted_target_net_apy_bps,
         capacity_adjusted_net_edge_bps: edge_bps,
         lost_yield_usd_micros_per_hour: clamp_i128_to_i64(lost_yield_per_hour),

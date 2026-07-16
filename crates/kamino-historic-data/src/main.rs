@@ -1357,6 +1357,7 @@ fn prepare_jsonl_record_for_timescale(record: &Value) -> Result<Value> {
     let target = required_object(record, "target")?;
     let diff = record.get("diff").cloned().unwrap_or(Value::Null);
     let source_commitment = required_str(record, "source_commitment")?;
+    let source = required_str(record, "source")?;
     let slot = required_u64(record, "slot")?;
     let account_data_hash = required_str(record, "account_data_hash")?;
     let reserve = pubkey_json_to_string(
@@ -1405,6 +1406,7 @@ fn prepare_jsonl_record_for_timescale(record: &Value) -> Result<Value> {
         "dedupe_key".to_string(),
         json!(TimescaleSink::dedupe_key_parts(
             source_commitment,
+            source,
             &reserve,
             slot,
             account_data_hash,

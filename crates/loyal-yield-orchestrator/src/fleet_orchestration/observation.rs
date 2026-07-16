@@ -1,9 +1,10 @@
 use super::domain::OpportunityInput;
 use crate::{route_amount_evidence_from_metadata, NeonSqlClient, ACTIVE_DECISION_STATUSES};
 use chrono::{DateTime, Duration, Utc};
-use loyal_actions::USDC_MINT;
+use loyal_actions::{CASH_MINT, PYUSD_MINT, USDC_MINT, USDG_MINT, USDS_MINT, USDT_MINT};
 use loyal_yield_router::timescale::{
-    SupportedReserveLatestQuery, SupportedReserveLatestRow, TimescaleRouterClient,
+    SupportedReserveCatalogRow, SupportedReserveMarketSnapshot,
+    SupportedReserveMarketSnapshotQuery, TimescaleRouterClient, VerifiedSupportedReserveRow,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,6 +17,11 @@ use thiserror::Error;
 
 const SAME_MINT_ROUTE_MODE: &str = "same_mint_kamino";
 const USD_MICROS_PER_USD: i64 = 1_000_000;
+/// Domain-separates optimizer epochs whose durable row lifetime is the
+/// longest complete-mint envelope while each route retains its own mint
+/// lifetime. Historical global-minimum epoch rows remain immutable under
+/// their pre-v2 fingerprints instead of colliding during rollout.
+const MARKET_EPOCH_FINGERPRINT_DOMAIN: &[u8] = b"loyal-yield-market-epoch-envelope-v2";
 /// A one-millidollar stablecoin price bucket (roughly 10 bps near $1) avoids
 /// turning harmless oracle ticks into full-fleet planning work while still
 /// waking promptly on economically material depegs.
@@ -27,6 +33,26 @@ pub const MARKET_WAKE_PRICE_BUCKET_USD_MICROS: i64 = 1_000;
 /// reserve churn. Drift accumulates against the last full sweep, so it cannot
 /// hide a sequence of individually-small changes forever.
 pub const MARKET_MATERIAL_CAPACITY_DRIFT_PPM: i64 = 1_000;
+/// Routes need enough immutable market lifetime to survive queue publication,
+/// claim, compilation, and a normal submission round without relaxing the
+/// hard confirmed-verification expiry.
+pub const MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS: i64 = 60;
+/// Exact confirmed verification is hard-expired after four minutes even if a
+/// caller supplies a looser market-age configuration.
+pub const MAXIMUM_CONFIRMED_VERIFICATION_AGE_SECONDS: i64 = 240;
+/// The monitor refreshes catalog identity independently from reserve account
+/// updates. Routing refuses catalog rows older than this bound and also
+/// reserves the publication lifetime above before admitting work.
+pub const MAXIMUM_SUPPORTED_RESERVE_CATALOG_AGE_SECONDS: i64 = 300;
+/// Maximum admitted distance between the confirmed RPC context and Klend's
+/// internal LastUpdate slot. This is a reserve-local safety fence: crossing it
+/// quarantines that reserve without freezing healthy peers for the mint.
+pub const MAXIMUM_RESERVE_ECONOMIC_SLOT_LAG: i64 = 1_500;
+/// Conservative conversion used to expire an admitted reserve before its
+/// LastUpdate lag can cross the reserve-local bound above.
+pub const RESERVE_ECONOMIC_EXPIRY_MILLIS_PER_SLOT: i64 = 250;
+const CODE_OWNED_STABLECOIN_DECIMALS: u8 = 6;
+const CODE_OWNED_STABLECOIN_CONFIDENCE_PPM: u32 = 950_000;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +62,40 @@ pub struct StablecoinValuation {
     /// USD micro-dollars per whole token. This must be supplied explicitly.
     pub price_usd_micros: i64,
     pub confidence_ppm: u32,
+}
+
+/// Returns the code-owned valuation contract for the production stablecoin
+/// universe. Reserve oracle price age/status remains observable evidence, but
+/// cannot distort stable capacity or make two reserves of the same mint carry
+/// different USD notionals.
+pub fn code_owned_stablecoin_valuations(
+    enabled_mints: &[String],
+) -> Result<Vec<StablecoinValuation>, FleetObservationError> {
+    let supported = [
+        CASH_MINT.to_string(),
+        USDG_MINT.to_string(),
+        PYUSD_MINT.to_string(),
+        USDC_MINT.to_string(),
+        USDT_MINT.to_string(),
+        USDS_MINT.to_string(),
+    ]
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    let mut valuations = Vec::with_capacity(enabled_mints.len());
+    for mint in enabled_mints.iter().cloned().collect::<BTreeSet<_>>() {
+        if !supported.contains(mint.as_str()) {
+            return Err(FleetObservationError::InvalidConfig(format!(
+                "missing code-owned stable valuation for mint {mint}"
+            )));
+        }
+        valuations.push(StablecoinValuation {
+            mint,
+            decimals: CODE_OWNED_STABLECOIN_DECIMALS,
+            price_usd_micros: USD_MICROS_PER_USD,
+            confidence_ppm: CODE_OWNED_STABLECOIN_CONFIDENCE_PPM,
+        });
+    }
+    Ok(valuations)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -69,7 +129,7 @@ impl Default for FleetObservationConfig {
             minimum_reserve_supply_usd: 100_000.0,
             minimum_supply_apy: 0.0,
             maximum_supply_apy: 0.5,
-            maximum_market_age_seconds: 5 * 60,
+            maximum_market_age_seconds: MAXIMUM_CONFIRMED_VERIFICATION_AGE_SECONDS,
             rebalance_cooldown_seconds: 5 * 60,
             holding_horizon_seconds: 30 * 24 * 60 * 60,
             expected_reserve_move_service_millis: 15_000,
@@ -84,15 +144,90 @@ impl Default for FleetObservationConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MarketEpochReserve {
+    pub state_event_id: i64,
+    pub account_data_hash: String,
+    pub state_observed_at: DateTime<Utc>,
+    pub state_slot: i64,
+    pub verification_commitment: String,
     pub reserve: String,
     pub market: Option<String>,
     pub liquidity_mint: String,
     pub mint_decimals: u8,
+    /// Code-owned stable valuation used for source notional and capacity.
     pub market_price_usd_micros: i64,
+    pub reserve_last_update_slot: i64,
+    /// Distance between the confirmed RPC context and Klend's LastUpdate slot.
+    pub economic_slot_lag: i64,
+    /// Reserve-local LastUpdate expiry, additionally bounded by the confirmed
+    /// HTTP verification expiry at the epoch level.
+    pub economic_expires_at: DateTime<Utc>,
+    pub reserve_last_update_stale: bool,
+    /// Retained as evidence, but deliberately not used as a supply-APY gate.
+    pub reserve_price_status: i16,
+    pub market_price_last_updated_ts: i64,
+    pub available_amount_raw: String,
+    pub borrowed_amount_raw: String,
+    pub total_supply_amount_raw: String,
+    pub utilization_ppm: i64,
+    pub borrow_apy_bps: i64,
+    /// Confirmed verification time used for freshness and expiry.
     pub observed_at: DateTime<Utc>,
+    /// Confirmed RPC context slot used for freshness and epoch identity.
     pub slot: i64,
     pub supply_apy_bps: i64,
     pub total_supply_usd_micros: i64,
+    pub target_eligible: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MarketMintBlockerCode {
+    MissingCatalog,
+    CatalogSourceMismatch,
+    CatalogFetchedInFuture,
+    CatalogStale,
+    CatalogInsufficientLifetime,
+    DuplicateCatalogReserveIdentity,
+    DuplicateVerifiedReserveIdentity,
+    MissingVerifiedReserve,
+    VerifiedIdentityMismatch,
+    VerificationSourceMismatch,
+    VerificationCommitmentMismatch,
+    VerificationInFuture,
+    VerificationStale,
+    VerificationInsufficientLifetime,
+    InvalidStateIdentity,
+    MissingStableValuation,
+    MintDecimalsMismatch,
+    ExplicitStaleEconomics,
+    InvalidEconomicSlotOrder,
+    EconomicSlotLagExceeded,
+    EconomicInsufficientLifetime,
+    InvalidEconomicFields,
+    NoEligibleTarget,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketMintBlocker {
+    pub code: MarketMintBlockerCode,
+    pub reserve: Option<String>,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketMintCoverage {
+    pub mint: String,
+    pub catalog_reserve_count: usize,
+    pub verified_reserve_count: usize,
+    pub eligible_target_reserve_count: usize,
+    /// True when the mint-wide contract is sound and at least one admissible
+    /// target exists. Reserve-scoped blockers remain explicit below, but only
+    /// exclude that reserve instead of freezing healthy peers for the mint.
+    pub complete: bool,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub blockers: Vec<MarketMintBlocker>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,12 +235,16 @@ pub struct MarketEpochReserve {
 pub struct ImmutableMarketEpoch {
     pub optimizer_epoch_id: i64,
     pub fingerprint: String,
+    pub catalog_fingerprint: String,
     pub captured_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+    pub catalog_expires_at: DateTime<Utc>,
+    pub catalog_reserve_count: usize,
     pub oldest_market_observed_at: Option<DateTime<Utc>>,
     pub newest_market_observed_at: Option<DateTime<Utc>>,
     pub minimum_market_slot: Option<i64>,
     pub maximum_market_slot: Option<i64>,
+    pub mint_coverage: Vec<MarketMintCoverage>,
     pub reserves: Vec<MarketEpochReserve>,
 }
 
@@ -121,6 +260,31 @@ impl ImmutableMarketEpoch {
         let mut evidence = self.clone();
         evidence.captured_at = self.newest_market_observed_at.unwrap_or(self.captured_at);
         evidence
+    }
+
+    /// Returns the durable lifetime of the multi-mint optimizer envelope.
+    ///
+    /// `expires_at` deliberately remains the conservative global-minimum
+    /// diagnostic. The optimizer row may remain addressable while any complete
+    /// mint in this immutable snapshot is still usable; individual routes must
+    /// use [`Self::mint_expires_at`] and never inherit this wider envelope.
+    pub fn optimizer_envelope_expires_at(&self) -> DateTime<Utc> {
+        self.mint_coverage
+            .iter()
+            .filter(|coverage| coverage.complete)
+            .filter_map(|coverage| coverage.expires_at)
+            .max()
+            .unwrap_or(self.expires_at)
+    }
+
+    /// Returns the hard lifetime for one complete mint inside this immutable
+    /// snapshot. Missing or incomplete mint coverage is never made usable by
+    /// the wider optimizer envelope.
+    pub fn mint_expires_at(&self, mint: &str) -> Option<DateTime<Utc>> {
+        self.mint_coverage
+            .iter()
+            .find(|coverage| coverage.complete && coverage.mint == mint)
+            .and_then(|coverage| coverage.expires_at)
     }
 
     /// Compact diagnostic signature for the five-second market probe. Exact
@@ -167,6 +331,30 @@ impl ImmutableMarketEpoch {
                     market_price_usd_micros: reserve.market_price_usd_micros,
                     supply_apy_bps: reserve.supply_apy_bps,
                     total_supply_usd_micros: reserve.total_supply_usd_micros,
+                    target_eligible: reserve.target_eligible,
+                })
+                .collect(),
+        }
+    }
+
+    /// Extracts the material frontier for one mint. This lets route workers
+    /// compare only the market topology and economics that can affect their
+    /// same-mint route, without unrelated mint expiry or churn invalidating it.
+    pub fn material_market_frontier_for_mint(&self, mint: &str) -> MaterialMarketFrontier {
+        MaterialMarketFrontier {
+            reserves: self
+                .reserves
+                .iter()
+                .filter(|reserve| reserve.liquidity_mint == mint)
+                .map(|reserve| MaterialMarketFrontierReserve {
+                    reserve: reserve.reserve.clone(),
+                    market: reserve.market.clone(),
+                    liquidity_mint: reserve.liquidity_mint.clone(),
+                    mint_decimals: reserve.mint_decimals,
+                    market_price_usd_micros: reserve.market_price_usd_micros,
+                    supply_apy_bps: reserve.supply_apy_bps,
+                    total_supply_usd_micros: reserve.total_supply_usd_micros,
+                    target_eligible: reserve.target_eligible,
                 })
                 .collect(),
         }
@@ -183,6 +371,7 @@ pub struct MaterialMarketFrontierReserve {
     pub market_price_usd_micros: i64,
     pub supply_apy_bps: i64,
     pub total_supply_usd_micros: i64,
+    pub target_eligible: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,6 +416,7 @@ impl MaterialMarketFrontier {
                 || baseline.market != latest.market
                 || baseline.liquidity_mint != latest.liquidity_mint
                 || baseline.mint_decimals != latest.mint_decimals
+                || baseline.target_eligible != latest.target_eligible
             {
                 return MaterialFrontierDisposition::FullSweepReserveTopologyChanged;
             }
@@ -276,6 +466,11 @@ pub struct MaterialFrontierDeterministicEvidence {
     pub material_topology_change_disposition: MaterialFrontierDisposition,
     pub nonmaterial_capacity_drift_ppm: i64,
     pub material_capacity_drift_ppm: i64,
+    pub economic_boundary_lag_slots: i64,
+    pub economic_boundary_is_rejected: bool,
+    pub economic_one_slot_fresher_is_usable: bool,
+    pub economic_nonzero_verification_age_seconds: i64,
+    pub economic_nonzero_age_is_rejected: bool,
 }
 
 /// Deterministic verifier fixture for the dirty-cohort gate. It deliberately
@@ -288,25 +483,59 @@ pub fn material_frontier_deterministic_evidence() -> MaterialFrontierDeterminist
     let mut baseline = ImmutableMarketEpoch {
         optimizer_epoch_id: 1,
         fingerprint: String::new(),
+        catalog_fingerprint: "catalog-fixture".to_owned(),
         captured_at: observed_at,
         expires_at: observed_at + Duration::minutes(5),
+        catalog_expires_at: observed_at + Duration::minutes(5),
+        catalog_reserve_count: 1,
         oldest_market_observed_at: Some(observed_at),
         newest_market_observed_at: Some(observed_at),
         minimum_market_slot: Some(100),
         maximum_market_slot: Some(100),
+        mint_coverage: vec![MarketMintCoverage {
+            mint: "USDC".to_owned(),
+            catalog_reserve_count: 1,
+            verified_reserve_count: 1,
+            eligible_target_reserve_count: 1,
+            complete: true,
+            expires_at: Some(observed_at + Duration::minutes(5)),
+            blockers: Vec::new(),
+        }],
         reserves: vec![MarketEpochReserve {
+            state_event_id: 1,
+            account_data_hash: "00".repeat(32),
+            state_observed_at: observed_at,
+            state_slot: 100,
+            verification_commitment: "confirmed".to_owned(),
             reserve: "reserve-a".to_owned(),
             market: Some("market-a".to_owned()),
             liquidity_mint: "USDC".to_owned(),
             mint_decimals: 6,
             market_price_usd_micros: USD_MICROS_PER_USD,
+            reserve_last_update_slot: 100,
+            economic_slot_lag: 0,
+            economic_expires_at: observed_at + Duration::minutes(5),
+            reserve_last_update_stale: false,
+            reserve_price_status: 0,
+            market_price_last_updated_ts: observed_at.timestamp(),
+            available_amount_raw: "1000000000000".to_owned(),
+            borrowed_amount_raw: "0".to_owned(),
+            total_supply_amount_raw: "1000000000000".to_owned(),
+            utilization_ppm: 0,
+            borrow_apy_bps: 0,
             observed_at,
             slot: 100,
             supply_apy_bps: 500,
             total_supply_usd_micros: 1_000_000_000_000,
+            target_eligible: true,
         }],
     };
-    baseline.fingerprint = market_epoch_fingerprint(&baseline.reserves, &["USDC".to_owned()]);
+    baseline.fingerprint = market_epoch_fingerprint(
+        &baseline.reserves,
+        &["USDC".to_owned()],
+        &baseline.catalog_fingerprint,
+        &baseline.mint_coverage,
+    );
     let mut harmless = baseline.clone();
     harmless.optimizer_epoch_id = 2;
     harmless.captured_at += Duration::seconds(15);
@@ -317,8 +546,15 @@ pub fn material_frontier_deterministic_evidence() -> MaterialFrontierDeterminist
     harmless.maximum_market_slot = Some(250);
     harmless.reserves[0].observed_at += Duration::seconds(15);
     harmless.reserves[0].slot = 250;
+    harmless.reserves[0].economic_slot_lag = 150;
+    harmless.reserves[0].economic_expires_at += Duration::seconds(15);
     harmless.reserves[0].total_supply_usd_micros = 1_000_500_000_000;
-    harmless.fingerprint = market_epoch_fingerprint(&harmless.reserves, &["USDC".to_owned()]);
+    harmless.fingerprint = market_epoch_fingerprint(
+        &harmless.reserves,
+        &["USDC".to_owned()],
+        &harmless.catalog_fingerprint,
+        &harmless.mint_coverage,
+    );
 
     let mut material_apy = harmless.clone();
     material_apy.reserves[0].supply_apy_bps += 1;
@@ -328,6 +564,16 @@ pub fn material_frontier_deterministic_evidence() -> MaterialFrontierDeterminist
     material_topology.reserves[0].reserve = "reserve-b".to_owned();
 
     let frontier = baseline.material_market_frontier();
+    let publication_millis = MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS * 1_000;
+    let boundary_remaining_slots = (publication_millis + RESERVE_ECONOMIC_EXPIRY_MILLIS_PER_SLOT
+        - 1)
+        / RESERVE_ECONOMIC_EXPIRY_MILLIS_PER_SLOT;
+    let economic_boundary_lag_slots = MAXIMUM_RESERVE_ECONOMIC_SLOT_LAG - boundary_remaining_slots;
+    let nonzero_age_lag_slots = 1_200;
+    let economic_nonzero_verification_age_seconds = 30;
+    let nonzero_age_remaining_millis = (MAXIMUM_RESERVE_ECONOMIC_SLOT_LAG - nonzero_age_lag_slots)
+        * RESERVE_ECONOMIC_EXPIRY_MILLIS_PER_SLOT
+        - economic_nonzero_verification_age_seconds * 1_000;
     MaterialFrontierDeterministicEvidence {
         exact_epoch_changed_under_harmless_churn: baseline.fingerprint != harmless.fingerprint
             && baseline.maximum_market_slot != harmless.maximum_market_slot
@@ -344,6 +590,15 @@ pub fn material_frontier_deterministic_evidence() -> MaterialFrontierDeterminist
             .disposition_against(&material_topology.material_market_frontier()),
         nonmaterial_capacity_drift_ppm: 500,
         material_capacity_drift_ppm: 2_000,
+        economic_boundary_lag_slots,
+        economic_boundary_is_rejected: boundary_remaining_slots
+            * RESERVE_ECONOMIC_EXPIRY_MILLIS_PER_SLOT
+            <= publication_millis,
+        economic_one_slot_fresher_is_usable: (boundary_remaining_slots + 1)
+            * RESERVE_ECONOMIC_EXPIRY_MILLIS_PER_SLOT
+            > publication_millis,
+        economic_nonzero_verification_age_seconds,
+        economic_nonzero_age_is_rejected: nonzero_age_remaining_millis <= publication_millis,
     }
 }
 
@@ -388,6 +643,11 @@ pub struct FleetObservationStats {
     pub projection_micros: u64,
     pub rpc_read_count: u32,
     pub child_process_count: u32,
+    pub market_catalog_fingerprint: String,
+    pub market_catalog_reserve_count: usize,
+    pub complete_market_mint_count: usize,
+    pub blocked_market_mint_count: usize,
+    pub market_mint_coverage: Vec<MarketMintCoverage>,
     /// Authoritative denominator: every active managed vault whose active
     /// policy is eligible for this planner/cluster/mint universe. This count
     /// is taken before active-movement and source-availability exclusions.
@@ -408,6 +668,8 @@ pub struct FleetObservationStats {
     pub complete_vault_accounting: bool,
     pub committed_target_inflow_reserve_count: usize,
     pub committed_target_inflow_usd_micros: i64,
+    pub committed_source_outflow_reserve_count: usize,
+    pub committed_source_outflow_usd_micros: i64,
     pub valued_position_source_count: usize,
     pub idle_usdc_source_count: usize,
     pub missing_valuation_source_count: usize,
@@ -423,6 +685,7 @@ pub struct FleetObservationResult {
     pub market_epoch: ImmutableMarketEpoch,
     pub opportunities: Vec<ObservedFleetOpportunity>,
     pub committed_target_inflows: Vec<CommittedTargetInflow>,
+    pub committed_source_outflows: Vec<CommittedSourceOutflow>,
     pub stats: FleetObservationStats,
 }
 
@@ -430,6 +693,13 @@ pub struct FleetObservationResult {
 #[serde(rename_all = "camelCase")]
 pub struct CommittedTargetInflow {
     pub target_reserve: String,
+    pub principal_usd_micros: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommittedSourceOutflow {
+    pub source_reserve: String,
     pub principal_usd_micros: i64,
 }
 
@@ -648,31 +918,16 @@ async fn load_market_epoch(
     timescale: &TimescaleRouterClient,
     config: &FleetObservationConfig,
     enabled_mints: &[String],
-    captured_at: DateTime<Utc>,
+    _captured_at: DateTime<Utc>,
 ) -> Result<ImmutableMarketEpoch, FleetObservationError> {
-    let latest = timescale
-        .latest_supported_reserves(SupportedReserveLatestQuery {
+    let snapshot = timescale
+        .supported_reserve_market_snapshot(SupportedReserveMarketSnapshotQuery {
             risk_baskets: config.risk_baskets.clone(),
-            liquidity_mint: None,
-            markets: Vec::new(),
-            min_supply_usd: Some(config.minimum_reserve_supply_usd),
-            min_supply_apy: Some(config.minimum_supply_apy),
-            max_supply_apy: Some(config.maximum_supply_apy),
-            stale: Some(false),
-            observed_after: Some(
-                captured_at - Duration::seconds(config.maximum_market_age_seconds),
-            ),
-            observed_before_or_at: Some(captured_at),
-            limit: None,
+            liquidity_mints: enabled_mints.to_vec(),
         })
         .await
         .map_err(FleetObservationError::MarketRead)?;
-    build_market_epoch(
-        latest,
-        enabled_mints,
-        captured_at,
-        config.maximum_market_age_seconds,
-    )
+    build_market_epoch(snapshot, enabled_mints, config)
 }
 
 pub fn stablecoin_raw_to_usd_micros(
@@ -714,7 +969,7 @@ impl ValidatedConfig {
             || config.minimum_reserve_supply_usd < 0.0
             || config.minimum_supply_apy < 0.0
             || config.maximum_supply_apy <= config.minimum_supply_apy
-            || config.maximum_market_age_seconds <= 0
+            || config.maximum_market_age_seconds <= MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS
             || config.rebalance_cooldown_seconds < 0
             || config.holding_horizon_seconds == 0
             || config.expected_reserve_move_service_millis == 0
@@ -759,66 +1014,633 @@ impl ValidatedConfig {
 }
 
 fn build_market_epoch(
-    latest: Vec<SupportedReserveLatestRow>,
+    snapshot: SupportedReserveMarketSnapshot,
     enabled_mints: &[String],
-    captured_at: DateTime<Utc>,
-    maximum_market_age_seconds: i64,
+    config: &FleetObservationConfig,
 ) -> Result<ImmutableMarketEpoch, FleetObservationError> {
-    let enabled = enabled_mints
+    let captured_at = snapshot.captured_at;
+    let publication_minimum =
+        captured_at + Duration::seconds(MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS);
+    let valuations = config
+        .stablecoin_valuations
         .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    let cutoff = captured_at - Duration::seconds(maximum_market_age_seconds);
-    let mut reserves = latest
-        .into_iter()
-        .filter(|reserve| {
-            enabled.contains(reserve.liquidity_mint.as_str())
-                && reserve.observed_at >= cutoff
-                && reserve.supply_apy.is_finite()
-                && reserve.total_supply_usd_estimate.is_finite()
-                && reserve.total_supply_usd_estimate >= 0.0
-                && reserve.market_price_usd.is_finite()
-                && reserve.market_price_usd > 0.0
-                && (0..=18).contains(&reserve.mint_decimals)
-        })
-        .map(|reserve| {
-            Ok(MarketEpochReserve {
-                reserve: reserve.reserve,
-                market: reserve.market,
-                liquidity_mint: reserve.liquidity_mint,
-                mint_decimals: u8::try_from(reserve.mint_decimals)
-                    .map_err(|_| FleetObservationError::ArithmeticOverflow)?,
-                market_price_usd_micros: usd_to_micros(reserve.market_price_usd)?,
-                observed_at: reserve.observed_at,
-                slot: reserve.slot,
-                supply_apy_bps: apy_to_bps(reserve.supply_apy)?,
-                total_supply_usd_micros: usd_to_micros(reserve.total_supply_usd_estimate)?,
-            })
-        })
-        .collect::<Result<Vec<_>, FleetObservationError>>()?;
+        .map(|valuation| (valuation.mint.clone(), valuation.clone()))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut catalog = snapshot.catalog;
+    catalog.sort_by(|left, right| {
+        left.liquidity_mint
+            .cmp(&right.liquidity_mint)
+            .then_with(|| left.market.cmp(&right.market))
+            .then_with(|| left.reserve.cmp(&right.reserve))
+            .then_with(|| left.fetched_at.cmp(&right.fetched_at))
+    });
+    let catalog_fingerprint = supported_reserve_catalog_fingerprint(&catalog);
+    let catalog_reserve_count = catalog.len();
+
+    let mut catalog_identity_counts = BTreeMap::<String, usize>::new();
+    for row in &catalog {
+        *catalog_identity_counts
+            .entry(row.reserve.clone())
+            .or_default() += 1;
+    }
+    let mut verified_by_identity =
+        BTreeMap::<(String, String, String), Vec<VerifiedSupportedReserveRow>>::new();
+    let mut verified_by_reserve = BTreeSet::new();
+    for row in snapshot.verified_reserves {
+        verified_by_reserve.insert(row.reserve.clone());
+        if let Some(market) = row.market.clone() {
+            verified_by_identity
+                .entry((row.reserve.clone(), market, row.liquidity_mint.clone()))
+                .or_default()
+                .push(row);
+        }
+    }
+
+    let mut reserves = Vec::new();
+    let mut mint_coverage = Vec::with_capacity(enabled_mints.len());
+    let mut routable_catalog_expiries = Vec::new();
+    let mut routable_epoch_expiries = Vec::new();
+    for mint in enabled_mints {
+        let mint_catalog = catalog
+            .iter()
+            .filter(|row| row.liquidity_mint == *mint)
+            .collect::<Vec<_>>();
+        let mut blockers = Vec::new();
+        let mut mint_wide_blocked = false;
+        let mut verified_reserve_count = 0usize;
+        let mut candidate_reserves = Vec::with_capacity(mint_catalog.len());
+        let mut mint_catalog_expiries = Vec::new();
+        let mut mint_verification_expiries = Vec::new();
+        let mut mint_economic_expiries = Vec::new();
+
+        if mint_catalog.is_empty() {
+            mint_wide_blocked = true;
+            push_market_blocker(
+                &mut blockers,
+                MarketMintBlockerCode::MissingCatalog,
+                None,
+                format!("active safe catalog has no reserve for enabled mint {mint}"),
+            );
+        }
+        let valuation = valuations.get(mint);
+        if valuation.is_none() {
+            mint_wide_blocked = true;
+            push_market_blocker(
+                &mut blockers,
+                MarketMintBlockerCode::MissingStableValuation,
+                None,
+                format!("enabled mint {mint} has no code-owned stable valuation"),
+            );
+        }
+
+        for catalog_row in &mint_catalog {
+            let reserve = Some(catalog_row.reserve.clone());
+            let mut reserve_blockers = Vec::new();
+            if catalog_row.source != "kamino-api" {
+                push_market_blocker(
+                    &mut reserve_blockers,
+                    MarketMintBlockerCode::CatalogSourceMismatch,
+                    reserve.clone(),
+                    format!("catalog source is {}", catalog_row.source),
+                );
+            }
+            let catalog_expiry = catalog_row.fetched_at
+                + Duration::seconds(MAXIMUM_SUPPORTED_RESERVE_CATALOG_AGE_SECONDS);
+            if catalog_row.fetched_at > captured_at {
+                push_market_blocker(
+                    &mut reserve_blockers,
+                    MarketMintBlockerCode::CatalogFetchedInFuture,
+                    reserve.clone(),
+                    format!(
+                        "catalog fetched_at {} is in the future",
+                        catalog_row.fetched_at
+                    ),
+                );
+            } else if catalog_expiry <= captured_at {
+                push_market_blocker(
+                    &mut reserve_blockers,
+                    MarketMintBlockerCode::CatalogStale,
+                    reserve.clone(),
+                    format!("catalog expired at {catalog_expiry}"),
+                );
+            } else if catalog_expiry <= publication_minimum {
+                push_market_blocker(
+                    &mut reserve_blockers,
+                    MarketMintBlockerCode::CatalogInsufficientLifetime,
+                    reserve.clone(),
+                    format!(
+                        "catalog expires at {catalog_expiry}; remaining lifetime is below {MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS} seconds"
+                    ),
+                );
+            }
+            if catalog_identity_counts
+                .get(&catalog_row.reserve)
+                .copied()
+                .unwrap_or_default()
+                != 1
+            {
+                push_market_blocker(
+                    &mut reserve_blockers,
+                    MarketMintBlockerCode::DuplicateCatalogReserveIdentity,
+                    reserve.clone(),
+                    "reserve identity appears more than once in the active safe enabled catalog"
+                        .to_owned(),
+                );
+            }
+
+            let key = (
+                catalog_row.reserve.clone(),
+                catalog_row.market.clone(),
+                catalog_row.liquidity_mint.clone(),
+            );
+            let Some(matches) = verified_by_identity.get(&key) else {
+                let code = if verified_by_reserve.contains(&catalog_row.reserve) {
+                    MarketMintBlockerCode::VerifiedIdentityMismatch
+                } else {
+                    MarketMintBlockerCode::MissingVerifiedReserve
+                };
+                push_market_blocker(
+                    &mut reserve_blockers,
+                    code,
+                    reserve.clone(),
+                    "catalog identity has no exact row in latest_verified_reserve_updates"
+                        .to_owned(),
+                );
+                blockers.extend(reserve_blockers);
+                continue;
+            };
+            if matches.len() != 1 {
+                push_market_blocker(
+                    &mut reserve_blockers,
+                    MarketMintBlockerCode::DuplicateVerifiedReserveIdentity,
+                    reserve.clone(),
+                    format!("exact verified identity returned {} rows", matches.len()),
+                );
+                blockers.extend(reserve_blockers);
+                continue;
+            }
+            verified_reserve_count += 1;
+            let exact = &matches[0];
+            let verification_expiry = exact.verified_at
+                + Duration::seconds(
+                    config
+                        .maximum_market_age_seconds
+                        .min(MAXIMUM_CONFIRMED_VERIFICATION_AGE_SECONDS),
+                );
+            let target_economic_expiry = validate_exact_verified_reserve(
+                exact,
+                catalog_row,
+                valuation,
+                captured_at,
+                publication_minimum,
+                verification_expiry,
+                config,
+                &mut reserve_blockers,
+                &mut blockers,
+            );
+            if !reserve_blockers.is_empty() {
+                blockers.extend(reserve_blockers);
+                continue;
+            }
+            let valuation = valuation.expect("validated stable valuation must exist");
+            let converted_economics = (
+                stable_supply_to_usd_micros(exact.total_supply_amount, valuation),
+                apy_to_bps(exact.supply_apy),
+                ratio_to_ppm(exact.utilization),
+                apy_to_bps(exact.borrow_apy),
+            );
+            let (
+                Ok(total_supply_usd_micros),
+                Ok(supply_apy_bps),
+                Ok(utilization_ppm),
+                Ok(borrow_apy_bps),
+            ) = converted_economics
+            else {
+                push_market_blocker(
+                    &mut blockers,
+                    MarketMintBlockerCode::InvalidEconomicFields,
+                    reserve,
+                    "reserve economics cannot be represented in routing fixed-point units"
+                        .to_owned(),
+                );
+                continue;
+            };
+            // Kamino routes refresh both reserves before the protected
+            // withdraw/deposit instructions. A freshly verified reserve whose
+            // internal economics need that refresh remains a valid source, but
+            // must never be selected as the destination until its pre-refresh
+            // economics are independently target-fresh.
+            let target_eligible = target_economic_expiry.is_some()
+                && total_supply_usd_micros > usd_to_micros(config.minimum_reserve_supply_usd)?
+                && exact.supply_apy >= config.minimum_supply_apy
+                && exact.supply_apy < config.maximum_supply_apy;
+            let economic_expires_at = target_economic_expiry.unwrap_or(verification_expiry);
+            mint_catalog_expiries.push(catalog_expiry);
+            mint_verification_expiries.push(verification_expiry);
+            if target_economic_expiry.is_some() {
+                mint_economic_expiries.push(economic_expires_at);
+            }
+            candidate_reserves.push(MarketEpochReserve {
+                state_event_id: exact.state_event_id,
+                account_data_hash: exact.account_data_hash.clone(),
+                state_observed_at: exact.state_observed_at,
+                state_slot: exact.state_slot,
+                verification_commitment: exact.verification_commitment.clone(),
+                reserve: exact.reserve.clone(),
+                market: exact.market.clone(),
+                liquidity_mint: exact.liquidity_mint.clone(),
+                mint_decimals: valuation.decimals,
+                market_price_usd_micros: valuation.price_usd_micros,
+                reserve_last_update_slot: exact.reserve_last_update_slot,
+                economic_slot_lag: exact.verified_slot - exact.reserve_last_update_slot,
+                economic_expires_at,
+                reserve_last_update_stale: exact.reserve_last_update_stale,
+                reserve_price_status: exact.reserve_price_status,
+                market_price_last_updated_ts: exact.market_price_last_updated_ts,
+                available_amount_raw: canonical_f64(exact.available_amount),
+                borrowed_amount_raw: canonical_f64(exact.borrowed_amount),
+                total_supply_amount_raw: canonical_f64(exact.total_supply_amount),
+                utilization_ppm,
+                borrow_apy_bps,
+                observed_at: exact.verified_at,
+                slot: exact.verified_slot,
+                supply_apy_bps,
+                total_supply_usd_micros,
+                target_eligible,
+            });
+        }
+
+        let eligible_target_reserve_count = candidate_reserves
+            .iter()
+            .filter(|reserve| reserve.target_eligible)
+            .count();
+        if eligible_target_reserve_count == 0 {
+            mint_wide_blocked = true;
+            push_market_blocker(
+                &mut blockers,
+                MarketMintBlockerCode::NoEligibleTarget,
+                None,
+                "admissible catalog subset contains no reserve inside target safety bounds"
+                    .to_owned(),
+            );
+        }
+        blockers.sort_by(|left, right| {
+            left.code
+                .cmp(&right.code)
+                .then_with(|| left.reserve.cmp(&right.reserve))
+                .then_with(|| left.detail.cmp(&right.detail))
+        });
+        blockers.dedup();
+        let complete = !mint_wide_blocked && !mint_catalog.is_empty();
+        let mint_catalog_expiry = mint_catalog_expiries.into_iter().min();
+        let mint_epoch_expiry = mint_catalog_expiry
+            .into_iter()
+            .chain(mint_verification_expiries.into_iter().min())
+            .chain(mint_economic_expiries.into_iter().min())
+            .min();
+        if complete {
+            if let Some(expiry) = mint_catalog_expiry {
+                routable_catalog_expiries.push(expiry);
+            }
+            if let Some(expiry) = mint_epoch_expiry {
+                routable_epoch_expiries.push(expiry);
+            }
+            reserves.extend(candidate_reserves);
+        }
+        mint_coverage.push(MarketMintCoverage {
+            mint: mint.clone(),
+            catalog_reserve_count: mint_catalog.len(),
+            verified_reserve_count,
+            eligible_target_reserve_count,
+            complete,
+            expires_at: complete.then_some(mint_epoch_expiry).flatten(),
+            blockers,
+        });
+    }
+
     reserves.sort_by(|left, right| {
         left.liquidity_mint
             .cmp(&right.liquidity_mint)
             .then_with(|| left.reserve.cmp(&right.reserve))
             .then_with(|| left.market.cmp(&right.market))
     });
-    let fingerprint = market_epoch_fingerprint(&reserves, enabled_mints);
+    mint_coverage.sort_by(|left, right| left.mint.cmp(&right.mint));
+    let catalog_expires_at = routable_catalog_expiries
+        .into_iter()
+        .min()
+        .unwrap_or(captured_at);
+    let expires_at = routable_epoch_expiries
+        .into_iter()
+        .min()
+        .unwrap_or(captured_at);
+    let fingerprint = market_epoch_fingerprint(
+        &reserves,
+        enabled_mints,
+        &catalog_fingerprint,
+        &mint_coverage,
+    );
     let optimizer_epoch_id = positive_epoch_id(&fingerprint);
     let oldest_market_observed_at = reserves.iter().map(|reserve| reserve.observed_at).min();
-    let expires_at = oldest_market_observed_at
-        .map(|observed_at| observed_at + Duration::seconds(maximum_market_age_seconds))
-        .unwrap_or(captured_at);
     Ok(ImmutableMarketEpoch {
         optimizer_epoch_id,
         fingerprint,
+        catalog_fingerprint,
         captured_at,
         expires_at,
+        catalog_expires_at,
+        catalog_reserve_count,
         oldest_market_observed_at,
         newest_market_observed_at: reserves.iter().map(|reserve| reserve.observed_at).max(),
         minimum_market_slot: reserves.iter().map(|reserve| reserve.slot).min(),
         maximum_market_slot: reserves.iter().map(|reserve| reserve.slot).max(),
+        mint_coverage,
         reserves,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_exact_verified_reserve(
+    exact: &VerifiedSupportedReserveRow,
+    catalog: &SupportedReserveCatalogRow,
+    valuation: Option<&StablecoinValuation>,
+    captured_at: DateTime<Utc>,
+    publication_minimum: DateTime<Utc>,
+    verification_expiry: DateTime<Utc>,
+    config: &FleetObservationConfig,
+    blockers: &mut Vec<MarketMintBlocker>,
+    refreshable_economic_blockers: &mut Vec<MarketMintBlocker>,
+) -> Option<DateTime<Utc>> {
+    let reserve = Some(catalog.reserve.clone());
+    let mut target_economic_expiry = None;
+    if exact.reserve != catalog.reserve
+        || exact.market.as_deref() != Some(catalog.market.as_str())
+        || exact.liquidity_mint != catalog.liquidity_mint
+    {
+        push_market_blocker(
+            blockers,
+            MarketMintBlockerCode::VerifiedIdentityMismatch,
+            reserve.clone(),
+            "verified row does not exactly match catalog reserve/market/mint".to_owned(),
+        );
+    }
+    if exact.verification_source != "http_snapshot"
+        && exact.verification_source != "http_confirmed_refresh"
+    {
+        push_market_blocker(
+            blockers,
+            MarketMintBlockerCode::VerificationSourceMismatch,
+            reserve.clone(),
+            format!("verification source is {}", exact.verification_source),
+        );
+    }
+    if exact.verification_commitment != "confirmed" {
+        push_market_blocker(
+            blockers,
+            MarketMintBlockerCode::VerificationCommitmentMismatch,
+            reserve.clone(),
+            format!(
+                "verification commitment is {}",
+                exact.verification_commitment
+            ),
+        );
+    }
+    if exact.verified_at > captured_at {
+        push_market_blocker(
+            blockers,
+            MarketMintBlockerCode::VerificationInFuture,
+            reserve.clone(),
+            format!("verified_at {} is in the future", exact.verified_at),
+        );
+    } else if verification_expiry <= captured_at {
+        push_market_blocker(
+            blockers,
+            MarketMintBlockerCode::VerificationStale,
+            reserve.clone(),
+            format!("verification expired at {verification_expiry}"),
+        );
+    } else if verification_expiry <= publication_minimum {
+        push_market_blocker(
+            blockers,
+            MarketMintBlockerCode::VerificationInsufficientLifetime,
+            reserve.clone(),
+            format!(
+                "verification expires at {verification_expiry}; remaining lifetime is below {MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS} seconds"
+            ),
+        );
+    }
+    if exact.state_event_id <= 0
+        || exact.account_data_hash.len() != 64
+        || !exact
+            .account_data_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        || exact.state_slot < 0
+        || exact.verified_slot < exact.state_slot
+    {
+        push_market_blocker(
+            blockers,
+            MarketMintBlockerCode::InvalidStateIdentity,
+            reserve.clone(),
+            format!(
+                "invalid event/hash/state/verification coordinates event={} state_slot={} verified_slot={}",
+                exact.state_event_id, exact.state_slot, exact.verified_slot
+            ),
+        );
+    }
+    match valuation {
+        Some(valuation)
+            if exact.mint_decimals != i32::from(valuation.decimals)
+                || !(0..=18).contains(&exact.mint_decimals) =>
+        {
+            push_market_blocker(
+                blockers,
+                MarketMintBlockerCode::MintDecimalsMismatch,
+                reserve.clone(),
+                format!(
+                    "verified mint decimals {} differ from code-owned {}",
+                    exact.mint_decimals, valuation.decimals
+                ),
+            );
+        }
+        None => push_market_blocker(
+            blockers,
+            MarketMintBlockerCode::MissingStableValuation,
+            reserve.clone(),
+            "verified reserve has no code-owned stable valuation".to_owned(),
+        ),
+        Some(_) => {}
+    }
+    if exact.reserve_last_update_stale {
+        push_market_blocker(
+            refreshable_economic_blockers,
+            MarketMintBlockerCode::ExplicitStaleEconomics,
+            reserve.clone(),
+            "reserve last_update.stale is set; admitted as refresh-before-withdraw source only"
+                .to_owned(),
+        );
+    }
+    if exact.reserve_last_update_slot < 0
+        || exact.reserve_last_update_slot > exact.state_slot
+        || exact.reserve_last_update_slot > exact.verified_slot
+    {
+        push_market_blocker(
+            blockers,
+            MarketMintBlockerCode::InvalidEconomicSlotOrder,
+            reserve.clone(),
+            format!(
+                "last_update_slot={} state_slot={} verified_slot={}",
+                exact.reserve_last_update_slot, exact.state_slot, exact.verified_slot
+            ),
+        );
+    } else {
+        let slot_lag = exact.verified_slot - exact.reserve_last_update_slot;
+        if slot_lag > MAXIMUM_RESERVE_ECONOMIC_SLOT_LAG {
+            push_market_blocker(
+                refreshable_economic_blockers,
+                MarketMintBlockerCode::EconomicSlotLagExceeded,
+                reserve.clone(),
+                format!(
+                    "economic slot lag {slot_lag} exceeds {}; admitted as refresh-before-withdraw source only",
+                    MAXIMUM_RESERVE_ECONOMIC_SLOT_LAG
+                ),
+            );
+        } else if let Ok(economic_expiry) = reserve_economic_expires_at(exact) {
+            if economic_expiry <= publication_minimum {
+                push_market_blocker(
+                    refreshable_economic_blockers,
+                    MarketMintBlockerCode::EconomicInsufficientLifetime,
+                    reserve.clone(),
+                    format!(
+                        "economic evidence expires at {economic_expiry}; remaining lifetime is below {MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS} seconds; admitted as refresh-before-withdraw source only"
+                    ),
+                );
+            } else if !exact.reserve_last_update_stale {
+                target_economic_expiry = Some(economic_expiry);
+            }
+        }
+    }
+    let economics_valid = exact.available_amount.is_finite()
+        && exact.available_amount >= 0.0
+        && exact.borrowed_amount.is_finite()
+        && exact.borrowed_amount >= 0.0
+        && exact.total_supply_amount.is_finite()
+        && exact.total_supply_amount > 0.0
+        && exact.market_price_usd.is_finite()
+        && exact.utilization.is_finite()
+        && (0.0..=1.000_001).contains(&exact.utilization)
+        && exact.borrow_apy.is_finite()
+        && exact.borrow_apy >= 0.0
+        && exact.supply_apy.is_finite()
+        && exact.supply_apy >= 0.0
+        && exact.supply_apy < config.maximum_supply_apy;
+    if !economics_valid {
+        push_market_blocker(
+            blockers,
+            MarketMintBlockerCode::InvalidEconomicFields,
+            reserve,
+            format!(
+                "invalid available={} borrowed={} total_supply={} utilization={} borrow_apy={} supply_apy={}",
+                exact.available_amount,
+                exact.borrowed_amount,
+                exact.total_supply_amount,
+                exact.utilization,
+                exact.borrow_apy,
+                exact.supply_apy,
+            ),
+        );
+    }
+    target_economic_expiry
+}
+
+fn push_market_blocker(
+    blockers: &mut Vec<MarketMintBlocker>,
+    code: MarketMintBlockerCode,
+    reserve: Option<String>,
+    detail: String,
+) {
+    blockers.push(MarketMintBlocker {
+        code,
+        reserve,
+        detail,
+    });
+}
+
+fn supported_reserve_catalog_fingerprint(catalog: &[SupportedReserveCatalogRow]) -> String {
+    let mut hasher = Sha256::new();
+    for row in catalog {
+        hash_part(&mut hasher, row.market.as_bytes());
+        hash_part(&mut hasher, row.liquidity_mint.as_bytes());
+        hash_part(&mut hasher, row.reserve.as_bytes());
+        hash_part(
+            &mut hasher,
+            row.market_name.as_deref().unwrap_or_default().as_bytes(),
+        );
+        hash_part(
+            &mut hasher,
+            row.symbol.as_deref().unwrap_or_default().as_bytes(),
+        );
+        let mut risk_baskets = row.risk_baskets.clone();
+        risk_baskets.sort();
+        for risk_basket in risk_baskets {
+            hash_part(&mut hasher, risk_basket.as_bytes());
+        }
+        hash_part(&mut hasher, row.source.as_bytes());
+        hash_part(
+            &mut hasher,
+            &row.fetched_at.timestamp_micros().to_le_bytes(),
+        );
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn stable_supply_to_usd_micros(
+    total_supply_amount: f64,
+    valuation: &StablecoinValuation,
+) -> Result<i64, FleetObservationError> {
+    if !total_supply_amount.is_finite()
+        || total_supply_amount <= 0.0
+        || valuation.price_usd_micros <= 0
+        || valuation.decimals > 18
+    {
+        return Err(FleetObservationError::ArithmeticOverflow);
+    }
+    let raw_units_per_token = 10_f64.powi(i32::from(valuation.decimals));
+    let value = total_supply_amount * valuation.price_usd_micros as f64 / raw_units_per_token;
+    if !value.is_finite() || value < 0.0 || value > i64::MAX as f64 {
+        return Err(FleetObservationError::ArithmeticOverflow);
+    }
+    Ok(value.round() as i64)
+}
+
+fn reserve_economic_expires_at(
+    exact: &VerifiedSupportedReserveRow,
+) -> Result<DateTime<Utc>, FleetObservationError> {
+    let lag = exact
+        .verified_slot
+        .checked_sub(exact.reserve_last_update_slot)
+        .ok_or(FleetObservationError::ArithmeticOverflow)?;
+    let remaining_slots = MAXIMUM_RESERVE_ECONOMIC_SLOT_LAG
+        .checked_sub(lag)
+        .ok_or(FleetObservationError::ArithmeticOverflow)?;
+    let remaining_millis = remaining_slots
+        .checked_mul(RESERVE_ECONOMIC_EXPIRY_MILLIS_PER_SLOT)
+        .ok_or(FleetObservationError::ArithmeticOverflow)?;
+    exact
+        .verified_at
+        .checked_add_signed(Duration::milliseconds(remaining_millis))
+        .ok_or(FleetObservationError::ArithmeticOverflow)
+}
+
+fn ratio_to_ppm(value: f64) -> Result<i64, FleetObservationError> {
+    if !value.is_finite() || value < 0.0 || value > 1.000_001 {
+        return Err(FleetObservationError::ArithmeticOverflow);
+    }
+    Ok((value * 1_000_000.0).round() as i64)
+}
+
+fn canonical_f64(value: f64) -> String {
+    value.to_string()
 }
 
 #[derive(Deserialize)]
@@ -852,6 +1674,7 @@ struct FleetSourceSet {
     no_positive_current_source_vault_count: i64,
     sources: Vec<FleetSourceRow>,
     committed_target_inflows: Vec<CommittedTargetInflow>,
+    committed_source_outflows: Vec<CommittedSourceOutflow>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -915,7 +1738,7 @@ async fn load_fleet_sources(
     let row = crate::sqlx::query(
         r#"
         WITH active_opportunities AS (
-            SELECT id, vault_id, target_reserve, liquidity_mint,
+            SELECT id, vault_id, source_reserve, target_reserve, liquidity_mint,
                    principal_usd_micros, opportunity_state, lease_kind
             FROM loyal_yield.rebalance_opportunities
             WHERE cluster = $8
@@ -932,16 +1755,21 @@ async fn load_fleet_sources(
             -- becomes terminal. In particular, reconciled flow remains here
             -- as awaiting_telemetry until a strictly newer target observation
             -- proves that market supply reflects the movement.
-            SELECT opportunity_id, target_reserve, liquidity_mint,
-                   principal_usd_micros
-            FROM loyal_yield.target_capacity_reservations
-            WHERE cluster = $8
-              AND reservation_state <> 'released'
+            SELECT reservation.opportunity_id,
+                   opportunity.source_reserve,
+                   reservation.target_reserve,
+                   reservation.liquidity_mint,
+                   reservation.principal_usd_micros
+            FROM loyal_yield.target_capacity_reservations reservation
+            JOIN loyal_yield.rebalance_opportunities opportunity
+              ON opportunity.id = reservation.opportunity_id
+            WHERE reservation.cluster = $8
+              AND reservation.reservation_state <> 'released'
         ),
-        committed_target_inflows AS (
+        committed_route_flows AS (
             -- Count every durable reservation exactly once and never subtract
             -- it merely because its vault belongs to a scoped dirty cohort.
-            SELECT target_reserve, principal_usd_micros
+            SELECT source_reserve, target_reserve, principal_usd_micros
             FROM live_capacity_reservations
 
             UNION ALL
@@ -952,7 +1780,8 @@ async fn load_fleet_sources(
             -- waiting/revalidate/ready intents. Leased/decision-backed work is
             -- already executing and remains committed even before the narrow
             -- reservation handoff completes.
-            SELECT opportunity.target_reserve,
+            SELECT opportunity.source_reserve,
+                   opportunity.target_reserve,
                    opportunity.principal_usd_micros
             FROM active_opportunities opportunity
             LEFT JOIN live_capacity_reservations reservation
@@ -1175,11 +2004,27 @@ async fn load_fleet_sources(
                 )
                 FROM (
                     SELECT target_reserve, sum(principal_usd_micros)::BIGINT AS principal_usd_micros
-                    FROM committed_target_inflows
+                    FROM committed_route_flows
                     GROUP BY target_reserve
                 ) committed),
                 '[]'::JSONB
-            ) AS committed_target_inflows
+            ) AS committed_target_inflows,
+            COALESCE(
+                (SELECT jsonb_agg(
+                    jsonb_build_object(
+                        'sourceReserve', committed.source_reserve,
+                        'principalUsdMicros', committed.principal_usd_micros
+                    ) ORDER BY committed.source_reserve
+                )
+                FROM (
+                    SELECT source_reserve,
+                           sum(principal_usd_micros)::BIGINT AS principal_usd_micros
+                    FROM committed_route_flows
+                    WHERE source_reserve IS NOT NULL
+                    GROUP BY source_reserve
+                ) committed),
+                '[]'::JSONB
+            ) AS committed_source_outflows
         "#,
     )
     .bind(delegated_signer)
@@ -1222,6 +2067,11 @@ async fn load_fleet_sources(
         .map_err(FleetObservationError::NeonRead)?;
     let committed_target_inflows = serde_json::from_value(committed_target_inflows_json)
         .map_err(FleetObservationError::RowDecode)?;
+    let committed_source_outflows_json: Value = row
+        .try_get("committed_source_outflows")
+        .map_err(FleetObservationError::NeonRead)?;
+    let committed_source_outflows = serde_json::from_value(committed_source_outflows_json)
+        .map_err(FleetObservationError::RowDecode)?;
     Ok(FleetSourceSet {
         eligible_vault_count,
         source_candidate_vault_count,
@@ -1230,6 +2080,7 @@ async fn load_fleet_sources(
         no_positive_current_source_vault_count,
         sources,
         committed_target_inflows,
+        committed_source_outflows,
     })
 }
 
@@ -1448,6 +2299,7 @@ async fn load_fleet_sources_without_queue_schema(
         no_positive_current_source_vault_count,
         sources,
         committed_target_inflows: Vec::new(),
+        committed_source_outflows: Vec::new(),
     })
 }
 
@@ -1513,6 +2365,19 @@ fn build_observation_result(
     let mut stats = FleetObservationStats {
         market_read_count: 1,
         neon_read_count: 1,
+        market_catalog_fingerprint: market_epoch.catalog_fingerprint.clone(),
+        market_catalog_reserve_count: market_epoch.catalog_reserve_count,
+        complete_market_mint_count: market_epoch
+            .mint_coverage
+            .iter()
+            .filter(|coverage| coverage.complete)
+            .count(),
+        blocked_market_mint_count: market_epoch
+            .mint_coverage
+            .iter()
+            .filter(|coverage| !coverage.complete)
+            .count(),
+        market_mint_coverage: market_epoch.mint_coverage.clone(),
         eligible_vault_count: source_set.eligible_vault_count,
         source_candidate_vault_count: source_set.source_candidate_vault_count,
         active_opportunity_vaults_excluded: source_set.active_opportunity_vaults_excluded,
@@ -1527,6 +2392,13 @@ fn build_observation_result(
             .iter()
             .fold(0i64, |total, inflow| {
                 total.saturating_add(inflow.principal_usd_micros)
+            }),
+        committed_source_outflow_reserve_count: source_set.committed_source_outflows.len(),
+        committed_source_outflow_usd_micros: source_set
+            .committed_source_outflows
+            .iter()
+            .fold(0i64, |total, outflow| {
+                total.saturating_add(outflow.principal_usd_micros)
             }),
         ..FleetObservationStats::default()
     };
@@ -1790,6 +2662,7 @@ fn build_observation_result(
         market_epoch,
         opportunities,
         committed_target_inflows: source_set.committed_target_inflows,
+        committed_source_outflows: source_set.committed_source_outflows,
         stats,
     })
 }
@@ -1804,10 +2677,11 @@ fn policy_targets<'a>(
         .iter()
         .copied()
         .filter(|target| {
-            source
-                .source_reserve
-                .as_ref()
-                .is_none_or(|source_reserve| target.reserve != *source_reserve)
+            target.target_eligible
+                && source
+                    .source_reserve
+                    .as_ref()
+                    .is_none_or(|source_reserve| target.reserve != *source_reserve)
                 && source
                     .policy_stable_mints
                     .iter()
@@ -1842,12 +2716,64 @@ fn source_kind_rank(kind: ObservedSourceKind) -> u8 {
     }
 }
 
-fn market_epoch_fingerprint(reserves: &[MarketEpochReserve], enabled_mints: &[String]) -> String {
+fn market_epoch_fingerprint(
+    reserves: &[MarketEpochReserve],
+    enabled_mints: &[String],
+    catalog_fingerprint: &str,
+    mint_coverage: &[MarketMintCoverage],
+) -> String {
     let mut hasher = Sha256::new();
+    hash_part(&mut hasher, MARKET_EPOCH_FINGERPRINT_DOMAIN);
+    hash_part(&mut hasher, catalog_fingerprint.as_bytes());
     for mint in enabled_mints {
         hash_part(&mut hasher, mint.as_bytes());
     }
+    for coverage in mint_coverage {
+        hash_part(&mut hasher, coverage.mint.as_bytes());
+        hash_part(
+            &mut hasher,
+            &u64::try_from(coverage.catalog_reserve_count)
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        );
+        hash_part(
+            &mut hasher,
+            &u64::try_from(coverage.verified_reserve_count)
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        );
+        hash_part(
+            &mut hasher,
+            &u64::try_from(coverage.eligible_target_reserve_count)
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        );
+        hash_part(&mut hasher, &[u8::from(coverage.complete)]);
+        hash_part(
+            &mut hasher,
+            &coverage
+                .expires_at
+                .map(|expires_at| expires_at.timestamp_micros())
+                .unwrap_or_default()
+                .to_le_bytes(),
+        );
+        for blocker in &coverage.blockers {
+            hash_part(&mut hasher, &[market_blocker_code_rank(blocker.code)]);
+            hash_part(
+                &mut hasher,
+                blocker.reserve.as_deref().unwrap_or_default().as_bytes(),
+            );
+        }
+    }
     for reserve in reserves {
+        hash_part(&mut hasher, &reserve.state_event_id.to_le_bytes());
+        hash_part(&mut hasher, reserve.account_data_hash.as_bytes());
+        hash_part(
+            &mut hasher,
+            &reserve.state_observed_at.timestamp_micros().to_le_bytes(),
+        );
+        hash_part(&mut hasher, &reserve.state_slot.to_le_bytes());
+        hash_part(&mut hasher, reserve.verification_commitment.as_bytes());
         hash_part(&mut hasher, reserve.reserve.as_bytes());
         hash_part(
             &mut hasher,
@@ -1856,6 +2782,23 @@ fn market_epoch_fingerprint(reserves: &[MarketEpochReserve], enabled_mints: &[St
         hash_part(&mut hasher, reserve.liquidity_mint.as_bytes());
         hash_part(&mut hasher, &[reserve.mint_decimals]);
         hash_part(&mut hasher, &reserve.market_price_usd_micros.to_le_bytes());
+        hash_part(&mut hasher, &reserve.reserve_last_update_slot.to_le_bytes());
+        hash_part(&mut hasher, &reserve.economic_slot_lag.to_le_bytes());
+        hash_part(
+            &mut hasher,
+            &reserve.economic_expires_at.timestamp_micros().to_le_bytes(),
+        );
+        hash_part(&mut hasher, &[u8::from(reserve.reserve_last_update_stale)]);
+        hash_part(&mut hasher, &reserve.reserve_price_status.to_le_bytes());
+        hash_part(
+            &mut hasher,
+            &reserve.market_price_last_updated_ts.to_le_bytes(),
+        );
+        hash_part(&mut hasher, reserve.available_amount_raw.as_bytes());
+        hash_part(&mut hasher, reserve.borrowed_amount_raw.as_bytes());
+        hash_part(&mut hasher, reserve.total_supply_amount_raw.as_bytes());
+        hash_part(&mut hasher, &reserve.utilization_ppm.to_le_bytes());
+        hash_part(&mut hasher, &reserve.borrow_apy_bps.to_le_bytes());
         hash_part(
             &mut hasher,
             &reserve.observed_at.timestamp_micros().to_le_bytes(),
@@ -1863,8 +2806,37 @@ fn market_epoch_fingerprint(reserves: &[MarketEpochReserve], enabled_mints: &[St
         hash_part(&mut hasher, &reserve.slot.to_le_bytes());
         hash_part(&mut hasher, &reserve.supply_apy_bps.to_le_bytes());
         hash_part(&mut hasher, &reserve.total_supply_usd_micros.to_le_bytes());
+        hash_part(&mut hasher, &[u8::from(reserve.target_eligible)]);
     }
     format!("{:x}", hasher.finalize())
+}
+
+fn market_blocker_code_rank(code: MarketMintBlockerCode) -> u8 {
+    match code {
+        MarketMintBlockerCode::MissingCatalog => 0,
+        MarketMintBlockerCode::CatalogSourceMismatch => 1,
+        MarketMintBlockerCode::CatalogFetchedInFuture => 2,
+        MarketMintBlockerCode::CatalogStale => 3,
+        MarketMintBlockerCode::CatalogInsufficientLifetime => 4,
+        MarketMintBlockerCode::DuplicateCatalogReserveIdentity => 5,
+        MarketMintBlockerCode::DuplicateVerifiedReserveIdentity => 6,
+        MarketMintBlockerCode::MissingVerifiedReserve => 7,
+        MarketMintBlockerCode::VerifiedIdentityMismatch => 8,
+        MarketMintBlockerCode::VerificationSourceMismatch => 9,
+        MarketMintBlockerCode::VerificationCommitmentMismatch => 10,
+        MarketMintBlockerCode::VerificationInFuture => 11,
+        MarketMintBlockerCode::VerificationStale => 12,
+        MarketMintBlockerCode::VerificationInsufficientLifetime => 13,
+        MarketMintBlockerCode::InvalidStateIdentity => 14,
+        MarketMintBlockerCode::MissingStableValuation => 15,
+        MarketMintBlockerCode::MintDecimalsMismatch => 16,
+        MarketMintBlockerCode::ExplicitStaleEconomics => 17,
+        MarketMintBlockerCode::InvalidEconomicSlotOrder => 18,
+        MarketMintBlockerCode::EconomicSlotLagExceeded => 19,
+        MarketMintBlockerCode::EconomicInsufficientLifetime => 20,
+        MarketMintBlockerCode::InvalidEconomicFields => 21,
+        MarketMintBlockerCode::NoEligibleTarget => 22,
+    }
 }
 
 fn epoch_valuations(

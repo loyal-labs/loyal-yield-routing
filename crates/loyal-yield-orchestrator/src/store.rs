@@ -1,10 +1,11 @@
 use crate::domain::{
     draft_same_mint_decision, route_amount_evidence, state_transition, PlannedDecision,
-    AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+    AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM,
+    ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
 use crate::fleet_orchestration::{
-    RebalanceOpportunityLease, SignedRouteSubmissionInput, SignedRouteSubmissionRecord,
-    TargetCapacityReservationInput,
+    RebalanceOpportunityLease, RebalanceOpportunityRecord, SignedRouteSubmissionInput,
+    SignedRouteSubmissionRecord, TargetCapacityReservationInput,
 };
 use crate::types::*;
 use crate::{OrchestratorError, ACTIVE_DECISION_STATUSES};
@@ -1473,6 +1474,17 @@ impl NeonSqlClient {
         )
         .await?;
         submission.decision_id = Some(decision.id);
+        if let Err(error) = NeonSqlClient::assert_signed_route_publication_lifetime_in_connection(
+            &mut tx,
+            opportunity_lease.opportunity.id,
+            decision.id,
+            submission.id,
+        )
+        .await
+        {
+            tx.rollback().await?;
+            return Err(error);
+        }
         tx.commit().await?;
         Ok((PlanOutcome::planned(vault_id, decision), submission))
     }
@@ -1500,7 +1512,7 @@ impl NeonSqlClient {
         }
 
         let positions = current_positions_for_update(&mut *tx, vault_id).await?;
-        if let Err(reason) = validate_same_mint_input(&input, &positions) {
+        if let Err(reason) = validate_same_mint_input(&input, &positions, None) {
             tx.commit().await?;
             return Ok(same_mint_error_result(vault_id, input, reason));
         }
@@ -1562,7 +1574,9 @@ impl NeonSqlClient {
             )));
         }
         let positions = current_positions_for_update(&mut tx, vault_id).await?;
-        if let Err(reason) = validate_same_mint_input(&input, &positions) {
+        if let Err(reason) =
+            validate_same_mint_input(&input, &positions, Some(&opportunity_lease.opportunity))
+        {
             return Err(OrchestratorError::SameMintRebalanceValidation(reason));
         }
 
@@ -1626,6 +1640,18 @@ impl NeonSqlClient {
         )
         .await?;
         submission.decision_id = Some(decision.id);
+        if let Err(error) = NeonSqlClient::assert_signed_route_publication_lifetime_in_connection(
+            &mut tx,
+            opportunity_lease.opportunity.id,
+            decision.id,
+            submission.id,
+        )
+        .await
+        {
+            tx.rollback().await?;
+            return Err(error);
+        }
+        tx.commit().await?;
         let result = same_mint_result_from_decision(
             vault_id,
             input,
@@ -1633,7 +1659,6 @@ impl NeonSqlClient {
             None,
             Some(same_mint_execution_preview(&planned)),
         );
-        tx.commit().await?;
         Ok((result, submission))
     }
 
@@ -2657,6 +2682,7 @@ async fn update_confirmed_decision(
 fn validate_same_mint_input(
     input: &SameMintRebalanceInput,
     positions: &[CurrentReservePosition],
+    queue_opportunity: Option<&RebalanceOpportunityRecord>,
 ) -> Result<(), String> {
     if input.source_reserve == input.target_reserve {
         return Err("source and target reserve must differ".to_owned());
@@ -2695,7 +2721,24 @@ fn validate_same_mint_input(
             input.liquidity_mint
         )
     })?;
-    if input.amount_raw != evidence.amount_raw {
+    let bounded_queue_accrual = queue_opportunity.is_some_and(|opportunity| {
+        input.vault_id == Some(opportunity.vault_id)
+            && opportunity.source_snapshot_id == Some(input.expected_source_snapshot_id)
+            && opportunity.source_reserve.as_deref() == Some(input.source_reserve.as_str())
+            && opportunity.target_reserve == input.target_reserve
+            && opportunity.liquidity_mint == input.liquidity_mint
+            && opportunity.amount_raw == evidence.amount_raw
+            && evidence.redeemable_source_liquidity_amount_raw == Some(opportunity.amount_raw)
+            && input.amount_raw > opportunity.amount_raw
+            && i128::from(input.amount_raw - opportunity.amount_raw) * 1_000_000
+                <= i128::from(opportunity.amount_raw)
+                    * i128::from(MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM)
+            && input.source_amount_semantics == evidence.source_amount_semantics
+            && input.source_collateral_amount_raw == evidence.source_collateral_amount_raw
+            && input.redeemable_source_liquidity_amount_raw == Some(input.amount_raw)
+            && input.idle_vault_liquidity_amount_raw == evidence.idle_vault_liquidity_amount_raw
+    });
+    if input.amount_raw != evidence.amount_raw && !bounded_queue_accrual {
         return Err(format!(
             "amount_raw {} does not match routeable source liquidity amount {}",
             input.amount_raw, evidence.amount_raw
@@ -2711,6 +2754,7 @@ fn validate_same_mint_input(
     }
     if input.redeemable_source_liquidity_amount_raw
         != evidence.redeemable_source_liquidity_amount_raw
+        && !bounded_queue_accrual
     {
         return Err(
             "redeemable_source_liquidity_amount_raw does not match current source metadata"

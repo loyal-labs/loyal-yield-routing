@@ -29,6 +29,7 @@ const REPLAY_SEED: u64 = 0x4c4f_5941_4c;
 struct Options {
     repository_root: PathBuf,
     image: String,
+    heavy_image: String,
     container_engine: ContainerEngine,
     output: Option<PathBuf>,
     foundation: bool,
@@ -120,6 +121,7 @@ fn default_repository_root() -> PathBuf {
 fn parse_options() -> Result<Options, Box<dyn Error>> {
     let mut repository_root = default_repository_root();
     let mut image = None;
+    let mut heavy_image = None;
     let mut output = None;
     let mut foundation = false;
     let mut replay_only = false;
@@ -133,6 +135,9 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
                     PathBuf::from(args.next().ok_or("--repository-root requires a value")?);
             }
             "--image" => image = Some(args.next().ok_or("--image requires a value")?),
+            "--heavy-image" => {
+                heavy_image = Some(args.next().ok_or("--heavy-image requires a value")?)
+            }
             "--container-engine" => {
                 container_engine = match args
                     .next()
@@ -158,7 +163,8 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "fleet-orchestration-runtime-evidence --image <LOCAL_IMAGE> \
+                    "fleet-orchestration-runtime-evidence --image <LIGHT_IMAGE> \
+                     --heavy-image <LASERSTREAM_IMAGE> \
                      [--container-engine docker|podman] [--repository-root <PATH>] \
                      [--isolated-database-url-env <NAME>] [--output <PATH>] [--foundation]\n\
                      fleet-orchestration-runtime-evidence --replay-only [--output <PATH>]"
@@ -176,12 +182,19 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
     } else {
         image.ok_or("--image is required")?
     };
-    if !replay_only
-        && (image.trim().is_empty()
-            || image.starts_with('-')
-            || image.chars().any(char::is_whitespace))
-    {
-        return Err("--image must be one non-option local image reference".into());
+    let heavy_image = if replay_only {
+        heavy_image.unwrap_or_default()
+    } else {
+        heavy_image.ok_or("--heavy-image is required")?
+    };
+    for (flag, reference) in [("--image", &image), ("--heavy-image", &heavy_image)] {
+        if !replay_only
+            && (reference.trim().is_empty()
+                || reference.starts_with('-')
+                || reference.chars().any(char::is_whitespace))
+        {
+            return Err(format!("{flag} must be one non-option image reference").into());
+        }
     }
     if isolated_database_url_env.is_empty()
         || !isolated_database_url_env
@@ -208,6 +221,7 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
     Ok(Options {
         repository_root,
         image,
+        heavy_image,
         container_engine,
         output,
         foundation,
@@ -227,6 +241,130 @@ fn command_failure(context: &str, output: &Output) -> String {
         sha256_hex(&output.stderr),
         output.stderr.len(),
     )
+}
+
+#[derive(Debug)]
+struct RegistryImageIdentity {
+    index_digest: String,
+    linux_amd64_manifest_digest: String,
+    provenance_vcs_revision: String,
+    provenance_vcs_source: String,
+}
+
+fn valid_sha256_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
+fn buildx_output(args: &[&str], context: &str) -> Result<Output, Box<dyn Error>> {
+    let output = Command::new("docker").args(args).output()?;
+    if !output.status.success() {
+        return Err(command_failure(context, &output).into());
+    }
+    Ok(output)
+}
+
+fn raw_index_document(stdout: &[u8]) -> Result<&[u8], Box<dyn Error>> {
+    // Buildx writes one display newline after the registry document. That byte
+    // is not part of the OCI object whose digest Render reports.
+    let raw = stdout.strip_suffix(b"\n").unwrap_or(stdout);
+    let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
+    if raw.is_empty() {
+        return Err("registry returned an empty OCI index".into());
+    }
+    Ok(raw)
+}
+
+fn registry_image_identity(
+    engine: ContainerEngine,
+    image: &str,
+) -> Result<RegistryImageIdentity, Box<dyn Error>> {
+    if !matches!(engine, ContainerEngine::Docker) {
+        return Err("complete registry-bound evidence requires Docker buildx imagetools".into());
+    }
+    let raw_output = buildx_output(
+        &["buildx", "imagetools", "inspect", "--raw", image],
+        "raw registry index inspection",
+    )?;
+    let raw = raw_index_document(&raw_output.stdout)?;
+    let index: Value = serde_json::from_slice(raw)?;
+    let manifests = index
+        .get("manifests")
+        .and_then(Value::as_array)
+        .ok_or("registry reference does not resolve to an OCI image index")?;
+    let linux_amd64 = manifests
+        .iter()
+        .filter(|manifest| {
+            manifest.pointer("/platform/os").and_then(Value::as_str) == Some("linux")
+                && manifest
+                    .pointer("/platform/architecture")
+                    .and_then(Value::as_str)
+                    == Some("amd64")
+                && manifest
+                    .pointer("/platform/variant")
+                    .and_then(Value::as_str)
+                    .is_none_or(str::is_empty)
+        })
+        .collect::<Vec<_>>();
+    if linux_amd64.len() != 1 {
+        return Err(format!(
+            "registry index must contain exactly one linux/amd64 image manifest, found {}",
+            linux_amd64.len()
+        )
+        .into());
+    }
+    let linux_amd64_manifest_digest = linux_amd64[0]
+        .get("digest")
+        .and_then(Value::as_str)
+        .filter(|digest| valid_sha256_digest(digest))
+        .ok_or("linux/amd64 registry manifest has no valid sha256 digest")?
+        .to_owned();
+
+    let provenance_output = buildx_output(
+        &[
+            "buildx",
+            "imagetools",
+            "inspect",
+            "--format",
+            "{{json .Provenance}}",
+            image,
+        ],
+        "registry provenance inspection",
+    )?;
+    let provenance: Value = serde_json::from_slice(&provenance_output.stdout)?;
+    let provenance_args = provenance
+        .pointer("/SLSA/buildDefinition/externalParameters/request/root/configSource/request/args")
+        .ok_or("registry provenance has no SLSA config-source arguments")?;
+    let provenance_vcs_revision = provenance_args
+        .get("vcs:revision")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("registry provenance has no vcs:revision")?
+        .to_owned();
+    let provenance_vcs_source = provenance_args
+        .get("vcs:source")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("registry provenance has no vcs:source")?
+        .to_owned();
+
+    Ok(RegistryImageIdentity {
+        index_digest: format!("sha256:{}", sha256_hex(raw)),
+        linux_amd64_manifest_digest,
+        provenance_vcs_revision,
+        provenance_vcs_source,
+    })
+}
+
+fn pull_linux_amd64_image(engine: ContainerEngine, image: &str) -> Result<(), Box<dyn Error>> {
+    let output = Command::new(engine.program())
+        .args(["pull", "--platform", "linux/amd64", image])
+        .output()?;
+    if !output.status.success() {
+        return Err(command_failure("linux/amd64 candidate image pull", &output).into());
+    }
+    Ok(())
 }
 
 fn locate_built_binary(repository_root: &Path, name: &str) -> Result<PathBuf, Box<dyn Error>> {
@@ -638,7 +776,7 @@ fn collect_controlled_evidence(
         execution: RuntimeExecutionEvidence::from_code_owned_probes(
             database.execution,
             transaction,
-        ),
+        )?,
         replay,
     })
 }
@@ -656,6 +794,44 @@ fn container_image_id(engine: ContainerEngine, image: &str) -> Result<String, Bo
         return Err("container engine returned an invalid local image ID".into());
     }
     Ok(image_id.to_owned())
+}
+
+fn verify_local_image_identity(
+    engine: ContainerEngine,
+    image: &str,
+    expected_index_digest: &str,
+) -> Result<(), Box<dyn Error>> {
+    let output = Command::new(engine.program())
+        .args([
+            "image",
+            "inspect",
+            "--format",
+            "{{json .RepoDigests}} {{.Os}}/{{.Architecture}}",
+            image,
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Err(command_failure("local container identity inspection", &output).into());
+    }
+    let rendered = String::from_utf8(output.stdout)?;
+    let (repo_digests_json, platform) = rendered
+        .trim()
+        .rsplit_once(' ')
+        .ok_or("local container identity inspection has an invalid shape")?;
+    let repo_digests: Vec<String> = serde_json::from_str(repo_digests_json)?;
+    let repository = image
+        .rsplit_once(':')
+        .map(|(repository, _)| repository)
+        .ok_or("candidate image reference has no immutable tag")?;
+    let expected_repo_digest = format!("{repository}@{expected_index_digest}");
+    if platform != "linux/amd64"
+        || !repo_digests
+            .iter()
+            .any(|digest| digest == &expected_repo_digest)
+    {
+        return Err("local role-probe image does not match the registry linux/amd64 index".into());
+    }
+    Ok(())
 }
 
 fn run_role_probe(
@@ -708,14 +884,19 @@ fn run_role_probe(
 
 fn collect_wiring(
     engine: ContainerEngine,
-    image: &str,
+    light_image: &str,
+    heavy_image: &str,
 ) -> Result<RuntimeWiringEvidence, Box<dyn Error>> {
-    let local_container_image_id = container_image_id(engine, image)?;
+    let light_registry = registry_image_identity(engine, light_image)?;
+    let heavy_registry = registry_image_identity(engine, heavy_image)?;
+    pull_linux_amd64_image(engine, light_image)?;
+    verify_local_image_identity(engine, light_image, &light_registry.index_digest)?;
+    let local_container_image_id = container_image_id(engine, light_image)?;
     let mut runnable_role_probe_exit_codes = BTreeMap::new();
     for role in FleetWorkerRole::ALL {
         runnable_role_probe_exit_codes.insert(
             role.as_str().to_owned(),
-            run_role_probe(engine, image, role)?,
+            run_role_probe(engine, light_image, role)?,
         );
     }
     let fixture = functional_stuck_stage_fixture();
@@ -723,8 +904,17 @@ fn collect_wiring(
         return Err("functional stuck-stage fixture failed".into());
     }
     Ok(RuntimeWiringEvidence {
-        probed_container_image_reference: image.to_owned(),
+        probed_container_image_reference: light_image.to_owned(),
         local_container_image_id,
+        light_registry_index_digest: light_registry.index_digest,
+        light_linux_amd64_manifest_digest: light_registry.linux_amd64_manifest_digest,
+        light_provenance_vcs_revision: light_registry.provenance_vcs_revision,
+        light_provenance_vcs_source: light_registry.provenance_vcs_source,
+        probed_heavy_container_image_reference: heavy_image.to_owned(),
+        heavy_registry_index_digest: heavy_registry.index_digest,
+        heavy_linux_amd64_manifest_digest: heavy_registry.linux_amd64_manifest_digest,
+        heavy_provenance_vcs_revision: heavy_registry.provenance_vcs_revision,
+        heavy_provenance_vcs_source: heavy_registry.provenance_vcs_source,
         runnable_role_probe_exit_codes,
         recovery_poll_interval_milliseconds: fixture.recovery_poll_interval_milliseconds,
         health_observation_interval_milliseconds: fixture.health_observation_interval_milliseconds,
@@ -760,7 +950,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let binaries = build_evidence_binaries(&options.repository_root, options.foundation)?;
     let before = RuntimeSourceBinding::capture(&options.repository_root)?;
-    let wiring = collect_wiring(options.container_engine, &options.image)?;
+    let wiring = collect_wiring(
+        options.container_engine,
+        &options.image,
+        &options.heavy_image,
+    )?;
     let controlled = if options.foundation {
         None
     } else {

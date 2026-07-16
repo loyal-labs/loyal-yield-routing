@@ -18,13 +18,22 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use super::{
+    deterministic_fleet_route_source_contract_fixtures, FleetRouteSourceContractFixtures,
+    FleetRouteSourceEvidenceError,
+};
+
 pub const RUNTIME_EVIDENCE_SCHEMA_VERSION: u32 = 1;
 
-const RUNTIME_DIGEST_INPUTS: [&str; 9] = [
+const RUNTIME_DIGEST_INPUTS: [&str; 13] = [
     "Cargo.toml",
     "Cargo.lock",
     "Dockerfile.light-workers",
+    "Dockerfile.laserstream-workers",
     "render.yaml",
+    "crates/kamino-historic-data/src",
+    "crates/kamino-reserve-monitor/src",
+    "crates/loyal-timescale-migrations",
     "crates/loyal-yield-orchestrator/Cargo.toml",
     "crates/loyal-yield-orchestrator/src",
     "crates/loyal-yield-orchestrator/migrations",
@@ -133,6 +142,7 @@ pub struct RuntimeExecutionEvidence {
     pub bounded_ranked_failover: bool,
     pub low_balance_limits_enforced: bool,
     pub atomic_immutable_spend_reservation: bool,
+    pub source_evidence_contract_fixtures: FleetRouteSourceContractFixtures,
     pub target_capacity_concurrent_admission_bounded: bool,
     pub pre_send_target_capacity_released: bool,
     pub reconciled_capacity_strict_telemetry_fence: bool,
@@ -184,8 +194,8 @@ impl RuntimeExecutionEvidence {
     pub fn from_code_owned_probes(
         database: RuntimeDatabaseExecutionEvidence,
         transaction: RuntimeTransactionProbeEvidence,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, FleetRouteSourceEvidenceError> {
+        Ok(Self {
             duplicate_active_vault_movements: database.duplicate_active_vault_movements,
             nonoverlapping_concurrent_leases: database.nonoverlapping_concurrent_leases,
             overlapping_lane_limit_violations: database.overlapping_lane_limit_violations,
@@ -222,13 +232,15 @@ impl RuntimeExecutionEvidence {
             bounded_ranked_failover: transaction.bounded_ranked_failover,
             low_balance_limits_enforced: database.low_balance_limits_enforced,
             atomic_immutable_spend_reservation: database.atomic_immutable_spend_reservation,
+            source_evidence_contract_fixtures: deterministic_fleet_route_source_contract_fixtures(
+            )?,
             target_capacity_concurrent_admission_bounded: database
                 .target_capacity_concurrent_admission_bounded,
             pre_send_target_capacity_released: database.pre_send_target_capacity_released,
             reconciled_capacity_strict_telemetry_fence: database
                 .reconciled_capacity_strict_telemetry_fence,
             preexisting_newer_telemetry_release: database.preexisting_newer_telemetry_release,
-        }
+        })
     }
 }
 
@@ -483,6 +495,15 @@ pub struct RuntimeWiringEvidence {
     /// Blueprint `light-workers:sha-<commit>` reference.
     pub probed_container_image_reference: String,
     pub local_container_image_id: String,
+    pub light_registry_index_digest: String,
+    pub light_linux_amd64_manifest_digest: String,
+    pub light_provenance_vcs_revision: String,
+    pub light_provenance_vcs_source: String,
+    pub probed_heavy_container_image_reference: String,
+    pub heavy_registry_index_digest: String,
+    pub heavy_linux_amd64_manifest_digest: String,
+    pub heavy_provenance_vcs_revision: String,
+    pub heavy_provenance_vcs_source: String,
     pub runnable_role_probe_exit_codes: BTreeMap<String, i32>,
     pub recovery_poll_interval_milliseconds: u64,
     pub health_observation_interval_milliseconds: u64,

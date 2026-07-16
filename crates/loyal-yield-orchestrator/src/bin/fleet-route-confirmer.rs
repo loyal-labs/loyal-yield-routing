@@ -578,6 +578,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .await?;
     neon.require_schema_migration(27, "rebalance_opportunity_attempt_generations")
         .await?;
+    neon.require_schema_migration(29, "fleet_commit_lifetime_fences")
+        .await?;
+    neon.require_schema_migration(30, "fused_queue_accrual_binding")
+        .await?;
     let mut wakeup_listener =
         DurablePgWakeupListener::new("loyal_yield_route_confirmation_wakeup")?;
     let broadcast_limit = Arc::new(Semaphore::new(options.broadcast_concurrency));

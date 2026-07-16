@@ -177,6 +177,18 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0028_reusable_alt_terminal_repair.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 29,
+        name: "fleet_commit_lifetime_fences",
+        sql: include_str!("../../migrations/0029_fleet_commit_lifetime_fences.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 30,
+        name: "fused_queue_accrual_binding",
+        sql: include_str!("../../migrations/0030_fused_queue_accrual_binding.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

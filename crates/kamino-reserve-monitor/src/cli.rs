@@ -5,6 +5,8 @@ use solana_sdk::pubkey::Pubkey;
 
 const DEFAULT_RPC_URL: &str = "https://api.mainnet-beta.solana.com";
 const DEFAULT_KAMINO_API_BASE: &str = "https://api.kamino.finance";
+const DEFAULT_SUPPORTED_RESERVE_REFRESH_INTERVAL_SECS: u64 = 120;
+const MAX_SUPPORTED_RESERVE_REFRESH_INTERVAL_SECS: u64 = 180;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum UpdateSourceKind {
@@ -39,6 +41,13 @@ pub struct Args {
     #[arg(long, default_value_t = 10)]
     pub kamino_api_timeout_secs: u64,
 
+    #[arg(
+        long,
+        env = "KAMINO_SUPPORTED_RESERVE_REFRESH_INTERVAL_SECS",
+        default_value_t = DEFAULT_SUPPORTED_RESERVE_REFRESH_INTERVAL_SECS
+    )]
+    pub supported_reserve_refresh_interval_secs: u64,
+
     #[arg(long, env = "TIMESCALEDB_URL")]
     pub timescaledb_url: String,
 
@@ -63,6 +72,12 @@ pub struct Args {
     #[arg(long)]
     pub sync_supported_reserves: bool,
 
+    /// Operator-only escape hatch for an intentional catalog contraction.
+    /// Normal startup/refresh and the standard predeploy sync fail closed on
+    /// removals so a partial-but-valid API response cannot erase a true peak.
+    #[arg(long, requires = "sync_supported_reserves")]
+    pub allow_supported_reserve_removals: bool,
+
     #[arg(long)]
     pub jsonl: Option<std::path::PathBuf>,
 
@@ -83,6 +98,12 @@ pub struct Args {
 
     #[arg(long, default_value_t = 60)]
     pub status_log_interval_secs: u64,
+
+    #[arg(long, default_value_t = 30)]
+    pub confirmed_refresh_interval_secs: u64,
+
+    #[arg(long, default_value_t = 20)]
+    pub confirmed_refresh_timeout_secs: u64,
 }
 
 impl Args {
@@ -101,6 +122,12 @@ pub fn validate_args(args: &Args) -> Result<()> {
     if args.kamino_api_timeout_secs == 0 {
         bail!("--kamino-api-timeout-secs must be greater than zero");
     }
+    if args.supported_reserve_refresh_interval_secs == 0 {
+        bail!("--supported-reserve-refresh-interval-secs must be greater than zero");
+    }
+    if args.supported_reserve_refresh_interval_secs > MAX_SUPPORTED_RESERVE_REFRESH_INTERVAL_SECS {
+        bail!("--supported-reserve-refresh-interval-secs must not exceed 180");
+    }
     if args.max_reconnect_attempts == 0 {
         bail!("--max-reconnect-attempts must be greater than zero");
     }
@@ -118,6 +145,15 @@ pub fn validate_args(args: &Args) -> Result<()> {
     }
     if args.status_log_interval_secs == 0 {
         bail!("--status-log-interval-secs must be greater than zero");
+    }
+    if args.confirmed_refresh_interval_secs == 0 {
+        bail!("--confirmed-refresh-interval-secs must be greater than zero");
+    }
+    if args.confirmed_refresh_timeout_secs == 0 {
+        bail!("--confirmed-refresh-timeout-secs must be greater than zero");
+    }
+    if args.allow_supported_reserve_removals && !args.sync_supported_reserves {
+        bail!("--allow-supported-reserve-removals requires --sync-supported-reserves");
     }
     if requires_account_update_source(args) {
         match args.update_source {

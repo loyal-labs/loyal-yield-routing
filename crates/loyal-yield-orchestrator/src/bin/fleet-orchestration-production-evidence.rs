@@ -8,12 +8,16 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, ExitCode},
     str::FromStr,
+    time::Instant,
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
 use loyal_actions::{KAMINO_MAIN_MARKET, KAMINO_MAIN_USDC_RESERVE, USDC_MINT};
-use loyal_yield_orchestrator::{enabled_stable_mints_from_env, STANDARD_POLICY_AUTHORITY};
+use loyal_yield_orchestrator::{
+    supported_stable_mints, AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
+    ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY, STANDARD_POLICY_AUTHORITY,
+};
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -31,12 +35,28 @@ use sqlx::{
 const SCHEMA_VERSION: u32 = 1;
 const DEFAULT_CLUSTER: &str = "mainnet-beta";
 const DEFAULT_RENDER_ENVIRONMENT_ID: &str = "evm-d8kgt4r7uimc73b1ul1g";
+const HEAVY_RENDER_ENVIRONMENT_ID: &str = "evm-d8kgt3a8qa3s7382glc0";
+const KAMINO_MONITOR_SERVICE_ID: &str = "srv-d8h4i9a8pkls73bver00";
+const KAMINO_MONITOR_SERVICE_NAME: &str = "loyal-kamino-reserve-monitor";
 const RENDER_API_BASE_URL: &str = "https://api.render.com/v1";
 const SERIAL_MONITOR_NAME: &str = "loyal-same-mint-yield-monitor";
 const MATERIAL_PRINCIPAL_USD_MICROS: i64 = 1_000_000_000;
 const MAX_MATERIAL_STAGE_AGE_SECONDS: i64 = 600;
 const MAX_FULL_SWEEP_AGE_SECONDS: i64 = 120;
 const SAME_MINT_ROUTE_MODE: &str = "same_mint_kamino";
+const ROUTE_AMOUNT_SEMANTICS_IDLE_VAULT_LIQUIDITY: &str = "idle_vault_liquidity";
+const TIMESCALE_MARKET_MIGRATION_VERSION: i64 = 5;
+const TIMESCALE_MARKET_MIGRATION_NAME: &str = "kamino_confirmed_state_verification";
+const TIMESCALE_MARKET_MIGRATION_SQL: &str = include_str!(
+    "../../../loyal-timescale-migrations/migrations/0005_kamino_confirmed_state_verification.sql"
+);
+const MARKET_VERIFICATION_WARNING_SECONDS: i64 = 90;
+const MARKET_VERIFICATION_HARD_EXPIRY_SECONDS: i64 = 240;
+const SUPPORTED_RESERVE_CATALOG_MAX_AGE_SECONDS: i64 = 300;
+const MARKET_EVIDENCE_QUERY_TIMEOUT_MILLISECONDS: i64 = 15_000;
+const PRODUCTION_EVIDENCE_MAX_COLLECTION_SECONDS: i64 = 300;
+const COMPILED_COLLECTOR_SOURCE: &[u8] =
+    include_bytes!("fleet-orchestration-production-evidence.rs");
 
 const DURABLE_SERVICE_NAMES: [&str; 6] = [
     "loyal-fleet-opportunity-planner",
@@ -47,7 +67,7 @@ const DURABLE_SERVICE_NAMES: [&str; 6] = [
     "loyal-route-lookup-table-provisioner",
 ];
 
-const REQUIRED_MIGRATIONS: [(i64, &str, &str); 6] = [
+const REQUIRED_MIGRATIONS: [(i64, &str, &str); 8] = [
     (
         23,
         "value_priority_rebalance_queue",
@@ -77,6 +97,16 @@ const REQUIRED_MIGRATIONS: [(i64, &str, &str); 6] = [
         28,
         "reusable_alt_terminal_repair",
         include_str!("../../migrations/0028_reusable_alt_terminal_repair.sql"),
+    ),
+    (
+        29,
+        "fleet_commit_lifetime_fences",
+        include_str!("../../migrations/0029_fleet_commit_lifetime_fences.sql"),
+    ),
+    (
+        30,
+        "fused_queue_accrual_binding",
+        include_str!("../../migrations/0030_fused_queue_accrual_binding.sql"),
     ),
 ];
 
@@ -124,6 +154,9 @@ struct MovementRow {
     route_kind: String,
     opportunity_optimizer_epoch_id: i64,
     submission_optimizer_epoch_id: i64,
+    optimizer_epoch_fingerprint: String,
+    optimizer_epoch_expires_at: DateTime<Utc>,
+    submission_optimizer_epoch_evidence: Value,
     opportunity_source_snapshot_id: Option<i64>,
     submission_source_snapshot_id: Option<i64>,
     source_reserve: Option<String>,
@@ -247,6 +280,12 @@ struct DatabaseEvidence {
     movement_verdict: Verdict,
 }
 
+#[derive(Debug)]
+struct MarketDataPlaneEvidence {
+    timescale: Value,
+    pass: bool,
+}
+
 fn default_repository_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -305,7 +344,8 @@ fn parse_options() -> Result<Option<Options>, Box<dyn Error>> {
                      [--render-environment-id ID] [--cutover-at RFC3339] \
                      [--baseline PATH] [--output PATH] [--json|--compact]\n\n\
                      Read-only production verification. Reads NEON_DATABASE_URL, \
-                     RENDER_API_KEY, and (when --cutover-at is set) SOLANA_RPC_URL. \
+                     TIMESCALEDB_URL, RENDER_API_KEY, and (when --cutover-at is set) \
+                     SOLANA_RPC_URL. \
                      Output never includes environment values, database/RPC URLs, \
                      signer material, or signed transaction bytes. Capture --output \
                      before cutover, then pass that artifact with --baseline after cutover."
@@ -315,11 +355,14 @@ fn parse_options() -> Result<Option<Options>, Box<dyn Error>> {
             other => return Err(format!("unknown argument: {other}").into()),
         }
     }
-    if cluster.trim().is_empty()
-        || render_environment_id.trim().is_empty()
-        || !render_environment_id.starts_with("evm-")
-    {
-        return Err("cluster and a Render environment ID are required".into());
+    if cluster.trim().is_empty() {
+        return Err("cluster is required".into());
+    }
+    if render_environment_id != DEFAULT_RENDER_ENVIRONMENT_ID {
+        return Err(format!(
+            "production evidence must use Render environment {DEFAULT_RENDER_ENVIRONMENT_ID}"
+        )
+        .into());
     }
     let repository_root = fs::canonicalize(repository_root)?;
     if !repository_root.join("render.yaml").is_file() {
@@ -340,6 +383,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+fn sha256_file(path: &Path) -> Option<String> {
+    fs::read(path).ok().map(|bytes| sha256_hex(&bytes))
+}
+
 fn git_output(repository_root: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
         .arg("-C")
@@ -353,6 +400,16 @@ fn git_output(repository_root: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+fn collector_checkout_source_sha256(repository_root: &Path) -> Option<String> {
+    fs::read(
+        repository_root.join(
+            "crates/loyal-yield-orchestrator/src/bin/fleet-orchestration-production-evidence.rs",
+        ),
+    )
+    .ok()
+    .map(|bytes| sha256_hex(&bytes))
+}
+
 fn source_evidence(repository_root: &Path, render_yaml: &str) -> Value {
     // Include untracked source files. In particular, a locally rebuilt but
     // uncommitted collector must never be able to describe itself as bound to
@@ -362,17 +419,96 @@ fn source_evidence(repository_root: &Path, render_yaml: &str) -> Value {
         "repositoryHead": git_output(repository_root, &["rev-parse", "HEAD"]),
         "trackedWorktreeDirty": !status.is_empty(),
         "renderYamlSha256": sha256_hex(render_yaml.as_bytes()),
+        "collectorCompiledSourceSha256": sha256_hex(COMPILED_COLLECTOR_SOURCE),
+        "collectorCheckoutSourceSha256": collector_checkout_source_sha256(repository_root),
+        "collectorExecutableSha256": env::current_exe().ok().as_deref().and_then(sha256_file),
         "collectorSource": "compiled production-owned measurements; caller verdicts are non-authoritative",
     })
 }
 
-fn production_environment(render_yaml: &str) -> Option<&str> {
-    let project = render_yaml.find("  - name: loyal-yield-light-workers")?;
+fn scope_fingerprint_nonce(
+    repository_root: &Path,
+    render_yaml: &str,
+    collection_started_at: DateTime<Utc>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"loyal-production-scope-fingerprint-v1\0");
+    hasher.update(
+        git_output(repository_root, &["rev-parse", "HEAD"])
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    hasher.update(sha256_hex(render_yaml.as_bytes()).as_bytes());
+    hasher.update(collection_started_at.timestamp_micros().to_le_bytes());
+    hasher.update(std::process::id().to_le_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn env_value_fingerprint(nonce: &str, key: &str, value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"loyal-render-env-scope-v1\0");
+    hasher.update((nonce.len() as u64).to_le_bytes());
+    hasher.update(nonce.as_bytes());
+    hasher.update((key.len() as u64).to_le_bytes());
+    hasher.update(key.as_bytes());
+    hasher.update((value.len() as u64).to_le_bytes());
+    hasher.update(value.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn fingerprint_live_values(
+    live_env: &BTreeMap<String, Option<String>>,
+    nonce: &str,
+    keys: impl IntoIterator<Item = String>,
+) -> BTreeMap<String, String> {
+    keys.into_iter()
+        .filter_map(|key| {
+            let value = live_env.get(&key)?.as_deref()?;
+            Some((key.clone(), env_value_fingerprint(nonce, &key, value)))
+        })
+        .collect()
+}
+
+fn role_scope_value_keys(name: &str, env_keys: &BTreeSet<String>) -> BTreeSet<String> {
+    env_keys
+        .iter()
+        .filter(|key| key.as_str() != "RUST_LOG")
+        .filter(|key| {
+            key.as_str() != "HELIUS_API_KEY"
+                && key.as_str() != "LASERSTREAM_ENDPOINT"
+                && key.as_str() != "KAMINO_API_BASE"
+                && key.as_str() != "KAMINO_UPDATE_SOURCE"
+        })
+        .filter(|key| name != "loyal-fleet-opportunity-planner" || key.as_str() != "POLICY_KEYPAIR")
+        .cloned()
+        .collect()
+}
+
+fn monitor_scope_value_keys(env_keys: &BTreeSet<String>) -> BTreeSet<String> {
+    env_keys
+        .iter()
+        .filter(|key| key.as_str() != "RUST_LOG")
+        .cloned()
+        .collect()
+}
+
+fn project_production_environment<'a>(render_yaml: &'a str, project_name: &str) -> Option<&'a str> {
+    let project = render_yaml.find(&format!("  - name: {project_name}"))?;
     let project = &render_yaml[project..];
     let production_start = project.find("      - name: production")?;
     let production = &project[production_start..];
-    let staging_start = production.find("      - name: staging");
-    Some(staging_start.map_or(production, |end| &production[..end]))
+    let next_environment = production["      - name: production".len()..]
+        .find("      - name:")
+        .map(|offset| offset + "      - name: production".len());
+    let next_project = production["      - name: production".len()..]
+        .find("  - name:")
+        .map(|offset| offset + "      - name: production".len());
+    let end = next_environment.into_iter().chain(next_project).min();
+    Some(end.map_or(production, |end| &production[..end]))
+}
+
+fn production_environment(render_yaml: &str) -> Option<&str> {
+    project_production_environment(render_yaml, "loyal-yield-light-workers")
 }
 
 fn service_blocks(production: &str) -> Vec<String> {
@@ -434,6 +570,41 @@ fn expected_services(render_yaml: &str) -> Result<Vec<ExpectedService>, Box<dyn 
         });
     }
     Ok(expected)
+}
+
+fn expected_kamino_monitor(render_yaml: &str) -> Result<ExpectedService, Box<dyn Error>> {
+    let production = project_production_environment(render_yaml, "loyal-yield-laserstream-workers")
+        .ok_or("render.yaml has no loyal-yield-laserstream-workers production environment")?;
+    let matching = service_blocks(production)
+        .into_iter()
+        .filter(|block| scalar(block, "name").as_deref() == Some(KAMINO_MONITOR_SERVICE_NAME))
+        .collect::<Vec<_>>();
+    if matching.len() != 1 {
+        return Err(format!(
+            "render.yaml must declare exactly one production service named {KAMINO_MONITOR_SERVICE_NAME}"
+        )
+        .into());
+    }
+    let block = &matching[0];
+    Ok(ExpectedService {
+        name: KAMINO_MONITOR_SERVICE_NAME.to_owned(),
+        image: scalar(block, "url").ok_or("Kamino monitor has no image URL")?,
+        command: scalar(block, "dockerCommand").ok_or("Kamino monitor has no command")?,
+        pre_deploy_command: scalar(block, "preDeployCommand")
+            .ok_or("Kamino monitor has no pre-deploy command")?,
+        plan: scalar(block, "plan").ok_or("Kamino monitor has no plan")?,
+        env_keys: block
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("- key:"))
+            .map(str::trim)
+            .map(str::to_owned)
+            .collect(),
+    })
+}
+
+fn image_commit_suffix(image: &str) -> Option<&str> {
+    let suffix = image.rsplit_once(":sha-")?.1;
+    (suffix.len() == 40 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(suffix)
 }
 
 fn role_env_boundaries(name: &str, keys: &BTreeSet<String>) -> (bool, Vec<String>) {
@@ -517,10 +688,202 @@ fn json_string(value: &Value, pointer: &str) -> Option<String> {
     value.pointer(pointer)?.as_str().map(str::to_owned)
 }
 
+async fn collect_market_monitor_render_evidence(
+    client: &Client,
+    api_key: &str,
+    expected_monitor: &ExpectedService,
+    expected_light_services: &[ExpectedService],
+    scope_fingerprint_nonce: &str,
+) -> (Value, bool, bool) {
+    let services_response = render_get(
+        client,
+        api_key,
+        "/services",
+        &[
+            ("environmentId", HEAVY_RENDER_ENVIRONMENT_ID),
+            ("limit", "100"),
+        ],
+    )
+    .await;
+    let service = services_response.as_ref().ok().and_then(|value| {
+        let matching = wrapped_array(value, "service")
+            .into_iter()
+            .filter(|service| {
+                json_string(service, "/id").as_deref() == Some(KAMINO_MONITOR_SERVICE_ID)
+                    && json_string(service, "/name").as_deref() == Some(KAMINO_MONITOR_SERVICE_NAME)
+            })
+            .collect::<Vec<_>>();
+        (matching.len() == 1).then_some(matching[0])
+    });
+
+    let deploy_response = if service.is_some() {
+        render_get(
+            client,
+            api_key,
+            &format!("/services/{KAMINO_MONITOR_SERVICE_ID}/deploys"),
+            &[("limit", "1")],
+        )
+        .await
+    } else {
+        Err("scoped_market_monitor_not_found".to_owned())
+    };
+    let env_response = if service.is_some() {
+        render_get(
+            client,
+            api_key,
+            &format!("/services/{KAMINO_MONITOR_SERVICE_ID}/env-vars"),
+            &[("limit", "100")],
+        )
+        .await
+    } else {
+        Err("scoped_market_monitor_not_found".to_owned())
+    };
+    let latest_deploy = deploy_response
+        .as_ref()
+        .ok()
+        .and_then(|value| wrapped_array(value, "deploy").into_iter().next());
+    let live_env = env_response
+        .as_ref()
+        .ok()
+        .map(|value| {
+            wrapped_array(value, "envVar")
+                .into_iter()
+                .filter_map(|entry| {
+                    Some((json_string(entry, "/key")?, json_string(entry, "/value")))
+                })
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let live_env_keys = live_env.keys().cloned().collect::<BTreeSet<_>>();
+    let env_key_boundary_exact = live_env_keys == expected_monitor.env_keys;
+    let env_value_fingerprints = fingerprint_live_values(
+        &live_env,
+        scope_fingerprint_nonce,
+        monitor_scope_value_keys(&live_env_keys),
+    );
+    let data_scope_verified = env_response.is_ok()
+        && live_env
+            .get("TIMESCALEDB_URL")
+            .and_then(Option::as_deref)
+            .zip(env::var("TIMESCALEDB_URL").ok().as_deref())
+            .is_some_and(|(live, expected)| live == expected)
+        && live_env
+            .get("SOLANA_RPC_URL")
+            .and_then(Option::as_deref)
+            .zip(env::var("SOLANA_RPC_URL").ok().as_deref())
+            .is_some_and(|(live, expected)| live == expected)
+        && live_env
+            .get("KAMINO_UPDATE_SOURCE")
+            .and_then(Option::as_deref)
+            == Some("laserstream");
+    let raw_command = service.and_then(|service| {
+        json_string(service, "/serviceDetails/envSpecificDetails/dockerCommand")
+    });
+    let raw_pre_deploy = service.and_then(|service| {
+        json_string(
+            service,
+            "/serviceDetails/envSpecificDetails/preDeployCommand",
+        )
+    });
+    let command = raw_command.as_ref().map(|command| {
+        if command == &expected_monitor.command && data_scope_verified {
+            command.clone()
+        } else {
+            "[redacted: live market-monitor command or data scope differs from blueprint]"
+                .to_owned()
+        }
+    });
+    let pre_deploy = raw_pre_deploy.as_ref().map(|command| {
+        if command == &expected_monitor.pre_deploy_command {
+            command.clone()
+        } else {
+            "[redacted: live market-monitor pre-deploy differs from blueprint]".to_owned()
+        }
+    });
+    let image_path = service.and_then(|service| json_string(service, "/imagePath"));
+    let deploy_status = latest_deploy.and_then(|deploy| json_string(deploy, "/status"));
+    let deploy_ref = latest_deploy.and_then(|deploy| json_string(deploy, "/image/ref"));
+    let deploy_digest = latest_deploy.and_then(|deploy| json_string(deploy, "/image/sha"));
+    let deploy_registry =
+        latest_deploy.and_then(|deploy| json_string(deploy, "/image/registryCredential"));
+    let light_suffixes = expected_light_services
+        .iter()
+        .filter_map(|service| image_commit_suffix(&service.image))
+        .collect::<BTreeSet<_>>();
+    let light_commit_suffix = (light_suffixes.len() == 1)
+        .then(|| light_suffixes.iter().next().copied())
+        .flatten();
+    let laserstream_commit_suffix = image_commit_suffix(&expected_monitor.image);
+    let image_commit_suffixes_match = light_commit_suffix.is_some()
+        && light_commit_suffix == laserstream_commit_suffix
+        && expected_light_services
+            .iter()
+            .all(|service| image_commit_suffix(&service.image) == light_commit_suffix);
+    let monitor_matches = service.is_some()
+        && json_string(service.expect("checked above"), "/suspended").as_deref()
+            == Some("not_suspended")
+        && json_string(service.expect("checked above"), "/type").as_deref()
+            == Some("background_worker")
+        && json_string(service.expect("checked above"), "/serviceDetails/runtime").as_deref()
+            == Some("image")
+        && json_string(service.expect("checked above"), "/serviceDetails/plan").as_deref()
+            == Some(expected_monitor.plan.as_str())
+        && image_path.as_deref() == Some(expected_monitor.image.as_str())
+        && raw_command.as_deref() == Some(expected_monitor.command.as_str())
+        && raw_pre_deploy.as_deref() == Some(expected_monitor.pre_deploy_command.as_str())
+        && env_key_boundary_exact
+        && data_scope_verified
+        && deploy_status.as_deref() == Some("live")
+        && deploy_ref.as_deref() == Some(expected_monitor.image.as_str())
+        && deploy_digest
+            .as_deref()
+            .is_some_and(|digest| digest.starts_with("sha256:"))
+        && deploy_registry.as_deref() == Some("loyal-ghcr");
+
+    (
+        json!({
+            "environmentId": HEAVY_RENDER_ENVIRONMENT_ID,
+            "serviceId": KAMINO_MONITOR_SERVICE_ID,
+            "name": KAMINO_MONITOR_SERVICE_NAME,
+            "present": service.is_some(),
+            "matches": monitor_matches,
+            "type": service.and_then(|service| json_string(service, "/type")),
+            "suspended": service.and_then(|service| json_string(service, "/suspended")),
+            "runtime": service.and_then(|service| json_string(service, "/serviceDetails/runtime")),
+            "plan": service.and_then(|service| json_string(service, "/serviceDetails/plan")),
+            "numInstances": service.and_then(|service| service.pointer("/serviceDetails/numInstances")),
+            "image": image_path,
+            "command": command,
+            "preDeployCommand": pre_deploy,
+            "envKeys": live_env_keys,
+            "blueprintEnvKeys": expected_monitor.env_keys,
+            "envValueFingerprints": env_value_fingerprints,
+            "envKeyBoundaryExact": env_key_boundary_exact,
+            "dataScopeVerified": data_scope_verified,
+            "latestDeploy": latest_deploy.map(|deploy| json!({
+                "id": json_string(deploy, "/id"),
+                "status": deploy_status,
+                "imageRef": deploy_ref,
+                "imageDigest": deploy_digest,
+                "registryCredential": deploy_registry,
+                "startedAt": json_string(deploy, "/startedAt"),
+                "finishedAt": json_string(deploy, "/finishedAt"),
+            })),
+            "serviceReadError": services_response.err(),
+            "deployReadError": deploy_response.err(),
+            "envReadError": env_response.err(),
+        }),
+        monitor_matches,
+        image_commit_suffixes_match,
+    )
+}
+
 async fn collect_render_evidence(
     expected: &[ExpectedService],
+    expected_monitor: &ExpectedService,
     environment_id: &str,
     cluster: &str,
+    scope_fingerprint_nonce: &str,
 ) -> (Value, bool, AltRenderRuntime) {
     let Some(api_key) = env::var("RENDER_API_KEY")
         .ok()
@@ -559,6 +922,15 @@ async fn collect_render_evidence(
         }
     };
     let live_services = wrapped_array(&services_response, "service");
+    let (market_monitor, market_monitor_matches, image_commit_suffixes_match) =
+        collect_market_monitor_render_evidence(
+            &client,
+            &api_key,
+            expected_monitor,
+            expected,
+            scope_fingerprint_nonce,
+        )
+        .await;
     let mut role_measurements = Vec::new();
     let mut all_roles_match = true;
     let mut deploy_digests = BTreeSet::new();
@@ -609,6 +981,11 @@ async fn collect_render_evidence(
             })
             .unwrap_or_default();
         let live_env_keys = live_env.keys().cloned().collect::<BTreeSet<_>>();
+        let env_value_fingerprints = fingerprint_live_values(
+            &live_env,
+            scope_fingerprint_nonce,
+            role_scope_value_keys(&expected_service.name, &live_env_keys),
+        );
         let (mut env_boundary_passes, mut env_failures) =
             role_env_boundaries(&expected_service.name, &live_env_keys);
         let (blueprint_env_boundary_passes, blueprint_env_failures) =
@@ -740,6 +1117,7 @@ async fn collect_render_evidence(
             "command": live_command,
             "preDeployCommand": live_pre_deploy,
             "envKeys": live_env_keys,
+            "envValueFingerprints": env_value_fingerprints,
             "envBoundaryPasses": env_boundary_passes,
             "envBoundaryFailures": env_failures,
             "blueprintEnvKeys": expected_service.env_keys,
@@ -883,21 +1261,39 @@ async fn collect_render_evidence(
         .iter()
         .map(|role| role.image.clone())
         .collect::<BTreeSet<_>>();
+    let light_image_commit_suffix = expected_images
+        .iter()
+        .filter_map(|image| image_commit_suffix(image))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .next()
+        .map(str::to_owned);
+    let laserstream_image_commit_suffix =
+        image_commit_suffix(&expected_monitor.image).map(str::to_owned);
     let render_pass = expected.len() == DURABLE_SERVICE_NAMES.len()
         && expected_images.len() == 1
         && all_roles_match
         && one_digest
+        && market_monitor_matches
+        && image_commit_suffixes_match
         && serial_currently_incapable
         && no_dual_execution_order;
     (
         json!({
             "available": true,
+            "capturedAt": Utc::now(),
             "environmentId": environment_id,
+            "scopeFingerprintNonce": scope_fingerprint_nonce,
             "expectedImageReferences": expected_images,
             "roles": role_measurements,
             "allRolesMatch": all_roles_match,
             "deployDigests": deploy_digests,
             "oneImmutableDigest": one_digest,
+            "heavyEnvironmentId": HEAVY_RENDER_ENVIRONMENT_ID,
+            "marketMonitor": market_monitor,
+            "lightImageCommitSuffix": light_image_commit_suffix,
+            "laserstreamImageCommitSuffix": laserstream_image_commit_suffix,
+            "imageCommitSuffixesMatch": image_commit_suffixes_match,
             "serialMonitor": serial_measurement,
             "firstFleetSenderDeployStartedAt": first_sender_started_at,
             "serialSuspendedBeforeFleetSenderStarted": no_dual_execution_order,
@@ -924,6 +1320,928 @@ async fn relation_exists(pool: &PgPool, relation: &str) -> Result<bool, sqlx::Er
         .bind(relation)
         .fetch_one(pool)
         .await
+}
+
+fn market_timescale_unavailable(
+    captured_at: DateTime<Utc>,
+    enabled_mints: &[String],
+    relations: Value,
+    migration: Value,
+    error: &str,
+) -> MarketDataPlaneEvidence {
+    MarketDataPlaneEvidence {
+        timescale: json!({
+            "available": false,
+            "capturedAt": captured_at,
+            "migration": migration,
+            "relations": relations,
+            "enabledStableMints": enabled_mints,
+            "activeDistinctSupportedReserveCount": Value::Null,
+            "activeSupportedReserveCatalogRowCount": Value::Null,
+            "duplicateActiveSupportedReserveCount": Value::Null,
+            "nonKaminoApiActiveSupportedReserveCount": Value::Null,
+            "staleActiveSupportedReserveOver300SecondsCount": Value::Null,
+            "oldestActiveSupportedReserveFetchedAt": Value::Null,
+            "oldestActiveSupportedReserveAgeSeconds": Value::Null,
+            "currentPointerCoverageCount": Value::Null,
+            "verificationCoverageCount": Value::Null,
+            "exactLatestViewCoverageCount": Value::Null,
+            "eventHashObservedAtIdentityViolationCount": Value::Null,
+            "verificationStateIdentityViolationCount": Value::Null,
+            "latestViewIdentityViolationCount": Value::Null,
+            "stateSlotGreaterThanVerifiedSlotCount": Value::Null,
+            "immutableTapeExactRowCardinalityViolationCount": Value::Null,
+            "latestViewRowCardinalityViolationCount": Value::Null,
+            "observationFloorCoverageCount": Value::Null,
+            "observationFloorIdentityViolationCount": Value::Null,
+            "observationFloorFutureObservedAtCount": Value::Null,
+            "staleObservationFloorOver90SecondsCount": Value::Null,
+            "invalidObservationFloorStateCount": Value::Null,
+            "currentStateBelowObservationFloorCount": Value::Null,
+            "atOrBelowFloorExactHashAdmissionCount": Value::Null,
+            "verificationAtOrBelowObservationFloorWithoutExactHashCount": Value::Null,
+            "conflictingAtOrBelowFloorRoutableStateCount": Value::Null,
+            "nonConfirmedCommitmentCount": Value::Null,
+            "nonHttpCurrentStateCount": Value::Null,
+            "nonHttpVerificationSourceCount": Value::Null,
+            "futureCurrentStateObservedAtCount": Value::Null,
+            "futureVerificationWatermarkCount": Value::Null,
+            "warningOver90SecondsCount": Value::Null,
+            "hardExpiredOver240SecondsCount": Value::Null,
+            "oldestVerificationAgeSeconds": Value::Null,
+            "coverageQueryMilliseconds": Value::Null,
+            "safeTargetQueryMilliseconds": Value::Null,
+            "topVerifiedSafeTargets": [],
+            "readError": error,
+            "pass": false,
+        }),
+        pass: false,
+    }
+}
+
+async fn collect_market_timescale_evidence(captured_at: DateTime<Utc>) -> MarketDataPlaneEvidence {
+    let source_checksum = sha256_hex(TIMESCALE_MARKET_MIGRATION_SQL.as_bytes());
+    // The production Blueprint intentionally omits EARN_ROUTER_ENABLED_STABLE_MINTS,
+    // so the live planner uses the canonical code-owned six-mint default. Do
+    // not let the collector's local shell environment narrow this denominator.
+    let enabled_mints = supported_stable_mints();
+    let Some(database_url) = env::var("TIMESCALEDB_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return market_timescale_unavailable(
+            captured_at,
+            &enabled_mints,
+            json!({
+                "migrationLedger": false,
+                "supportedReserves": false,
+                "reserveUpdates": false,
+                "reserveCurrentStates": false,
+                "reserveConfirmedObservationIdSequence": false,
+                "reserveConfirmedObservationFloors": false,
+                "reserveConfirmedVerifications": false,
+                "latestVerifiedReserveUpdates": false,
+            }),
+            json!({
+                "version": TIMESCALE_MARKET_MIGRATION_VERSION,
+                "expectedName": TIMESCALE_MARKET_MIGRATION_NAME,
+                "sourceChecksum": source_checksum,
+                "appliedRowCount": 0,
+                "appliedName": Value::Null,
+                "appliedChecksum": Value::Null,
+                "appliedAt": Value::Null,
+            }),
+            "TIMESCALEDB_URL is missing",
+        );
+    };
+    let Ok(pool) = connect_database(&database_url).await else {
+        return market_timescale_unavailable(
+            captured_at,
+            &enabled_mints,
+            json!({
+                "migrationLedger": false,
+                "supportedReserves": false,
+                "reserveUpdates": false,
+                "reserveCurrentStates": false,
+                "reserveConfirmedObservationIdSequence": false,
+                "reserveConfirmedObservationFloors": false,
+                "reserveConfirmedVerifications": false,
+                "latestVerifiedReserveUpdates": false,
+            }),
+            json!({
+                "version": TIMESCALE_MARKET_MIGRATION_VERSION,
+                "expectedName": TIMESCALE_MARKET_MIGRATION_NAME,
+                "sourceChecksum": source_checksum,
+                "appliedRowCount": 0,
+                "appliedName": Value::Null,
+                "appliedChecksum": Value::Null,
+                "appliedAt": Value::Null,
+            }),
+            "Timescale connection failed",
+        );
+    };
+
+    let relation_row = sqlx::query(
+        r#"
+        SELECT to_regclass('loyal.timescale_schema_migrations') IS NOT NULL
+                   AS migration_ledger,
+               to_regclass('kamino.supported_reserves') IS NOT NULL
+                   AS supported_reserves,
+               to_regclass('kamino.reserve_updates') IS NOT NULL
+                   AS reserve_updates,
+               to_regclass('kamino.reserve_current_states') IS NOT NULL
+                   AS reserve_current_states,
+               to_regclass('kamino.reserve_confirmed_observation_id_seq') IS NOT NULL
+                   AS reserve_confirmed_observation_id_sequence,
+               to_regclass('kamino.reserve_confirmed_observation_floors') IS NOT NULL
+                   AS reserve_confirmed_observation_floors,
+               to_regclass('kamino.reserve_confirmed_verifications') IS NOT NULL
+                   AS reserve_confirmed_verifications,
+               to_regclass('kamino.latest_verified_reserve_updates') IS NOT NULL
+                   AS latest_verified_reserve_updates
+        "#,
+    )
+    .fetch_one(&pool)
+    .await;
+    let Ok(relation_row) = relation_row else {
+        return market_timescale_unavailable(
+            captured_at,
+            &enabled_mints,
+            json!({
+                "migrationLedger": false,
+                "supportedReserves": false,
+                "reserveUpdates": false,
+                "reserveCurrentStates": false,
+                "reserveConfirmedObservationIdSequence": false,
+                "reserveConfirmedObservationFloors": false,
+                "reserveConfirmedVerifications": false,
+                "latestVerifiedReserveUpdates": false,
+            }),
+            json!({
+                "version": TIMESCALE_MARKET_MIGRATION_VERSION,
+                "expectedName": TIMESCALE_MARKET_MIGRATION_NAME,
+                "sourceChecksum": source_checksum,
+                "appliedRowCount": 0,
+                "appliedName": Value::Null,
+                "appliedChecksum": Value::Null,
+                "appliedAt": Value::Null,
+            }),
+            "Timescale relation inspection failed",
+        );
+    };
+    let migration_ledger = relation_row
+        .try_get::<bool, _>("migration_ledger")
+        .unwrap_or(false);
+    let supported_reserves = relation_row
+        .try_get::<bool, _>("supported_reserves")
+        .unwrap_or(false);
+    let reserve_updates = relation_row
+        .try_get::<bool, _>("reserve_updates")
+        .unwrap_or(false);
+    let reserve_current_states = relation_row
+        .try_get::<bool, _>("reserve_current_states")
+        .unwrap_or(false);
+    let reserve_confirmed_observation_id_sequence = relation_row
+        .try_get::<bool, _>("reserve_confirmed_observation_id_sequence")
+        .unwrap_or(false);
+    let reserve_confirmed_observation_floors = relation_row
+        .try_get::<bool, _>("reserve_confirmed_observation_floors")
+        .unwrap_or(false);
+    let reserve_confirmed_verifications = relation_row
+        .try_get::<bool, _>("reserve_confirmed_verifications")
+        .unwrap_or(false);
+    let latest_verified_reserve_updates = relation_row
+        .try_get::<bool, _>("latest_verified_reserve_updates")
+        .unwrap_or(false);
+    let relations = json!({
+        "migrationLedger": migration_ledger,
+        "supportedReserves": supported_reserves,
+        "reserveUpdates": reserve_updates,
+        "reserveCurrentStates": reserve_current_states,
+        "reserveConfirmedObservationIdSequence": reserve_confirmed_observation_id_sequence,
+        "reserveConfirmedObservationFloors": reserve_confirmed_observation_floors,
+        "reserveConfirmedVerifications": reserve_confirmed_verifications,
+        "latestVerifiedReserveUpdates": latest_verified_reserve_updates,
+    });
+
+    let applied_rows = if migration_ledger {
+        sqlx::query(
+            r#"
+            SELECT name, checksum, applied_at
+            FROM loyal.timescale_schema_migrations
+            WHERE version = $1
+            "#,
+        )
+        .bind(TIMESCALE_MARKET_MIGRATION_VERSION)
+        .fetch_all(&pool)
+        .await
+        .ok()
+    } else {
+        None
+    };
+    let applied_row_count = applied_rows
+        .as_ref()
+        .and_then(|rows| i64::try_from(rows.len()).ok())
+        .unwrap_or(0);
+    let applied_name = applied_rows.as_ref().and_then(|rows| {
+        (rows.len() == 1)
+            .then(|| rows[0].try_get::<String, _>("name").ok())
+            .flatten()
+    });
+    let applied_checksum = applied_rows.as_ref().and_then(|rows| {
+        (rows.len() == 1)
+            .then(|| rows[0].try_get::<String, _>("checksum").ok())
+            .flatten()
+    });
+    let applied_at = applied_rows.as_ref().and_then(|rows| {
+        (rows.len() == 1)
+            .then(|| rows[0].try_get::<DateTime<Utc>, _>("applied_at").ok())
+            .flatten()
+    });
+    let migration = json!({
+        "version": TIMESCALE_MARKET_MIGRATION_VERSION,
+        "expectedName": TIMESCALE_MARKET_MIGRATION_NAME,
+        "sourceChecksum": source_checksum,
+        "appliedRowCount": applied_row_count,
+        "appliedName": applied_name,
+        "appliedChecksum": applied_checksum,
+        "appliedAt": applied_at,
+    });
+    let all_relations_exist = migration_ledger
+        && supported_reserves
+        && reserve_updates
+        && reserve_current_states
+        && reserve_confirmed_observation_id_sequence
+        && reserve_confirmed_observation_floors
+        && reserve_confirmed_verifications
+        && latest_verified_reserve_updates;
+    if !all_relations_exist {
+        return market_timescale_unavailable(
+            captured_at,
+            &enabled_mints,
+            relations,
+            migration,
+            "required Timescale market-data relation is missing",
+        );
+    }
+
+    let mut transaction = match pool.begin().await {
+        Ok(transaction) => transaction,
+        Err(_) => {
+            return market_timescale_unavailable(
+                captured_at,
+                &enabled_mints,
+                relations,
+                migration,
+                "Timescale market snapshot transaction failed",
+            )
+        }
+    };
+    if sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .execute(&mut *transaction)
+        .await
+        .is_err()
+    {
+        return market_timescale_unavailable(
+            captured_at,
+            &enabled_mints,
+            relations,
+            migration,
+            "Timescale market snapshot fence failed",
+        );
+    }
+    let statement_timeout_sql =
+        format!("SET LOCAL statement_timeout = '{MARKET_EVIDENCE_QUERY_TIMEOUT_MILLISECONDS}ms'");
+    if sqlx::query(&statement_timeout_sql)
+        .execute(&mut *transaction)
+        .await
+        .is_err()
+        || sqlx::query("SET LOCAL lock_timeout = '2000ms'")
+            .execute(&mut *transaction)
+            .await
+            .is_err()
+    {
+        return market_timescale_unavailable(
+            captured_at,
+            &enabled_mints,
+            relations,
+            migration,
+            "Timescale market query timeout fence failed",
+        );
+    }
+    let captured_at = match sqlx::query_scalar::<_, DateTime<Utc>>("SELECT clock_timestamp()")
+        .fetch_one(&mut *transaction)
+        .await
+    {
+        Ok(captured_at) => captured_at,
+        Err(_) => {
+            return market_timescale_unavailable(
+                captured_at,
+                &enabled_mints,
+                relations,
+                migration,
+                "Timescale market snapshot clock failed",
+            )
+        }
+    };
+
+    let coverage_query_started = Instant::now();
+    let counters = sqlx::query(
+        r#"
+        WITH active_catalog AS MATERIALIZED (
+            SELECT market, liquidity_mint, reserve, source, fetched_at
+            FROM kamino.supported_reserves
+            WHERE active
+        ), active AS MATERIALIZED (
+            SELECT reserve
+            FROM active_catalog
+            GROUP BY reserve
+        ), evidence AS (
+            SELECT active.reserve,
+                   current_state.state_event_id,
+                   current_state.account_data_hash AS current_hash,
+                   current_state.state_slot,
+                   current_state.state_observed_at,
+                   current_state.state_source,
+                   observation_floor.reserve AS observation_floor_reserve,
+                   observation_floor.floor_slot AS observation_floor_slot,
+                   observation_floor.observation_id AS observation_floor_observation_id,
+                   observation_floor.account_data_hash AS observation_floor_hash,
+                   observation_floor.state_valid AS observation_floor_state_valid,
+                   observation_floor.source AS observation_floor_source,
+                   observation_floor.source_rank AS observation_floor_source_rank,
+                   observation_floor.observed_at AS observation_floor_observed_at,
+                   verification.state_event_id AS verification_event_id,
+                   verification.account_data_hash AS verification_hash,
+                   verification.verified_slot,
+                   verification.verified_at,
+                   verification.commitment,
+                   verification.verification_source,
+                   state.exact_row_count AS event_exact_row_count,
+                   state.event_id AS event_id,
+                   state.account_data_hash AS event_hash,
+                   state.observed_at AS event_observed_at,
+                   state.slot AS event_slot,
+                   state.source AS event_source,
+                   state.source_commitment AS event_commitment,
+                   latest.exact_row_count AS latest_exact_row_count,
+                   latest.event_id AS latest_event_id,
+                   latest.account_data_hash AS latest_hash,
+                   latest.observed_at AS latest_observed_at,
+                   latest.slot AS latest_state_slot,
+                   latest.verified_slot AS latest_verified_slot,
+                   latest.verified_at AS latest_verified_at,
+                   latest.verification_commitment AS latest_commitment,
+                   latest.source AS latest_state_source,
+                   latest.verification_source AS latest_verification_source
+            FROM active
+            LEFT JOIN kamino.reserve_current_states current_state
+              ON current_state.reserve = active.reserve
+            LEFT JOIN kamino.reserve_confirmed_observation_floors observation_floor
+              ON observation_floor.reserve = active.reserve
+            LEFT JOIN kamino.reserve_confirmed_verifications verification
+              ON verification.reserve = active.reserve
+            LEFT JOIN LATERAL (
+                SELECT count(*)::BIGINT AS exact_row_count,
+                       min(candidate.event_id) AS event_id,
+                       min(candidate.account_data_hash) AS account_data_hash,
+                       min(candidate.observed_at) AS observed_at,
+                       min(candidate.slot) AS slot,
+                       min(candidate.source) AS source,
+                       min(candidate.source_commitment) AS source_commitment
+                FROM (
+                    SELECT state.event_id, state.account_data_hash,
+                           state.observed_at, state.slot, state.source,
+                           state.source_commitment
+                    FROM kamino.reserve_updates state
+                    WHERE state.reserve = current_state.reserve
+                      AND state.event_id = current_state.state_event_id
+                    LIMIT 2
+                ) candidate
+            ) state ON true
+            LEFT JOIN LATERAL (
+                SELECT count(*)::BIGINT AS exact_row_count,
+                       min(candidate.event_id) AS event_id,
+                       min(candidate.account_data_hash) AS account_data_hash,
+                       min(candidate.observed_at) AS observed_at,
+                       min(candidate.slot) AS slot,
+                       min(candidate.verified_slot) AS verified_slot,
+                       min(candidate.verified_at) AS verified_at,
+                       min(candidate.verification_commitment) AS verification_commitment,
+                       min(candidate.source) AS source,
+                       min(candidate.verification_source) AS verification_source
+                FROM (
+                    SELECT latest.event_id, latest.account_data_hash,
+                           latest.observed_at, latest.slot, latest.verified_slot,
+                           latest.verified_at, latest.verification_commitment,
+                           latest.source, latest.verification_source
+                    FROM kamino.latest_verified_reserve_updates latest
+                    WHERE latest.reserve = active.reserve
+                    LIMIT 2
+                ) candidate
+            ) latest ON true
+        )
+        SELECT count(*)::BIGINT AS active_count,
+               (SELECT count(*)::BIGINT FROM active_catalog)
+                   AS active_catalog_row_count,
+               (SELECT count(*)::BIGINT
+                FROM (
+                    SELECT reserve
+                    FROM active_catalog
+                    GROUP BY reserve
+                    HAVING count(*) <> 1
+                ) duplicate_reserves)
+                   AS duplicate_active_supported_reserve_count,
+               (SELECT count(*)::BIGINT
+                FROM active_catalog
+                WHERE source IS DISTINCT FROM 'kamino-api')
+                   AS non_kamino_api_active_supported_reserve_count,
+               (SELECT count(*)::BIGINT
+                FROM active_catalog
+                WHERE fetched_at < $1 - make_interval(secs => $4::INTEGER))
+                   AS stale_active_supported_reserve_count,
+               (SELECT min(fetched_at) FROM active_catalog)
+                   AS oldest_active_supported_reserve_fetched_at,
+               (SELECT floor(max(extract(epoch FROM ($1 - fetched_at))))::BIGINT
+                FROM active_catalog)
+                   AS oldest_active_supported_reserve_age_seconds,
+               count(*) FILTER (WHERE state_event_id IS NOT NULL)::BIGINT
+                   AS current_pointer_count,
+               count(*) FILTER (WHERE verification_event_id IS NOT NULL)::BIGINT
+                   AS verification_count,
+               count(*) FILTER (WHERE latest_exact_row_count = 1)::BIGINT
+                   AS latest_view_count,
+               count(*) FILTER (
+                   WHERE state_event_id IS NOT NULL
+                     AND event_exact_row_count IS DISTINCT FROM 1
+               )::BIGINT AS immutable_tape_exact_row_cardinality_violation_count,
+               count(*) FILTER (
+                   WHERE latest_exact_row_count IS DISTINCT FROM 1
+               )::BIGINT AS latest_view_row_cardinality_violation_count,
+               count(*) FILTER (
+                   WHERE state_event_id IS NOT NULL
+                     AND (event_exact_row_count IS DISTINCT FROM 1
+                       OR event_id IS NULL
+                       OR event_hash IS DISTINCT FROM current_hash
+                       OR event_observed_at IS DISTINCT FROM state_observed_at
+                       OR event_slot IS DISTINCT FROM state_slot
+                       OR event_source IS DISTINCT FROM state_source)
+               )::BIGINT AS event_identity_violation_count,
+               count(*) FILTER (
+                   WHERE verification_event_id IS NOT NULL
+                     AND (state_event_id IS NULL
+                       OR verification_event_id IS DISTINCT FROM state_event_id
+                       OR verification_hash IS DISTINCT FROM current_hash)
+               )::BIGINT AS verification_identity_violation_count,
+               count(*) FILTER (
+                   WHERE latest_exact_row_count > 0
+                     AND (latest_exact_row_count IS DISTINCT FROM 1
+                       OR latest_event_id IS DISTINCT FROM state_event_id
+                       OR latest_hash IS DISTINCT FROM current_hash
+                       OR latest_observed_at IS DISTINCT FROM state_observed_at
+                       OR latest_state_slot IS DISTINCT FROM state_slot
+                       OR latest_verified_slot IS DISTINCT FROM verified_slot
+                       OR latest_verified_at IS DISTINCT FROM verified_at
+                       OR latest_commitment IS DISTINCT FROM commitment
+                       OR latest_state_source IS DISTINCT FROM state_source
+                       OR latest_verification_source IS DISTINCT FROM verification_source)
+               )::BIGINT AS latest_identity_violation_count,
+               count(*) FILTER (
+                   WHERE state_slot IS NOT NULL AND verified_slot IS NOT NULL
+                     AND state_slot > verified_slot
+               )::BIGINT AS state_slot_after_verification_count,
+               count(*) FILTER (WHERE observation_floor_reserve IS NOT NULL)::BIGINT
+                   AS observation_floor_count,
+               count(*) FILTER (
+                   WHERE observation_floor_reserve IS NOT NULL
+                     AND (observation_floor_slot < 0
+                       OR observation_floor_observation_id IS NULL
+                       OR observation_floor_observation_id <= 0
+                       OR observation_floor_source IS NULL
+                       OR observation_floor_source NOT IN (
+                            'http_snapshot', 'http_confirmed_refresh',
+                            'laserstream_grpc', 'websocket'
+                       )
+                       OR observation_floor_source_rank IS NULL
+                       OR observation_floor_source_rank <> CASE
+                            WHEN observation_floor_source IN (
+                                'http_snapshot', 'http_confirmed_refresh'
+                            ) THEN 2
+                            WHEN observation_floor_source IN (
+                                'laserstream_grpc', 'websocket'
+                            ) THEN 1
+                            ELSE 0
+                          END
+                       OR observation_floor_observed_at IS NULL
+                       OR (observation_floor_state_valid AND (
+                            observation_floor_hash IS NULL
+                            OR observation_floor_hash !~ '^[0-9a-fA-F]{64}$'
+                       ))
+                       OR (NOT observation_floor_state_valid
+                           AND observation_floor_hash IS NOT NULL))
+               )::BIGINT AS observation_floor_identity_violation_count,
+               count(*) FILTER (
+                   WHERE observation_floor_observed_at > $1
+               )::BIGINT AS observation_floor_future_count,
+               count(*) FILTER (
+                   WHERE observation_floor_reserve IS NOT NULL
+                     AND observation_floor_observed_at
+                         < $1 - make_interval(secs => $2::INTEGER)
+               )::BIGINT AS stale_observation_floor_count,
+               count(*) FILTER (
+                   WHERE observation_floor_reserve IS NOT NULL
+                     AND state_event_id IS NOT NULL
+                     AND state_slot < observation_floor_slot
+               )::BIGINT AS current_state_below_observation_floor_count,
+               count(*) FILTER (
+                   WHERE observation_floor_reserve IS NOT NULL
+                     AND verification_event_id IS NOT NULL
+                     AND verified_slot <= observation_floor_slot
+                     AND observation_floor_state_valid
+                     AND observation_floor_hash = current_hash
+               )::BIGINT AS at_or_below_floor_exact_hash_admission_count,
+               count(*) FILTER (
+                   WHERE observation_floor_reserve IS NOT NULL
+                     AND verification_event_id IS NOT NULL
+                     AND verified_slot <= observation_floor_slot
+                     AND NOT (
+                          observation_floor_state_valid
+                      AND observation_floor_hash = current_hash
+                     )
+               )::BIGINT AS verification_at_or_below_floor_without_exact_hash_count,
+               count(*) FILTER (
+                   WHERE observation_floor_reserve IS NOT NULL
+                     AND latest_event_id IS NOT NULL
+                     AND latest_verified_slot <= observation_floor_slot
+                     AND NOT (
+                          observation_floor_state_valid
+                      AND observation_floor_hash = latest_hash
+                     )
+               )::BIGINT AS conflicting_at_or_below_floor_routable_state_count,
+               count(*) FILTER (
+                   WHERE observation_floor_reserve IS NOT NULL
+                     AND NOT observation_floor_state_valid
+               )::BIGINT AS invalid_observation_floor_state_count,
+               count(*) FILTER (
+                   WHERE (state_event_id IS NOT NULL
+                          AND event_commitment IS DISTINCT FROM 'confirmed')
+                      OR (verification_event_id IS NOT NULL
+                          AND commitment IS DISTINCT FROM 'confirmed')
+               )::BIGINT AS non_confirmed_count,
+               count(*) FILTER (
+                   WHERE state_event_id IS NOT NULL
+                     AND (state_source IS NULL OR NOT (state_source = ANY(
+                         ARRAY['http_snapshot', 'http_confirmed_refresh']::TEXT[]
+                     )))
+               )::BIGINT AS non_http_current_state_count,
+               count(*) FILTER (
+                   WHERE verification_event_id IS NOT NULL
+                     AND (verification_source IS NULL
+                       OR NOT (verification_source = ANY(
+                            ARRAY['http_snapshot', 'http_confirmed_refresh']::TEXT[]
+                       )))
+               )::BIGINT AS non_http_verification_source_count,
+               count(*) FILTER (WHERE state_observed_at > $1)::BIGINT
+                   AS future_current_state_count,
+               count(*) FILTER (WHERE verified_at > $1)::BIGINT
+                   AS future_verification_count,
+               count(*) FILTER (
+                   WHERE verified_at < $1 - make_interval(secs => $2::INTEGER)
+               )::BIGINT AS warning_expired_count,
+               count(*) FILTER (
+                   WHERE verified_at < $1 - make_interval(secs => $3::INTEGER)
+               )::BIGINT AS hard_expired_count,
+               floor(max(extract(epoch FROM ($1 - verified_at))))::BIGINT
+                   AS oldest_verification_age_seconds
+        FROM evidence
+        "#,
+    )
+    .bind(captured_at)
+    .bind(MARKET_VERIFICATION_WARNING_SECONDS)
+    .bind(MARKET_VERIFICATION_HARD_EXPIRY_SECONDS)
+    .bind(SUPPORTED_RESERVE_CATALOG_MAX_AGE_SECONDS)
+    .fetch_one(&mut *transaction)
+    .await;
+    let coverage_query_milliseconds =
+        i64::try_from(coverage_query_started.elapsed().as_millis()).unwrap_or(i64::MAX);
+    let Ok(counters) = counters else {
+        return market_timescale_unavailable(
+            captured_at,
+            &enabled_mints,
+            relations,
+            migration,
+            "Timescale market coverage query failed",
+        );
+    };
+
+    let safe_target_query_started = Instant::now();
+    let targets = sqlx::query(
+        r#"
+        WITH enabled AS (
+            SELECT enabled_mint.liquidity_mint
+            FROM unnest($1::TEXT[]) AS enabled_mint(liquidity_mint)
+        ), ranked AS (
+            SELECT supported.liquidity_mint, supported.risk_baskets,
+                   latest.reserve, latest.market, latest.supply_apy,
+                   latest.total_supply_usd_estimate,
+                   latest.reserve_last_update_stale,
+                   latest.event_id AS state_event_id,
+                   latest.account_data_hash,
+                   latest.observed_at AS state_observed_at,
+                   latest.slot AS state_slot,
+                   latest.verified_at, latest.verified_slot,
+                   latest.source AS state_source,
+                   latest.verification_commitment,
+                   latest.verification_source,
+                   observation_floor.floor_slot AS observation_floor_slot,
+                   observation_floor.observation_id AS observation_floor_observation_id,
+                   observation_floor.account_data_hash AS observation_floor_hash,
+                   observation_floor.state_valid AS observation_floor_state_valid,
+                   observation_floor.source AS observation_floor_source,
+                   observation_floor.source_rank AS observation_floor_source_rank,
+                   observation_floor.observed_at AS observation_floor_observed_at,
+                   count(*) OVER (PARTITION BY supported.liquidity_mint)::BIGINT
+                       AS eligible_target_count,
+                   row_number() OVER (
+                       PARTITION BY supported.liquidity_mint
+                       ORDER BY latest.supply_apy DESC,
+                                latest.total_supply_usd_estimate DESC,
+                                latest.reserve ASC
+                   ) AS target_rank
+            FROM kamino.supported_reserves supported
+            JOIN kamino.latest_verified_reserve_updates latest
+              ON latest.reserve = supported.reserve
+             AND latest.market = supported.market
+             AND latest.liquidity_mint = supported.liquidity_mint
+            JOIN kamino.reserve_confirmed_observation_floors observation_floor
+              ON observation_floor.reserve = supported.reserve
+            WHERE supported.active
+              AND supported.liquidity_mint = ANY($1::TEXT[])
+              AND 'safe' = ANY(supported.risk_baskets)
+              AND latest.total_supply_usd_estimate > 100000.0
+              AND latest.supply_apy >= 0.0
+              AND latest.supply_apy < 0.5
+              AND NOT latest.reserve_last_update_stale
+              AND latest.verified_at <= $2
+              AND latest.verified_at >= $2 - make_interval(secs => $3::INTEGER)
+              AND latest.verification_commitment = 'confirmed'
+              AND latest.slot <= latest.verified_slot
+              AND (
+                    latest.verified_slot > observation_floor.floor_slot
+                 OR (
+                        observation_floor.state_valid
+                    AND observation_floor.account_data_hash = latest.account_data_hash
+                 )
+              )
+        )
+        SELECT enabled.liquidity_mint,
+               COALESCE(ranked.eligible_target_count, 0)::BIGINT
+                   AS eligible_target_count,
+               ranked.reserve, ranked.market, ranked.supply_apy,
+               ranked.risk_baskets, ranked.total_supply_usd_estimate,
+               ranked.reserve_last_update_stale, ranked.state_event_id,
+               ranked.account_data_hash, ranked.state_observed_at,
+               ranked.state_slot, ranked.verified_at, ranked.verified_slot,
+               ranked.state_source, ranked.verification_commitment,
+               ranked.verification_source, ranked.observation_floor_slot,
+               ranked.observation_floor_observation_id,
+               ranked.observation_floor_hash, ranked.observation_floor_state_valid,
+               ranked.observation_floor_source, ranked.observation_floor_source_rank,
+               ranked.observation_floor_observed_at
+        FROM enabled
+        LEFT JOIN ranked
+          ON ranked.liquidity_mint = enabled.liquidity_mint
+         AND ranked.target_rank = 1
+        ORDER BY enabled.liquidity_mint
+        "#,
+    )
+    .bind(&enabled_mints)
+    .bind(captured_at)
+    .bind(MARKET_VERIFICATION_WARNING_SECONDS)
+    .fetch_all(&mut *transaction)
+    .await;
+    let safe_target_query_milliseconds =
+        i64::try_from(safe_target_query_started.elapsed().as_millis()).unwrap_or(i64::MAX);
+    let Ok(targets) = targets else {
+        return market_timescale_unavailable(
+            captured_at,
+            &enabled_mints,
+            relations,
+            migration,
+            "Timescale safe-target query failed",
+        );
+    };
+    let _ = transaction.rollback().await;
+    let top_targets = targets
+        .iter()
+        .map(|row| {
+            json!({
+                "liquidityMint": row.try_get::<String, _>("liquidity_mint").ok(),
+                "eligibleTargetCount": row.try_get::<i64, _>("eligible_target_count").ok(),
+                "riskBaskets": row.try_get::<Option<Vec<String>>, _>("risk_baskets").ok().flatten(),
+                "reserve": row.try_get::<Option<String>, _>("reserve").ok().flatten(),
+                "market": row.try_get::<Option<String>, _>("market").ok().flatten(),
+                "supplyApy": row.try_get::<Option<f64>, _>("supply_apy").ok().flatten(),
+                "totalSupplyUsdEstimate": row.try_get::<Option<f64>, _>("total_supply_usd_estimate").ok().flatten(),
+                "reserveLastUpdateStale": row.try_get::<Option<bool>, _>("reserve_last_update_stale").ok().flatten(),
+                "stateEventId": row.try_get::<Option<i64>, _>("state_event_id").ok().flatten(),
+                "accountDataHash": row.try_get::<Option<String>, _>("account_data_hash").ok().flatten(),
+                "stateObservedAt": row.try_get::<Option<DateTime<Utc>>, _>("state_observed_at").ok().flatten(),
+                "stateSlot": row.try_get::<Option<i64>, _>("state_slot").ok().flatten(),
+                "verifiedAt": row.try_get::<Option<DateTime<Utc>>, _>("verified_at").ok().flatten(),
+                "verifiedSlot": row.try_get::<Option<i64>, _>("verified_slot").ok().flatten(),
+                "stateSource": row.try_get::<Option<String>, _>("state_source").ok().flatten(),
+                "verificationCommitment": row.try_get::<Option<String>, _>("verification_commitment").ok().flatten(),
+                "verificationSource": row.try_get::<Option<String>, _>("verification_source").ok().flatten(),
+                "observationFloorSlot": row.try_get::<Option<i64>, _>("observation_floor_slot").ok().flatten(),
+                "observationFloorObservationId": row.try_get::<Option<i64>, _>("observation_floor_observation_id").ok().flatten(),
+                "observationFloorAccountDataHash": row.try_get::<Option<String>, _>("observation_floor_hash").ok().flatten(),
+                "observationFloorStateValid": row.try_get::<Option<bool>, _>("observation_floor_state_valid").ok().flatten(),
+                "observationFloorSource": row.try_get::<Option<String>, _>("observation_floor_source").ok().flatten(),
+                "observationFloorSourceRank": row.try_get::<Option<i16>, _>("observation_floor_source_rank").ok().flatten(),
+                "observationFloorObservedAt": row.try_get::<Option<DateTime<Utc>>, _>("observation_floor_observed_at").ok().flatten(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let active_count = counters.try_get::<i64, _>("active_count").ok();
+    let active_catalog_row_count = counters.try_get::<i64, _>("active_catalog_row_count").ok();
+    let duplicate_active_supported_reserves = counters
+        .try_get::<i64, _>("duplicate_active_supported_reserve_count")
+        .ok();
+    let non_kamino_api_active_supported_reserves = counters
+        .try_get::<i64, _>("non_kamino_api_active_supported_reserve_count")
+        .ok();
+    let stale_active_supported_reserves = counters
+        .try_get::<i64, _>("stale_active_supported_reserve_count")
+        .ok();
+    let oldest_active_supported_reserve_fetched_at = counters
+        .try_get::<Option<DateTime<Utc>>, _>("oldest_active_supported_reserve_fetched_at")
+        .ok()
+        .flatten();
+    let oldest_active_supported_reserve_age_seconds = counters
+        .try_get::<Option<i64>, _>("oldest_active_supported_reserve_age_seconds")
+        .ok()
+        .flatten();
+    let current_pointer_count = counters.try_get::<i64, _>("current_pointer_count").ok();
+    let verification_count = counters.try_get::<i64, _>("verification_count").ok();
+    let latest_view_count = counters.try_get::<i64, _>("latest_view_count").ok();
+    let event_identity_violations = counters
+        .try_get::<i64, _>("event_identity_violation_count")
+        .ok();
+    let verification_identity_violations = counters
+        .try_get::<i64, _>("verification_identity_violation_count")
+        .ok();
+    let latest_identity_violations = counters
+        .try_get::<i64, _>("latest_identity_violation_count")
+        .ok();
+    let slot_violations = counters
+        .try_get::<i64, _>("state_slot_after_verification_count")
+        .ok();
+    let immutable_tape_cardinality_violations = counters
+        .try_get::<i64, _>("immutable_tape_exact_row_cardinality_violation_count")
+        .ok();
+    let latest_view_cardinality_violations = counters
+        .try_get::<i64, _>("latest_view_row_cardinality_violation_count")
+        .ok();
+    let observation_floor_count = counters.try_get::<i64, _>("observation_floor_count").ok();
+    let observation_floor_identity_violations = counters
+        .try_get::<i64, _>("observation_floor_identity_violation_count")
+        .ok();
+    let observation_floor_future = counters
+        .try_get::<i64, _>("observation_floor_future_count")
+        .ok();
+    let stale_observation_floors = counters
+        .try_get::<i64, _>("stale_observation_floor_count")
+        .ok();
+    let invalid_observation_floor_states = counters
+        .try_get::<i64, _>("invalid_observation_floor_state_count")
+        .ok();
+    let current_states_below_floor = counters
+        .try_get::<i64, _>("current_state_below_observation_floor_count")
+        .ok();
+    let exact_hash_admissions = counters
+        .try_get::<i64, _>("at_or_below_floor_exact_hash_admission_count")
+        .ok();
+    let at_or_below_floor_verification_violations = counters
+        .try_get::<i64, _>("verification_at_or_below_floor_without_exact_hash_count")
+        .ok();
+    let at_or_below_floor_routable_violations = counters
+        .try_get::<i64, _>("conflicting_at_or_below_floor_routable_state_count")
+        .ok();
+    let non_confirmed = counters.try_get::<i64, _>("non_confirmed_count").ok();
+    let non_http = counters
+        .try_get::<i64, _>("non_http_current_state_count")
+        .ok();
+    let non_http_verifications = counters
+        .try_get::<i64, _>("non_http_verification_source_count")
+        .ok();
+    let future_current_states = counters
+        .try_get::<i64, _>("future_current_state_count")
+        .ok();
+    let future = counters.try_get::<i64, _>("future_verification_count").ok();
+    let warning = counters.try_get::<i64, _>("warning_expired_count").ok();
+    let hard = counters.try_get::<i64, _>("hard_expired_count").ok();
+    let oldest_age = counters
+        .try_get::<Option<i64>, _>("oldest_verification_age_seconds")
+        .ok()
+        .flatten();
+    let targets_complete = top_targets.len() == enabled_mints.len()
+        && top_targets.iter().all(|target| {
+            target
+                .get("eligibleTargetCount")
+                .and_then(Value::as_i64)
+                .is_some_and(|count| count > 0)
+        });
+    let migration_matches = applied_row_count == 1
+        && applied_name.as_deref() == Some(TIMESCALE_MARKET_MIGRATION_NAME)
+        && applied_checksum.as_deref() == Some(source_checksum.as_str())
+        && applied_at.is_some();
+    let pass = migration_matches
+        && active_count.is_some_and(|count| count > 0)
+        && active_catalog_row_count == active_count
+        && duplicate_active_supported_reserves == Some(0)
+        && non_kamino_api_active_supported_reserves == Some(0)
+        && stale_active_supported_reserves == Some(0)
+        && oldest_active_supported_reserve_fetched_at
+            .is_some_and(|fetched_at| fetched_at <= captured_at)
+        && oldest_active_supported_reserve_age_seconds
+            .is_some_and(|age| (0..=SUPPORTED_RESERVE_CATALOG_MAX_AGE_SECONDS).contains(&age))
+        && current_pointer_count == active_count
+        && verification_count == active_count
+        && latest_view_count == active_count
+        && observation_floor_count == active_count
+        && event_identity_violations == Some(0)
+        && verification_identity_violations == Some(0)
+        && latest_identity_violations == Some(0)
+        && slot_violations == Some(0)
+        && immutable_tape_cardinality_violations == Some(0)
+        && latest_view_cardinality_violations == Some(0)
+        && observation_floor_identity_violations == Some(0)
+        && observation_floor_future == Some(0)
+        && stale_observation_floors == Some(0)
+        && invalid_observation_floor_states == Some(0)
+        && at_or_below_floor_verification_violations == Some(0)
+        && at_or_below_floor_routable_violations == Some(0)
+        && non_confirmed == Some(0)
+        && non_http == Some(0)
+        && non_http_verifications == Some(0)
+        && future_current_states == Some(0)
+        && future == Some(0)
+        && hard == Some(0)
+        && oldest_age.is_some_and(|age| (0..=MARKET_VERIFICATION_WARNING_SECONDS).contains(&age))
+        && (0..=MARKET_EVIDENCE_QUERY_TIMEOUT_MILLISECONDS).contains(&coverage_query_milliseconds)
+        && (0..=MARKET_EVIDENCE_QUERY_TIMEOUT_MILLISECONDS)
+            .contains(&safe_target_query_milliseconds)
+        && targets_complete;
+    MarketDataPlaneEvidence {
+        timescale: json!({
+            "available": true,
+            "capturedAt": captured_at,
+            "migration": migration,
+            "relations": relations,
+            "enabledStableMints": enabled_mints,
+            "activeDistinctSupportedReserveCount": active_count,
+            "activeSupportedReserveCatalogRowCount": active_catalog_row_count,
+            "duplicateActiveSupportedReserveCount": duplicate_active_supported_reserves,
+            "nonKaminoApiActiveSupportedReserveCount": non_kamino_api_active_supported_reserves,
+            "staleActiveSupportedReserveOver300SecondsCount": stale_active_supported_reserves,
+            "oldestActiveSupportedReserveFetchedAt": oldest_active_supported_reserve_fetched_at,
+            "oldestActiveSupportedReserveAgeSeconds": oldest_active_supported_reserve_age_seconds,
+            "currentPointerCoverageCount": current_pointer_count,
+            "verificationCoverageCount": verification_count,
+            "exactLatestViewCoverageCount": latest_view_count,
+            "eventHashObservedAtIdentityViolationCount": event_identity_violations,
+            "verificationStateIdentityViolationCount": verification_identity_violations,
+            "latestViewIdentityViolationCount": latest_identity_violations,
+            "stateSlotGreaterThanVerifiedSlotCount": slot_violations,
+            "immutableTapeExactRowCardinalityViolationCount": immutable_tape_cardinality_violations,
+            "latestViewRowCardinalityViolationCount": latest_view_cardinality_violations,
+            "observationFloorCoverageCount": observation_floor_count,
+            "observationFloorIdentityViolationCount": observation_floor_identity_violations,
+            "observationFloorFutureObservedAtCount": observation_floor_future,
+            "staleObservationFloorOver90SecondsCount": stale_observation_floors,
+            "invalidObservationFloorStateCount": invalid_observation_floor_states,
+            "currentStateBelowObservationFloorCount": current_states_below_floor,
+            "atOrBelowFloorExactHashAdmissionCount": exact_hash_admissions,
+            "verificationAtOrBelowObservationFloorWithoutExactHashCount": at_or_below_floor_verification_violations,
+            "conflictingAtOrBelowFloorRoutableStateCount": at_or_below_floor_routable_violations,
+            "nonConfirmedCommitmentCount": non_confirmed,
+            "nonHttpCurrentStateCount": non_http,
+            "nonHttpVerificationSourceCount": non_http_verifications,
+            "futureCurrentStateObservedAtCount": future_current_states,
+            "futureVerificationWatermarkCount": future,
+            "warningOver90SecondsCount": warning,
+            "hardExpiredOver240SecondsCount": hard,
+            "oldestVerificationAgeSeconds": oldest_age,
+            "coverageQueryMilliseconds": coverage_query_milliseconds,
+            "safeTargetQueryMilliseconds": safe_target_query_milliseconds,
+            "topVerifiedSafeTargets": top_targets,
+            "readError": Value::Null,
+            "pass": pass,
+        }),
+        pass,
+    }
 }
 
 fn ordered_address_hash(addresses: &[String]) -> String {
@@ -1634,7 +2952,9 @@ async fn collect_position_evidence(pool: &PgPool) -> Result<Value, Box<dyn Error
     let main_reserve = KAMINO_MAIN_USDC_RESERVE.to_string();
     let main_market = KAMINO_MAIN_MARKET.to_string();
     let usdc_mint = USDC_MINT.to_string();
-    let enabled_mints = enabled_stable_mints_from_env()?;
+    // Exact live planner env evidence proves there is no production narrowing
+    // override, so baseline membership must use the same code-owned default.
+    let enabled_mints = supported_stable_mints();
     let positions = sqlx::query(
         r#"
         WITH eligible_vaults AS MATERIALIZED (
@@ -1660,29 +2980,58 @@ async fn collect_position_evidence(pool: &PgPool) -> Result<Value, Box<dyn Error
               AND $4 = ANY(kamino_liquidity_mints)
               AND $5 = ANY(kamino_markets)
         ),
-        routeable_main AS MATERIALIZED (
-            SELECT position.*
+        main_positions AS MATERIALIZED (
+            SELECT position.*,
+                   CASE
+                       WHEN position.planning_metadata->>'amount_semantics' = $7
+                            AND COALESCE(
+                                NULLIF(position.planning_metadata->>'redeemable_source_liquidity_amount_raw', ''),
+                                NULLIF(position.planning_metadata->>'redeemable_liquidity_amount_raw', '')
+                            ) ~ '^[0-9]+$'
+                       THEN COALESCE(
+                           NULLIF(position.planning_metadata->>'redeemable_source_liquidity_amount_raw', ''),
+                           NULLIF(position.planning_metadata->>'redeemable_liquidity_amount_raw', '')
+                       )::BIGINT
+                       WHEN position.planning_metadata->>'amount_semantics' = $8
+                       THEN position.amount_raw
+                       ELSE NULL
+                   END AS routeable_liquidity_amount_raw
             FROM loyal_yield.vault_reserve_positions_current position
-            JOIN main_usdc_cohort cohort ON cohort.vault_id = position.vault_id
             WHERE position.reserve = $6
               AND position.liquidity_mint = $4
               AND position.has_value
               AND position.amount_raw > 0
+        ),
+        routeable_main AS MATERIALIZED (
+            SELECT position.*
+            FROM main_positions position
+            JOIN main_usdc_cohort cohort ON cohort.vault_id = position.vault_id
+            WHERE position.routeable_liquidity_amount_raw > 0
               AND (position.market IS NULL OR position.market = $5)
+        ),
+        unresolved_routeable_main AS MATERIALIZED (
+            SELECT position.*
+            FROM main_positions position
+            JOIN main_usdc_cohort cohort ON cohort.vault_id = position.vault_id
+            WHERE position.routeable_liquidity_amount_raw IS NULL
+               OR position.routeable_liquidity_amount_raw <= 0
         ),
         global_main AS MATERIALIZED (
             SELECT position.*
-            FROM loyal_yield.vault_reserve_positions_current position
-            WHERE position.reserve = $6
-              AND position.liquidity_mint = $4
-              AND position.has_value
-              AND position.amount_raw > 0
+            FROM main_positions position
+            WHERE position.routeable_liquidity_amount_raw > 0
+        ),
+        unresolved_global_main AS MATERIALIZED (
+            SELECT position.*
+            FROM main_positions position
+            WHERE position.routeable_liquidity_amount_raw IS NULL
+               OR position.routeable_liquidity_amount_raw <= 0
         )
         SELECT
             (SELECT count(*)::BIGINT FROM main_usdc_cohort) AS cohort_vault_count,
             (SELECT COALESCE(array_agg(vault_id ORDER BY vault_id), ARRAY[]::BIGINT[])
              FROM main_usdc_cohort) AS cohort_vault_ids,
-            (SELECT COALESCE(sum(amount_raw), 0)::BIGINT FROM routeable_main)
+            (SELECT COALESCE(sum(routeable_liquidity_amount_raw), 0)::BIGINT FROM routeable_main)
                 AS routeable_amount_raw,
             (SELECT count(*)::BIGINT FROM routeable_main) AS routeable_vault_count,
             (SELECT COALESCE(array_agg(vault_id ORDER BY vault_id), ARRAY[]::BIGINT[])
@@ -1693,7 +3042,9 @@ async fn collect_position_evidence(pool: &PgPool) -> Result<Value, Box<dyn Error
             (SELECT max(observed_slot) FROM routeable_main) AS routeable_maximum_observed_slot,
             (SELECT count(*)::BIGINT FROM routeable_main
              WHERE observed_at < now() - interval '10 minutes') AS routeable_stale_row_count,
-            (SELECT COALESCE(sum(amount_raw), 0)::BIGINT FROM global_main)
+            (SELECT count(*)::BIGINT FROM unresolved_routeable_main)
+                AS routeable_unresolved_amount_semantics_count,
+            (SELECT COALESCE(sum(routeable_liquidity_amount_raw), 0)::BIGINT FROM global_main)
                 AS global_amount_raw,
             (SELECT count(*)::BIGINT FROM global_main) AS global_vault_count,
             (SELECT COALESCE(array_agg(vault_id ORDER BY vault_id), ARRAY[]::BIGINT[])
@@ -1703,7 +3054,9 @@ async fn collect_position_evidence(pool: &PgPool) -> Result<Value, Box<dyn Error
             (SELECT min(observed_slot) FROM global_main) AS global_minimum_observed_slot,
             (SELECT max(observed_slot) FROM global_main) AS global_maximum_observed_slot,
             (SELECT count(*)::BIGINT FROM global_main
-             WHERE observed_at < now() - interval '10 minutes') AS global_stale_row_count
+             WHERE observed_at < now() - interval '10 minutes') AS global_stale_row_count,
+            (SELECT count(*)::BIGINT FROM unresolved_global_main)
+                AS global_unresolved_amount_semantics_count
         "#,
     )
     .bind(STANDARD_POLICY_AUTHORITY)
@@ -1712,6 +3065,8 @@ async fn collect_position_evidence(pool: &PgPool) -> Result<Value, Box<dyn Error
     .bind(&usdc_mint)
     .bind(&main_market)
     .bind(&main_reserve)
+    .bind(AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED)
+    .bind(ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY)
     .fetch_one(pool)
     .await?;
     let reserve_aggregates: Value = sqlx::query_scalar(
@@ -1736,8 +3091,12 @@ async fn collect_position_evidence(pool: &PgPool) -> Result<Value, Box<dyn Error
     .await?;
     let routeable_amount_raw = positions.try_get::<i64, _>("routeable_amount_raw")?;
     let routeable_stale_row_count = positions.try_get::<i64, _>("routeable_stale_row_count")?;
+    let routeable_unresolved_amount_semantics_count =
+        positions.try_get::<i64, _>("routeable_unresolved_amount_semantics_count")?;
     let global_amount_raw = positions.try_get::<i64, _>("global_amount_raw")?;
     let global_stale_row_count = positions.try_get::<i64, _>("global_stale_row_count")?;
+    let global_unresolved_amount_semantics_count =
+        positions.try_get::<i64, _>("global_unresolved_amount_semantics_count")?;
     Ok(json!({
         "available": true,
         "mainUsdcCohort": {
@@ -1763,7 +3122,8 @@ async fn collect_position_evidence(pool: &PgPool) -> Result<Value, Box<dyn Error
             "maximumObservedSlot": positions.try_get::<Option<i64>, _>("routeable_maximum_observed_slot")?,
             "freshnessMaximumAgeSeconds": MAX_MATERIAL_STAGE_AGE_SECONDS,
             "staleRowCount": routeable_stale_row_count,
-            "freshForBaseline": routeable_stale_row_count == 0,
+            "freshForBaseline": routeable_stale_row_count == 0
+                && routeable_unresolved_amount_semantics_count == 0,
         },
         "globalMainUsdc": {
             "reserve": main_reserve,
@@ -1778,7 +3138,8 @@ async fn collect_position_evidence(pool: &PgPool) -> Result<Value, Box<dyn Error
             "maximumObservedSlot": positions.try_get::<Option<i64>, _>("global_maximum_observed_slot")?,
             "freshnessMaximumAgeSeconds": MAX_MATERIAL_STAGE_AGE_SECONDS,
             "staleRowCount": global_stale_row_count,
-            "freshForBaseline": global_stale_row_count == 0,
+            "freshForBaseline": global_stale_row_count == 0
+                && global_unresolved_amount_semantics_count == 0,
         },
         "reserveAggregates": reserve_aggregates,
     }))
@@ -1789,6 +3150,7 @@ async fn collect_queue_evidence(pool: &PgPool, cluster: &str) -> Result<Value, s
         r#"
         SELECT jsonb_build_object(
             'available', true,
+            'capturedAt', clock_timestamp(),
             'statusRows', COALESCE((
                 SELECT jsonb_agg(to_jsonb(status_row)
                                  ORDER BY status_row.opportunity_state NULLS FIRST)
@@ -2076,6 +3438,12 @@ async fn load_movements(
                COALESCE(opportunity.execution_plan->>'kind', '') AS route_kind,
                opportunity.optimizer_epoch_id AS opportunity_optimizer_epoch_id,
                submission.optimizer_epoch_id AS submission_optimizer_epoch_id,
+               optimizer_epoch.epoch_key AS optimizer_epoch_fingerprint,
+               optimizer_epoch.expires_at AS optimizer_epoch_expires_at,
+               COALESCE(
+                   submission.alt_mutation_epochs->'optimizerEpoch',
+                   'null'::JSONB
+               ) AS submission_optimizer_epoch_evidence,
                opportunity.source_snapshot_id AS opportunity_source_snapshot_id,
                submission.source_snapshot_id AS submission_source_snapshot_id,
                opportunity.source_reserve, opportunity.target_reserve,
@@ -2185,6 +3553,9 @@ async fn load_movements(
         FROM loyal_yield.signed_route_submissions submission
         JOIN loyal_yield.rebalance_opportunities opportunity
           ON opportunity.id = submission.opportunity_id
+        JOIN loyal_yield.optimizer_epochs optimizer_epoch
+          ON optimizer_epoch.id = opportunity.optimizer_epoch_id
+         AND optimizer_epoch.cluster = opportunity.cluster
         JOIN loyal_yield.rebalance_decisions decision
           ON decision.id = submission.decision_id
         LEFT JOIN loyal_yield.vault_position_snapshots post_snapshot
@@ -2249,6 +3620,10 @@ async fn load_movements(
                 route_kind: row.try_get("route_kind")?,
                 opportunity_optimizer_epoch_id: row.try_get("opportunity_optimizer_epoch_id")?,
                 submission_optimizer_epoch_id: row.try_get("submission_optimizer_epoch_id")?,
+                optimizer_epoch_fingerprint: row.try_get("optimizer_epoch_fingerprint")?,
+                optimizer_epoch_expires_at: row.try_get("optimizer_epoch_expires_at")?,
+                submission_optimizer_epoch_evidence: row
+                    .try_get("submission_optimizer_epoch_evidence")?,
                 opportunity_source_snapshot_id: row.try_get("opportunity_source_snapshot_id")?,
                 submission_source_snapshot_id: row.try_get("submission_source_snapshot_id")?,
                 source_reserve: row.try_get("source_reserve")?,
@@ -2421,6 +3796,46 @@ fn execution_string<'a>(plan: &'a Value, key: &str) -> Option<&'a str> {
     plan.get(key).and_then(Value::as_str)
 }
 
+fn same_mint_route_amount_evidence_exact(movement: &MovementRow) -> bool {
+    let amount = Some(movement.amount_raw);
+    let source_collateral = movement
+        .pre_source_amount_raw
+        .filter(|source_collateral| *source_collateral > 0);
+    [&movement.execution_plan, &movement.decision_execution_plan]
+        .into_iter()
+        .all(|plan| {
+            execution_string(plan, "route_amount_semantics")
+                == Some(ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY)
+                && execution_string(plan, "source_amount_semantics")
+                    == Some(AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED)
+                && execution_i64(plan, "source_collateral_amount_raw") == source_collateral
+                && execution_i64(plan, "redeemable_source_liquidity_amount_raw") == amount
+        })
+}
+
+fn idle_route_amount_evidence_exact(movement: &MovementRow) -> bool {
+    let amount = Some(movement.amount_raw);
+    execution_string(&movement.execution_plan, "route_amount_semantics")
+        == Some(ROUTE_AMOUNT_SEMANTICS_IDLE_VAULT_LIQUIDITY)
+        && execution_string(&movement.decision_execution_plan, "route_amount_semantics")
+            == Some(ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY)
+        && execution_string(&movement.decision_execution_plan, "source_amount_semantics")
+            == Some("idle_vault")
+        && execution_i64(&movement.execution_plan, "idle_vault_liquidity_amount_raw") == amount
+        && execution_i64(
+            &movement.decision_execution_plan,
+            "idle_vault_liquidity_amount_raw",
+        ) == amount
+}
+
+fn movement_route_amount_evidence_exact(movement: &MovementRow) -> bool {
+    match movement.route_kind.as_str() {
+        "same_mint" => same_mint_route_amount_evidence_exact(movement),
+        "idle_vault_deposit" => idle_route_amount_evidence_exact(movement),
+        _ => false,
+    }
+}
+
 fn execution_timestamp(plan: &Value, key: &str) -> Option<DateTime<Utc>> {
     execution_string(plan, key)
         .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
@@ -2479,6 +3894,7 @@ fn movement_json(
     let planner_source_kind = execution_string(&movement.execution_plan, "source_kind");
     let same_mint_plan_identity_exact = decision_route_kind == "same_mint"
         && execution_string(&movement.execution_plan, "kind") == Some("same_mint")
+        && same_mint_route_amount_evidence_exact(movement)
         && execution_string(&movement.decision_execution_plan, "source_reserve")
             == movement.decision_source_reserve.as_deref()
         && execution_string(&movement.execution_plan, "source_reserve")
@@ -2527,6 +3943,7 @@ fn movement_json(
             .or_else(|| execution_i64(post_target_metadata, "vault_liquidity_amount_raw"));
     let idle_plan_identity_exact = decision_route_kind == "idle_vault_deposit"
         && execution_string(&movement.execution_plan, "kind") == Some("idle_vault_deposit")
+        && idle_route_amount_evidence_exact(movement)
         && decision_source_kind == Some("idle_vault")
         && planner_source_kind == Some("idle_vault_usdc")
         && movement.source_reserve.is_none()
@@ -2560,9 +3977,21 @@ fn movement_json(
         && pre_idle_source_amount_raw == planner_pre_idle_source_amount_raw
         && pre_idle_source_observed_slot == planner_pre_idle_source_observed_slot
         && pre_idle_source_observed_at == planner_pre_idle_source_observed_at;
+    let signed_optimizer_epoch_id =
+        execution_i64(&movement.submission_optimizer_epoch_evidence, "id");
+    let signed_optimizer_epoch_fingerprint =
+        execution_string(&movement.submission_optimizer_epoch_evidence, "fingerprint");
+    let signed_optimizer_epoch_expires_at =
+        execution_timestamp(&movement.submission_optimizer_epoch_evidence, "expiresAt");
+    let optimizer_epoch_identity_exact = movement.opportunity_optimizer_epoch_id > 0
+        && movement.opportunity_optimizer_epoch_id == movement.submission_optimizer_epoch_id
+        && signed_optimizer_epoch_id == Some(movement.opportunity_optimizer_epoch_id)
+        && signed_optimizer_epoch_fingerprint
+            == Some(movement.optimizer_epoch_fingerprint.as_str())
+        && signed_optimizer_epoch_expires_at == Some(movement.optimizer_epoch_expires_at);
     let reciprocal_identity_exact = movement.opportunity_decision_id == Some(movement.decision_id)
         && movement.decision_vault_id == movement.vault_id
-        && movement.opportunity_optimizer_epoch_id == movement.submission_optimizer_epoch_id;
+        && optimizer_epoch_identity_exact;
     let snapshot_identity_exact = match movement.route_kind.as_str() {
         "same_mint" => {
             movement
@@ -2821,6 +4250,10 @@ fn movement_json(
             "plannerSourceKind": planner_source_kind,
             "opportunityOptimizerEpochId": movement.opportunity_optimizer_epoch_id,
             "submissionOptimizerEpochId": movement.submission_optimizer_epoch_id,
+            "optimizerEpochFingerprint": movement.optimizer_epoch_fingerprint,
+            "optimizerEpochExpiresAt": movement.optimizer_epoch_expires_at,
+            "submissionOptimizerEpochEvidence": movement.submission_optimizer_epoch_evidence,
+            "optimizerEpochIdentityExact": optimizer_epoch_identity_exact,
             "opportunitySourceSnapshotId": movement.opportunity_source_snapshot_id,
             "submissionSourceSnapshotId": movement.submission_source_snapshot_id,
             "sourceReserve": movement.source_reserve,
@@ -2935,7 +4368,15 @@ fn validated_baseline_collected_at(baseline: &Value, cluster: &str) -> Option<Da
     let captured_at = DateTime::parse_from_rfc3339(baseline.get("capturedAt")?.as_str()?)
         .ok()?
         .with_timezone(&Utc);
-    (collected_at == captured_at).then_some(collected_at)
+    let collection_started_at =
+        DateTime::parse_from_rfc3339(baseline.get("collectionStartedAt")?.as_str()?)
+            .ok()?
+            .with_timezone(&Utc);
+    (collected_at == captured_at
+        && captured_at >= collection_started_at
+        && captured_at.signed_duration_since(collection_started_at)
+            <= chrono::Duration::seconds(PRODUCTION_EVIDENCE_MAX_COLLECTION_SECONDS))
+    .then_some(collected_at)
 }
 
 fn baseline_main(
@@ -3007,24 +4448,50 @@ async fn post_baseline_deposits(
 async fn current_baseline_cohort_main(
     pool: &PgPool,
     vault_ids: &[i64],
-) -> Result<i64, sqlx::Error> {
+) -> Result<Option<i64>, sqlx::Error> {
     if vault_ids.is_empty() {
-        return Ok(0);
+        return Ok(Some(0));
     }
-    sqlx::query_scalar(
+    sqlx::query_scalar::<_, Option<i64>>(
         r#"
-        SELECT COALESCE(sum(amount_raw), 0)::BIGINT
-        FROM loyal_yield.vault_reserve_positions_current
-        WHERE vault_id = ANY($1)
-          AND reserve = $2
-          AND liquidity_mint = $3
-          AND has_value
-          AND amount_raw > 0
+        WITH cohort_main AS MATERIALIZED (
+            SELECT CASE
+                       WHEN planning_metadata->>'amount_semantics' = $4
+                            AND COALESCE(
+                                NULLIF(planning_metadata->>'redeemable_source_liquidity_amount_raw', ''),
+                                NULLIF(planning_metadata->>'redeemable_liquidity_amount_raw', '')
+                            ) ~ '^[0-9]+$'
+                       THEN COALESCE(
+                           NULLIF(planning_metadata->>'redeemable_source_liquidity_amount_raw', ''),
+                           NULLIF(planning_metadata->>'redeemable_liquidity_amount_raw', '')
+                       )::BIGINT
+                       WHEN planning_metadata->>'amount_semantics' = $5
+                       THEN amount_raw
+                       ELSE NULL
+                   END AS routeable_liquidity_amount_raw
+            FROM loyal_yield.vault_reserve_positions_current
+            WHERE vault_id = ANY($1)
+              AND reserve = $2
+              AND liquidity_mint = $3
+              AND has_value
+              AND amount_raw > 0
+        )
+        SELECT CASE
+                   WHEN count(*) FILTER (
+                       WHERE routeable_liquidity_amount_raw IS NULL
+                          OR routeable_liquidity_amount_raw <= 0
+                   ) > 0
+                   THEN NULL
+                   ELSE COALESCE(sum(routeable_liquidity_amount_raw), 0)::BIGINT
+               END
+        FROM cohort_main
         "#,
     )
     .bind(vault_ids)
     .bind(KAMINO_MAIN_USDC_RESERVE.to_string())
     .bind(USDC_MINT.to_string())
+    .bind(AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED)
+    .bind(ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY)
     .fetch_one(pool)
     .await
 }
@@ -3167,7 +4634,10 @@ async fn collect_movement_evidence(
                 _ => {}
             }
         }
-        if movement.submission_state == "reconciled" && movement.liquidity_mint == usdc_mint {
+        if movement.submission_state == "reconciled"
+            && movement.liquidity_mint == usdc_mint
+            && movement_route_amount_evidence_exact(movement)
+        {
             if movement.route_kind == "same_mint"
                 && movement.source_reserve.as_deref() == Some(main_reserve.as_str())
             {
@@ -3217,7 +4687,7 @@ async fn collect_movement_evidence(
         .pointer("/mainUsdc/amountRaw")
         .and_then(Value::as_i64);
     let current_baseline_main = if baseline_collected_at.is_some() {
-        Some(current_baseline_cohort_main(pool, &baseline_vault_ids).await?)
+        current_baseline_cohort_main(pool, &baseline_vault_ids).await?
     } else {
         None
     };
@@ -3358,26 +4828,6 @@ async fn collect_database_evidence(
         && relation_exists(&pool, "loyal_yield.target_capacity_reservations")
             .await
             .unwrap_or(false);
-    let (queue, queue_verdict) = if queue_schema_available {
-        match collect_queue_evidence(&pool, &options.cluster).await {
-            Ok(value) => {
-                let verdict = queue_verdict(&value);
-                (value, verdict)
-            }
-            Err(_) => (
-                json!({"available": false, "error": "queue measurement query failed"}),
-                Verdict::Fail,
-            ),
-        }
-    } else {
-        (
-            json!({
-                "available": false,
-                "error": "fleet queue schema is unavailable",
-            }),
-            Verdict::Fail,
-        )
-    };
     let (mut movements, mut movement_verdict) = if queue_schema_available
         && positions["available"] == true
     {
@@ -3400,6 +4850,29 @@ async fn collect_database_evidence(
         (
             json!({"available": false, "error": "queue schema or position evidence unavailable"}),
             Verdict::NotRun,
+        )
+    };
+    // Capture queue/status last. Movement reconciliation can perform a bounded
+    // chain sweep; a queue snapshot taken before it is not valid liveness
+    // evidence for the end of this artifact.
+    let (queue, queue_verdict) = if queue_schema_available {
+        match collect_queue_evidence(&pool, &options.cluster).await {
+            Ok(value) => {
+                let verdict = queue_verdict(&value);
+                (value, verdict)
+            }
+            Err(_) => (
+                json!({"available": false, "error": "queue measurement query failed"}),
+                Verdict::Fail,
+            ),
+        }
+    } else {
+        (
+            json!({
+                "available": false,
+                "error": "fleet queue schema is unavailable",
+            }),
+            Verdict::Fail,
         )
     };
     let (production_slos, production_slos_pass) = production_slo_measurements(&queue);
@@ -3437,6 +4910,9 @@ fn baseline_is_source_bound(baseline: &Value, options: &Options, render_yaml: &s
     let Some(head) = git_output(&options.repository_root, &["rev-parse", "HEAD"]) else {
         return false;
     };
+    let compiled_source_sha256 = sha256_hex(COMPILED_COLLECTOR_SOURCE);
+    let checkout_source_sha256 = collector_checkout_source_sha256(&options.repository_root);
+    let executable_sha256 = env::current_exe().ok().as_deref().and_then(sha256_file);
     validated_baseline_collected_at(baseline, &options.cluster).is_some()
         && baseline
             .pointer("/scope/renderEnvironmentId")
@@ -3455,6 +4931,18 @@ fn baseline_is_source_bound(baseline: &Value, options: &Options, render_yaml: &s
             .pointer("/source/renderYamlSha256")
             .and_then(Value::as_str)
             == Some(sha256_hex(render_yaml.as_bytes()).as_str())
+        && baseline
+            .pointer("/source/collectorCompiledSourceSha256")
+            .and_then(Value::as_str)
+            == Some(compiled_source_sha256.as_str())
+        && baseline
+            .pointer("/source/collectorCheckoutSourceSha256")
+            .and_then(Value::as_str)
+            == checkout_source_sha256.as_deref()
+        && baseline
+            .pointer("/source/collectorExecutableSha256")
+            .and_then(Value::as_str)
+            == executable_sha256.as_deref()
         && baseline
             .pointer("/source/collectorSource")
             .and_then(Value::as_str)
@@ -3478,9 +4966,19 @@ fn aggregate_verdict(verdicts: impl IntoIterator<Item = Verdict>) -> Verdict {
 }
 
 async fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
-    let collected_at = Utc::now();
+    let collection_started_at = Utc::now();
     let render_yaml = fs::read_to_string(options.repository_root.join("render.yaml"))?;
+    let collector_source_before = collector_checkout_source_sha256(&options.repository_root);
+    if collector_source_before.as_deref() != Some(sha256_hex(COMPILED_COLLECTOR_SOURCE).as_str()) {
+        return Err("collector executable source does not match the checkout".into());
+    }
+    let fingerprint_nonce = scope_fingerprint_nonce(
+        &options.repository_root,
+        &render_yaml,
+        collection_started_at,
+    );
     let expected = expected_services(&render_yaml)?;
+    let expected_monitor = expected_kamino_monitor(&render_yaml)?;
     let baseline = load_baseline(options.baseline.as_deref())?;
     if baseline
         .as_ref()
@@ -3488,10 +4986,32 @@ async fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     {
         return Err("baseline artifact is not bound to this clean source and Render scope".into());
     }
-    let (render, render_pass, alt_runtime) =
-        collect_render_evidence(&expected, &options.render_environment_id, &options.cluster).await;
+    // The first Render read supplies the live provisioner budget scope needed
+    // by the ALT audit. It is intentionally not the freshness measurement.
+    let (_, _, alt_runtime) = collect_render_evidence(
+        &expected,
+        &expected_monitor,
+        &options.render_environment_id,
+        &options.cluster,
+        &fingerprint_nonce,
+    )
+    .await;
     let database = collect_database_evidence(&options, baseline.as_ref(), alt_runtime).await;
-    let deployment_verdict = if render_pass && database.migrations_pass {
+    let (render, render_pass, _) = collect_render_evidence(
+        &expected,
+        &expected_monitor,
+        &options.render_environment_id,
+        &options.cluster,
+        &fingerprint_nonce,
+    )
+    .await;
+    let market_data_plane = collect_market_timescale_evidence(Utc::now()).await;
+    let final_render_yaml = fs::read_to_string(options.repository_root.join("render.yaml"))?;
+    let collector_source_after = collector_checkout_source_sha256(&options.repository_root);
+    if final_render_yaml != render_yaml || collector_source_after != collector_source_before {
+        return Err("collector source or render.yaml changed during evidence collection".into());
+    }
+    let deployment_verdict = if render_pass && database.migrations_pass && market_data_plane.pass {
         Verdict::Pass
     } else {
         Verdict::Fail
@@ -3499,21 +5019,28 @@ async fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
     let production_performance_verdict =
         aggregate_verdict([database.queue_verdict, database.movement_verdict]);
     let end_state_verdict = aggregate_verdict([deployment_verdict, production_performance_verdict]);
+    let head_commit = git_output(&options.repository_root, &["rev-parse", "HEAD"]);
+    let source = source_evidence(&options.repository_root, &render_yaml);
+    let captured_at = Utc::now();
     let output = json!({
         "schemaVersion": SCHEMA_VERSION,
         "event": "fleet_orchestration_production_evidence",
-        "collectedAt": collected_at,
-        "capturedAt": collected_at,
-        "headCommit": git_output(&options.repository_root, &["rev-parse", "HEAD"]),
+        "collectionStartedAt": collection_started_at,
+        "collectedAt": captured_at,
+        "capturedAt": captured_at,
+        "headCommit": head_commit,
         "scope": {
             "cluster": options.cluster,
             "renderEnvironmentId": options.render_environment_id,
             "cutoverAt": options.cutover_at,
             "baselinePathSupplied": options.baseline.is_some(),
         },
-        "source": source_evidence(&options.repository_root, &render_yaml),
+        "source": source,
         "measurements": {
             "render": render,
+            "marketDataPlane": {
+                "timescale": market_data_plane.timescale,
+            },
             "database": {
                 "migrations": database.migrations,
                 "queue": database.queue,
@@ -3526,6 +5053,7 @@ async fn run(options: Options) -> Result<ExitCode, Box<dyn Error>> {
         // every verdict from the measurements above and source-bind this schema.
         "recomputedVerdicts": {
             "productionMigrationAndAtomicCutover": deployment_verdict,
+            "confirmedKaminoMarketDataPlane": if market_data_plane.pass { Verdict::Pass } else { Verdict::Fail },
             "completeFleetEvaluation": database.queue_verdict,
             "correctProductionMovement": database.movement_verdict,
             "deployment": deployment_verdict,

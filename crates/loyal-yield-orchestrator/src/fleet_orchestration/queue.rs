@@ -1,3 +1,4 @@
+use super::observation::MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS;
 use crate::{
     DecisionId, NeonSqlClient, OrchestratorError, SnapshotId, VaultId, ACTIVE_DECISION_STATUSES,
 };
@@ -788,6 +789,26 @@ impl NeonSqlClient {
         Ok(epoch)
     }
 
+    pub async fn optimizer_epoch(
+        &self,
+        cluster: &str,
+        optimizer_epoch_id: i64,
+    ) -> Result<Option<OptimizerEpochRecord>, OrchestratorError> {
+        if cluster.trim().is_empty() || optimizer_epoch_id <= 0 {
+            return Err(OrchestratorError::StoreInvariant(
+                "optimizer epoch lookup requires a cluster and positive id".to_owned(),
+            ));
+        }
+        let row = sqlx::query(
+            "SELECT * FROM loyal_yield.optimizer_epochs WHERE cluster = $1 AND id = $2",
+        )
+        .bind(cluster)
+        .bind(optimizer_epoch_id)
+        .fetch_optional(self.pool())
+        .await?;
+        row.as_ref().map(optimizer_epoch_from_row).transpose()
+    }
+
     pub async fn fleet_planning_state(
         &self,
         cluster: &str,
@@ -1264,10 +1285,29 @@ impl NeonSqlClient {
             }
         }
 
+        let minimum_publication_lifetime_seconds =
+            i32::try_from(MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS).map_err(|_| {
+                OrchestratorError::StoreInvariant(
+                    "minimum market-epoch publication lifetime does not fit PostgreSQL INTEGER"
+                        .to_owned(),
+                )
+            })?;
         let epoch = sqlx::query(
-            "SELECT cluster, expires_at FROM loyal_yield.optimizer_epochs WHERE id = $1 FOR SHARE",
+            r#"
+            SELECT cluster, expires_at,
+                   expires_at >= clock_timestamp()
+                       + make_interval(secs => $2::INTEGER)
+                   AND $3::TIMESTAMPTZ >= clock_timestamp()
+                       + make_interval(secs => $2::INTEGER)
+                       AS publication_lifetime_ready
+            FROM loyal_yield.optimizer_epochs
+            WHERE id = $1
+            FOR SHARE
+            "#,
         )
         .bind(input.optimizer_epoch_id)
+        .bind(minimum_publication_lifetime_seconds)
+        .bind(input.expires_at)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| {
@@ -1278,9 +1318,11 @@ impl NeonSqlClient {
         })?;
         if epoch.try_get::<String, _>("cluster")? != input.cluster
             || epoch.try_get::<DateTime<Utc>, _>("expires_at")? < input.expires_at
+            || !epoch.try_get::<bool, _>("publication_lifetime_ready")?
         {
             return Err(OrchestratorError::StoreInvariant(
-                "opportunity cluster/lifetime exceeds its optimizer epoch evidence".to_owned(),
+                "opportunity cluster/lifetime exceeds or has less than the minimum usable optimizer epoch evidence"
+                    .to_owned(),
             ));
         }
 
@@ -1489,10 +1531,17 @@ impl NeonSqlClient {
                  expected_net_gain_usd_micros, economic_priority,
                  priority_version, opportunity_state, execution_plan,
                  available_at, expires_at)
-            VALUES
-                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                 $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-                 $21, $22, $23, $24, $25, $26)
+            SELECT
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+                $21, $22, $23, $24, $25, $26
+            FROM loyal_yield.optimizer_epochs epoch
+            WHERE epoch.id = $7
+              AND epoch.cluster = $1
+              AND epoch.expires_at >= clock_timestamp()
+                  + make_interval(secs => $27::INTEGER)
+              AND $26::TIMESTAMPTZ >= clock_timestamp()
+                  + make_interval(secs => $27::INTEGER)
             ON CONFLICT DO NOTHING
             RETURNING *
             "#,
@@ -1523,11 +1572,38 @@ impl NeonSqlClient {
         .bind(&input.execution_plan)
         .bind(input.available_at)
         .bind(input.expires_at)
+        .bind(minimum_publication_lifetime_seconds)
         .fetch_optional(&mut *tx)
         .await?;
         let row = match row {
             Some(row) => row,
             None => {
+                let publication_lifetime_ready: bool = sqlx::query_scalar(
+                    r#"
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM loyal_yield.optimizer_epochs epoch
+                        WHERE epoch.id = $1
+                          AND epoch.cluster = $2
+                          AND epoch.expires_at >= clock_timestamp()
+                              + make_interval(secs => $3::INTEGER)
+                          AND $4::TIMESTAMPTZ >= clock_timestamp()
+                              + make_interval(secs => $3::INTEGER)
+                    )
+                    "#,
+                )
+                .bind(input.optimizer_epoch_id)
+                .bind(&input.cluster)
+                .bind(minimum_publication_lifetime_seconds)
+                .bind(input.expires_at)
+                .fetch_one(&mut *tx)
+                .await?;
+                if !publication_lifetime_ready {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "rebalance opportunity publication lost its minimum usable market-epoch lifetime before insertion"
+                            .to_owned(),
+                    ));
+                }
                 sqlx::query(
                     r#"
                 SELECT *
@@ -1566,6 +1642,33 @@ impl NeonSqlClient {
             .bind(request_id)
             .execute(&mut *tx)
             .await?;
+        }
+
+        // Consumer linkage above can itself wait on a locked provisioning
+        // row. Recheck with the database wall clock immediately before commit
+        // so no stalled publication becomes visible after spending the
+        // lifetime margin that made its market evidence executable.
+        let publication_lifetime_ready: bool = sqlx::query_scalar(
+            r#"
+            SELECT opportunity.expires_at >= clock_timestamp()
+                       + make_interval(secs => $2::INTEGER)
+               AND epoch.expires_at >= clock_timestamp()
+                       + make_interval(secs => $2::INTEGER)
+            FROM loyal_yield.rebalance_opportunities opportunity
+            JOIN loyal_yield.optimizer_epochs epoch
+              ON epoch.id = opportunity.optimizer_epoch_id
+            WHERE opportunity.id = $1
+            "#,
+        )
+        .bind(opportunity.id)
+        .bind(minimum_publication_lifetime_seconds)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !publication_lifetime_ready {
+            return Err(OrchestratorError::StoreInvariant(
+                "rebalance opportunity publication lost its minimum usable market-epoch lifetime before commit"
+                    .to_owned(),
+            ));
         }
 
         tx.commit().await?;
@@ -1640,6 +1743,13 @@ impl NeonSqlClient {
             return Ok(current);
         }
 
+        let minimum_publication_lifetime_seconds =
+            i32::try_from(MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS).map_err(|_| {
+                OrchestratorError::StoreInvariant(
+                    "minimum market-epoch publication lifetime does not fit PostgreSQL INTEGER"
+                        .to_owned(),
+                )
+            })?;
         let row = sqlx::query(
             r#"
             UPDATE loyal_yield.rebalance_opportunities
@@ -1653,14 +1763,20 @@ impl NeonSqlClient {
             WHERE id = $1
               AND opportunity_state = 'waiting_alt'
               AND optimizer_epoch_id = $2
-              AND expires_at > now()
+              AND expires_at >= clock_timestamp()
+                  + make_interval(secs => $3::INTEGER)
             RETURNING *
             "#,
         )
         .bind(opportunity_id)
         .bind(optimizer_epoch_id)
-        .fetch_one(&mut *tx)
+        .bind(minimum_publication_lifetime_seconds)
+        .fetch_optional(&mut *tx)
         .await?;
+        let Some(row) = row else {
+            tx.commit().await?;
+            return Ok(current);
+        };
         let readmitted = rebalance_opportunity_from_row(&row)?;
         tx.commit().await?;
         Ok(readmitted)
@@ -2305,6 +2421,13 @@ impl NeonSqlClient {
                 "signed transaction hash does not match the exact persisted wire bytes".to_owned(),
             ));
         }
+        let minimum_publication_lifetime_seconds =
+            i32::try_from(MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS).map_err(|_| {
+                OrchestratorError::StoreInvariant(
+                    "minimum market-epoch publication lifetime does not fit PostgreSQL INTEGER"
+                        .to_owned(),
+                )
+            })?;
 
         let row = sqlx::query(
             r#"
@@ -2319,19 +2442,22 @@ impl NeonSqlClient {
               AND opportunity.lease_owner = $2
               AND opportunity.fencing_token = $3
               AND opportunity.lease_expires_at > clock_timestamp()
-              AND opportunity.expires_at > clock_timestamp()
-              AND epoch.expires_at > clock_timestamp()
+              AND opportunity.expires_at >= clock_timestamp()
+                  + make_interval(secs => $4::INTEGER)
+              AND epoch.expires_at >= clock_timestamp()
+                  + make_interval(secs => $4::INTEGER)
             FOR SHARE OF opportunity, epoch
             "#,
         )
         .bind(opportunity_lease.opportunity.id)
         .bind(&opportunity_lease.owner)
         .bind(opportunity_lease.fencing_token)
+        .bind(minimum_publication_lifetime_seconds)
         .fetch_optional(&mut *connection)
         .await?
         .ok_or_else(|| {
             OrchestratorError::StoreInvariant(format!(
-                "rebalance opportunity {} signing lease is stale, expired, or fenced",
+                "rebalance opportunity {} signing lease is stale, below the minimum signed-publication lifetime, or fenced",
                 opportunity_lease.opportunity.id
             ))
         })?;
@@ -2474,6 +2600,59 @@ impl NeonSqlClient {
             ));
         }
         Ok(submission)
+    }
+
+    /// Rechecks the DB clock after the decision, submission, and capacity rows
+    /// are linked. Callers must invoke this as their final SQL statement before
+    /// committing an atomic signed-decision handoff.
+    pub(crate) async fn assert_signed_route_publication_lifetime_in_connection(
+        connection: &mut sqlx::PgConnection,
+        opportunity_id: i64,
+        decision_id: DecisionId,
+        signed_submission_id: i64,
+    ) -> Result<(), OrchestratorError> {
+        let minimum_publication_lifetime_seconds =
+            i32::try_from(MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS).map_err(|_| {
+                OrchestratorError::StoreInvariant(
+                    "minimum market-epoch publication lifetime does not fit PostgreSQL INTEGER"
+                        .to_owned(),
+                )
+            })?;
+        let publication_lifetime_ready: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM loyal_yield.rebalance_opportunities opportunity
+                JOIN loyal_yield.optimizer_epochs epoch
+                  ON epoch.id = opportunity.optimizer_epoch_id
+                 AND epoch.cluster = opportunity.cluster
+                JOIN loyal_yield.signed_route_submissions submission
+                  ON submission.id = $3
+                 AND submission.opportunity_id = opportunity.id
+                 AND submission.decision_id = $2
+                WHERE opportunity.id = $1
+                  AND opportunity.opportunity_state = 'decision_created'
+                  AND opportunity.decision_id = $2
+                  AND submission.submission_state = 'signed'
+                  AND opportunity.expires_at >= clock_timestamp()
+                      + make_interval(secs => $4::INTEGER)
+                  AND epoch.expires_at >= clock_timestamp()
+                      + make_interval(secs => $4::INTEGER)
+            )
+            "#,
+        )
+        .bind(opportunity_id)
+        .bind(decision_id.as_i64())
+        .bind(signed_submission_id)
+        .bind(minimum_publication_lifetime_seconds)
+        .fetch_one(&mut *connection)
+        .await?;
+        if !publication_lifetime_ready {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "rebalance opportunity {opportunity_id} lost the minimum usable market-epoch lifetime before signed decision commit"
+            )));
+        }
+        Ok(())
     }
 
     pub async fn signed_route_submission_by_semantic_key(
@@ -2861,12 +3040,16 @@ impl NeonSqlClient {
                   AND (SELECT count(*) FROM advanced_decisions) =
                       (SELECT count(*) FROM eligible)
                 RETURNING submission.id, submission.semantic_key
-            ), released_shared_lane AS (
+            ), released_transient_conflicts AS (
                 DELETE FROM loyal_yield.route_account_conflict_leases conflict
                 USING pending
                 WHERE conflict.submission_id = pending.id
-                  AND conflict.writable_account_key LIKE
-                      'fleet-shared-write-lane:%'
+                  AND (
+                      conflict.writable_account_key LIKE
+                          'fleet-shared-write-lane:%'
+                      OR conflict.writable_account_key LIKE
+                          'policy-setup-funding:%'
+                  )
                 RETURNING conflict.writable_account_key
             ), released_alt AS (
                 UPDATE loyal_yield.lookup_table_usage_leases usage
@@ -3326,10 +3509,44 @@ impl NeonSqlClient {
                           )
                       )
                       OR (
-                          submission.submission_state IN (
-                              'reconciliation_pending', 'effect_ambiguous'
+                          submission.submission_state = 'reconciliation_pending'
+                          AND cardinality(submission.conflict_account_keys) - (
+                              SELECT count(*)::INTEGER
+                              FROM unnest(submission.conflict_account_keys) AS key
+                              WHERE key LIKE 'fleet-shared-write-lane:%'
+                                 OR key LIKE 'policy-setup-funding:%'
+                          ) = (
+                              SELECT count(*)::INTEGER
+                              FROM loyal_yield.route_account_conflict_leases conflict
+                              WHERE conflict.submission_id = submission.id
+                                AND conflict.cluster = submission.cluster
+                                AND conflict.writable_account_key = ANY(
+                                    submission.conflict_account_keys
+                                )
+                                AND conflict.writable_account_key NOT LIKE
+                                    'fleet-shared-write-lane:%'
+                                AND conflict.writable_account_key NOT LIKE
+                                    'policy-setup-funding:%'
                           )
-                          AND cardinality(submission.conflict_account_keys) - 1 = (
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM loyal_yield.route_account_conflict_leases conflict
+                              WHERE conflict.submission_id = submission.id
+                                AND (
+                                    conflict.writable_account_key LIKE
+                                        'fleet-shared-write-lane:%'
+                                    OR conflict.writable_account_key LIKE
+                                        'policy-setup-funding:%'
+                                )
+                          )
+                      )
+                      OR (
+                          submission.submission_state = 'effect_ambiguous'
+                          AND cardinality(submission.conflict_account_keys) - (
+                              SELECT count(*)::INTEGER
+                              FROM unnest(submission.conflict_account_keys) AS key
+                              WHERE key LIKE 'fleet-shared-write-lane:%'
+                          ) = (
                               SELECT count(*)::INTEGER
                               FROM loyal_yield.route_account_conflict_leases conflict
                               WHERE conflict.submission_id = submission.id
@@ -3416,11 +3633,16 @@ impl NeonSqlClient {
             let expected_conflict_count = leases
                 .iter()
                 .map(|lease| {
-                    let shared_lanes = lease
+                    let released = lease
                         .submission
                         .conflict_account_keys
                         .iter()
-                        .filter(|key| key.starts_with("fleet-shared-write-lane:"))
+                        .filter(|key| {
+                            key.starts_with("fleet-shared-write-lane:")
+                                || (lease.submission.state
+                                    == SignedRouteSubmissionState::ReconciliationPending
+                                    && key.starts_with("policy-setup-funding:"))
+                        })
                         .count();
                     let retained = if matches!(
                         lease.submission.state,
@@ -3431,7 +3653,7 @@ impl NeonSqlClient {
                             .submission
                             .conflict_account_keys
                             .len()
-                            .saturating_sub(shared_lanes)
+                            .saturating_sub(released)
                     } else {
                         lease.submission.conflict_account_keys.len()
                     };
@@ -3648,12 +3870,16 @@ impl NeonSqlClient {
                       AND confirmation_fencing_token = $3
                       AND confirmation_lease_expires_at > now()
                     RETURNING *
-                ), released_shared_lane AS (
+                ), released_transient_conflicts AS (
                     DELETE FROM loyal_yield.route_account_conflict_leases conflict
                     USING pending
                     WHERE conflict.submission_id = pending.id
-                      AND conflict.writable_account_key LIKE
-                          'fleet-shared-write-lane:%'
+                      AND (
+                          conflict.writable_account_key LIKE
+                              'fleet-shared-write-lane:%'
+                          OR conflict.writable_account_key LIKE
+                              'policy-setup-funding:%'
+                      )
                     RETURNING conflict.writable_account_key
                 ), released_alt AS (
                     UPDATE loyal_yield.lookup_table_usage_leases usage
@@ -3989,6 +4215,24 @@ impl NeonSqlClient {
             .iter()
             .map(|status| (*status).to_owned())
             .collect::<Vec<_>>();
+        // The deferred migration-29 commit trigger requires sixty seconds of
+        // reciprocal opportunity/epoch lifetime when a row becomes leased.
+        // Keep a small statement-to-commit cushion so near-expiry work is
+        // skipped by the claimant instead of aborting the whole worker.
+        let minimum_claim_lifetime_seconds = i32::try_from(
+            MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS
+                .checked_add(5)
+                .ok_or_else(|| {
+                    OrchestratorError::StoreInvariant(
+                        "minimum claim lifetime overflowed".to_owned(),
+                    )
+                })?,
+        )
+        .map_err(|_| {
+            OrchestratorError::StoreInvariant(
+                "minimum claim lifetime does not fit PostgreSQL INTEGER".to_owned(),
+            )
+        })?;
         // Keep the runnable state literal in the statement so PostgreSQL can
         // prove this query is covered by the partial ready-priority index.
         // A bind parameter here can force a generic plan that scans ALT-cold
@@ -4017,7 +4261,16 @@ impl NeonSqlClient {
                 WHERE opportunity.cluster = $1
                   AND ({runnable_state_predicate})
                   AND opportunity.available_at <= now()
-                  AND opportunity.expires_at > now()
+                  AND opportunity.expires_at >= clock_timestamp()
+                      + make_interval(secs => $7::INTEGER)
+                  AND EXISTS (
+                      SELECT 1
+                      FROM loyal_yield.optimizer_epochs epoch
+                      WHERE epoch.id = opportunity.optimizer_epoch_id
+                        AND epoch.cluster = opportunity.cluster
+                        AND epoch.expires_at >= clock_timestamp()
+                            + make_interval(secs => $7::INTEGER)
+                  )
                 ORDER BY
                     opportunity.scheduler_priority_anchor DESC,
                     opportunity.economic_priority DESC,
@@ -4034,7 +4287,16 @@ impl NeonSqlClient {
                   AND opportunity.lease_kind = $4
                   AND opportunity.lease_expires_at <= now()
                   AND opportunity.available_at <= now()
-                  AND opportunity.expires_at > now()
+                  AND opportunity.expires_at >= clock_timestamp()
+                      + make_interval(secs => $7::INTEGER)
+                  AND EXISTS (
+                      SELECT 1
+                      FROM loyal_yield.optimizer_epochs epoch
+                      WHERE epoch.id = opportunity.optimizer_epoch_id
+                        AND epoch.cluster = opportunity.cluster
+                        AND epoch.expires_at >= clock_timestamp()
+                            + make_interval(secs => $7::INTEGER)
+                  )
                 ORDER BY
                     opportunity.scheduler_priority_anchor DESC,
                     opportunity.economic_priority DESC,
@@ -4074,7 +4336,16 @@ impl NeonSqlClient {
                       )
                   )
                   AND opportunity.available_at <= now()
-                  AND opportunity.expires_at > now()
+                  AND opportunity.expires_at >= clock_timestamp()
+                      + make_interval(secs => $7::INTEGER)
+                  AND EXISTS (
+                      SELECT 1
+                      FROM loyal_yield.optimizer_epochs epoch
+                      WHERE epoch.id = opportunity.optimizer_epoch_id
+                        AND epoch.cluster = opportunity.cluster
+                        AND epoch.expires_at >= clock_timestamp()
+                            + make_interval(secs => $7::INTEGER)
+                  )
                   AND NOT EXISTS (
                       SELECT 1
                       FROM loyal_yield.rebalance_decisions decision
@@ -4133,6 +4404,7 @@ impl NeonSqlClient {
             .bind(claim_kind.as_str())
             .bind(&active_statuses)
             .bind(limit)
+            .bind(minimum_claim_lifetime_seconds)
             .fetch_all(self.pool())
             .await?;
         let server_elapsed_micros = rows
