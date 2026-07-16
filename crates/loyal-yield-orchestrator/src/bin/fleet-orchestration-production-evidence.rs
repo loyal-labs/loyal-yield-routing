@@ -1,3 +1,5 @@
+#![recursion_limit = "512"]
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
@@ -112,13 +114,30 @@ struct MovementRow {
     submission_id: i64,
     opportunity_id: i64,
     decision_id: i64,
+    opportunity_decision_id: Option<i64>,
     vault_id: i64,
+    decision_vault_id: i64,
     signature: String,
     submission_state: String,
+    opportunity_state: String,
+    decision_status: String,
+    route_kind: String,
+    opportunity_optimizer_epoch_id: i64,
+    submission_optimizer_epoch_id: i64,
+    opportunity_source_snapshot_id: Option<i64>,
+    submission_source_snapshot_id: Option<i64>,
     source_reserve: Option<String>,
     target_reserve: String,
     liquidity_mint: String,
     amount_raw: i64,
+    decision_source_snapshot_id: Option<i64>,
+    decision_source_reserve: Option<String>,
+    decision_signature: Option<String>,
+    decision_confirmed_slot: Option<i64>,
+    decision_post_snapshot_id: Option<i64>,
+    decision_target_reserve: String,
+    decision_liquidity_mint: String,
+    decision_amount_raw: i64,
     principal_usd_micros: i64,
     estimated_edge_bps: i64,
     estimated_cost_lamports: i64,
@@ -126,24 +145,58 @@ struct MovementRow {
     economic_priority: i64,
     compiled_fee_lamports: i64,
     execution_plan: Value,
+    decision_execution_plan: Value,
     created_at: DateTime<Utc>,
+    submitted_slot: Option<i64>,
     submitted_at: Option<DateTime<Utc>>,
     confirmed_at: Option<DateTime<Utc>>,
     reconciled_at: Option<DateTime<Utc>>,
     confirmed_slot: Option<i64>,
     reconciled_slot: Option<i64>,
+    broadcast_count: i32,
+    last_broadcast_at: Option<DateTime<Utc>>,
+    last_valid_block_height: i64,
+    expiry_observed_block_height: Option<i64>,
+    effect_check_slot: Option<i64>,
+    last_status_checked_at: Option<DateTime<Utc>>,
+    source_snapshot_id: Option<i64>,
+    source_snapshot_vault_id: Option<i64>,
+    source_snapshot_context: Option<Value>,
+    post_snapshot_id: Option<i64>,
+    post_snapshot_vault_id: Option<i64>,
+    post_snapshot_context: Option<Value>,
+    pre_target_snapshot_id: Option<i64>,
+    pre_target_snapshot_vault_id: Option<i64>,
+    pre_target_snapshot_context: Option<Value>,
+    pre_target_planning_metadata: Option<Value>,
     post_snapshot_observed_slot: Option<i64>,
+    post_snapshot_observed_at: Option<DateTime<Utc>>,
+    pre_target_snapshot_observed_slot: Option<i64>,
+    pre_target_snapshot_observed_at: Option<DateTime<Utc>>,
     pre_source_amount_raw: Option<i64>,
     post_source_amount_raw: Option<i64>,
+    pre_target_liquidity_mint: Option<String>,
+    pre_target_has_value: Option<bool>,
     pre_target_amount_raw: Option<i64>,
+    post_target_liquidity_mint: Option<String>,
+    post_target_has_value: Option<bool>,
     post_target_amount_raw: Option<i64>,
+    post_target_planning_metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
 struct SignatureFinality {
+    found: bool,
     finalized: bool,
     successful: bool,
     slot: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+struct FinalityEvidence {
+    statuses: BTreeMap<String, SignatureFinality>,
+    finalized_block_height: i64,
+    finalized_slot: i64,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -2006,10 +2059,26 @@ async fn load_movements(
         r#"
         SELECT submission.id AS submission_id,
                submission.opportunity_id, submission.decision_id,
-               opportunity.vault_id, submission.transaction_signature,
-               submission.submission_state,
+               opportunity.decision_id AS opportunity_decision_id,
+               opportunity.vault_id, decision.vault_id AS decision_vault_id,
+               submission.transaction_signature, submission.submission_state,
+               opportunity.opportunity_state,
+               decision.status::text AS decision_status,
+               COALESCE(opportunity.execution_plan->>'kind', '') AS route_kind,
+               opportunity.optimizer_epoch_id AS opportunity_optimizer_epoch_id,
+               submission.optimizer_epoch_id AS submission_optimizer_epoch_id,
+               opportunity.source_snapshot_id AS opportunity_source_snapshot_id,
+               submission.source_snapshot_id AS submission_source_snapshot_id,
                opportunity.source_reserve, opportunity.target_reserve,
                opportunity.liquidity_mint, opportunity.amount_raw,
+               decision.source_snapshot_id AS decision_source_snapshot_id,
+               decision.source_reserve AS decision_source_reserve,
+               decision.signature AS decision_signature,
+               decision.confirmed_slot AS decision_confirmed_slot,
+               decision.post_snapshot_id AS decision_post_snapshot_id,
+               decision.target_reserve AS decision_target_reserve,
+               decision.liquidity_mint AS decision_liquidity_mint,
+               decision.amount_raw AS decision_amount_raw,
                opportunity.principal_usd_micros,
                opportunity.estimated_edge_bps,
                opportunity.estimated_cost_lamports,
@@ -2017,14 +2086,93 @@ async fn load_movements(
                opportunity.economic_priority,
                submission.compiled_fee_lamports,
                opportunity.execution_plan,
-               submission.created_at, submission.submitted_at,
+               decision.execution_plan AS decision_execution_plan,
+               submission.created_at, submission.submitted_slot,
+               submission.submitted_at,
                submission.confirmed_at, submission.reconciled_at,
                submission.confirmed_slot, submission.reconciled_slot,
+               submission.broadcast_count, submission.last_broadcast_at,
+               submission.last_valid_block_height,
+               submission.expiry_observed_block_height,
+               submission.effect_check_slot,
+               submission.last_status_checked_at,
+               source_snapshot.id AS source_snapshot_id,
+               source_snapshot.vault_id AS source_snapshot_vault_id,
+               source_snapshot.context AS source_snapshot_context,
+               post_snapshot.id AS post_snapshot_id,
+               post_snapshot.vault_id AS post_snapshot_vault_id,
+               post_snapshot.context AS post_snapshot_context,
+               CASE
+                   WHEN opportunity.execution_plan->>'kind' = 'same_mint'
+                       THEN source_snapshot.id
+                   WHEN opportunity.execution_plan->>'kind' = 'idle_vault_deposit'
+                       THEN idle_pre_target.snapshot_id
+                   ELSE NULL
+               END AS pre_target_snapshot_id,
+               CASE
+                   WHEN opportunity.execution_plan->>'kind' = 'same_mint'
+                       THEN source_snapshot.vault_id
+                   WHEN opportunity.execution_plan->>'kind' = 'idle_vault_deposit'
+                       THEN idle_pre_target.snapshot_vault_id
+                   ELSE NULL
+               END AS pre_target_snapshot_vault_id,
+               CASE
+                   WHEN opportunity.execution_plan->>'kind' = 'same_mint'
+                       THEN source_snapshot.context
+                   WHEN opportunity.execution_plan->>'kind' = 'idle_vault_deposit'
+                       THEN idle_pre_target.snapshot_context
+                   ELSE NULL
+               END AS pre_target_snapshot_context,
                post_snapshot.observed_slot AS post_snapshot_observed_slot,
+               post_snapshot.observed_at AS post_snapshot_observed_at,
+               CASE
+                   WHEN opportunity.execution_plan->>'kind' = 'same_mint'
+                       THEN source_snapshot.observed_slot
+                   WHEN opportunity.execution_plan->>'kind' = 'idle_vault_deposit'
+                       THEN idle_pre_target.observed_slot
+                   ELSE NULL
+               END AS pre_target_snapshot_observed_slot,
+               CASE
+                   WHEN opportunity.execution_plan->>'kind' = 'same_mint'
+                       THEN source_snapshot.observed_at
+                   WHEN opportunity.execution_plan->>'kind' = 'idle_vault_deposit'
+                       THEN idle_pre_target.observed_at
+                   ELSE NULL
+               END AS pre_target_snapshot_observed_at,
                pre_source.amount_raw AS pre_source_amount_raw,
                post_source.amount_raw AS post_source_amount_raw,
-               pre_target.amount_raw AS pre_target_amount_raw,
-               post_target.amount_raw AS post_target_amount_raw
+               CASE
+                   WHEN opportunity.execution_plan->>'kind' = 'same_mint'
+                       THEN pre_target.liquidity_mint
+                   WHEN opportunity.execution_plan->>'kind' = 'idle_vault_deposit'
+                       THEN idle_pre_target.liquidity_mint
+                   ELSE NULL
+               END AS pre_target_liquidity_mint,
+               CASE
+                   WHEN opportunity.execution_plan->>'kind' = 'same_mint'
+                       THEN pre_target.has_value
+                   WHEN opportunity.execution_plan->>'kind' = 'idle_vault_deposit'
+                       THEN idle_pre_target.has_value
+                   ELSE NULL
+               END AS pre_target_has_value,
+               CASE
+                   WHEN opportunity.execution_plan->>'kind' = 'same_mint'
+                       THEN pre_target.amount_raw
+                   WHEN opportunity.execution_plan->>'kind' = 'idle_vault_deposit'
+                       THEN idle_pre_target.amount_raw
+                   ELSE NULL
+               END AS pre_target_amount_raw,
+               CASE
+                   WHEN opportunity.execution_plan->>'kind' = 'same_mint'
+                       THEN pre_target.planning_metadata
+                   WHEN opportunity.execution_plan->>'kind' = 'idle_vault_deposit'
+                       THEN idle_pre_target.planning_metadata
+                   ELSE NULL
+               END AS pre_target_planning_metadata,
+               post_target.liquidity_mint AS post_target_liquidity_mint,
+               post_target.has_value AS post_target_has_value,
+               post_target.amount_raw AS post_target_amount_raw,
+               post_target.planning_metadata AS post_target_planning_metadata
         FROM loyal_yield.signed_route_submissions submission
         JOIN loyal_yield.rebalance_opportunities opportunity
           ON opportunity.id = submission.opportunity_id
@@ -2032,6 +2180,30 @@ async fn load_movements(
           ON decision.id = submission.decision_id
         LEFT JOIN loyal_yield.vault_position_snapshots post_snapshot
           ON post_snapshot.id = decision.post_snapshot_id
+        LEFT JOIN loyal_yield.vault_position_snapshots source_snapshot
+          ON source_snapshot.id = decision.source_snapshot_id
+        LEFT JOIN LATERAL (
+            SELECT snapshot.id AS snapshot_id,
+                   snapshot.vault_id AS snapshot_vault_id,
+                   snapshot.context AS snapshot_context,
+                   snapshot.observed_slot, snapshot.observed_at,
+                   target.liquidity_mint, target.amount_raw, target.has_value,
+                   target.planning_metadata
+            FROM loyal_yield.vault_position_snapshots snapshot
+            JOIN loyal_yield.vault_position_snapshot_positions target
+              ON target.snapshot_id = snapshot.id
+             AND target.reserve = opportunity.target_reserve
+            WHERE opportunity.execution_plan->>'kind' = 'idle_vault_deposit'
+              AND snapshot.vault_id = opportunity.vault_id
+              AND snapshot.observed_at <= submission.created_at
+              AND (
+                  submission.confirmed_slot IS NULL
+                  OR snapshot.observed_slot <= submission.confirmed_slot
+              )
+              AND target.liquidity_mint = opportunity.liquidity_mint
+            ORDER BY snapshot.observed_slot DESC, snapshot.id DESC
+            LIMIT 1
+        ) idle_pre_target ON TRUE
         LEFT JOIN loyal_yield.vault_position_snapshot_positions pre_source
           ON pre_source.snapshot_id = decision.source_snapshot_id
          AND pre_source.reserve = decision.source_reserve
@@ -2058,13 +2230,30 @@ async fn load_movements(
                 submission_id: row.try_get("submission_id")?,
                 opportunity_id: row.try_get("opportunity_id")?,
                 decision_id: row.try_get("decision_id")?,
+                opportunity_decision_id: row.try_get("opportunity_decision_id")?,
                 vault_id: row.try_get("vault_id")?,
+                decision_vault_id: row.try_get("decision_vault_id")?,
                 signature: row.try_get("transaction_signature")?,
                 submission_state: row.try_get("submission_state")?,
+                opportunity_state: row.try_get("opportunity_state")?,
+                decision_status: row.try_get("decision_status")?,
+                route_kind: row.try_get("route_kind")?,
+                opportunity_optimizer_epoch_id: row.try_get("opportunity_optimizer_epoch_id")?,
+                submission_optimizer_epoch_id: row.try_get("submission_optimizer_epoch_id")?,
+                opportunity_source_snapshot_id: row.try_get("opportunity_source_snapshot_id")?,
+                submission_source_snapshot_id: row.try_get("submission_source_snapshot_id")?,
                 source_reserve: row.try_get("source_reserve")?,
                 target_reserve: row.try_get("target_reserve")?,
                 liquidity_mint: row.try_get("liquidity_mint")?,
                 amount_raw: row.try_get("amount_raw")?,
+                decision_source_snapshot_id: row.try_get("decision_source_snapshot_id")?,
+                decision_source_reserve: row.try_get("decision_source_reserve")?,
+                decision_signature: row.try_get("decision_signature")?,
+                decision_confirmed_slot: row.try_get("decision_confirmed_slot")?,
+                decision_post_snapshot_id: row.try_get("decision_post_snapshot_id")?,
+                decision_target_reserve: row.try_get("decision_target_reserve")?,
+                decision_liquidity_mint: row.try_get("decision_liquidity_mint")?,
+                decision_amount_raw: row.try_get("decision_amount_raw")?,
                 principal_usd_micros: row.try_get("principal_usd_micros")?,
                 estimated_edge_bps: row.try_get("estimated_edge_bps")?,
                 estimated_cost_lamports: row.try_get("estimated_cost_lamports")?,
@@ -2072,17 +2261,44 @@ async fn load_movements(
                 economic_priority: row.try_get("economic_priority")?,
                 compiled_fee_lamports: row.try_get("compiled_fee_lamports")?,
                 execution_plan: row.try_get("execution_plan")?,
+                decision_execution_plan: row.try_get("decision_execution_plan")?,
                 created_at: row.try_get("created_at")?,
+                submitted_slot: row.try_get("submitted_slot")?,
                 submitted_at: row.try_get("submitted_at")?,
                 confirmed_at: row.try_get("confirmed_at")?,
                 reconciled_at: row.try_get("reconciled_at")?,
                 confirmed_slot: row.try_get("confirmed_slot")?,
                 reconciled_slot: row.try_get("reconciled_slot")?,
+                broadcast_count: row.try_get("broadcast_count")?,
+                last_broadcast_at: row.try_get("last_broadcast_at")?,
+                last_valid_block_height: row.try_get("last_valid_block_height")?,
+                expiry_observed_block_height: row.try_get("expiry_observed_block_height")?,
+                effect_check_slot: row.try_get("effect_check_slot")?,
+                last_status_checked_at: row.try_get("last_status_checked_at")?,
+                source_snapshot_id: row.try_get("source_snapshot_id")?,
+                source_snapshot_vault_id: row.try_get("source_snapshot_vault_id")?,
+                source_snapshot_context: row.try_get("source_snapshot_context")?,
+                post_snapshot_id: row.try_get("post_snapshot_id")?,
+                post_snapshot_vault_id: row.try_get("post_snapshot_vault_id")?,
+                post_snapshot_context: row.try_get("post_snapshot_context")?,
+                pre_target_snapshot_id: row.try_get("pre_target_snapshot_id")?,
+                pre_target_snapshot_vault_id: row.try_get("pre_target_snapshot_vault_id")?,
+                pre_target_snapshot_context: row.try_get("pre_target_snapshot_context")?,
+                pre_target_planning_metadata: row.try_get("pre_target_planning_metadata")?,
                 post_snapshot_observed_slot: row.try_get("post_snapshot_observed_slot")?,
+                post_snapshot_observed_at: row.try_get("post_snapshot_observed_at")?,
+                pre_target_snapshot_observed_slot: row
+                    .try_get("pre_target_snapshot_observed_slot")?,
+                pre_target_snapshot_observed_at: row.try_get("pre_target_snapshot_observed_at")?,
                 pre_source_amount_raw: row.try_get("pre_source_amount_raw")?,
                 post_source_amount_raw: row.try_get("post_source_amount_raw")?,
+                pre_target_liquidity_mint: row.try_get("pre_target_liquidity_mint")?,
+                pre_target_has_value: row.try_get("pre_target_has_value")?,
                 pre_target_amount_raw: row.try_get("pre_target_amount_raw")?,
+                post_target_liquidity_mint: row.try_get("post_target_liquidity_mint")?,
+                post_target_has_value: row.try_get("post_target_has_value")?,
                 post_target_amount_raw: row.try_get("post_target_amount_raw")?,
+                post_target_planning_metadata: row.try_get("post_target_planning_metadata")?,
             })
         })
         .collect()
@@ -2091,7 +2307,7 @@ async fn load_movements(
 async fn finalized_signatures(
     rpc_url: Option<&str>,
     movements: &[MovementRow],
-) -> Result<BTreeMap<String, SignatureFinality>, ()> {
+) -> Result<FinalityEvidence, ()> {
     let rpc_url = rpc_url.filter(|value| !value.trim().is_empty()).ok_or(())?;
     let client = Client::new();
     let mut finality = BTreeMap::new();
@@ -2126,6 +2342,7 @@ async fn finalized_signatures(
             finality.insert(
                 movement.signature.clone(),
                 SignatureFinality {
+                    found: !status.is_null(),
                     finalized: status.get("confirmationStatus").and_then(Value::as_str)
                         == Some("finalized"),
                     successful: !status.is_null() && status.get("err").is_some_and(Value::is_null),
@@ -2134,35 +2351,301 @@ async fn finalized_signatures(
             );
         }
     }
-    Ok(finality)
+    let response = client
+        .post(rpc_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": "finalized-block-height",
+            "method": "getBlockHeight",
+            "params": [{"commitment": "finalized"}],
+        }))
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if !response.status().is_success() {
+        return Err(());
+    }
+    let finalized_block_height = response
+        .json::<Value>()
+        .await
+        .map_err(|_| ())?
+        .pointer("/result")
+        .and_then(Value::as_i64)
+        .ok_or(())?;
+    let response = client
+        .post(rpc_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": "finalized-slot",
+            "method": "getSlot",
+            "params": [{"commitment": "finalized"}],
+        }))
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if !response.status().is_success() {
+        return Err(());
+    }
+    let finalized_slot = response
+        .json::<Value>()
+        .await
+        .map_err(|_| ())?
+        .pointer("/result")
+        .and_then(Value::as_i64)
+        .ok_or(())?;
+    Ok(FinalityEvidence {
+        statuses: finality,
+        finalized_block_height,
+        finalized_slot,
+    })
 }
 
 fn execution_i64(plan: &Value, key: &str) -> Option<i64> {
-    plan.get(key).and_then(Value::as_i64)
+    plan.get(key).and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+    })
+}
+
+fn execution_string<'a>(plan: &'a Value, key: &str) -> Option<&'a str> {
+    plan.get(key).and_then(Value::as_str)
+}
+
+fn execution_timestamp(plan: &Value, key: &str) -> Option<DateTime<Utc>> {
+    execution_string(plan, key)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+}
+
+fn chain_snapshot_context(context: Option<&Value>) -> bool {
+    matches!(
+        context
+            .and_then(|context| context.get("kind"))
+            .and_then(Value::as_str),
+        Some("fleet_position_sweep" | "same_mint_chain_reconcile_preview")
+    )
+}
+
+fn chain_position_metadata(metadata: Option<&Value>) -> bool {
+    metadata
+        .and_then(|metadata| metadata.get("source"))
+        .and_then(Value::as_str)
+        == Some("chain_reconcile_preview")
 }
 
 fn movement_json(
     movement: &MovementRow,
     finality: Option<&SignatureFinality>,
-) -> (Value, bool, bool) {
-    let post_slot_fenced = movement
-        .confirmed_slot
+    finalized_block_height: Option<i64>,
+    finalized_slot: Option<i64>,
+) -> (Value, bool, bool, bool) {
+    let rpc_slot = finality.and_then(|status| status.slot);
+    let source_snapshot_chain_proven =
+        chain_snapshot_context(movement.source_snapshot_context.as_ref());
+    let pre_target_snapshot_chain_proven =
+        chain_snapshot_context(movement.pre_target_snapshot_context.as_ref())
+            && chain_position_metadata(movement.pre_target_planning_metadata.as_ref());
+    let post_snapshot_chain_proven =
+        chain_snapshot_context(movement.post_snapshot_context.as_ref())
+            && chain_position_metadata(movement.post_target_planning_metadata.as_ref());
+    let post_slot_fenced = rpc_slot
         .zip(movement.post_snapshot_observed_slot)
-        .is_some_and(|(confirmed, observed)| observed >= confirmed);
-    let reserve_effect = movement.source_reserve.is_some()
+        .is_some_and(|(rpc, observed)| observed >= rpc);
+    let target_increased = movement.post_target_amount_raw.unwrap_or_default()
+        > movement.pre_target_amount_raw.unwrap_or_default();
+    let reserve_effect = movement.route_kind == "same_mint"
+        && movement.source_reserve.is_some()
+        && source_snapshot_chain_proven
+        && pre_target_snapshot_chain_proven
+        && post_snapshot_chain_proven
         && movement
             .pre_source_amount_raw
             .zip(movement.post_source_amount_raw)
             .is_some_and(|(before, after)| after < before)
-        && movement.post_target_amount_raw.unwrap_or_default()
-            > movement.pre_target_amount_raw.unwrap_or_default();
+        && target_increased;
+    let decision_route_kind =
+        execution_string(&movement.decision_execution_plan, "kind").unwrap_or_default();
+    let decision_source_kind = execution_string(&movement.decision_execution_plan, "source_kind");
+    let planner_source_kind = execution_string(&movement.execution_plan, "source_kind");
+    let same_mint_plan_identity_exact = decision_route_kind == "same_mint"
+        && execution_string(&movement.execution_plan, "kind") == Some("same_mint")
+        && execution_string(&movement.decision_execution_plan, "source_reserve")
+            == movement.decision_source_reserve.as_deref()
+        && execution_string(&movement.execution_plan, "source_reserve")
+            == movement.source_reserve.as_deref()
+        && execution_string(&movement.decision_execution_plan, "target_reserve")
+            == Some(movement.target_reserve.as_str())
+        && execution_string(&movement.execution_plan, "target_reserve")
+            == Some(movement.target_reserve.as_str())
+        && execution_string(&movement.decision_execution_plan, "liquidity_mint")
+            == Some(movement.liquidity_mint.as_str())
+        && execution_string(&movement.execution_plan, "liquidity_mint")
+            == Some(movement.liquidity_mint.as_str())
+        && execution_i64(&movement.decision_execution_plan, "amount_raw")
+            == Some(movement.amount_raw)
+        && execution_i64(&movement.execution_plan, "amount_raw") == Some(movement.amount_raw);
+    let idle_token_account =
+        execution_string(&movement.decision_execution_plan, "idle_token_account");
+    let planner_idle_token_account =
+        execution_string(&movement.execution_plan, "idle_token_account");
+    let pre_idle_source_amount_raw = execution_i64(
+        &movement.decision_execution_plan,
+        "idle_vault_liquidity_amount_raw",
+    );
+    let planner_pre_idle_source_amount_raw =
+        execution_i64(&movement.execution_plan, "idle_vault_liquidity_amount_raw");
+    let pre_idle_source_observed_slot =
+        execution_i64(&movement.decision_execution_plan, "idle_observed_slot")
+            .or_else(|| execution_i64(&movement.decision_execution_plan, "observed_slot"));
+    let planner_pre_idle_source_observed_slot =
+        execution_i64(&movement.execution_plan, "source_observed_slot")
+            .or_else(|| execution_i64(&movement.execution_plan, "idle_observed_slot"));
+    let pre_idle_source_observed_at =
+        execution_timestamp(&movement.decision_execution_plan, "idle_observed_at")
+            .or_else(|| execution_timestamp(&movement.decision_execution_plan, "observed_at"));
+    let planner_pre_idle_source_observed_at =
+        execution_timestamp(&movement.execution_plan, "source_observed_at")
+            .or_else(|| execution_timestamp(&movement.execution_plan, "idle_observed_at"));
+    let post_target_metadata = movement
+        .post_target_planning_metadata
+        .as_ref()
+        .unwrap_or(&Value::Null);
+    let post_idle_source_token_account =
+        execution_string(post_target_metadata, "vault_liquidity_ata");
+    let post_idle_source_amount_raw =
+        execution_i64(post_target_metadata, "idle_vault_liquidity_amount_raw")
+            .or_else(|| execution_i64(post_target_metadata, "vault_liquidity_amount_raw"));
+    let idle_plan_identity_exact = decision_route_kind == "idle_vault_deposit"
+        && execution_string(&movement.execution_plan, "kind") == Some("idle_vault_deposit")
+        && decision_source_kind == Some("idle_vault")
+        && planner_source_kind == Some("idle_vault_usdc")
+        && movement.source_reserve.is_none()
+        && movement.opportunity_source_snapshot_id.is_none()
+        && movement.decision_source_reserve.is_none()
+        && movement.decision_source_snapshot_id.is_none()
+        && movement.decision_target_reserve == movement.target_reserve
+        && movement.decision_liquidity_mint == movement.liquidity_mint
+        && movement.decision_amount_raw == movement.amount_raw
+        && movement
+            .decision_execution_plan
+            .get("source_reserve")
+            .is_some_and(Value::is_null)
+        && movement
+            .execution_plan
+            .get("source_reserve")
+            .is_some_and(Value::is_null)
+        && execution_string(&movement.decision_execution_plan, "target_reserve")
+            == Some(movement.target_reserve.as_str())
+        && execution_string(&movement.decision_execution_plan, "liquidity_mint")
+            == Some(movement.liquidity_mint.as_str())
+        && execution_i64(&movement.decision_execution_plan, "amount_raw")
+            == Some(movement.amount_raw)
+        && execution_string(&movement.execution_plan, "target_reserve")
+            == Some(movement.target_reserve.as_str())
+        && execution_string(&movement.execution_plan, "liquidity_mint")
+            == Some(movement.liquidity_mint.as_str())
+        && execution_i64(&movement.execution_plan, "amount_raw") == Some(movement.amount_raw);
+    let idle_plan_evidence_exact = idle_plan_identity_exact
+        && idle_token_account == planner_idle_token_account
+        && pre_idle_source_amount_raw == planner_pre_idle_source_amount_raw
+        && pre_idle_source_observed_slot == planner_pre_idle_source_observed_slot
+        && pre_idle_source_observed_at == planner_pre_idle_source_observed_at;
+    let reciprocal_identity_exact = movement.opportunity_decision_id == Some(movement.decision_id)
+        && movement.decision_vault_id == movement.vault_id
+        && movement.opportunity_optimizer_epoch_id == movement.submission_optimizer_epoch_id;
+    let snapshot_identity_exact = match movement.route_kind.as_str() {
+        "same_mint" => {
+            movement
+                .opportunity_source_snapshot_id
+                .is_some_and(|id| id > 0)
+                && movement.decision_source_snapshot_id == movement.opportunity_source_snapshot_id
+                && movement.submission_source_snapshot_id == movement.opportunity_source_snapshot_id
+                && movement.source_snapshot_id == movement.opportunity_source_snapshot_id
+                && movement.source_snapshot_vault_id == Some(movement.vault_id)
+                && source_snapshot_chain_proven
+                && movement.pre_target_snapshot_id == movement.opportunity_source_snapshot_id
+                && movement.pre_target_snapshot_vault_id == Some(movement.vault_id)
+                && pre_target_snapshot_chain_proven
+        }
+        "idle_vault_deposit" => {
+            movement.opportunity_source_snapshot_id.is_none()
+                && movement.decision_source_snapshot_id.is_none()
+                && movement.submission_source_snapshot_id.is_none()
+                && movement.source_snapshot_id.is_none()
+                && movement.source_snapshot_vault_id.is_none()
+                && movement.pre_target_snapshot_id.is_some_and(|id| id > 0)
+                && movement.pre_target_snapshot_vault_id == Some(movement.vault_id)
+                && pre_target_snapshot_chain_proven
+        }
+        _ => false,
+    };
+    let route_plan_identity_exact = match movement.route_kind.as_str() {
+        "same_mint" => {
+            movement.source_reserve.is_some()
+                && movement.source_reserve.as_deref() != Some(movement.target_reserve.as_str())
+                && movement.decision_source_reserve == movement.source_reserve
+                && same_mint_plan_identity_exact
+        }
+        "idle_vault_deposit" => idle_plan_identity_exact,
+        _ => false,
+    };
+    let route_identity_exact = reciprocal_identity_exact
+        && snapshot_identity_exact
+        && route_plan_identity_exact
+        && movement.decision_target_reserve == movement.target_reserve
+        && movement.decision_liquidity_mint == movement.liquidity_mint
+        && movement.decision_amount_raw == movement.amount_raw;
+    let idle_source_decreased = pre_idle_source_amount_raw
+        .zip(post_idle_source_amount_raw)
+        .is_some_and(|(before, after)| {
+            before == movement.amount_raw
+                && after >= 0
+                && after <= before.saturating_sub(movement.amount_raw)
+        });
+    let idle_effect = movement.route_kind == "idle_vault_deposit"
+        && movement.source_reserve.is_none()
+        && idle_plan_evidence_exact
+        && post_snapshot_chain_proven
+        && idle_token_account.is_some()
+        && idle_token_account == post_idle_source_token_account
+        && pre_idle_source_observed_slot
+            .zip(rpc_slot)
+            .is_some_and(|(observed, rpc)| observed > 0 && observed <= rpc)
+        && pre_idle_source_observed_at.is_some_and(|observed| observed <= movement.created_at)
+        && movement
+            .pre_target_snapshot_observed_slot
+            .zip(rpc_slot)
+            .is_some_and(|(observed, rpc)| observed > 0 && observed <= rpc)
+        && movement
+            .pre_target_snapshot_observed_at
+            .is_some_and(|observed| observed <= movement.created_at)
+        && movement
+            .post_snapshot_observed_slot
+            .zip(rpc_slot)
+            .is_some_and(|(observed, rpc)| observed >= rpc)
+        && movement.post_snapshot_observed_at.is_some()
+        && idle_source_decreased
+        && movement.pre_target_liquidity_mint.as_deref() == Some(movement.liquidity_mint.as_str())
+        && movement.post_target_liquidity_mint.as_deref() == Some(movement.liquidity_mint.as_str())
+        && movement.pre_target_amount_raw.is_some()
+        && movement.post_target_amount_raw.is_some()
+        && movement.pre_target_has_value == movement.pre_target_amount_raw.map(|amount| amount > 0)
+        && movement.post_target_has_value == Some(true)
+        && target_increased;
+    let route_effect = match movement.route_kind.as_str() {
+        "same_mint" => reserve_effect,
+        "idle_vault_deposit" => idle_effect,
+        _ => false,
+    };
     let finalized_success = finality.is_some_and(|status| {
-        status.finalized
+        status.found
+            && status.finalized
             && status.successful
             && status
                 .slot
                 .zip(movement.confirmed_slot)
-                .is_some_and(|(rpc_slot, confirmed_slot)| rpc_slot >= confirmed_slot)
+                .is_some_and(|(rpc_slot, confirmed_slot)| rpc_slot == confirmed_slot)
     });
     let conservative_sol_price = execution_i64(
         &movement.execution_plan,
@@ -2189,26 +2672,163 @@ fn movement_json(
         && movement.compiled_fee_lamports <= movement.estimated_cost_lamports
         && fee_fraction_cap > 0
         && fee_fraction_ppm.is_some_and(|fraction| fraction <= fee_fraction_cap);
+    let reconciled_lifecycle_ordered = movement
+        .submitted_at
+        .zip(movement.confirmed_at)
+        .zip(movement.reconciled_at)
+        .is_some_and(|((submitted, confirmed), reconciled)| {
+            movement.created_at <= submitted && submitted <= confirmed && confirmed <= reconciled
+        });
+    let reconciled_slots_ordered = movement
+        .submitted_slot
+        .zip(rpc_slot)
+        .zip(movement.reconciled_slot)
+        .is_some_and(|((submitted, rpc), reconciled)| {
+            submitted > 0 && submitted <= rpc && reconciled >= rpc
+        });
+    let post_snapshot_identity_exact = movement.post_snapshot_id.is_some_and(|id| id > 0)
+        && movement.post_snapshot_vault_id == Some(movement.vault_id)
+        && movement.decision_post_snapshot_id == movement.post_snapshot_id
+        && post_snapshot_chain_proven;
+    let post_snapshot_time_ordered = movement
+        .post_snapshot_observed_at
+        .zip(movement.reconciled_at)
+        .is_some_and(|(observed, reconciled)| {
+            movement.created_at <= observed && observed <= reconciled
+        });
+    let broadcast_evidence_ordered = movement.broadcast_count > 0
+        && movement
+            .last_broadcast_at
+            .zip(movement.submitted_at)
+            .is_some_and(|(broadcast, submitted)| {
+                movement.created_at <= broadcast && broadcast <= submitted
+            });
     let effect_pass = movement.submission_state == "reconciled"
+        && movement.opportunity_state == "completed"
+        && movement.decision_status == "confirmed"
+        && movement.decision_signature.as_deref() == Some(movement.signature.as_str())
+        && movement.decision_confirmed_slot == movement.confirmed_slot
+        && route_identity_exact
+        && post_snapshot_identity_exact
+        && reconciled_lifecycle_ordered
+        && reconciled_slots_ordered
+        && post_snapshot_time_ordered
+        && broadcast_evidence_ordered
         && movement.reconciled_at.is_some()
         && movement
             .reconciled_slot
-            .zip(movement.confirmed_slot)
-            .is_some_and(|(reconciled, confirmed)| reconciled >= confirmed)
+            .zip(rpc_slot)
+            .is_some_and(|(reconciled, rpc)| reconciled >= rpc)
         && post_slot_fenced
-        && reserve_effect;
+        && route_effect;
+    let failed_lifecycle_ordered = movement
+        .submitted_at
+        .zip(movement.confirmed_at)
+        .zip(movement.last_status_checked_at)
+        .is_some_and(|((submitted, confirmed), checked)| {
+            movement.created_at <= submitted && submitted <= confirmed && confirmed <= checked
+        });
+    let failed_terminal_safe = movement.opportunity_state == "failed"
+        && movement.decision_status == "failed"
+        && movement.decision_signature.as_deref() == Some(movement.signature.as_str())
+        && route_identity_exact
+        && broadcast_evidence_ordered
+        && failed_lifecycle_ordered
+        && movement
+            .submitted_slot
+            .zip(rpc_slot)
+            .is_some_and(|(submitted, rpc)| submitted > 0 && submitted <= rpc)
+        && finality.is_some_and(|status| {
+            status.found
+                && status.finalized
+                && !status.successful
+                && status.slot == movement.confirmed_slot
+        });
+    let expired_lifecycle_ordered = movement.last_status_checked_at.is_some_and(|checked| {
+        movement.created_at <= checked
+            && movement
+                .last_broadcast_at
+                .is_none_or(|broadcast| movement.created_at <= broadcast && broadcast <= checked)
+    });
+    let expired_height_proven = finalized_block_height
+        .is_some_and(|height| height > movement.last_valid_block_height)
+        && match movement.broadcast_count {
+            0 => {
+                movement.last_broadcast_at.is_none()
+                    && movement.expiry_observed_block_height.is_none()
+                    && movement.effect_check_slot.is_none()
+            }
+            count if count > 0 => {
+                let pre_route_slot = movement
+                    .pre_target_snapshot_observed_slot
+                    .into_iter()
+                    .chain(
+                        execution_i64(&movement.decision_execution_plan, "idle_observed_slot")
+                            .or_else(|| {
+                                execution_i64(&movement.decision_execution_plan, "observed_slot")
+                            }),
+                    )
+                    .max()
+                    .unwrap_or_default();
+                movement.last_broadcast_at.is_some()
+                    && movement.expiry_observed_block_height.is_some_and(|height| {
+                        height > movement.last_valid_block_height
+                            && finalized_block_height.is_some_and(|current| height <= current)
+                    })
+                    && movement.effect_check_slot.is_some_and(|slot| {
+                        slot > pre_route_slot
+                            && finalized_slot.is_some_and(|current| slot <= current)
+                    })
+            }
+            _ => false,
+        };
+    let expired_terminal_safe = movement.opportunity_state == "failed"
+        && movement.decision_status == "failed"
+        && route_identity_exact
+        && expired_lifecycle_ordered
+        && expired_height_proven
+        && finality.is_some_and(|status| !status.found);
+    let terminal_outcome_safe = match movement.submission_state.as_str() {
+        "reconciled" => effect_pass && finalized_success,
+        "failed" => failed_terminal_safe,
+        "expired" => expired_terminal_safe,
+        _ => false,
+    };
     (
         json!({
             "submissionId": movement.submission_id,
             "opportunityId": movement.opportunity_id,
             "decisionId": movement.decision_id,
+            "opportunityDecisionId": movement.opportunity_decision_id,
             "vaultId": movement.vault_id,
+            "decisionVaultId": movement.decision_vault_id,
             "signature": movement.signature,
             "submissionState": movement.submission_state,
+            "opportunityState": movement.opportunity_state,
+            "decisionStatus": movement.decision_status,
+            "routeKind": movement.route_kind,
+            "decisionRouteKind": decision_route_kind,
+            "decisionSourceKind": decision_source_kind,
+            "plannerSourceKind": planner_source_kind,
+            "opportunityOptimizerEpochId": movement.opportunity_optimizer_epoch_id,
+            "submissionOptimizerEpochId": movement.submission_optimizer_epoch_id,
+            "opportunitySourceSnapshotId": movement.opportunity_source_snapshot_id,
+            "submissionSourceSnapshotId": movement.submission_source_snapshot_id,
             "sourceReserve": movement.source_reserve,
+            "decisionSourceSnapshotId": movement.decision_source_snapshot_id,
+            "decisionSourceReserve": movement.decision_source_reserve,
+            "decisionSignature": movement.decision_signature,
+            "decisionConfirmedSlot": movement.decision_confirmed_slot,
+            "decisionPostSnapshotId": movement.decision_post_snapshot_id,
             "targetReserve": movement.target_reserve,
+            "decisionTargetReserve": movement.decision_target_reserve,
             "liquidityMint": movement.liquidity_mint,
+            "decisionLiquidityMint": movement.decision_liquidity_mint,
             "amountRaw": movement.amount_raw,
+            "decisionAmountRaw": movement.decision_amount_raw,
+            "plannerExecutionPlan": movement.execution_plan,
+            "decisionExecutionPlan": movement.decision_execution_plan,
+            "routeIdentityExact": route_identity_exact,
             "principalUsdMicros": movement.principal_usd_micros,
             "estimatedEdgeBps": movement.estimated_edge_bps,
             "expectedNetGainUsdMicros": movement.expected_net_gain_usd_micros,
@@ -2221,25 +2841,69 @@ fn movement_json(
             "feeFractionCapPpm": fee_fraction_cap,
             "economicPass": economic_pass,
             "createdAt": movement.created_at,
+            "submittedSlot": movement.submitted_slot,
             "submittedAt": movement.submitted_at,
             "confirmedAt": movement.confirmed_at,
             "reconciledAt": movement.reconciled_at,
             "confirmedSlot": movement.confirmed_slot,
             "reconciledSlot": movement.reconciled_slot,
+            "broadcastCount": movement.broadcast_count,
+            "lastBroadcastAt": movement.last_broadcast_at,
+            "lastValidBlockHeight": movement.last_valid_block_height,
+            "expiryObservedBlockHeight": movement.expiry_observed_block_height,
+            "effectCheckSlot": movement.effect_check_slot,
+            "lastStatusCheckedAt": movement.last_status_checked_at,
+            "sourceSnapshotId": movement.source_snapshot_id,
+            "sourceSnapshotVaultId": movement.source_snapshot_vault_id,
+            "sourceSnapshotContext": movement.source_snapshot_context,
+            "postSnapshotId": movement.post_snapshot_id,
+            "postSnapshotVaultId": movement.post_snapshot_vault_id,
+            "postSnapshotContext": movement.post_snapshot_context,
+            "preTargetSnapshotId": movement.pre_target_snapshot_id,
+            "preTargetSnapshotVaultId": movement.pre_target_snapshot_vault_id,
+            "preTargetSnapshotContext": movement.pre_target_snapshot_context,
+            "preTargetPlanningMetadata": movement.pre_target_planning_metadata,
             "postSnapshotObservedSlot": movement.post_snapshot_observed_slot,
+            "postSnapshotObservedAt": movement.post_snapshot_observed_at,
             "postSnapshotAtOrAboveConfirmation": post_slot_fenced,
+            "preTargetSnapshotObservedSlot": movement.pre_target_snapshot_observed_slot,
+            "preTargetSnapshotObservedAt": movement.pre_target_snapshot_observed_at,
             "preSourceAmountRaw": movement.pre_source_amount_raw,
             "postSourceAmountRaw": movement.post_source_amount_raw,
+            "preTargetLiquidityMint": movement.pre_target_liquidity_mint,
+            "preTargetHasValue": movement.pre_target_has_value,
             "preTargetAmountRaw": movement.pre_target_amount_raw,
+            "postTargetLiquidityMint": movement.post_target_liquidity_mint,
+            "postTargetHasValue": movement.post_target_has_value,
             "postTargetAmountRaw": movement.post_target_amount_raw,
+            "postTargetPlanningMetadata": movement.post_target_planning_metadata,
             "sourceDecreasedAndTargetIncreased": reserve_effect,
+            "idleTokenAccount": idle_token_account,
+            "plannerIdleTokenAccount": planner_idle_token_account,
+            "preIdleSourceAmountRaw": pre_idle_source_amount_raw,
+            "plannerPreIdleSourceAmountRaw": planner_pre_idle_source_amount_raw,
+            "preIdleSourceObservedSlot": pre_idle_source_observed_slot,
+            "plannerPreIdleSourceObservedSlot": planner_pre_idle_source_observed_slot,
+            "preIdleSourceObservedAt": pre_idle_source_observed_at,
+            "plannerPreIdleSourceObservedAt": planner_pre_idle_source_observed_at,
+            "idlePlanIdentityExact": idle_plan_identity_exact,
+            "idlePlanEvidenceExact": idle_plan_evidence_exact,
+            "postIdleSourceTokenAccount": post_idle_source_token_account,
+            "postIdleSourceAmountRaw": post_idle_source_amount_raw,
+            "postIdleSourceObservedSlot": movement.post_snapshot_observed_slot,
+            "postIdleSourceObservedAt": movement.post_snapshot_observed_at,
+            "idleSourceDecreasedAndTargetIncreased": idle_effect,
+            "routeEffectProven": route_effect,
+            "rpcFound": finality.map(|status| status.found),
             "rpcFinalized": finality.map(|status| status.finalized),
             "rpcSuccessful": finality.map(|status| status.successful),
             "rpcSlot": finality.and_then(|status| status.slot),
             "finalizedSuccess": finalized_success,
+            "terminalOutcomeSafe": terminal_outcome_safe,
         }),
         effect_pass && finalized_success,
         economic_pass,
+        terminal_outcome_safe,
     )
 }
 
@@ -2458,9 +3122,12 @@ async fn collect_movement_evidence(
     let rpc_url = env::var("SOLANA_RPC_URL").ok();
     let finality = finalized_signatures(rpc_url.as_deref(), &movements).await;
     let mut safe_rows = Vec::new();
+    let mut reconciled_movement_count = 0i64;
     let mut reconciled_reserve_count = 0i64;
+    let mut reconciled_idle_deposit_count = 0i64;
     let mut fully_proven_count = 0i64;
     let mut economic_failure_count = 0i64;
+    let mut unsafe_terminal_outcome_count = 0i64;
     let mut nonterminal_count = 0i64;
     let mut ambiguous_count = 0i64;
     let mut main_outflow_raw = 0i128;
@@ -2479,35 +3146,61 @@ async fn collect_movement_evidence(
         if movement.submission_state == "effect_ambiguous" {
             ambiguous_count += 1;
         }
-        if movement.submission_state == "reconciled" && movement.source_reserve.is_some() {
-            reconciled_reserve_count += 1;
+        if movement.submission_state == "reconciled" {
+            reconciled_movement_count += 1;
+            match movement.route_kind.as_str() {
+                "same_mint" if movement.source_reserve.is_some() => {
+                    reconciled_reserve_count += 1;
+                }
+                "idle_vault_deposit" if movement.source_reserve.is_none() => {
+                    reconciled_idle_deposit_count += 1;
+                }
+                _ => {}
+            }
         }
         if movement.submission_state == "reconciled" && movement.liquidity_mint == usdc_mint {
-            if movement.source_reserve.as_deref() == Some(main_reserve.as_str()) {
+            if movement.route_kind == "same_mint"
+                && movement.source_reserve.as_deref() == Some(main_reserve.as_str())
+            {
                 main_outflow_raw += i128::from(movement.amount_raw);
                 if baseline_vaults.contains(&movement.vault_id) {
                     baseline_main_outflow_raw += i128::from(movement.amount_raw);
                 }
             }
-            if movement.target_reserve == main_reserve {
+            if matches!(
+                movement.route_kind.as_str(),
+                "same_mint" | "idle_vault_deposit"
+            ) && movement.target_reserve == main_reserve
+            {
                 main_inflow_raw += i128::from(movement.amount_raw);
                 if baseline_vaults.contains(&movement.vault_id) {
                     baseline_main_inflow_raw += i128::from(movement.amount_raw);
                 }
             }
         }
-        let (safe, fully_proven, economic_pass) = movement_json(
+        let (safe, fully_proven, economic_pass, terminal_outcome_safe) = movement_json(
             movement,
             finality
                 .as_ref()
                 .ok()
-                .and_then(|statuses| statuses.get(&movement.signature)),
+                .and_then(|evidence| evidence.statuses.get(&movement.signature)),
+            finality
+                .as_ref()
+                .ok()
+                .map(|evidence| evidence.finalized_block_height),
+            finality
+                .as_ref()
+                .ok()
+                .map(|evidence| evidence.finalized_slot),
         );
         if fully_proven {
             fully_proven_count += 1;
         }
         if !economic_pass {
             economic_failure_count += 1;
+        }
+        if !terminal_outcome_safe {
+            unsafe_terminal_outcome_count += 1;
         }
         safe_rows.push(safe);
     }
@@ -2538,11 +3231,15 @@ async fn collect_movement_evidence(
             && reduction.saturating_mul(100)
                 >= baseline_confirmed_main_net_outflow.saturating_mul(95)
     });
-    let rpc_available = finality.is_ok();
+    let rpc_available = finality
+        .as_ref()
+        .is_ok_and(|evidence| evidence.finalized_block_height > 0 && evidence.finalized_slot > 0);
     let pass = rpc_available
         && reconciled_reserve_count > 0
-        && fully_proven_count == reconciled_reserve_count
+        && reconciled_reserve_count + reconciled_idle_deposit_count == reconciled_movement_count
+        && fully_proven_count == reconciled_movement_count
         && economic_failure_count == 0
+        && unsafe_terminal_outcome_count == 0
         && nonterminal_count == 0
         && ambiguous_count == 0
         && database_deadlock_count == 0
@@ -2554,12 +3251,23 @@ async fn collect_movement_evidence(
             "cutoverAt": cutover_at,
             "rpcFinalityAvailable": rpc_available,
             "rpcReadError": finality.as_ref().err().map(|_| "finalized RPC evidence unavailable"),
+            "rpcFinalizedBlockHeight": finality
+                .as_ref()
+                .ok()
+                .map(|evidence| evidence.finalized_block_height),
+            "rpcFinalizedSlot": finality
+                .as_ref()
+                .ok()
+                .map(|evidence| evidence.finalized_slot),
             "submissionCount": movements.len(),
             "nonterminalSubmissionCount": nonterminal_count,
             "effectAmbiguousCount": ambiguous_count,
+            "reconciledMovementCount": reconciled_movement_count,
             "reconciledReserveMovementCount": reconciled_reserve_count,
+            "reconciledIdleDepositCount": reconciled_idle_deposit_count,
             "fullyFinalizedAndReconciledEffectCount": fully_proven_count,
             "economicFailureCount": economic_failure_count,
+            "unsafeTerminalOutcomeCount": unsafe_terminal_outcome_count,
             "databaseDeadlockCount": database_deadlock_count,
             "duplicateMovementCount": duplicate_movement_count,
             "mainUsdc": {

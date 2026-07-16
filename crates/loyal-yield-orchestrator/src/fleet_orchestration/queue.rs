@@ -2839,6 +2839,14 @@ impl NeonSqlClient {
             ), pending AS (
                 UPDATE loyal_yield.signed_route_submissions submission
                 SET submission_state = 'reconciliation_pending',
+                    submitted_slot = COALESCE(
+                        submission.submitted_slot, eligible.confirmed_slot
+                    ),
+                    submitted_at = COALESCE(
+                        submission.submitted_at,
+                        submission.last_broadcast_at,
+                        $6
+                    ),
                     confirmed_slot = COALESCE(
                         submission.confirmed_slot, eligible.confirmed_slot
                     ),
@@ -3598,6 +3606,8 @@ impl NeonSqlClient {
                     r#"
                     UPDATE loyal_yield.signed_route_submissions
                     SET submission_state = 'confirmed',
+                        submitted_slot = COALESCE(submitted_slot, $5),
+                        submitted_at = COALESCE(submitted_at, last_broadcast_at, $4),
                         confirmed_slot = COALESCE(confirmed_slot, $5),
                         confirmed_at = COALESCE(confirmed_at, $4),
                         last_status_checked_at = $4,
@@ -3860,6 +3870,18 @@ impl NeonSqlClient {
                     r#"
                     UPDATE loyal_yield.signed_route_submissions
                     SET submission_state = 'failed',
+                        submitted_slot = CASE
+                            WHEN $6 IS NOT NULL THEN COALESCE(submitted_slot, $6)
+                            ELSE submitted_slot
+                        END,
+                        submitted_at = CASE
+                            WHEN $6 IS NOT NULL THEN COALESCE(
+                                submitted_at,
+                                last_broadcast_at,
+                                $4
+                            )
+                            ELSE submitted_at
+                        END,
                         confirmed_slot = COALESCE(confirmed_slot, $6),
                         confirmed_at = CASE
                             WHEN $6 IS NOT NULL THEN COALESCE(confirmed_at, $4)

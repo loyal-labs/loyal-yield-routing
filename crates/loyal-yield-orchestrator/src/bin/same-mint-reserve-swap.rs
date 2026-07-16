@@ -144,6 +144,7 @@ const KAMINO_WITHDRAW_ROUTE_STEP: &str =
 const KAMINO_DEPOSIT_ROUTE_STEP: &str =
     "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2";
 const KAMINO_INIT_OBLIGATION_ROUTE_STEP: &str = "kamino_init_obligation";
+const SYSTEM_TRANSFER_VAULT_RENT_TOP_UP_ROUTE_STEP: &str = "system_transfer_vault_rent_top_up";
 const KAMINO_INIT_OBLIGATION_FARM_ROUTE_STEP: &str = "kamino_init_obligation_farms_for_reserve";
 const KAMINO_REFRESH_OBLIGATION_ROUTE_STEP: &str = "kamino_refresh_obligation";
 const KAMINO_STABLE_UNIVERSE_PRESET: &str = "kamino_stable";
@@ -151,6 +152,7 @@ const SAFE_RISK_PROFILE: &str = "safe";
 const LOOKUP_TABLE_RESOLVER_EXACT_SEARCH_LIMIT: usize = 16;
 const LOOKUP_TABLE_ROUTE_LEASE_MINUTES: i64 = 10;
 const LOOKUP_TABLE_PREPARED_LEASE_MINUTES: i64 = 5;
+const MAX_KAMINO_OBLIGATION_RENT_LAMPORTS: u64 = 25_000_000;
 const DEFAULT_FLEET_WORKER_POLL_MILLISECONDS: u64 = 250;
 const FLEET_HEALTH_OBSERVATION_INTERVAL_MILLISECONDS: u64 = 1_000;
 const DEFAULT_FLEET_WORKER_LEASE_SECONDS: i64 = 120;
@@ -1224,6 +1226,7 @@ struct FleetRpcAccountReadEvidence {
 enum IdleVaultDepositBlockerKind {
     SourceStale,
     LookupTable,
+    Retry,
     Safety,
 }
 
@@ -1248,11 +1251,31 @@ impl IdleVaultDepositBlocker {
         }
     }
 
-    fn lookup_table(message: impl Into<String>) -> Self {
+    fn route_resolution(context: &str, blocker: &str) -> Self {
+        let kind = match classify_route_resolution_blocker(blocker) {
+            SameMintRouteExecutionState::WaitingAlt => IdleVaultDepositBlockerKind::LookupTable,
+            SameMintRouteExecutionState::Retry => IdleVaultDepositBlockerKind::Retry,
+            SameMintRouteExecutionState::Terminal => IdleVaultDepositBlockerKind::Safety,
+            SameMintRouteExecutionState::Ready
+            | SameMintRouteExecutionState::SubmissionQueued
+            | SameMintRouteExecutionState::Executed => IdleVaultDepositBlockerKind::Safety,
+        };
         Self {
-            kind: IdleVaultDepositBlockerKind::LookupTable,
-            message: message.into(),
+            kind,
+            message: format!("{context}: {blocker}"),
         }
+    }
+
+    fn route_preflight(message: impl Into<String>) -> Self {
+        let message = message.into();
+        let kind = if !message.contains("route_setup_rent_cap_exceeded")
+            && classify_in_process_execution_error(&message) == SameMintRouteExecutionState::Retry
+        {
+            IdleVaultDepositBlockerKind::Retry
+        } else {
+            IdleVaultDepositBlockerKind::Safety
+        };
+        Self { kind, message }
     }
 }
 
@@ -1450,6 +1473,7 @@ struct InlineMissingObligationSetupPreview {
     policy_account: String,
     policy_source: &'static str,
     instruction_constraint_index: u8,
+    vault_rent_top_up: Option<MissingObligationSetupFunding>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1652,6 +1676,27 @@ impl RuntimeLookupTableResolution {
     }
 }
 
+fn apply_policy_setup_funding_serialization(
+    resolution: &mut RuntimeLookupTableResolution,
+    policy_signer: &str,
+    required: bool,
+) {
+    if required {
+        resolution
+            .conflict_account_keys
+            .push(format!("policy-setup-funding:{policy_signer}"));
+        resolution.conflict_account_keys.sort_unstable();
+        resolution.conflict_account_keys.dedup();
+    }
+    if let Some(fields) = resolution.evidence.as_object_mut() {
+        fields.insert("serializesPolicySetupFunding".to_owned(), json!(required));
+        fields.insert(
+            "conflictAccountKeys".to_owned(),
+            json!(&resolution.conflict_account_keys),
+        );
+    }
+}
+
 fn in_process_route_result(
     state: SameMintRouteExecutionState,
     reason: Option<String>,
@@ -1813,7 +1858,24 @@ fn reusable_runtime_blocker(
     }
 }
 
-#[derive(Debug)]
+fn route_simulation_blocker(error: &str) -> String {
+    let normalized = error.to_ascii_lowercase();
+    let funding_shortfall = [
+        "insufficient funds",
+        "insufficientfundsforfee",
+        "insufficient lamports",
+        "insufficient balance",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle));
+    if funding_shortfall {
+        format!("route_funding_required: exact route simulation failed: {error}")
+    } else {
+        format!("route_simulation_failed: {error}")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct MissingObligationSetupFunding {
     payer: String,
     vault: String,
@@ -5096,8 +5158,11 @@ fn classify_in_process_execution_error(reason: &str) -> SameMintRouteExecutionSt
         "database",
         "deadlock",
         "fee_payer_reselection_required",
+        "insufficient funds",
+        "insufficient lamports",
         "lease",
         "rate limit",
+        "route_funding_required",
         "rpc",
         "serialization",
         "stale rpc",
@@ -5111,6 +5176,20 @@ fn classify_in_process_execution_error(reason: &str) -> SameMintRouteExecutionSt
         SameMintRouteExecutionState::Retry
     } else {
         SameMintRouteExecutionState::Terminal
+    }
+}
+
+fn classify_route_resolution_blocker(reason: &str) -> SameMintRouteExecutionState {
+    if reason.starts_with("route_funding_required:") {
+        SameMintRouteExecutionState::Retry
+    } else if reason.starts_with("route_simulation_failed:") {
+        if reason.contains("simulation_rpc_failed:") {
+            SameMintRouteExecutionState::Retry
+        } else {
+            SameMintRouteExecutionState::Terminal
+        }
+    } else {
+        classify_in_process_execution_error(reason)
     }
 }
 
@@ -5809,7 +5888,7 @@ async fn run_with_runtime(
         if options.route_runtime_active() {
             require_current_opportunity_fence(&client, &options, &vault, None).await?;
         }
-        let resolution = resolve_route_lookup_tables(
+        let mut resolution = resolve_route_lookup_tables(
             &client,
             &rpc,
             &options,
@@ -5824,6 +5903,30 @@ async fn run_with_runtime(
             &transaction_signers,
         )
         .await?;
+        let serializes_policy_setup_funding =
+            route_execution.preview.missing_obligation_setup.is_some()
+                || route_execution.preview.source_farm_setup_required
+                || route_execution.preview.target_farm_setup_required;
+        apply_policy_setup_funding_serialization(
+            &mut resolution,
+            &route_execution.preview.signer,
+            serializes_policy_setup_funding,
+        );
+        if let Some(fields) = resolution.evidence.as_object_mut() {
+            fields.insert(
+                "routeSteps".to_owned(),
+                json!(&route_execution.preview.route_steps),
+            );
+            fields.insert(
+                "missingObligationSetup".to_owned(),
+                route_execution
+                    .preview
+                    .missing_obligation_setup
+                    .as_ref()
+                    .map(inline_missing_obligation_setup_json)
+                    .unwrap_or(Value::Null),
+            );
+        }
         if options.route_runtime_active() {
             require_current_opportunity_fence(
                 &client,
@@ -7326,19 +7429,39 @@ fn missing_obligation_setup_vault_rent_top_up(
     vault_pubkey: Pubkey,
     fee_payer: &dyn Signer,
 ) -> Result<(Option<MissingObligationSetupFunding>, Vec<Instruction>), Box<dyn Error>> {
+    missing_obligation_setup_vault_rent_top_up_for_payer(rpc, vault_pubkey, fee_payer.pubkey())
+}
+
+fn missing_obligation_setup_vault_rent_top_up_for_payer(
+    rpc: &RpcClient,
+    vault_pubkey: Pubkey,
+    fee_payer: Pubkey,
+) -> Result<(Option<MissingObligationSetupFunding>, Vec<Instruction>), Box<dyn Error>> {
     let required_vault_lamports =
         rpc.get_minimum_balance_for_rent_exemption(std::mem::size_of::<Obligation>() + 8)?;
+    if required_vault_lamports > MAX_KAMINO_OBLIGATION_RENT_LAMPORTS {
+        return Err(format!(
+            "route_setup_rent_cap_exceeded: RPC requires {required_vault_lamports} lamports for a Kamino obligation, above the {MAX_KAMINO_OBLIGATION_RENT_LAMPORTS} lamport cap"
+        )
+        .into());
+    }
     let vault_lamports_before = rpc.get_balance(&vault_pubkey)?;
-    let payer_lamports_before = rpc.get_balance(&fee_payer.pubkey())?;
-    if vault_lamports_before >= required_vault_lamports || fee_payer.pubkey() == vault_pubkey {
+    let payer_lamports_before = rpc.get_balance(&fee_payer)?;
+    if vault_lamports_before >= required_vault_lamports || fee_payer == vault_pubkey {
         return Ok((None, Vec::new()));
     }
 
     let lamports = required_vault_lamports.saturating_sub(vault_lamports_before);
-    let transfer = system_instruction::transfer(&fee_payer.pubkey(), &vault_pubkey, lamports);
+    if payer_lamports_before < lamports {
+        return Err(format!(
+            "route_funding_required: missing-obligation rent payer {fee_payer} has {payer_lamports_before} lamports but vault {vault_pubkey} requires a {lamports} lamport top-up"
+        )
+        .into());
+    }
+    let transfer = system_instruction::transfer(&fee_payer, &vault_pubkey, lamports);
     Ok((
         Some(MissingObligationSetupFunding {
-            payer: fee_payer.pubkey().to_string(),
+            payer: fee_payer.to_string(),
             vault: vault_pubkey.to_string(),
             lamports,
             vault_lamports_before,
@@ -8273,7 +8396,7 @@ async fn run_idle_vault_deposit_flow(
                 ));
                 missing_obligation_setup_plan = Some(dry_run);
             }
-            Err(error) => blockers.push(IdleVaultDepositBlocker::safety(
+            Err(error) => blockers.push(IdleVaultDepositBlocker::route_preflight(
                 safe_same_mint_operational_error_with_context(
                     "idle_vault_init_obligation_plan_failed",
                     error.as_ref(),
@@ -8388,22 +8511,31 @@ async fn run_idle_vault_deposit_flow(
             .ok_or("idle deposit target disappeared from predicted post-setup preview")?;
         predicted_position.obligation_exists = true;
     }
-    let dry_run_policy_plan = match build_initial_reserve_deposit_policy_plan(
-        vault,
-        &predicted_deposit_preview,
-        policy_preflight,
-        deposit_reserve,
-        amount_raw,
-        signer.pubkey(),
-        signer.pubkey(),
-        account_index,
-    ) {
-        Ok(plan) => Some(plan),
-        Err(error) => {
-            blockers.push(IdleVaultDepositBlocker::safety(
-                safe_same_mint_operational_error(error.as_ref()),
-            ));
-            None
+    let missing_obligation_setup_retry = !deposit_position.obligation_exists
+        && missing_obligation_setup_plan.is_none()
+        && blockers
+            .iter()
+            .any(|blocker| blocker.kind == IdleVaultDepositBlockerKind::Retry);
+    let dry_run_policy_plan = if missing_obligation_setup_retry {
+        None
+    } else {
+        match build_initial_reserve_deposit_policy_plan(
+            vault,
+            &predicted_deposit_preview,
+            policy_preflight,
+            deposit_reserve,
+            amount_raw,
+            signer.pubkey(),
+            signer.pubkey(),
+            account_index,
+        ) {
+            Ok(plan) => Some(plan),
+            Err(error) => {
+                blockers.push(IdleVaultDepositBlocker::safety(
+                    safe_same_mint_operational_error(error.as_ref()),
+                ));
+                None
+            }
         }
     };
     let dry_run_policy_transaction: Option<PolicyTransactionBuild> = None;
@@ -8444,9 +8576,10 @@ async fn run_idle_vault_deposit_flow(
             )
             .await?;
             if let Some(blocker) = resolution.blocker.as_ref() {
-                blockers.push(IdleVaultDepositBlocker::lookup_table(format!(
-                    "idle setup lookup-table resolver blocked: {blocker}"
-                )));
+                blockers.push(IdleVaultDepositBlocker::route_resolution(
+                    "idle setup route resolver blocked",
+                    blocker,
+                ));
             }
             setup_lookup_table_phase = Some(RouteLookupTablePhase {
                 route_kind: "idle_vault_deposit_setup",
@@ -8483,7 +8616,12 @@ async fn run_idle_vault_deposit_flow(
         } else {
             "idle_vault_deposit"
         };
-        let resolution = resolve_route_lookup_tables(
+        let serializes_policy_setup_funding = atomic_queue_setup
+            || plan
+                .preview
+                .route_steps
+                .contains(&KAMINO_INIT_OBLIGATION_FARM_ROUTE_STEP);
+        let mut resolution = resolve_route_lookup_tables(
             client,
             &rpc,
             options,
@@ -8498,10 +8636,16 @@ async fn run_idle_vault_deposit_flow(
             &transaction_signers,
         )
         .await?;
+        apply_policy_setup_funding_serialization(
+            &mut resolution,
+            &plan.preview.signer,
+            serializes_policy_setup_funding,
+        );
         if let Some(blocker) = resolution.blocker.as_ref() {
-            blockers.push(IdleVaultDepositBlocker::lookup_table(format!(
-                "idle deposit lookup-table resolver blocked: {blocker}"
-            )));
+            blockers.push(IdleVaultDepositBlocker::route_resolution(
+                "idle deposit route resolver blocked",
+                blocker,
+            ));
         }
         deposit_lookup_table_phase = Some(RouteLookupTablePhase {
             route_kind,
@@ -8707,15 +8851,7 @@ async fn run_idle_vault_deposit_flow(
     if options.prepare_only {
         let blocker_reason = (!blockers.is_empty())
             .then(|| idle_vault_deposit_blocker_messages(&blockers).join("; "));
-        let state = if idle_vault_deposit_requires_lookup_table_provisioning(&blockers) {
-            SameMintRouteExecutionState::WaitingAlt
-        } else if idle_vault_deposit_has_only_source_sync_blockers(&blockers) {
-            SameMintRouteExecutionState::Retry
-        } else if blockers.is_empty() {
-            SameMintRouteExecutionState::Ready
-        } else {
-            SameMintRouteExecutionState::Terminal
-        };
+        let state = idle_vault_deposit_blocker_state(&blockers);
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
@@ -8899,6 +9035,41 @@ async fn run_idle_vault_deposit_flow(
         } else {
             Ok(None)
         };
+    }
+
+    if idle_vault_deposit_blocker_state(&blockers) == SameMintRouteExecutionState::Retry {
+        let preflight_blockers = idle_vault_deposit_blocker_messages(&blockers);
+        let blocker_reason = format!(
+            "idle vault deposit retryable preflight blocked: {}",
+            preflight_blockers.join("; ")
+        );
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "status": "idle_vault_deposit_revalidate_retry",
+                "writesDecision": false,
+                "writesCurrentPositions": false,
+                "sendsTransactions": false,
+                "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, &deposit_position, amount_raw, db_idle.as_ref(), options),
+                "preflightBlockers": preflight_blockers,
+                "setupObligationBeforeDeposit": setup_obligation_before_deposit,
+                "missingObligationSetup": missing_obligation_setup_dry_run,
+                "policyDeposit": dry_run_policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
+                "policyDepositTransaction": dry_run_policy_transaction.as_ref().map(policy_transaction_json),
+                "lookupTableResolution": idle_lookup_table_evidence.clone(),
+            }))?
+        );
+        if options.opportunity_id.is_some() {
+            return Ok(Some(idle_in_process_route_result(
+                SameMintRouteExecutionState::Retry,
+                Some(blocker_reason),
+                setup_lookup_table_phase.as_ref(),
+                setup_provisioning_request_id,
+                deposit_lookup_table_phase.as_ref(),
+                deposit_provisioning_request_id,
+            )));
+        }
+        return Err(blocker_reason.into());
     }
 
     if !blockers.is_empty() {
@@ -9698,12 +9869,30 @@ fn idle_vault_deposit_has_only_source_sync_blockers(blockers: &[IdleVaultDeposit
             .all(|blocker| blocker.kind == IdleVaultDepositBlockerKind::SourceStale)
 }
 
+fn idle_vault_deposit_blocker_state(
+    blockers: &[IdleVaultDepositBlocker],
+) -> SameMintRouteExecutionState {
+    if blockers.is_empty() {
+        SameMintRouteExecutionState::Ready
+    } else if blockers
+        .iter()
+        .any(|blocker| blocker.kind == IdleVaultDepositBlockerKind::Safety)
+    {
+        SameMintRouteExecutionState::Terminal
+    } else if blockers
+        .iter()
+        .any(|blocker| blocker.kind == IdleVaultDepositBlockerKind::LookupTable)
+    {
+        SameMintRouteExecutionState::WaitingAlt
+    } else {
+        SameMintRouteExecutionState::Retry
+    }
+}
+
 fn idle_vault_deposit_requires_lookup_table_provisioning(
     blockers: &[IdleVaultDepositBlocker],
 ) -> bool {
-    blockers
-        .iter()
-        .any(|blocker| blocker.kind == IdleVaultDepositBlockerKind::LookupTable)
+    idle_vault_deposit_blocker_state(blockers) == SameMintRouteExecutionState::WaitingAlt
 }
 
 async fn record_live_idle_vault_balance(
@@ -11670,7 +11859,17 @@ async fn resolve_route_lookup_tables(
         .map(|packet| packet.fits_packet_data_size);
     let reusable_simulation_units_consumed = reusable.simulation_units_consumed;
     let reusable_simulation_error = reusable.simulation_error.clone();
-    let blocker = reusable_runtime_blocker(&rollout, shared_catalog_covered, reusable_ready);
+    let blocker = if reusable_runtime_enabled(&rollout)
+        && shared_catalog_covered
+        && reusable.domain.missing_addresses.is_empty()
+        && reusable_simulation_error.is_some()
+    {
+        reusable_simulation_error
+            .as_deref()
+            .map(route_simulation_blocker)
+    } else {
+        reusable_runtime_blocker(&rollout, shared_catalog_covered, reusable_ready)
+    };
     let selection_kind = if blocker.is_none() {
         LookupTableSelectionKind::Reusable
     } else {
@@ -16063,6 +16262,17 @@ fn build_route_execution_plan(
         kamino_init_obligation_collateral_farm_instruction(fee_payer, vault_pubkey, target)?;
     let source_farm_setup_required = source_farm_init_instruction.is_some();
     let target_farm_setup_required = target_farm_init_instruction.is_some();
+    if fee_payer_selection.kind == RouteFeePayerKind::Policy
+        && (source_farm_setup_required || target_farm_setup_required)
+    {
+        let rpc = rpc.ok_or("farm setup funding preflight requires an RPC client")?;
+        if rpc.get_balance(&fee_payer)? == 0 {
+            return Err(format!(
+                "route_funding_required: farm setup payer {fee_payer} has no lamports"
+            )
+            .into());
+        }
+    }
     let source_refresh_instruction = kamino_refresh_obligation_instruction(source)?;
     let target_refresh_instruction = kamino_refresh_obligation_instruction(target)?;
     let source_instruction = kamino_withdraw_instruction(
@@ -16154,14 +16364,25 @@ fn build_route_execution_plan(
         );
         route_steps.push(KAMINO_REFRESH_OBLIGATION_ROUTE_STEP);
     } else {
+        let rpc = rpc.ok_or(
+            "inline target obligation setup requires an RPC client for exact rent funding",
+        )?;
         let (init_policy, init_index) =
-            resolve_init_obligation_policy(rpc, vault, target, policy_preflight)?;
+            resolve_init_obligation_policy(Some(rpc), vault, target, policy_preflight)?;
         let route_policy = Pubkey::from_str(&vault.policy_account)?;
         let policy_source = if init_policy == route_policy {
             "route_policy"
         } else {
             "setup_policy"
         };
+        let (vault_rent_top_up, rent_top_up_instructions) =
+            missing_obligation_setup_vault_rent_top_up_for_payer(rpc, vault_pubkey, fee_payer)?;
+        for instruction in rent_top_up_instructions {
+            routed_protected_and_public_instructions.push(YieldRouteInstruction::new(
+                instruction,
+                YieldRouteLookupTableRequirements::default(),
+            ));
+        }
         let init_instruction = kamino_init_obligation_instruction(vault_pubkey, target)?;
         setup_instruction_program = Some(init_instruction.instruction().program_id.to_string());
         setup_instruction_discriminator = Some(init_instruction.instruction().data[..8].to_vec());
@@ -16180,6 +16401,9 @@ fn build_route_execution_plan(
         routed_protected_and_public_instructions.push(init_outer_instruction);
         routed_protected_and_public_instructions.extend(target_farm_init_instruction);
         routed_protected_and_public_instructions.push(target_refresh_instruction);
+        if vault_rent_top_up.is_some() {
+            route_steps.push(SYSTEM_TRANSFER_VAULT_RENT_TOP_UP_ROUTE_STEP);
+        }
         route_steps.push(KAMINO_INIT_OBLIGATION_ROUTE_STEP);
         route_steps.push(KAMINO_REFRESH_OBLIGATION_ROUTE_STEP);
         inner_instruction_count += init_inner_count;
@@ -16196,6 +16420,7 @@ fn build_route_execution_plan(
             policy_account: init_policy.to_string(),
             policy_source,
             instruction_constraint_index: init_index,
+            vault_rent_top_up,
         });
     }
 
@@ -19131,6 +19356,20 @@ fn missing_obligation_setup_funding_json(funding: &MissingObligationSetupFunding
 }
 
 fn inline_missing_obligation_setup_json(setup: &InlineMissingObligationSetupPreview) -> Value {
+    let route_order = if setup.vault_rent_top_up.is_some() {
+        vec![
+            KAMINO_WITHDRAW_ROUTE_STEP,
+            SYSTEM_TRANSFER_VAULT_RENT_TOP_UP_ROUTE_STEP,
+            KAMINO_INIT_OBLIGATION_ROUTE_STEP,
+            KAMINO_DEPOSIT_ROUTE_STEP,
+        ]
+    } else {
+        vec![
+            KAMINO_WITHDRAW_ROUTE_STEP,
+            KAMINO_INIT_OBLIGATION_ROUTE_STEP,
+            KAMINO_DEPOSIT_ROUTE_STEP,
+        ]
+    };
     json!({
         "executionMode": "inline_route_transaction",
         "targetObligation": setup.target_obligation,
@@ -19139,11 +19378,8 @@ fn inline_missing_obligation_setup_json(setup: &InlineMissingObligationSetupPrev
         "policyAccount": setup.policy_account,
         "policySource": setup.policy_source,
         "instructionConstraintIndex": setup.instruction_constraint_index,
-        "routeOrder": [
-            KAMINO_WITHDRAW_ROUTE_STEP,
-            KAMINO_INIT_OBLIGATION_ROUTE_STEP,
-            KAMINO_DEPOSIT_ROUTE_STEP,
-        ],
+        "vaultRentTopUp": setup.vault_rent_top_up.as_ref().map(missing_obligation_setup_funding_json),
+        "routeOrder": route_order,
     })
 }
 
@@ -19591,8 +19827,10 @@ mod tests {
     fn idle_lookup_table_blocker_requires_predecision_provisioning_defer() {
         let blockers = vec![
             IdleVaultDepositBlocker::source_stale("source snapshot changed"),
-            IdleVaultDepositBlocker::lookup_table("vault manifest is not covered"),
-            IdleVaultDepositBlocker::safety("unrelated safety blocker"),
+            IdleVaultDepositBlocker::route_resolution(
+                "idle deposit route resolver blocked",
+                "reusable-only runtime requires complete reusable ALT coverage and simulation",
+            ),
         ];
 
         assert!(idle_vault_deposit_requires_lookup_table_provisioning(

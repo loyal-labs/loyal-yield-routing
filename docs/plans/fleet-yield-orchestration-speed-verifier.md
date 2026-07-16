@@ -73,6 +73,19 @@ confirmation slot. The baseline cohort's routeable Main balance must fall by
 the confirmed net outflow, while deposits arriving after the baseline remain
 visible rather than being mistaken for failed optimization.
 
+Movement effects are route-kind specific. A `same_mint` reserve route proves
+its source reserve fell and target reserve rose from the decision's pre/post
+position snapshots. An `idle_vault_deposit` proves that the exact planned idle
+token account fell by at least the submitted amount and that the target reserve
+rose between an independently selected pre-send position snapshot and the
+post-confirm snapshot; both post observations must be at or above the
+confirmation slot. Every submitted row must be terminal and economically
+positive after fees; every reconciled row must additionally be finalized,
+successful, and individually effect-proven. Idle deposits do not enter the
+reserve-to-reserve Main outflow term, but a proven idle deposit targeting Main
+is an explicit Main inflow adjustment. This prevents idle-to-Main optimization
+from being misreported as reserve-route outflow or unexplained balance drift.
+
 The authoritative pre-cutover baseline freezes the complete exact set of
 vault IDs that are active, policy-active, authorized for the standard delegated
 policy signer, enabled for the same-mint route mode, and compatible with the
@@ -291,6 +304,16 @@ execution_priority =
   construction rejects the shard again if it discovers obligation/farm setup.
   Idle deposits, ATA/rent top-ups, setup transactions, ALT creation/extension,
   and any other account-creation work remain funded by `POLICY_KEYPAIR`.
+- A first route into a missing Kamino obligation includes only the RPC-derived
+  obligation rent deficit from `POLICY_KEYPAIR` to the Squads vault. Its final
+  simulated atomic transaction orders protected withdraw, vault funding,
+  protected obligation initialization, farm initialization, and protected
+  deposit. The obligation requirement is capped at 25,000,000 lamports;
+  a payer shortfall retries as `route_funding_required`, a deterministic
+  simulation failure terminates, and neither is disguised as missing ALT
+  coverage. Any obligation/farm setup route holds the durable
+  `policy-setup-funding:<POLICY signer>` conflict through reconciliation, while
+  mature routes remain independently parallel.
 - The exact compiled fee and a fresh shard balance observation are admitted in
   the same SQL transaction as immutable signed bytes. A per-key row lock,
   balance floor/ceiling, per-transaction cap, and rolling spend reservation
@@ -464,6 +487,11 @@ PASS only if operational verifier output proves:
   proves exact registry/keypair matching, reciprocal authority separation,
   bounded ranked failover, low-balance limits, and one atomic immutable spend
   reservation.
+- missing-obligation execution proves the exact capped rent deficit, atomic
+  withdraw/fund/init/deposit order, final manifest and simulation coverage, and
+  setup-funding serialization. Funding/RPC failures retry without a decision
+  or send; deterministic simulation failures are terminal; only genuine
+  reusable-v2 coverage gaps enter `waiting_alt`.
 
 ### Check 6: Performance, value, and price
 
@@ -602,8 +630,25 @@ PASS only if post-cutover production evidence proves:
 - finalized RPC and chain-backed reconciler rows at or above each confirmation
   slot show the expected source decrease and target increase; projection-only
   or dashboard-only evidence is insufficient;
+- source/target proof is selected by the durable route kind: reserve routes use
+  reserve pre/post snapshots, while idle deposits match the exact idle token
+  account and its pre-send amount to a post-confirm balance decrease plus an
+  independently measured target-reserve increase. Unknown route kinds, missing
+  pre-send target snapshots, or current-only target assertions fail closed;
+- every terminal row proves reciprocal submission/opportunity/decision IDs,
+  one vault and optimizer epoch, exact raw execution-plan fields, route-kind
+  source-snapshot semantics, and snapshot ownership. Reconciled rows require a
+  found finalized successful RPC status at exactly the persisted confirmation
+  slot plus ordered submit/confirm/reconcile timestamps and post-state slots.
+  Failed rows require a found finalized unsuccessful status at that exact slot.
+  Expired rows require finalized-history absence, a current finalized block
+  height beyond last-valid, and a persisted effect-check slot for any attempted
+  broadcast. Collector verdict booleans cannot substitute for these raw facts;
 - the baseline Main cohort falls by confirmed net outflow after separately
   accounting for deposits received after the baseline;
+- the Main net-flow equation counts same-mint Main source moves as outflow and
+  both same-mint and idle-vault Main targets as inflow; reserve and idle route
+  counts remain separately visible;
 - the baseline artifact contains the full frozen eligible cohort ID set,
   including eligible zero-Main vaults. The aggregate equation uses only that
   set on every term: baseline routeable Main plus post-baseline cohort deposits

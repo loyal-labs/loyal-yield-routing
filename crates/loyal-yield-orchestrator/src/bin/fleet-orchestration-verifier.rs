@@ -7363,13 +7363,36 @@ fn movement_measurement_schema_known(value: &Value) -> bool {
         "submissionId",
         "opportunityId",
         "decisionId",
+        "opportunityDecisionId",
         "vaultId",
+        "decisionVaultId",
         "signature",
         "submissionState",
+        "opportunityState",
+        "decisionStatus",
+        "routeKind",
+        "decisionRouteKind",
+        "decisionSourceKind",
+        "plannerSourceKind",
+        "opportunityOptimizerEpochId",
+        "submissionOptimizerEpochId",
+        "opportunitySourceSnapshotId",
+        "submissionSourceSnapshotId",
         "sourceReserve",
+        "decisionSourceSnapshotId",
+        "decisionSourceReserve",
+        "decisionSignature",
+        "decisionConfirmedSlot",
+        "decisionPostSnapshotId",
         "targetReserve",
+        "decisionTargetReserve",
         "liquidityMint",
+        "decisionLiquidityMint",
         "amountRaw",
+        "decisionAmountRaw",
+        "plannerExecutionPlan",
+        "decisionExecutionPlan",
+        "routeIdentityExact",
         "principalUsdMicros",
         "estimatedEdgeBps",
         "expectedNetGainUsdMicros",
@@ -7382,22 +7405,65 @@ fn movement_measurement_schema_known(value: &Value) -> bool {
         "feeFractionCapPpm",
         "economicPass",
         "createdAt",
+        "submittedSlot",
         "submittedAt",
         "confirmedAt",
         "reconciledAt",
         "confirmedSlot",
         "reconciledSlot",
+        "broadcastCount",
+        "lastBroadcastAt",
+        "lastValidBlockHeight",
+        "expiryObservedBlockHeight",
+        "effectCheckSlot",
+        "lastStatusCheckedAt",
+        "sourceSnapshotId",
+        "sourceSnapshotVaultId",
+        "sourceSnapshotContext",
+        "postSnapshotId",
+        "postSnapshotVaultId",
+        "postSnapshotContext",
+        "preTargetSnapshotId",
+        "preTargetSnapshotVaultId",
+        "preTargetSnapshotContext",
+        "preTargetPlanningMetadata",
         "postSnapshotObservedSlot",
+        "postSnapshotObservedAt",
         "postSnapshotAtOrAboveConfirmation",
+        "preTargetSnapshotObservedSlot",
+        "preTargetSnapshotObservedAt",
         "preSourceAmountRaw",
         "postSourceAmountRaw",
+        "preTargetLiquidityMint",
+        "preTargetHasValue",
         "preTargetAmountRaw",
+        "postTargetLiquidityMint",
+        "postTargetHasValue",
         "postTargetAmountRaw",
+        "postTargetPlanningMetadata",
         "sourceDecreasedAndTargetIncreased",
+        "idleTokenAccount",
+        "plannerIdleTokenAccount",
+        "preIdleSourceAmountRaw",
+        "plannerPreIdleSourceAmountRaw",
+        "preIdleSourceObservedSlot",
+        "plannerPreIdleSourceObservedSlot",
+        "preIdleSourceObservedAt",
+        "plannerPreIdleSourceObservedAt",
+        "idlePlanIdentityExact",
+        "idlePlanEvidenceExact",
+        "postIdleSourceTokenAccount",
+        "postIdleSourceAmountRaw",
+        "postIdleSourceObservedSlot",
+        "postIdleSourceObservedAt",
+        "idleSourceDecreasedAndTargetIncreased",
+        "routeEffectProven",
+        "rpcFound",
         "rpcFinalized",
         "rpcSuccessful",
         "rpcSlot",
         "finalizedSuccess",
+        "terminalOutcomeSafe",
     ];
     exact_object_keys(
         value,
@@ -7406,12 +7472,17 @@ fn movement_measurement_schema_known(value: &Value) -> bool {
             "cutoverAt",
             "rpcFinalityAvailable",
             "rpcReadError",
+            "rpcFinalizedBlockHeight",
+            "rpcFinalizedSlot",
             "submissionCount",
             "nonterminalSubmissionCount",
             "effectAmbiguousCount",
+            "reconciledMovementCount",
             "reconciledReserveMovementCount",
+            "reconciledIdleDepositCount",
             "fullyFinalizedAndReconciledEffectCount",
             "economicFailureCount",
+            "unsafeTerminalOutcomeCount",
             "databaseDeadlockCount",
             "duplicateMovementCount",
             "mainUsdc",
@@ -8058,6 +8129,46 @@ fn parse_rfc3339(value: Option<&Value>) -> Option<DateTime<Utc>> {
         .map(|value| value.with_timezone(&Utc))
 }
 
+fn plan_string<'a>(row: &'a Value, plan_key: &str, field: &str) -> Option<&'a str> {
+    row.get(plan_key)?.get(field)?.as_str()
+}
+
+fn plan_i64(row: &Value, plan_key: &str, field: &str) -> Option<i64> {
+    row.get(plan_key)?.get(field).and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+    })
+}
+
+fn plan_timestamp(row: &Value, plan_key: &str, field: &str) -> Option<DateTime<Utc>> {
+    plan_string(row, plan_key, field)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+}
+
+fn plan_explicit_null(row: &Value, plan_key: &str, field: &str) -> bool {
+    row.get(plan_key)
+        .and_then(|plan| plan.get(field))
+        .is_some_and(Value::is_null)
+}
+
+fn movement_chain_snapshot_context(row: &Value, field: &str) -> bool {
+    matches!(
+        row.get(field)
+            .and_then(|context| context.get("kind"))
+            .and_then(Value::as_str),
+        Some("fleet_position_sweep" | "same_mint_chain_reconcile_preview")
+    )
+}
+
+fn movement_chain_position_metadata(row: &Value, field: &str) -> bool {
+    row.get(field)
+        .and_then(|metadata| metadata.get("source"))
+        .and_then(Value::as_str)
+        == Some("chain_reconcile_preview")
+}
+
 fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck {
     let movement = &binding.artifact.measurements.database.movement;
     let queue = &binding.artifact.measurements.database.queue;
@@ -8094,9 +8205,14 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
             .all(|vault_id| *vault_id > 0)
         && baseline_cohort_vaults.len() == baseline_cohort_vault_ids.len()
         && i64::try_from(baseline_cohort_vault_ids.len()).ok() == baseline_cohort_count;
+    let rpc_finalized_block_height = value_i64(movement, "rpcFinalizedBlockHeight");
+    let rpc_finalized_slot = value_i64(movement, "rpcFinalizedSlot");
+    let mut reconciled_movement_count = 0i64;
     let mut reconciled_reserve_count = 0i64;
+    let mut reconciled_idle_deposit_count = 0i64;
     let mut fully_proven_count = 0i64;
     let mut economic_failure_count = 0i64;
+    let mut unsafe_terminal_outcome_count = 0i64;
     let mut nonterminal_count = 0i64;
     let mut ambiguous_count = 0i64;
     let mut main_outflow = 0i128;
@@ -8113,28 +8229,115 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
         if state == "effect_ambiguous" {
             ambiguous_count += 1;
         }
+        let route_kind = value_string(row, "routeKind");
+        let decision_plan_kind = plan_string(row, "decisionExecutionPlan", "kind");
+        let planner_plan_kind = plan_string(row, "plannerExecutionPlan", "kind");
+        let decision_source_kind = plan_string(row, "decisionExecutionPlan", "source_kind");
+        let planner_source_kind = plan_string(row, "plannerExecutionPlan", "source_kind");
+        let opportunity_source_snapshot_id = value_i64(row, "opportunitySourceSnapshotId");
+        let submission_source_snapshot_id = value_i64(row, "submissionSourceSnapshotId");
         let source = row.get("sourceReserve").and_then(Value::as_str);
+        let decision_source_snapshot_id = value_i64(row, "decisionSourceSnapshotId");
+        let decision_source = row.get("decisionSourceReserve").and_then(Value::as_str);
         let target = value_string(row, "targetReserve");
+        let decision_target = value_string(row, "decisionTargetReserve");
         let mint = value_string(row, "liquidityMint");
+        let decision_mint = value_string(row, "decisionLiquidityMint");
         let amount = value_i64(row, "amountRaw");
+        let decision_amount = value_i64(row, "decisionAmountRaw");
         let opportunity_id = value_i64(row, "opportunityId");
         let decision_id = value_i64(row, "decisionId");
+        let opportunity_decision_id = value_i64(row, "opportunityDecisionId");
         let submission_id = value_i64(row, "submissionId");
         let vault_id = value_i64(row, "vaultId");
+        let decision_vault_id = value_i64(row, "decisionVaultId");
+        let opportunity_optimizer_epoch_id = value_i64(row, "opportunityOptimizerEpochId");
+        let submission_optimizer_epoch_id = value_i64(row, "submissionOptimizerEpochId");
+        let source_snapshot_id = value_i64(row, "sourceSnapshotId");
+        let source_snapshot_vault_id = value_i64(row, "sourceSnapshotVaultId");
+        let pre_target_snapshot_id = value_i64(row, "preTargetSnapshotId");
+        let pre_target_snapshot_vault_id = value_i64(row, "preTargetSnapshotVaultId");
         let created_at = parse_rfc3339(row.get("createdAt"));
+        let route_identity_ok = match route_kind {
+            Some("same_mint") => {
+                source.is_some()
+                    && source != target
+                    && decision_source == source
+                    && opportunity_source_snapshot_id.is_some_and(|id| id > 0)
+                    && decision_source_snapshot_id == opportunity_source_snapshot_id
+                    && submission_source_snapshot_id == opportunity_source_snapshot_id
+                    && source_snapshot_id == opportunity_source_snapshot_id
+                    && source_snapshot_vault_id == vault_id
+                    && movement_chain_snapshot_context(row, "sourceSnapshotContext")
+                    && pre_target_snapshot_id == opportunity_source_snapshot_id
+                    && pre_target_snapshot_vault_id == vault_id
+                    && movement_chain_snapshot_context(row, "preTargetSnapshotContext")
+                    && movement_chain_position_metadata(row, "preTargetPlanningMetadata")
+                    && decision_plan_kind == Some("same_mint")
+                    && planner_plan_kind == Some("same_mint")
+                    && plan_string(row, "decisionExecutionPlan", "source_reserve") == source
+                    && plan_string(row, "plannerExecutionPlan", "source_reserve") == source
+                    && plan_string(row, "decisionExecutionPlan", "target_reserve") == target
+                    && plan_string(row, "plannerExecutionPlan", "target_reserve") == target
+                    && plan_string(row, "decisionExecutionPlan", "liquidity_mint") == mint
+                    && plan_string(row, "plannerExecutionPlan", "liquidity_mint") == mint
+                    && plan_i64(row, "decisionExecutionPlan", "amount_raw") == amount
+                    && plan_i64(row, "plannerExecutionPlan", "amount_raw") == amount
+            }
+            Some("idle_vault_deposit") => {
+                source.is_none()
+                    && decision_source.is_none()
+                    && opportunity_source_snapshot_id.is_none()
+                    && decision_source_snapshot_id.is_none()
+                    && submission_source_snapshot_id.is_none()
+                    && source_snapshot_id.is_none()
+                    && source_snapshot_vault_id.is_none()
+                    && pre_target_snapshot_id.is_some_and(|id| id > 0)
+                    && pre_target_snapshot_vault_id == vault_id
+                    && movement_chain_snapshot_context(row, "preTargetSnapshotContext")
+                    && movement_chain_position_metadata(row, "preTargetPlanningMetadata")
+                    && decision_source_kind == Some("idle_vault")
+                    && planner_source_kind == Some("idle_vault_usdc")
+                    && decision_plan_kind == Some("idle_vault_deposit")
+                    && planner_plan_kind == Some("idle_vault_deposit")
+                    && plan_explicit_null(row, "decisionExecutionPlan", "source_reserve")
+                    && plan_explicit_null(row, "plannerExecutionPlan", "source_reserve")
+                    && plan_string(row, "decisionExecutionPlan", "target_reserve") == target
+                    && plan_string(row, "plannerExecutionPlan", "target_reserve") == target
+                    && plan_string(row, "decisionExecutionPlan", "liquidity_mint") == mint
+                    && plan_string(row, "plannerExecutionPlan", "liquidity_mint") == mint
+                    && plan_i64(row, "decisionExecutionPlan", "amount_raw") == amount
+                    && plan_i64(row, "plannerExecutionPlan", "amount_raw") == amount
+                    && plan_string(row, "decisionExecutionPlan", "idle_token_account")
+                        .is_some_and(|account| !account.trim().is_empty())
+                    && plan_string(row, "decisionExecutionPlan", "idle_token_account")
+                        == plan_string(row, "plannerExecutionPlan", "idle_token_account")
+            }
+            _ => false,
+        };
         let identity_ok = opportunity_id.is_some_and(|id| id > 0)
             && decision_id.is_some_and(|id| id > 0)
             && submission_id.is_some_and(|id| id > 0)
             && vault_id.is_some_and(|id| id > 0)
+            && opportunity_decision_id == decision_id
+            && decision_vault_id == vault_id
+            && opportunity_optimizer_epoch_id.is_some_and(|id| id > 0)
+            && submission_optimizer_epoch_id == opportunity_optimizer_epoch_id
             && value_string(row, "signature").is_some_and(|value| !value.trim().is_empty())
-            && source.is_some()
-            && source != target
+            && route_identity_ok
+            && value_string(row, "decisionRouteKind") == decision_plan_kind
+            && value_string(row, "decisionSourceKind") == decision_source_kind
+            && value_string(row, "plannerSourceKind") == planner_source_kind
             && target.is_some_and(|value| !value.trim().is_empty())
+            && decision_target == target
             && mint.is_some_and(|value| !value.trim().is_empty())
+            && decision_mint == mint
             && amount.is_some_and(|amount| amount > 0)
+            && decision_amount == amount
             && created_at
                 .zip(cutover_at)
-                .is_some_and(|(created, cutover)| created >= cutover);
+                .is_some_and(|(created, cutover)| created >= cutover)
+            && value_bool(row, "routeIdentityExact") == Some(true);
         if let (Some(submission), Some(opportunity), Some(decision)) =
             (submission_id, opportunity_id, decision_id)
         {
@@ -8167,13 +8370,19 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
         if !economic {
             economic_failure_count += 1;
         }
+        let submitted_slot = value_i64(row, "submittedSlot");
         let confirmed_slot = value_i64(row, "confirmedSlot");
         let reconciled_slot = value_i64(row, "reconciledSlot");
         let observed_slot = value_i64(row, "postSnapshotObservedSlot");
-        let source_effect = value_i64(row, "preSourceAmountRaw")
+        let rpc_slot = value_i64(row, "rpcSlot");
+        let reserve_source_effect = value_i64(row, "preSourceAmountRaw")
             .zip(value_i64(row, "postSourceAmountRaw"))
-            .is_some_and(|(before, after)| after < before);
-        let target_effect = row
+            .is_some_and(|(before, after)| after < before)
+            && movement_chain_snapshot_context(row, "sourceSnapshotContext")
+            && movement_chain_snapshot_context(row, "preTargetSnapshotContext")
+            && movement_chain_position_metadata(row, "preTargetPlanningMetadata")
+            && movement_chain_snapshot_context(row, "postSnapshotContext");
+        let reserve_target_effect = row
             .get("preTargetAmountRaw")
             .and_then(Value::as_i64)
             .unwrap_or_default()
@@ -8181,34 +8390,253 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
                 .get("postTargetAmountRaw")
                 .and_then(Value::as_i64)
                 .unwrap_or_default();
+        let idle_source_effect = value_i64(row, "preIdleSourceAmountRaw")
+            .zip(value_i64(row, "postIdleSourceAmountRaw"))
+            .zip(amount)
+            .is_some_and(|((before, after), amount)| {
+                before == amount && after >= 0 && after <= before.saturating_sub(amount)
+            })
+            && value_string(row, "idleTokenAccount")
+                == value_string(row, "postIdleSourceTokenAccount")
+            && value_string(row, "idleTokenAccount")
+                == value_string(row, "plannerIdleTokenAccount")
+            && movement_chain_snapshot_context(row, "postSnapshotContext")
+            && movement_chain_position_metadata(row, "postTargetPlanningMetadata")
+            && value_string(row, "idleTokenAccount")
+                == plan_string(row, "decisionExecutionPlan", "idle_token_account")
+            && value_string(row, "plannerIdleTokenAccount")
+                == plan_string(row, "plannerExecutionPlan", "idle_token_account")
+            && value_i64(row, "preIdleSourceAmountRaw")
+                == value_i64(row, "plannerPreIdleSourceAmountRaw")
+            && value_i64(row, "preIdleSourceAmountRaw")
+                == plan_i64(
+                    row,
+                    "decisionExecutionPlan",
+                    "idle_vault_liquidity_amount_raw",
+                )
+            && value_i64(row, "plannerPreIdleSourceAmountRaw")
+                == plan_i64(
+                    row,
+                    "plannerExecutionPlan",
+                    "idle_vault_liquidity_amount_raw",
+                )
+            && value_i64(row, "preIdleSourceObservedSlot")
+                .zip(rpc_slot)
+                .is_some_and(|(observed, rpc)| observed > 0 && observed <= rpc)
+            && value_i64(row, "preIdleSourceObservedSlot")
+                == value_i64(row, "plannerPreIdleSourceObservedSlot")
+            && value_i64(row, "preIdleSourceObservedSlot")
+                == plan_i64(row, "decisionExecutionPlan", "idle_observed_slot")
+                    .or_else(|| plan_i64(row, "decisionExecutionPlan", "observed_slot"))
+            && value_i64(row, "plannerPreIdleSourceObservedSlot")
+                == plan_i64(row, "plannerExecutionPlan", "source_observed_slot")
+                    .or_else(|| plan_i64(row, "plannerExecutionPlan", "idle_observed_slot"))
+            && parse_rfc3339(row.get("preIdleSourceObservedAt"))
+                .zip(created_at)
+                .is_some_and(|(observed, created)| observed <= created)
+            && parse_rfc3339(row.get("preIdleSourceObservedAt"))
+                == parse_rfc3339(row.get("plannerPreIdleSourceObservedAt"))
+            && parse_rfc3339(row.get("preIdleSourceObservedAt"))
+                == plan_timestamp(row, "decisionExecutionPlan", "idle_observed_at")
+                    .or_else(|| plan_timestamp(row, "decisionExecutionPlan", "observed_at"))
+            && parse_rfc3339(row.get("plannerPreIdleSourceObservedAt"))
+                == plan_timestamp(row, "plannerExecutionPlan", "source_observed_at")
+                    .or_else(|| plan_timestamp(row, "plannerExecutionPlan", "idle_observed_at"))
+            && value_i64(row, "postIdleSourceObservedSlot")
+                .zip(rpc_slot)
+                .is_some_and(|(observed, rpc)| observed >= rpc)
+            && value_i64(row, "postIdleSourceObservedSlot") == observed_slot
+            && parse_rfc3339(row.get("postIdleSourceObservedAt")).is_some()
+            && parse_rfc3339(row.get("postIdleSourceObservedAt"))
+                == parse_rfc3339(row.get("postSnapshotObservedAt"));
+        let idle_target_effect = value_i64(row, "preTargetAmountRaw")
+            .zip(value_i64(row, "postTargetAmountRaw"))
+            .is_some_and(|(before, after)| after > before)
+            && value_string(row, "preTargetLiquidityMint") == mint
+            && value_string(row, "postTargetLiquidityMint") == mint
+            && value_bool(row, "preTargetHasValue")
+                == value_i64(row, "preTargetAmountRaw").map(|amount| amount > 0)
+            && value_bool(row, "postTargetHasValue") == Some(true)
+            && value_i64(row, "preTargetSnapshotObservedSlot")
+                .zip(rpc_slot)
+                .is_some_and(|(observed, rpc)| observed > 0 && observed <= rpc)
+            && parse_rfc3339(row.get("preTargetSnapshotObservedAt"))
+                .zip(created_at)
+                .is_some_and(|(observed, created)| observed <= created);
+        let route_effect = match route_kind {
+            Some("same_mint") => reserve_source_effect && reserve_target_effect,
+            Some("idle_vault_deposit") => idle_source_effect && idle_target_effect,
+            _ => false,
+        };
+        let created_at = parse_rfc3339(row.get("createdAt"));
+        let submitted_at = parse_rfc3339(row.get("submittedAt"));
+        let confirmed_at = parse_rfc3339(row.get("confirmedAt"));
+        let reconciled_at = parse_rfc3339(row.get("reconciledAt"));
+        let last_broadcast_at = parse_rfc3339(row.get("lastBroadcastAt"));
+        let last_status_checked_at = parse_rfc3339(row.get("lastStatusCheckedAt"));
+        let post_snapshot_observed_at = parse_rfc3339(row.get("postSnapshotObservedAt"));
+        let opportunity_state = value_string(row, "opportunityState");
+        let decision_status = value_string(row, "decisionStatus");
+        let reconciled_lifecycle_ordered = created_at
+            .zip(submitted_at)
+            .zip(confirmed_at)
+            .zip(reconciled_at)
+            .is_some_and(|(((created, submitted), confirmed), reconciled)| {
+                created <= submitted && submitted <= confirmed && confirmed <= reconciled
+            });
+        let reconciled_slots_ordered = submitted_slot
+            .zip(rpc_slot)
+            .zip(reconciled_slot)
+            .is_some_and(|((submitted, rpc), reconciled)| {
+                submitted > 0 && submitted <= rpc && reconciled >= rpc
+            });
+        let post_snapshot_time_ordered = created_at
+            .zip(post_snapshot_observed_at)
+            .zip(reconciled_at)
+            .is_some_and(|((created, observed), reconciled)| {
+                created <= observed && observed <= reconciled
+            });
+        let broadcast_evidence_ordered = value_i64(row, "broadcastCount")
+            .is_some_and(|count| count > 0)
+            && created_at
+                .zip(last_broadcast_at)
+                .zip(submitted_at)
+                .is_some_and(|((created, broadcast), submitted)| {
+                    created <= broadcast && broadcast <= submitted
+                });
         let final_effect = state == "reconciled"
-            && parse_rfc3339(row.get("reconciledAt")).is_some()
+            && opportunity_state == Some("completed")
+            && decision_status == Some("confirmed")
+            && value_string(row, "decisionSignature") == value_string(row, "signature")
+            && value_i64(row, "decisionConfirmedSlot") == confirmed_slot
+            && identity_ok
+            && value_i64(row, "postSnapshotId").is_some_and(|id| id > 0)
+            && value_i64(row, "postSnapshotVaultId") == vault_id
+            && value_i64(row, "decisionPostSnapshotId") == value_i64(row, "postSnapshotId")
+            && movement_chain_snapshot_context(row, "postSnapshotContext")
+            && movement_chain_position_metadata(row, "postTargetPlanningMetadata")
+            && reconciled_lifecycle_ordered
+            && reconciled_slots_ordered
+            && post_snapshot_time_ordered
+            && broadcast_evidence_ordered
             && reconciled_slot
-                .zip(confirmed_slot)
-                .is_some_and(|(reconciled, confirmed)| reconciled >= confirmed)
+                .zip(rpc_slot)
+                .is_some_and(|(reconciled, rpc)| reconciled >= rpc)
             && observed_slot
-                .zip(confirmed_slot)
-                .is_some_and(|(observed, confirmed)| observed >= confirmed)
-            && source_effect
-            && target_effect
+                .zip(rpc_slot)
+                .is_some_and(|(observed, rpc)| observed >= rpc)
+            && route_effect
+            && value_bool(row, "rpcFound") == Some(true)
             && value_bool(row, "rpcFinalized") == Some(true)
             && value_bool(row, "rpcSuccessful") == Some(true)
-            && value_i64(row, "rpcSlot")
-                .zip(confirmed_slot)
-                .is_some_and(|(rpc, confirmed)| rpc >= confirmed);
-        if state == "reconciled" && source.is_some() {
-            reconciled_reserve_count += 1;
+            && rpc_slot == confirmed_slot;
+        let failed_lifecycle_ordered = created_at
+            .zip(submitted_at)
+            .zip(confirmed_at)
+            .zip(last_status_checked_at)
+            .is_some_and(|(((created, submitted), confirmed), checked)| {
+                created <= submitted && submitted <= confirmed && confirmed <= checked
+            });
+        let failed_terminal_safe = state == "failed"
+            && opportunity_state == Some("failed")
+            && decision_status == Some("failed")
+            && value_string(row, "decisionSignature") == value_string(row, "signature")
+            && identity_ok
+            && broadcast_evidence_ordered
+            && failed_lifecycle_ordered
+            && submitted_slot
+                .zip(rpc_slot)
+                .is_some_and(|(submitted, rpc)| submitted > 0 && submitted <= rpc)
+            && value_bool(row, "rpcFound") == Some(true)
+            && value_bool(row, "rpcFinalized") == Some(true)
+            && value_bool(row, "rpcSuccessful") == Some(false)
+            && rpc_slot == confirmed_slot;
+        let broadcast_count = value_i64(row, "broadcastCount");
+        let last_valid_block_height = value_i64(row, "lastValidBlockHeight");
+        let expiry_height_proven = rpc_finalized_block_height
+            .zip(last_valid_block_height)
+            .is_some_and(|(current, last_valid)| current > last_valid)
+            && match broadcast_count {
+                Some(0) => {
+                    row.get("lastBroadcastAt").is_some_and(Value::is_null)
+                        && row
+                            .get("expiryObservedBlockHeight")
+                            .is_some_and(Value::is_null)
+                        && row.get("effectCheckSlot").is_some_and(Value::is_null)
+                }
+                Some(count) if count > 0 => {
+                    let pre_route_slot = value_i64(row, "preTargetSnapshotObservedSlot")
+                        .into_iter()
+                        .chain(
+                            plan_i64(row, "decisionExecutionPlan", "idle_observed_slot").or_else(
+                                || plan_i64(row, "decisionExecutionPlan", "observed_slot"),
+                            ),
+                        )
+                        .max()
+                        .unwrap_or_default();
+                    value_i64(row, "expiryObservedBlockHeight")
+                        .zip(last_valid_block_height)
+                        .zip(rpc_finalized_block_height)
+                        .is_some_and(|((observed, last_valid), current)| {
+                            observed > last_valid && observed <= current
+                        })
+                        && last_broadcast_at.is_some()
+                        && value_i64(row, "effectCheckSlot").is_some_and(|slot| {
+                            slot > pre_route_slot
+                                && rpc_finalized_slot.is_some_and(|current| slot <= current)
+                        })
+                }
+                _ => false,
+            };
+        let expired_lifecycle_ordered =
+            created_at
+                .zip(last_status_checked_at)
+                .is_some_and(|(created, checked)| {
+                    created <= checked
+                        && last_broadcast_at
+                            .is_none_or(|broadcast| created <= broadcast && broadcast <= checked)
+                });
+        let expired_terminal_safe = state == "expired"
+            && opportunity_state == Some("failed")
+            && decision_status == Some("failed")
+            && identity_ok
+            && expired_lifecycle_ordered
+            && expiry_height_proven
+            && value_bool(row, "rpcFound") == Some(false)
+            && value_bool(row, "rpcFinalized") == Some(false)
+            && value_bool(row, "rpcSuccessful") == Some(false)
+            && row.get("rpcSlot").is_some_and(Value::is_null);
+        let terminal_outcome_safe = match state {
+            "reconciled" => final_effect,
+            "failed" => failed_terminal_safe,
+            "expired" => expired_terminal_safe,
+            _ => false,
+        };
+        if !terminal_outcome_safe {
+            unsafe_terminal_outcome_count += 1;
+        }
+        if state == "reconciled" {
+            reconciled_movement_count += 1;
             if final_effect {
                 fully_proven_count += 1;
             }
+            match route_kind {
+                Some("same_mint") if source.is_some() => reconciled_reserve_count += 1,
+                Some("idle_vault_deposit") if source.is_none() => {
+                    reconciled_idle_deposit_count += 1;
+                }
+                _ => {}
+            }
             if mint == Some(usdc_mint.as_str()) {
-                if source == Some(main_reserve.as_str()) {
+                if route_kind == Some("same_mint") && source == Some(main_reserve.as_str()) {
                     main_outflow += i128::from(amount.unwrap_or_default());
                     if vault_id.is_some_and(|id| baseline_cohort_vaults.contains(&id)) {
                         baseline_cohort_main_outflow += i128::from(amount.unwrap_or_default());
                     }
                 }
-                if target == Some(main_reserve.as_str()) {
+                if matches!(route_kind, Some("same_mint" | "idle_vault_deposit"))
+                    && target == Some(main_reserve.as_str())
+                {
                     main_inflow += i128::from(amount.unwrap_or_default());
                     if vault_id.is_some_and(|id| baseline_cohort_vaults.contains(&id)) {
                         baseline_cohort_main_inflow += i128::from(amount.unwrap_or_default());
@@ -8216,16 +8644,28 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
                 }
             }
         }
-        all_rows_well_formed &= identity_ok;
+        all_rows_well_formed &= identity_ok
+            && value_bool(row, "routeEffectProven") == Some(route_effect)
+            && value_bool(row, "terminalOutcomeSafe") == Some(terminal_outcome_safe)
+            && value_bool(row, "finalizedSuccess")
+                == Some(
+                    value_bool(row, "rpcFound") == Some(true)
+                        && value_bool(row, "rpcFinalized") == Some(true)
+                        && value_bool(row, "rpcSuccessful") == Some(true)
+                        && rpc_slot == confirmed_slot,
+                );
     }
     let unique_identifiers = identifiers.len() == rows.len();
     let raw_counts_match = value_i64(movement, "submissionCount") == i64::try_from(rows.len()).ok()
         && value_i64(movement, "nonterminalSubmissionCount") == Some(nonterminal_count)
         && value_i64(movement, "effectAmbiguousCount") == Some(ambiguous_count)
+        && value_i64(movement, "reconciledMovementCount") == Some(reconciled_movement_count)
         && value_i64(movement, "reconciledReserveMovementCount") == Some(reconciled_reserve_count)
+        && value_i64(movement, "reconciledIdleDepositCount") == Some(reconciled_idle_deposit_count)
         && value_i64(movement, "fullyFinalizedAndReconciledEffectCount")
             == Some(fully_proven_count)
-        && value_i64(movement, "economicFailureCount") == Some(economic_failure_count);
+        && value_i64(movement, "economicFailureCount") == Some(economic_failure_count)
+        && value_i64(movement, "unsafeTerminalOutcomeCount") == Some(unsafe_terminal_outcome_count);
     let baseline = value_i64(main, "baselineAmountRaw");
     let deposits = value_i64(main, "postBaselineCohortDepositAmountRaw");
     let current_baseline_cohort = value_i64(main, "currentBaselineCohortAmountRaw");
@@ -8299,6 +8739,7 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
     let terminal_counters_zero = ambiguous_count == 0
         && nonterminal_count == 0
         && economic_failure_count == 0
+        && unsafe_terminal_outcome_count == 0
         && value_i64(movement, "databaseDeadlockCount") == Some(0)
         && value_i64(movement, "duplicateMovementCount") == Some(0)
         && value_i64(queue, "staleActiveDecisionCount") == Some(0)
@@ -8308,12 +8749,15 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
         && value_bool(movement, "available") == Some(true)
         && cutover_bound
         && value_bool(movement, "rpcFinalityAvailable") == Some(true)
+        && rpc_finalized_block_height.is_some_and(|height| height > 0)
+        && rpc_finalized_slot.is_some_and(|slot| slot > 0)
         && !rows.is_empty()
         && all_rows_well_formed
         && unique_identifiers
         && raw_counts_match
         && reconciled_reserve_count > 0
-        && fully_proven_count == reconciled_reserve_count
+        && reconciled_reserve_count + reconciled_idle_deposit_count == reconciled_movement_count
+        && fully_proven_count == reconciled_movement_count
         && baseline_reduction_pass
         && positions_match
         && slos_pass
@@ -8331,7 +8775,10 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
             "recomputedNonterminalCount": nonterminal_count,
             "recomputedAmbiguousCount": ambiguous_count,
             "recomputedEconomicFailureCount": economic_failure_count,
+            "recomputedUnsafeTerminalOutcomeCount": unsafe_terminal_outcome_count,
+            "recomputedReconciledMovementCount": reconciled_movement_count,
             "recomputedReconciledReserveMovementCount": reconciled_reserve_count,
+            "recomputedReconciledIdleDepositCount": reconciled_idle_deposit_count,
             "recomputedFullyFinalizedEffectCount": fully_proven_count,
             "recomputedMainOutflowRaw": main_outflow,
             "recomputedMainInflowRaw": main_inflow,
