@@ -10,6 +10,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use loyal_actions::{KAMINO_MAIN_USDC_RESERVE, USDC_MINT};
 use loyal_yield_orchestrator::fleet_orchestration::{
     classify_authoritative_signature_status, evaluate_economics, evaluate_fresh_route_economics,
     fleet_worker_role_probe, functional_stuck_stage_fixture, functional_worker_resilience_fixture,
@@ -45,7 +46,23 @@ use solana_sdk::signature::{Keypair, Signer};
 use sqlx::{postgres::PgConnectOptions, Row};
 
 const TEN_SECONDS_MILLIS: u128 = 10_000;
-const VERIFIED_MIGRATIONS: [(i64, &str, &str); 5] = [
+const PRODUCTION_EVIDENCE_MAX_AGE: chrono::Duration = chrono::Duration::hours(1);
+const PRODUCTION_EVIDENCE_MAX_FUTURE_SKEW: chrono::Duration = chrono::Duration::minutes(5);
+const PRODUCTION_CLUSTER: &str = "mainnet-beta";
+const STANDARD_POLICY_PUBKEY: &str = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5";
+const ADDRESS_LOOKUP_TABLE_PROGRAM_ID: &str = "AddressLookupTab1e1111111111111111111111111";
+const MATERIAL_STAGE_MAX_AGE_SECONDS: i64 = 600;
+const COMPLETE_SWEEP_MAX_AGE_SECONDS: i64 = 120;
+const MATERIAL_PRINCIPAL_USD_MICROS: i64 = 1_000_000_000;
+const PRODUCTION_SERVICE_NAMES: [&str; 6] = [
+    "loyal-fleet-opportunity-planner",
+    "loyal-fleet-route-revalidator",
+    "loyal-fleet-route-executor",
+    "loyal-fleet-route-confirmer",
+    "loyal-fleet-route-reconciler",
+    "loyal-route-lookup-table-provisioner",
+];
+const VERIFIED_MIGRATIONS: [(i64, &str, &str); 6] = [
     (
         23,
         "value_priority_rebalance_queue",
@@ -70,6 +87,11 @@ const VERIFIED_MIGRATIONS: [(i64, &str, &str); 5] = [
         27,
         "rebalance_opportunity_attempt_generations",
         "0027_rebalance_opportunity_attempt_generations.sql",
+    ),
+    (
+        28,
+        "reusable_alt_terminal_repair",
+        "0028_reusable_alt_terminal_repair.sql",
     ),
 ];
 
@@ -124,12 +146,83 @@ struct LocalEvidence {
 
 struct Cli {
     implementation: bool,
+    end_state: bool,
     json_output: bool,
     database_url: Option<String>,
     isolated_database: bool,
     collect_repository_evidence: bool,
     repository_root: Option<PathBuf>,
     runtime_evidence_json: Option<PathBuf>,
+    production_evidence_json: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProductionEvidenceV1 {
+    schema_version: u32,
+    event: String,
+    collected_at: DateTime<Utc>,
+    captured_at: DateTime<Utc>,
+    head_commit: Option<String>,
+    scope: ProductionEvidenceScope,
+    source: ProductionEvidenceSource,
+    measurements: ProductionMeasurements,
+    #[serde(rename = "recomputedVerdicts")]
+    _recomputed_verdicts: Value,
+    caller_verdicts_accepted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProductionEvidenceScope {
+    cluster: String,
+    render_environment_id: String,
+    cutover_at: Option<DateTime<Utc>>,
+    baseline_path_supplied: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProductionEvidenceSource {
+    repository_head: Option<String>,
+    tracked_worktree_dirty: bool,
+    render_yaml_sha256: String,
+    collector_source: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProductionMeasurements {
+    render: Value,
+    database: ProductionDatabaseMeasurements,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProductionDatabaseMeasurements {
+    migrations: Value,
+    queue: Value,
+    positions: Value,
+    movement: Value,
+    #[serde(default)]
+    alt_repair: Option<Value>,
+}
+
+struct ProductionEvidenceBinding {
+    artifact: ProductionEvidenceV1,
+    repository_root: PathBuf,
+    head_commit: String,
+    render_yaml_sha256: String,
+}
+
+#[derive(Debug)]
+struct ExpectedProductionService {
+    name: String,
+    image: String,
+    command: String,
+    pre_deploy_command: String,
+    plan: String,
+    env_keys: BTreeSet<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1083,6 +1176,7 @@ fn collect_local_evidence(repository_root: &Path) -> Result<LocalEvidence, Box<d
                     ("--concurrency", "16"),
                     ("--batch-size", "32"),
                     ("--poll-interval-milliseconds", "250"),
+                    ("--position-sweep-interval-seconds", "300"),
                 ],
             ),
             "priority_provisioner" => (
@@ -6441,7 +6535,7 @@ async fn migration_repository_checks(
             json!({"migrations": ledger_evidence}),
         ),
         subcheck(
-            "migration_sql_23_through_27_reexecutes_in_rolled_back_transaction",
+            "migration_sql_23_through_28_reexecutes_in_rolled_back_transaction",
             reapply_result.is_ok(),
             json!({
                 "transaction": "ROLLED_BACK",
@@ -6839,18 +6933,1399 @@ fn implementation_checks(
     ])
 }
 
+fn production_expected_services(
+    repository_root: &Path,
+) -> Result<Vec<ExpectedProductionService>, Box<dyn Error>> {
+    let render_yaml = fs::read_to_string(repository_root.join("render.yaml"))?;
+    let production = production_environment(&render_yaml)
+        .ok_or("render.yaml has no loyal-yield-light-workers production environment")?;
+    let blocks = service_blocks(production);
+    PRODUCTION_SERVICE_NAMES
+        .iter()
+        .map(|name| {
+            let matching = blocks
+                .iter()
+                .filter(|block| yaml_scalar(block, "name") == Some(*name))
+                .collect::<Vec<_>>();
+            if matching.len() != 1 {
+                return Err(format!(
+                    "render.yaml must declare exactly one production service named {name}"
+                )
+                .into());
+            }
+            let block = matching[0];
+            Ok(ExpectedProductionService {
+                name: (*name).to_owned(),
+                image: yaml_scalar(block, "url")
+                    .ok_or_else(|| format!("{name} has no image URL"))?
+                    .to_owned(),
+                command: yaml_scalar(block, "dockerCommand")
+                    .ok_or_else(|| format!("{name} has no dockerCommand"))?
+                    .to_owned(),
+                pre_deploy_command: yaml_scalar(block, "preDeployCommand")
+                    .ok_or_else(|| format!("{name} has no preDeployCommand"))?
+                    .to_owned(),
+                plan: yaml_scalar(block, "plan")
+                    .ok_or_else(|| format!("{name} has no plan"))?
+                    .to_owned(),
+                env_keys: service_env_keys(block)
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
+fn load_production_evidence(
+    path: &Path,
+    repository_root: &Path,
+) -> Result<ProductionEvidenceBinding, Box<dyn Error>> {
+    let bytes = fs::read(path)?;
+    let artifact: ProductionEvidenceV1 = serde_json::from_slice(&bytes)?;
+    if artifact.schema_version != 1 {
+        return Err(format!(
+            "production evidence schemaVersion must be 1, got {}",
+            artifact.schema_version
+        )
+        .into());
+    }
+    if artifact.event != "fleet_orchestration_production_evidence" {
+        return Err("production evidence event is not recognized".into());
+    }
+    let now = Utc::now();
+    if artifact.captured_at < now - PRODUCTION_EVIDENCE_MAX_AGE
+        || artifact.captured_at > now + PRODUCTION_EVIDENCE_MAX_FUTURE_SKEW
+        || artifact.collected_at < now - PRODUCTION_EVIDENCE_MAX_AGE
+        || artifact.collected_at > now + PRODUCTION_EVIDENCE_MAX_FUTURE_SKEW
+        || artifact.collected_at != artifact.captured_at
+    {
+        return Err("production evidence must be one fresh internally consistent capture from the last hour".into());
+    }
+    if artifact.scope.cluster != PRODUCTION_CLUSTER {
+        return Err(format!("production evidence cluster must be {PRODUCTION_CLUSTER}").into());
+    }
+    if !artifact.scope.render_environment_id.starts_with("evm-") {
+        return Err("production evidence has an invalid Render environment ID".into());
+    }
+    if artifact.scope.cutover_at.is_none() || !artifact.scope.baseline_path_supplied {
+        return Err(
+            "end-state evidence requires a cutover timestamp and a supplied pre-cutover baseline"
+                .into(),
+        );
+    }
+    if artifact.caller_verdicts_accepted {
+        return Err("production evidence unexpectedly accepts caller verdicts".into());
+    }
+    if artifact.source.tracked_worktree_dirty {
+        return Err("production evidence was captured from a dirty tracked worktree".into());
+    }
+    if !artifact.source.collector_source.contains("measurements") {
+        return Err("production evidence collector provenance is missing".into());
+    }
+    let head_commit = git_stdout(repository_root, &["rev-parse", "HEAD"])
+        .ok_or("cannot read checkout HEAD for production evidence binding")?;
+    let tracked_status = git_stdout(
+        repository_root,
+        &["status", "--porcelain", "--untracked-files=no"],
+    )
+    .ok_or("cannot inspect checkout worktree for production evidence binding")?;
+    if !tracked_status.is_empty() {
+        return Err("end-state verification requires a clean tracked checkout".into());
+    }
+    if artifact.head_commit.as_deref() != Some(head_commit.as_str())
+        || artifact.source.repository_head.as_deref() != Some(head_commit.as_str())
+    {
+        return Err("production evidence HEAD does not match the clean checkout".into());
+    }
+    let render_yaml = fs::read(repository_root.join("render.yaml"))?;
+    let render_yaml_sha256 = sha256_hex(&render_yaml);
+    if artifact.source.render_yaml_sha256 != render_yaml_sha256 {
+        return Err("production evidence render.yaml digest does not match the checkout".into());
+    }
+    if artifact
+        .measurements
+        .render
+        .get("environmentId")
+        .and_then(Value::as_str)
+        != Some(artifact.scope.render_environment_id.as_str())
+    {
+        return Err(
+            "production Render measurements are not bound to the scoped environment".into(),
+        );
+    }
+
+    Ok(ProductionEvidenceBinding {
+        artifact,
+        repository_root: repository_root.to_path_buf(),
+        head_commit,
+        render_yaml_sha256,
+    })
+}
+
+fn value_i64(value: &Value, key: &str) -> Option<i64> {
+    value.get(key).and_then(Value::as_i64)
+}
+
+fn value_bool(value: &Value, key: &str) -> Option<bool> {
+    value.get(key).and_then(Value::as_bool)
+}
+
+fn value_string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(Value::as_str)
+}
+
+fn exact_object_keys(value: &Value, expected: &[&str]) -> bool {
+    value.as_object().is_some_and(|object| {
+        object.len() == expected.len() && expected.iter().all(|key| object.contains_key(*key))
+    })
+}
+
+fn migration_measurement_schema_known(value: &Value) -> bool {
+    exact_object_keys(value, &["ledgerExists", "required", "pass"])
+        && value
+            .get("required")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| {
+                rows.iter().all(|row| {
+                    exact_object_keys(
+                        row,
+                        &[
+                            "version",
+                            "name",
+                            "sourceChecksum",
+                            "applied",
+                            "appliedName",
+                            "appliedChecksum",
+                            "appliedAt",
+                            "matchesSource",
+                        ],
+                    )
+                })
+            })
+}
+
+fn render_measurement_schema_known(value: &Value) -> bool {
+    if !exact_object_keys(
+        value,
+        &[
+            "available",
+            "environmentId",
+            "expectedImageReferences",
+            "roles",
+            "allRolesMatch",
+            "deployDigests",
+            "oneImmutableDigest",
+            "serialMonitor",
+            "firstFleetSenderDeployStartedAt",
+            "serialSuspendedBeforeFleetSenderStarted",
+            "pass",
+        ],
+    ) {
+        return false;
+    }
+    let roles_known = value
+        .get("roles")
+        .and_then(Value::as_array)
+        .is_some_and(|roles| {
+            roles.iter().all(|role| {
+                exact_object_keys(
+                    role,
+                    &[
+                        "name",
+                        "id",
+                        "present",
+                        "matches",
+                        "suspended",
+                        "runtime",
+                        "plan",
+                        "numInstances",
+                        "image",
+                        "command",
+                        "preDeployCommand",
+                        "envKeys",
+                        "envBoundaryPasses",
+                        "envBoundaryFailures",
+                        "blueprintEnvKeys",
+                        "blueprintEnvBoundaryPasses",
+                        "blueprintEnvBoundaryFailures",
+                        "latestDeploy",
+                        "deployReadError",
+                        "envReadError",
+                    ],
+                ) && role.get("latestDeploy").is_some_and(|deploy| {
+                    exact_object_keys(
+                        deploy,
+                        &[
+                            "id",
+                            "status",
+                            "imageRef",
+                            "imageDigest",
+                            "registryCredential",
+                            "startedAt",
+                            "finishedAt",
+                        ],
+                    )
+                })
+            })
+        });
+    let serial_known = value.get("serialMonitor").is_some_and(|serial| {
+        exact_object_keys(
+            serial,
+            &[
+                "id",
+                "present",
+                "suspended",
+                "scaledToZero",
+                "executeFlagAbsent",
+                "currentlyIncapableOfSending",
+                "command",
+                "suspensionEvents",
+                "eventReadError",
+            ],
+        ) && serial
+            .get("suspensionEvents")
+            .and_then(Value::as_array)
+            .is_some_and(|events| {
+                events
+                    .iter()
+                    .all(|event| exact_object_keys(event, &["type", "timestamp"]))
+            })
+    });
+    roles_known && serial_known
+}
+
+fn queue_measurement_schema_known(value: &Value) -> bool {
+    const STATUS_KEYS: &[&str] = &[
+        "opportunity_state",
+        "opportunity_count",
+        "principal_usd_micros",
+        "annual_yield_gain_usd_micros",
+        "yield_gain_usd_micros_per_hour",
+        "oldest_age_seconds",
+        "oldest_state_age_seconds",
+        "expired_lease_count",
+        "pending_outbox_count",
+        "pending_submission_count",
+        "pending_compiled_fee_lamports",
+        "expiry_check_pending_count",
+        "effect_ambiguous_count",
+        "oldest_pending_submission_age_seconds",
+        "sender_submission_count",
+        "oldest_sender_state_age_seconds",
+        "confirmer_submission_count",
+        "oldest_confirmer_state_age_seconds",
+        "reconciler_submission_count",
+        "oldest_reconciler_state_age_seconds",
+        "planner_last_seen_age_seconds",
+        "full_sweep_age_seconds",
+        "complete_frontier",
+        "observed_vault_count",
+        "planned_opportunity_count",
+        "planned_selected_count",
+        "planned_deferred_count",
+        "latest_market_epoch_id",
+        "latest_market_epoch_age_seconds",
+        "latest_market_epoch_expires_in_seconds",
+        "latest_market_epoch_expired",
+        "planner_epoch_matches_latest",
+        "waiting_alt_opportunity_count",
+        "waiting_alt_principal_usd_micros",
+        "waiting_alt_yield_gain_usd_micros_per_hour",
+        "oldest_waiting_alt_state_age_seconds",
+        "ready_opportunity_count",
+        "ready_principal_usd_micros",
+        "ready_yield_gain_usd_micros_per_hour",
+        "oldest_ready_state_age_seconds",
+        "current_epoch_opportunity_count",
+        "current_epoch_principal_usd_micros",
+        "current_epoch_recoverable_yield_usd_micros_per_hour",
+        "current_epoch_submitted_within_10s_yield_ppm",
+        "current_epoch_submitted_within_2m_yield_ppm",
+        "current_epoch_submitted_within_10m_yield_ppm",
+        "current_epoch_confirmed_within_30s_yield_ppm",
+        "current_epoch_submission_p95_milliseconds",
+        "current_epoch_confirmation_p95_milliseconds",
+        "current_epoch_compiled_fee_lamports",
+    ];
+    const TOP_KEYS: &[&str] = &[
+        "id",
+        "vault_id",
+        "source_reserve",
+        "target_reserve",
+        "liquidity_mint",
+        "principal_usd_micros",
+        "annual_yield_gain_usd_micros",
+        "expected_net_gain_usd_micros",
+        "economic_priority",
+        "opportunity_state",
+        "terminal_reason",
+        "state_age_seconds",
+        "first_submitted_at",
+        "first_confirmed_at",
+    ];
+    exact_object_keys(
+        value,
+        &[
+            "available",
+            "statusRows",
+            "activeDecisionsByStatus",
+            "activeDecisionCount",
+            "staleActiveDecisionCount",
+            "duplicateActiveVaultMovementCount",
+            "materialStuckOverTenMinutesCount",
+            "targetCapacityOversubscriptionCount",
+            "highValueOrderingInversionCount",
+            "topCurrentEpochOpportunities",
+        ],
+    ) && value
+        .get("statusRows")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| rows.iter().all(|row| exact_object_keys(row, STATUS_KEYS)))
+        && value
+            .get("topCurrentEpochOpportunities")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| rows.iter().all(|row| exact_object_keys(row, TOP_KEYS)))
+}
+
+fn position_measurement_schema_known(value: &Value) -> bool {
+    exact_object_keys(value, &["available", "mainUsdc", "reserveAggregates"])
+        && value.get("mainUsdc").is_some_and(|main| {
+            exact_object_keys(
+                main,
+                &[
+                    "reserve",
+                    "liquidityMint",
+                    "amountRaw",
+                    "amountUsdc",
+                    "vaultCount",
+                    "vaultIds",
+                    "oldestObservedAt",
+                    "newestObservedAt",
+                    "minimumObservedSlot",
+                    "maximumObservedSlot",
+                    "freshnessMaximumAgeSeconds",
+                    "staleRowCount",
+                    "freshForBaseline",
+                ],
+            )
+        })
+        && value
+            .get("reserveAggregates")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| {
+                rows.iter().all(|row| {
+                    exact_object_keys(
+                        row,
+                        &[
+                            "reserve",
+                            "liquidity_mint",
+                            "amount_raw",
+                            "vault_count",
+                            "oldest_observed_at",
+                            "newest_observed_at",
+                            "minimum_observed_slot",
+                            "maximum_observed_slot",
+                        ],
+                    )
+                })
+            })
+}
+
+fn movement_measurement_schema_known(value: &Value) -> bool {
+    const MOVEMENT_KEYS: &[&str] = &[
+        "submissionId",
+        "opportunityId",
+        "decisionId",
+        "vaultId",
+        "signature",
+        "submissionState",
+        "sourceReserve",
+        "targetReserve",
+        "liquidityMint",
+        "amountRaw",
+        "principalUsdMicros",
+        "estimatedEdgeBps",
+        "expectedNetGainUsdMicros",
+        "economicPriority",
+        "estimatedCostLamports",
+        "compiledFeeLamports",
+        "conservativeSolPriceUsdMicros",
+        "compiledFeeUsdMicros",
+        "feeFractionPpm",
+        "feeFractionCapPpm",
+        "economicPass",
+        "createdAt",
+        "submittedAt",
+        "confirmedAt",
+        "reconciledAt",
+        "confirmedSlot",
+        "reconciledSlot",
+        "postSnapshotObservedSlot",
+        "postSnapshotAtOrAboveConfirmation",
+        "preSourceAmountRaw",
+        "postSourceAmountRaw",
+        "preTargetAmountRaw",
+        "postTargetAmountRaw",
+        "sourceDecreasedAndTargetIncreased",
+        "rpcFinalized",
+        "rpcSuccessful",
+        "rpcSlot",
+        "finalizedSuccess",
+    ];
+    exact_object_keys(
+        value,
+        &[
+            "available",
+            "cutoverAt",
+            "rpcFinalityAvailable",
+            "rpcReadError",
+            "submissionCount",
+            "nonterminalSubmissionCount",
+            "effectAmbiguousCount",
+            "reconciledReserveMovementCount",
+            "fullyFinalizedAndReconciledEffectCount",
+            "economicFailureCount",
+            "databaseDeadlockCount",
+            "duplicateMovementCount",
+            "mainUsdc",
+            "movements",
+            "pass",
+            "productionSlos",
+        ],
+    ) && value.get("mainUsdc").is_some_and(|main| {
+        exact_object_keys(
+            main,
+            &[
+                "reserve",
+                "baselineCollectedAt",
+                "baselineAmountRaw",
+                "baselineCohortVaultCount",
+                "postBaselineCohortDepositAmountRaw",
+                "currentAmountRaw",
+                "confirmedOptimizerOutflowRaw",
+                "confirmedOptimizerInflowRaw",
+                "confirmedOptimizerNetOutflowRaw",
+                "depositAdjustedReductionRaw",
+                "reductionAfterDepositsCoversConfirmedNetOutflow",
+            ],
+        )
+    }) && value.get("productionSlos").is_some_and(|slos| {
+        exact_object_keys(
+            slos,
+            &[
+                "currentEpochOpportunityCount",
+                "submissionP95Milliseconds",
+                "submissionP95LimitMilliseconds",
+                "confirmationP95Milliseconds",
+                "confirmationP95LimitMilliseconds",
+                "submittedWithinTwoMinutesYieldPpm",
+                "submittedWithinTwoMinutesMinimumYieldPpm",
+                "submittedWithinTenMinutesYieldPpm",
+                "submittedWithinTenMinutesMinimumYieldPpm",
+                "pass",
+            ],
+        )
+    }) && value
+        .get("movements")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| rows.iter().all(|row| exact_object_keys(row, MOVEMENT_KEYS)))
+}
+
+fn alt_repair_measurement_schema_known(value: &Value) -> bool {
+    exact_object_keys(
+        value,
+        &[
+            "available",
+            "cluster",
+            "finalizedRpcSlot",
+            "altProgramId",
+            "standardPolicyPubkey",
+            "activeOrReferencedTableCount",
+            "activeOrReferencedVerifiedCount",
+            "activeOrReferencedWrongOwnerCount",
+            "activeOrReferencedAuthorityMismatchCount",
+            "activeOrReferencedPrefixMismatchCount",
+            "damagedTableCount",
+            "damagedNonAllocatingCount",
+            "damagedActiveOrPreparingBindingCount",
+            "damagedRunnableOperationCount",
+            "damagedRouteDependencyCount",
+            "historicalTerminalOperationCount",
+            "terminalOperationWithRepairEvidenceCount",
+            "terminalOperationMissingRepairEvidenceCount",
+            "affectedTerminalRequestCount",
+            "affectedRequestSatisfiedOrSuccessorCount",
+            "unresolvedActiveTerminalRequestCount",
+            "validPrefixTableCount",
+            "validPrefixPreservedCount",
+            "staleSuffixRetryCount",
+            "newLegacyOrExactRouteTableCount",
+            "activeAltMutatorCount",
+            "budgetWindowSeconds",
+            "budgetMaximumLamports",
+            "budgetSpentLamports",
+        ],
+    )
+}
+
+fn production_migration_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck {
+    let evidence = &binding.artifact.measurements.database.migrations;
+    let rows = evidence.get("required").and_then(Value::as_array);
+    let ledger_exists = value_bool(evidence, "ledgerExists") == Some(true);
+    let mut row_evidence = Vec::new();
+    let schema_known = migration_measurement_schema_known(evidence);
+    let mut all_match = schema_known
+        && ledger_exists
+        && rows.is_some_and(|rows| rows.len() == VERIFIED_MIGRATIONS.len());
+    for (version, expected_name, file_name) in VERIFIED_MIGRATIONS {
+        let path = binding
+            .repository_root
+            .join("crates/loyal-yield-orchestrator/migrations")
+            .join(file_name);
+        let expected_checksum = fs::read(path)
+            .map(|bytes| sha256_hex(&bytes))
+            .unwrap_or_default();
+        let matching = rows
+            .into_iter()
+            .flatten()
+            .filter(|row| value_i64(row, "version") == Some(version))
+            .collect::<Vec<_>>();
+        let row_matches = matching.len() == 1
+            && !expected_checksum.is_empty()
+            && value_string(matching[0], "name") == Some(expected_name)
+            && value_string(matching[0], "appliedName") == Some(expected_name)
+            && value_string(matching[0], "sourceChecksum") == Some(expected_checksum.as_str())
+            && value_string(matching[0], "appliedChecksum") == Some(expected_checksum.as_str())
+            && value_bool(matching[0], "applied") == Some(true)
+            && matching[0]
+                .get("appliedAt")
+                .and_then(Value::as_str)
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .is_some();
+        all_match &= row_matches;
+        row_evidence.push(json!({
+            "version": version,
+            "expectedName": expected_name,
+            "expectedChecksum": expected_checksum,
+            "matchingRows": matching.len(),
+            "matches": row_matches,
+        }));
+    }
+    subcheck(
+        "production_migrations_23_through_28_match_repository_bytes",
+        all_match,
+        json!({
+            "ledgerExists": ledger_exists,
+            "measurementSchemaKnown": schema_known,
+            "required": row_evidence,
+            "embeddedPassIgnored": evidence.get("pass"),
+        }),
+    )
+}
+
+fn production_render_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck {
+    let expected = match production_expected_services(&binding.repository_root) {
+        Ok(expected) => expected,
+        Err(error) => {
+            return subcheck(
+                "six_live_roles_match_clean_blueprint_and_one_digest",
+                false,
+                json!({"error": error.to_string()}),
+            )
+        }
+    };
+    let render = &binding.artifact.measurements.render;
+    let schema_known = render_measurement_schema_known(render);
+    let roles = render.get("roles").and_then(Value::as_array);
+    let mut role_evidence = Vec::new();
+    let mut digests = BTreeSet::new();
+    let mut all_roles_match = schema_known
+        && value_bool(render, "available") == Some(true)
+        && roles.is_some_and(|roles| roles.len() == expected.len());
+    let mut sender_started = Vec::new();
+    for expected_role in &expected {
+        let matching = roles
+            .into_iter()
+            .flatten()
+            .filter(|role| value_string(role, "name") == Some(expected_role.name.as_str()))
+            .collect::<Vec<_>>();
+        let role = matching.first().copied();
+        let live_env = role
+            .and_then(|role| role.get("envKeys"))
+            .and_then(Value::as_array)
+            .map(|keys| {
+                keys.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<BTreeSet<_>>()
+            });
+        let deploy = role.and_then(|role| role.get("latestDeploy"));
+        let digest = deploy.and_then(|deploy| value_string(deploy, "imageDigest"));
+        if let Some(digest) = digest {
+            digests.insert(digest.to_owned());
+        }
+        let started_at = deploy
+            .and_then(|deploy| value_string(deploy, "startedAt"))
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&Utc));
+        if matches!(
+            expected_role.name.as_str(),
+            "loyal-fleet-route-revalidator" | "loyal-fleet-route-executor"
+        ) {
+            if let Some(started_at) = started_at {
+                sender_started.push(started_at);
+            }
+        }
+        let role_matches = matching.len() == 1
+            && role.and_then(|role| value_bool(role, "present")) == Some(true)
+            && role.and_then(|role| value_string(role, "suspended")) == Some("not_suspended")
+            && role.and_then(|role| value_string(role, "runtime")) == Some("image")
+            && role.and_then(|role| value_string(role, "plan"))
+                == Some(expected_role.plan.as_str())
+            && role.and_then(|role| value_string(role, "image"))
+                == Some(expected_role.image.as_str())
+            && role.and_then(|role| value_string(role, "command"))
+                == Some(expected_role.command.as_str())
+            && role.and_then(|role| value_string(role, "preDeployCommand"))
+                == Some(expected_role.pre_deploy_command.as_str())
+            && live_env.as_ref() == Some(&expected_role.env_keys)
+            && deploy.and_then(|deploy| value_string(deploy, "status")) == Some("live")
+            && deploy.and_then(|deploy| value_string(deploy, "imageRef"))
+                == Some(expected_role.image.as_str())
+            && digest.is_some_and(|digest| digest.starts_with("sha256:"))
+            && deploy.and_then(|deploy| value_string(deploy, "registryCredential"))
+                == Some("loyal-ghcr")
+            && started_at.is_some();
+        all_roles_match &= role_matches;
+        role_evidence.push(json!({
+            "name": expected_role.name,
+            "matchingRows": matching.len(),
+            "matchesBlueprintAndLiveDeploy": role_matches,
+            "image": role.and_then(|role| value_string(role, "image")),
+            "command": role.and_then(|role| value_string(role, "command")),
+            "envKeys": live_env,
+            "deployDigest": digest,
+            "deployStartedAt": started_at,
+        }));
+    }
+    let expected_images = expected
+        .iter()
+        .map(|service| service.image.as_str())
+        .collect::<BTreeSet<_>>();
+    let one_image_and_digest = expected_images.len() == 1 && digests.len() == 1;
+    let serial = render.get("serialMonitor");
+    let serial_present = serial.and_then(|value| value_bool(value, "present")) == Some(true);
+    let serial_command = serial
+        .and_then(|value| value_string(value, "command"))
+        .unwrap_or_default();
+    let serial_incapable = !serial_present
+        || serial.and_then(|value| value_bool(value, "suspended")) == Some(true)
+        || serial.and_then(|value| value_bool(value, "scaledToZero")) == Some(true)
+        || !serial_command
+            .split_ascii_whitespace()
+            .any(|token| token == "--execute");
+    let latest_serial_suspension = serial
+        .and_then(|value| value.get("suspensionEvents"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|event| value_string(event, "type").is_some_and(|kind| kind.contains("suspend")))
+        .filter_map(|event| {
+            value_string(event, "timestamp")
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.with_timezone(&Utc))
+        })
+        .max();
+    let first_sender_started = sender_started.into_iter().min();
+    let serial_preceded_senders = match (
+        serial_present,
+        latest_serial_suspension,
+        first_sender_started,
+    ) {
+        (false, _, Some(_)) => true,
+        (true, Some(suspended), Some(sender)) => suspended <= sender,
+        _ => false,
+    };
+    let passed =
+        all_roles_match && one_image_and_digest && serial_incapable && serial_preceded_senders;
+    subcheck(
+        "six_live_roles_match_clean_blueprint_and_one_digest",
+        passed,
+        json!({
+            "roles": role_evidence,
+            "measurementSchemaKnown": schema_known,
+            "oneBlueprintImage": expected_images.len() == 1,
+            "liveDeployDigests": digests,
+            "oneLiveDigest": digests.len() == 1,
+            "serialPresent": serial_present,
+            "serialCurrentlyIncapableOfSending": serial_incapable,
+            "serialSuspendedAt": latest_serial_suspension,
+            "firstFleetSenderDeployStartedAt": first_sender_started,
+            "serialSuspendedBeforeFleetSenderStarted": serial_preceded_senders,
+            "embeddedPassesIgnored": {
+                "allRolesMatch": render.get("allRolesMatch"),
+                "oneImmutableDigest": render.get("oneImmutableDigest"),
+                "serialOrdering": render.get("serialSuspendedBeforeFleetSenderStarted"),
+                "pass": render.get("pass"),
+            },
+        }),
+    )
+}
+
+fn production_alt_repair_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck {
+    let Some(evidence) = binding.artifact.measurements.database.alt_repair.as_ref() else {
+        return subcheck(
+            "production_alt_damage_is_fenced_repaired_and_budgeted",
+            false,
+            json!({"error": "measurements.database.altRepair is missing"}),
+        );
+    };
+    let schema_known = alt_repair_measurement_schema_known(evidence);
+    let active = value_i64(evidence, "activeOrReferencedTableCount");
+    let verified = value_i64(evidence, "activeOrReferencedVerifiedCount");
+    let damaged = value_i64(evidence, "damagedTableCount");
+    let damaged_nonallocating = value_i64(evidence, "damagedNonAllocatingCount");
+    let terminal = value_i64(evidence, "historicalTerminalOperationCount");
+    let terminal_repaired = value_i64(evidence, "terminalOperationWithRepairEvidenceCount");
+    let affected_requests = value_i64(evidence, "affectedTerminalRequestCount");
+    let resolved_requests = value_i64(evidence, "affectedRequestSatisfiedOrSuccessorCount");
+    let valid_prefixes = value_i64(evidence, "validPrefixTableCount");
+    let preserved_prefixes = value_i64(evidence, "validPrefixPreservedCount");
+    let maximum_lamports = value_i64(evidence, "budgetMaximumLamports");
+    let spent_lamports = value_i64(evidence, "budgetSpentLamports");
+    let exact_required_counters_present = [
+        active,
+        verified,
+        damaged,
+        damaged_nonallocating,
+        terminal,
+        terminal_repaired,
+        affected_requests,
+        resolved_requests,
+        valid_prefixes,
+        preserved_prefixes,
+        maximum_lamports,
+        spent_lamports,
+        value_i64(evidence, "activeOrReferencedWrongOwnerCount"),
+        value_i64(evidence, "activeOrReferencedAuthorityMismatchCount"),
+        value_i64(evidence, "activeOrReferencedPrefixMismatchCount"),
+        value_i64(evidence, "damagedActiveOrPreparingBindingCount"),
+        value_i64(evidence, "damagedRunnableOperationCount"),
+        value_i64(evidence, "damagedRouteDependencyCount"),
+        value_i64(evidence, "terminalOperationMissingRepairEvidenceCount"),
+        value_i64(evidence, "unresolvedActiveTerminalRequestCount"),
+        value_i64(evidence, "staleSuffixRetryCount"),
+        value_i64(evidence, "newLegacyOrExactRouteTableCount"),
+        value_i64(evidence, "activeAltMutatorCount"),
+        value_i64(evidence, "budgetWindowSeconds"),
+        value_i64(evidence, "finalizedRpcSlot"),
+    ]
+    .into_iter()
+    .all(|value| value.is_some());
+    let zero_error_counters = [
+        "activeOrReferencedWrongOwnerCount",
+        "activeOrReferencedAuthorityMismatchCount",
+        "activeOrReferencedPrefixMismatchCount",
+        "damagedActiveOrPreparingBindingCount",
+        "damagedRunnableOperationCount",
+        "damagedRouteDependencyCount",
+        "terminalOperationMissingRepairEvidenceCount",
+        "unresolvedActiveTerminalRequestCount",
+        "staleSuffixRetryCount",
+        "newLegacyOrExactRouteTableCount",
+    ]
+    .into_iter()
+    .all(|key| value_i64(evidence, key) == Some(0));
+    let passed = schema_known
+        && value_bool(evidence, "available") == Some(true)
+        && value_string(evidence, "cluster") == Some(PRODUCTION_CLUSTER)
+        && value_i64(evidence, "finalizedRpcSlot").is_some_and(|slot| slot > 0)
+        && value_string(evidence, "altProgramId") == Some(ADDRESS_LOOKUP_TABLE_PROGRAM_ID)
+        && value_string(evidence, "standardPolicyPubkey") == Some(STANDARD_POLICY_PUBKEY)
+        && exact_required_counters_present
+        && active.is_some_and(|count| count > 0)
+        && active == verified
+        && damaged.is_some_and(|count| count > 0)
+        && damaged == damaged_nonallocating
+        && terminal.is_some_and(|count| count > 0)
+        && terminal == terminal_repaired
+        && affected_requests.is_some_and(|count| count > 0)
+        && affected_requests == resolved_requests
+        && valid_prefixes.is_some_and(|count| count > 0)
+        && valid_prefixes == preserved_prefixes
+        && zero_error_counters
+        && value_i64(evidence, "activeAltMutatorCount") == Some(1)
+        && value_i64(evidence, "budgetWindowSeconds").is_some_and(|seconds| seconds > 0)
+        && maximum_lamports.is_some_and(|maximum| maximum > 0)
+        && spent_lamports.is_some_and(|spent| spent >= 0)
+        && maximum_lamports
+            .zip(spent_lamports)
+            .is_some_and(|(maximum, spent)| spent <= maximum);
+    subcheck(
+        "production_alt_damage_is_fenced_repaired_and_budgeted",
+        passed,
+        json!({
+            "rawMeasurements": evidence,
+            "measurementSchemaKnown": schema_known,
+            "requiredCountersPresent": exact_required_counters_present,
+            "activeTablesEqualVerifiedTables": active == verified,
+            "damagedTablesEqualNonallocatingTables": damaged == damaged_nonallocating,
+            "terminalOperationsEqualRepairEvidence": terminal == terminal_repaired,
+            "affectedRequestsEqualResolvedOrSuccessorRequests": affected_requests == resolved_requests,
+            "validPrefixesEqualPreservedPrefixes": valid_prefixes == preserved_prefixes,
+            "unsafeCountersZero": zero_error_counters,
+            "budgetWithinLimit": maximum_lamports.zip(spent_lamports).is_some_and(|(maximum, spent)| spent <= maximum),
+            "embeddedPassIgnored": evidence.get("pass"),
+        }),
+    )
+}
+
+fn production_alt_mutator_identity_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck {
+    let evidence = binding.artifact.measurements.database.alt_repair.as_ref();
+    let passed = evidence.is_some_and(|evidence| {
+        alt_repair_measurement_schema_known(evidence)
+            && value_bool(evidence, "available") == Some(true)
+            && value_string(evidence, "cluster") == Some(PRODUCTION_CLUSTER)
+            && value_string(evidence, "standardPolicyPubkey") == Some(STANDARD_POLICY_PUBKEY)
+            && value_i64(evidence, "activeAltMutatorCount") == Some(1)
+            && value_i64(evidence, "budgetWindowSeconds").is_some_and(|value| value > 0)
+            && value_i64(evidence, "budgetMaximumLamports").is_some_and(|value| value > 0)
+            && value_i64(evidence, "budgetSpentLamports")
+                .zip(value_i64(evidence, "budgetMaximumLamports"))
+                .is_some_and(|(spent, maximum)| spent >= 0 && spent <= maximum)
+    });
+    subcheck(
+        "one_budgeted_provisioner_uses_standard_policy_identity",
+        passed,
+        json!({
+            "standardPolicyPubkey": evidence.and_then(|value| value.get("standardPolicyPubkey")),
+            "activeAltMutatorCount": evidence.and_then(|value| value.get("activeAltMutatorCount")),
+            "budgetWindowSeconds": evidence.and_then(|value| value.get("budgetWindowSeconds")),
+            "budgetMaximumLamports": evidence.and_then(|value| value.get("budgetMaximumLamports")),
+            "budgetSpentLamports": evidence.and_then(|value| value.get("budgetSpentLamports")),
+        }),
+    )
+}
+
+fn production_deployment_checks(binding: &ProductionEvidenceBinding) -> Vec<VerifierCheck> {
+    let alt_repair = production_alt_repair_subcheck(binding);
+    let alt_failure = (!matches!(alt_repair.verdict, Verdict::Pass)).then_some(alt_repair.name);
+    let migration = production_migration_subcheck(binding);
+    let render = production_render_subcheck(binding);
+    let alt_mutator = production_alt_mutator_identity_subcheck(binding);
+    let cutover_subchecks = vec![migration, render, alt_mutator];
+    let cutover_failure = first_failed(&cutover_subchecks);
+    vec![
+        check(
+            8,
+            "production_alt_damage_recovery",
+            alt_repair.verdict,
+            alt_failure,
+            json!({
+                "sourceBoundHead": binding.head_commit,
+                "cluster": binding.artifact.scope.cluster,
+                "capturedAt": binding.artifact.captured_at,
+            }),
+            vec![alt_repair],
+        ),
+        check(
+            9,
+            "production_migration_and_atomic_executor_cutover",
+            aggregate_subchecks(&cutover_subchecks),
+            cutover_failure,
+            json!({
+                "sourceBoundHead": binding.head_commit,
+                "renderYamlSha256": binding.render_yaml_sha256,
+                "renderEnvironmentId": binding.artifact.scope.render_environment_id,
+                "capturedAt": binding.artifact.captured_at,
+            }),
+            cutover_subchecks,
+        ),
+    ]
+}
+
+fn status_metric<'a>(queue: &'a Value, key: &str) -> Option<&'a Value> {
+    queue.get("statusRows")?.as_array()?.first()?.get(key)
+}
+
+fn status_i64(queue: &Value, key: &str) -> Option<i64> {
+    status_metric(queue, key).and_then(Value::as_i64)
+}
+
+fn production_complete_fleet_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck {
+    let queue = &binding.artifact.measurements.database.queue;
+    let Some(rows) = queue.get("statusRows").and_then(Value::as_array) else {
+        return subcheck(
+            "fresh_complete_epoch_accounts_for_fleet_and_drains_by_value",
+            false,
+            json!({"error": "queue.statusRows is missing"}),
+        );
+    };
+    let schema_known = queue_measurement_schema_known(queue);
+    let aggregate_keys = [
+        "full_sweep_age_seconds",
+        "complete_frontier",
+        "observed_vault_count",
+        "planned_opportunity_count",
+        "planned_selected_count",
+        "planned_deferred_count",
+        "latest_market_epoch_id",
+        "latest_market_epoch_expired",
+        "planner_epoch_matches_latest",
+        "current_epoch_opportunity_count",
+        "current_epoch_principal_usd_micros",
+        "current_epoch_recoverable_yield_usd_micros_per_hour",
+    ];
+    let aggregate_fields_consistent = rows.first().is_some_and(|first| {
+        aggregate_keys
+            .iter()
+            .all(|key| rows.iter().all(|row| row.get(*key) == first.get(*key)))
+    });
+    let fresh_complete_epoch = schema_known
+        && value_bool(queue, "available") == Some(true)
+        && !rows.is_empty()
+        && status_i64(queue, "full_sweep_age_seconds")
+            .is_some_and(|age| (0..=COMPLETE_SWEEP_MAX_AGE_SECONDS).contains(&age))
+        && status_metric(queue, "complete_frontier").and_then(Value::as_bool) == Some(true)
+        && status_metric(queue, "planner_epoch_matches_latest").and_then(Value::as_bool)
+            == Some(true)
+        && status_metric(queue, "latest_market_epoch_expired").and_then(Value::as_bool)
+            == Some(false)
+        && status_i64(queue, "latest_market_epoch_id").is_some_and(|id| id > 0)
+        && status_i64(queue, "observed_vault_count").is_some_and(|count| count > 0)
+        && aggregate_fields_consistent;
+    let selected = status_i64(queue, "planned_selected_count");
+    let deferred = status_i64(queue, "planned_deferred_count");
+    let planned = status_i64(queue, "planned_opportunity_count");
+    let planner_accounting_exact =
+        selected
+            .zip(deferred)
+            .zip(planned)
+            .is_some_and(|((selected, deferred), planned)| {
+                selected >= 0 && deferred >= 0 && planned == selected + deferred
+            });
+    let bounded_stage_ages = [
+        "oldest_waiting_alt_state_age_seconds",
+        "oldest_ready_state_age_seconds",
+        "oldest_sender_state_age_seconds",
+        "oldest_confirmer_state_age_seconds",
+        "oldest_reconciler_state_age_seconds",
+    ]
+    .into_iter()
+    .all(|key| {
+        status_metric(queue, key).map_or(false, |value| {
+            value.is_null()
+                || value
+                    .as_i64()
+                    .is_some_and(|age| (0..=MATERIAL_STAGE_MAX_AGE_SECONDS).contains(&age))
+        })
+    });
+    let status_counts_well_formed = rows.iter().all(|row| {
+        value_i64(row, "opportunity_count").is_some_and(|count| count >= 0)
+            && value_i64(row, "principal_usd_micros").is_some_and(|amount| amount >= 0)
+            && value_i64(row, "annual_yield_gain_usd_micros").is_some_and(|gain| gain >= 0)
+            && value_i64(row, "expired_lease_count") == Some(0)
+            && value_i64(row, "effect_ambiguous_count") == Some(0)
+    });
+    let zero_queue_counters = [
+        "staleActiveDecisionCount",
+        "duplicateActiveVaultMovementCount",
+        "materialStuckOverTenMinutesCount",
+        "targetCapacityOversubscriptionCount",
+        "highValueOrderingInversionCount",
+    ]
+    .into_iter()
+    .all(|key| value_i64(queue, key) == Some(0));
+    let top = queue
+        .get("topCurrentEpochOpportunities")
+        .and_then(Value::as_array);
+    let known_states = [
+        "waiting_alt",
+        "revalidate",
+        "ready",
+        "leased",
+        "decision_created",
+        "completed",
+        "stale",
+        "superseded",
+        "failed",
+        "cancelled",
+    ];
+    let material_top_rows_named = top.is_some_and(|top| {
+        top.iter().all(|row| {
+            let principal = value_i64(row, "principal_usd_micros").unwrap_or_default();
+            if principal < MATERIAL_PRINCIPAL_USD_MICROS {
+                return true;
+            }
+            let state = value_string(row, "opportunity_state");
+            let current = matches!(
+                state,
+                Some(
+                    "waiting_alt"
+                        | "revalidate"
+                        | "ready"
+                        | "leased"
+                        | "decision_created"
+                        | "completed"
+                )
+            );
+            let named_terminal =
+                matches!(state, Some("stale" | "superseded" | "failed" | "cancelled"))
+                    && row
+                        .get("terminal_reason")
+                        .and_then(Value::as_str)
+                        .is_some_and(|reason| !reason.trim().is_empty());
+            state.is_some_and(|state| known_states.contains(&state)) && (current || named_terminal)
+        })
+    });
+    let aggregate_visible = status_i64(queue, "current_epoch_opportunity_count")
+        .is_some_and(|count| count > 0)
+        && status_i64(queue, "current_epoch_principal_usd_micros").is_some_and(|amount| amount > 0)
+        && status_i64(queue, "current_epoch_recoverable_yield_usd_micros_per_hour")
+            .is_some_and(|gain| gain > 0);
+    let passed = fresh_complete_epoch
+        && planner_accounting_exact
+        && bounded_stage_ages
+        && status_counts_well_formed
+        && zero_queue_counters
+        && material_top_rows_named
+        && aggregate_visible;
+    subcheck(
+        "fresh_complete_epoch_accounts_for_fleet_and_drains_by_value",
+        passed,
+        json!({
+            "statusRowCount": rows.len(),
+            "measurementSchemaKnown": schema_known,
+            "freshCompleteEpoch": fresh_complete_epoch,
+            "aggregateFieldsConsistentAcrossRows": aggregate_fields_consistent,
+            "observedVaultCount": status_i64(queue, "observed_vault_count"),
+            "plannedOpportunityCount": planned,
+            "plannedSelectedCount": selected,
+            "plannedDeferredCount": deferred,
+            "plannerAccountingExact": planner_accounting_exact,
+            "boundedStageAges": bounded_stage_ages,
+            "statusCountsWellFormed": status_counts_well_formed,
+            "zeroQueueErrorCounters": zero_queue_counters,
+            "materialTopRowsHaveCurrentStateOrNamedTerminalReason": material_top_rows_named,
+            "aggregateOutcomeAndValueVisible": aggregate_visible,
+            "queueCounters": {
+                "staleActiveDecisionCount": queue.get("staleActiveDecisionCount"),
+                "duplicateActiveVaultMovementCount": queue.get("duplicateActiveVaultMovementCount"),
+                "materialStuckOverTenMinutesCount": queue.get("materialStuckOverTenMinutesCount"),
+                "targetCapacityOversubscriptionCount": queue.get("targetCapacityOversubscriptionCount"),
+                "highValueOrderingInversionCount": queue.get("highValueOrderingInversionCount"),
+            },
+        }),
+    )
+}
+
+fn parse_rfc3339(value: Option<&Value>) -> Option<DateTime<Utc>> {
+    value
+        .and_then(Value::as_str)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+}
+
+fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck {
+    let movement = &binding.artifact.measurements.database.movement;
+    let queue = &binding.artifact.measurements.database.queue;
+    let positions = &binding.artifact.measurements.database.positions;
+    let schema_known = movement_measurement_schema_known(movement)
+        && queue_measurement_schema_known(queue)
+        && position_measurement_schema_known(positions);
+    let Some(rows) = movement.get("movements").and_then(Value::as_array) else {
+        return subcheck(
+            "optimizer_movements_are_final_economic_reconciled_and_meet_slos",
+            false,
+            json!({"error": "movement.movements is missing"}),
+        );
+    };
+    let cutover_at = binding.artifact.scope.cutover_at;
+    let artifact_cutover_at = parse_rfc3339(movement.get("cutoverAt"));
+    let cutover_bound = cutover_at.is_some() && cutover_at == artifact_cutover_at;
+    let main_reserve = KAMINO_MAIN_USDC_RESERVE.to_string();
+    let usdc_mint = USDC_MINT.to_string();
+    let mut reconciled_reserve_count = 0i64;
+    let mut fully_proven_count = 0i64;
+    let mut economic_failure_count = 0i64;
+    let mut nonterminal_count = 0i64;
+    let mut ambiguous_count = 0i64;
+    let mut main_outflow = 0i128;
+    let mut main_inflow = 0i128;
+    let mut identifiers = BTreeSet::new();
+    let mut all_rows_well_formed = true;
+    for row in rows {
+        let state = value_string(row, "submissionState").unwrap_or_default();
+        if !matches!(state, "reconciled" | "expired" | "failed") {
+            nonterminal_count += 1;
+        }
+        if state == "effect_ambiguous" {
+            ambiguous_count += 1;
+        }
+        let source = row.get("sourceReserve").and_then(Value::as_str);
+        let target = value_string(row, "targetReserve");
+        let mint = value_string(row, "liquidityMint");
+        let amount = value_i64(row, "amountRaw");
+        let opportunity_id = value_i64(row, "opportunityId");
+        let decision_id = value_i64(row, "decisionId");
+        let submission_id = value_i64(row, "submissionId");
+        let created_at = parse_rfc3339(row.get("createdAt"));
+        let identity_ok = opportunity_id.is_some_and(|id| id > 0)
+            && decision_id.is_some_and(|id| id > 0)
+            && submission_id.is_some_and(|id| id > 0)
+            && value_i64(row, "vaultId").is_some_and(|id| id > 0)
+            && value_string(row, "signature").is_some_and(|value| !value.trim().is_empty())
+            && source.is_some()
+            && source != target
+            && target.is_some_and(|value| !value.trim().is_empty())
+            && mint.is_some_and(|value| !value.trim().is_empty())
+            && amount.is_some_and(|amount| amount > 0)
+            && created_at
+                .zip(cutover_at)
+                .is_some_and(|(created, cutover)| created >= cutover);
+        if let (Some(submission), Some(opportunity), Some(decision)) =
+            (submission_id, opportunity_id, decision_id)
+        {
+            identifiers.insert((submission, opportunity, decision));
+        }
+        let estimated_edge = value_i64(row, "estimatedEdgeBps");
+        let expected_gain = value_i64(row, "expectedNetGainUsdMicros");
+        let compiled_fee = value_i64(row, "compiledFeeLamports");
+        let estimated_cost = value_i64(row, "estimatedCostLamports");
+        let sol_price = value_i64(row, "conservativeSolPriceUsdMicros");
+        let fee_cap = value_i64(row, "feeFractionCapPpm");
+        let computed_fee_usd = compiled_fee
+            .zip(sol_price)
+            .map(|(fee, price)| i128::from(fee) * i128::from(price) / 1_000_000_000i128);
+        let computed_fee_fraction = computed_fee_usd
+            .zip(expected_gain)
+            .and_then(|(fee, gain)| (gain > 0).then_some(fee * 1_000_000i128 / i128::from(gain)));
+        let economic = estimated_edge.is_some_and(|edge| edge > 0)
+            && expected_gain.is_some_and(|gain| gain > 0)
+            && compiled_fee.is_some_and(|fee| fee >= 0)
+            && estimated_cost.is_some_and(|cost| cost >= 0)
+            && compiled_fee
+                .zip(estimated_cost)
+                .is_some_and(|(fee, estimated)| fee <= estimated)
+            && sol_price.is_some_and(|price| price > 0)
+            && fee_cap.is_some_and(|cap| cap > 0)
+            && computed_fee_fraction
+                .zip(fee_cap)
+                .is_some_and(|(fraction, cap)| fraction >= 0 && fraction <= i128::from(cap));
+        if !economic {
+            economic_failure_count += 1;
+        }
+        let confirmed_slot = value_i64(row, "confirmedSlot");
+        let reconciled_slot = value_i64(row, "reconciledSlot");
+        let observed_slot = value_i64(row, "postSnapshotObservedSlot");
+        let source_effect = value_i64(row, "preSourceAmountRaw")
+            .zip(value_i64(row, "postSourceAmountRaw"))
+            .is_some_and(|(before, after)| after < before);
+        let target_effect = row
+            .get("preTargetAmountRaw")
+            .and_then(Value::as_i64)
+            .unwrap_or_default()
+            < row
+                .get("postTargetAmountRaw")
+                .and_then(Value::as_i64)
+                .unwrap_or_default();
+        let final_effect = state == "reconciled"
+            && parse_rfc3339(row.get("reconciledAt")).is_some()
+            && reconciled_slot
+                .zip(confirmed_slot)
+                .is_some_and(|(reconciled, confirmed)| reconciled >= confirmed)
+            && observed_slot
+                .zip(confirmed_slot)
+                .is_some_and(|(observed, confirmed)| observed >= confirmed)
+            && source_effect
+            && target_effect
+            && value_bool(row, "rpcFinalized") == Some(true)
+            && value_bool(row, "rpcSuccessful") == Some(true)
+            && value_i64(row, "rpcSlot")
+                .zip(confirmed_slot)
+                .is_some_and(|(rpc, confirmed)| rpc >= confirmed);
+        if state == "reconciled" && source.is_some() {
+            reconciled_reserve_count += 1;
+            if final_effect {
+                fully_proven_count += 1;
+            }
+            if mint == Some(usdc_mint.as_str()) {
+                if source == Some(main_reserve.as_str()) {
+                    main_outflow += i128::from(amount.unwrap_or_default());
+                }
+                if target == Some(main_reserve.as_str()) {
+                    main_inflow += i128::from(amount.unwrap_or_default());
+                }
+            }
+        }
+        all_rows_well_formed &= identity_ok;
+    }
+    let unique_identifiers = identifiers.len() == rows.len();
+    let raw_counts_match = value_i64(movement, "submissionCount") == i64::try_from(rows.len()).ok()
+        && value_i64(movement, "nonterminalSubmissionCount") == Some(nonterminal_count)
+        && value_i64(movement, "effectAmbiguousCount") == Some(ambiguous_count)
+        && value_i64(movement, "reconciledReserveMovementCount") == Some(reconciled_reserve_count)
+        && value_i64(movement, "fullyFinalizedAndReconciledEffectCount")
+            == Some(fully_proven_count)
+        && value_i64(movement, "economicFailureCount") == Some(economic_failure_count);
+    let main = movement.get("mainUsdc").unwrap_or(&Value::Null);
+    let baseline = value_i64(main, "baselineAmountRaw");
+    let deposits = value_i64(main, "postBaselineCohortDepositAmountRaw");
+    let current = value_i64(main, "currentAmountRaw");
+    let adjusted_reduction =
+        baseline
+            .zip(deposits)
+            .zip(current)
+            .map(|((baseline, deposits), current)| {
+                i128::from(baseline) + i128::from(deposits) - i128::from(current)
+            });
+    let confirmed_net_outflow = main_outflow - main_inflow;
+    let baseline_reduction_pass = parse_rfc3339(main.get("baselineCollectedAt"))
+        .zip(cutover_at)
+        .is_some_and(|(baseline_at, cutover)| baseline_at <= cutover)
+        && value_i64(main, "baselineCohortVaultCount").is_some_and(|count| count > 0)
+        && baseline.is_some_and(|amount| amount > 0)
+        && deposits.is_some_and(|amount| amount >= 0)
+        && current.is_some_and(|amount| amount >= 0)
+        && confirmed_net_outflow > 0
+        && adjusted_reduction.is_some_and(|reduction| {
+            reduction > 0
+                && reduction.saturating_mul(100) >= confirmed_net_outflow.saturating_mul(95)
+        })
+        && value_i64(main, "confirmedOptimizerOutflowRaw").map(i128::from) == Some(main_outflow)
+        && value_i64(main, "confirmedOptimizerInflowRaw").map(i128::from) == Some(main_inflow)
+        && value_i64(main, "confirmedOptimizerNetOutflowRaw").map(i128::from)
+            == Some(confirmed_net_outflow)
+        && value_i64(main, "depositAdjustedReductionRaw").map(i128::from) == adjusted_reduction;
+    let current_position = positions.pointer("/mainUsdc").unwrap_or(&Value::Null);
+    let positions_match = value_bool(positions, "available") == Some(true)
+        && value_string(current_position, "reserve") == Some(main_reserve.as_str())
+        && value_string(current_position, "liquidityMint") == Some(usdc_mint.as_str())
+        && value_i64(current_position, "amountRaw") == current
+        && value_i64(current_position, "staleRowCount") == Some(0)
+        && value_bool(current_position, "freshForBaseline") == Some(true);
+    let slo = movement.get("productionSlos").unwrap_or(&Value::Null);
+    let slos_pass = value_i64(slo, "currentEpochOpportunityCount").is_some_and(|count| count > 0)
+        && value_i64(slo, "currentEpochOpportunityCount")
+            == status_i64(queue, "current_epoch_opportunity_count")
+        && value_i64(slo, "submissionP95Milliseconds")
+            .is_some_and(|millis| (0..=10_000).contains(&millis))
+        && value_i64(slo, "confirmationP95Milliseconds")
+            .is_some_and(|millis| (0..=30_000).contains(&millis))
+        && value_i64(slo, "submittedWithinTwoMinutesYieldPpm")
+            .is_some_and(|ppm| (900_000..=1_000_000).contains(&ppm))
+        && value_i64(slo, "submittedWithinTenMinutesYieldPpm")
+            .is_some_and(|ppm| (990_000..=1_000_000).contains(&ppm))
+        && value_i64(slo, "submissionP95Milliseconds")
+            == status_i64(queue, "current_epoch_submission_p95_milliseconds")
+        && value_i64(slo, "confirmationP95Milliseconds")
+            == status_i64(queue, "current_epoch_confirmation_p95_milliseconds")
+        && value_i64(slo, "submittedWithinTwoMinutesYieldPpm")
+            == status_i64(queue, "current_epoch_submitted_within_2m_yield_ppm")
+        && value_i64(slo, "submittedWithinTenMinutesYieldPpm")
+            == status_i64(queue, "current_epoch_submitted_within_10m_yield_ppm");
+    let terminal_counters_zero = ambiguous_count == 0
+        && economic_failure_count == 0
+        && value_i64(movement, "databaseDeadlockCount") == Some(0)
+        && value_i64(movement, "duplicateMovementCount") == Some(0)
+        && value_i64(queue, "staleActiveDecisionCount") == Some(0)
+        && value_i64(queue, "duplicateActiveVaultMovementCount") == Some(0)
+        && value_i64(queue, "targetCapacityOversubscriptionCount") == Some(0);
+    let passed = schema_known
+        && value_bool(movement, "available") == Some(true)
+        && cutover_bound
+        && value_bool(movement, "rpcFinalityAvailable") == Some(true)
+        && !rows.is_empty()
+        && all_rows_well_formed
+        && unique_identifiers
+        && raw_counts_match
+        && reconciled_reserve_count > 0
+        && fully_proven_count == reconciled_reserve_count
+        && baseline_reduction_pass
+        && positions_match
+        && slos_pass
+        && terminal_counters_zero;
+    subcheck(
+        "optimizer_movements_are_final_economic_reconciled_and_meet_slos",
+        passed,
+        json!({
+            "cutoverBound": cutover_bound,
+            "measurementSchemasKnown": schema_known,
+            "submissionRows": rows.len(),
+            "rowsWellFormedAndPostCutover": all_rows_well_formed,
+            "uniqueSubmissionOpportunityDecisionTuples": unique_identifiers,
+            "rawCountsMatchRecomputation": raw_counts_match,
+            "recomputedNonterminalCount": nonterminal_count,
+            "recomputedAmbiguousCount": ambiguous_count,
+            "recomputedEconomicFailureCount": economic_failure_count,
+            "recomputedReconciledReserveMovementCount": reconciled_reserve_count,
+            "recomputedFullyFinalizedEffectCount": fully_proven_count,
+            "recomputedMainOutflowRaw": main_outflow,
+            "recomputedMainInflowRaw": main_inflow,
+            "recomputedMainNetOutflowRaw": confirmed_net_outflow,
+            "recomputedDepositAdjustedReductionRaw": adjusted_reduction,
+            "baselineReductionPass": baseline_reduction_pass,
+            "freshPositionsMatch": positions_match,
+            "productionSlosPass": slos_pass,
+            "terminalAndSafetyCountersZero": terminal_counters_zero,
+            "databaseDeadlockCount": movement.get("databaseDeadlockCount"),
+            "duplicateMovementCount": movement.get("duplicateMovementCount"),
+            "embeddedPassesIgnored": {
+                "movement": movement.get("pass"),
+                "productionSlos": slo.get("pass"),
+            },
+        }),
+    )
+}
+
+fn production_performance_checks(binding: &ProductionEvidenceBinding) -> Vec<VerifierCheck> {
+    let fleet = production_complete_fleet_subcheck(binding);
+    let fleet_failure = (!matches!(fleet.verdict, Verdict::Pass)).then_some(fleet.name);
+    let movement = production_movement_subcheck(binding);
+    let movement_failure = (!matches!(movement.verdict, Verdict::Pass)).then_some(movement.name);
+    vec![
+        check(
+            10,
+            "complete_fleet_evaluation_and_economic_draining",
+            fleet.verdict,
+            fleet_failure,
+            json!({
+                "cluster": binding.artifact.scope.cluster,
+                "capturedAt": binding.artifact.captured_at,
+            }),
+            vec![fleet],
+        ),
+        check(
+            11,
+            "correct_production_movement_and_reconciliation",
+            movement.verdict,
+            movement_failure,
+            json!({
+                "cluster": binding.artifact.scope.cluster,
+                "cutoverAt": binding.artifact.scope.cutover_at,
+                "capturedAt": binding.artifact.captured_at,
+            }),
+            vec![movement],
+        ),
+    ]
+}
+
 fn parse_cli() -> Result<Option<Cli>, Box<dyn Error>> {
     let mut implementation = false;
+    let mut end_state = false;
     let mut json_output = false;
     let mut database_url = None;
     let mut isolated_database = false;
     let mut collect_repository_evidence = false;
     let mut repository_root = None;
     let mut runtime_evidence_json = None;
+    let mut production_evidence_json = None;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--implementation" => implementation = true,
+            "--end-state" => end_state = true,
             "--json" => json_output = true,
             "--isolated-database" => isolated_database = true,
             "--collect-repository-evidence" => collect_repository_evidence = true,
@@ -6865,6 +8340,12 @@ fn parse_cli() -> Result<Option<Cli>, Box<dyn Error>> {
                         .ok_or("--runtime-evidence-json requires a path")?,
                 ));
             }
+            "--production-evidence-json" => {
+                production_evidence_json = Some(PathBuf::from(
+                    args.next()
+                        .ok_or("--production-evidence-json requires a path")?,
+                ));
+            }
             "--database-url" => {
                 database_url = Some(
                     args.next()
@@ -6873,7 +8354,7 @@ fn parse_cli() -> Result<Option<Cli>, Box<dyn Error>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "fleet-orchestration-verifier --implementation [--json] [--collect-repository-evidence [--repository-root PATH]] [--runtime-evidence-json PATH] [--isolated-database [--database-url URL|FLEET_VERIFY_DATABASE_URL]]"
+                    "fleet-orchestration-verifier (--implementation|--end-state) [--json] [--collect-repository-evidence [--repository-root PATH]] [--runtime-evidence-json PATH] [--production-evidence-json PATH] [--isolated-database [--database-url URL|FLEET_VERIFY_DATABASE_URL]]\n\n--implementation verifies Checks 1-7 only. --end-state additionally requires a fresh source-bound schema-v1 production artifact, independently recomputes Checks 8-11 from raw measurements, and succeeds only for literal END_STATE: PASS."
                 );
                 return Ok(None);
             }
@@ -6887,6 +8368,10 @@ fn parse_cli() -> Result<Option<Cli>, Box<dyn Error>> {
                 runtime_evidence_json =
                     Some(PathBuf::from(&other["--runtime-evidence-json=".len()..]));
             }
+            other if other.starts_with("--production-evidence-json=") => {
+                production_evidence_json =
+                    Some(PathBuf::from(&other["--production-evidence-json=".len()..]));
+            }
             other => return Err(format!("unknown argument: {other}").into()),
         }
     }
@@ -6897,12 +8382,14 @@ fn parse_cli() -> Result<Option<Cli>, Box<dyn Error>> {
     }
     Ok(Some(Cli {
         implementation,
+        end_state,
         json_output,
         database_url,
         isolated_database,
         collect_repository_evidence,
         repository_root,
         runtime_evidence_json,
+        production_evidence_json,
     }))
 }
 
@@ -6939,8 +8426,8 @@ async fn run() -> Result<ExitCode, Box<dyn Error>> {
     let Some(cli) = parse_cli()? else {
         return Ok(ExitCode::SUCCESS);
     };
-    if !cli.implementation {
-        return Err("--implementation is required".into());
+    if cli.implementation == cli.end_state {
+        return Err("exactly one of --implementation or --end-state is required".into());
     }
     if cli.database_url.is_some() != cli.isolated_database {
         return Err(
@@ -6948,19 +8435,37 @@ async fn run() -> Result<ExitCode, Box<dyn Error>> {
                 .into(),
         );
     }
-    if cli.repository_root.is_some() && !cli.collect_repository_evidence {
+    if cli.repository_root.is_some() && !(cli.collect_repository_evidence || cli.end_state) {
         return Err("--repository-root requires --collect-repository-evidence".into());
     }
-    if cli.runtime_evidence_json.is_some() && !cli.collect_repository_evidence {
+    if cli.runtime_evidence_json.is_some() && !(cli.collect_repository_evidence || cli.end_state) {
         return Err(
             "--runtime-evidence-json requires --collect-repository-evidence for HEAD and source binding"
                 .into(),
         );
     }
+    if cli.end_state && cli.production_evidence_json.is_none() {
+        return Err("--end-state requires --production-evidence-json".into());
+    }
+    if cli.production_evidence_json.is_some() && !cli.end_state {
+        return Err("--production-evidence-json is only valid with --end-state".into());
+    }
 
-    let collected_repository_root = cli
-        .collect_repository_evidence
+    let collect_repository_evidence = cli.collect_repository_evidence || cli.end_state;
+    let collected_repository_root = collect_repository_evidence
         .then(|| repository_root(cli.repository_root.as_deref()))
+        .transpose()?;
+    let production_evidence = cli
+        .production_evidence_json
+        .as_deref()
+        .map(|path| {
+            load_production_evidence(
+                path,
+                collected_repository_root
+                    .as_deref()
+                    .ok_or("production evidence requires a repository root")?,
+            )
+        })
         .transpose()?;
     let local_evidence = collected_repository_root
         .as_deref()
@@ -6990,15 +8495,23 @@ async fn run() -> Result<ExitCode, Box<dyn Error>> {
         None
     };
 
-    let checks =
+    let mut checks =
         implementation_checks(database_evidence, local_evidence, runtime_evidence.as_ref())?;
     let implementation_verdict = aggregate_verdicts(checks.iter().map(|check| check.verdict));
-    // This command collects local/read-only implementation evidence only.
-    // Registry/image existence and live Render state require an explicit
-    // deployment evidence run; real fund-movement SLOs require a production
-    // performance run. Absence of either is never promoted to PASS.
-    let deployment_verdict = Verdict::NotRun;
-    let production_performance_verdict = Verdict::NotRun;
+    let (deployment_verdict, production_performance_verdict) =
+        if let Some(binding) = production_evidence.as_ref() {
+            let deployment_checks = production_deployment_checks(binding);
+            let production_checks = production_performance_checks(binding);
+            let deployment_verdict =
+                aggregate_verdicts(deployment_checks.iter().map(|check| check.verdict));
+            let production_performance_verdict =
+                aggregate_verdicts(production_checks.iter().map(|check| check.verdict));
+            checks.extend(deployment_checks);
+            checks.extend(production_checks);
+            (deployment_verdict, production_performance_verdict)
+        } else {
+            (Verdict::NotRun, Verdict::NotRun)
+        };
     let end_state_verdict = aggregate_verdicts([
         implementation_verdict,
         deployment_verdict,
@@ -7017,8 +8530,8 @@ async fn run() -> Result<ExitCode, Box<dyn Error>> {
         });
     let output = json!({
         "status": end_state_verdict,
-        "requestedScope": "IMPLEMENTATION",
-        "requestedScopeStatus": implementation_verdict,
+        "requestedScope": if cli.end_state { "END_STATE" } else { "IMPLEMENTATION" },
+        "requestedScopeStatus": if cli.end_state { end_state_verdict } else { implementation_verdict },
         "implementation": implementation_verdict,
         "deployment": deployment_verdict,
         "productionPerformance": production_performance_verdict,
@@ -7038,7 +8551,12 @@ async fn run() -> Result<ExitCode, Box<dyn Error>> {
         println!("{}", serde_json::to_string_pretty(&output)?);
     }
 
-    Ok(if implementation_verdict == Verdict::Pass {
+    let requested_scope_verdict = if cli.end_state {
+        end_state_verdict
+    } else {
+        implementation_verdict
+    };
+    Ok(if requested_scope_verdict == Verdict::Pass {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

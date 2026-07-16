@@ -1,11 +1,11 @@
-use std::{borrow::Cow, env, error::Error, str::FromStr};
+use std::{borrow::Cow, collections::BTreeMap, env, error::Error, str::FromStr};
 
 #[cfg(test)]
 use loyal_yield_orchestrator::LookupTableAlertCondition;
 use sha2::{Digest, Sha256};
 use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
-    PgPool,
+    Connection, PgConnection, PgPool,
 };
 
 const MIGRATIONS: &[Migration] = &[
@@ -202,16 +202,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mode = parse_mode()?;
     let database_url = env::var("NEON_DATABASE_URL")
         .map_err(|_| "NEON_DATABASE_URL must be set for Yield Neon migrations")?;
-    let pool = connect(&database_url).await?;
-    if matches!(mode, Mode::Apply) {
+    let mut migration_apply_lock_connection = if matches!(mode, Mode::Apply) {
         // Render starts every role with the same preDeploy command. A
-        // session-level lock plus this binary's one-connection pool keeps
-        // concurrent direct-cutover preDeploys from racing the ledger/DDL.
+        // dedicated session-level lock keeps concurrent direct-cutover
+        // preDeploys from racing the ledger/DDL even if the work pool recycles
+        // or reconnects its single physical connection.
+        let mut connection = connect_session(&database_url).await?;
         sqlx::query("SELECT pg_advisory_lock($1)")
             .bind(MIGRATION_APPLY_ADVISORY_LOCK)
-            .execute(&pool)
+            .execute(&mut connection)
             .await?;
-    }
+        Some(connection)
+    } else {
+        None
+    };
+    let pool = connect(&database_url).await?;
 
     if matches!(mode, Mode::Apply) {
         ensure_ledger(&pool).await?;
@@ -219,10 +224,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         require_ledger(&pool).await?;
     }
 
+    // Read the checksum ledger once. On Neon, one query per migration kept
+    // every checksum-current Render predeploy inside the global apply lock for
+    // roughly eleven seconds; six worker roles then paid that latency
+    // serially despite having no DDL to run.
+    let applied_checksums = applied_checksums(&pool).await?;
     let mut pending = Vec::new();
     for migration in MIGRATIONS {
-        match applied_checksum(&pool, migration.version).await? {
-            Some(applied) if applied == migration.checksum() => {
+        match applied_checksums.get(&migration.version) {
+            Some(applied) if applied == &migration.checksum() => {
                 println!(
                     "migration {} {} already applied",
                     migration.version, migration.name
@@ -240,12 +250,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     if pending.is_empty() {
-        validate_schema(&pool).await?;
+        // Render runs this pre-deploy command independently for every worker.
+        // Once the checksum-bound ledger is current, repeating the exhaustive
+        // catalog validation under the global apply lock only serializes
+        // otherwise independent deploys. The invocation that actually applies
+        // a migration still validates below; explicit --check and
+        // --verify-reusable-alts retain the full read-only schema audit.
+        if !matches!(mode, Mode::Apply) {
+            validate_schema(&pool).await?;
+        }
         if matches!(mode, Mode::VerifyReusableAlts) {
             verify_reusable_alts(&pool).await?;
         }
         if matches!(mode, Mode::Apply) {
-            release_migration_apply_lock(&pool).await?;
+            release_migration_apply_lock(migration_apply_lock_connection.as_mut()).await?;
         }
         println!("loyal_yield migrations are up to date");
         return Ok(());
@@ -255,6 +273,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Err(format!("{} loyal_yield migration(s) pending", pending.len()).into());
     }
 
+    // Keep the final pending ledger row absent until the exhaustive catalog
+    // validation succeeds. It is the durable validation fence for later
+    // `--apply` fast paths: a failed or interrupted validation must leave at
+    // least one migration pending instead of making an unvalidated schema look
+    // checksum-current.
+    let validation_fence = pending
+        .pop()
+        .ok_or("pending migration set unexpectedly became empty")?;
     for migration in pending {
         println!(
             "applying migration {} {}",
@@ -265,16 +291,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
         record_applied(&pool, migration).await?;
     }
 
+    println!(
+        "applying migration {} {}",
+        validation_fence.version, validation_fence.name
+    );
+    let execution_sql = migration_execution_sql(validation_fence);
+    sqlx::raw_sql(&execution_sql).execute(&pool).await?;
+
     validate_schema(&pool).await?;
-    release_migration_apply_lock(&pool).await?;
+    record_applied(&pool, validation_fence).await?;
+    release_migration_apply_lock(migration_apply_lock_connection.as_mut()).await?;
     println!("loyal_yield migrations are up to date");
     Ok(())
 }
 
-async fn release_migration_apply_lock(pool: &PgPool) -> Result<(), Box<dyn Error>> {
+async fn release_migration_apply_lock(
+    connection: Option<&mut PgConnection>,
+) -> Result<(), Box<dyn Error>> {
+    let connection =
+        connection.ok_or("yield migration apply advisory lock connection was not retained")?;
     let released: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
         .bind(MIGRATION_APPLY_ADVISORY_LOCK)
-        .fetch_one(pool)
+        .fetch_one(connection)
         .await?;
     if !released {
         return Err("yield migration apply advisory lock was not held by this session".into());
@@ -339,6 +377,11 @@ async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
         .await
 }
 
+async fn connect_session(database_url: &str) -> Result<PgConnection, sqlx::Error> {
+    let options = PgConnectOptions::from_str(database_url)?.statement_cache_capacity(0);
+    PgConnection::connect_with(&options).await
+}
+
 async fn ensure_ledger(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::raw_sql(&format!("CREATE SCHEMA IF NOT EXISTS {LEDGER_SCHEMA};"))
         .execute(pool)
@@ -367,13 +410,20 @@ async fn require_ledger(pool: &PgPool) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn applied_checksum(pool: &PgPool, version: i64) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar::<_, String>(&format!(
-        "SELECT checksum FROM {LEDGER_SCHEMA}.{LEDGER_TABLE} WHERE version = $1"
+async fn applied_checksums(pool: &PgPool) -> Result<BTreeMap<i64, String>, sqlx::Error> {
+    let versions = MIGRATIONS
+        .iter()
+        .map(|migration| migration.version)
+        .collect::<Vec<_>>();
+    let rows = sqlx::query_as::<_, (i64, String)>(&format!(
+        "SELECT version, checksum
+         FROM {LEDGER_SCHEMA}.{LEDGER_TABLE}
+         WHERE version = ANY($1::BIGINT[])"
     ))
-    .bind(version)
-    .fetch_optional(pool)
-    .await
+    .bind(versions)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().collect())
 }
 
 async fn record_applied(pool: &PgPool, migration: &Migration) -> Result<(), sqlx::Error> {

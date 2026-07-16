@@ -59,6 +59,7 @@ use loyal_yield_orchestrator::sqlx::{
     PgPool, Row,
 };
 use loyal_yield_orchestrator::{
+    enabled_stable_mints_from_env, enabled_stable_mints_hash,
     fleet_orchestration::{
         evaluate_fresh_route_economics, fleet_stage_health_report, fleet_worker_role_probe,
         maximum_target_inflight_usd_micros, observe_market_epoch, outer_task_failure_recovery,
@@ -78,15 +79,16 @@ use loyal_yield_orchestrator::{
     standard_policy_keypair_from_env, vault_manifest_addresses, vault_manifest_hash,
     ConfirmSameMintRebalanceInput, CurrentIdleTokenBalance, DecisionAdvance, DecisionId,
     DecisionStatus, EffectiveLookupTableRollout, IdleVaultDepositDecisionInput,
-    LookupTableAllocationKind, LookupTableProvisioningRequestUpsert, LookupTableReadinessRecord,
-    LookupTableReadinessStatus, LookupTableRolloutMode, LookupTableSelectionKind,
-    LookupTableSimulationState, LookupTableUsageLeaseBundle, LookupTableUsageLeaseKind,
-    NeonSqlClient, NeonSqlConfig, PlanOutcomeStatus, PolicyMatchInput, RebalanceDecision,
-    ReconciledReservePosition, ReconciledVaultState, ResolvedLookupTableBundle,
-    ResolverTableCandidate, SameMintRebalanceInput, SameMintRebalanceResult,
-    SharedMarketCatalogRouteValidation, SharedMarketCatalogRouteValidationState, SnapshotId,
-    VaultId, AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
-    ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+    LookupTableAllocationKind, LookupTableManifestSubject, LookupTableProvisioningRequestUpsert,
+    LookupTableReadinessRecord, LookupTableReadinessStatus, LookupTableRolloutMode,
+    LookupTableSelectionKind, LookupTableSimulationState, LookupTableUsageLeaseBundle,
+    LookupTableUsageLeaseKind, NeonSqlClient, NeonSqlConfig, OrchestratorError, PlanOutcomeStatus,
+    PolicyMatchInput, RebalanceDecision, ReconciledReservePosition, ReconciledVaultState,
+    ResolvedLookupTableBundle, ResolverTableCandidate, SameMintRebalanceInput,
+    SameMintRebalanceResult, SharedMarketCatalogReadiness, SharedMarketCatalogRouteValidation,
+    SharedMarketCatalogRouteValidationState, SnapshotId, VaultId,
+    AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+    STANDARD_POLICY_AUTHORITY,
 };
 use loyal_yield_router::timescale::{TimescaleRouterClient, TimescaleRouterClientConfig};
 use num_bigint::BigUint;
@@ -164,6 +166,8 @@ const FEE_PAYER_BALANCE_CACHE_MAX_ENTRIES: usize = 256;
 const DEFAULT_FLEET_EXECUTE_CONCURRENCY: usize = 8;
 const DEFAULT_FLEET_RECONCILE_CONCURRENCY: usize = 16;
 const DEFAULT_FLEET_RECONCILE_BATCH_SIZE: i64 = 32;
+const DEFAULT_FLEET_POSITION_SWEEP_INTERVAL_SECONDS: u64 = 300;
+const FLEET_POSITION_SWEEP_FAILURE_RETRY_SECONDS: u64 = 5;
 /// Cross-process admission cap, not a claim of physical transaction
 /// independence. Each route also owns a vault-specific semantic key. Exact
 /// writable evidence exposes the real Solana ceilings: a common fee payer or
@@ -406,7 +410,154 @@ struct FleetReconcilerOptions {
     batch_size: i64,
     lease_seconds: i64,
     poll_interval_milliseconds: u64,
+    position_sweep_interval_seconds: u64,
     once: bool,
+}
+
+#[derive(Clone, Debug)]
+struct FleetPositionSweepVault {
+    vault: SelectedVault,
+}
+
+#[derive(Clone, Debug)]
+struct FleetPositionSweepReserve {
+    reserve: String,
+    market: String,
+    liquidity_mint: String,
+}
+
+#[derive(Clone, Debug)]
+struct FleetPositionSweepUniverse {
+    cluster: String,
+    enabled_mints: BTreeSet<String>,
+    catalog_revision_id: i64,
+    catalog_source_slot: Option<i64>,
+    reserves: Vec<FleetPositionSweepReserve>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FleetPositionSweepMetrics {
+    sweep_id: u64,
+    catalog_revision_id: Option<i64>,
+    catalog_source_slot: Option<i64>,
+    reserve_count: usize,
+    cursor_vault_id: Option<i64>,
+    eligible: usize,
+    processed: u64,
+    refreshed: u64,
+    failed: u64,
+    stale: u64,
+    duration_milliseconds: u64,
+    complete: bool,
+    error: Option<String>,
+}
+
+struct FleetPositionSweepRun {
+    sweep_id: u64,
+    started_at: DateTime<Utc>,
+    started: Instant,
+    universe: Arc<FleetPositionSweepUniverse>,
+    vaults: Vec<FleetPositionSweepVault>,
+    next_index: usize,
+    cursor_vault_id: Option<i64>,
+    processed: u64,
+    refreshed: u64,
+    failed: u64,
+    stale: u64,
+}
+
+impl FleetPositionSweepRun {
+    fn metrics(&self, complete: bool, error: Option<String>) -> FleetPositionSweepMetrics {
+        FleetPositionSweepMetrics {
+            sweep_id: self.sweep_id,
+            catalog_revision_id: Some(self.universe.catalog_revision_id),
+            catalog_source_slot: self.universe.catalog_source_slot,
+            reserve_count: self.universe.reserves.len(),
+            cursor_vault_id: self.cursor_vault_id,
+            eligible: self.vaults.len(),
+            processed: self.processed,
+            refreshed: self.refreshed,
+            failed: self.failed,
+            stale: self.stale,
+            duration_milliseconds: u64::try_from(self.started.elapsed().as_millis())
+                .unwrap_or(u64::MAX),
+            complete,
+            error,
+        }
+    }
+}
+
+struct FleetPositionSweepCoordinator {
+    interval: Duration,
+    next_due_at: Instant,
+    next_sweep_id: u64,
+    active: Option<FleetPositionSweepRun>,
+    latest: Option<FleetPositionSweepMetrics>,
+}
+
+impl FleetPositionSweepCoordinator {
+    fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            next_due_at: Instant::now(),
+            next_sweep_id: 1,
+            active: None,
+            latest: None,
+        }
+    }
+
+    fn due(&self) -> bool {
+        self.active.is_some() || Instant::now() >= self.next_due_at
+    }
+
+    fn next_sweep_id(&mut self) -> u64 {
+        let sweep_id = self.next_sweep_id;
+        self.next_sweep_id = self.next_sweep_id.saturating_add(1);
+        sweep_id
+    }
+
+    fn record_initialization_failure(&mut self, sweep_id: u64, error: String) {
+        self.latest = Some(FleetPositionSweepMetrics {
+            sweep_id,
+            catalog_revision_id: None,
+            catalog_source_slot: None,
+            reserve_count: 0,
+            cursor_vault_id: None,
+            eligible: 0,
+            processed: 0,
+            refreshed: 0,
+            failed: 0,
+            stale: 0,
+            duration_milliseconds: 0,
+            complete: false,
+            error: Some(error),
+        });
+        self.next_due_at = Instant::now()
+            + self.interval.min(Duration::from_secs(
+                FLEET_POSITION_SWEEP_FAILURE_RETRY_SECONDS,
+            ));
+    }
+
+    fn record_progress(&mut self) {
+        self.latest = self.active.as_ref().map(|run| run.metrics(false, None));
+    }
+
+    fn record_completion(&mut self) -> Option<FleetPositionSweepMetrics> {
+        let run = self.active.as_ref()?;
+        let metrics = run.metrics(true, None);
+        let cadence_due_at = run.started + self.interval;
+        self.latest = Some(metrics.clone());
+        self.active = None;
+        self.next_due_at = cadence_due_at.max(Instant::now());
+        Some(metrics)
+    }
+
+    fn health_json(&self) -> Value {
+        self.latest
+            .as_ref()
+            .map_or(Value::Null, |metrics| json!(metrics))
+    }
 }
 
 #[derive(Debug)]
@@ -993,7 +1144,7 @@ impl SameMintRouteExecutionRequest {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct SelectedVault {
     id: VaultId,
     settings: String,
@@ -2469,6 +2620,7 @@ fn parse_fleet_reconciler_options(
     let mut batch_size = DEFAULT_FLEET_RECONCILE_BATCH_SIZE;
     let mut lease_seconds = DEFAULT_FLEET_WORKER_LEASE_SECONDS;
     let mut poll_interval_milliseconds = DEFAULT_FLEET_WORKER_POLL_MILLISECONDS;
+    let mut position_sweep_interval_seconds = DEFAULT_FLEET_POSITION_SWEEP_INTERVAL_SECONDS;
     let mut once = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -2500,6 +2652,12 @@ fn parse_fleet_reconciler_options(
                     .ok_or("--poll-interval-milliseconds requires a value")?
                     .parse()?;
             }
+            "--position-sweep-interval-seconds" => {
+                position_sweep_interval_seconds = args
+                    .next()
+                    .ok_or("--position-sweep-interval-seconds requires a value")?
+                    .parse()?;
+            }
             "--once" => once = true,
             other => return Err(format!("unknown fleet-reconciler argument: {other}").into()),
         }
@@ -2517,6 +2675,9 @@ fn parse_fleet_reconciler_options(
     }
     if poll_interval_milliseconds == 0 || poll_interval_milliseconds > 60_000 {
         return Err("fleet reconciler poll interval must be in 1..=60000 milliseconds".into());
+    }
+    if position_sweep_interval_seconds == 0 || position_sweep_interval_seconds > 86_400 {
+        return Err("fleet position sweep interval must be in 1..=86400 seconds".into());
     }
     let owner = owner.unwrap_or_else(|| {
         format!(
@@ -2536,6 +2697,7 @@ fn parse_fleet_reconciler_options(
         batch_size,
         lease_seconds,
         poll_interval_milliseconds,
+        position_sweep_interval_seconds,
         once,
     })
 }
@@ -2912,6 +3074,12 @@ async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box
     ));
     health_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     health_interval.tick().await;
+    let mut position_sweep = FleetPositionSweepCoordinator::new(Duration::from_secs(
+        options.position_sweep_interval_seconds,
+    ));
+    // Match the planner's durable eligible-vault denominator exactly. This
+    // resolved set remains fixed until an explicit worker restart/deploy.
+    let enabled_mints = enabled_stable_mints_from_env()?;
 
     loop {
         let leases = client
@@ -2972,6 +3140,7 @@ async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box
                         outer_task_fenced_deferral_failure_count,
                         first_outer_task_error.as_deref(),
                         wakeup_listener.is_connected(),
+                        &position_sweep,
                     )
                     .await?;
                     continue;
@@ -3058,6 +3227,21 @@ async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box
             }
         }
 
+        // Signed submissions always claim and reconcile first. Advance only
+        // one bounded position wave afterward so a continuously nonempty
+        // confirmation queue cannot starve fleet freshness forever.
+        let position_sweep_progressed = if position_sweep.due() {
+            advance_fleet_position_sweep(
+                runtime.clone(),
+                &options,
+                &enabled_mints,
+                &mut position_sweep,
+            )
+            .await
+        } else {
+            false
+        };
+
         emit_fleet_reconciler_health(
             &client,
             &options,
@@ -3071,12 +3255,13 @@ async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box
             outer_task_fenced_deferral_failure_count,
             first_outer_task_error.as_deref(),
             wakeup_listener.is_connected(),
+            &position_sweep,
         )
         .await?;
         if options.once {
             break;
         }
-        if claimed == 0 {
+        if claimed == 0 && !position_sweep_progressed {
             wait_for_reconciliation_wakeup(
                 &mut wakeup_listener,
                 &client,
@@ -3102,6 +3287,7 @@ async fn emit_fleet_reconciler_health(
     outer_task_fenced_deferral_failure_count: u64,
     first_outer_task_error: Option<&str>,
     wakeup_listener_connected: bool,
+    position_sweep: &FleetPositionSweepCoordinator,
 ) -> Result<(), Box<dyn Error>> {
     let status = client.fleet_orchestration_status(&options.cluster).await?;
     let observed_at = Utc::now();
@@ -3125,6 +3311,11 @@ async fn emit_fleet_reconciler_health(
             "wakeupListenerConnected": wakeup_listener_connected,
             "durableRecoveryPollMilliseconds": options.poll_interval_milliseconds,
             "healthObservationIntervalMilliseconds": FLEET_HEALTH_OBSERVATION_INTERVAL_MILLISECONDS,
+            "positionSweepIntervalSeconds": options.position_sweep_interval_seconds,
+            "positionSweepBatchSize": options.concurrency,
+            "positionSweep": position_sweep.health_json(),
+            "positionSweepSignerLoaded": false,
+            "positionSweepTransactionsSent": false,
             "outerTaskFailureCount": outer_task_failure_count,
             "outerTaskPanicCount": outer_task_panic_count,
             "outerTaskJoinFailureCount": outer_task_join_failure_count,
@@ -3179,6 +3370,542 @@ async fn wait_for_reconciliation_wakeup(
                 })
             );
         }
+    }
+}
+
+#[derive(Debug)]
+struct FleetPositionSweepTaskResult {
+    vault_id: Option<VaultId>,
+    outcome: FleetPositionSweepTaskOutcome,
+}
+
+#[derive(Debug)]
+enum FleetPositionSweepTaskOutcome {
+    Refreshed,
+    Stale,
+    Failed(String),
+}
+
+/// Advances at most one bounded RPC wave. The outer reconciler always claims
+/// signed submissions before calling this function, and returns to that claim
+/// path immediately after the batch, so background freshness cannot starve a
+/// confirmed movement awaiting durable reconciliation.
+async fn advance_fleet_position_sweep(
+    runtime: Arc<SameMintRouteRuntime>,
+    options: &FleetReconcilerOptions,
+    enabled_mints: &[String],
+    coordinator: &mut FleetPositionSweepCoordinator,
+) -> bool {
+    if coordinator.active.is_none() {
+        let sweep_id = coordinator.next_sweep_id();
+        match initialize_fleet_position_sweep(
+            runtime.as_ref(),
+            &options.cluster,
+            enabled_mints,
+            sweep_id,
+        )
+        .await
+        {
+            Ok(run) => coordinator.active = Some(run),
+            Err(error) => {
+                let error = redacted_external_error(&error.to_string());
+                coordinator.record_initialization_failure(sweep_id, error.clone());
+                eprintln!(
+                    "{}",
+                    json!({
+                        "status": "fleet_position_sweep_initialization_failed",
+                        "sweepId": sweep_id,
+                        "error": error,
+                        "complete": false,
+                        "signerLoaded": false,
+                        "transactionsSent": false,
+                    })
+                );
+                return true;
+            }
+        }
+    }
+
+    let Some(run) = coordinator.active.as_ref() else {
+        return false;
+    };
+    if run.next_index >= run.vaults.len() {
+        if let Some(metrics) = coordinator.record_completion() {
+            println!(
+                "{}",
+                json!({
+                    "status": "fleet_position_sweep_complete",
+                    "metrics": metrics,
+                    "signerLoaded": false,
+                    "transactionsSent": false,
+                })
+            );
+        }
+        return true;
+    }
+
+    let (batch, universe, sweep_id, started_at) = {
+        let run = coordinator
+            .active
+            .as_ref()
+            .expect("position sweep was initialized above");
+        let end = run
+            .next_index
+            .saturating_add(options.concurrency)
+            .min(run.vaults.len());
+        (
+            run.vaults[run.next_index..end].to_vec(),
+            run.universe.clone(),
+            run.sweep_id,
+            run.started_at,
+        )
+    };
+    let batch_cursor = batch.last().map(|entry| entry.vault.id.as_i64());
+    let outcomes = reconcile_fleet_position_sweep_batch(
+        runtime,
+        batch,
+        universe,
+        sweep_id,
+        started_at,
+        options.concurrency,
+    )
+    .await;
+
+    if let Some(run) = coordinator.active.as_mut() {
+        run.next_index = run.next_index.saturating_add(outcomes.len());
+        run.cursor_vault_id = batch_cursor.or(run.cursor_vault_id);
+        for outcome in outcomes {
+            run.processed = run.processed.saturating_add(1);
+            match outcome.outcome {
+                FleetPositionSweepTaskOutcome::Refreshed => {
+                    run.refreshed = run.refreshed.saturating_add(1);
+                }
+                FleetPositionSweepTaskOutcome::Stale => {
+                    run.stale = run.stale.saturating_add(1);
+                }
+                FleetPositionSweepTaskOutcome::Failed(error) => {
+                    run.failed = run.failed.saturating_add(1);
+                    eprintln!(
+                        "{}",
+                        json!({
+                            "status": "fleet_position_sweep_vault_failed",
+                            "sweepId": run.sweep_id,
+                            "vaultId": outcome.vault_id.map(VaultId::as_i64),
+                            "error": error,
+                            "stateChanged": false,
+                            "signerLoaded": false,
+                            "transactionsSent": false,
+                        })
+                    );
+                }
+            }
+        }
+    }
+
+    let complete = coordinator
+        .active
+        .as_ref()
+        .is_some_and(|run| run.next_index >= run.vaults.len());
+    if complete {
+        if let Some(metrics) = coordinator.record_completion() {
+            println!(
+                "{}",
+                json!({
+                    "status": "fleet_position_sweep_complete",
+                    "metrics": metrics,
+                    "signerLoaded": false,
+                    "transactionsSent": false,
+                })
+            );
+        }
+    } else {
+        coordinator.record_progress();
+        println!(
+            "{}",
+            json!({
+                "status": "fleet_position_sweep_progress",
+                "metrics": coordinator.health_json(),
+                "signerLoaded": false,
+                "transactionsSent": false,
+            })
+        );
+    }
+    true
+}
+
+async fn initialize_fleet_position_sweep(
+    runtime: &SameMintRouteRuntime,
+    cluster: &str,
+    enabled_mints: &[String],
+    sweep_id: u64,
+) -> Result<FleetPositionSweepRun, Box<dyn Error>> {
+    let started_at = Utc::now();
+    let started = Instant::now();
+    let vaults = load_fleet_position_sweep_vaults(&runtime.pool, enabled_mints).await?;
+    let universe = load_fleet_position_sweep_universe(runtime, cluster, enabled_mints).await?;
+    Ok(FleetPositionSweepRun {
+        sweep_id,
+        started_at,
+        started,
+        universe: Arc::new(universe),
+        vaults,
+        next_index: 0,
+        cursor_vault_id: None,
+        processed: 0,
+        refreshed: 0,
+        failed: 0,
+        stale: 0,
+    })
+}
+
+async fn load_fleet_position_sweep_vaults(
+    pool: &PgPool,
+    enabled_mints: &[String],
+) -> Result<Vec<FleetPositionSweepVault>, Box<dyn Error>> {
+    let rows = loyal_yield_orchestrator::sqlx::query(
+        r#"
+        SELECT
+            v.id,
+            v.settings,
+            p.authority,
+            p.policy_seed,
+            v.vault_index,
+            v.vault_pubkey,
+            p.policy_account,
+            sp.policy_account AS setup_policy_account,
+            sp.policy_seed AS setup_policy_seed,
+            p.delegated_signers,
+            p.threshold,
+            p.route_modes,
+            p.stable_mints,
+            p.kamino_markets,
+            p.kamino_liquidity_mints,
+            p.swap_lanes
+        FROM loyal_yield.managed_vaults v
+        JOIN loyal_yield.route_policies p ON p.id = v.active_policy_id
+        LEFT JOIN loyal_yield.route_policies sp ON sp.id = v.setup_policy_id
+          AND sp.active = TRUE
+        LEFT JOIN (
+            SELECT position.vault_id, max(position.observed_at) AS last_observed_at
+            FROM loyal_yield.vault_reserve_positions_current position
+            GROUP BY position.vault_id
+        ) observed_position ON observed_position.vault_id = v.id
+        WHERE v.active = TRUE
+          AND p.active = TRUE
+          AND $1 = ANY(p.delegated_signers)
+          AND $2 = ANY(p.route_modes)
+          AND p.stable_mints && $3::TEXT[]
+          AND p.kamino_liquidity_mints && $3::TEXT[]
+          AND cardinality(p.kamino_markets) > 0
+        -- A restart begins with never-observed/oldest-observed vaults instead
+        -- of replaying low database ids forever. The cohort remains frozen
+        -- and deterministic once this statement completes.
+        ORDER BY observed_position.last_observed_at ASC NULLS FIRST,
+        v.id
+        "#,
+    )
+    .bind(STANDARD_POLICY_AUTHORITY)
+    .bind(SAME_MINT_ROUTE_MODE)
+    .bind(enabled_mints)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(FleetPositionSweepVault {
+                vault: SelectedVault {
+                    id: VaultId(row.try_get::<i64, _>("id")?),
+                    settings: row.try_get("settings")?,
+                    authority: row.try_get("authority")?,
+                    policy_seed: row.try_get("policy_seed")?,
+                    vault_index: row.try_get("vault_index")?,
+                    vault_pubkey: row.try_get("vault_pubkey")?,
+                    policy_account: row.try_get("policy_account")?,
+                    setup_policy_account: row.try_get("setup_policy_account")?,
+                    setup_policy_seed: row.try_get("setup_policy_seed")?,
+                    delegated_signers: row.try_get("delegated_signers")?,
+                    threshold: row.try_get("threshold")?,
+                    route_modes: row.try_get("route_modes")?,
+                    stable_mints: row.try_get("stable_mints")?,
+                    kamino_markets: row.try_get("kamino_markets")?,
+                    kamino_liquidity_mints: row.try_get("kamino_liquidity_mints")?,
+                    swap_lanes: row.try_get("swap_lanes")?,
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, loyal_yield_orchestrator::sqlx::Error>>()
+        .map_err(Into::into)
+}
+
+async fn load_fleet_position_sweep_universe(
+    runtime: &SameMintRouteRuntime,
+    cluster: &str,
+    enabled_mints: &[String],
+) -> Result<FleetPositionSweepUniverse, Box<dyn Error>> {
+    let head = runtime
+        .client
+        .shared_market_catalog_head(cluster)
+        .await?
+        .ok_or("fleet position sweep requires a durable shared-market catalog head")?;
+    if head.readiness_state != SharedMarketCatalogReadiness::Active
+        || head.active_generation.is_none()
+        || head.active_generation != head.target_generation
+    {
+        return Err(
+            "fleet position sweep requires the exact active shared-market catalog generation"
+                .into(),
+        );
+    }
+    let expected_enabled_mints_hash = enabled_stable_mints_hash(enabled_mints)?;
+    if head.enabled_mints_hash != expected_enabled_mints_hash {
+        return Err(
+            "fleet position sweep enabled mints do not match the active shared-market catalog"
+                .into(),
+        );
+    }
+
+    let mut reserve_pubkeys = Vec::new();
+    let mut reserve_addresses = BTreeSet::new();
+    for address in &head.addresses {
+        if address.semantic_class != LookupTableManifestSubject::SharedMarket {
+            return Err("shared-market catalog head contains a non-shared semantic row".into());
+        }
+        let role_parts = address.account_role.split(',').collect::<Vec<_>>();
+        let roles = role_parts.iter().copied().collect::<BTreeSet<_>>();
+        if role_parts.is_empty()
+            || role_parts
+                .iter()
+                .any(|role| role.is_empty() || role.trim() != *role)
+            || roles.len() != role_parts.len()
+        {
+            return Err("shared-market catalog contains malformed account roles".into());
+        }
+        if !roles.contains("reserve") {
+            continue;
+        }
+        if !address.is_writable || !reserve_addresses.insert(address.address.clone()) {
+            return Err("shared-market catalog reserve roles must be unique and writable".into());
+        }
+        reserve_pubkeys
+            .push(Pubkey::from_str(&address.address).map_err(|_| {
+                "shared-market catalog reserve role contains an invalid public key"
+            })?);
+    }
+    if reserve_pubkeys.is_empty() {
+        return Err("active shared-market catalog contains no reserve-role addresses".into());
+    }
+
+    let mut evidence = FleetRpcAccountReadEvidence::default();
+    let summaries =
+        load_cached_reserve_summaries(runtime, &reserve_pubkeys, None, None, &mut evidence).await?;
+    let mut reserves = reserve_pubkeys
+        .into_iter()
+        .map(|reserve| {
+            let summary = summaries
+                .get(&reserve)
+                .ok_or("validated reserve summary batch omitted a catalog reserve")?;
+            Ok(FleetPositionSweepReserve {
+                reserve: reserve.to_string(),
+                market: summary.0.market.to_string(),
+                liquidity_mint: summary.0.liquidity_mint.to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+    reserves.sort_by(|left, right| left.reserve.cmp(&right.reserve));
+
+    Ok(FleetPositionSweepUniverse {
+        cluster: cluster.to_owned(),
+        enabled_mints: enabled_mints.iter().cloned().collect(),
+        catalog_revision_id: head.catalog_revision_id,
+        catalog_source_slot: head.source_slot,
+        reserves,
+    })
+}
+
+async fn reconcile_fleet_position_sweep_batch(
+    runtime: Arc<SameMintRouteRuntime>,
+    batch: Vec<FleetPositionSweepVault>,
+    universe: Arc<FleetPositionSweepUniverse>,
+    sweep_id: u64,
+    started_at: DateTime<Utc>,
+    concurrency: usize,
+) -> Vec<FleetPositionSweepTaskResult> {
+    let mut tasks = JoinSet::new();
+    let mut pending = batch.into_iter();
+    let mut results = Vec::new();
+    loop {
+        while tasks.len() < concurrency {
+            let Some(entry) = pending.next() else {
+                break;
+            };
+            let vault_id = entry.vault.id;
+            let task_runtime = runtime.clone();
+            let task_universe = universe.clone();
+            let runtime_handle = tokio::runtime::Handle::current();
+            tasks.spawn_blocking(move || {
+                let attempt = catch_unwind(AssertUnwindSafe(|| {
+                    runtime_handle.block_on(reconcile_fleet_position_sweep_vault(
+                        task_runtime.as_ref(),
+                        &entry,
+                        task_universe.as_ref(),
+                        sweep_id,
+                        started_at,
+                    ))
+                }));
+                let outcome = match attempt {
+                    Ok(Ok(outcome)) => outcome,
+                    Ok(Err(error)) => {
+                        FleetPositionSweepTaskOutcome::Failed(redacted_external_error(&error))
+                    }
+                    Err(_) => FleetPositionSweepTaskOutcome::Failed(
+                        "position sweep task panicked before its monotonic write".to_owned(),
+                    ),
+                };
+                FleetPositionSweepTaskResult {
+                    vault_id: Some(vault_id),
+                    outcome,
+                }
+            });
+        }
+        let Some(result) = tasks.join_next().await else {
+            break;
+        };
+        match result {
+            Ok(result) => results.push(result),
+            Err(error) => results.push(FleetPositionSweepTaskResult {
+                vault_id: None,
+                outcome: FleetPositionSweepTaskOutcome::Failed(redacted_external_error(
+                    &error.to_string(),
+                )),
+            }),
+        }
+    }
+    results
+}
+
+async fn reconcile_fleet_position_sweep_vault(
+    runtime: &SameMintRouteRuntime,
+    entry: &FleetPositionSweepVault,
+    universe: &FleetPositionSweepUniverse,
+    sweep_id: u64,
+    started_at: DateTime<Utc>,
+) -> Result<FleetPositionSweepTaskOutcome, String> {
+    // The ordered cohort is frozen for deterministic completion, but policy
+    // eligibility is re-read immediately before RPC work so a mid-sweep
+    // deactivate or policy replacement cannot be projected with stale rules.
+    let vault = load_active_vault(
+        &runtime.pool,
+        &entry.vault.settings,
+        entry.vault.vault_index,
+    )
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "sweep vault is no longer active under an active policy".to_owned())?;
+    if vault.id != entry.vault.id {
+        return Err("active sweep vault identity changed during the full sweep".to_owned());
+    }
+    validate_vault_policy(&vault).map_err(|error| error.to_string())?;
+    if !vault
+        .delegated_signers
+        .iter()
+        .any(|signer| signer == STANDARD_POLICY_AUTHORITY)
+    {
+        return Err("active policy no longer contains the standard delegated signer".to_owned());
+    }
+    if !vault
+        .stable_mints
+        .iter()
+        .any(|mint| universe.enabled_mints.contains(mint))
+        || !vault
+            .kamino_liquidity_mints
+            .iter()
+            .any(|mint| universe.enabled_mints.contains(mint))
+    {
+        return Err("active policy is no longer in the enabled stable-mint cohort".to_owned());
+    }
+    let reserves = universe
+        .reserves
+        .iter()
+        .filter(|reserve| {
+            vault.kamino_markets.contains(&reserve.market)
+                && vault.stable_mints.contains(&reserve.liquidity_mint)
+                && vault
+                    .kamino_liquidity_mints
+                    .contains(&reserve.liquidity_mint)
+        })
+        .map(|reserve| reserve.reserve.clone())
+        .collect::<Vec<_>>();
+    if reserves.is_empty() {
+        return Err("active policy has no role-validated shared-catalog reserve".to_owned());
+    }
+    let current_reserves = runtime
+        .client
+        .current_positions(vault.id)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|position| position.has_value || position.amount_raw > 0)
+        .map(|position| position.reserve)
+        .collect::<BTreeSet<_>>();
+    if current_reserves
+        .iter()
+        .any(|reserve| !reserves.contains(reserve))
+    {
+        return Err(
+            "a held current reserve is outside the active policy's role-validated stable universe"
+                .to_owned(),
+        );
+    }
+
+    let preview =
+        load_chain_reconcile_preview_from_runtime(runtime, &vault, &reserves, None, None, false)
+            .await
+            .map_err(|error| error.to_string())?;
+    let universe_by_reserve = universe
+        .reserves
+        .iter()
+        .map(|reserve| (reserve.reserve.as_str(), reserve))
+        .collect::<BTreeMap<_, _>>();
+    for position in &preview.positions {
+        let reserve = universe_by_reserve
+            .get(position.reserve.as_str())
+            .ok_or_else(|| {
+                "chain obligation references a reserve without an active shared-catalog reserve role"
+                    .to_owned()
+            })?;
+        if position.market != reserve.market
+            || position.liquidity_mint != reserve.liquidity_mint
+            || !vault.kamino_markets.contains(&position.market)
+            || !vault.stable_mints.contains(&position.liquidity_mint)
+            || !vault
+                .kamino_liquidity_mints
+                .contains(&position.liquidity_mint)
+        {
+            return Err(
+                "chain position identity falls outside the active policy's stable reserve universe"
+                    .to_owned(),
+            );
+        }
+    }
+
+    let mut state = chain_preview_reconciled_state(&preview).map_err(|error| error.to_string())?;
+    state.context = json!({
+        "kind": "fleet_position_sweep",
+        "cluster": universe.cluster,
+        "sweep_id": sweep_id,
+        "sweep_started_at": started_at,
+        "catalog_revision_id": universe.catalog_revision_id,
+        "catalog_source_slot": universe.catalog_source_slot,
+        "amount_semantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
+        "signer_loaded": false,
+        "transactions_sent": false,
+    });
+    match runtime.client.reconcile_vault(vault.id, state).await {
+        Ok(_) => Ok(FleetPositionSweepTaskOutcome::Refreshed),
+        Err(OrchestratorError::StaleVaultObservation { .. }) => {
+            Ok(FleetPositionSweepTaskOutcome::Stale)
+        }
+        Err(error) => Err(error.to_string()),
     }
 }
 

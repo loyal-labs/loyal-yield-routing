@@ -41,6 +41,59 @@ commands pass this verifier, production replaces the executing serial monitor
 as one coordinated change. The old and new execution paths must never move the
 same fleet concurrently.
 
+### Production completion correction (2026-07-15)
+
+`IMPLEMENTATION: PASS` is not the goal by itself. The goal is
+`END STATE: PASS`, which additionally requires repaired production ALT state,
+the production cutover, complete fleet evaluation, and observed fund movement.
+A locally built image, a Blueprint declaration, an alive worker, or an empty
+queue cannot substitute for those outcomes.
+
+Every active, policy-eligible vault with a fresh chain-backed balance must be
+accounted for in one current optimizer epoch. “Accounted for” means a durable
+opportunity/decision is progressing, the vault is already at its economically
+valid winner, or a specific current exclusion such as no positive net edge,
+capacity, cooldown, or policy ineligibility is recorded. `not_evaluated`, an
+unclassified error, or an old serial cursor that has not reached the vault is
+never an acceptable final outcome.
+
+Historical terminal ALT operations remain immutable audit evidence. “Zero ALT
+failures” means zero unresolved active failures: no current request, binding,
+readiness row, opportunity, or allocator head may depend on an absent,
+wrong-owner, or otherwise unusable table. Each damaged table must have a
+durable repair record and successor (or an explicit no-longer-needed
+resolution), and active usable prefixes on real ALTs must not be discarded
+while failed suffix work is replanned.
+
+Production movement PASS is cohort- and flow-aware. New deposits may increase
+raw Main AUM during the run, so the verifier captures a baseline cohort and
+separately accounts for later deposits. It must prove finalized optimizer
+signatures, source/target chain deltas, and reconciler rows at or above the
+confirmation slot. The baseline cohort's routeable Main balance must fall by
+the confirmed net outflow, while deposits arriving after the baseline remain
+visible rather than being mistaken for failed optimization.
+
+### Required production order
+
+1. Capture the production baseline and pause the damaged legacy provisioner if
+   it can create more terminal work. Do not erase or hand-edit failed rows.
+2. Land a fenced repair command and additive migration. The command verifies
+   finalized on-chain owner/authority/prefix state, quarantines phantom
+   allocations, records successor lineage, preserves valid prefixes, and
+   requeues only affected demand.
+3. Publish the exact immutable light-worker image and prove its registry
+   digest. Apply and checksum-verify migrations 23 through the repair migration
+   before starting any worker that requires them.
+4. Run the repair path and priority provisioner until active phantom
+   references and unresolved terminal requests are zero. This is demand-driven
+   repair, not a fleet-wide ALT pre-provisioning pass.
+5. Stop and drain the executing serial monitor. Prove no serial send can race,
+   then deploy the planner, revalidator, executor, confirmer, reconciler, and
+   priority provisioner on the same image. Never overlap the two executors.
+6. Run the production verifier repeatedly until every vault has a current
+   outcome, material opportunities are draining in economic order, finalized
+   signatures reconcile to the correct reserves, and the production SLOs pass.
+
 ## Ideal Implementation Contract
 
 ### 1. Versioned observation and planning
@@ -66,6 +119,21 @@ same fleet concurrently.
   by epoch and `minContextSlot` so one worker wave does not stampede RPC.
   Normal discovery does not spawn another process or synchronously reconcile
   every vault from RPC.
+- The signer-free fleet reconciler owns a bounded chain-position sweep. It
+  snapshots one fixed eligible-vault cohort, reuses the validated shared reserve
+  catalog/runtime cache, batch-reads vault state with bounded concurrency, and
+  advances the existing monotonic slot-fenced position projection. Submitted or
+  ambiguous movement reconciliation always drains first; otherwise the sweep
+  must finish the fleet quickly enough that planning never depends on an old
+  serial cursor or stale dashboard projection. A worker restart may resume with
+  a new fixed cohort, but older RPC slots can never overwrite newer rows.
+- The periodic O(vaults) sweep is a recovery/backstop path, not the eventual
+  neobank-scale ingestion architecture. As the fleet grows, live account events
+  should mark deterministic vault shards dirty and multiple reconciler owners
+  should partition those shards. Cross-vault RPC batching is allowed only when
+  each vault's reserve/obligation/token evidence still shares one coherent
+  context; otherwise preserve the one-context-per-vault safety boundary and
+  scale horizontally.
 - Stale epochs/opportunities are superseded before decision creation. Older
   observed slots cannot overwrite newer projected state.
 
@@ -285,6 +353,9 @@ captured/live read-only fleet snapshot. PASS only if its machine-readable output
 proves:
 
 - every eligible current vault was considered from one non-expired epoch;
+- the input position projection is chain-backed, slot-fenced, and within its
+  declared freshness bound for the whole captured cohort; stale rows from a
+  partial/old serial pass cannot count toward completeness;
 - completeness starts from the authoritative eligible-vault denominator and
   assigns every vault exactly one mutually exclusive outcome: observed
   opportunity, active queue/decision state, no positive current source,
@@ -420,6 +491,101 @@ Actual deployment and fund movement are separate operator actions. Until run,
 record `PRODUCTION PERFORMANCE: NOT RUN`; do not fabricate a PASS from local
 evidence.
 
+### Check 8: Production ALT damage recovery
+
+PASS only if a finalized-RPC and production-database verifier proves:
+
+- every reusable-v2 table that is active, warming, allocation-accepting, or
+  referenced by an active/preparing binding is owned by the Solana Address
+  Lookup Table program, has the standard `POLICY_KEYPAIR` authority, and its
+  persisted usable prefix exactly matches the on-chain prefix;
+- every absent/wrong-owner table is non-allocating and has zero active or
+  preparing bindings, zero runnable operation, and zero route-readiness or
+  opportunity dependency;
+- each historically terminal create/extend has immutable repair evidence that
+  links the damaged table/operation and affected demand to a verified successor
+  or an explicit no-longer-needed resolution;
+- all requests failed solely because of a terminal damaged-table dependency
+  have a fenced successor attempt or are satisfied; unresolved active terminal
+  request count is zero;
+- valid prefixes on real ALTs remain usable, and suffix retries start from the
+  finalized observed prefix rather than allocating duplicate tables or
+  replaying a stale extension;
+- no new legacy or exact-route ALT is created, and the standard policy account
+  remains within the explicit rolling lamport budget.
+
+Historical `permanent_failure` rows are expected audit records and are not
+deleted to manufacture PASS. Any live extension attempt against a phantom
+table, raw operator SQL repair, missing successor lineage, or unresolved active
+terminal dependency is FAIL.
+
+### Check 9: Production migration and atomic executor cutover
+
+PASS only if live readback proves:
+
+- the production migration ledger contains migrations 23 through the repair
+  migration with repository-matching names and checksums;
+- one immutable GHCR light-worker tag/digest for the verified commit exists and
+  all six production workers use it with the required commands and
+  least-privilege env boundaries;
+- the latest deploy for each worker is live, each process reports its durable
+  recovery/health state, and no required binary or migration precondition is
+  missing;
+- `loyal-same-mint-yield-monitor` is suspended, scaled to zero, or otherwise
+  incapable of `--execute` before the fleet executor begins sending;
+- no interval exists in which both serial and fleet executors could claim/send
+  production routes, and pre-cutover signed/ambiguous work is drained or
+  adopted without replacement movement;
+- the new provisioner is the only active ALT mutator for the cluster and uses
+  the standard `POLICY_KEYPAIR` plus its explicit budget.
+
+### Check 10: Complete fleet evaluation and economic draining
+
+PASS only if a fresh production epoch and its durable queue prove:
+
+- every active policy-eligible vault with a fresh chain-backed position is
+  present in exactly one mutually exclusive current outcome; unaccounted and
+  `not_evaluated` counts are zero;
+- the epoch is complete and unexpired, the counted outcomes sum exactly to the
+  eligible fleet, and no result is inherited from the old serial cursor;
+- every material opportunity (at minimum the captured >= $1,000 cohort) is
+  ready, leased/in flight, waiting on a named current ALT/capacity/conflict
+  dependency, confirmed, or economically excluded—never silently absent;
+- no lower-value nonconflicting route is submitted while a materially higher
+  lost-yield-dollar opportunity is runnable and unleased; fairness aging may
+  break near-ties but cannot hide the high-value cohort;
+- `waiting_alt`, simulation failures, expired leases, and worker errors have
+  bounded age and are decreasing or have an explicit fenced recovery action;
+  no material vault remains stuck beyond ten minutes;
+- aggregate outcome counts and USDC amounts are emitted every health interval
+  so regressions are visible without reconstructing the fleet manually.
+
+### Check 11: Correct production movement and reconciliation
+
+PASS only if post-cutover production evidence proves:
+
+- real optimizer-created routes—not a manual operator transaction—have
+  finalized signatures and positive net edge after measured fees;
+- each selected target was the best currently admissible safe reserve for its
+  risk/mint/capacity constraints in the opportunity's immutable epoch;
+- the >= $1,000/highest-lost-yield cohort begins moving before lower-value
+  nonconflicting work, subject only to explicit ALT, account-conflict, or target
+  capacity blockers;
+- finalized RPC and chain-backed reconciler rows at or above each confirmation
+  slot show the expected source decrease and target increase; projection-only
+  or dashboard-only evidence is insufficient;
+- the baseline Main cohort falls by confirmed net outflow after separately
+  accounting for deposits received after the baseline;
+- the real deployment meets the same two-minute/ten-minute yield-unlock,
+  submission, confirmation, fee, duplicate, deadlock, and negative-value gates
+  from Check 6;
+- unresolved terminal ALT failures, stale active decisions, ambiguous
+  replacement sends, duplicate movements, and capacity oversubscriptions are
+  zero at the end of the observation window.
+
+One successful tiny route does not pass this check while material eligible
+funds remain unevaluated or stuck.
+
 ## Evidence Commands
 
 Use the smallest relevant set and record exact output/commit:
@@ -444,6 +610,14 @@ cargo run -p loyal-yield-orchestrator --bin fleet-orchestration-verifier -- \
   --implementation --json --collect-repository-evidence \
   --runtime-evidence-json <PATH> \
   --isolated-database --database-url <ISOLATED_FLEET_VERIFY_URL>
+
+# Final completion must consume freshly collected live measurements rather
+# than operator-authored PASS booleans. These commands are implementation-owned.
+op run --env-file=.env.1password -- sh -c \
+  'fleet-orchestration-production-evidence --json --output <PATH>'
+fleet-orchestration-verifier --end-state --json \
+  --runtime-evidence-json <PATH> \
+  --production-evidence-json <PATH>
 ```
 
 ### Runtime evidence schema v1
@@ -574,6 +748,10 @@ real movements for production performance. Check 7 requires source-bound
 local-container binary probes, structured six-service Blueprint validation,
 and functional status fixtures for implementation; registry presence and live
 Render/DB state are deployment evidence and never a hardcoded implementation
+`NOT RUN`. Check 8 spans the repair implementation and its live active-state
+proof; Check 9 is a deployment gate; Checks 10-11 require live production
+optimizer and movement evidence. `--end-state` must collect or consume those
+measurements and cannot hardcode deployment or production performance to
 `NOT RUN`. `--implementation` succeeds only when every
 required implementation subcheck passes, regardless of deployment or
 production-performance `NOT RUN` state, and must not claim `END STATE: PASS`.
@@ -584,43 +762,54 @@ reason in this document before changing implementation.
 
 ## Latest Evidence Run: 2026-07-15
 
-The table below records the last complete source-bound run, not a deployment
-claim. Current runtime-source changes supersede it until the new immutable
-image and post-build complete artifact are verified; during that interval the
-literal current implementation verdict is `NOT RUN`.
+This is the literal current verdict. Checks 1-7 retain the last clean
+source-bound implementation artifact at checkout
+`80342a3b8eeaf4dd5c2e18943c66cd8dd3fddcfd`; the production repair checkpoint
+below is direct readback from migration 28 plus the fenced repair command at
+checkout `f4e5d59`, and is not yet the final clean deployment artifact:
 
 | Check | Verdict | Evidence / first missing invariant |
 | --- | --- | --- |
-| 1. Repository and migration integrity | PASS | The dedicated runner applied and checked migrations 1-27 in a fresh PostgreSQL database. The source-aware verifier passed the migration ledger, rolled-back reapplication, changed/untracked whitespace, non-printing credential scan, `cargo fmt --all -- --check`, orchestrator all-bin check, router check, and `git diff --check`. |
-| 2. Fast complete discovery | PASS | A fresh source-bound read-only artifact accounted for all 3,022 eligible current vaults in mutually exclusive outcomes. Seven live samples measured 1.927s p95, the 10,000-vault replay took 61ms, economic/top-cohort ordering passed, and zero child route/reconcile processes were spawned. The freshness-bounded Timescale query used typed source columns and runtime chunk exclusion instead of the historical latest-view scan. |
+| 1. Repository and migration integrity | FAIL | The new runner applied migrations 1-28 and passed exhaustive validation from a blank PostgreSQL database; production also completed one explicit exhaustive 1-28 audit. A checksum-current production `--apply` now takes 2.74s instead of the prior multi-minute catalog audit because it reads the ledger once and skips already-proven exhaustive validation, while the applying invocation retains a dedicated advisory-lock session and records the final validation-fence row only after validation. This check remains FAIL until the current tracked implementation is committed cleanly and the full source-bound verifier is rerun. |
+| 2. Fast complete discovery | FAIL | The prior read-only planner artifact accounted for all 3,018 eligible rows in 3.320s p95 and passed ordering/replay checks, but the production evidence collector found that the Main/OnRe position projection was not fresh enough for a cutover baseline. The old serial cursor cannot prove a fresh chain-backed whole-fleet denominator. A signer-free bounded position sweep is now required; this check remains FAIL until a clean source-bound run proves the full fixed cohort was slot-fenced and fresh before the planner epoch. |
 | 3. Economic behavior | PASS | Deterministic notional, edge, lost-yield, starvation, dust/cost, fee-cap, material-frontier, and concurrent target-capacity invariants passed. Three simultaneous $100 admissions against $250 of headroom admitted two and rejected only the excess contender without a telemetry-fence false rejection. |
-| 4. ALT head-of-line isolation | PASS | The source-bound artifact drained all 4,096 ready jobs while leaving 10,000 `waiting_alt` jobs decision-free. PostgreSQL statement p95 was 4.257ms baseline versus 3.723ms cold (0ppm positive regression); reusable-v2-only planning, one-row durable targeted wakeup, two independent physical ALT lanes, lane-exact indexes, zero normal global-lock acquisitions, and zero stale-fence commits passed. |
+| 4. ALT head-of-line isolation | PASS | The source-bound artifact drained all 4,096 ready jobs while leaving 10,000 `waiting_alt` jobs decision-free. PostgreSQL statement p95 was 4.821ms baseline versus 4.017ms cold (0ppm positive regression); reusable-v2-only planning, one-row durable targeted wakeup, two independent physical ALT lanes, lane-exact indexes, zero normal global-lock acquisitions, and zero stale-fence commits passed. |
 | 5. Execution concurrency and crash safety | PASS | Isolated DB plus controlled-RPC evidence passed 64 nonoverlapping leases, physical writable congestion, full/disjoint mixed runnable-expired claims, higher-fence reclaim, exact-byte rebroadcast, ambiguity blocking, slot-fenced reconciliation, target-capacity admission/release fences, and zero duplicate movements/deadlocks. The standard `POLICY_KEYPAIR` signed policy execution and remained ALT authority/payer; fee-only shard identity and budget gates passed. |
 | 6. Performance, value, and price | PASS | The controlled 10,000-route replay measured 2.331s warm high-value submission p95 and 23.930s confirmation p95. It submitted 100% of recoverable yield dollars/hour inside both two and ten minutes, observed a 162ppm maximum fee fraction under the 50,000ppm cap, and produced zero negative-value routes, duplicates, or deadlocks; ALT backlog changed warm p95 by 0ppm. This is implementation replay evidence, not real production movement evidence. |
-| 7. Production wiring and feedback loop | PASS | `render.yaml` declares six distinct least-privilege durable roles on one immutable image reference and no serial executing monitor. The locally built candidate image ID `sha256:b4665feb5d4b85d273f5e7b0270b629a3a0f79fe55f013e96b21458c665f1e49` passed all six network-disabled role probes. Durable recovery polls every 250ms; all six stuck stages were detected in 500ms, within the declared 1,000ms health interval. |
+| 7. Production wiring and feedback loop | FAIL | The corrected reconciler now performs a signer-free, transaction-free fixed-cohort chain sweep and interleaves one bounded 16-vault wave only after each signed-reconciliation batch, preventing both confirmation starvation and freshness starvation. Its cohort query exactly matches the planner denominator (3,015 current vaults), restarts oldest-first, validates the active catalog hash/42 reserve roles, and passed the role probe. `render.yaml` and the verifier require `--position-sweep-interval-seconds 300`; a clean source-bound image probe and measured full 3,015-vault duration are still required. |
+| 8. Production ALT damage recovery | FAIL | Migration 28 and the provisioner-owned fenced repair ran under durable pause epoch 9 with finalized RPC and standard `POLICY_KEYPAIR` identity proof, sending zero transactions. The raw production collector now verifies 84/84 active or referenced ALTs at finalized RPC with zero owner, authority, or persisted-prefix mismatch; all 7 damaged phantoms are non-allocating with zero live binding/runnable/route dependency; all 107 historical terminal operations have immutable repair evidence; and all 4 real prefixes are preserved. Only 18 of 108 affected requests are currently satisfied or have a healthy successor, leaving 90 unresolved while the provisioner is suspended. Historical charged spend is about 1.313 SOL in the 24-hour window, so the explicit safe cap is 2 SOL for the remaining approximately 0.22 SOL repair. This remains FAIL until the standard payer is funded, the sole budgeted v2 provisioner drains those requests, and a fresh collector retains every zero-damage invariant. |
+| 9. Production migration and atomic cutover | FAIL | Migrations 23-28 are applied and explicit production schema validation passed; migration 28 ledger readback is `reusable_alt_terminal_repair` with repository-matching checksum `890ed019ab37c0334f22cdc9a94256f3d85218c724c09669bd96595ca3006f13`. The executing fleet service is still the serial `loyal-same-mint-yield-monitor` on `light-workers:sha-1c25f69...`; none of the six optimizer services is live and the final optimized image has not been published. |
+| 10. Complete fleet evaluation | FAIL | The new planner's live read-only full-fleet pass accounted for all 3,016 eligible vaults in 2.033s and found 2,540 opportunity vaults; its top cohort began at $10,104 and $7,663 and a bounded wave selected $57,582.89 notional. This is not yet a durable production epoch: the planner ran nonmutating, no six-worker fleet is live, and legacy readiness still contains incomplete/failed work. |
+| 11. Correct production movement | FAIL | At 23:11 UTC, chain-backed current positions held 83,468.51 USDC in Main versus 220,294.57 in OnRe; fresh APYs were 3.5106% and 6.8297%. The old serial monitor reduced Main from the earlier 96-97k incident snapshot, but there are still no post-cutover optimizer signatures or cohort/flow-aware new-worker reconciliation because the cutover has not occurred. |
 
-Last complete scoped result: `IMPLEMENTATION: PASS`; `DEPLOYMENT: NOT RUN`;
-`PRODUCTION PERFORMANCE: NOT RUN`; `END STATE: NOT RUN`. Current post-change
-result: `IMPLEMENTATION: NOT RUN` pending the post-build complete artifact.
-Deployment remains `NOT RUN` in the executable verifier because registry,
-Render, and production database observations are deliberately outside local
-implementation evidence. No production migration, deployment, transaction
-send, or fund movement occurred in this run.
+Current scoped result: `IMPLEMENTATION: FAIL`; `DEPLOYMENT: FAIL`;
+`PRODUCTION PERFORMANCE: FAIL`; `END STATE: FAIL`.
+The previous implementation-only goal was prematurely complete. The executable
+verifier must now support live deployment/performance evidence, and the goal
+stays active until the production end state passes.
 
 ## Standing Codex Goal (under 4,000 characters)
 
 ```text
-Run docs/plans/fleet-yield-orchestration-speed-verifier.md adversarially against the current loyal-yield-routing checkout and make IMPLEMENTATION: PASS without weakening it. Implement the durable fleet optimizer described there, then rerun the verifier literally after each material slice.
+Run docs/plans/fleet-yield-orchestration-speed-verifier.md adversarially against the current loyal-yield-routing checkout and production, and make END STATE: PASS without weakening any check. IMPLEMENTATION: PASS alone is insufficient. Re-run the literal verifier after every material repair, migration, deploy, or runtime finding.
 
-Required end state: replace production dependence on the serial vault-id monitor with versioned market epochs, a durable economically ranked rebalance-opportunity queue, ALT-independent ready/waiting lanes, persistent in-process planner/executor/confirmer workers, slot-fenced projections, and concise operational metrics. Preserve rebalance_decisions as the one-active-movement audit/lock; ALT-missing work must not create a decision.
+Current failures are binding: migrations 23-28 and the fenced repair are now
+applied, but the old ID-ordered serial monitor remains the only executor; the
+six-role image is not published/deployed; the repaired reusable-v2 provisioning
+queue is paused and the standard policy payer still requires an explicit safe
+top-up/budget before sends; much of the fleet lacks a fresh current optimizer
+epoch; and large Main balances have not yet been proven to move under the new
+optimizer.
 
-Prioritize lost yield dollars per hour using normalized notional, capacity-adjusted net APY edge, confidence, expected service time, holding-horizon costs, and aging/fairness. Reject negative-value/dust moves. Plan fleet-wide capacity-aware waves rather than sending every vault to the point-estimate peak.
+Implement a durable fenced repair path, preferably migration 28 plus provisioner-owned admin logic. From finalized RPC, distinguish absent/wrong-owner tables from real ALTs with valid prefixes. Preserve immutable failed-operation history. Quarantine phantom allocations, stop them accepting work, supersede affected preparing bindings, record repair/successor lineage, allocate fresh best-fit reusable-v2 shards, and create new attempt generations for only affected demand. Replan failed suffixes on real ALTs from their verified usable prefixes. Never repair with ad hoc production SQL, reopen a terminal row in place, create legacy/exact-route ALTs, discard a valid prefix, or use any signer other than standard POLICY_KEYPAIR for ALT authority/payer.
 
-ALT requirements: exact verified active prefixes remain usable while later suffixes extend; ready work must not wait behind cold work; remove the global reusable-alt-rollout lock from normal readiness; keep it only for cutover/pause/catalog publication; use lane/family/table locks, one fenced mutation stream per physical ALT, concurrent independent tables, economic request priority, durable coverage_ready outbox wakeups, active/staging shared catalog revisions, best-fit reusable-v2 packing, no new legacy/exact-route ALTs, and standard POLICY_KEYPAIR authority/payer.
+Extend the executable verifier with measured production evidence: finalized ALT owner/authority/prefix checks, active dependency counts, migration checksums, GHCR digest, live Render service/image/command/suspension/deploy state, complete optimizer-epoch outcomes and USDC amounts, opportunity ordering/age, signatures, fees, and chain-backed source/target reconciliation. Caller-supplied verdict booleans are invalid.
 
-Execution requirements: persist exact writable sets and schedule conflict-free bounded waves; keep POLICY_KEYPAIR as delegated policy signer; any route fee-payer pool is fee-only, low-balance, budgeted, and has no ALT/vault authority. Persist semantic identity and exact signed bytes before broadcast; retry identical bytes until expiry; confirm asynchronously; use transaction-slot minContextSlot for reconciliation; never duplicate movement after ambiguous sends or stale reads.
+Publish the exact immutable light-workers image through the worker-images workflow. Apply and verify migrations 23 through the repair migration. Run the fenced repair and drain unresolved active terminal ALT dependencies to zero. Stop/drain the executing serial monitor before the fleet executor can send, then deploy the planner, revalidator, executor, confirmer, reconciler, and priority provisioner on the same image with least-privilege envs. Never dual-execute.
 
-Performance/price gates: complete current-fleet planning from one fresh epoch under 5s p95; 10k replay under 10s; warm high-value submission under 10s p95 and confirmation under 30s p95; 10k ALT-cold jobs alter ready p95 by less than 5%; submit 90% of recoverable yield dollars/hour within 2m and 99% within 10m subject to explicit capacity/conflict ceilings; zero duplicate movements/deadlocks/negative-value routes; bounded fees relative to incremental yield; health evidence identifies a stuck stage within one declared health-observation interval while reporting the faster durable recovery poll separately.
+Production PASS requires every active policy-eligible fresh vault in exactly one current epoch outcome; zero not_evaluated/unclassified vaults; material >=$1k/highest-lost-yield opportunities moving first unless a named current ALT/conflict/capacity blocker exists; no material vault stuck over ten minutes; and aggregate counts/USDC emitted each health interval. Do not fleet-backfill ALTs or use a slow canary.
 
-Follow AGENTS.md. Keep binaries thin and reusable domain/data/integration logic in owning modules. Add no broad Rust tests or source-string assertions outside the allowed proof surface; prefer additive migration checks, targeted cargo check, deterministic dry-run/benchmark/verifier paths, isolated SQL behavior checks, and read-only live evidence. Do not expose secrets. Do not perform production writes, deploys, or sends without separate authorization. Report each verifier check PASS/FAIL/NOT RUN with exact evidence; production-only checks remain NOT RUN until authorized.
+Movement PASS requires real optimizer-created finalized signatures, positive net edge after fees, best admissible safe targets, reconciler observations at or above confirmation slots, source decreases/target increases, and baseline Main cohort reduction after separately accounting for new deposits. Meet the 2m/10m yield-unlock and 10s/30s submission/confirmation gates with zero duplicates, deadlocks, negative-value routes, ambiguous replacements, capacity oversubscription, stale active decisions, or unresolved active ALT failures.
+
+Follow AGENTS.md: keep binaries thin, reusable logic in owning modules, and avoid broad new Rust tests. Prefer targeted cargo check, migration verification, production SQL/RPC/Render evidence, and the executable verifier. Use op run with .env.1password; never print secrets or signed bytes. Production data repair, migrations, Render changes, deployments, and optimizer sends are authorized for this goal, but remain bounded by the verifier and fail closed on uncertain state.
 ```
