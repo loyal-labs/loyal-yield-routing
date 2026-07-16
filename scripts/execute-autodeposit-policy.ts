@@ -183,6 +183,7 @@ const SAME_MINT_ROUTE_MODE = "same_mint_kamino";
 const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDC_DECIMALS = 6;
 const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
+const AUTODEPOSIT_PULL_FEE_PAYER_MIN_LAMPORTS = 50_000_000;
 
 export function isMissingAutodepositTokenDelegateFailure(
   error: unknown
@@ -1387,6 +1388,24 @@ function requireTopUpFeePayer(
   );
 }
 
+export async function assertSolBalance(args: {
+  connection: Pick<Connection, "getBalance">;
+  feePayer: PublicKey;
+  minimumLamports: number;
+  role: string;
+}): Promise<void> {
+  const balanceLamports = await args.connection.getBalance(
+    args.feePayer,
+    DEFAULT_COMMITMENT
+  );
+  if (balanceLamports < args.minimumLamports) {
+    throw new Error(
+      `${args.role} ${args.feePayer.toBase58()} has ${balanceLamports} lamports; ` +
+        `${args.minimumLamports} required.`
+    );
+  }
+}
+
 export async function assertFeePayerSol(args: {
   connection: Pick<Connection, "getBalance">;
   feePayer: PublicKey;
@@ -2221,6 +2240,13 @@ async function main() {
 
   let pullSent = false;
   try {
+    await assertSolBalance({
+      connection,
+      feePayer: policyKeypair.publicKey,
+      minimumLamports: AUTODEPOSIT_PULL_FEE_PAYER_MIN_LAMPORTS,
+      role: "Autodeposit pull fee payer",
+    });
+
     const pull = await client.prepareEarnUsdcAutodepositPull({
       policy: new PublicKeyCtor(target.sweepPolicyAccount),
       walletAddress: new PublicKeyCtor(target.wallet),
