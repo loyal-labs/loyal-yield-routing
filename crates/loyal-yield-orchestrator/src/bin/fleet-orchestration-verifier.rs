@@ -59,7 +59,7 @@ const HEAVY_RENDER_ENVIRONMENT_ID: &str = "evm-d8kgt3a8qa3s7382glc0";
 const KAMINO_MONITOR_SERVICE_ID: &str = "srv-d8h4i9a8pkls73bver00";
 const KAMINO_MONITOR_SERVICE_NAME: &str = "loyal-kamino-reserve-monitor";
 const KAMINO_MONITOR_COMMAND: &str = "/usr/local/bin/kamino-reserve-monitor";
-const KAMINO_MONITOR_PREDEPLOY: &str = "/bin/sh -lc '/usr/local/bin/loyal-timescale-migrations --apply && /usr/local/bin/kamino-reserve-monitor --sync-supported-reserves'";
+const KAMINO_MONITOR_PREDEPLOY: &str = "/usr/local/bin/kamino-monitor-predeploy";
 const TIMESCALE_MARKET_MIGRATION_VERSION: i64 = 5;
 const TIMESCALE_MARKET_MIGRATION_NAME: &str = "kamino_confirmed_state_verification";
 const MARKET_VERIFICATION_WARNING_SECONDS: i64 = 90;
@@ -1108,6 +1108,39 @@ fn collect_local_evidence(repository_root: &Path) -> Result<LocalEvidence, Box<d
             "proofScope": "Dockerfile recipe only; built-image probing is separate evidence"
         }),
     )];
+    let heavy_dockerfile =
+        fs::read_to_string(repository_root.join("Dockerfile.laserstream-workers"))?;
+    let monitor_predeploy =
+        fs::read_to_string(repository_root.join("scripts/kamino-monitor-predeploy.sh"))?;
+    let monitor_predeploy_lines = monitor_predeploy
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    let expected_monitor_predeploy_lines = [
+        "#!/bin/sh",
+        "set -eu",
+        "/usr/local/bin/loyal-timescale-migrations --apply",
+        "exec /usr/local/bin/kamino-reserve-monitor --sync-supported-reserves",
+    ];
+    let monitor_wrapper_copy =
+        format!("COPY --chmod=0755 scripts/kamino-monitor-predeploy.sh {KAMINO_MONITOR_PREDEPLOY}");
+    wiring_subchecks.push(subcheck(
+        "kamino_monitor_predeploy_is_one_image_executable_with_ordered_migration_and_sync",
+        monitor_predeploy_lines == expected_monitor_predeploy_lines
+            && heavy_dockerfile
+                .lines()
+                .any(|line| line.trim() == monitor_wrapper_copy),
+        json!({
+            "wrapperSource": "scripts/kamino-monitor-predeploy.sh",
+            "imageCommand": KAMINO_MONITOR_PREDEPLOY,
+            "imageCopyIsExecutable": heavy_dockerfile
+                .lines()
+                .any(|line| line.trim() == monitor_wrapper_copy),
+            "migrationRunsBeforeSync": monitor_predeploy_lines == expected_monitor_predeploy_lines,
+            "removalOverridePresent": monitor_predeploy.contains("--allow-supported-reserve-removals"),
+        }),
+    ));
 
     let workflow = fs::read_to_string(repository_root.join(".github/workflows/worker-images.yml"))?;
     wiring_subchecks.push(subcheck(
@@ -1385,10 +1418,26 @@ fn collect_local_evidence(repository_root: &Path) -> Result<LocalEvidence, Box<d
         && validated_image_service_count == required_services.len()
         && matched_block_indexes.len() == required_services.len())
     .then(|| durable_image_references[0].clone());
-    let production_heavy_worker_image_reference =
-        production_expected_kamino_monitor(repository_root)
-            .ok()
-            .map(|service| service.image);
+    let expected_kamino_monitor = production_expected_kamino_monitor(repository_root);
+    let production_heavy_worker_image_reference = expected_kamino_monitor
+        .as_ref()
+        .ok()
+        .map(|service| service.image.clone());
+    wiring_subchecks.push(subcheck(
+        "production_blueprint_uses_exact_kamino_monitor_predeploy_executable",
+        expected_kamino_monitor.as_ref().is_ok_and(|service| {
+            service.command == KAMINO_MONITOR_COMMAND
+                && service.pre_deploy_command == KAMINO_MONITOR_PREDEPLOY
+        }),
+        json!({
+            "service": KAMINO_MONITOR_SERVICE_NAME,
+            "expectedCommand": KAMINO_MONITOR_COMMAND,
+            "expectedPreDeployCommand": KAMINO_MONITOR_PREDEPLOY,
+            "configuredCommand": expected_kamino_monitor.as_ref().ok().map(|service| service.command.as_str()),
+            "configuredPreDeployCommand": expected_kamino_monitor.as_ref().ok().map(|service| service.pre_deploy_command.as_str()),
+            "configurationError": expected_kamino_monitor.as_ref().err().map(|error| error.to_string()),
+        }),
+    ));
     wiring_subchecks.push(subcheck(
         "production_blueprint_declares_six_distinct_durable_worker_roles",
         missing_or_duplicate_roles.is_empty()

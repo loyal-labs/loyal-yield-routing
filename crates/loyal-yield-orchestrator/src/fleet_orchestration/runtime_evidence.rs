@@ -25,7 +25,7 @@ use super::{
 
 pub const RUNTIME_EVIDENCE_SCHEMA_VERSION: u32 = 1;
 
-const RUNTIME_DIGEST_INPUTS: [&str; 13] = [
+const RUNTIME_DIGEST_INPUTS: [&str; 14] = [
     "Cargo.toml",
     "Cargo.lock",
     "Dockerfile.light-workers",
@@ -39,6 +39,7 @@ const RUNTIME_DIGEST_INPUTS: [&str; 13] = [
     "crates/loyal-yield-orchestrator/migrations",
     "crates/loyal-yield-router/Cargo.toml",
     "crates/loyal-yield-router/src",
+    "scripts/kamino-monitor-predeploy.sh",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

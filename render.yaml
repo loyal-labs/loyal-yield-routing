@@ -11,7 +11,7 @@ projects:
             autoDeploy: false
             image:
               url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-7ddd0c16d39e121c0fcbab51ebd00be79f8abeda
-            preDeployCommand: /usr/local/bin/kamino-reserve-monitor --sync-supported-reserves
+            preDeployCommand: /usr/local/bin/kamino-monitor-predeploy
             dockerCommand: /usr/local/bin/kamino-reserve-monitor
             maxShutdownDelaySeconds: 60
             envVars:

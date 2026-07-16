@@ -53,5 +53,6 @@ COPY --from=builder /usr/local/bin/kamino-reserve-monitor /usr/local/bin/kamino-
 COPY --from=builder /usr/local/bin/balance-sweep-ata-monitor /usr/local/bin/balance-sweep-ata-monitor
 COPY --from=builder /usr/local/bin/loyal-timescale-migrations /usr/local/bin/loyal-timescale-migrations
 COPY --from=builder /usr/local/bin/yield-migrations /usr/local/bin/yield-migrations
+COPY --chmod=0755 scripts/kamino-monitor-predeploy.sh /usr/local/bin/kamino-monitor-predeploy
 
 CMD ["/usr/local/bin/kamino-reserve-monitor"]

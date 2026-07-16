@@ -118,9 +118,11 @@ precondition to sending an independently fresh, safe, high-value route.
    requeues only affected demand.
 3. Publish the exact immutable light-worker and LaserStream-worker images from
    the same source commit and prove both registry digests. Apply Timescale
-   migration 5 first. The Kamino monitor predeploy must then sync supported
-   reserves without the removal override, and the live monitor must establish
-   a valid durable observation floor plus a confirmed, exact-identity,
+   migration 5 first. The Kamino monitor predeploy must be one image-contained
+   executable that applies the Timescale migrations and then syncs supported
+   reserves without the removal override; Render must invoke that executable
+   directly rather than tokenizing a shell pipeline. The live monitor must
+   establish a valid durable observation floor plus a confirmed, exact-identity,
    <= 90-second verification watermark and routeable latest-view row for every
    reserve in each mint admitted for routing. An incomplete mint is blocked and
    named without shrinking its own catalog denominator; it must not block an
@@ -943,7 +945,8 @@ PASS only if live readback proves:
 - Timescale migration 5 has its exact repository checksum, the heavy Kamino
   monitor (`srv-d8h4i9a8pkls73bver00` in
   `evm-d8kgt3a8qa3s7382glc0`) is a live unsuspended image worker with the exact
-  Blueprint command, migration-before-sync predeploy, plan, env-key boundary,
+  Blueprint command, single image-contained migration-before-sync predeploy
+  executable, plan, env-key boundary,
   and `loyal-ghcr` digest, and its LaserStream tag names the same source commit
   as the six-role light-worker tag;
 - normal monitor startup and refresh prove a nonempty exact active
@@ -1330,8 +1333,11 @@ independently enforce the 1,500-slot, 240-second, and > 60-second gates.
 The Render measurement additionally contains the fixed heavy environment and
 monitor identity, exact live/Blueprint env-key sets, redacted scope-comparison
 result, live deploy metadata, the effective supported-reserve refresh interval,
-the absence of the removal override from normal/predeploy commands, both image
-tag commit suffixes, and their exact same-source comparison. It never emits
+and the exact image-contained predeploy executable path. Source-bound local
+evidence verifies that this executable applies migrations before reserve sync
+and that the removal override is absent from normal/predeploy commands. The
+measurement also contains both image tag commit suffixes and their exact
+same-source comparison. It never emits
 environment values. Instead, a
 capture-specific nonce and per-key salted hashes let the verifier recompute the
 exact local/Render data and signer scope; embedded boundary booleans are
