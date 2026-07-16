@@ -14005,6 +14005,10 @@ async fn load_cached_reserve_summaries(
             }
         }
 
+        if loaded.len() == requested.len() {
+            break;
+        }
+
         if !leader_claims.is_empty() {
             let missing = leader_claims
                 .iter()
