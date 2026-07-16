@@ -3562,30 +3562,38 @@ async fn run_database_checks(
     let cold_latency_cluster = fixture.cluster("latency_cold");
     let baseline_latency_epoch = fixture.seed_epoch(&baseline_latency_cluster).await?;
     let cold_latency_epoch = fixture.seed_epoch(&cold_latency_cluster).await?;
+    const READY_JOBS_SEEDED: usize = 4_160;
+    const CLAIM_WARMUP_BATCH_SIZE: usize = 64;
     fixture
         .seed_claim_latency_cluster(
             &baseline_latency_cluster,
             baseline_latency_epoch,
-            4_096,
+            i64::try_from(READY_JOBS_SEEDED)?,
             0,
             10_000,
         )
         .await?;
     fixture
-        .seed_claim_latency_cluster(&cold_latency_cluster, cold_latency_epoch, 4_096, 10_000, 0)
+        .seed_claim_latency_cluster(
+            &cold_latency_cluster,
+            cold_latency_epoch,
+            i64::try_from(READY_JOBS_SEEDED)?,
+            10_000,
+            0,
+        )
         .await?;
     claim_latency_batch_micros(
         &fixture.latency_client,
         &baseline_latency_cluster,
         "latency-baseline-warmup",
-        8,
+        CLAIM_WARMUP_BATCH_SIZE,
     )
     .await?;
     claim_latency_batch_micros(
         &fixture.latency_client,
         &cold_latency_cluster,
         "latency-cold-warmup",
-        8,
+        CLAIM_WARMUP_BATCH_SIZE,
     )
     .await?;
     let (runnable_index_reads_before, expired_index_reads_before) =
@@ -3647,7 +3655,7 @@ async fn run_database_checks(
     const TIMED_CLAIM_SERIES: i64 = 2;
     const TIMED_CLAIM_ROUNDS: i64 = 63;
     const CLAIM_BATCH_SIZE: i64 = 64;
-    const WARMUP_CLAIMS_PER_SERIES: i64 = 8;
+    const WARMUP_CLAIMS_PER_SERIES: i64 = 64;
     let timed_ready_rows_claimed = TIMED_CLAIM_SERIES * TIMED_CLAIM_ROUNDS * CLAIM_BATCH_SIZE;
     // Each ready -> leased update leaves one dead entry in the runnable B-tree
     // until vacuum. The exact no-vacuum traversal is triangular: every later
@@ -3671,8 +3679,7 @@ async fn run_database_checks(
         .saturating_sub(baseline_claim_p95_micros)
         .saturating_mul(1_000_000)
         / baseline_claim_p95_micros.max(1);
-    const READY_JOBS_SEEDED: usize = 4_096;
-    const TIMED_READY_JOBS_CLAIMED: usize = 8 + (63 * 64);
+    const TIMED_READY_JOBS_CLAIMED: usize = CLAIM_WARMUP_BATCH_SIZE + (63 * 64);
     let remaining_ready_jobs = READY_JOBS_SEEDED - TIMED_READY_JOBS_CLAIMED;
     claim_latency_batch_micros(
         &fixture.latency_client,

@@ -449,7 +449,8 @@ with the same economic distribution. PASS only if:
 
 - ready workers continue claiming all ready work while cold work remains
   `waiting_alt`;
-- adding 10,000 ALT-cold jobs changes ready-claim p95 by less than 5%;
+- after one production-sized 64-row warmup for each cohort, adding 10,000
+  ALT-cold jobs changes ready-claim p95 by less than 5%;
 - no decision exists for `waiting_alt` work;
 - satisfying coverage writes a durable wakeup and makes only affected valid jobs
   eligible immediately, without another fleet cycle;
