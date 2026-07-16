@@ -4673,7 +4673,11 @@ fn same_mint_request_from_opportunity(
         "idle_vault_usdc" => SameMintRouteSourceKind::IdleVaultUsdc,
         other => return Err(format!("unsupported fleet source_kind {other:?}").into()),
     };
-    let expected_idle_observed_at = optional_plan_datetime(plan, "source_observed_at")?;
+    // `source_observed_*` is generic planner evidence. It is idle-account
+    // evidence only for an idle-vault source; reserve-position routes are
+    // fenced by their immutable source snapshot instead.
+    let (expected_idle_token_account, expected_idle_observed_slot, expected_idle_observed_at) =
+        idle_source_observation_evidence(source_kind, plan)?;
     Ok(SameMintRouteExecutionRequest {
         mode: match claim_kind {
             RebalanceOpportunityClaimKind::Revalidate => SameMintRouteExecutionMode::Revalidate,
@@ -4690,8 +4694,8 @@ fn same_mint_request_from_opportunity(
         source_reserve: opportunity.source_reserve.clone(),
         target_reserve: opportunity.target_reserve.clone(),
         expected_source_snapshot_id: opportunity.source_snapshot_id.map(SnapshotId::as_i64),
-        expected_idle_token_account: optional_plan_string(plan, "idle_token_account"),
-        expected_idle_observed_slot: optional_plan_i64(plan, "source_observed_slot"),
+        expected_idle_token_account,
+        expected_idle_observed_slot,
         expected_idle_observed_at,
         expected_liquidity_mint: opportunity.liquidity_mint.clone(),
         expected_amount_raw: opportunity.amount_raw,
@@ -4721,6 +4725,26 @@ fn same_mint_request_from_opportunity(
         cluster: opportunity.cluster.clone(),
         rpc_url: rpc_url.to_owned(),
     })
+}
+
+type IdleSourceObservationEvidence = (Option<String>, Option<i64>, Option<DateTime<Utc>>);
+
+fn idle_source_observation_evidence(
+    source_kind: SameMintRouteSourceKind,
+    plan: &Value,
+) -> Result<IdleSourceObservationEvidence, Box<dyn Error>> {
+    let idle_token_account = optional_plan_string(plan, "idle_token_account");
+    if source_kind == SameMintRouteSourceKind::ReservePosition {
+        // Preserve an explicitly corrupt idle account so request validation
+        // still fails closed; only the generic source timestamp/slot must not
+        // be relabeled as idle evidence.
+        return Ok((idle_token_account, None, None));
+    }
+    Ok((
+        idle_token_account,
+        optional_plan_i64(plan, "source_observed_slot"),
+        optional_plan_datetime(plan, "source_observed_at")?,
+    ))
 }
 
 fn required_plan_string(plan: &Value, field: &str) -> Result<String, Box<dyn Error>> {
@@ -19876,6 +19900,43 @@ mod tests {
 
         assert!(error.contains("mismatched RPC"));
         assert!(validate_same_mint_rpc_genesis("mainnet-beta", mainnet_genesis).is_ok());
+    }
+
+    #[test]
+    fn fleet_source_observation_evidence_is_not_relabelled_across_source_kinds() {
+        let observed_at = "2026-07-16T03:11:11Z";
+        let idle_account = Pubkey::new_unique().to_string();
+        let generic_source_plan = json!({
+            "source_observed_slot": 433_191_369,
+            "source_observed_at": observed_at,
+            "idle_token_account": null,
+        });
+
+        let reserve = idle_source_observation_evidence(
+            SameMintRouteSourceKind::ReservePosition,
+            &generic_source_plan,
+        )
+        .unwrap();
+        assert_eq!(reserve, (None, None, None));
+
+        let idle_plan = json!({
+            "source_observed_slot": 433_191_369,
+            "source_observed_at": observed_at,
+            "idle_token_account": idle_account,
+        });
+        let idle =
+            idle_source_observation_evidence(SameMintRouteSourceKind::IdleVaultUsdc, &idle_plan)
+                .unwrap();
+        assert_eq!(idle.0.as_deref(), Some(idle_account.as_str()));
+        assert_eq!(idle.1, Some(433_191_369));
+        assert_eq!(idle.2.unwrap().to_rfc3339(), "2026-07-16T03:11:11+00:00");
+
+        let corrupt_reserve =
+            idle_source_observation_evidence(SameMintRouteSourceKind::ReservePosition, &idle_plan)
+                .unwrap();
+        assert_eq!(corrupt_reserve.0.as_deref(), Some(idle_account.as_str()));
+        assert_eq!(corrupt_reserve.1, None);
+        assert_eq!(corrupt_reserve.2, None);
     }
 
     fn test_chain_position(

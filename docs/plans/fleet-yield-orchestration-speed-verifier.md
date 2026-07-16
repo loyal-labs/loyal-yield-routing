@@ -235,7 +235,10 @@ execution_priority =
   transaction had no effect, concurrent rediscovery may create exactly one next
   attempt generation with bounded retry/backoff. It must never reopen a landed
   success or a submitted/ambiguous attempt, and the prior attempt remains an
-  audit row.
+  audit row. This also applies to a pre-decision planner/executor contract
+  failure: correcting the worker may create one successor generation, but must
+  not rewrite the failed attempt's identity, execution plan, state, or terminal
+  reason.
 
 ### 4. ALT-independent fast lane
 
@@ -494,6 +497,28 @@ PASS only if operational verifier output proves:
   or send; deterministic simulation failures are terminal; only genuine
   reusable-v2 coverage gaps enter `waiting_alt`.
 
+The executable verifier must additionally emit these two named subchecks from
+real planner-shaped opportunity payloads rather than caller-supplied verdicts:
+
+- `planner_executor_source_evidence_is_kind_scoped`: both source kinds retain
+  generic `source_observed_slot`/`source_observed_at` in their immutable planner
+  plan, but a `reserve_position` request is fenced only by its positive source
+  snapshot and has all three executor `expected_idle_*` fields null. An
+  `idle_vault_usdc` request has no source reserve/snapshot and maps the exact
+  planned idle token account, observed slot, and observed time into those three
+  fields. An idle account contaminating a reserve plan still fails closed.
+- `predecision_source_contract_failure_creates_one_immutable_retry_generation`:
+  reproduce the historical reserve-source terminal reason
+  `same-mint reserve-position request cannot carry idle-vault evidence` before
+  any decision, signed submission, unreleased capacity reservation, or conflict
+  lease exists; then run two concurrent rediscoveries after the corrected
+  mapping. The failed row's idempotency key, rediscovery key, generation,
+  execution plan, failed state, terminal reason, and post-failure `updated_at`
+  remain unchanged, while exactly one distinct successor with the same
+  rediscovery key and generation `n + 1` reaches the current
+  revalidation/runnable path. Reopening the failed row or retrying
+  submitted/ambiguous work is FAIL.
+
 ### Check 6: Performance, value, and price
 
 PASS only if a production-like replay reports:
@@ -617,6 +642,11 @@ PASS only if a fresh production epoch and its durable queue prove:
 - `waiting_alt`, simulation failures, expired leases, and worker errors have
   bounded age and are decreasing or have an explicit fenced recovery action;
   no material vault remains stuck beyond ten minutes;
+- every still-economic rediscovery key with a historical attempt that failed
+  before decision creation has exactly one current highest-generation successor
+  (or a named current economic exclusion), while every failed row remains
+  immutable; historical failure is audit evidence, not permission to leave the
+  vault unevaluated;
 - aggregate outcome counts and USDC amounts are emitted every health interval
   so regressions are visible without reconstructing the fleet manually.
 
@@ -763,6 +793,8 @@ execution:
   setupIdleAndFarmInitUsePolicyPayer, shardRegistryKeypairMatch,
   reciprocalAuthoritySeparation, boundedRankedFailover,
   lowBalanceLimitsEnforced, atomicImmutableSpendReservation,
+  sourceEvidenceContractFixtures,
+  sourceContractFailedAttemptAndSuccessorEvidence,
   targetCapacityConcurrentAdmissionBounded,
   preSendTargetCapacityReleased,
   reconciledCapacityStrictTelemetryFence,
