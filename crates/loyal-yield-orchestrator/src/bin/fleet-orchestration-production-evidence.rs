@@ -1990,6 +1990,15 @@ fn queue_verdict(queue: &Value) -> Verdict {
             .and_then(Value::as_bool)
             == Some(false)
         && metric_i64(status, "observed_vault_count").is_some_and(|count| count > 0);
+    let planner_accounting_exact = metric_i64(status, "planned_opportunity_count")
+        .zip(metric_i64(status, "planned_selected_count"))
+        .zip(metric_i64(status, "planned_deferred_count"))
+        .is_some_and(|((planned, selected), deferred)| {
+            planned >= 0
+                && selected >= 0
+                && deferred >= 0
+                && selected.checked_add(deferred) == Some(planned)
+        });
     let stage_ages_bounded = [
         "oldest_waiting_alt_state_age_seconds",
         "oldest_ready_state_age_seconds",
@@ -2006,7 +2015,7 @@ fn queue_verdict(queue: &Value) -> Verdict {
         && metric_i64(queue, "materialStuckOverTenMinutesCount") == Some(0)
         && metric_i64(queue, "targetCapacityOversubscriptionCount") == Some(0)
         && metric_i64(queue, "highValueOrderingInversionCount") == Some(0);
-    if fresh_complete_epoch && stage_ages_bounded && counters_zero {
+    if fresh_complete_epoch && planner_accounting_exact && stage_ages_bounded && counters_zero {
         Verdict::Pass
     } else {
         Verdict::Fail

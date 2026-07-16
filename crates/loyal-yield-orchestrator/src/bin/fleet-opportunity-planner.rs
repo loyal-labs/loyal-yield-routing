@@ -641,7 +641,7 @@ async fn run_live_once(
     let mut queued_notional_usd_micros = 0i128;
     let mut queued_lost_yield_usd_micros_per_hour = 0i128;
     let fee_policy = RouteFeePolicy::default();
-    let optimizer_epoch_id = if options.dry_run || wave.selected.is_empty() {
+    let optimizer_epoch_id = if options.dry_run {
         observation.market_epoch.optimizer_epoch_id
     } else {
         let durable_epoch = observation.market_epoch.durable_optimizer_epoch_evidence();
@@ -740,10 +740,28 @@ async fn run_live_once(
     } else {
         publish_wave(neon, queue_inputs).await?
     };
+    let classified_selected_count = if options.dry_run {
+        queue_input_count
+    } else {
+        let classified_publish_count = publish
+            .published
+            .saturating_add(publish.deferred_contention);
+        if classified_publish_count != queue_input_count {
+            return Err(format!(
+                "published and contention-deferred opportunities {classified_publish_count} do not partition queue inputs {queue_input_count}"
+            )
+            .into());
+        }
+        publish.published
+    };
     let total_deferred_count = wave
         .deferred
         .len()
         .saturating_add(publish.deferred_contention);
+    // This durable denominator is the economically admitted frontier that the
+    // queue must drain, not every pre-economic route candidate. Capacity- and
+    // fee-rejected candidates are already named outside this frontier.
+    let planned_frontier_count = classified_selected_count.saturating_add(total_deferred_count);
     let retired_dirty_opportunities = if options.dry_run {
         0
     } else if let Some(vault_ids) = scoped_vault_ids {
@@ -778,8 +796,8 @@ async fn run_live_once(
         material_frontier: current_material_frontier,
         optimizer_epoch_expires_at: observation.market_epoch.expires_at,
         observed_vault_count: observation.stats.eligible_vault_count,
-        opportunity_count: i64::try_from(observation.stats.opportunity_count).unwrap_or(i64::MAX),
-        selected_count: i64::try_from(queue_input_count).unwrap_or(i64::MAX),
+        opportunity_count: i64::try_from(planned_frontier_count).unwrap_or(i64::MAX),
+        selected_count: i64::try_from(classified_selected_count).unwrap_or(i64::MAX),
         deferred_count: i64::try_from(total_deferred_count).unwrap_or(i64::MAX),
         complete_frontier: total_deferred_count == 0,
     };
@@ -841,6 +859,14 @@ async fn run_live_once(
         fields.insert(
             "materialMarketFrontierFingerprint".to_owned(),
             json!(material_frontier_fingerprint),
+        );
+        fields.insert(
+            "plannedFrontierCount".to_owned(),
+            json!(planned_frontier_count),
+        );
+        fields.insert(
+            "classifiedSelectedCount".to_owned(),
+            json!(classified_selected_count),
         );
         fields.insert("marketWakePolicy".to_owned(), market_wake_policy_evidence());
     }

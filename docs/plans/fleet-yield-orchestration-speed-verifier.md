@@ -604,6 +604,9 @@ PASS only if a fresh production epoch and its durable queue prove:
   `not_evaluated` counts are zero;
 - the epoch is complete and unexpired, the counted outcomes sum exactly to the
   eligible fleet, and no result is inherited from the old serial cursor;
+- the durable planned frontier is the post-economic, post-fee work admitted
+  for queue draining, and its count equals published/selected plus explicitly
+  deferred work; raw rejected route alternatives cannot inflate this counter;
 - every material opportunity (at minimum the captured >= $1,000 cohort) is
   ready, leased/in flight, waiting on a named current ALT/capacity/conflict
   dependency, confirmed, or economically excluded—never silently absent;
