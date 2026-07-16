@@ -73,10 +73,24 @@ confirmation slot. The baseline cohort's routeable Main balance must fall by
 the confirmed net outflow, while deposits arriving after the baseline remain
 visible rather than being mistaken for failed optimization.
 
+The authoritative pre-cutover baseline freezes the complete exact set of
+vault IDs that are active, policy-active, authorized for the standard delegated
+policy signer, enabled for the same-mint route mode, and compatible with the
+enabled stable-mint/market universe at capture time. This full cohort includes
+eligible vaults with zero Main balance. Its membership never changes inside the
+movement equation: final Main balance, post-baseline deposits, and confirmed
+optimizer Main inflow/outflow are all restricted to those frozen IDs even if a
+vault or policy is later activated, deactivated, or replaced. Vaults that first
+become eligible after the baseline remain outside that aggregate equation, but
+every post-cutover movement, including theirs, must still pass the individual
+finality, economics, target, and chain-effect checks.
+
 ### Required production order
 
 1. Capture the production baseline and pause the damaged legacy provisioner if
-   it can create more terminal work. Do not erase or hand-edit failed rows.
+   it can create more terminal work. This initial incident snapshot is
+   diagnostic only until the accepted pre-cutover baseline gate below passes.
+   Do not erase or hand-edit failed rows.
 2. Land a fenced repair command and additive migration. The command verifies
    finalized on-chain owner/authority/prefix state, quarantines phantom
    allocations, records successor lineage, preserves valid prefixes, and
@@ -93,6 +107,11 @@ visible rather than being mistaken for failed optimization.
 6. Run the production verifier repeatedly until every vault has a current
    outcome, material opportunities are draining in economic order, finalized
    signatures reconcile to the correct reserves, and the production SLOs pass.
+
+The accepted cutover baseline in this order is captured only after the
+signer-free fixed-cohort position sweep completes successfully and before the
+fleet sender begins moving funds. An earlier incident or diagnostic snapshot
+cannot substitute for it.
 
 ## Ideal Implementation Contract
 
@@ -127,6 +146,12 @@ visible rather than being mistaken for failed optimization.
   must finish the fleet quickly enough that planning never depends on an old
   serial cursor or stale dashboard projection. A worker restart may resume with
   a new fixed cohort, but older RPC slots can never overwrite newer rows.
+- A baseline-qualifying sweep must complete in less than 600 seconds and report
+  `eligible = processed = refreshed` for its frozen cohort, with `failed = 0`
+  and `stale = 0`. The production position collector must then report
+  `staleRowCount = 0` for the exact eligible routeable scope before the baseline
+  is accepted. A partial sweep, a dynamically shrinking denominator, or stale
+  rows hidden by a later policy deactivation cannot satisfy this gate.
 - The periodic O(vaults) sweep is a recovery/backstop path, not the eventual
   neobank-scale ingestion architecture. As the fleet grows, live account events
   should mark deterministic vault shards dirty and multiple reconciler owners
@@ -356,6 +381,9 @@ proves:
 - the input position projection is chain-backed, slot-fenced, and within its
   declared freshness bound for the whole captured cohort; stale rows from a
   partial/old serial pass cannot count toward completeness;
+- the fixed-cohort production sweep completed in less than 600 seconds with
+  `eligible = processed = refreshed`, `failed = 0`, and `stale = 0`, and the
+  immediately following exact-scope collector reported `staleRowCount = 0`;
 - completeness starts from the authoritative eligible-vault denominator and
   assigns every vault exactly one mutually exclusive outcome: observed
   opportunity, active queue/decision state, no positive current source,
@@ -576,6 +604,17 @@ PASS only if post-cutover production evidence proves:
   or dashboard-only evidence is insufficient;
 - the baseline Main cohort falls by confirmed net outflow after separately
   accounting for deposits received after the baseline;
+- the baseline artifact contains the full frozen eligible cohort ID set,
+  including eligible zero-Main vaults. The aggregate equation uses only that
+  set on every term: baseline routeable Main plus post-baseline cohort deposits
+  minus final cohort Main equals confirmed cohort optimizer Main net outflow
+  within the declared tolerance. Final cohort Main is summed for the frozen IDs
+  regardless of their later active-policy state, and the net-flow term excludes
+  movements belonging to vaults that first became eligible after capture;
+- all post-cutover movements remain individually verified even when their vault
+  is outside the frozen aggregate cohort; excluding a newly eligible vault from
+  the Main equation must never exclude its signature, economics, selected
+  target, source/target delta, or reconciliation evidence from this check;
 - the real deployment meets the same two-minute/ten-minute yield-unlock,
   submission, confirmation, fee, duplicate, deadlock, and negative-value gates
   from Check 6;

@@ -1173,7 +1173,7 @@ fn collect_local_evidence(repository_root: &Path) -> Result<LocalEvidence, Box<d
                     "YIELD_ROUTER_KEYPAIR",
                 ],
                 &[
-                    ("--concurrency", "16"),
+                    ("--concurrency", "32"),
                     ("--batch-size", "32"),
                     ("--poll-interval-milliseconds", "250"),
                     ("--position-sweep-interval-seconds", "300"),
@@ -7289,27 +7289,53 @@ fn queue_measurement_schema_known(value: &Value) -> bool {
 }
 
 fn position_measurement_schema_known(value: &Value) -> bool {
-    exact_object_keys(value, &["available", "mainUsdc", "reserveAggregates"])
-        && value.get("mainUsdc").is_some_and(|main| {
-            exact_object_keys(
-                main,
-                &[
-                    "reserve",
-                    "liquidityMint",
-                    "amountRaw",
-                    "amountUsdc",
-                    "vaultCount",
-                    "vaultIds",
-                    "oldestObservedAt",
-                    "newestObservedAt",
-                    "minimumObservedSlot",
-                    "maximumObservedSlot",
-                    "freshnessMaximumAgeSeconds",
-                    "staleRowCount",
-                    "freshForBaseline",
-                ],
-            )
-        })
+    let position_shape_known = |position: &Value| {
+        exact_object_keys(
+            position,
+            &[
+                "reserve",
+                "liquidityMint",
+                "amountRaw",
+                "amountUsdc",
+                "vaultCount",
+                "vaultIds",
+                "oldestObservedAt",
+                "newestObservedAt",
+                "minimumObservedSlot",
+                "maximumObservedSlot",
+                "freshnessMaximumAgeSeconds",
+                "staleRowCount",
+                "freshForBaseline",
+            ],
+        )
+    };
+    exact_object_keys(
+        value,
+        &[
+            "available",
+            "mainUsdcCohort",
+            "mainUsdc",
+            "globalMainUsdc",
+            "reserveAggregates",
+        ],
+    ) && value.get("mainUsdcCohort").is_some_and(|cohort| {
+        exact_object_keys(
+            cohort,
+            &[
+                "standardPolicyPubkey",
+                "routeMode",
+                "reserve",
+                "market",
+                "liquidityMint",
+                "enabledStableMints",
+                "vaultCount",
+                "vaultIds",
+            ],
+        )
+    }) && value.get("mainUsdc").is_some_and(position_shape_known)
+        && value
+            .get("globalMainUsdc")
+            .is_some_and(position_shape_known)
         && value
             .get("reserveAggregates")
             .and_then(Value::as_array)
@@ -7401,11 +7427,16 @@ fn movement_measurement_schema_known(value: &Value) -> bool {
                 "baselineCollectedAt",
                 "baselineAmountRaw",
                 "baselineCohortVaultCount",
+                "baselineCohortVaultIds",
                 "postBaselineCohortDepositAmountRaw",
-                "currentAmountRaw",
+                "currentBaselineCohortAmountRaw",
+                "currentRouteableAmountRaw",
                 "confirmedOptimizerOutflowRaw",
                 "confirmedOptimizerInflowRaw",
                 "confirmedOptimizerNetOutflowRaw",
+                "baselineCohortConfirmedOptimizerOutflowRaw",
+                "baselineCohortConfirmedOptimizerInflowRaw",
+                "baselineCohortConfirmedOptimizerNetOutflowRaw",
                 "depositAdjustedReductionRaw",
                 "reductionAfterDepositsCoversConfirmedNetOutflow",
             ],
@@ -8046,6 +8077,23 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
     let cutover_bound = cutover_at.is_some() && cutover_at == artifact_cutover_at;
     let main_reserve = KAMINO_MAIN_USDC_RESERVE.to_string();
     let usdc_mint = USDC_MINT.to_string();
+    let main = movement.get("mainUsdc").unwrap_or(&Value::Null);
+    let baseline_cohort_vault_ids = main
+        .get("baselineCohortVaultIds")
+        .and_then(Value::as_array)
+        .and_then(|ids| ids.iter().map(Value::as_i64).collect::<Option<Vec<_>>>())
+        .unwrap_or_default();
+    let baseline_cohort_vaults = baseline_cohort_vault_ids
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let baseline_cohort_count = value_i64(main, "baselineCohortVaultCount");
+    let baseline_cohort_identity_exact = !baseline_cohort_vault_ids.is_empty()
+        && baseline_cohort_vault_ids
+            .iter()
+            .all(|vault_id| *vault_id > 0)
+        && baseline_cohort_vaults.len() == baseline_cohort_vault_ids.len()
+        && i64::try_from(baseline_cohort_vault_ids.len()).ok() == baseline_cohort_count;
     let mut reconciled_reserve_count = 0i64;
     let mut fully_proven_count = 0i64;
     let mut economic_failure_count = 0i64;
@@ -8053,6 +8101,8 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
     let mut ambiguous_count = 0i64;
     let mut main_outflow = 0i128;
     let mut main_inflow = 0i128;
+    let mut baseline_cohort_main_outflow = 0i128;
+    let mut baseline_cohort_main_inflow = 0i128;
     let mut identifiers = BTreeSet::new();
     let mut all_rows_well_formed = true;
     for row in rows {
@@ -8070,11 +8120,12 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
         let opportunity_id = value_i64(row, "opportunityId");
         let decision_id = value_i64(row, "decisionId");
         let submission_id = value_i64(row, "submissionId");
+        let vault_id = value_i64(row, "vaultId");
         let created_at = parse_rfc3339(row.get("createdAt"));
         let identity_ok = opportunity_id.is_some_and(|id| id > 0)
             && decision_id.is_some_and(|id| id > 0)
             && submission_id.is_some_and(|id| id > 0)
-            && value_i64(row, "vaultId").is_some_and(|id| id > 0)
+            && vault_id.is_some_and(|id| id > 0)
             && value_string(row, "signature").is_some_and(|value| !value.trim().is_empty())
             && source.is_some()
             && source != target
@@ -8153,9 +8204,15 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
             if mint == Some(usdc_mint.as_str()) {
                 if source == Some(main_reserve.as_str()) {
                     main_outflow += i128::from(amount.unwrap_or_default());
+                    if vault_id.is_some_and(|id| baseline_cohort_vaults.contains(&id)) {
+                        baseline_cohort_main_outflow += i128::from(amount.unwrap_or_default());
+                    }
                 }
                 if target == Some(main_reserve.as_str()) {
                     main_inflow += i128::from(amount.unwrap_or_default());
+                    if vault_id.is_some_and(|id| baseline_cohort_vaults.contains(&id)) {
+                        baseline_cohort_main_inflow += i128::from(amount.unwrap_or_default());
+                    }
                 }
             }
         }
@@ -8169,40 +8226,54 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
         && value_i64(movement, "fullyFinalizedAndReconciledEffectCount")
             == Some(fully_proven_count)
         && value_i64(movement, "economicFailureCount") == Some(economic_failure_count);
-    let main = movement.get("mainUsdc").unwrap_or(&Value::Null);
     let baseline = value_i64(main, "baselineAmountRaw");
     let deposits = value_i64(main, "postBaselineCohortDepositAmountRaw");
-    let current = value_i64(main, "currentAmountRaw");
-    let adjusted_reduction =
-        baseline
-            .zip(deposits)
-            .zip(current)
-            .map(|((baseline, deposits), current)| {
-                i128::from(baseline) + i128::from(deposits) - i128::from(current)
-            });
+    let current_baseline_cohort = value_i64(main, "currentBaselineCohortAmountRaw");
+    let current_routeable = value_i64(main, "currentRouteableAmountRaw");
+    let adjusted_reduction = baseline.zip(deposits).zip(current_baseline_cohort).map(
+        |((baseline, deposits), current)| {
+            i128::from(baseline) + i128::from(deposits) - i128::from(current)
+        },
+    );
     let confirmed_net_outflow = main_outflow - main_inflow;
-    let baseline_reduction_pass = parse_rfc3339(main.get("baselineCollectedAt"))
-        .zip(cutover_at)
-        .is_some_and(|(baseline_at, cutover)| baseline_at <= cutover)
-        && value_i64(main, "baselineCohortVaultCount").is_some_and(|count| count > 0)
-        && baseline.is_some_and(|amount| amount > 0)
-        && deposits.is_some_and(|amount| amount >= 0)
-        && current.is_some_and(|amount| amount >= 0)
-        && confirmed_net_outflow > 0
-        && adjusted_reduction.is_some_and(|reduction| {
-            reduction > 0
-                && reduction.saturating_mul(100) >= confirmed_net_outflow.saturating_mul(95)
-        })
-        && value_i64(main, "confirmedOptimizerOutflowRaw").map(i128::from) == Some(main_outflow)
+    let baseline_cohort_confirmed_net_outflow =
+        baseline_cohort_main_outflow - baseline_cohort_main_inflow;
+    let reduction_covers_cohort_net_outflow = adjusted_reduction.is_some_and(|reduction| {
+        baseline_cohort_confirmed_net_outflow > 0
+            && reduction > 0
+            && reduction.saturating_mul(100)
+                >= baseline_cohort_confirmed_net_outflow.saturating_mul(95)
+    });
+    let reported_main_flows_match = value_i64(main, "confirmedOptimizerOutflowRaw").map(i128::from)
+        == Some(main_outflow)
         && value_i64(main, "confirmedOptimizerInflowRaw").map(i128::from) == Some(main_inflow)
         && value_i64(main, "confirmedOptimizerNetOutflowRaw").map(i128::from)
             == Some(confirmed_net_outflow)
-        && value_i64(main, "depositAdjustedReductionRaw").map(i128::from) == adjusted_reduction;
+        && value_i64(main, "baselineCohortConfirmedOptimizerOutflowRaw").map(i128::from)
+            == Some(baseline_cohort_main_outflow)
+        && value_i64(main, "baselineCohortConfirmedOptimizerInflowRaw").map(i128::from)
+            == Some(baseline_cohort_main_inflow)
+        && value_i64(main, "baselineCohortConfirmedOptimizerNetOutflowRaw").map(i128::from)
+            == Some(baseline_cohort_confirmed_net_outflow);
+    let baseline_reduction_pass = parse_rfc3339(main.get("baselineCollectedAt"))
+        .zip(cutover_at)
+        .is_some_and(|(baseline_at, cutover)| baseline_at <= cutover)
+        && value_string(main, "reserve") == Some(main_reserve.as_str())
+        && baseline_cohort_identity_exact
+        && baseline.is_some_and(|amount| amount > 0)
+        && deposits.is_some_and(|amount| amount >= 0)
+        && current_baseline_cohort.is_some_and(|amount| amount >= 0)
+        && current_routeable.is_some_and(|amount| amount >= 0)
+        && reduction_covers_cohort_net_outflow
+        && reported_main_flows_match
+        && value_i64(main, "depositAdjustedReductionRaw").map(i128::from) == adjusted_reduction
+        && value_bool(main, "reductionAfterDepositsCoversConfirmedNetOutflow")
+            == Some(reduction_covers_cohort_net_outflow);
     let current_position = positions.pointer("/mainUsdc").unwrap_or(&Value::Null);
     let positions_match = value_bool(positions, "available") == Some(true)
         && value_string(current_position, "reserve") == Some(main_reserve.as_str())
         && value_string(current_position, "liquidityMint") == Some(usdc_mint.as_str())
-        && value_i64(current_position, "amountRaw") == current
+        && value_i64(current_position, "amountRaw") == current_routeable
         && value_i64(current_position, "staleRowCount") == Some(0)
         && value_bool(current_position, "freshForBaseline") == Some(true);
     let slo = movement.get("productionSlos").unwrap_or(&Value::Null);
@@ -8226,6 +8297,7 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
         && value_i64(slo, "submittedWithinTenMinutesYieldPpm")
             == status_i64(queue, "current_epoch_submitted_within_10m_yield_ppm");
     let terminal_counters_zero = ambiguous_count == 0
+        && nonterminal_count == 0
         && economic_failure_count == 0
         && value_i64(movement, "databaseDeadlockCount") == Some(0)
         && value_i64(movement, "duplicateMovementCount") == Some(0)
@@ -8264,7 +8336,14 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
             "recomputedMainOutflowRaw": main_outflow,
             "recomputedMainInflowRaw": main_inflow,
             "recomputedMainNetOutflowRaw": confirmed_net_outflow,
+            "baselineCohortVaultCount": baseline_cohort_vault_ids.len(),
+            "baselineCohortIdentityExact": baseline_cohort_identity_exact,
+            "recomputedBaselineCohortMainOutflowRaw": baseline_cohort_main_outflow,
+            "recomputedBaselineCohortMainInflowRaw": baseline_cohort_main_inflow,
+            "recomputedBaselineCohortMainNetOutflowRaw": baseline_cohort_confirmed_net_outflow,
+            "reportedMainFlowsMatch": reported_main_flows_match,
             "recomputedDepositAdjustedReductionRaw": adjusted_reduction,
+            "reductionCoversBaselineCohortNetOutflow": reduction_covers_cohort_net_outflow,
             "baselineReductionPass": baseline_reduction_pass,
             "freshPositionsMatch": positions_match,
             "productionSlosPass": slos_pass,

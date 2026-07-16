@@ -10,8 +10,8 @@ use std::{
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
-use loyal_actions::{KAMINO_MAIN_USDC_RESERVE, USDC_MINT};
-use loyal_yield_orchestrator::STANDARD_POLICY_AUTHORITY;
+use loyal_actions::{KAMINO_MAIN_MARKET, KAMINO_MAIN_USDC_RESERVE, USDC_MINT};
+use loyal_yield_orchestrator::{enabled_stable_mints_from_env, STANDARD_POLICY_AUTHORITY};
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -34,6 +34,7 @@ const SERIAL_MONITOR_NAME: &str = "loyal-same-mint-yield-monitor";
 const MATERIAL_PRINCIPAL_USD_MICROS: i64 = 1_000_000_000;
 const MAX_MATERIAL_STAGE_AGE_SECONDS: i64 = 600;
 const MAX_FULL_SWEEP_AGE_SECONDS: i64 = 120;
+const SAME_MINT_ROUTE_MODE: &str = "same_mint_kamino";
 
 const DURABLE_SERVICE_NAMES: [&str; 6] = [
     "loyal-fleet-opportunity-planner",
@@ -1576,28 +1577,88 @@ async fn collect_alt_repair_evidence(
     }))
 }
 
-async fn collect_position_evidence(pool: &PgPool) -> Result<Value, sqlx::Error> {
+async fn collect_position_evidence(pool: &PgPool) -> Result<Value, Box<dyn Error>> {
     let main_reserve = KAMINO_MAIN_USDC_RESERVE.to_string();
+    let main_market = KAMINO_MAIN_MARKET.to_string();
     let usdc_mint = USDC_MINT.to_string();
-    let main = sqlx::query(
+    let enabled_mints = enabled_stable_mints_from_env()?;
+    let positions = sqlx::query(
         r#"
-        SELECT COALESCE(sum(amount_raw), 0)::BIGINT AS amount_raw,
-               count(*)::BIGINT AS vault_count,
-               COALESCE(array_agg(vault_id ORDER BY vault_id), ARRAY[]::BIGINT[])
-                   AS vault_ids,
-               min(observed_at) AS oldest_observed_at,
-               max(observed_at) AS newest_observed_at,
-               min(observed_slot) AS minimum_observed_slot,
-               max(observed_slot) AS maximum_observed_slot,
-               count(*) FILTER (
-                   WHERE observed_at < now() - interval '10 minutes'
-               )::BIGINT AS stale_row_count
-        FROM loyal_yield.vault_reserve_positions_current
-        WHERE reserve = $1 AND liquidity_mint = $2 AND has_value
+        WITH eligible_vaults AS MATERIALIZED (
+            SELECT v.id AS vault_id,
+                   policy.kamino_markets,
+                   policy.stable_mints,
+                   policy.kamino_liquidity_mints
+            FROM loyal_yield.managed_vaults v
+            JOIN loyal_yield.route_policies policy
+              ON policy.id = v.active_policy_id
+            WHERE v.active = TRUE
+              AND policy.active = TRUE
+              AND $1 = ANY(policy.delegated_signers)
+              AND $2 = ANY(policy.route_modes)
+              AND policy.stable_mints && $3::TEXT[]
+              AND policy.kamino_liquidity_mints && $3::TEXT[]
+              AND cardinality(policy.kamino_markets) > 0
+        ),
+        main_usdc_cohort AS MATERIALIZED (
+            SELECT vault_id
+            FROM eligible_vaults
+            WHERE $4 = ANY(stable_mints)
+              AND $4 = ANY(kamino_liquidity_mints)
+              AND $5 = ANY(kamino_markets)
+        ),
+        routeable_main AS MATERIALIZED (
+            SELECT position.*
+            FROM loyal_yield.vault_reserve_positions_current position
+            JOIN main_usdc_cohort cohort ON cohort.vault_id = position.vault_id
+            WHERE position.reserve = $6
+              AND position.liquidity_mint = $4
+              AND position.has_value
+              AND position.amount_raw > 0
+              AND (position.market IS NULL OR position.market = $5)
+        ),
+        global_main AS MATERIALIZED (
+            SELECT position.*
+            FROM loyal_yield.vault_reserve_positions_current position
+            WHERE position.reserve = $6
+              AND position.liquidity_mint = $4
+              AND position.has_value
+              AND position.amount_raw > 0
+        )
+        SELECT
+            (SELECT count(*)::BIGINT FROM main_usdc_cohort) AS cohort_vault_count,
+            (SELECT COALESCE(array_agg(vault_id ORDER BY vault_id), ARRAY[]::BIGINT[])
+             FROM main_usdc_cohort) AS cohort_vault_ids,
+            (SELECT COALESCE(sum(amount_raw), 0)::BIGINT FROM routeable_main)
+                AS routeable_amount_raw,
+            (SELECT count(*)::BIGINT FROM routeable_main) AS routeable_vault_count,
+            (SELECT COALESCE(array_agg(vault_id ORDER BY vault_id), ARRAY[]::BIGINT[])
+             FROM routeable_main) AS routeable_vault_ids,
+            (SELECT min(observed_at) FROM routeable_main) AS routeable_oldest_observed_at,
+            (SELECT max(observed_at) FROM routeable_main) AS routeable_newest_observed_at,
+            (SELECT min(observed_slot) FROM routeable_main) AS routeable_minimum_observed_slot,
+            (SELECT max(observed_slot) FROM routeable_main) AS routeable_maximum_observed_slot,
+            (SELECT count(*)::BIGINT FROM routeable_main
+             WHERE observed_at < now() - interval '10 minutes') AS routeable_stale_row_count,
+            (SELECT COALESCE(sum(amount_raw), 0)::BIGINT FROM global_main)
+                AS global_amount_raw,
+            (SELECT count(*)::BIGINT FROM global_main) AS global_vault_count,
+            (SELECT COALESCE(array_agg(vault_id ORDER BY vault_id), ARRAY[]::BIGINT[])
+             FROM global_main) AS global_vault_ids,
+            (SELECT min(observed_at) FROM global_main) AS global_oldest_observed_at,
+            (SELECT max(observed_at) FROM global_main) AS global_newest_observed_at,
+            (SELECT min(observed_slot) FROM global_main) AS global_minimum_observed_slot,
+            (SELECT max(observed_slot) FROM global_main) AS global_maximum_observed_slot,
+            (SELECT count(*)::BIGINT FROM global_main
+             WHERE observed_at < now() - interval '10 minutes') AS global_stale_row_count
         "#,
     )
-    .bind(&main_reserve)
+    .bind(STANDARD_POLICY_AUTHORITY)
+    .bind(SAME_MINT_ROUTE_MODE)
+    .bind(&enabled_mints)
     .bind(&usdc_mint)
+    .bind(&main_market)
+    .bind(&main_reserve)
     .fetch_one(pool)
     .await?;
     let reserve_aggregates: Value = sqlx::query_scalar(
@@ -1613,30 +1674,58 @@ async fn collect_position_evidence(pool: &PgPool) -> Result<Value, sqlx::Error> 
                    min(observed_slot) AS minimum_observed_slot,
                    max(observed_slot) AS maximum_observed_slot
             FROM loyal_yield.vault_reserve_positions_current
-            WHERE has_value
+            WHERE has_value AND amount_raw > 0
             GROUP BY reserve, liquidity_mint
         ) aggregate_row
         "#,
     )
     .fetch_one(pool)
     .await?;
-    let stale_row_count = main.try_get::<i64, _>("stale_row_count")?;
+    let routeable_amount_raw = positions.try_get::<i64, _>("routeable_amount_raw")?;
+    let routeable_stale_row_count = positions.try_get::<i64, _>("routeable_stale_row_count")?;
+    let global_amount_raw = positions.try_get::<i64, _>("global_amount_raw")?;
+    let global_stale_row_count = positions.try_get::<i64, _>("global_stale_row_count")?;
     Ok(json!({
         "available": true,
+        "mainUsdcCohort": {
+            "standardPolicyPubkey": STANDARD_POLICY_AUTHORITY,
+            "routeMode": SAME_MINT_ROUTE_MODE,
+            "reserve": main_reserve,
+            "market": main_market,
+            "liquidityMint": usdc_mint,
+            "enabledStableMints": enabled_mints,
+            "vaultCount": positions.try_get::<i64, _>("cohort_vault_count")?,
+            "vaultIds": positions.try_get::<Vec<i64>, _>("cohort_vault_ids")?,
+        },
         "mainUsdc": {
             "reserve": main_reserve,
             "liquidityMint": usdc_mint,
-            "amountRaw": main.try_get::<i64, _>("amount_raw")?,
-            "amountUsdc": main.try_get::<i64, _>("amount_raw")? as f64 / 1_000_000.0,
-            "vaultCount": main.try_get::<i64, _>("vault_count")?,
-            "vaultIds": main.try_get::<Vec<i64>, _>("vault_ids")?,
-            "oldestObservedAt": main.try_get::<Option<DateTime<Utc>>, _>("oldest_observed_at")?,
-            "newestObservedAt": main.try_get::<Option<DateTime<Utc>>, _>("newest_observed_at")?,
-            "minimumObservedSlot": main.try_get::<Option<i64>, _>("minimum_observed_slot")?,
-            "maximumObservedSlot": main.try_get::<Option<i64>, _>("maximum_observed_slot")?,
+            "amountRaw": routeable_amount_raw,
+            "amountUsdc": routeable_amount_raw as f64 / 1_000_000.0,
+            "vaultCount": positions.try_get::<i64, _>("routeable_vault_count")?,
+            "vaultIds": positions.try_get::<Vec<i64>, _>("routeable_vault_ids")?,
+            "oldestObservedAt": positions.try_get::<Option<DateTime<Utc>>, _>("routeable_oldest_observed_at")?,
+            "newestObservedAt": positions.try_get::<Option<DateTime<Utc>>, _>("routeable_newest_observed_at")?,
+            "minimumObservedSlot": positions.try_get::<Option<i64>, _>("routeable_minimum_observed_slot")?,
+            "maximumObservedSlot": positions.try_get::<Option<i64>, _>("routeable_maximum_observed_slot")?,
             "freshnessMaximumAgeSeconds": MAX_MATERIAL_STAGE_AGE_SECONDS,
-            "staleRowCount": stale_row_count,
-            "freshForBaseline": stale_row_count == 0,
+            "staleRowCount": routeable_stale_row_count,
+            "freshForBaseline": routeable_stale_row_count == 0,
+        },
+        "globalMainUsdc": {
+            "reserve": main_reserve,
+            "liquidityMint": usdc_mint,
+            "amountRaw": global_amount_raw,
+            "amountUsdc": global_amount_raw as f64 / 1_000_000.0,
+            "vaultCount": positions.try_get::<i64, _>("global_vault_count")?,
+            "vaultIds": positions.try_get::<Vec<i64>, _>("global_vault_ids")?,
+            "oldestObservedAt": positions.try_get::<Option<DateTime<Utc>>, _>("global_oldest_observed_at")?,
+            "newestObservedAt": positions.try_get::<Option<DateTime<Utc>>, _>("global_newest_observed_at")?,
+            "minimumObservedSlot": positions.try_get::<Option<i64>, _>("global_minimum_observed_slot")?,
+            "maximumObservedSlot": positions.try_get::<Option<i64>, _>("global_maximum_observed_slot")?,
+            "freshnessMaximumAgeSeconds": MAX_MATERIAL_STAGE_AGE_SECONDS,
+            "staleRowCount": global_stale_row_count,
+            "freshForBaseline": global_stale_row_count == 0,
         },
         "reserveAggregates": reserve_aggregates,
     }))
@@ -2193,11 +2282,22 @@ fn baseline_main(
         .pointer("/measurements/database/positions/mainUsdc/amountRaw")?
         .as_i64()?;
     let vault_ids = baseline
-        .pointer("/measurements/database/positions/mainUsdc/vaultIds")?
+        .pointer("/measurements/database/positions/mainUsdcCohort/vaultIds")?
         .as_array()?
         .iter()
         .map(Value::as_i64)
         .collect::<Option<Vec<_>>>()?;
+    let vault_count = baseline
+        .pointer("/measurements/database/positions/mainUsdcCohort/vaultCount")?
+        .as_i64()?;
+    let unique_vault_ids = vault_ids.iter().copied().collect::<BTreeSet<_>>();
+    if vault_ids.is_empty()
+        || vault_ids.iter().any(|vault_id| *vault_id <= 0)
+        || unique_vault_ids.len() != vault_ids.len()
+        || i64::try_from(vault_ids.len()).ok()? != vault_count
+    {
+        return None;
+    }
     Some((collected_at, amount, vault_ids))
 }
 
@@ -2227,6 +2327,31 @@ async fn post_baseline_deposits(
     .bind(baseline_at)
     .bind(USDC_MINT.to_string())
     .bind(vault_ids)
+    .fetch_one(pool)
+    .await
+}
+
+async fn current_baseline_cohort_main(
+    pool: &PgPool,
+    vault_ids: &[i64],
+) -> Result<i64, sqlx::Error> {
+    if vault_ids.is_empty() {
+        return Ok(0);
+    }
+    sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(sum(amount_raw), 0)::BIGINT
+        FROM loyal_yield.vault_reserve_positions_current
+        WHERE vault_id = ANY($1)
+          AND reserve = $2
+          AND liquidity_mint = $3
+          AND has_value
+          AND amount_raw > 0
+        "#,
+    )
+    .bind(vault_ids)
+    .bind(KAMINO_MAIN_USDC_RESERVE.to_string())
+    .bind(USDC_MINT.to_string())
     .fetch_one(pool)
     .await
 }
@@ -2324,6 +2449,12 @@ async fn collect_movement_evidence(
     };
     let duplicate_movement_count = duplicate_movement_count(pool, cluster, cutover_at).await?;
     let movements = load_movements(pool, cluster, cutover_at).await?;
+    let baseline =
+        baseline_main(baseline, cluster).filter(|(baseline_at, _, _)| *baseline_at <= cutover_at);
+    let (baseline_collected_at, baseline_amount_raw, baseline_vault_ids) = baseline
+        .map(|(at, amount, ids)| (Some(at), Some(amount), ids))
+        .unwrap_or((None, None, Vec::new()));
+    let baseline_vaults = baseline_vault_ids.iter().copied().collect::<BTreeSet<_>>();
     let rpc_url = env::var("SOLANA_RPC_URL").ok();
     let finality = finalized_signatures(rpc_url.as_deref(), &movements).await;
     let mut safe_rows = Vec::new();
@@ -2334,6 +2465,8 @@ async fn collect_movement_evidence(
     let mut ambiguous_count = 0i64;
     let mut main_outflow_raw = 0i128;
     let mut main_inflow_raw = 0i128;
+    let mut baseline_main_outflow_raw = 0i128;
+    let mut baseline_main_inflow_raw = 0i128;
     let main_reserve = KAMINO_MAIN_USDC_RESERVE.to_string();
     let usdc_mint = USDC_MINT.to_string();
     for movement in &movements {
@@ -2352,9 +2485,15 @@ async fn collect_movement_evidence(
         if movement.submission_state == "reconciled" && movement.liquidity_mint == usdc_mint {
             if movement.source_reserve.as_deref() == Some(main_reserve.as_str()) {
                 main_outflow_raw += i128::from(movement.amount_raw);
+                if baseline_vaults.contains(&movement.vault_id) {
+                    baseline_main_outflow_raw += i128::from(movement.amount_raw);
+                }
             }
             if movement.target_reserve == main_reserve {
                 main_inflow_raw += i128::from(movement.amount_raw);
+                if baseline_vaults.contains(&movement.vault_id) {
+                    baseline_main_inflow_raw += i128::from(movement.amount_raw);
+                }
             }
         }
         let (safe, fully_proven, economic_pass) = movement_json(
@@ -2372,38 +2511,39 @@ async fn collect_movement_evidence(
         }
         safe_rows.push(safe);
     }
-    let current_main = current_positions
+    let current_routeable_main = current_positions
         .pointer("/mainUsdc/amountRaw")
         .and_then(Value::as_i64);
-    let baseline =
-        baseline_main(baseline, cluster).filter(|(baseline_at, _, _)| *baseline_at <= cutover_at);
-    let (baseline_collected_at, baseline_amount_raw, baseline_vault_ids) = baseline
-        .clone()
-        .map(|(at, amount, ids)| (Some(at), Some(amount), ids))
-        .unwrap_or((None, None, Vec::new()));
+    let current_baseline_main = if baseline_collected_at.is_some() {
+        Some(current_baseline_cohort_main(pool, &baseline_vault_ids).await?)
+    } else {
+        None
+    };
     let deposits = if let Some(at) = baseline_collected_at {
         Some(post_baseline_deposits(pool, at, &baseline_vault_ids).await?)
     } else {
         None
     };
-    let adjusted_main_reduction =
-        baseline_amount_raw
-            .zip(current_main)
-            .zip(deposits)
-            .map(|((before, current), deposits)| {
-                i128::from(before) + i128::from(deposits) - i128::from(current)
-            });
+    let adjusted_main_reduction = baseline_amount_raw
+        .zip(current_baseline_main)
+        .zip(deposits)
+        .map(|((before, current), deposits)| {
+            i128::from(before) + i128::from(deposits) - i128::from(current)
+        });
     let confirmed_main_net_outflow = main_outflow_raw - main_inflow_raw;
+    let baseline_confirmed_main_net_outflow = baseline_main_outflow_raw - baseline_main_inflow_raw;
     let main_reduction_pass = adjusted_main_reduction.is_some_and(|reduction| {
-        confirmed_main_net_outflow > 0
+        baseline_confirmed_main_net_outflow > 0
             && reduction > 0
-            && reduction.saturating_mul(100) >= confirmed_main_net_outflow.saturating_mul(95)
+            && reduction.saturating_mul(100)
+                >= baseline_confirmed_main_net_outflow.saturating_mul(95)
     });
     let rpc_available = finality.is_ok();
     let pass = rpc_available
         && reconciled_reserve_count > 0
         && fully_proven_count == reconciled_reserve_count
         && economic_failure_count == 0
+        && nonterminal_count == 0
         && ambiguous_count == 0
         && database_deadlock_count == 0
         && duplicate_movement_count == 0
@@ -2427,11 +2567,16 @@ async fn collect_movement_evidence(
                 "baselineCollectedAt": baseline_collected_at,
                 "baselineAmountRaw": baseline_amount_raw,
                 "baselineCohortVaultCount": baseline_vault_ids.len(),
+                "baselineCohortVaultIds": baseline_vault_ids,
                 "postBaselineCohortDepositAmountRaw": deposits,
-                "currentAmountRaw": current_main,
+                "currentBaselineCohortAmountRaw": current_baseline_main,
+                "currentRouteableAmountRaw": current_routeable_main,
                 "confirmedOptimizerOutflowRaw": main_outflow_raw,
                 "confirmedOptimizerInflowRaw": main_inflow_raw,
                 "confirmedOptimizerNetOutflowRaw": confirmed_main_net_outflow,
+                "baselineCohortConfirmedOptimizerOutflowRaw": baseline_main_outflow_raw,
+                "baselineCohortConfirmedOptimizerInflowRaw": baseline_main_inflow_raw,
+                "baselineCohortConfirmedOptimizerNetOutflowRaw": baseline_confirmed_main_net_outflow,
                 "depositAdjustedReductionRaw": adjusted_main_reduction,
                 "reductionAfterDepositsCoversConfirmedNetOutflow": main_reduction_pass,
             },

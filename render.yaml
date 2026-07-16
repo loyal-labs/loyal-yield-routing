@@ -308,7 +308,7 @@ projects:
             image:
               url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-62af7256f700a894a8a2b093fc3a57eab33d7f08
             preDeployCommand: /usr/local/bin/yield-migrations --apply
-            dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-reconciler --concurrency 16 --batch-size 32 --poll-interval-milliseconds 250 --position-sweep-interval-seconds 300
+            dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-reconciler --concurrency 32 --batch-size 32 --poll-interval-milliseconds 250 --position-sweep-interval-seconds 300
             maxShutdownDelaySeconds: 60
             envVars:
               - key: NEON_DATABASE_URL
