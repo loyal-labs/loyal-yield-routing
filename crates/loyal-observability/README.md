@@ -311,9 +311,9 @@ All remote export is disabled by default. One switch enables or disables operati
 
 | Variable | Purpose |
 | --- | --- |
-| `LOYAL_OBSERVABILITY_ENABLED` | Enables operational error logs, workflow metrics, and workflow traces together |
-| `LOYAL_OBSERVABILITY_ENVIRONMENT` | Sets `deployment.environment.name`; defaults to `unknown` |
-| `LOYAL_OBSERVABILITY_SERVICE_VERSION` | Sets the service version; falls back to `RENDER_GIT_COMMIT` |
+| `OBSERVABILITY_ENABLED` | Enables operational error logs, workflow metrics, and workflow traces together |
+| `OBSERVABILITY_ENVIRONMENT` | Sets `deployment.environment.name`; defaults to `unknown` |
+| `OBSERVABILITY_SERVICE_VERSION` | Sets the service version; falls back to `RENDER_GIT_COMMIT` |
 | `OBSERVABILITY_ACTOR_HMAC_SECRET` | Server-only HMAC key for pseudonymous wallet correlation; must match the frontend secret |
 | `OBSERVABILITY_OTLP_ENDPOINT` | Sets the shared base HTTP OTLP endpoint for logs, metrics, and traces |
 | `OBSERVABILITY_INGESTION_API_KEY` | Server-only ClickStack ingestion key used as the `authorization` header |
@@ -326,7 +326,7 @@ The exporter appends `/v1/logs`, `/v1/metrics`, or `/v1/traces` to `OBSERVABILIT
 
 Store `OBSERVABILITY_INGESTION_API_KEY` as a secret environment variable. The crate constructs the `authorization` header internally and does not expose the key through configuration `Debug` output or logs. Do not use `NEXT_PUBLIC_*` variables for server-side telemetry secrets.
 
-When `LOYAL_OBSERVABILITY_ENABLED=true`, both `OBSERVABILITY_OTLP_ENDPOINT` and `OBSERVABILITY_INGESTION_API_KEY` are required. Missing either value is a startup error.
+When `OBSERVABILITY_ENABLED=true`, both `OBSERVABILITY_OTLP_ENDPOINT` and `OBSERVABILITY_INGESTION_API_KEY` are required. Missing either value is a startup error.
 
 Render metadata is discovered automatically:
 

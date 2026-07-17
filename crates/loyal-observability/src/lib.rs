@@ -39,13 +39,13 @@ pub use workflow::{WorkflowMetrics, WorkflowOutcome, WorkflowSpan};
 const OPERATIONAL_ERROR_TARGET: &str = "loyal.observability.operational_error";
 
 /// Enables the remote OTLP exporter when set to a truthy value.
-pub const ENABLED_ENV: &str = "LOYAL_OBSERVABILITY_ENABLED";
+pub const ENABLED_ENV: &str = "OBSERVABILITY_ENABLED";
 
 /// Sets `deployment.environment.name` on exported records.
-pub const ENVIRONMENT_ENV: &str = "LOYAL_OBSERVABILITY_ENVIRONMENT";
+pub const ENVIRONMENT_ENV: &str = "OBSERVABILITY_ENVIRONMENT";
 
 /// Overrides the service version discovered from `RENDER_GIT_COMMIT`.
-pub const SERVICE_VERSION_ENV: &str = "LOYAL_OBSERVABILITY_SERVICE_VERSION";
+pub const SERVICE_VERSION_ENV: &str = "OBSERVABILITY_SERVICE_VERSION";
 
 /// Sets the shared base OTLP endpoint for logs, metrics, and traces.
 pub const OTLP_ENDPOINT_ENV: &str = "OBSERVABILITY_OTLP_ENDPOINT";
