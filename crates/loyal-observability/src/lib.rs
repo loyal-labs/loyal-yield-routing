@@ -56,7 +56,7 @@ pub const INGESTION_API_KEY_ENV: &str = "OBSERVABILITY_INGESTION_API_KEY";
 /// Non-secret configuration for the observability subscriber.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObservabilityConfig {
-    /// Whether operational errors should be exported through OTLP.
+    /// Whether OTLP logs, metrics, and traces should be exported.
     pub enabled: bool,
     /// Logical service name used by ClickStack and other OTLP backends.
     pub service_name: String,
@@ -191,7 +191,7 @@ pub struct ObservabilityGuard {
 }
 
 impl ObservabilityGuard {
-    /// Returns whether operational error log export is enabled.
+    /// Returns whether remote observability export is enabled.
     pub fn is_enabled(&self) -> bool {
         self.providers.logger.is_some()
     }
@@ -208,7 +208,7 @@ impl ObservabilityGuard {
 
     /// Returns the low-cardinality workflow metric instruments.
     ///
-    /// The returned handle is a no-op when metrics are disabled.
+    /// The returned handle is a no-op when [`ENABLED_ENV`] is false.
     pub fn workflow_metrics(&self) -> WorkflowMetrics {
         self.workflow_metrics.clone()
     }

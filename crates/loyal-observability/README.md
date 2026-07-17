@@ -2,7 +2,7 @@
 
 A shared crate for exporting privacy-safe logs, metrics, and traces from Loyal Rust services to an OTLP-compatible backend, currently ClickStack.
 
-Existing integrations initialize this crate for operational error logs. This crate-only change does not add metrics or workflow spans to any binary, and it does not change Render or ClickStack configuration.
+Current service integrations initialize this crate and emit bounded `OperationalError` records. They do not yet record `WorkflowMetrics` or `WorkflowSpan` signals; those APIs are available for explicit adoption by individual workflows.
 
 ## Signals
 
@@ -14,7 +14,7 @@ Existing integrations initialize this crate for operational error logs. This cra
 
 Regular `tracing` events and spans are not exported remotely. The OTLP layers accept only the bounded targets created by this crate. All regular events still use the local formatting layer controlled by `RUST_LOG`.
 
-Metrics and traces are separately opt-in so an existing log-only deployment does not gain unexpected telemetry volume.
+`OBSERVABILITY_ENABLED` controls all three remote exporters together. A service emits workflow metrics or traces only after its code explicitly calls `WorkflowMetrics` or `WorkflowSpan`.
 
 ## Initialization
 
@@ -35,6 +35,8 @@ fn main() -> anyhow::Result<()> {
 ```
 
 The guard owns all enabled OpenTelemetry providers. Its `Drop` implementation shuts them down and flushes queued telemetry. Controlled shutdown flows can call `force_flush()` or `shutdown()` explicitly.
+
+Dispatch any startup-safe probe that promises `secretsLoaded: false` before calling `init_from_env`. When remote export is enabled, initialization reads the exporter endpoint and ingestion key.
 
 ## Operational error logs
 
@@ -106,7 +108,7 @@ fn run_reconciliation(observability: &ObservabilityGuard) -> anyhow::Result<()> 
 # fn reconcile_accounts() -> anyhow::Result<()> { Ok(()) }
 ```
 
-The returned metrics handle is a no-op when metrics are disabled, so call sites do not need their own feature branch.
+The returned metrics handle is a no-op when `OBSERVABILITY_ENABLED` is false, so call sites do not need their own feature branch.
 
 ## Workflow traces
 
@@ -322,7 +324,7 @@ All remote export is disabled by default. One switch enables or disables operati
 | `OTEL_TRACES_SAMPLER_ARG` | Ratio for `traceidratio` or `parentbased_traceidratio` |
 | `RUST_LOG` | Configures only the local formatting layer; defaults to `warn` |
 
-The exporter appends `/v1/logs`, `/v1/metrics`, or `/v1/traces` to `OBSERVABILITY_OTLP_ENDPOINT` for the corresponding signal.
+Treat `OBSERVABILITY_OTLP_ENDPOINT` as the collector base URL. The exporter replaces any existing path, query, or fragment with `/v1/logs`, `/v1/metrics`, or `/v1/traces` for the corresponding signal.
 
 Store `OBSERVABILITY_INGESTION_API_KEY` as a secret environment variable. The crate constructs the `authorization` header internally and does not expose the key through configuration `Debug` output or logs. Do not use `NEXT_PUBLIC_*` variables for server-side telemetry secrets.
 
@@ -338,6 +340,7 @@ Render metadata is discovered automatically:
 ## Verification
 
 ```sh
+cargo test -p loyal-observability --locked
 cargo check -p loyal-observability --locked
 cargo clippy -p loyal-observability --locked -- -D warnings
 cargo fmt -p loyal-observability -- --check
