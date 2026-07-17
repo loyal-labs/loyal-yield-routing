@@ -307,34 +307,26 @@ Use stable workflow names, operation names, outcomes, and error codes. Do not us
 
 ## Environment variables
 
-All remote export is disabled by default. Metrics and traces require the master flag and their own signal flag.
+All remote export is disabled by default. One switch enables or disables operational error logs, workflow metrics, and workflow traces together.
 
 | Variable | Purpose |
 | --- | --- |
-| `LOYAL_OBSERVABILITY_ENABLED` | Enables operational error logs and acts as the master exporter switch |
-| `LOYAL_OBSERVABILITY_METRICS_ENABLED` | Enables workflow metrics when the master switch is enabled |
-| `LOYAL_OBSERVABILITY_TRACES_ENABLED` | Enables workflow traces when the master switch is enabled |
+| `LOYAL_OBSERVABILITY_ENABLED` | Enables operational error logs, workflow metrics, and workflow traces together |
 | `LOYAL_OBSERVABILITY_ENVIRONMENT` | Sets `deployment.environment.name`; defaults to `unknown` |
 | `LOYAL_OBSERVABILITY_SERVICE_VERSION` | Sets the service version; falls back to `RENDER_GIT_COMMIT` |
 | `OBSERVABILITY_ACTOR_HMAC_SECRET` | Server-only HMAC key for pseudonymous wallet correlation; must match the frontend secret |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Sets the base HTTP OTLP endpoint for all enabled signals |
-| `OTEL_EXPORTER_OTLP_HEADERS` | Sets request headers shared by all signals |
-| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | Overrides the complete logs endpoint |
-| `OTEL_EXPORTER_OTLP_LOGS_HEADERS` | Sets signal-specific logs request headers |
-| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | Overrides the complete metrics endpoint |
-| `OTEL_EXPORTER_OTLP_METRICS_HEADERS` | Sets signal-specific metrics request headers |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Overrides the complete traces endpoint |
-| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | Sets signal-specific traces request headers |
+| `OBSERVABILITY_OTLP_ENDPOINT` | Sets the shared base HTTP OTLP endpoint for logs, metrics, and traces |
+| `OBSERVABILITY_INGESTION_API_KEY` | Server-only ClickStack ingestion key used as the `authorization` header |
 | `OTEL_METRIC_EXPORT_INTERVAL` | Metric export interval in milliseconds; defaults to `60000` |
 | `OTEL_TRACES_SAMPLER` | Trace sampler; defaults to `parentbased_always_on` |
 | `OTEL_TRACES_SAMPLER_ARG` | Ratio for `traceidratio` or `parentbased_traceidratio` |
-| `RUST_LOG` | Configures only the local formatting layer; defaults to `info` |
+| `RUST_LOG` | Configures only the local formatting layer; defaults to `warn` |
 
-When the general endpoint is used, the exporter appends `/v1/logs`, `/v1/metrics`, or `/v1/traces` for the corresponding signal. A signal-specific endpoint is used as the complete endpoint.
+The exporter appends `/v1/logs`, `/v1/metrics`, or `/v1/traces` to `OBSERVABILITY_OTLP_ENDPOINT` for the corresponding signal.
 
-Store the ClickStack ingestion key in secret environment variables. Prefer `OTEL_EXPORTER_OTLP_HEADERS=authorization=<ingestion-key>` when all signals use the same key. The crate does not read headers into its own configuration or expose them through `Debug` output or logs. Do not use `NEXT_PUBLIC_*` variables for server-side telemetry secrets.
+Store `OBSERVABILITY_INGESTION_API_KEY` as a secret environment variable. The crate constructs the `authorization` header internally and does not expose the key through configuration `Debug` output or logs. Do not use `NEXT_PUBLIC_*` variables for server-side telemetry secrets.
 
-Enabling a signal without either its signal-specific endpoint or `OTEL_EXPORTER_OTLP_ENDPOINT` is a startup error. Enabling metrics or traces without `LOYAL_OBSERVABILITY_ENABLED` is also a startup error.
+When `LOYAL_OBSERVABILITY_ENABLED=true`, both `OBSERVABILITY_OTLP_ENDPOINT` and `OBSERVABILITY_INGESTION_API_KEY` are required. Missing either value is a startup error.
 
 Render metadata is discovered automatically:
 

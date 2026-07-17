@@ -10,6 +10,7 @@ mod actor;
 mod workflow;
 
 use std::{
+    collections::HashMap,
     env,
     error::Error,
     fmt::{self, Display, Formatter},
@@ -17,12 +18,15 @@ use std::{
 
 use opentelemetry::{metrics::MeterProvider as _, trace::TracerProvider as _, KeyValue};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
-use opentelemetry_otlp::{LogExporter, MetricExporter, Protocol, SpanExporter, WithExportConfig};
+use opentelemetry_otlp::{
+    LogExporter, MetricExporter, Protocol, SpanExporter, WithExportConfig, WithHttpConfig,
+};
 use opentelemetry_sdk::{
     logs::SdkLoggerProvider, metrics::SdkMeterProvider, trace::SdkTracerProvider, Resource,
 };
 use tracing::Level;
 use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use url::Url;
 
 pub use actor::{
     derive_observability_actor_id, derive_observability_actor_id_from_env, ObservabilityActorId,
@@ -37,32 +41,23 @@ const OPERATIONAL_ERROR_TARGET: &str = "loyal.observability.operational_error";
 /// Enables the remote OTLP exporter when set to a truthy value.
 pub const ENABLED_ENV: &str = "LOYAL_OBSERVABILITY_ENABLED";
 
-/// Enables OTLP metrics in addition to operational error logs.
-pub const METRICS_ENABLED_ENV: &str = "LOYAL_OBSERVABILITY_METRICS_ENABLED";
-
-/// Enables OTLP traces in addition to operational error logs.
-pub const TRACES_ENABLED_ENV: &str = "LOYAL_OBSERVABILITY_TRACES_ENABLED";
-
 /// Sets `deployment.environment.name` on exported records.
 pub const ENVIRONMENT_ENV: &str = "LOYAL_OBSERVABILITY_ENVIRONMENT";
 
 /// Overrides the service version discovered from `RENDER_GIT_COMMIT`.
 pub const SERVICE_VERSION_ENV: &str = "LOYAL_OBSERVABILITY_SERVICE_VERSION";
 
-const OTLP_ENDPOINT_ENV: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
-const OTLP_LOGS_ENDPOINT_ENV: &str = "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT";
-const OTLP_METRICS_ENDPOINT_ENV: &str = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT";
-const OTLP_TRACES_ENDPOINT_ENV: &str = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT";
+/// Sets the shared base OTLP endpoint for logs, metrics, and traces.
+pub const OTLP_ENDPOINT_ENV: &str = "OBSERVABILITY_OTLP_ENDPOINT";
+
+/// Sets the server-only ClickStack ingestion key.
+pub const INGESTION_API_KEY_ENV: &str = "OBSERVABILITY_INGESTION_API_KEY";
 
 /// Non-secret configuration for the observability subscriber.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObservabilityConfig {
     /// Whether operational errors should be exported through OTLP.
     pub enabled: bool,
-    /// Whether low-cardinality workflow metrics should be exported through OTLP.
-    pub metrics_enabled: bool,
-    /// Whether workflow spans should be exported through OTLP.
-    pub traces_enabled: bool,
     /// Logical service name used by ClickStack and other OTLP backends.
     pub service_name: String,
     /// Deployment environment, for example `production` or `staging`.
@@ -73,27 +68,18 @@ pub struct ObservabilityConfig {
     pub service_instance_id: Option<String>,
     /// Render service identifier, recorded as `render.service.id`.
     pub render_service_id: Option<String>,
-    /// Filter for the local formatting layer. Defaults to `RUST_LOG` or `info`.
+    /// Filter for the local formatting layer. Defaults to `RUST_LOG` or `warn`.
     pub stdout_filter: String,
 }
 
 impl ObservabilityConfig {
     /// Reads non-secret service metadata from the process environment.
     ///
-    /// The OTLP exporter itself reads the standard `OTEL_EXPORTER_OTLP_*`
-    /// variables. In particular, authentication headers remain outside this
-    /// config so they cannot be exposed through its `Debug` implementation.
+    /// The endpoint and ingestion key remain outside this config so secrets
+    /// cannot be exposed through its `Debug` implementation.
     pub fn from_env(default_service_name: impl Into<String>) -> Result<Self, InitError> {
         let default_service_name = default_service_name.into();
         let enabled = parse_enabled(ENABLED_ENV, env::var(ENABLED_ENV).ok().as_deref())?;
-        let metrics_enabled = parse_enabled(
-            METRICS_ENABLED_ENV,
-            env::var(METRICS_ENABLED_ENV).ok().as_deref(),
-        )?;
-        let traces_enabled = parse_enabled(
-            TRACES_ENABLED_ENV,
-            env::var(TRACES_ENABLED_ENV).ok().as_deref(),
-        )?;
         let service_name = non_empty_env("RENDER_SERVICE_NAME").unwrap_or(default_service_name);
 
         if service_name.trim().is_empty() {
@@ -104,8 +90,6 @@ impl ObservabilityConfig {
 
         let config = Self {
             enabled,
-            metrics_enabled,
-            traces_enabled,
             service_name,
             deployment_environment: non_empty_env(ENVIRONMENT_ENV)
                 .unwrap_or_else(|| "unknown".to_owned()),
@@ -113,11 +97,11 @@ impl ObservabilityConfig {
                 .or_else(|| non_empty_env("RENDER_GIT_COMMIT")),
             service_instance_id: non_empty_env("RENDER_INSTANCE_ID"),
             render_service_id: non_empty_env("RENDER_SERVICE_ID"),
-            stdout_filter: non_empty_env("RUST_LOG").unwrap_or_else(|| "info".to_owned()),
+            stdout_filter: non_empty_env("RUST_LOG").unwrap_or_else(|| "warn".to_owned()),
         };
 
         validate_config(&config)?;
-        validate_export_endpoints(&config)?;
+        validate_export_config(&config)?;
         Ok(config)
     }
 }
@@ -266,7 +250,7 @@ pub fn init_from_env(
 /// crate must replace its existing subscriber initialization with this call.
 pub fn init(config: ObservabilityConfig) -> Result<ObservabilityGuard, InitError> {
     validate_config(&config)?;
-    validate_export_endpoints(&config)?;
+    validate_export_config(&config)?;
 
     let stdout_filter = EnvFilter::try_new(&config.stdout_filter)
         .map_err(|error| InitError::InvalidFilter(error.to_string()))?;
@@ -284,8 +268,15 @@ pub fn init(config: ObservabilityConfig) -> Result<ObservabilityGuard, InitError
     }
 
     let shared_resource = resource(&config);
+    let base_endpoint = required_env(OTLP_ENDPOINT_ENV)?;
+    let logs_endpoint = signal_endpoint(&base_endpoint, "/v1/logs")?;
+    let metrics_endpoint = signal_endpoint(&base_endpoint, "/v1/metrics")?;
+    let traces_endpoint = signal_endpoint(&base_endpoint, "/v1/traces")?;
+    let headers = ingestion_headers()?;
     let log_exporter = LogExporter::builder()
         .with_http()
+        .with_endpoint(logs_endpoint)
+        .with_headers(headers.clone())
         .with_protocol(Protocol::HttpBinary)
         .build()
         .map_err(|error| InitError::Exporter(format!("logs: {error}")))?;
@@ -294,43 +285,36 @@ pub fn init(config: ObservabilityConfig) -> Result<ObservabilityGuard, InitError
         .with_batch_exporter(log_exporter)
         .build();
 
-    let (meter_provider, workflow_metrics) = if config.metrics_enabled {
-        let metric_exporter = MetricExporter::builder()
-            .with_http()
-            .with_protocol(Protocol::HttpBinary)
-            .build()
-            .map_err(|error| InitError::Exporter(format!("metrics: {error}")))?;
-        let provider = SdkMeterProvider::builder()
-            .with_resource(shared_resource.clone())
-            .with_periodic_exporter(metric_exporter)
-            .build();
-        let meter = provider.meter("loyal-observability");
-        let metrics = WorkflowMetrics::new(&meter);
-        (Some(provider), metrics)
-    } else {
-        (None, WorkflowMetrics::default())
-    };
+    let metric_exporter = MetricExporter::builder()
+        .with_http()
+        .with_endpoint(metrics_endpoint)
+        .with_headers(headers.clone())
+        .with_protocol(Protocol::HttpBinary)
+        .build()
+        .map_err(|error| InitError::Exporter(format!("metrics: {error}")))?;
+    let meter_provider = SdkMeterProvider::builder()
+        .with_resource(shared_resource.clone())
+        .with_periodic_exporter(metric_exporter)
+        .build();
+    let meter = meter_provider.meter("loyal-observability");
+    let workflow_metrics = WorkflowMetrics::new(&meter);
 
-    let tracer_provider = if config.traces_enabled {
-        let span_exporter = SpanExporter::builder()
-            .with_http()
-            .with_protocol(Protocol::HttpBinary)
-            .build()
-            .map_err(|error| InitError::Exporter(format!("traces: {error}")))?;
-        Some(
-            SdkTracerProvider::builder()
-                .with_resource(shared_resource)
-                .with_batch_exporter(span_exporter)
-                .build(),
-        )
-    } else {
-        None
-    };
+    let span_exporter = SpanExporter::builder()
+        .with_http()
+        .with_endpoint(traces_endpoint)
+        .with_headers(headers)
+        .with_protocol(Protocol::HttpBinary)
+        .build()
+        .map_err(|error| InitError::Exporter(format!("traces: {error}")))?;
+    let tracer_provider = SdkTracerProvider::builder()
+        .with_resource(shared_resource)
+        .with_batch_exporter(span_exporter)
+        .build();
 
     let mut providers = Providers {
         logger: Some(logger_provider),
-        meter: meter_provider,
-        tracer: tracer_provider,
+        meter: Some(meter_provider),
+        tracer: Some(tracer_provider),
     };
 
     let operational_errors_only = filter::filter_fn(|metadata| {
@@ -422,42 +406,49 @@ fn validate_config(config: &ObservabilityConfig) -> Result<(), InitError> {
             "deployment environment must not be empty".to_owned(),
         ));
     }
-    if !config.enabled && config.metrics_enabled {
-        return Err(InitError::InvalidConfig(format!(
-            "{METRICS_ENABLED_ENV} requires {ENABLED_ENV}"
-        )));
-    }
-    if !config.enabled && config.traces_enabled {
-        return Err(InitError::InvalidConfig(format!(
-            "{TRACES_ENABLED_ENV} requires {ENABLED_ENV}"
-        )));
-    }
     Ok(())
 }
 
-fn validate_export_endpoints(config: &ObservabilityConfig) -> Result<(), InitError> {
+fn validate_export_config(config: &ObservabilityConfig) -> Result<(), InitError> {
     if !config.enabled {
         return Ok(());
     }
 
-    require_signal_endpoint("logs", OTLP_LOGS_ENDPOINT_ENV)?;
-    if config.metrics_enabled {
-        require_signal_endpoint("metrics", OTLP_METRICS_ENDPOINT_ENV)?;
-    }
-    if config.traces_enabled {
-        require_signal_endpoint("traces", OTLP_TRACES_ENDPOINT_ENV)?;
-    }
+    let endpoint = required_env(OTLP_ENDPOINT_ENV)?;
+    signal_endpoint(&endpoint, "/v1/logs")?;
+    required_env(INGESTION_API_KEY_ENV)?;
     Ok(())
 }
 
-fn require_signal_endpoint(signal: &str, signal_endpoint_env: &str) -> Result<(), InitError> {
-    if non_empty_env(signal_endpoint_env).is_some() || non_empty_env(OTLP_ENDPOINT_ENV).is_some() {
-        return Ok(());
+fn required_env(name: &str) -> Result<String, InitError> {
+    non_empty_env(name).ok_or_else(|| {
+        InitError::InvalidConfig(format!("{name} must be set when {ENABLED_ENV}=true"))
+    })
+}
+
+fn ingestion_headers() -> Result<HashMap<String, String>, InitError> {
+    Ok(HashMap::from([(
+        "authorization".to_owned(),
+        required_env(INGESTION_API_KEY_ENV)?,
+    )]))
+}
+
+fn signal_endpoint(base_endpoint: &str, signal_path: &str) -> Result<String, InitError> {
+    let mut endpoint = Url::parse(base_endpoint).map_err(|error| {
+        InitError::InvalidConfig(format!("{OTLP_ENDPOINT_ENV} is not a valid URL: {error}"))
+    })?;
+    let is_local_http = endpoint.scheme() == "http"
+        && matches!(endpoint.host_str(), Some("127.0.0.1" | "localhost"));
+    if endpoint.scheme() != "https" && !is_local_http {
+        return Err(InitError::InvalidConfig(format!(
+            "{OTLP_ENDPOINT_ENV} must use HTTPS, except for localhost development"
+        )));
     }
 
-    Err(InitError::InvalidConfig(format!(
-        "{signal} export is enabled but neither {signal_endpoint_env} nor {OTLP_ENDPOINT_ENV} is set"
-    )))
+    endpoint.set_path(signal_path);
+    endpoint.set_query(None);
+    endpoint.set_fragment(None);
+    Ok(endpoint.to_string())
 }
 
 fn resource(config: &ObservabilityConfig) -> Resource {
