@@ -10,11 +10,23 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-7ddd0c16d39e121c0fcbab51ebd00be79f8abeda
+              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
             preDeployCommand: /usr/local/bin/kamino-monitor-predeploy
             dockerCommand: /usr/local/bin/kamino-reserve-monitor
             maxShutdownDelaySeconds: 60
             envVars:
+              - key: OBSERVABILITY_ENABLED
+                value: "true"
+              - key: OBSERVABILITY_ENVIRONMENT
+                value: production
+              - key: OBSERVABILITY_OTLP_ENDPOINT
+                value: https://loyal-clickstack.onrender.com
+              - key: OBSERVABILITY_INGESTION_API_KEY
+                sync: false
+              - key: OBSERVABILITY_SERVICE_VERSION
+                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              - key: OBSERVABILITY_ACTOR_HMAC_SECRET
+                sync: false
               - key: TIMESCALEDB_URL
                 sync: false
               - key: SOLANA_RPC_URL
@@ -37,11 +49,23 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a
+              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
             preDeployCommand: /bin/sh -lc '/usr/local/bin/loyal-timescale-migrations --apply && /usr/local/bin/yield-migrations --apply'
             dockerCommand: /usr/local/bin/balance-sweep-ata-monitor
             maxShutdownDelaySeconds: 60
             envVars:
+              - key: OBSERVABILITY_ENABLED
+                value: "true"
+              - key: OBSERVABILITY_ENVIRONMENT
+                value: production
+              - key: OBSERVABILITY_OTLP_ENDPOINT
+                value: https://loyal-clickstack.onrender.com
+              - key: OBSERVABILITY_INGESTION_API_KEY
+                sync: false
+              - key: OBSERVABILITY_SERVICE_VERSION
+                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              - key: OBSERVABILITY_ACTOR_HMAC_SECRET
+                sync: false
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -74,11 +98,23 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a
+              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
             preDeployCommand: /bin/sh -lc '/usr/local/bin/loyal-timescale-migrations --apply && /usr/local/bin/yield-migrations --apply'
             dockerCommand: /usr/local/bin/balance-sweep-ata-monitor
             maxShutdownDelaySeconds: 60
             envVars:
+              - key: OBSERVABILITY_ENABLED
+                value: "true"
+              - key: OBSERVABILITY_ENVIRONMENT
+                value: staging
+              - key: OBSERVABILITY_OTLP_ENDPOINT
+                value: https://loyal-clickstack.onrender.com
+              - key: OBSERVABILITY_INGESTION_API_KEY
+                sync: false
+              - key: OBSERVABILITY_SERVICE_VERSION
+                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              - key: OBSERVABILITY_ACTOR_HMAC_SECRET
+                sync: false
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -113,11 +149,23 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4ead255ae260e7ddf31234e632c021d26e91b290
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
             dockerCommand: /usr/local/bin/loyal-yield-realtime
             healthCheckPath: /healthz
             maxShutdownDelaySeconds: 60
             envVars:
+              - key: OBSERVABILITY_ENABLED
+                value: "true"
+              - key: OBSERVABILITY_ENVIRONMENT
+                value: production
+              - key: OBSERVABILITY_OTLP_ENDPOINT
+                value: https://loyal-clickstack.onrender.com
+              - key: OBSERVABILITY_INGESTION_API_KEY
+                sync: false
+              - key: OBSERVABILITY_SERVICE_VERSION
+                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              - key: OBSERVABILITY_ACTOR_HMAC_SECRET
+                sync: false
               - key: NEON_DATABASE_URL
                 sync: false
               - key: REALTIME_AUTH_SECRET
@@ -152,11 +200,23 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-ata-projector
             maxShutdownDelaySeconds: 60
             envVars:
+              - key: OBSERVABILITY_ENABLED
+                value: "true"
+              - key: OBSERVABILITY_ENVIRONMENT
+                value: production
+              - key: OBSERVABILITY_OTLP_ENDPOINT
+                value: https://loyal-clickstack.onrender.com
+              - key: OBSERVABILITY_INGESTION_API_KEY
+                sync: false
+              - key: OBSERVABILITY_SERVICE_VERSION
+                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              - key: OBSERVABILITY_ACTOR_HMAC_SECRET
+                sync: false
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -173,11 +233,23 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-5fc5f7825a717cfb0ccaab57cee5e38f09aa7f53
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-autodeposit-trigger --execute-eligible
             maxShutdownDelaySeconds: 60
             envVars:
+              - key: OBSERVABILITY_ENABLED
+                value: "true"
+              - key: OBSERVABILITY_ENVIRONMENT
+                value: production
+              - key: OBSERVABILITY_OTLP_ENDPOINT
+                value: https://loyal-clickstack.onrender.com
+              - key: OBSERVABILITY_INGESTION_API_KEY
+                sync: false
+              - key: OBSERVABILITY_SERVICE_VERSION
+                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              - key: OBSERVABILITY_ACTOR_HMAC_SECRET
+                sync: false
               - key: NEON_DATABASE_URL
                 sync: false
               - key: SOLANA_RPC_URL
@@ -210,11 +282,23 @@ projects:
             plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-7ddd0c16d39e121c0fcbab51ebd00be79f8abeda
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/fleet-opportunity-planner --poll-interval-seconds 1 --full-sweep-interval-seconds 30 --dirty-batch-size 256 --max-opportunities-per-wave 128
             maxShutdownDelaySeconds: 60
             envVars:
+              - key: OBSERVABILITY_ENABLED
+                value: "true"
+              - key: OBSERVABILITY_ENVIRONMENT
+                value: production
+              - key: OBSERVABILITY_OTLP_ENDPOINT
+                value: https://loyal-clickstack.onrender.com
+              - key: OBSERVABILITY_INGESTION_API_KEY
+                sync: false
+              - key: OBSERVABILITY_SERVICE_VERSION
+                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              - key: OBSERVABILITY_ACTOR_HMAC_SECRET
+                sync: false
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -231,11 +315,23 @@ projects:
             plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-7ddd0c16d39e121c0fcbab51ebd00be79f8abeda
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-worker revalidate --concurrency 16 --fused-execute-concurrency 8 --poll-interval-milliseconds 250
             maxShutdownDelaySeconds: 60
             envVars:
+              - key: OBSERVABILITY_ENABLED
+                value: "true"
+              - key: OBSERVABILITY_ENVIRONMENT
+                value: production
+              - key: OBSERVABILITY_OTLP_ENDPOINT
+                value: https://loyal-clickstack.onrender.com
+              - key: OBSERVABILITY_INGESTION_API_KEY
+                sync: false
+              - key: OBSERVABILITY_SERVICE_VERSION
+                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              - key: OBSERVABILITY_ACTOR_HMAC_SECRET
+                sync: false
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -258,11 +354,23 @@ projects:
             plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-7ddd0c16d39e121c0fcbab51ebd00be79f8abeda
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-worker execute --concurrency 4 --poll-interval-milliseconds 250
             maxShutdownDelaySeconds: 60
             envVars:
+              - key: OBSERVABILITY_ENABLED
+                value: "true"
+              - key: OBSERVABILITY_ENVIRONMENT
+                value: production
+              - key: OBSERVABILITY_OTLP_ENDPOINT
+                value: https://loyal-clickstack.onrender.com
+              - key: OBSERVABILITY_INGESTION_API_KEY
+                sync: false
+              - key: OBSERVABILITY_SERVICE_VERSION
+                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              - key: OBSERVABILITY_ACTOR_HMAC_SECRET
+                sync: false
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -285,11 +393,23 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-7ddd0c16d39e121c0fcbab51ebd00be79f8abeda
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/fleet-route-confirmer --execute --batch-size 128 --broadcast-concurrency 16 --poll-interval-milliseconds 1000
             maxShutdownDelaySeconds: 60
             envVars:
+              - key: OBSERVABILITY_ENABLED
+                value: "true"
+              - key: OBSERVABILITY_ENVIRONMENT
+                value: production
+              - key: OBSERVABILITY_OTLP_ENDPOINT
+                value: https://loyal-clickstack.onrender.com
+              - key: OBSERVABILITY_INGESTION_API_KEY
+                sync: false
+              - key: OBSERVABILITY_SERVICE_VERSION
+                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              - key: OBSERVABILITY_ACTOR_HMAC_SECRET
+                sync: false
               - key: NEON_DATABASE_URL
                 sync: false
               - key: SOLANA_RPC_URL
@@ -306,11 +426,23 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-7ddd0c16d39e121c0fcbab51ebd00be79f8abeda
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-reconciler --concurrency 32 --batch-size 32 --poll-interval-milliseconds 250 --position-sweep-interval-seconds 300
             maxShutdownDelaySeconds: 60
             envVars:
+              - key: OBSERVABILITY_ENABLED
+                value: "true"
+              - key: OBSERVABILITY_ENVIRONMENT
+                value: production
+              - key: OBSERVABILITY_OTLP_ENDPOINT
+                value: https://loyal-clickstack.onrender.com
+              - key: OBSERVABILITY_INGESTION_API_KEY
+                sync: false
+              - key: OBSERVABILITY_SERVICE_VERSION
+                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              - key: OBSERVABILITY_ACTOR_HMAC_SECRET
+                sync: false
               - key: NEON_DATABASE_URL
                 sync: false
               - key: SOLANA_RPC_URL
@@ -327,11 +459,23 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-7ddd0c16d39e121c0fcbab51ebd00be79f8abeda
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/route-lookup-table-provisioner --execute --watch --max-operations 32 --concurrency 8 --rate-limit-ms 250
             maxShutdownDelaySeconds: 60
             envVars:
+              - key: OBSERVABILITY_ENABLED
+                value: "true"
+              - key: OBSERVABILITY_ENVIRONMENT
+                value: production
+              - key: OBSERVABILITY_OTLP_ENDPOINT
+                value: https://loyal-clickstack.onrender.com
+              - key: OBSERVABILITY_INGESTION_API_KEY
+                sync: false
+              - key: OBSERVABILITY_SERVICE_VERSION
+                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              - key: OBSERVABILITY_ACTOR_HMAC_SECRET
+                sync: false
               - key: NEON_DATABASE_URL
                 sync: false
               - key: SOLANA_RPC_URL
@@ -356,11 +500,23 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-ata-projector
             maxShutdownDelaySeconds: 60
             envVars:
+              - key: OBSERVABILITY_ENABLED
+                value: "true"
+              - key: OBSERVABILITY_ENVIRONMENT
+                value: staging
+              - key: OBSERVABILITY_OTLP_ENDPOINT
+                value: https://loyal-clickstack.onrender.com
+              - key: OBSERVABILITY_INGESTION_API_KEY
+                sync: false
+              - key: OBSERVABILITY_SERVICE_VERSION
+                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              - key: OBSERVABILITY_ACTOR_HMAC_SECRET
+                sync: false
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -377,11 +533,23 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-autodeposit-trigger
             maxShutdownDelaySeconds: 60
             envVars:
+              - key: OBSERVABILITY_ENABLED
+                value: "true"
+              - key: OBSERVABILITY_ENVIRONMENT
+                value: staging
+              - key: OBSERVABILITY_OTLP_ENDPOINT
+                value: https://loyal-clickstack.onrender.com
+              - key: OBSERVABILITY_INGESTION_API_KEY
+                sync: false
+              - key: OBSERVABILITY_SERVICE_VERSION
+                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              - key: OBSERVABILITY_ACTOR_HMAC_SECRET
+                sync: false
               - key: NEON_DATABASE_URL
                 sync: false
               - key: BALANCE_SWEEP_EXECUTE_ELIGIBLE
@@ -396,11 +564,23 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-ce5fe2ead0ab55bf3cac4a597cf6aac52232ee3a
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-yield-monitor --all-active-vaults --poll-interval-seconds 300 --rebalance-cooldown-seconds 300
             maxShutdownDelaySeconds: 60
             envVars:
+              - key: OBSERVABILITY_ENABLED
+                value: "true"
+              - key: OBSERVABILITY_ENVIRONMENT
+                value: staging
+              - key: OBSERVABILITY_OTLP_ENDPOINT
+                value: https://loyal-clickstack.onrender.com
+              - key: OBSERVABILITY_INGESTION_API_KEY
+                sync: false
+              - key: OBSERVABILITY_SERVICE_VERSION
+                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              - key: OBSERVABILITY_ACTOR_HMAC_SECRET
+                sync: false
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
