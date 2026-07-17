@@ -6,6 +6,8 @@
 
 #![forbid(unsafe_code)]
 
+mod actor;
+
 use std::{
     env,
     error::Error,
@@ -18,6 +20,11 @@ use opentelemetry_otlp::{LogExporter, Protocol, WithExportConfig};
 use opentelemetry_sdk::{logs::SdkLoggerProvider, Resource};
 use tracing::Level;
 use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+
+pub use actor::{
+    derive_observability_actor_id, derive_observability_actor_id_from_env, ObservabilityActorId,
+    ACTOR_HMAC_SECRET_ENV,
+};
 
 /// The only `tracing` target exported by this crate's OTLP layer.
 const OPERATIONAL_ERROR_TARGET: &str = "loyal.observability.operational_error";
@@ -95,8 +102,9 @@ impl ObservabilityConfig {
 /// Text fields require static strings so runtime errors, wallet addresses,
 /// request bodies, transaction payloads, and other user data cannot be passed
 /// accidentally. Add only stable classifications and operator-facing summaries.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OperationalError {
+    actor_id: Option<ObservabilityActorId>,
     code: &'static str,
     operation: &'static str,
     summary: &'static str,
@@ -108,6 +116,7 @@ impl OperationalError {
     /// Creates an operational error with stable, non-user-specific fields.
     pub const fn new(code: &'static str, operation: &'static str, summary: &'static str) -> Self {
         Self {
+            actor_id: None,
             code,
             operation,
             summary,
@@ -128,17 +137,39 @@ impl OperationalError {
         self
     }
 
+    /// Attaches a pseudonymous actor ID without retaining the raw wallet address.
+    pub fn actor_id(mut self, actor_id: ObservabilityActorId) -> Self {
+        self.actor_id = Some(actor_id);
+        self
+    }
+
     /// Emits this record to local logs and, when enabled, the filtered OTLP layer.
     pub fn emit(self) {
-        tracing::error!(
-            name: "loyal.operational_error",
-            target: OPERATIONAL_ERROR_TARGET,
-            error_code = self.code,
-            operation = self.operation,
-            retryable = self.retryable,
-            recovery_required = self.recovery_required,
-            message = self.summary,
-        );
+        if let Some(actor_id) = self.actor_id {
+            tracing::event!(
+                name: "loyal.operational_error",
+                target: OPERATIONAL_ERROR_TARGET,
+                Level::ERROR,
+                {
+                    loyal.actor.id = actor_id.as_str(),
+                    error_code = self.code,
+                    operation = self.operation,
+                    retryable = self.retryable,
+                    recovery_required = self.recovery_required,
+                    message = self.summary,
+                }
+            );
+        } else {
+            tracing::error!(
+                name: "loyal.operational_error",
+                target: OPERATIONAL_ERROR_TARGET,
+                error_code = self.code,
+                operation = self.operation,
+                retryable = self.retryable,
+                recovery_required = self.recovery_required,
+                message = self.summary,
+            );
+        }
     }
 }
 

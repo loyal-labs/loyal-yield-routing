@@ -3163,10 +3163,13 @@ dependencies = [
 name = "loyal-observability"
 version = "0.1.0"
 dependencies = [
+ "hex",
+ "hmac 0.12.1",
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "sha2 0.10.9",
  "tracing",
  "tracing-subscriber",
 ]
