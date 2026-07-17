@@ -12,6 +12,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 futures-util = "0.3"
 klend-interface = { git = "https://github.com/Kamino-Finance/klend" }
 loyal-actions = { path = "../loyal-actions" }
+loyal-observability = { path = "../loyal-observability" }
 loyal-yield-router = { path = "../loyal-yield-router" }
 num-bigint = "0.4"
 num-traits = "0.2"

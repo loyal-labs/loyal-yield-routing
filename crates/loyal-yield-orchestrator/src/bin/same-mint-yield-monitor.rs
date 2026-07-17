@@ -10,6 +10,7 @@ use std::{
 
 use chrono::{DateTime, Duration, Utc};
 use loyal_actions::USDC_MINT;
+use loyal_observability::{init_from_env, OperationalError};
 use loyal_yield_orchestrator::sqlx::Row;
 use loyal_yield_orchestrator::{
     enabled_stable_mints_from_env, policy_keypair_from_env, route_amount_evidence,
@@ -117,6 +118,20 @@ enum VaultResolutionMode {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let _observability = init_from_env("loyal-same-mint-yield-monitor")?;
+    run().await.inspect_err(|_| {
+        OperationalError::new(
+            "rebalance_monitor_poll_failed",
+            "run_rebalance_monitor",
+            "rebalance monitor stopped after a startup or polling failure",
+        )
+        .retryable(false)
+        .recovery_required(true)
+        .emit();
+    })
+}
+
+async fn run() -> Result<(), Box<dyn Error>> {
     let options = parse_args(env::args().skip(1))?;
     let neon_url = env::var("NEON_DATABASE_URL").map_err(|_| "NEON_DATABASE_URL is required")?;
     let timescale_url = env::var("TIMESCALEDB_URL").map_err(|_| "TIMESCALEDB_URL is required")?;
@@ -232,12 +247,22 @@ async fn run_fleet_once(
                 .await
                 {
                     Ok(result) => result,
-                    Err(error) => json!({
-                        "status": "vault_error",
-                        "execute": options.execute,
-                        "vault": vault_identity,
-                        "error": error.to_string(),
-                    }),
+                    Err(error) => {
+                        OperationalError::new(
+                            "rebalance_vault_processing_failed",
+                            "process_rebalance_vault",
+                            "rebalance monitor failed to process a vault",
+                        )
+                        .retryable(true)
+                        .recovery_required(false)
+                        .emit();
+                        json!({
+                            "status": "vault_error",
+                            "execute": options.execute,
+                            "vault": vault_identity,
+                            "error": error.to_string(),
+                        })
+                    }
                 };
                 idle_priority_count += usize::from(
                     result
@@ -349,6 +374,14 @@ async fn run_vault_once(
             let active_decision_count_after = active_decision_count(neon, vault.vault.id).await?;
             let execution_status = route_execution_status(&execution);
             if !execution.success || execution_status != "idle_vault_deposit_executed" {
+                OperationalError::new(
+                    "yield_route_execution_failed",
+                    "execute_idle_vault_deposit",
+                    "idle vault deposit route execution failed",
+                )
+                .retryable(true)
+                .recovery_required(true)
+                .emit();
                 return Ok(json!({
                     "status": execution_status,
                     "execute": true,
@@ -443,6 +476,14 @@ async fn run_vault_once(
 
     let reconcile = reconcile_current_positions_for_vault(&vault, &policy_source_reserves)?;
     if !reconcile.success {
+        OperationalError::new(
+            "rebalance_chain_reconciliation_failed",
+            "reconcile_rebalance_positions",
+            "rebalance chain position reconciliation failed",
+        )
+        .retryable(true)
+        .recovery_required(false)
+        .emit();
         return Ok(json!({
             "status": "reconcile_failed",
             "execute": options.execute,
@@ -480,6 +521,14 @@ async fn run_vault_once(
         let active_decision_count_after = active_decision_count(neon, vault.vault.id).await?;
         let positions_after = neon.current_positions(vault.vault.id).await?;
         if !execution.success {
+            OperationalError::new(
+                "yield_route_execution_failed",
+                "execute_planned_rebalance",
+                "planned rebalance route execution failed",
+            )
+            .retryable(true)
+            .recovery_required(true)
+            .emit();
             return Ok(json!({
                 "status": route_execution_status(&execution),
                 "execute": true,

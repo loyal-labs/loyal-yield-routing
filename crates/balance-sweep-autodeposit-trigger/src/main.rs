@@ -12,6 +12,7 @@ use balance_sweep_autodeposit_trigger::{
 };
 use chrono::{DateTime, Utc};
 use clap::Parser;
+use loyal_observability::{init_from_env, OperationalError};
 use loyal_yield_realtime_core::neon_url_looks_pooled;
 use sqlx::{
     postgres::{PgConnectOptions, PgListener, PgPoolOptions},
@@ -198,23 +199,34 @@ struct ClaimedLot {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    let _observability = init_from_env("loyal-balance-sweep-autodeposit-trigger")?;
     let args = Args::parse();
-    let pool = connect(&args.postgres_url).await?;
+    let pool = connect(&args.postgres_url).await.inspect_err(|_| {
+        OperationalError::new(
+            "autodeposit_worker_startup_failed",
+            "connect_autodeposit_database",
+            "autodeposit worker failed to connect to its database",
+        )
+        .retryable(true)
+        .recovery_required(true)
+        .emit();
+    })?;
 
     if let Some(claim_token) = args.complete_claim_token.as_deref() {
         let execution_id = args
             .complete_execution_id
             .context("--complete-execution-id is required with --complete-claim-token")?;
-        let outcome = complete_claim_once(&pool, claim_token, execution_id).await?;
+        let outcome = complete_claim_once(&pool, claim_token, execution_id)
+            .await
+            .inspect_err(|_| emit_claim_transition_failed())?;
         println!("{}", serde_json::to_string_pretty(&outcome)?);
         return Ok(());
     }
 
     if let Some(claim_token) = args.release_claim_token.as_deref() {
-        let outcome = release_claim_once(&pool, claim_token).await?;
+        let outcome = release_claim_once(&pool, claim_token)
+            .await
+            .inspect_err(|_| emit_claim_transition_failed())?;
         println!("{}", serde_json::to_string_pretty(&outcome)?);
         return Ok(());
     }
@@ -240,7 +252,8 @@ async fn main() -> Result<()> {
             args.claim_max_amount_raw,
             args.claim_remaining_allowance_raw,
         )
-        .await?;
+        .await
+        .inspect_err(|_| emit_claim_transition_failed())?;
         println!("{}", serde_json::to_string_pretty(&outcome)?);
         return Ok(());
     }
@@ -258,7 +271,18 @@ async fn main() -> Result<()> {
     let mut pending_slot_hints = SlotHintQueue::new(args.realtime_hint_queue_capacity);
     loop {
         drain_available_slot_hints(&mut realtime_hint_receiver, &mut pending_slot_hints);
-        let outcome = project_surplus_lots_once(&pool, args.batch_limit).await?;
+        let outcome = project_surplus_lots_once(&pool, args.batch_limit)
+            .await
+            .inspect_err(|_| {
+                OperationalError::new(
+                    "autodeposit_projection_failed",
+                    "project_autodeposit_surplus_lots",
+                    "autodeposit surplus lot projection failed",
+                )
+                .retryable(true)
+                .recovery_required(true)
+                .emit();
+            })?;
         tracing::info!(
             events_scanned = outcome.events_scanned,
             previous_event_id = outcome.previous_event_id,
@@ -271,7 +295,16 @@ async fn main() -> Result<()> {
         if args.execute_eligible {
             let executor_command = args.executor_command.as_deref().context(
                 "--executor-command or BALANCE_SWEEP_EXECUTOR_COMMAND is required with --execute-eligible",
-            )?;
+            ).inspect_err(|_| {
+                OperationalError::new(
+                    "autodeposit_executor_configuration_missing",
+                    "configure_autodeposit_executor",
+                    "autodeposit executor command is not configured",
+                )
+                .retryable(false)
+                .recovery_required(true)
+                .emit();
+            })?;
             let hinted_slot_ids = pending_slot_hints.drain(args.execute_limit.max(0) as usize);
             let execution_outcome = execute_eligible_targets_once(
                 &pool,
@@ -281,6 +314,36 @@ async fn main() -> Result<()> {
                 &hinted_slot_ids,
             )
             .await?;
+            if execution_outcome.missing_route_policy_slots_failed > 0 {
+                OperationalError::new(
+                    "autodeposit_route_policy_missing",
+                    "validate_autodeposit_route_policy",
+                    "autodeposit slots failed because an active route policy was missing",
+                )
+                .retryable(false)
+                .recovery_required(true)
+                .emit();
+            }
+            if execution_outcome.stale_requested_slots_failed > 0 {
+                OperationalError::new(
+                    "autodeposit_requested_slot_timed_out",
+                    "expire_stale_autodeposit_requests",
+                    "autodeposit requested slots timed out before selection",
+                )
+                .retryable(false)
+                .recovery_required(true)
+                .emit();
+            }
+            if execution_outcome.stale_claims_released > 0 {
+                OperationalError::new(
+                    "autodeposit_stale_claim_released",
+                    "release_stale_autodeposit_claims",
+                    "autodeposit stale selected claims were released",
+                )
+                .retryable(true)
+                .recovery_required(false)
+                .emit();
+            }
             tracing::info!(
                 targets_scanned = execution_outcome.targets_scanned,
                 executions_attempted = execution_outcome.executions_attempted,
@@ -353,6 +416,7 @@ async fn run_autodeposit_realtime_listener(
     sender: mpsc::Sender<i64>,
     reconnect_delay: Duration,
 ) {
+    let mut outage_reported = false;
     if neon_url_looks_pooled(&postgres_url) {
         tracing::warn!(
             "NEON_DATABASE_URL appears to use a pooled -pooler host; LISTEN/NOTIFY requires a direct connection"
@@ -363,6 +427,7 @@ async fn run_autodeposit_realtime_listener(
         let mut listener = match connect_realtime_listener(&postgres_url, &channel).await {
             Ok(listener) => {
                 tracing::info!(channel, "autodeposit realtime listener connected");
+                outage_reported = false;
                 listener
             }
             Err(error) => {
@@ -371,6 +436,10 @@ async fn run_autodeposit_realtime_listener(
                     channel,
                     "autodeposit realtime listener connect failed; timed scans remain active"
                 );
+                if !outage_reported {
+                    emit_realtime_listener_failed();
+                    outage_reported = true;
+                }
                 time::sleep(reconnect_delay).await;
                 continue;
             }
@@ -400,6 +469,10 @@ async fn run_autodeposit_realtime_listener(
                         channel,
                         "autodeposit realtime listener failed; reconnecting while timed scans remain active"
                     );
+                    if !outage_reported {
+                        emit_realtime_listener_failed();
+                        outage_reported = true;
+                    }
                     time::sleep(reconnect_delay).await;
                     break;
                 }
@@ -437,11 +510,19 @@ async fn execute_eligible_targets_once(
     hinted_slot_ids: &[i64],
 ) -> Result<ExecutorOutcome> {
     let missing_route_policy_slots_failed =
-        fail_slots_without_active_earn_route_policy_once(pool, limit).await?;
-    let stale_requested_slots_failed = fail_stale_requested_slots_once(pool, limit).await?;
+        fail_slots_without_active_earn_route_policy_once(pool, limit)
+            .await
+            .inspect_err(|_| emit_execution_scan_failed())?;
+    let stale_requested_slots_failed = fail_stale_requested_slots_once(pool, limit)
+        .await
+        .inspect_err(|_| emit_execution_scan_failed())?;
     let stale_claims_released =
-        release_stale_selected_claims_once(pool, stale_selected_claim_seconds, limit).await?;
-    let targets = load_executable_targets(pool, limit, hinted_slot_ids).await?;
+        release_stale_selected_claims_once(pool, stale_selected_claim_seconds, limit)
+            .await
+            .inspect_err(|_| emit_execution_scan_failed())?;
+    let targets = load_executable_targets(pool, limit, hinted_slot_ids)
+        .await
+        .inspect_err(|_| emit_execution_scan_failed())?;
     let mut outcome = ExecutorOutcome {
         targets_scanned: targets.len(),
         missing_route_policy_slots_failed,
@@ -468,8 +549,16 @@ async fn execute_eligible_targets_once(
                 &claim_token,
             ))
             .status()
-            .with_context(|| {
-                format!("spawn autodeposit executor for target {}", target.target_id)
+            .with_context(|| format!("spawn autodeposit executor for target {}", target.target_id))
+            .inspect_err(|_| {
+                OperationalError::new(
+                    "autodeposit_executor_spawn_failed",
+                    "spawn_autodeposit_executor",
+                    "autodeposit executor process could not be started",
+                )
+                .retryable(true)
+                .recovery_required(true)
+                .emit();
             })?;
         if status.success() {
             outcome.executions_succeeded += 1;
@@ -482,9 +571,50 @@ async fn execute_eligible_targets_once(
                 status = ?status,
                 "autodeposit executor exited unsuccessfully"
             );
+            OperationalError::new(
+                "autodeposit_executor_failed",
+                "execute_eligible_autodeposit_target",
+                "autodeposit executor exited unsuccessfully",
+            )
+            .retryable(false)
+            .recovery_required(true)
+            .emit();
         }
     }
     Ok(outcome)
+}
+
+fn emit_claim_transition_failed() {
+    OperationalError::new(
+        "autodeposit_claim_transition_failed",
+        "transition_autodeposit_claim",
+        "autodeposit claim state transition failed",
+    )
+    .retryable(true)
+    .recovery_required(true)
+    .emit();
+}
+
+fn emit_execution_scan_failed() {
+    OperationalError::new(
+        "autodeposit_execution_scan_failed",
+        "scan_autodeposit_execution_queue",
+        "autodeposit execution queue scan failed",
+    )
+    .retryable(true)
+    .recovery_required(true)
+    .emit();
+}
+
+fn emit_realtime_listener_failed() {
+    OperationalError::new(
+        "autodeposit_realtime_listener_failed",
+        "listen_for_autodeposit_wakeups",
+        "autodeposit realtime listener entered a disconnected state",
+    )
+    .retryable(true)
+    .recovery_required(false)
+    .emit();
 }
 
 async fn fail_slots_without_active_earn_route_policy_once(

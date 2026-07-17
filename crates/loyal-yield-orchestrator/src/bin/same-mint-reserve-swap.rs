@@ -54,6 +54,7 @@ use loyal_actions::{
     KAMINO_MAIN_USDC_RESERVE, SQUADS_SMART_ACCOUNT_PROGRAM_ID, USDC_MINT,
     YIELD_ROUTE_WITHDRAW_ACTION_SEED,
 };
+use loyal_observability::{init_from_env, OperationalError};
 use loyal_yield_orchestrator::sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
     PgPool, Row,
@@ -2059,8 +2060,24 @@ enum PlanBlocker {
 
 #[tokio::main]
 async fn main() {
+    let observability = match init_from_env("loyal-same-mint-reserve-swap") {
+        Ok(observability) => observability,
+        Err(error) => {
+            eprintln!("failed to initialize observability: {error}");
+            std::process::exit(1);
+        }
+    };
     if let Err(error) = run().await {
+        OperationalError::new(
+            "same_mint_route_worker_fatal",
+            "run_same_mint_route_worker",
+            "same-mint route worker stopped after a fatal error",
+        )
+        .retryable(false)
+        .recovery_required(true)
+        .emit();
         eprintln!("{}", same_mint_fatal_error_payload(error.as_ref()));
+        let _ = observability.force_flush();
         std::process::exit(1);
     }
 }
@@ -2928,11 +2945,21 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
                             fallback_request.as_ref(),
                             error,
                         ),
-                        Err(_) => fleet_worker_retry_result(
-                            effective_lease,
-                            fallback_request.as_ref(),
-                            "fleet route task panicked before its fenced transition".to_owned(),
-                        ),
+                        Err(_) => {
+                            OperationalError::new(
+                                "rebalance_worker_task_panicked",
+                                "execute_fleet_rebalance_task",
+                                "fleet rebalance task panicked before its fenced transition",
+                            )
+                            .retryable(true)
+                            .recovery_required(true)
+                            .emit();
+                            fleet_worker_retry_result(
+                                effective_lease,
+                                fallback_request.as_ref(),
+                                "fleet route task panicked before its fenced transition".to_owned(),
+                            )
+                        }
                     }
                 });
             }
@@ -3017,6 +3044,14 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
                     Ok(()) => completed = completed.saturating_add(1),
                     Err(error) => {
                         failed = failed.saturating_add(1);
+                        OperationalError::new(
+                            "rebalance_queue_transition_failed",
+                            "finish_fleet_rebalance_task",
+                            "fleet rebalance task could not persist its durable queue transition",
+                        )
+                        .retryable(true)
+                        .recovery_required(true)
+                        .emit();
                         eprintln!(
                             "{}",
                             serde_json::to_string(&json!({
@@ -3030,6 +3065,14 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
             }
             Err(error) => {
                 failed = failed.saturating_add(1);
+                OperationalError::new(
+                    "rebalance_worker_task_failed",
+                    "join_fleet_rebalance_task",
+                    "fleet rebalance task failed to join",
+                )
+                .retryable(true)
+                .recovery_required(true)
+                .emit();
                 eprintln!(
                     "{}",
                     serde_json::to_string(&json!({
@@ -3234,6 +3277,14 @@ async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box
                     }
                     let redacted_error = redacted_external_error(&error);
                     if first_outer_task_error.is_none() {
+                        OperationalError::new(
+                            "rebalance_reconciler_task_failed",
+                            "reconcile_fleet_rebalance_submission",
+                            "fleet rebalance reconciler task failed",
+                        )
+                        .retryable(true)
+                        .recovery_required(true)
+                        .emit();
                         eprintln!(
                             "{}",
                             json!({
@@ -3259,6 +3310,14 @@ async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box
                             Err(error) => {
                                 outer_task_fenced_deferral_failure_count =
                                     outer_task_fenced_deferral_failure_count.saturating_add(1);
+                                OperationalError::new(
+                                    "rebalance_recovery_transition_failed",
+                                    "defer_failed_rebalance_reconciliation",
+                                    "fleet rebalance recovery transition failed",
+                                )
+                                .retryable(true)
+                                .recovery_required(true)
+                                .emit();
                                 eprintln!(
                                     "{}",
                                     json!({
@@ -3277,6 +3336,14 @@ async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box
                     outer_task_join_failure_count = outer_task_join_failure_count.saturating_add(1);
                     let redacted_error = redacted_external_error(&error.to_string());
                     if first_outer_task_error.is_none() {
+                        OperationalError::new(
+                            "rebalance_reconciler_task_failed",
+                            "join_fleet_rebalance_reconciler_task",
+                            "fleet rebalance reconciler task failed to join",
+                        )
+                        .retryable(true)
+                        .recovery_required(true)
+                        .emit();
                         eprintln!(
                             "{}",
                             json!({
@@ -3476,6 +3543,14 @@ async fn advance_fleet_position_sweep(
             Err(error) => {
                 let error = redacted_external_error(&error.to_string());
                 coordinator.record_initialization_failure(sweep_id, error.clone());
+                OperationalError::new(
+                    "rebalance_position_sweep_failed",
+                    "initialize_rebalance_position_sweep",
+                    "fleet rebalance position sweep failed to initialize",
+                )
+                .retryable(true)
+                .recovery_required(false)
+                .emit();
                 eprintln!(
                     "{}",
                     json!({
@@ -3551,6 +3626,14 @@ async fn advance_fleet_position_sweep(
                 }
                 FleetPositionSweepTaskOutcome::Failed(error) => {
                     run.failed = run.failed.saturating_add(1);
+                    OperationalError::new(
+                        "rebalance_position_sweep_failed",
+                        "refresh_rebalance_vault_position",
+                        "fleet rebalance position sweep failed for a vault",
+                    )
+                    .retryable(true)
+                    .recovery_required(false)
+                    .emit();
                     eprintln!(
                         "{}",
                         json!({

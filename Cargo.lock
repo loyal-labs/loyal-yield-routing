@@ -715,6 +715,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "loyal-observability",
  "loyal-yield-realtime-core",
  "serde",
  "serde_json",
@@ -722,7 +723,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -3216,6 +3216,7 @@ dependencies = [
  "futures-util",
  "klend-interface",
  "loyal-actions",
+ "loyal-observability",
  "loyal-yield-router",
  "num-bigint 0.4.6",
  "num-traits",
