@@ -2060,6 +2060,16 @@ enum PlanBlocker {
 
 #[tokio::main]
 async fn main() {
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    match run_startup_probe(&args) {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("{}", same_mint_fatal_error_payload(error.as_ref()));
+            std::process::exit(1);
+        }
+    }
+
     let observability = match init_from_env("loyal-same-mint-reserve-swap") {
         Ok(observability) => observability,
         Err(error) => {
@@ -2067,7 +2077,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    if let Err(error) = run().await {
+    if let Err(error) = run(args).await {
         OperationalError::new(
             "same_mint_route_worker_fatal",
             "run_same_mint_route_worker",
@@ -2082,19 +2092,18 @@ async fn main() {
     }
 }
 
-async fn run() -> Result<(), Box<dyn Error>> {
-    let args = env::args().skip(1).collect::<Vec<_>>();
+fn run_startup_probe(args: &[String]) -> Result<bool, Box<dyn Error>> {
     if matches!(
-        args.as_slice(),
+        args,
         [flag] if flag == "--fleet-controlled-transaction-probe"
     ) {
         println!(
             "{}",
             serde_json::to_string(&fleet_controlled_transaction_probe()?)?
         );
-        return Ok(());
+        return Ok(true);
     }
-    let role_probe = match args.as_slice() {
+    let role_probe = match args {
         [fleet_worker, lane, role_probe]
             if fleet_worker == "--fleet-worker"
                 && lane == "revalidate"
@@ -2118,8 +2127,13 @@ async fn run() -> Result<(), Box<dyn Error>> {
     };
     if let Some(role) = role_probe {
         println!("{}", fleet_worker_role_probe(role));
-        return Ok(());
+        return Ok(true);
     }
+
+    Ok(false)
+}
+
+async fn run(args: Vec<String>) -> Result<(), Box<dyn Error>> {
     if matches!(
         args.as_slice(),
         [flag] if flag == "--fleet-rpc-hot-path-model"
