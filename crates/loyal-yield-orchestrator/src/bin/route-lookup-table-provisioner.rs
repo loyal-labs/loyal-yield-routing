@@ -4,9 +4,13 @@
 //! extend reusable route lookup tables. Dry-run is the default. A signer is
 //! loaded only after `--execute` has passed all CLI and control-plane gates.
 
-use std::{collections::BTreeSet, env, error::Error, fmt, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeSet, env, error::Error, fmt, process::ExitCode, str::FromStr, sync::Arc,
+    time::Duration,
+};
 
 use chrono::Utc;
+use loyal_observability::{init_from_env, OperationalError};
 use loyal_yield_orchestrator::{
     finalized_shared_table_bundle_hash,
     fleet_orchestration::{fleet_worker_role_probe, FleetWorkerRole},
@@ -418,30 +422,48 @@ struct OperationReport {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     if env::args().skip(1).eq(["--role-probe"]) {
         println!(
             "{}",
             fleet_worker_role_probe(FleetWorkerRole::PriorityProvisioner)
         );
-        return;
+        return ExitCode::SUCCESS;
     }
     if env::args()
         .skip(1)
         .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
     {
         println!("{}", usage());
-        return;
+        return ExitCode::SUCCESS;
     }
-    if let Err(error) = run().await {
-        eprintln!(
-            "{}",
-            json!({
-                "event": "alt_provisioner_fatal",
-                "error": redacted_external_error(&error.to_string()),
-            })
-        );
-        std::process::exit(1);
+    let _observability = match init_from_env("loyal-route-lookup-table-provisioner") {
+        Ok(observability) => observability,
+        Err(error) => {
+            eprintln!("failed to initialize observability: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            OperationalError::new(
+                "alt_provisioner_fatal",
+                "run_alt_provisioner",
+                "ALT provisioner stopped after a fatal error",
+            )
+            .retryable(true)
+            .recovery_required(true)
+            .emit();
+            eprintln!(
+                "{}",
+                json!({
+                    "event": "alt_provisioner_fatal",
+                    "error": redacted_external_error(&error.to_string()),
+                })
+            );
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -745,6 +767,16 @@ async fn finish_operation_task(
                     &detail,
                 )
                 .await?;
+            if recorded.operation_state == LookupTableOperationStatus::PermanentFailure {
+                OperationalError::new(
+                    "alt_operation_permanently_failed",
+                    "execute_alt_operation",
+                    "ALT operation reached permanent failure",
+                )
+                .retryable(false)
+                .recovery_required(true)
+                .emit();
+            }
             println!(
                 "{}",
                 json!({
@@ -1108,7 +1140,7 @@ async fn plan_next_provisioning_request(
         }
         Err(error) => {
             let detail = safe_error(&error.to_string());
-            client
+            let failed_request = client
                 .advance_lookup_table_provisioning_request(
                     request.id,
                     &lease,
@@ -1118,6 +1150,16 @@ async fn plan_next_provisioning_request(
                     Some(&detail),
                 )
                 .await?;
+            if failed_request.attempt_count == options.max_attempts {
+                OperationalError::new(
+                    "alt_request_planning_stalled",
+                    "plan_alt_provisioning_request",
+                    "ALT provisioning request planning failed repeatedly",
+                )
+                .retryable(true)
+                .recovery_required(true)
+                .emit();
+            }
             println!(
                 "{}",
                 json!({
@@ -1986,6 +2028,14 @@ async fn reconcile_existing_operation(
                     },
                 )
                 .await?;
+            OperationalError::new(
+                "alt_operation_permanently_failed",
+                "reconcile_alt_operation",
+                "ALT operation reached permanent failure",
+            )
+            .retryable(false)
+            .recovery_required(true)
+            .emit();
             "permanent_failure"
         }
     };

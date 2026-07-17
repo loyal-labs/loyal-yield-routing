@@ -3,6 +3,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{BufWriter, Write},
     path::Path,
+    process::ExitCode,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -29,13 +30,13 @@ use kamino_reserve_monitor::{
     ReserveDiff, ReserveSnapshot,
 };
 use klend_interface::KLEND_PROGRAM_ID;
+use loyal_observability::{init_from_env, OperationalError};
 use solana_sdk::pubkey::Pubkey;
 use tokio::{
     sync::mpsc,
     task::JoinHandle,
     time::{Instant, MissedTickBehavior},
 };
-use tracing_subscriber::EnvFilter;
 
 #[derive(Clone, Copy, Debug)]
 struct ProcessingConfig {
@@ -104,15 +105,30 @@ impl OwnedReserveUpdate {
 }
 
 #[tokio::main]
-async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+async fn main() -> ExitCode {
+    let _observability = match init_from_env("loyal-kamino-reserve-monitor") {
+        Ok(observability) => observability,
+        Err(error) => {
+            eprintln!("failed to initialize observability: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
 
-    if let Err(err) = run().await {
-        tracing::error!(error = %format!("{err:#}"), "fatal");
-        eprintln!("fatal: {err:#}");
-        std::process::exit(1);
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            OperationalError::new(
+                "kamino_monitor_fatal",
+                "run_monitor",
+                "Kamino reserve monitor stopped after a fatal error",
+            )
+            .retryable(true)
+            .recovery_required(true)
+            .emit();
+            tracing::error!(error = %format!("{error:#}"), "fatal");
+            eprintln!("fatal: {error:#}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -461,6 +477,7 @@ async fn run_event_loop(
     let mut confirmed_states_verified = 0_u64;
     let mut catalog_refreshes_completed = 0_u64;
     let mut catalog_refreshes_failed = 0_u64;
+    let mut permanent_subscription_failure_reported = false;
 
     while running.load(Ordering::Relaxed) {
         tokio::select! {
@@ -548,6 +565,17 @@ async fn run_event_loop(
                     }
                     AccountUpdateEvent::Failed { reserve, attempts, error } => {
                         subscription_states.insert(reserve, SubscriptionRuntimeState::Failed);
+                        if !permanent_subscription_failure_reported {
+                            OperationalError::new(
+                                "kamino_subscription_permanently_failed",
+                                "monitor_reserve_subscription",
+                                "Kamino reserve subscription exhausted its reconnect attempts",
+                            )
+                            .retryable(true)
+                            .recovery_required(true)
+                            .emit();
+                            permanent_subscription_failure_reported = true;
+                        }
                         tracing::error!(%reserve, attempts, %error, "subscription failed permanently");
                     }
                     AccountUpdateEvent::Stopped { reserve } => {

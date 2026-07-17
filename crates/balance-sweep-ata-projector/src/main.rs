@@ -6,6 +6,7 @@ use balance_sweep_ata_observations::{
     TimescaleAtaObservationSink, TimescaleAtaStream,
 };
 use clap::Parser;
+use loyal_observability::{init_from_env, OperationalError};
 use loyal_yield_orchestrator::{
     OrchestratorConfig, OrchestratorError, OrchestratorStore, ProjectedWalletAtaBalanceUpdateInput,
 };
@@ -36,9 +37,22 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    let _observability = init_from_env("loyal-balance-sweep-ata-projector")?;
+    if let Err(error) = run().await {
+        OperationalError::new(
+            "balance_sweep_ata_projector_fatal",
+            "run_balance_sweep_ata_projector",
+            "Balance sweep ATA projector stopped after a fatal error",
+        )
+        .retryable(true)
+        .recovery_required(true)
+        .emit();
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn run() -> Result<()> {
     let args = Args::parse();
     let timescale = TimescaleAtaObservationSink::connect(
         TimescaleAtaConfig::new(args.timescaledb_url).with_stream(args.ata_stream),

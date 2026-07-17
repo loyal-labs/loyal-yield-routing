@@ -20,6 +20,7 @@ use axum::{
     routing::get,
     Router,
 };
+use loyal_observability::{init_from_env, OperationalError};
 use loyal_yield_realtime_core::{
     cleanup_expired_events_batch, event_matches_claims, fetch_events_after,
     fetch_matching_events_after, invalidation_json_for_row, latest_event_id, min_event_id,
@@ -76,6 +77,7 @@ struct AppState {
     clients: Arc<RwLock<HashMap<u64, ClientHandle>>>,
     next_client_id: Arc<AtomicU64>,
     listener_connected: Arc<AtomicBool>,
+    admission_database_failure_reported: Arc<AtomicBool>,
     broadcast_cursor: Arc<AtomicI64>,
     metrics: Arc<Metrics>,
 }
@@ -158,6 +160,22 @@ impl Drop for ConnectionGuard {
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
+    let _observability = init_from_env("loyal-yield-realtime")?;
+    if let Err(error) = run().await {
+        OperationalError::new(
+            "realtime_service_fatal",
+            "run_realtime_service",
+            "Yield realtime service stopped after a fatal error",
+        )
+        .retryable(true)
+        .recovery_required(true)
+        .emit();
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn run() -> Result<(), BoxError> {
     let config = Arc::new(Config::from_env()?);
     reject_pooled_connection_url(&config.database_url)?;
 
@@ -172,6 +190,7 @@ async fn main() -> Result<(), BoxError> {
         clients: Arc::new(RwLock::new(HashMap::new())),
         next_client_id: Arc::new(AtomicU64::new(1)),
         listener_connected: Arc::new(AtomicBool::new(false)),
+        admission_database_failure_reported: Arc::new(AtomicBool::new(false)),
         broadcast_cursor: Arc::new(AtomicI64::new(initial_cursor)),
         metrics: Arc::new(Metrics::default()),
     };
@@ -469,8 +488,26 @@ async fn events(
     }
 
     let high_water = match latest_event_id(&state.pool).await {
-        Ok(value) => value,
+        Ok(value) => {
+            state
+                .admission_database_failure_reported
+                .store(false, Ordering::Relaxed);
+            value
+        }
         Err(error) => {
+            if !state
+                .admission_database_failure_reported
+                .swap(true, Ordering::Relaxed)
+            {
+                OperationalError::new(
+                    "realtime_admission_database_failed",
+                    "load_realtime_admission_high_water",
+                    "Yield realtime admission could not read the event high-water mark",
+                )
+                .retryable(true)
+                .recovery_required(false)
+                .emit();
+            }
             eprintln!("realtime admission high-water lookup failed: {error}");
             state.clients.write().await.remove(&client_id);
             decrement_active(&state.metrics, claims.client_kind);
@@ -641,9 +678,25 @@ fn decrement_active(metrics: &Metrics, client_kind: RealtimeClientKind) {
 
 async fn run_listener_loop(state: AppState) {
     let mut cursor = state.broadcast_cursor.load(Ordering::Relaxed);
+    let mut outage_reported = false;
     loop {
         state.listener_connected.store(false, Ordering::Relaxed);
         if let Err(error) = run_listener_session(&state, &mut cursor).await {
+            let had_connected = state.listener_connected.swap(false, Ordering::Relaxed);
+            if had_connected {
+                outage_reported = false;
+            }
+            if !outage_reported {
+                OperationalError::new(
+                    "realtime_listener_unavailable",
+                    "listen_for_realtime_events",
+                    "Yield realtime listener session is unavailable",
+                )
+                .retryable(true)
+                .recovery_required(false)
+                .emit();
+                outage_reported = true;
+            }
             state
                 .metrics
                 .listener_reconnects

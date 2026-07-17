@@ -20,10 +20,13 @@ use balance_sweep_ata_monitor::{
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
 use loyal_actions::USDC_MINT;
+use loyal_observability::{init_from_env, OperationalError};
 use loyal_yield_orchestrator::{OrchestratorConfig, OrchestratorError, OrchestratorStore};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
 use tokio::{sync::mpsc, task::JoinHandle, time};
+
+const EARN_APY_FAILURE_REPORT_THRESHOLD: u32 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum UpdateSourceKind {
@@ -101,9 +104,22 @@ impl MonitorSession {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    let _observability = init_from_env("loyal-balance-sweep-ata-monitor")?;
+    if let Err(error) = run().await {
+        OperationalError::new(
+            "balance_sweep_ata_monitor_fatal",
+            "run_balance_sweep_ata_monitor",
+            "Balance sweep ATA monitor stopped after a fatal error",
+        )
+        .retryable(true)
+        .recovery_required(true)
+        .emit();
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn run() -> Result<()> {
     let args = Args::parse();
     tracing::info!(
         cluster = %args.cluster,
@@ -196,10 +212,12 @@ async fn run_earn_apy_refresh_loop(
     refresher: EarnApySnapshotRefresher,
     refresh_interval: Duration,
 ) {
+    let mut consecutive_failures = 0_u32;
     loop {
         let now = Utc::now();
         match refresher.refresh(now).await {
             Ok(outcome) => {
+                consecutive_failures = 0;
                 tracing::info!(
                     generated_at = %outcome.generated_at,
                     profiles = outcome.profiles,
@@ -210,6 +228,17 @@ async fn run_earn_apy_refresh_loop(
                 );
             }
             Err(error) => {
+                consecutive_failures = consecutive_failures.saturating_add(1);
+                if consecutive_failures == EARN_APY_FAILURE_REPORT_THRESHOLD {
+                    OperationalError::new(
+                        "earn_apy_refresh_stalled",
+                        "refresh_earn_apy_snapshots",
+                        "Earn APY snapshot refresh failed repeatedly",
+                    )
+                    .retryable(true)
+                    .recovery_required(true)
+                    .emit();
+                }
                 tracing::warn!(error = %error, "failed to refresh hourly Earn APY snapshots");
             }
         }
@@ -399,6 +428,14 @@ async fn stop_session(session: MonitorSession) {
 }
 
 async fn log_finished_session(session: MonitorSession) {
+    OperationalError::new(
+        "balance_sweep_ata_session_failed",
+        "run_balance_sweep_ata_session",
+        "Balance sweep ATA monitor session exited unexpectedly",
+    )
+    .retryable(true)
+    .recovery_required(false)
+    .emit();
     tracing::warn!("balance sweep ATA monitor session exited before refresh");
     session.running.store(false, Ordering::Relaxed);
 

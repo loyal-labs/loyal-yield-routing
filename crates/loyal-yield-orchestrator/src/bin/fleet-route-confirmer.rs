@@ -18,6 +18,7 @@ use std::{
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use chrono::{Duration as ChronoDuration, Utc};
 use futures_util::StreamExt;
+use loyal_observability::{init_from_env, OperationalError};
 use loyal_yield_orchestrator::{
     fleet_orchestration::{
         classify_authoritative_signature_status, fleet_worker_role_probe,
@@ -512,9 +513,28 @@ impl Drop for SignatureHintArm {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    if env::args().skip(1).eq(["--role-probe"]) {
+        println!("{}", fleet_worker_role_probe(FleetWorkerRole::Confirmer));
+        return ExitCode::SUCCESS;
+    }
+    let _observability = match init_from_env("loyal-fleet-route-confirmer") {
+        Ok(observability) => observability,
+        Err(error) => {
+            eprintln!("failed to initialize observability: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
+            OperationalError::new(
+                "fleet_route_confirmer_fatal",
+                "run_fleet_route_confirmer",
+                "Fleet route confirmer stopped after a fatal error",
+            )
+            .retryable(true)
+            .recovery_required(true)
+            .emit();
             eprintln!(
                 "{}",
                 json!({
@@ -529,10 +549,6 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<(), Box<dyn Error>> {
-    if env::args().skip(1).eq(["--role-probe"]) {
-        println!("{}", fleet_worker_role_probe(FleetWorkerRole::Confirmer));
-        return Ok(());
-    }
     let options = parse_options()?;
     validate_rpc_endpoint(&options.rpc_url)
         .map_err(|error| format!("invalid fleet route RPC endpoint: {error}"))?;
@@ -585,6 +601,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let mut wakeup_listener =
         DurablePgWakeupListener::new("loyal_yield_route_confirmation_wakeup")?;
     let broadcast_limit = Arc::new(Semaphore::new(options.broadcast_concurrency));
+    let mut poll_error_reported = false;
+    let mut item_errors_reported = false;
 
     loop {
         let started = Instant::now();
@@ -600,12 +618,39 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .await
         {
             Ok(mut health) => {
+                poll_error_reported = false;
+                if health.item_errors > 0 {
+                    if !item_errors_reported {
+                        OperationalError::new(
+                            "fleet_route_confirmer_items_deferred_after_error",
+                            "confirm_signed_route_submissions",
+                            "Fleet route confirmer deferred submissions after item failures",
+                        )
+                        .retryable(true)
+                        .recovery_required(true)
+                        .emit();
+                        item_errors_reported = true;
+                    }
+                } else {
+                    item_errors_reported = false;
+                }
                 health.elapsed_milliseconds = started.elapsed().as_millis();
                 claimed = health.claimed;
                 health.wakeup_listener_connected = wakeup_listener.is_connected();
                 println!("{}", serde_json::to_string(&health)?);
             }
             Err(error) => {
+                if !options.once && !poll_error_reported {
+                    OperationalError::new(
+                        "fleet_route_confirmer_poll_failed",
+                        "poll_signed_route_submissions",
+                        "Fleet route confirmer poll failed",
+                    )
+                    .retryable(true)
+                    .recovery_required(true)
+                    .emit();
+                    poll_error_reported = true;
+                }
                 println!(
                     "{}",
                     json!({

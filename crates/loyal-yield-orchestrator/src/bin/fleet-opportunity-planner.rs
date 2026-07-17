@@ -6,6 +6,7 @@ use std::{
 };
 
 use chrono::{Duration as ChronoDuration, Utc};
+use loyal_observability::{init_from_env, OperationalError};
 use loyal_yield_orchestrator::fleet_orchestration::{
     code_owned_stablecoin_valuations, fleet_worker_role_probe, observe_fleet_opportunities,
     observe_fleet_opportunities_for_vaults, observe_fleet_opportunities_without_queue_schema,
@@ -1071,6 +1072,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
         );
         return Ok(());
     }
+    let _observability = init_from_env("loyal-fleet-opportunity-planner")?;
+    if let Err(error) = run().await {
+        OperationalError::new(
+            "fleet_opportunity_planner_fatal",
+            "run_fleet_opportunity_planner",
+            "Fleet opportunity planner stopped after a fatal error",
+        )
+        .retryable(true)
+        .recovery_required(true)
+        .emit();
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn run() -> Result<(), Box<dyn Error>> {
     let options = parse_options()?;
     if options.benchmark {
         let output = run_benchmark(&options)?;
