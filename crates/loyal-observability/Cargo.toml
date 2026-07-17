@@ -2,15 +2,16 @@
 name = "loyal-observability"
 version = "0.1.0"
 edition = "2021"
-description = "Privacy-safe operational error reporting for Loyal Rust services"
+description = "Privacy-safe OTLP logs, metrics, and traces for Loyal Rust services"
 
 [dependencies]
 hex = "0.4"
 hmac = "0.12"
-opentelemetry = { version = "0.32", default-features = false, features = ["logs"] }
+opentelemetry = { version = "0.32", default-features = false, features = ["logs", "metrics", "trace"] }
 opentelemetry-appender-tracing = "0.32"
-opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "logs", "reqwest-blocking-client", "reqwest-rustls-webpki-roots"] }
-opentelemetry_sdk = { version = "0.32", default-features = false, features = ["logs"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "logs", "metrics", "reqwest-blocking-client", "reqwest-rustls-webpki-roots", "trace"] }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["logs", "metrics", "trace"] }
 sha2 = "0.10"
 tracing = "0.1"
+tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }

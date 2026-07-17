@@ -1,58 +1,255 @@
 # loyal-observability
 
-A shared crate for sending privacy-safe operational errors from Loyal Rust services to an OTLP-compatible backend, currently ClickStack.
+A shared crate for exporting privacy-safe logs, metrics, and traces from Loyal Rust services to an OTLP-compatible backend, currently ClickStack.
 
-Current scope: the crate is part of the workspace, but no binary uses it yet. This change does not modify Render configuration, environment variables, or ClickStack. Production worker behavior remains unchanged.
+Existing integrations initialize this crate for operational error logs. This crate-only change does not add metrics or workflow spans to any binary, and it does not change Render or ClickStack configuration.
 
-## Exported data
+## Signals
 
-The OTLP layer accepts only events with the `loyal.observability.operational_error` target emitted by `OperationalError::emit`. Other `tracing` events continue to use the local formatting layer (`stdout`) and are not exported remotely.
+| ClickStack data source | Crate API | Exported data |
+| --- | --- | --- |
+| Logs | `OperationalError` | Explicit operational failures with stable codes and optional pseudonymous actor correlation |
+| Metrics | `WorkflowMetrics` | Low-cardinality execution counts and duration histograms |
+| Traces | `WorkflowSpan` | Nested workflow operations with duration, outcome, and error status |
 
-Each event contains a small, fixed set of fields:
+Regular `tracing` events and spans are not exported remotely. The OTLP layers accept only the bounded targets created by this crate. All regular events still use the local formatting layer controlled by `RUST_LOG`.
+
+Metrics and traces are separately opt-in so an existing log-only deployment does not gain unexpected telemetry volume.
+
+## Initialization
+
+Initialization must replace the binary's existing `tracing_subscriber::fmt().init()` call:
+
+```rust
+use loyal_observability::init_from_env;
+
+fn main() -> anyhow::Result<()> {
+    let observability = init_from_env("loyal-yield-orchestrator")?;
+
+    // Keep the guard alive until shutdown.
+    run_service(&observability)?;
+
+    observability.shutdown()?;
+    Ok(())
+}
+```
+
+The guard owns all enabled OpenTelemetry providers. Its `Drop` implementation shuts them down and flushes queued telemetry. Controlled shutdown flows can call `force_flush()` or `shutdown()` explicitly.
+
+## Operational error logs
+
+```rust
+use loyal_observability::OperationalError;
+
+OperationalError::new(
+    "route_execution_failed",
+    "execute_route",
+    "yield route execution failed",
+)
+.retryable(true)
+.recovery_required(false)
+.emit();
+```
+
+Each operational event contains:
 
 - `error_code`: a stable machine-readable code;
 - `operation`: a stable operation name;
 - `message`: a short operator-facing description;
 - `retryable`: whether retrying is expected to be safe;
-- `recovery_required`: whether an operator or repair flow must take action.
+- `recovery_required`: whether an operator or repair flow must take action;
 - `loyal.actor.id`: an optional pseudonymous actor ID.
 
-The `error_code`, `operation`, and `message` fields accept only `&'static str`. This is intentional: runtime error text, wallet addresses, transaction payloads, request or response bodies, SQL, and secrets cannot be passed accidentally.
+The `error_code`, `operation`, and `message` fields accept only `&'static str`. Runtime errors and user data cannot be passed accidentally.
 
-Do not include the following data in an operational error:
+## Workflow metrics
 
-- private keys, tokens, or authorization header values;
-- raw wallet or user identifiers;
-- transactions, account data, or request and response bodies;
-- complete `anyhow::Error` or `Debug` output;
-- SQL or query parameter values.
+`WorkflowMetrics` exports two instruments:
 
-## Future binary integration
+| Metric | Type | Unit |
+| --- | --- | --- |
+| `loyal.workflow.executions` | Counter | `{execution}` |
+| `loyal.workflow.duration` | Histogram | `s` |
 
-Initialization must replace the binary's existing `tracing_subscriber::fmt().init()` call:
+Both instruments use only these bounded attributes:
+
+- `loyal.workflow.name`;
+- `loyal.workflow.operation`;
+- `loyal.workflow.outcome`: `succeeded`, `failed`, or `skipped`.
+
+Actor IDs are deliberately excluded from metrics because they would create a high-cardinality dimension.
 
 ```rust
-use loyal_observability::{init_from_env, OperationalError};
+use std::time::Instant;
 
-fn main() -> anyhow::Result<()> {
-    let _observability = init_from_env("loyal-yield-orchestrator")?;
+use loyal_observability::{ObservabilityGuard, WorkflowOutcome};
 
-    // ...
+fn run_reconciliation(observability: &ObservabilityGuard) -> anyhow::Result<()> {
+    let started_at = Instant::now();
+    let result = reconcile_accounts();
+    let outcome = if result.is_ok() {
+        WorkflowOutcome::Succeeded
+    } else {
+        WorkflowOutcome::Failed
+    };
 
-    OperationalError::new(
-        "route_execution_failed",
-        "execute_route",
-        "yield route execution failed",
-    )
-    .retryable(true)
-    .recovery_required(false)
-    .emit();
+    observability.workflow_metrics().record_execution(
+        "reconcile",
+        "reconcile.run",
+        outcome,
+        started_at.elapsed(),
+    );
 
-    Ok(())
+    result
 }
+
+# fn reconcile_accounts() -> anyhow::Result<()> { Ok(()) }
 ```
 
-The guard must remain alive until the process finishes shutting down. Its `Drop` implementation shuts down the provider and flushes queued records. Controlled shutdown flows can also call `force_flush()` or `shutdown()` explicitly.
+The returned metrics handle is a no-op when metrics are disabled, so call sites do not need their own feature branch.
+
+## Workflow traces
+
+`WorkflowSpan` creates only privacy-safe spans with stable workflow and operation names. It records duration automatically when the span closes. Use `succeeded()`, `skipped()`, `failed()`, or `finish_from_result()` once before closing the span. `finish_from_result()` inspects only whether a result succeeded and never formats or exports the contained error.
+
+### Synchronous nesting
+
+Create a child while its parent is entered:
+
+```rust
+use loyal_observability::WorkflowSpan;
+
+let reconciliation = WorkflowSpan::new("reconcile", "reconcile.run");
+let _reconciliation_guard = reconciliation.enter();
+
+let result = (|| -> anyhow::Result<()> {
+    {
+        let load_expected = WorkflowSpan::new("reconcile", "reconcile.load_expected");
+        let _load_guard = load_expected.enter();
+        let result = load_expected_balances();
+        load_expected.finish_from_result(&result, "load_expected_failed");
+        result?;
+    }
+
+    {
+        let compare = WorkflowSpan::new("reconcile", "reconcile.compare_balances");
+        let _compare_guard = compare.enter();
+        let result = compare_balances();
+        compare.finish_from_result(&result, "balance_comparison_failed");
+        result?;
+    }
+
+    Ok(())
+})();
+
+reconciliation.finish_from_result(&result, "reconcile_failed");
+result?;
+
+# fn load_expected_balances() -> anyhow::Result<()> { Ok(()) }
+# fn compare_balances() -> anyhow::Result<()> { Ok(()) }
+# Ok::<(), anyhow::Error>(())
+```
+
+### Async auto-deposit chain
+
+Use `tracing::Instrument` to keep the parent active while an async future runs. Create child spans inside the instrumented future so ClickStack receives one connected trace:
+
+```rust
+use std::time::Instant;
+
+use loyal_observability::{
+    ObservabilityGuard, WorkflowSpan,
+};
+use tracing::Instrument;
+
+async fn run_autodeposit(
+    observability: &ObservabilityGuard,
+) -> anyhow::Result<()> {
+    let started_at = Instant::now();
+    let run = WorkflowSpan::new("autodeposit", "autodeposit.run");
+
+    let result = async {
+        let evaluate = WorkflowSpan::new(
+            "autodeposit",
+            "autodeposit.evaluate_candidate",
+        );
+        let candidate_result = evaluate_candidate()
+            .instrument(evaluate.span().clone())
+            .await;
+        evaluate.finish_from_result(
+            &candidate_result,
+            "candidate_evaluation_failed",
+        );
+        let candidate = candidate_result?;
+
+        let submit = WorkflowSpan::new(
+            "autodeposit",
+            "autodeposit.submit_transaction",
+        );
+        let submit_result = submit_transaction(candidate)
+            .instrument(submit.span().clone())
+            .await;
+        submit.finish_from_result(
+            &submit_result,
+            "transaction_submission_failed",
+        );
+        submit_result?;
+
+        let confirm = WorkflowSpan::new(
+            "autodeposit",
+            "autodeposit.confirm_transaction",
+        );
+        let confirm_result = confirm_transaction()
+            .instrument(confirm.span().clone())
+            .await;
+        confirm.finish_from_result(
+            &confirm_result,
+            "transaction_confirmation_failed",
+        );
+        confirm_result?;
+
+        Ok(())
+    }
+    .instrument(run.span().clone())
+    .await;
+
+    let outcome = run.finish_from_result(&result, "autodeposit_failed");
+
+    observability.workflow_metrics().record_execution(
+        "autodeposit",
+        "autodeposit.run",
+        outcome,
+        started_at.elapsed(),
+    );
+
+    result
+}
+
+# async fn evaluate_candidate() -> anyhow::Result<u64> { Ok(1) }
+# async fn submit_transaction(_: u64) -> anyhow::Result<()> { Ok(()) }
+# async fn confirm_transaction() -> anyhow::Result<()> { Ok(()) }
+```
+
+This produces a trace shaped like:
+
+```text
+autodeposit.run
+├── autodeposit.evaluate_candidate
+├── autodeposit.submit_transaction
+└── autodeposit.confirm_transaction
+```
+
+A reconciliation trace can use the same pattern:
+
+```text
+reconcile.run
+├── reconcile.load_expected
+├── reconcile.load_observed
+├── reconcile.compare_balances
+└── reconcile.apply_repair
+```
+
+Record only stable error codes with `WorkflowSpan::failed`. Do not pass formatted runtime errors or payloads as the error code.
 
 ## Pseudonymous wallet correlation
 
@@ -67,45 +264,77 @@ HMAC-SHA256(
 actor:v1:<64 lowercase hex characters>
 ```
 
-This is pseudonymization, not encryption or complete anonymization. The same wallet, environment, and secret produce the same ID. Changing the environment or rotating the secret produces a different ID. The original wallet address is never attached to the operational event.
+This is pseudonymization, not encryption or complete anonymization. The original wallet address is never attached to telemetry.
 
 ```rust
 use loyal_observability::{
-    derive_observability_actor_id_from_env, OperationalError,
+    derive_observability_actor_id_from_env, OperationalError, WorkflowSpan,
 };
-
-let mut event = OperationalError::new(
-    "route_execution_failed",
-    "execute_route",
-    "yield route execution failed",
-);
 
 if let Some(actor_id) = derive_observability_actor_id_from_env(
     "production",
     wallet_address,
 ) {
-    event = event.actor_id(actor_id);
+    OperationalError::new(
+        "autodeposit_failed",
+        "autodeposit.run",
+        "auto-deposit workflow failed",
+    )
+    .actor_id(actor_id.clone())
+    .emit();
+
+    let trace = WorkflowSpan::new("autodeposit", "autodeposit.run")
+        .actor_id(&actor_id);
+    // Use the trace span here.
 }
 
-event.emit();
+# let wallet_address = "11111111111111111111111111111111";
 ```
 
-Only surrounding whitespace is removed from the wallet address. Its case is preserved because Solana base58 addresses are case-sensitive. If the secret is missing or shorter than 32 characters, or if the environment or wallet is empty, derivation returns `None` and `loyal.actor.id` is omitted.
+Only surrounding whitespace is removed from the wallet address. Case is preserved because Solana base58 addresses are case-sensitive. If the secret is missing or shorter than 32 characters, or if the environment or wallet is empty, derivation returns `None` and `loyal.actor.id` is omitted.
+
+## Privacy and cardinality rules
+
+Do not include the following data in logs, metric attributes, span attributes, names, or statuses:
+
+- private keys, tokens, or authorization header values;
+- raw wallet or user identifiers;
+- transaction payloads, account data, or request and response bodies;
+- complete `anyhow::Error` or `Debug` output;
+- SQL or query parameter values.
+
+Use stable workflow names, operation names, outcomes, and error codes. Do not use transaction signatures, wallet addresses, route IDs, or timestamps as metric attributes.
 
 ## Environment variables
 
-The crate is disabled by default.
+All remote export is disabled by default. Metrics and traces require the master flag and their own signal flag.
 
 | Variable | Purpose |
 | --- | --- |
-| `LOYAL_OBSERVABILITY_ENABLED` | Enables the OTLP exporter when set to `true` or `1` |
+| `LOYAL_OBSERVABILITY_ENABLED` | Enables operational error logs and acts as the master exporter switch |
+| `LOYAL_OBSERVABILITY_METRICS_ENABLED` | Enables workflow metrics when the master switch is enabled |
+| `LOYAL_OBSERVABILITY_TRACES_ENABLED` | Enables workflow traces when the master switch is enabled |
 | `LOYAL_OBSERVABILITY_ENVIRONMENT` | Sets `deployment.environment.name`; defaults to `unknown` |
 | `LOYAL_OBSERVABILITY_SERVICE_VERSION` | Sets the service version; falls back to `RENDER_GIT_COMMIT` |
 | `OBSERVABILITY_ACTOR_HMAC_SECRET` | Server-only HMAC key for pseudonymous wallet correlation; must match the frontend secret |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Sets the base HTTP OTLP endpoint; the exporter appends `/v1/logs` |
-| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | Sets the complete logs endpoint and takes precedence over the general endpoint |
-| `OTEL_EXPORTER_OTLP_LOGS_HEADERS` | Sets logs request headers, for example `authorization=<ingestion-key>` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Sets the base HTTP OTLP endpoint for all enabled signals |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Sets request headers shared by all signals |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | Overrides the complete logs endpoint |
+| `OTEL_EXPORTER_OTLP_LOGS_HEADERS` | Sets signal-specific logs request headers |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | Overrides the complete metrics endpoint |
+| `OTEL_EXPORTER_OTLP_METRICS_HEADERS` | Sets signal-specific metrics request headers |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Overrides the complete traces endpoint |
+| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | Sets signal-specific traces request headers |
+| `OTEL_METRIC_EXPORT_INTERVAL` | Metric export interval in milliseconds; defaults to `60000` |
+| `OTEL_TRACES_SAMPLER` | Trace sampler; defaults to `parentbased_always_on` |
+| `OTEL_TRACES_SAMPLER_ARG` | Ratio for `traceidratio` or `parentbased_traceidratio` |
 | `RUST_LOG` | Configures only the local formatting layer; defaults to `info` |
+
+When the general endpoint is used, the exporter appends `/v1/logs`, `/v1/metrics`, or `/v1/traces` for the corresponding signal. A signal-specific endpoint is used as the complete endpoint.
+
+Store the ClickStack ingestion key in secret environment variables. Prefer `OTEL_EXPORTER_OTLP_HEADERS=authorization=<ingestion-key>` when all signals use the same key. The crate does not read headers into its own configuration or expose them through `Debug` output or logs. Do not use `NEXT_PUBLIC_*` variables for server-side telemetry secrets.
+
+Enabling a signal without either its signal-specific endpoint or `OTEL_EXPORTER_OTLP_ENDPOINT` is a startup error. Enabling metrics or traces without `LOYAL_OBSERVABILITY_ENABLED` is also a startup error.
 
 Render metadata is discovered automatically:
 
@@ -114,15 +343,12 @@ Render metadata is discovered automatically:
 - `RENDER_SERVICE_ID` maps to `render.service.id`;
 - `RENDER_GIT_COMMIT` maps to `service.version` unless explicitly overridden.
 
-Store the ingestion key in a secret environment variable and pass it through `OTEL_EXPORTER_OTLP_LOGS_HEADERS`. The crate does not read it into its own configuration or expose it through `Debug` output or logs. Do not use `NEXT_PUBLIC_*` variables for server-side telemetry secrets.
-
-When `LOYAL_OBSERVABILITY_ENABLED` is enabled, the absence of both endpoint variables is a startup error. An exporter configuration error must not silently fall back to localhost.
-
 ## Verification
 
 ```sh
-cargo check -p loyal-observability
+cargo check -p loyal-observability --locked
+cargo clippy -p loyal-observability --locked -- -D warnings
 cargo fmt -p loyal-observability -- --check
 ```
 
-The next independent step is to integrate the crate into selected binaries. Only after that should Render environment variables and secrets be added and a canary event verified in ClickStack.
+Binary integration, Render environment changes, and ClickStack canary verification are separate deployment steps.
