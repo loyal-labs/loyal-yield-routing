@@ -121,7 +121,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let _observability = init_from_env("loyal-same-mint-yield-monitor")?;
     run().await.inspect_err(|_| {
         OperationalError::new(
-            "rebalance_monitor_poll_failed",
+            "rebalance_monitor_run_failed",
             "run_rebalance_monitor",
             "rebalance monitor stopped after a startup or polling failure",
         )
@@ -375,7 +375,7 @@ async fn run_vault_once(
             let execution_status = route_execution_status(&execution);
             if !execution.success || execution_status != "idle_vault_deposit_executed" {
                 OperationalError::new(
-                    "yield_route_execution_failed",
+                    "idle_vault_deposit_execution_failed",
                     "execute_idle_vault_deposit",
                     "idle vault deposit route execution failed",
                 )
@@ -522,7 +522,7 @@ async fn run_vault_once(
         let positions_after = neon.current_positions(vault.vault.id).await?;
         if !execution.success {
             OperationalError::new(
-                "yield_route_execution_failed",
+                "planned_rebalance_execution_failed",
                 "execute_planned_rebalance",
                 "planned rebalance route execution failed",
             )

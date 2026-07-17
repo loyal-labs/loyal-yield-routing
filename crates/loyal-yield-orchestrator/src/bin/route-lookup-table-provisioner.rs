@@ -769,9 +769,9 @@ async fn finish_operation_task(
                 .await?;
             if recorded.operation_state == LookupTableOperationStatus::PermanentFailure {
                 OperationalError::new(
-                    "alt_operation_permanently_failed",
+                    "alt_operation_execution_permanently_failed",
                     "execute_alt_operation",
-                    "ALT operation reached permanent failure",
+                    "ALT operation execution reached permanent failure",
                 )
                 .retryable(false)
                 .recovery_required(true)
@@ -2029,9 +2029,9 @@ async fn reconcile_existing_operation(
                 )
                 .await?;
             OperationalError::new(
-                "alt_operation_permanently_failed",
+                "alt_operation_reconciliation_permanently_failed",
                 "reconcile_alt_operation",
-                "ALT operation reached permanent failure",
+                "ALT operation reconciliation reached permanent failure",
             )
             .retryable(false)
             .recovery_required(true)

@@ -3292,9 +3292,9 @@ async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box
                     let redacted_error = redacted_external_error(&error);
                     if first_outer_task_error.is_none() {
                         OperationalError::new(
-                            "rebalance_reconciler_task_failed",
+                            "rebalance_reconciler_execution_failed",
                             "reconcile_fleet_rebalance_submission",
-                            "fleet rebalance reconciler task failed",
+                            "fleet rebalance reconciler execution failed",
                         )
                         .retryable(true)
                         .recovery_required(true)
@@ -3351,7 +3351,7 @@ async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box
                     let redacted_error = redacted_external_error(&error.to_string());
                     if first_outer_task_error.is_none() {
                         OperationalError::new(
-                            "rebalance_reconciler_task_failed",
+                            "rebalance_reconciler_task_join_failed",
                             "join_fleet_rebalance_reconciler_task",
                             "fleet rebalance reconciler task failed to join",
                         )
@@ -3558,7 +3558,7 @@ async fn advance_fleet_position_sweep(
                 let error = redacted_external_error(&error.to_string());
                 coordinator.record_initialization_failure(sweep_id, error.clone());
                 OperationalError::new(
-                    "rebalance_position_sweep_failed",
+                    "rebalance_position_sweep_initialization_failed",
                     "initialize_rebalance_position_sweep",
                     "fleet rebalance position sweep failed to initialize",
                 )
@@ -3641,9 +3641,9 @@ async fn advance_fleet_position_sweep(
                 FleetPositionSweepTaskOutcome::Failed(error) => {
                     run.failed = run.failed.saturating_add(1);
                     OperationalError::new(
-                        "rebalance_position_sweep_failed",
+                        "rebalance_vault_position_refresh_failed",
                         "refresh_rebalance_vault_position",
-                        "fleet rebalance position sweep failed for a vault",
+                        "fleet rebalance vault position refresh failed during the sweep",
                     )
                     .retryable(true)
                     .recovery_required(false)

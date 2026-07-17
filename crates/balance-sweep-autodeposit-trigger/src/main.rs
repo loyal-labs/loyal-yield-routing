@@ -512,17 +512,17 @@ async fn execute_eligible_targets_once(
     let missing_route_policy_slots_failed =
         fail_slots_without_active_earn_route_policy_once(pool, limit)
             .await
-            .inspect_err(|_| emit_execution_scan_failed())?;
+            .inspect_err(|_| emit_execution_queue_preparation_failed())?;
     let stale_requested_slots_failed = fail_stale_requested_slots_once(pool, limit)
         .await
-        .inspect_err(|_| emit_execution_scan_failed())?;
+        .inspect_err(|_| emit_execution_queue_preparation_failed())?;
     let stale_claims_released =
         release_stale_selected_claims_once(pool, stale_selected_claim_seconds, limit)
             .await
-            .inspect_err(|_| emit_execution_scan_failed())?;
+            .inspect_err(|_| emit_execution_queue_preparation_failed())?;
     let targets = load_executable_targets(pool, limit, hinted_slot_ids)
         .await
-        .inspect_err(|_| emit_execution_scan_failed())?;
+        .inspect_err(|_| emit_execution_queue_preparation_failed())?;
     let mut outcome = ExecutorOutcome {
         targets_scanned: targets.len(),
         missing_route_policy_slots_failed,
@@ -595,11 +595,11 @@ fn emit_claim_transition_failed() {
     .emit();
 }
 
-fn emit_execution_scan_failed() {
+fn emit_execution_queue_preparation_failed() {
     OperationalError::new(
-        "autodeposit_execution_scan_failed",
-        "scan_autodeposit_execution_queue",
-        "autodeposit execution queue scan failed",
+        "autodeposit_execution_queue_preparation_failed",
+        "prepare_autodeposit_execution_queue",
+        "autodeposit execution queue preparation failed",
     )
     .retryable(true)
     .recovery_required(true)
