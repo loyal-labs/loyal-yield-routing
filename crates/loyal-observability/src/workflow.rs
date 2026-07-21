@@ -10,7 +10,7 @@ use opentelemetry::{
 use tracing::{span::Entered, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use crate::ObservabilityActorId;
+use crate::ObservabilityWalletAddress;
 
 pub(crate) const WORKFLOW_TRACE_TARGET: &str = "loyal.observability.workflow";
 
@@ -37,8 +37,9 @@ impl WorkflowOutcome {
 
 /// Low-cardinality workflow metrics exported through the OTLP metrics pipeline.
 ///
-/// Actor IDs are intentionally excluded from metrics because they would create
-/// a high-cardinality dimension. Use logs and traces for actor-level correlation.
+/// Wallet addresses are intentionally excluded from metrics because they would
+/// create a high-cardinality dimension. Use logs and traces for wallet-level
+/// correlation.
 #[derive(Clone, Default)]
 pub struct WorkflowMetrics {
     executions: Option<Counter<u64>>,
@@ -116,14 +117,15 @@ impl WorkflowSpan {
                 loyal.workflow.operation = operation,
                 loyal.workflow.outcome = tracing::field::Empty,
                 error.type = tracing::field::Empty,
-                loyal.actor.id = tracing::field::Empty,
+                loyal.wallet.address = tracing::field::Empty,
             ),
         }
     }
 
-    /// Attaches a pseudonymous actor ID without exposing the raw wallet address.
-    pub fn actor_id(self, actor_id: &ObservabilityActorId) -> Self {
-        self.span.record("loyal.actor.id", actor_id.as_str());
+    /// Attaches the raw wallet address to this span.
+    pub fn wallet_address(self, wallet_address: &ObservabilityWalletAddress) -> Self {
+        self.span
+            .record("loyal.wallet.address", wallet_address.as_str());
         self
     }
 

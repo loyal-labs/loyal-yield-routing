@@ -8,7 +8,7 @@ Current service integrations initialize this crate and emit bounded `Operational
 
 | ClickStack data source | Crate API | Exported data |
 | --- | --- | --- |
-| Logs | `OperationalError` | Explicit operational failures with stable codes and optional pseudonymous actor correlation |
+| Logs | `OperationalError` | Explicit operational failures with stable codes and optional wallet correlation |
 | Metrics | `WorkflowMetrics` | Low-cardinality execution counts and duration histograms |
 | Traces | `WorkflowSpan` | Nested workflow operations with duration, outcome, and error status |
 
@@ -60,7 +60,7 @@ Each operational event contains:
 - `message`: a short operator-facing description;
 - `retryable`: whether retrying is expected to be safe;
 - `recovery_required`: whether an operator or repair flow must take action;
-- `loyal.actor.id`: an optional pseudonymous actor ID.
+- `loyal.wallet.address`: an optional raw wallet address.
 
 The `error_code`, `operation`, and `message` fields accept only `&'static str`. Runtime errors and user data cannot be passed accidentally.
 
@@ -79,7 +79,7 @@ Both instruments use only these bounded attributes:
 - `loyal.workflow.operation`;
 - `loyal.workflow.outcome`: `succeeded`, `failed`, or `skipped`.
 
-Actor IDs are deliberately excluded from metrics because they would create a high-cardinality dimension.
+Wallet addresses are deliberately excluded from metrics because they would create a high-cardinality dimension.
 
 ```rust
 use std::time::Instant;
@@ -253,59 +253,48 @@ reconcile.run
 
 Record only stable error codes with `WorkflowSpan::failed`. Do not pass formatted runtime errors or payloads as the error code.
 
-## Pseudonymous wallet correlation
+## Wallet correlation
 
-The crate derives the same actor ID as the Loyal frontend observability pipeline:
-
-```text
-HMAC-SHA256(
-  key = OBSERVABILITY_ACTOR_HMAC_SECRET,
-  message = "v1|<deployment_environment>|<wallet_address>"
-)
-
-actor:v1:<64 lowercase hex characters>
-```
-
-This is pseudonymization, not encryption or complete anonymization. The original wallet address is never attached to telemetry.
+Operational errors and workflow spans can carry the user's raw wallet address,
+exported as `loyal.wallet.address`. It is stored verbatim, so a stored event is
+directly linkable to on-chain identity and history. Treat telemetry carrying it
+as operator-only and restrict dashboard access accordingly.
 
 ```rust
-use loyal_observability::{
-    derive_observability_actor_id_from_env, OperationalError, WorkflowSpan,
-};
+use loyal_observability::{ObservabilityWalletAddress, OperationalError, WorkflowSpan};
 
-if let Some(actor_id) = derive_observability_actor_id_from_env(
-    "production",
-    wallet_address,
-) {
+if let Some(wallet) = ObservabilityWalletAddress::new(wallet_address) {
     OperationalError::new(
         "autodeposit_failed",
         "autodeposit.run",
         "auto-deposit workflow failed",
     )
-    .actor_id(actor_id.clone())
+    .wallet_address(wallet.clone())
     .emit();
 
     let trace = WorkflowSpan::new("autodeposit", "autodeposit.run")
-        .actor_id(&actor_id);
+        .wallet_address(&wallet);
     // Use the trace span here.
 }
 
 # let wallet_address = "11111111111111111111111111111111";
 ```
 
-Only surrounding whitespace is removed from the wallet address. Case is preserved because Solana base58 addresses are case-sensitive. If the secret is missing or shorter than 32 characters, or if the environment or wallet is empty, derivation returns `None` and `loyal.actor.id` is omitted.
+Only surrounding whitespace is removed. Case is preserved because Solana base58
+addresses are case-sensitive. An empty or whitespace-only address yields `None`
+and `loyal.wallet.address` is omitted.
 
 ## Privacy and cardinality rules
 
 Do not include the following data in logs, metric attributes, span attributes, names, or statuses:
 
 - private keys, tokens, or authorization header values;
-- raw wallet or user identifiers;
+- user identifiers other than the wallet address;
 - transaction payloads, account data, or request and response bodies;
 - complete `anyhow::Error` or `Debug` output;
 - SQL or query parameter values.
 
-Use stable workflow names, operation names, outcomes, and error codes. Do not use transaction signatures, wallet addresses, route IDs, or timestamps as metric attributes.
+Use stable workflow names, operation names, outcomes, and error codes. Do not use transaction signatures, wallet addresses, route IDs, or timestamps as metric attributes. Wallet addresses belong on logs and traces only, never on metrics, where they would explode cardinality.
 
 ## Environment variables
 
@@ -316,7 +305,6 @@ All remote export is disabled by default. One switch enables or disables operati
 | `OBSERVABILITY_ENABLED` | Enables operational error logs, workflow metrics, and workflow traces together |
 | `OBSERVABILITY_ENVIRONMENT` | Sets `deployment.environment.name`; defaults to `unknown` |
 | `OBSERVABILITY_SERVICE_VERSION` | Sets the service version; falls back to `RENDER_GIT_COMMIT` |
-| `OBSERVABILITY_ACTOR_HMAC_SECRET` | Server-only HMAC key for pseudonymous wallet correlation; must match the frontend secret |
 | `OBSERVABILITY_OTLP_ENDPOINT` | Sets the shared base HTTP OTLP endpoint for logs, metrics, and traces |
 | `OBSERVABILITY_INGESTION_API_KEY` | Server-only ClickStack ingestion key used as the `authorization` header |
 | `OTEL_METRIC_EXPORT_INTERVAL` | Metric export interval in milliseconds; defaults to `60000` |
