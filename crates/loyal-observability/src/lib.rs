@@ -243,11 +243,31 @@ pub fn init_from_env(
     init(ObservabilityConfig::from_env(default_service_name)?)
 }
 
+/// Installs `ring` as the process-wide Rustls crypto provider.
+///
+/// An error means a provider is already installed, which is the outcome this
+/// call wants. Installation must not be fatal, because `init` may run more than
+/// once in a process and a binary may deliberately install its own provider
+/// first.
+fn install_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 /// Initializes local structured logging and the optional OTLP exporter.
 ///
 /// This installs the process-global `tracing` subscriber. A binary adopting the
 /// crate must replace its existing subscriber initialization with this call.
+///
+/// This also installs the process-wide Rustls crypto provider. This crate links
+/// `aws-lc-rs` through OpenTelemetry's reqwest 0.13 path, while the Solana,
+/// Kamino, and reqwest 0.12 paths link `ring`. With both providers compiled in
+/// and no default installed, Rustls cannot pick one and every
+/// provider-agnostic `ClientConfig::builder()` call panics. Adopting binaries
+/// call this before constructing HTTP or gRPC clients, so installing here fixes
+/// the ambiguity the exporter dependency introduces.
 pub fn init(config: ObservabilityConfig) -> Result<ObservabilityGuard, InitError> {
+    install_crypto_provider();
+
     validate_config(&config)?;
     validate_export_config(&config)?;
 

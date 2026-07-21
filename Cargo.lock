@@ -3167,6 +3167,7 @@ dependencies = [
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "rustls 0.23.40",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
