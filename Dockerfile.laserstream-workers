@@ -27,7 +27,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         -p kamino-reserve-monitor \
         -p balance-sweep-ata-monitor \
         -p loyal-timescale-migrations \
+        --recipe-path recipe.json \
+    && cargo chef cook --release \
         -p loyal-yield-orchestrator \
+        --bin yield-migrations \
         --recipe-path recipe.json
 
 COPY . .
@@ -37,7 +40,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         -p kamino-reserve-monitor \
         -p balance-sweep-ata-monitor \
         -p loyal-timescale-migrations \
+    && cargo build --release \
         -p loyal-yield-orchestrator \
+        --bin yield-migrations \
     && cp /app/target/release/kamino-reserve-monitor /usr/local/bin/kamino-reserve-monitor \
     && cp /app/target/release/balance-sweep-ata-monitor /usr/local/bin/balance-sweep-ata-monitor \
     && cp /app/target/release/loyal-timescale-migrations /usr/local/bin/loyal-timescale-migrations \
