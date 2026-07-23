@@ -175,6 +175,15 @@ const DEFAULT_FLEET_RECONCILE_CONCURRENCY: usize = 16;
 const DEFAULT_FLEET_RECONCILE_BATCH_SIZE: i64 = 32;
 const DEFAULT_FLEET_POSITION_SWEEP_INTERVAL_SECONDS: u64 = 300;
 const FLEET_POSITION_SWEEP_FAILURE_RETRY_SECONDS: u64 = 5;
+/// Consecutive transport failures before the first operational error is
+/// emitted. Upstream RPC providers routinely fail for a few attempts and
+/// recover on their own; the per-attempt stderr record stays unconditional so
+/// forensics keep every occurrence either way.
+const FLEET_POSITION_SWEEP_TRANSPORT_ALERT_AFTER_FAILURES: u32 = 12;
+/// Additional consecutive transport failures between repeat emissions once the
+/// threshold above is crossed, so a long outage stays visible without
+/// reproducing one operational error per retry.
+const FLEET_POSITION_SWEEP_TRANSPORT_ALERT_REPEAT_FAILURES: u32 = 60;
 const CURRENT_MARKET_EPOCH_STALE_PREFIX: &str = "current_market_epoch_stale:";
 /// Cross-process admission cap, not a claim of physical transaction
 /// independence. Each route also owns a vault-specific semantic key. Exact
@@ -425,6 +434,69 @@ struct FleetPositionSweepReserve {
     liquidity_mint: String,
 }
 
+/// Separates sweep initialization faults that clear on their own from faults
+/// that keep the sweep wedged until a person or a catalog rollout intervenes.
+///
+/// Both used to share one retryable operational error, so a passing RPC outage
+/// and a catalog generation mismatch were indistinguishable to an operator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FleetPositionSweepInitFailureKind {
+    /// Upstream RPC or database unavailability. Retrying is the whole recovery.
+    Transport,
+    /// The catalog, policy cohort, or configuration cannot support a sweep.
+    /// Retrying alone will not clear this.
+    Invariant,
+}
+
+impl FleetPositionSweepInitFailureKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Transport => "transport",
+            Self::Invariant => "invariant",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct FleetPositionSweepInitError {
+    kind: FleetPositionSweepInitFailureKind,
+    source: Box<dyn Error>,
+}
+
+impl FleetPositionSweepInitError {
+    fn transport(source: impl Into<Box<dyn Error>>) -> Self {
+        Self {
+            kind: FleetPositionSweepInitFailureKind::Transport,
+            source: source.into(),
+        }
+    }
+
+    fn invariant(source: impl Into<Box<dyn Error>>) -> Self {
+        Self {
+            kind: FleetPositionSweepInitFailureKind::Invariant,
+            source: source.into(),
+        }
+    }
+
+    /// Column and type failures mean the query no longer matches the schema,
+    /// which no amount of retrying repairs. Everything else is connectivity.
+    fn from_sqlx(error: loyal_yield_orchestrator::sqlx::Error) -> Self {
+        match error {
+            loyal_yield_orchestrator::sqlx::Error::ColumnDecode { .. }
+            | loyal_yield_orchestrator::sqlx::Error::ColumnNotFound(_)
+            | loyal_yield_orchestrator::sqlx::Error::ColumnIndexOutOfBounds { .. }
+            | loyal_yield_orchestrator::sqlx::Error::TypeNotFound { .. } => {
+                Self::invariant(error.to_string())
+            }
+            other => Self::transport(other.to_string()),
+        }
+    }
+
+    fn redacted_message(&self) -> String {
+        redacted_external_error(&self.source.to_string())
+    }
+}
+
 #[derive(Clone, Debug)]
 struct FleetPositionSweepUniverse {
     cluster: String,
@@ -493,6 +565,7 @@ struct FleetPositionSweepCoordinator {
     next_sweep_id: u64,
     active: Option<FleetPositionSweepRun>,
     latest: Option<FleetPositionSweepMetrics>,
+    consecutive_transport_failures: u32,
 }
 
 impl FleetPositionSweepCoordinator {
@@ -503,6 +576,7 @@ impl FleetPositionSweepCoordinator {
             next_sweep_id: 1,
             active: None,
             latest: None,
+            consecutive_transport_failures: 0,
         }
     }
 
@@ -516,7 +590,18 @@ impl FleetPositionSweepCoordinator {
         sweep_id
     }
 
-    fn record_initialization_failure(&mut self, sweep_id: u64, error: String) {
+    /// Records a failed initialization and reports whether this occurrence
+    /// should emit an operational error.
+    ///
+    /// Invariant failures always emit because each one is independently
+    /// actionable. Transport failures emit only once a sustained run proves the
+    /// upstream outage is not self-clearing, then at a slow repeat cadence.
+    fn record_initialization_failure(
+        &mut self,
+        sweep_id: u64,
+        kind: FleetPositionSweepInitFailureKind,
+        error: String,
+    ) -> bool {
         self.latest = Some(FleetPositionSweepMetrics {
             sweep_id,
             catalog_revision_id: None,
@@ -536,6 +621,30 @@ impl FleetPositionSweepCoordinator {
             + self.interval.min(Duration::from_secs(
                 FLEET_POSITION_SWEEP_FAILURE_RETRY_SECONDS,
             ));
+        match kind {
+            FleetPositionSweepInitFailureKind::Invariant => {
+                self.consecutive_transport_failures = 0;
+                true
+            }
+            FleetPositionSweepInitFailureKind::Transport => {
+                self.consecutive_transport_failures =
+                    self.consecutive_transport_failures.saturating_add(1);
+                let elapsed = self
+                    .consecutive_transport_failures
+                    .saturating_sub(FLEET_POSITION_SWEEP_TRANSPORT_ALERT_AFTER_FAILURES);
+                self.consecutive_transport_failures
+                    >= FLEET_POSITION_SWEEP_TRANSPORT_ALERT_AFTER_FAILURES
+                    && elapsed % FLEET_POSITION_SWEEP_TRANSPORT_ALERT_REPEAT_FAILURES == 0
+            }
+        }
+    }
+
+    fn record_initialization_success(&mut self) {
+        self.consecutive_transport_failures = 0;
+    }
+
+    fn consecutive_transport_failures(&self) -> u32 {
+        self.consecutive_transport_failures
     }
 
     fn record_progress(&mut self) {
@@ -3553,24 +3662,45 @@ async fn advance_fleet_position_sweep(
         )
         .await
         {
-            Ok(run) => coordinator.active = Some(run),
-            Err(error) => {
-                let error = redacted_external_error(&error.to_string());
-                coordinator.record_initialization_failure(sweep_id, error.clone());
-                OperationalError::new(
-                    "rebalance_position_sweep_initialization_failed",
-                    "initialize_rebalance_position_sweep",
-                    "fleet rebalance position sweep failed to initialize",
-                )
-                .retryable(true)
-                .recovery_required(false)
-                .emit();
+            Ok(run) => {
+                coordinator.record_initialization_success();
+                coordinator.active = Some(run);
+            }
+            Err(failure) => {
+                let kind = failure.kind;
+                let error = failure.redacted_message();
+                let emit_operational_error =
+                    coordinator.record_initialization_failure(sweep_id, kind, error.clone());
+                if emit_operational_error {
+                    match kind {
+                        FleetPositionSweepInitFailureKind::Transport => OperationalError::new(
+                            "rebalance_position_sweep_initialization_failed",
+                            "initialize_rebalance_position_sweep",
+                            "fleet rebalance position sweep is blocked on a sustained upstream outage",
+                        )
+                        .retryable(true)
+                        .recovery_required(false)
+                        .emit(),
+                        FleetPositionSweepInitFailureKind::Invariant => OperationalError::new(
+                            "rebalance_position_sweep_invariant_blocked",
+                            "initialize_rebalance_position_sweep",
+                            "fleet rebalance position sweep cannot start under the active catalog or policy cohort",
+                        )
+                        .retryable(false)
+                        .recovery_required(true)
+                        .emit(),
+                    }
+                }
                 eprintln!(
                     "{}",
                     json!({
                         "status": "fleet_position_sweep_initialization_failed",
                         "sweepId": sweep_id,
+                        "kind": kind.as_str(),
                         "error": error,
+                        "consecutiveTransportFailures":
+                            coordinator.consecutive_transport_failures(),
+                        "operationalErrorEmitted": emit_operational_error,
                         "complete": false,
                         "signerLoaded": false,
                         "transactionsSent": false,
@@ -3701,10 +3831,12 @@ async fn initialize_fleet_position_sweep(
     cluster: &str,
     enabled_mints: &[String],
     sweep_id: u64,
-) -> Result<FleetPositionSweepRun, Box<dyn Error>> {
+) -> Result<FleetPositionSweepRun, FleetPositionSweepInitError> {
     let started_at = Utc::now();
     let started = Instant::now();
-    let vaults = load_fleet_position_sweep_vaults(&runtime.pool, enabled_mints).await?;
+    let vaults = load_fleet_position_sweep_vaults(&runtime.pool, enabled_mints)
+        .await
+        .map_err(FleetPositionSweepInitError::from_sqlx)?;
     let universe = load_fleet_position_sweep_universe(runtime, cluster, enabled_mints).await?;
     Ok(FleetPositionSweepRun {
         sweep_id,
@@ -3724,7 +3856,7 @@ async fn initialize_fleet_position_sweep(
 async fn load_fleet_position_sweep_vaults(
     pool: &PgPool,
     enabled_mints: &[String],
-) -> Result<Vec<FleetPositionSweepVault>, Box<dyn Error>> {
+) -> Result<Vec<FleetPositionSweepVault>, loyal_yield_orchestrator::sqlx::Error> {
     let rows = loyal_yield_orchestrator::sqlx::query(
         r#"
         SELECT
@@ -3797,41 +3929,46 @@ async fn load_fleet_position_sweep_vaults(
             })
         })
         .collect::<Result<Vec<_>, loyal_yield_orchestrator::sqlx::Error>>()
-        .map_err(Into::into)
 }
 
 async fn load_fleet_position_sweep_universe(
     runtime: &SameMintRouteRuntime,
     cluster: &str,
     enabled_mints: &[String],
-) -> Result<FleetPositionSweepUniverse, Box<dyn Error>> {
+) -> Result<FleetPositionSweepUniverse, FleetPositionSweepInitError> {
     let head = runtime
         .client
         .shared_market_catalog_head(cluster)
-        .await?
-        .ok_or("fleet position sweep requires a durable shared-market catalog head")?;
+        .await
+        .map_err(FleetPositionSweepInitError::transport)?
+        .ok_or_else(|| {
+            FleetPositionSweepInitError::invariant(
+                "fleet position sweep requires a durable shared-market catalog head",
+            )
+        })?;
     if head.readiness_state != SharedMarketCatalogReadiness::Active
         || head.active_generation.is_none()
         || head.active_generation != head.target_generation
     {
-        return Err(
-            "fleet position sweep requires the exact active shared-market catalog generation"
-                .into(),
-        );
+        return Err(FleetPositionSweepInitError::invariant(
+            "fleet position sweep requires the exact active shared-market catalog generation",
+        ));
     }
-    let expected_enabled_mints_hash = enabled_stable_mints_hash(enabled_mints)?;
+    let expected_enabled_mints_hash =
+        enabled_stable_mints_hash(enabled_mints).map_err(FleetPositionSweepInitError::invariant)?;
     if head.enabled_mints_hash != expected_enabled_mints_hash {
-        return Err(
-            "fleet position sweep enabled mints do not match the active shared-market catalog"
-                .into(),
-        );
+        return Err(FleetPositionSweepInitError::invariant(
+            "fleet position sweep enabled mints do not match the active shared-market catalog",
+        ));
     }
 
     let mut reserve_pubkeys = Vec::new();
     let mut reserve_addresses = BTreeSet::new();
     for address in &head.addresses {
         if address.semantic_class != LookupTableManifestSubject::SharedMarket {
-            return Err("shared-market catalog head contains a non-shared semantic row".into());
+            return Err(FleetPositionSweepInitError::invariant(
+                "shared-market catalog head contains a non-shared semantic row",
+            ));
         }
         let role_parts = address.account_role.split(',').collect::<Vec<_>>();
         let roles = role_parts.iter().copied().collect::<BTreeSet<_>>();
@@ -3841,39 +3978,50 @@ async fn load_fleet_position_sweep_universe(
                 .any(|role| role.is_empty() || role.trim() != *role)
             || roles.len() != role_parts.len()
         {
-            return Err("shared-market catalog contains malformed account roles".into());
+            return Err(FleetPositionSweepInitError::invariant(
+                "shared-market catalog contains malformed account roles",
+            ));
         }
         if !roles.contains("reserve") {
             continue;
         }
         if !address.is_writable || !reserve_addresses.insert(address.address.clone()) {
-            return Err("shared-market catalog reserve roles must be unique and writable".into());
+            return Err(FleetPositionSweepInitError::invariant(
+                "shared-market catalog reserve roles must be unique and writable",
+            ));
         }
-        reserve_pubkeys
-            .push(Pubkey::from_str(&address.address).map_err(|_| {
-                "shared-market catalog reserve role contains an invalid public key"
-            })?);
+        reserve_pubkeys.push(Pubkey::from_str(&address.address).map_err(|_| {
+            FleetPositionSweepInitError::invariant(
+                "shared-market catalog reserve role contains an invalid public key",
+            )
+        })?);
     }
     if reserve_pubkeys.is_empty() {
-        return Err("active shared-market catalog contains no reserve-role addresses".into());
+        return Err(FleetPositionSweepInitError::invariant(
+            "active shared-market catalog contains no reserve-role addresses",
+        ));
     }
 
     let mut evidence = FleetRpcAccountReadEvidence::default();
     let summaries =
-        load_cached_reserve_summaries(runtime, &reserve_pubkeys, None, None, &mut evidence).await?;
+        load_cached_reserve_summaries(runtime, &reserve_pubkeys, None, None, &mut evidence)
+            .await
+            .map_err(|error| FleetPositionSweepInitError::transport(error.to_string()))?;
     let mut reserves = reserve_pubkeys
         .into_iter()
         .map(|reserve| {
-            let summary = summaries
-                .get(&reserve)
-                .ok_or("validated reserve summary batch omitted a catalog reserve")?;
+            let summary = summaries.get(&reserve).ok_or_else(|| {
+                FleetPositionSweepInitError::invariant(
+                    "validated reserve summary batch omitted a catalog reserve",
+                )
+            })?;
             Ok(FleetPositionSweepReserve {
                 reserve: reserve.to_string(),
                 market: summary.0.market.to_string(),
                 liquidity_mint: summary.0.liquidity_mint.to_string(),
             })
         })
-        .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+        .collect::<Result<Vec<_>, FleetPositionSweepInitError>>()?;
     reserves.sort_by(|left, right| left.reserve.cmp(&right.reserve));
 
     Ok(FleetPositionSweepUniverse {
