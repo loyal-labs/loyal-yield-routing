@@ -79,7 +79,7 @@ const PRODUCTION_SERVICE_NAMES: [&str; 6] = [
     "loyal-fleet-route-reconciler",
     "loyal-route-lookup-table-provisioner",
 ];
-const VERIFIED_MIGRATIONS: [(i64, &str, &str); 8] = [
+const VERIFIED_MIGRATIONS: [(i64, &str, &str); 9] = [
     (
         23,
         "value_priority_rebalance_queue",
@@ -119,6 +119,11 @@ const VERIFIED_MIGRATIONS: [(i64, &str, &str); 8] = [
         30,
         "fused_queue_accrual_binding",
         "0030_fused_queue_accrual_binding.sql",
+    ),
+    (
+        31,
+        "fleet_commit_lifetime_fence_errcode",
+        "0031_fleet_commit_lifetime_fence_errcode.sql",
     ),
 ];
 
@@ -6874,7 +6879,7 @@ async fn run_database_checks(
     Ok(DatabaseEvidence {
         migration_subchecks: vec![
             subcheck(
-                "isolated_database_migrated_through_29",
+                "isolated_database_migrated_through_31",
                 true,
                 json!({
                     "databaseNameGuard": "fleet_verify",
@@ -6885,6 +6890,8 @@ async fn run_database_checks(
                     "migration27": "rebalance_opportunity_attempt_generations",
                     "migration28": "reusable_alt_terminal_repair",
                     "migration29": "fleet_commit_lifetime_fences",
+                    "migration30": "fused_queue_accrual_binding",
+                    "migration31": "fleet_commit_lifetime_fence_errcode",
                 }),
             ),
             subcheck(
@@ -7606,7 +7613,7 @@ async fn migration_repository_checks(
             json!({"migrations": ledger_evidence}),
         ),
         subcheck(
-            "migration_sql_23_through_29_reexecutes_in_rolled_back_transaction",
+            "migration_sql_23_through_31_reexecutes_in_rolled_back_transaction",
             reapply_result.is_ok(),
             json!({
                 "transaction": "ROLLED_BACK",
@@ -9055,7 +9062,7 @@ fn production_migration_subcheck(binding: &ProductionEvidenceBinding) -> Subchec
         }));
     }
     subcheck(
-        "production_migrations_23_through_29_match_repository_bytes",
+        "production_migrations_23_through_31_match_repository_bytes",
         all_match,
         json!({
             "ledgerExists": ledger_exists,

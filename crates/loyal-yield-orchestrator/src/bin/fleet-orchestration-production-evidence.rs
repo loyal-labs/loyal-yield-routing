@@ -67,7 +67,7 @@ const DURABLE_SERVICE_NAMES: [&str; 6] = [
     "loyal-route-lookup-table-provisioner",
 ];
 
-const REQUIRED_MIGRATIONS: [(i64, &str, &str); 8] = [
+const REQUIRED_MIGRATIONS: [(i64, &str, &str); 9] = [
     (
         23,
         "value_priority_rebalance_queue",
@@ -107,6 +107,11 @@ const REQUIRED_MIGRATIONS: [(i64, &str, &str); 8] = [
         30,
         "fused_queue_accrual_binding",
         include_str!("../../migrations/0030_fused_queue_accrual_binding.sql"),
+    ),
+    (
+        31,
+        "fleet_commit_lifetime_fence_errcode",
+        include_str!("../../migrations/0031_fleet_commit_lifetime_fence_errcode.sql"),
     ),
 ];
 
