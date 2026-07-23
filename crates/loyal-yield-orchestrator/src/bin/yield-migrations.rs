@@ -189,6 +189,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0030_fused_queue_accrual_binding.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 31,
+        name: "fleet_commit_lifetime_fence_errcode",
+        sql: include_str!("../../migrations/0031_fleet_commit_lifetime_fence_errcode.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

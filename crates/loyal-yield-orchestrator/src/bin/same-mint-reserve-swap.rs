@@ -434,6 +434,39 @@ struct FleetPositionSweepReserve {
     liquidity_mint: String,
 }
 
+/// SQLSTATE raised by `require_rebalance_opportunity_commit_lifetime` when an
+/// opportunity would become visible with less than the fence's minimum usable
+/// optimizer-epoch lifetime. See migration 0031.
+const SQLSTATE_OPPORTUNITY_COMMIT_LIFETIME_FENCE: &str = "LY001";
+/// SQLSTATE raised by `require_signed_route_commit_lifetime` for the same
+/// reason on the signed handoff. See migration 0031.
+const SQLSTATE_SIGNED_ROUTE_COMMIT_LIFETIME_FENCE: &str = "LY002";
+
+/// Reports whether a durable queue transition was refused by a commit-time
+/// lifetime fence rather than failing to persist.
+///
+/// A fence rejection is designed backpressure: the worker finished its route
+/// but the optimizer epoch aged out before COMMIT, so the database refused to
+/// republish work that could never execute in time. The next epoch replans it.
+/// Treating that as a recovery-required fault made routine end-of-epoch churn
+/// page, so it is reported without an operational error. Anything else — a
+/// pool timeout, a store invariant, an unexpected state — stays loud.
+fn is_commit_lifetime_fence_rejection(error: &(dyn Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(source) = current {
+        if let Some(OrchestratorError::Sqlx(sqlx_error)) =
+            source.downcast_ref::<OrchestratorError>()
+        {
+            if let Some(code) = sqlx_error.as_database_error().and_then(|db| db.code()) {
+                return code == SQLSTATE_OPPORTUNITY_COMMIT_LIFETIME_FENCE
+                    || code == SQLSTATE_SIGNED_ROUTE_COMMIT_LIFETIME_FENCE;
+            }
+        }
+        current = source.source();
+    }
+    false
+}
+
 /// Separates sweep initialization faults that clear on their own from faults
 /// that keep the sweep wedged until a person or a catalog rollout intervenes.
 ///
@@ -2926,6 +2959,12 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
     client
         .require_schema_migration(30, "fused_queue_accrual_binding")
         .await?;
+    // The commit-lifetime fences must carry their dedicated SQLSTATE before
+    // this worker can tell an expected end-of-epoch rejection from a real
+    // persistence fault.
+    client
+        .require_schema_migration(31, "fleet_commit_lifetime_fence_errcode")
+        .await?;
     // Validate the standard signer once at startup. Individual route builds
     // re-read and match it to the active policy before signing.
     let delegated_signer = standard_policy_keypair_from_env()?.pubkey().to_string();
@@ -2950,6 +2989,9 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
     let mut claimed = 0u64;
     let mut completed = 0u64;
     let mut failed = 0u64;
+    // Transitions the commit-lifetime fence refused. Counted apart from
+    // `failed` so end-of-epoch backpressure does not read as a fault rate.
+    let mut lifetime_fenced = 0u64;
     let mut outbox_acknowledged = 0u64;
     let mut fused_execute_permits = 0u64;
     let mut fused_execute_promotions = 0u64;
@@ -3099,6 +3141,7 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
                     claimed,
                     completed,
                     failed,
+                    lifetime_fenced,
                     outbox_acknowledged,
                     fused_execute_permits,
                     fused_execute_promotions,
@@ -3125,6 +3168,7 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
                         claimed,
                         completed,
                         failed,
+                        lifetime_fenced,
                         outbox_acknowledged,
                         fused_execute_permits,
                         fused_execute_promotions,
@@ -3147,6 +3191,7 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
                     claimed,
                     completed,
                     failed,
+                    lifetime_fenced,
                     outbox_acknowledged,
                     fused_execute_permits,
                     fused_execute_promotions,
@@ -3166,23 +3211,38 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
                 match finish_fleet_worker_task(&client, result).await {
                     Ok(()) => completed = completed.saturating_add(1),
                     Err(error) => {
-                        failed = failed.saturating_add(1);
-                        OperationalError::new(
-                            "rebalance_queue_transition_failed",
-                            "finish_fleet_rebalance_task",
-                            "fleet rebalance task could not persist its durable queue transition",
-                        )
-                        .retryable(true)
-                        .recovery_required(true)
-                        .emit();
-                        eprintln!(
-                            "{}",
-                            serde_json::to_string(&json!({
-                                "status": "fleet_worker_transition_failed",
-                                "lane": options.claim_kind.as_str(),
-                                "error": redacted_external_error(&error.to_string()),
-                            }))?
-                        );
+                        if is_commit_lifetime_fence_rejection(error.as_ref()) {
+                            lifetime_fenced = lifetime_fenced.saturating_add(1);
+                            println!(
+                                "{}",
+                                serde_json::to_string(&json!({
+                                    "status": "fleet_worker_transition_lifetime_fenced",
+                                    "lane": options.claim_kind.as_str(),
+                                    "reason": redacted_external_error(&error.to_string()),
+                                    "stateChanged": false,
+                                    "signerLoaded": false,
+                                    "transactionsSent": false,
+                                }))?
+                            );
+                        } else {
+                            failed = failed.saturating_add(1);
+                            OperationalError::new(
+                                "rebalance_queue_transition_failed",
+                                "finish_fleet_rebalance_task",
+                                "fleet rebalance task could not persist its durable queue transition",
+                            )
+                            .retryable(true)
+                            .recovery_required(true)
+                            .emit();
+                            eprintln!(
+                                "{}",
+                                serde_json::to_string(&json!({
+                                    "status": "fleet_worker_transition_failed",
+                                    "lane": options.claim_kind.as_str(),
+                                    "error": redacted_external_error(&error.to_string()),
+                                }))?
+                            );
+                        }
                     }
                 }
             }
@@ -5231,6 +5291,7 @@ async fn emit_fleet_worker_health(
     claimed: u64,
     completed: u64,
     failed: u64,
+    lifetime_fenced: u64,
     outbox_acknowledged: u64,
     fused_execute_permits: u64,
     fused_execute_promotions: u64,
@@ -5313,6 +5374,7 @@ async fn emit_fleet_worker_health(
             "claimed": claimed,
             "completed": completed,
             "failed": failed,
+            "lifetimeFenced": lifetime_fenced,
             "altWakeupsAcknowledged": outbox_acknowledged,
             "fusedExecutePermits": fused_execute_permits,
             "fusedExecutePromotions": fused_execute_promotions,
