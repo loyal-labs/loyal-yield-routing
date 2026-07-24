@@ -4,7 +4,6 @@ use std::{
     convert::TryInto,
     env,
     error::Error,
-    fmt,
     panic::{catch_unwind, AssertUnwindSafe},
     str::FromStr,
     sync::{
@@ -463,19 +462,25 @@ const SQLSTATE_SIGNED_ROUTE_COMMIT_LIFETIME_FENCE: &str = "LY002";
 /// page, so it is reported without an operational error. Anything else — a
 /// pool timeout, a store invariant, an unexpected state — stays loud.
 fn is_commit_lifetime_fence_rejection(error: &(dyn Error + 'static)) -> bool {
-    let mut current = Some(error);
-    while let Some(source) = current {
-        if let Some(OrchestratorError::Sqlx(sqlx_error)) =
-            source.downcast_ref::<OrchestratorError>()
-        {
-            if let Some(code) = sqlx_error.as_database_error().and_then(|db| db.code()) {
-                return code == SQLSTATE_OPPORTUNITY_COMMIT_LIFETIME_FENCE
-                    || code == SQLSTATE_SIGNED_ROUTE_COMMIT_LIFETIME_FENCE;
+    error_chain(error)
+        .find_map(|source| match source.downcast_ref::<OrchestratorError>() {
+            Some(OrchestratorError::Sqlx(sqlx_error)) => {
+                sqlx_error.as_database_error().and_then(|db| db.code())
             }
-        }
-        current = source.source();
-    }
-    false
+            _ => None,
+        })
+        .is_some_and(|code| {
+            code == SQLSTATE_OPPORTUNITY_COMMIT_LIFETIME_FENCE
+                || code == SQLSTATE_SIGNED_ROUTE_COMMIT_LIFETIME_FENCE
+        })
+}
+
+/// Iterates an error and everything it wraps, so classification reads the whole
+/// chain instead of only the outermost type.
+fn error_chain<'a>(
+    error: &'a (dyn Error + 'static),
+) -> impl Iterator<Item = &'a (dyn Error + 'static)> {
+    std::iter::successors(Some(error), |source| (*source).source())
 }
 
 /// A chain read that failed for a reason the next attempt clears on its own,
@@ -486,16 +491,23 @@ fn is_commit_lifetime_fence_rejection(error: &(dyn Error + 'static)) -> bool {
 /// owner and identity assertions. Transport is recognized by error type there:
 /// RPC faults arrive as [`ClientError`], and the few self-clearing failures
 /// raised by this binary use this type. Everything else is an invariant.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
 struct TransientChainReadError(String);
 
-impl fmt::Display for TransientChainReadError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
+/// Advances a consecutive-transport-failure counter and reports whether this
+/// occurrence should emit an operational error.
+///
+/// The first emission waits for `alert_after` consecutive failures so a passing
+/// upstream outage stays quiet, then repeats every `alert_repeat` failures so a
+/// sustained one stays visible without one error per attempt. Shared by the
+/// sweep's initialization and per-vault counters, which run the same cadence
+/// over different units of work.
+fn record_transport_failure(counter: &mut u32, alert_after: u32, alert_repeat: u32) -> bool {
+    *counter = counter.saturating_add(1);
+    let elapsed = counter.saturating_sub(alert_after);
+    *counter >= alert_after && elapsed % alert_repeat == 0
 }
-
-impl Error for TransientChainReadError {}
 
 /// Reports whether a database failure means the query no longer matches the
 /// schema, which no amount of retrying repairs. Everything else — pool
@@ -707,16 +719,11 @@ impl FleetPositionSweepCoordinator {
                 self.consecutive_transport_failures = 0;
                 true
             }
-            FleetPositionSweepInitFailureKind::Transport => {
-                self.consecutive_transport_failures =
-                    self.consecutive_transport_failures.saturating_add(1);
-                let elapsed = self
-                    .consecutive_transport_failures
-                    .saturating_sub(FLEET_POSITION_SWEEP_TRANSPORT_ALERT_AFTER_FAILURES);
-                self.consecutive_transport_failures
-                    >= FLEET_POSITION_SWEEP_TRANSPORT_ALERT_AFTER_FAILURES
-                    && elapsed % FLEET_POSITION_SWEEP_TRANSPORT_ALERT_REPEAT_FAILURES == 0
-            }
+            FleetPositionSweepInitFailureKind::Transport => record_transport_failure(
+                &mut self.consecutive_transport_failures,
+                FLEET_POSITION_SWEEP_TRANSPORT_ALERT_AFTER_FAILURES,
+                FLEET_POSITION_SWEEP_TRANSPORT_ALERT_REPEAT_FAILURES,
+            ),
         }
     }
 
@@ -741,16 +748,11 @@ impl FleetPositionSweepCoordinator {
                 self.consecutive_vault_transport_failures = 0;
                 true
             }
-            FleetPositionSweepVaultFailureKind::Transport => {
-                self.consecutive_vault_transport_failures =
-                    self.consecutive_vault_transport_failures.saturating_add(1);
-                let elapsed = self
-                    .consecutive_vault_transport_failures
-                    .saturating_sub(FLEET_POSITION_SWEEP_VAULT_TRANSPORT_ALERT_AFTER_FAILURES);
-                self.consecutive_vault_transport_failures
-                    >= FLEET_POSITION_SWEEP_VAULT_TRANSPORT_ALERT_AFTER_FAILURES
-                    && elapsed % FLEET_POSITION_SWEEP_VAULT_TRANSPORT_ALERT_REPEAT_FAILURES == 0
-            }
+            FleetPositionSweepVaultFailureKind::Transport => record_transport_failure(
+                &mut self.consecutive_vault_transport_failures,
+                FLEET_POSITION_SWEEP_VAULT_TRANSPORT_ALERT_AFTER_FAILURES,
+                FLEET_POSITION_SWEEP_VAULT_TRANSPORT_ALERT_REPEAT_FAILURES,
+            ),
         }
     }
 
@@ -3813,25 +3815,19 @@ struct FleetPositionSweepVaultError {
 }
 
 impl FleetPositionSweepVaultError {
-    fn transport(error: impl Into<String>) -> Self {
-        Self {
-            kind: FleetPositionSweepVaultFailureKind::Transport,
-            error: redacted_external_error(&error.into()),
-        }
-    }
-
-    fn invariant(error: impl Into<String>) -> Self {
-        Self {
-            kind: FleetPositionSweepVaultFailureKind::Invariant,
-            error: redacted_external_error(&error.into()),
-        }
-    }
-
     fn of_kind(kind: FleetPositionSweepVaultFailureKind, error: impl Into<String>) -> Self {
         Self {
             kind,
             error: redacted_external_error(&error.into()),
         }
+    }
+
+    fn transport(error: impl Into<String>) -> Self {
+        Self::of_kind(FleetPositionSweepVaultFailureKind::Transport, error)
+    }
+
+    fn invariant(error: impl Into<String>) -> Self {
+        Self::of_kind(FleetPositionSweepVaultFailureKind::Invariant, error)
     }
 
     /// Classifies a database failure behind the shared schema-versus-
@@ -3871,19 +3867,18 @@ impl FleetPositionSweepVaultError {
     }
 }
 
-/// Walks the source chain so a transport fault stays transport even when the
-/// preview path wraps it on the way out.
+/// Reads the whole source chain so a transport fault stays transport even when
+/// the preview path wraps it on the way out.
 fn classify_chain_read_error(error: &(dyn Error + 'static)) -> FleetPositionSweepVaultFailureKind {
-    let mut current = Some(error);
-    while let Some(source) = current {
-        if source.downcast_ref::<ClientError>().is_some()
+    let transport = error_chain(error).any(|source| {
+        source.downcast_ref::<ClientError>().is_some()
             || source.downcast_ref::<TransientChainReadError>().is_some()
-        {
-            return FleetPositionSweepVaultFailureKind::Transport;
-        }
-        current = source.source();
+    });
+    if transport {
+        FleetPositionSweepVaultFailureKind::Transport
+    } else {
+        FleetPositionSweepVaultFailureKind::Invariant
     }
-    FleetPositionSweepVaultFailureKind::Invariant
 }
 
 #[derive(Debug)]
@@ -4173,6 +4168,14 @@ async fn initialize_fleet_position_sweep(
     })
 }
 
+/// Freezes the ordered cohort for one sweep.
+///
+/// Every predicate in the WHERE clause below is re-checked per vault in
+/// `reconcile_fleet_position_sweep_vault` immediately before its RPC work, and
+/// a predicate that no longer holds there is reported as `Superseded` instead
+/// of a failure. Changing the predicates here without updating that recheck
+/// makes the sweep page on the expected mid-sweep policy change the recheck
+/// exists to absorb.
 async fn load_fleet_position_sweep_vaults(
     pool: &PgPool,
     enabled_mints: &[String],
@@ -4448,10 +4451,10 @@ async fn reconcile_fleet_position_sweep_vault(
             "active sweep vault identity changed during the full sweep".to_owned(),
         ));
     }
-    // Cohort predicate `$2 = ANY(p.route_modes)`. A policy replaced mid-sweep
-    // without the same-mint mode no longer belongs to this cohort, so it is
-    // rechecked here rather than reaching validate_vault_policy below, which
-    // would report the same condition as an invariant and page.
+    // Cohort predicate `$2 = ANY(p.route_modes)`. This is the same condition
+    // `validate_vault_policy` enforces elsewhere, checked inline instead of
+    // through it because leaving the cohort mid-sweep is a policy replacement to
+    // report rather than an invariant to page on.
     if !vault
         .route_modes
         .iter()
@@ -4461,10 +4464,6 @@ async fn reconcile_fleet_position_sweep_vault(
             "active policy no longer allows the same-mint route mode".to_owned(),
         ));
     }
-    // Retained for policy invariants the cohort query never constrained. The
-    // route-mode condition it currently checks is handled above.
-    validate_vault_policy(&vault)
-        .map_err(|error| FleetPositionSweepVaultError::invariant(error.to_string()))?;
     if !vault
         .delegated_signers
         .iter()
