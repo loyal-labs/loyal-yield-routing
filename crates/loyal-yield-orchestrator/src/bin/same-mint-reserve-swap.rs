@@ -4,6 +4,7 @@ use std::{
     convert::TryInto,
     env,
     error::Error,
+    fmt,
     panic::{catch_unwind, AssertUnwindSafe},
     str::FromStr,
     sync::{
@@ -102,7 +103,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use solana_client::{
-    rpc_client::RpcClient, rpc_config::RpcAccountInfoConfig, rpc_request::RpcRequest,
+    client_error::ClientError, rpc_client::RpcClient, rpc_config::RpcAccountInfoConfig,
+    rpc_request::RpcRequest,
 };
 use solana_rpc_client::mock_sender::MocksMap;
 #[allow(deprecated)]
@@ -476,6 +478,41 @@ fn is_commit_lifetime_fence_rejection(error: &(dyn Error + 'static)) -> bool {
     false
 }
 
+/// A chain read that failed for a reason the next attempt clears on its own,
+/// carried as a distinct type so callers classify it without matching on
+/// message text.
+///
+/// The chain preview path returns `Box<dyn Error>` and mixes RPC faults with
+/// owner and identity assertions. Transport is recognized by error type there:
+/// RPC faults arrive as [`ClientError`], and the few self-clearing failures
+/// raised by this binary use this type. Everything else is an invariant.
+#[derive(Debug)]
+struct TransientChainReadError(String);
+
+impl fmt::Display for TransientChainReadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl Error for TransientChainReadError {}
+
+/// Reports whether a database failure means the query no longer matches the
+/// schema, which no amount of retrying repairs. Everything else — pool
+/// timeouts, dropped connections, transient server errors — is connectivity.
+///
+/// Shared by the sweep's initialization and per-vault sites so both classify
+/// the same database failure the same way.
+fn sqlx_failure_is_invariant(error: &loyal_yield_orchestrator::sqlx::Error) -> bool {
+    matches!(
+        error,
+        loyal_yield_orchestrator::sqlx::Error::ColumnDecode { .. }
+            | loyal_yield_orchestrator::sqlx::Error::ColumnNotFound(_)
+            | loyal_yield_orchestrator::sqlx::Error::ColumnIndexOutOfBounds { .. }
+            | loyal_yield_orchestrator::sqlx::Error::TypeNotFound { .. }
+    )
+}
+
 /// Separates sweep initialization faults that clear on their own from faults
 /// that keep the sweep wedged until a person or a catalog rollout intervenes.
 ///
@@ -523,14 +560,10 @@ impl FleetPositionSweepInitError {
     /// Column and type failures mean the query no longer matches the schema,
     /// which no amount of retrying repairs. Everything else is connectivity.
     fn from_sqlx(error: loyal_yield_orchestrator::sqlx::Error) -> Self {
-        match error {
-            loyal_yield_orchestrator::sqlx::Error::ColumnDecode { .. }
-            | loyal_yield_orchestrator::sqlx::Error::ColumnNotFound(_)
-            | loyal_yield_orchestrator::sqlx::Error::ColumnIndexOutOfBounds { .. }
-            | loyal_yield_orchestrator::sqlx::Error::TypeNotFound { .. } => {
-                Self::invariant(error.to_string())
-            }
-            other => Self::transport(other.to_string()),
+        if sqlx_failure_is_invariant(&error) {
+            Self::invariant(error.to_string())
+        } else {
+            Self::transport(error.to_string())
         }
     }
 
@@ -3793,6 +3826,64 @@ impl FleetPositionSweepVaultError {
             error: redacted_external_error(&error.into()),
         }
     }
+
+    fn of_kind(kind: FleetPositionSweepVaultFailureKind, error: impl Into<String>) -> Self {
+        Self {
+            kind,
+            error: redacted_external_error(&error.into()),
+        }
+    }
+
+    /// Classifies a database failure behind the shared schema-versus-
+    /// connectivity rule instead of assuming every database fault is transient.
+    fn from_sqlx(error: &loyal_yield_orchestrator::sqlx::Error) -> Self {
+        if sqlx_failure_is_invariant(error) {
+            Self::invariant(error.to_string())
+        } else {
+            Self::transport(error.to_string())
+        }
+    }
+
+    /// Classifies a store failure by variant. `OrchestratorError` is typed, so
+    /// only the database arm needs the connectivity rule; every other variant
+    /// reports a consistency or conversion fault that retrying cannot repair
+    /// and that must stay independently visible.
+    ///
+    /// `StaleVaultObservation` never reaches here: the caller reports it as
+    /// [`FleetPositionSweepTaskOutcome::Stale`] before classification.
+    fn from_orchestrator(error: &OrchestratorError) -> Self {
+        match error {
+            OrchestratorError::Sqlx(sqlx_error) => Self::from_sqlx(sqlx_error),
+            other => Self::invariant(other.to_string()),
+        }
+    }
+
+    /// Classifies a chain-read failure that arrived as an untyped boxed error.
+    ///
+    /// The preview path fuses RPC transport with owner, mint, market, and
+    /// obligation-identity assertions. Only error types known to clear on their
+    /// own count as transport; anything else stays an invariant so a genuine
+    /// chain-identity fault keeps paging per occurrence instead of being
+    /// absorbed by the consecutive-transport threshold, which an isolated vault
+    /// would never cross.
+    fn from_chain_read(error: &(dyn Error + 'static)) -> Self {
+        Self::of_kind(classify_chain_read_error(error), error.to_string())
+    }
+}
+
+/// Walks the source chain so a transport fault stays transport even when the
+/// preview path wraps it on the way out.
+fn classify_chain_read_error(error: &(dyn Error + 'static)) -> FleetPositionSweepVaultFailureKind {
+    let mut current = Some(error);
+    while let Some(source) = current {
+        if source.downcast_ref::<ClientError>().is_some()
+            || source.downcast_ref::<TransientChainReadError>().is_some()
+        {
+            return FleetPositionSweepVaultFailureKind::Transport;
+        }
+        current = source.source();
+    }
+    FleetPositionSweepVaultFailureKind::Invariant
 }
 
 #[derive(Debug)]
@@ -3923,6 +4014,10 @@ async fn advance_fleet_position_sweep(
 
     // The alert decision reads and mutates the coordinator's consecutive-failure
     // run, so it is resolved before the active run is borrowed mutably below.
+    // The streak is captured per outcome rather than once after the batch: a
+    // later vault in the same batch resets or advances the counter, so a single
+    // post-batch read would stamp every record with a value that does not
+    // explain the decision the record reports.
     let outcomes = outcomes
         .into_iter()
         .map(|outcome| {
@@ -3937,15 +4032,20 @@ async fn advance_fleet_position_sweep(
                     coordinator.record_vault_failure(error.kind)
                 }
             };
-            (outcome, emit_operational_error)
+            let consecutive_vault_transport_failures =
+                coordinator.consecutive_vault_transport_failures();
+            (
+                outcome,
+                emit_operational_error,
+                consecutive_vault_transport_failures,
+            )
         })
         .collect::<Vec<_>>();
-    let consecutive_vault_transport_failures = coordinator.consecutive_vault_transport_failures();
 
     if let Some(run) = coordinator.active.as_mut() {
         run.next_index = run.next_index.saturating_add(outcomes.len());
         run.cursor_vault_id = batch_cursor.or(run.cursor_vault_id);
-        for (outcome, emit_operational_error) in outcomes {
+        for (outcome, emit_operational_error, consecutive_vault_transport_failures) in outcomes {
             run.processed = run.processed.saturating_add(1);
             let vault_id = outcome.vault_id.map(VaultId::as_i64);
             match outcome.outcome {
@@ -4337,7 +4437,7 @@ async fn reconcile_fleet_position_sweep_vault(
         entry.vault.vault_index,
     )
     .await
-    .map_err(|error| FleetPositionSweepVaultError::transport(error.to_string()))?;
+    .map_err(|error| FleetPositionSweepVaultError::from_sqlx(&error))?;
     let Some(vault) = vault else {
         return Ok(FleetPositionSweepTaskOutcome::Superseded(
             "sweep vault is no longer active under an active policy".to_owned(),
@@ -4348,6 +4448,21 @@ async fn reconcile_fleet_position_sweep_vault(
             "active sweep vault identity changed during the full sweep".to_owned(),
         ));
     }
+    // Cohort predicate `$2 = ANY(p.route_modes)`. A policy replaced mid-sweep
+    // without the same-mint mode no longer belongs to this cohort, so it is
+    // rechecked here rather than reaching validate_vault_policy below, which
+    // would report the same condition as an invariant and page.
+    if !vault
+        .route_modes
+        .iter()
+        .any(|mode| mode == SAME_MINT_ROUTE_MODE)
+    {
+        return Ok(FleetPositionSweepTaskOutcome::Superseded(
+            "active policy no longer allows the same-mint route mode".to_owned(),
+        ));
+    }
+    // Retained for policy invariants the cohort query never constrained. The
+    // route-mode condition it currently checks is handled above.
     validate_vault_policy(&vault)
         .map_err(|error| FleetPositionSweepVaultError::invariant(error.to_string()))?;
     if !vault
@@ -4372,6 +4487,16 @@ async fn reconcile_fleet_position_sweep_vault(
             "active policy is no longer in the enabled stable-mint cohort".to_owned(),
         ));
     }
+    // Cohort predicate `cardinality(p.kamino_markets) > 0`. Checked before the
+    // reserve intersection below so a policy that lost its markets mid-sweep is
+    // separated from a policy whose markets have no shared-catalog reserve role,
+    // which is a genuine invariant that the same empty result would otherwise
+    // hide.
+    if vault.kamino_markets.is_empty() {
+        return Ok(FleetPositionSweepTaskOutcome::Superseded(
+            "active policy no longer declares a Kamino market".to_owned(),
+        ));
+    }
     let reserves = universe
         .reserves
         .iter()
@@ -4393,7 +4518,7 @@ async fn reconcile_fleet_position_sweep_vault(
         .client
         .current_positions(vault.id)
         .await
-        .map_err(|error| FleetPositionSweepVaultError::transport(error.to_string()))?
+        .map_err(|error| FleetPositionSweepVaultError::from_orchestrator(&error))?
         .into_iter()
         .filter(|position| position.has_value || position.amount_raw > 0)
         .map(|position| position.reserve)
@@ -4410,7 +4535,7 @@ async fn reconcile_fleet_position_sweep_vault(
     let preview =
         load_chain_reconcile_preview_from_runtime(runtime, &vault, &reserves, None, None, false)
             .await
-            .map_err(|error| FleetPositionSweepVaultError::transport(error.to_string()))?;
+            .map_err(|error| FleetPositionSweepVaultError::from_chain_read(error.as_ref()))?;
     let universe_by_reserve = universe
         .reserves
         .iter()
@@ -4456,7 +4581,7 @@ async fn reconcile_fleet_position_sweep_vault(
         Err(OrchestratorError::StaleVaultObservation { .. }) => {
             Ok(FleetPositionSweepTaskOutcome::Stale)
         }
-        Err(error) => Err(FleetPositionSweepVaultError::transport(error.to_string())),
+        Err(error) => Err(FleetPositionSweepVaultError::from_orchestrator(&error)),
     }
 }
 
@@ -14760,19 +14885,22 @@ fn get_multiple_accounts_batched(
             },
         )?;
         if response.value.len() != chunk.len() {
-            return Err(format!(
+            // An upstream response that violates the RPC contract, not evidence
+            // about the accounts themselves. Typed as transient so callers class
+            // it with the provider faults it belongs to.
+            return Err(TransientChainReadError(format!(
                 "getMultipleAccounts returned {} values for {} requested accounts",
                 response.value.len(),
                 chunk.len()
-            )
+            ))
             .into());
         }
         let context_slot = response.context.slot;
         if let Some(minimum) = min_context_slot {
             if context_slot < minimum {
-                return Err(format!(
+                return Err(TransientChainReadError(format!(
                     "getMultipleAccounts context slot {context_slot} is older than required minContextSlot {minimum}"
-                )
+                ))
                 .into());
             }
         }
@@ -15198,9 +15326,12 @@ async fn load_chain_reconcile_preview_from_runtime(
             );
         }
         if let Some(reserve) = identity_drift {
-            return Err(format!(
+            // The refreshed summary is already cached above, so the next attempt
+            // derives from it and succeeds. Typed so the fleet sweep does not
+            // report a self-clearing cache generation change as an invariant.
+            return Err(TransientChainReadError(format!(
                 "reserve {reserve} address-derivation identity changed during coherent account read; retry with the refreshed cache"
-            )
+            ))
             .into());
         }
 
