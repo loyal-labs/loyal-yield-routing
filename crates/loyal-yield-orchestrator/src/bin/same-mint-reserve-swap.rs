@@ -102,7 +102,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use solana_client::{
-    rpc_client::RpcClient, rpc_config::RpcAccountInfoConfig, rpc_request::RpcRequest,
+    client_error::ClientError, rpc_client::RpcClient, rpc_config::RpcAccountInfoConfig,
+    rpc_request::RpcRequest,
 };
 use solana_rpc_client::mock_sender::MocksMap;
 #[allow(deprecated)]
@@ -184,6 +185,15 @@ const FLEET_POSITION_SWEEP_TRANSPORT_ALERT_AFTER_FAILURES: u32 = 12;
 /// threshold above is crossed, so a long outage stays visible without
 /// reproducing one operational error per retry.
 const FLEET_POSITION_SWEEP_TRANSPORT_ALERT_REPEAT_FAILURES: u32 = 60;
+/// Consecutive per-vault transport failures before the first operational error
+/// is emitted. Unlike the initialization counter above this one is not driven by
+/// a retry timer: a broad upstream outage fails every vault in the concurrent
+/// batch and crosses this threshold within a single sweep, while an isolated
+/// vault flake resets it on the next refreshed vault.
+const FLEET_POSITION_SWEEP_VAULT_TRANSPORT_ALERT_AFTER_FAILURES: u32 = 12;
+/// Additional consecutive per-vault transport failures between repeat emissions
+/// once the threshold above is crossed.
+const FLEET_POSITION_SWEEP_VAULT_TRANSPORT_ALERT_REPEAT_FAILURES: u32 = 60;
 const CURRENT_MARKET_EPOCH_STALE_PREFIX: &str = "current_market_epoch_stale:";
 /// Cross-process admission cap, not a claim of physical transaction
 /// independence. Each route also owns a vault-specific semantic key. Exact
@@ -452,19 +462,67 @@ const SQLSTATE_SIGNED_ROUTE_COMMIT_LIFETIME_FENCE: &str = "LY002";
 /// page, so it is reported without an operational error. Anything else — a
 /// pool timeout, a store invariant, an unexpected state — stays loud.
 fn is_commit_lifetime_fence_rejection(error: &(dyn Error + 'static)) -> bool {
-    let mut current = Some(error);
-    while let Some(source) = current {
-        if let Some(OrchestratorError::Sqlx(sqlx_error)) =
-            source.downcast_ref::<OrchestratorError>()
-        {
-            if let Some(code) = sqlx_error.as_database_error().and_then(|db| db.code()) {
-                return code == SQLSTATE_OPPORTUNITY_COMMIT_LIFETIME_FENCE
-                    || code == SQLSTATE_SIGNED_ROUTE_COMMIT_LIFETIME_FENCE;
+    error_chain(error)
+        .find_map(|source| match source.downcast_ref::<OrchestratorError>() {
+            Some(OrchestratorError::Sqlx(sqlx_error)) => {
+                sqlx_error.as_database_error().and_then(|db| db.code())
             }
-        }
-        current = source.source();
-    }
-    false
+            _ => None,
+        })
+        .is_some_and(|code| {
+            code == SQLSTATE_OPPORTUNITY_COMMIT_LIFETIME_FENCE
+                || code == SQLSTATE_SIGNED_ROUTE_COMMIT_LIFETIME_FENCE
+        })
+}
+
+/// Iterates an error and everything it wraps, so classification reads the whole
+/// chain instead of only the outermost type.
+fn error_chain<'a>(
+    error: &'a (dyn Error + 'static),
+) -> impl Iterator<Item = &'a (dyn Error + 'static)> {
+    std::iter::successors(Some(error), |source| (*source).source())
+}
+
+/// A chain read that failed for a reason the next attempt clears on its own,
+/// carried as a distinct type so callers classify it without matching on
+/// message text.
+///
+/// The chain preview path returns `Box<dyn Error>` and mixes RPC faults with
+/// owner and identity assertions. Transport is recognized by error type there:
+/// RPC faults arrive as [`ClientError`], and the few self-clearing failures
+/// raised by this binary use this type. Everything else is an invariant.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct TransientChainReadError(String);
+
+/// Advances a consecutive-transport-failure counter and reports whether this
+/// occurrence should emit an operational error.
+///
+/// The first emission waits for `alert_after` consecutive failures so a passing
+/// upstream outage stays quiet, then repeats every `alert_repeat` failures so a
+/// sustained one stays visible without one error per attempt. Shared by the
+/// sweep's initialization and per-vault counters, which run the same cadence
+/// over different units of work.
+fn record_transport_failure(counter: &mut u32, alert_after: u32, alert_repeat: u32) -> bool {
+    *counter = counter.saturating_add(1);
+    let elapsed = counter.saturating_sub(alert_after);
+    *counter >= alert_after && elapsed % alert_repeat == 0
+}
+
+/// Reports whether a database failure means the query no longer matches the
+/// schema, which no amount of retrying repairs. Everything else — pool
+/// timeouts, dropped connections, transient server errors — is connectivity.
+///
+/// Shared by the sweep's initialization and per-vault sites so both classify
+/// the same database failure the same way.
+fn sqlx_failure_is_invariant(error: &loyal_yield_orchestrator::sqlx::Error) -> bool {
+    matches!(
+        error,
+        loyal_yield_orchestrator::sqlx::Error::ColumnDecode { .. }
+            | loyal_yield_orchestrator::sqlx::Error::ColumnNotFound(_)
+            | loyal_yield_orchestrator::sqlx::Error::ColumnIndexOutOfBounds { .. }
+            | loyal_yield_orchestrator::sqlx::Error::TypeNotFound { .. }
+    )
 }
 
 /// Separates sweep initialization faults that clear on their own from faults
@@ -514,14 +572,10 @@ impl FleetPositionSweepInitError {
     /// Column and type failures mean the query no longer matches the schema,
     /// which no amount of retrying repairs. Everything else is connectivity.
     fn from_sqlx(error: loyal_yield_orchestrator::sqlx::Error) -> Self {
-        match error {
-            loyal_yield_orchestrator::sqlx::Error::ColumnDecode { .. }
-            | loyal_yield_orchestrator::sqlx::Error::ColumnNotFound(_)
-            | loyal_yield_orchestrator::sqlx::Error::ColumnIndexOutOfBounds { .. }
-            | loyal_yield_orchestrator::sqlx::Error::TypeNotFound { .. } => {
-                Self::invariant(error.to_string())
-            }
-            other => Self::transport(other.to_string()),
+        if sqlx_failure_is_invariant(&error) {
+            Self::invariant(error.to_string())
+        } else {
+            Self::transport(error.to_string())
         }
     }
 
@@ -552,6 +606,7 @@ struct FleetPositionSweepMetrics {
     refreshed: u64,
     failed: u64,
     stale: u64,
+    superseded: u64,
     duration_milliseconds: u64,
     complete: bool,
     error: Option<String>,
@@ -569,6 +624,7 @@ struct FleetPositionSweepRun {
     refreshed: u64,
     failed: u64,
     stale: u64,
+    superseded: u64,
 }
 
 impl FleetPositionSweepRun {
@@ -584,6 +640,7 @@ impl FleetPositionSweepRun {
             refreshed: self.refreshed,
             failed: self.failed,
             stale: self.stale,
+            superseded: self.superseded,
             duration_milliseconds: u64::try_from(self.started.elapsed().as_millis())
                 .unwrap_or(u64::MAX),
             complete,
@@ -599,6 +656,7 @@ struct FleetPositionSweepCoordinator {
     active: Option<FleetPositionSweepRun>,
     latest: Option<FleetPositionSweepMetrics>,
     consecutive_transport_failures: u32,
+    consecutive_vault_transport_failures: u32,
 }
 
 impl FleetPositionSweepCoordinator {
@@ -610,6 +668,7 @@ impl FleetPositionSweepCoordinator {
             active: None,
             latest: None,
             consecutive_transport_failures: 0,
+            consecutive_vault_transport_failures: 0,
         }
     }
 
@@ -646,6 +705,7 @@ impl FleetPositionSweepCoordinator {
             refreshed: 0,
             failed: 0,
             stale: 0,
+            superseded: 0,
             duration_milliseconds: 0,
             complete: false,
             error: Some(error),
@@ -659,16 +719,11 @@ impl FleetPositionSweepCoordinator {
                 self.consecutive_transport_failures = 0;
                 true
             }
-            FleetPositionSweepInitFailureKind::Transport => {
-                self.consecutive_transport_failures =
-                    self.consecutive_transport_failures.saturating_add(1);
-                let elapsed = self
-                    .consecutive_transport_failures
-                    .saturating_sub(FLEET_POSITION_SWEEP_TRANSPORT_ALERT_AFTER_FAILURES);
-                self.consecutive_transport_failures
-                    >= FLEET_POSITION_SWEEP_TRANSPORT_ALERT_AFTER_FAILURES
-                    && elapsed % FLEET_POSITION_SWEEP_TRANSPORT_ALERT_REPEAT_FAILURES == 0
-            }
+            FleetPositionSweepInitFailureKind::Transport => record_transport_failure(
+                &mut self.consecutive_transport_failures,
+                FLEET_POSITION_SWEEP_TRANSPORT_ALERT_AFTER_FAILURES,
+                FLEET_POSITION_SWEEP_TRANSPORT_ALERT_REPEAT_FAILURES,
+            ),
         }
     }
 
@@ -678,6 +733,38 @@ impl FleetPositionSweepCoordinator {
 
     fn consecutive_transport_failures(&self) -> u32 {
         self.consecutive_transport_failures
+    }
+
+    /// Records one failed vault refresh and reports whether this occurrence
+    /// should emit an operational error.
+    ///
+    /// Invariant failures always emit because each one names a specific vault
+    /// whose policy or on-chain identity needs inspection. Transport failures
+    /// emit only once enough consecutive vaults fail to distinguish an upstream
+    /// outage from the isolated flake that the next sweep repairs on its own.
+    fn record_vault_failure(&mut self, kind: FleetPositionSweepVaultFailureKind) -> bool {
+        match kind {
+            FleetPositionSweepVaultFailureKind::Invariant => {
+                self.consecutive_vault_transport_failures = 0;
+                true
+            }
+            FleetPositionSweepVaultFailureKind::Transport => record_transport_failure(
+                &mut self.consecutive_vault_transport_failures,
+                FLEET_POSITION_SWEEP_VAULT_TRANSPORT_ALERT_AFTER_FAILURES,
+                FLEET_POSITION_SWEEP_VAULT_TRANSPORT_ALERT_REPEAT_FAILURES,
+            ),
+        }
+    }
+
+    /// Any vault that reached a verdict without a transport fault ends the
+    /// consecutive run, so the threshold below only ever measures an
+    /// uninterrupted stretch of upstream unavailability.
+    fn record_vault_transport_success(&mut self) {
+        self.consecutive_vault_transport_failures = 0;
+    }
+
+    fn consecutive_vault_transport_failures(&self) -> u32 {
+        self.consecutive_vault_transport_failures
     }
 
     fn record_progress(&mut self) {
@@ -3695,11 +3782,115 @@ struct FleetPositionSweepTaskResult {
     outcome: FleetPositionSweepTaskOutcome,
 }
 
+/// Separates per-vault sweep faults that clear on their own from faults that
+/// need a person, mirroring [`FleetPositionSweepInitFailureKind`] at the
+/// initialization site.
+///
+/// Both used to share one retryable operational error alongside the frozen-
+/// cohort races now reported as [`FleetPositionSweepTaskOutcome::Superseded`],
+/// so an upstream RPC blip and a chain position outside the policy's stable
+/// universe were indistinguishable to an operator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FleetPositionSweepVaultFailureKind {
+    /// Upstream RPC or database unavailability. Retrying is the whole recovery.
+    Transport,
+    /// The policy, catalog reserve roles, or on-chain position identity cannot
+    /// support a refresh. Retrying alone will not clear this.
+    Invariant,
+}
+
+impl FleetPositionSweepVaultFailureKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Transport => "transport",
+            Self::Invariant => "invariant",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct FleetPositionSweepVaultError {
+    kind: FleetPositionSweepVaultFailureKind,
+    error: String,
+}
+
+impl FleetPositionSweepVaultError {
+    fn of_kind(kind: FleetPositionSweepVaultFailureKind, error: impl Into<String>) -> Self {
+        Self {
+            kind,
+            error: redacted_external_error(&error.into()),
+        }
+    }
+
+    fn transport(error: impl Into<String>) -> Self {
+        Self::of_kind(FleetPositionSweepVaultFailureKind::Transport, error)
+    }
+
+    fn invariant(error: impl Into<String>) -> Self {
+        Self::of_kind(FleetPositionSweepVaultFailureKind::Invariant, error)
+    }
+
+    /// Classifies a database failure behind the shared schema-versus-
+    /// connectivity rule instead of assuming every database fault is transient.
+    fn from_sqlx(error: &loyal_yield_orchestrator::sqlx::Error) -> Self {
+        if sqlx_failure_is_invariant(error) {
+            Self::invariant(error.to_string())
+        } else {
+            Self::transport(error.to_string())
+        }
+    }
+
+    /// Classifies a store failure by variant. `OrchestratorError` is typed, so
+    /// only the database arm needs the connectivity rule; every other variant
+    /// reports a consistency or conversion fault that retrying cannot repair
+    /// and that must stay independently visible.
+    ///
+    /// `StaleVaultObservation` never reaches here: the caller reports it as
+    /// [`FleetPositionSweepTaskOutcome::Stale`] before classification.
+    fn from_orchestrator(error: &OrchestratorError) -> Self {
+        match error {
+            OrchestratorError::Sqlx(sqlx_error) => Self::from_sqlx(sqlx_error),
+            other => Self::invariant(other.to_string()),
+        }
+    }
+
+    /// Classifies a chain-read failure that arrived as an untyped boxed error.
+    ///
+    /// The preview path fuses RPC transport with owner, mint, market, and
+    /// obligation-identity assertions. Only error types known to clear on their
+    /// own count as transport; anything else stays an invariant so a genuine
+    /// chain-identity fault keeps paging per occurrence instead of being
+    /// absorbed by the consecutive-transport threshold, which an isolated vault
+    /// would never cross.
+    fn from_chain_read(error: &(dyn Error + 'static)) -> Self {
+        Self::of_kind(classify_chain_read_error(error), error.to_string())
+    }
+}
+
+/// Reads the whole source chain so a transport fault stays transport even when
+/// the preview path wraps it on the way out.
+fn classify_chain_read_error(error: &(dyn Error + 'static)) -> FleetPositionSweepVaultFailureKind {
+    let transport = error_chain(error).any(|source| {
+        source.downcast_ref::<ClientError>().is_some()
+            || source.downcast_ref::<TransientChainReadError>().is_some()
+    });
+    if transport {
+        FleetPositionSweepVaultFailureKind::Transport
+    } else {
+        FleetPositionSweepVaultFailureKind::Invariant
+    }
+}
+
 #[derive(Debug)]
 enum FleetPositionSweepTaskOutcome {
     Refreshed,
     Stale,
-    Failed(String),
+    /// The frozen cohort no longer describes this vault: it was deactivated,
+    /// its policy was replaced, or its identity changed between cohort freeze
+    /// and refresh. The pre-RPC re-read exists to catch exactly this, so it is
+    /// the guard succeeding rather than a failure to report.
+    Superseded(String),
+    Failed(FleetPositionSweepVaultError),
 }
 
 /// Advances at most one bounded RPC wave. The outer reconciler always claims
@@ -3816,11 +4007,42 @@ async fn advance_fleet_position_sweep(
     )
     .await;
 
+    // The alert decision reads and mutates the coordinator's consecutive-failure
+    // run, so it is resolved before the active run is borrowed mutably below.
+    // The streak is captured per outcome rather than once after the batch: a
+    // later vault in the same batch resets or advances the counter, so a single
+    // post-batch read would stamp every record with a value that does not
+    // explain the decision the record reports.
+    let outcomes = outcomes
+        .into_iter()
+        .map(|outcome| {
+            let emit_operational_error = match &outcome.outcome {
+                FleetPositionSweepTaskOutcome::Refreshed
+                | FleetPositionSweepTaskOutcome::Stale
+                | FleetPositionSweepTaskOutcome::Superseded(_) => {
+                    coordinator.record_vault_transport_success();
+                    false
+                }
+                FleetPositionSweepTaskOutcome::Failed(error) => {
+                    coordinator.record_vault_failure(error.kind)
+                }
+            };
+            let consecutive_vault_transport_failures =
+                coordinator.consecutive_vault_transport_failures();
+            (
+                outcome,
+                emit_operational_error,
+                consecutive_vault_transport_failures,
+            )
+        })
+        .collect::<Vec<_>>();
+
     if let Some(run) = coordinator.active.as_mut() {
         run.next_index = run.next_index.saturating_add(outcomes.len());
         run.cursor_vault_id = batch_cursor.or(run.cursor_vault_id);
-        for outcome in outcomes {
+        for (outcome, emit_operational_error, consecutive_vault_transport_failures) in outcomes {
             run.processed = run.processed.saturating_add(1);
+            let vault_id = outcome.vault_id.map(VaultId::as_i64);
             match outcome.outcome {
                 FleetPositionSweepTaskOutcome::Refreshed => {
                     run.refreshed = run.refreshed.saturating_add(1);
@@ -3828,23 +4050,55 @@ async fn advance_fleet_position_sweep(
                 FleetPositionSweepTaskOutcome::Stale => {
                     run.stale = run.stale.saturating_add(1);
                 }
+                // The frozen cohort going out of date is the pre-RPC re-read
+                // doing its job, so this is recorded at info and never pages.
+                FleetPositionSweepTaskOutcome::Superseded(reason) => {
+                    run.superseded = run.superseded.saturating_add(1);
+                    println!(
+                        "{}",
+                        json!({
+                            "status": "fleet_position_sweep_vault_superseded",
+                            "sweepId": run.sweep_id,
+                            "vaultId": vault_id,
+                            "reason": reason,
+                            "stateChanged": false,
+                            "signerLoaded": false,
+                            "transactionsSent": false,
+                        })
+                    );
+                }
                 FleetPositionSweepTaskOutcome::Failed(error) => {
                     run.failed = run.failed.saturating_add(1);
-                    OperationalError::new(
-                        "rebalance_vault_position_refresh_failed",
-                        "refresh_rebalance_vault_position",
-                        "fleet rebalance vault position refresh failed during the sweep",
-                    )
-                    .retryable(true)
-                    .recovery_required(false)
-                    .emit();
+                    if emit_operational_error {
+                        let invariant =
+                            matches!(error.kind, FleetPositionSweepVaultFailureKind::Invariant);
+                        let (code, summary) = if invariant {
+                            (
+                                "rebalance_vault_position_invariant_blocked",
+                                "fleet rebalance vault position refresh hit a policy or chain identity invariant",
+                            )
+                        } else {
+                            (
+                                "rebalance_vault_position_refresh_failed",
+                                "fleet rebalance vault position refresh failed during the sweep",
+                            )
+                        };
+                        OperationalError::new(code, "refresh_rebalance_vault_position", summary)
+                            .retryable(!invariant)
+                            .recovery_required(invariant)
+                            .emit();
+                    }
                     eprintln!(
                         "{}",
                         json!({
                             "status": "fleet_position_sweep_vault_failed",
                             "sweepId": run.sweep_id,
-                            "vaultId": outcome.vault_id.map(VaultId::as_i64),
-                            "error": error,
+                            "vaultId": vault_id,
+                            "kind": error.kind.as_str(),
+                            "error": error.error,
+                            "consecutiveVaultTransportFailures":
+                                consecutive_vault_transport_failures,
+                            "operationalErrorEmitted": emit_operational_error,
                             "stateChanged": false,
                             "signerLoaded": false,
                             "transactionsSent": false,
@@ -3910,9 +4164,18 @@ async fn initialize_fleet_position_sweep(
         refreshed: 0,
         failed: 0,
         stale: 0,
+        superseded: 0,
     })
 }
 
+/// Freezes the ordered cohort for one sweep.
+///
+/// Every predicate in the WHERE clause below is re-checked per vault in
+/// `reconcile_fleet_position_sweep_vault` immediately before its RPC work, and
+/// a predicate that no longer holds there is reported as `Superseded` instead
+/// of a failure. Changing the predicates here without updating that recheck
+/// makes the sweep page on the expected mid-sweep policy change the recheck
+/// exists to absorb.
 async fn load_fleet_position_sweep_vaults(
     pool: &PgPool,
     enabled_mints: &[String],
@@ -4125,11 +4388,13 @@ async fn reconcile_fleet_position_sweep_batch(
                 }));
                 let outcome = match attempt {
                     Ok(Ok(outcome)) => outcome,
-                    Ok(Err(error)) => {
-                        FleetPositionSweepTaskOutcome::Failed(redacted_external_error(&error))
-                    }
+                    Ok(Err(error)) => FleetPositionSweepTaskOutcome::Failed(error),
+                    // A panic is a defect in the refresh path itself, not
+                    // upstream unavailability, so it stays independently loud.
                     Err(_) => FleetPositionSweepTaskOutcome::Failed(
-                        "position sweep task panicked before its monotonic write".to_owned(),
+                        FleetPositionSweepVaultError::invariant(
+                            "position sweep task panicked before its monotonic write",
+                        ),
                     ),
                 };
                 FleetPositionSweepTaskResult {
@@ -4145,9 +4410,9 @@ async fn reconcile_fleet_position_sweep_batch(
             Ok(result) => results.push(result),
             Err(error) => results.push(FleetPositionSweepTaskResult {
                 vault_id: None,
-                outcome: FleetPositionSweepTaskOutcome::Failed(redacted_external_error(
-                    &error.to_string(),
-                )),
+                outcome: FleetPositionSweepTaskOutcome::Failed(
+                    FleetPositionSweepVaultError::invariant(error.to_string()),
+                ),
             }),
         }
     }
@@ -4160,28 +4425,53 @@ async fn reconcile_fleet_position_sweep_vault(
     universe: &FleetPositionSweepUniverse,
     sweep_id: u64,
     started_at: DateTime<Utc>,
-) -> Result<FleetPositionSweepTaskOutcome, String> {
+) -> Result<FleetPositionSweepTaskOutcome, FleetPositionSweepVaultError> {
     // The ordered cohort is frozen for deterministic completion, but policy
     // eligibility is re-read immediately before RPC work so a mid-sweep
     // deactivate or policy replacement cannot be projected with stale rules.
+    // Every guard below that re-checks a cohort-selection predicate reports
+    // Superseded rather than a failure: the vault matched the predicate when the
+    // cohort was frozen, so a mismatch now means the row changed underneath this
+    // sweep. Guards that check conditions the cohort query never constrained are
+    // genuine invariants.
     let vault = load_active_vault(
         &runtime.pool,
         &entry.vault.settings,
         entry.vault.vault_index,
     )
     .await
-    .map_err(|error| error.to_string())?
-    .ok_or_else(|| "sweep vault is no longer active under an active policy".to_owned())?;
+    .map_err(|error| FleetPositionSweepVaultError::from_sqlx(&error))?;
+    let Some(vault) = vault else {
+        return Ok(FleetPositionSweepTaskOutcome::Superseded(
+            "sweep vault is no longer active under an active policy".to_owned(),
+        ));
+    };
     if vault.id != entry.vault.id {
-        return Err("active sweep vault identity changed during the full sweep".to_owned());
+        return Ok(FleetPositionSweepTaskOutcome::Superseded(
+            "active sweep vault identity changed during the full sweep".to_owned(),
+        ));
     }
-    validate_vault_policy(&vault).map_err(|error| error.to_string())?;
+    // Cohort predicate `$2 = ANY(p.route_modes)`. This is the same condition
+    // `validate_vault_policy` enforces elsewhere, checked inline instead of
+    // through it because leaving the cohort mid-sweep is a policy replacement to
+    // report rather than an invariant to page on.
+    if !vault
+        .route_modes
+        .iter()
+        .any(|mode| mode == SAME_MINT_ROUTE_MODE)
+    {
+        return Ok(FleetPositionSweepTaskOutcome::Superseded(
+            "active policy no longer allows the same-mint route mode".to_owned(),
+        ));
+    }
     if !vault
         .delegated_signers
         .iter()
         .any(|signer| signer == STANDARD_POLICY_AUTHORITY)
     {
-        return Err("active policy no longer contains the standard delegated signer".to_owned());
+        return Ok(FleetPositionSweepTaskOutcome::Superseded(
+            "active policy no longer contains the standard delegated signer".to_owned(),
+        ));
     }
     if !vault
         .stable_mints
@@ -4192,7 +4482,19 @@ async fn reconcile_fleet_position_sweep_vault(
             .iter()
             .any(|mint| universe.enabled_mints.contains(mint))
     {
-        return Err("active policy is no longer in the enabled stable-mint cohort".to_owned());
+        return Ok(FleetPositionSweepTaskOutcome::Superseded(
+            "active policy is no longer in the enabled stable-mint cohort".to_owned(),
+        ));
+    }
+    // Cohort predicate `cardinality(p.kamino_markets) > 0`. Checked before the
+    // reserve intersection below so a policy that lost its markets mid-sweep is
+    // separated from a policy whose markets have no shared-catalog reserve role,
+    // which is a genuine invariant that the same empty result would otherwise
+    // hide.
+    if vault.kamino_markets.is_empty() {
+        return Ok(FleetPositionSweepTaskOutcome::Superseded(
+            "active policy no longer declares a Kamino market".to_owned(),
+        ));
     }
     let reserves = universe
         .reserves
@@ -4207,13 +4509,15 @@ async fn reconcile_fleet_position_sweep_vault(
         .map(|reserve| reserve.reserve.clone())
         .collect::<Vec<_>>();
     if reserves.is_empty() {
-        return Err("active policy has no role-validated shared-catalog reserve".to_owned());
+        return Err(FleetPositionSweepVaultError::invariant(
+            "active policy has no role-validated shared-catalog reserve",
+        ));
     }
     let current_reserves = runtime
         .client
         .current_positions(vault.id)
         .await
-        .map_err(|error| error.to_string())?
+        .map_err(|error| FleetPositionSweepVaultError::from_orchestrator(&error))?
         .into_iter()
         .filter(|position| position.has_value || position.amount_raw > 0)
         .map(|position| position.reserve)
@@ -4222,16 +4526,15 @@ async fn reconcile_fleet_position_sweep_vault(
         .iter()
         .any(|reserve| !reserves.contains(reserve))
     {
-        return Err(
-            "a held current reserve is outside the active policy's role-validated stable universe"
-                .to_owned(),
-        );
+        return Err(FleetPositionSweepVaultError::invariant(
+            "a held current reserve is outside the active policy's role-validated stable universe",
+        ));
     }
 
     let preview =
         load_chain_reconcile_preview_from_runtime(runtime, &vault, &reserves, None, None, false)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| FleetPositionSweepVaultError::from_chain_read(error.as_ref()))?;
     let universe_by_reserve = universe
         .reserves
         .iter()
@@ -4241,8 +4544,9 @@ async fn reconcile_fleet_position_sweep_vault(
         let reserve = universe_by_reserve
             .get(position.reserve.as_str())
             .ok_or_else(|| {
-                "chain obligation references a reserve without an active shared-catalog reserve role"
-                    .to_owned()
+                FleetPositionSweepVaultError::invariant(
+                    "chain obligation references a reserve without an active shared-catalog reserve role",
+                )
             })?;
         if position.market != reserve.market
             || position.liquidity_mint != reserve.liquidity_mint
@@ -4252,14 +4556,14 @@ async fn reconcile_fleet_position_sweep_vault(
                 .kamino_liquidity_mints
                 .contains(&position.liquidity_mint)
         {
-            return Err(
-                "chain position identity falls outside the active policy's stable reserve universe"
-                    .to_owned(),
-            );
+            return Err(FleetPositionSweepVaultError::invariant(
+                "chain position identity falls outside the active policy's stable reserve universe",
+            ));
         }
     }
 
-    let mut state = chain_preview_reconciled_state(&preview).map_err(|error| error.to_string())?;
+    let mut state = chain_preview_reconciled_state(&preview)
+        .map_err(|error| FleetPositionSweepVaultError::invariant(error.to_string()))?;
     state.context = json!({
         "kind": "fleet_position_sweep",
         "cluster": universe.cluster,
@@ -4276,7 +4580,7 @@ async fn reconcile_fleet_position_sweep_vault(
         Err(OrchestratorError::StaleVaultObservation { .. }) => {
             Ok(FleetPositionSweepTaskOutcome::Stale)
         }
-        Err(error) => Err(error.to_string()),
+        Err(error) => Err(FleetPositionSweepVaultError::from_orchestrator(&error)),
     }
 }
 
@@ -14580,19 +14884,22 @@ fn get_multiple_accounts_batched(
             },
         )?;
         if response.value.len() != chunk.len() {
-            return Err(format!(
+            // An upstream response that violates the RPC contract, not evidence
+            // about the accounts themselves. Typed as transient so callers class
+            // it with the provider faults it belongs to.
+            return Err(TransientChainReadError(format!(
                 "getMultipleAccounts returned {} values for {} requested accounts",
                 response.value.len(),
                 chunk.len()
-            )
+            ))
             .into());
         }
         let context_slot = response.context.slot;
         if let Some(minimum) = min_context_slot {
             if context_slot < minimum {
-                return Err(format!(
+                return Err(TransientChainReadError(format!(
                     "getMultipleAccounts context slot {context_slot} is older than required minContextSlot {minimum}"
-                )
+                ))
                 .into());
             }
         }
@@ -15018,9 +15325,12 @@ async fn load_chain_reconcile_preview_from_runtime(
             );
         }
         if let Some(reserve) = identity_drift {
-            return Err(format!(
+            // The refreshed summary is already cached above, so the next attempt
+            // derives from it and succeeds. Typed so the fleet sweep does not
+            // report a self-clearing cache generation change as an invariant.
+            return Err(TransientChainReadError(format!(
                 "reserve {reserve} address-derivation identity changed during coherent account read; retry with the refreshed cache"
-            )
+            ))
             .into());
         }
 
