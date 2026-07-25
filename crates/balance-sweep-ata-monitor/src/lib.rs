@@ -40,7 +40,9 @@ use tokio::{
 pub mod ata_recheck;
 pub mod earn_apy;
 
-pub use ata_recheck::{spawn_ata_recheck_worker, AtaRecheckConfig, AtaRecheckHandle};
+pub use ata_recheck::{
+    record_missing_ata_zero_balance, spawn_ata_recheck_worker, AtaRecheckConfig, AtaRecheckHandle,
+};
 
 type AccountNotification = solana_client::rpc_response::Response<UiAccount>;
 
@@ -273,10 +275,14 @@ pub async fn seed_current_balances(
         }
         for (target, account) in chunk.iter().zip(fetched) {
             let Some(account) = account else {
+                // The account is gone, which RPC has just confirmed at a known
+                // slot. Recording it here repairs targets whose closing frame
+                // was never observed, including rechecks lost to a restart.
                 tracing::warn!(
                     wallet_usdc_ata = %target.wallet_usdc_ata,
-                    "skipping missing wallet ATA seed account"
+                    "recording zero balance for missing wallet ATA seed account"
                 );
+                record_missing_ata_zero_balance(target, seed_observed_slot, sink).await?;
                 continue;
             };
             process_account_update(
