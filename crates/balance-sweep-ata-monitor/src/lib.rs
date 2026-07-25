@@ -37,7 +37,10 @@ use tokio::{
     time,
 };
 
+pub mod ata_recheck;
 pub mod earn_apy;
+
+pub use ata_recheck::{spawn_ata_recheck_worker, AtaRecheckConfig, AtaRecheckHandle};
 
 type AccountNotification = solana_client::rpc_response::Response<UiAccount>;
 
@@ -125,6 +128,31 @@ pub enum AtaUpdateEvent {
     Stopped {
         account: Pubkey,
     },
+}
+
+/// Why an update could not become an observation for its target.
+///
+/// Both cases are per-account facts about on-chain state, not monitor
+/// failures, so they must never take the session down with them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtaUpdateSkip {
+    NonSplTokenOwner { owner: Pubkey },
+    UnexpectedMint { mint: Pubkey },
+}
+
+impl AtaUpdateSkip {
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::NonSplTokenOwner { .. } => "non_spl_token_owner",
+            Self::UnexpectedMint { .. } => "unexpected_mint",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtaUpdateOutcome {
+    Recorded(ObservationInsertOutcome),
+    Skipped(AtaUpdateSkip),
 }
 
 pub trait AtaUpdateSource {
@@ -281,17 +309,16 @@ pub async fn process_account_update(
     txn_signature: Option<String>,
     received_at: DateTime<Utc>,
     sink: &impl AtaObservationSink,
-) -> Result<ObservationInsertOutcome> {
+) -> Result<AtaUpdateOutcome> {
     if owner != spl_token::id() {
         tracing::warn!(
             wallet_usdc_ata = %target.wallet_usdc_ata,
             owner = %owner,
             "skipping wallet ATA update owned by non-SPL-token program"
         );
-        bail!(
-            "wallet ATA {} owner is not SPL Token",
-            target.wallet_usdc_ata
-        );
+        return Ok(AtaUpdateOutcome::Skipped(AtaUpdateSkip::NonSplTokenOwner {
+            owner,
+        }));
     }
     let snapshot = decode_spl_token_account(&data)?;
     if snapshot.mint != USDC_MINT {
@@ -300,7 +327,9 @@ pub async fn process_account_update(
             mint = %snapshot.mint,
             "skipping wallet ATA update for non-USDC mint"
         );
-        bail!("wallet ATA {} mint is not USDC", target.wallet_usdc_ata);
+        return Ok(AtaUpdateOutcome::Skipped(AtaUpdateSkip::UnexpectedMint {
+            mint: snapshot.mint,
+        }));
     }
     let hash = account_data_hash(&data);
     let raw_account_data_base64 = raw_account_data_base64(&data);
@@ -334,7 +363,8 @@ pub async fn process_account_update(
         }),
         received_at,
     };
-    sink.record_observation(observation).await
+    let outcome = sink.record_observation(observation).await?;
+    Ok(AtaUpdateOutcome::Recorded(outcome))
 }
 
 pub async fn run_event_loop(
@@ -342,6 +372,7 @@ pub async fn run_event_loop(
     targets: HashMap<Pubkey, AtaTarget>,
     sink: impl AtaObservationSink,
     running: Arc<AtomicBool>,
+    recheck: Option<AtaRecheckHandle>,
 ) -> Result<()> {
     while running.load(Ordering::Relaxed) {
         let Some(event) = rx.recv().await else {
@@ -370,7 +401,7 @@ pub async fn run_event_loop(
                 source,
                 "writing raw wallet ATA observation"
             );
-            process_account_update(
+            let outcome = process_account_update(
                 target,
                 lamports,
                 slot,
@@ -383,6 +414,20 @@ pub async fn run_event_loop(
                 &sink,
             )
             .await?;
+            // The streamed frame cannot be trusted to describe the account's
+            // settled state, so hand the target to the recheck queue and keep
+            // serving every other target on this session.
+            if let AtaUpdateOutcome::Skipped(skip) = outcome {
+                match recheck.as_ref() {
+                    Some(recheck) => recheck.enqueue(target, skip, slot),
+                    None => tracing::warn!(
+                        account = %account,
+                        reason = skip.reason(),
+                        slot,
+                        "skipped wallet ATA update without a recheck queue"
+                    ),
+                }
+            }
         }
     }
     Ok(())
