@@ -13,9 +13,9 @@ use balance_sweep_ata_monitor::earn_apy::{
 };
 use balance_sweep_ata_monitor::{
     ata_target_set, diff_ata_target_sets, laserstream_replay_from_slot, run_event_loop,
-    seed_current_balances, AtaTarget, AtaUpdateSource, LaserstreamAtaUpdateSource,
-    SubscriptionConfig, TimescaleAtaConfig, TimescaleAtaObservationSink, TimescaleAtaStream,
-    WebsocketAtaUpdateSource,
+    seed_current_balances, spawn_ata_recheck_worker, AtaRecheckConfig, AtaRecheckHandle, AtaTarget,
+    AtaUpdateSource, LaserstreamAtaUpdateSource, SubscriptionConfig, TimescaleAtaConfig,
+    TimescaleAtaObservationSink, TimescaleAtaStream, WebsocketAtaUpdateSource,
 };
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
@@ -87,6 +87,27 @@ struct Args {
     earn_apy_risk_profiles: String,
     #[arg(long)]
     earn_apy_only: bool,
+    #[arg(
+        long,
+        env = "BALANCE_SWEEP_ATA_RECHECK_DELAY_SECONDS",
+        default_value_t = 30,
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    ata_recheck_delay_seconds: u64,
+    #[arg(
+        long,
+        env = "BALANCE_SWEEP_ATA_RECHECK_RETRY_SECONDS",
+        default_value_t = 30,
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    ata_recheck_retry_seconds: u64,
+    #[arg(
+        long,
+        env = "BALANCE_SWEEP_ATA_RECHECK_MAX_ATTEMPTS",
+        default_value_t = 3,
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    ata_recheck_max_attempts: u32,
 }
 
 struct MonitorSession {
@@ -167,7 +188,19 @@ async fn run() -> Result<()> {
         ));
     }
 
-    supervise_monitor_sessions(args, store, observations, config, targets).await
+    // Owned by the process, not the session, so rechecks queued by a session
+    // still settle after that session is rebuilt.
+    let (recheck, _recheck_task) = spawn_ata_recheck_worker(
+        args.rpc_url.clone(),
+        observations.clone(),
+        AtaRecheckConfig {
+            delay: Duration::from_secs(args.ata_recheck_delay_seconds),
+            retry_backoff: Duration::from_secs(args.ata_recheck_retry_seconds),
+            max_attempts: args.ata_recheck_max_attempts,
+        },
+    );
+
+    supervise_monitor_sessions(args, store, observations, config, targets, recheck).await
 }
 
 async fn connect_earn_apy_refresher(args: &Args) -> Result<EarnApySnapshotRefresher> {
@@ -253,6 +286,7 @@ async fn supervise_monitor_sessions(
     observations: TimescaleAtaObservationSink,
     config: SubscriptionConfig,
     initial_targets: Vec<AtaTarget>,
+    recheck: AtaRecheckHandle,
 ) -> Result<()> {
     let refresh_interval = Duration::from_secs(args.target_refresh_seconds);
     let mut session: Option<MonitorSession> = None;
@@ -316,9 +350,15 @@ async fn supervise_monitor_sessions(
             );
 
             session = Some(
-                start_session(&args, targets, observations.clone(), config)
-                    .await
-                    .context("start balance sweep ATA monitor session")?,
+                start_session(
+                    &args,
+                    targets,
+                    observations.clone(),
+                    config,
+                    recheck.clone(),
+                )
+                .await
+                .context("start balance sweep ATA monitor session")?,
             );
         } else {
             tracing::debug!(
@@ -356,6 +396,7 @@ async fn start_session(
     targets: Vec<AtaTarget>,
     observations: TimescaleAtaObservationSink,
     config: SubscriptionConfig,
+    recheck: AtaRecheckHandle,
 ) -> Result<MonitorSession> {
     let accounts = targets
         .iter()
@@ -399,6 +440,7 @@ async fn start_session(
         target_by_ata,
         observations,
         running.clone(),
+        Some(recheck),
     ));
     Ok(MonitorSession {
         target_atas,
