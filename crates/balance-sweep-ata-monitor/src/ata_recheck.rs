@@ -67,6 +67,15 @@ enum ZeroBalanceCause {
     UnexpectedMint { mint: Pubkey },
 }
 
+impl From<AtaUpdateSkip> for ZeroBalanceCause {
+    fn from(skip: AtaUpdateSkip) -> Self {
+        match skip {
+            AtaUpdateSkip::NonSplTokenOwner { owner } => Self::NonSplTokenOwner { owner },
+            AtaUpdateSkip::UnexpectedMint { mint } => Self::UnexpectedMint { mint },
+        }
+    }
+}
+
 impl ZeroBalanceCause {
     fn as_str(self) -> &'static str {
         match self {
@@ -174,6 +183,33 @@ pub async fn record_missing_ata_zero_balance(
             slot,
             cause: ZeroBalanceCause::AccountMissing,
             data: &[],
+            source: RPC_SEED_SOURCE,
+            stream_slot: None,
+            stream_reason: None,
+        },
+        sink,
+    )
+    .await
+}
+
+/// Records the zero balance of a seeded wallet ATA that holds no routeable USDC.
+///
+/// The account still exists but was reclaimed or holds another mint, so the
+/// seed settles it the same way a recheck would instead of leaving the previous
+/// balance standing.
+pub async fn record_skipped_ata_zero_balance(
+    target: &AtaTarget,
+    slot: u64,
+    skip: AtaUpdateSkip,
+    data: &[u8],
+    sink: &impl AtaObservationSink,
+) -> Result<ObservationInsertOutcome> {
+    record_zero_balance(
+        ZeroBalanceRecord {
+            target,
+            slot,
+            cause: skip.into(),
+            data,
             source: RPC_SEED_SOURCE,
             stream_slot: None,
             stream_reason: None,
@@ -342,12 +378,7 @@ where
             );
             return Ok(());
         }
-        AtaUpdateOutcome::Skipped(AtaUpdateSkip::NonSplTokenOwner { owner }) => {
-            ZeroBalanceCause::NonSplTokenOwner { owner }
-        }
-        AtaUpdateOutcome::Skipped(AtaUpdateSkip::UnexpectedMint { mint }) => {
-            ZeroBalanceCause::UnexpectedMint { mint }
-        }
+        AtaUpdateOutcome::Skipped(skip) => ZeroBalanceCause::from(skip),
     };
     record_zero_balance(
         ZeroBalanceRecord {

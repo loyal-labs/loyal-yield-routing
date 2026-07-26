@@ -41,7 +41,8 @@ pub mod ata_recheck;
 pub mod earn_apy;
 
 pub use ata_recheck::{
-    record_missing_ata_zero_balance, spawn_ata_recheck_worker, AtaRecheckConfig, AtaRecheckHandle,
+    record_missing_ata_zero_balance, record_skipped_ata_zero_balance, spawn_ata_recheck_worker,
+    AtaRecheckConfig, AtaRecheckHandle,
 };
 
 type AccountNotification = solana_client::rpc_response::Response<UiAccount>;
@@ -264,16 +265,24 @@ pub async fn seed_current_balances(
     let rpc = RpcClient::new_with_commitment(rpc_url.to_owned(), CommitmentConfig::confirmed());
     for chunk in targets.chunks(100) {
         let accounts: Vec<Pubkey> = chunk.iter().map(|target| target.wallet_usdc_ata).collect();
+        // Stamp every observation with the slot the read itself happened at. A
+        // separately fetched slot can postdate a recreation this read never
+        // saw, and the slot-monotonic balance row would then keep the zero and
+        // discard the recreation update that follows it.
+        let config = RpcAccountInfoConfig {
+            encoding: Some(UiAccountEncoding::Base64),
+            commitment: Some(CommitmentConfig::confirmed()),
+            data_slice: None,
+            min_context_slot: None,
+        };
         let fetched = rpc
-            .get_multiple_accounts(&accounts)
+            .get_multiple_accounts_with_config(&accounts, config)
             .with_context(|| format!("fetch {} wallet ATA seed accounts", accounts.len()))?;
-        let seed_observed_slot = rpc
-            .get_slot()
-            .context("fetch confirmed seed observed slot")?;
+        let seed_observed_slot = fetched.context.slot;
         if seed_observed_slot == 0 {
             bail!("RPC seed observed slot was zero");
         }
-        for (target, account) in chunk.iter().zip(fetched) {
+        for (target, account) in chunk.iter().zip(fetched.value) {
             let Some(account) = account else {
                 // The account is gone, which RPC has just confirmed at a known
                 // slot. Recording it here repairs targets whose closing frame
@@ -285,7 +294,8 @@ pub async fn seed_current_balances(
                 record_missing_ata_zero_balance(target, seed_observed_slot, sink).await?;
                 continue;
             };
-            process_account_update(
+            let data = account.data.clone();
+            let outcome = process_account_update(
                 target,
                 account.lamports,
                 seed_observed_slot,
@@ -298,6 +308,14 @@ pub async fn seed_current_balances(
                 sink,
             )
             .await?;
+            // The account exists but was reclaimed or holds another mint, so it
+            // carries no routeable USDC. Settle it here rather than leaving the
+            // previous balance standing until a recheck that a restart may have
+            // already erased.
+            if let AtaUpdateOutcome::Skipped(skip) = outcome {
+                record_skipped_ata_zero_balance(target, seed_observed_slot, skip, &data, sink)
+                    .await?;
+            }
         }
     }
     Ok(())
