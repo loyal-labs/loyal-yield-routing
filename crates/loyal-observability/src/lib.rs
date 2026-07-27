@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod supervisor;
 mod wallet;
 mod workflow;
 
@@ -28,11 +29,18 @@ use tracing::Level;
 use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 use url::Url;
 
+use supervisor::SUPERVISOR_STATE_TARGET;
+pub use supervisor::{
+    FailureClass, ProcessGeneration, SupervisorCounters, SupervisorState, SupervisorStateEvent,
+    WorkerDependency,
+};
 pub use wallet::ObservabilityWalletAddress;
 use workflow::WORKFLOW_TRACE_TARGET;
 pub use workflow::{WorkflowMetrics, WorkflowOutcome, WorkflowSpan};
 
-/// The only `tracing` target exported by this crate's OTLP layer.
+/// The error `tracing` target exported by this crate's OTLP log layer.
+///
+/// [`SUPERVISOR_STATE_TARGET`] is the only other exported log target.
 const OPERATIONAL_ERROR_TARGET: &str = "loyal.observability.operational_error";
 
 /// Enables the remote OTLP exporter when set to a truthy value.
@@ -117,6 +125,8 @@ pub struct OperationalError {
     summary: &'static str,
     retryable: bool,
     recovery_required: bool,
+    dependency: Option<WorkerDependency>,
+    failure_class: Option<FailureClass>,
     wallet_address: Option<ObservabilityWalletAddress>,
 }
 
@@ -129,8 +139,28 @@ impl OperationalError {
             summary,
             retryable: false,
             recovery_required: false,
+            dependency: None,
+            failure_class: None,
             wallet_address: None,
         }
+    }
+
+    /// Names the dependency whose failure produced this record.
+    ///
+    /// Without this, a fleet-wide restart wave is indistinguishable from a set
+    /// of unrelated per-worker faults.
+    pub const fn dependency(mut self, dependency: WorkerDependency) -> Self {
+        self.dependency = Some(dependency);
+        self
+    }
+
+    /// Records how the worker classified this failure.
+    ///
+    /// Prefer this over [`Self::retryable`], which does not distinguish a
+    /// transient dependency loss from a genuine configuration fault.
+    pub const fn failure_class(mut self, failure_class: FailureClass) -> Self {
+        self.failure_class = Some(failure_class);
+        self
     }
 
     /// Marks whether retrying the failed operation is expected to be safe.
@@ -153,6 +183,8 @@ impl OperationalError {
 
     /// Emits this record to local logs and, when enabled, the filtered OTLP layer.
     pub fn emit(self) {
+        let dependency = self.dependency.map_or("", WorkerDependency::as_str);
+        let failure_class = self.failure_class.map_or("", FailureClass::as_str);
         if let Some(wallet_address) = self.wallet_address {
             tracing::event!(
                 name: "loyal.operational_error",
@@ -164,6 +196,8 @@ impl OperationalError {
                     operation = self.operation,
                     retryable = self.retryable,
                     recovery_required = self.recovery_required,
+                    dependency = dependency,
+                    failure_class = failure_class,
                     message = self.summary,
                 }
             );
@@ -175,6 +209,8 @@ impl OperationalError {
                 operation = self.operation,
                 retryable = self.retryable,
                 recovery_required = self.recovery_required,
+                dependency = dependency,
+                failure_class = failure_class,
                 message = self.summary,
             );
         }
@@ -336,8 +372,12 @@ pub fn init(config: ObservabilityConfig) -> Result<ObservabilityGuard, InitError
         tracer: Some(tracer_provider),
     };
 
-    let operational_errors_only = filter::filter_fn(|metadata| {
-        metadata.target() == OPERATIONAL_ERROR_TARGET && *metadata.level() == Level::ERROR
+    // Supervisor-state records are exported at INFO because a worker that stays
+    // alive through an outage produces no error record at all, and the recovery
+    // itself is the thing operators need to see.
+    let bounded_records_only = filter::filter_fn(|metadata| {
+        (metadata.target() == OPERATIONAL_ERROR_TARGET && *metadata.level() == Level::ERROR)
+            || metadata.target() == SUPERVISOR_STATE_TARGET
     });
     let log_layer = OpenTelemetryTracingBridge::new(
         providers
@@ -345,7 +385,7 @@ pub fn init(config: ObservabilityConfig) -> Result<ObservabilityGuard, InitError
             .as_ref()
             .expect("logger provider is installed when observability is enabled"),
     )
-    .with_filter(operational_errors_only);
+    .with_filter(bounded_records_only);
     let trace_layer = providers.tracer.as_ref().map(|provider| {
         let workflow_traces_only =
             filter::filter_fn(|metadata| metadata.target() == WORKFLOW_TRACE_TARGET);
