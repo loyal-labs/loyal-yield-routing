@@ -7,6 +7,9 @@ use std::{
 
 use chrono::{Duration as ChronoDuration, Utc};
 use loyal_observability::{init_from_env, OperationalError};
+use loyal_worker_supervisor::{
+    classify_sqlx, FailureClass, SupervisedFailure, WorkerDependency, WorkerSupervisor,
+};
 use loyal_yield_orchestrator::fleet_orchestration::{
     code_owned_stablecoin_valuations, fleet_worker_role_probe, observe_fleet_opportunities,
     observe_fleet_opportunities_for_vaults, observe_fleet_opportunities_without_queue_schema,
@@ -1073,28 +1076,101 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     let _observability = init_from_env("loyal-fleet-opportunity-planner")?;
-    if let Err(error) = run().await {
-        OperationalError::new(
-            "fleet_opportunity_planner_fatal",
-            "run_fleet_opportunity_planner",
-            "Fleet opportunity planner stopped after a fatal error",
-        )
-        .retryable(true)
-        .recovery_required(true)
-        .emit();
-        return Err(error);
+
+    // Everything up to and including configuration validation runs before
+    // supervision starts. A missing environment variable or an unusable mint
+    // set is a deployment fault: it must still fail fast rather than retry
+    // behind a process that looks alive.
+    let setup = match prepare().await {
+        Ok(Some(setup)) => setup,
+        // A benchmark or one-shot dry run completed; nothing to supervise.
+        Ok(None) => return Ok(()),
+        Err(error) => {
+            emit_planner_fatal(SupervisedFailure::new(
+                WorkerDependency::ProcessLocal,
+                FailureClass::FatalProcess,
+            ));
+            return Err(error);
+        }
+    };
+
+    let outcome = WorkerSupervisor::new()
+        .run_supervised(|error| classify_planner_failure(AsRef::as_ref(error)), || {
+            run(&setup)
+        })
+        .await;
+
+    match outcome {
+        Ok(()) => Ok(()),
+        Err(exit) => {
+            emit_planner_fatal(exit.failure);
+            Err(exit.error)
+        }
     }
-    Ok(())
 }
 
-async fn run() -> Result<(), Box<dyn Error>> {
+fn emit_planner_fatal(failure: SupervisedFailure) {
+    OperationalError::new(
+        "fleet_opportunity_planner_fatal",
+        "run_fleet_opportunity_planner",
+        "Fleet opportunity planner stopped after a fatal error",
+    )
+    .retryable(false)
+    .recovery_required(true)
+    .dependency(failure.dependency)
+    .failure_class(failure.class)
+    .emit();
+}
+
+/// Attributes a planner failure to the dependency that produced it.
+///
+/// TimescaleDB failures do not reach this point: the market-epoch probe already
+/// absorbs them and keeps planning from durable state, so a database error
+/// arriving here came from Neon.
+fn classify_planner_failure(error: &(dyn Error + 'static)) -> SupervisedFailure {
+    let mut current = Some(error);
+    while let Some(cause) = current {
+        if let Some(orchestrator) = cause.downcast_ref::<OrchestratorError>() {
+            return match orchestrator {
+                // An incompatible deploy cannot be retried into working.
+                OrchestratorError::SchemaMigrationMissing { .. } => SupervisedFailure::new(
+                    WorkerDependency::Neon,
+                    FailureClass::FatalProcess,
+                ),
+                OrchestratorError::Sqlx(sqlx_error) => {
+                    classify_sqlx(sqlx_error, WorkerDependency::Neon)
+                }
+                _ => SupervisedFailure::new(WorkerDependency::Neon, FailureClass::TransientIo),
+            };
+        }
+        if let Some(sqlx_error) = cause.downcast_ref::<sqlx::Error>() {
+            return classify_sqlx(sqlx_error, WorkerDependency::Neon);
+        }
+        current = cause.source();
+    }
+    SupervisedFailure::new(WorkerDependency::ProcessLocal, FailureClass::TransientIo)
+}
+
+/// Validated, connection-independent planner startup state.
+struct PlannerSetup {
+    options: Options,
+    neon_url: String,
+    timescale_url: String,
+    delegated_signer: String,
+    config: FleetObservationConfig,
+}
+
+/// Parses and validates configuration, running any one-shot mode to completion.
+///
+/// Returns `None` when a one-shot mode handled the whole invocation.
+async fn prepare() -> Result<Option<PlannerSetup>, Box<dyn Error>> {
     let options = parse_options()?;
     if options.benchmark {
         let output = run_benchmark(&options)?;
         let passed = output.get("status").and_then(Value::as_str) == Some("pass");
         print_output(&output, options.json)?;
         return if passed {
-            Ok(())
+            Ok(None)
         } else {
             Err("10,000-vault replay exceeded 10 seconds p95".into())
         };
@@ -1108,44 +1184,89 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let delegated_signer = STANDARD_POLICY_AUTHORITY.to_owned();
     let enabled_mints = enabled_stable_mints_from_env()?;
     let config = live_observation_config(&options.cluster, enabled_mints)?;
+    let setup = PlannerSetup {
+        options,
+        neon_url,
+        timescale_url,
+        delegated_signer,
+        config,
+    };
+
+    // The one-shot dry run keeps its fail-fast contract; it is an operator
+    // command, not a long-running worker.
+    if setup.options.once && setup.options.dry_run {
+        run_once_dry(&setup).await?;
+        return Ok(None);
+    }
+
+    Ok(Some(setup))
+}
+
+async fn run_once_dry(setup: &PlannerSetup) -> Result<(), Box<dyn Error>> {
+    let PlannerSetup {
+        options,
+        delegated_signer,
+        config,
+        ..
+    } = setup;
+    let (neon, timescale) = connect(setup).await?;
+    let queue_schema_available = durable_fleet_schema_available(&neon).await?;
+    let mut run = run_live_once(
+        options,
+        &neon,
+        &timescale,
+        delegated_signer,
+        config,
+        None,
+        None,
+        true,
+        queue_schema_available,
+    )
+    .await?;
+    if let Some(output) = run.output.as_object_mut() {
+        output.insert(
+            "queueCapacityAccounting".to_owned(),
+            json!(if queue_schema_available {
+                "included"
+            } else {
+                "unavailable_pre_migration_27"
+            }),
+        );
+    }
+    print_output(&run.output, options.json)?;
+    Ok(())
+}
+
+async fn connect(
+    setup: &PlannerSetup,
+) -> Result<(NeonSqlClient, TimescaleRouterClient), Box<dyn Error>> {
     let neon = NeonSqlClient::connect(
-        NeonSqlConfig::new(neon_url).with_max_connections(DEFAULT_QUEUE_CONNECTIONS),
+        NeonSqlConfig::new(setup.neon_url.clone())
+            .with_max_connections(DEFAULT_QUEUE_CONNECTIONS),
     )
     .await?;
     let timescale = TimescaleRouterClient::connect(
-        TimescaleRouterClientConfig::new(timescale_url)
+        TimescaleRouterClientConfig::new(setup.timescale_url.clone())
             .with_schema("kamino")
             .with_max_connections(2),
     )
     .await?;
+    Ok((neon, timescale))
+}
 
-    if options.once && options.dry_run {
-        let queue_schema_available = durable_fleet_schema_available(&neon).await?;
-        let mut run = run_live_once(
-            &options,
-            &neon,
-            &timescale,
-            &delegated_signer,
-            &config,
-            None,
-            None,
-            true,
-            queue_schema_available,
-        )
-        .await?;
-        if let Some(output) = run.output.as_object_mut() {
-            output.insert(
-                "queueCapacityAccounting".to_owned(),
-                json!(if queue_schema_available {
-                    "included"
-                } else {
-                    "unavailable_pre_migration_27"
-                }),
-            );
-        }
-        print_output(&run.output, options.json)?;
-        return Ok(());
-    }
+/// Runs the supervised planner body.
+///
+/// Every failure inside this function is a retry boundary, not a process exit.
+/// Connection setup lives here rather than in [`prepare`] so a Neon outage at
+/// startup is recovered in place instead of terminating the worker.
+async fn run(setup: &PlannerSetup) -> Result<(), Box<dyn Error>> {
+    let PlannerSetup {
+        options,
+        delegated_signer,
+        config,
+        ..
+    } = setup;
+    let (neon, timescale) = connect(setup).await?;
 
     neon.require_schema_migration(27, "rebalance_opportunity_attempt_generations")
         .await?;
@@ -1169,7 +1290,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             .await?;
         if Instant::now() < next_full_sweep_at && Instant::now() >= next_market_probe_at {
             next_market_probe_at = Instant::now() + market_probe_interval;
-            match observe_market_epoch(&timescale, &config).await {
+            match observe_market_epoch(&timescale, config).await {
                 Ok(epoch) => {
                     let next_material_frontier = epoch.material_frontier_fingerprint();
                     let next_frontier = epoch.material_market_frontier();
@@ -1209,14 +1330,14 @@ async fn run() -> Result<(), Box<dyn Error>> {
         let full_sweep_due = Instant::now() >= next_full_sweep_at;
         if full_sweep_due {
             let mut run =
-                run_full_sweep(&options, &neon, &timescale, &delegated_signer, &config).await?;
+                run_full_sweep(options, &neon, &timescale, delegated_signer, config).await?;
             if let Some(evidence) = run.evidence.as_ref() {
                 current_market_epoch_key = Some(evidence.optimizer_epoch_key.clone());
                 current_material_frontier_fingerprint =
                     Some(evidence.material_frontier_fingerprint.clone());
                 current_material_frontier = Some(evidence.material_frontier.clone());
             }
-            let delay = next_full_sweep_delay(&run, &options);
+            let delay = next_full_sweep_delay(&run, options);
             annotate_full_sweep_schedule(&mut run, delay);
             if let Some(output) = run.output.as_object_mut() {
                 output.insert(
@@ -1263,11 +1384,11 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 // admission against the latest per-target capacity version.
                 let required_material_frontier = current_material_frontier.as_ref();
                 let mut dirty_run = run_live_once(
-                    &options,
+                    options,
                     &neon,
                     &timescale,
-                    &delegated_signer,
-                    &config,
+                    delegated_signer,
+                    config,
                     Some(&vault_ids),
                     required_material_frontier,
                     frontier_fresh,
@@ -1277,7 +1398,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 if dirty_run.fallback_to_full {
                     print_output(&dirty_run.output, options.json)?;
                     let mut full_run =
-                        run_full_sweep(&options, &neon, &timescale, &delegated_signer, &config)
+                        run_full_sweep(options, &neon, &timescale, delegated_signer, config)
                             .await?;
                     if let Some(evidence) = full_run.evidence.as_ref() {
                         current_market_epoch_key = Some(evidence.optimizer_epoch_key.clone());
@@ -1285,7 +1406,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                             Some(evidence.material_frontier_fingerprint.clone());
                         current_material_frontier = Some(evidence.material_frontier.clone());
                     }
-                    let delay = next_full_sweep_delay(&full_run, &options);
+                    let delay = next_full_sweep_delay(&full_run, options);
                     annotate_full_sweep_schedule(&mut full_run, delay);
                     let acknowledged = if full_run.evidence.is_some() {
                         neon.acknowledge_fleet_planning_dirty_vaults(&leases)

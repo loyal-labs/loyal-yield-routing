@@ -31,6 +31,11 @@ use kamino_reserve_monitor::{
 };
 use klend_interface::KLEND_PROGRAM_ID;
 use loyal_observability::{init_from_env, OperationalError};
+use loyal_worker_supervisor::{
+    classify_reqwest, classify_sqlx, FailureClass, FatalExit, SupervisedFailure, WorkerDependency,
+    WorkerSupervisor,
+};
+use solana_client::client_error::ClientError;
 use solana_sdk::pubkey::Pubkey;
 use tokio::{
     sync::mpsc,
@@ -114,28 +119,106 @@ async fn main() -> ExitCode {
         }
     };
 
-    match run().await {
+    // Arguments and their validation stay outside supervision: an invalid
+    // endpoint or missing credential is a deployment fault, and retrying it in
+    // place would only hide a bad deploy behind a healthy-looking process.
+    let args = Args::parse_args();
+    if let Err(error) = validate_args(&args) {
+        emit_monitor_fatal(SupervisedFailure::new(
+            WorkerDependency::ProcessLocal,
+            FailureClass::FatalProcess,
+        ));
+        eprintln!("fatal: {error:#}");
+        return ExitCode::FAILURE;
+    }
+
+    // The Ctrl-C handler is installed once per process, not once per attempt:
+    // `ctrlc::set_handler` rejects a second registration, so installing it
+    // inside the supervised body would break every retry after the first.
+    let running = Arc::new(AtomicBool::new(true));
+    if let Err(error) = install_ctrlc_handler(running.clone()) {
+        emit_monitor_fatal(SupervisedFailure::new(
+            WorkerDependency::ProcessLocal,
+            FailureClass::FatalProcess,
+        ));
+        eprintln!("fatal: {error:#}");
+        return ExitCode::FAILURE;
+    }
+
+    // The catalog sync and `--once` seed are operator-invoked one-shot runs.
+    // They keep their fail-fast contract; only the long-running monitor is
+    // supervised.
+    let one_shot = args.sync_supported_reserves || args.once;
+    let outcome = if one_shot {
+        run(&args, &running).await.map_err(|error| FatalExit {
+            failure: classify_monitor_failure(&error),
+            error,
+        })
+    } else {
+        WorkerSupervisor::new()
+            .run_supervised(classify_monitor_failure, || async {
+                let result = run(&args, &running).await;
+                // A requested shutdown is a clean stop, not a failure to retry.
+                match result {
+                    Err(_) if !running.load(Ordering::Relaxed) => Ok(()),
+                    other => other,
+                }
+            })
+            .await
+    };
+
+    match outcome {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            OperationalError::new(
-                "kamino_monitor_fatal",
-                "run_monitor",
-                "Kamino reserve monitor stopped after a fatal error",
-            )
-            .retryable(true)
-            .recovery_required(true)
-            .emit();
-            tracing::error!(error = %format!("{error:#}"), "fatal");
-            eprintln!("fatal: {error:#}");
+        Err(exit) => {
+            emit_monitor_fatal(exit.failure);
+            tracing::error!(error = %format!("{:#}", exit.error), "fatal");
+            eprintln!("fatal: {:#}", exit.error);
             ExitCode::FAILURE
         }
     }
 }
 
-async fn run() -> Result<()> {
-    let args = Args::parse_args();
-    validate_args(&args)?;
+fn emit_monitor_fatal(failure: SupervisedFailure) {
+    OperationalError::new(
+        "kamino_monitor_fatal",
+        "run_monitor",
+        "Kamino reserve monitor stopped after a fatal error",
+    )
+    .retryable(false)
+    .recovery_required(true)
+    .dependency(failure.dependency)
+    .failure_class(failure.class)
+    .emit();
+}
 
+/// Attributes a monitor failure to the dependency that produced it.
+///
+/// The monitor holds four controlled dependencies, and a fleet-wide restart
+/// wave is only actionable if the record names which one went away. Each arm
+/// keys off a typed driver error rather than message text.
+fn classify_monitor_failure(error: &anyhow::Error) -> SupervisedFailure {
+    for cause in error.chain() {
+        if let Some(sqlx_error) = cause.downcast_ref::<sqlx::Error>() {
+            return classify_sqlx(sqlx_error, WorkerDependency::Timescale);
+        }
+        if let Some(reqwest_error) = cause.downcast_ref::<reqwest::Error>() {
+            return classify_reqwest(reqwest_error, WorkerDependency::KaminoApi);
+        }
+        if cause.downcast_ref::<ClientError>().is_some() {
+            return SupervisedFailure::new(WorkerDependency::SolanaRpc, FailureClass::TransientIo);
+        }
+    }
+    // An unattributed failure is still recoverable; the bounded
+    // `starting_degraded` escalation is what surfaces a genuinely stuck worker.
+    SupervisedFailure::new(WorkerDependency::ProcessLocal, FailureClass::TransientIo)
+}
+
+/// Runs the supervised monitor body.
+///
+/// `running` is owned by the caller because the Ctrl-C handler behind it can be
+/// installed only once per process: installing it here would make every retry
+/// after the first fail immediately with `MultipleHandlers`.
+async fn run(args: &Args, running: &Arc<AtomicBool>) -> Result<()> {
     let timescale_config = TimescaleSinkConfig {
         url: args.timescaledb_url.clone(),
         schema: args.timescaledb_schema.clone(),
@@ -198,8 +281,6 @@ async fn run() -> Result<()> {
         bail!("no active supported Kamino reserve targets selected; run --sync-supported-reserves first");
     }
 
-    let running = Arc::new(AtomicBool::new(true));
-    install_ctrlc_handler(running.clone())?;
     let progress_timeout = Duration::from_secs(args.progress_timeout_secs);
     let status_log_interval = Duration::from_secs(args.status_log_interval_secs);
 
@@ -296,7 +377,7 @@ async fn run() -> Result<()> {
         &timescale,
         &mut snapshots,
         jsonl.as_mut(),
-        running,
+        running.clone(),
         progress_timeout,
         status_log_interval,
     )

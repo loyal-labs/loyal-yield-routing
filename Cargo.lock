@@ -703,6 +703,7 @@ dependencies = [
  "balance-sweep-ata-observations",
  "clap",
  "loyal-observability",
+ "loyal-worker-supervisor",
  "loyal-yield-orchestrator",
  "tokio",
  "tracing",
@@ -2840,6 +2841,7 @@ dependencies = [
  "klend-interface",
  "loyal-actions",
  "loyal-observability",
+ "loyal-worker-supervisor",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -3204,6 +3206,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "loyal-worker-supervisor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "loyal-observability",
+ "reqwest 0.12.28",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "loyal-yield-orchestrator"
 version = "0.1.0"
 dependencies = [
@@ -3216,6 +3230,7 @@ dependencies = [
  "klend-interface",
  "loyal-actions",
  "loyal-observability",
+ "loyal-worker-supervisor",
  "loyal-yield-router",
  "num-bigint 0.4.6",
  "num-traits",

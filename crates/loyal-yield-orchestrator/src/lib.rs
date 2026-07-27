@@ -64,6 +64,15 @@ pub enum OrchestratorError {
     },
     #[error("unexpected store state: {0}")]
     StoreInvariant(String),
+    /// The live database predates the schema this binary requires.
+    ///
+    /// This is deliberately its own variant rather than a [`Self::StoreInvariant`]
+    /// message: a supervised worker must be able to tell an incompatible deploy,
+    /// which has to stop, from a dependency outage, which it must retry through.
+    #[error(
+        "required database migration {version} {name} is not applied; run the dedicated migration command before starting this process"
+    )]
+    SchemaMigrationMissing { version: i64, name: String },
     #[error("same-mint rebalance validation failed: {0}")]
     SameMintRebalanceValidation(String),
     #[error(

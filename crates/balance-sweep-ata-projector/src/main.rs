@@ -7,6 +7,9 @@ use balance_sweep_ata_observations::{
 };
 use clap::Parser;
 use loyal_observability::{init_from_env, OperationalError};
+use loyal_worker_supervisor::{
+    classify_anyhow, classify_sqlx, SupervisedFailure, WorkerDependency, WorkerSupervisor,
+};
 use loyal_yield_orchestrator::{
     OrchestratorConfig, OrchestratorError, OrchestratorStore, ProjectedWalletAtaBalanceUpdateInput,
 };
@@ -38,27 +41,69 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let _observability = init_from_env("loyal-balance-sweep-ata-projector")?;
-    if let Err(error) = run().await {
-        OperationalError::new(
-            "balance_sweep_ata_projector_fatal",
-            "run_balance_sweep_ata_projector",
-            "Balance sweep ATA projector stopped after a fatal error",
-        )
-        .retryable(true)
-        .recovery_required(true)
-        .emit();
-        return Err(error);
+
+    // Argument parsing stays outside supervision. A missing or malformed flag
+    // is a deployment fault, and failing fast on it is the behavior worth
+    // keeping from before this worker was supervised.
+    let args = Args::parse();
+
+    // A one-shot repair run keeps its fail-fast contract: the operator invoking
+    // it is the supervisor, and silently retrying would hide a failed repair.
+    if args.once {
+        return run(&args).await.inspect_err(|error| {
+            emit_projector_fatal(classify_projector_failure(error));
+        });
     }
-    Ok(())
+
+    let outcome = WorkerSupervisor::new()
+        .run_supervised(classify_projector_failure, || run(&args))
+        .await;
+
+    match outcome {
+        Ok(()) => Ok(()),
+        Err(exit) => {
+            emit_projector_fatal(exit.failure);
+            Err(exit.error)
+        }
+    }
 }
 
-async fn run() -> Result<()> {
-    let args = Args::parse();
+fn emit_projector_fatal(failure: SupervisedFailure) {
+    OperationalError::new(
+        "balance_sweep_ata_projector_fatal",
+        "run_balance_sweep_ata_projector",
+        "Balance sweep ATA projector stopped after a fatal error",
+    )
+    .retryable(false)
+    .recovery_required(true)
+    .dependency(failure.dependency)
+    .failure_class(failure.class)
+    .emit();
+}
+
+/// Attributes a projector failure to the database that produced it.
+///
+/// Neon failures reach here as `OrchestratorError::Sqlx`, which carries the
+/// typed driver error. TimescaleDB failures arrive either as a bare `sqlx`
+/// error from the observation sink or stringified by the projection helper, so
+/// TimescaleDB is the fallback attribution rather than Neon.
+fn classify_projector_failure(error: &anyhow::Error) -> SupervisedFailure {
+    for cause in error.chain() {
+        if let Some(OrchestratorError::Sqlx(sqlx_error)) = cause.downcast_ref::<OrchestratorError>()
+        {
+            return classify_sqlx(sqlx_error, WorkerDependency::Neon);
+        }
+    }
+    classify_anyhow(error, WorkerDependency::Timescale)
+}
+
+async fn run(args: &Args) -> Result<()> {
     let timescale = TimescaleAtaObservationSink::connect(
-        TimescaleAtaConfig::new(args.timescaledb_url).with_stream(args.ata_stream),
+        TimescaleAtaConfig::new(args.timescaledb_url.clone()).with_stream(args.ata_stream),
     )
     .await?;
-    let store = OrchestratorStore::connect(OrchestratorConfig::new(args.postgres_url)).await?;
+    let store =
+        OrchestratorStore::connect(OrchestratorConfig::new(args.postgres_url.clone())).await?;
     let consumer_name = consumer_name(args.ata_stream);
     tracing::info!(
         ata_stream = %args.ata_stream,

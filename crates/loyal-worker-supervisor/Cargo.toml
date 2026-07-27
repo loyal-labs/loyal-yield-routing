@@ -1,0 +1,16 @@
+[package]
+name = "loyal-worker-supervisor"
+version = "0.1.0"
+edition = "2021"
+description = "In-process supervision and typed failure classification for Loyal's long-running Render workers"
+
+[dependencies]
+anyhow = "1"
+loyal-observability = { path = "../loyal-observability" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util", "time"] }

@@ -9,6 +9,7 @@ anyhow = "1"
 balance-sweep-ata-observations = { path = "../balance-sweep-ata-observations" }
 clap = { version = "4.5", features = ["derive", "env"] }
 loyal-observability = { path = "../loyal-observability" }
+loyal-worker-supervisor = { path = "../loyal-worker-supervisor" }
 loyal-yield-orchestrator = { path = "../loyal-yield-orchestrator" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 tracing = "0.1"

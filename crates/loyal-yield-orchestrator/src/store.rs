@@ -182,9 +182,10 @@ impl NeonSqlClient {
                 .fetch_one(&self.pool)
                 .await?;
         if !ledger_exists {
-            return Err(OrchestratorError::StoreInvariant(format!(
-                "database schema is not initialized; run the dedicated migration command before starting this process (required migration {version} {name})"
-            )));
+            return Err(OrchestratorError::SchemaMigrationMissing {
+                version,
+                name: name.to_owned(),
+            });
         }
 
         let applied: bool = sqlx::query_scalar(
@@ -202,9 +203,10 @@ impl NeonSqlClient {
         .fetch_one(&self.pool)
         .await?;
         if !applied {
-            return Err(OrchestratorError::StoreInvariant(format!(
-                "required database migration {version} {name} is not applied; run the dedicated migration command before starting this process"
-            )));
+            return Err(OrchestratorError::SchemaMigrationMissing {
+                version,
+                name: name.to_owned(),
+            });
         }
 
         Ok(())
