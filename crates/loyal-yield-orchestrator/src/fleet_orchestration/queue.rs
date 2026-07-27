@@ -1519,7 +1519,7 @@ impl NeonSqlClient {
         .execute(&mut *tx)
         .await?;
 
-        let row = sqlx::query(
+        let row = match sqlx::query(
             r#"
             INSERT INTO loyal_yield.rebalance_opportunities
                 (cluster, idempotency_key, rediscovery_key, attempt_generation,
@@ -1574,7 +1574,46 @@ impl NeonSqlClient {
         .bind(input.expires_at)
         .bind(minimum_publication_lifetime_seconds)
         .fetch_optional(&mut *tx)
-        .await?;
+        .await
+        {
+            Ok(row) => row,
+            Err(error) if is_active_opportunity_slot_conflict(&error) => {
+                // PostgreSQL leaves the transaction aborted after a uniqueness
+                // violation. Discard it before collecting best-effort evidence
+                // through a fresh pool connection.
+                let _ = tx.rollback().await;
+                let slot_owner = sqlx::query_as::<_, (i64, Option<String>)>(
+                    r#"
+                    SELECT slot.opportunity_id, opportunity.opportunity_state
+                    FROM loyal_yield.active_rebalance_opportunity_slots slot
+                    LEFT JOIN loyal_yield.rebalance_opportunities opportunity
+                      ON opportunity.id = slot.opportunity_id
+                    WHERE slot.vault_id = $1 AND slot.cluster = $2
+                    "#,
+                )
+                .bind(input.vault_id.as_i64())
+                .bind(&input.cluster)
+                .fetch_optional(self.pool())
+                .await
+                .ok()
+                .flatten();
+                let (slot_opportunity_id, slot_opportunity_state, reason) = match slot_owner {
+                    Some((opportunity_id, opportunity_state)) => (
+                        Some(opportunity_id),
+                        opportunity_state,
+                        "active_slot_owner_valid",
+                    ),
+                    None => (None, None, "active_slot_owner_unresolved"),
+                };
+                return Err(OrchestratorError::OpportunityDeferredBehindActiveSlot {
+                    vault_id: input.vault_id,
+                    slot_opportunity_id,
+                    slot_opportunity_state,
+                    reason,
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
         let row = match row {
             Some(row) => row,
             None => {
@@ -4851,6 +4890,14 @@ impl NeonSqlClient {
         tx.commit().await?;
         Ok(opportunity)
     }
+}
+
+fn is_active_opportunity_slot_conflict(error: &sqlx::Error) -> bool {
+    let sqlx::Error::Database(database_error) = error else {
+        return false;
+    };
+    database_error.code().as_deref() == Some("23505")
+        && database_error.constraint() == Some("active_rebalance_opportunity_slots_pkey")
 }
 
 pub fn rebalance_opportunity_idempotency_key(input: &RebalanceOpportunityInput) -> String {

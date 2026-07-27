@@ -38,9 +38,9 @@ use loyal_yield_orchestrator::{
     LookupTableOperationRecord, LookupTableProvisionerBroadcastPermitResult,
     LookupTableProvisioningPlanPolicy, LookupTableProvisioningRequestUpsert,
     LookupTableUsageLeaseBundle, LookupTableUsageLeaseKind, NeonSqlClient, NeonSqlConfig,
-    PackedShardPolicy, ReconciledReservePosition, ReconciledVaultState, ReusableLookupTableInsert,
-    SameMintRebalanceInput, SharedMarketCatalogUpsert, SignedLookupTableTransaction, VaultId,
-    ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+    OrchestratorError, PackedShardPolicy, ReconciledReservePosition, ReconciledVaultState,
+    ReusableLookupTableInsert, SameMintRebalanceInput, SharedMarketCatalogUpsert,
+    SignedLookupTableTransaction, VaultId, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -3760,6 +3760,138 @@ async fn run_database_checks(
         && empty_status_rows[0].reconciler_submission_count == 0
         && empty_status_rows[0].current_epoch_opportunity_count == 0;
 
+    // Force the production race at the exact insert boundary. The direct
+    // writer changes the active occupant from revalidate to leased while
+    // holding its row lock. Publication observes the pre-update row at its
+    // lease probe, then blocks trying to supersede it. Once the writer commits,
+    // PostgreSQL rechecks the supersede predicate, preserves the leased
+    // occupant, and the real active-slot trigger rejects the competing insert.
+    let active_slot_cluster = fixture.cluster("active_slot_conflict");
+    let active_slot_epoch = fixture.seed_epoch(&active_slot_cluster).await?;
+    let active_slot_seed = fixture
+        .seed_opportunity(
+            &active_slot_cluster,
+            active_slot_epoch,
+            "active-slot-owner",
+            "revalidate",
+            1_500,
+        )
+        .await?;
+    let active_slot_owner = fixture
+        .client
+        .rebalance_opportunity(active_slot_seed.id)
+        .await?
+        .ok_or("active-slot owner disappeared before conflict fixture")?;
+    let mut active_slot_competing_input = rediscovery_input_for_opportunity(&active_slot_owner);
+    active_slot_competing_input.route_fingerprint =
+        Some(format!("route:{}:active-slot-competitor", fixture.prefix));
+    active_slot_competing_input.requirements_fingerprint = Some(format!(
+        "requirements:{}:active-slot-competitor",
+        fixture.prefix
+    ));
+    active_slot_competing_input.economic_priority += 1;
+    active_slot_competing_input.available_at = Utc::now();
+
+    let mut active_slot_direct_writer = fixture.client.pool().begin().await?;
+    let active_slot_direct_write_count = sqlx::query(
+        r#"
+        UPDATE loyal_yield.rebalance_opportunities
+        SET opportunity_state = 'leased',
+            lease_kind = 'revalidate',
+            lease_owner = $2,
+            lease_expires_at = clock_timestamp() + interval '5 minutes',
+            fencing_token = fencing_token + 1,
+            attempt_count = attempt_count + 1,
+            updated_at = clock_timestamp()
+        WHERE id = $1 AND opportunity_state = 'revalidate'
+        "#,
+    )
+    .bind(active_slot_seed.id)
+    .bind(format!("{}:active-slot-direct-writer", fixture.prefix))
+    .execute(&mut *active_slot_direct_writer)
+    .await?
+    .rows_affected();
+
+    let active_slot_publish_client = fixture.client.clone();
+    let active_slot_publish_task = tokio::spawn(async move {
+        active_slot_publish_client
+            .upsert_rebalance_opportunity(active_slot_competing_input)
+            .await
+    });
+    let mut active_slot_publication_wait_observed = false;
+    for _ in 0..200 {
+        active_slot_publication_wait_observed = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_stat_activity
+                WHERE datname = current_database()
+                  AND pid <> pg_backend_pid()
+                  AND state = 'active'
+                  AND wait_event_type = 'Lock'
+                  AND query LIKE '%UPDATE loyal_yield.rebalance_opportunities%'
+                  AND query LIKE '%opportunity_state = ''superseded''%'
+            )
+            "#,
+        )
+        .fetch_one(fixture.client.pool())
+        .await?;
+        if active_slot_publication_wait_observed {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    active_slot_direct_writer.commit().await?;
+    let active_slot_publish_result =
+        tokio::time::timeout(Duration::from_secs(10), active_slot_publish_task)
+            .await
+            .map_err(|_| "active-slot conflict publication did not finish after writer commit")?
+            .map_err(|error| format!("active-slot publication task failed: {error}"))?;
+    let (
+        active_slot_typed_deferral,
+        active_slot_returned_vault_id,
+        active_slot_returned_opportunity_id,
+        active_slot_returned_state,
+        active_slot_returned_reason,
+    ) = match &active_slot_publish_result {
+        Err(OrchestratorError::OpportunityDeferredBehindActiveSlot {
+            vault_id,
+            slot_opportunity_id,
+            slot_opportunity_state,
+            reason,
+        }) => (
+            true,
+            Some(vault_id.as_i64()),
+            *slot_opportunity_id,
+            slot_opportunity_state.clone(),
+            Some(*reason),
+        ),
+        _ => (false, None, None, None, None),
+    };
+    let active_slot_opportunity_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.rebalance_opportunities WHERE cluster = $1 AND vault_id = $2",
+    )
+    .bind(&active_slot_cluster)
+    .bind(active_slot_owner.vault_id.as_i64())
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let active_slot_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.active_rebalance_opportunity_slots WHERE cluster = $1 AND vault_id = $2",
+    )
+    .bind(&active_slot_cluster)
+    .bind(active_slot_owner.vault_id.as_i64())
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let active_slot_conflict_is_contained = active_slot_direct_write_count == 1
+        && active_slot_publication_wait_observed
+        && active_slot_typed_deferral
+        && active_slot_returned_vault_id == Some(active_slot_owner.vault_id.as_i64())
+        && active_slot_returned_opportunity_id == Some(active_slot_seed.id)
+        && active_slot_returned_state.as_deref() == Some("leased")
+        && active_slot_returned_reason == Some("active_slot_owner_valid")
+        && active_slot_opportunity_rows == 1
+        && active_slot_rows == 1;
+
     let priority_cluster = fixture.cluster("priority");
     let priority_epoch = fixture.seed_epoch(&priority_cluster).await?;
     let low = fixture
@@ -4037,9 +4169,18 @@ async fn run_database_checks(
     // live batch. Allow 20% for MVCC/page visibility overhead. A regression
     // that scans the 10,000 waiting_alt rows in every cold round adds 630,000
     // reads and remains well beyond this derived ceiling.
-    let expected_runnable_self_churn_reads = TIMED_CLAIM_SERIES
+    let expected_ranked_lane_reads = TIMED_CLAIM_SERIES
         * (TIMED_CLAIM_ROUNDS * WARMUP_CLAIMS_PER_SERIES
             + CLAIM_BATCH_SIZE * TIMED_CLAIM_ROUNDS * (TIMED_CLAIM_ROUNDS + 1) / 2);
+    // PostgreSQL 17 reads this partial index once for the ranked runnable
+    // stream and again while locking/rechecking the candidate path, with two
+    // additional index reads per claimed row. Plans that use primary-key
+    // probes for the second path only reduce this one-sided ceiling. The
+    // waiting_alt full-scan regression remains another 630,000 reads beyond
+    // this derived production-statement baseline.
+    let expected_runnable_self_churn_reads = expected_ranked_lane_reads
+        .saturating_mul(2)
+        .saturating_add(timed_ready_rows_claimed.saturating_mul(2));
     let runnable_self_churn_ceiling_reads = expected_runnable_self_churn_reads * 6 / 5;
     let waiting_alt_full_scan_regression_reads = 10_000_i64 * TIMED_CLAIM_ROUNDS;
     let claim_index_reads_are_bounded = runnable_index_tuple_reads
@@ -7027,6 +7168,7 @@ async fn run_database_checks(
                     "timedReadyRowsClaimed": timed_ready_rows_claimed,
                     "runnableIndexTupleReads": runnable_index_tuple_reads,
                     "expiredIndexTupleReads": expired_index_tuple_reads,
+                    "expectedRankedLaneReads": expected_ranked_lane_reads,
                     "expectedRunnableSelfChurnReads": expected_runnable_self_churn_reads,
                     "runnableSelfChurnCeilingReads": runnable_self_churn_ceiling_reads,
                     "waitingAltFullScanRegressionReads": waiting_alt_full_scan_regression_reads,
@@ -7071,6 +7213,24 @@ async fn run_database_checks(
             ),
         ],
         execution_subchecks: vec![
+            subcheck(
+                "active_slot_conflict_is_contained",
+                active_slot_conflict_is_contained,
+                json!({
+                    "directWriterUpdatedRows": active_slot_direct_write_count,
+                    "publicationWaitObserved": active_slot_publication_wait_observed,
+                    "typedDeferral": active_slot_typed_deferral,
+                    "expectedVaultId": active_slot_owner.vault_id.as_i64(),
+                    "returnedVaultId": active_slot_returned_vault_id,
+                    "expectedSlotOpportunityId": active_slot_seed.id,
+                    "returnedSlotOpportunityId": active_slot_returned_opportunity_id,
+                    "returnedSlotOpportunityState": active_slot_returned_state,
+                    "returnedReason": active_slot_returned_reason,
+                    "opportunityRows": active_slot_opportunity_rows,
+                    "activeSlotRows": active_slot_rows,
+                    "rawResult": format!("{active_slot_publish_result:?}"),
+                }),
+            ),
             subcheck(
                 "expired_opportunity_lease_reclaimed_with_higher_fence",
                 reclaimed.opportunity.id == reclaim_seed.id
@@ -11028,6 +11188,31 @@ async fn run() -> Result<ExitCode, Box<dyn Error>> {
     } else {
         None
     };
+    let isolated_database_verdict = database_evidence
+        .as_ref()
+        .map(|evidence| {
+            aggregate_verdicts(
+                evidence
+                    .migration_subchecks
+                    .iter()
+                    .chain(&evidence.discovery_subchecks)
+                    .chain(&evidence.alt_subchecks)
+                    .chain(&evidence.execution_subchecks)
+                    .map(|subcheck| subcheck.verdict),
+            )
+        })
+        .unwrap_or(Verdict::NotRun);
+    let isolated_database_first_blocking_subcheck =
+        database_evidence.as_ref().and_then(|evidence| {
+            evidence
+                .migration_subchecks
+                .iter()
+                .chain(&evidence.discovery_subchecks)
+                .chain(&evidence.alt_subchecks)
+                .chain(&evidence.execution_subchecks)
+                .find(|subcheck| subcheck.verdict != Verdict::Pass)
+                .map(|subcheck| (subcheck.name, subcheck.verdict))
+        });
 
     let mut checks =
         implementation_checks(database_evidence, local_evidence, runtime_evidence.as_ref())?;
@@ -11052,27 +11237,51 @@ async fn run() -> Result<ExitCode, Box<dyn Error>> {
         deployment_verdict,
         production_performance_verdict,
     ]);
-    let first_blocking_check = checks
-        .iter()
-        .find(|check| !matches!(check.verdict, Verdict::Pass))
-        .map(|check| {
+    // An isolated-database invocation is already an explicit verifier scope.
+    // When no repository/runtime evidence was requested, report and exit on
+    // every isolated database subcheck rather than unrelated NOT_RUN evidence
+    // from the broader implementation/end-state verifier.
+    let isolated_database_only =
+        cli.isolated_database && !collect_repository_evidence && runtime_evidence.is_none();
+    let (requested_scope, requested_scope_verdict) = if cli.end_state {
+        ("END_STATE", end_state_verdict)
+    } else if isolated_database_only {
+        ("ISOLATED_DATABASE", isolated_database_verdict)
+    } else {
+        ("IMPLEMENTATION", implementation_verdict)
+    };
+    let first_blocking_check = if isolated_database_only {
+        isolated_database_first_blocking_subcheck.map(|(name, verdict)| {
             json!({
-                "id": check.id,
-                "name": check.name,
-                "verdict": check.verdict,
-                "invariant": check.first_failing_invariant,
+                "name": name,
+                "verdict": verdict,
             })
-        });
+        })
+    } else {
+        checks
+            .iter()
+            .find(|check| !matches!(check.verdict, Verdict::Pass))
+            .map(|check| {
+                json!({
+                    "id": check.id,
+                    "name": check.name,
+                    "verdict": check.verdict,
+                    "invariant": check.first_failing_invariant,
+                })
+            })
+    };
     let output = json!({
-        "status": end_state_verdict,
-        "requestedScope": if cli.end_state { "END_STATE" } else { "IMPLEMENTATION" },
-        "requestedScopeStatus": if cli.end_state { end_state_verdict } else { implementation_verdict },
+        "status": requested_scope_verdict,
+        "requestedScope": requested_scope,
+        "requestedScopeStatus": requested_scope_verdict,
         "implementation": implementation_verdict,
+        "isolatedDatabase": isolated_database_verdict,
         "deployment": deployment_verdict,
         "productionPerformance": production_performance_verdict,
         "endState": end_state_verdict,
         "scopeVerdicts": {
             "IMPLEMENTATION": implementation_verdict,
+            "ISOLATED_DATABASE": isolated_database_verdict,
             "DEPLOYMENT": deployment_verdict,
             "PRODUCTION_PERFORMANCE": production_performance_verdict,
             "END_STATE": end_state_verdict,
@@ -11086,11 +11295,6 @@ async fn run() -> Result<ExitCode, Box<dyn Error>> {
         println!("{}", serde_json::to_string_pretty(&output)?);
     }
 
-    let requested_scope_verdict = if cli.end_state {
-        end_state_verdict
-    } else {
-        implementation_verdict
-    };
     Ok(if requested_scope_verdict == Verdict::Pass {
         ExitCode::SUCCESS
     } else {

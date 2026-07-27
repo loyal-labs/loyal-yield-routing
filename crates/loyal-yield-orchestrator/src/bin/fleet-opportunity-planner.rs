@@ -392,6 +392,7 @@ fn is_publish_contention(error: &OrchestratorError) -> bool {
     matches!(
         error,
         OrchestratorError::OpportunityDeferredBehindLease { .. }
+            | OrchestratorError::OpportunityDeferredBehindActiveSlot { .. }
     )
 }
 
@@ -427,12 +428,32 @@ async fn publish_wave(
             Ok(()) => summary.published += 1,
             Err(error) if is_publish_contention(&error) => {
                 summary.deferred_contention += 1;
+                let (reason, slot_opportunity_id, slot_opportunity_state) = match &error {
+                    OrchestratorError::OpportunityDeferredBehindLease { leased_id, .. } => (
+                        "unexpired_competing_lease",
+                        Some(*leased_id),
+                        Some("leased"),
+                    ),
+                    OrchestratorError::OpportunityDeferredBehindActiveSlot {
+                        slot_opportunity_id,
+                        slot_opportunity_state,
+                        reason,
+                        ..
+                    } => (
+                        *reason,
+                        *slot_opportunity_id,
+                        slot_opportunity_state.as_deref(),
+                    ),
+                    _ => unreachable!("publish contention classification must stay exhaustive"),
+                };
                 eprintln!(
                     "{}",
                     json!({
                         "status": "fleet_opportunity_publish_deferred",
                         "vaultId": vault_id.as_i64(),
-                        "reason": "unexpired_competing_lease",
+                        "slotOpportunityId": slot_opportunity_id,
+                        "slotOpportunityState": slot_opportunity_state,
+                        "reason": reason,
                         "durableRecoveryRequired": true,
                     })
                 );

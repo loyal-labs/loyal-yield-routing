@@ -85,6 +85,15 @@ pub enum OrchestratorError {
     LookupTableBindingActivationDeferred { binding_id: i64 },
     #[error("new opportunity for vault {vault_id} is deferred behind unexpired lease {leased_id}")]
     OpportunityDeferredBehindLease { vault_id: VaultId, leased_id: i64 },
+    #[error(
+        "new opportunity for vault {vault_id} is deferred behind active slot owner {slot_opportunity_id:?}"
+    )]
+    OpportunityDeferredBehindActiveSlot {
+        vault_id: VaultId,
+        slot_opportunity_id: Option<i64>,
+        slot_opportunity_state: Option<String>,
+        reason: &'static str,
+    },
 }
 
 impl OrchestratorError {
