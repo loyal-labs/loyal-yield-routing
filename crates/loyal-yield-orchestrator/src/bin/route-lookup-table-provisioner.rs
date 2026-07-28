@@ -1401,6 +1401,38 @@ async fn process_leased_operation(
             return Ok(LeasedOperationOutcome::Processed);
         }
     }
+    if leased.operation.operation_kind != LookupTableOperationKind::Verify {
+        if let Some(table_id) = leased.operation.route_lookup_table_id {
+            if client.lookup_table_has_active_usage_lease(table_id).await? {
+                let recorded = client
+                    .defer_unsigned_lookup_table_operation_without_attempt(
+                        leased.operation.id,
+                        &lease,
+                        Utc::now() + chrono::Duration::seconds(DEFAULT_RETRY_SECONDS),
+                        "lookup_table_usage_lease_active_before_signing",
+                        "mutating operation is deferred while a route lookup-table usage lease is active",
+                    )
+                    .await?;
+                println!(
+                    "{}",
+                    json!({
+                        "event": "alt_provisioner_usage_lease_deferred",
+                        "cluster": options.cluster,
+                        "familyId": family.id,
+                        "operationId": recorded.id,
+                        "operationKind": recorded.operation_kind.as_str(),
+                        "operationState": recorded.operation_state.as_str(),
+                        "attemptCount": recorded.attempt_count,
+                        "errorCode": "lookup_table_usage_lease_active_before_signing",
+                        "retryAt": recorded.next_attempt_at,
+                        "attemptConsumed": false,
+                        "transactionsSent": false,
+                    })
+                );
+                return Ok(LeasedOperationOutcome::Processed);
+            }
+        }
+    }
     if family.kind == LookupTableFamilyKind::SharedMarket
         && matches!(
             leased.operation.operation_kind,

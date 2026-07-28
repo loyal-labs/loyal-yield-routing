@@ -7710,20 +7710,20 @@ impl NeonSqlClient {
                 ));
             }
         }
-        let cleanup_operation_count: i64 = sqlx::query_scalar(
+        let mutation_operation_count: i64 = sqlx::query_scalar(
             r#"
             SELECT count(*) FROM loyal_yield.lookup_table_operations
             WHERE route_lookup_table_id = ANY($1)
-              AND operation_kind IN ('deactivate', 'close')
+              AND operation_kind IN ('create', 'extend', 'rollover', 'deactivate', 'close')
               AND operation_state NOT IN ('complete', 'permanent_failure', 'cancelled')
             "#,
         )
         .bind(&bundle.route_lookup_table_ids)
         .fetch_one(&mut *tx)
         .await?;
-        if cleanup_operation_count != 0 {
+        if mutation_operation_count != 0 {
             return Err(OrchestratorError::StoreInvariant(
-                "lookup-table usage lease races with a pending cleanup operation".to_owned(),
+                "lookup-table usage lease races with a nonterminal mutation operation".to_owned(),
             ));
         }
         for table_id in &bundle.route_lookup_table_ids {
@@ -7833,6 +7833,26 @@ impl NeonSqlClient {
         .execute(self.pool())
         .await?;
         Ok(result.rows_affected())
+    }
+
+    pub async fn lookup_table_has_active_usage_lease(
+        &self,
+        route_lookup_table_id: i64,
+    ) -> Result<bool, OrchestratorError> {
+        Ok(sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM loyal_yield.lookup_table_usage_leases
+                WHERE route_lookup_table_id = $1
+                  AND released_at IS NULL
+                  AND expires_at > now()
+            )
+            "#,
+        )
+        .bind(route_lookup_table_id)
+        .fetch_one(self.pool())
+        .await?)
     }
 
     /// Returns the complete durable legacy fleet that must be verified as one
@@ -14255,6 +14275,19 @@ impl NeonSqlClient {
                       OR operation.next_attempt_at <= now()
                   )
                   AND (
+                      $4
+                      OR operation.operation_kind = 'verify'
+                      OR operation.transaction_signature IS NOT NULL
+                      OR operation.route_lookup_table_id IS NULL
+                      OR NOT EXISTS (
+                          SELECT 1
+                          FROM loyal_yield.lookup_table_usage_leases usage
+                          WHERE usage.route_lookup_table_id = operation.route_lookup_table_id
+                            AND usage.released_at IS NULL
+                            AND usage.expires_at > now()
+                      )
+                  )
+                  AND (
                       operation.route_lookup_table_id IS NULL
                       OR NOT EXISTS (
                           SELECT 1
@@ -16604,6 +16637,26 @@ impl NeonSqlClient {
                 fence = Some((
                     "lookup_table_identity_changed_before_broadcast",
                     "mutating operation lost its cluster, family, authority, payer, table, or mutation-epoch identity"
+                        .to_owned(),
+                ));
+            } else if sqlx::query_scalar::<_, bool>(
+                r#"
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM loyal_yield.lookup_table_usage_leases
+                    WHERE route_lookup_table_id = $1
+                      AND released_at IS NULL
+                      AND expires_at > now()
+                )
+                "#,
+            )
+            .bind(table.id)
+            .fetch_one(&mut *tx)
+            .await?
+            {
+                fence = Some((
+                    "lookup_table_usage_lease_active_before_broadcast",
+                    "mutating operation is blocked by an active route lookup-table usage lease"
                         .to_owned(),
                 ));
             } else if let Some(catalog) = shared_catalog.as_ref() {

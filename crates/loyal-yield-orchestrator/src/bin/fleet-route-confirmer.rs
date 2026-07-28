@@ -737,8 +737,20 @@ async fn run_poll(
             lease_expires_at,
         )
         .await?;
-    let claimed = leases.len();
-    if leases.is_empty() {
+    let recovery_leases = neon
+        .lease_unprotected_unbroadcast_signed_route_submissions(
+            &options.cluster,
+            &options.worker_id,
+            options.batch_size,
+            lease_expires_at,
+        )
+        .await?;
+    let recovery_ids = recovery_leases
+        .iter()
+        .map(|lease| lease.submission.id)
+        .collect::<BTreeSet<_>>();
+    let claimed = leases.len().saturating_add(recovery_leases.len());
+    if claimed == 0 {
         return Ok(empty_health(options, signature_hints.connected().await));
     }
 
@@ -746,10 +758,10 @@ async fn run_poll(
     let mut pre_task_deferred = 0usize;
     let mut first_pre_task_error = None::<String>;
 
-    let mut work = Vec::with_capacity(leases.len());
+    let mut work = Vec::with_capacity(claimed);
     let mut status_leases = Vec::new();
     let mut signatures = Vec::new();
-    for lease in leases {
+    for lease in leases.into_iter().chain(recovery_leases) {
         if lease.submission.state == SignedRouteSubmissionState::Confirmed {
             work.push((lease, SignatureObservation::AlreadyConfirmed));
             continue;
@@ -924,6 +936,34 @@ async fn run_poll(
         }
     }
 
+    // Invalid or expired ALT protection is terminal-only. Until its blockhash
+    // expires, keep the exact signed bytes fenced without preparing a send.
+    let recovery_wait_ids = work
+        .iter()
+        .filter_map(|(lease, observation)| {
+            (recovery_ids.contains(&lease.submission.id)
+                && matches!(observation, SignatureObservation::Missing)
+                && current_height
+                    .is_none_or(|height| height <= lease.submission.last_valid_block_height))
+            .then_some(lease.submission.id)
+        })
+        .collect::<BTreeSet<_>>();
+    if !recovery_wait_ids.is_empty() {
+        let deferred = take_work_leases(&mut work, &recovery_wait_ids);
+        let detail = "recovery_only_waiting_for_blockhash_expiry";
+        defer_claims_after_error(neon, &deferred, options.poll_interval, detail).await?;
+        pre_task_deferred = pre_task_deferred.saturating_add(deferred.len());
+    }
+    for (lease, observation) in &mut work {
+        if recovery_ids.contains(&lease.submission.id) {
+            if let SignatureObservation::Seen { error_detail, .. } = observation {
+                if error_detail.is_none() {
+                    *error_detail = Some("recovery_only_signature_seen_no_rebroadcast".to_owned());
+                }
+            }
+        }
+    }
+
     // Authoritative confirmations need no per-row state replay. Validate every
     // immutable wire image first, then commit decision confirmation evidence and
     // reconciliation handoff in one fenced set-based transaction.
@@ -1018,8 +1058,9 @@ async fn run_poll(
     let broadcast_ids = work
         .iter()
         .filter_map(|(lease, observation)| {
-            observation_will_broadcast(observation, current_height, &lease.submission)
-                .then_some(lease.submission.id)
+            (!recovery_ids.contains(&lease.submission.id)
+                && observation_will_broadcast(observation, current_height, &lease.submission))
+            .then_some(lease.submission.id)
         })
         .collect::<BTreeSet<_>>();
     let mut encoded_wire_by_id = BTreeMap::new();

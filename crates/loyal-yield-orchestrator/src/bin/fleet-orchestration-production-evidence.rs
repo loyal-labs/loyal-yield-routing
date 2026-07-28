@@ -222,6 +222,55 @@ struct MovementRow {
     post_target_planning_metadata: Option<Value>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReconciledVolumeSnapshot {
+    movement_count: i64,
+    amount_raw: i64,
+    principal_usd_micros: i64,
+    newest_reconciled_at: Option<DateTime<Utc>>,
+    unique_submission_count: i64,
+    unique_opportunity_count: i64,
+    unique_decision_count: i64,
+    unique_signature_count: i64,
+}
+
+impl ReconciledVolumeSnapshot {
+    fn identity_exact(self) -> bool {
+        self.movement_count >= 0
+            && self.amount_raw >= 0
+            && self.principal_usd_micros >= 0
+            && self.unique_submission_count == self.movement_count
+            && self.unique_opportunity_count == self.movement_count
+            && self.unique_decision_count == self.movement_count
+            && self.unique_signature_count == self.movement_count
+    }
+
+    fn checked_delta(self, baseline: Self) -> Option<Self> {
+        Some(Self {
+            movement_count: self.movement_count.checked_sub(baseline.movement_count)?,
+            amount_raw: self.amount_raw.checked_sub(baseline.amount_raw)?,
+            principal_usd_micros: self
+                .principal_usd_micros
+                .checked_sub(baseline.principal_usd_micros)?,
+            newest_reconciled_at: self.newest_reconciled_at,
+            unique_submission_count: self
+                .unique_submission_count
+                .checked_sub(baseline.unique_submission_count)?,
+            unique_opportunity_count: self
+                .unique_opportunity_count
+                .checked_sub(baseline.unique_opportunity_count)?,
+            unique_decision_count: self
+                .unique_decision_count
+                .checked_sub(baseline.unique_decision_count)?,
+            unique_signature_count: self
+                .unique_signature_count
+                .checked_sub(baseline.unique_signature_count)?,
+        })
+        .filter(|delta| delta.identity_exact())
+    }
+}
+
 #[derive(Debug, Clone)]
 struct SignatureFinality {
     found: bool,
@@ -3150,6 +3199,265 @@ async fn collect_position_evidence(pool: &PgPool) -> Result<Value, Box<dyn Error
     }))
 }
 
+async fn collect_largest_account_evidence(
+    pool: &PgPool,
+    cluster: &str,
+    cutover_at: Option<DateTime<Utc>>,
+) -> Result<Value, Box<dyn Error>> {
+    let enabled_mints = supported_stable_mints();
+    Ok(sqlx::query_scalar(
+        r#"
+        WITH planning AS MATERIALIZED (
+            SELECT state.*
+            FROM loyal_yield.fleet_planning_state state
+            WHERE state.cluster = $1
+        ),
+        current_epoch AS MATERIALIZED (
+            SELECT epoch.*
+            FROM planning
+            JOIN loyal_yield.optimizer_epochs epoch
+              ON epoch.cluster = planning.cluster
+             AND epoch.epoch_key = planning.optimizer_epoch_key
+        ),
+        epoch_reserves AS MATERIALIZED (
+            SELECT
+                reserve.value->>'reserve' AS reserve,
+                reserve.value->>'market' AS market,
+                reserve.value->>'liquidityMint' AS liquidity_mint,
+                CASE WHEN reserve.value->>'mintDecimals' ~ '^[0-9]+$'
+                     THEN (reserve.value->>'mintDecimals')::INTEGER END AS mint_decimals,
+                CASE WHEN reserve.value->>'marketPriceUsdMicros' ~ '^[0-9]+$'
+                     THEN (reserve.value->>'marketPriceUsdMicros')::BIGINT END
+                    AS market_price_usd_micros,
+                CASE WHEN reserve.value->>'supplyApyBps' ~ '^-?[0-9]+$'
+                     THEN (reserve.value->>'supplyApyBps')::BIGINT END AS supply_apy_bps,
+                COALESCE((reserve.value->>'targetEligible')::BOOLEAN, FALSE) AS target_eligible
+            FROM current_epoch epoch
+            CROSS JOIN LATERAL jsonb_array_elements(epoch.market_state->'reserves') reserve(value)
+        ),
+        eligible_vaults AS MATERIALIZED (
+            SELECT vault.id AS vault_id, policy.kamino_markets,
+                   policy.stable_mints, policy.kamino_liquidity_mints
+            FROM loyal_yield.managed_vaults vault
+            JOIN loyal_yield.route_policies policy ON policy.id = vault.active_policy_id
+            WHERE vault.active AND policy.active
+              AND $2 = ANY(policy.delegated_signers)
+              AND $3 = ANY(policy.route_modes)
+              AND policy.stable_mints && $4::TEXT[]
+              AND policy.kamino_liquidity_mints && $4::TEXT[]
+              AND cardinality(policy.kamino_markets) > 0
+        ),
+        routeable_positions AS MATERIALIZED (
+            SELECT position.vault_id, position.reserve, position.market,
+                   position.liquidity_mint, position.observed_slot,
+                   position.observed_at,
+                   CASE
+                       WHEN position.planning_metadata->>'amount_semantics' = $5
+                            AND COALESCE(
+                                NULLIF(position.planning_metadata->>'redeemable_source_liquidity_amount_raw', ''),
+                                NULLIF(position.planning_metadata->>'redeemable_liquidity_amount_raw', '')
+                            ) ~ '^[0-9]+$'
+                       THEN COALESCE(
+                           NULLIF(position.planning_metadata->>'redeemable_source_liquidity_amount_raw', ''),
+                           NULLIF(position.planning_metadata->>'redeemable_liquidity_amount_raw', '')
+                       )::BIGINT
+                       WHEN position.planning_metadata->>'amount_semantics' = $6
+                       THEN position.amount_raw
+                       ELSE NULL
+                   END AS routeable_amount_raw,
+                   eligible.kamino_markets, eligible.stable_mints,
+                   eligible.kamino_liquidity_mints
+            FROM loyal_yield.vault_reserve_positions_current position
+            JOIN eligible_vaults eligible ON eligible.vault_id = position.vault_id
+            WHERE position.has_value AND position.amount_raw > 0
+              AND position.liquidity_mint = ANY(eligible.stable_mints)
+              AND position.liquidity_mint = ANY(eligible.kamino_liquidity_mints)
+              AND (position.market IS NULL OR position.market = ANY(eligible.kamino_markets))
+        ),
+        valued_positions AS MATERIALIZED (
+            SELECT position.*,
+                   market.supply_apy_bps,
+                   (position.routeable_amount_raw::NUMERIC
+                    * market.market_price_usd_micros::NUMERIC
+                    / power(10::NUMERIC, market.mint_decimals))::BIGINT
+                       AS principal_usd_micros
+            FROM routeable_positions position
+            JOIN epoch_reserves market
+              ON market.reserve = position.reserve
+             AND market.liquidity_mint = position.liquidity_mint
+             AND (position.market IS NULL OR market.market = position.market)
+            WHERE position.routeable_amount_raw > 0
+              AND market.market_price_usd_micros > 0
+              AND market.mint_decimals BETWEEN 0 AND 18
+        ),
+        vault_values AS MATERIALIZED (
+            SELECT position.vault_id,
+                   max(position.kamino_markets) AS kamino_markets,
+                   max(position.stable_mints) AS stable_mints,
+                   max(position.kamino_liquidity_mints) AS kamino_liquidity_mints,
+                   sum(position.principal_usd_micros)::BIGINT AS principal_usd_micros,
+                   min(position.observed_at) AS oldest_observed_at,
+                   max(position.observed_at) AS newest_observed_at,
+                   min(position.observed_slot) AS minimum_observed_slot,
+                   max(position.observed_slot) AS maximum_observed_slot,
+                   jsonb_agg(jsonb_build_object(
+                       'reserve', position.reserve,
+                       'market', position.market,
+                       'liquidityMint', position.liquidity_mint,
+                       'amountRaw', position.routeable_amount_raw,
+                       'principalUsdMicros', position.principal_usd_micros,
+                       'supplyApyBps', position.supply_apy_bps
+                   ) ORDER BY position.principal_usd_micros DESC, position.reserve) AS positions
+            FROM valued_positions position
+            GROUP BY position.vault_id
+        ),
+        ranked AS MATERIALIZED (
+            SELECT value.*, row_number() OVER (
+                       ORDER BY value.principal_usd_micros DESC, value.vault_id
+                   )::BIGINT AS rank
+            FROM vault_values value
+            ORDER BY value.principal_usd_micros DESC, value.vault_id
+            LIMIT 10
+        ),
+        evidence AS MATERIALIZED (
+            SELECT ranked.*,
+                   best.reserve AS best_reserve,
+                   best.market AS best_market,
+                   best.liquidity_mint AS best_liquidity_mint,
+                   best.supply_apy_bps AS best_supply_apy_bps,
+                   opportunity.id AS opportunity_id,
+                   opportunity.opportunity_state,
+                   opportunity.target_reserve,
+                   opportunity.estimated_edge_bps,
+                   opportunity.expected_net_gain_usd_micros,
+                   submission.id AS moved_submission_id,
+                   submission.reconciled_at AS moved_reconciled_at,
+                   COALESCE((SELECT sum((item->>'principalUsdMicros')::BIGINT)
+                             FROM jsonb_array_elements(ranked.positions) item
+                             WHERE item->>'reserve' = best.reserve), 0)::BIGINT
+                       AS principal_at_best_reserve
+            FROM ranked
+            LEFT JOIN LATERAL (
+                SELECT market.*
+                FROM epoch_reserves market
+                WHERE market.target_eligible
+                  AND market.market = ANY(ranked.kamino_markets)
+                  AND market.liquidity_mint = ANY(ranked.stable_mints)
+                  AND market.liquidity_mint = ANY(ranked.kamino_liquidity_mints)
+                ORDER BY market.supply_apy_bps DESC, market.reserve
+                LIMIT 1
+            ) best ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT candidate.*
+                FROM loyal_yield.rebalance_opportunities candidate
+                JOIN current_epoch epoch ON epoch.id = candidate.optimizer_epoch_id
+                WHERE candidate.cluster = $1 AND candidate.vault_id = ranked.vault_id
+                ORDER BY candidate.attempt_generation DESC, candidate.id DESC
+                LIMIT 1
+            ) opportunity ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT signed.id, signed.reconciled_at
+                FROM loyal_yield.signed_route_submissions signed
+                WHERE signed.opportunity_id = opportunity.id
+                  AND signed.submission_state = 'reconciled'
+                  AND $7::TIMESTAMPTZ IS NOT NULL
+                  AND signed.reconciled_at >= $7
+                  AND opportunity.target_reserve = best.reserve
+                ORDER BY signed.id DESC
+                LIMIT 1
+            ) submission ON TRUE
+        ),
+        classified AS MATERIALIZED (
+            SELECT evidence.*,
+                   CASE
+                       WHEN planning.cluster IS NULL OR current_epoch.id IS NULL
+                            OR NOT planning.complete_frontier
+                            OR planning.optimizer_epoch_expires_at <= now()
+                            OR planning.full_sweep_completed_at < now() - interval '120 seconds'
+                            OR evidence.oldest_observed_at < now() - interval '10 minutes'
+                            OR evidence.best_reserve IS NULL
+                           THEN 'blocked'
+                       WHEN evidence.moved_submission_id IS NOT NULL THEN 'moved'
+                       WHEN evidence.principal_at_best_reserve = evidence.principal_usd_micros
+                           THEN 'already_optimal'
+                       WHEN evidence.opportunity_id IS NULL THEN 'no_positive_edge'
+                       ELSE 'blocked'
+                   END AS classification
+            FROM evidence
+            LEFT JOIN planning ON TRUE
+            LEFT JOIN current_epoch ON TRUE
+        ),
+        summary AS (
+            SELECT count(*)::BIGINT AS ranked_count,
+                   COALESCE(sum(principal_usd_micros), 0)::BIGINT AS ranked_principal,
+                   COALESCE(sum(principal_usd_micros) FILTER (
+                       WHERE classification <> 'blocked'), 0)::BIGINT AS covered_principal,
+                   count(*) FILTER (WHERE rank <= 3 AND classification = 'blocked')::BIGINT
+                       AS top_three_blocked_count,
+                   count(*) FILTER (WHERE classification = 'moved')::BIGINT AS moved_count
+            FROM classified
+        )
+        SELECT jsonb_build_object(
+            'available', planning.cluster IS NOT NULL AND current_epoch.id IS NOT NULL,
+            'cluster', $1,
+            'cutoverAt', $7::TIMESTAMPTZ,
+            'optimizerEpochId', current_epoch.id,
+            'optimizerEpochKey', planning.optimizer_epoch_key,
+            'optimizerEpochExpiresAt', planning.optimizer_epoch_expires_at,
+            'fullSweepCompletedAt', planning.full_sweep_completed_at,
+            'completeFrontier', planning.complete_frontier,
+            'rankedCount', summary.ranked_count,
+            'rankedPrincipalUsdMicros', summary.ranked_principal,
+            'coveredPrincipalUsdMicros', summary.covered_principal,
+            'coveragePpm', CASE WHEN summary.ranked_principal = 0 THEN 0 ELSE
+                (1000000::NUMERIC * summary.covered_principal / summary.ranked_principal)::BIGINT END,
+            'minimumCoveragePpm', 900000,
+            'topThreeBlockedCount', summary.top_three_blocked_count,
+            'movedCount', summary.moved_count,
+            'vaults', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+                'rank', row.rank,
+                'vaultId', row.vault_id,
+                'principalUsdMicros', row.principal_usd_micros,
+                'oldestObservedAt', row.oldest_observed_at,
+                'newestObservedAt', row.newest_observed_at,
+                'minimumObservedSlot', row.minimum_observed_slot,
+                'maximumObservedSlot', row.maximum_observed_slot,
+                'positions', row.positions,
+                'bestReserve', row.best_reserve,
+                'bestMarket', row.best_market,
+                'bestLiquidityMint', row.best_liquidity_mint,
+                'bestSupplyApyBps', row.best_supply_apy_bps,
+                'principalAtBestReserve', row.principal_at_best_reserve,
+                'opportunityId', row.opportunity_id,
+                'opportunityState', row.opportunity_state,
+                'opportunityTargetReserve', row.target_reserve,
+                'estimatedEdgeBps', row.estimated_edge_bps,
+                'expectedNetGainUsdMicros', row.expected_net_gain_usd_micros,
+                'movedSubmissionId', row.moved_submission_id,
+                'movedReconciledAt', row.moved_reconciled_at,
+                'classification', row.classification
+            ) ORDER BY row.rank) FROM classified row), '[]'::JSONB),
+            'pass', $7::TIMESTAMPTZ IS NOT NULL
+                AND summary.ranked_count > 0
+                AND summary.top_three_blocked_count = 0
+                AND summary.covered_principal * 10 >= summary.ranked_principal * 9
+        )
+        FROM summary
+        LEFT JOIN planning ON TRUE
+        LEFT JOIN current_epoch ON TRUE
+        "#,
+    )
+    .bind(cluster)
+    .bind(STANDARD_POLICY_AUTHORITY)
+    .bind(SAME_MINT_ROUTE_MODE)
+    .bind(&enabled_mints)
+    .bind(AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED)
+    .bind(ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY)
+    .bind(cutover_at)
+    .fetch_one(pool)
+    .await?)
+}
+
 async fn collect_queue_evidence(pool: &PgPool, cluster: &str) -> Result<Value, sqlx::Error> {
     sqlx::query_scalar(
         r#"
@@ -4572,6 +4880,75 @@ async fn duplicate_movement_count(
     .await
 }
 
+async fn reconciled_volume_snapshot(
+    pool: &PgPool,
+    cluster: &str,
+) -> Result<ReconciledVolumeSnapshot, sqlx::Error> {
+    let row = sqlx::query(
+        r#"
+        SELECT count(*)::BIGINT AS movement_count,
+               COALESCE(sum(opportunity.amount_raw), 0)::BIGINT AS amount_raw,
+               COALESCE(sum(opportunity.principal_usd_micros), 0)::BIGINT
+                   AS principal_usd_micros,
+               max(submission.reconciled_at) AS newest_reconciled_at,
+               count(DISTINCT submission.id)::BIGINT AS unique_submission_count,
+               count(DISTINCT submission.opportunity_id)::BIGINT
+                   AS unique_opportunity_count,
+               count(DISTINCT submission.decision_id)::BIGINT AS unique_decision_count,
+               count(DISTINCT submission.transaction_signature)::BIGINT
+                   AS unique_signature_count
+        FROM loyal_yield.signed_route_submissions submission
+        JOIN loyal_yield.rebalance_opportunities opportunity
+          ON opportunity.id = submission.opportunity_id
+        WHERE submission.cluster = $1
+          AND submission.submission_state = 'reconciled'
+        "#,
+    )
+    .bind(cluster)
+    .fetch_one(pool)
+    .await?;
+    Ok(ReconciledVolumeSnapshot {
+        movement_count: row.try_get("movement_count")?,
+        amount_raw: row.try_get("amount_raw")?,
+        principal_usd_micros: row.try_get("principal_usd_micros")?,
+        newest_reconciled_at: row.try_get("newest_reconciled_at")?,
+        unique_submission_count: row.try_get("unique_submission_count")?,
+        unique_opportunity_count: row.try_get("unique_opportunity_count")?,
+        unique_decision_count: row.try_get("unique_decision_count")?,
+        unique_signature_count: row.try_get("unique_signature_count")?,
+    })
+}
+
+fn baseline_reconciled_volume(
+    baseline: Option<&Value>,
+    cluster: &str,
+    cutover_at: Option<DateTime<Utc>>,
+) -> Option<ReconciledVolumeSnapshot> {
+    let baseline = baseline?;
+    let collected_at = validated_baseline_collected_at(baseline, cluster)?;
+    if cutover_at.is_some_and(|cutover_at| collected_at > cutover_at) {
+        return None;
+    }
+    let value = baseline.pointer("/measurements/database/movement/reconciledVolume/current")?;
+    Some(ReconciledVolumeSnapshot {
+        movement_count: value.get("movementCount")?.as_i64()?,
+        amount_raw: value.get("amountRaw")?.as_i64()?,
+        principal_usd_micros: value.get("principalUsdMicros")?.as_i64()?,
+        newest_reconciled_at: value
+            .get("newestReconciledAt")
+            .and_then(Value::as_str)
+            .map(DateTime::parse_from_rfc3339)
+            .transpose()
+            .ok()?
+            .map(|at| at.with_timezone(&Utc)),
+        unique_submission_count: value.get("uniqueSubmissionCount")?.as_i64()?,
+        unique_opportunity_count: value.get("uniqueOpportunityCount")?.as_i64()?,
+        unique_decision_count: value.get("uniqueDecisionCount")?.as_i64()?,
+        unique_signature_count: value.get("uniqueSignatureCount")?.as_i64()?,
+    })
+    .filter(|snapshot| snapshot.identity_exact())
+}
+
 async fn collect_movement_evidence(
     pool: &PgPool,
     cluster: &str,
@@ -4581,6 +4958,9 @@ async fn collect_movement_evidence(
 ) -> Result<(Value, Verdict), sqlx::Error> {
     let database_deadlock_count =
         database_deadlock_measurement(pool, cluster, cutover_at, baseline).await?;
+    let current_volume = reconciled_volume_snapshot(pool, cluster).await?;
+    let baseline_volume = baseline_reconciled_volume(baseline, cluster, cutover_at);
+    let volume_delta = baseline_volume.and_then(|before| current_volume.checked_delta(before));
     let Some(cutover_at) = cutover_at else {
         return Ok((
             json!({
@@ -4588,6 +4968,12 @@ async fn collect_movement_evidence(
                 "reason": "--cutover-at is required for finalized movement evidence",
                 "databaseDeadlockCount": database_deadlock_count,
                 "duplicateMovementCount": 0,
+                "reconciledVolume": {
+                    "current": current_volume,
+                    "currentIdentityExact": current_volume.identity_exact(),
+                    "baseline": null,
+                    "delta": null,
+                },
             }),
             Verdict::NotRun,
         ));
@@ -4604,6 +4990,8 @@ async fn collect_movement_evidence(
     let finality = finalized_signatures(rpc_url.as_deref(), &movements).await;
     let mut safe_rows = Vec::new();
     let mut reconciled_movement_count = 0i64;
+    let mut reconciled_amount_raw = 0i64;
+    let mut reconciled_principal_usd_micros = 0i64;
     let mut reconciled_reserve_count = 0i64;
     let mut reconciled_idle_deposit_count = 0i64;
     let mut fully_proven_count = 0i64;
@@ -4629,6 +5017,9 @@ async fn collect_movement_evidence(
         }
         if movement.submission_state == "reconciled" {
             reconciled_movement_count += 1;
+            reconciled_amount_raw = reconciled_amount_raw.saturating_add(movement.amount_raw);
+            reconciled_principal_usd_micros =
+                reconciled_principal_usd_micros.saturating_add(movement.principal_usd_micros);
             match movement.route_kind.as_str() {
                 "same_mint" if movement.source_reserve.is_some() => {
                     reconciled_reserve_count += 1;
@@ -4718,6 +5109,15 @@ async fn collect_movement_evidence(
     let rpc_available = finality
         .as_ref()
         .is_ok_and(|evidence| evidence.finalized_block_height > 0 && evidence.finalized_slot > 0);
+    let volume_pass = current_volume.identity_exact()
+        && volume_delta.is_some_and(|delta| {
+            delta.movement_count >= reconciled_movement_count
+                && delta.amount_raw >= reconciled_amount_raw
+                && delta.principal_usd_micros >= reconciled_principal_usd_micros
+                && delta.movement_count > 0
+                && delta.amount_raw > 0
+                && delta.principal_usd_micros > 0
+        });
     let pass = rpc_available
         && reconciled_reserve_count > 0
         && reconciled_reserve_count + reconciled_idle_deposit_count == reconciled_movement_count
@@ -4728,6 +5128,7 @@ async fn collect_movement_evidence(
         && ambiguous_count == 0
         && database_deadlock_count == 0
         && duplicate_movement_count == 0
+        && volume_pass
         && main_reduction_pass;
     Ok((
         json!({
@@ -4747,6 +5148,8 @@ async fn collect_movement_evidence(
             "nonterminalSubmissionCount": nonterminal_count,
             "effectAmbiguousCount": ambiguous_count,
             "reconciledMovementCount": reconciled_movement_count,
+            "reconciledAmountRaw": reconciled_amount_raw,
+            "reconciledPrincipalUsdMicros": reconciled_principal_usd_micros,
             "reconciledReserveMovementCount": reconciled_reserve_count,
             "reconciledIdleDepositCount": reconciled_idle_deposit_count,
             "fullyFinalizedAndReconciledEffectCount": fully_proven_count,
@@ -4754,6 +5157,16 @@ async fn collect_movement_evidence(
             "unsafeTerminalOutcomeCount": unsafe_terminal_outcome_count,
             "databaseDeadlockCount": database_deadlock_count,
             "duplicateMovementCount": duplicate_movement_count,
+            "reconciledVolume": {
+                "current": current_volume,
+                "currentIdentityExact": current_volume.identity_exact(),
+                "baseline": baseline_volume,
+                "delta": volume_delta,
+                "postCutoverMovementCount": reconciled_movement_count,
+                "postCutoverAmountRaw": reconciled_amount_raw,
+                "postCutoverPrincipalUsdMicros": reconciled_principal_usd_micros,
+                "pass": volume_pass,
+            },
             "mainUsdc": {
                 "reserve": main_reserve,
                 "baselineCollectedAt": baseline_collected_at,
@@ -4811,10 +5224,24 @@ async fn collect_database_evidence(
             movement_verdict: Verdict::NotRun,
         };
     };
-    let positions = match collect_position_evidence(&pool).await {
+    let mut positions = match collect_position_evidence(&pool).await {
         Ok(value) => value,
         Err(_) => json!({"available": false, "error": "position measurement query failed"}),
     };
+    if let Some(object) = positions.as_object_mut() {
+        object.insert(
+            "largestEligibleVaults".to_owned(),
+            collect_largest_account_evidence(&pool, &options.cluster, options.cutover_at)
+                .await
+                .unwrap_or_else(|_| {
+                    json!({
+                        "available": false,
+                        "pass": false,
+                        "error": "largest-account measurement query failed",
+                    })
+                }),
+        );
+    }
     let (migrations, migrations_pass) = match collect_migration_evidence(&pool).await {
         Ok(value) => value,
         Err(_) => (
@@ -4889,6 +5316,16 @@ async fn collect_database_evidence(
     }
     if movement_verdict == Verdict::Pass && !production_slos_pass {
         movement_verdict = Verdict::Fail;
+    }
+    let largest_accounts_pass = positions
+        .pointer("/largestEligibleVaults/pass")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if options.cutover_at.is_some() && !largest_accounts_pass {
+        movement_verdict = Verdict::Fail;
+        if let Some(object) = movements.as_object_mut() {
+            object.insert("pass".to_owned(), Value::Bool(false));
+        }
     }
     DatabaseEvidence {
         migrations,

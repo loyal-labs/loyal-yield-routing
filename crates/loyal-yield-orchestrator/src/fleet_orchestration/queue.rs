@@ -3279,6 +3279,86 @@ impl NeonSqlClient {
                       submission.confirmation_lease_owner IS NULL
                       OR submission.confirmation_lease_expires_at <= now()
                   )
+                  AND jsonb_typeof(submission.alt_mutation_epochs->'tables') = 'array'
+                  AND jsonb_array_length(submission.alt_mutation_epochs->'tables') > 0
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM jsonb_array_elements(
+                          submission.alt_mutation_epochs->'tables'
+                      ) AS expected(table_evidence)
+                      WHERE expected.table_evidence->>'tableId'
+                                !~ '^[0-9]{1,18}$'
+                         OR expected.table_evidence->>'mutationEpoch'
+                                !~ '^[0-9]{1,18}$'
+                         OR NOT EXISTS (
+                              SELECT 1
+                              FROM loyal_yield.lookup_table_usage_leases usage
+                              JOIN loyal_yield.route_lookup_tables route_table
+                                ON route_table.id = usage.route_lookup_table_id
+                              WHERE usage.lease_kind = 'prepared_transaction'
+                                AND usage.reference_key = submission.semantic_key
+                                AND usage.cluster = submission.cluster
+                                AND usage.released_at IS NULL
+                                AND usage.expires_at > now()
+                                AND usage.requirements_fingerprint =
+                                    submission.alt_requirements_fingerprint
+                                AND usage.route_lookup_table_id =
+                                    CASE
+                                        WHEN expected.table_evidence->>'tableId'
+                                            ~ '^[0-9]{1,18}$'
+                                        THEN (expected.table_evidence->>'tableId')::BIGINT
+                                        ELSE NULL
+                                    END
+                                AND route_table.cluster = usage.cluster
+                                AND route_table.family_id IS NOT NULL
+                                AND route_table.desired_state = 'active'
+                                AND route_table.mutation_epoch =
+                                    CASE
+                                        WHEN expected.table_evidence->>'mutationEpoch'
+                                            ~ '^[0-9]{1,18}$'
+                                        THEN (expected.table_evidence->>'mutationEpoch')::BIGINT
+                                        ELSE NULL
+                                    END
+                                AND NOT EXISTS (
+                                    SELECT 1
+                                    FROM loyal_yield.lookup_table_operations mutation
+                                    WHERE mutation.route_lookup_table_id = route_table.id
+                                      AND mutation.operation_kind IN (
+                                          'create', 'extend', 'rollover',
+                                          'deactivate', 'close'
+                                      )
+                                      AND (
+                                          mutation.operation_state IN (
+                                              'signed', 'submitted', 'confirmed',
+                                              'finalized', 'reconciled',
+                                              'needs_reconcile'
+                                          )
+                                          OR (
+                                              mutation.operation_state IN (
+                                                  'leased', 'retry_wait'
+                                              )
+                                              AND mutation.transaction_signature IS NOT NULL
+                                          )
+                                      )
+                                )
+                          )
+                  )
+                  AND jsonb_array_length(submission.alt_mutation_epochs->'tables') = (
+                      SELECT count(*)::INTEGER
+                      FROM loyal_yield.lookup_table_usage_leases usage
+                      JOIN loyal_yield.route_lookup_tables route_table
+                        ON route_table.id = usage.route_lookup_table_id
+                      WHERE usage.lease_kind = 'prepared_transaction'
+                        AND usage.reference_key = submission.semantic_key
+                        AND usage.cluster = submission.cluster
+                        AND usage.released_at IS NULL
+                        AND usage.expires_at > now()
+                        AND usage.requirements_fingerprint =
+                            submission.alt_requirements_fingerprint
+                        AND route_table.cluster = usage.cluster
+                        AND route_table.family_id IS NOT NULL
+                        AND route_table.desired_state = 'active'
+                  )
                   AND cardinality(submission.conflict_account_keys) = (
                       SELECT count(*)::INTEGER
                       FROM loyal_yield.route_account_conflict_leases conflict
@@ -3475,6 +3555,85 @@ impl NeonSqlClient {
         }
         tx.commit().await?;
         Ok(leases)
+    }
+
+    /// Claims only never-broadcast signed rows whose prepared ALT protection
+    /// is no longer live. This lane is terminal-only: callers may observe the
+    /// persisted signature and expire or fail the row, but must never prepare
+    /// or broadcast its signed bytes.
+    pub async fn lease_unprotected_unbroadcast_signed_route_submissions(
+        &self,
+        cluster: &str,
+        owner: &str,
+        limit: i64,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<Vec<SignedRouteSubmissionLease>, OrchestratorError> {
+        if cluster.trim().is_empty()
+            || owner.trim().is_empty()
+            || owner.len() > 128
+            || !(1..=256).contains(&limit)
+            || lease_expires_at <= Utc::now()
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "signed-submission recovery claim requires cluster, owner, limit in 1..=256, and future expiry"
+                    .to_owned(),
+            ));
+        }
+        let rows = sqlx::query(
+            r#"
+            WITH candidate AS (
+                SELECT submission.id
+                FROM loyal_yield.signed_route_submissions submission
+                WHERE submission.cluster = $1
+                  AND submission.decision_id IS NOT NULL
+                  AND submission.submission_state IN ('signed', 'submitted')
+                  AND submission.broadcast_count = 0
+                  AND submission.confirmation_available_at <= now()
+                  AND (
+                      submission.confirmation_lease_owner IS NULL
+                      OR submission.confirmation_lease_expires_at <= now()
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM loyal_yield.lookup_table_usage_leases usage
+                      WHERE usage.lease_kind = 'prepared_transaction'
+                        AND usage.reference_key = submission.semantic_key
+                        AND usage.cluster = submission.cluster
+                        AND usage.released_at IS NULL
+                        AND usage.expires_at > now()
+                  )
+                ORDER BY submission.created_at, submission.id
+                FOR UPDATE OF submission SKIP LOCKED
+                LIMIT $4
+            )
+            UPDATE loyal_yield.signed_route_submissions submission
+            SET confirmation_lease_owner = $2,
+                confirmation_lease_expires_at = $3,
+                confirmation_fencing_token = submission.confirmation_fencing_token + 1,
+                confirmation_attempt_count = submission.confirmation_attempt_count + 1,
+                updated_at = now()
+            FROM candidate
+            WHERE submission.id = candidate.id
+            RETURNING submission.*
+            "#,
+        )
+        .bind(cluster)
+        .bind(owner)
+        .bind(lease_expires_at)
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter()
+            .map(|row| {
+                let submission = signed_route_submission_from_row(row)?;
+                Ok(SignedRouteSubmissionLease {
+                    fencing_token: submission.confirmation_fencing_token,
+                    expires_at: lease_expires_at,
+                    owner: owner.to_owned(),
+                    submission,
+                })
+            })
+            .collect()
     }
 
     /// Claims confirmed routes that still need their slot-fenced post-state

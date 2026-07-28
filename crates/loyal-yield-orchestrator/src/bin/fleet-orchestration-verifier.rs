@@ -25,8 +25,9 @@ use loyal_yield_orchestrator::fleet_orchestration::{
     RebalanceOpportunityAdvance, RebalanceOpportunityClaimKind, RebalanceOpportunityInput,
     RebalanceOpportunityLease, RebalanceOpportunityRecord, RebalanceOpportunityState,
     RouteFeeBudgetError, RouteFeePayerKind, RouteFeePolicy, SignedRouteSubmissionAdvance,
-    SignedRouteSubmissionInput, TargetCapacityCurve, TargetCapacityObservation,
-    TargetCapacityProjection, TargetCapacityReservationInput, WaveLimits,
+    SignedRouteSubmissionInput, SignedRouteSubmissionRecord, TargetCapacityCurve,
+    TargetCapacityObservation, TargetCapacityProjection, TargetCapacityReservationInput,
+    WaveLimits,
 };
 use loyal_yield_orchestrator::{
     lookup_table_manifest_address_records_hash, lookup_table_rollout_lock_acquisition_count,
@@ -463,6 +464,11 @@ struct AltDatabaseRuntimeMeasurements {
     same_table_predecessor_violations: u64,
     stale_fence_commits: u64,
     stale_fence_rejections: u64,
+    usage_leases_rejected_during_mutation: u64,
+    mutating_operations_leased_during_usage: u64,
+    verify_operations_leased_during_usage: u64,
+    usage_fence_broadcast_commits: u64,
+    usage_fence_broadcast_rejections: u64,
     alt_authority_payer_identity_consistent: bool,
     policy_pubkey: String,
 }
@@ -3152,6 +3158,77 @@ async fn signed_input_for_lease(
     Ok(input)
 }
 
+async fn prepare_signed_submission_fixture(
+    fixture: &DatabaseFixture,
+    cluster: &str,
+    optimizer_epoch_id: i64,
+    label: &str,
+    economic_priority: i64,
+    last_valid_block_height: i64,
+) -> Result<SignedRouteSubmissionRecord, Box<dyn Error>> {
+    fixture
+        .seed_opportunity(
+            cluster,
+            optimizer_epoch_id,
+            label,
+            "ready",
+            economic_priority,
+        )
+        .await?;
+    let lease = claim_one(
+        &fixture.client,
+        cluster,
+        &format!("{label}-executor"),
+        RebalanceOpportunityClaimKind::Execute,
+    )
+    .await?;
+    let conflicts = vec![
+        format!("fleet-shared-write-lane:{}:{label}", fixture.prefix),
+        format!("vault-write:{}:{label}", fixture.prefix),
+    ];
+    fixture
+        .client
+        .acquire_route_account_conflict_leases(
+            &lease,
+            &conflicts,
+            Utc::now() + chrono::Duration::minutes(4),
+        )
+        .await?;
+    let mut signed = signed_input_for_lease(fixture, &lease, conflicts, label).await?;
+    signed.last_valid_block_height = last_valid_block_height;
+    let (_, submission) = fixture
+        .client
+        .prepare_same_mint_rebalance_with_signed_submission(
+            same_mint_input_for_lease(&lease)?,
+            &lease,
+            target_capacity_input_for_lease(fixture, &lease).await?,
+            signed,
+        )
+        .await?;
+    Ok(submission)
+}
+
+async fn reconciled_volume_for_cluster(
+    fixture: &DatabaseFixture,
+    cluster: &str,
+) -> Result<(i64, i64, i64), Box<dyn Error>> {
+    Ok(sqlx::query_as(
+        r#"
+        SELECT count(*)::BIGINT,
+               COALESCE(sum(opportunity.amount_raw), 0)::BIGINT,
+               COALESCE(sum(opportunity.principal_usd_micros), 0)::BIGINT
+        FROM loyal_yield.signed_route_submissions submission
+        JOIN loyal_yield.rebalance_opportunities opportunity
+          ON opportunity.id = submission.opportunity_id
+        WHERE submission.cluster = $1
+          AND submission.submission_state = 'reconciled'
+        "#,
+    )
+    .bind(cluster)
+    .fetch_one(fixture.client.pool())
+    .await?)
+}
+
 async fn fee_shard_signed_input_for_lease(
     fixture: &DatabaseFixture,
     lease: &RebalanceOpportunityLease,
@@ -3707,6 +3784,247 @@ async fn run_alt_database_runtime_measurements(
         && serial_table.authority == policy_pubkey
         && serial_table.payer == policy_pubkey;
 
+    let reciprocal_cluster = format!("{runtime_prefix}_reciprocal_usage_fence");
+    let reciprocal_family = create_runtime_alt_family(
+        &fixture.client,
+        &reciprocal_cluster,
+        "stable-market",
+        LookupTableFamilyKind::SharedMarket,
+        &policy_pubkey,
+    )
+    .await?;
+
+    // Direction one: a route cannot acquire protection after a physical
+    // mutation has entered the durable operation queue.
+    let mutation_first_table = insert_runtime_alt_table(
+        &fixture.client,
+        &reciprocal_cluster,
+        &reciprocal_family,
+        LookupTableAllocationKind::SharedMarket,
+        0,
+        &policy_pubkey,
+    )
+    .await?;
+    let mutation_first = enqueue_runtime_alt_extend(
+        &fixture.client,
+        &reciprocal_family,
+        mutation_first_table.id,
+        mutation_first_table.mutation_epoch,
+        &format!("{runtime_prefix}:mutation-first"),
+    )
+    .await?;
+    let mutation_first_usage = fixture
+        .client
+        .upsert_lookup_table_usage_leases(LookupTableUsageLeaseBundle {
+            cluster: reciprocal_cluster.clone(),
+            lease_kind: LookupTableUsageLeaseKind::PreparedTransaction,
+            reference_key: format!("{runtime_prefix}:mutation-first-usage"),
+            route_lookup_table_ids: vec![mutation_first_table.id],
+            vault_id: None,
+            binding_id: None,
+            route_fingerprint: Some(format!("{runtime_prefix}:route")),
+            requirements_fingerprint: Some(format!("{runtime_prefix}:requirements")),
+            expires_at: Utc::now() + chrono::Duration::minutes(15),
+        })
+        .await;
+    let usage_leases_rejected_during_mutation = u64::from(
+        mutation_first_usage
+            .as_ref()
+            .is_err_and(|error| error.to_string().contains("nonterminal mutation operation")),
+    );
+    sqlx::query(
+        "UPDATE loyal_yield.lookup_table_operations SET operation_state = 'cancelled', next_attempt_at = NULL, updated_at = now() WHERE id = $1",
+    )
+    .bind(mutation_first.id)
+    .execute(fixture.client.pool())
+    .await?;
+
+    // Direction two: an active route usage lease keeps an unsigned mutator out
+    // of the work queue, while a read-only verification remains runnable.
+    let usage_first_table = insert_runtime_alt_table(
+        &fixture.client,
+        &reciprocal_cluster,
+        &reciprocal_family,
+        LookupTableAllocationKind::SharedMarket,
+        1,
+        &policy_pubkey,
+    )
+    .await?;
+    fixture
+        .client
+        .upsert_lookup_table_usage_leases(LookupTableUsageLeaseBundle {
+            cluster: reciprocal_cluster.clone(),
+            lease_kind: LookupTableUsageLeaseKind::PreparedTransaction,
+            reference_key: format!("{runtime_prefix}:usage-first"),
+            route_lookup_table_ids: vec![usage_first_table.id],
+            vault_id: None,
+            binding_id: None,
+            route_fingerprint: Some(format!("{runtime_prefix}:route")),
+            requirements_fingerprint: Some(format!("{runtime_prefix}:requirements")),
+            expires_at: Utc::now() + chrono::Duration::minutes(15),
+        })
+        .await?;
+    let usage_verify = fixture
+        .client
+        .enqueue_lookup_table_operation(LookupTableOperationEnqueue {
+            idempotency_key: format!("fleet-runtime-verifier:{runtime_prefix}:usage-verify"),
+            family_id: reciprocal_family.id,
+            route_lookup_table_id: Some(usage_first_table.id),
+            manifest_id: None,
+            binding_id: None,
+            operation_kind: LookupTableOperationKind::Verify,
+            target_generation: None,
+            target_shard_ordinal: None,
+            operation_context: json!({"source": "fleet_isolated_database_runtime_measurements"}),
+            mutation_epoch: usage_first_table.mutation_epoch,
+            estimated_fee_lamports: None,
+            estimated_rent_lamports: None,
+            addresses: Vec::new(),
+        })
+        .await?;
+    let usage_mutation = enqueue_runtime_alt_extend(
+        &fixture.client,
+        &reciprocal_family,
+        usage_first_table.id,
+        usage_first_table.mutation_epoch,
+        &format!("{runtime_prefix}:usage-mutation"),
+    )
+    .await?;
+    let usage_verify_lease = fixture
+        .client
+        .lease_next_lookup_table_operation(
+            &reciprocal_cluster,
+            "fleet-runtime-usage-verify",
+            Utc::now() + chrono::Duration::minutes(5),
+            false,
+        )
+        .await?;
+    let verify_operations_leased_during_usage = u64::from(
+        usage_verify_lease
+            .as_ref()
+            .is_some_and(|leased| leased.operation.id == usage_verify.id),
+    );
+    sqlx::query(
+        "UPDATE loyal_yield.lookup_table_operations SET operation_state = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL, updated_at = now() WHERE id = $1",
+    )
+    .bind(usage_verify.id)
+    .execute(fixture.client.pool())
+    .await?;
+    let usage_mutation_lease = fixture
+        .client
+        .lease_next_lookup_table_operation(
+            &reciprocal_cluster,
+            "fleet-runtime-usage-mutation",
+            Utc::now() + chrono::Duration::minutes(5),
+            false,
+        )
+        .await?;
+    let mutating_operations_leased_during_usage = u64::from(
+        usage_mutation_lease
+            .as_ref()
+            .is_some_and(|leased| leased.operation.id == usage_mutation.id),
+    );
+
+    // The final pre-broadcast fence also rejects a legacy/inconsistent race
+    // in which protection appears after durable signing.
+    let broadcast_fence_cluster = format!("{runtime_prefix}_broadcast_usage_fence");
+    let broadcast_fence_family = create_runtime_alt_family(
+        &fixture.client,
+        &broadcast_fence_cluster,
+        "vault-shards",
+        LookupTableFamilyKind::VaultShards,
+        &policy_pubkey,
+    )
+    .await?;
+    let broadcast_fence_table = insert_runtime_alt_table(
+        &fixture.client,
+        &broadcast_fence_cluster,
+        &broadcast_fence_family,
+        LookupTableAllocationKind::VaultShard,
+        0,
+        &policy_pubkey,
+    )
+    .await?;
+    let broadcast_fence_operation = enqueue_runtime_alt_extend(
+        &fixture.client,
+        &broadcast_fence_family,
+        broadcast_fence_table.id,
+        broadcast_fence_table.mutation_epoch,
+        &format!("{runtime_prefix}:broadcast-fence"),
+    )
+    .await?;
+    let broadcast_fence_leased = fixture
+        .client
+        .lease_next_lookup_table_operation(
+            &broadcast_fence_cluster,
+            "fleet-runtime-broadcast-fence",
+            Utc::now() + chrono::Duration::minutes(5),
+            false,
+        )
+        .await?
+        .ok_or("broadcast-fence mutation was not leaseable before usage existed")?;
+    if broadcast_fence_leased.operation.id != broadcast_fence_operation.id {
+        return Err("broadcast-fence scenario leased the wrong operation".into());
+    }
+    let broadcast_fence_lease = lookup_table_operation_lease(&broadcast_fence_leased.operation)?;
+    fixture
+        .client
+        .persist_signed_lookup_table_transaction(
+            broadcast_fence_operation.id,
+            &broadcast_fence_lease,
+            SignedLookupTableTransaction {
+                transaction_signature: format!("{runtime_prefix}:broadcast-fence-signature"),
+                message_hash: format!("{:x}", Sha256::digest(b"usage-fence-message")),
+                recent_blockhash: runtime_random_pubkey(),
+                last_valid_block_height: 100_000,
+                estimated_fee_lamports: 5_000,
+                estimated_rent_lamports: 0,
+                estimated_reclaimed_rent_lamports: 0,
+            },
+        )
+        .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.lookup_table_usage_leases
+            (cluster, lease_kind, reference_key, route_lookup_table_id,
+             route_fingerprint, requirements_fingerprint, expires_at)
+        VALUES ($1, 'prepared_transaction', $2, $3, $4, $5, $6)
+        "#,
+    )
+    .bind(&broadcast_fence_cluster)
+    .bind(format!("{runtime_prefix}:late-usage"))
+    .bind(broadcast_fence_table.id)
+    .bind(format!("{runtime_prefix}:route"))
+    .bind(format!("{runtime_prefix}:requirements"))
+    .bind(Utc::now() + chrono::Duration::minutes(15))
+    .execute(fixture.client.pool())
+    .await?;
+    let usage_fence_permit = fixture
+        .client
+        .grant_lookup_table_provisioner_broadcast_permit(
+            &broadcast_fence_cluster,
+            broadcast_fence_operation.id,
+            &broadcast_fence_lease,
+            Utc::now() + chrono::Duration::seconds(5),
+        )
+        .await?;
+    let usage_fence_broadcast_rejections = u64::from(matches!(
+        &usage_fence_permit,
+        LookupTableProvisionerBroadcastPermitResult::Fenced { error_code, .. }
+            if error_code == "lookup_table_usage_lease_active_before_broadcast"
+    ));
+    let usage_fence_broadcast_commits = u64::from(matches!(
+        usage_fence_permit,
+        LookupTableProvisionerBroadcastPermitResult::Granted { .. }
+    ));
+    policy_identity_matches &= reciprocal_family.provisioning_authority == policy_pubkey
+        && reciprocal_family.payer == policy_pubkey
+        && broadcast_fence_family.provisioning_authority == policy_pubkey
+        && broadcast_fence_family.payer == policy_pubkey
+        && mutation_first_table.authority == policy_pubkey
+        && usage_first_table.authority == policy_pubkey
+        && broadcast_fence_table.authority == policy_pubkey;
+
     Ok(AltDatabaseRuntimeMeasurements {
         typed_provisioner_dry_run_plans,
         reusable_v2_plans,
@@ -3716,6 +4034,11 @@ async fn run_alt_database_runtime_measurements(
         same_table_predecessor_violations,
         stale_fence_commits,
         stale_fence_rejections,
+        usage_leases_rejected_during_mutation,
+        mutating_operations_leased_during_usage,
+        verify_operations_leased_during_usage,
+        usage_fence_broadcast_commits,
+        usage_fence_broadcast_rejections,
         alt_authority_payer_identity_consistent: policy_identity_matches,
         policy_pubkey,
     })
@@ -6493,7 +6816,9 @@ async fn run_database_checks(
             expires_at >= reconciler_reclaimed.expires_at + chrono::Duration::minutes(2)
         });
     let reconciler_fenced = reconciler_reclaimed.fencing_token > reconciler_first.fencing_token;
-    fixture
+    let reconciled_volume_before =
+        reconciled_volume_for_cluster(fixture, &submission_cluster).await?;
+    let reconciled_submission = fixture
         .client
         .advance_signed_route_submission(
             &reconciler_reclaimed,
@@ -6504,6 +6829,28 @@ async fn run_database_checks(
             },
         )
         .await?;
+    let reconciled_volume_after =
+        reconciled_volume_for_cluster(fixture, &submission_cluster).await?;
+    let replayed_reconciliation = fixture
+        .client
+        .advance_signed_route_submission(
+            &reconciler_reclaimed,
+            SignedRouteSubmissionAdvance::Reconciled {
+                reconciled_slot: 50_010,
+            },
+        )
+        .await;
+    let reconciled_volume_after_replay =
+        reconciled_volume_for_cluster(fixture, &submission_cluster).await?;
+    let reconciled_volume_updates_exactly_once = reconciled_submission.state.as_str()
+        == "reconciled"
+        && reconciled_volume_after.0 == reconciled_volume_before.0 + 1
+        && reconciled_volume_after.1
+            == reconciled_volume_before.1 + signed_route_lease.opportunity.amount_raw
+        && reconciled_volume_after.2
+            == reconciled_volume_before.2 + signed_route_lease.opportunity.principal_usd_micros
+        && replayed_reconciliation.is_err()
+        && reconciled_volume_after_replay == reconciled_volume_after;
     let rediscovery_after_reconciled = fixture
         .client
         .upsert_rebalance_opportunity(signed_route_rediscovery_input.clone())
@@ -6978,6 +7325,133 @@ async fn run_database_checks(
     let expired_lease_reclaimed_with_higher_fence = reclaimed.opportunity.id == reclaim_seed.id
         && reclaimed.fencing_token > first_lease.fencing_token
         && mixed_lane_global_order_preserved;
+
+    let poison_cluster = fixture.cluster("signed_alt_poison_isolation");
+    let poison_epoch = fixture.seed_epoch(&poison_cluster).await?;
+    let poison_submission = prepare_signed_submission_fixture(
+        fixture,
+        &poison_cluster,
+        poison_epoch,
+        "poison-alt-row",
+        3_000,
+        10,
+    )
+    .await?;
+    let valid_submission = prepare_signed_submission_fixture(
+        fixture,
+        &poison_cluster,
+        poison_epoch,
+        "valid-alt-row",
+        2_000,
+        100_000,
+    )
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE loyal_yield.lookup_table_usage_leases
+        SET created_at = now() - interval '1 hour',
+            expires_at = now() - interval '1 second', updated_at = now()
+        WHERE lease_kind = 'prepared_transaction' AND reference_key = $1
+        "#,
+    )
+    .bind(&poison_submission.semantic_key)
+    .execute(fixture.client.pool())
+    .await?;
+    let normal_after_poison = fixture
+        .client
+        .lease_pending_signed_route_submissions(
+            &poison_cluster,
+            "poison-normal-confirmer",
+            2,
+            Utc::now() + chrono::Duration::minutes(2),
+        )
+        .await?;
+    let normal_after_poison_ids = normal_after_poison
+        .iter()
+        .map(|lease| lease.submission.id)
+        .collect::<Vec<_>>();
+    let recovery_after_poison = fixture
+        .client
+        .lease_unprotected_unbroadcast_signed_route_submissions(
+            &poison_cluster,
+            "poison-recovery-confirmer",
+            2,
+            Utc::now() + chrono::Duration::minutes(2),
+        )
+        .await?;
+    let poison_recovery_lease = recovery_after_poison
+        .iter()
+        .find(|lease| lease.submission.id == poison_submission.id)
+        .cloned()
+        .ok_or("poisoned signed route did not enter terminal-only recovery")?;
+    let expired_poison = fixture
+        .client
+        .advance_signed_route_submission(
+            &poison_recovery_lease,
+            SignedRouteSubmissionAdvance::Expired {
+                checked_at: Utc::now(),
+                observed_block_height: 11,
+                signature_history_absent: true,
+                effect_absence_proved: false,
+            },
+        )
+        .await?;
+    let poison_terminal_conflicts: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.route_account_conflict_leases WHERE submission_id = $1",
+    )
+    .bind(poison_submission.id)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let poison_active_alt_leases: i64 = sqlx::query_scalar(
+        r#"
+        SELECT count(*) FROM loyal_yield.lookup_table_usage_leases
+        WHERE lease_kind = 'prepared_transaction' AND reference_key = $1
+          AND released_at IS NULL
+        "#,
+    )
+    .bind(&poison_submission.semantic_key)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let poison_capacity_state: String = sqlx::query_scalar(
+        "SELECT reservation_state FROM loyal_yield.target_capacity_reservations WHERE signed_submission_id = $1",
+    )
+    .bind(poison_submission.id)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let (poison_opportunity_state, poison_decision_state): (String, String) = sqlx::query_as(
+        r#"
+        SELECT opportunity.opportunity_state, decision.status::text
+        FROM loyal_yield.rebalance_opportunities opportunity
+        JOIN loyal_yield.rebalance_decisions decision ON decision.id = opportunity.decision_id
+        WHERE opportunity.id = $1
+        "#,
+    )
+    .bind(poison_submission.opportunity_id)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let valid_normal_lease = normal_after_poison
+        .iter()
+        .find(|lease| lease.submission.id == valid_submission.id)
+        .ok_or("valid signed route was not independently claimable")?;
+    fixture
+        .client
+        .advance_signed_route_submission(
+            valid_normal_lease,
+            SignedRouteSubmissionAdvance::Failed {
+                checked_at: Utc::now(),
+                confirmed_slot: None,
+                error_detail: "synthetic verifier cleanup after poison isolation".to_owned(),
+            },
+        )
+        .await?;
+    let poison_row_isolated_and_recovered = normal_after_poison_ids == vec![valid_submission.id]
+        && recovery_after_poison.len() == 1
+        && expired_poison.state.as_str() == "expired"
+        && poison_terminal_conflicts == 0
+        && poison_active_alt_leases == 0
+        && poison_capacity_state == "released"
+        && poison_opportunity_state == "failed"
+        && poison_decision_state == "failed";
     let runtime_measurements_passed = alt_runtime_measurements.typed_provisioner_dry_run_plans > 0
         && alt_runtime_measurements.reusable_v2_plans
             == alt_runtime_measurements.typed_provisioner_dry_run_plans
@@ -6997,6 +7471,11 @@ async fn run_database_checks(
         && alt_runtime_measurements.same_table_predecessor_violations == 0
         && alt_runtime_measurements.stale_fence_commits == 0
         && alt_runtime_measurements.stale_fence_rejections == 1
+        && alt_runtime_measurements.usage_leases_rejected_during_mutation == 1
+        && alt_runtime_measurements.mutating_operations_leased_during_usage == 0
+        && alt_runtime_measurements.verify_operations_leased_during_usage == 1
+        && alt_runtime_measurements.usage_fence_broadcast_commits == 0
+        && alt_runtime_measurements.usage_fence_broadcast_rejections == 1
         && duplicate_active_vault_movements == 0
         && independent_count == 64
         && overlapping_lane_limit_violations == 0
@@ -7015,6 +7494,8 @@ async fn run_database_checks(
         && pre_send_terminal_failure_released_capacity
         && reconciled_capacity_retention_passed
         && preexisting_newer_telemetry_releases_on_reconcile
+        && poison_row_isolated_and_recovered
+        && reconciled_volume_updates_exactly_once
         && database_deadlocks == 0;
 
     Ok(DatabaseEvidence {
@@ -7106,6 +7587,11 @@ async fn run_database_checks(
                         "independentPhysicalAltLanesProgressed": alt_runtime_measurements.independent_physical_alt_lanes_progressed,
                         "sameTablePredecessorViolations": alt_runtime_measurements.same_table_predecessor_violations,
                         "staleFenceCommits": alt_runtime_measurements.stale_fence_commits,
+                        "usageLeasesRejectedDuringMutation": alt_runtime_measurements.usage_leases_rejected_during_mutation,
+                        "mutatingOperationsLeasedDuringUsage": alt_runtime_measurements.mutating_operations_leased_during_usage,
+                        "verifyOperationsLeasedDuringUsage": alt_runtime_measurements.verify_operations_leased_during_usage,
+                        "usageFenceBroadcastCommits": alt_runtime_measurements.usage_fence_broadcast_commits,
+                        "usageFenceBroadcastRejections": alt_runtime_measurements.usage_fence_broadcast_rejections,
                     },
                     "execution": {
                         "duplicateActiveVaultMovements": duplicate_active_vault_movements,
@@ -7126,6 +7612,59 @@ async fn run_database_checks(
                         "preexistingNewerTelemetryRelease": preexisting_newer_telemetry_releases_on_reconcile,
                         "databaseDeadlocks": database_deadlocks,
                     },
+                }),
+            ),
+            subcheck(
+                "route_usage_and_alt_mutation_are_reciprocally_fenced",
+                alt_runtime_measurements.usage_leases_rejected_during_mutation == 1
+                    && alt_runtime_measurements.mutating_operations_leased_during_usage == 0
+                    && alt_runtime_measurements.verify_operations_leased_during_usage == 1
+                    && alt_runtime_measurements.usage_fence_broadcast_commits == 0
+                    && alt_runtime_measurements.usage_fence_broadcast_rejections == 1,
+                json!({
+                    "usageLeasesRejectedDuringMutation": alt_runtime_measurements.usage_leases_rejected_during_mutation,
+                    "mutatingOperationsLeasedDuringUsage": alt_runtime_measurements.mutating_operations_leased_during_usage,
+                    "verifyOperationsLeasedDuringUsage": alt_runtime_measurements.verify_operations_leased_during_usage,
+                    "usageFenceBroadcastCommits": alt_runtime_measurements.usage_fence_broadcast_commits,
+                    "usageFenceBroadcastRejections": alt_runtime_measurements.usage_fence_broadcast_rejections,
+                }),
+            ),
+            subcheck(
+                "invalid_alt_row_isolated_and_terminally_recovered_without_broadcast",
+                poison_row_isolated_and_recovered,
+                json!({
+                    "normalClaimIds": normal_after_poison_ids,
+                    "validSubmissionId": valid_submission.id,
+                    "recoveryClaimIds": recovery_after_poison.iter().map(|lease| lease.submission.id).collect::<Vec<_>>(),
+                    "poisonSubmissionId": poison_submission.id,
+                    "poisonTerminalState": expired_poison.state.as_str(),
+                    "remainingConflictRows": poison_terminal_conflicts,
+                    "activeAltUsageLeases": poison_active_alt_leases,
+                    "capacityState": poison_capacity_state,
+                    "opportunityState": poison_opportunity_state,
+                    "decisionState": poison_decision_state,
+                }),
+            ),
+            subcheck(
+                "reconciled_volume_counts_unique_submission_exactly_once",
+                reconciled_volume_updates_exactly_once,
+                json!({
+                    "before": {
+                        "submissionCount": reconciled_volume_before.0,
+                        "amountRaw": reconciled_volume_before.1,
+                        "principalUsdMicros": reconciled_volume_before.2,
+                    },
+                    "after": {
+                        "submissionCount": reconciled_volume_after.0,
+                        "amountRaw": reconciled_volume_after.1,
+                        "principalUsdMicros": reconciled_volume_after.2,
+                    },
+                    "afterReplay": {
+                        "submissionCount": reconciled_volume_after_replay.0,
+                        "amountRaw": reconciled_volume_after_replay.1,
+                        "principalUsdMicros": reconciled_volume_after_replay.2,
+                    },
+                    "replayRejected": replayed_reconciliation.is_err(),
                 }),
             ),
             subcheck(
@@ -8924,6 +9463,7 @@ fn position_measurement_schema_known(value: &Value) -> bool {
             "mainUsdc",
             "globalMainUsdc",
             "reserveAggregates",
+            "largestEligibleVaults",
         ],
     ) && value.get("mainUsdcCohort").is_some_and(|cohort| {
         exact_object_keys(
@@ -8963,6 +9503,108 @@ fn position_measurement_schema_known(value: &Value) -> bool {
                     )
                 })
             })
+        && largest_account_measurement_schema_known(
+            value.get("largestEligibleVaults").unwrap_or(&Value::Null),
+        )
+}
+
+fn largest_account_measurement_schema_known(value: &Value) -> bool {
+    const POSITION_KEYS: &[&str] = &[
+        "reserve",
+        "market",
+        "liquidityMint",
+        "amountRaw",
+        "principalUsdMicros",
+        "supplyApyBps",
+    ];
+    const VAULT_KEYS: &[&str] = &[
+        "rank",
+        "vaultId",
+        "principalUsdMicros",
+        "oldestObservedAt",
+        "newestObservedAt",
+        "minimumObservedSlot",
+        "maximumObservedSlot",
+        "positions",
+        "bestReserve",
+        "bestMarket",
+        "bestLiquidityMint",
+        "bestSupplyApyBps",
+        "principalAtBestReserve",
+        "opportunityId",
+        "opportunityState",
+        "opportunityTargetReserve",
+        "estimatedEdgeBps",
+        "expectedNetGainUsdMicros",
+        "movedSubmissionId",
+        "movedReconciledAt",
+        "classification",
+    ];
+    exact_object_keys(
+        value,
+        &[
+            "available",
+            "cluster",
+            "cutoverAt",
+            "optimizerEpochId",
+            "optimizerEpochKey",
+            "optimizerEpochExpiresAt",
+            "fullSweepCompletedAt",
+            "completeFrontier",
+            "rankedCount",
+            "rankedPrincipalUsdMicros",
+            "coveredPrincipalUsdMicros",
+            "coveragePpm",
+            "minimumCoveragePpm",
+            "topThreeBlockedCount",
+            "movedCount",
+            "vaults",
+            "pass",
+        ],
+    ) && value
+        .get("vaults")
+        .and_then(Value::as_array)
+        .is_some_and(|vaults| {
+            vaults.iter().all(|vault| {
+                exact_object_keys(vault, VAULT_KEYS)
+                    && vault
+                        .get("positions")
+                        .and_then(Value::as_array)
+                        .is_some_and(|positions| {
+                            positions
+                                .iter()
+                                .all(|position| exact_object_keys(position, POSITION_KEYS))
+                        })
+            })
+        })
+}
+
+fn reconciled_volume_measurement_schema_known(value: &Value) -> bool {
+    let snapshot_known = |snapshot: &Value| {
+        exact_object_keys(
+            snapshot,
+            &[
+                "movementCount",
+                "amountRaw",
+                "principalUsdMicros",
+                "newestReconciledAt",
+                "uniqueSubmissionCount",
+                "uniqueOpportunityCount",
+                "uniqueDecisionCount",
+                "uniqueSignatureCount",
+            ],
+        )
+    };
+    exact_object_keys(
+        value,
+        &["baseline", "current", "currentIdentityExact", "delta"],
+    ) && value.get("current").is_some_and(snapshot_known)
+        && value
+            .get("baseline")
+            .is_some_and(|snapshot| snapshot.is_null() || snapshot_known(snapshot))
+        && value
+            .get("delta")
+            .is_some_and(|snapshot| snapshot.is_null() || snapshot_known(snapshot))
 }
 
 fn movement_measurement_schema_known(value: &Value) -> bool {
@@ -9092,53 +9734,59 @@ fn movement_measurement_schema_known(value: &Value) -> bool {
             "unsafeTerminalOutcomeCount",
             "databaseDeadlockCount",
             "duplicateMovementCount",
+            "reconciledVolume",
             "mainUsdc",
             "movements",
             "pass",
             "productionSlos",
         ],
-    ) && value.get("mainUsdc").is_some_and(|main| {
-        exact_object_keys(
-            main,
-            &[
-                "reserve",
-                "baselineCollectedAt",
-                "baselineAmountRaw",
-                "baselineCohortVaultCount",
-                "baselineCohortVaultIds",
-                "postBaselineCohortDepositAmountRaw",
-                "currentBaselineCohortAmountRaw",
-                "currentRouteableAmountRaw",
-                "confirmedOptimizerOutflowRaw",
-                "confirmedOptimizerInflowRaw",
-                "confirmedOptimizerNetOutflowRaw",
-                "baselineCohortConfirmedOptimizerOutflowRaw",
-                "baselineCohortConfirmedOptimizerInflowRaw",
-                "baselineCohortConfirmedOptimizerNetOutflowRaw",
-                "depositAdjustedReductionRaw",
-                "reductionAfterDepositsCoversConfirmedNetOutflow",
-            ],
-        )
-    }) && value.get("productionSlos").is_some_and(|slos| {
-        exact_object_keys(
-            slos,
-            &[
-                "currentEpochOpportunityCount",
-                "submissionP95Milliseconds",
-                "submissionP95LimitMilliseconds",
-                "confirmationP95Milliseconds",
-                "confirmationP95LimitMilliseconds",
-                "submittedWithinTwoMinutesYieldPpm",
-                "submittedWithinTwoMinutesMinimumYieldPpm",
-                "submittedWithinTenMinutesYieldPpm",
-                "submittedWithinTenMinutesMinimumYieldPpm",
-                "pass",
-            ],
-        )
-    }) && value
-        .get("movements")
-        .and_then(Value::as_array)
-        .is_some_and(|rows| rows.iter().all(|row| exact_object_keys(row, MOVEMENT_KEYS)))
+    ) && value
+        .get("reconciledVolume")
+        .is_some_and(reconciled_volume_measurement_schema_known)
+        && value.get("mainUsdc").is_some_and(|main| {
+            exact_object_keys(
+                main,
+                &[
+                    "reserve",
+                    "baselineCollectedAt",
+                    "baselineAmountRaw",
+                    "baselineCohortVaultCount",
+                    "baselineCohortVaultIds",
+                    "postBaselineCohortDepositAmountRaw",
+                    "currentBaselineCohortAmountRaw",
+                    "currentRouteableAmountRaw",
+                    "confirmedOptimizerOutflowRaw",
+                    "confirmedOptimizerInflowRaw",
+                    "confirmedOptimizerNetOutflowRaw",
+                    "baselineCohortConfirmedOptimizerOutflowRaw",
+                    "baselineCohortConfirmedOptimizerInflowRaw",
+                    "baselineCohortConfirmedOptimizerNetOutflowRaw",
+                    "depositAdjustedReductionRaw",
+                    "reductionAfterDepositsCoversConfirmedNetOutflow",
+                ],
+            )
+        })
+        && value.get("productionSlos").is_some_and(|slos| {
+            exact_object_keys(
+                slos,
+                &[
+                    "currentEpochOpportunityCount",
+                    "submissionP95Milliseconds",
+                    "submissionP95LimitMilliseconds",
+                    "confirmationP95Milliseconds",
+                    "confirmationP95LimitMilliseconds",
+                    "submittedWithinTwoMinutesYieldPpm",
+                    "submittedWithinTwoMinutesMinimumYieldPpm",
+                    "submittedWithinTenMinutesYieldPpm",
+                    "submittedWithinTenMinutesMinimumYieldPpm",
+                    "pass",
+                ],
+            )
+        })
+        && value
+            .get("movements")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| rows.iter().all(|row| exact_object_keys(row, MOVEMENT_KEYS)))
 }
 
 fn alt_repair_measurement_schema_known(value: &Value) -> bool {
@@ -10316,6 +10964,20 @@ fn movement_chain_position_metadata(row: &Value, field: &str) -> bool {
         == Some("chain_reconcile_preview")
 }
 
+fn reconciled_volume_snapshot(value: &Value) -> Option<(i64, i64, i64)> {
+    let movement_count = value_i64(value, "movementCount")?;
+    let amount_raw = value_i64(value, "amountRaw")?;
+    let principal_usd_micros = value_i64(value, "principalUsdMicros")?;
+    (movement_count >= 0
+        && amount_raw >= 0
+        && principal_usd_micros >= 0
+        && value_i64(value, "uniqueSubmissionCount") == Some(movement_count)
+        && value_i64(value, "uniqueOpportunityCount") == Some(movement_count)
+        && value_i64(value, "uniqueDecisionCount") == Some(movement_count)
+        && value_i64(value, "uniqueSignatureCount") == Some(movement_count))
+    .then_some((movement_count, amount_raw, principal_usd_micros))
+}
+
 fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck {
     let movement = &binding.artifact.measurements.database.movement;
     let queue = &binding.artifact.measurements.database.queue;
@@ -10367,7 +11029,10 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
     let mut main_inflow = 0i128;
     let mut baseline_cohort_main_outflow = 0i128;
     let mut baseline_cohort_main_inflow = 0i128;
+    let mut reconciled_amount_raw = 0i128;
+    let mut reconciled_principal_usd_micros = 0i128;
     let mut identifiers = BTreeSet::new();
+    let mut reconciled_submission_ids = BTreeSet::new();
     let mut all_rows_well_formed = true;
     for row in rows {
         let state = value_string(row, "submissionState").unwrap_or_default();
@@ -10782,6 +11447,12 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
         }
         if state == "reconciled" {
             reconciled_movement_count += 1;
+            reconciled_amount_raw += i128::from(amount.unwrap_or_default());
+            reconciled_principal_usd_micros +=
+                i128::from(value_i64(row, "principalUsdMicros").unwrap_or_default());
+            if let Some(submission_id) = submission_id {
+                reconciled_submission_ids.insert(submission_id);
+            }
             if final_effect {
                 fully_proven_count += 1;
             }
@@ -10831,6 +11502,102 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
             == Some(fully_proven_count)
         && value_i64(movement, "economicFailureCount") == Some(economic_failure_count)
         && value_i64(movement, "unsafeTerminalOutcomeCount") == Some(unsafe_terminal_outcome_count);
+    let volume = movement.get("reconciledVolume").unwrap_or(&Value::Null);
+    let volume_current = volume.get("current").and_then(reconciled_volume_snapshot);
+    let volume_baseline = volume.get("baseline").and_then(reconciled_volume_snapshot);
+    let volume_delta = volume.get("delta").and_then(reconciled_volume_snapshot);
+    let reconciled_volume_exact = volume_current
+        .zip(volume_baseline)
+        .zip(volume_delta)
+        .is_some_and(|((current, baseline), delta)| {
+            current.0.checked_sub(baseline.0) == Some(delta.0)
+                && current.1.checked_sub(baseline.1) == Some(delta.1)
+                && current.2.checked_sub(baseline.2) == Some(delta.2)
+                && delta.0 == reconciled_movement_count
+                && i128::from(delta.1) == reconciled_amount_raw
+                && i128::from(delta.2) == reconciled_principal_usd_micros
+        })
+        && value_bool(volume, "currentIdentityExact") == Some(true);
+
+    let largest = positions
+        .get("largestEligibleVaults")
+        .unwrap_or(&Value::Null);
+    let largest_vaults = largest
+        .get("vaults")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut largest_vault_ids = BTreeSet::new();
+    let mut recomputed_ranked_principal = 0i128;
+    let mut recomputed_covered_principal = 0i128;
+    let mut recomputed_top_three_blocked = 0i64;
+    let mut recomputed_moved_count = 0i64;
+    let mut largest_rows_valid = !largest_vaults.is_empty() && largest_vaults.len() <= 10;
+    for (index, vault) in largest_vaults.iter().enumerate() {
+        let expected_rank = i64::try_from(index + 1).ok();
+        let vault_id = value_i64(vault, "vaultId");
+        let principal = value_i64(vault, "principalUsdMicros");
+        let classification = value_string(vault, "classification");
+        largest_rows_valid &= value_i64(vault, "rank") == expected_rank
+            && vault_id.is_some_and(|id| id > 0 && largest_vault_ids.insert(id))
+            && principal.is_some_and(|amount| amount > 0)
+            && matches!(
+                classification,
+                Some("already_optimal" | "moved" | "no_positive_edge" | "blocked")
+            );
+        recomputed_ranked_principal += i128::from(principal.unwrap_or_default());
+        if classification != Some("blocked") {
+            recomputed_covered_principal += i128::from(principal.unwrap_or_default());
+        } else if index < 3 {
+            recomputed_top_three_blocked += 1;
+        }
+        match classification {
+            Some("already_optimal") => {
+                largest_rows_valid &= value_i64(vault, "principalAtBestReserve") == principal
+                    && vault.get("movedSubmissionId").is_some_and(Value::is_null);
+            }
+            Some("moved") => {
+                recomputed_moved_count += 1;
+                largest_rows_valid &= value_i64(vault, "movedSubmissionId")
+                    .is_some_and(|id| reconciled_submission_ids.contains(&id))
+                    && value_string(vault, "opportunityTargetReserve")
+                        == value_string(vault, "bestReserve")
+                    && parse_rfc3339(vault.get("movedReconciledAt"))
+                        .zip(cutover_at)
+                        .is_some_and(|(moved_at, cutover)| moved_at >= cutover);
+            }
+            Some("no_positive_edge") => {
+                largest_rows_valid &= vault.get("opportunityId").is_some_and(Value::is_null)
+                    && vault.get("movedSubmissionId").is_some_and(Value::is_null);
+            }
+            Some("blocked") => {}
+            _ => largest_rows_valid = false,
+        }
+    }
+    let largest_coverage_pass = recomputed_ranked_principal > 0
+        && recomputed_covered_principal.saturating_mul(10)
+            >= recomputed_ranked_principal.saturating_mul(9);
+    let largest_accounts_pass = largest_account_measurement_schema_known(largest)
+        && value_bool(largest, "available") == Some(true)
+        && value_string(largest, "cluster") == Some(binding.artifact.scope.cluster.as_str())
+        && parse_rfc3339(largest.get("cutoverAt")) == cutover_at
+        && value_bool(largest, "completeFrontier") == Some(true)
+        && parse_rfc3339(largest.get("optimizerEpochExpiresAt"))
+            .is_some_and(|expires_at| expires_at > binding.artifact.captured_at)
+        && parse_rfc3339(largest.get("fullSweepCompletedAt")).is_some_and(|completed_at| {
+            completed_at <= binding.artifact.captured_at
+                && binding.artifact.captured_at - completed_at <= chrono::Duration::seconds(120)
+        })
+        && largest_rows_valid
+        && value_i64(largest, "rankedCount") == i64::try_from(largest_vaults.len()).ok()
+        && value_i64(largest, "rankedPrincipalUsdMicros").map(i128::from)
+            == Some(recomputed_ranked_principal)
+        && value_i64(largest, "coveredPrincipalUsdMicros").map(i128::from)
+            == Some(recomputed_covered_principal)
+        && value_i64(largest, "topThreeBlockedCount") == Some(recomputed_top_three_blocked)
+        && value_i64(largest, "movedCount") == Some(recomputed_moved_count)
+        && recomputed_top_three_blocked == 0
+        && largest_coverage_pass;
     let baseline = value_i64(main, "baselineAmountRaw");
     let deposits = value_i64(main, "postBaselineCohortDepositAmountRaw");
     let current_baseline_cohort = value_i64(main, "currentBaselineCohortAmountRaw");
@@ -10921,11 +11688,13 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
         && all_rows_well_formed
         && unique_identifiers
         && raw_counts_match
+        && reconciled_volume_exact
         && reconciled_reserve_count > 0
         && reconciled_reserve_count + reconciled_idle_deposit_count == reconciled_movement_count
         && fully_proven_count == reconciled_movement_count
         && baseline_reduction_pass
         && positions_match
+        && largest_accounts_pass
         && slos_pass
         && terminal_counters_zero;
     subcheck(
@@ -10940,6 +11709,9 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
             "rowsWellFormedAndPostCutover": all_rows_well_formed,
             "uniqueSubmissionOpportunityDecisionTuples": unique_identifiers,
             "rawCountsMatchRecomputation": raw_counts_match,
+            "reconciledVolumeExact": reconciled_volume_exact,
+            "recomputedVolumeAmountRaw": reconciled_amount_raw,
+            "recomputedVolumePrincipalUsdMicros": reconciled_principal_usd_micros,
             "recomputedNonterminalCount": nonterminal_count,
             "recomputedAmbiguousCount": ambiguous_count,
             "recomputedEconomicFailureCount": economic_failure_count,
@@ -10961,6 +11733,13 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
             "reductionCoversBaselineCohortNetOutflow": reduction_covers_cohort_net_outflow,
             "baselineReductionPass": baseline_reduction_pass,
             "freshPositionsMatch": positions_match,
+            "largestAccountsPass": largest_accounts_pass,
+            "largestRankedCount": largest_vaults.len(),
+            "largestRowsValid": largest_rows_valid,
+            "largestRecomputedRankedPrincipalUsdMicros": recomputed_ranked_principal,
+            "largestRecomputedCoveredPrincipalUsdMicros": recomputed_covered_principal,
+            "largestRecomputedTopThreeBlockedCount": recomputed_top_three_blocked,
+            "largestRecomputedMovedCount": recomputed_moved_count,
             "productionSlosPass": slos_pass,
             "terminalAndSafetyCountersZero": terminal_counters_zero,
             "databaseDeadlockCount": movement.get("databaseDeadlockCount"),
