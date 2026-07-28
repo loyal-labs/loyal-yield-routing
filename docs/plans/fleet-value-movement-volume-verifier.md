@@ -73,6 +73,12 @@ The production evidence JSON must expose the current totals and baseline delta,
 including count, raw amount, principal USD micros, and newest reconciliation
 time.
 
+Fresh market APYs and target-capacity telemetry must revalidate admission before
+signing, but they must not replace the planner-published APYs and edge in the
+durable decision identity. The isolated verifier must prove that refreshed
+economics cannot bind as the published decision and that the exact published
+economics can still bind after successful fresh revalidation.
+
 ## Required 4: live movement and routing rate
 
 Capture a source-bound baseline before rollout. After rollout, wait for an

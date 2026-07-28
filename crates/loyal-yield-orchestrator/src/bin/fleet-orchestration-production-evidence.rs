@@ -4119,8 +4119,7 @@ fn same_mint_route_amount_evidence_exact(movement: &MovementRow) -> bool {
     let bounded_positive_accrual = movement.amount_raw > 0
         && movement.decision_amount_raw >= movement.amount_raw
         && i128::from(movement.decision_amount_raw - movement.amount_raw) * 1_000_000
-            <= i128::from(movement.amount_raw)
-                * i128::from(MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM);
+            <= i128::from(movement.amount_raw) * i128::from(MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM);
     bounded_positive_accrual
         && execution_string(&movement.execution_plan, "route_amount_semantics")
             == Some(ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY)
@@ -4136,8 +4135,10 @@ fn same_mint_route_amount_evidence_exact(movement: &MovementRow) -> bool {
             &movement.decision_execution_plan,
             "source_collateral_amount_raw",
         ) == source_collateral
-        && execution_i64(&movement.execution_plan, "redeemable_source_liquidity_amount_raw")
-            == published_amount
+        && execution_i64(
+            &movement.execution_plan,
+            "redeemable_source_liquidity_amount_raw",
+        ) == published_amount
         && execution_i64(
             &movement.decision_execution_plan,
             "redeemable_source_liquidity_amount_raw",

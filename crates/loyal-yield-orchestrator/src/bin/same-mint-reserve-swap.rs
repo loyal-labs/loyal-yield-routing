@@ -19730,14 +19730,37 @@ fn build_same_mint_input(
                     .map(ToOwned::to_owned),
             })?;
 
-    let source_apy_bps = current_market
-        .map(|market| market.source_apy_bps)
-        .or(source.supply_apy_bps)
-        .unwrap_or_default();
-    let target_apy_bps = current_market
-        .map(|market| market.capacity_adjusted_target_apy_bps)
-        .or(target.supply_apy_bps)
-        .unwrap_or_default();
+    // A queue route revalidates against fresh market economics before this
+    // point, but its durable decision must retain the economics identity that
+    // the planner published. The capacity reservation and signed handoff carry
+    // the fresh admission evidence separately. Mixing those two identities
+    // makes the database's execute-opportunity trigger reject every ordinary
+    // APY tick after revalidation.
+    let queue_route = options.opportunity_id.is_some();
+    let source_apy_bps = if queue_route {
+        options.expected_source_apy_bps.ok_or_else(|| {
+            PlanBlocker::MonitorPlanDrift(
+                "queue route is missing its published source APY".to_owned(),
+            )
+        })?
+    } else {
+        current_market
+            .map(|market| market.source_apy_bps)
+            .or(source.supply_apy_bps)
+            .unwrap_or_default()
+    };
+    let target_apy_bps = if queue_route {
+        options.expected_target_apy_bps.ok_or_else(|| {
+            PlanBlocker::MonitorPlanDrift(
+                "queue route is missing its published target APY".to_owned(),
+            )
+        })?
+    } else {
+        current_market
+            .map(|market| market.capacity_adjusted_target_apy_bps)
+            .or(target.supply_apy_bps)
+            .unwrap_or_default()
+    };
     let input = SameMintRebalanceInput {
         vault_id: Some(vault_id),
         settings: None,
@@ -19754,9 +19777,17 @@ fn build_same_mint_input(
         expected_source_snapshot_id: source.snapshot_id,
         source_apy_bps,
         target_apy_bps,
-        estimated_edge_bps: current_market
-            .map(|market| market.edge_bps)
-            .unwrap_or(target_apy_bps - source_apy_bps),
+        estimated_edge_bps: if queue_route {
+            options.expected_edge_bps.ok_or_else(|| {
+                PlanBlocker::MonitorPlanDrift(
+                    "queue route is missing its published edge".to_owned(),
+                )
+            })?
+        } else {
+            current_market
+                .map(|market| market.edge_bps)
+                .unwrap_or(target_apy_bps - source_apy_bps)
+        },
         estimated_cost_lamports: options.expected_cost_lamports.unwrap_or_default(),
         dry_run: !options.execute,
     };

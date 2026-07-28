@@ -6509,12 +6509,26 @@ async fn run_database_checks(
         .ok_or("signed fixture accrued amount overflowed")?;
     same_mint_input.amount_raw = accrued_amount_raw;
     same_mint_input.redeemable_source_liquidity_amount_raw = Some(accrued_amount_raw);
+    let capacity_input = target_capacity_input_for_lease(fixture, &signed_route_lease).await?;
+    let mut refreshed_economics_input = same_mint_input.clone();
+    refreshed_economics_input.source_apy_bps += 1;
+    refreshed_economics_input.estimated_edge_bps -= 1;
+    let refreshed_economics_rejected = fixture
+        .client
+        .prepare_same_mint_rebalance_with_signed_submission(
+            refreshed_economics_input,
+            &signed_route_lease,
+            capacity_input.clone(),
+            signed_input.clone(),
+        )
+        .await
+        .is_err();
     let (prepared, persisted) = fixture
         .client
         .prepare_same_mint_rebalance_with_signed_submission(
             same_mint_input,
             &signed_route_lease,
-            target_capacity_input_for_lease(fixture, &signed_route_lease).await?,
+            capacity_input,
             signed_input,
         )
         .await?;
@@ -6526,8 +6540,14 @@ async fn run_database_checks(
     let decision_id = prepared
         .decision_id
         .ok_or("atomic signed fixture did not return a decision")?;
-    let (durable_decision_amount_raw, durable_decision_plan): (i64, Value) = sqlx::query_as(
-        "SELECT amount_raw, execution_plan FROM loyal_yield.rebalance_decisions WHERE id = $1",
+    let (
+        durable_decision_amount_raw,
+        durable_decision_source_apy_bps,
+        durable_decision_target_apy_bps,
+        durable_decision_estimated_edge_bps,
+        durable_decision_plan,
+    ): (i64, i64, i64, i64, Value) = sqlx::query_as(
+        "SELECT amount_raw, source_apy_bps, target_apy_bps, estimated_edge_bps, execution_plan FROM loyal_yield.rebalance_decisions WHERE id = $1",
     )
     .bind(decision_id.as_i64())
     .fetch_one(fixture.client.pool())
@@ -6543,6 +6563,10 @@ async fn run_database_checks(
                 .get("redeemable_source_liquidity_amount_raw")
                 .and_then(Value::as_i64)
                 == Some(accrued_amount_raw);
+    let published_economics_bind_signed_decision = refreshed_economics_rejected
+        && durable_decision_source_apy_bps == signed_route_lease.opportunity.source_apy_bps
+        && durable_decision_target_apy_bps == signed_route_lease.opportunity.target_apy_bps
+        && durable_decision_estimated_edge_bps == signed_route_lease.opportunity.estimated_edge_bps;
     let decision_linked = persisted.decision_id == Some(decision_id);
     let signed_evidence_immutable = sqlx::query(
         "UPDATE loyal_yield.signed_route_submissions SET message_hash = 'tampered' WHERE id = $1",
@@ -7525,6 +7549,7 @@ async fn run_database_checks(
         && preexisting_newer_telemetry_releases_on_reconcile
         && poison_row_isolated_and_recovered
         && bounded_accrual_preserves_discovery_and_binds_signed_decision
+        && published_economics_bind_signed_decision
         && reconciled_volume_updates_exactly_once
         && database_deadlocks == 0;
 
@@ -7683,6 +7708,20 @@ async fn run_database_checks(
                     "refreshedAmountRaw": accrued_amount_raw,
                     "durableOpportunityAmountRaw": immutable_opportunity.amount_raw,
                     "durableDecisionAmountRaw": durable_decision_amount_raw,
+                    "durableDecisionExecutionPlan": durable_decision_plan,
+                }),
+            ),
+            subcheck(
+                "fresh_economics_revalidate_but_published_economics_bind_decision",
+                published_economics_bind_signed_decision,
+                json!({
+                    "refreshedEconomicsRejectedAtDecisionBinding": refreshed_economics_rejected,
+                    "publishedSourceApyBps": signed_route_lease.opportunity.source_apy_bps,
+                    "publishedTargetApyBps": signed_route_lease.opportunity.target_apy_bps,
+                    "publishedEstimatedEdgeBps": signed_route_lease.opportunity.estimated_edge_bps,
+                    "durableDecisionSourceApyBps": durable_decision_source_apy_bps,
+                    "durableDecisionTargetApyBps": durable_decision_target_apy_bps,
+                    "durableDecisionEstimatedEdgeBps": durable_decision_estimated_edge_bps,
                     "durableDecisionExecutionPlan": durable_decision_plan,
                 }),
             ),
