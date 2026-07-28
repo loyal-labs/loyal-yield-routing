@@ -83,6 +83,9 @@ The live market-plane sample may retry for at most six one-second attempts so
 the one-second confirmed refresher can catch an event-driven pointer advance.
 PASS still requires one attempt with exact active-reserve coverage and every
 identity, commitment, source, freshness, and observation-floor invariant true.
+An enabled mint with zero currently eligible targets is recorded explicitly but
+does not make the confirmed data plane unhealthy; live movement and largest-
+account gates separately fail unless a safe economic route is actually proven.
 
 ## Required 4: live movement and routing rate
 

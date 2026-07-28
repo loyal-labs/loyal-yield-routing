@@ -2203,13 +2203,22 @@ async fn collect_market_timescale_evidence_once(
         .try_get::<Option<i64>, _>("oldest_verification_age_seconds")
         .ok()
         .flatten();
-    let targets_complete = top_targets.len() == enabled_mints.len()
+    let target_rows_complete = top_targets.len() == enabled_mints.len()
         && top_targets.iter().all(|target| {
             target
                 .get("eligibleTargetCount")
                 .and_then(Value::as_i64)
-                .is_some_and(|count| count > 0)
+                .is_some_and(|count| count >= 0)
         });
+    let enabled_mint_with_eligible_target_count = top_targets
+        .iter()
+        .filter(|target| {
+            target
+                .get("eligibleTargetCount")
+                .and_then(Value::as_i64)
+                .is_some_and(|count| count > 0)
+        })
+        .count();
     let migration_matches = applied_row_count == 1
         && applied_name.as_deref() == Some(TIMESCALE_MARKET_MIGRATION_NAME)
         && applied_checksum.as_deref() == Some(source_checksum.as_str())
@@ -2250,7 +2259,7 @@ async fn collect_market_timescale_evidence_once(
         && (0..=MARKET_EVIDENCE_QUERY_TIMEOUT_MILLISECONDS).contains(&coverage_query_milliseconds)
         && (0..=MARKET_EVIDENCE_QUERY_TIMEOUT_MILLISECONDS)
             .contains(&safe_target_query_milliseconds)
-        && targets_complete;
+        && target_rows_complete;
     MarketDataPlaneEvidence {
         timescale: json!({
             "available": true,
@@ -2293,6 +2302,8 @@ async fn collect_market_timescale_evidence_once(
             "oldestVerificationAgeSeconds": oldest_age,
             "coverageQueryMilliseconds": coverage_query_milliseconds,
             "safeTargetQueryMilliseconds": safe_target_query_milliseconds,
+            "allEnabledMintTargetRowsPresent": target_rows_complete,
+            "enabledMintWithEligibleTargetCount": enabled_mint_with_eligible_target_count,
             "topVerifiedSafeTargets": top_targets,
             "readError": Value::Null,
             "pass": pass,
