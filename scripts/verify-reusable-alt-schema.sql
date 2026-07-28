@@ -314,6 +314,22 @@ BEGIN
         RAISE EXCEPTION 'lookup-table family active kind is not deterministic';
     END IF;
 
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_indexes
+        WHERE schemaname = 'loyal_yield'
+          AND tablename = 'lookup_table_vault_bindings'
+          AND indexname = 'lookup_table_vault_bindings_one_inflight_idx'
+    ) OR EXISTS (
+        SELECT 1
+        FROM loyal_yield.lookup_table_vault_bindings
+        WHERE lifecycle_state IN ('preparing', 'warming')
+        GROUP BY vault_id, family_id, binding_ordinal
+        HAVING count(*) > 1
+    ) THEN
+        RAISE EXCEPTION 'lookup-table in-flight binding head is not deterministic';
+    END IF;
+
     IF EXISTS (
         SELECT 1
         FROM loyal_yield.route_lookup_tables

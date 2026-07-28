@@ -60,6 +60,7 @@
     "verify:realtime:render-config": "bun scripts/verify-realtime-render-config.ts",
     "verify:realtime:sse": "bun scripts/verify-realtime-sse-smoke.ts",
     "verify:reusable-alts": "bash scripts/verify-reusable-alts.sh",
+    "verify:reusable-alt-inflight-binding-repair": "bash scripts/verify-reusable-alt-inflight-binding-repair.sh",
     "verify:reusable-alts:schema": "cargo run -p loyal-yield-orchestrator --bin yield-migrations -- --verify-reusable-alts",
     "verify:reusable-alts:db": "cargo run -p loyal-yield-orchestrator --bin verify-reusable-alt-db",
     "verify:reusable-alts:routes": "cargo test -p squads-test-harness --test reusable_alt_v0_matrix -- --nocapture",

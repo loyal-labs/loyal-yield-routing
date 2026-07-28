@@ -195,6 +195,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0031_fleet_commit_lifetime_fence_errcode.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 32,
+        name: "reusable_alt_inflight_binding_uniqueness",
+        sql: include_str!("../../migrations/0032_reusable_alt_inflight_binding_uniqueness.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -2094,6 +2100,7 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "lookup_table_provisioner_broadcast_permits_cluster_active_idx",
         "lookup_table_precutover_probe_shared_tables_route_idx",
         "lookup_table_vault_bindings_one_active_idx",
+        "lookup_table_vault_bindings_one_inflight_idx",
         "lookup_table_usage_leases_active_table_idx",
         "lookup_table_provisioning_requests_work_queue_idx",
         "lookup_table_rollout_controls_global_idx",

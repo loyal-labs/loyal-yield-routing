@@ -5347,11 +5347,13 @@ impl NeonSqlClient {
                         let pending_rows = sqlx::query(
                             r#"
                             SELECT * FROM loyal_yield.lookup_table_operations
-                            WHERE route_lookup_table_id = $1
+                            WHERE binding_id = $1
+                              AND route_lookup_table_id = $2
                               AND operation_state NOT IN ('complete', 'permanent_failure', 'cancelled')
                             ORDER BY created_at, id
                             "#,
                         )
+                        .bind(binding.id)
                         .bind(table.id)
                         .fetch_all(&mut *tx)
                         .await?;
@@ -5404,34 +5406,25 @@ impl NeonSqlClient {
                 }
             }
         }
-        let in_flight_binding_rows = sqlx::query(
-            r#"
-            SELECT * FROM loyal_yield.lookup_table_vault_bindings
-            WHERE vault_id = $1 AND family_id = $2 AND binding_ordinal = $3
-              AND manifest_id = $4 AND lifecycle_state IN ('preparing', 'warming')
-              AND desired_head_revision = $5
-            ORDER BY id DESC
-            FOR UPDATE
-            "#,
+        let reconciled_in_flight = reconcile_in_flight_vault_bindings_in_tx(
+            tx,
+            request.vault_id,
+            request.family_id,
+            request.binding_ordinal,
+            request.manifest_id,
+            desired_head_revision,
         )
-        .bind(request.vault_id.as_i64())
-        .bind(request.family_id)
-        .bind(request.binding_ordinal)
-        .bind(request.manifest_id)
-        .bind(desired_head_revision)
-        .fetch_all(&mut *tx)
         .await?;
-        if in_flight_binding_rows.len() > 1 {
-            return Err(OrchestratorError::StoreInvariant(format!(
-                "vault {} has multiple in-flight bindings for manifest {}",
-                request.vault_id.as_i64(),
-                request.manifest_id
-            )));
+        if let Some((binding, operations)) = reconciled_in_flight.operation_reconciliation {
+            return Ok(AtomicVaultAllocationResult::BindingReserved {
+                allocation: PackedVaultAllocation::KeepExisting {
+                    table_id: binding.route_lookup_table_id,
+                },
+                binding,
+                operations,
+            });
         }
-        let current_reservation = in_flight_binding_rows
-            .first()
-            .map(lookup_table_binding_from_row)
-            .transpose()?;
+        let current_reservation = reconciled_in_flight.current;
         if let Some(binding) = &current_reservation {
             if let Some(operation) = terminal_lookup_table_binding_operation_in_tx(
                 tx,
@@ -5648,6 +5641,9 @@ impl NeonSqlClient {
                      binding_ordinal, desired_head_revision, allocation_mode,
                      reserved_capacity, predecessor_binding_id, lifecycle_state)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'preparing')
+                ON CONFLICT (vault_id, family_id, binding_ordinal)
+                    WHERE lifecycle_state IN ('preparing', 'warming')
+                DO NOTHING
                 RETURNING *
                 "#,
             )
@@ -5660,8 +5656,38 @@ impl NeonSqlClient {
             .bind(reservation.binding_mode.as_str())
             .bind(i32::from(reservation.reserved_capacity))
             .bind(active_binding.as_ref().map(|binding| binding.id))
-            .fetch_one(&mut *tx)
+            .fetch_optional(&mut *tx)
             .await?;
+            let Some(binding_row) = binding_row else {
+                sqlx::query(
+                    r#"
+                    UPDATE loyal_yield.route_lookup_tables
+                    SET desired_state = 'failed',
+                        accepting_allocations = FALSE,
+                        updated_at = now()
+                    WHERE id = $1
+                    "#,
+                )
+                .bind(table.id)
+                .execute(&mut *tx)
+                .await?;
+                let (binding, operations) = reload_in_flight_vault_binding_after_conflict_in_tx(
+                    tx,
+                    request.vault_id,
+                    request.family_id,
+                    request.binding_ordinal,
+                    request.manifest_id,
+                    desired_head_revision,
+                )
+                .await?;
+                return Ok(AtomicVaultAllocationResult::BindingReserved {
+                    allocation: PackedVaultAllocation::KeepExisting {
+                        table_id: binding.route_lookup_table_id,
+                    },
+                    binding,
+                    operations,
+                });
+            };
             let binding = lookup_table_binding_from_row(&binding_row)?;
             let chunk = desired_addresses
                 .iter()
@@ -5751,13 +5777,16 @@ impl NeonSqlClient {
         let binding = if let Some(row) = existing_binding_row {
             lookup_table_binding_from_row(&row)?
         } else {
-            let row = sqlx::query(
+            let inserted_row = sqlx::query(
                 r#"
                 INSERT INTO loyal_yield.lookup_table_vault_bindings
                     (vault_id, family_id, route_lookup_table_id, manifest_id,
                      binding_ordinal, desired_head_revision, allocation_mode,
                      reserved_capacity, predecessor_binding_id, lifecycle_state)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'preparing')
+                ON CONFLICT (vault_id, family_id, binding_ordinal)
+                    WHERE lifecycle_state IN ('preparing', 'warming')
+                DO NOTHING
                 RETURNING *
                 "#,
             )
@@ -5770,18 +5799,33 @@ impl NeonSqlClient {
             .bind(allocation_mode.as_str())
             .bind(i32::from(reserved_capacity))
             .bind(active_binding.as_ref().map(|binding| binding.id))
-            .fetch_one(&mut *tx)
+            .fetch_optional(&mut *tx)
             .await?;
-            lookup_table_binding_from_row(&row)?
+            if let Some(row) = inserted_row {
+                lookup_table_binding_from_row(&row)?
+            } else {
+                reload_in_flight_vault_binding_after_conflict_in_tx(
+                    tx,
+                    request.vault_id,
+                    request.family_id,
+                    request.binding_ordinal,
+                    request.manifest_id,
+                    desired_head_revision,
+                )
+                .await?
+                .0
+            }
         };
         let pending_operation_rows = sqlx::query(
             r#"
             SELECT * FROM loyal_yield.lookup_table_operations
-            WHERE route_lookup_table_id = $1
+            WHERE binding_id = $1
+              AND route_lookup_table_id = $2
               AND operation_state NOT IN ('complete', 'permanent_failure', 'cancelled')
             ORDER BY created_at, id
             "#,
         )
+        .bind(binding.id)
         .bind(table_id)
         .fetch_all(&mut *tx)
         .await?;
@@ -11524,9 +11568,9 @@ async fn supersede_stale_vault_binding_revisions_in_tx(
     manifest_id: i64,
     desired_head_revision: i64,
 ) -> Result<(), OrchestratorError> {
-    // Operations retain their immutable binding/signature attribution for
-    // reconciliation, but a superseded binding immediately stops reserving
-    // capacity and can never return to a warm/active lifecycle.
+    // A no-operation draft can stop reserving capacity immediately. An
+    // operation-owning binding retains its lifecycle and immutable signature
+    // attribution until the planner sends it through finalized reconciliation.
     sqlx::query(
         r#"
         UPDATE loyal_yield.lookup_table_vault_bindings
@@ -11536,6 +11580,11 @@ async fn supersede_stale_vault_binding_revisions_in_tx(
         WHERE family_id = $1 AND vault_id = $2 AND binding_ordinal = $3
           AND lifecycle_state IN ('preparing', 'warming')
           AND (manifest_id <> $4 OR desired_head_revision <> $5)
+          AND NOT EXISTS (
+              SELECT 1
+              FROM loyal_yield.lookup_table_operations operation
+              WHERE operation.binding_id = lookup_table_vault_bindings.id
+          )
         "#,
     )
     .bind(family_id)
@@ -12074,6 +12123,282 @@ async fn terminal_lookup_table_binding_operation_in_tx(
     row.as_ref()
         .map(lookup_table_operation_from_row)
         .transpose()
+}
+
+struct InFlightVaultBindingReconciliation {
+    current: Option<LookupTableVaultBindingRecord>,
+    operation_reconciliation: Option<(
+        LookupTableVaultBindingRecord,
+        Vec<LookupTableOperationRecord>,
+    )>,
+}
+
+async fn reconcile_in_flight_vault_bindings_in_tx(
+    tx: &mut sqlx::PgConnection,
+    vault_id: VaultId,
+    family_id: i64,
+    binding_ordinal: i32,
+    manifest_id: i64,
+    desired_head_revision: i64,
+) -> Result<InFlightVaultBindingReconciliation, OrchestratorError> {
+    let binding_rows = sqlx::query(
+        r#"
+        SELECT * FROM loyal_yield.lookup_table_vault_bindings
+        WHERE vault_id = $1 AND family_id = $2 AND binding_ordinal = $3
+          AND lifecycle_state IN ('preparing', 'warming')
+        ORDER BY created_at DESC, id DESC
+        FOR UPDATE
+        "#,
+    )
+    .bind(vault_id.as_i64())
+    .bind(family_id)
+    .bind(binding_ordinal)
+    .fetch_all(&mut *tx)
+    .await?;
+    let bindings = binding_rows
+        .iter()
+        .map(lookup_table_binding_from_row)
+        .collect::<Result<Vec<_>, _>>()?;
+    if bindings.is_empty() {
+        return Ok(InFlightVaultBindingReconciliation {
+            current: None,
+            operation_reconciliation: None,
+        });
+    }
+
+    let binding_ids = bindings
+        .iter()
+        .map(|binding| binding.id)
+        .collect::<Vec<_>>();
+    let operation_rows = sqlx::query(
+        r#"
+        SELECT * FROM loyal_yield.lookup_table_operations
+        WHERE binding_id = ANY($1)
+        ORDER BY binding_id, created_at, id
+        "#,
+    )
+    .bind(&binding_ids)
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut operations_by_binding = BTreeMap::<i64, Vec<LookupTableOperationRecord>>::new();
+    for row in &operation_rows {
+        let operation = lookup_table_operation_from_row(row)?;
+        let operation_binding_id = operation.binding_id.ok_or_else(|| {
+            OrchestratorError::StoreInvariant(format!(
+                "lookup-table operation {} lost binding attribution",
+                operation.id
+            ))
+        })?;
+        operations_by_binding
+            .entry(operation_binding_id)
+            .or_default()
+            .push(operation);
+    }
+    let operation_owners = bindings
+        .iter()
+        .filter(|binding| operations_by_binding.contains_key(&binding.id))
+        .map(|binding| binding.id)
+        .collect::<Vec<_>>();
+    if operation_owners.len() > 1 {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "vault {} has multiple operation-owning in-flight bindings; finalized reconciliation is required",
+            vault_id.as_i64()
+        )));
+    }
+
+    let canonical_id = operation_owners.first().copied().or_else(|| {
+        bindings
+            .iter()
+            .find(|binding| {
+                binding.manifest_id == manifest_id
+                    && binding.desired_head_revision == desired_head_revision
+            })
+            .map(|binding| binding.id)
+    });
+    let Some(canonical_id) = canonical_id else {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "vault {} has an in-flight binding outside desired manifest {} without operation evidence",
+            vault_id.as_i64(),
+            manifest_id
+        )));
+    };
+
+    for stale in bindings.iter().filter(|binding| binding.id != canonical_id) {
+        if operations_by_binding.contains_key(&stale.id) {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "vault {} stale binding {} owns operation evidence",
+                vault_id.as_i64(),
+                stale.id
+            )));
+        }
+        let updated = sqlx::query(
+            r#"
+            UPDATE loyal_yield.lookup_table_vault_bindings binding
+            SET lifecycle_state = 'failed',
+                deactivated_at = COALESCE(deactivated_at, now()),
+                updated_at = now()
+            WHERE id = $1
+              AND lifecycle_state IN ('preparing', 'warming')
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM loyal_yield.lookup_table_operations operation
+                  WHERE operation.binding_id = binding.id
+              )
+            "#,
+        )
+        .bind(stale.id)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(stale_store_update(
+                "stale no-operation lookup-table binding",
+                stale.id,
+            ));
+        }
+    }
+
+    let canonical = bindings
+        .into_iter()
+        .find(|binding| binding.id == canonical_id)
+        .ok_or_else(|| stale_store_update("canonical in-flight binding", canonical_id))?;
+    let operations = operations_by_binding
+        .remove(&canonical.id)
+        .unwrap_or_default();
+    if canonical.manifest_id == manifest_id
+        && canonical.desired_head_revision == desired_head_revision
+    {
+        let operations_to_reconcile = operations
+            .into_iter()
+            .filter(|operation| {
+                !matches!(
+                    operation.operation_state,
+                    LookupTableOperationStatus::Complete
+                        | LookupTableOperationStatus::PermanentFailure
+                        | LookupTableOperationStatus::Cancelled
+                )
+            })
+            .collect::<Vec<_>>();
+        if !operations_to_reconcile.is_empty() {
+            return Ok(InFlightVaultBindingReconciliation {
+                current: None,
+                operation_reconciliation: Some((canonical, operations_to_reconcile)),
+            });
+        }
+        return Ok(InFlightVaultBindingReconciliation {
+            current: Some(canonical),
+            operation_reconciliation: None,
+        });
+    }
+
+    let completed_with_finalized_evidence = !operations.is_empty()
+        && operations.iter().all(|operation| {
+            operation.operation_state == LookupTableOperationStatus::Complete
+                && operation.transaction_signature.is_some()
+                && operation.finalized_slot.is_some()
+                && operation.reconciled_slot.is_some()
+        });
+    let terminal_without_chain_work = !operations.is_empty()
+        && operations.iter().all(|operation| {
+            matches!(
+                operation.operation_state,
+                LookupTableOperationStatus::PermanentFailure
+                    | LookupTableOperationStatus::Cancelled
+            )
+        });
+    if completed_with_finalized_evidence || terminal_without_chain_work {
+        let updated = sqlx::query(
+            r#"
+            UPDATE loyal_yield.lookup_table_vault_bindings
+            SET lifecycle_state = 'failed',
+                deactivated_at = COALESCE(deactivated_at, now()),
+                updated_at = now()
+            WHERE id = $1 AND lifecycle_state IN ('preparing', 'warming')
+            "#,
+        )
+        .bind(canonical.id)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(stale_store_update(
+                "finalized superseded lookup-table binding",
+                canonical.id,
+            ));
+        }
+        return Ok(InFlightVaultBindingReconciliation {
+            current: None,
+            operation_reconciliation: None,
+        });
+    }
+    if operations.is_empty() {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "vault {} canonical stale binding {} has no operation evidence",
+            vault_id.as_i64(),
+            canonical.id
+        )));
+    }
+
+    Ok(InFlightVaultBindingReconciliation {
+        current: None,
+        operation_reconciliation: Some((canonical, operations)),
+    })
+}
+
+async fn reload_in_flight_vault_binding_after_conflict_in_tx(
+    tx: &mut sqlx::PgConnection,
+    vault_id: VaultId,
+    family_id: i64,
+    binding_ordinal: i32,
+    manifest_id: i64,
+    desired_head_revision: i64,
+) -> Result<
+    (
+        LookupTableVaultBindingRecord,
+        Vec<LookupTableOperationRecord>,
+    ),
+    OrchestratorError,
+> {
+    let binding_row = sqlx::query(
+        r#"
+        SELECT * FROM loyal_yield.lookup_table_vault_bindings
+        WHERE vault_id = $1 AND family_id = $2 AND binding_ordinal = $3
+          AND lifecycle_state IN ('preparing', 'warming')
+        FOR UPDATE
+        "#,
+    )
+    .bind(vault_id.as_i64())
+    .bind(family_id)
+    .bind(binding_ordinal)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| {
+        OrchestratorError::StoreInvariant(format!(
+            "vault {} in-flight binding uniqueness conflict had no canonical row",
+            vault_id.as_i64()
+        ))
+    })?;
+    let binding = lookup_table_binding_from_row(&binding_row)?;
+    if binding.manifest_id != manifest_id || binding.desired_head_revision != desired_head_revision
+    {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "vault {} in-flight binding uniqueness conflict resolved to an incompatible desired head",
+            vault_id.as_i64()
+        )));
+    }
+    let operation_rows = sqlx::query(
+        r#"
+        SELECT * FROM loyal_yield.lookup_table_operations
+        WHERE binding_id = $1 AND operation_state <> 'complete'
+        ORDER BY created_at, id
+        "#,
+    )
+    .bind(binding.id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let operations = operation_rows
+        .iter()
+        .map(lookup_table_operation_from_row)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((binding, operations))
 }
 
 pub fn lookup_table_manifest_address_records_hash(
