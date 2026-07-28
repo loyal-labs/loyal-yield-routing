@@ -61,7 +61,8 @@ const PRODUCTION_RENDER_ENVIRONMENT_ID: &str = "evm-d8kgt4r7uimc73b1ul1g";
 const HEAVY_RENDER_ENVIRONMENT_ID: &str = "evm-d8kgt3a8qa3s7382glc0";
 const KAMINO_MONITOR_SERVICE_ID: &str = "srv-d8h4i9a8pkls73bver00";
 const KAMINO_MONITOR_SERVICE_NAME: &str = "loyal-kamino-reserve-monitor";
-const KAMINO_MONITOR_COMMAND: &str = "/usr/local/bin/kamino-reserve-monitor";
+const KAMINO_MONITOR_COMMAND: &str =
+    "/usr/local/bin/kamino-reserve-monitor --confirmed-refresh-interval-secs 1";
 const KAMINO_MONITOR_PREDEPLOY: &str = "/usr/local/bin/kamino-monitor-predeploy";
 const TIMESCALE_MARKET_MIGRATION_VERSION: i64 = 5;
 const TIMESCALE_MARKET_MIGRATION_NAME: &str = "kamino_confirmed_state_verification";
@@ -1210,9 +1211,25 @@ fn collect_local_evidence(repository_root: &Path) -> Result<LocalEvidence, Box<d
         && material_frontier_fixture.material_capacity_change_disposition
             == MaterialFrontierDisposition::FullSweepTargetCapacityChanged
         && material_frontier_fixture.material_topology_change_disposition
-            == MaterialFrontierDisposition::FullSweepReserveTopologyChanged;
+            == MaterialFrontierDisposition::FullSweepReserveTopologyChanged
+        && material_frontier_fixture
+            .material_apy_change_disposition
+            .allows_current_route_revalidation()
+        && material_frontier_fixture
+            .material_capacity_change_disposition
+            .allows_current_route_revalidation()
+        && !material_frontier_fixture
+            .material_topology_change_disposition
+            .allows_current_route_revalidation()
+        && material_frontier_fixture
+            .material_topology_change_disposition
+            .requires_current_route_topology_convergence()
+        && !MaterialFrontierDisposition::FullSweepMarketPriceChanged
+            .allows_current_route_revalidation()
+        && !MaterialFrontierDisposition::FullSweepMarketPriceChanged
+            .requires_current_route_topology_convergence();
     wiring_subchecks.push(subcheck(
-        "functional_material_market_frontier_skips_harmless_churn_and_wakes_on_material_change",
+        "functional_market_frontier_replans_material_change_without_starving_fresh_route_economics",
         material_frontier_fixture_passed,
         serde_json::to_value(&material_frontier_fixture)?,
     ));
@@ -1330,7 +1347,7 @@ fn collect_local_evidence(repository_root: &Path) -> Result<LocalEvidence, Box<d
                     "YIELD_ROUTER_KEYPAIR",
                 ],
                 &[
-                    ("--concurrency", "32"),
+                    ("--concurrency", "64"),
                     ("--batch-size", "32"),
                     ("--poll-interval-milliseconds", "250"),
                     ("--position-sweep-interval-seconds", "300"),

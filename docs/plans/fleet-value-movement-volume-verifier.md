@@ -117,6 +117,13 @@ readiness writers wait, then prove both commit without increasing PostgreSQL's
 deadlock counter. Worker heartbeats or successful deadlock retries without this
 movement evidence are FAIL.
 
+A route may outlive transient confirmed-view topology gaps only through a
+bounded convergence retry. Once its source and target topology is restored,
+current APY and capacity changes must be re-evaluated through the fresh
+economics gate instead of repeatedly starving a large eligible account.
+Persistent topology changes and material price changes must still fail closed
+before signing.
+
 ## Required 5: largest-account optimization
 
 At one fresh, non-expired optimizer epoch, rank active policy-backed vaults by

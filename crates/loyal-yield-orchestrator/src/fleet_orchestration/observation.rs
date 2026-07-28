@@ -394,6 +394,24 @@ impl MaterialFrontierDisposition {
     pub fn allows_scoped_planning(self) -> bool {
         self == Self::ReuseScopedFrontier
     }
+
+    /// Route execution re-reads the source and target APYs, recomputes target
+    /// capacity, and reruns the economic gate before signing. Those bounded
+    /// changes therefore do not need to starve an otherwise valid route.
+    /// Price changes can invalidate the durable principal, while topology
+    /// changes may remove or replace a route account, so both remain fenced.
+    pub fn allows_current_route_revalidation(self) -> bool {
+        matches!(
+            self,
+            Self::ReuseScopedFrontier
+                | Self::FullSweepSupplyApyChanged
+                | Self::FullSweepTargetCapacityChanged
+        )
+    }
+
+    pub fn requires_current_route_topology_convergence(self) -> bool {
+        self == Self::FullSweepReserveTopologyChanged
+    }
 }
 
 impl MaterialMarketFrontier {

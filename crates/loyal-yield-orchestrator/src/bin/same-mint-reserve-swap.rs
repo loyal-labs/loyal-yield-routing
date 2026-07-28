@@ -451,6 +451,12 @@ const SQLSTATE_OPPORTUNITY_COMMIT_LIFETIME_FENCE: &str = "LY001";
 /// SQLSTATE raised by `require_signed_route_commit_lifetime` for the same
 /// reason on the signed handoff. See migration 0031.
 const SQLSTATE_SIGNED_ROUTE_COMMIT_LIFETIME_FENCE: &str = "LY002";
+/// The confirmed monitor can advance an observation floor just before its HTTP
+/// verifier republishes the matching state. During that bounded handoff the
+/// exact verified view temporarily omits one or more otherwise healthy
+/// reserves. Give the topology time to converge before fencing the route.
+const CURRENT_MARKET_TOPOLOGY_CONVERGENCE_TIMEOUT_SECONDS: u64 = 20;
+const CURRENT_MARKET_TOPOLOGY_CONVERGENCE_POLL_MILLISECONDS: u64 = 1_000;
 
 /// Reports whether a durable queue transition was refused by a commit-time
 /// lifetime fence rather than failing to persist.
@@ -6047,22 +6053,47 @@ async fn load_current_route_market_economics(
             )
         })?;
     require_market_epoch_lifetime(&planned_epoch.fingerprint, planned_mint_expires_at)?;
-    let epoch = runtime.current_market_epoch(&config).await?;
-    let fresh_mint_expires_at = epoch.mint_expires_at(liquidity_mint).ok_or_else(|| {
-        format!(
-            "{CURRENT_MARKET_EPOCH_STALE_PREFIX} current market evidence has no lifetime for route mint {liquidity_mint}"
-        )
-    })?;
-    require_market_epoch_lifetime(&epoch.fingerprint, fresh_mint_expires_at)?;
-    let material_frontier_disposition = planned_epoch
-        .material_market_frontier_for_mint(liquidity_mint)
-        .disposition_against(&epoch.material_market_frontier_for_mint(liquidity_mint));
-    if !material_frontier_disposition.allows_scoped_planning() {
+    let topology_convergence_started = Instant::now();
+    let (epoch, fresh_mint_expires_at, material_frontier_disposition) = loop {
+        require_market_epoch_lifetime(&planned_epoch.fingerprint, planned_mint_expires_at)?;
+        let epoch = runtime.current_market_epoch(&config).await?;
+        let Some(fresh_mint_expires_at) = epoch.mint_expires_at(liquidity_mint) else {
+            if topology_convergence_started.elapsed()
+                < Duration::from_secs(CURRENT_MARKET_TOPOLOGY_CONVERGENCE_TIMEOUT_SECONDS)
+            {
+                tokio::time::sleep(Duration::from_millis(
+                    CURRENT_MARKET_TOPOLOGY_CONVERGENCE_POLL_MILLISECONDS,
+                ))
+                .await;
+                continue;
+            }
+            return Err(format!(
+                "{CURRENT_MARKET_EPOCH_STALE_PREFIX} current market evidence has no lifetime for route mint {liquidity_mint} after bounded topology convergence"
+            )
+            .into());
+        };
+        require_market_epoch_lifetime(&epoch.fingerprint, fresh_mint_expires_at)?;
+        let material_frontier_disposition = planned_epoch
+            .material_market_frontier_for_mint(liquidity_mint)
+            .disposition_against(&epoch.material_market_frontier_for_mint(liquidity_mint));
+        if material_frontier_disposition.allows_current_route_revalidation() {
+            break (epoch, fresh_mint_expires_at, material_frontier_disposition);
+        }
+        if material_frontier_disposition.requires_current_route_topology_convergence()
+            && topology_convergence_started.elapsed()
+                < Duration::from_secs(CURRENT_MARKET_TOPOLOGY_CONVERGENCE_TIMEOUT_SECONDS)
+        {
+            tokio::time::sleep(Duration::from_millis(
+                CURRENT_MARKET_TOPOLOGY_CONVERGENCE_POLL_MILLISECONDS,
+            ))
+            .await;
+            continue;
+        }
         return Err(format!(
-            "{CURRENT_MARKET_EPOCH_STALE_PREFIX} bound optimizer epoch {optimizer_epoch_id} has a materially superseded market frontier ({material_frontier_disposition:?})"
+            "{CURRENT_MARKET_EPOCH_STALE_PREFIX} bound optimizer epoch {optimizer_epoch_id} has a materially superseded market frontier ({material_frontier_disposition:?}) after bounded topology convergence"
         )
         .into());
-    }
+    };
     let target = epoch
         .reserves
         .iter()
