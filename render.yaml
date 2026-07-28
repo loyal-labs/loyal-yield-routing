@@ -408,7 +408,7 @@ projects:
             image:
               url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
             preDeployCommand: /usr/local/bin/yield-migrations --apply
-            dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-reconciler --concurrency 32 --batch-size 32 --poll-interval-milliseconds 250 --position-sweep-interval-seconds 300
+            dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-reconciler --concurrency 64 --batch-size 32 --poll-interval-milliseconds 250 --position-sweep-interval-seconds 300
             maxShutdownDelaySeconds: 60
             envVars:
               - key: OBSERVABILITY_ENABLED
