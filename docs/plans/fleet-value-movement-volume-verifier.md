@@ -79,6 +79,11 @@ durable decision identity. The isolated verifier must prove that refreshed
 economics cannot bind as the published decision and that the exact published
 economics can still bind after successful fresh revalidation.
 
+The live market-plane sample may retry for at most six one-second attempts so
+the one-second confirmed refresher can catch an event-driven pointer advance.
+PASS still requires one attempt with exact active-reserve coverage and every
+identity, commitment, source, freshness, and observation-floor invariant true.
+
 ## Required 4: live movement and routing rate
 
 Capture a source-bound baseline before rollout. After rollout, wait for an

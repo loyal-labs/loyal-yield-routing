@@ -1434,7 +1434,9 @@ fn market_timescale_unavailable(
     }
 }
 
-async fn collect_market_timescale_evidence(captured_at: DateTime<Utc>) -> MarketDataPlaneEvidence {
+async fn collect_market_timescale_evidence_once(
+    captured_at: DateTime<Utc>,
+) -> MarketDataPlaneEvidence {
     let source_checksum = sha256_hex(TIMESCALE_MARKET_MIGRATION_SQL.as_bytes());
     // The production Blueprint intentionally omits EARN_ROUTER_ENABLED_STABLE_MINTS,
     // so the live planner uses the canonical code-owned six-mint default. Do
@@ -2297,6 +2299,20 @@ async fn collect_market_timescale_evidence(captured_at: DateTime<Utc>) -> Market
         }),
         pass,
     }
+}
+
+async fn collect_market_timescale_evidence(captured_at: DateTime<Utc>) -> MarketDataPlaneEvidence {
+    const MAX_ATTEMPTS: usize = 6;
+
+    let mut evidence = collect_market_timescale_evidence_once(captured_at).await;
+    for _ in 1..MAX_ATTEMPTS {
+        if evidence.pass {
+            return evidence;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        evidence = collect_market_timescale_evidence_once(Utc::now()).await;
+    }
+    evidence
 }
 
 fn ordered_address_hash(addresses: &[String]) -> String {
