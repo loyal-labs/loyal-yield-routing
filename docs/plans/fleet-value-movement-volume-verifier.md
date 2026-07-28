@@ -95,6 +95,12 @@ PASS only if at least one route created after cutover:
 - is reflected exactly once in the reconciled volume delta;
 - submits within 2 minutes of signing and reconciles within 15 minutes.
 
+The decisive latency evidence is computed over the same bounded, post-cutover
+reconciled submissions used for movement and volume proof. Latest-epoch queue
+latencies remain diagnostic only: a fresh complete epoch may correctly contain
+zero opportunities after the eligible fleet is optimized, so its null latency
+percentiles cannot invalidate already bounded movement evidence.
+
 The queue must have no zero-broadcast signed row older than 5 minutes, no
 confirmation batch invariant loop, and no effect-ambiguous route. Worker
 heartbeats without this movement evidence are FAIL.

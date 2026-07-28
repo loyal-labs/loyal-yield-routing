@@ -3698,7 +3698,7 @@ fn queue_verdict(queue: &Value) -> Verdict {
     }
 }
 
-fn production_slo_measurements(queue: &Value) -> (Value, bool) {
+fn current_epoch_slo_measurements(queue: &Value) -> (Value, bool) {
     let status = queue
         .get("statusRows")
         .and_then(Value::as_array)
@@ -3729,6 +3729,58 @@ fn production_slo_measurements(queue: &Value) -> (Value, bool) {
             "submittedWithinTwoMinutesMinimumYieldPpm": 900_000,
             "submittedWithinTenMinutesYieldPpm": within_ten_minutes,
             "submittedWithinTenMinutesMinimumYieldPpm": 990_000,
+            "pass": pass,
+        }),
+        pass,
+    )
+}
+
+fn bounded_movement_slo_measurements(movements: &[MovementRow]) -> (Value, bool) {
+    const SUBMISSION_LIMIT_MILLISECONDS: i64 = 120_000;
+    const RECONCILIATION_LIMIT_MILLISECONDS: i64 = 900_000;
+
+    let reconciled = movements
+        .iter()
+        .filter(|movement| movement.submission_state == "reconciled")
+        .collect::<Vec<_>>();
+    let signed_to_submitted = reconciled
+        .iter()
+        .filter_map(|movement| {
+            movement
+                .submitted_at
+                .map(|submitted| (submitted - movement.created_at).num_milliseconds())
+        })
+        .collect::<Vec<_>>();
+    let signed_to_reconciled = reconciled
+        .iter()
+        .filter_map(|movement| {
+            movement
+                .reconciled_at
+                .map(|reconciled| (reconciled - movement.created_at).num_milliseconds())
+        })
+        .collect::<Vec<_>>();
+    let maximum_submission_milliseconds = signed_to_submitted.iter().copied().max();
+    let maximum_reconciliation_milliseconds = signed_to_reconciled.iter().copied().max();
+    let pass = !reconciled.is_empty()
+        && signed_to_submitted.len() == reconciled.len()
+        && signed_to_reconciled.len() == reconciled.len()
+        && signed_to_submitted
+            .iter()
+            .all(|millis| (0..=SUBMISSION_LIMIT_MILLISECONDS).contains(millis))
+        && signed_to_reconciled
+            .iter()
+            .all(|millis| (0..=RECONCILIATION_LIMIT_MILLISECONDS).contains(millis));
+
+    (
+        json!({
+            "basis": "post_cutover_reconciled_submissions",
+            "reconciledMovementCount": reconciled.len(),
+            "submissionTimestampCount": signed_to_submitted.len(),
+            "reconciliationTimestampCount": signed_to_reconciled.len(),
+            "maximumSignedToSubmittedMilliseconds": maximum_submission_milliseconds,
+            "submissionLimitMilliseconds": SUBMISSION_LIMIT_MILLISECONDS,
+            "maximumSignedToReconciledMilliseconds": maximum_reconciliation_milliseconds,
+            "reconciliationLimitMilliseconds": RECONCILIATION_LIMIT_MILLISECONDS,
             "pass": pass,
         }),
         pass,
@@ -5145,6 +5197,7 @@ async fn collect_movement_evidence(
                 && delta.amount_raw > 0
                 && delta.principal_usd_micros > 0
         });
+    let (movement_slos, movement_slos_pass) = bounded_movement_slo_measurements(&movements);
     let pass = rpc_available
         && reconciled_reserve_count > 0
         && reconciled_reserve_count + reconciled_idle_deposit_count == reconciled_movement_count
@@ -5156,7 +5209,8 @@ async fn collect_movement_evidence(
         && database_deadlock_count == 0
         && duplicate_movement_count == 0
         && volume_pass
-        && main_reduction_pass;
+        && main_reduction_pass
+        && movement_slos_pass;
     Ok((
         json!({
             "available": true,
@@ -5184,6 +5238,7 @@ async fn collect_movement_evidence(
             "unsafeTerminalOutcomeCount": unsafe_terminal_outcome_count,
             "databaseDeadlockCount": database_deadlock_count,
             "duplicateMovementCount": duplicate_movement_count,
+            "movementSlos": movement_slos,
             "reconciledVolume": {
                 "current": current_volume,
                 "currentIdentityExact": current_volume.identity_exact(),
@@ -5334,15 +5389,9 @@ async fn collect_database_evidence(
             Verdict::Fail,
         )
     };
-    let (production_slos, production_slos_pass) = production_slo_measurements(&queue);
+    let (current_epoch_slos, _) = current_epoch_slo_measurements(&queue);
     if let Some(object) = movements.as_object_mut() {
-        object.insert("productionSlos".to_owned(), production_slos);
-        if movement_verdict == Verdict::Pass && !production_slos_pass {
-            object.insert("pass".to_owned(), Value::Bool(false));
-        }
-    }
-    if movement_verdict == Verdict::Pass && !production_slos_pass {
-        movement_verdict = Verdict::Fail;
+        object.insert("currentEpochSlos".to_owned(), current_epoch_slos);
     }
     let largest_accounts_pass = positions
         .pointer("/largestEligibleVaults/pass")
