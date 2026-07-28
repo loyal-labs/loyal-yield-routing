@@ -143,7 +143,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
             dockerCommand: /usr/local/bin/loyal-yield-realtime
             healthCheckPath: /healthz
             maxShutdownDelaySeconds: 60
@@ -157,7 +157,7 @@ projects:
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
               - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+                value: sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
               - key: NEON_DATABASE_URL
                 sync: false
               - key: REALTIME_AUTH_SECRET
@@ -192,7 +192,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-ata-projector
             maxShutdownDelaySeconds: 60
@@ -206,7 +206,7 @@ projects:
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
               - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+                value: sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -223,7 +223,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-autodeposit-trigger --execute-eligible
             maxShutdownDelaySeconds: 60
@@ -237,7 +237,7 @@ projects:
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
               - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+                value: sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
               - key: NEON_DATABASE_URL
                 sync: false
               - key: SOLANA_RPC_URL
@@ -270,7 +270,7 @@ projects:
             plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/fleet-opportunity-planner --poll-interval-seconds 1 --full-sweep-interval-seconds 30 --dirty-batch-size 256 --max-opportunities-per-wave 128
             maxShutdownDelaySeconds: 60
@@ -284,7 +284,7 @@ projects:
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
               - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+                value: sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -301,7 +301,7 @@ projects:
             plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-worker revalidate --concurrency 16 --fused-execute-concurrency 8 --poll-interval-milliseconds 250
             maxShutdownDelaySeconds: 60
@@ -315,7 +315,7 @@ projects:
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
               - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+                value: sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -338,7 +338,7 @@ projects:
             plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-worker execute --concurrency 4 --poll-interval-milliseconds 250
             maxShutdownDelaySeconds: 60
@@ -352,7 +352,7 @@ projects:
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
               - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+                value: sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -375,7 +375,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/fleet-route-confirmer --execute --batch-size 128 --broadcast-concurrency 16 --poll-interval-milliseconds 1000
             maxShutdownDelaySeconds: 60
@@ -389,7 +389,7 @@ projects:
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
               - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+                value: sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
               - key: NEON_DATABASE_URL
                 sync: false
               - key: SOLANA_RPC_URL
@@ -406,7 +406,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-reconciler --concurrency 32 --batch-size 32 --poll-interval-milliseconds 250 --position-sweep-interval-seconds 300
             maxShutdownDelaySeconds: 60
@@ -420,7 +420,7 @@ projects:
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
               - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+                value: sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
               - key: NEON_DATABASE_URL
                 sync: false
               - key: SOLANA_RPC_URL
@@ -437,7 +437,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/route-lookup-table-provisioner --execute --watch --max-operations 32 --concurrency 8 --rate-limit-ms 250
             maxShutdownDelaySeconds: 60
@@ -451,7 +451,7 @@ projects:
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
               - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+                value: sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
               - key: NEON_DATABASE_URL
                 sync: false
               - key: SOLANA_RPC_URL
@@ -476,7 +476,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-ata-projector
             maxShutdownDelaySeconds: 60
@@ -490,7 +490,7 @@ projects:
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
               - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+                value: sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -507,7 +507,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-autodeposit-trigger
             maxShutdownDelaySeconds: 60
@@ -521,7 +521,7 @@ projects:
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
               - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+                value: sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
               - key: NEON_DATABASE_URL
                 sync: false
               - key: BALANCE_SWEEP_EXECUTE_ELIGIBLE
@@ -536,7 +536,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-yield-monitor --all-active-vaults --poll-interval-seconds 300 --rebalance-cooldown-seconds 300
             maxShutdownDelaySeconds: 60
@@ -550,7 +550,7 @@ projects:
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
               - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+                value: sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
