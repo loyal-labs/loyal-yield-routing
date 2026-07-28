@@ -373,7 +373,7 @@ pub struct MockKaminoReserveTokenAccounts {
     pub reserve_liquidity_authority: Pubkey,
     pub collateral_mint_authority: Pubkey,
     pub vault_liquidity: Pubkey,
-    pub vault_collateral: Pubkey,
+    pub reserve_collateral_supply: Pubkey,
     pub reserve_liquidity_supply: Pubkey,
 }
 

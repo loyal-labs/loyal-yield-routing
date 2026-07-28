@@ -468,7 +468,7 @@ fn kamino_allowed_reserves_instruction_constraint(
                 account_constraint: SquadsAccountConstraintType::Pubkey(
                     reserves
                         .iter()
-                        .map(|reserve| reserve.vault_collateral)
+                        .map(|reserve| reserve.reserve_collateral_supply)
                         .collect(),
                 ),
                 owner: Some(spl_token::id()),

@@ -1,0 +1,21 @@
+[package]
+name = "autonomous-vaults"
+version = "0.1.0"
+edition = "2021"
+description = "Rust-only setup and verification CLI for Loyal autonomous treasury vaults"
+
+[dependencies]
+anchor-lang = "0.31"
+anyhow = "1"
+bincode = "1"
+borsh.workspace = true
+klend-interface = { git = "https://github.com/Kamino-Finance/klend" }
+loyal-actions = { path = "../loyal-actions" }
+loyal-yield-orchestrator = { path = "../loyal-yield-orchestrator" }
+meteora-dlmm-commons = { package = "commons", git = "https://github.com/MeteoraAg/dlmm-sdk", rev = "fb02e51ae677bbd18e76543f702dae40632426db" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+solana-client = "2.3"
+solana-sdk.workspace = true
+solana-system-interface.workspace = true
+spl-token.workspace = true

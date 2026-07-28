@@ -12,7 +12,8 @@ use solana_program::{
 use spl_token::solana_program::program_pack::Pack;
 
 pub const JUPITER_V6_PROGRAM_ID: Pubkey = pubkey!("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4");
-pub const LOYAL_HUB_SWAP_PROGRAM_ID: Pubkey = Pubkey::new_from_array([42; 32]);
+pub const LOYAL_HUB_SWAP_PROGRAM_ID: Pubkey =
+    pubkey!("LHUB3MMwYEwXqbfMdr1AQ8vkrJoubH37qoBxiy38smH");
 pub const USDC_MINT: Pubkey = pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 pub const PYUSD_MINT: Pubkey = pubkey!("2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo");
 pub const WRAPPED_SOL_MINT: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
@@ -40,7 +41,7 @@ pub const JUPITER_SWAP_AUTHORITY_SEED: &[u8] = b"jupiter-swap-authority";
 pub const KAMINO_RESERVE_LIQUIDITY_AUTHORITY_SEED: &[u8] = b"kamino-reserve-liq-authority";
 pub const KAMINO_COLLATERAL_MINT_AUTHORITY_SEED: &[u8] = b"kamino-collateral-mint-authority";
 pub const KAMINO_LENDING_MARKET_AUTHORITY_SEED: &[u8] = b"kamino-lending-market-authority";
-pub const KAMINO_RESERVE_STATE_LEN: usize = 128;
+pub const KAMINO_RESERVE_STATE_LEN: usize = 160;
 
 entrypoint!(process_instruction);
 
@@ -370,7 +371,7 @@ struct KaminoDepositAccounts<'a, 'info> {
     reserve_liquidity_supply: &'a AccountInfo<'info>,
     reserve_collateral_mint: &'a AccountInfo<'info>,
     user_source_liquidity: &'a AccountInfo<'info>,
-    user_destination_collateral: &'a AccountInfo<'info>,
+    reserve_destination_deposit_collateral: &'a AccountInfo<'info>,
     collateral_token_program: &'a AccountInfo<'info>,
     liquidity_token_program: &'a AccountInfo<'info>,
     liquidity_decimals: u8,
@@ -384,7 +385,7 @@ struct KaminoRedeemAccounts<'a, 'info> {
     reserve_liquidity_mint: &'a AccountInfo<'info>,
     reserve_collateral_mint: &'a AccountInfo<'info>,
     reserve_liquidity_supply: &'a AccountInfo<'info>,
-    user_source_collateral: &'a AccountInfo<'info>,
+    reserve_source_collateral: &'a AccountInfo<'info>,
     user_destination_liquidity: &'a AccountInfo<'info>,
     collateral_token_program: &'a AccountInfo<'info>,
     liquidity_token_program: &'a AccountInfo<'info>,
@@ -396,6 +397,7 @@ struct KaminoReserveState {
     liquidity_mint: Pubkey,
     collateral_mint: Pubkey,
     liquidity_supply: Pubkey,
+    collateral_supply: Pubkey,
 }
 
 fn process_kamino_deposit(
@@ -416,7 +418,7 @@ fn process_kamino_deposit(
     mint_to_checked_signed(
         program_id,
         kamino.reserve_collateral_mint,
-        kamino.user_destination_collateral,
+        kamino.reserve_destination_deposit_collateral,
         kamino.lending_market_authority,
         kamino.collateral_token_program,
         amount,
@@ -434,13 +436,18 @@ fn process_kamino_withdraw(
     amount: u64,
 ) -> ProgramResult {
     let kamino = parse_kamino_redeem_accounts(program_id, accounts)?;
-    burn_checked(
-        kamino.user_source_collateral,
+    burn_checked_signed(
+        program_id,
+        kamino.reserve_source_collateral,
         kamino.reserve_collateral_mint,
-        kamino.owner,
+        kamino.lending_market_authority,
         kamino.collateral_token_program,
         amount,
         KAMINO_COLLATERAL_DECIMALS,
+        &[
+            KAMINO_LENDING_MARKET_AUTHORITY_SEED,
+            kamino.lending_market.key.as_ref(),
+        ],
     )?;
     transfer_checked_signed(
         program_id,
@@ -471,7 +478,7 @@ fn parse_kamino_deposit_accounts<'a, 'info>(
     let reserve_liquidity_mint = next_account_info(account_info_iter)?;
     let reserve_liquidity_supply = next_account_info(account_info_iter)?;
     let reserve_collateral_mint = next_account_info(account_info_iter)?;
-    let user_destination_collateral = next_account_info(account_info_iter)?;
+    let reserve_destination_deposit_collateral = next_account_info(account_info_iter)?;
     let user_source_liquidity = next_account_info(account_info_iter)?;
     let _placeholder_user_destination_collateral = next_account_info(account_info_iter)?;
     let collateral_token_program = next_account_info(account_info_iter)?;
@@ -489,7 +496,7 @@ fn parse_kamino_deposit_accounts<'a, 'info>(
         reserve_liquidity_supply,
         reserve_collateral_mint,
         user_source_liquidity,
-        user_destination_collateral,
+        reserve_destination_deposit_collateral,
         collateral_token_program,
         liquidity_token_program,
         liquidity_decimals: 0,
@@ -509,6 +516,10 @@ fn parse_kamino_deposit_accounts<'a, 'info>(
     require_key(kamino.reserve_liquidity_mint, &reserve.liquidity_mint)?;
     require_key(kamino.reserve_collateral_mint, &reserve.collateral_mint)?;
     require_key(kamino.reserve_liquidity_supply, &reserve.liquidity_supply)?;
+    require_key(
+        kamino.reserve_destination_deposit_collateral,
+        &reserve.collateral_supply,
+    )?;
 
     kamino.liquidity_decimals =
         spl_token::state::Mint::unpack(&kamino.reserve_liquidity_mint.data.borrow())?.decimals;
@@ -527,7 +538,7 @@ fn parse_kamino_redeem_accounts<'a, 'info>(
     let lending_market_authority = next_account_info(account_info_iter)?;
     let reserve = next_account_info(account_info_iter)?;
     let reserve_liquidity_mint = next_account_info(account_info_iter)?;
-    let user_source_collateral = next_account_info(account_info_iter)?;
+    let reserve_source_collateral = next_account_info(account_info_iter)?;
     let reserve_collateral_mint = next_account_info(account_info_iter)?;
     let reserve_liquidity_supply = next_account_info(account_info_iter)?;
     let user_destination_liquidity = next_account_info(account_info_iter)?;
@@ -546,7 +557,7 @@ fn parse_kamino_redeem_accounts<'a, 'info>(
         reserve_liquidity_mint,
         reserve_collateral_mint,
         reserve_liquidity_supply,
-        user_source_collateral,
+        reserve_source_collateral,
         user_destination_liquidity,
         collateral_token_program,
         liquidity_token_program,
@@ -567,6 +578,7 @@ fn parse_kamino_redeem_accounts<'a, 'info>(
     require_key(kamino.reserve_liquidity_mint, &reserve.liquidity_mint)?;
     require_key(kamino.reserve_collateral_mint, &reserve.collateral_mint)?;
     require_key(kamino.reserve_liquidity_supply, &reserve.liquidity_supply)?;
+    require_key(kamino.reserve_source_collateral, &reserve.collateral_supply)?;
 
     kamino.liquidity_decimals =
         spl_token::state::Mint::unpack(&kamino.reserve_liquidity_mint.data.borrow())?.decimals;
@@ -605,6 +617,7 @@ fn read_kamino_reserve_state(reserve: &AccountInfo) -> Result<KaminoReserveState
         liquidity_mint: Pubkey::new_from_array(read_pubkey(&data[32..64])?),
         collateral_mint: Pubkey::new_from_array(read_pubkey(&data[64..96])?),
         liquidity_supply: Pubkey::new_from_array(read_pubkey(&data[96..128])?),
+        collateral_supply: Pubkey::new_from_array(read_pubkey(&data[128..160])?),
     })
 }
 
@@ -710,13 +723,15 @@ fn mint_to_checked_signed<'info>(
     }
 }
 
-fn burn_checked<'info>(
+fn burn_checked_signed<'info>(
+    program_id: &Pubkey,
     source: &AccountInfo<'info>,
     mint: &AccountInfo<'info>,
     authority: &AccountInfo<'info>,
     token_program: &AccountInfo<'info>,
     amount: u64,
     decimals: u8,
+    seed_parts: &[&[u8]],
 ) -> ProgramResult {
     let ix = spl_token::instruction::burn_checked(
         token_program.key,
@@ -727,15 +742,19 @@ fn burn_checked<'info>(
         amount,
         decimals,
     )?;
-    invoke(
-        &ix,
-        &[
-            source.clone(),
-            mint.clone(),
-            authority.clone(),
-            token_program.clone(),
-        ],
-    )
+    let account_infos = [
+        source.clone(),
+        mint.clone(),
+        authority.clone(),
+        token_program.clone(),
+    ];
+    let (_, bump) = Pubkey::find_program_address(seed_parts, program_id);
+    let bump_seed = [bump];
+    match seed_parts {
+        [seed] => invoke_signed(&ix, &account_infos, &[&[*seed, &bump_seed]]),
+        [seed_a, seed_b] => invoke_signed(&ix, &account_infos, &[&[*seed_a, *seed_b, &bump_seed]]),
+        _ => Err(ProgramError::InvalidSeeds),
+    }
 }
 
 fn require_signer(account: &AccountInfo) -> ProgramResult {

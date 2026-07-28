@@ -790,7 +790,7 @@ fn adversarial_loyal_hub_program_can_drain_route_value_past_all_in_one_policy() 
 }
 
 #[test]
-fn rejects_kamino_destination_accounts_not_owned_by_this_vault() {
+fn rejects_kamino_noncanonical_supply_or_non_vault_destinations() {
     let Some(mut fixture) = setup_fixture() else {
         return;
     };
@@ -822,7 +822,7 @@ fn rejects_kamino_destination_accounts_not_owned_by_this_vault() {
         );
         assert!(
             result.is_err(),
-            "policy should reject non-vault collateral destination"
+            "K-Lend should reject a noncanonical reserve collateral supply"
         );
         assert_eq!(get_spl_token_amount(&fixture.context.svm, destination), 0);
         fixture.assert_starting_balances();
@@ -830,7 +830,7 @@ fn rejects_kamino_destination_accounts_not_owned_by_this_vault() {
 
     for destination in [fixture.attacker_usdc, fixture.second_vault_usdc] {
         let (withdraw_instructions, mut withdraw_accounts) = fixture.main_withdraw();
-        withdraw_accounts[8] = AccountMeta::new(destination, false);
+        withdraw_accounts[9] = AccountMeta::new(destination, false);
         let withdraw_ix = fixture
             .route_action
             .withdraw()
@@ -1665,7 +1665,7 @@ fn raw_constrained_account_replacements_reject_without_custody_change() {
             name: "Kamino withdraw wrong market",
             payload_builder: AdversarialRouteFixture::raw_same_mint_route,
             instruction_index: 0,
-            account_position: 1,
+            account_position: 2,
             replacement: wrong_market,
             include_hub_authorizer: false,
             expected_boundary: "withdraw market pubkey constraint",
@@ -1674,7 +1674,7 @@ fn raw_constrained_account_replacements_reject_without_custody_change() {
             name: "Kamino withdraw wrong liquidity mint",
             payload_builder: AdversarialRouteFixture::raw_same_mint_route,
             instruction_index: 0,
-            account_position: 4,
+            account_position: 5,
             replacement: wrong_mint,
             include_hub_authorizer: false,
             expected_boundary: "withdraw liquidity mint constraint",
@@ -1683,7 +1683,7 @@ fn raw_constrained_account_replacements_reject_without_custody_change() {
             name: "Kamino withdraw wrong token owner",
             payload_builder: AdversarialRouteFixture::raw_same_mint_route,
             instruction_index: 0,
-            account_position: 8,
+            account_position: 9,
             replacement: fixture.attacker_usdc,
             include_hub_authorizer: false,
             expected_boundary: "withdraw destination owner constraint",
@@ -1692,7 +1692,7 @@ fn raw_constrained_account_replacements_reject_without_custody_change() {
             name: "Kamino withdraw wrong token program",
             payload_builder: AdversarialRouteFixture::raw_same_mint_route,
             instruction_index: 0,
-            account_position: 10,
+            account_position: 11,
             replacement: wrong_token_program,
             include_hub_authorizer: false,
             expected_boundary: "withdraw token program constraint",
@@ -1719,25 +1719,25 @@ fn raw_constrained_account_replacements_reject_without_custody_change() {
             name: "Kamino deposit wrong liquidity mint",
             payload_builder: AdversarialRouteFixture::raw_same_mint_route,
             instruction_index: 1,
-            account_position: 4,
+            account_position: 5,
             replacement: wrong_mint,
             include_hub_authorizer: false,
             expected_boundary: "deposit liquidity mint constraint",
         },
         ReplacementCase {
-            name: "Kamino deposit wrong token owner",
+            name: "Kamino deposit noncanonical collateral supply",
             payload_builder: AdversarialRouteFixture::raw_same_mint_route,
             instruction_index: 1,
             account_position: 8,
             replacement: fixture.attacker_prime_usdc_collateral,
             include_hub_authorizer: false,
-            expected_boundary: "deposit destination owner constraint",
+            expected_boundary: "K-Lend reserve collateral supply constraint",
         },
         ReplacementCase {
             name: "Kamino deposit wrong token program",
             payload_builder: AdversarialRouteFixture::raw_same_mint_route,
             instruction_index: 1,
-            account_position: 10,
+            account_position: 11,
             replacement: wrong_token_program,
             include_hub_authorizer: false,
             expected_boundary: "deposit token program constraint",
@@ -2187,86 +2187,86 @@ fn raw_account_data_spoofs_reject_without_value_escape() {
         (
             "Kamino withdraw source wrong mint",
             0,
-            7,
+            6,
             spoof("withdraw_source_wrong_mint"),
         ),
         (
             "Kamino withdraw source wrong owner",
             0,
-            7,
+            6,
             spoof("withdraw_source_wrong_owner"),
         ),
         (
             "Kamino withdraw source system account",
             0,
-            7,
+            6,
             system_account,
         ),
         (
             "Kamino withdraw source mint account",
             0,
-            7,
+            6,
             mint_as_token_account,
         ),
         (
             "Kamino withdraw source short token data",
             0,
-            7,
+            6,
             short_token_account,
         ),
         (
             "Kamino withdraw destination wrong mint",
             0,
-            8,
+            9,
             spoof("withdraw_destination_wrong_mint"),
         ),
         (
             "Kamino withdraw destination wrong owner",
             0,
-            8,
+            9,
             spoof("withdraw_destination_wrong_owner"),
         ),
         (
             "Kamino withdraw destination system account",
             0,
-            8,
+            9,
             system_account,
         ),
         (
             "Kamino withdraw destination mint account",
             0,
-            8,
+            9,
             mint_as_token_account,
         ),
         (
             "Kamino withdraw destination short token data",
             0,
-            8,
+            9,
             short_token_account,
         ),
         (
             "Kamino deposit source wrong mint",
             1,
-            7,
+            9,
             spoof("deposit_source_wrong_mint"),
         ),
         (
             "Kamino deposit source wrong owner",
             1,
-            7,
+            9,
             spoof("deposit_source_wrong_owner"),
         ),
-        ("Kamino deposit source system account", 1, 7, system_account),
+        ("Kamino deposit source system account", 1, 9, system_account),
         (
             "Kamino deposit source mint account",
             1,
-            7,
+            9,
             mint_as_token_account,
         ),
         (
             "Kamino deposit source short token data",
             1,
-            7,
+            9,
             short_token_account,
         ),
         (

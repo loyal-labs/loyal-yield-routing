@@ -314,7 +314,7 @@ fn wallet_b_replays_fixed_start_kamino_hindsight_route() {
         .expect("wallet A withdraws from the final Kamino reserve");
 
     assert_eq!(
-        get_spl_token_amount(&context.svm, final_accounts.vault_collateral),
+        get_spl_token_amount(&context.svm, final_accounts.reserve_collateral_supply),
         0
     );
     assert_eq!(

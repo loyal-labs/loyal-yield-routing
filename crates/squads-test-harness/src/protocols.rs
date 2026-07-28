@@ -185,7 +185,7 @@ pub fn mock_kamino_reserve_transaction(
             AccountMeta::new_readonly(reserve_accounts.liquidity_mint, false),
             AccountMeta::new(reserve_accounts.reserve_liquidity_supply, false),
             AccountMeta::new(reserve_accounts.collateral_mint, false),
-            AccountMeta::new(reserve_accounts.vault_collateral, false),
+            AccountMeta::new(reserve_accounts.reserve_collateral_supply, false),
             AccountMeta::new(reserve_accounts.vault_liquidity, false),
             AccountMeta::new_readonly(KAMINO_LEND_PROGRAM_ID, false),
             AccountMeta::new_readonly(spl_token::id(), false),
@@ -203,7 +203,7 @@ pub fn mock_kamino_reserve_transaction(
             AccountMeta::new_readonly(reserve_accounts.lending_market_authority, false),
             AccountMeta::new(reserve_accounts.reserve, false),
             AccountMeta::new_readonly(reserve_accounts.liquidity_mint, false),
-            AccountMeta::new(reserve_accounts.vault_collateral, false),
+            AccountMeta::new(reserve_accounts.reserve_collateral_supply, false),
             AccountMeta::new(reserve_accounts.collateral_mint, false),
             AccountMeta::new(reserve_accounts.reserve_liquidity_supply, false),
             AccountMeta::new(reserve_accounts.vault_liquidity, false),
@@ -267,6 +267,7 @@ pub fn mock_kamino_reserve_route_part(
     ];
     reserve_requirements.liquidity_supply = Some(reserve.reserve_liquidity_supply);
     reserve_requirements.collateral_mint = Some(reserve.collateral_mint);
+    reserve_requirements.collateral_supply = Some(reserve.reserve_collateral_supply);
     reserve_requirements.infrastructure = vec![
         KAMINO_LEND_PROGRAM_ID,
         spl_token::id(),
@@ -276,7 +277,6 @@ pub fn mock_kamino_reserve_route_part(
     lookup_table_requirements.add_kamino_reserve(reserve_requirements);
     lookup_table_requirements.add_vault_account(vault);
     lookup_table_requirements.add_vault_token_account(reserve.vault_liquidity);
-    lookup_table_requirements.add_vault_token_account(reserve.vault_collateral);
 
     MockKaminoRoutePart {
         instructions,
@@ -682,7 +682,7 @@ pub fn seed_mock_kamino_reserve_spl_accounts(
     market: Pubkey,
     vault: Pubkey,
     vault_liquidity: Pubkey,
-    vault_collateral: Pubkey,
+    reserve_collateral_supply: Pubkey,
     reserve_liquidity_supply: Pubkey,
 ) -> MockKaminoReserveTokenAccounts {
     seed_mock_kamino_reserve_spl_accounts_with_mint(
@@ -693,7 +693,7 @@ pub fn seed_mock_kamino_reserve_spl_accounts(
         USDC_DECIMALS,
         vault,
         vault_liquidity,
-        vault_collateral,
+        reserve_collateral_supply,
         reserve_liquidity_supply,
     )
 }
@@ -706,7 +706,7 @@ pub fn seed_mock_kamino_reserve_spl_accounts_with_mint(
     liquidity_decimals: u8,
     vault: Pubkey,
     vault_liquidity: Pubkey,
-    vault_collateral: Pubkey,
+    reserve_collateral_supply: Pubkey,
     reserve_liquidity_supply: Pubkey,
 ) -> MockKaminoReserveTokenAccounts {
     let lending_market_authority = derive_mock_kamino_lending_market_authority(market);
@@ -722,6 +722,7 @@ pub fn seed_mock_kamino_reserve_spl_accounts_with_mint(
         liquidity_mint,
         collateral_mint,
         reserve_liquidity_supply,
+        reserve_collateral_supply,
     );
     seed_empty_system_account_if_missing(svm, lending_market_authority);
     seed_spl_mint_if_missing(svm, liquidity_mint, None, liquidity_decimals, 0);
@@ -733,7 +734,13 @@ pub fn seed_mock_kamino_reserve_spl_accounts_with_mint(
         0,
     );
     seed_spl_token_account_if_missing(svm, vault_liquidity, liquidity_mint, vault, 0);
-    seed_spl_token_account_if_missing(svm, vault_collateral, collateral_mint, vault, 0);
+    seed_spl_token_account_if_missing(
+        svm,
+        reserve_collateral_supply,
+        collateral_mint,
+        lending_market_authority,
+        0,
+    );
     seed_spl_token_account_if_missing(
         svm,
         reserve_liquidity_supply,
@@ -751,7 +758,7 @@ pub fn seed_mock_kamino_reserve_spl_accounts_with_mint(
         reserve_liquidity_authority,
         collateral_mint_authority,
         vault_liquidity,
-        vault_collateral,
+        reserve_collateral_supply,
         reserve_liquidity_supply,
     }
 }
@@ -763,12 +770,14 @@ fn seed_mock_kamino_reserve_account(
     liquidity_mint: Pubkey,
     collateral_mint: Pubkey,
     reserve_liquidity_supply: Pubkey,
+    reserve_collateral_supply: Pubkey,
 ) {
     let mut data = vec![0; KAMINO_RESERVE_STATE_LEN];
     data[0..32].copy_from_slice(market.as_ref());
     data[32..64].copy_from_slice(liquidity_mint.as_ref());
     data[64..96].copy_from_slice(collateral_mint.as_ref());
     data[96..128].copy_from_slice(reserve_liquidity_supply.as_ref());
+    data[128..160].copy_from_slice(reserve_collateral_supply.as_ref());
 
     svm.set_account(
         reserve,

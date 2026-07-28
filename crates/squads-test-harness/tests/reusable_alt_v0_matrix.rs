@@ -142,6 +142,7 @@ fn reusable_alt_v0_matrix_compiles_covers_and_executes_every_earn_shape() {
     let vault_liquidity = Pubkey::new_unique();
     let vault_main_collateral = Pubkey::new_unique();
     let vault_prime_collateral = Pubkey::new_unique();
+    let vault_cleanup_token = Pubkey::new_unique();
     let main_liquidity_supply = Pubkey::new_unique();
     let prime_liquidity_supply = Pubkey::new_unique();
 
@@ -151,6 +152,13 @@ fn reusable_alt_v0_matrix_compiles_covers_and_executes_every_earn_shape() {
         USDC_MINT,
         context.vault,
         ROUTE_AMOUNT,
+    );
+    seed_spl_token_account(
+        &mut context.svm,
+        vault_cleanup_token,
+        USDC_MINT,
+        context.vault,
+        0,
     );
     let main = seed_mock_kamino_reserve_spl_accounts(
         &mut context.svm,
@@ -249,8 +257,9 @@ fn reusable_alt_v0_matrix_compiles_covers_and_executes_every_earn_shape() {
         ROUTE_AMOUNT
     );
 
-    // Full withdrawal and its token-account cleanup are separate runtime
-    // phases, so both are independently compiled, simulated, and executed.
+    // Full withdrawal and cleanup of a separate empty vault-owned token account
+    // are distinct runtime phases. K-Lend's reserve collateral supply is
+    // protocol-owned and must never be treated as a vault-closeable account.
     let prime_withdraw = mock_kamino_reserve_route_part(
         context.vault,
         prime,
@@ -282,7 +291,7 @@ fn reusable_alt_v0_matrix_compiles_covers_and_executes_every_earn_shape() {
 
     let close_collateral = spl_token::instruction::close_account(
         &spl_token::id(),
-        &vault_prime_collateral,
+        &vault_cleanup_token,
         &context.vault,
         &context.vault,
         &[],
@@ -296,7 +305,7 @@ fn reusable_alt_v0_matrix_compiles_covers_and_executes_every_earn_shape() {
         cleanup_compiled,
         cleanup_accounts,
     );
-    let cleanup = vault_token_cleanup_instruction(cleanup, vault_prime_collateral);
+    let cleanup = vault_token_cleanup_instruction(cleanup, vault_cleanup_token);
     let cleanup_plan = route_instruction_plan(&route_setup, [cleanup]);
     catalog_measurements.push(prove_and_execute_v0(
         "full_withdrawal_cleanup",

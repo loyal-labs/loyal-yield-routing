@@ -888,7 +888,7 @@ fn kamino_stable_presets_reject_non_allowlisted_swap_mint() {
 }
 
 #[test]
-fn raw_mock_kamino_deposit_allows_third_party_collateral_destination() {
+fn raw_mock_kamino_deposit_rejects_noncanonical_collateral_supply() {
     let amount = 1_000_000;
 
     let mut context =
@@ -943,17 +943,17 @@ fn raw_mock_kamino_deposit_allows_third_party_collateral_destination() {
         accounts,
     );
 
-    try_send_instructions(&mut context.svm, &[ix], &context.wallet, &[])
-        .expect("raw mock Kamino matches current deposit behavior");
-    assert_eq!(get_spl_token_amount(&context.svm, vault_collateral), 0);
-    assert_eq!(
-        get_spl_token_amount(&context.svm, attacker_collateral),
-        amount
+    let result = try_send_instructions(&mut context.svm, &[ix], &context.wallet, &[]);
+    assert!(
+        result.is_err(),
+        "K-Lend must reject a collateral supply account not pinned by the reserve"
     );
+    assert_eq!(get_spl_token_amount(&context.svm, vault_collateral), 0);
+    assert_eq!(get_spl_token_amount(&context.svm, attacker_collateral), 0);
 }
 
 #[test]
-fn route_policy_rejects_third_party_kamino_deposit_collateral_destination() {
+fn route_policy_allows_kamino_to_enforce_its_canonical_collateral_supply() {
     let amount = 1_000_000;
 
     let mut context =
@@ -1034,7 +1034,7 @@ fn route_policy_rejects_third_party_kamino_deposit_collateral_destination() {
         try_send_instructions_with_heap_frame(&mut context.svm, &[deposit_ix], &wallet_b, &[]);
     assert!(
         result.is_err(),
-        "policy should reject attacker-owned Kamino collateral destination"
+        "K-Lend should reject a noncanonical reserve collateral supply after policy validation"
     );
     assert_eq!(get_spl_token_amount(&context.svm, attacker_collateral), 0);
 }
@@ -1095,7 +1095,7 @@ fn raw_mock_kamino_redeem_allows_third_party_liquidity_destination() {
         reserve_accounts,
         mock_kamino_withdraw_reserve_liquidity_data(amount),
     );
-    withdraw_accounts[8] = AccountMeta::new(attacker_usdc, false);
+    withdraw_accounts[9] = AccountMeta::new(attacker_usdc, false);
     let withdraw_ix = execute_squads_sync_transaction_instruction(
         context.pool.settings,
         context.wallet_pubkey(),

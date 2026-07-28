@@ -1,0 +1,832 @@
+{
+  "schema_version": 1,
+  "cluster": "mainnet-beta",
+  "genesis_hash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "deployment_signer": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+  "delegated_policy_signer": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+  "smart_account": {
+    "status": "finalized",
+    "account_index": "502127",
+    "settings": "EEA8aso4Vky11KYsL66jsBujUW8quseSr9GinxAPpmvw",
+    "vault_index": 0,
+    "vault": "F7zuL14omw4JJfS1cvsWXVb3wh48dvsonMJgoc9tYu3e",
+    "program_config": "GmY9kVi3FhrCUn2MJkzzpE6C5618YoHuGsgqHU78cKus",
+    "program_treasury": "init9xckLHfofCRp5SCisRK4f6eDehGRtFSAw5mLhE8",
+    "pending_signature": "3rgmeb6okghkbbeZcG2d5YAjpCKkCzxvSGUS9eRzvLPCr76mAFT5PHXHvDCgPTcvCahRPG7zhiSMyPM6GsfMFB7L",
+    "last_valid_block_height": 413723472,
+    "creation_signature": "3rgmeb6okghkbbeZcG2d5YAjpCKkCzxvSGUS9eRzvLPCr76mAFT5PHXHvDCgPTcvCahRPG7zhiSMyPM6GsfMFB7L",
+    "finalized_slot": 435664493
+  },
+  "kamino": {
+    "source_slot": 435667824,
+    "vault_usdc_token_account": "CovHF1eSvqKE7A4MkGq5FYCsKtZBue3TQN464diBqW8",
+    "reserves": [
+      {
+        "market": "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+        "reserve": "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+        "obligation": "GbhDpsf22GKNaYmpJBPNn26sZ1GL8HYKmbWCZWveAote",
+        "market_authority": "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+        "liquidity_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "liquidity_token_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "liquidity_supply": "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+        "collateral_mint": "DBieuGmP1xh36oZRwTtw722yJ8pzZ8wycYD9nY2BSxwn",
+        "collateral_supply": "6aTxdy7Hg7MHtE8NDBZWxxw9tnpj56XmdoCpkf8g2hxZ",
+        "collateral_farm": "GNcywqL6AZajsyyitxGQUvbihPgAzGZUqKfjYcvTj2pi",
+        "obligation_farm_user_state": "2BvABLzifLsLC96rCf2RCTutJzWBj4EwnArnfgaeLWYC"
+      },
+      {
+        "market": "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+        "reserve": "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",
+        "obligation": "4HhTdUm6Z1GLTjW9bvv3B9X5tHedJC8zHwdGtvu3yqKU",
+        "market_authority": "9DrvZvyWh1HuAoZxvYWMvkf2XCzryCpGgHqrMjyDWpmo",
+        "liquidity_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "liquidity_token_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "liquidity_supply": "Bgq7trRgVMeq33yt235zM2onQ4bRDBsY5EWiTetF4qw6",
+        "collateral_mint": "B8V6WVjPxW1UGwVDfxH2d2r8SyT4cqn7dQRK6XneVa7D",
+        "collateral_supply": "3DzjXRfxRm6iejfyyMynR4tScddaanrePJ1NJU2XnPPL",
+        "collateral_farm": "JAvnB9AKtgPsTEoKmn24Bq64UMoYcrtWtq42HHBdsPkh",
+        "obligation_farm_user_state": "HXUp6gznNWQPHeRSwCCd7Q5Qaetv8aMMgxtZ5fe56GkX"
+      }
+    ],
+    "operations_policy": {
+      "status": "finalized",
+      "seed": 1,
+      "policy": "5nAGZKeGW7HhFhDedgqgDBrjEgjTZjWP3otwPuh6ujZZ",
+      "pending_signature": "2Fo2bHtSz4SiUe73Wq1J636TWGi1CHcosY3EDdinhfVMev7QSu8gNZG4q2o8QPYG5CwVHp7SHgtVzmtWRiDDhwRy",
+      "last_valid_block_height": 413726832,
+      "creation_signature": "2Fo2bHtSz4SiUe73Wq1J636TWGi1CHcosY3EDdinhfVMev7QSu8gNZG4q2o8QPYG5CwVHp7SHgtVzmtWRiDDhwRy",
+      "finalized_slot": 435667857
+    },
+    "init_obligation_policy": {
+      "status": "finalized",
+      "seed": 2,
+      "policy": "7Vc3JAuayMdLarLqnu6NwKzyuB7h4u89zLrJAJPfTDFg",
+      "pending_signature": "BPmuN28sok8mSZeUxwk7szFLmKcrW6VudiEcMpFHYnoTojRMoKShSfshPrCpDjEqcBF9rE7xjmQn8nfQGUg7v5o",
+      "last_valid_block_height": 413726946,
+      "creation_signature": "BPmuN28sok8mSZeUxwk7szFLmKcrW6VudiEcMpFHYnoTojRMoKShSfshPrCpDjEqcBF9rE7xjmQn8nfQGUg7v5o",
+      "finalized_slot": 435667975
+    },
+    "live_steps": [
+      {
+        "name": "kamino-account-setup",
+        "status": "finalized",
+        "pending_signature": "4sbDSBSTtbqvx2npJbU9uBQ3qB9er5H8bh4YVubLGmkkRtQKK9FB6ECm4F2TWNwur5nFH7umx6L7nodS4SZSven6",
+        "last_valid_block_height": 413728352,
+        "finalized_signature": "4sbDSBSTtbqvx2npJbU9uBQ3qB9er5H8bh4YVubLGmkkRtQKK9FB6ECm4F2TWNwur5nFH7umx6L7nodS4SZSven6",
+        "finalized_slot": 435669390,
+        "before": {
+          "deployment_lamports": 4509649629,
+          "deployment_usdc_raw": 5000000,
+          "user_metadata_exists": 0,
+          "vault_lamports": 0,
+          "vault_usdc_exists": 0,
+          "vault_usdc_raw": 0
+        },
+        "after": {
+          "deployment_lamports": 4409644629,
+          "deployment_usdc_raw": 4000000,
+          "user_metadata_exists": 1,
+          "vault_lamports": 89887120,
+          "vault_usdc_exists": 1,
+          "vault_usdc_raw": 1000000
+        }
+      },
+      {
+        "name": "kamino-init-obligation-0",
+        "status": "finalized",
+        "pending_signature": "rSec96LAJbGHxXW2FbhgxbAYTmW9hXGgnq9iRjNbiNRU8fNQa14RX47cyeF9Sw5HawDXL74aCorJgt9FbM6RiAg",
+        "last_valid_block_height": 413728665,
+        "finalized_signature": "rSec96LAJbGHxXW2FbhgxbAYTmW9hXGgnq9iRjNbiNRU8fNQa14RX47cyeF9Sw5HawDXL74aCorJgt9FbM6RiAg",
+        "finalized_slot": 435669703,
+        "before": {
+          "obligation_deposited_raw": 0,
+          "obligation_exists": 0,
+          "obligation_lamports": 0,
+          "vault_lamports": 89887120,
+          "vault_usdc_raw": 1000000
+        },
+        "after": {
+          "obligation_deposited_raw": 0,
+          "obligation_exists": 1,
+          "obligation_lamports": 24165120,
+          "vault_lamports": 65722000,
+          "vault_usdc_raw": 1000000
+        }
+      },
+      {
+        "name": "kamino-init-obligation-1",
+        "status": "finalized",
+        "pending_signature": "47JUVsERuahegT34HhcBNm4Nwn57EjnwdGTMeuNGhqPhNCxb4KmFtbsqvg1sSwtDXmDc8EVZNVBoDGwaEzWrNZwF",
+        "last_valid_block_height": 413728743,
+        "finalized_signature": "47JUVsERuahegT34HhcBNm4Nwn57EjnwdGTMeuNGhqPhNCxb4KmFtbsqvg1sSwtDXmDc8EVZNVBoDGwaEzWrNZwF",
+        "finalized_slot": 435669781,
+        "before": {
+          "obligation_deposited_raw": 0,
+          "obligation_exists": 0,
+          "obligation_lamports": 0,
+          "vault_lamports": 65722000,
+          "vault_usdc_raw": 1000000
+        },
+        "after": {
+          "obligation_deposited_raw": 0,
+          "obligation_exists": 1,
+          "obligation_lamports": 24165120,
+          "vault_lamports": 41556880,
+          "vault_usdc_raw": 1000000
+        }
+      },
+      {
+        "name": "kamino-farm-setup",
+        "status": "finalized",
+        "pending_signature": "26XXGxJqN9XA2ccS49dYYvHev844NHG6Vjp1J5sd1aX4vBeoKbXcG37ujUtwBveQFECTJ1C5ZG1v6GgJT9cUsj4C",
+        "last_valid_block_height": 413729150,
+        "finalized_signature": "26XXGxJqN9XA2ccS49dYYvHev844NHG6Vjp1J5sd1aX4vBeoKbXcG37ujUtwBveQFECTJ1C5ZG1v6GgJT9cUsj4C",
+        "finalized_slot": 435670192,
+        "before": {
+          "farm_0_data_len": 0,
+          "farm_0_exists": 0,
+          "farm_0_lamports": 0,
+          "farm_1_data_len": 0,
+          "farm_1_exists": 0,
+          "farm_1_lamports": 0,
+          "vault_lamports": 41556880
+        },
+        "after": {
+          "farm_0_data_len": 920,
+          "farm_0_exists": 1,
+          "farm_0_lamports": 7294080,
+          "farm_1_data_len": 920,
+          "farm_1_exists": 1,
+          "farm_1_lamports": 7294080,
+          "vault_lamports": 26968720
+        }
+      },
+      {
+        "name": "kamino-deposit-0",
+        "status": "finalized",
+        "pending_signature": "5DapUJsxSGjLHNTfBPPGJhCPm3wQV4GSzMzksKA54q7DYXghtEHzidCJ3rzWHyXqWhZiyKwchX7XwM2VhemUFkwU",
+        "last_valid_block_height": 413729732,
+        "finalized_signature": "5DapUJsxSGjLHNTfBPPGJhCPm3wQV4GSzMzksKA54q7DYXghtEHzidCJ3rzWHyXqWhZiyKwchX7XwM2VhemUFkwU",
+        "finalized_slot": 435670774,
+        "before": {
+          "farm_data_len": 920,
+          "farm_exists": 1,
+          "farm_lamports": 7294080,
+          "obligation_deposited_raw": 0,
+          "obligation_exists": 1,
+          "obligation_lamports": 24165120,
+          "requested_amount_raw": 100000,
+          "vault_lamports": 26968720,
+          "vault_usdc_raw": 1000000
+        },
+        "after": {
+          "farm_data_len": 920,
+          "farm_exists": 1,
+          "farm_lamports": 7294080,
+          "obligation_deposited_raw": 95407,
+          "obligation_exists": 1,
+          "obligation_lamports": 24165120,
+          "vault_lamports": 26968720,
+          "vault_usdc_raw": 900000
+        }
+      },
+      {
+        "name": "kamino-partial-withdraw-0",
+        "status": "finalized",
+        "pending_signature": "jFkuacLed3hYyChtmn4ruGH8tQ97uxVuDUAw8mwogRWDmHJNGPYeTQZi127LWL5DTiZdx97G2tCzw4bp7p4cnxt",
+        "last_valid_block_height": 413729838,
+        "finalized_signature": "jFkuacLed3hYyChtmn4ruGH8tQ97uxVuDUAw8mwogRWDmHJNGPYeTQZi127LWL5DTiZdx97G2tCzw4bp7p4cnxt",
+        "finalized_slot": 435670880,
+        "before": {
+          "farm_data_len": 920,
+          "farm_exists": 1,
+          "farm_lamports": 7294080,
+          "obligation_deposited_raw": 95407,
+          "obligation_exists": 1,
+          "obligation_lamports": 24165120,
+          "requested_amount_raw": 47703,
+          "vault_lamports": 26968720,
+          "vault_usdc_raw": 900000
+        },
+        "after": {
+          "farm_data_len": 920,
+          "farm_exists": 1,
+          "farm_lamports": 7294080,
+          "obligation_deposited_raw": 47704,
+          "obligation_exists": 1,
+          "obligation_lamports": 24165120,
+          "vault_lamports": 26968720,
+          "vault_usdc_raw": 949999
+        }
+      },
+      {
+        "name": "kamino-full-withdraw-0",
+        "status": "finalized",
+        "pending_signature": "5xjbqaFdTvihkp3sMt4huk1bbRH9mG8K1GCoQ2DSGzHo1Ng3yYvNTK8o3DjSmzdiJhRjnvvG5mTcoL62wW9t5Uvj",
+        "last_valid_block_height": 413729930,
+        "finalized_signature": "5xjbqaFdTvihkp3sMt4huk1bbRH9mG8K1GCoQ2DSGzHo1Ng3yYvNTK8o3DjSmzdiJhRjnvvG5mTcoL62wW9t5Uvj",
+        "finalized_slot": 435670972,
+        "before": {
+          "farm_data_len": 920,
+          "farm_exists": 1,
+          "farm_lamports": 7294080,
+          "obligation_deposited_raw": 47704,
+          "obligation_exists": 1,
+          "obligation_lamports": 24165120,
+          "requested_amount_raw": 18446744073709551615,
+          "vault_lamports": 26968720,
+          "vault_usdc_raw": 949999
+        },
+        "after": {
+          "farm_data_len": 920,
+          "farm_exists": 1,
+          "farm_lamports": 7294080,
+          "obligation_deposited_raw": 0,
+          "obligation_exists": 0,
+          "obligation_lamports": 0,
+          "vault_lamports": 51133840,
+          "vault_usdc_raw": 999999
+        }
+      },
+      {
+        "name": "kamino-reinit-obligation-0",
+        "status": "finalized",
+        "pending_signature": "2KPc97xpz2GwgcXfmfAopsqkkLqGJR6dDL3fBmnEtxeuJMj5neupLiEPXJw4D1jR3LZiadBUzjnjDvd2mKuLPDCu",
+        "last_valid_block_height": 413730244,
+        "finalized_signature": "2KPc97xpz2GwgcXfmfAopsqkkLqGJR6dDL3fBmnEtxeuJMj5neupLiEPXJw4D1jR3LZiadBUzjnjDvd2mKuLPDCu",
+        "finalized_slot": 435671286,
+        "before": {
+          "obligation_deposited_raw": 0,
+          "obligation_exists": 0,
+          "obligation_lamports": 0,
+          "vault_lamports": 51133840,
+          "vault_usdc_raw": 999999
+        },
+        "after": {
+          "obligation_deposited_raw": 0,
+          "obligation_exists": 1,
+          "obligation_lamports": 24165120,
+          "vault_lamports": 26968720,
+          "vault_usdc_raw": 999999
+        }
+      },
+      {
+        "name": "kamino-deposit-1",
+        "status": "finalized",
+        "pending_signature": "5f5jiWapx9VNL1jcnjdmd4KZC6q68jyzenk6WScu1QFipvwjjrBPfvWWE86rKzZVk5PVoVb21R1jr1YqhtVjw6v6",
+        "last_valid_block_height": 413730350,
+        "finalized_signature": "5f5jiWapx9VNL1jcnjdmd4KZC6q68jyzenk6WScu1QFipvwjjrBPfvWWE86rKzZVk5PVoVb21R1jr1YqhtVjw6v6",
+        "finalized_slot": 435671395,
+        "before": {
+          "farm_data_len": 920,
+          "farm_exists": 1,
+          "farm_lamports": 7294080,
+          "obligation_deposited_raw": 0,
+          "obligation_exists": 1,
+          "obligation_lamports": 24165120,
+          "requested_amount_raw": 100000,
+          "vault_lamports": 26968720,
+          "vault_usdc_raw": 999999
+        },
+        "after": {
+          "farm_data_len": 920,
+          "farm_exists": 1,
+          "farm_lamports": 7294080,
+          "obligation_deposited_raw": 83812,
+          "obligation_exists": 1,
+          "obligation_lamports": 24165120,
+          "vault_lamports": 26968720,
+          "vault_usdc_raw": 899999
+        }
+      },
+      {
+        "name": "kamino-partial-withdraw-1",
+        "status": "finalized",
+        "pending_signature": "pcM3feiNyjiYsy3E6Vd7gBuX64Jcb7TgaT99xMfrKjYvRMwLhar6pRqxtQSwwKpUtwFfSpHzRUkvavvmWNj6gty",
+        "last_valid_block_height": 413730435,
+        "finalized_signature": "pcM3feiNyjiYsy3E6Vd7gBuX64Jcb7TgaT99xMfrKjYvRMwLhar6pRqxtQSwwKpUtwFfSpHzRUkvavvmWNj6gty",
+        "finalized_slot": 435671480,
+        "before": {
+          "farm_data_len": 920,
+          "farm_exists": 1,
+          "farm_lamports": 7294080,
+          "obligation_deposited_raw": 83812,
+          "obligation_exists": 1,
+          "obligation_lamports": 24165120,
+          "requested_amount_raw": 41906,
+          "vault_lamports": 26968720,
+          "vault_usdc_raw": 899999
+        },
+        "after": {
+          "farm_data_len": 920,
+          "farm_exists": 1,
+          "farm_lamports": 7294080,
+          "obligation_deposited_raw": 41906,
+          "obligation_exists": 1,
+          "obligation_lamports": 24165120,
+          "vault_lamports": 26968720,
+          "vault_usdc_raw": 949998
+        }
+      },
+      {
+        "name": "kamino-full-withdraw-1",
+        "status": "finalized",
+        "pending_signature": "2pyZPcAv66zj3oQRsdMuJg3SU8WgfyYu8H8xmrVHUU3q9B8RQi3ejTixB3L222JHxaB5hJyE1tPvcp58q6FkM9zu",
+        "last_valid_block_height": 413730521,
+        "finalized_signature": "2pyZPcAv66zj3oQRsdMuJg3SU8WgfyYu8H8xmrVHUU3q9B8RQi3ejTixB3L222JHxaB5hJyE1tPvcp58q6FkM9zu",
+        "finalized_slot": 435671565,
+        "before": {
+          "farm_data_len": 920,
+          "farm_exists": 1,
+          "farm_lamports": 7294080,
+          "obligation_deposited_raw": 41906,
+          "obligation_exists": 1,
+          "obligation_lamports": 24165120,
+          "requested_amount_raw": 18446744073709551615,
+          "vault_lamports": 26968720,
+          "vault_usdc_raw": 949998
+        },
+        "after": {
+          "farm_data_len": 920,
+          "farm_exists": 1,
+          "farm_lamports": 7294080,
+          "obligation_deposited_raw": 0,
+          "obligation_exists": 0,
+          "obligation_lamports": 0,
+          "vault_lamports": 51133840,
+          "vault_usdc_raw": 999997
+        }
+      },
+      {
+        "name": "kamino-reinit-obligation-1",
+        "status": "finalized",
+        "pending_signature": "2KnNa1f5YbQRUGYAjW9jWBHGFc18JNjNC7uNFdsxucWB3aQme9DGeRYTwxZSL8WLjeAmjo3sNZaprrf9iLF9k5FR",
+        "last_valid_block_height": 413730607,
+        "finalized_signature": "2KnNa1f5YbQRUGYAjW9jWBHGFc18JNjNC7uNFdsxucWB3aQme9DGeRYTwxZSL8WLjeAmjo3sNZaprrf9iLF9k5FR",
+        "finalized_slot": 435671650,
+        "before": {
+          "obligation_deposited_raw": 0,
+          "obligation_exists": 0,
+          "obligation_lamports": 0,
+          "vault_lamports": 51133840,
+          "vault_usdc_raw": 999997
+        },
+        "after": {
+          "obligation_deposited_raw": 0,
+          "obligation_exists": 1,
+          "obligation_lamports": 24165120,
+          "vault_lamports": 26968720,
+          "vault_usdc_raw": 999997
+        }
+      }
+    ]
+  },
+  "meteora": {
+    "source_slot": 435676019,
+    "pool": "c29DVknA5DZUCH6U5ujo1EGfiKKXZrUk6yk56yJxLrm",
+    "program": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+    "active_bin_id_at_setup": -203,
+    "position": "3SBxJxpCG2EbfLrvD5DgjKUarLgn5i643WYNnUdTYgCB",
+    "position_lower_bin_id": -237,
+    "position_upper_bin_id": -168,
+    "position_width": 70,
+    "vault_loyal_token_account": "ALqM7B2RPGkdJyafxWHqvsgqaPz8DgriekfKhrVZPT1o",
+    "vault_usdc_token_account": "CovHF1eSvqKE7A4MkGq5FYCsKtZBue3TQN464diBqW8",
+    "bitmap_extension_or_program_sentinel": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+    "bin_arrays": [
+      "AvJnsVVSq8VNBzHXdmHYzXUfyfwF6UFbcG1WYypy2xF1",
+      "2ArooKALsXSFCZ9jDgGet8u8jyHb7LZWxdHkNxwuegDK",
+      "J7XCjD9pP2QRJYDSqj96NyGjbJqLQgNCFRzYqcogZBVj"
+    ],
+    "strategy_range_a_min_bin_id": -207,
+    "strategy_range_a_max_bin_id": -199,
+    "strategy_range_b_min_bin_id": -211,
+    "strategy_range_b_max_bin_id": -195,
+    "add_liquidity_policy": {
+      "status": "finalized",
+      "seed": 3,
+      "policy": "GHitZJYZbum2wVnQ9Hesg1qof6KUCKVxTf4zmHiMaKTe",
+      "pending_signature": "4GSNwXcRLNaUWe5EBbCCChCX2tMMHqwnbM75rzZS8rXvVpsm62cFJEkf7yxwYzGFeJayzyh9AjBED51iL27QAxqP",
+      "last_valid_block_height": 413735527,
+      "creation_signature": "4GSNwXcRLNaUWe5EBbCCChCX2tMMHqwnbM75rzZS8rXvVpsm62cFJEkf7yxwYzGFeJayzyh9AjBED51iL27QAxqP",
+      "finalized_slot": 435676576
+    },
+    "remove_liquidity_policy": {
+      "status": "finalized",
+      "seed": 4,
+      "policy": "ErKkpfJBn7jKtofDqwsWQGeQYqxUATN3hi91VES76Cx5",
+      "pending_signature": "62gfWACioUdx78qaFLxtjK5kYqwy7NoRqxc7N6YTNgFE74LemPqsqimw2h5Pyon83byGFi9zagUcCCS8dE3YL3ZX",
+      "last_valid_block_height": 413735639,
+      "creation_signature": "62gfWACioUdx78qaFLxtjK5kYqwy7NoRqxc7N6YTNgFE74LemPqsqimw2h5Pyon83byGFi9zagUcCCS8dE3YL3ZX",
+      "finalized_slot": 435676686
+    },
+    "claim_fee_policy": {
+      "status": "finalized",
+      "seed": 5,
+      "policy": "2ots3M1LejBMoLCYd1kSLtAGs1auvjGdosHNhoorN5xt",
+      "pending_signature": "4swxiiB69BLAteHv62HgEW5x21AufPRy3JW6jQzEAq7qWnpSJPrJrbMETSZAb2xkdJh5dghZU1EET3NHSzyW4f8K",
+      "last_valid_block_height": 413735745,
+      "creation_signature": "4swxiiB69BLAteHv62HgEW5x21AufPRy3JW6jQzEAq7qWnpSJPrJrbMETSZAb2xkdJh5dghZU1EET3NHSzyW4f8K",
+      "finalized_slot": 435676792
+    },
+    "live_steps": [
+      {
+        "name": "meteora-acquire-loyal-dust",
+        "status": "finalized",
+        "pending_signature": "mZN1UyqrmzFDfwEMazqXtaByymoNsoTHD32sJPrGTFyt8Dibaf94rnQ1ubVGUyJXEhUoY7i85uSNtGGFRf75tTr",
+        "last_valid_block_height": 413735006,
+        "finalized_signature": "mZN1UyqrmzFDfwEMazqXtaByymoNsoTHD32sJPrGTFyt8Dibaf94rnQ1ubVGUyJXEhUoY7i85uSNtGGFRf75tTr",
+        "finalized_slot": 435676056,
+        "before": {
+          "deployment_loyal_exists": 0,
+          "deployment_loyal_raw": 0,
+          "deployment_usdc_raw": 4000000,
+          "expected_usdc_input_raw": 1000,
+          "minimum_loyal_output_raw": 7478,
+          "price_impact_parts_per_billion": 9841298,
+          "quoted_loyal_output_raw": 7553
+        },
+        "after": {
+          "deployment_loyal_exists": 1,
+          "deployment_loyal_raw": 7553,
+          "deployment_usdc_raw": 3999000
+        }
+      },
+      {
+        "name": "meteora-account-setup",
+        "status": "finalized",
+        "pending_signature": "5a4P7N7jcfiuRUA3vUK6oDnPAZ1x3dptnApryLCGV2mS745Xw3SP1HzMJZ2UH5nQATVgLuymfkQsFmzyF7hsd3oQ",
+        "last_valid_block_height": 413735374,
+        "finalized_signature": "5a4P7N7jcfiuRUA3vUK6oDnPAZ1x3dptnApryLCGV2mS745Xw3SP1HzMJZ2UH5nQATVgLuymfkQsFmzyF7hsd3oQ",
+        "finalized_slot": 435676421,
+        "before": {
+          "bin_array_0_exists": 1,
+          "bin_array_1_exists": 1,
+          "bin_array_2_exists": 1,
+          "deployment_lamports": 4407540349,
+          "deployment_loyal_raw": 7553,
+          "position_data_len": 0,
+          "position_exists": 0,
+          "position_lamports": 0,
+          "position_nonzero_liquidity_bins": 0,
+          "position_pending_fee_loyal_raw": 0,
+          "position_pending_fee_usdc_raw": 0,
+          "vault_lamports": 26968720,
+          "vault_loyal_account_lamports": 0,
+          "vault_loyal_exists": 0,
+          "vault_loyal_raw": 0,
+          "vault_usdc_raw": 999997
+        },
+        "after": {
+          "bin_array_0_exists": 1,
+          "bin_array_1_exists": 1,
+          "bin_array_2_exists": 1,
+          "deployment_lamports": 4307535349,
+          "deployment_loyal_raw": 2553,
+          "position_data_len": 8120,
+          "position_exists": 1,
+          "position_lamports": 57406080,
+          "position_nonzero_liquidity_bins": 0,
+          "position_pending_fee_loyal_raw": 0,
+          "position_pending_fee_usdc_raw": 0,
+          "vault_lamports": 67523360,
+          "vault_loyal_account_lamports": 2039280,
+          "vault_loyal_exists": 1,
+          "vault_loyal_raw": 5000,
+          "vault_usdc_raw": 999997
+        }
+      },
+      {
+        "name": "meteora-add-a",
+        "status": "finalized",
+        "pending_signature": "5A9LamN9rXnaNH4rQmSvFs4ndUjcFPk5g41kgfQfkgS5KK27fahSbbVhwozowdnXXgY51WMrvhyitG51EYrQUei3",
+        "last_valid_block_height": 413736614,
+        "finalized_signature": "5A9LamN9rXnaNH4rQmSvFs4ndUjcFPk5g41kgfQfkgS5KK27fahSbbVhwozowdnXXgY51WMrvhyitG51EYrQUei3",
+        "finalized_slot": 435677665,
+        "before": {
+          "bin_array_0_exists": 1,
+          "bin_array_1_exists": 1,
+          "bin_array_2_exists": 1,
+          "pool_loyal_reserve_raw": 1411,
+          "pool_usdc_reserve_raw": 56726,
+          "position_data_len": 8120,
+          "position_exists": 1,
+          "position_lamports": 57406080,
+          "position_nonzero_liquidity_bins": 0,
+          "position_pending_fee_loyal_raw": 0,
+          "position_pending_fee_usdc_raw": 0,
+          "requested_loyal_raw": 1000,
+          "requested_usdc_raw": 100000,
+          "vault_lamports": 67523360,
+          "vault_loyal_raw": 5000,
+          "vault_usdc_raw": 999997
+        },
+        "after": {
+          "bin_array_0_exists": 1,
+          "bin_array_1_exists": 1,
+          "bin_array_2_exists": 1,
+          "pool_loyal_reserve_raw": 2408,
+          "pool_usdc_reserve_raw": 56861,
+          "position_data_len": 8120,
+          "position_exists": 1,
+          "position_lamports": 57406080,
+          "position_nonzero_liquidity_bins": 9,
+          "position_pending_fee_loyal_raw": 0,
+          "position_pending_fee_usdc_raw": 0,
+          "vault_lamports": 67523360,
+          "vault_loyal_raw": 4003,
+          "vault_usdc_raw": 999862
+        }
+      },
+      {
+        "name": "meteora-remove-a",
+        "status": "finalized",
+        "pending_signature": "5DGCxGYnQrPjihAmfF2bb14ogNwisfYDbopFq5mx7DtE1EiUNZD1b6Ece961xZfukBFLv7iEHtQkEHo9DMwvSNh6",
+        "last_valid_block_height": 413737102,
+        "finalized_signature": "5DGCxGYnQrPjihAmfF2bb14ogNwisfYDbopFq5mx7DtE1EiUNZD1b6Ece961xZfukBFLv7iEHtQkEHo9DMwvSNh6",
+        "finalized_slot": 435678149,
+        "before": {
+          "active_id_i32_bits": 4294967093,
+          "bin_array_0_exists": 1,
+          "bin_array_1_exists": 1,
+          "bin_array_2_exists": 1,
+          "pool_loyal_reserve_raw": 2408,
+          "pool_usdc_reserve_raw": 56861,
+          "position_data_len": 8120,
+          "position_exists": 1,
+          "position_lamports": 57406080,
+          "position_nonzero_liquidity_bins": 9,
+          "position_pending_fee_loyal_raw": 0,
+          "position_pending_fee_usdc_raw": 0,
+          "range_max_i32_bits": 4294967097,
+          "range_min_i32_bits": 4294967089,
+          "requested_remove_bps": 10000,
+          "vault_lamports": 67523360,
+          "vault_loyal_raw": 4003,
+          "vault_usdc_raw": 999862
+        },
+        "after": {
+          "bin_array_0_exists": 1,
+          "bin_array_1_exists": 1,
+          "bin_array_2_exists": 1,
+          "pool_loyal_reserve_raw": 1411,
+          "pool_usdc_reserve_raw": 56726,
+          "position_data_len": 8120,
+          "position_exists": 1,
+          "position_lamports": 57406080,
+          "position_nonzero_liquidity_bins": 0,
+          "position_pending_fee_loyal_raw": 0,
+          "position_pending_fee_usdc_raw": 0,
+          "vault_lamports": 67523360,
+          "vault_loyal_raw": 5000,
+          "vault_usdc_raw": 999997
+        }
+      },
+      {
+        "name": "meteora-add-b",
+        "status": "finalized",
+        "pending_signature": "5tj5Mwj9CqBqfKLQq6FkVWV9NTc7Dn5xukQVmSHByaRi6CCwfsMSygEKUikqAS4KAmrqJvKeqkgUcCAL6ycVbCzV",
+        "last_valid_block_height": 413737227,
+        "finalized_signature": "5tj5Mwj9CqBqfKLQq6FkVWV9NTc7Dn5xukQVmSHByaRi6CCwfsMSygEKUikqAS4KAmrqJvKeqkgUcCAL6ycVbCzV",
+        "finalized_slot": 435678273,
+        "before": {
+          "active_id_i32_bits": 4294967093,
+          "bin_array_0_exists": 1,
+          "bin_array_1_exists": 1,
+          "bin_array_2_exists": 1,
+          "pool_loyal_reserve_raw": 1411,
+          "pool_usdc_reserve_raw": 56726,
+          "position_data_len": 8120,
+          "position_exists": 1,
+          "position_lamports": 57406080,
+          "position_nonzero_liquidity_bins": 0,
+          "position_pending_fee_loyal_raw": 0,
+          "position_pending_fee_usdc_raw": 0,
+          "range_max_i32_bits": 4294967101,
+          "range_min_i32_bits": 4294967085,
+          "requested_loyal_raw": 1000,
+          "requested_usdc_raw": 100000,
+          "vault_lamports": 67523360,
+          "vault_loyal_raw": 5000,
+          "vault_usdc_raw": 999997
+        },
+        "after": {
+          "bin_array_0_exists": 1,
+          "bin_array_1_exists": 1,
+          "bin_array_2_exists": 1,
+          "pool_loyal_reserve_raw": 2407,
+          "pool_usdc_reserve_raw": 56862,
+          "position_data_len": 8120,
+          "position_exists": 1,
+          "position_lamports": 57406080,
+          "position_nonzero_liquidity_bins": 17,
+          "position_pending_fee_loyal_raw": 0,
+          "position_pending_fee_usdc_raw": 0,
+          "vault_lamports": 67523360,
+          "vault_loyal_raw": 4004,
+          "vault_usdc_raw": 999861
+        }
+      },
+      {
+        "name": "meteora-generate-fees",
+        "status": "finalized",
+        "pending_signature": "3FdcS5sKLMZFrcx1wyaoKXcxVAJYcET1uhhbyfHHxwPjoh9MQQSmQmLPcAMzQyRpHNDaWr4WkyFoR4CK8WxTKXFP",
+        "last_valid_block_height": 413737756,
+        "finalized_signature": "3FdcS5sKLMZFrcx1wyaoKXcxVAJYcET1uhhbyfHHxwPjoh9MQQSmQmLPcAMzQyRpHNDaWr4WkyFoR4CK8WxTKXFP",
+        "finalized_slot": 435678802,
+        "before": {
+          "bin_array_0_exists": 1,
+          "bin_array_1_exists": 1,
+          "bin_array_2_exists": 1,
+          "deployment_loyal_raw": 2553,
+          "deployment_usdc_raw": 3999000,
+          "expected_usdc_input_raw": 100,
+          "minimum_loyal_output_raw": 647,
+          "pool_loyal_reserve_raw": 2407,
+          "pool_usdc_reserve_raw": 56862,
+          "position_data_len": 8120,
+          "position_exists": 1,
+          "position_lamports": 57406080,
+          "position_nonzero_liquidity_bins": 17,
+          "position_pending_fee_loyal_raw": 0,
+          "position_pending_fee_usdc_raw": 0,
+          "quoted_fee_raw": 6,
+          "quoted_loyal_output_raw": 654,
+          "quoted_protocol_fee_raw": 0,
+          "swap_bin_array_count": 1,
+          "vault_lamports": 67523360,
+          "vault_loyal_raw": 4004,
+          "vault_usdc_raw": 999861
+        },
+        "after": {
+          "bin_array_0_exists": 1,
+          "bin_array_1_exists": 1,
+          "bin_array_2_exists": 1,
+          "deployment_loyal_raw": 3207,
+          "deployment_usdc_raw": 3998900,
+          "pool_loyal_reserve_raw": 1753,
+          "pool_usdc_reserve_raw": 56962,
+          "position_data_len": 8120,
+          "position_exists": 1,
+          "position_lamports": 57406080,
+          "position_nonzero_liquidity_bins": 17,
+          "position_pending_fee_loyal_raw": 0,
+          "position_pending_fee_usdc_raw": 0,
+          "vault_lamports": 67523360,
+          "vault_loyal_raw": 4004,
+          "vault_usdc_raw": 999861
+        }
+      },
+      {
+        "name": "meteora-remove-b",
+        "status": "finalized",
+        "pending_signature": "3LneqLDQcv4BNfdEGZJpq4B1FiJZ1oycfHUKFCbEa52rrLAWuzX3MUMoNJGNLksw5jJRu73Ecx7Y2Hhje6EyggPQ",
+        "last_valid_block_height": 413737950,
+        "finalized_signature": "3LneqLDQcv4BNfdEGZJpq4B1FiJZ1oycfHUKFCbEa52rrLAWuzX3MUMoNJGNLksw5jJRu73Ecx7Y2Hhje6EyggPQ",
+        "finalized_slot": 435678997,
+        "before": {
+          "active_id_i32_bits": 4294967098,
+          "bin_array_0_exists": 1,
+          "bin_array_1_exists": 1,
+          "bin_array_2_exists": 1,
+          "pool_loyal_reserve_raw": 1753,
+          "pool_usdc_reserve_raw": 56962,
+          "position_data_len": 8120,
+          "position_exists": 1,
+          "position_lamports": 57406080,
+          "position_nonzero_liquidity_bins": 17,
+          "position_pending_fee_loyal_raw": 0,
+          "position_pending_fee_usdc_raw": 0,
+          "range_max_i32_bits": 4294967101,
+          "range_min_i32_bits": 4294967085,
+          "requested_remove_bps": 10000,
+          "vault_lamports": 67523360,
+          "vault_loyal_raw": 4004,
+          "vault_usdc_raw": 999861
+        },
+        "after": {
+          "bin_array_0_exists": 1,
+          "bin_array_1_exists": 1,
+          "bin_array_2_exists": 1,
+          "pool_loyal_reserve_raw": 1411,
+          "pool_usdc_reserve_raw": 56732,
+          "position_data_len": 8120,
+          "position_exists": 1,
+          "position_lamports": 57406080,
+          "position_nonzero_liquidity_bins": 0,
+          "position_pending_fee_loyal_raw": 0,
+          "position_pending_fee_usdc_raw": 6,
+          "vault_lamports": 67523360,
+          "vault_loyal_raw": 4346,
+          "vault_usdc_raw": 1000091
+        }
+      },
+      {
+        "name": "meteora-claim-fees",
+        "status": "finalized",
+        "pending_signature": "59NR6kDEURYxpRcPtPptCmx5EYun7tbLVyUDgk1SgJP7AgiNAuCp6Mxsw3DV2bEhjh3HRAuWfe4PpVo7vkYjYzXV",
+        "last_valid_block_height": 413738288,
+        "finalized_signature": "59NR6kDEURYxpRcPtPptCmx5EYun7tbLVyUDgk1SgJP7AgiNAuCp6Mxsw3DV2bEhjh3HRAuWfe4PpVo7vkYjYzXV",
+        "finalized_slot": 435679335,
+        "before": {
+          "bin_array_0_exists": 1,
+          "bin_array_1_exists": 1,
+          "bin_array_2_exists": 1,
+          "pool_loyal_reserve_raw": 1411,
+          "pool_usdc_reserve_raw": 56732,
+          "position_data_len": 8120,
+          "position_exists": 1,
+          "position_lamports": 57406080,
+          "position_nonzero_liquidity_bins": 0,
+          "position_pending_fee_loyal_raw": 0,
+          "position_pending_fee_usdc_raw": 6,
+          "range_max_i32_bits": 4294967128,
+          "range_min_i32_bits": 4294967059,
+          "vault_lamports": 67523360,
+          "vault_loyal_raw": 4346,
+          "vault_usdc_raw": 1000091
+        },
+        "after": {
+          "bin_array_0_exists": 1,
+          "bin_array_1_exists": 1,
+          "bin_array_2_exists": 1,
+          "pool_loyal_reserve_raw": 1411,
+          "pool_usdc_reserve_raw": 56726,
+          "position_data_len": 8120,
+          "position_exists": 1,
+          "position_lamports": 57406080,
+          "position_nonzero_liquidity_bins": 0,
+          "position_pending_fee_loyal_raw": 0,
+          "position_pending_fee_usdc_raw": 0,
+          "vault_lamports": 67523360,
+          "vault_loyal_raw": 4346,
+          "vault_usdc_raw": 1000097
+        }
+      }
+    ]
+  },
+  "returns": {
+    "source_slot": 435681648,
+    "mother": "AQyyTwCKemeeMu8ZPZFxrXMbVwAYTSbBhi1w4PBrhvYE",
+    "vault_loyal_token_account": "ALqM7B2RPGkdJyafxWHqvsgqaPz8DgriekfKhrVZPT1o",
+    "vault_usdc_token_account": "CovHF1eSvqKE7A4MkGq5FYCsKtZBue3TQN464diBqW8",
+    "mother_loyal_token_account": "2EKLyZKCfhZxhSW35jYRaKSig3saAq97JKK9j28yrUg5",
+    "mother_usdc_token_account": "FujHwQAccqyq4yCLYBZ9v2XxvDN3bLckB21iH3LSNhyW",
+    "loyal_policy": {
+      "status": "finalized",
+      "seed": 6,
+      "policy": "7p9fbAoAJU1LjbjRXhWqh1gABWTG7aeUe96ZK55kLQUq",
+      "pending_signature": "29ZfuPzahTH7h2vP2BQeoKfk96j9cGcjfswUV3rCZrNs6SWCPXFnhT5JYZ5rj34S16B33LQn5qJpCTroJm9YDR2e",
+      "last_valid_block_height": 413740635,
+      "creation_signature": "29ZfuPzahTH7h2vP2BQeoKfk96j9cGcjfswUV3rCZrNs6SWCPXFnhT5JYZ5rj34S16B33LQn5qJpCTroJm9YDR2e",
+      "finalized_slot": 435681682
+    },
+    "usdc_policy": {
+      "status": "finalized",
+      "seed": 7,
+      "policy": "Hn4rztZmUYVRvdfUWso3zXAoQEY5efk6KWbJJPxXdn8k",
+      "pending_signature": "63jYGMbXmpoWrtHJVp2UgdXi4ab1ed8RhVFhjct8GXZ8CJKocsYNaa2EpZyAhAi4piFuYeoQCbNjX3XaeWSH39FB",
+      "last_valid_block_height": 413740706,
+      "creation_signature": "63jYGMbXmpoWrtHJVp2UgdXi4ab1ed8RhVFhjct8GXZ8CJKocsYNaa2EpZyAhAi4piFuYeoQCbNjX3XaeWSH39FB",
+      "finalized_slot": 435681753
+    },
+    "live_steps": [
+      {
+        "name": "return-loyal-to-mother",
+        "status": "finalized",
+        "pending_signature": "3Sw4KhdsW4qJEzyCCvZFLM8dPcjc1raiTzuTdHVRgjD3VV3jv1yRDRU2S7jUTGLSLXrMvo3knsTzCQvZXaUUoxKx",
+        "last_valid_block_height": 413740794,
+        "finalized_signature": "3Sw4KhdsW4qJEzyCCvZFLM8dPcjc1raiTzuTdHVRgjD3VV3jv1yRDRU2S7jUTGLSLXrMvo3knsTzCQvZXaUUoxKx",
+        "finalized_slot": 435681841,
+        "before": {
+          "mother_raw": 6751866978094,
+          "vault_lamports": 67523360,
+          "vault_raw": 4346
+        },
+        "after": {
+          "mother_raw": 6751866978095,
+          "vault_lamports": 67523360,
+          "vault_raw": 4345
+        }
+      },
+      {
+        "name": "return-usdc-to-mother",
+        "status": "finalized",
+        "pending_signature": "2UhK9Nw8vRb2pab87FTcDZmY5Gty1p4GfRK35cB5vUNLR73ywQzHVqznURk7cyGggvKT7vTZHV9dgbpcXPHRHLyj",
+        "last_valid_block_height": 413740885,
+        "finalized_signature": "2UhK9Nw8vRb2pab87FTcDZmY5Gty1p4GfRK35cB5vUNLR73ywQzHVqznURk7cyGggvKT7vTZHV9dgbpcXPHRHLyj",
+        "finalized_slot": 435681933,
+        "before": {
+          "mother_raw": 41000,
+          "vault_lamports": 67523360,
+          "vault_raw": 1000097
+        },
+        "after": {
+          "mother_raw": 41006,
+          "vault_lamports": 67523360,
+          "vault_raw": 1000091
+        }
+      }
+    ]
+  }
+}

@@ -4,6 +4,7 @@
 //! this SDK to build instructions, then execute them in their own runtime.
 
 mod actions;
+pub mod autonomous_vaults;
 mod detection;
 mod ids;
 pub mod lookup_tables;
@@ -65,7 +66,9 @@ pub use protocols::{
     LoyalHubRebalanceBuilder, LoyalHubRebalanceTransfer, LoyalHubSwapExactIn,
 };
 pub use squads::{
-    compile_squads_inner_instruction, derive_action_account,
-    execute_program_interaction_policy_instruction, execute_sync_transaction_instruction,
-    remove_policy_instruction, LoyalActionError, Result, SquadsCompiledInstruction,
+    compile_squads_inner_instruction, create_unlimited_spl_spending_limit_policy_instruction,
+    derive_action_account, derive_classic_associated_token_account, derive_squads_vault,
+    execute_program_interaction_policy_instruction, execute_spl_spending_limit_policy_instruction,
+    execute_sync_transaction_instruction, remove_policy_instruction, LoyalActionError, Result,
+    SquadsCompiledInstruction,
 };

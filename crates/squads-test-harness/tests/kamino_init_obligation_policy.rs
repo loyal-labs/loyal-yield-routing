@@ -1,9 +1,9 @@
 use loyal_actions::{
     decode_squads_policy_create_actions, derive_action_account, derive_kamino_user_metadata,
-    derive_kamino_vanilla_obligation, update_init_obligation_yield_route_action,
-    LoyalActionContext, SquadsAccountConstraintKindView, SquadsAccountConstraintView,
-    SquadsDataOperatorView, SquadsDataValueView, SquadsInstructionConstraintView,
-    YieldRouteUniverse, KAMINO_FIGURE_MARKET as KAMINO_PRIME_MARKET,
+    update_init_obligation_yield_route_action, LoyalActionContext, SquadsAccountConstraintKindView,
+    SquadsAccountConstraintView, SquadsDataOperatorView, SquadsDataValueView,
+    SquadsInstructionConstraintView, YieldRouteUniverse,
+    KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR, KAMINO_FIGURE_MARKET as KAMINO_PRIME_MARKET,
     KAMINO_INIT_OBLIGATION_DISCRIMINATOR, KAMINO_LEND_PROGRAM_ID, KAMINO_MAIN_MARKET,
     KAMINO_MAPLE_MARKET, KAMINO_VANILLA_OBLIGATION_ID, KAMINO_VANILLA_OBLIGATION_TAG, USDC_MINT,
 };
@@ -11,7 +11,7 @@ use solana_sdk::{pubkey::Pubkey, sysvar};
 use solana_system_interface::program as system_program;
 
 #[test]
-fn init_obligation_policy_update_anchors_exact_klend_accounts_and_rejects_mutations() {
+fn init_obligation_policy_update_anchors_owner_market_and_seed_accounts() {
     let settings = Pubkey::new_unique();
     let authority = Pubkey::new_unique();
     let delegated_signer = Pubkey::new_unique();
@@ -46,9 +46,17 @@ fn init_obligation_policy_update_anchors_exact_klend_accounts_and_rejects_mutati
     assert_eq!(action.delegated_signers, vec![delegated_signer]);
     assert_eq!(action.threshold, 1);
     assert_eq!(action.payload.vault_index, vault_index);
-    assert_eq!(action.payload.constraints.len(), 1);
+    assert_eq!(action.payload.constraints.len(), 2);
+    assert_eq!(
+        action.payload.constraints[0].program_id,
+        KAMINO_LEND_PROGRAM_ID
+    );
+    assert!(data_prefix_matches(
+        &action.payload.constraints[0],
+        &KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR
+    ));
 
-    let constraint = &action.payload.constraints[0];
+    let constraint = &action.payload.constraints[1];
     assert_init_obligation_constraint(constraint, vault, &markets);
 
     assert_rejects_mutation(
@@ -57,11 +65,6 @@ fn init_obligation_policy_update_anchors_exact_klend_accounts_and_rejects_mutati
         &markets,
         "unsupported market",
         |mutated| {
-            replace_pubkeys(
-                mutated,
-                2,
-                vec![derive_kamino_vanilla_obligation(vault, KAMINO_MAPLE_MARKET)],
-            );
             replace_pubkeys(mutated, 3, vec![KAMINO_MAPLE_MARKET]);
         },
     );
@@ -71,15 +74,6 @@ fn init_obligation_policy_update_anchors_exact_klend_accounts_and_rejects_mutati
     assert_rejects_mutation(constraint, vault, &markets, "wrong fee payer", |mutated| {
         replace_pubkeys(mutated, 1, vec![Pubkey::new_unique()]);
     });
-    assert_rejects_mutation(
-        constraint,
-        vault,
-        &markets,
-        "wrong obligation PDA",
-        |mutated| {
-            replace_pubkeys(mutated, 2, vec![Pubkey::new_unique()]);
-        },
-    );
     assert_rejects_mutation(
         constraint,
         vault,
@@ -152,10 +146,6 @@ fn init_obligation_constraint_matches(
     vault: Pubkey,
     markets: &[Pubkey],
 ) -> bool {
-    let obligations = markets
-        .iter()
-        .map(|market| derive_kamino_vanilla_obligation(vault, *market))
-        .collect::<Vec<_>>();
     let mut expected_data_prefix = KAMINO_INIT_OBLIGATION_DISCRIMINATOR.to_vec();
     expected_data_prefix.push(KAMINO_VANILLA_OBLIGATION_TAG);
     expected_data_prefix.push(KAMINO_VANILLA_OBLIGATION_ID);
@@ -163,7 +153,6 @@ fn init_obligation_constraint_matches(
     constraint.program_id == KAMINO_LEND_PROGRAM_ID
         && account_pubkeys_match(constraint, 0, &[vault])
         && account_pubkeys_match(constraint, 1, &[vault])
-        && account_pubkeys_match(constraint, 2, &obligations)
         && account_pubkeys_match(constraint, 3, markets)
         && account_pubkeys_match(constraint, 4, &[Pubkey::default()])
         && account_pubkeys_match(constraint, 5, &[Pubkey::default()])

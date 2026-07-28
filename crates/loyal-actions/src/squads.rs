@@ -96,6 +96,26 @@ pub fn derive_action_account(squads_settings: &Pubkey, action_seed: u64) -> (Pub
     )
 }
 
+pub fn derive_squads_vault(squads_settings: &Pubkey, vault_index: u8) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            SQUADS_SEED_PREFIX,
+            squads_settings.as_ref(),
+            SQUADS_SEED_PREFIX,
+            &[vault_index],
+        ],
+        &SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+    )
+}
+
+pub fn derive_classic_associated_token_account(owner: Pubkey, mint: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[owner.as_ref(), spl_token::id().as_ref(), mint.as_ref()],
+        &ASSOCIATED_TOKEN_PROGRAM_ID,
+    )
+    .0
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SquadsCompiledInstruction {
     pub program_id_index: u8,
@@ -205,6 +225,108 @@ pub fn remove_policy_instruction(
             AccountMeta::new(policy, false),
         ],
         data: serialize_settings_actions(vec![action]),
+    }
+}
+
+/// Creates the exact effectively-unlimited SPL SpendingLimit used by an
+/// autonomous vault to return one mint to one treasury owner.
+#[allow(clippy::too_many_arguments)]
+pub fn create_unlimited_spl_spending_limit_policy_instruction(
+    settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    policy_seed: u64,
+    source_account_index: u8,
+    mint: Pubkey,
+    destination_owner: Pubkey,
+) -> Instruction {
+    let (policy, _) = derive_action_account(&settings, policy_seed);
+    let action = SquadsSettingsAction::PolicyCreate {
+        seed: policy_seed,
+        policy_creation_payload: SquadsPolicyCreationPayload::SpendingLimit(
+            SquadsSpendingLimitPolicyCreationPayload {
+                mint,
+                source_account_index,
+                time_constraints: SquadsTimeConstraints {
+                    start: 0,
+                    expiration: None,
+                    period: SquadsPeriodV2::OneTime,
+                    accumulate_unused: false,
+                },
+                quantity_constraints: SquadsQuantityConstraints {
+                    max_per_period: u64::MAX,
+                    max_per_use: 0,
+                    enforce_exact_quantity: false,
+                },
+                usage_state: None,
+                destinations: vec![destination_owner],
+            },
+        ),
+        signers: vec![SquadsSmartAccountSigner {
+            key: delegated_signer,
+            permissions: SquadsPermissions {
+                mask: SQUADS_FULL_PERMISSIONS_MASK,
+            },
+        }],
+        threshold: 1,
+        time_lock: 0,
+        start_timestamp: None,
+        expiration_args: None,
+    };
+
+    Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(settings, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(policy, false),
+        ],
+        data: serialize_settings_actions(vec![action]),
+    }
+}
+
+/// Executes an SPL SpendingLimit through canonical classic-token ATAs. The
+/// on-chain policy ultimately authorizes the destination owner and mint; using
+/// canonical ATAs here removes client-side destination ambiguity.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_spl_spending_limit_policy_instruction(
+    policy: Pubkey,
+    signer: Pubkey,
+    settings: Pubkey,
+    source_account_index: u8,
+    mint: Pubkey,
+    destination_owner: Pubkey,
+    amount: u64,
+    decimals: u8,
+) -> Instruction {
+    let vault = derive_squads_vault(&settings, source_account_index).0;
+    let source_token_account = derive_classic_associated_token_account(vault, mint);
+    let destination_token_account =
+        derive_classic_associated_token_account(destination_owner, mint);
+
+    Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(policy, false),
+            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+            AccountMeta::new_readonly(signer, true),
+            AccountMeta::new_readonly(vault, false),
+            AccountMeta::new(source_token_account, false),
+            AccountMeta::new(destination_token_account, false),
+            AccountMeta::new_readonly(mint, false),
+            AccountMeta::new_readonly(spl_token::id(), false),
+        ],
+        data: serialize_squads_sync_policy_payload_args(
+            source_account_index,
+            SquadsPolicyPayload::SpendingLimit(SquadsSpendingLimitPayload {
+                amount,
+                destination: destination_owner,
+                decimals,
+            }),
+        ),
     }
 }
 
@@ -475,9 +597,40 @@ enum SquadsPolicyExpirationArgs {
 #[allow(dead_code)]
 enum SquadsPolicyCreationPayload {
     InternalFundTransfer(Vec<u8>),
-    SpendingLimit(Vec<u8>),
+    SpendingLimit(SquadsSpendingLimitPolicyCreationPayload),
     SettingsChange(Vec<u8>),
     ProgramInteraction(SquadsProgramInteractionPolicyCreationPayload),
+}
+
+#[derive(BorshSerialize)]
+struct SquadsSpendingLimitPolicyCreationPayload {
+    mint: Pubkey,
+    source_account_index: u8,
+    time_constraints: SquadsTimeConstraints,
+    quantity_constraints: SquadsQuantityConstraints,
+    usage_state: Option<SquadsUsageState>,
+    destinations: Vec<Pubkey>,
+}
+
+#[derive(BorshSerialize)]
+struct SquadsTimeConstraints {
+    start: i64,
+    expiration: Option<i64>,
+    period: SquadsPeriodV2,
+    accumulate_unused: bool,
+}
+
+#[derive(BorshSerialize)]
+struct SquadsQuantityConstraints {
+    max_per_period: u64,
+    max_per_use: u64,
+    enforce_exact_quantity: bool,
+}
+
+#[derive(BorshSerialize)]
+struct SquadsUsageState {
+    remaining_in_period: u64,
+    last_reset: i64,
 }
 
 #[derive(BorshSerialize)]

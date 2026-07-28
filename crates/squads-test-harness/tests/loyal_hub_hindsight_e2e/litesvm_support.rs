@@ -652,7 +652,7 @@ fn apply_mock_kamino_accrual(
     accounts: MockKaminoReserveTokenAccounts,
     amount_raw: u64,
 ) {
-    set_spl_token_amount(svm, accounts.vault_collateral, amount_raw);
+    set_spl_token_amount(svm, accounts.reserve_collateral_supply, amount_raw);
     set_spl_mint_supply(svm, accounts.collateral_mint, amount_raw);
     if get_spl_token_amount(svm, accounts.reserve_liquidity_supply) < amount_raw {
         set_spl_token_amount(svm, accounts.reserve_liquidity_supply, amount_raw);
@@ -672,7 +672,7 @@ fn assert_route_state(
             0
         };
         assert_eq!(
-            get_spl_token_amount(svm, accounts.vault_collateral),
+            get_spl_token_amount(svm, accounts.reserve_collateral_supply),
             expected_collateral,
             "vault collateral mismatch for reserve {reserve_index}"
         );

@@ -52,3 +52,6 @@ yarn-error.log*
 next-env.d.ts
 
 AGENTS.override.md
+
+# personal linked worktrees
+/.infra-personal-clickhouse/
