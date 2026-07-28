@@ -110,8 +110,12 @@ zero opportunities after the eligible fleet is optimized, so its null latency
 percentiles cannot invalidate already bounded movement evidence.
 
 The queue must have no zero-broadcast signed row older than 5 minutes, no
-confirmation batch invariant loop, and no effect-ambiguous route. Worker
-heartbeats without this movement evidence are FAIL.
+confirmation batch invariant loop, no effect-ambiguous route, and zero database
+deadlocks during the source-bound movement window. The isolated database proof
+must also hold the per-vault readiness advisory fence, prove competing
+readiness writers wait, then prove both commit without increasing PostgreSQL's
+deadlock counter. Worker heartbeats or successful deadlock retries without this
+movement evidence are FAIL.
 
 ## Required 5: largest-account optimization
 

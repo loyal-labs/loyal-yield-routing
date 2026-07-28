@@ -50,6 +50,21 @@ async fn acquire_lookup_table_rollout_lock(
     Ok(())
 }
 
+async fn acquire_lookup_table_readiness_vault_lock(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    cluster: &str,
+    vault_id: VaultId,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-readiness:' || $1 || ':' || $2::TEXT, 0))",
+    )
+    .bind(cluster)
+    .bind(vault_id.as_i64())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum LookupTableDomainError {
     #[error("unknown {kind} value {value:?}")]
@@ -15832,6 +15847,10 @@ impl NeonSqlClient {
         input: LookupTableReadinessRecord,
     ) -> Result<LookupTableReadinessRecord, OrchestratorError> {
         let mut tx = self.pool().begin().await?;
+        // One vault can publish several overlapping route variants at once.
+        // Serialize that vault's readiness transactions before they acquire
+        // physical-table and readiness-row locks in different combinations.
+        acquire_lookup_table_readiness_vault_lock(&mut tx, &input.cluster, input.vault_id).await?;
         if !input.selected_table_ids.is_empty() {
             // Readiness writes are a fleet hot path. Serialize only against
             // lifecycle changes to the selected physical tables, in canonical

@@ -38,10 +38,12 @@ use loyal_yield_orchestrator::{
     LookupTableOperationEnqueue, LookupTableOperationKind, LookupTableOperationLease,
     LookupTableOperationRecord, LookupTableProvisionerBroadcastPermitResult,
     LookupTableProvisioningPlanPolicy, LookupTableProvisioningRequestUpsert,
-    LookupTableUsageLeaseBundle, LookupTableUsageLeaseKind, NeonSqlClient, NeonSqlConfig,
-    OrchestratorError, PackedShardPolicy, ReconciledReservePosition, ReconciledVaultState,
-    ReusableLookupTableInsert, SameMintRebalanceInput, SharedMarketCatalogUpsert,
-    SignedLookupTableTransaction, VaultId, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+    LookupTableReadinessRecord, LookupTableReadinessStatus, LookupTableRolloutMode,
+    LookupTableSelectionKind, LookupTableSimulationState, LookupTableUsageLeaseBundle,
+    LookupTableUsageLeaseKind, NeonSqlClient, NeonSqlConfig, OrchestratorError, PackedShardPolicy,
+    ReconciledReservePosition, ReconciledVaultState, ReusableLookupTableInsert,
+    SameMintRebalanceInput, SharedMarketCatalogUpsert, SignedLookupTableTransaction, VaultId,
+    ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -4055,6 +4057,100 @@ async fn run_database_checks(
     .fetch_one(fixture.client.pool())
     .await?;
 
+    let readiness_serialization_cluster = fixture.cluster("readiness_serialization");
+    let readiness_serialization_epoch =
+        fixture.seed_epoch(&readiness_serialization_cluster).await?;
+    let readiness_serialization_opportunity = fixture
+        .seed_opportunity(
+            &readiness_serialization_cluster,
+            readiness_serialization_epoch,
+            "readiness-serialization",
+            "waiting_alt",
+            1_000,
+        )
+        .await?;
+    let readiness_serialization_vault_id: i64 = sqlx::query_scalar(
+        "SELECT vault_id FROM loyal_yield.rebalance_opportunities WHERE id = $1",
+    )
+    .bind(readiness_serialization_opportunity.id)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let mut readiness_guard = fixture.client.pool().begin().await?;
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-readiness:' || $1 || ':' || $2::TEXT, 0))",
+    )
+    .bind(&readiness_serialization_cluster)
+    .bind(readiness_serialization_vault_id)
+    .execute(&mut *readiness_guard)
+    .await?;
+    let readiness_task = |ordinal: u8| {
+        let client = fixture.client.clone();
+        let cluster = readiness_serialization_cluster.clone();
+        let vault_id = VaultId(readiness_serialization_vault_id);
+        let route_fingerprint = format!("{}:readiness-route:{ordinal}", fixture.prefix);
+        let requirements_fingerprint =
+            format!("{}:readiness-requirements:{ordinal}", fixture.prefix);
+        tokio::spawn(async move {
+            let now = Utc::now();
+            client
+                .upsert_lookup_table_readiness(LookupTableReadinessRecord {
+                    cluster,
+                    vault_id,
+                    route_fingerprint,
+                    requirements_fingerprint,
+                    route_kind: "fleet_verifier_readiness_serialization".to_owned(),
+                    source_reserve: None,
+                    target_reserve: None,
+                    manifest_id: None,
+                    shared_family_id: None,
+                    vault_binding_id: None,
+                    readiness_state: LookupTableReadinessStatus::Incomplete,
+                    required_address_count: 0,
+                    covered_address_count: 0,
+                    missing_addresses: json!([]),
+                    legacy_table_ids: Vec::new(),
+                    reusable_table_ids: Vec::new(),
+                    compiled_message_size: None,
+                    packet_limit: Some(1232),
+                    observed_slot: Some(90_000 + i64::from(ordinal)),
+                    observed_at: now,
+                    selection_kind: Some(LookupTableSelectionKind::Blocked),
+                    fallback_reason: Some("fleet_verifier_serialization".to_owned()),
+                    rollout_mode: Some(LookupTableRolloutMode::ReusableOnly),
+                    selected_table_ids: Vec::new(),
+                    selected_table_count: Some(0),
+                    packet_fits: None,
+                    simulation_state: Some(LookupTableSimulationState::NotRun),
+                    simulation_units_consumed: None,
+                    simulation_error: None,
+                    updated_at: now,
+                })
+                .await
+        })
+    };
+    let first_readiness_writer = readiness_task(1);
+    let second_readiness_writer = readiness_task(2);
+    tokio::time::sleep(Duration::from_millis(75)).await;
+    let readiness_writers_waited =
+        !first_readiness_writer.is_finished() && !second_readiness_writer.is_finished();
+    readiness_guard.commit().await?;
+    first_readiness_writer.await??;
+    second_readiness_writer.await??;
+    let serialized_readiness_row_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.lookup_table_route_readiness_current WHERE cluster = $1 AND vault_id = $2",
+    )
+    .bind(&readiness_serialization_cluster)
+    .bind(readiness_serialization_vault_id)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    sqlx::query(
+        "DELETE FROM loyal_yield.lookup_table_route_readiness_current WHERE cluster = $1 AND vault_id = $2",
+    )
+    .bind(&readiness_serialization_cluster)
+    .bind(readiness_serialization_vault_id)
+    .execute(fixture.client.pool())
+    .await?;
+
     let empty_status_cluster = fixture.cluster("empty_status");
     fixture
         .client
@@ -7551,6 +7647,8 @@ async fn run_database_checks(
         && bounded_accrual_preserves_discovery_and_binds_signed_decision
         && published_economics_bind_signed_decision
         && reconciled_volume_updates_exactly_once
+        && readiness_writers_waited
+        && serialized_readiness_row_count == 2
         && database_deadlocks == 0;
 
     Ok(DatabaseEvidence {
@@ -7665,8 +7763,21 @@ async fn run_database_checks(
                         "preSendTargetCapacityReleased": pre_send_terminal_failure_released_capacity,
                         "reconciledCapacityStrictTelemetryFence": reconciled_capacity_retention_passed,
                         "preexistingNewerTelemetryRelease": preexisting_newer_telemetry_releases_on_reconcile,
+                        "readinessWritersWaitedOnPerVaultFence": readiness_writers_waited,
+                        "serializedReadinessRowCount": serialized_readiness_row_count,
                         "databaseDeadlocks": database_deadlocks,
                     },
+                }),
+            ),
+            subcheck(
+                "per_vault_readiness_writes_serialize_without_database_deadlocks",
+                readiness_writers_waited
+                    && serialized_readiness_row_count == 2
+                    && database_deadlocks == 0,
+                json!({
+                    "writersWaitedOnPerVaultFence": readiness_writers_waited,
+                    "committedReadinessRows": serialized_readiness_row_count,
+                    "databaseDeadlocks": database_deadlocks,
                 }),
             ),
             subcheck(
