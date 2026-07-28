@@ -3069,7 +3069,6 @@ async fn collect_position_evidence(pool: &PgPool) -> Result<Value, Box<dyn Error
             FROM main_positions position
             JOIN main_usdc_cohort cohort ON cohort.vault_id = position.vault_id
             WHERE position.routeable_liquidity_amount_raw IS NULL
-               OR position.routeable_liquidity_amount_raw <= 0
         ),
         global_main AS MATERIALIZED (
             SELECT position.*
@@ -3080,7 +3079,6 @@ async fn collect_position_evidence(pool: &PgPool) -> Result<Value, Box<dyn Error
             SELECT position.*
             FROM main_positions position
             WHERE position.routeable_liquidity_amount_raw IS NULL
-               OR position.routeable_liquidity_amount_raw <= 0
         )
         SELECT
             (SELECT count(*)::BIGINT FROM main_usdc_cohort) AS cohort_vault_count,
