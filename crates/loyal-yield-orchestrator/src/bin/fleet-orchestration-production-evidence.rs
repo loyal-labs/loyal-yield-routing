@@ -16,7 +16,8 @@ use chrono::{DateTime, Utc};
 use loyal_actions::{KAMINO_MAIN_MARKET, KAMINO_MAIN_USDC_RESERVE, USDC_MINT};
 use loyal_yield_orchestrator::{
     supported_stable_mints, AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
-    ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY, STANDARD_POLICY_AUTHORITY,
+    MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+    STANDARD_POLICY_AUTHORITY,
 };
 use reqwest::Client;
 use serde::Serialize;
@@ -4110,20 +4111,37 @@ fn execution_string<'a>(plan: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 fn same_mint_route_amount_evidence_exact(movement: &MovementRow) -> bool {
-    let amount = Some(movement.amount_raw);
+    let published_amount = Some(movement.amount_raw);
+    let executed_amount = Some(movement.decision_amount_raw);
     let source_collateral = movement
         .pre_source_amount_raw
         .filter(|source_collateral| *source_collateral > 0);
-    [&movement.execution_plan, &movement.decision_execution_plan]
-        .into_iter()
-        .all(|plan| {
-            execution_string(plan, "route_amount_semantics")
-                == Some(ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY)
-                && execution_string(plan, "source_amount_semantics")
-                    == Some(AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED)
-                && execution_i64(plan, "source_collateral_amount_raw") == source_collateral
-                && execution_i64(plan, "redeemable_source_liquidity_amount_raw") == amount
-        })
+    let bounded_positive_accrual = movement.amount_raw > 0
+        && movement.decision_amount_raw >= movement.amount_raw
+        && i128::from(movement.decision_amount_raw - movement.amount_raw) * 1_000_000
+            <= i128::from(movement.amount_raw)
+                * i128::from(MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM);
+    bounded_positive_accrual
+        && execution_string(&movement.execution_plan, "route_amount_semantics")
+            == Some(ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY)
+        && execution_string(&movement.decision_execution_plan, "route_amount_semantics")
+            == Some(ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY)
+        && execution_string(&movement.execution_plan, "source_amount_semantics")
+            == Some(AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED)
+        && execution_string(&movement.decision_execution_plan, "source_amount_semantics")
+            == Some(AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED)
+        && execution_i64(&movement.execution_plan, "source_collateral_amount_raw")
+            == source_collateral
+        && execution_i64(
+            &movement.decision_execution_plan,
+            "source_collateral_amount_raw",
+        ) == source_collateral
+        && execution_i64(&movement.execution_plan, "redeemable_source_liquidity_amount_raw")
+            == published_amount
+        && execution_i64(
+            &movement.decision_execution_plan,
+            "redeemable_source_liquidity_amount_raw",
+        ) == executed_amount
 }
 
 fn idle_route_amount_evidence_exact(movement: &MovementRow) -> bool {
@@ -4221,7 +4239,7 @@ fn movement_json(
         && execution_string(&movement.execution_plan, "liquidity_mint")
             == Some(movement.liquidity_mint.as_str())
         && execution_i64(&movement.decision_execution_plan, "amount_raw")
-            == Some(movement.amount_raw)
+            == Some(movement.decision_amount_raw)
         && execution_i64(&movement.execution_plan, "amount_raw") == Some(movement.amount_raw);
     let idle_token_account =
         execution_string(&movement.decision_execution_plan, "idle_token_account");
@@ -4346,7 +4364,11 @@ fn movement_json(
         && route_plan_identity_exact
         && movement.decision_target_reserve == movement.target_reserve
         && movement.decision_liquidity_mint == movement.liquidity_mint
-        && movement.decision_amount_raw == movement.amount_raw;
+        && match movement.route_kind.as_str() {
+            "same_mint" => same_mint_route_amount_evidence_exact(movement),
+            "idle_vault_deposit" => movement.decision_amount_raw == movement.amount_raw,
+            _ => false,
+        };
     let idle_source_decreased = pre_idle_source_amount_raw
         .zip(post_idle_source_amount_raw)
         .is_some_and(|(before, after)| {
@@ -4581,6 +4603,7 @@ fn movement_json(
             "decisionLiquidityMint": movement.decision_liquidity_mint,
             "amountRaw": movement.amount_raw,
             "decisionAmountRaw": movement.decision_amount_raw,
+            "executedAmountRaw": movement.decision_amount_raw,
             "plannerExecutionPlan": movement.execution_plan,
             "decisionExecutionPlan": movement.decision_execution_plan,
             "routeIdentityExact": route_identity_exact,
@@ -4887,7 +4910,7 @@ async fn reconciled_volume_snapshot(
     let row = sqlx::query(
         r#"
         SELECT count(*)::BIGINT AS movement_count,
-               COALESCE(sum(opportunity.amount_raw), 0)::BIGINT AS amount_raw,
+               COALESCE(sum(decision.amount_raw), 0)::BIGINT AS amount_raw,
                COALESCE(sum(opportunity.principal_usd_micros), 0)::BIGINT
                    AS principal_usd_micros,
                max(submission.reconciled_at) AS newest_reconciled_at,
@@ -4900,6 +4923,8 @@ async fn reconciled_volume_snapshot(
         FROM loyal_yield.signed_route_submissions submission
         JOIN loyal_yield.rebalance_opportunities opportunity
           ON opportunity.id = submission.opportunity_id
+        JOIN loyal_yield.rebalance_decisions decision
+          ON decision.id = submission.decision_id
         WHERE submission.cluster = $1
           AND submission.submission_state = 'reconciled'
         "#,
@@ -5017,7 +5042,8 @@ async fn collect_movement_evidence(
         }
         if movement.submission_state == "reconciled" {
             reconciled_movement_count += 1;
-            reconciled_amount_raw = reconciled_amount_raw.saturating_add(movement.amount_raw);
+            reconciled_amount_raw =
+                reconciled_amount_raw.saturating_add(movement.decision_amount_raw);
             reconciled_principal_usd_micros =
                 reconciled_principal_usd_micros.saturating_add(movement.principal_usd_micros);
             match movement.route_kind.as_str() {
@@ -5037,9 +5063,9 @@ async fn collect_movement_evidence(
             if movement.route_kind == "same_mint"
                 && movement.source_reserve.as_deref() == Some(main_reserve.as_str())
             {
-                main_outflow_raw += i128::from(movement.amount_raw);
+                main_outflow_raw += i128::from(movement.decision_amount_raw);
                 if baseline_vaults.contains(&movement.vault_id) {
-                    baseline_main_outflow_raw += i128::from(movement.amount_raw);
+                    baseline_main_outflow_raw += i128::from(movement.decision_amount_raw);
                 }
             }
             if matches!(
@@ -5047,9 +5073,9 @@ async fn collect_movement_evidence(
                 "same_mint" | "idle_vault_deposit"
             ) && movement.target_reserve == main_reserve
             {
-                main_inflow_raw += i128::from(movement.amount_raw);
+                main_inflow_raw += i128::from(movement.decision_amount_raw);
                 if baseline_vaults.contains(&movement.vault_id) {
-                    baseline_main_inflow_raw += i128::from(movement.amount_raw);
+                    baseline_main_inflow_raw += i128::from(movement.decision_amount_raw);
                 }
             }
         }

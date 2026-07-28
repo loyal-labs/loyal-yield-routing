@@ -62,6 +62,13 @@ take another snapshot. PASS only if:
 - every counted row has one unique submission, decision, opportunity, and
   transaction signature.
 
+`amount_raw` comes from the executed decision. The opportunity retains the
+immutable published amount and principal used for discovery and ranking. For a
+same-mint route, ordinary positive reserve accrual may increase the final
+decision amount by at most the existing 100 ppm queue bound. The verifier must
+prove the planner plan exactly matches the published amount, the signed decision
+plan exactly matches the executed amount, and the delta stays within that bound.
+
 The production evidence JSON must expose the current totals and baseline delta,
 including count, raw amount, principal USD micros, and newest reconciliation
 time.

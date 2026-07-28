@@ -3215,11 +3215,13 @@ async fn reconciled_volume_for_cluster(
     Ok(sqlx::query_as(
         r#"
         SELECT count(*)::BIGINT,
-               COALESCE(sum(opportunity.amount_raw), 0)::BIGINT,
+               COALESCE(sum(decision.amount_raw), 0)::BIGINT,
                COALESCE(sum(opportunity.principal_usd_micros), 0)::BIGINT
         FROM loyal_yield.signed_route_submissions submission
         JOIN loyal_yield.rebalance_opportunities opportunity
           ON opportunity.id = submission.opportunity_id
+        JOIN loyal_yield.rebalance_decisions decision
+          ON decision.id = submission.decision_id
         WHERE submission.cluster = $1
           AND submission.submission_state = 'reconciled'
         "#,
@@ -6500,7 +6502,13 @@ async fn run_database_checks(
         "signed-route",
     )
     .await?;
-    let same_mint_input = same_mint_input_for_lease(&signed_route_lease)?;
+    let mut same_mint_input = same_mint_input_for_lease(&signed_route_lease)?;
+    let published_amount_raw = same_mint_input.amount_raw;
+    let accrued_amount_raw = published_amount_raw
+        .checked_add((published_amount_raw / 1_000_000).max(1))
+        .ok_or("signed fixture accrued amount overflowed")?;
+    same_mint_input.amount_raw = accrued_amount_raw;
+    same_mint_input.redeemable_source_liquidity_amount_raw = Some(accrued_amount_raw);
     let (prepared, persisted) = fixture
         .client
         .prepare_same_mint_rebalance_with_signed_submission(
@@ -6510,9 +6518,31 @@ async fn run_database_checks(
             signed_input,
         )
         .await?;
+    let immutable_opportunity = fixture
+        .client
+        .rebalance_opportunity(signed_route_lease.opportunity.id)
+        .await?
+        .ok_or("atomic signed fixture opportunity disappeared")?;
     let decision_id = prepared
         .decision_id
         .ok_or("atomic signed fixture did not return a decision")?;
+    let (durable_decision_amount_raw, durable_decision_plan): (i64, Value) = sqlx::query_as(
+        "SELECT amount_raw, execution_plan FROM loyal_yield.rebalance_decisions WHERE id = $1",
+    )
+    .bind(decision_id.as_i64())
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let bounded_accrual_preserves_discovery_and_binds_signed_decision =
+        immutable_opportunity.amount_raw == published_amount_raw
+            && durable_decision_amount_raw == accrued_amount_raw
+            && durable_decision_plan
+                .get("amount_raw")
+                .and_then(Value::as_i64)
+                == Some(accrued_amount_raw)
+            && durable_decision_plan
+                .get("redeemable_source_liquidity_amount_raw")
+                .and_then(Value::as_i64)
+                == Some(accrued_amount_raw);
     let decision_linked = persisted.decision_id == Some(decision_id);
     let signed_evidence_immutable = sqlx::query(
         "UPDATE loyal_yield.signed_route_submissions SET message_hash = 'tampered' WHERE id = $1",
@@ -6845,8 +6875,7 @@ async fn run_database_checks(
     let reconciled_volume_updates_exactly_once = reconciled_submission.state.as_str()
         == "reconciled"
         && reconciled_volume_after.0 == reconciled_volume_before.0 + 1
-        && reconciled_volume_after.1
-            == reconciled_volume_before.1 + signed_route_lease.opportunity.amount_raw
+        && reconciled_volume_after.1 == reconciled_volume_before.1 + accrued_amount_raw
         && reconciled_volume_after.2
             == reconciled_volume_before.2 + signed_route_lease.opportunity.principal_usd_micros
         && replayed_reconciliation.is_err()
@@ -7495,6 +7524,7 @@ async fn run_database_checks(
         && reconciled_capacity_retention_passed
         && preexisting_newer_telemetry_releases_on_reconcile
         && poison_row_isolated_and_recovered
+        && bounded_accrual_preserves_discovery_and_binds_signed_decision
         && reconciled_volume_updates_exactly_once
         && database_deadlocks == 0;
 
@@ -7643,6 +7673,17 @@ async fn run_database_checks(
                     "capacityState": poison_capacity_state,
                     "opportunityState": poison_opportunity_state,
                     "decisionState": poison_decision_state,
+                }),
+            ),
+            subcheck(
+                "bounded_accrual_preserves_discovery_and_binds_signed_decision",
+                bounded_accrual_preserves_discovery_and_binds_signed_decision,
+                json!({
+                    "publishedAmountRaw": published_amount_raw,
+                    "refreshedAmountRaw": accrued_amount_raw,
+                    "durableOpportunityAmountRaw": immutable_opportunity.amount_raw,
+                    "durableDecisionAmountRaw": durable_decision_amount_raw,
+                    "durableDecisionExecutionPlan": durable_decision_plan,
                 }),
             ),
             subcheck(
