@@ -46,6 +46,72 @@ the LOYAL and USDC return policies. Run `inspect` and `verify-all` before relyin
 on this section because on-chain signer state can change after documentation is
 published.
 
+## Mainnet transaction evidence
+
+The links below are the complete finalized mainnet trail for the current canary
+vault. They come from
+[`autonomous-treasury-vault-mainnet-state.json`](../../docs/plans/autonomous-treasury-vault-mainnet-state.json),
+and `verify-all` independently checks every recorded signature and finalized
+slot against RPC before it prints `overall_verdict=PASS`.
+
+Solscan may label generated or nested Squads instructions differently as its IDL
+support changes. Verify the transaction result, slot, signer set, program IDs,
+account addresses, inner instructions, and pre/post balances rather than relying
+only on an explorer's instruction label.
+
+### Smart Account and policy creation
+
+| Step | Finalized transaction | Slot | What to verify |
+| --- | --- | ---: | --- |
+| Create Squads Smart Account | [3rgm…FB7L](https://solscan.io/tx/3rgmeb6okghkbbeZcG2d5YAjpCKkCzxvSGUS9eRzvLPCr76mAFT5PHXHvDCgPTcvCahRPG7zhiSMyPM6GsfMFB7L) | `435664493` | Creates Settings `EEA8…Ppmvw` and vault `F7zu…tYu3e` |
+| Create Kamino operations policy | [2Fo2…hwRy](https://solscan.io/tx/2Fo2bHtSz4SiUe73Wq1J636TWGi1CHcosY3EDdinhfVMev7QSu8gNZG4q2o8QPYG5CwVHp7SHgtVzmtWRiDDhwRy) | `435667857` | Installs policy seed `1` for approved deposits and withdrawals |
+| Create Kamino init-obligation policy | [BPmu…v5o](https://solscan.io/tx/BPmuN28sok8mSZeUxwk7szFLmKcrW6VudiEcMpFHYnoTojRMoKShSfshPrCpDjEqcBF9rE7xjmQn8nfQGUg7v5o) | `435667975` | Installs policy seed `2` for the two approved obligations |
+| Create Meteora add-liquidity policy | [4GSN…AxqP](https://solscan.io/tx/4GSNwXcRLNaUWe5EBbCCChCX2tMMHqwnbM75rzZS8rXvVpsm62cFJEkf7yxwYzGFeJayzyh9AjBED51iL27QAxqP) | `435676576` | Installs policy seed `3` for the fixed LOYAL/USDC pool |
+| Create Meteora remove-liquidity policy | [62gf…L3ZX](https://solscan.io/tx/62gfWACioUdx78qaFLxtjK5kYqwy7NoRqxc7N6YTNgFE74LemPqsqimw2h5Pyon83byGFi9zagUcCCS8dE3YL3ZX) | `435676686` | Installs policy seed `4`; it does not authorize position closure |
+| Create Meteora claim-fees policy | [4swx…W4f8K](https://solscan.io/tx/4swxiiB69BLAteHv62HgEW5x21AufPRy3JW6jQzEAq7qWnpSJPrJrbMETSZAb2xkdJh5dghZU1EET3NHSzyW4f8K) | `435676792` | Installs policy seed `5` with vault-only fee destinations |
+| Create LOYAL return policy | [29Zf…YDR2e](https://solscan.io/tx/29ZfuPzahTH7h2vP2BQeoKfk96j9cGcjfswUV3rCZrNs6SWCPXFnhT5JYZ5rj34S16B33LQn5qJpCTroJm9YDR2e) | `435681682` | Installs policy seed `6`, LOYAL mint, Mother-only destination |
+| Create USDC return policy | [63jY…H39FB](https://solscan.io/tx/63jYGMbXmpoWrtHJVp2UgdXi4ab1ed8RhVFhjct8GXZ8CJKocsYNaa2EpZyAhAi4piFuYeoQCbNjX3XaeWSH39FB) | `435681753` | Installs policy seed `7`, USDC mint, Mother-only destination |
+
+### Kamino setup and delegated execution
+
+These transactions are in execution order. Reserve `0` is
+`AYL4…GVR2Z`; reserve `1` is `D6q6…gJ59`.
+
+| Step | Finalized transaction | Slot | What to verify |
+| --- | --- | ---: | --- |
+| Create vault USDC account and UserMetadata | [4sbD…ven6](https://solscan.io/tx/4sbDSBSTtbqvx2npJbU9uBQ3qB9er5H8bh4YVubLGmkkRtQKK9FB6ECm4F2TWNwur5nFH7umx6L7nodS4SZSven6) | `435669390` | Funds the vault with `1,000,000` raw USDC and creates persistent metadata |
+| Initialize obligation `0` | [rSec…RiAg](https://solscan.io/tx/rSec96LAJbGHxXW2FbhgxbAYTmW9hXGgnq9iRjNbiNRU8fNQa14RX47cyeF9Sw5HawDXL74aCorJgt9FbM6RiAg) | `435669703` | Delegated execution through policy seed `2` |
+| Initialize obligation `1` | [47JU…NZwF](https://solscan.io/tx/47JUVsERuahegT34HhcBNm4Nwn57EjnwdGTMeuNGhqPhNCxb4KmFtbsqvg1sSwtDXmDc8EVZNVBoDGwaEzWrNZwF) | `435669781` | Delegated execution through policy seed `2` |
+| Create persistent farm-user accounts | [26XX…sj4C](https://solscan.io/tx/26XXGxJqN9XA2ccS49dYYvHev844NHG6Vjp1J5sd1aX4vBeoKbXcG37ujUtwBveQFECTJ1C5ZG1v6GgJT9cUsj4C) | `435670192` | Creates both farm-user accounts before value movement |
+| Deposit to reserve `0` | [5Dap…FkwU](https://solscan.io/tx/5DapUJsxSGjLHNTfBPPGJhCPm3wQV4GSzMzksKA54q7DYXghtEHzidCJ3rzWHyXqWhZiyKwchX7XwM2VhemUFkwU) | `435670774` | Vault USDC `1,000,000 -> 900,000`; obligation collateral `0 -> 95,407` |
+| Partially withdraw reserve `0` | [jFku…cnxt](https://solscan.io/tx/jFkuacLed3hYyChtmn4ruGH8tQ97uxVuDUAw8mwogRWDmHJNGPYeTQZi127LWL5DTiZdx97G2tCzw4bp7p4cnxt) | `435670880` | Vault USDC `900,000 -> 949,999`; collateral `95,407 -> 47,704` |
+| Fully withdraw reserve `0` | [5xjb…t5Uvj](https://solscan.io/tx/5xjbqaFdTvihkp3sMt4huk1bbRH9mG8K1GCoQ2DSGzHo1Ng3yYvNTK8o3DjSmzdiJhRjnvvG5mTcoL62wW9t5Uvj) | `435670972` | Returns remaining USDC, closes obligation, refunds `24,165,120` lamports to vault |
+| Reinitialize obligation `0` | [2KPc…LPDCu](https://solscan.io/tx/2KPc97xpz2GwgcXfmfAopsqkkLqGJR6dDL3fBmnEtxeuJMj5neupLiEPXJw4D1jR3LZiadBUzjnjDvd2mKuLPDCu) | `435671286` | Proves the delegated init policy can restore the closed account |
+| Deposit to reserve `1` | [5f5j…jw6v6](https://solscan.io/tx/5f5jiWapx9VNL1jcnjdmd4KZC6q68jyzenk6WScu1QFipvwjjrBPfvWWE86rKzZVk5PVoVb21R1jr1YqhtVjw6v6) | `435671395` | Vault USDC `999,999 -> 899,999`; obligation collateral `0 -> 83,812` |
+| Partially withdraw reserve `1` | [pcM3…6gty](https://solscan.io/tx/pcM3feiNyjiYsy3E6Vd7gBuX64Jcb7TgaT99xMfrKjYvRMwLhar6pRqxtQSwwKpUtwFfSpHzRUkvavvmWNj6gty) | `435671480` | Vault USDC `899,999 -> 949,998`; collateral `83,812 -> 41,906` |
+| Fully withdraw reserve `1` | [2pyZ…M9zu](https://solscan.io/tx/2pyZPcAv66zj3oQRsdMuJg3SU8WgfyYu8H8xmrVHUU3q9B8RQi3ejTixB3L222JHxaB5hJyE1tPvcp58q6FkM9zu) | `435671565` | Returns remaining USDC, closes obligation, refunds `24,165,120` lamports to vault |
+| Reinitialize obligation `1` | [2KnN…k5FR](https://solscan.io/tx/2KnNa1f5YbQRUGYAjW9jWBHGFc18JNjNC7uNFdsxucWB3aQme9DGeRYTwxZSL8WLjeAmjo3sNZaprrf9iLF9k5FR) | `435671650` | Restores the second persistent zero-deposit obligation |
+
+### Meteora setup and delegated execution
+
+| Step | Finalized transaction | Slot | What to verify |
+| --- | --- | ---: | --- |
+| Acquire deployment-funded LOYAL dust | [mZN1…5tTr](https://solscan.io/tx/mZN1UyqrmzFDfwEMazqXtaByymoNsoTHD32sJPrGTFyt8Dibaf94rnQ1ubVGUyJXEhUoY7i85uSNtGGFRf75tTr) | `435676056` | Direct fixed-pool setup swap: `1,000` raw USDC for `7,553` raw LOYAL |
+| Create vault LOYAL account and PositionV2 | [5a4P…d3oQ](https://solscan.io/tx/5a4P7N7jcfiuRUA3vUK6oDnPAZ1x3dptnApryLCGV2mS745Xw3SP1HzMJZ2UH5nQATVgLuymfkQsFmzyF7hsd3oQ) | `435676421` | Creates the persistent position, transfers `5,000` raw LOYAL, leaves liquidity and fees at zero |
+| Add liquidity with range A | [5A9L…Uei3](https://solscan.io/tx/5A9LamN9rXnaNH4rQmSvFs4ndUjcFPk5g41kgfQfkgS5KK27fahSbbVhwozowdnXXgY51WMrvhyitG51EYrQUei3) | `435677665` | Delegated add for `-207..=-199`; pool receives `997` LOYAL and `135` USDC raw |
+| Remove 100% of range A | [5DGC…SNh6](https://solscan.io/tx/5DGCxGYnQrPjihAmfF2bb14ogNwisfYDbopFq5mx7DtE1EiUNZD1b6Ece961xZfukBFLv7iEHtQkEHo9DMwvSNh6) | `435678149` | Returns the exact principal while the position and its rent persist |
+| Add liquidity with range B | [5tj5…bCzV](https://solscan.io/tx/5tj5Mwj9CqBqfKLQq6FkVWV9NTc7Dn5xukQVmSHByaRi6CCwfsMSygEKUikqAS4KAmrqJvKeqkgUcCAL6ycVbCzV) | `435678273` | Delegated add for different range `-211..=-195`; position has 17 active bins |
+| Generate a visible fee | [3Fdc…KXFP](https://solscan.io/tx/3FdcS5sKLMZFrcx1wyaoKXcxVAJYcET1uhhbyfHHxwPjoh9MQQSmQmLPcAMzQyRpHNDaWr4WkyFoR4CK8WxTKXFP) | `435678802` | Deployment-controlled `100` raw USDC swap generates `6` raw USDC in quoted fees |
+| Remove 100% of range B | [3Lne…ggPQ](https://solscan.io/tx/3LneqLDQcv4BNfdEGZJpq4B1FiJZ1oycfHUKFCbEa52rrLAWuzX3MUMoNJGNLksw5jJRu73Ecx7Y2Hhje6EyggPQ) | `435678997` | Liquidity returns to zero; position records `6` raw pending USDC fees and stays open |
+| Claim all settled fees | [59NR…YzXV](https://solscan.io/tx/59NR6kDEURYxpRcPtPptCmx5EYun7tbLVyUDgk1SgJP7AgiNAuCp6Mxsw3DV2bEhjh3HRAuWfe4PpVo7vkYjYzXV) | `435679335` | Moves exactly `6` raw USDC to the vault; pending fees return to zero |
+
+### Return-to-Mother execution
+
+| Step | Finalized transaction | Slot | What to verify |
+| --- | --- | ---: | --- |
+| Return LOYAL dust | [3Sw4…UoxKx](https://solscan.io/tx/3Sw4KhdsW4qJEzyCCvZFLM8dPcjc1raiTzuTdHVRgjD3VV3jv1yRDRU2S7jUTGLSLXrMvo3knsTzCQvZXaUUoxKx) | `435681841` | SpendingLimit sends `1` raw LOYAL: vault `4,346 -> 4,345`, Mother `6,751,866,978,094 -> 6,751,866,978,095` |
+| Return realized USDC fees | [2UhK…HLyj](https://solscan.io/tx/2UhK9Nw8vRb2pab87FTcDZmY5Gty1p4GfRK35cB5vUNLR73ywQzHVqznURk7cyGggvKT7vTZHV9dgbpcXPHRHLyj) | `435681933` | SpendingLimit sends all `6` raw fee units: vault `1,000,097 -> 1,000,091`, Mother `41,000 -> 41,006` |
+
 ## Security model
 
 An allowed transaction passes three separate checks. Before policy creation, the
