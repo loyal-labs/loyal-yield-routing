@@ -38,6 +38,9 @@ async fn main() -> VerifyResult<()> {
         match scenario.as_str() {
             "unsafe" => verify_unsafe_multiple_operation_owners(&client).await?,
             "signed" => verify_signed_operation_reconciliation(&client).await?,
+            "repaired-terminal-successor" => {
+                verify_repaired_terminal_successor_supersession(&client).await?
+            }
             other => return fail(format!("unknown focused verifier scenario {other}")),
         }
         pool.close().await;
@@ -303,6 +306,128 @@ async fn verify_signed_operation_reconciliation(client: &NeonSqlClient) -> Verif
         "signed reconciliation left a duplicate no-operation binding in flight",
     )?;
     println!("PASS planner_signed_operation_preserved_for_reconciliation");
+    Ok(())
+}
+
+async fn verify_repaired_terminal_successor_supersession(
+    client: &NeonSqlClient,
+) -> VerifyResult<()> {
+    let row = loyal_yield_orchestrator::sqlx::query(
+        r#"
+        SELECT family.id AS family_id,
+               vault.id AS vault_id,
+               old_binding.id AS old_binding_id,
+               new_manifest.id AS new_manifest_id
+        FROM loyal_yield.lookup_table_families family
+        JOIN loyal_yield.lookup_table_manifests old_manifest
+          ON old_manifest.family_id = family.id
+         AND old_manifest.subject_key = 'repaired-terminal-old'
+        JOIN loyal_yield.lookup_table_manifests new_manifest
+          ON new_manifest.family_id = family.id
+         AND new_manifest.subject_key = 'repaired-terminal-new'
+         AND new_manifest.vault_id = old_manifest.vault_id
+        JOIN loyal_yield.managed_vaults vault
+          ON vault.id = old_manifest.vault_id
+        JOIN loyal_yield.lookup_table_vault_bindings old_binding
+          ON old_binding.manifest_id = old_manifest.id
+         AND old_binding.lifecycle_state IN ('preparing', 'warming')
+        WHERE family.cluster = 'reusable_alt_inflight_local'
+        "#,
+    )
+    .fetch_one(client.pool())
+    .await?;
+    let family_id: i64 = row.try_get("family_id")?;
+    let vault_id = VaultId(row.try_get("vault_id")?);
+    let old_binding_id: i64 = row.try_get("old_binding_id")?;
+    let new_manifest_id: i64 = row.try_get("new_manifest_id")?;
+    let desired_addresses = loyal_yield_orchestrator::sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT address
+        FROM loyal_yield.lookup_table_manifest_addresses
+        WHERE manifest_id = $1
+        ORDER BY ordinal
+        "#,
+    )
+    .bind(new_manifest_id)
+    .fetch_all(client.pool())
+    .await?
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    let request = AtomicVaultAllocationRequest {
+        cluster: "reusable_alt_inflight_local".to_owned(),
+        family_id,
+        vault_id,
+        manifest_id: new_manifest_id,
+        binding_ordinal: 0,
+        desired_addresses,
+        policy: PackedShardPolicy {
+            hard_capacity: 64,
+            largest_atomic_expansion: 8,
+            safety_margin: 4,
+            per_vault_growth_reservation: 0,
+            max_vault_cohort: 8,
+        },
+        next_generation: 0,
+        next_shard_ordinal: 42,
+        operation_context: json!({
+            "source": "repaired_terminal_successor_verifier",
+            "recent_slot": 500
+        }),
+        estimated_fee_lamports: None,
+        estimated_rent_lamports: None,
+        max_extension_addresses: 8,
+    };
+
+    let result = client
+        .allocate_vault_binding_and_queue_operation(request)
+        .await?;
+    let (binding, operations) = match result {
+        AtomicVaultAllocationResult::BindingReserved {
+            binding,
+            operations,
+            ..
+        }
+        | AtomicVaultAllocationResult::CreateQueued {
+            binding,
+            operations,
+            ..
+        } => (binding, operations),
+        other => {
+            return fail(format!(
+                "repaired-terminal supersession returned unexpected allocation: {other:?}"
+            ))
+        }
+    };
+    let operation_states = operations
+        .iter()
+        .map(|operation| operation.operation_state.as_str())
+        .collect::<Vec<_>>();
+    ensure(
+        binding.id != old_binding_id
+            && binding.manifest_id == new_manifest_id
+            && operations.iter().all(|operation| {
+                !matches!(
+                    operation.operation_state,
+                    LookupTableOperationStatus::PermanentFailure
+                        | LookupTableOperationStatus::Cancelled
+                )
+            }),
+        format!(
+            "repaired terminal ancestor poisoned supersession: returned binding {}, manifest {}, states {:?}",
+            binding.id, binding.manifest_id, operation_states
+        ),
+    )?;
+    let old_state: String = loyal_yield_orchestrator::sqlx::query_scalar(
+        "SELECT lifecycle_state FROM loyal_yield.lookup_table_vault_bindings WHERE id = $1",
+    )
+    .bind(old_binding_id)
+    .fetch_one(client.pool())
+    .await?;
+    ensure(
+        old_state == "failed",
+        format!("superseded repaired binding remained {old_state}"),
+    )?;
+    println!("PASS planner_repaired_terminal_successor_does_not_poison_supersession");
     Ok(())
 }
 

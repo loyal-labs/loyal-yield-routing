@@ -68,6 +68,12 @@ row IDs or write to a production database.
 - A signed operation must remain attached to its canonical binding and be
   returned to the normal finalized-chain reconciliation path; it must never be
   discarded or relabeled as a safe stale row.
+- An append-only terminal operation recorded in
+  `lookup_table_terminal_repair_operations` must remain as audit history but
+  must not be classified or returned as an unresolved current operation. A
+  completed finalized/reconciled retry successor must remain effective
+  evidence, allowing its superseded in-flight binding to fail and planning for
+  the new desired manifest to continue in the same transaction.
 - A completed/finalized canonical binding must be reused so activation can
   continue.
 

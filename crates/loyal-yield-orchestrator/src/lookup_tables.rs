@@ -12172,9 +12172,15 @@ async fn reconcile_in_flight_vault_bindings_in_tx(
         .collect::<Vec<_>>();
     let operation_rows = sqlx::query(
         r#"
-        SELECT * FROM loyal_yield.lookup_table_operations
-        WHERE binding_id = ANY($1)
-        ORDER BY binding_id, created_at, id
+        SELECT operation.*
+        FROM loyal_yield.lookup_table_operations operation
+        WHERE operation.binding_id = ANY($1)
+          AND NOT EXISTS (
+              SELECT 1
+              FROM loyal_yield.lookup_table_terminal_repair_operations repaired
+              WHERE repaired.operation_id = operation.id
+          )
+        ORDER BY operation.binding_id, operation.created_at, operation.id
         "#,
     )
     .bind(&binding_ids)

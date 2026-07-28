@@ -270,6 +270,13 @@ psql "$VERIFY_DATABASE_URL" \
   -f crates/loyal-yield-orchestrator/migrations/0032_reusable_alt_inflight_binding_uniqueness.sql \
   >/dev/null
 
+REUSABLE_ALT_INFLIGHT_VERIFY_ISOLATED=1 \
+  REUSABLE_ALT_INFLIGHT_VERIFY_SCENARIO=repaired-terminal-successor \
+  NEON_DATABASE_URL="$VERIFY_DATABASE_URL" \
+  NO_DNA=1 \
+  cargo run -q -p loyal-yield-orchestrator \
+    --bin verify-reusable-alt-inflight-binding-repair
+
 psql "$VERIFY_DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
 DO $verify_inflight_unique$
 DECLARE
