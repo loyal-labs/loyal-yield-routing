@@ -195,6 +195,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0031_fleet_commit_lifetime_fence_errcode.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 32,
+        name: "idle_vault_decision_lookup_index",
+        sql: include_str!("../../migrations/0032_idle_vault_decision_lookup_index.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -304,8 +310,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "applying migration {} {}",
             migration.version, migration.name
         );
-        let execution_sql = migration_execution_sql(migration);
-        sqlx::raw_sql(&execution_sql).execute(&pool).await?;
+        apply_migration(&pool, migration).await?;
         record_applied(&pool, migration).await?;
     }
 
@@ -313,13 +318,77 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "applying migration {} {}",
         validation_fence.version, validation_fence.name
     );
-    let execution_sql = migration_execution_sql(validation_fence);
-    sqlx::raw_sql(&execution_sql).execute(&pool).await?;
+    apply_migration(&pool, validation_fence).await?;
 
     validate_schema(&pool).await?;
     record_applied(&pool, validation_fence).await?;
     release_migration_apply_lock(migration_apply_lock_connection.as_mut()).await?;
     println!("loyal_yield migrations are up to date");
+    Ok(())
+}
+
+async fn apply_migration(pool: &PgPool, migration: &Migration) -> Result<(), Box<dyn Error>> {
+    if migration.version == 32 {
+        recover_invalid_idle_vault_decision_lookup_index(pool).await?;
+    }
+    let execution_sql = migration_execution_sql(migration);
+    sqlx::raw_sql(&execution_sql).execute(pool).await?;
+    Ok(())
+}
+
+async fn recover_invalid_idle_vault_decision_lookup_index(
+    pool: &PgPool,
+) -> Result<(), sqlx::Error> {
+    let state: Option<(bool, bool)> = sqlx::query_as(
+        r#"
+        SELECT indisready, indisvalid
+        FROM pg_index
+        WHERE indexrelid =
+            to_regclass('loyal_yield.rebalance_decisions_idle_signature_id_idx')
+        "#,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    if state.is_some_and(|(indisready, indisvalid)| !indisready || !indisvalid) {
+        println!(
+            "dropping invalid loyal_yield.rebalance_decisions_idle_signature_id_idx before retry"
+        );
+        sqlx::query(
+            "DROP INDEX CONCURRENTLY loyal_yield.rebalance_decisions_idle_signature_id_idx",
+        )
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn validate_idle_vault_decision_lookup_index(pool: &PgPool) -> Result<(), Box<dyn Error>> {
+    let (idle_vault_index_ready, idle_vault_index_valid, idle_vault_decision_lookup_index): (
+        bool,
+        bool,
+        String,
+    ) = sqlx::query_as(
+        r#"
+        SELECT indisready, indisvalid, pg_get_indexdef(indexrelid)
+        FROM pg_index
+        WHERE indexrelid =
+            'loyal_yield.rebalance_decisions_idle_signature_id_idx'::regclass
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if !idle_vault_index_ready
+        || !idle_vault_index_valid
+        || !idle_vault_decision_lookup_index.contains("(signature, id DESC)")
+        || !idle_vault_decision_lookup_index
+            .contains("(execution_plan ->> 'kind'::text) = 'idle_vault_deposit'::text")
+    {
+        return Err(
+            "idle-vault decision lookup index must be ready and valid, key signature/latest id, and contain only idle-vault deposits"
+                .into(),
+        );
+    }
     Ok(())
 }
 
@@ -2118,6 +2187,7 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "signed_route_submissions_one_nonterminal_opportunity_idx",
         "route_account_conflict_leases_opportunity_idx",
         "route_account_conflict_leases_submission_idx",
+        "rebalance_decisions_idle_signature_id_idx",
     ] {
         let exists: bool =
             sqlx::query_scalar("SELECT to_regclass(format('loyal_yield.%I', $1)) IS NOT NULL")
@@ -2128,6 +2198,7 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
             return Err(format!("missing index loyal_yield.{index}").into());
         }
     }
+    validate_idle_vault_decision_lookup_index(pool).await?;
     let runnable_priority_index: String = sqlx::query_scalar(
         "SELECT pg_get_indexdef('loyal_yield.rebalance_opportunities_ready_priority_idx'::regclass)",
     )
@@ -3540,6 +3611,60 @@ mod tests {
         assert_ne!(execution_sql.as_ref(), migration.sql);
         assert_eq!(migration.checksum(), checksum(migration.sql));
         assert_ne!(migration.checksum(), checksum(execution_sql.as_ref()));
+    }
+
+    #[tokio::test]
+    async fn invalid_idle_vault_index_is_rebuilt_before_migration_success() {
+        let Ok(database_url) = env::var("ASK_1928_TEST_DATABASE_URL") else {
+            eprintln!("ASK_1928_TEST_DATABASE_URL not set; skipping database regression");
+            return;
+        };
+        let pool = connect(&database_url)
+            .await
+            .expect("connect to ASK-1928 verifier database");
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 32)
+            .expect("migration 32 exists");
+
+        let before: (bool, bool) = sqlx::query_as(
+            r#"
+            SELECT indisready, indisvalid
+            FROM pg_index
+            WHERE indexrelid =
+                'loyal_yield.rebalance_decisions_idle_signature_id_idx'::regclass
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read simulated interrupted index state");
+        assert_eq!(before, (false, false));
+        let invalid_error = validate_idle_vault_decision_lookup_index(&pool)
+            .await
+            .expect_err("invalid concurrent index must fail schema validation");
+        assert!(invalid_error
+            .to_string()
+            .contains("must be ready and valid"));
+
+        apply_migration(&pool, migration)
+            .await
+            .expect("recover invalid index and apply migration");
+
+        let after: (bool, bool) = sqlx::query_as(
+            r#"
+            SELECT indisready, indisvalid
+            FROM pg_index
+            WHERE indexrelid =
+                'loyal_yield.rebalance_decisions_idle_signature_id_idx'::regclass
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read rebuilt index state");
+        assert_eq!(after, (true, true));
+        validate_idle_vault_decision_lookup_index(&pool)
+            .await
+            .expect("rebuilt index must pass schema validation");
     }
 
     #[test]
