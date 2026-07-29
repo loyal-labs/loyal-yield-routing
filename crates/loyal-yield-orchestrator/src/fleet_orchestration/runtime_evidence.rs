@@ -112,6 +112,11 @@ pub struct RuntimeAltEvidence {
     pub independent_physical_alt_lanes_progressed: u64,
     pub same_table_predecessor_violations: u64,
     pub stale_fence_commits: u64,
+    pub usage_leases_rejected_during_mutation: u64,
+    pub mutating_operations_leased_during_usage: u64,
+    pub verify_operations_leased_during_usage: u64,
+    pub usage_fence_broadcast_commits: u64,
+    pub usage_fence_broadcast_rejections: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

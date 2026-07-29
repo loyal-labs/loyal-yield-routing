@@ -340,6 +340,11 @@ struct RuntimeAltEvidence {
     independent_physical_alt_lanes_progressed: u64,
     same_table_predecessor_violations: u64,
     stale_fence_commits: u64,
+    usage_leases_rejected_during_mutation: u64,
+    mutating_operations_leased_during_usage: u64,
+    verify_operations_leased_during_usage: u64,
+    usage_fence_broadcast_commits: u64,
+    usage_fence_broadcast_rejections: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1673,7 +1678,12 @@ fn runtime_alt_subcheck(evidence: &RuntimeEvidenceV1) -> Subcheck {
             == 0
         && evidence.alt.independent_physical_alt_lanes_progressed >= 2
         && evidence.alt.same_table_predecessor_violations == 0
-        && evidence.alt.stale_fence_commits == 0;
+        && evidence.alt.stale_fence_commits == 0
+        && evidence.alt.usage_leases_rejected_during_mutation == 1
+        && evidence.alt.mutating_operations_leased_during_usage == 0
+        && evidence.alt.verify_operations_leased_during_usage == 1
+        && evidence.alt.usage_fence_broadcast_commits == 0
+        && evidence.alt.usage_fence_broadcast_rejections == 1;
     subcheck(
         "bound_alt_runtime_evidence_meets_head_of_line_wakeup_and_mutation_gates",
         passed,
