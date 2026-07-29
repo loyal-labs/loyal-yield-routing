@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-migration="$repo_root/crates/loyal-yield-orchestrator/migrations/0032_idle_vault_decision_lookup_index.sql"
+migration="$repo_root/crates/loyal-yield-orchestrator/migrations/0033_idle_vault_decision_lookup_index.sql"
 runner="$repo_root/crates/loyal-yield-orchestrator/src/bin/yield-migrations.rs"
 index_name="rebalance_decisions_idle_signature_id_idx"
 
@@ -23,7 +23,7 @@ command -v initdb >/dev/null || fail "initdb is required"
 command -v pg_ctl >/dev/null || fail "pg_ctl is required"
 command -v psql >/dev/null || fail "psql is required"
 
-[[ -f "$migration" ]] || fail "migration 0032 is missing"
+[[ -f "$migration" ]] || fail "migration 0033 is missing"
 require_literal "$migration" \
   "CREATE INDEX CONCURRENTLY IF NOT EXISTS $index_name" \
   "migration must create the idle-vault index concurrently"
@@ -35,14 +35,20 @@ require_literal "$migration" \
   "migration must use the admin query's idle-vault partial predicate"
 
 require_literal "$runner" \
-  'version: 32,' \
-  "yield-migrations must register migration 32"
+  'version: 33,' \
+  "yield-migrations must register migration 33"
 require_literal "$runner" \
   'name: "idle_vault_decision_lookup_index",' \
   "yield-migrations must register the migration name"
 require_literal "$runner" \
-  'include_str!("../../migrations/0032_idle_vault_decision_lookup_index.sql")' \
-  "yield-migrations must embed migration 32"
+  'include_str!("../../migrations/0033_idle_vault_decision_lookup_index.sql")' \
+  "yield-migrations must embed migration 33"
+require_literal "$runner" \
+  "DROP INDEX CONCURRENTLY loyal_yield.$index_name" \
+  "yield-migrations must remove an invalid concurrent-build remnant"
+require_literal "$runner" \
+  "SELECT indisready, indisvalid" \
+  "yield-migrations must inspect PostgreSQL index readiness and validity"
 
 if [[ -n "${ADMIN_REBALANCE_DATA_FILE:-}" ]]; then
   [[ -f "$ADMIN_REBALANCE_DATA_FILE" ]] ||
@@ -80,7 +86,7 @@ trap cleanup EXIT
 
 initdb -D "$data_dir" -A trust --no-locale -E UTF8 >/dev/null
 pg_ctl -D "$data_dir" \
-  -o "-F -k '$socket_dir' -p $port" \
+  -o "-F -k '$socket_dir' -p $port -c allow_system_table_mods=on" \
   -w start >/dev/null
 server_started=1
 
@@ -150,8 +156,45 @@ EXPLAIN (ANALYZE, BUFFERS)
 $audit_lookup_sql;
 SQL
 
-psql "${psql_args[@]}" --file="$migration" >/dev/null
+psql "${psql_args[@]}" >/dev/null <<SQL
+CREATE INDEX CONCURRENTLY $index_name
+    ON loyal_yield.rebalance_decisions (signature, id DESC)
+    WHERE execution_plan->>'kind' = 'idle_vault_deposit';
+
+UPDATE pg_index
+SET indisready = false,
+    indisvalid = false
+WHERE indexrelid = 'loyal_yield.$index_name'::regclass;
+SQL
+
+invalid_state="$(
+  psql "${psql_args[@]}" --tuples-only --no-align --command="
+    SELECT indisready, indisvalid
+    FROM pg_index
+    WHERE indexrelid = 'loyal_yield.$index_name'::regclass;
+  "
+)"
+[[ "$invalid_state" == "f|f" ]] ||
+  fail "failed to simulate an interrupted concurrent index build"
+
+ASK_1928_TEST_DATABASE_URL="postgresql://$(id -un)@127.0.0.1:$port/postgres" \
+  cargo test \
+    -p loyal-yield-orchestrator \
+    --bin yield-migrations \
+    tests::invalid_idle_vault_index_is_rebuilt_before_migration_success \
+    -- --exact
+
 psql "${psql_args[@]}" --command="ANALYZE loyal_yield.rebalance_decisions" >/dev/null
+
+rebuilt_state="$(
+  psql "${psql_args[@]}" --tuples-only --no-align --command="
+    SELECT indisready, indisvalid
+    FROM pg_index
+    WHERE indexrelid = 'loyal_yield.$index_name'::regclass;
+  "
+)"
+[[ "$rebuilt_state" == "t|t" ]] ||
+  fail "rebuilt index is not ready and valid ($rebuilt_state)"
 
 index_definition="$(
   psql "${psql_args[@]}" --tuples-only --no-align --command="

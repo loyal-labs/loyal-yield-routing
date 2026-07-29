@@ -8,21 +8,25 @@ the audit's correlated idle-vault decision lookup.
 
 ## Required checks
 
-1. Migration `0032_idle_vault_decision_lookup_index.sql` creates
+1. Migration `0033_idle_vault_decision_lookup_index.sql` creates
    `rebalance_decisions_idle_signature_id_idx` on
    `loyal_yield.rebalance_decisions (signature, id DESC)`.
 2. The index predicate is exactly
    `execution_plan->>'kind' = 'idle_vault_deposit'`.
-3. Migration 32 is registered in the production `yield-migrations` runner.
+3. Migration 33 is registered after PR #24's migration 32 in the production
+   `yield-migrations` runner.
 4. When `ADMIN_REBALANCE_DATA_FILE` is supplied, the verifier confirms the
    admin query uses the same signature equality, predicate, descending ID
    order, and one-row limit.
-5. On an isolated local PostgreSQL cluster with production-scale cardinalities
+5. An interrupted concurrent-build catalog entry with `indisready = false` and
+   `indisvalid = false` is dropped and rebuilt before migration success.
+6. On an isolated local PostgreSQL cluster with production-scale cardinalities
    (19,620 deposits and 3,621 decisions), the post-migration plan uses the new
    index and returns the same aggregate lookup result.
-6. The indexed execution is at least 10 times faster than the unindexed
+7. The rebuilt index is both ready and valid in `pg_index`.
+8. The indexed execution is at least 10 times faster than the unindexed
    execution and completes in under 500 ms.
-7. The verifier never connects to Neon or any other external database.
+9. The verifier never connects to Neon or any other external database.
 
 ## Command
 
