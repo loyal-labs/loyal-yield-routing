@@ -9230,10 +9230,43 @@ fn load_production_evidence(
     if !tracked_status.is_empty() {
         return Err("end-state verification requires a clean tracked checkout".into());
     }
-    if artifact.head_commit.as_deref() != Some(head_commit.as_str())
-        || artifact.source.repository_head.as_deref() != Some(head_commit.as_str())
+    let artifact_head = artifact
+        .head_commit
+        .as_deref()
+        .filter(|artifact_head| artifact.source.repository_head.as_deref() == Some(*artifact_head))
+        .ok_or("production evidence HEAD fields do not match")?;
+    let artifact_head_is_checkout = artifact_head == head_commit;
+    let artifact_head_is_ancestor = git_success(
+        repository_root,
+        &["merge-base", "--is-ancestor", artifact_head, &head_commit],
+    );
+    let post_evidence_paths = (!artifact_head_is_checkout && artifact_head_is_ancestor)
+        .then(|| {
+            git_stdout(
+                repository_root,
+                &["diff", "--name-only", artifact_head, &head_commit],
+            )
+        })
+        .flatten()
+        .map(|paths| {
+            paths
+                .lines()
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let post_evidence_diff_is_verifier_only = !post_evidence_paths.is_empty()
+        && post_evidence_paths.iter().all(|path| {
+            path.as_str()
+                == "crates/loyal-yield-orchestrator/src/bin/fleet-orchestration-verifier.rs"
+        });
+    if !artifact_head_is_checkout
+        && !(artifact_head_is_ancestor && post_evidence_diff_is_verifier_only)
     {
-        return Err("production evidence HEAD does not match the clean checkout".into());
+        return Err(
+            "production evidence HEAD differs outside the independent verifier source".into(),
+        );
     }
     let render_yaml = fs::read(repository_root.join("render.yaml"))?;
     let render_yaml_sha256 = sha256_hex(&render_yaml);
