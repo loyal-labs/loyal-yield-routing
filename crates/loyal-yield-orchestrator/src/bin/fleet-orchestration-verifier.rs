@@ -11196,22 +11196,34 @@ fn production_complete_fleet_subcheck(binding: &ProductionEvidenceBinding) -> Su
             .iter()
             .all(|key| rows.iter().all(|row| row.get(*key) == first.get(*key)))
     });
+    let selected = status_i64(queue, "planned_selected_count");
+    let deferred = status_i64(queue, "planned_deferred_count");
+    let planned = status_i64(queue, "planned_opportunity_count");
+    let drained_complete_frontier = [
+        selected,
+        deferred,
+        planned,
+        status_i64(queue, "current_epoch_opportunity_count"),
+        status_i64(queue, "current_epoch_principal_usd_micros"),
+        status_i64(queue, "current_epoch_recoverable_yield_usd_micros_per_hour"),
+    ]
+    .into_iter()
+    .all(|value| value == Some(0));
+    let planner_epoch_current_or_drained =
+        status_metric(queue, "planner_epoch_matches_latest").and_then(Value::as_bool) == Some(true)
+            || drained_complete_frontier;
     let fresh_complete_epoch = schema_known
         && value_bool(queue, "available") == Some(true)
         && !rows.is_empty()
         && status_i64(queue, "full_sweep_age_seconds")
             .is_some_and(|age| (0..=COMPLETE_SWEEP_MAX_AGE_SECONDS).contains(&age))
         && status_metric(queue, "complete_frontier").and_then(Value::as_bool) == Some(true)
-        && status_metric(queue, "planner_epoch_matches_latest").and_then(Value::as_bool)
-            == Some(true)
+        && planner_epoch_current_or_drained
         && status_metric(queue, "latest_market_epoch_expired").and_then(Value::as_bool)
             == Some(false)
         && status_i64(queue, "latest_market_epoch_id").is_some_and(|id| id > 0)
         && status_i64(queue, "observed_vault_count").is_some_and(|count| count > 0)
         && aggregate_fields_consistent;
-    let selected = status_i64(queue, "planned_selected_count");
-    let deferred = status_i64(queue, "planned_deferred_count");
-    let planned = status_i64(queue, "planned_opportunity_count");
     let planner_accounting_exact =
         selected
             .zip(deferred)
@@ -11323,6 +11335,8 @@ fn production_complete_fleet_subcheck(binding: &ProductionEvidenceBinding) -> Su
             "queueCaptureFresh": queue_capture_fresh,
             "componentMaximumLagSeconds": PRODUCTION_COMPONENT_MAX_LAG_SECONDS,
             "freshCompleteEpoch": fresh_complete_epoch,
+            "plannerEpochCurrentOrDrained": planner_epoch_current_or_drained,
+            "drainedCompleteFrontier": drained_complete_frontier,
             "aggregateFieldsConsistentAcrossRows": aggregate_fields_consistent,
             "observedVaultCount": status_i64(queue, "observed_vault_count"),
             "plannedOpportunityCount": planned,
