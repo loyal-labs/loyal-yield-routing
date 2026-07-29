@@ -1888,7 +1888,17 @@ impl RuntimeLookupTableResolution {
 
     fn require_deferred_simulation_coverage(&self) -> Result<(), Box<dyn Error>> {
         let ready = reusable_runtime_enabled(&self.rollout) && self.reusable_ready;
-        if ready {
+        let funding_deferred = reusable_runtime_enabled(&self.rollout)
+            && self.shared_catalog_covered
+            && self.reusable_missing_addresses.is_empty()
+            && self.reusable_packet_fits == Some(true)
+            && !self.reusable_table_ids.is_empty()
+            && self.reusable_compiled_message_size.is_some()
+            && self
+                .blocker
+                .as_deref()
+                .is_some_and(|blocker| blocker.starts_with("route_funding_required:"));
+        if ready || funding_deferred {
             Ok(())
         } else {
             Err(format!(
