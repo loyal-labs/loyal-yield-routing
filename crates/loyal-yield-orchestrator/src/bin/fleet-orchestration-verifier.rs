@@ -8986,9 +8986,12 @@ fn valid_sha256_digest(value: &str) -> bool {
 }
 
 fn image_source_binding(repository_root: &Path, image: &str) -> (bool, Value) {
-    const ALLOWED_POST_IMAGE_PATHS: [&str; 2] = [
+    const ALLOWED_POST_IMAGE_PATHS: [&str; 5] = [
         "render.yaml",
         "docs/plans/fleet-yield-orchestration-speed-verifier.md",
+        "crates/loyal-yield-orchestrator/src/bin/fleet-orchestration-runtime-evidence.rs",
+        "crates/loyal-yield-orchestrator/src/bin/fleet-orchestration-verifier.rs",
+        "crates/loyal-yield-orchestrator/src/fleet_orchestration/runtime_evidence.rs",
     ];
     let head = git_stdout(repository_root, &["rev-parse", "HEAD"]);
     let image_commit = image_commit_suffix(image).map(str::to_owned);
@@ -9032,7 +9035,7 @@ fn image_source_binding(repository_root: &Path, image: &str) -> (bool, Value) {
             "imageCommitIsAncestor": is_ancestor,
             "postImageChangedPaths": changed_paths,
             "allowedPostImagePaths": ALLOWED_POST_IMAGE_PATHS,
-            "postImageDiffIsLimitedToPinningFiles": changed_paths_allowed,
+            "postImageDiffIsLimitedToVerificationOrPinningFiles": changed_paths_allowed,
         }),
     )
 }
