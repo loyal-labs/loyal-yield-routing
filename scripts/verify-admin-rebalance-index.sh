@@ -49,6 +49,9 @@ require_literal "$runner" \
 require_literal "$runner" \
   "SELECT indisready, indisvalid" \
   "yield-migrations must inspect PostgreSQL index readiness and validity"
+require_literal "$runner" \
+  "requires migration 32 reusable_alt_inflight_binding_uniqueness" \
+  "migration 33 must fail closed until PR #24's migration 32 is recorded"
 
 if [[ -n "${ADMIN_REBALANCE_DATA_FILE:-}" ]]; then
   [[ -f "$ADMIN_REBALANCE_DATA_FILE" ]] ||
@@ -101,6 +104,11 @@ psql_args=(
 
 psql "${psql_args[@]}" >/dev/null <<'SQL'
 CREATE SCHEMA loyal_yield;
+
+CREATE TABLE loyal_yield.schema_migrations (
+  version BIGINT PRIMARY KEY,
+  name TEXT NOT NULL
+);
 
 CREATE TABLE loyal_yield.rebalance_decisions (
   id BIGSERIAL PRIMARY KEY,

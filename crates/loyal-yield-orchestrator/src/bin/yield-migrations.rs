@@ -329,10 +329,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 async fn apply_migration(pool: &PgPool, migration: &Migration) -> Result<(), Box<dyn Error>> {
     if migration.version == 33 {
+        require_idle_vault_decision_lookup_predecessor(pool).await?;
         recover_invalid_idle_vault_decision_lookup_index(pool).await?;
     }
     let execution_sql = migration_execution_sql(migration);
     sqlx::raw_sql(&execution_sql).execute(pool).await?;
+    Ok(())
+}
+
+async fn require_idle_vault_decision_lookup_predecessor(
+    pool: &PgPool,
+) -> Result<(), Box<dyn Error>> {
+    let predecessor_applied: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM loyal_yield.schema_migrations
+            WHERE version = 32
+              AND name = 'reusable_alt_inflight_binding_uniqueness'
+        )
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if !predecessor_applied {
+        return Err(
+            "migration 33 idle_vault_decision_lookup_index requires migration 32 reusable_alt_inflight_binding_uniqueness"
+                .into(),
+        );
+    }
     Ok(())
 }
 
@@ -3645,6 +3670,21 @@ mod tests {
         assert!(invalid_error
             .to_string()
             .contains("must be ready and valid"));
+        let order_error = apply_migration(&pool, migration)
+            .await
+            .expect_err("migration 33 must not run before migration 32");
+        assert!(order_error
+            .to_string()
+            .contains("requires migration 32 reusable_alt_inflight_binding_uniqueness"));
+        sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.schema_migrations (version, name)
+            VALUES (32, 'reusable_alt_inflight_binding_uniqueness')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("record migration 32 predecessor");
 
         apply_migration(&pool, migration)
             .await

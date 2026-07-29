@@ -13,8 +13,8 @@ the audit's correlated idle-vault decision lookup.
    `loyal_yield.rebalance_decisions (signature, id DESC)`.
 2. The index predicate is exactly
    `execution_plan->>'kind' = 'idle_vault_deposit'`.
-3. Migration 33 is registered after PR #24's migration 32 in the production
-   `yield-migrations` runner.
+3. Migration 33 fails closed until PR #24's migration 32 is recorded as
+   `reusable_alt_inflight_binding_uniqueness`.
 4. When `ADMIN_REBALANCE_DATA_FILE` is supplied, the verifier confirms the
    admin query uses the same signature equality, predicate, descending ID
    order, and one-row limit.
