@@ -195,6 +195,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0031_fleet_commit_lifetime_fence_errcode.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 32,
+        name: "idle_vault_decision_lookup_index",
+        sql: include_str!("../../migrations/0032_idle_vault_decision_lookup_index.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -2118,6 +2124,7 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "signed_route_submissions_one_nonterminal_opportunity_idx",
         "route_account_conflict_leases_opportunity_idx",
         "route_account_conflict_leases_submission_idx",
+        "rebalance_decisions_idle_signature_id_idx",
     ] {
         let exists: bool =
             sqlx::query_scalar("SELECT to_regclass(format('loyal_yield.%I', $1)) IS NOT NULL")
@@ -2127,6 +2134,20 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         if !exists {
             return Err(format!("missing index loyal_yield.{index}").into());
         }
+    }
+    let idle_vault_decision_lookup_index: String = sqlx::query_scalar(
+        "SELECT pg_get_indexdef('loyal_yield.rebalance_decisions_idle_signature_id_idx'::regclass)",
+    )
+    .fetch_one(pool)
+    .await?;
+    if !idle_vault_decision_lookup_index.contains("(signature, id DESC)")
+        || !idle_vault_decision_lookup_index
+            .contains("(execution_plan ->> 'kind'::text) = 'idle_vault_deposit'::text")
+    {
+        return Err(
+            "idle-vault decision lookup index must key signature/latest id and contain only idle-vault deposits"
+                .into(),
+        );
     }
     let runnable_priority_index: String = sqlx::query_scalar(
         "SELECT pg_get_indexdef('loyal_yield.rebalance_opportunities_ready_priority_idx'::regclass)",
