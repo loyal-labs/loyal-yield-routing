@@ -9372,6 +9372,9 @@ fn expected_env_value(key: &str) -> Option<String> {
     match key {
         "YIELD_ALT_CLUSTER" => Some(PRODUCTION_CLUSTER.to_owned()),
         "KAMINO_UPDATE_SOURCE" => Some("laserstream".to_owned()),
+        // A blank fee-payer pool is a valid explicit configuration: the
+        // route workers intentionally fall back to POLICY_KEYPAIR.
+        "YIELD_ROUTE_FEE_PAYER_KEYPAIRS" => env::var(key).ok(),
         _ => env::var(key).ok().filter(|value| !value.trim().is_empty()),
     }
 }
@@ -10627,6 +10630,36 @@ fn production_confirmed_market_data_plane_subcheck(
         && target_rows.is_some_and(|rows| rows.len() == enabled_mints.len())
         && target_mints == enabled_set
         && target_rows.into_iter().flatten().all(|target| {
+            let eligible_target_count = value_i64(target, "eligibleTargetCount");
+            if eligible_target_count == Some(0) {
+                const NULL_TARGET_KEYS: &[&str] = &[
+                    "riskBaskets",
+                    "reserve",
+                    "market",
+                    "supplyApy",
+                    "totalSupplyUsdEstimate",
+                    "reserveLastUpdateStale",
+                    "stateEventId",
+                    "accountDataHash",
+                    "stateObservedAt",
+                    "stateSlot",
+                    "verifiedAt",
+                    "verifiedSlot",
+                    "stateSource",
+                    "verificationCommitment",
+                    "verificationSource",
+                    "observationFloorSlot",
+                    "observationFloorObservationId",
+                    "observationFloorAccountDataHash",
+                    "observationFloorStateValid",
+                    "observationFloorSource",
+                    "observationFloorSourceRank",
+                    "observationFloorObservedAt",
+                ];
+                return NULL_TARGET_KEYS
+                    .iter()
+                    .all(|key| target.get(*key).is_some_and(Value::is_null));
+            }
             let verified_at = target
                 .get("verifiedAt")
                 .and_then(Value::as_str)
@@ -10674,7 +10707,7 @@ fn production_confirmed_market_data_plane_subcheck(
                         || (observation_floor_state_valid == Some(true)
                             && observation_floor_hash == Some(hash))
                 });
-            value_i64(target, "eligibleTargetCount").is_some_and(|count| count > 0)
+            eligible_target_count.is_some_and(|count| count > 0)
                 && target
                     .get("riskBaskets")
                     .and_then(Value::as_array)
@@ -10760,7 +10793,7 @@ fn production_confirmed_market_data_plane_subcheck(
     let scope_nonce = value_string(render, "scopeFingerprintNonce").unwrap_or_default();
     let expected_monitor_fingerprints = expected_env_fingerprints(
         scope_nonce,
-        monitor_scope_value_keys(&required_monitor_env_keys),
+        monitor_scope_value_keys(&expected_monitor.env_keys),
     );
     let reported_monitor_fingerprints =
         reported_env_fingerprints(monitor.get("envValueFingerprints"));
@@ -10789,9 +10822,9 @@ fn production_confirmed_market_data_plane_subcheck(
         && value_string(monitor, "image") == Some(expected_monitor.image.as_str())
         && value_string(monitor, "command") == Some(KAMINO_MONITOR_COMMAND)
         && value_string(monitor, "preDeployCommand") == Some(KAMINO_MONITOR_PREDEPLOY)
-        && expected_monitor.env_keys == required_monitor_env_keys
-        && live_env_keys.as_ref() == Some(&required_monitor_env_keys)
-        && reported_blueprint_env_keys.as_ref() == Some(&required_monitor_env_keys)
+        && required_monitor_env_keys.is_subset(&expected_monitor.env_keys)
+        && live_env_keys.as_ref() == Some(&expected_monitor.env_keys)
+        && reported_blueprint_env_keys.as_ref() == Some(&expected_monitor.env_keys)
         && expected_monitor_fingerprints.is_some()
         && reported_monitor_fingerprints == expected_monitor_fingerprints
         && value_string(deploy, "status") == Some("live")
