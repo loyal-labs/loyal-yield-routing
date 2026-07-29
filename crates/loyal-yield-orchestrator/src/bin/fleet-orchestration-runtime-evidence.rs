@@ -526,6 +526,7 @@ fn run_read_only_planner(
 ) -> Result<PlannerOutput, Box<dyn Error>> {
     let output = Command::new(planner_binary)
         .args(["--once", "--dry-run", "--json"])
+        .env("RUST_LOG", "off")
         .current_dir(repository_root)
         .output()?;
     if !output.status.success() {
