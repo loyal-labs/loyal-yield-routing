@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-migration="$repo_root/crates/loyal-yield-orchestrator/migrations/0033_idle_vault_decision_lookup_index.sql"
+migration="$repo_root/crates/loyal-yield-orchestrator/migrations/0032_idle_vault_decision_lookup_index.sql"
 runner="$repo_root/crates/loyal-yield-orchestrator/src/bin/yield-migrations.rs"
 index_name="rebalance_decisions_idle_signature_id_idx"
 
@@ -23,7 +23,7 @@ command -v initdb >/dev/null || fail "initdb is required"
 command -v pg_ctl >/dev/null || fail "pg_ctl is required"
 command -v psql >/dev/null || fail "psql is required"
 
-[[ -f "$migration" ]] || fail "migration 0033 is missing"
+[[ -f "$migration" ]] || fail "migration 0032 is missing"
 require_literal "$migration" \
   "CREATE INDEX CONCURRENTLY IF NOT EXISTS $index_name" \
   "migration must create the idle-vault index concurrently"
@@ -35,23 +35,20 @@ require_literal "$migration" \
   "migration must use the admin query's idle-vault partial predicate"
 
 require_literal "$runner" \
-  'version: 33,' \
-  "yield-migrations must register migration 33"
+  'version: 32,' \
+  "yield-migrations must register migration 32"
 require_literal "$runner" \
   'name: "idle_vault_decision_lookup_index",' \
   "yield-migrations must register the migration name"
 require_literal "$runner" \
-  'include_str!("../../migrations/0033_idle_vault_decision_lookup_index.sql")' \
-  "yield-migrations must embed migration 33"
+  'include_str!("../../migrations/0032_idle_vault_decision_lookup_index.sql")' \
+  "yield-migrations must embed migration 32"
 require_literal "$runner" \
   "DROP INDEX CONCURRENTLY loyal_yield.$index_name" \
   "yield-migrations must remove an invalid concurrent-build remnant"
 require_literal "$runner" \
   "SELECT indisready, indisvalid" \
   "yield-migrations must inspect PostgreSQL index readiness and validity"
-require_literal "$runner" \
-  "requires migration 32 reusable_alt_inflight_binding_uniqueness" \
-  "migration 33 must fail closed until PR #24's migration 32 is recorded"
 
 if [[ -n "${ADMIN_REBALANCE_DATA_FILE:-}" ]]; then
   [[ -f "$ADMIN_REBALANCE_DATA_FILE" ]] ||
@@ -104,11 +101,6 @@ psql_args=(
 
 psql "${psql_args[@]}" >/dev/null <<'SQL'
 CREATE SCHEMA loyal_yield;
-
-CREATE TABLE loyal_yield.schema_migrations (
-  version BIGINT PRIMARY KEY,
-  name TEXT NOT NULL
-);
 
 CREATE TABLE loyal_yield.rebalance_decisions (
   id BIGSERIAL PRIMARY KEY,

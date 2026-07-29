@@ -8,13 +8,12 @@ the audit's correlated idle-vault decision lookup.
 
 ## Required checks
 
-1. Migration `0033_idle_vault_decision_lookup_index.sql` creates
+1. Migration `0032_idle_vault_decision_lookup_index.sql` creates
    `rebalance_decisions_idle_signature_id_idx` on
    `loyal_yield.rebalance_decisions (signature, id DESC)`.
 2. The index predicate is exactly
    `execution_plan->>'kind' = 'idle_vault_deposit'`.
-3. Migration 33 fails closed until PR #24's migration 32 is recorded as
-   `reusable_alt_inflight_binding_uniqueness`.
+3. Migration 32 is registered in the production `yield-migrations` runner.
 4. When `ADMIN_REBALANCE_DATA_FILE` is supplied, the verifier confirms the
    admin query uses the same signature equality, predicate, descending ID
    order, and one-row limit.
