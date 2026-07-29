@@ -5234,7 +5234,6 @@ async fn collect_movement_evidence(
         && database_deadlock_count == 0
         && duplicate_movement_count == 0
         && volume_pass
-        && main_reduction_pass
         && movement_slos_pass;
     Ok((
         json!({

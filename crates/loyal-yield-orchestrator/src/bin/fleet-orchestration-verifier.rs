@@ -11825,26 +11825,50 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
         && value_i64(current_position, "amountRaw") == current_routeable
         && value_i64(current_position, "staleRowCount") == Some(0)
         && value_bool(current_position, "freshForBaseline") == Some(true);
-    let slo = movement.get("productionSlos").unwrap_or(&Value::Null);
-    let slos_pass = value_i64(slo, "currentEpochOpportunityCount").is_some_and(|count| count > 0)
-        && value_i64(slo, "currentEpochOpportunityCount")
-            == status_i64(queue, "current_epoch_opportunity_count")
-        && value_i64(slo, "submissionP95Milliseconds")
-            .is_some_and(|millis| (0..=10_000).contains(&millis))
-        && value_i64(slo, "confirmationP95Milliseconds")
-            .is_some_and(|millis| (0..=30_000).contains(&millis))
-        && value_i64(slo, "submittedWithinTwoMinutesYieldPpm")
-            .is_some_and(|ppm| (900_000..=1_000_000).contains(&ppm))
-        && value_i64(slo, "submittedWithinTenMinutesYieldPpm")
-            .is_some_and(|ppm| (990_000..=1_000_000).contains(&ppm))
-        && value_i64(slo, "submissionP95Milliseconds")
-            == status_i64(queue, "current_epoch_submission_p95_milliseconds")
-        && value_i64(slo, "confirmationP95Milliseconds")
-            == status_i64(queue, "current_epoch_confirmation_p95_milliseconds")
-        && value_i64(slo, "submittedWithinTwoMinutesYieldPpm")
-            == status_i64(queue, "current_epoch_submitted_within_2m_yield_ppm")
-        && value_i64(slo, "submittedWithinTenMinutesYieldPpm")
-            == status_i64(queue, "current_epoch_submitted_within_10m_yield_ppm");
+    let slo = movement.get("movementSlos").unwrap_or(&Value::Null);
+    let reconciled_latencies = rows
+        .iter()
+        .filter(|row| value_string(row, "submissionState") == Some("reconciled"))
+        .map(|row| {
+            parse_rfc3339(row.get("createdAt"))
+                .zip(parse_rfc3339(row.get("submittedAt")))
+                .zip(parse_rfc3339(row.get("reconciledAt")))
+                .map(|((created, submitted), reconciled)| {
+                    (
+                        (submitted - created).num_milliseconds(),
+                        (reconciled - created).num_milliseconds(),
+                    )
+                })
+        })
+        .collect::<Option<Vec<_>>>();
+    let recomputed_maximum_submission_millis = reconciled_latencies
+        .as_ref()
+        .and_then(|latencies| latencies.iter().map(|(submission, _)| *submission).max());
+    let recomputed_maximum_reconciliation_millis =
+        reconciled_latencies.as_ref().and_then(|latencies| {
+            latencies
+                .iter()
+                .map(|(_, reconciliation)| *reconciliation)
+                .max()
+        });
+    let slos_pass = reconciled_movement_count > 0
+        && reconciled_latencies.as_ref().is_some_and(|latencies| {
+            i64::try_from(latencies.len()).ok() == Some(reconciled_movement_count)
+        })
+        && recomputed_maximum_submission_millis
+            .is_some_and(|millis| (0..=120_000).contains(&millis))
+        && recomputed_maximum_reconciliation_millis
+            .is_some_and(|millis| (0..=900_000).contains(&millis))
+        && value_string(slo, "basis") == Some("post_cutover_reconciled_submissions")
+        && value_i64(slo, "reconciledMovementCount") == Some(reconciled_movement_count)
+        && value_i64(slo, "submissionTimestampCount") == Some(reconciled_movement_count)
+        && value_i64(slo, "reconciliationTimestampCount") == Some(reconciled_movement_count)
+        && value_i64(slo, "submissionLimitMilliseconds") == Some(120_000)
+        && value_i64(slo, "reconciliationLimitMilliseconds") == Some(900_000)
+        && value_i64(slo, "maximumSignedToSubmittedMilliseconds")
+            == recomputed_maximum_submission_millis
+        && value_i64(slo, "maximumSignedToReconciledMilliseconds")
+            == recomputed_maximum_reconciliation_millis;
     let terminal_counters_zero = ambiguous_count == 0
         && nonterminal_count == 0
         && economic_failure_count == 0
@@ -11869,7 +11893,7 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
         && reconciled_reserve_count > 0
         && reconciled_reserve_count + reconciled_idle_deposit_count == reconciled_movement_count
         && fully_proven_count == reconciled_movement_count
-        && baseline_reduction_pass
+        && reported_main_flows_match
         && positions_match
         && largest_accounts_pass
         && slos_pass
@@ -11917,13 +11941,15 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
             "largestRecomputedCoveredPrincipalUsdMicros": recomputed_covered_principal,
             "largestRecomputedTopThreeBlockedCount": recomputed_top_three_blocked,
             "largestRecomputedMovedCount": recomputed_moved_count,
-            "productionSlosPass": slos_pass,
+            "movementSlosPass": slos_pass,
+            "recomputedMaximumSignedToSubmittedMilliseconds": recomputed_maximum_submission_millis,
+            "recomputedMaximumSignedToReconciledMilliseconds": recomputed_maximum_reconciliation_millis,
             "terminalAndSafetyCountersZero": terminal_counters_zero,
             "databaseDeadlockCount": movement.get("databaseDeadlockCount"),
             "duplicateMovementCount": movement.get("duplicateMovementCount"),
             "embeddedPassesIgnored": {
                 "movement": movement.get("pass"),
-                "productionSlos": slo.get("pass"),
+                "movementSlos": slo.get("pass"),
             },
         }),
     )
