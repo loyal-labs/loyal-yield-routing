@@ -154,6 +154,7 @@ pub struct RuntimeExecutionEvidence {
     pub reconciled_capacity_strict_telemetry_fence: bool,
     pub preexisting_newer_telemetry_release: bool,
     pub readiness_writers_waited_on_per_vault_fence: bool,
+    pub readiness_parent_before_physical_lock_order_proved: bool,
     pub serialized_readiness_row_count: u64,
 }
 
@@ -177,6 +178,7 @@ pub struct RuntimeDatabaseExecutionEvidence {
     pub reconciled_capacity_strict_telemetry_fence: bool,
     pub preexisting_newer_telemetry_release: bool,
     pub readiness_writers_waited_on_per_vault_fence: bool,
+    pub readiness_parent_before_physical_lock_order_proved: bool,
     pub serialized_readiness_row_count: u64,
     pub database_deadlocks: u64,
 }
@@ -252,6 +254,8 @@ impl RuntimeExecutionEvidence {
             preexisting_newer_telemetry_release: database.preexisting_newer_telemetry_release,
             readiness_writers_waited_on_per_vault_fence: database
                 .readiness_writers_waited_on_per_vault_fence,
+            readiness_parent_before_physical_lock_order_proved: database
+                .readiness_parent_before_physical_lock_order_proved,
             serialized_readiness_row_count: database.serialized_readiness_row_count,
         })
     }

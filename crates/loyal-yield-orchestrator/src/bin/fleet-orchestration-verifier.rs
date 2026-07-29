@@ -382,6 +382,7 @@ struct RuntimeExecutionEvidence {
     reconciled_capacity_strict_telemetry_fence: bool,
     preexisting_newer_telemetry_release: bool,
     readiness_writers_waited_on_per_vault_fence: bool,
+    readiness_parent_before_physical_lock_order_proved: bool,
     serialized_readiness_row_count: u64,
 }
 
@@ -1682,6 +1683,7 @@ fn runtime_execution_subcheck(evidence: &RuntimeEvidenceV1) -> Subcheck {
         && execution.reconciled_capacity_strict_telemetry_fence
         && execution.preexisting_newer_telemetry_release
         && execution.readiness_writers_waited_on_per_vault_fence
+        && execution.readiness_parent_before_physical_lock_order_proved
         && execution.serialized_readiness_row_count == 2;
     subcheck(
         "bound_controlled_rpc_evidence_meets_replay_signer_and_reconciliation_gates",
@@ -2722,6 +2724,12 @@ impl DatabaseFixture {
             .bind(&cluster_pattern)
             .execute(self.client.pool())
             .await?;
+        sqlx::query(
+            "DELETE FROM loyal_yield.lookup_table_route_readiness_current WHERE cluster LIKE $1",
+        )
+        .bind(&cluster_pattern)
+        .execute(self.client.pool())
+        .await?;
         sqlx::query(
             "DELETE FROM loyal_yield.lookup_table_provisioning_request_consumers consumer USING loyal_yield.rebalance_opportunities opportunity WHERE consumer.opportunity_id = opportunity.id AND opportunity.cluster LIKE $1",
         )
@@ -4126,6 +4134,109 @@ async fn run_database_checks(
     .bind(readiness_serialization_vault_id)
     .fetch_one(fixture.client.pool())
     .await?;
+    sqlx::query(
+        "DELETE FROM loyal_yield.lookup_table_route_readiness_current WHERE cluster = $1 AND vault_id = $2",
+    )
+    .bind(&readiness_serialization_cluster)
+    .bind(readiness_serialization_vault_id)
+    .execute(fixture.client.pool())
+    .await?;
+
+    // Recreate the production family/physical-row lock graph. Readiness must
+    // wait on the logical parent without owning the physical ALT row, allowing
+    // a generation lifecycle transaction to take that row and finish.
+    let readiness_family_id: i64 =
+        sqlx::query_scalar("SELECT id FROM loyal_yield.lookup_table_families WHERE cluster = $1")
+            .bind(&readiness_serialization_cluster)
+            .fetch_one(fixture.client.pool())
+            .await?;
+    let readiness_table_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM loyal_yield.route_lookup_tables WHERE cluster = $1 AND family_id = $2",
+    )
+    .bind(&readiness_serialization_cluster)
+    .bind(readiness_family_id)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let mut lifecycle_guard = fixture.client.pool().begin().await?;
+    sqlx::query("SELECT id FROM loyal_yield.lookup_table_families WHERE id = $1 FOR UPDATE")
+        .bind(readiness_family_id)
+        .execute(&mut *lifecycle_guard)
+        .await?;
+    let parent_order_client = fixture.client.clone();
+    let parent_order_cluster = readiness_serialization_cluster.clone();
+    let parent_order_task = tokio::spawn(async move {
+        let now = Utc::now();
+        parent_order_client
+            .upsert_lookup_table_readiness(LookupTableReadinessRecord {
+                cluster: parent_order_cluster,
+                vault_id: VaultId(readiness_serialization_vault_id),
+                route_fingerprint: "fleet-verifier-parent-order-route".to_owned(),
+                requirements_fingerprint: "fleet-verifier-parent-order-requirements".to_owned(),
+                route_kind: "fleet_verifier_parent_order".to_owned(),
+                source_reserve: None,
+                target_reserve: None,
+                manifest_id: None,
+                shared_family_id: Some(readiness_family_id),
+                vault_binding_id: None,
+                readiness_state: LookupTableReadinessStatus::Ready,
+                required_address_count: 1,
+                covered_address_count: 1,
+                missing_addresses: json!([]),
+                legacy_table_ids: Vec::new(),
+                reusable_table_ids: vec![readiness_table_id],
+                compiled_message_size: Some(256),
+                packet_limit: Some(1232),
+                observed_slot: Some(90_100),
+                observed_at: now,
+                selection_kind: Some(LookupTableSelectionKind::Reusable),
+                fallback_reason: None,
+                rollout_mode: Some(LookupTableRolloutMode::ReusableOnly),
+                selected_table_ids: vec![readiness_table_id],
+                selected_table_count: Some(1),
+                packet_fits: Some(true),
+                simulation_state: Some(LookupTableSimulationState::Succeeded),
+                simulation_units_consumed: Some(1),
+                simulation_error: None,
+                updated_at: now,
+            })
+            .await
+    });
+    let mut readiness_waited_on_parent = false;
+    for _ in 0..200 {
+        readiness_waited_on_parent = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1 FROM pg_stat_activity
+                WHERE datname = current_database()
+                  AND pid <> pg_backend_pid()
+                  AND state = 'active'
+                  AND wait_event_type = 'Lock'
+                  AND query LIKE '%FROM loyal_yield.lookup_table_families%'
+                  AND query LIKE '%FOR SHARE%'
+            )
+            "#,
+        )
+        .fetch_one(fixture.client.pool())
+        .await?;
+        if readiness_waited_on_parent {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let lifecycle_physical_lock_result = sqlx::query(
+        "SELECT id FROM loyal_yield.route_lookup_tables WHERE id = $1 FOR UPDATE NOWAIT",
+    )
+    .bind(readiness_table_id)
+    .execute(&mut *lifecycle_guard)
+    .await;
+    let lifecycle_acquired_physical_while_readiness_waited = lifecycle_physical_lock_result.is_ok();
+    lifecycle_guard.commit().await?;
+    tokio::time::timeout(Duration::from_secs(10), parent_order_task)
+        .await
+        .map_err(|_| "readiness parent-order writer did not finish after lifecycle commit")?
+        .map_err(|error| format!("readiness parent-order task failed: {error}"))??;
+    let readiness_parent_before_physical_lock_order_proved =
+        readiness_waited_on_parent && lifecycle_acquired_physical_while_readiness_waited;
     sqlx::query(
         "DELETE FROM loyal_yield.lookup_table_route_readiness_current WHERE cluster = $1 AND vault_id = $2",
     )
@@ -7631,6 +7742,7 @@ async fn run_database_checks(
         && published_economics_bind_signed_decision
         && reconciled_volume_updates_exactly_once
         && readiness_writers_waited
+        && readiness_parent_before_physical_lock_order_proved
         && serialized_readiness_row_count == 2
         && database_deadlocks == 0;
 
@@ -7747,9 +7859,20 @@ async fn run_database_checks(
                         "reconciledCapacityStrictTelemetryFence": reconciled_capacity_retention_passed,
                         "preexistingNewerTelemetryRelease": preexisting_newer_telemetry_releases_on_reconcile,
                         "readinessWritersWaitedOnPerVaultFence": readiness_writers_waited,
+                        "readinessParentBeforePhysicalLockOrderProved": readiness_parent_before_physical_lock_order_proved,
                         "serializedReadinessRowCount": serialized_readiness_row_count,
                         "databaseDeadlocks": database_deadlocks,
                     },
+                }),
+            ),
+            subcheck(
+                "readiness_parent_lock_precedes_physical_alt_lock",
+                readiness_parent_before_physical_lock_order_proved
+                    && database_deadlocks == 0,
+                json!({
+                    "readinessWaitedOnLogicalParent": readiness_waited_on_parent,
+                    "lifecycleAcquiredPhysicalWhileReadinessWaited": lifecycle_acquired_physical_while_readiness_waited,
+                    "databaseDeadlocks": database_deadlocks,
                 }),
             ),
             subcheck(

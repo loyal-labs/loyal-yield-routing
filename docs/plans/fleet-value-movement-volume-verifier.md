@@ -113,9 +113,13 @@ The queue must have no zero-broadcast signed row older than 5 minutes, no
 confirmation batch invariant loop, no effect-ambiguous route, and zero database
 deadlocks during the source-bound movement window. The isolated database proof
 must also hold the per-vault readiness advisory fence, prove competing
-readiness writers wait, then prove both commit without increasing PostgreSQL's
-deadlock counter. Worker heartbeats or successful deadlock retries without this
-movement evidence are FAIL.
+readiness writers wait, and recreate the lifecycle/readiness contention to
+prove readiness starts its logical-parent lock order at the reusable ALT family
+before owning its physical table row. The lifecycle transaction must still
+acquire that physical row and both transactions must commit without increasing
+PostgreSQL's deadlock counter.
+Worker heartbeats or successful deadlock retries without this movement evidence
+are FAIL.
 
 A route may outlive transient confirmed-view topology gaps only through a
 bounded convergence retry. Once its source and target topology is restored,

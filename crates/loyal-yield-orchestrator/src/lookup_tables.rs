@@ -15852,9 +15852,164 @@ impl NeonSqlClient {
         // physical-table and readiness-row locks in different combinations.
         acquire_lookup_table_readiness_vault_lock(&mut tx, &input.cluster, input.vault_id).await?;
         if !input.selected_table_ids.is_empty() {
+            // Lifecycle and provisioner transactions lock reusable ALT parents
+            // before their physical rows. Discover the immutable parent ids
+            // without row locks, then take the same family-first order here.
+            // Locking a physical row before its family can deadlock with a
+            // generation activation or cleanup transaction that already owns
+            // the family and is waiting for that physical row.
+            let selected_parent_rows = sqlx::query(
+                r#"
+                SELECT id, family_id
+                FROM loyal_yield.route_lookup_tables
+                WHERE id = ANY($1)
+                ORDER BY id
+                "#,
+            )
+            .bind(&input.selected_table_ids)
+            .fetch_all(&mut *tx)
+            .await?;
+            if selected_parent_rows.len() != input.selected_table_ids.len() {
+                return Err(OrchestratorError::StoreInvariant(
+                    "readiness selected a missing lookup table".to_owned(),
+                ));
+            }
+            let mut selected_manifest_ids = input.manifest_id.into_iter().collect::<Vec<_>>();
+            let mut selected_binding_ids = input.vault_binding_id.into_iter().collect::<Vec<_>>();
+            let mut selected_family_ids = selected_parent_rows
+                .iter()
+                .map(|row| row.try_get::<Option<i64>, _>("family_id"))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+            if let Some(shared_family_id) = input.shared_family_id {
+                selected_family_ids.push(shared_family_id);
+            }
+
+            if !selected_binding_ids.is_empty() {
+                selected_binding_ids.sort_unstable();
+                selected_binding_ids.dedup();
+                let binding_parent_rows = sqlx::query(
+                    r#"
+                    SELECT id, family_id, manifest_id
+                    FROM loyal_yield.lookup_table_vault_bindings
+                    WHERE id = ANY($1)
+                    ORDER BY id
+                    "#,
+                )
+                .bind(&selected_binding_ids)
+                .fetch_all(&mut *tx)
+                .await?;
+                if binding_parent_rows.len() != selected_binding_ids.len() {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "readiness selected a missing lookup-table binding".to_owned(),
+                    ));
+                }
+                for row in binding_parent_rows {
+                    selected_family_ids.push(row.try_get("family_id")?);
+                    selected_manifest_ids.push(row.try_get("manifest_id")?);
+                }
+            }
+            selected_manifest_ids.sort_unstable();
+            selected_manifest_ids.dedup();
+            if !selected_manifest_ids.is_empty() {
+                let manifest_parent_rows = sqlx::query(
+                    r#"
+                    SELECT id, family_id
+                    FROM loyal_yield.lookup_table_manifests
+                    WHERE id = ANY($1)
+                    ORDER BY id
+                    "#,
+                )
+                .bind(&selected_manifest_ids)
+                .fetch_all(&mut *tx)
+                .await?;
+                if manifest_parent_rows.len() != selected_manifest_ids.len() {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "readiness selected a missing lookup-table manifest".to_owned(),
+                    ));
+                }
+                for row in manifest_parent_rows {
+                    selected_family_ids.push(row.try_get("family_id")?);
+                }
+            }
+            selected_family_ids.sort_unstable();
+            selected_family_ids.dedup();
+            if !selected_family_ids.is_empty() {
+                let locked_family_ids = sqlx::query_scalar::<_, i64>(
+                    r#"
+                    SELECT id FROM loyal_yield.lookup_table_families
+                    WHERE id = ANY($1)
+                    ORDER BY id
+                    FOR SHARE
+                    "#,
+                )
+                .bind(&selected_family_ids)
+                .fetch_all(&mut *tx)
+                .await?;
+                if locked_family_ids != selected_family_ids {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "readiness selected a missing lookup-table family".to_owned(),
+                    ));
+                }
+            }
+            if !selected_manifest_ids.is_empty() {
+                let locked_manifest_ids = sqlx::query_scalar::<_, i64>(
+                    r#"
+                    SELECT id FROM loyal_yield.lookup_table_manifests
+                    WHERE id = ANY($1)
+                    ORDER BY id
+                    FOR SHARE
+                    "#,
+                )
+                .bind(&selected_manifest_ids)
+                .fetch_all(&mut *tx)
+                .await?;
+                if locked_manifest_ids != selected_manifest_ids {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "readiness lookup-table manifest changed while parent locks were acquired"
+                            .to_owned(),
+                    ));
+                }
+            }
+            if !selected_binding_ids.is_empty() {
+                let locked_binding_rows = sqlx::query(
+                    r#"
+                    SELECT id, family_id, manifest_id
+                    FROM loyal_yield.lookup_table_vault_bindings
+                    WHERE id = ANY($1)
+                    ORDER BY id
+                    FOR SHARE
+                    "#,
+                )
+                .bind(&selected_binding_ids)
+                .fetch_all(&mut *tx)
+                .await?;
+                if locked_binding_rows.len() != selected_binding_ids.len()
+                    || locked_binding_rows.iter().any(|row| {
+                        row.try_get::<i64, _>("family_id")
+                            .ok()
+                            .is_none_or(|family_id| !selected_family_ids.contains(&family_id))
+                            || row
+                                .try_get::<i64, _>("manifest_id")
+                                .ok()
+                                .is_none_or(|manifest_id| {
+                                    !selected_manifest_ids.contains(&manifest_id)
+                                })
+                    })
+                {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "readiness lookup-table binding changed while parent locks were acquired"
+                            .to_owned(),
+                    ));
+                }
+            }
+
             // Readiness writes are a fleet hot path. Serialize only against
-            // lifecycle changes to the selected physical tables, in canonical
-            // id order, instead of taking the cluster-wide rollout lock.
+            // lifecycle changes to selected families, manifests, bindings,
+            // and physical tables in that order, instead of taking the
+            // cluster-wide lock.
             let selected_rows = sqlx::query(
                 r#"
                 SELECT id, cluster, status, durable, family_id, desired_state
@@ -15874,6 +16029,12 @@ impl NeonSqlClient {
             }
             for row in &selected_rows {
                 let family_id: Option<i64> = row.try_get("family_id")?;
+                if family_id.is_some_and(|family_id| !selected_family_ids.contains(&family_id)) {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "readiness lookup-table family changed while lifecycle locks were acquired"
+                            .to_owned(),
+                    ));
+                }
                 let is_legacy = family_id.is_none();
                 let selectable = row.try_get::<String, _>("cluster")? == input.cluster
                     && if is_legacy {
