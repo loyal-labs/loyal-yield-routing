@@ -24,6 +24,7 @@ pub enum LoyalActionError {
     InvalidRebalanceTransferCount,
     MissingActionStep,
     SplitActionRoute,
+    InvalidSettingsHandoff,
 }
 
 impl fmt::Display for LoyalActionError {
@@ -76,6 +77,9 @@ impl fmt::Display for LoyalActionError {
             Self::SplitActionRoute => {
                 formatter.write_str("route steps must share one Loyal action account")
             }
+            Self::InvalidSettingsHandoff => {
+                formatter.write_str("invalid atomic Squads Settings signer handoff")
+            }
         }
     }
 }
@@ -108,6 +112,13 @@ pub fn derive_squads_vault(squads_settings: &Pubkey, vault_index: u8) -> (Pubkey
     )
 }
 
+pub fn derive_squads_v4_vault(multisig: &Pubkey, vault_index: u8) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[b"multisig", multisig.as_ref(), b"vault", &[vault_index]],
+        &SQUADS_V4_PROGRAM_ID,
+    )
+}
+
 pub fn derive_classic_associated_token_account(owner: Pubkey, mint: Pubkey) -> Pubkey {
     Pubkey::find_program_address(
         &[owner.as_ref(), spl_token::id().as_ref(), mint.as_ref()],
@@ -121,6 +132,14 @@ pub struct SquadsCompiledInstruction {
     pub program_id_index: u8,
     pub accounts: Vec<u8>,
     pub data: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SquadsSettingsSignerHandoff {
+    pub settings: Pubkey,
+    pub current_signer: Pubkey,
+    pub new_signer: Pubkey,
+    pub new_signer_permissions_mask: u8,
 }
 
 pub fn compile_squads_inner_instruction(
@@ -226,6 +245,110 @@ pub fn remove_policy_instruction(
         ],
         data: serialize_settings_actions(vec![action]),
     }
+}
+
+/// Atomically installs a full-permission Settings signer before removing the
+/// current signer. The add-first order prevents a threshold-1 Settings account
+/// from passing through an empty signer set.
+pub fn handoff_settings_signer_instruction(
+    settings: Pubkey,
+    current_signer: Pubkey,
+    new_signer: Pubkey,
+) -> Result<Instruction> {
+    if settings == Pubkey::default()
+        || current_signer == Pubkey::default()
+        || new_signer == Pubkey::default()
+        || current_signer == new_signer
+    {
+        return Err(LoyalActionError::InvalidSettingsHandoff);
+    }
+    let actions = vec![
+        SquadsSettingsAction::AddSigner {
+            new_signer: SquadsSmartAccountSigner {
+                key: new_signer,
+                permissions: SquadsPermissions {
+                    mask: SQUADS_FULL_PERMISSIONS_MASK,
+                },
+            },
+        },
+        SquadsSettingsAction::RemoveSigner {
+            old_signer: current_signer,
+        },
+    ];
+
+    Ok(Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(settings, false),
+            AccountMeta::new(current_signer, true),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+            AccountMeta::new_readonly(current_signer, true),
+        ],
+        data: serialize_settings_actions(actions),
+    })
+}
+
+/// Independently decodes the narrow handoff wire shape emitted above. This is
+/// intentionally not a general Settings-action decoder: any extra action,
+/// reordered action, memo, account, or trailing byte is rejected.
+pub fn decode_settings_signer_handoff_instruction(
+    instruction: &Instruction,
+) -> Result<SquadsSettingsSignerHandoff> {
+    let accounts = &instruction.accounts;
+    if instruction.program_id != SQUADS_SMART_ACCOUNT_PROGRAM_ID
+        || accounts.len() != 5
+        || accounts[0].is_signer
+        || !accounts[0].is_writable
+        || !accounts[1].is_signer
+        || !accounts[1].is_writable
+        || accounts[2] != AccountMeta::new_readonly(solana_sdk::system_program::ID, false)
+        || accounts[3] != AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false)
+        || accounts[4] != AccountMeta::new_readonly(accounts[1].pubkey, true)
+    {
+        return Err(LoyalActionError::InvalidSettingsHandoff);
+    }
+
+    let data = &instruction.data;
+    let discriminator = anchor_instruction_discriminator("execute_settings_transaction_sync");
+    if data.len() != 81
+        || data[..8] != discriminator
+        || data[8] != SQUADS_SYNC_SIGNER_COUNT
+        || u32::from_le_bytes(
+            data[9..13]
+                .try_into()
+                .map_err(|_| LoyalActionError::InvalidSettingsHandoff)?,
+        ) != 2
+        || data[13] != 0
+        || data[46] != SQUADS_FULL_PERMISSIONS_MASK
+        || data[47] != 1
+        || data[80] != 0
+    {
+        return Err(LoyalActionError::InvalidSettingsHandoff);
+    }
+    let new_signer = Pubkey::new_from_array(
+        data[14..46]
+            .try_into()
+            .map_err(|_| LoyalActionError::InvalidSettingsHandoff)?,
+    );
+    let removed_signer = Pubkey::new_from_array(
+        data[48..80]
+            .try_into()
+            .map_err(|_| LoyalActionError::InvalidSettingsHandoff)?,
+    );
+    if new_signer == Pubkey::default()
+        || removed_signer != accounts[1].pubkey
+        || new_signer == removed_signer
+    {
+        return Err(LoyalActionError::InvalidSettingsHandoff);
+    }
+
+    Ok(SquadsSettingsSignerHandoff {
+        settings: accounts[0].pubkey,
+        current_signer: removed_signer,
+        new_signer,
+        new_signer_permissions_mask: data[46],
+    })
 }
 
 /// Creates the exact effectively-unlimited SPL SpendingLimit used by an
@@ -811,6 +934,42 @@ mod tests {
                 &SQUADS_SMART_ACCOUNT_PROGRAM_ID,
             )
         );
+    }
+
+    #[test]
+    fn derives_the_published_mother_v4_vault() {
+        let multisig = Pubkey::try_from("Gv27nnaXR8UanJmjPZ4MLS81eqee2DfzJSv7C8PkQTEC").unwrap();
+        let mother = Pubkey::try_from("AQyyTwCKemeeMu8ZPZFxrXMbVwAYTSbBhi1w4PBrhvYE").unwrap();
+
+        assert_eq!(derive_squads_v4_vault(&multisig, 0).0, mother);
+    }
+
+    #[test]
+    fn signer_handoff_is_atomic_add_then_remove_and_strictly_decoded() {
+        let settings = Pubkey::new_unique();
+        let current = Pubkey::new_unique();
+        let mother = Pubkey::new_unique();
+        let instruction =
+            handoff_settings_signer_instruction(settings, current, mother).expect("handoff");
+
+        assert_eq!(
+            decode_settings_signer_handoff_instruction(&instruction).expect("decode"),
+            SquadsSettingsSignerHandoff {
+                settings,
+                current_signer: current,
+                new_signer: mother,
+                new_signer_permissions_mask: SQUADS_FULL_PERMISSIONS_MASK,
+            }
+        );
+
+        for offset in [8usize, 9, 13, 46, 47, 80] {
+            let mut mutated = instruction.clone();
+            mutated.data[offset] ^= 1;
+            assert_eq!(
+                decode_settings_signer_handoff_instruction(&mutated),
+                Err(LoyalActionError::InvalidSettingsHandoff)
+            );
+        }
     }
 
     #[test]

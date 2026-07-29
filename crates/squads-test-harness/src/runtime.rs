@@ -132,6 +132,16 @@ pub fn add_squads_program_from_env_or_sibling_checkout(
     Ok(Some(sibling_path))
 }
 
+pub fn add_squads_v4_program_from_fixture(svm: &mut LiteSVM) -> std::io::Result<PathBuf> {
+    let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(SQUADS_V4_PROGRAM_SO_FIXTURE);
+    let program = fs::read(&fixture_path)?;
+    svm.add_program(loyal_actions::SQUADS_V4_PROGRAM_ID, &program)
+        .map_err(|error| std::io::Error::other(format!("add Squads v4 program failed: {error}")))?;
+    Ok(fixture_path)
+}
+
 pub fn add_subscriptions_program_from_env_or_fixture(
     svm: &mut LiteSVM,
 ) -> std::io::Result<Option<PathBuf>> {

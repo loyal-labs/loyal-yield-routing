@@ -382,21 +382,25 @@
     ]
   },
   "meteora": {
-    "source_slot": 435676019,
+    "policy_generation": 2,
+    "source_slot": 435846130,
     "pool": "c29DVknA5DZUCH6U5ujo1EGfiKKXZrUk6yk56yJxLrm",
     "program": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
     "active_bin_id_at_setup": -203,
     "position": "3SBxJxpCG2EbfLrvD5DgjKUarLgn5i643WYNnUdTYgCB",
     "position_lower_bin_id": -237,
-    "position_upper_bin_id": -168,
-    "position_width": 70,
+    "position_upper_bin_id": 0,
+    "position_width": 238,
     "vault_loyal_token_account": "ALqM7B2RPGkdJyafxWHqvsgqaPz8DgriekfKhrVZPT1o",
     "vault_usdc_token_account": "CovHF1eSvqKE7A4MkGq5FYCsKtZBue3TQN464diBqW8",
     "bitmap_extension_or_program_sentinel": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
     "bin_arrays": [
       "AvJnsVVSq8VNBzHXdmHYzXUfyfwF6UFbcG1WYypy2xF1",
       "2ArooKALsXSFCZ9jDgGet8u8jyHb7LZWxdHkNxwuegDK",
-      "J7XCjD9pP2QRJYDSqj96NyGjbJqLQgNCFRzYqcogZBVj"
+      "J7XCjD9pP2QRJYDSqj96NyGjbJqLQgNCFRzYqcogZBVj",
+      "73z5QTEF4PaCccJ5hrFijS2eGME7VC8svF6RhCukSNKR",
+      "7arsjwRAf5wwN3dgcLGUkRjxsEeCv2E74jdgXtaKxiLL",
+      "HmQLeR924iXUgkyKrivjxU92JaDEBfwGP7Kkivg183Ea"
     ],
     "strategy_range_a_min_bin_id": -207,
     "strategy_range_a_max_bin_id": -199,
@@ -429,6 +433,75 @@
       "creation_signature": "4swxiiB69BLAteHv62HgEW5x21AufPRy3JW6jQzEAq7qWnpSJPrJrbMETSZAb2xkdJh5dghZU1EET3NHSzyW4f8K",
       "finalized_slot": 435676792
     },
+    "additional_policy_shards": [
+      {
+        "shard_index": 1,
+        "lower_bin_array_indexes": [
+          -2,
+          -1
+        ],
+        "add_liquidity_policy": {
+          "status": "finalized",
+          "seed": 8,
+          "policy": "EL6Y7PeavKJgPBLfTJFJWjhiCWAaZ66dCFCLCTtW8jxy",
+          "pending_signature": "5ywMqjwJPxcnowCvQKdWPq4hF53VAqJAij6modfVHTyseF1hN22X6mHEvj9csqGwpeRBcrhie2Q6kaSMHaxpmJ1v",
+          "last_valid_block_height": 413904028,
+          "creation_signature": "5ywMqjwJPxcnowCvQKdWPq4hF53VAqJAij6modfVHTyseF1hN22X6mHEvj9csqGwpeRBcrhie2Q6kaSMHaxpmJ1v",
+          "finalized_slot": 435845448
+        },
+        "remove_liquidity_policy": {
+          "status": "finalized",
+          "seed": 9,
+          "policy": "EZGptfsj2yn1yVdYQvPq9vqReTBnvius2DXWKDP9rkxt",
+          "pending_signature": "2uDeDRNfkRw8tB28DjHfkYZprtjFQWzx8uMWTK8JMsbNAJhoMDem7XyASyGQbXV5hy6UWe45rE3RLRCWZH7Av8Bw",
+          "last_valid_block_height": 413904062,
+          "creation_signature": "2uDeDRNfkRw8tB28DjHfkYZprtjFQWzx8uMWTK8JMsbNAJhoMDem7XyASyGQbXV5hy6UWe45rE3RLRCWZH7Av8Bw",
+          "finalized_slot": 435845483
+        },
+        "claim_fee_policy": {
+          "status": "finalized",
+          "seed": 10,
+          "policy": "GD6os6HMZLRN5deg6G4ykMAdWsCYptvwRJPT5ajJhwfN",
+          "pending_signature": "2GHE7uDf97uh7XDzJykBzgBVa7eSzXJQbGiTRDu5XEAymUnGnFvhPE8yh6qceWnoB1DyHDNwRub8J9XHTP5YTupP",
+          "last_valid_block_height": 413904097,
+          "creation_signature": "2GHE7uDf97uh7XDzJykBzgBVa7eSzXJQbGiTRDu5XEAymUnGnFvhPE8yh6qceWnoB1DyHDNwRub8J9XHTP5YTupP",
+          "finalized_slot": 435845517
+        }
+      },
+      {
+        "shard_index": 2,
+        "lower_bin_array_indexes": [
+          0
+        ],
+        "add_liquidity_policy": {
+          "status": "finalized",
+          "seed": 11,
+          "policy": "GyXPmLSCRtmweePHjvNFb23eWSQjEdvXPKJNr8hfGNxV",
+          "pending_signature": "2HbQG96SAhDGgdeLTAwfjA7KwVt7vkjAgY2vuFohLM5ozcYqPNhpoU4bpfz8Gp1faVRu2U5ZnUt6evETefg8DfmG",
+          "last_valid_block_height": 413904318,
+          "creation_signature": "2HbQG96SAhDGgdeLTAwfjA7KwVt7vkjAgY2vuFohLM5ozcYqPNhpoU4bpfz8Gp1faVRu2U5ZnUt6evETefg8DfmG",
+          "finalized_slot": 435845738
+        },
+        "remove_liquidity_policy": {
+          "status": "finalized",
+          "seed": 12,
+          "policy": "tg1ZThsNM3Nq66sTNe61KaK2BYN2NXvkQUzmZcwbFEg",
+          "pending_signature": "3BsVoyUsK3dgWDdKxN2ED9VJacvdEiLNVtG9iTKC4No7MBmE1W87fGehzAUv5ghutYghweUF7GZHz6JwEo7WRTPP",
+          "last_valid_block_height": 413904353,
+          "creation_signature": "3BsVoyUsK3dgWDdKxN2ED9VJacvdEiLNVtG9iTKC4No7MBmE1W87fGehzAUv5ghutYghweUF7GZHz6JwEo7WRTPP",
+          "finalized_slot": 435845774
+        },
+        "claim_fee_policy": {
+          "status": "finalized",
+          "seed": 13,
+          "policy": "42eutsakUJ5ZWydRkYxDhRqDqokfieqU58P3S2dqeMvF",
+          "pending_signature": "5r6FcmFNDFxSNecSGLNL8FAgrRKgMpPoYgTBKdiAiDs3PrwbLEYoxUfduZtT65fQdiSMSBSU4wXK94AatuF4i8Kf",
+          "last_valid_block_height": 413904746,
+          "creation_signature": "5r6FcmFNDFxSNecSGLNL8FAgrRKgMpPoYgTBKdiAiDs3PrwbLEYoxUfduZtT65fQdiSMSBSU4wXK94AatuF4i8Kf",
+          "finalized_slot": 435846167
+        }
+      }
+    ],
     "live_steps": [
       {
         "name": "meteora-acquire-loyal-dust",
@@ -761,6 +834,158 @@
           "vault_lamports": 67523360,
           "vault_loyal_raw": 4346,
           "vault_usdc_raw": 1000097
+        }
+      },
+      {
+        "name": "meteora-position-expand-upper-to-bin-neg77",
+        "status": "finalized",
+        "pending_signature": "5cRWiptcTaVFJztCWbavVSM98JaqUZcdcLYvHGzz3k3xueUR9wkyxivNhWi7bpaUNMcGgp7XEJubt98gAYXYQ9Qe",
+        "last_valid_block_height": 413761386,
+        "finalized_signature": "5cRWiptcTaVFJztCWbavVSM98JaqUZcdcLYvHGzz3k3xueUR9wkyxivNhWi7bpaUNMcGgp7XEJubt98gAYXYQ9Qe",
+        "finalized_slot": 435702536,
+        "before": {
+          "deployment_lamports": 4265320389,
+          "position_data_len": 8120,
+          "position_lamports": 57406080,
+          "position_nonzero_liquidity_bins": 0,
+          "position_pending_fee_loyal_raw": 0,
+          "position_pending_fee_usdc_raw": 0,
+          "position_width": 70,
+          "vault_lamports": 67523360
+        },
+        "after": {
+          "deployment_lamports": 4251902429,
+          "position_data_len": 18312,
+          "position_lamports": 128342400,
+          "position_nonzero_liquidity_bins": 0,
+          "position_pending_fee_loyal_raw": 0,
+          "position_pending_fee_usdc_raw": 0,
+          "position_width": 161,
+          "vault_lamports": 10000000
+        }
+      },
+      {
+        "name": "meteora-position-expand-upper-to-bin-0",
+        "status": "finalized",
+        "pending_signature": "4AhiCbEsNdSAHP4iRViEmzH3dSiEMFhe7ejKrV3TF6Gb3LgE1pXJB6xqKB4SrTcndNLcHASsE2fSqzcq1swPq28s",
+        "last_valid_block_height": 413761426,
+        "finalized_signature": "4AhiCbEsNdSAHP4iRViEmzH3dSiEMFhe7ejKrV3TF6Gb3LgE1pXJB6xqKB4SrTcndNLcHASsE2fSqzcq1swPq28s",
+        "finalized_slot": 435702575,
+        "before": {
+          "deployment_lamports": 4251902429,
+          "position_data_len": 18312,
+          "position_lamports": 128342400,
+          "position_nonzero_liquidity_bins": 0,
+          "position_pending_fee_loyal_raw": 0,
+          "position_pending_fee_usdc_raw": 0,
+          "position_width": 161,
+          "vault_lamports": 10000000
+        },
+        "after": {
+          "deployment_lamports": 4191874389,
+          "position_data_len": 26936,
+          "position_lamports": 188365440,
+          "position_nonzero_liquidity_bins": 0,
+          "position_pending_fee_loyal_raw": 0,
+          "position_pending_fee_usdc_raw": 0,
+          "position_width": 238,
+          "vault_lamports": 10000000
+        }
+      },
+      {
+        "name": "meteora-policy-upgrade-shard-1-add",
+        "status": "finalized",
+        "pending_signature": "5ywMqjwJPxcnowCvQKdWPq4hF53VAqJAij6modfVHTyseF1hN22X6mHEvj9csqGwpeRBcrhie2Q6kaSMHaxpmJ1v",
+        "last_valid_block_height": 413904028,
+        "finalized_signature": "5ywMqjwJPxcnowCvQKdWPq4hF53VAqJAij6modfVHTyseF1hN22X6mHEvj9csqGwpeRBcrhie2Q6kaSMHaxpmJ1v",
+        "finalized_slot": 435845448,
+        "before": {
+          "policy_exists": 0,
+          "settings_policy_seed": 7
+        },
+        "after": {
+          "policy_exists": 1,
+          "settings_policy_seed": 8
+        }
+      },
+      {
+        "name": "meteora-policy-upgrade-shard-1-remove",
+        "status": "finalized",
+        "pending_signature": "2uDeDRNfkRw8tB28DjHfkYZprtjFQWzx8uMWTK8JMsbNAJhoMDem7XyASyGQbXV5hy6UWe45rE3RLRCWZH7Av8Bw",
+        "last_valid_block_height": 413904062,
+        "finalized_signature": "2uDeDRNfkRw8tB28DjHfkYZprtjFQWzx8uMWTK8JMsbNAJhoMDem7XyASyGQbXV5hy6UWe45rE3RLRCWZH7Av8Bw",
+        "finalized_slot": 435845483,
+        "before": {
+          "policy_exists": 0,
+          "settings_policy_seed": 8
+        },
+        "after": {
+          "policy_exists": 1,
+          "settings_policy_seed": 9
+        }
+      },
+      {
+        "name": "meteora-policy-upgrade-shard-1-claim",
+        "status": "finalized",
+        "pending_signature": "2GHE7uDf97uh7XDzJykBzgBVa7eSzXJQbGiTRDu5XEAymUnGnFvhPE8yh6qceWnoB1DyHDNwRub8J9XHTP5YTupP",
+        "last_valid_block_height": 413904097,
+        "finalized_signature": "2GHE7uDf97uh7XDzJykBzgBVa7eSzXJQbGiTRDu5XEAymUnGnFvhPE8yh6qceWnoB1DyHDNwRub8J9XHTP5YTupP",
+        "finalized_slot": 435845517,
+        "before": {
+          "policy_exists": 0,
+          "settings_policy_seed": 9
+        },
+        "after": {
+          "policy_exists": 1,
+          "settings_policy_seed": 10
+        }
+      },
+      {
+        "name": "meteora-policy-upgrade-shard-2-add",
+        "status": "finalized",
+        "pending_signature": "2HbQG96SAhDGgdeLTAwfjA7KwVt7vkjAgY2vuFohLM5ozcYqPNhpoU4bpfz8Gp1faVRu2U5ZnUt6evETefg8DfmG",
+        "last_valid_block_height": 413904318,
+        "finalized_signature": "2HbQG96SAhDGgdeLTAwfjA7KwVt7vkjAgY2vuFohLM5ozcYqPNhpoU4bpfz8Gp1faVRu2U5ZnUt6evETefg8DfmG",
+        "finalized_slot": 435845738,
+        "before": {
+          "policy_exists": 0,
+          "settings_policy_seed": 10
+        },
+        "after": {
+          "policy_exists": 1,
+          "settings_policy_seed": 11
+        }
+      },
+      {
+        "name": "meteora-policy-upgrade-shard-2-remove",
+        "status": "finalized",
+        "pending_signature": "3BsVoyUsK3dgWDdKxN2ED9VJacvdEiLNVtG9iTKC4No7MBmE1W87fGehzAUv5ghutYghweUF7GZHz6JwEo7WRTPP",
+        "last_valid_block_height": 413904353,
+        "finalized_signature": "3BsVoyUsK3dgWDdKxN2ED9VJacvdEiLNVtG9iTKC4No7MBmE1W87fGehzAUv5ghutYghweUF7GZHz6JwEo7WRTPP",
+        "finalized_slot": 435845774,
+        "before": {
+          "policy_exists": 0,
+          "settings_policy_seed": 11
+        },
+        "after": {
+          "policy_exists": 1,
+          "settings_policy_seed": 12
+        }
+      },
+      {
+        "name": "meteora-policy-upgrade-shard-2-claim",
+        "status": "finalized",
+        "pending_signature": "5r6FcmFNDFxSNecSGLNL8FAgrRKgMpPoYgTBKdiAiDs3PrwbLEYoxUfduZtT65fQdiSMSBSU4wXK94AatuF4i8Kf",
+        "last_valid_block_height": 413904746,
+        "finalized_signature": "5r6FcmFNDFxSNecSGLNL8FAgrRKgMpPoYgTBKdiAiDs3PrwbLEYoxUfduZtT65fQdiSMSBSU4wXK94AatuF4i8Kf",
+        "finalized_slot": 435846167,
+        "before": {
+          "policy_exists": 0,
+          "settings_policy_seed": 12
+        },
+        "after": {
+          "policy_exists": 1,
+          "settings_policy_seed": 13
         }
       }
     ]

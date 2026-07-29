@@ -67,8 +67,10 @@ pub use protocols::{
 };
 pub use squads::{
     compile_squads_inner_instruction, create_unlimited_spl_spending_limit_policy_instruction,
-    derive_action_account, derive_classic_associated_token_account, derive_squads_vault,
+    decode_settings_signer_handoff_instruction, derive_action_account,
+    derive_classic_associated_token_account, derive_squads_v4_vault, derive_squads_vault,
     execute_program_interaction_policy_instruction, execute_spl_spending_limit_policy_instruction,
-    execute_sync_transaction_instruction, remove_policy_instruction, LoyalActionError, Result,
-    SquadsCompiledInstruction,
+    execute_sync_transaction_instruction, handoff_settings_signer_instruction,
+    remove_policy_instruction, LoyalActionError, Result, SquadsCompiledInstruction,
+    SquadsSettingsSignerHandoff,
 };

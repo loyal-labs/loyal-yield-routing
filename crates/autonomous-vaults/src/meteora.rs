@@ -24,14 +24,25 @@ use solana_sdk::{
 };
 use std::collections::HashMap;
 
-use crate::state::{MeteoraRecord, PolicyRecord};
+use crate::state::{MeteoraPolicyShardRecord, MeteoraRecord, PolicyRecord, PolicyStatus};
 
 pub const METEORA_ADD_POLICY_SEED: u64 = 3;
 pub const METEORA_REMOVE_POLICY_SEED: u64 = 4;
 pub const METEORA_CLAIM_POLICY_SEED: u64 = 5;
+pub const METEORA_EXPANDED_ADD_POLICY_SEED: u64 = 8;
+pub const METEORA_EXPANDED_REMOVE_POLICY_SEED: u64 = 9;
+pub const METEORA_EXPANDED_CLAIM_POLICY_SEED: u64 = 10;
+pub const METEORA_FINAL_ADD_POLICY_SEED: u64 = 11;
+pub const METEORA_FINAL_REMOVE_POLICY_SEED: u64 = 12;
+pub const METEORA_FINAL_CLAIM_POLICY_SEED: u64 = 13;
+pub const METEORA_LEGACY_POLICY_GENERATION: u8 = 1;
+pub const METEORA_EXPANDED_POLICY_GENERATION: u8 = 2;
 pub const POSITION_LOWER_BIN_ID: i32 = -237;
 pub const POSITION_WIDTH: i32 = 70;
 pub const POSITION_UPPER_BIN_ID: i32 = POSITION_LOWER_BIN_ID + POSITION_WIDTH - 1;
+pub const POSITION_TARGET_UPPER_BIN_ID: i32 = 0;
+pub const POSITION_TARGET_WIDTH: i32 = POSITION_TARGET_UPPER_BIN_ID - POSITION_LOWER_BIN_ID + 1;
+pub const POSITION_RESIZE_MAX_LENGTH: i32 = 91;
 pub const MAX_ACTIVE_BIN_SLIPPAGE: i32 = 3;
 pub const LOYAL_ACQUIRE_USDC_RAW: u64 = 1_000;
 pub const DIRECT_FEE_SWAP_USDC_RAW: u64 = 100;
@@ -66,15 +77,30 @@ pub struct PositionSnapshot {
 
 #[derive(Clone, Debug)]
 pub struct MeteoraPlan {
+    pub policy_generation: u8,
     pub source_slot: u64,
     pub active_bin_id: i32,
     pub position: Pubkey,
+    pub position_lower_bin_id: i32,
+    pub position_upper_bin_id: i32,
+    pub position_width: i32,
     pub vault_loyal: Pubkey,
     pub vault_usdc: Pubkey,
     pub bitmap_extension_or_program_sentinel: Pubkey,
     pub bin_arrays: Vec<Pubkey>,
     pub range_a: BinRange,
     pub range_b: BinRange,
+    pub policies: AutonomousMeteoraPolicies,
+    pub add_constraints: Vec<SquadsInstructionConstraintView>,
+    pub remove_constraints: Vec<SquadsInstructionConstraintView>,
+    pub claim_constraints: Vec<SquadsInstructionConstraintView>,
+    pub additional_policy_shards: Vec<MeteoraPolicyShardPlan>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MeteoraPolicyShardPlan {
+    pub shard_index: u8,
+    pub lower_bin_array_indexes: Vec<i32>,
     pub policies: AutonomousMeteoraPolicies,
     pub add_constraints: Vec<SquadsInstructionConstraintView>,
     pub remove_constraints: Vec<SquadsInstructionConstraintView>,
@@ -257,7 +283,17 @@ pub fn load_plan(
     delegated_signer: Pubkey,
     vault: Pubkey,
     vault_index: u8,
+    policy_generation: u8,
+    require_bin_arrays: bool,
 ) -> Result<MeteoraPlan> {
+    if ![
+        METEORA_LEGACY_POLICY_GENERATION,
+        METEORA_EXPANDED_POLICY_GENERATION,
+    ]
+    .contains(&policy_generation)
+    {
+        bail!("unsupported Meteora policy generation {policy_generation}");
+    }
     let response = rpc
         .get_account_with_commitment(&METEORA_POOL, CommitmentConfig::finalized())
         .context("fetch Meteora pool at finalized commitment")?;
@@ -282,15 +318,27 @@ pub fn load_plan(
     }
     validate_token_graph(rpc)?;
 
+    // These are the immutable PDA creation seeds. Expanding PositionV2 changes
+    // its live bounds, but does not change its address.
     let position =
         derive_position_pda(METEORA_POOL, vault, POSITION_LOWER_BIN_ID, POSITION_WIDTH).0;
-    if let Some(snapshot) = load_position_snapshot(rpc, position, vault)? {
-        if snapshot.lower_bin_id != POSITION_LOWER_BIN_ID
-            || snapshot.upper_bin_id != POSITION_UPPER_BIN_ID
-        {
-            bail!("existing Meteora position bounds do not match the approved manifest");
-        }
-    }
+    let position_snapshot = load_position_snapshot(rpc, position, vault)?;
+    let (position_lower_bin_id, position_upper_bin_id, position_width) =
+        if let Some(snapshot) = position_snapshot {
+            if snapshot.lower_bin_id != POSITION_LOWER_BIN_ID
+                || snapshot.upper_bin_id < POSITION_UPPER_BIN_ID
+                || snapshot.upper_bin_id > POSITION_TARGET_UPPER_BIN_ID
+            {
+                bail!("existing Meteora position bounds are outside the approved resize corridor");
+            }
+            (
+                snapshot.lower_bin_id,
+                snapshot.upper_bin_id,
+                snapshot.upper_bin_id - snapshot.lower_bin_id + 1,
+            )
+        } else {
+            (POSITION_LOWER_BIN_ID, POSITION_UPPER_BIN_ID, POSITION_WIDTH)
+        };
 
     let (bitmap_extension, _) = derive_bin_array_bitmap_extension(METEORA_POOL);
     let bitmap_extension_or_program_sentinel = match rpc
@@ -302,23 +350,32 @@ pub fn load_plan(
         None => METEORA_DLMM_PROGRAM_ID,
     };
     let lower_array_index = bin_array_index(POSITION_LOWER_BIN_ID);
-    let upper_array_index = bin_array_index(POSITION_UPPER_BIN_ID);
-    let candidate_array_indexes = [
-        lower_array_index,
-        upper_array_index,
-        upper_array_index
+    let policy_upper_bin_id = if policy_generation == METEORA_EXPANDED_POLICY_GENERATION {
+        POSITION_TARGET_UPPER_BIN_ID
+    } else {
+        POSITION_UPPER_BIN_ID
+    };
+    let upper_array_index = bin_array_index(policy_upper_bin_id);
+    let candidate_array_indexes = (lower_array_index
+        ..=upper_array_index
             .checked_add(1)
-            .context("Meteora bin-array index overflow")?,
-    ];
+            .context("Meteora bin-array index overflow")?)
+        .collect::<Vec<_>>();
     let bin_arrays = candidate_array_indexes
-        .into_iter()
+        .iter()
+        .copied()
         .map(|index| derive_bin_array_pda(METEORA_POOL, i64::from(index)).0)
         .collect::<Vec<_>>();
-    for (bin_array, expected_index) in bin_arrays.iter().zip(candidate_array_indexes) {
+    for (bin_array, expected_index) in bin_arrays.iter().zip(candidate_array_indexes.iter()) {
         let account = rpc
             .get_account_with_commitment(bin_array, CommitmentConfig::finalized())?
-            .value
-            .with_context(|| format!("required Meteora BinArray {bin_array} is absent"))?;
+            .value;
+        let Some(account) = account else {
+            if require_bin_arrays {
+                bail!("required Meteora BinArray {bin_array} is absent");
+            }
+            continue;
+        };
         if account.owner != METEORA_DLMM_PROGRAM_ID {
             bail!("required Meteora BinArray {bin_array} has an unexpected owner");
         }
@@ -326,7 +383,7 @@ pub fn load_plan(
         let bin_array_state: dlmm::accounts::BinArray =
             pod_read_unaligned_skip_disc(&account.data).context("decode required BinArray")?;
         if bin_array_state.lb_pair != METEORA_POOL
-            || bin_array_state.index != i64::from(expected_index)
+            || bin_array_state.index != i64::from(*expected_index)
         {
             bail!("required Meteora BinArray {bin_array} pool or index is incorrect");
         }
@@ -334,6 +391,9 @@ pub fn load_plan(
 
     let vault_loyal = derive_associated_token_address(vault, METEORA_LOYAL_MINT);
     let vault_usdc = derive_associated_token_address(vault, USDC_MINT);
+    if bin_arrays.len() < 3 {
+        bail!("Meteora policy plan requires at least three BinArray candidates");
+    }
     let policies = create_meteora_policies(
         settings,
         authority,
@@ -344,26 +404,69 @@ pub fn load_plan(
         METEORA_REMOVE_POLICY_SEED,
         METEORA_CLAIM_POLICY_SEED,
         vec![position],
-        vec![bin_arrays[0], bin_arrays[1]],
-        vec![bin_arrays[1], bin_arrays[2]],
+        bin_arrays[..2].to_vec(),
+        bin_arrays[1..3].to_vec(),
     )
-    .context("construct split Meteora policies")?;
+    .context("construct base Meteora policy shard")?;
     let add_constraints = decoded_constraints(&policies.add_liquidity.create_instruction)?;
     let remove_constraints = decoded_constraints(&policies.remove_liquidity.create_instruction)?;
     let claim_constraints = decoded_constraints(&policies.claim_fees.create_instruction)?;
+    let additional_policy_shards = if policy_generation == METEORA_EXPANDED_POLICY_GENERATION {
+        if bin_arrays.len() != 6 {
+            bail!("expanded Meteora policy plan requires exactly six BinArray candidates");
+        }
+        vec![
+            create_policy_shard(
+                settings,
+                authority,
+                delegated_signer,
+                vault,
+                vault_index,
+                position,
+                1,
+                vec![-2, -1],
+                METEORA_EXPANDED_ADD_POLICY_SEED,
+                METEORA_EXPANDED_REMOVE_POLICY_SEED,
+                METEORA_EXPANDED_CLAIM_POLICY_SEED,
+                bin_arrays[2..4].to_vec(),
+                bin_arrays[3..5].to_vec(),
+            )?,
+            create_policy_shard(
+                settings,
+                authority,
+                delegated_signer,
+                vault,
+                vault_index,
+                position,
+                2,
+                vec![0],
+                METEORA_FINAL_ADD_POLICY_SEED,
+                METEORA_FINAL_REMOVE_POLICY_SEED,
+                METEORA_FINAL_CLAIM_POLICY_SEED,
+                vec![bin_arrays[4]],
+                vec![bin_arrays[5]],
+            )?,
+        ]
+    } else {
+        Vec::new()
+    };
     let range_a = TEST_RANGE_A;
     let range_b = TEST_RANGE_B;
     for range in [range_a, range_b] {
-        validate_position_range(range)?;
+        validate_position_range(range, position_lower_bin_id, position_upper_bin_id)?;
     }
     if range_a == range_b {
         bail!("Meteora verifier ranges must be distinct");
     }
 
     Ok(MeteoraPlan {
+        policy_generation,
         source_slot: response.context.slot,
         active_bin_id: pool.active_id,
         position,
+        position_lower_bin_id,
+        position_upper_bin_id,
+        position_width,
         vault_loyal,
         vault_usdc,
         bitmap_extension_or_program_sentinel,
@@ -374,19 +477,61 @@ pub fn load_plan(
         add_constraints,
         remove_constraints,
         claim_constraints,
+        additional_policy_shards,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_policy_shard(
+    settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    vault: Pubkey,
+    vault_index: u8,
+    position: Pubkey,
+    shard_index: u8,
+    lower_bin_array_indexes: Vec<i32>,
+    add_policy_seed: u64,
+    remove_policy_seed: u64,
+    claim_policy_seed: u64,
+    lower_bin_arrays: Vec<Pubkey>,
+    upper_bin_arrays: Vec<Pubkey>,
+) -> Result<MeteoraPolicyShardPlan> {
+    let policies = create_meteora_policies(
+        settings,
+        authority,
+        delegated_signer,
+        vault,
+        vault_index,
+        add_policy_seed,
+        remove_policy_seed,
+        claim_policy_seed,
+        vec![position],
+        lower_bin_arrays,
+        upper_bin_arrays,
+    )
+    .with_context(|| format!("construct Meteora policy shard {shard_index}"))?;
+    Ok(MeteoraPolicyShardPlan {
+        shard_index,
+        lower_bin_array_indexes,
+        add_constraints: decoded_constraints(&policies.add_liquidity.create_instruction)?,
+        remove_constraints: decoded_constraints(&policies.remove_liquidity.create_instruction)?,
+        claim_constraints: decoded_constraints(&policies.claim_fees.create_instruction)?,
+        policies,
     })
 }
 
 pub fn record_from_plan(plan: &MeteoraPlan) -> MeteoraRecord {
     MeteoraRecord {
+        policy_generation: plan.policy_generation,
         source_slot: plan.source_slot,
         pool: METEORA_POOL.to_string(),
         program: METEORA_DLMM_PROGRAM_ID.to_string(),
         active_bin_id_at_setup: plan.active_bin_id,
         position: plan.position.to_string(),
-        position_lower_bin_id: POSITION_LOWER_BIN_ID,
-        position_upper_bin_id: POSITION_UPPER_BIN_ID,
-        position_width: POSITION_WIDTH,
+        position_lower_bin_id: plan.position_lower_bin_id,
+        position_upper_bin_id: plan.position_upper_bin_id,
+        position_width: plan.position_width,
         vault_loyal_token_account: plan.vault_loyal.to_string(),
         vault_usdc_token_account: plan.vault_usdc.to_string(),
         bitmap_extension_or_program_sentinel: plan.bitmap_extension_or_program_sentinel.to_string(),
@@ -398,26 +543,113 @@ pub fn record_from_plan(plan: &MeteoraPlan) -> MeteoraRecord {
         add_liquidity_policy: None,
         remove_liquidity_policy: None,
         claim_fee_policy: None,
+        additional_policy_shards: plan
+            .additional_policy_shards
+            .iter()
+            .map(|shard| MeteoraPolicyShardRecord {
+                shard_index: shard.shard_index,
+                lower_bin_array_indexes: shard.lower_bin_array_indexes.clone(),
+                add_liquidity_policy: None,
+                remove_liquidity_policy: None,
+                claim_fee_policy: None,
+            })
+            .collect(),
         live_steps: Vec::new(),
     }
 }
 
 pub fn validate_record(record: &MeteoraRecord, plan: &MeteoraPlan) -> Result<()> {
     let fresh = record_from_plan(plan);
+    let recorded_width_matches_bounds =
+        record.position_upper_bin_id - record.position_lower_bin_id + 1 == record.position_width;
+    let recorded_bounds_are_approved = record.position_lower_bin_id == POSITION_LOWER_BIN_ID
+        && record.position_upper_bin_id >= POSITION_UPPER_BIN_ID
+        && record.position_upper_bin_id <= POSITION_TARGET_UPPER_BIN_ID
+        && recorded_width_matches_bounds;
+    let recorded_bounds_match_live = record.position_lower_bin_id == fresh.position_lower_bin_id
+        && record.position_upper_bin_id == fresh.position_upper_bin_id
+        && record.position_width == fresh.position_width;
+    let resize_is_recoverable = record.live_steps.iter().any(|step| {
+        step.name
+            .starts_with("meteora-position-expand-upper-to-bin-")
+            && step.status == PolicyStatus::Planned
+    });
     if record.pool != fresh.pool
+        || record.policy_generation != fresh.policy_generation
         || record.program != fresh.program
         || record.position != fresh.position
-        || record.position_lower_bin_id != fresh.position_lower_bin_id
-        || record.position_upper_bin_id != fresh.position_upper_bin_id
-        || record.position_width != fresh.position_width
+        || !recorded_bounds_are_approved
+        || (!recorded_bounds_match_live && !resize_is_recoverable)
         || record.vault_loyal_token_account != fresh.vault_loyal_token_account
         || record.vault_usdc_token_account != fresh.vault_usdc_token_account
         || record.bitmap_extension_or_program_sentinel != fresh.bitmap_extension_or_program_sentinel
         || record.bin_arrays != fresh.bin_arrays
+        || [
+            (
+                record.add_liquidity_policy.as_ref(),
+                &plan.policies.add_liquidity,
+            ),
+            (
+                record.remove_liquidity_policy.as_ref(),
+                &plan.policies.remove_liquidity,
+            ),
+            (record.claim_fee_policy.as_ref(), &plan.policies.claim_fees),
+        ]
+        .into_iter()
+        .any(|(record, policy)| match record {
+            Some(record) => {
+                record.seed != policy.policy_seed || record.policy != policy.policy.to_string()
+            }
+            None => false,
+        })
+        || record.additional_policy_shards.len() != fresh.additional_policy_shards.len()
+        || record
+            .additional_policy_shards
+            .iter()
+            .zip(plan.additional_policy_shards.iter())
+            .any(|(recorded, expected)| {
+                recorded.shard_index != expected.shard_index
+                    || recorded.lower_bin_array_indexes != expected.lower_bin_array_indexes
+                    || [
+                        (
+                            recorded.add_liquidity_policy.as_ref(),
+                            &expected.policies.add_liquidity,
+                        ),
+                        (
+                            recorded.remove_liquidity_policy.as_ref(),
+                            &expected.policies.remove_liquidity,
+                        ),
+                        (
+                            recorded.claim_fee_policy.as_ref(),
+                            &expected.policies.claim_fees,
+                        ),
+                    ]
+                    .into_iter()
+                    .any(|(record, policy)| match record {
+                        Some(record) => {
+                            record.seed != policy.policy_seed
+                                || record.policy != policy.policy.to_string()
+                        }
+                        None => true,
+                    })
+            })
     {
         bail!("recorded Meteora account graph does not match the fresh finalized snapshot");
     }
     Ok(())
+}
+
+pub fn expanded_bin_array_candidates() -> Vec<(i32, Pubkey)> {
+    let lower = bin_array_index(POSITION_LOWER_BIN_ID);
+    let upper = bin_array_index(POSITION_TARGET_UPPER_BIN_ID) + 1;
+    (lower..=upper)
+        .map(|index| {
+            (
+                index,
+                derive_bin_array_pda(METEORA_POOL, i64::from(index)).0,
+            )
+        })
+        .collect()
 }
 
 pub fn setup_inner_instructions(vault: Pubkey, plan: &MeteoraPlan) -> Result<Vec<Instruction>> {
@@ -460,6 +692,65 @@ pub fn setup_inner_instructions(vault: Pubkey, plan: &MeteoraPlan) -> Result<Vec
     Ok(instructions)
 }
 
+pub fn expand_position_upper_instruction(
+    vault: Pubkey,
+    plan: &MeteoraPlan,
+    target_upper_bin_id: i32,
+) -> Result<Instruction> {
+    if plan.position_lower_bin_id != POSITION_LOWER_BIN_ID
+        || plan.position_upper_bin_id < POSITION_UPPER_BIN_ID
+        || plan.position_upper_bin_id > POSITION_TARGET_UPPER_BIN_ID
+    {
+        bail!("Meteora position is outside the approved upper-resize corridor");
+    }
+
+    let length = target_upper_bin_id
+        .checked_sub(plan.position_upper_bin_id)
+        .context("Meteora upper-bin resize underflow")?;
+    if length <= 0 || length > POSITION_RESIZE_MAX_LENGTH {
+        bail!("Meteora upper resize must add between 1 and 91 bins");
+    }
+    if target_upper_bin_id > POSITION_TARGET_UPPER_BIN_ID {
+        bail!("Meteora upper resize exceeds the approved target");
+    }
+    let accounts = dlmm::client::accounts::IncreasePositionLength2 {
+        funder: vault,
+        lb_pair: METEORA_POOL,
+        position: plan.position,
+        owner: vault,
+        system_program: solana_sdk::system_program::ID,
+        event_authority: METEORA_EVENT_AUTHORITY,
+        program: METEORA_DLMM_PROGRAM_ID,
+    }
+    .to_account_metas(None);
+    let data = dlmm::client::args::IncreasePositionLength2 {
+        minimum_upper_bin_id: target_upper_bin_id,
+    }
+    .data();
+    Ok(Instruction {
+        program_id: METEORA_DLMM_PROGRAM_ID,
+        accounts,
+        data,
+    })
+}
+
+pub fn position_data_len_for_width(width: i32) -> Result<usize> {
+    if !(1..=1_400).contains(&width) {
+        bail!("Meteora position width must be between 1 and 1,400 bins");
+    }
+    let base_bins = usize::try_from(POSITION_WIDTH).context("convert base position width")?;
+    let width = usize::try_from(width).context("convert position width")?;
+    let extra_bins = width.saturating_sub(base_bins);
+    8_usize
+        .checked_add(std::mem::size_of::<dlmm::accounts::PositionV2>())
+        .and_then(|size| {
+            extra_bins
+                .checked_mul(std::mem::size_of::<dlmm::types::PositionBinData>())
+                .and_then(|extra| size.checked_add(extra))
+        })
+        .context("Meteora position data length overflow")
+}
+
 pub fn add_liquidity_instruction(
     vault: Pubkey,
     plan: &MeteoraPlan,
@@ -468,7 +759,11 @@ pub fn add_liquidity_instruction(
     active_id: i32,
     range: BinRange,
 ) -> Result<Instruction> {
-    validate_add_range(range, active_id)?;
+    validate_position_range(
+        range,
+        plan.position_lower_bin_id,
+        plan.position_upper_bin_id,
+    )?;
     let mut accounts = dlmm::client::accounts::AddLiquidityByStrategy2 {
         position: plan.position,
         lb_pair: METEORA_POOL,
@@ -516,7 +811,11 @@ pub fn remove_liquidity_instruction(
     range: BinRange,
     bps_to_remove: u16,
 ) -> Result<Instruction> {
-    validate_position_range(range)?;
+    validate_position_range(
+        range,
+        plan.position_lower_bin_id,
+        plan.position_upper_bin_id,
+    )?;
     if bps_to_remove == 0 || bps_to_remove > 10_000 {
         bail!("Meteora removal BPS must be between 1 and 10,000");
     }
@@ -558,12 +857,11 @@ pub fn claim_fees_instruction(
     plan: &MeteoraPlan,
     range: BinRange,
 ) -> Result<Instruction> {
-    if range.min < POSITION_LOWER_BIN_ID
-        || range.max > POSITION_UPPER_BIN_ID
-        || range.min > range.max
-    {
-        bail!("Meteora fee-claim range is outside the approved position");
-    }
+    validate_position_range(
+        range,
+        plan.position_lower_bin_id,
+        plan.position_upper_bin_id,
+    )?;
     let mut accounts = dlmm::client::accounts::ClaimFee2 {
         lb_pair: METEORA_POOL,
         position: plan.position,
@@ -613,21 +911,55 @@ pub fn load_position_snapshot(
     if position_state.lb_pair != METEORA_POOL || position_state.owner != expected_owner {
         bail!("Meteora position pool or owner does not match the autonomous vault manifest");
     }
-    let nonzero_liquidity_bins = position_state
+    let mut nonzero_liquidity_bins = position_state
         .liquidity_shares
         .iter()
         .filter(|shares| **shares != 0)
         .count() as u64;
-    let pending_fee_x = position_state
+    let mut pending_fee_x = position_state
         .fee_infos
         .iter()
         .try_fold(0_u64, |sum, fee| sum.checked_add(fee.fee_x_pending))
         .context("Meteora pending X fee overflow")?;
-    let pending_fee_y = position_state
+    let mut pending_fee_y = position_state
         .fee_infos
         .iter()
         .try_fold(0_u64, |sum, fee| sum.checked_add(fee.fee_y_pending))
         .context("Meteora pending Y fee overflow")?;
+    let width = position_state
+        .upper_bin_id
+        .checked_sub(position_state.lower_bin_id)
+        .and_then(|delta| delta.checked_add(1))
+        .context("Meteora position width overflow")?;
+    let base_width = i32::try_from(position_state.liquidity_shares.len())
+        .context("convert Meteora base position width")?;
+    let extra_bin_count = usize::try_from(width.saturating_sub(base_width))
+        .context("convert Meteora extended bin count")?;
+    let base_data_len = 8_usize
+        .checked_add(std::mem::size_of::<dlmm::accounts::PositionV2>())
+        .context("Meteora base position length overflow")?;
+    let bin_data_len = std::mem::size_of::<dlmm::types::PositionBinData>();
+    for index in 0..extra_bin_count {
+        let offset = index
+            .checked_mul(bin_data_len)
+            .and_then(|value| base_data_len.checked_add(value))
+            .context("Meteora extended position offset overflow")?;
+        let end = offset
+            .checked_add(bin_data_len)
+            .context("Meteora extended position end overflow")?;
+        let bytes = account
+            .data
+            .get(offset..end)
+            .context("Meteora extended position data is truncated")?;
+        let bin: dlmm::types::PositionBinData = bytemuck::pod_read_unaligned(bytes);
+        nonzero_liquidity_bins += u64::from(bin.liquidity_share != 0);
+        pending_fee_x = pending_fee_x
+            .checked_add(bin.fee_info.fee_x_pending)
+            .context("Meteora extended pending X fee overflow")?;
+        pending_fee_y = pending_fee_y
+            .checked_add(bin.fee_info.fee_y_pending)
+            .context("Meteora extended pending Y fee overflow")?;
+    }
     Ok(Some(PositionSnapshot {
         exists: true,
         lamports: account.lamports,
@@ -695,20 +1027,12 @@ fn decoded_constraints(instruction: &Instruction) -> Result<Vec<SquadsInstructio
     Ok(actions[0].payload.constraints.clone())
 }
 
-fn validate_position_range(range: BinRange) -> Result<()> {
-    if range.min < POSITION_LOWER_BIN_ID
-        || range.max > POSITION_UPPER_BIN_ID
-        || range.min > range.max
-    {
+fn validate_position_range(range: BinRange, lower_bin_id: i32, upper_bin_id: i32) -> Result<()> {
+    if range.min < lower_bin_id || range.max > upper_bin_id || range.min > range.max {
         bail!("Meteora range is outside the approved position");
     }
-    Ok(())
-}
-
-fn validate_add_range(range: BinRange, active_id: i32) -> Result<()> {
-    validate_position_range(range)?;
-    if range.min > active_id || range.max < active_id {
-        bail!("Meteora add range does not contain the observed active bin");
+    if bin_array_index(range.max) > bin_array_index(range.min) + 1 {
+        bail!("Meteora range spans more than one two-BinArray execution window");
     }
     Ok(())
 }
@@ -726,8 +1050,33 @@ fn bin_array_metas_for_range(range: BinRange) -> Vec<AccountMeta> {
         .collect()
 }
 
-fn bin_array_index(bin_id: i32) -> i32 {
+pub fn bin_array_index(bin_id: i32) -> i32 {
     bin_id.div_euclid(MAX_BIN_PER_ARRAY)
+}
+
+pub fn position_range_chunks(plan: &MeteoraPlan) -> Result<Vec<BinRange>> {
+    let mut chunks = Vec::new();
+    let mut min = plan.position_lower_bin_id;
+    while min <= plan.position_upper_bin_id {
+        let max = min
+            .checked_add(MAX_BIN_PER_ARRAY - 1)
+            .context("Meteora claim chunk upper-bin overflow")?
+            .min(plan.position_upper_bin_id);
+        let range = BinRange { min, max };
+        validate_position_range(
+            range,
+            plan.position_lower_bin_id,
+            plan.position_upper_bin_id,
+        )?;
+        chunks.push(range);
+        min = max
+            .checked_add(1)
+            .context("Meteora claim chunk lower-bin overflow")?;
+    }
+    if chunks.is_empty() {
+        bail!("Meteora position has no claimable bin range");
+    }
+    Ok(chunks)
 }
 
 fn derive_associated_token_address(owner: Pubkey, mint: Pubkey) -> Pubkey {

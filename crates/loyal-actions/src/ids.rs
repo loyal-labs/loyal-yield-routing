@@ -2,6 +2,7 @@ use solana_sdk::{pubkey, pubkey::Pubkey};
 
 pub const SQUADS_SMART_ACCOUNT_PROGRAM_ID: Pubkey =
     pubkey!("SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG");
+pub const SQUADS_V4_PROGRAM_ID: Pubkey = pubkey!("SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf");
 pub(crate) const SQUADS_SEED_PREFIX: &[u8] = b"smart_account";
 pub(crate) const SQUADS_SEED_POLICY: &[u8] = b"policy";
 pub(crate) const SQUADS_FULL_PERMISSIONS_MASK: u8 = 7;

@@ -6,16 +6,20 @@ Implementation details may change when simulation or live evidence disproves an
 assumption, but the required observable end state must not be weakened merely to
 obtain a passing result.
 
-PASS means one mainnet Squads v5 Smart Account has been created with the Loyal
-deployment identity as its recoverable setup signer, its public addresses and
-transaction evidence are recorded below, and seven independently decoded policies
-allow the delegated `POLICY_KEYPAIR` to perform only the requested Kamino,
-Meteora, and return-to-Mother operations. The complete modular dust test must pass
-in order: Smart Account, Kamino, Meteora, then treasury returns.
+PASS means one mainnet Squads v5 Smart Account exists with the Loyal deployment
+identity still available as its recoverable setup signer, its public addresses and
+transaction evidence are recorded below, and thirteen independently decoded
+policies allow `POLICY_KEYPAIR` to perform only the requested Kamino, Meteora, and
+return-to-Mother operations. The complete modular proof must pass in order: Smart
+Account, Kamino, generation-2 Meteora, treasury returns, then signer-handoff
+readiness.
 
-This cycle stops before the final Mother-only signer handoff. Do not remove the
-deployment signer or move Mother treasury capital until a human independently
-reviews this verifier's evidence and explicitly authorizes the handoff.
+This cycle stops before the final Mother-only signer handoff. PASS means the exact
+atomic add-Mother/remove-deployment Settings mutation is constructed and
+signed-unsent simulated, and the nested Squads path by which Mother can control
+the child Settings account is proven locally. It does not mean the handoff was
+broadcast. Do not remove the deployment signer or move Mother treasury capital
+until a human independently reviews this evidence and explicitly authorizes it.
 
 ## Durable Deployment Record
 
@@ -37,7 +41,7 @@ Never record a private key, secret environment value, or serialized transaction.
 | Meteora claim-fee policy PDA | `2ots3M1LejBMoLCYd1kSLtAGs1auvjGdosHNhoorN5xt` (signature `4swxiiB69BLAteHv62HgEW5x21AufPRy3JW6jQzEAq7qWnpSJPrJrbMETSZAb2xkdJh5dghZU1EET3NHSzyW4f8K`, finalized slot `435676792`) |
 | LOYAL return policy PDA | `7p9fbAoAJU1LjbjRXhWqh1gABWTG7aeUe96ZK55kLQUq` (signature `29ZfuPzahTH7h2vP2BQeoKfk96j9cGcjfswUV3rCZrNs6SWCPXFnhT5JYZ5rj34S16B33LQn5qJpCTroJm9YDR2e`, finalized slot `435681682`) |
 | USDC return policy PDA | `Hn4rztZmUYVRvdfUWso3zXAoQEY5efk6KWbJJPxXdn8k` (signature `63jYGMbXmpoWrtHJVp2UgdXi4ab1ed8RhVFhjct8GXZ8CJKocsYNaa2EpZyAhAi4piFuYeoQCbNjX3XaeWSH39FB`, finalized slot `435681753`) |
-| Meteora position PDA(s) and supported bin bounds | `3SBxJxpCG2EbfLrvD5DgjKUarLgn5i643WYNnUdTYgCB`, bins `-237..=-168`; test ranges A `-207..=-199`, B `-211..=-195` |
+| Meteora position PDA and bounds | `3SBxJxpCG2EbfLrvD5DgjKUarLgn5i643WYNnUdTYgCB`; immutable creation seeds lower `-237` / width `70`; live physical bounds `-237..=0` after expansion; currently policy-tested ranges A `-207..=-199`, B `-211..=-195` |
 | Vault LOYAL and USDC token accounts | LOYAL `ALqM7B2RPGkdJyafxWHqvsgqaPz8DgriekfKhrVZPT1o` / USDC `CovHF1eSvqKE7A4MkGq5FYCsKtZBue3TQN464diBqW8` |
 | Mother LOYAL and USDC destination token accounts | LOYAL `2EKLyZKCfhZxhSW35jYRaKSig3saAq97JKK9j28yrUg5` / USDC `FujHwQAccqyq4yCLYBZ9v2XxvDN3bLckB21iH3LSNhyW` |
 | Evidence/state file path, if used | `docs/plans/autonomous-treasury-vault-mainnet-state.json` |
@@ -68,7 +72,7 @@ public evidence file named above.
 
 ## Completed Meteora Setup Evidence
 
-Both transactions below were simulated before send, finalized, and followed by
+All setup and resize transactions below were simulated before send, finalized, and followed by
 fresh RPC decoding. The autonomous vault paid the inner account rent; the setup
 signer paid only the outer network fee and transferred deployment-funded dust.
 
@@ -76,6 +80,23 @@ signer paid only the outer network fee and transferred deployment-funded dust.
 | --- | --- |
 | Acquire deployment LOYAL dust | `mZN1UyqrmzFDfwEMazqXtaByymoNsoTHD32sJPrGTFyt8Dibaf94rnQ1ubVGUyJXEhUoY7i85uSNtGGFRf75tTr` / slot `435676056`; deployment USDC `4,000,000 -> 3,999,000`, LOYAL `0 -> 7,553` raw |
 | Persistent Meteora account setup | `5a4P7N7jcfiuRUA3vUK6oDnPAZ1x3dptnApryLCGV2mS745Xw3SP1HzMJZ2UH5nQATVgLuymfkQsFmzyF7hsd3oQ` / slot `435676421`; position initialized with `57,406,080` lamports, LOYAL ATA with `2,039,280` lamports, vault LOYAL `0 -> 5,000` raw; position liquidity and pending fees remain zero |
+| Expand upper bound to bin `-77` | `5cRWiptcTaVFJztCWbavVSM98JaqUZcdcLYvHGzz3k3xueUR9wkyxivNhWi7bpaUNMcGgp7XEJubt98gAYXYQ9Qe` / slot `435702536`; signed simulation passed at 498 bytes / 29,779 CU; width `70 -> 161`, data `8,120 -> 18,312` bytes, rent `57,406,080 -> 128,342,400` lamports; liquidity and pending fees stayed zero |
+| Expand upper bound to bin `0` | `4AhiCbEsNdSAHP4iRViEmzH3dSiEMFhe7ejKrV3TF6Gb3LgE1pXJB6xqKB4SrTcndNLcHASsE2fSqzcq1swPq28s` / slot `435702575`; signed simulation passed at 498 bytes / 29,919 CU; final bounds `-237..=0`, width `238`, data `26,936` bytes, rent `188,365,440` lamports; liquidity and pending fees stayed zero |
+
+## Generation-2 Meteora Policy Evidence
+
+Each creation transaction was simulated immediately before broadcast, finalized,
+decoded from RPC, and matched against its exact signer, pool, position, token,
+reserve, BinArray, discriminator, and destination constraints.
+
+| Policy | Finalized evidence |
+| --- | --- |
+| Shard 1 add, seed `8` | `5ywMqjwJPxcnowCvQKdWPq4hF53VAqJAij6modfVHTyseF1hN22X6mHEvj9csqGwpeRBcrhie2Q6kaSMHaxpmJ1v` / slot `435845448`; 1,213 bytes / 52,287 CU; PDA `EL6Y7PeavKJgPBLfTJFJWjhiCWAaZ66dCFCLCTtW8jxy` |
+| Shard 1 remove, seed `9` | `2uDeDRNfkRw8tB28DjHfkYZprtjFQWzx8uMWTK8JMsbNAJhoMDem7XyASyGQbXV5hy6UWe45rE3RLRCWZH7Av8Bw` / slot `435845483`; 1,159 bytes / 51,668 CU; PDA `EZGptfsj2yn1yVdYQvPq9vqReTBnvius2DXWKDP9rkxt` |
+| Shard 1 claim, seed `10` | `2GHE7uDf97uh7XDzJykBzgBVa7eSzXJQbGiTRDu5XEAymUnGnFvhPE8yh6qceWnoB1DyHDNwRub8J9XHTP5YTupP` / slot `435845517`; 1,120 bytes / 53,148 CU; PDA `GD6os6HMZLRN5deg6G4ykMAdWsCYptvwRJPT5ajJhwfN` |
+| Shard 2 add, seed `11` | `2HbQG96SAhDGgdeLTAwfjA7KwVt7vkjAgY2vuFohLM5ozcYqPNhpoU4bpfz8Gp1faVRu2U5ZnUt6evETefg8DfmG` / slot `435845738`; 1,149 bytes / 52,485 CU; PDA `GyXPmLSCRtmweePHjvNFb23eWSQjEdvXPKJNr8hfGNxV` |
+| Shard 2 remove, seed `12` | `3BsVoyUsK3dgWDdKxN2ED9VJacvdEiLNVtG9iTKC4No7MBmE1W87fGehzAUv5ghutYghweUF7GZHz6JwEo7WRTPP` / slot `435845774`; 1,095 bytes / 54,868 CU; PDA `tg1ZThsNM3Nq66sTNe61KaK2BYN2NXvkQUzmZcwbFEg` |
+| Shard 2 claim, seed `13` | `5r6FcmFNDFxSNecSGLNL8FAgrRKgMpPoYgTBKdiAiDs3PrwbLEYoxUfduZtT65fQdiSMSBSU4wXK94AatuF4i8Kf` / slot `435846167`; 1,056 bytes / 54,853 CU; PDA `42eutsakUJ5ZWydRkYxDhRqDqokfieqU58P3S2dqeMvF` |
 
 ## Meteora Delegated Execution Evidence
 
@@ -135,14 +156,16 @@ final validator for dynamic range relationships.
   at most 1 USDC and 10 LOYAL; spend no more than 0.5 SOL total without new human
   approval. LOYAL acquisition uses a locally built, deployment-controlled swap
   against the fixed Meteora pool and is not an autonomous-vault policy action.
-- The final Settings remain recoverable for testing. Mother signer installation
-  and deployment-signer removal are explicitly out of scope for this verifier.
+- The final Settings remain recoverable for testing. Broadcasting Mother signer
+  installation or deployment-signer removal is out of scope. Building, decoding,
+  packet-checking, and signed-unsent simulation of that exact atomic mutation are
+  required.
 
 ## Required Policy Manifest
 
-Independent decoding of on-chain policy accounts must show seven distinct policy
-PDAs, each with `POLICY_KEYPAIR` as the sole policy signer, threshold 1, time lock
-0, and no Settings-state expiration.
+Independent decoding of on-chain policy accounts must show thirteen distinct
+policy PDAs, each with `POLICY_KEYPAIR` as the sole policy signer, threshold 1,
+time lock 0, and no Settings-state expiration.
 
 1. **Kamino operations:** exactly the current K-Lend program's V2 reserve deposit
    and V2 reserve withdrawal instructions. Pin the autonomous vault, its USDC token
@@ -153,20 +176,31 @@ PDAs, each with `POLICY_KEYPAIR` as the sole policy signer, threshold 1, time lo
    markets and their vault-derived vanilla obligation PDAs. Pin the vault as owner
    and payer, the vault UserMetadata PDA, default seed accounts, Rent, and System.
    No deposit or withdrawal instruction is present.
-3. **Meteora add liquidity:** only `add_liquidity_by_strategy2` for pool
+3. **Meteora add liquidity, three shards:** only
+   `add_liquidity_by_strategy2` for pool
    `c29DVknA5DZUCH6U5ujo1EGfiKKXZrUk6yk56yJxLrm`, approved vault-owned
    position(s), vault LOYAL/USDC token accounts, exact pool reserves and mints,
    token programs, event authority, and valid pool BinArrays.
-4. **Meteora remove liquidity:** only `remove_liquidity_by_range2` for that same
+4. **Meteora remove liquidity, three shards:** only
+   `remove_liquidity_by_range2` for that same
    pool and approved position(s), with outputs fixed to the vault token accounts.
    Valid removal BPS are accepted; no close-position instruction is authorized.
-5. **Meteora claim fees:** only `claim_fee2` for the same pool and position(s),
+5. **Meteora claim fees, three shards:** only `claim_fee2` for the same pool and
+   position(s),
    with LOYAL and USDC fees fixed to the vault token accounts. No swap, reward,
    operator, resize, or position-close instruction is authorized.
 6. **Return LOYAL:** a Squads SpendingLimit policy for the LOYAL mint whose only
    destination owner is Mother vault
    `AQyyTwCKemeeMu8ZPZFxrXMbVwAYTSbBhi1w4PBrhvYE`.
 7. **Return USDC:** the equivalent policy for native USDC and the same Mother.
+
+The nine Meteora policies are three add/remove/claim families. Seeds `3..=5`
+cover lower-BinArray windows `(-4,-3)` and `(-3,-2)`; seeds `8..=10` cover
+`(-2,-1)` and `(-1,0)`; seeds `11..=13` cover `(0,1)`. Every creation transaction
+must fit the `1,232`-byte packet limit. Together they authorize two-array execution
+windows across the PositionV2 physical bounds `-237..=0` without authorizing
+another position or pool. Full fee collection uses four resumable claim chunks:
+`-237..=-168`, `-167..=-98`, `-97..=-28`, and `-27..=0`.
 
 The two return policies are intentionally effectively unlimited: `OneTime`,
 `max_per_period = u64::MAX`, no restrictive per-use maximum, no accumulation,
@@ -186,8 +220,10 @@ position set:
 3. add again using a demonstrably different range/strategy B;
 4. remove again and verify the same approved position accounts persist.
 
-The implementation must record the supported immutable position bounds and prove
-that both A and B fall within them. If one position cannot safely support both,
+The implementation must record the immutable position PDA seeds, live physical
+bounds, and narrower policy-authorized execution range, and prove that both A and
+B fall within the authorized range. Physical expansion alone must not broaden a
+delegated policy's BinArray allowlists. If one position cannot safely support both,
 precreate a small explicit set of allowed positions before policy creation. The
 policy must never accept another pool, arbitrary destination token accounts, or a
 position owned by anyone other than the autonomous vault.
@@ -234,8 +270,9 @@ modules until fixed and reverified.
 ### Module 4 — Meteora Policy Creation And Setup
 
 - Precreate the vault LOYAL/USDC token accounts, approved position PDA(s), and all
-  BinArrays required for the recorded supported bounds.
-- Create add, remove, and claim policies separately and record their PDAs.
+  BinArrays required for the policy-authorized execution ranges. A position may
+  have a wider physical capacity than the current delegated policy allowlists.
+- Create all three add/remove/claim shards separately and record all nine PDAs.
 - Independent decode proves the exact fixed pool/account graph and dynamic range
   fields described above. Wrong pool, position, owner, reserve, mint, destination,
   program, and any close-position discriminator are rejected.
@@ -261,6 +298,29 @@ modules until fixed and reverified.
   final evidence collection, retaining only protocol rent and explicitly recorded
   test residue.
 
+Historical return proof must come from the finalized transaction's token balance
+metadata and the persisted before/after record. The verifier must not require
+Mother's or the vault's current token balances to remain frozen after the canary.
+
+### Module 7 — Signer-Handoff Readiness
+
+- Fresh RPC decoding proves Settings threshold `1`, time lock `0`, policy seed
+  `13`, and deployment signer as the sole current full-permission signer.
+- Independently identify `AQyyTwCKemeeMu8ZPZFxrXMbVwAYTSbBhi1w4PBrhvYE`
+  as the intended Mother vault and prove it is a Squads-derived vault PDA for its
+  parent Settings account.
+- Construct one atomic child-Settings instruction that adds Mother with full
+  permissions and removes deployment, leaving threshold `1`, time lock `0`, and
+  every policy unchanged. Decode and compare the exact actions before simulation.
+- The deployment-signed handoff transaction fits the packet limit and succeeds in
+  a mainnet signed-unsent simulation. No live Settings state changes.
+- A focused LiteSVM proof executes a child Settings action through a parent Squads
+  vault signer and proves an arbitrary key or unrelated vault cannot substitute
+  for Mother. This proves the nested authorization shape without claiming that
+  Mother governance has approved or broadcast the live handoff.
+- Print a final `handoff_ready=PASS transaction_sent=false` only after all prior
+  modules pass. Never print it after a partial verifier run.
+
 ## Static And Independent Evidence
 
 Before live sends, run the smallest relevant policy tests and packet measurements.
@@ -276,11 +336,13 @@ this manifest, report exact raw-token and lamport deltas, and end with one overa
 verdict.
 
 Overall verdict is **PASS only when every required module and independent evidence
-condition above passes**. `PENDING`, skipped live behavior, simulation-only
-evidence, an unrecorded Smart Account address, or a policy created but not executed
-is FAIL.
+condition above passes**. A generation-1 policy manifest, a stale current-balance
+comparison, missing policy transaction evidence, an unproved handoff instruction,
+`PENDING`, skipped required live behavior, an unrecorded Smart Account address, or
+a policy created but not decoded is FAIL. The handoff itself is the sole required
+simulation-only step because broadcasting it is deliberately outside this gate.
 
-## Final Gate Record — 2026-07-27
+## Initial Generation-1 Gate Record — 2026-07-27
 
 - `cargo test -p autonomous-vaults`: PASS, 5/5.
 - `cargo test -p loyal-actions autonomous_vaults::returns::tests`: PASS, 2/2.
@@ -288,7 +350,67 @@ is FAIL.
 - `bun run test:squads`: PASS, including autonomous Kamino 1/1 and Meteora 2/2.
 - `bun run test:squads:e2e`: PASS, historical Kamino replay 1/1.
 - signed-unsent live Meteora boundary matrix: PASS, six cases, state unchanged.
-- `autonomous-vaults verify-all`: PASS against fresh mainnet RPC reads, all seven
+- `autonomous-vaults verify-all`: PASS against fresh mainnet RPC reads, the seven
   policy accounts, 22 finalized live steps, exact return transaction metadata,
   and all recorded signatures and slots; final output ended
   `overall_verdict=PASS`.
+
+## Position Expansion Record — 2026-07-28
+
+- The same PositionV2 PDA was expanded from `-237..=-168` to `-237..=0` without
+  creating or closing a position.
+- A combined two-resize simulation correctly failed before send because Solana
+  limits cumulative inner-instruction account growth to 10,240 bytes. The flow
+  was split into two resumable transactions, each simulated immediately before
+  broadcast.
+- Both resize transactions finalized and fresh RPC decoding proved width `238`,
+  data length `26,936`, rent `188,365,440` lamports, zero liquidity, and zero
+  pending LOYAL or USDC fees.
+- `cargo check -p autonomous-vaults`: PASS.
+- `cargo test -p autonomous-vaults`: PASS, 5/5.
+- `bun run test:squads`: PASS, including the autonomous Meteora policy suite.
+- `inspect-meteora`: PASS against finalized mainnet state.
+- The post-finalization simulation command is idempotent and returned
+  `already_expanded=true` without constructing or sending another transaction.
+- The first post-expansion `verify-all` exposed a stale-current-balance assumption
+  in the treasury-return replay. That verifier now uses finalized transaction
+  metadata; the current full gate passes after later Mother balance changes.
+
+## Current Pre-Handoff Gate — 2026-07-28
+
+Status: **PASS. The live signer handoff remains intentionally unbroadcast.**
+
+- Fresh `verify-all` passed Smart Account, Kamino, generation-2 Meteora, treasury
+  returns, all thirteen decoded policy accounts, thirty finalized live steps,
+  and every recorded signature and slot. It ended `overall_verdict=PASS` with
+  Settings policy seed `13`.
+- Historical LOYAL and USDC returns are verified from their finalized transaction
+  token metadata and persisted exact deltas, so later Mother balance changes do
+  not invalidate the canary proof.
+- `inspect-meteora` passed with PositionV2 `-237..=0`, width `238`, six BinArrays,
+  nine Meteora policies, zero liquidity, and zero pending fees.
+- The signed-unsent mainnet matrix passed all ten cases using the production
+  builders. Atomic add then full remove passed for `-100..=-90` through seeds
+  `8/9` and for `0..=0` through seeds `11/12`; both transactions were `1,014`
+  bytes and invoked DLMM twice. Fee claims passed through seeds `10` and `13` in
+  `804`-byte transactions. The canonical payload reached DLMM; noncontinuous or
+  duplicate arrays, an out-of-position range, an inverted range, and 10,001 BPS
+  removal all failed atomically. No transaction was sent and live state was
+  unchanged.
+- The exact handoff adds Mother
+  `AQyyTwCKemeeMu8ZPZFxrXMbVwAYTSbBhi1w4PBrhvYE` with full permission mask `7`
+  and removes deployment signer
+  `62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5` in one transaction. It decoded
+  exactly, measured 319 bytes / 12,741 CU, simulated successfully, and printed
+  `handoff_ready=PASS transaction_sent=false`.
+- Fresh RPC and derivation prove Mother is Squads v4 vault index `0` for multisig
+  `Gv27nnaXR8UanJmjPZ4MLS81eqee2DfzJSv7C8PkQTEC` under program
+  `SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf`.
+- The focused cross-version LiteSVM proof loads real Squads v4 and v5 SBF, executes
+  the child Settings mutation through the correct parent vault PDA, rejects an
+  unrelated vault index, and leaves only the replacement signer at threshold `1`
+  and time lock `0`. The v4 fixture SHA-256 is
+  `dec8d3e0fae58c7c8f2416e5f67c25e673f047afd6dd2bba4a47e0b29a01d34c`.
+
+The irreversible next action is a separate human-approved broadcast of the exact
+handoff transaction. No verifier or setup command in this record performed it.

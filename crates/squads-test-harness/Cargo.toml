@@ -18,3 +18,4 @@ base64 = "0.22"
 bincode = "1.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+squads-multisig = { git = "https://github.com/Squads-Protocol/v4", rev = "c14a6d607a4d5295c7df90499674418b57aff792" }

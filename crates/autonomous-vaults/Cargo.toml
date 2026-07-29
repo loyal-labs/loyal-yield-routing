@@ -9,6 +9,7 @@ anchor-lang = "0.31"
 anyhow = "1"
 bincode = "1"
 borsh.workspace = true
+bytemuck = "1"
 klend-interface = { git = "https://github.com/Kamino-Finance/klend" }
 loyal-actions = { path = "../loyal-actions" }
 loyal-yield-orchestrator = { path = "../loyal-yield-orchestrator" }

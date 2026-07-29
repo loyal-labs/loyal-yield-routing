@@ -13,6 +13,7 @@ use spl_token::state::Mint;
 use std::str::FromStr;
 
 use crate::{
+    meteora,
     policy::{
         decode_spending_limit_policy, verify_spending_limit_policy, ExpectedSpendingLimitPolicy,
         SpendingLimitPolicyAccount,
@@ -77,7 +78,9 @@ pub fn load_plan(
     let current_policy_seed = decoded_settings
         .policy_seed
         .context("Settings policy seed is absent")?;
-    if !(5..=7).contains(&current_policy_seed) {
+    if !(5..=7).contains(&current_policy_seed)
+        && current_policy_seed != meteora::METEORA_FINAL_CLAIM_POLICY_SEED
+    {
         bail!("Settings policy seed is outside the expected return-policy sequence");
     }
 

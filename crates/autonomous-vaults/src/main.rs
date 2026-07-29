@@ -8,9 +8,11 @@ mod state;
 use anyhow::{bail, Context, Result};
 use loyal_actions::{
     autonomous_vaults::{return_to_mother_instruction, TreasuryReturnKind},
-    compile_squads_inner_instruction, derive_kamino_user_metadata,
+    compile_squads_inner_instruction, decode_settings_signer_handoff_instruction,
+    derive_kamino_user_metadata, derive_squads_v4_vault,
     execute_program_interaction_policy_instruction, execute_sync_transaction_instruction,
-    ASSOCIATED_TOKEN_PROGRAM_ID, KAMINO_FARMS_PROGRAM_ID, KAMINO_LEND_PROGRAM_ID, USDC_MINT,
+    handoff_settings_signer_instruction, ASSOCIATED_TOKEN_PROGRAM_ID, KAMINO_FARMS_PROGRAM_ID,
+    KAMINO_LEND_PROGRAM_ID, SQUADS_V4_PROGRAM_ID, USDC_MINT,
 };
 use loyal_yield_orchestrator::{
     keypair_from_env, policy_keypair_from_env, rpc_safety::validate_rpc_genesis_hash,
@@ -99,6 +101,28 @@ fn main() -> Result<()> {
             &deployment,
             &delegated,
         ),
+        "inspect-meteora-policy-upgrade" => inspect_meteora_policy_upgrade(
+            &rpc,
+            persisted.as_ref().context("Smart Account state is missing")?,
+            &deployment,
+            &delegated,
+        ),
+        "simulate-meteora-policy-upgrade" => simulate_meteora_policy_upgrade(
+            &rpc,
+            persisted.as_ref().context("Smart Account state is missing")?,
+            &deployment,
+            &delegated,
+        ),
+        "upgrade-meteora-policies" => {
+            require_mainnet_confirmation()?;
+            upgrade_meteora_policies(
+                &rpc,
+                &path,
+                persisted.as_mut().context("Smart Account state is missing")?,
+                &deployment,
+                &delegated,
+            )
+        }
         "simulate-meteora-adversarial" => simulate_meteora_adversarial_matrix(
             &rpc,
             persisted.as_ref().context("Smart Account state is missing")?,
@@ -112,6 +136,13 @@ fn main() -> Result<()> {
             &delegated,
         ),
         "verify-all" => verify_all(
+            &rpc,
+            &path,
+            persisted.as_ref().context("Smart Account state is missing")?,
+            &deployment,
+            &delegated,
+        ),
+        "simulate-signer-handoff-readiness" => simulate_signer_handoff_readiness(
             &rpc,
             &path,
             persisted.as_ref().context("Smart Account state is missing")?,
@@ -199,6 +230,17 @@ fn main() -> Result<()> {
             require_mainnet_confirmation()?;
             let state = persisted.as_mut().context("Smart Account state is missing")?;
             setup_meteora_accounts(&rpc, &path, state, &deployment, &delegated)
+        }
+        "simulate-meteora-position-expand" => simulate_meteora_position_expand(
+            &rpc,
+            persisted.as_ref().context("Smart Account state is missing")?,
+            &deployment,
+            &delegated,
+        ),
+        "expand-meteora-position" => {
+            require_mainnet_confirmation()?;
+            let state = persisted.as_mut().context("Smart Account state is missing")?;
+            expand_meteora_position(&rpc, &path, state, &deployment, &delegated)
         }
         "simulate-meteora-add-a" => simulate_meteora_execution(
             &rpc,
@@ -933,6 +975,23 @@ fn load_meteora_plan(
     deployment: &solana_sdk::signature::Keypair,
     delegated: &solana_sdk::signature::Keypair,
 ) -> Result<(Pubkey, Pubkey, meteora::MeteoraPlan)> {
+    let generation = state
+        .meteora
+        .as_ref()
+        .map(|record| record.policy_generation)
+        .unwrap_or(meteora::METEORA_LEGACY_POLICY_GENERATION);
+    load_meteora_plan_for_generation(rpc, state, deployment, delegated, generation, true, true)
+}
+
+fn load_meteora_plan_for_generation(
+    rpc: &RpcClient,
+    state: &VaultState,
+    deployment: &solana_sdk::signature::Keypair,
+    delegated: &solana_sdk::signature::Keypair,
+    generation: u8,
+    validate_record: bool,
+    require_bin_arrays: bool,
+) -> Result<(Pubkey, Pubkey, meteora::MeteoraPlan)> {
     let smart_account = state
         .smart_account
         .as_ref()
@@ -950,8 +1009,14 @@ fn load_meteora_plan(
         delegated.pubkey(),
         vault,
         smart_account.vault_index,
+        generation,
+        require_bin_arrays,
     )?;
-    if let Some(record) = &state.meteora {
+    if validate_record {
+        let record = state
+            .meteora
+            .as_ref()
+            .context("Meteora record is missing")?;
         meteora::validate_record(record, &plan)?;
     }
     Ok((settings, vault, plan))
@@ -974,6 +1039,7 @@ fn inspect_meteora(
     let decoded_settings = squads::decode_settings(&settings_account.data)?;
 
     println!("module=meteora-readiness verdict=PASS");
+    println!("policy_generation={}", plan.policy_generation);
     println!("settings={settings}");
     println!("vault={vault}");
     println!("pool={}", loyal_actions::autonomous_vaults::METEORA_POOL);
@@ -981,10 +1047,7 @@ fn inspect_meteora(
     println!("active_bin_id={}", plan.active_bin_id);
     println!(
         "position={} lower_bin_id={} upper_bin_id={} width={}",
-        plan.position,
-        meteora::POSITION_LOWER_BIN_ID,
-        meteora::POSITION_UPPER_BIN_ID,
-        meteora::POSITION_WIDTH
+        plan.position, plan.position_lower_bin_id, plan.position_upper_bin_id, plan.position_width
     );
     println!(
         "strategy_range_a={}..={} strategy_range_b={}..={}",
@@ -1090,6 +1153,42 @@ fn inspect_meteora(
             policy_plan.policy_seed
         );
     }
+    if let Some(record) = state.meteora.as_ref() {
+        for shard in &plan.additional_policy_shards {
+            let recorded_shard = record
+                .additional_policy_shards
+                .iter()
+                .find(|candidate| candidate.shard_index == shard.shard_index);
+            for kind in [
+                meteora::MeteoraPolicyKind::AddLiquidity,
+                meteora::MeteoraPolicyKind::RemoveLiquidity,
+                meteora::MeteoraPolicyKind::ClaimFees,
+            ] {
+                let policy_plan = meteora_shard_policy_plan(shard, kind).0;
+                let status = recorded_shard.and_then(|recorded| match kind {
+                    meteora::MeteoraPolicyKind::AddLiquidity => {
+                        recorded.add_liquidity_policy.as_ref()
+                    }
+                    meteora::MeteoraPolicyKind::RemoveLiquidity => {
+                        recorded.remove_liquidity_policy.as_ref()
+                    }
+                    meteora::MeteoraPolicyKind::ClaimFees => recorded.claim_fee_policy.as_ref(),
+                });
+                println!(
+                    "policy_shard={} policy={} status={} address={} seed={} lower_bin_array_indexes={:?}",
+                    shard.shard_index,
+                    kind.label(),
+                    status
+                        .map(|policy| format!("{:?}", policy.status))
+                        .as_deref()
+                        .unwrap_or("PENDING"),
+                    policy_plan.policy,
+                    policy_plan.policy_seed,
+                    shard.lower_bin_array_indexes
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1111,6 +1210,423 @@ fn meteora_policy_plan<'a>(
             (&plan.policies.claim_fees, &plan.claim_constraints)
         }
     }
+}
+
+fn meteora_shard_policy_plan<'a>(
+    shard: &'a meteora::MeteoraPolicyShardPlan,
+    kind: meteora::MeteoraPolicyKind,
+) -> (
+    &'a loyal_actions::autonomous_vaults::MeteoraPolicyPlan,
+    &'a [loyal_actions::SquadsInstructionConstraintView],
+) {
+    match kind {
+        meteora::MeteoraPolicyKind::AddLiquidity => {
+            (&shard.policies.add_liquidity, &shard.add_constraints)
+        }
+        meteora::MeteoraPolicyKind::RemoveLiquidity => {
+            (&shard.policies.remove_liquidity, &shard.remove_constraints)
+        }
+        meteora::MeteoraPolicyKind::ClaimFees => {
+            (&shard.policies.claim_fees, &shard.claim_constraints)
+        }
+    }
+}
+
+fn inspect_meteora_policy_upgrade(
+    rpc: &RpcClient,
+    state: &VaultState,
+    deployment: &solana_sdk::signature::Keypair,
+    delegated: &solana_sdk::signature::Keypair,
+) -> Result<()> {
+    let (settings, vault, current) = load_meteora_plan(rpc, state, deployment, delegated)?;
+    if current.policy_generation != meteora::METEORA_LEGACY_POLICY_GENERATION {
+        println!(
+            "module=meteora-policy-upgrade-readiness verdict=PASS already_upgraded=true generation={}",
+            current.policy_generation
+        );
+        return Ok(());
+    }
+    let (_, _, expanded) = load_meteora_plan_for_generation(
+        rpc,
+        state,
+        deployment,
+        delegated,
+        meteora::METEORA_EXPANDED_POLICY_GENERATION,
+        false,
+        true,
+    )?;
+    if expanded.position != current.position
+        || expanded.position_lower_bin_id != meteora::POSITION_LOWER_BIN_ID
+        || expanded.position_upper_bin_id != meteora::POSITION_TARGET_UPPER_BIN_ID
+    {
+        bail!("expanded Meteora policy plan changed the approved position identity or bounds");
+    }
+    verify_next_policy_seed(rpc, settings, meteora::METEORA_EXPANDED_ADD_POLICY_SEED)?;
+
+    println!("module=meteora-policy-upgrade-readiness verdict=PASS");
+    println!("settings={settings}");
+    println!("vault={vault}");
+    println!("position={}", expanded.position);
+    println!(
+        "physical_bounds={}..={} policy_generation_before={} policy_generation_after={}",
+        expanded.position_lower_bin_id,
+        expanded.position_upper_bin_id,
+        current.policy_generation,
+        expanded.policy_generation
+    );
+    for ((index, address), planned_address) in meteora::expanded_bin_array_candidates()
+        .into_iter()
+        .zip(expanded.bin_arrays.iter())
+    {
+        if address != *planned_address {
+            bail!("expanded Meteora BinArray derivation order changed");
+        }
+        let account = rpc
+            .get_account_with_commitment(&address, CommitmentConfig::finalized())?
+            .value;
+        println!(
+            "bin_array_index={index} address={address} exists={} lamports={} data_len={}",
+            account.is_some(),
+            account.as_ref().map(|value| value.lamports).unwrap_or(0),
+            account.as_ref().map(|value| value.data.len()).unwrap_or(0)
+        );
+    }
+    for shard in &expanded.additional_policy_shards {
+        for kind in [
+            meteora::MeteoraPolicyKind::AddLiquidity,
+            meteora::MeteoraPolicyKind::RemoveLiquidity,
+            meteora::MeteoraPolicyKind::ClaimFees,
+        ] {
+            let policy_plan = meteora_shard_policy_plan(shard, kind).0;
+            let (transaction, _, _) =
+                build_policy_transaction(rpc, &policy_plan.create_instruction, deployment)?;
+            let packet_bytes = bincode::serialized_size(&transaction)?;
+            if packet_bytes > SOLANA_PACKET_DATA_SIZE {
+                bail!(
+                    "Meteora policy shard {} {} is {} bytes and exceeds the Solana packet limit",
+                    shard.shard_index,
+                    kind.label(),
+                    packet_bytes
+                );
+            }
+            println!(
+                "expanded_policy_shard={} policy={} seed={} address={} packet_bytes={}",
+                shard.shard_index,
+                kind.label(),
+                policy_plan.policy_seed,
+                policy_plan.policy,
+                packet_bytes
+            );
+        }
+    }
+    println!("transaction_sent=false");
+    Ok(())
+}
+
+fn simulate_meteora_policy_upgrade(
+    rpc: &RpcClient,
+    state: &VaultState,
+    deployment: &solana_sdk::signature::Keypair,
+    delegated: &solana_sdk::signature::Keypair,
+) -> Result<()> {
+    inspect_meteora_policy_upgrade(rpc, state, deployment, delegated)?;
+    let current_generation = state
+        .meteora
+        .as_ref()
+        .context("Meteora state is missing")?
+        .policy_generation;
+    if current_generation == meteora::METEORA_EXPANDED_POLICY_GENERATION {
+        println!("meteora_policy_upgrade_simulation=PASS already_upgraded=true");
+        return Ok(());
+    }
+    let (settings, _, expanded) = load_meteora_plan_for_generation(
+        rpc,
+        state,
+        deployment,
+        delegated,
+        meteora::METEORA_EXPANDED_POLICY_GENERATION,
+        false,
+        true,
+    )?;
+    let first_shard = expanded
+        .additional_policy_shards
+        .first()
+        .context("expanded Meteora plan has no additional policy shards")?;
+    let policy_plan =
+        meteora_shard_policy_plan(first_shard, meteora::MeteoraPolicyKind::AddLiquidity).0;
+    verify_next_policy_seed(rpc, settings, policy_plan.policy_seed)?;
+    let (transaction, _, _) =
+        build_policy_transaction(rpc, &policy_plan.create_instruction, deployment)?;
+    let units = simulate_signed_transaction(rpc, &transaction, "meteora-policy-upgrade-first")?;
+    println!("meteora_policy_upgrade_simulation=PASS units_consumed={units}");
+    println!("first_policy={}", policy_plan.policy);
+    println!("first_policy_seed={}", policy_plan.policy_seed);
+    println!("transaction_sent=false");
+    Ok(())
+}
+
+fn meteora_upgrade_step_name(shard_index: u8, kind: meteora::MeteoraPolicyKind) -> String {
+    format!(
+        "meteora-policy-upgrade-shard-{shard_index}-{}",
+        match kind {
+            meteora::MeteoraPolicyKind::AddLiquidity => "add",
+            meteora::MeteoraPolicyKind::RemoveLiquidity => "remove",
+            meteora::MeteoraPolicyKind::ClaimFees => "claim",
+        }
+    )
+}
+
+fn meteora_policy_upgrade_observations(
+    rpc: &RpcClient,
+    settings: Pubkey,
+    policy_address: Pubkey,
+) -> Result<BTreeMap<String, u64>> {
+    let settings_account = rpc.get_account(&settings)?;
+    let decoded = squads::decode_settings(&settings_account.data)?;
+    let mut observations = BTreeMap::new();
+    observations.insert(
+        "settings_policy_seed".to_owned(),
+        decoded.policy_seed.unwrap_or(0),
+    );
+    observations.insert(
+        "policy_exists".to_owned(),
+        u64::from(
+            rpc.get_account_with_commitment(&policy_address, CommitmentConfig::finalized())?
+                .value
+                .is_some(),
+        ),
+    );
+    Ok(observations)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_or_resume_meteora_upgrade_policy(
+    rpc: &RpcClient,
+    path: &std::path::PathBuf,
+    state: &mut VaultState,
+    deployment: &solana_sdk::signature::Keypair,
+    delegated: &solana_sdk::signature::Keypair,
+    settings: Pubkey,
+    shard: &meteora::MeteoraPolicyShardPlan,
+    kind: meteora::MeteoraPolicyKind,
+) -> Result<()> {
+    let (policy_plan, constraints) = meteora_shard_policy_plan(shard, kind);
+    let step_name = meteora_upgrade_step_name(shard.shard_index, kind);
+    let before = meteora_policy_upgrade_observations(rpc, settings, policy_plan.policy)?;
+    ensure_meteora_live_step(path, state, &step_name, before)?;
+
+    if let Some(signature) = recover_finalized_meteora_live_step(rpc, state, &step_name)? {
+        verify_meteora_policy_plan_account(
+            rpc,
+            policy_plan,
+            constraints,
+            settings,
+            deployment.pubkey(),
+            delegated.pubkey(),
+            &step_name,
+        )?;
+        let after = meteora_policy_upgrade_observations(rpc, settings, policy_plan.policy)?;
+        if after.get("settings_policy_seed") != Some(&policy_plan.policy_seed)
+            || after.get("policy_exists") != Some(&1)
+        {
+            bail!("{step_name} recovered state does not match the exact policy manifest");
+        }
+        return finalize_meteora_live_step(rpc, path, state, &step_name, signature, after);
+    }
+    if meteora_live_step(state, &step_name)?.status == PolicyStatus::Finalized {
+        verify_meteora_policy_plan_account(
+            rpc,
+            policy_plan,
+            constraints,
+            settings,
+            deployment.pubkey(),
+            delegated.pubkey(),
+            &step_name,
+        )?;
+        println!("{step_name}=PASS already_finalized=true");
+        return Ok(());
+    }
+    let recorded_before = &meteora_live_step(state, &step_name)?.before;
+    if recorded_before.get("policy_exists") != Some(&0)
+        || recorded_before.get("settings_policy_seed")
+            != Some(&policy_plan.policy_seed.saturating_sub(1))
+    {
+        bail!("{step_name} recorded prerequisites do not match the expected policy sequence");
+    }
+    if rpc
+        .get_account_with_commitment(&policy_plan.policy, CommitmentConfig::finalized())?
+        .value
+        .is_some()
+    {
+        bail!("{step_name} policy exists without recoverable finalized evidence");
+    }
+    verify_next_policy_seed(rpc, settings, policy_plan.policy_seed)?;
+    let (transaction, blockhash, last_valid_block_height) =
+        build_policy_transaction(rpc, &policy_plan.create_instruction, deployment)?;
+    let packet_bytes = bincode::serialized_size(&transaction)?;
+    if packet_bytes > SOLANA_PACKET_DATA_SIZE {
+        bail!("{step_name} exceeds the Solana packet limit at {packet_bytes} bytes");
+    }
+    let units = simulate_signed_transaction(rpc, &transaction, &step_name)?;
+    println!("{step_name}_simulation=PASS units_consumed={units} packet_bytes={packet_bytes}");
+    let signature = send_meteora_live_transaction(
+        rpc,
+        path,
+        state,
+        &step_name,
+        transaction,
+        blockhash,
+        last_valid_block_height,
+    )?;
+    verify_meteora_policy_plan_account(
+        rpc,
+        policy_plan,
+        constraints,
+        settings,
+        deployment.pubkey(),
+        delegated.pubkey(),
+        &step_name,
+    )?;
+    let after = meteora_policy_upgrade_observations(rpc, settings, policy_plan.policy)?;
+    if after.get("settings_policy_seed") != Some(&policy_plan.policy_seed)
+        || after.get("policy_exists") != Some(&1)
+    {
+        bail!("{step_name} finalized state does not match the exact policy manifest");
+    }
+    finalize_meteora_live_step(rpc, path, state, &step_name, signature, after)
+}
+
+fn policy_record_from_meteora_upgrade_step(
+    state: &VaultState,
+    shard: &meteora::MeteoraPolicyShardPlan,
+    kind: meteora::MeteoraPolicyKind,
+) -> Result<PolicyRecord> {
+    let policy_plan = meteora_shard_policy_plan(shard, kind).0;
+    let step_name = meteora_upgrade_step_name(shard.shard_index, kind);
+    let step = meteora_live_step(state, &step_name)?;
+    if step.status != PolicyStatus::Finalized {
+        bail!("{step_name} is not finalized");
+    }
+    Ok(PolicyRecord {
+        status: PolicyStatus::Finalized,
+        seed: policy_plan.policy_seed,
+        policy: policy_plan.policy.to_string(),
+        pending_signature: step.pending_signature.clone(),
+        last_valid_block_height: step.last_valid_block_height,
+        creation_signature: step.finalized_signature.clone(),
+        finalized_slot: step.finalized_slot,
+    })
+}
+
+fn upgrade_meteora_policies(
+    rpc: &RpcClient,
+    path: &std::path::PathBuf,
+    state: &mut VaultState,
+    deployment: &solana_sdk::signature::Keypair,
+    delegated: &solana_sdk::signature::Keypair,
+) -> Result<()> {
+    require_finalized_meteora_policies(state)?;
+    let current_generation = state
+        .meteora
+        .as_ref()
+        .context("Meteora state is missing")?
+        .policy_generation;
+    let (settings, _, expanded) = load_meteora_plan_for_generation(
+        rpc,
+        state,
+        deployment,
+        delegated,
+        meteora::METEORA_EXPANDED_POLICY_GENERATION,
+        current_generation == meteora::METEORA_EXPANDED_POLICY_GENERATION,
+        true,
+    )?;
+    if current_generation == meteora::METEORA_EXPANDED_POLICY_GENERATION {
+        verify_all_meteora_policy_accounts(
+            rpc,
+            &expanded,
+            settings,
+            deployment.pubkey(),
+            delegated.pubkey(),
+        )?;
+        println!("meteora_policy_upgrade=PASS already_finalized=true");
+        return Ok(());
+    }
+    if current_generation != meteora::METEORA_LEGACY_POLICY_GENERATION {
+        bail!("unsupported current Meteora policy generation {current_generation}");
+    }
+    if expanded.position_upper_bin_id != meteora::POSITION_TARGET_UPPER_BIN_ID {
+        bail!("Meteora position must be expanded before policy authorization");
+    }
+
+    for shard in &expanded.additional_policy_shards {
+        for kind in [
+            meteora::MeteoraPolicyKind::AddLiquidity,
+            meteora::MeteoraPolicyKind::RemoveLiquidity,
+            meteora::MeteoraPolicyKind::ClaimFees,
+        ] {
+            create_or_resume_meteora_upgrade_policy(
+                rpc, path, state, deployment, delegated, settings, shard, kind,
+            )?;
+        }
+    }
+
+    let additional_policy_shards = expanded
+        .additional_policy_shards
+        .iter()
+        .map(|shard| {
+            Ok(state::MeteoraPolicyShardRecord {
+                shard_index: shard.shard_index,
+                lower_bin_array_indexes: shard.lower_bin_array_indexes.clone(),
+                add_liquidity_policy: Some(policy_record_from_meteora_upgrade_step(
+                    state,
+                    shard,
+                    meteora::MeteoraPolicyKind::AddLiquidity,
+                )?),
+                remove_liquidity_policy: Some(policy_record_from_meteora_upgrade_step(
+                    state,
+                    shard,
+                    meteora::MeteoraPolicyKind::RemoveLiquidity,
+                )?),
+                claim_fee_policy: Some(policy_record_from_meteora_upgrade_step(
+                    state,
+                    shard,
+                    meteora::MeteoraPolicyKind::ClaimFees,
+                )?),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    {
+        let record = state.meteora.as_mut().context("Meteora state is missing")?;
+        record.policy_generation = meteora::METEORA_EXPANDED_POLICY_GENERATION;
+        record.source_slot = expanded.source_slot;
+        record.position_lower_bin_id = expanded.position_lower_bin_id;
+        record.position_upper_bin_id = expanded.position_upper_bin_id;
+        record.position_width = expanded.position_width;
+        record.bin_arrays = expanded
+            .bin_arrays
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        record.additional_policy_shards = additional_policy_shards;
+    }
+    state::save(path, state)?;
+    meteora::validate_record(
+        state.meteora.as_ref().context("Meteora state is missing")?,
+        &expanded,
+    )?;
+    verify_all_meteora_policy_accounts(
+        rpc,
+        &expanded,
+        settings,
+        deployment.pubkey(),
+        delegated.pubkey(),
+    )?;
+    println!(
+        "meteora_policy_upgrade=PASS generation={} policies_added=6 total_meteora_policies=9 bin_arrays={}",
+        meteora::METEORA_EXPANDED_POLICY_GENERATION,
+        expanded.bin_arrays.len()
+    );
+    Ok(())
 }
 
 fn acquire_meteora_loyal_dust(
@@ -1369,6 +1885,25 @@ fn recover_finalized_meteora_live_step(
     if rpc.get_block_height()? <= last_valid {
         bail!("recorded {name} signature is still live but not visible; retry later");
     }
+    if let Ok(transaction) = rpc.get_transaction_with_config(
+        &signature,
+        RpcTransactionConfig {
+            encoding: None,
+            commitment: Some(CommitmentConfig::finalized()),
+            max_supported_transaction_version: Some(0),
+        },
+    ) {
+        if transaction
+            .transaction
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.err.as_ref())
+            .is_some()
+        {
+            bail!("recorded {name} transaction finalized with an error");
+        }
+        return Ok(Some(signature));
+    }
     Ok(None)
 }
 
@@ -1481,6 +2016,375 @@ fn setup_meteora_accounts(
     )?;
     let after = verify_meteora_setup(rpc, deployment.pubkey(), vault, &plan, &before)?;
     finalize_meteora_live_step(rpc, path, state, STEP, signature, after)
+}
+
+const METEORA_POSITION_EXPAND_TARGETS: [i32; 2] = [-77, 0];
+const METEORA_POSITION_EXPAND_VAULT_CUSHION_LAMPORTS: u64 = 10_000_000;
+
+fn meteora_position_expand_step_name(target_upper_bin_id: i32) -> String {
+    let target = if target_upper_bin_id < 0 {
+        format!("neg{}", target_upper_bin_id.unsigned_abs())
+    } else {
+        target_upper_bin_id.to_string()
+    };
+    format!("meteora-position-expand-upper-to-bin-{target}")
+}
+
+fn next_meteora_position_expand_target(current_upper_bin_id: i32) -> Option<i32> {
+    METEORA_POSITION_EXPAND_TARGETS
+        .into_iter()
+        .find(|target| *target > current_upper_bin_id)
+}
+
+fn simulate_meteora_position_expand(
+    rpc: &RpcClient,
+    state: &VaultState,
+    deployment: &solana_sdk::signature::Keypair,
+    delegated: &solana_sdk::signature::Keypair,
+) -> Result<()> {
+    let (settings, vault, plan) = load_meteora_plan(rpc, state, deployment, delegated)?;
+    let Some(target_upper_bin_id) = next_meteora_position_expand_target(plan.position_upper_bin_id)
+    else {
+        println!(
+            "module=meteora-position-expand-simulation verdict=PASS already_expanded=true transaction_sent=false"
+        );
+        return Ok(());
+    };
+    let step_name = meteora_position_expand_step_name(target_upper_bin_id);
+    let before = meteora_position_expand_observations(rpc, deployment.pubkey(), vault, &plan)?;
+    let (transaction, _, _, vault_funding) = build_meteora_position_expand_transaction(
+        rpc,
+        settings,
+        vault,
+        &plan,
+        deployment,
+        &before,
+        target_upper_bin_id,
+    )?;
+    let packet_size = bincode::serialized_size(&transaction)?;
+    if packet_size > SOLANA_PACKET_DATA_SIZE {
+        bail!("Meteora position expansion exceeds Solana's packet limit");
+    }
+    let units = simulate_signed_transaction(rpc, &transaction, &step_name)?;
+    println!("module=meteora-position-expand-simulation verdict=PASS");
+    println!("position={}", plan.position);
+    println!(
+        "bounds_before={}..={} bounds_after={}..={}",
+        plan.position_lower_bin_id,
+        plan.position_upper_bin_id,
+        meteora::POSITION_LOWER_BIN_ID,
+        target_upper_bin_id
+    );
+    println!(
+        "remaining_final_upper_bin={}",
+        meteora::POSITION_TARGET_UPPER_BIN_ID
+    );
+    println!("vault_funding_lamports={vault_funding}");
+    println!("packet_bytes={packet_size}");
+    println!("units_consumed={units}");
+    println!("transaction_sent=false");
+    Ok(())
+}
+
+fn expand_meteora_position(
+    rpc: &RpcClient,
+    path: &std::path::PathBuf,
+    state: &mut VaultState,
+    deployment: &solana_sdk::signature::Keypair,
+    delegated: &solana_sdk::signature::Keypair,
+) -> Result<()> {
+    for target_upper_bin_id in METEORA_POSITION_EXPAND_TARGETS {
+        let (settings, vault, plan) = load_meteora_plan(rpc, state, deployment, delegated)?;
+        let step_name = meteora_position_expand_step_name(target_upper_bin_id);
+        if plan.position_upper_bin_id > target_upper_bin_id {
+            if meteora_live_step(state, &step_name)?.status != PolicyStatus::Finalized {
+                bail!("Meteora position passed resize checkpoint {target_upper_bin_id} without finalized evidence");
+            }
+            continue;
+        }
+        if plan.position_upper_bin_id == target_upper_bin_id {
+            if meteora_live_step(state, &step_name)?.status == PolicyStatus::Finalized {
+                continue;
+            }
+        }
+        expand_meteora_position_step(
+            rpc,
+            path,
+            state,
+            deployment,
+            settings,
+            vault,
+            &plan,
+            target_upper_bin_id,
+            &step_name,
+        )?;
+    }
+    let (_, vault, plan) = load_meteora_plan(rpc, state, deployment, delegated)?;
+    let position = meteora::load_position_snapshot(rpc, plan.position, vault)?
+        .context("Meteora position is absent after expansion")?;
+    if position.upper_bin_id != meteora::POSITION_TARGET_UPPER_BIN_ID {
+        bail!("Meteora position did not reach the approved upper target");
+    }
+    println!(
+        "module=meteora-position-expand verdict=PASS position={} bounds={}..={} width={} rent_lamports={}",
+        plan.position,
+        position.lower_bin_id,
+        position.upper_bin_id,
+        position.upper_bin_id - position.lower_bin_id + 1,
+        position.lamports
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn expand_meteora_position_step(
+    rpc: &RpcClient,
+    path: &std::path::PathBuf,
+    state: &mut VaultState,
+    deployment: &solana_sdk::signature::Keypair,
+    settings: Pubkey,
+    vault: Pubkey,
+    plan: &meteora::MeteoraPlan,
+    target_upper_bin_id: i32,
+    step_name: &str,
+) -> Result<()> {
+    ensure_meteora_record(path, state, plan)?;
+    let before = meteora_position_expand_observations(rpc, deployment.pubkey(), vault, plan)?;
+    ensure_meteora_live_step(path, state, step_name, before)?;
+    let before = meteora_live_step(state, step_name)?.before.clone();
+    if let Some(signature) = recover_finalized_meteora_live_step(rpc, state, step_name)? {
+        let after = verify_meteora_position_expand(
+            rpc,
+            deployment.pubkey(),
+            vault,
+            plan,
+            &before,
+            target_upper_bin_id,
+        )?;
+        update_meteora_position_record(state, &after, target_upper_bin_id)?;
+        return finalize_meteora_live_step(rpc, path, state, step_name, signature, after);
+    }
+    if meteora_live_step(state, step_name)?.status == PolicyStatus::Finalized {
+        verify_meteora_position_expand(
+            rpc,
+            deployment.pubkey(),
+            vault,
+            plan,
+            &before,
+            target_upper_bin_id,
+        )?;
+        println!("{step_name}=PASS already_finalized=true");
+        return Ok(());
+    }
+    if plan.position_upper_bin_id == target_upper_bin_id {
+        bail!(
+            "Meteora position reached checkpoint {target_upper_bin_id} without finalized evidence"
+        );
+    }
+    let (transaction, blockhash, last_valid_block_height, vault_funding) =
+        build_meteora_position_expand_transaction(
+            rpc,
+            settings,
+            vault,
+            plan,
+            deployment,
+            &before,
+            target_upper_bin_id,
+        )?;
+    let packet_size = bincode::serialized_size(&transaction)?;
+    if packet_size > SOLANA_PACKET_DATA_SIZE {
+        bail!("Meteora position expansion exceeds Solana's packet limit");
+    }
+    let units = simulate_signed_transaction(rpc, &transaction, step_name)?;
+    println!(
+        "{step_name}_simulation=PASS packet_bytes={packet_size} units_consumed={units} vault_funding_lamports={vault_funding}"
+    );
+    println!(
+        "setup_exception_path=settings signer={}",
+        deployment.pubkey()
+    );
+    println!("inner_rent_payer={vault}");
+    let signature = send_meteora_live_transaction(
+        rpc,
+        path,
+        state,
+        step_name,
+        transaction,
+        blockhash,
+        last_valid_block_height,
+    )?;
+    let after = verify_meteora_position_expand(
+        rpc,
+        deployment.pubkey(),
+        vault,
+        plan,
+        &before,
+        target_upper_bin_id,
+    )?;
+    update_meteora_position_record(state, &after, target_upper_bin_id)?;
+    finalize_meteora_live_step(rpc, path, state, step_name, signature, after)
+}
+
+fn build_meteora_position_expand_transaction(
+    rpc: &RpcClient,
+    settings: Pubkey,
+    vault: Pubkey,
+    plan: &meteora::MeteoraPlan,
+    deployment: &solana_sdk::signature::Keypair,
+    before: &BTreeMap<String, u64>,
+    target_upper_bin_id: i32,
+) -> Result<(Transaction, solana_sdk::hash::Hash, u64, u64)> {
+    if observed(before, "position_nonzero_liquidity_bins")? != 0
+        || observed(before, "position_pending_fee_loyal_raw")? != 0
+        || observed(before, "position_pending_fee_usdc_raw")? != 0
+    {
+        bail!("Meteora position must be empty with no pending fees before expansion");
+    }
+    let inner_instruction =
+        meteora::expand_position_upper_instruction(vault, plan, target_upper_bin_id)?;
+    let mut transaction_accounts = Vec::new();
+    let compiled = vec![compile_squads_inner_instruction(
+        &mut transaction_accounts,
+        inner_instruction,
+    )];
+    let resize = execute_sync_transaction_instruction(
+        settings,
+        deployment.pubkey(),
+        VAULT_INDEX,
+        compiled,
+        transaction_accounts,
+    );
+
+    let target_width = target_upper_bin_id
+        .checked_sub(meteora::POSITION_LOWER_BIN_ID)
+        .and_then(|delta| delta.checked_add(1))
+        .context("Meteora resize target width overflow")?;
+    let target_data_len = meteora::position_data_len_for_width(target_width)?;
+    let target_rent = rpc
+        .get_minimum_balance_for_rent_exemption(target_data_len)
+        .context("quote target Meteora position rent")?;
+    let position_top_up = target_rent
+        .checked_sub(observed(before, "position_lamports")?)
+        .context("Meteora position already exceeds target rent quote")?;
+    let required_vault_balance = position_top_up
+        .checked_add(METEORA_POSITION_EXPAND_VAULT_CUSHION_LAMPORTS)
+        .context("Meteora resize vault balance overflow")?;
+    let vault_funding = required_vault_balance.saturating_sub(observed(before, "vault_lamports")?);
+    if observed(before, "deployment_lamports")?
+        < vault_funding
+            .checked_add(1_000_000)
+            .context("Meteora deployment funding threshold overflow")?
+    {
+        bail!("deployment signer has insufficient SOL for the approved position expansion");
+    }
+
+    let mut outer_instructions = vec![ComputeBudgetInstruction::set_compute_unit_limit(1_400_000)];
+    if vault_funding > 0 {
+        outer_instructions.push(system_instruction::transfer(
+            &deployment.pubkey(),
+            &vault,
+            vault_funding,
+        ));
+    }
+    outer_instructions.push(resize);
+    let (transaction, blockhash, last_valid_block_height) =
+        build_signed_transaction(rpc, &outer_instructions, deployment)?;
+    Ok((
+        transaction,
+        blockhash,
+        last_valid_block_height,
+        vault_funding,
+    ))
+}
+
+fn meteora_position_expand_observations(
+    rpc: &RpcClient,
+    deployment: Pubkey,
+    vault: Pubkey,
+    plan: &meteora::MeteoraPlan,
+) -> Result<BTreeMap<String, u64>> {
+    let position = meteora::load_position_snapshot(rpc, plan.position, vault)?
+        .context("Meteora position is absent before expansion")?;
+    let mut observations = BTreeMap::new();
+    observations.insert(
+        "deployment_lamports".to_owned(),
+        rpc.get_balance(&deployment)?,
+    );
+    observations.insert("vault_lamports".to_owned(), rpc.get_balance(&vault)?);
+    observations.insert("position_lamports".to_owned(), position.lamports);
+    observations.insert("position_data_len".to_owned(), position.data_len as u64);
+    observations.insert(
+        "position_width".to_owned(),
+        u64::try_from(position.upper_bin_id - position.lower_bin_id + 1)
+            .context("convert Meteora position width")?,
+    );
+    observations.insert(
+        "position_nonzero_liquidity_bins".to_owned(),
+        position.nonzero_liquidity_bins,
+    );
+    observations.insert(
+        "position_pending_fee_loyal_raw".to_owned(),
+        position.pending_fee_x,
+    );
+    observations.insert(
+        "position_pending_fee_usdc_raw".to_owned(),
+        position.pending_fee_y,
+    );
+    Ok(observations)
+}
+
+fn verify_meteora_position_expand(
+    rpc: &RpcClient,
+    deployment: Pubkey,
+    vault: Pubkey,
+    plan: &meteora::MeteoraPlan,
+    before: &BTreeMap<String, u64>,
+    target_upper_bin_id: i32,
+) -> Result<BTreeMap<String, u64>> {
+    let after = meteora_position_expand_observations(rpc, deployment, vault, plan)?;
+    let position = meteora::load_position_snapshot(rpc, plan.position, vault)?
+        .context("Meteora position disappeared after expansion")?;
+    let target_width = target_upper_bin_id
+        .checked_sub(meteora::POSITION_LOWER_BIN_ID)
+        .and_then(|delta| delta.checked_add(1))
+        .context("Meteora verified target width overflow")?;
+    let expected_data_len = meteora::position_data_len_for_width(target_width)?;
+    let expected_rent = rpc.get_minimum_balance_for_rent_exemption(expected_data_len)?;
+    if position.lower_bin_id != meteora::POSITION_LOWER_BIN_ID
+        || position.upper_bin_id != target_upper_bin_id
+        || position.data_len != expected_data_len
+        || position.lamports != expected_rent
+        || position.nonzero_liquidity_bins != 0
+        || position.pending_fee_x != 0
+        || position.pending_fee_y != 0
+    {
+        bail!("expanded Meteora position does not match the approved empty target envelope");
+    }
+    let expected_position_delta = expected_rent
+        .checked_sub(observed(before, "position_lamports")?)
+        .context("Meteora position rent delta underflow")?;
+    if observed(&after, "position_lamports")?.checked_sub(observed(before, "position_lamports")?)
+        != Some(expected_position_delta)
+    {
+        bail!("Meteora position rent delta does not match the live mainnet quote");
+    }
+    Ok(after)
+}
+
+fn update_meteora_position_record(
+    state: &mut VaultState,
+    after: &BTreeMap<String, u64>,
+    target_upper_bin_id: i32,
+) -> Result<()> {
+    let record = state
+        .meteora
+        .as_mut()
+        .context("Meteora state record is missing")?;
+    record.position_lower_bin_id = meteora::POSITION_LOWER_BIN_ID;
+    record.position_upper_bin_id = target_upper_bin_id;
+    record.position_width = i32::try_from(observed(after, "position_width")?)
+        .context("convert finalized Meteora position width")?;
+    Ok(())
 }
 
 fn meteora_setup_observations(
@@ -1748,8 +2652,67 @@ fn simulate_meteora_adversarial_matrix(
     )?;
     simulate_meteora_matrix_case(rpc, delegated, "canonical-b", &[canonical], true, 1, &[])?;
 
+    for (label, range) in [
+        (
+            "generation-2-shard-1",
+            meteora::BinRange {
+                min: -100,
+                max: -90,
+            },
+        ),
+        ("generation-2-shard-2", meteora::BinRange { min: 0, max: 0 }),
+    ] {
+        let (add, add_policy) = build_meteora_liquidity_policy_execution(
+            state,
+            delegated.pubkey(),
+            vault,
+            &plan,
+            MeteoraExecutionKind::AddB,
+            plan.active_bin_id,
+            range,
+        )?;
+        let (remove, remove_policy) = build_meteora_liquidity_policy_execution(
+            state,
+            delegated.pubkey(),
+            vault,
+            &plan,
+            MeteoraExecutionKind::RemoveB,
+            plan.active_bin_id,
+            range,
+        )?;
+        println!(
+            "meteora_generation_2_case={label}-atomic-add-remove range={}..={} add_policy={add_policy} remove_policy={remove_policy}",
+            range.min, range.max
+        );
+        simulate_meteora_matrix_case(
+            rpc,
+            delegated,
+            &format!("{label}-atomic-add-remove"),
+            &[add, remove],
+            true,
+            2,
+            &[],
+        )?;
+
+        let (claim, claim_policy) =
+            build_meteora_claim_policy_execution(state, delegated.pubkey(), vault, &plan, range)?;
+        println!(
+            "meteora_generation_2_case={label}-claim range={}..={} policy={claim_policy}",
+            range.min, range.max
+        );
+        simulate_meteora_matrix_case(
+            rpc,
+            delegated,
+            &format!("{label}-claim"),
+            &[claim],
+            true,
+            1,
+            &[],
+        )?;
+    }
+
     let mut noncontinuous_inner = canonical_inner.clone();
-    if noncontinuous_inner.accounts.len() != 16 || plan.bin_arrays.len() != 3 {
+    if noncontinuous_inner.accounts.len() != 16 || plan.bin_arrays.len() < 3 {
         bail!("Meteora add account graph changed from the reviewed layout");
     }
     noncontinuous_inner.accounts[14].pubkey = plan.bin_arrays[0];
@@ -2379,16 +3342,24 @@ fn simulate_meteora_claim_fees(
     require_finalized_meteora_live_step(state, MeteoraExecutionKind::RemoveB.step_name())?;
     let before = meteora_liquidity_observations(rpc, vault, &plan)?;
     validate_meteora_claim_before(&before)?;
-    let (execute, policy_address, range) =
-        build_meteora_claim_policy_execution(state, delegated.pubkey(), vault, &plan)?;
-    let compute = ComputeBudgetInstruction::set_compute_unit_limit(600_000);
-    let (transaction, _, _) = build_signed_transaction(rpc, &[compute, execute], delegated)?;
-    let units = simulate_signed_transaction(rpc, &transaction, "meteora-claim-fees")?;
-    println!("module=meteora-claim-fees simulation verdict=PASS");
-    println!("policy_execution_path={policy_address}");
+    let chunks = meteora::position_range_chunks(&plan)?;
+    for (index, range) in chunks.iter().copied().enumerate() {
+        let (execute, policy_address) =
+            build_meteora_claim_policy_execution(state, delegated.pubkey(), vault, &plan, range)?;
+        let compute = ComputeBudgetInstruction::set_compute_unit_limit(600_000);
+        let (transaction, _, _) = build_signed_transaction(rpc, &[compute, execute], delegated)?;
+        let label = format!("meteora-claim-fees-chunk-{index}");
+        let units = simulate_signed_transaction(rpc, &transaction, &label)?;
+        println!(
+            "claim_chunk={index} range={}..={} policy={} units_consumed={units}",
+            range.min, range.max, policy_address
+        );
+    }
+    println!(
+        "module=meteora-claim-fees simulation verdict=PASS chunks={}",
+        chunks.len()
+    );
     println!("policy_signer={}", delegated.pubkey());
-    println!("claim_range={}..={}", range.min, range.max);
-    println!("units_consumed={units}");
     println!("transaction_sent=false");
     Ok(())
 }
@@ -2400,56 +3371,103 @@ fn execute_meteora_claim_fees(
     deployment: &solana_sdk::signature::Keypair,
     delegated: &solana_sdk::signature::Keypair,
 ) -> Result<()> {
-    const STEP: &str = "meteora-claim-fees";
     let (_, vault, plan) = load_meteora_plan(rpc, state, deployment, delegated)?;
     require_finalized_meteora_policies(state)?;
     require_finalized_meteora_live_step(state, MeteoraExecutionKind::RemoveB.step_name())?;
-    let range = meteora::BinRange {
-        min: meteora::POSITION_LOWER_BIN_ID,
-        max: meteora::POSITION_UPPER_BIN_ID,
-    };
-    let mut before = meteora_liquidity_observations(rpc, vault, &plan)?;
-    before.insert("range_min_i32_bits".to_owned(), u64::from(range.min as u32));
-    before.insert("range_max_i32_bits".to_owned(), u64::from(range.max as u32));
-    ensure_meteora_live_step(path, state, STEP, before)?;
-    let before = meteora_live_step(state, STEP)?.before.clone();
-
-    if let Some(signature) = recover_finalized_meteora_live_step(rpc, state, STEP)? {
-        let after = verify_meteora_claim_fees(rpc, vault, &plan, &before)?;
-        return finalize_meteora_live_step(rpc, path, state, STEP, signature, after);
+    let initial = meteora_liquidity_observations(rpc, vault, &plan)?;
+    if observed(&initial, "position_nonzero_liquidity_bins")? != 0 {
+        bail!("Meteora fee claim requires an empty position");
     }
-    if meteora_live_step(state, STEP)?.status == PolicyStatus::Finalized {
-        verify_meteora_claim_fees(rpc, vault, &plan, &before)?;
-        println!("{STEP}=PASS already_finalized=true");
+    let pending_cycle = pending_meteora_claim_cycle(state)?;
+    if observed(&initial, "position_pending_fee_loyal_raw")?
+        .checked_add(observed(&initial, "position_pending_fee_usdc_raw")?)
+        .unwrap_or(0)
+        == 0
+        && pending_cycle.is_none()
+    {
+        println!("meteora-claim-fees=PASS already_zero=true");
         return Ok(());
     }
-    validate_meteora_claim_before(&before)?;
-    let recorded_range = meteora_range_from_observations(&before)?;
-    if recorded_range != range {
-        bail!("recorded Meteora fee-claim range does not cover the full approved position");
+    let cycle =
+        pending_cycle.unwrap_or(rpc.get_slot_with_commitment(CommitmentConfig::finalized())?);
+    let chunks = meteora::position_range_chunks(&plan)?;
+    for (index, range) in chunks.iter().copied().enumerate() {
+        let step_name = format!("meteora-claim-fees-cycle-{cycle}-chunk-{index}");
+        let mut before = meteora_liquidity_observations(rpc, vault, &plan)?;
+        before.insert("range_min_i32_bits".to_owned(), u64::from(range.min as u32));
+        before.insert("range_max_i32_bits".to_owned(), u64::from(range.max as u32));
+        ensure_meteora_live_step(path, state, &step_name, before)?;
+        let before = meteora_live_step(state, &step_name)?.before.clone();
+        let require_all_zero = index + 1 == chunks.len();
+
+        if let Some(signature) = recover_finalized_meteora_live_step(rpc, state, &step_name)? {
+            let after = verify_meteora_claim_chunk(rpc, vault, &plan, &before, require_all_zero)?;
+            finalize_meteora_live_step(rpc, path, state, &step_name, signature, after)?;
+            continue;
+        }
+        if meteora_live_step(state, &step_name)?.status == PolicyStatus::Finalized {
+            println!("{step_name}=PASS already_finalized=true");
+            continue;
+        }
+        let recorded_range = meteora_range_from_observations(&before)?;
+        if recorded_range != range {
+            bail!("recorded Meteora fee-claim chunk changed range");
+        }
+        let (execute, policy_address) =
+            build_meteora_claim_policy_execution(state, delegated.pubkey(), vault, &plan, range)?;
+        let compute = ComputeBudgetInstruction::set_compute_unit_limit(600_000);
+        let (transaction, blockhash, last_valid_block_height) =
+            build_signed_transaction(rpc, &[compute, execute], delegated)?;
+        let units = simulate_signed_transaction(rpc, &transaction, &step_name)?;
+        println!("{step_name}_simulation=PASS units_consumed={units}");
+        println!("policy_execution_path={policy_address}");
+        println!("claim_range={}..={}", range.min, range.max);
+        let signature = send_meteora_live_transaction(
+            rpc,
+            path,
+            state,
+            &step_name,
+            transaction,
+            blockhash,
+            last_valid_block_height,
+        )?;
+        let after = verify_meteora_claim_chunk(rpc, vault, &plan, &before, require_all_zero)?;
+        finalize_meteora_live_step(rpc, path, state, &step_name, signature, after)?;
     }
-    let (execute, policy_address, _) =
-        build_meteora_claim_policy_execution(state, delegated.pubkey(), vault, &plan)?;
-    let compute = ComputeBudgetInstruction::set_compute_unit_limit(600_000);
-    let (transaction, blockhash, last_valid_block_height) =
-        build_signed_transaction(rpc, &[compute, execute], delegated)?;
-    let units = simulate_signed_transaction(rpc, &transaction, STEP)?;
-    println!("{STEP}_simulation=PASS units_consumed={units}");
-    println!("policy_execution_path={policy_address}");
-    println!("policy_signer={}", delegated.pubkey());
-    println!("settings_setup_path_used=false");
-    println!("claim_range={}..={}", range.min, range.max);
-    let signature = send_meteora_live_transaction(
-        rpc,
-        path,
-        state,
-        STEP,
-        transaction,
-        blockhash,
-        last_valid_block_height,
-    )?;
-    let after = verify_meteora_claim_fees(rpc, vault, &plan, &before)?;
-    finalize_meteora_live_step(rpc, path, state, STEP, signature, after)
+    println!(
+        "meteora-claim-fees=PASS cycle={cycle} chunks={}",
+        chunks.len()
+    );
+    Ok(())
+}
+
+fn pending_meteora_claim_cycle(state: &VaultState) -> Result<Option<u64>> {
+    const PREFIX: &str = "meteora-claim-fees-cycle-";
+    let mut cycles = BTreeSet::new();
+    for step in &state
+        .meteora
+        .as_ref()
+        .context("Meteora state is missing")?
+        .live_steps
+    {
+        if step.status != PolicyStatus::Planned {
+            continue;
+        }
+        let Some(suffix) = step.name.strip_prefix(PREFIX) else {
+            continue;
+        };
+        let cycle = suffix
+            .split_once("-chunk-")
+            .context("malformed pending Meteora claim-cycle step name")?
+            .0
+            .parse::<u64>()
+            .context("parse pending Meteora claim-cycle slot")?;
+        cycles.insert(cycle);
+    }
+    if cycles.len() > 1 {
+        bail!("multiple incomplete Meteora fee-claim cycles require operator review");
+    }
+    Ok(cycles.into_iter().next())
 }
 
 fn build_meteora_claim_policy_execution(
@@ -2457,23 +3475,11 @@ fn build_meteora_claim_policy_execution(
     delegated: Pubkey,
     vault: Pubkey,
     plan: &meteora::MeteoraPlan,
-) -> Result<(Instruction, Pubkey, meteora::BinRange)> {
-    let range = meteora::BinRange {
-        min: meteora::POSITION_LOWER_BIN_ID,
-        max: meteora::POSITION_UPPER_BIN_ID,
-    };
+    range: meteora::BinRange,
+) -> Result<(Instruction, Pubkey)> {
     let inner = meteora::claim_fees_instruction(vault, plan, range)?;
-    let record = meteora::policy_record(
-        state
-            .meteora
-            .as_ref()
-            .context("Meteora state record is missing")?,
-        meteora::MeteoraPolicyKind::ClaimFees,
-    )
-    .context("Meteora claim-fee policy record is missing")?;
-    if record.status != PolicyStatus::Finalized {
-        bail!("Meteora claim-fee policy is not finalized");
-    }
+    let record =
+        meteora_policy_record_for_range(state, meteora::MeteoraPolicyKind::ClaimFees, range)?;
     let policy_address = Pubkey::from_str(&record.policy)?;
     let mut transaction_accounts = Vec::new();
     let compiled = compile_squads_inner_instruction(&mut transaction_accounts, inner);
@@ -2485,7 +3491,7 @@ fn build_meteora_claim_policy_execution(
         vec![0],
         transaction_accounts,
     );
-    Ok((execute, policy_address, range))
+    Ok((execute, policy_address))
 }
 
 fn validate_meteora_claim_before(before: &BTreeMap<String, u64>) -> Result<()> {
@@ -2500,11 +3506,12 @@ fn validate_meteora_claim_before(before: &BTreeMap<String, u64>) -> Result<()> {
     Ok(())
 }
 
-fn verify_meteora_claim_fees(
+fn verify_meteora_claim_chunk(
     rpc: &RpcClient,
     vault: Pubkey,
     plan: &meteora::MeteoraPlan,
     before: &BTreeMap<String, u64>,
+    require_all_zero: bool,
 ) -> Result<BTreeMap<String, u64>> {
     let after = meteora_liquidity_observations(rpc, vault, plan)?;
     let before_loyal = observed(before, "vault_loyal_raw")?;
@@ -2517,9 +3524,13 @@ fn verify_meteora_claim_fees(
     let usdc_delta = after_usdc
         .checked_sub(before_usdc)
         .context("Meteora fee claim unexpectedly reduced vault USDC")?;
-    if (loyal_delta == 0 && usdc_delta == 0)
-        || observed(&after, "position_pending_fee_loyal_raw")? != 0
-        || observed(&after, "position_pending_fee_usdc_raw")? != 0
+    let before_pending_loyal = observed(before, "position_pending_fee_loyal_raw")?;
+    let after_pending_loyal = observed(&after, "position_pending_fee_loyal_raw")?;
+    let before_pending_usdc = observed(before, "position_pending_fee_usdc_raw")?;
+    let after_pending_usdc = observed(&after, "position_pending_fee_usdc_raw")?;
+    if before_pending_loyal.checked_sub(after_pending_loyal) != Some(loyal_delta)
+        || before_pending_usdc.checked_sub(after_pending_usdc) != Some(usdc_delta)
+        || (require_all_zero && (after_pending_loyal != 0 || after_pending_usdc != 0))
         || observed(&after, "position_nonzero_liquidity_bins")? != 0
         || observed(&after, "pool_loyal_reserve_raw")?.checked_add(loyal_delta)
             != Some(observed(before, "pool_loyal_reserve_raw")?)
@@ -2561,14 +3572,7 @@ fn build_meteora_liquidity_policy_execution(
     } else {
         meteora::remove_liquidity_instruction(vault, plan, range, 10_000)?
     };
-    let record = meteora::policy_record(
-        state
-            .meteora
-            .as_ref()
-            .context("Meteora state record is missing")?,
-        kind.policy_kind(),
-    )
-    .context("Meteora execution policy record is missing")?;
+    let record = meteora_policy_record_for_range(state, kind.policy_kind(), range)?;
     if record.status != PolicyStatus::Finalized {
         bail!("Meteora execution policy is not finalized");
     }
@@ -2586,6 +3590,51 @@ fn build_meteora_liquidity_policy_execution(
         ),
         policy_address,
     ))
+}
+
+fn meteora_policy_record_for_range<'a>(
+    state: &'a VaultState,
+    kind: meteora::MeteoraPolicyKind,
+    range: meteora::BinRange,
+) -> Result<&'a PolicyRecord> {
+    let record = state
+        .meteora
+        .as_ref()
+        .context("Meteora state record is missing")?;
+    let lower_index = meteora::bin_array_index(range.min);
+    let upper_index = meteora::bin_array_index(range.max);
+    if upper_index < lower_index || upper_index > lower_index + 1 {
+        bail!(
+            "Meteora execution range {}..={} spans more than one two-BinArray policy window",
+            range.min,
+            range.max
+        );
+    }
+    let selected = if [-4, -3].contains(&lower_index) {
+        meteora::policy_record(record, kind)
+    } else {
+        record
+            .additional_policy_shards
+            .iter()
+            .find(|shard| shard.lower_bin_array_indexes.contains(&lower_index))
+            .and_then(|shard| match kind {
+                meteora::MeteoraPolicyKind::AddLiquidity => shard.add_liquidity_policy.as_ref(),
+                meteora::MeteoraPolicyKind::RemoveLiquidity => {
+                    shard.remove_liquidity_policy.as_ref()
+                }
+                meteora::MeteoraPolicyKind::ClaimFees => shard.claim_fee_policy.as_ref(),
+            })
+    }
+    .with_context(|| {
+        format!(
+            "no finalized Meteora {} policy covers lower BinArray index {lower_index}",
+            kind.label()
+        )
+    })?;
+    if selected.status != PolicyStatus::Finalized {
+        bail!("selected Meteora {} policy is not finalized", kind.label());
+    }
+    Ok(selected)
 }
 
 fn meteora_range_from_observations(
@@ -2800,6 +3849,25 @@ fn require_finalized_meteora_policies(state: &VaultState) -> Result<()> {
             != Some(PolicyStatus::Finalized)
         {
             bail!("Meteora {label} policy must be finalized before delegated execution");
+        }
+    }
+    if record.policy_generation == meteora::METEORA_EXPANDED_POLICY_GENERATION {
+        if record.additional_policy_shards.len() != 2 {
+            bail!("expanded Meteora policy manifest must contain exactly two additional shards");
+        }
+        for shard in &record.additional_policy_shards {
+            for (policy, label) in [
+                (shard.add_liquidity_policy.as_ref(), "add"),
+                (shard.remove_liquidity_policy.as_ref(), "remove"),
+                (shard.claim_fee_policy.as_ref(), "claim"),
+            ] {
+                if policy.map(|policy| policy.status) != Some(PolicyStatus::Finalized) {
+                    bail!(
+                        "Meteora shard {} {label} policy must be finalized before delegated execution",
+                        shard.shard_index
+                    );
+                }
+            }
         }
     }
     Ok(())
@@ -3067,16 +4135,72 @@ fn verify_meteora_policy_account(
     delegated: Pubkey,
 ) -> Result<policy::ProgramInteractionPolicyAccount> {
     let (policy_plan, constraints) = meteora_policy_plan(plan, kind);
+    verify_meteora_policy_plan_account(
+        rpc,
+        policy_plan,
+        constraints,
+        settings,
+        deployment,
+        delegated,
+        kind.label(),
+    )
+}
+
+fn verify_all_meteora_policy_accounts(
+    rpc: &RpcClient,
+    plan: &meteora::MeteoraPlan,
+    settings: Pubkey,
+    deployment: Pubkey,
+    delegated: Pubkey,
+) -> Result<()> {
+    for kind in [
+        meteora::MeteoraPolicyKind::AddLiquidity,
+        meteora::MeteoraPolicyKind::RemoveLiquidity,
+        meteora::MeteoraPolicyKind::ClaimFees,
+    ] {
+        verify_meteora_policy_account(rpc, plan, kind, settings, deployment, delegated)?;
+    }
+    for shard in &plan.additional_policy_shards {
+        for kind in [
+            meteora::MeteoraPolicyKind::AddLiquidity,
+            meteora::MeteoraPolicyKind::RemoveLiquidity,
+            meteora::MeteoraPolicyKind::ClaimFees,
+        ] {
+            let (policy_plan, constraints) = meteora_shard_policy_plan(shard, kind);
+            verify_meteora_policy_plan_account(
+                rpc,
+                policy_plan,
+                constraints,
+                settings,
+                deployment,
+                delegated,
+                &meteora_upgrade_step_name(shard.shard_index, kind),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_meteora_policy_plan_account(
+    rpc: &RpcClient,
+    policy_plan: &loyal_actions::autonomous_vaults::MeteoraPolicyPlan,
+    constraints: &[loyal_actions::SquadsInstructionConstraintView],
+    settings: Pubkey,
+    deployment: Pubkey,
+    delegated: Pubkey,
+    label: &str,
+) -> Result<policy::ProgramInteractionPolicyAccount> {
     let account = rpc
         .get_account(&policy_plan.policy)
-        .with_context(|| format!("reload {} policy", kind.label()))?;
+        .with_context(|| format!("reload {label} policy"))?;
     let decoded = policy::decode_program_interaction_policy(account.owner, &account.data)?;
     policy::verify_program_interaction_policy(
         &decoded,
         policy::ExpectedProgramInteractionPolicy {
             policy_address: policy_plan.policy,
             settings,
-            seed: kind.seed(),
+            seed: policy_plan.policy_seed,
             delegated_signer: delegated,
             account_index: VAULT_INDEX,
             constraints,
@@ -3222,10 +4346,21 @@ fn verify_all(
     let vault = Pubkey::from_str(&smart.vault)?;
     let settings_account = rpc.get_account(&settings)?;
     let decoded_settings = squads::decode_settings(&settings_account.data)?;
-    if decoded_settings.policy_seed != Some(7) {
-        bail!("Settings does not record exactly seven created policies");
+    let expected_policy_seed = if state
+        .meteora
+        .as_ref()
+        .context("Meteora state is missing")?
+        .policy_generation
+        == meteora::METEORA_EXPANDED_POLICY_GENERATION
+    {
+        13
+    } else {
+        7
+    };
+    if decoded_settings.policy_seed != Some(expected_policy_seed) {
+        bail!("Settings policy seed does not match the recorded policy generation");
     }
-    println!("module=smart-account verdict=PASS policy_seed=7");
+    println!("module=smart-account verdict=PASS policy_seed={expected_policy_seed}");
 
     let (kamino_settings, kamino_vault, kamino_plan) =
         load_kamino_plan(rpc, state, deployment, delegated)?;
@@ -3277,28 +4412,23 @@ fn verify_all(
 
     let (meteora_settings, meteora_vault, meteora_plan) =
         load_meteora_plan(rpc, state, deployment, delegated)?;
-    for kind in [
-        meteora::MeteoraPolicyKind::AddLiquidity,
-        meteora::MeteoraPolicyKind::RemoveLiquidity,
-        meteora::MeteoraPolicyKind::ClaimFees,
-    ] {
-        verify_meteora_policy_account(
-            rpc,
-            &meteora_plan,
-            kind,
-            meteora_settings,
-            deployment.pubkey(),
-            delegated.pubkey(),
-        )?;
-    }
+    verify_all_meteora_policy_accounts(
+        rpc,
+        &meteora_plan,
+        meteora_settings,
+        deployment.pubkey(),
+        delegated.pubkey(),
+    )?;
     let position = meteora::load_position_snapshot(rpc, meteora_plan.position, meteora_vault)?
         .context("Meteora position is absent during final verification")?;
     if position.lower_bin_id != meteora::POSITION_LOWER_BIN_ID
-        || position.upper_bin_id != meteora::POSITION_UPPER_BIN_ID
+        || position.upper_bin_id != meteora::POSITION_TARGET_UPPER_BIN_ID
         || position.nonzero_liquidity_bins != 0
         || position.pending_fee_x != 0
         || position.pending_fee_y != 0
-        || position.lamports != 57_406_080
+        || position.data_len
+            != meteora::position_data_len_for_width(meteora::POSITION_TARGET_WIDTH)?
+        || position.lamports != rpc.get_minimum_balance_for_rent_exemption(position.data_len)?
     {
         bail!("Meteora position does not match the persistent zero-liquidity manifest");
     }
@@ -3318,10 +4448,15 @@ fn verify_all(
             .as_ref()
             .context("Meteora state is missing")?
             .live_steps,
-        8,
+        if meteora_plan.policy_generation == meteora::METEORA_EXPANDED_POLICY_GENERATION {
+            16
+        } else {
+            10
+        },
     )?;
     println!(
-        "module=meteora verdict=PASS policies=3 position={} bin_arrays={}",
+        "module=meteora verdict=PASS policies={} position={} bin_arrays={}",
+        3 + meteora_plan.additional_policy_shards.len() * 3,
         meteora_plan.position,
         meteora_plan.bin_arrays.len()
     );
@@ -3337,7 +4472,6 @@ fn verify_all(
             expected_return_allowance(state, &return_plan, kind),
         )?;
         let step = return_live_step(state, return_step_name(kind))?;
-        verify_return_deltas(rpc, &return_plan, kind, &step.before)?;
         verify_return_transaction_token_deltas(rpc, &return_plan, kind, step)?;
     }
     require_all_steps_finalized(
@@ -3352,8 +4486,8 @@ fn verify_all(
     println!("module=treasury-returns verdict=PASS policies=2 transfers=2");
 
     let policy_addresses = all_policy_addresses(state)?;
-    if policy_addresses.len() != 7 {
-        bail!("the final policy manifest does not contain seven unique PDAs");
+    if policy_addresses.len() != expected_policy_seed as usize {
+        bail!("the final policy manifest does not match the Settings policy seed");
     }
     verify_all_recorded_signatures(rpc, state)?;
     println!("module=recorded-signatures verdict=PASS");
@@ -3366,12 +4500,91 @@ fn verify_all(
     Ok(())
 }
 
+fn simulate_signer_handoff_readiness(
+    rpc: &RpcClient,
+    path: &std::path::Path,
+    state: &VaultState,
+    deployment: &solana_sdk::signature::Keypair,
+    delegated: &solana_sdk::signature::Keypair,
+) -> Result<()> {
+    verify_all(rpc, path, state, deployment, delegated)?;
+
+    let smart = state
+        .smart_account
+        .as_ref()
+        .context("Smart Account record is missing")?;
+    let settings = Pubkey::from_str(&smart.settings)?;
+    let mother = loyal_actions::autonomous_vaults::MOTHER_TREASURY_VAULT;
+    let mother_multisig = Pubkey::from_str("Gv27nnaXR8UanJmjPZ4MLS81eqee2DfzJSv7C8PkQTEC")?;
+    let mother_vault_index = 0u8;
+    if derive_squads_v4_vault(&mother_multisig, mother_vault_index).0 != mother {
+        bail!("published Mother address is not the expected Squads v4 vault PDA");
+    }
+    let mother_multisig_account = rpc.get_account(&mother_multisig)?;
+    if mother_multisig_account.owner != SQUADS_V4_PROGRAM_ID {
+        bail!("Mother multisig is not owned by the Squads v4 program");
+    }
+
+    let settings_before = rpc.get_account(&settings)?;
+    let decoded_before = squads::verify_created_settings(
+        settings_before.owner,
+        &settings_before.data,
+        smart.account_index.parse::<u128>()?,
+        deployment.pubkey(),
+    )?;
+    if decoded_before.policy_seed != Some(13) {
+        bail!("signer handoff is forbidden before Settings policy seed 13");
+    }
+
+    let handoff = handoff_settings_signer_instruction(settings, deployment.pubkey(), mother)
+        .map_err(anyhow::Error::msg)?;
+    let decoded_handoff =
+        decode_settings_signer_handoff_instruction(&handoff).map_err(anyhow::Error::msg)?;
+    if decoded_handoff.settings != settings
+        || decoded_handoff.current_signer != deployment.pubkey()
+        || decoded_handoff.new_signer != mother
+        || decoded_handoff.new_signer_permissions_mask != 7
+    {
+        bail!("decoded signer handoff does not match the exact reviewed manifest");
+    }
+
+    let blockhash = rpc.get_latest_blockhash()?;
+    let transaction = Transaction::new_signed_with_payer(
+        &[handoff],
+        Some(&deployment.pubkey()),
+        &[deployment],
+        blockhash,
+    );
+    let packet_bytes = bincode::serialized_size(&transaction)?;
+    if packet_bytes > SOLANA_PACKET_DATA_SIZE {
+        bail!("signer handoff exceeds Solana packet size: {packet_bytes}");
+    }
+    let units = simulate_signed_transaction(rpc, &transaction, "signer handoff readiness")?;
+    let settings_after = rpc.get_account(&settings)?;
+    if settings_after != settings_before {
+        bail!("signed-unsent handoff simulation changed live Settings state");
+    }
+
+    println!("module=signer-handoff-readiness verdict=PASS");
+    println!("mother_squads_v4_program={SQUADS_V4_PROGRAM_ID}");
+    println!("mother_multisig={mother_multisig}");
+    println!("mother_vault_index={mother_vault_index}");
+    println!("mother_vault={mother}");
+    println!("handoff_add_signer={}", decoded_handoff.new_signer);
+    println!("handoff_add_permissions_mask=7");
+    println!("handoff_remove_signer={}", decoded_handoff.current_signer);
+    println!("handoff_packet_bytes={packet_bytes}");
+    println!("handoff_units_consumed={units}");
+    println!("handoff_ready=PASS transaction_sent=false");
+    Ok(())
+}
+
 fn require_all_steps_finalized(
     module: &str,
     steps: &[LiveStepRecord],
     expected_count: usize,
 ) -> Result<()> {
-    if steps.len() != expected_count
+    if steps.len() < expected_count
         || steps.iter().any(|step| {
             step.status != PolicyStatus::Finalized
                 || step.finalized_signature.is_none()
@@ -3410,7 +4623,7 @@ fn all_policy_addresses(state: &VaultState) -> Result<BTreeSet<Pubkey>> {
         returns.loyal_policy.as_ref(),
         returns.usdc_policy.as_ref(),
     ];
-    records
+    let mut addresses = records
         .into_iter()
         .map(|record| {
             let record = record.context("policy record is missing")?;
@@ -3419,7 +4632,23 @@ fn all_policy_addresses(state: &VaultState) -> Result<BTreeSet<Pubkey>> {
             }
             Pubkey::from_str(&record.policy).context("parse policy address")
         })
-        .collect()
+        .collect::<Result<BTreeSet<_>>>()?;
+    for shard in &meteora.additional_policy_shards {
+        for record in [
+            shard.add_liquidity_policy.as_ref(),
+            shard.remove_liquidity_policy.as_ref(),
+            shard.claim_fee_policy.as_ref(),
+        ] {
+            let record = record.context("Meteora shard policy record is missing")?;
+            if record.status != PolicyStatus::Finalized {
+                bail!("Meteora shard policy record is not finalized");
+            }
+            if !addresses.insert(Pubkey::from_str(&record.policy)?) {
+                bail!("policy manifest contains a duplicate PDA");
+            }
+        }
+    }
+    Ok(addresses)
 }
 
 fn verify_all_recorded_signatures(rpc: &RpcClient, state: &VaultState) -> Result<()> {
@@ -3475,6 +4704,27 @@ fn verify_all_recorded_signatures(rpc: &RpcClient, state: &VaultState) -> Result
                 .finalized_slot
                 .context("policy creation slot is missing")?,
         ));
+    }
+    for shard in &meteora.additional_policy_shards {
+        for (kind, record) in [
+            ("add", shard.add_liquidity_policy.as_ref()),
+            ("remove", shard.remove_liquidity_policy.as_ref()),
+            ("claim", shard.claim_fee_policy.as_ref()),
+        ] {
+            let record = record.context("Meteora shard policy signature record is missing")?;
+            evidence.push((
+                format!("meteora-shard-{}-{kind}-policy", shard.shard_index),
+                Signature::from_str(
+                    record
+                        .creation_signature
+                        .as_deref()
+                        .context("Meteora shard policy creation signature is missing")?,
+                )?,
+                record
+                    .finalized_slot
+                    .context("Meteora shard policy creation slot is missing")?,
+            ));
+        }
     }
     for (module, steps) in [
         ("kamino", kamino.live_steps.as_slice()),

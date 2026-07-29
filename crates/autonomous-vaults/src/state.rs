@@ -36,6 +36,8 @@ pub struct TreasuryReturnRecord {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MeteoraRecord {
+    #[serde(default = "default_meteora_policy_generation")]
+    pub policy_generation: u8,
     pub source_slot: u64,
     pub pool: String,
     pub program: String,
@@ -56,7 +58,22 @@ pub struct MeteoraRecord {
     pub remove_liquidity_policy: Option<PolicyRecord>,
     pub claim_fee_policy: Option<PolicyRecord>,
     #[serde(default)]
+    pub additional_policy_shards: Vec<MeteoraPolicyShardRecord>,
+    #[serde(default)]
     pub live_steps: Vec<LiveStepRecord>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MeteoraPolicyShardRecord {
+    pub shard_index: u8,
+    pub lower_bin_array_indexes: Vec<i32>,
+    pub add_liquidity_policy: Option<PolicyRecord>,
+    pub remove_liquidity_policy: Option<PolicyRecord>,
+    pub claim_fee_policy: Option<PolicyRecord>,
+}
+
+fn default_meteora_policy_generation() -> u8 {
+    1
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

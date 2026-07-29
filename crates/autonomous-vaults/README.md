@@ -10,15 +10,15 @@ The policy builders live in
 This crate owns mainnet orchestration, account setup, simulation, resumable
 execution, finalized-RPC checks, and the public state record.
 
-The configured policy set contains seven Squads policies in three families:
+The configured policy set contains thirteen Squads policies in three families:
 
 | Family | Policies | Delegated operations |
 | --- | ---: | --- |
 | Kamino | 2 | Deposit or withdraw USDC in two approved reserves; initialize the matching vanilla obligations |
-| Meteora | 3 | Add liquidity, remove liquidity, and claim fees in one LOYAL/USDC DLMM pool |
+| Meteora | 9 | Add liquidity, remove liquidity, and claim fees across three BinArray shards in one LOYAL/USDC DLMM pool |
 | Return to Mother | 2 | Send LOYAL or USDC from vault index `0` to the Mother treasury |
 
-All seven policies authorize `POLICY_KEYPAIR` with threshold `1`, time lock `0`,
+All thirteen policies authorize `POLICY_KEYPAIR` with threshold `1`, time lock `0`,
 no start time, and no expiration. The policy signer may execute an installed
 policy. It cannot create, update, or remove policies merely because it is named
 inside them.
@@ -37,14 +37,18 @@ control state:
 | Current Settings signer | Deployment key `62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5`, full permissions |
 | Delegated policy signer | `62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5` |
 | Mother vault | `AQyyTwCKemeeMu8ZPZFxrXMbVwAYTSbBhi1w4PBrhvYE` |
-| Mother status | Return-policy destination; Settings handoff is still pending |
+| Mother status | Return-policy destination; atomic Settings handoff is verified but not broadcast |
 
-Mother is not yet a Settings signer. The final handoff will add Mother and remove
-the deployment key only after human approval. Until then, the deployment key is
-the sole Settings signer, while Mother is the only allowed owner destination in
-the LOYAL and USDC return policies. Run `inspect` and `verify-all` before relying
-on this section because on-chain signer state can change after documentation is
-published.
+Mother is not yet a Settings signer. It is Squads v4 vault index `0` for multisig
+`Gv27nnaXR8UanJmjPZ4MLS81eqee2DfzJSv7C8PkQTEC`, owned by program
+`SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf`. The final handoff will add that
+exact vault with full permissions and remove the deployment key in one child
+Settings transaction. The exact transaction has been decoded, packet-checked,
+and successfully simulated without broadcast. Until human approval, the
+deployment key remains the sole Settings signer and Mother remains the only
+allowed owner destination in the LOYAL and USDC return policies. Run `inspect`
+and `verify-all` before relying on this section because on-chain signer state can
+change after documentation is published.
 
 ## Mainnet transaction evidence
 
@@ -71,6 +75,12 @@ only on an explorer's instruction label.
 | Create Meteora claim-fees policy | [4swx…W4f8K](https://solscan.io/tx/4swxiiB69BLAteHv62HgEW5x21AufPRy3JW6jQzEAq7qWnpSJPrJrbMETSZAb2xkdJh5dghZU1EET3NHSzyW4f8K) | `435676792` | Installs policy seed `5` with vault-only fee destinations |
 | Create LOYAL return policy | [29Zf…YDR2e](https://solscan.io/tx/29ZfuPzahTH7h2vP2BQeoKfk96j9cGcjfswUV3rCZrNs6SWCPXFnhT5JYZ5rj34S16B33LQn5qJpCTroJm9YDR2e) | `435681682` | Installs policy seed `6`, LOYAL mint, Mother-only destination |
 | Create USDC return policy | [63jY…H39FB](https://solscan.io/tx/63jYGMbXmpoWrtHJVp2UgdXi4ab1ed8RhVFhjct8GXZ8CJKocsYNaa2EpZyAhAi4piFuYeoQCbNjX3XaeWSH39FB) | `435681753` | Installs policy seed `7`, USDC mint, Mother-only destination |
+| Create Meteora shard 1 add policy | [5ywM…mJ1v](https://solscan.io/tx/5ywMqjwJPxcnowCvQKdWPq4hF53VAqJAij6modfVHTyseF1hN22X6mHEvj9csqGwpeRBcrhie2Q6kaSMHaxpmJ1v) | `435845448` | Installs seed `8` for lower BinArrays `-2/-1` |
+| Create Meteora shard 1 remove policy | [2uDe…v8Bw](https://solscan.io/tx/2uDeDRNfkRw8tB28DjHfkYZprtjFQWzx8uMWTK8JMsbNAJhoMDem7XyASyGQbXV5hy6UWe45rE3RLRCWZH7Av8Bw) | `435845483` | Installs seed `9` for lower BinArrays `-2/-1` |
+| Create Meteora shard 1 claim policy | [2GHE…TupP](https://solscan.io/tx/2GHE7uDf97uh7XDzJykBzgBVa7eSzXJQbGiTRDu5XEAymUnGnFvhPE8yh6qceWnoB1DyHDNwRub8J9XHTP5YTupP) | `435845517` | Installs seed `10` for lower BinArrays `-2/-1` |
+| Create Meteora shard 2 add policy | [2HbQ…DfmG](https://solscan.io/tx/2HbQG96SAhDGgdeLTAwfjA7KwVt7vkjAgY2vuFohLM5ozcYqPNhpoU4bpfz8Gp1faVRu2U5ZnUt6evETefg8DfmG) | `435845738` | Installs seed `11` for lower BinArray `0` |
+| Create Meteora shard 2 remove policy | [3BsV…RTPP](https://solscan.io/tx/3BsVoyUsK3dgWDdKxN2ED9VJacvdEiLNVtG9iTKC4No7MBmE1W87fGehzAUv5ghutYghweUF7GZHz6JwEo7WRTPP) | `435845774` | Installs seed `12` for lower BinArray `0` |
+| Create Meteora shard 2 claim policy | [5r6F…i8Kf](https://solscan.io/tx/5r6FcmFNDFxSNecSGLNL8FAgrRKgMpPoYgTBKdiAiDs3PrwbLEYoxUfduZtT65fQdiSMSBSU4wXK94AatuF4i8Kf) | `435846167` | Installs seed `13`; Settings policy seed ends at `13` |
 
 ### Kamino setup and delegated execution
 
@@ -98,6 +108,8 @@ These transactions are in execution order. Reserve `0` is
 | --- | --- | ---: | --- |
 | Acquire deployment-funded LOYAL dust | [mZN1…5tTr](https://solscan.io/tx/mZN1UyqrmzFDfwEMazqXtaByymoNsoTHD32sJPrGTFyt8Dibaf94rnQ1ubVGUyJXEhUoY7i85uSNtGGFRf75tTr) | `435676056` | Direct fixed-pool setup swap: `1,000` raw USDC for `7,553` raw LOYAL |
 | Create vault LOYAL account and PositionV2 | [5a4P…d3oQ](https://solscan.io/tx/5a4P7N7jcfiuRUA3vUK6oDnPAZ1x3dptnApryLCGV2mS745Xw3SP1HzMJZ2UH5nQATVgLuymfkQsFmzyF7hsd3oQ) | `435676421` | Creates the persistent position, transfers `5,000` raw LOYAL, leaves liquidity and fees at zero |
+| Expand PositionV2 upper bound to bin `-77` | [5cRW…Q9Qe](https://solscan.io/tx/5cRWiptcTaVFJztCWbavVSM98JaqUZcdcLYvHGzz3k3xueUR9wkyxivNhWi7bpaUNMcGgp7XEJubt98gAYXYQ9Qe) | `435702536` | First bounded Settings-authorized resize; width `70 -> 161`, position rent `57,406,080 -> 128,342,400` lamports |
+| Expand PositionV2 upper bound to bin `0` | [4Ahi…Pq28s](https://solscan.io/tx/4AhiCbEsNdSAHP4iRViEmzH3dSiEMFhe7ejKrV3TF6Gb3LgE1pXJB6xqKB4SrTcndNLcHASsE2fSqzcq1swPq28s) | `435702575` | Second bounded resize; final bounds `-237..=0`, width `238`, rent `188,365,440` lamports, liquidity and pending fees remain zero |
 | Add liquidity with range A | [5A9L…Uei3](https://solscan.io/tx/5A9LamN9rXnaNH4rQmSvFs4ndUjcFPk5g41kgfQfkgS5KK27fahSbbVhwozowdnXXgY51WMrvhyitG51EYrQUei3) | `435677665` | Delegated add for `-207..=-199`; pool receives `997` LOYAL and `135` USDC raw |
 | Remove 100% of range A | [5DGC…SNh6](https://solscan.io/tx/5DGCxGYnQrPjihAmfF2bb14ogNwisfYDbopFq5mx7DtE1EiUNZD1b6Ece961xZfukBFLv7iEHtQkEHo9DMwvSNh6) | `435678149` | Returns the exact principal while the position and its rent persist |
 | Add liquidity with range B | [5tj5…bCzV](https://solscan.io/tx/5tj5Mwj9CqBqfKLQq6FkVWV9NTc7Dn5xukQVmSHByaRi6CCwfsMSygEKUikqAS4KAmrqJvKeqkgUcCAL6ycVbCzV) | `435678273` | Delegated add for different range `-211..=-195`; position has 17 active bins |
@@ -223,9 +235,11 @@ needed.
 
 ## Policy family 2: Meteora
 
-Meteora uses three ProgramInteraction policies because the add-liquidity policy
-is already close to Solana's packet limit. A separate policy for each operation
-also makes every instruction family independently inspectable.
+Meteora starts with three ProgramInteraction policies. The expanded position
+uses nine: add, remove, and claim policies for each of three BinArray shards.
+The split is necessary because one full-envelope add policy is larger than
+Solana's `1,232`-byte packet limit. A separate policy for each operation and
+shard keeps every instruction family independently inspectable.
 
 ### Fixed pool and account graph
 
@@ -243,21 +257,47 @@ The planner also requires a live pool with LOYAL as token X, USDC as token Y,
 the listed reserves, bin step `100`, and active status. It verifies both mints and
 reserves as classic Tokenkeg accounts.
 
-The current setup precreates one vault-owned PositionV2 with immutable bounds
-`-237..=-168`. Two test ranges prove that the same persistent position supports
-different allocations:
+The current setup has one vault-owned PositionV2. Its immutable PDA creation
+seeds are lower bin `-237` and initial width `70`; resizing does not change the
+PDA. The live account was subsequently expanded from `-237..=-168` to
+`-237..=0`, an approximate physical price envelope of `$0.0946–$1.00`.
+
+The first three delegated policies were created before that resize. They still
+authorize the original three reviewed BinArray candidates; expanding the
+physical position did not silently broaden their permissions. Two live test
+ranges prove that the same persistent position supports different allocations:
 
 - range A: `-207..=-199`;
 - range B: `-211..=-195`.
 
-The policy accepts only the approved position PDA and the BinArray candidates
-derived from the fixed pool. Each lower and upper BinArray slot has its own
-allowlist. A delegated call cannot substitute a position or BinArray from another
-pool.
+Generation 2 keeps those policies and adds six more. It does not remove or
+replace a working policy, so there is no permission gap during installation.
+
+| Shard | Policy seeds | Allowed lower BinArray indexes | Allowed upper BinArray indexes |
+| ---: | --- | --- | --- |
+| `0` | add `3`, remove `4`, claim `5` | `-4`, `-3` | `-3`, `-2` |
+| `1` | add `8`, remove `9`, claim `10` | `-2`, `-1` | `-1`, `0` |
+| `2` | add `11`, remove `12`, claim `13` | `0` | `1` |
+
+These shards cover every possible two-BinArray execution window for physical
+bins `-237..=0`: `(-4,-3)`, `(-3,-2)`, `(-2,-1)`, `(-1,0)`, and `(0,1)`.
+BinArray `1` is required even though the physical position ends at bin `0`
+because Meteora PositionV2 instructions always supply the selected lower array
+and its successor. All six BinArrays already exist for this pool; the upgrade
+fails closed if any is absent or has the wrong pool, owner, or index.
+
+The range remains dynamic in instruction data. At execution time the Rust
+planner derives the lower BinArray index from the requested range, selects the
+corresponding finalized shard, and rejects a range spanning more than one
+two-array window. Each lower and upper account slot has its own allowlist.
+Meteora then rejects noncontinuous or duplicate array combinations and any range
+outside the live position. A delegated call cannot substitute another pool,
+position, destination, or BinArray PDA.
 
 ### Meteora add-liquidity policy
 
-Policy seed `3` permits only `add_liquidity_by_strategy2`.
+Policy seeds `3`, `8`, and `11` permit only
+`add_liquidity_by_strategy2`; they differ only in their BinArray allowlists.
 
 | Index | Constraint |
 | ---: | --- |
@@ -283,13 +323,16 @@ The instruction-data constraints are:
 | `105` | Exact empty classic-token `RemainingAccountsInfo` encoding |
 
 LOYAL amount, USDC amount, active bin, and range are dynamic. The Rust builder
-requires the range to contain the observed active bin and to remain within the
-approved position. Meteora rechecks the active bin, allowed slippage, position,
-range, and supplied BinArrays on-chain.
+requires the range to remain within the approved position and fit one shard; it
+does not require the selected range to contain the current active bin. This is
+what permits one-sided or ahead-of-market deployment anywhere in the physical
+position. Meteora rechecks the observed active bin against the policy-capped
+slippage, plus the position, range, and supplied BinArrays on-chain.
 
 ### Meteora remove-liquidity policy
 
-Policy seed `4` permits only `remove_liquidity_by_range2`.
+Policy seeds `4`, `9`, and `12` permit only
+`remove_liquidity_by_range2`; they differ only in their BinArray allowlists.
 
 | Index | Constraint |
 | ---: | --- |
@@ -308,8 +351,9 @@ Policy seed `4` permits only `remove_liquidity_by_range2`.
 
 The policy fixes the discriminator at offset `0` and the empty classic-token
 `RemainingAccountsInfo` at offset `18`. Range and removal BPS remain dynamic.
-The Rust execution builder accepts only ranges inside `-237..=-168` and BPS from
-`1` through `10,000`; Meteora enforces the position and removal rules on-chain.
+The Rust execution builder accepts ranges inside the live `-237..=0` position,
+limits each call to one two-BinArray window, and accepts BPS from `1` through
+`10,000`; Meteora enforces the position and removal rules on-chain.
 
 This policy does not include a close-position discriminator. Removing `100%` of
 liquidity leaves the position, vault token accounts, and BinArrays in place, so
@@ -317,7 +361,8 @@ the delegated signer can add liquidity again without recreating accounts.
 
 ### Meteora claim-fee policy
 
-Policy seed `5` permits only `claim_fee2`.
+Policy seeds `5`, `10`, and `13` permit only `claim_fee2`; they differ only in
+their BinArray allowlists.
 
 | Index | Constraint |
 | ---: | --- |
@@ -341,11 +386,26 @@ the vault's canonical LOYAL and USDC token accounts.
 The claim policy does not authorize swaps, rewards, operator actions, position
 resizing, token-account closure, or position closure.
 
+Claiming the full expanded position is an orchestration concern, not a broader
+policy. The operator issues four separately simulated and resumable calls:
+
+- `-237..=-168` through shard `0`;
+- `-167..=-98` through shard `0`;
+- `-97..=-28` through shard `1`;
+- `-27..=0` through shard `1`.
+
+The final call must leave both pending-fee totals at zero. Each claim cycle uses
+a finalized-slot identifier in its step names, so a later fee cycle cannot be
+mistaken for an already completed one.
+
 ### Meteora setup and fee generation
 
 `setup-meteora-accounts` creates the canonical vault token accounts and the
-approved PositionV2 before final signer handoff. BinArrays are derived from the
-fixed pool and verified to exist; they are not disposable vault accounts.
+approved PositionV2 before final signer handoff. `expand-meteora-position` then
+uses the current Settings signer to expand that same position in separately
+simulated transactions capped at 91 added bins each. The autonomous vault is the
+inner rent payer. BinArrays are derived from the fixed pool and are not disposable
+vault accounts.
 
 The deployment signer controls the dust-acquisition and fee-generation swaps.
 Those setup/test operations are outside the delegated policy permissions. The CLI
@@ -395,18 +455,21 @@ The intended order is:
    identity as the recoverable Settings signer.
 2. Create the two Kamino policies and test initialization, deposit, partial
    withdrawal, full withdrawal, and reinitialization through the policy signer.
-3. Precreate the Meteora token accounts and position, create the three Meteora
-   policies, and test add A, remove A, add B, fee generation, remove B, and claim.
+3. Precreate the Meteora token accounts and position, expand it to `-237..=0`,
+   create all nine Meteora policies, and test add A, remove A, add B, fee
+   generation, remove B, claim, both upper-range policy shards, and adversarial
+   boundaries.
 4. Verify Mother's canonical LOYAL and USDC token accounts, create both return
    policies, and test a nonzero transfer of each mint through the policy signer.
 5. Run independent RPC verification and obtain human approval.
 6. Add Mother as the Settings signer and remove the deployment signer, leaving
    Mother as the only Settings signer. The delegated policy signer remains
-   attached to the seven precreated policies.
+   attached to the thirteen precreated policies.
 
-The current verifier stops before step 6. Signer handoff requires separate human
-approval after reviewing the recorded addresses, policy bytes, transaction
-signatures, and balance deltas.
+The current verifier proves step 6 with a signed-unsent transaction but does not
+broadcast it. Signer handoff still requires separate human approval after
+reviewing the recorded addresses, policy bytes, transaction signatures, balance
+deltas, and `handoff_ready=PASS transaction_sent=false` output.
 
 The autonomous vault is the token owner and can be the inner payer when Squads
 signs for its PDA. A Solana PDA cannot sign the outer transaction or act as its
@@ -443,6 +506,12 @@ create-meteora-remove-policy
 simulate-meteora-claim-policy
 create-meteora-claim-policy
 
+inspect-meteora-policy-upgrade
+simulate-meteora-policy-upgrade
+upgrade-meteora-policies
+
+simulate-signer-handoff-readiness
+
 simulate-return-loyal-policy
 create-return-loyal-policy
 simulate-return-usdc-policy
@@ -478,3 +547,11 @@ The tests independently decode the generated policies, mutate protected fields,
 measure packet size, and execute representative flows through Squads and the
 protocol mocks. Mainnet acceptance still requires fresh RPC decoding and exact
 transaction balance evidence; local tests do not replace that check.
+
+The current signed-unsent mainnet matrix also exercises the production builders
+against the expanded range. An atomic add then full remove passed for
+`-100..=-90` through policy seeds `8/9` in a `1,014`-byte transaction, and for
+`0..=0` through seeds `11/12` in another `1,014`-byte transaction. Fee claims
+passed through seeds `10` and `13` in `804`-byte transactions. The simulations
+reached DLMM, sent no transaction, and left the finalized empty position
+unchanged.

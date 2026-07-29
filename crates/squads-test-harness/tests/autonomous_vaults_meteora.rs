@@ -350,6 +350,81 @@ fn rejects_empty_allowlists_and_duplicate_policy_seeds() {
     ));
 }
 
+#[test]
+fn final_expanded_shard_fits_packets_and_pins_the_zero_bin_window() {
+    let settings = Pubkey::new_unique();
+    let authority = Keypair::new();
+    let delegated = Pubkey::new_unique();
+    let vault = Pubkey::new_unique();
+    let position = Pubkey::new_unique();
+    let lower = Pubkey::new_unique();
+    let upper = Pubkey::new_unique();
+    let policies = create_meteora_policies(
+        settings,
+        authority.pubkey(),
+        delegated,
+        vault,
+        0,
+        11,
+        12,
+        13,
+        vec![position],
+        vec![lower],
+        vec![upper],
+    )
+    .expect("build final expanded Meteora shard");
+    let constraints = [
+        &policies.add_liquidity.create_instruction,
+        &policies.remove_liquidity.create_instruction,
+        &policies.claim_fees.create_instruction,
+    ]
+    .map(|instruction| {
+        let actions = decode_squads_policy_create_actions(instruction)
+            .expect("decode final expanded Meteora shard");
+        assert_eq!(actions.len(), 1);
+        assert!(packet_bytes(instruction, &authority) <= PACKET_DATA_SIZE);
+        actions[0].payload.constraints[0].clone()
+    });
+    let (vault_loyal, vault_usdc) = derive_meteora_vault_token_accounts(vault);
+    let add = add_instruction(
+        vault,
+        vault_loyal,
+        vault_usdc,
+        position,
+        lower,
+        upper,
+        1,
+        1,
+        0,
+        0,
+    );
+    let remove = remove_instruction(
+        vault,
+        vault_loyal,
+        vault_usdc,
+        position,
+        lower,
+        upper,
+        0,
+        0,
+        10_000,
+    );
+    let claim = claim_instruction(vault, vault_loyal, vault_usdc, position, lower, upper, 0, 0);
+    assert!(constraint_matches(&constraints[0], &add));
+    assert!(constraint_matches(&constraints[1], &remove));
+    assert!(constraint_matches(&constraints[2], &claim));
+
+    for ((constraint, valid), upper_index) in constraints
+        .iter()
+        .zip([add, remove, claim])
+        .zip([15, 16, 15])
+    {
+        let mut wrong_upper = valid;
+        wrong_upper.accounts[upper_index].pubkey = Pubkey::new_unique();
+        assert!(!constraint_matches(constraint, &wrong_upper));
+    }
+}
+
 fn add_instruction(
     vault: Pubkey,
     vault_loyal: Pubkey,

@@ -81,3 +81,5 @@ pub const SUBSCRIPTIONS_PROGRAM_SO_ENV: &str = "SUBSCRIPTIONS_PROGRAM_SO";
 pub const SUBSCRIPTIONS_PROGRAM_SO: &str = "subscriptions_program.so";
 pub const SQUADS_SMART_ACCOUNT_PROGRAM_SO_FIXTURE: &str =
     "crates/squads-test-harness/fixtures/squads/squads_smart_account_program.so";
+pub const SQUADS_V4_PROGRAM_SO_FIXTURE: &str =
+    "crates/squads-test-harness/fixtures/squads/squads_v4_program.so";
