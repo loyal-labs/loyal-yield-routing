@@ -801,6 +801,74 @@ struct FleetWorkerTaskResult {
     outcome: SameMintRouteExecutionOutcome,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FleetWorkerCompletionIdentity<'a> {
+    opportunity_id: i64,
+    route_fingerprint: Option<&'a str>,
+    requirements_fingerprint: Option<&'a str>,
+}
+
+fn validate_fleet_worker_completion(
+    lease: FleetWorkerCompletionIdentity<'_>,
+    outcome: FleetWorkerCompletionIdentity<'_>,
+    current: FleetWorkerCompletionIdentity<'_>,
+    current_state: RebalanceOpportunityState,
+    has_decision_link: bool,
+) -> Result<(), String> {
+    if lease.route_fingerprint.is_none() || lease.requirements_fingerprint.is_none() {
+        return Err(format!(
+            "executed opportunity {} is missing its leased route identity",
+            lease.opportunity_id
+        ));
+    }
+    if outcome != lease {
+        return Err(format!(
+            "executed opportunity {} worker outcome identity diverged from its lease",
+            lease.opportunity_id
+        ));
+    }
+    if current != lease {
+        return Err(format!(
+            "executed opportunity {} durable identity diverged from its lease",
+            lease.opportunity_id
+        ));
+    }
+    if !has_decision_link {
+        return Err(format!(
+            "executed opportunity {} is missing its durable decision link",
+            lease.opportunity_id
+        ));
+    }
+    if !matches!(
+        current_state,
+        RebalanceOpportunityState::DecisionCreated | RebalanceOpportunityState::Completed
+    ) {
+        return Err(format!(
+            "executed opportunity {} is {}, expected decision_created or completed",
+            lease.opportunity_id,
+            current_state.as_str()
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+enum FleetWorkerWakeup<T> {
+    Task(Option<Result<T, tokio::task::JoinError>>),
+    Health,
+}
+
+async fn next_fleet_worker_wakeup<T: 'static>(
+    tasks: &mut JoinSet<T>,
+    health_interval: &mut tokio::time::Interval,
+) -> FleetWorkerWakeup<T> {
+    tokio::select! {
+        biased;
+        task = tasks.join_next() => FleetWorkerWakeup::Task(task),
+        _ = health_interval.tick() => FleetWorkerWakeup::Health,
+    }
+}
+
 #[derive(Debug)]
 struct FleetReconcilerTaskResult {
     lease: SignedRouteSubmissionLease,
@@ -3315,9 +3383,9 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
             continue;
         }
 
-        let task = tokio::select! {
-            task = tasks.join_next() => task,
-            _ = health_interval.tick() => {
+        let task = match next_fleet_worker_wakeup(&mut tasks, &mut health_interval).await {
+            FleetWorkerWakeup::Task(task) => task,
+            FleetWorkerWakeup::Health => {
                 emit_fleet_worker_health(
                     &client,
                     &options,
@@ -3332,7 +3400,8 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
                     fused_execute_permits,
                     fused_execute_promotions,
                     wakeup_listener.is_connected(),
-                ).await?;
+                )
+                .await?;
                 continue;
             }
         }
@@ -5496,14 +5565,29 @@ async fn finish_fleet_worker_task(
             .rebalance_opportunity(lease.opportunity.id)
             .await?
             .ok_or("executed opportunity disappeared")?;
-        if current.state != RebalanceOpportunityState::DecisionCreated {
-            return Err(format!(
-                "executed opportunity {} is {}, expected decision_created",
-                current.id,
-                current.state.as_str()
-            )
-            .into());
-        }
+        let lease_identity = FleetWorkerCompletionIdentity {
+            opportunity_id: lease.opportunity.id,
+            route_fingerprint: lease.opportunity.route_fingerprint.as_deref(),
+            requirements_fingerprint: lease.opportunity.requirements_fingerprint.as_deref(),
+        };
+        let outcome_identity = FleetWorkerCompletionIdentity {
+            opportunity_id: outcome.opportunity_id,
+            route_fingerprint: outcome.route_fingerprint.as_deref(),
+            requirements_fingerprint: outcome.requirements_fingerprint.as_deref(),
+        };
+        let current_identity = FleetWorkerCompletionIdentity {
+            opportunity_id: current.id,
+            route_fingerprint: current.route_fingerprint.as_deref(),
+            requirements_fingerprint: current.requirements_fingerprint.as_deref(),
+        };
+        validate_fleet_worker_completion(
+            lease_identity,
+            outcome_identity,
+            current_identity,
+            current.state,
+            current.decision_id.is_some(),
+        )
+        .map_err(|error| -> Box<dyn Error> { error.into() })?;
         return Ok(());
     }
 
@@ -20696,6 +20780,109 @@ mod tests {
     use super::*;
 
     const CREDENTIAL_BEARING_RPC_ERROR: &str = "sendTransaction failed with HTTP 401 Unauthorized at https://user:password@example.test/private/path?api-key=query-secret access_token=header-secret";
+
+    fn fleet_worker_completion_identity<'a>(
+        opportunity_id: i64,
+        route_fingerprint: Option<&'a str>,
+        requirements_fingerprint: Option<&'a str>,
+    ) -> FleetWorkerCompletionIdentity<'a> {
+        FleetWorkerCompletionIdentity {
+            opportunity_id,
+            route_fingerprint,
+            requirements_fingerprint,
+        }
+    }
+
+    #[test]
+    fn fleet_worker_completion_accepts_exact_decision_and_completed_states() {
+        let exact = fleet_worker_completion_identity(405_569, Some("route-v1"), Some("req-v1"));
+
+        for state in [
+            RebalanceOpportunityState::DecisionCreated,
+            RebalanceOpportunityState::Completed,
+        ] {
+            assert!(
+                validate_fleet_worker_completion(exact, exact, exact, state, true).is_ok(),
+                "expected exact {} state to be accepted",
+                state.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn fleet_worker_completion_rejects_identity_drift_and_unrelated_states() {
+        let exact = fleet_worker_completion_identity(405_569, Some("route-v1"), Some("req-v1"));
+
+        let divergent_identities = [
+            fleet_worker_completion_identity(405_570, Some("route-v1"), Some("req-v1")),
+            fleet_worker_completion_identity(405_569, Some("route-v2"), Some("req-v1")),
+            fleet_worker_completion_identity(405_569, Some("route-v1"), Some("req-v2")),
+            fleet_worker_completion_identity(405_569, None, Some("req-v1")),
+            fleet_worker_completion_identity(405_569, Some("route-v1"), None),
+        ];
+        for outcome in divergent_identities {
+            assert!(
+                validate_fleet_worker_completion(
+                    exact,
+                    outcome,
+                    exact,
+                    RebalanceOpportunityState::Completed,
+                    true,
+                )
+                .is_err(),
+                "expected divergent worker outcome identity to be rejected: {outcome:?}"
+            );
+        }
+        for current in divergent_identities {
+            assert!(
+                validate_fleet_worker_completion(
+                    exact,
+                    exact,
+                    current,
+                    RebalanceOpportunityState::Completed,
+                    true,
+                )
+                .is_err(),
+                "expected divergent completed identity to be rejected: {current:?}"
+            );
+        }
+        for state in [
+            RebalanceOpportunityState::DecisionCreated,
+            RebalanceOpportunityState::Completed,
+        ] {
+            assert!(validate_fleet_worker_completion(exact, exact, exact, state, false).is_err());
+        }
+
+        for state in [
+            RebalanceOpportunityState::WaitingAlt,
+            RebalanceOpportunityState::Revalidate,
+            RebalanceOpportunityState::Ready,
+            RebalanceOpportunityState::Leased,
+            RebalanceOpportunityState::Stale,
+            RebalanceOpportunityState::Superseded,
+            RebalanceOpportunityState::Failed,
+            RebalanceOpportunityState::Cancelled,
+        ] {
+            assert!(
+                validate_fleet_worker_completion(exact, exact, exact, state, true).is_err(),
+                "expected unrelated {} state to be rejected",
+                state.as_str()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ready_fleet_worker_task_preempts_ready_health_tick() {
+        let mut tasks = JoinSet::new();
+        tasks.spawn(async { 7_u8 });
+        tokio::task::yield_now().await;
+        let mut health_interval = tokio::time::interval(Duration::from_secs(1));
+
+        match next_fleet_worker_wakeup(&mut tasks, &mut health_interval).await {
+            FleetWorkerWakeup::Task(Some(Ok(7))) => {}
+            wakeup => panic!("ready task did not preempt ready health tick: {wakeup:?}"),
+        }
+    }
 
     fn assert_safe_operational_error(value: &str) {
         assert!(value.contains("sendTransaction"));
