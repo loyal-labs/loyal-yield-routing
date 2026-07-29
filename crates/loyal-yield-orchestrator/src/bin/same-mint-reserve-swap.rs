@@ -101,6 +101,7 @@ use num_traits::{ToPrimitive, Zero};
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use solana_account_decoder_client_types::UiAccountEncoding;
 use solana_client::{
     client_error::ClientError, rpc_client::RpcClient, rpc_config::RpcAccountInfoConfig,
     rpc_request::RpcRequest,
@@ -14909,6 +14910,7 @@ fn get_multiple_accounts_batched(
         let response = rpc.get_multiple_accounts_with_config(
             chunk,
             RpcAccountInfoConfig {
+                encoding: Some(UiAccountEncoding::Base64),
                 commitment: Some(CommitmentConfig::confirmed()),
                 min_context_slot,
                 ..RpcAccountInfoConfig::default()
@@ -18549,6 +18551,7 @@ fn load_kamino_reserve_summary_at_or_after(
     let response = rpc.get_account_with_config(
         reserve,
         RpcAccountInfoConfig {
+            encoding: Some(UiAccountEncoding::Base64),
             commitment: Some(CommitmentConfig::confirmed()),
             min_context_slot,
             ..RpcAccountInfoConfig::default()
@@ -18709,6 +18712,7 @@ fn load_kamino_obligation_summary_at_or_after(
     let response = rpc.get_account_with_config(
         obligation_account,
         RpcAccountInfoConfig {
+            encoding: Some(UiAccountEncoding::Base64),
             commitment: Some(CommitmentConfig::confirmed()),
             min_context_slot,
             ..RpcAccountInfoConfig::default()
@@ -18850,6 +18854,7 @@ fn load_spl_token_account_amount_at_or_after(
     let response = rpc.get_account_with_config(
         token_account,
         RpcAccountInfoConfig {
+            encoding: Some(UiAccountEncoding::Base64),
             commitment: Some(CommitmentConfig::confirmed()),
             min_context_slot,
             ..RpcAccountInfoConfig::default()
@@ -18997,6 +19002,7 @@ fn account_exists_with_owner_at_or_after(
     let response = rpc.get_account_with_config(
         pubkey,
         RpcAccountInfoConfig {
+            encoding: Some(UiAccountEncoding::Base64),
             commitment: Some(CommitmentConfig::confirmed()),
             min_context_slot,
             ..RpcAccountInfoConfig::default()
