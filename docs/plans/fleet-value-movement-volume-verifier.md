@@ -93,6 +93,14 @@ Capture a source-bound baseline before rollout. After rollout, wait for an
 economically eligible route or use one explicitly approved bounded canary. Run
 the production evidence collector with the rollout cutover and baseline.
 
+When a bounded canary starts from a fully withdrawn vault, its initial deposit
+must also prove the prerequisite sequence: the ALT/catalog/packet checks pass,
+the ALT-free funding transaction simulates, the missing vault token account is
+created and funded, and the exact policy deposit is rebuilt and successfully
+simulated on the funded state before it is sent. A pre-funding
+`AccountNotInitialized` simulation may be deferred only for that proved missing
+token account; any other simulation failure remains fail-closed.
+
 PASS only if at least one route created after cutover:
 
 - advances `signed -> submitted -> confirmed -> reconciliation_pending -> reconciled`;

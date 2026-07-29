@@ -1864,6 +1864,15 @@ struct SubmittedLookupTablePhase {
 }
 
 impl RuntimeLookupTableResolution {
+    fn has_complete_reusable_static_coverage(&self) -> bool {
+        reusable_runtime_enabled(&self.rollout)
+            && self.shared_catalog_covered
+            && self.reusable_missing_addresses.is_empty()
+            && self.reusable_packet_fits == Some(true)
+            && !self.reusable_table_ids.is_empty()
+            && self.reusable_compiled_message_size.is_some()
+    }
+
     fn selected_table_ids(&self) -> Vec<i64> {
         self.selected_bundle
             .as_ref()
@@ -1888,12 +1897,7 @@ impl RuntimeLookupTableResolution {
 
     fn require_deferred_simulation_coverage(&self) -> Result<(), Box<dyn Error>> {
         let ready = reusable_runtime_enabled(&self.rollout) && self.reusable_ready;
-        let funding_deferred = reusable_runtime_enabled(&self.rollout)
-            && self.shared_catalog_covered
-            && self.reusable_missing_addresses.is_empty()
-            && self.reusable_packet_fits == Some(true)
-            && !self.reusable_table_ids.is_empty()
-            && self.reusable_compiled_message_size.is_some()
+        let funding_deferred = self.has_complete_reusable_static_coverage()
             && self
                 .blocker
                 .as_deref()
@@ -1910,6 +1914,26 @@ impl RuntimeLookupTableResolution {
                 self.reusable_packet_fits,
             )
             .into())
+        }
+    }
+
+    fn require_missing_token_account_deferred_simulation_coverage(
+        &self,
+        prerequisite_token_account_is_missing: bool,
+    ) -> Result<(), Box<dyn Error>> {
+        if self.require_deferred_simulation_coverage().is_ok() {
+            return Ok(());
+        }
+        let account_creation_deferred = prerequisite_token_account_is_missing
+            && self.has_complete_reusable_static_coverage()
+            && self
+                .reusable_simulation_error
+                .as_deref()
+                .is_some_and(is_account_not_initialized_simulation_error);
+        if account_creation_deferred {
+            Ok(())
+        } else {
+            Err("reusable lookup-table coverage is incomplete or the exact simulation failure is not the expected missing-token-account prerequisite".into())
         }
     }
 }
@@ -2111,6 +2135,14 @@ fn route_simulation_blocker(error: &str) -> String {
     } else {
         format!("route_simulation_failed: {error}")
     }
+}
+
+fn is_account_not_initialized_simulation_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("accountnotinitialized")
+        || normalized.contains("account not initialized")
+        || normalized.contains("custom(3012)")
+        || normalized.contains("custom program error: 0xbc4")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -8770,6 +8802,9 @@ async fn run_initial_reserve_deposit_flow(
         }
     }
     let active_policy_preflight = reloaded_policy_preflight.as_ref().or(policy_preflight);
+    let active_deposit_position = chain_position_for_reserve(&active_preview, deposit_reserve)?;
+    let funding_creates_missing_vault_usdc_ata =
+        !active_deposit_position.vault_liquidity_token_account_exists;
 
     let mut funding_instructions = vec![create_associated_token_account_idempotent_instruction(
         wallet_signer.pubkey(),
@@ -8920,10 +8955,15 @@ async fn run_initial_reserve_deposit_flow(
         return Ok(());
     }
 
+    if let Some(error) = &funding_transaction.simulation_error {
+        return Err(format!("initial reserve funding simulation failed: {error}").into());
+    }
     if let Some(phase) = pre_funding_lookup_table_phase.as_ref() {
         phase
             .resolution
-            .require_deferred_simulation_coverage()
+            .require_missing_token_account_deferred_simulation_coverage(
+                funding_creates_missing_vault_usdc_ata,
+            )
             .map_err(|error| {
                 format!(
                     "initial reserve deposit ALT coverage is incomplete before wallet funding: {error}"
@@ -8947,10 +8987,6 @@ async fn run_initial_reserve_deposit_flow(
         );
         return Err("initial reserve deposit preflight blocked before live submit".into());
     }
-    if let Some(error) = &funding_transaction.simulation_error {
-        return Err(format!("initial reserve funding simulation failed: {error}").into());
-    }
-
     let funding_submitted_slot = i64::try_from(rpc.get_slot()?)?;
     let funding_signature = rpc.send_and_confirm_transaction(&funding_transaction.transaction)?;
     let funding_confirmed_slot = i64::try_from(rpc.get_slot()?)?;
@@ -20713,6 +20749,24 @@ mod tests {
         let blocker = same_mint_readiness_rpc_failure(&CREDENTIAL_BEARING_RPC_ERROR);
         assert!(blocker.starts_with("simulation_rpc_failed:"));
         assert_safe_operational_error(&blocker);
+    }
+
+    #[test]
+    fn missing_token_account_simulation_error_recognizes_anchor_and_rpc_forms() {
+        for error in [
+            "InstructionError(2, Custom(3012))",
+            "AnchorError caused by account: user_source_liquidity. Error Code: AccountNotInitialized",
+            "Error processing Instruction 2: custom program error: 0xbc4",
+            "account not initialized",
+        ] {
+            assert!(
+                is_account_not_initialized_simulation_error(error),
+                "expected missing-account error: {error}"
+            );
+        }
+        assert!(!is_account_not_initialized_simulation_error(
+            "InstructionError(2, Custom(6001))"
+        ));
     }
 
     #[test]
