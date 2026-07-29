@@ -381,6 +381,8 @@ struct RuntimeExecutionEvidence {
     pre_send_target_capacity_released: bool,
     reconciled_capacity_strict_telemetry_fence: bool,
     preexisting_newer_telemetry_release: bool,
+    readiness_writers_waited_on_per_vault_fence: bool,
+    serialized_readiness_row_count: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1726,7 +1728,9 @@ fn runtime_execution_subcheck(evidence: &RuntimeEvidenceV1) -> Subcheck {
         && execution.target_capacity_concurrent_admission_bounded
         && execution.pre_send_target_capacity_released
         && execution.reconciled_capacity_strict_telemetry_fence
-        && execution.preexisting_newer_telemetry_release;
+        && execution.preexisting_newer_telemetry_release
+        && execution.readiness_writers_waited_on_per_vault_fence
+        && execution.serialized_readiness_row_count == 2;
     subcheck(
         "bound_controlled_rpc_evidence_meets_replay_signer_and_reconciliation_gates",
         passed,

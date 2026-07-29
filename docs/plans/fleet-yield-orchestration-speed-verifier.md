@@ -1210,6 +1210,7 @@ execution:
   preSendTargetCapacityReleased,
   reconciledCapacityStrictTelemetryFence,
   preexistingNewerTelemetryRelease,
+  readinessWritersWaitedOnPerVaultFence, serializedReadinessRowCount,
   sameGenerationSignatureCount, boundedIdenticalRebroadcastCount,
   distinctReplacementWithoutAbsenceProofCount,
   setupFundingReservationReleasedBeforeProjection

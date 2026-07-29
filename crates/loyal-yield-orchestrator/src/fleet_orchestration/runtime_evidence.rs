@@ -153,6 +153,8 @@ pub struct RuntimeExecutionEvidence {
     pub pre_send_target_capacity_released: bool,
     pub reconciled_capacity_strict_telemetry_fence: bool,
     pub preexisting_newer_telemetry_release: bool,
+    pub readiness_writers_waited_on_per_vault_fence: bool,
+    pub serialized_readiness_row_count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -174,6 +176,8 @@ pub struct RuntimeDatabaseExecutionEvidence {
     pub pre_send_target_capacity_released: bool,
     pub reconciled_capacity_strict_telemetry_fence: bool,
     pub preexisting_newer_telemetry_release: bool,
+    pub readiness_writers_waited_on_per_vault_fence: bool,
+    pub serialized_readiness_row_count: u64,
     pub database_deadlocks: u64,
 }
 
@@ -246,6 +250,9 @@ impl RuntimeExecutionEvidence {
             reconciled_capacity_strict_telemetry_fence: database
                 .reconciled_capacity_strict_telemetry_fence,
             preexisting_newer_telemetry_release: database.preexisting_newer_telemetry_release,
+            readiness_writers_waited_on_per_vault_fence: database
+                .readiness_writers_waited_on_per_vault_fence,
+            serialized_readiness_row_count: database.serialized_readiness_row_count,
         })
     }
 }
