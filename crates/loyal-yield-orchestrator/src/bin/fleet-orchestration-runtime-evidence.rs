@@ -334,8 +334,8 @@ fn registry_image_identity(
     )?;
     let provenance: Value = serde_json::from_slice(&provenance_output.stdout)?;
     let provenance_args = provenance
-        .pointer("/SLSA/buildDefinition/externalParameters/request/root/configSource/request/args")
-        .ok_or("registry provenance has no SLSA config-source arguments")?;
+        .pointer("/SLSA/buildDefinition/externalParameters/request/root/request/args")
+        .ok_or("registry provenance has no SLSA root-request arguments")?;
     let provenance_vcs_revision = provenance_args
         .get("vcs:revision")
         .and_then(Value::as_str)
@@ -348,6 +348,24 @@ fn registry_image_identity(
         .filter(|value| !value.trim().is_empty())
         .ok_or("registry provenance has no vcs:source")?
         .to_owned();
+    let metadata_vcs = provenance
+        .pointer("/SLSA/runDetails/metadata/buildkit_metadata/vcs")
+        .ok_or("registry provenance has no BuildKit VCS metadata")?;
+    let metadata_vcs_revision = metadata_vcs
+        .get("revision")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("registry BuildKit metadata has no VCS revision")?;
+    let metadata_vcs_source = metadata_vcs
+        .get("source")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("registry BuildKit metadata has no VCS source")?;
+    if metadata_vcs_revision != provenance_vcs_revision
+        || metadata_vcs_source != provenance_vcs_source
+    {
+        return Err("registry provenance VCS identities disagree".into());
+    }
 
     Ok(RegistryImageIdentity {
         index_digest: format!("sha256:{}", sha256_hex(raw)),
