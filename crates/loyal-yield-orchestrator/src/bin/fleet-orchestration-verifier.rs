@@ -9564,6 +9564,8 @@ fn market_timescale_measurement_schema_known(value: &Value) -> bool {
             "migration",
             "relations",
             "enabledStableMints",
+            "enabledMintWithEligibleTargetCount",
+            "allEnabledMintTargetRowsPresent",
             "activeDistinctSupportedReserveCount",
             "activeSupportedReserveCatalogRowCount",
             "duplicateActiveSupportedReserveCount",
@@ -9897,7 +9899,16 @@ fn reconciled_volume_measurement_schema_known(value: &Value) -> bool {
     };
     exact_object_keys(
         value,
-        &["baseline", "current", "currentIdentityExact", "delta"],
+        &[
+            "baseline",
+            "current",
+            "currentIdentityExact",
+            "delta",
+            "postCutoverMovementCount",
+            "postCutoverAmountRaw",
+            "postCutoverPrincipalUsdMicros",
+            "pass",
+        ],
     ) && value.get("current").is_some_and(snapshot_known)
         && value
             .get("baseline")
@@ -9925,6 +9936,10 @@ fn movement_measurement_schema_known(value: &Value) -> bool {
         "plannerSourceKind",
         "opportunityOptimizerEpochId",
         "submissionOptimizerEpochId",
+        "optimizerEpochFingerprint",
+        "optimizerEpochExpiresAt",
+        "submissionOptimizerEpochEvidence",
+        "optimizerEpochIdentityExact",
         "opportunitySourceSnapshotId",
         "submissionSourceSnapshotId",
         "sourceReserve",
@@ -9939,6 +9954,7 @@ fn movement_measurement_schema_known(value: &Value) -> bool {
         "decisionLiquidityMint",
         "amountRaw",
         "decisionAmountRaw",
+        "executedAmountRaw",
         "plannerExecutionPlan",
         "decisionExecutionPlan",
         "routeIdentityExact",
@@ -10027,6 +10043,8 @@ fn movement_measurement_schema_known(value: &Value) -> bool {
             "nonterminalSubmissionCount",
             "effectAmbiguousCount",
             "reconciledMovementCount",
+            "reconciledAmountRaw",
+            "reconciledPrincipalUsdMicros",
             "reconciledReserveMovementCount",
             "reconciledIdleDepositCount",
             "fullyFinalizedAndReconciledEffectCount",
@@ -10038,7 +10056,8 @@ fn movement_measurement_schema_known(value: &Value) -> bool {
             "mainUsdc",
             "movements",
             "pass",
-            "productionSlos",
+            "currentEpochSlos",
+            "movementSlos",
         ],
     ) && value
         .get("reconciledVolume")
@@ -10066,7 +10085,7 @@ fn movement_measurement_schema_known(value: &Value) -> bool {
                 ],
             )
         })
-        && value.get("productionSlos").is_some_and(|slos| {
+        && value.get("currentEpochSlos").is_some_and(|slos| {
             exact_object_keys(
                 slos,
                 &[
@@ -10079,6 +10098,22 @@ fn movement_measurement_schema_known(value: &Value) -> bool {
                     "submittedWithinTwoMinutesMinimumYieldPpm",
                     "submittedWithinTenMinutesYieldPpm",
                     "submittedWithinTenMinutesMinimumYieldPpm",
+                    "pass",
+                ],
+            )
+        })
+        && value.get("movementSlos").is_some_and(|slos| {
+            exact_object_keys(
+                slos,
+                &[
+                    "basis",
+                    "reconciledMovementCount",
+                    "submissionTimestampCount",
+                    "reconciliationTimestampCount",
+                    "maximumSignedToSubmittedMilliseconds",
+                    "maximumSignedToReconciledMilliseconds",
+                    "submissionLimitMilliseconds",
+                    "reconciliationLimitMilliseconds",
                     "pass",
                 ],
             )
@@ -11174,10 +11209,18 @@ fn production_complete_fleet_subcheck(binding: &ProductionEvidenceBinding) -> Su
         })
     });
     let aggregate_visible = status_i64(queue, "current_epoch_opportunity_count")
-        .is_some_and(|count| count > 0)
-        && status_i64(queue, "current_epoch_principal_usd_micros").is_some_and(|amount| amount > 0)
-        && status_i64(queue, "current_epoch_recoverable_yield_usd_micros_per_hour")
-            .is_some_and(|gain| gain > 0);
+        .zip(status_i64(queue, "current_epoch_principal_usd_micros"))
+        .zip(status_i64(
+            queue,
+            "current_epoch_recoverable_yield_usd_micros_per_hour",
+        ))
+        .is_some_and(|((count, principal), gain)| {
+            count >= 0
+                && principal >= 0
+                && gain >= 0
+                && ((count == 0 && principal == 0 && gain == 0)
+                    || (count > 0 && principal > 0 && gain > 0))
+        });
     let passed = queue_capture_fresh
         && fresh_complete_epoch
         && planner_accounting_exact
@@ -11358,6 +11401,7 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
         let decision_mint = value_string(row, "decisionLiquidityMint");
         let amount = value_i64(row, "amountRaw");
         let decision_amount = value_i64(row, "decisionAmountRaw");
+        let executed_amount = value_i64(row, "executedAmountRaw");
         let opportunity_id = value_i64(row, "opportunityId");
         let decision_id = value_i64(row, "decisionId");
         let opportunity_decision_id = value_i64(row, "opportunityDecisionId");
@@ -11411,7 +11455,7 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
                     && plan_string(row, "plannerExecutionPlan", "target_reserve") == target
                     && plan_string(row, "decisionExecutionPlan", "liquidity_mint") == mint
                     && plan_string(row, "plannerExecutionPlan", "liquidity_mint") == mint
-                    && plan_i64(row, "decisionExecutionPlan", "amount_raw") == amount
+                    && plan_i64(row, "decisionExecutionPlan", "amount_raw") == decision_amount
                     && plan_i64(row, "plannerExecutionPlan", "amount_raw") == amount
             }
             Some("idle_vault_deposit") => {
@@ -11436,7 +11480,7 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
                     && plan_string(row, "plannerExecutionPlan", "target_reserve") == target
                     && plan_string(row, "decisionExecutionPlan", "liquidity_mint") == mint
                     && plan_string(row, "plannerExecutionPlan", "liquidity_mint") == mint
-                    && plan_i64(row, "decisionExecutionPlan", "amount_raw") == amount
+                    && plan_i64(row, "decisionExecutionPlan", "amount_raw") == decision_amount
                     && plan_i64(row, "plannerExecutionPlan", "amount_raw") == amount
                     && plan_string(row, "decisionExecutionPlan", "idle_token_account")
                         .is_some_and(|account| !account.trim().is_empty())
@@ -11463,7 +11507,8 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
             && mint.is_some_and(|value| !value.trim().is_empty())
             && decision_mint == mint
             && amount.is_some_and(|amount| amount > 0)
-            && decision_amount == amount
+            && decision_amount.is_some_and(|amount| amount > 0)
+            && executed_amount == decision_amount
             && created_at
                 .zip(cutover_at)
                 .is_some_and(|(created, cutover)| created >= cutover)
@@ -11747,7 +11792,7 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
         }
         if state == "reconciled" {
             reconciled_movement_count += 1;
-            reconciled_amount_raw += i128::from(amount.unwrap_or_default());
+            reconciled_amount_raw += i128::from(executed_amount.unwrap_or_default());
             reconciled_principal_usd_micros +=
                 i128::from(value_i64(row, "principalUsdMicros").unwrap_or_default());
             if let Some(submission_id) = submission_id {
@@ -11765,17 +11810,19 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
             }
             if mint == Some(usdc_mint.as_str()) {
                 if route_kind == Some("same_mint") && source == Some(main_reserve.as_str()) {
-                    main_outflow += i128::from(amount.unwrap_or_default());
+                    main_outflow += i128::from(executed_amount.unwrap_or_default());
                     if vault_id.is_some_and(|id| baseline_cohort_vaults.contains(&id)) {
-                        baseline_cohort_main_outflow += i128::from(amount.unwrap_or_default());
+                        baseline_cohort_main_outflow +=
+                            i128::from(executed_amount.unwrap_or_default());
                     }
                 }
                 if matches!(route_kind, Some("same_mint" | "idle_vault_deposit"))
                     && target == Some(main_reserve.as_str())
                 {
-                    main_inflow += i128::from(amount.unwrap_or_default());
+                    main_inflow += i128::from(executed_amount.unwrap_or_default());
                     if vault_id.is_some_and(|id| baseline_cohort_vaults.contains(&id)) {
-                        baseline_cohort_main_inflow += i128::from(amount.unwrap_or_default());
+                        baseline_cohort_main_inflow +=
+                            i128::from(executed_amount.unwrap_or_default());
                     }
                 }
             }
@@ -11801,7 +11848,11 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
         && value_i64(movement, "fullyFinalizedAndReconciledEffectCount")
             == Some(fully_proven_count)
         && value_i64(movement, "economicFailureCount") == Some(economic_failure_count)
-        && value_i64(movement, "unsafeTerminalOutcomeCount") == Some(unsafe_terminal_outcome_count);
+        && value_i64(movement, "unsafeTerminalOutcomeCount") == Some(unsafe_terminal_outcome_count)
+        && value_i64(movement, "reconciledAmountRaw").map(i128::from)
+            == Some(reconciled_amount_raw)
+        && value_i64(movement, "reconciledPrincipalUsdMicros").map(i128::from)
+            == Some(reconciled_principal_usd_micros);
     let volume = movement.get("reconciledVolume").unwrap_or(&Value::Null);
     let volume_current = volume.get("current").and_then(reconciled_volume_snapshot);
     let volume_baseline = volume.get("baseline").and_then(reconciled_volume_snapshot);
@@ -11817,7 +11868,11 @@ fn production_movement_subcheck(binding: &ProductionEvidenceBinding) -> Subcheck
                 && i128::from(delta.1) == reconciled_amount_raw
                 && i128::from(delta.2) == reconciled_principal_usd_micros
         })
-        && value_bool(volume, "currentIdentityExact") == Some(true);
+        && value_bool(volume, "currentIdentityExact") == Some(true)
+        && value_i64(volume, "postCutoverMovementCount") == Some(reconciled_movement_count)
+        && value_i64(volume, "postCutoverAmountRaw").map(i128::from) == Some(reconciled_amount_raw)
+        && value_i64(volume, "postCutoverPrincipalUsdMicros").map(i128::from)
+            == Some(reconciled_principal_usd_micros);
 
     let largest = positions
         .get("largestEligibleVaults")
