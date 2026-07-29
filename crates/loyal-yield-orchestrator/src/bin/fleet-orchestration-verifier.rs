@@ -9342,9 +9342,17 @@ fn env_value_fingerprint(nonce: &str, key: &str, value: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn role_scope_value_keys(name: &str, env_keys: &BTreeSet<String>) -> BTreeSet<String> {
+fn role_service_scoped_env_keys(env_keys: &BTreeSet<String>) -> BTreeSet<String> {
     env_keys
         .iter()
+        .filter(|key| !key.starts_with("OBSERVABILITY_"))
+        .cloned()
+        .collect()
+}
+
+fn role_scope_value_keys(name: &str, env_keys: &BTreeSet<String>) -> BTreeSet<String> {
+    role_service_scoped_env_keys(env_keys)
+        .into_iter()
         .filter(|key| key.as_str() != "RUST_LOG")
         .filter(|key| {
             !matches!(
@@ -9356,7 +9364,6 @@ fn role_scope_value_keys(name: &str, env_keys: &BTreeSet<String>) -> BTreeSet<St
             )
         })
         .filter(|key| name != "loyal-fleet-opportunity-planner" || key.as_str() != "POLICY_KEYPAIR")
-        .cloned()
         .collect()
 }
 
@@ -10310,6 +10317,16 @@ fn production_render_subcheck(
                     .map(str::to_owned)
                     .collect::<BTreeSet<_>>()
             });
+        let blueprint_env = role
+            .and_then(|role| role.get("blueprintEnvKeys"))
+            .and_then(Value::as_array)
+            .map(|keys| {
+                keys.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<BTreeSet<_>>()
+            });
+        let expected_live_env = role_service_scoped_env_keys(&expected_role.env_keys);
         let expected_fingerprints = expected_env_fingerprints(
             scope_nonce,
             role_scope_value_keys(&expected_role.name, &expected_role.env_keys),
@@ -10345,7 +10362,8 @@ fn production_render_subcheck(
                 == Some(expected_role.command.as_str())
             && role.and_then(|role| value_string(role, "preDeployCommand"))
                 == Some(expected_role.pre_deploy_command.as_str())
-            && live_env.as_ref() == Some(&expected_role.env_keys)
+            && live_env.as_ref() == Some(&expected_live_env)
+            && blueprint_env.as_ref() == Some(&expected_role.env_keys)
             && expected_fingerprints.is_some()
             && reported_fingerprints == expected_fingerprints
             && role
@@ -10369,6 +10387,7 @@ fn production_render_subcheck(
             "image": role.and_then(|role| value_string(role, "image")),
             "command": role.and_then(|role| value_string(role, "command")),
             "envKeys": live_env,
+            "blueprintEnvKeys": blueprint_env,
             "envFingerprintsMatchLocalScope": reported_fingerprints == expected_fingerprints,
             "deployDigest": digest,
             "deployStartedAt": started_at,
