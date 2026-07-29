@@ -24,10 +24,10 @@ use loyal_yield_orchestrator::fleet_orchestration::{
     MarketEpochReserve, MarketMintCoverage, MaterialFrontierDisposition, OpportunityInput,
     RebalanceOpportunityAdvance, RebalanceOpportunityClaimKind, RebalanceOpportunityInput,
     RebalanceOpportunityLease, RebalanceOpportunityRecord, RebalanceOpportunityState,
-    RouteFeeBudgetError, RouteFeePayerKind, RouteFeePolicy, SignedRouteSubmissionAdvance,
-    SignedRouteSubmissionInput, SignedRouteSubmissionRecord, TargetCapacityCurve,
-    TargetCapacityObservation, TargetCapacityProjection, TargetCapacityReservationInput,
-    WaveLimits,
+    RouteFeeBudgetError, RouteFeePayerKind, RouteFeePolicy, RuntimeSourceBinding,
+    SignedRouteSubmissionAdvance, SignedRouteSubmissionInput, SignedRouteSubmissionRecord,
+    TargetCapacityCurve, TargetCapacityObservation, TargetCapacityProjection,
+    TargetCapacityReservationInput, WaveLimits,
 };
 use loyal_yield_orchestrator::{
     lookup_table_manifest_address_records_hash, lookup_table_rollout_lock_acquisition_count,
@@ -563,55 +563,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
     encoded
 }
 
-fn collect_digest_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), Box<dyn Error>> {
-    if path.is_file() {
-        files.push(path.to_path_buf());
-        return Ok(());
-    }
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_digest_files(&path, files)?;
-        } else if path.is_file() {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn runtime_source_digest(repository_root: &Path) -> Result<String, Box<dyn Error>> {
-    let inputs = [
-        "Cargo.toml",
-        "Cargo.lock",
-        "Dockerfile.light-workers",
-        "render.yaml",
-        "crates/loyal-yield-orchestrator/Cargo.toml",
-        "crates/loyal-yield-orchestrator/src",
-        "crates/loyal-yield-orchestrator/migrations",
-        "crates/loyal-yield-router/Cargo.toml",
-        "crates/loyal-yield-router/src",
-    ];
-    let mut files = Vec::new();
-    for input in inputs {
-        collect_digest_files(&repository_root.join(input), &mut files)?;
-    }
-    files.sort();
-    files.dedup();
-    let mut digest = Sha256::new();
-    for file in files {
-        let relative = file.strip_prefix(repository_root)?;
-        let relative = relative.to_string_lossy();
-        let bytes = fs::read(&file)?;
-        digest.update((relative.len() as u64).to_le_bytes());
-        digest.update(relative.as_bytes());
-        digest.update((bytes.len() as u64).to_le_bytes());
-        digest.update(bytes);
-    }
-    let bytes = digest.finalize();
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
-}
-
 fn output_tail(bytes: &[u8]) -> String {
     const MAX_BYTES: usize = 2_000;
     let start = bytes.len().saturating_sub(MAX_BYTES);
@@ -996,7 +947,8 @@ fn immutable_light_worker_reference(block: &str) -> Option<String> {
 
 fn collect_local_evidence(repository_root: &Path) -> Result<LocalEvidence, Box<dyn Error>> {
     let head_commit = git_stdout(repository_root, &["rev-parse", "HEAD"]);
-    let runtime_source_digest_sha256 = runtime_source_digest(repository_root)?;
+    let runtime_source_digest_sha256 =
+        RuntimeSourceBinding::capture(repository_root)?.runtime_source_digest_sha256;
     let mut repository_subchecks = vec![
         run_repository_command(
             repository_root,
