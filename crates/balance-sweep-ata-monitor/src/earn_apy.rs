@@ -23,6 +23,15 @@ const DEFAULT_WINDOW_DAYS: i64 = 30;
 const DEFAULT_OUTPUT_DAYS: i64 = 30;
 const DEFAULT_MAX_SUPPLY_APY: f64 = 0.5;
 const DEFAULT_MIN_TOTAL_SUPPLY_USD: f64 = 100_000.0;
+// Stored hours are recomputed this far back so a sample hour still settles once
+// reserve updates land after it was first written.
+const REFRESH_OVERLAP_HOURS: i64 = 3;
+// How far before the queried range the seed lookup may reach for each reserve's
+// opening state. Without a floor the seed scans every row older than the range,
+// which grows as the range start moves later and cancels out the incremental
+// range. Eligible reserves observed over 7 days had a 5h worst-case gap between
+// updates, so a reserve silent for two days carries no state worth seeding.
+const SEED_LOOKBACK_HOURS: i64 = 48;
 
 #[derive(Debug, Clone)]
 pub struct EarnApyRefreshConfig {
@@ -92,14 +101,28 @@ impl EarnApySnapshotRefresher {
 
         let generated_at = now;
         let end = truncate_to_hour(now);
-        let output_start = end - self.config.output_span;
-        let query_start = output_start - self.config.window;
+        let retention_start = end - self.config.output_span;
         let strategies = self.config.strategies.clone();
         let mut inserted_or_updated = 0;
         let mut first_sample_hour = None;
         let mut last_sample_hour = None;
 
         for strategy in &strategies {
+            // Each sample hour is derived from its own trailing window, so hours
+            // that already have a snapshot do not change and only the tail needs
+            // rebuilding. Reading raw updates from the retention floor every time
+            // would rescan `output_span + window` of reserve history to rewrite
+            // rows that are already settled.
+            let output_start = match self.latest_snapshot_hour(strategy).await? {
+                Some(latest) => {
+                    retention_start.max(latest - Duration::hours(REFRESH_OVERLAP_HOURS))
+                }
+                None => retention_start,
+            };
+            if hourly_sample_points(output_start, end).is_empty() {
+                continue;
+            }
+            let query_start = output_start - self.config.window;
             let supported_reserves = self.supported_reserves(strategy.risk_profile).await?;
             let rows = self
                 .reserve_updates(&supported_reserves, query_start, end)
@@ -192,6 +215,29 @@ pub async fn ensure_earn_apy_hourly_snapshot_schema(pool: &PgPool) -> Result<()>
 }
 
 impl EarnApySnapshotRefresher {
+    async fn latest_snapshot_hour(
+        &self,
+        strategy: &EarnApyStrategy,
+    ) -> Result<Option<DateTime<Utc>>> {
+        let row = sqlx::query(
+            r#"
+            SELECT max(sample_hour) AS latest_sample_hour
+            FROM loyal_yield.earn_apy_hourly_snapshots
+            WHERE strategy = $1
+              AND risk_profile = $2
+              AND fee_bps = $3
+            "#,
+        )
+        .bind(strategy.name)
+        .bind(strategy.risk_profile_label)
+        .bind(strategy.fee_bps)
+        .fetch_one(&self.neon_pool)
+        .await
+        .context("fetch latest Earn APY snapshot hour")?;
+
+        Ok(row.get("latest_sample_hour"))
+    }
+
     async fn supported_reserves(
         &self,
         risk_profile: KaminoStableRiskProfile,
@@ -262,6 +308,7 @@ impl EarnApySnapshotRefresher {
                 FROM kamino.reserve_updates ru
                 JOIN requested_reserves rr ON rr.reserve = ru.reserve
                 WHERE ru.observed_at < $2
+                  AND ru.observed_at >= $6
                   AND ru.reserve_last_update_stale = false
                   AND ru.total_supply_usd_estimate > $4
                   AND ru.supply_apy >= 0
@@ -325,6 +372,7 @@ impl EarnApySnapshotRefresher {
         .bind(end)
         .bind(self.config.min_total_supply_usd)
         .bind(self.config.max_supply_apy)
+        .bind(start - Duration::hours(SEED_LOOKBACK_HOURS))
         .fetch_all(&self.timescale_pool)
         .await
         .context("fetch Kamino reserve APY updates")?;
