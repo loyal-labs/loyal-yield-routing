@@ -121,6 +121,8 @@ projects:
                 value: laserstream
               - key: BALANCE_SWEEP_TARGET_REFRESH_SECONDS
                 value: "300"
+              - key: DISABLE_EARN_APY_REFRESH
+                value: "true"
               - key: EARN_APY_REFRESH_INTERVAL_SECONDS
                 value: "3600"
               - key: EARN_APY_RISK_PROFILES

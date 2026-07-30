@@ -83,6 +83,16 @@ and `NEON_BRANCH_NAME=production`; staging sets
 The production autodeposit trigger also sets `SOLANA_WEEK_NOTIFY_ENDPOINT` for
 the post-sweep Solana Week callback.
 
+The staging ATA monitor also sets `DISABLE_EARN_APY_REFRESH=true`. Its
+`TIMESCALEDB_URL` resolves to the production compute, so the Earn APY refresher
+was rescanning 60 days of production `kamino.reserve_updates` once an hour
+alongside the production monitor's own refresh. Staging tracks two ATA targets
+and does not serve Earn APY history, so only production needs that refresh.
+Keep `EARN_APY_REFRESH_INTERVAL_SECONDS` and `EARN_APY_RISK_PROFILES` on staging
+so re-enabling it is a single flag flip. The flag is parsed by clap's strict
+bool parser, so the only accepted values are `true` and `false`; anything else
+fails argument parsing at startup.
+
 Populate the remaining environment-specific secret values from the approved
 operator source: `NEON_DATABASE_URL`, `TIMESCALEDB_URL`, `SOLANA_RPC_URL`,
 `HELIUS_API_KEY`, `POLICY_KEYPAIR`,
