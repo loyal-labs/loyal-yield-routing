@@ -27,7 +27,22 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         -p balance-sweep-autodeposit-trigger \
         -p loyal-timescale-migrations \
         -p loyal-yield-realtime \
+        --recipe-path recipe.json \
+    && cargo chef cook --release \
         -p loyal-yield-orchestrator \
+        --bin yield-migrations \
+        --bin same-mint-reserve-swap \
+        --bin same-mint-yield-monitor \
+        --bin fleet-opportunity-planner \
+        --bin fleet-orchestration-verifier \
+        --bin fleet-orchestration-production-evidence \
+        --bin fleet-route-confirmer \
+        --bin same-mint-monitor-e2e \
+        --bin route-lookup-table-shared-catalog \
+        --bin route-lookup-table-provisioner \
+        --bin route-lookup-table-alert-monitor \
+        --bin route-lookup-table-legacy-import \
+        --bin route-lookup-table-cleanup \
         --recipe-path recipe.json
 
 COPY . .
