@@ -274,10 +274,11 @@ describe("runtime dependency boundary", () => {
     ).text();
 
     // Both hand-back paths clamp: the retryable release and the terminal
-    // cancel taken when the route policy is gone from the chain.
+    // cancel taken when the route policy is gone from the chain. Whitespace is
+    // tolerant so the clamp can be written inline or across lines.
     expect(
       executorSource.match(
-        /LEAST\(\s+l\.original_amount_raw,\s+l\.remaining_amount_raw \+ i\.amount_raw\s+\)/g
+        /LEAST\(\s*l\.original_amount_raw,\s*l\.remaining_amount_raw \+ i\.amount_raw\s*\)/g
       )
     ).toHaveLength(2);
     expect(

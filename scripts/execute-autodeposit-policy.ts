@@ -200,9 +200,12 @@ const SAME_MINT_ROUTE_MODE = "same_mint_kamino";
 const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDC_DECIMALS = 6;
 const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
-/// Caps the retry delay at 5min * 2^5 = 160 minutes. The trigger's attempt cap
+/// Caps the retry delay at 5min * 2^5 = 160 minutes. The attempt cap
 /// dead-letters the lot before the backoff would grow past that anyway.
 const MAX_AUTODEPOSIT_RETRY_BACKOFF_DOUBLINGS = 5;
+/// Must match MAX_AUTODEPOSIT_LOT_ATTEMPTS in the autodeposit trigger: both
+/// this claim path and the trigger's own claim CLI select and carry lots.
+const MAX_AUTODEPOSIT_LOT_ATTEMPTS = 6;
 const AUTODEPOSIT_PULL_FEE_PAYER_MIN_LAMPORTS = 50_000_000;
 
 export function isMissingAutodepositTokenDelegateFailure(
@@ -747,6 +750,10 @@ async function claimAutodepositLots(args: {
         )
         AND l.status = 'open'
         AND l.remaining_amount_raw > 0
+        -- Enforced before selection, not just on the residual path: a lot that
+        -- is always fully consumed never becomes a residual, so a cap applied
+        -- only afterwards would never bind.
+        AND l.autodeposit_attempt_count < ${MAX_AUTODEPOSIT_LOT_ATTEMPTS}::integer
         AND (
           ${args.scheduledSlotId !== null}
           OR l.eligible_after <= now()
@@ -833,6 +840,20 @@ async function claimAutodepositLots(args: {
         AND l.remaining_amount_raw >= i.amount_raw
       RETURNING l.id
     ),
+    -- Mirrors move_residual_open_lots_to_next_slot in the trigger: lots past
+    -- the attempt budget are dead-lettered instead of carried forward, and the
+    -- replacement slot never inherits an eligible_after that already elapsed.
+    suppressed_exhausted_lots AS (
+      UPDATE loyal_yield.balance_sweep_surplus_lots l
+      SET status = 'suppressed',
+          updated_at = now()
+      WHERE ${args.scheduledSlotId !== null}
+        AND l.scheduled_slot_id = ${args.scheduledSlotId?.toString() ?? null}
+        AND l.status = 'open'
+        AND l.autodeposit_attempt_count >= ${MAX_AUTODEPOSIT_LOT_ATTEMPTS}::integer
+        AND EXISTS (SELECT 1 FROM inserted_claim)
+      RETURNING l.id
+    ),
     residual_slot AS (
       INSERT INTO loyal_yield.balance_sweep_scheduled_slots (
         target_id,
@@ -843,13 +864,15 @@ async function claimAutodepositLots(args: {
       SELECT
         ${args.targetId.toString()},
         ${args.tokenMint},
-        MAX(l.eligible_after),
+        GREATEST(MAX(l.eligible_after), now()),
         'scheduled'
       FROM loyal_yield.balance_sweep_surplus_lots l
       WHERE ${args.scheduledSlotId !== null}
         AND l.scheduled_slot_id = ${args.scheduledSlotId?.toString() ?? null}
         AND l.status = 'open'
         AND l.remaining_amount_raw > 0
+        AND l.autodeposit_attempt_count < ${MAX_AUTODEPOSIT_LOT_ATTEMPTS}::integer
+        AND NOT EXISTS (SELECT 1 FROM suppressed_exhausted_lots s WHERE s.id = l.id)
         AND EXISTS (SELECT 1 FROM inserted_claim)
       HAVING COUNT(*) > 0
       RETURNING id
@@ -862,6 +885,8 @@ async function claimAutodepositLots(args: {
         AND l.scheduled_slot_id = ${args.scheduledSlotId?.toString() ?? null}
         AND l.status = 'open'
         AND l.remaining_amount_raw > 0
+        AND l.autodeposit_attempt_count < ${MAX_AUTODEPOSIT_LOT_ATTEMPTS}::integer
+        AND NOT EXISTS (SELECT 1 FROM suppressed_exhausted_lots s WHERE s.id = l.id)
         AND EXISTS (SELECT 1 FROM residual_slot)
       RETURNING l.id
     ),
@@ -996,43 +1021,91 @@ export async function releaseAutodepositLotClaim(args: {
         AND c.status = 'selected'
         AND t.token_mint = ${USDC_MINT_ADDRESS}
     ),
-    restored AS (
-      UPDATE loyal_yield.balance_sweep_surplus_lots l
-      SET remaining_amount_raw = LEAST(
-            l.original_amount_raw,
-            l.remaining_amount_raw + i.amount_raw
-          ),
-          status = 'open',
-          autodeposit_attempt_count = l.autodeposit_attempt_count + 1,
-          -- Exponential backoff off the attempt this failure just recorded, so
-          -- a target that cannot succeed stops occupying a worker tick every
-          -- few minutes. The trigger dead-letters the lot once the attempt
-          -- budget runs out.
-          eligible_after = now() + (
-            ${PRE_SEND_FAILURE_RETRY_DELAY_SECONDS}::double precision
-              * power(
-                  2,
-                  LEAST(
-                    l.autodeposit_attempt_count,
-                    ${MAX_AUTODEPOSIT_RETRY_BACKOFF_DOUBLINGS}::integer
-                  )
+    -- The lots this claim is handing back, with the attempt count and backoff
+    -- the restore below will write. Postgres forbids touching a row from two
+    -- data-modifying CTEs and would not show one CTE's writes to another, so
+    -- the retry slot has to be planned from these pre-update values and the
+    -- lots then updated exactly once.
+    claimed_lots AS (
+      SELECT
+        l.id,
+        c.target_id,
+        t.token_mint,
+        LEAST(l.original_amount_raw, l.remaining_amount_raw + i.amount_raw)
+          AS restored_amount_raw,
+        l.autodeposit_attempt_count + 1 AS next_attempt_count,
+        now() + (
+          ${PRE_SEND_FAILURE_RETRY_DELAY_SECONDS}::double precision
+            * power(
+                2,
+                LEAST(
+                  l.autodeposit_attempt_count,
+                  ${MAX_AUTODEPOSIT_RETRY_BACKOFF_DOUBLINGS}::integer
                 )
-              * interval '1 second'
-          ),
-          updated_at = now()
-      FROM loyal_yield.balance_sweep_lot_claim_items i
-      JOIN loyal_yield.balance_sweep_wallet_balance_events e
-        ON true
+              )
+            * interval '1 second'
+        ) AS next_eligible_after
+      FROM loyal_yield.balance_sweep_surplus_lots l
+      JOIN loyal_yield.balance_sweep_lot_claim_items i
+        ON i.lot_id = l.id
       JOIN loyal_yield.balance_sweep_lot_claims c
         ON c.claim_token = i.claim_token
       JOIN loyal_yield.balance_sweep_targets t
         ON t.id = c.target_id
+      JOIN loyal_yield.balance_sweep_wallet_balance_events e
+        ON e.event_id = l.source_event_id
       WHERE i.claim_token = (SELECT claim_token FROM selected_claim)
-        AND l.id = i.lot_id
         AND l.target_id = c.target_id
-        AND e.event_id = l.source_event_id
         AND e.mint = t.token_mint
         AND t.token_mint = ${USDC_MINT_ADDRESS}
+    ),
+    -- A lot the claim consumed in full is not a residual, so nothing moved it
+    -- off the slot this release is about to mark 'failed'. Without a live slot
+    -- to hang from, an ordinary retryable failure would leave the lot open but
+    -- invisible to every executable scan. The backoff keeps it from firing
+    -- immediately.
+    retry_slot AS (
+      INSERT INTO loyal_yield.balance_sweep_scheduled_slots (
+        target_id,
+        token_mint,
+        eligible_after,
+        status
+      )
+      SELECT
+        target_id,
+        token_mint,
+        GREATEST(MAX(next_eligible_after), now()),
+        'scheduled'
+      FROM claimed_lots
+      WHERE restored_amount_raw > 0
+        AND next_attempt_count < ${MAX_AUTODEPOSIT_LOT_ATTEMPTS}::integer
+      GROUP BY target_id, token_mint
+      RETURNING id
+    ),
+    restored AS (
+      UPDATE loyal_yield.balance_sweep_surplus_lots l
+      SET remaining_amount_raw = claimed.restored_amount_raw,
+          -- Exponential backoff off the attempt this failure just recorded, so
+          -- a target that cannot succeed stops occupying a worker tick every
+          -- few minutes. A lot whose budget this attempt exhausts is
+          -- dead-lettered instead of reopened.
+          autodeposit_attempt_count = claimed.next_attempt_count,
+          eligible_after = claimed.next_eligible_after,
+          status = CASE
+            WHEN claimed.next_attempt_count >= ${MAX_AUTODEPOSIT_LOT_ATTEMPTS}::integer
+              OR claimed.restored_amount_raw = 0
+            THEN 'suppressed'::loyal_yield.balance_sweep_surplus_lot_status
+            ELSE 'open'::loyal_yield.balance_sweep_surplus_lot_status
+          END,
+          scheduled_slot_id = CASE
+            WHEN claimed.next_attempt_count < ${MAX_AUTODEPOSIT_LOT_ATTEMPTS}::integer
+              AND claimed.restored_amount_raw > 0
+            THEN COALESCE((SELECT id FROM retry_slot), l.scheduled_slot_id)
+            ELSE l.scheduled_slot_id
+          END,
+          updated_at = now()
+      FROM claimed_lots AS claimed
+      WHERE l.id = claimed.id
       RETURNING l.id
     ),
     paused_target AS (

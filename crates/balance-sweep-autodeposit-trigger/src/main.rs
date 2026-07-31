@@ -845,6 +845,47 @@ async fn cancel_slot_for_closed_route_policy(
     );
     let mut tx = pool.begin().await?;
 
+    // The "missing on chain" verdict was formed before the RPC round trip, so
+    // re-read the binding under lock and require it to still name the policy we
+    // actually checked. Otherwise an in-place policy repair that lands during
+    // that window would be cancelled and disabled on stale evidence.
+    let binding_unchanged = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT policy.id
+        FROM loyal_yield.balance_sweep_scheduled_slots AS slot
+        JOIN loyal_yield.balance_sweep_targets AS target
+          ON target.id = slot.target_id
+        JOIN loyal_yield.managed_vaults AS managed
+          ON managed.settings = target.settings
+         AND managed.vault_index = target.vault_index
+         AND managed.vault_pubkey = target.vault_pubkey
+         AND managed.active = true
+        JOIN loyal_yield.route_policies AS policy
+          ON policy.id = managed.active_policy_id
+         AND policy.active = true
+        WHERE slot.id = $1
+          AND slot.target_id = $2
+          AND policy.policy_account = $3
+        FOR UPDATE OF policy
+        "#,
+    )
+    .bind(binding.slot_id)
+    .bind(binding.target_id)
+    .bind(&binding.policy_account)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    if binding_unchanged.is_none() {
+        tx.commit().await?;
+        tracing::info!(
+            target_id = binding.target_id,
+            scheduled_slot_id = binding.slot_id,
+            policy_account = binding.policy_account,
+            "route policy binding changed during the chain check; leaving the slot queued"
+        );
+        return Ok(0);
+    }
+
     let canceled = sqlx::query(
         r#"
         UPDATE loyal_yield.balance_sweep_scheduled_slots
@@ -1724,6 +1765,7 @@ async fn lock_eligible_lots(
           AND target.token_mint = $2
           AND lot.status = 'open'
           AND lot.remaining_amount_raw > 0
+          AND lot.autodeposit_attempt_count < $4
           AND ($3::bigint IS NOT NULL OR lot.eligible_after <= now())
           AND ($3::bigint IS NULL OR lot.scheduled_slot_id = $3::bigint)
         ORDER BY lot.eligible_after ASC, lot.created_at ASC, lot.id ASC
@@ -1733,6 +1775,7 @@ async fn lock_eligible_lots(
     .bind(target_id)
     .bind(USDC_MINT_ADDRESS)
     .bind(scheduled_slot_id)
+    .bind(MAX_AUTODEPOSIT_LOT_ATTEMPTS)
     .fetch_all(&mut **tx)
     .await?;
     rows.into_iter()

@@ -146,12 +146,14 @@ type StubRpc = {
   requests: number;
   setMissing: (accounts: string[]) => void;
   setOutage: (outage: boolean) => void;
+  setBeforeRespond: (hook: (() => Promise<void>) | null) => void;
   stop: () => void;
 };
 
 function startStubRpc(missing: string[]): StubRpc {
   let missingAccounts = new Set(missing);
   let outage = false;
+  let beforeRespond: (() => Promise<void>) | null = null;
   const state = { requests: 0 };
 
   const server = Bun.serve({
@@ -170,6 +172,9 @@ function startStubRpc(missing: string[]): StubRpc {
         return Response.json({ jsonrpc: "2.0", id: 1, error: { message: "unsupported" } });
       }
       const requested = body.params?.[0] ?? [];
+      if (beforeRespond) {
+        await beforeRespond();
+      }
       return Response.json({
         jsonrpc: "2.0",
         id: 1,
@@ -203,6 +208,9 @@ function startStubRpc(missing: string[]): StubRpc {
     },
     setOutage: (value: boolean) => {
       outage = value;
+    },
+    setBeforeRespond: (hook: (() => Promise<void>) | null) => {
+      beforeRespond = hook;
     },
     stop: () => server.stop(true),
   };
@@ -495,7 +503,60 @@ try {
     triggerLog(outageRun).split("\n").slice(-6)
   );
 
-  console.log("\n[7/7] scenario: executor-side classification, cancel, and attempt cap");
+  console.log("\n[7/8] scenario: a policy repair during the chain check is not cancelled");
+  const raceFixture = {
+    targetId: 9007n,
+    settings: "RaceSettings1111111111111111111111111111",
+    vaultPubkey: "RaceVauxt111111111111111111111111111111",
+    policyAccount: "RaceRoutePoxicy11111111111111111111111111",
+    wallet: "RaceWaxxet11111111111111111111111111111",
+  };
+  await seedVault(sql, raceFixture, { policySeed: 1 });
+  const raced = await seedLotAndSlot(sql, raceFixture, { eventId: 9, amountRaw: 5_000_000 });
+  rpc.setMissing([raceFixture.policyAccount]);
+  // Repoint the vault at a healthy replacement policy after the worker has
+  // loaded its candidate but before it sees the answer.
+  rpc.setBeforeRespond(async () => {
+    const repair = new SQL(cluster!.url);
+    const [replacement] = await repair`
+      INSERT INTO loyal_yield.route_policies
+        (settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
+         delegated_signers, threshold, route_modes, stable_mints, kamino_markets,
+         kamino_liquidity_mints, active, last_seen_slot, last_seen_signature)
+      VALUES
+        (${raceFixture.settings}, ${raceFixture.wallet}, 2, 'RaceRepairedPoxicy111111111111111111111',
+         1, ${raceFixture.vaultPubkey}, ARRAY['DexegateSigner111111111111111111111111111'], 1,
+         ARRAY['same_mint_kamino'], ARRAY[${USDC_MINT}], ARRAY['KaminoMarket1111111111111111111111111111'],
+         ARRAY[${USDC_MINT}], true, 2, 'repaired-policy-signature')
+      RETURNING id
+    `;
+    await repair`
+      UPDATE loyal_yield.managed_vaults SET active_policy_id = ${replacement.id}
+      WHERE settings = ${raceFixture.settings} AND vault_index = 1
+    `;
+    await repair.end();
+    rpc.setBeforeRespond(null);
+  });
+  await runTrigger();
+  rpc.setMissing([BROKEN.policyAccount]);
+  const [racedSlot] = await sql`
+    SELECT status::text AS status FROM loyal_yield.balance_sweep_scheduled_slots WHERE id = ${raced.slotId}
+  `;
+  const [racedTarget] = await sql`
+    SELECT active, lifecycle_status FROM loyal_yield.balance_sweep_targets WHERE id = ${raceFixture.targetId}
+  `;
+  const [racedLot] = await sql`
+    SELECT status::text AS status FROM loyal_yield.balance_sweep_surplus_lots WHERE id = ${raced.lotId}
+  `;
+  check("a repaired binding is not cancelled on stale evidence", racedSlot.status !== "canceled", racedSlot);
+  check(
+    "a repaired binding leaves the target enabled",
+    racedTarget.active === true && racedTarget.lifecycle_status === "active",
+    racedTarget
+  );
+  check("a repaired binding leaves its lot alone", racedLot.status === "open", racedLot);
+
+  console.log("\n[8/8] scenario: executor-side classification, cancel, and attempt cap");
   check(
     "AccountNotFound for the bound policy is classified",
     closedRoutePolicyAccountFromStderr(
@@ -596,13 +657,82 @@ try {
     pauseTargetForMissingDelegate: false,
   });
   const [releasedLot] = await sql`
-    SELECT status::text AS status, autodeposit_attempt_count,
+    SELECT status::text AS status, autodeposit_attempt_count, scheduled_slot_id,
            eligible_after > now() + interval '4 minutes' AS backed_off
     FROM loyal_yield.balance_sweep_surplus_lots WHERE id = ${retried.lotId}
   `;
   check("retryable failure reopens the lot", releasedLot.status === "open", releasedLot);
   check("retryable failure records an attempt", releasedLot.autodeposit_attempt_count === 1, releasedLot);
   check("retryable failure backs the lot off into the future", releasedLot.backed_off === true, releasedLot);
+
+  // The claim consumed this lot in full, so no residual mover touched it. It
+  // must still land on a live slot or no executable scan can ever see it again.
+  const [retrySlot] = await sql`
+    SELECT status::text AS status, eligible_after > now() AS in_future
+    FROM loyal_yield.balance_sweep_scheduled_slots
+    WHERE id = ${releasedLot.scheduled_slot_id}
+  `;
+  check(
+    "a fully consumed lot is requeued onto a live slot",
+    String(releasedLot.scheduled_slot_id) !== String(retried.slotId) &&
+      retrySlot?.status === "scheduled",
+    { lot: releasedLot, slot: retrySlot, originalSlot: String(retried.slotId) }
+  );
+  check(
+    "the requeued slot respects the backoff",
+    retrySlot?.in_future === true,
+    retrySlot
+  );
+  const [oldSlot] = await sql`
+    SELECT status::text AS status FROM loyal_yield.balance_sweep_scheduled_slots WHERE id = ${retried.slotId}
+  `;
+  check("the failed slot is still recorded as failed", oldSlot.status === "failed", oldSlot);
+
+  // The attempt cap must bind at selection, not only on the residual path: a
+  // lot that is always consumed in full never becomes a residual.
+  const exhaustedClaim = await sql`
+    UPDATE loyal_yield.balance_sweep_surplus_lots
+    SET autodeposit_attempt_count = ${MAX_ATTEMPTS}, status = 'open',
+        eligible_after = now() - interval '1 hour'
+    WHERE id = ${retried.lotId}
+    RETURNING id
+  `;
+  await sql`
+    UPDATE loyal_yield.balance_sweep_scheduled_slots
+    SET eligible_after = now() - interval '1 hour', status = 'scheduled'
+    WHERE id = ${releasedLot.scheduled_slot_id}
+  `;
+  await sql`
+    INSERT INTO loyal_yield.projection_offsets (consumer_name, last_event_id, updated_at)
+    VALUES ('balance_sweep_autodeposit_trigger',
+            (SELECT MAX(event_id) FROM loyal_yield.balance_sweep_wallet_balance_events), now())
+    ON CONFLICT (consumer_name) DO UPDATE
+      SET last_event_id = EXCLUDED.last_event_id, updated_at = now()
+  `;
+  const exhaustedSelect = await run(
+    [
+      triggerBin,
+      "--postgres-url",
+      cluster.url,
+      "--disable-realtime-listen",
+      "--claim-target-id",
+      String(retryFixture.targetId),
+      "--scheduled-slot-id",
+      String(releasedLot.scheduled_slot_id),
+      "--claim-token",
+      "verifier-claim-exhausted",
+      "--claim-wallet-balance-raw",
+      "50000000",
+      "--claim-wallet-balance-floor-raw",
+      "1000",
+    ],
+    { allowFailure: true }
+  );
+  check(
+    "a lot at the attempt cap is never selected",
+    exhaustedSelect.stdout.includes('"status": "noop"'),
+    { lots: exhaustedClaim.length, stdout: exhaustedSelect.stdout.trim().slice(0, 300) }
+  );
 
   // Residual mover: over-budget lots are dead-lettered, in-budget lots keep a
   // future eligibility instead of an already-elapsed one.
