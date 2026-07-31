@@ -14,6 +14,7 @@
     "lint": "eslint",
     "autodeposit:execute": "bun scripts/execute-autodeposit-policy.ts",
     "autodeposit:test": "bun test scripts/execute-autodeposit-policy.test.ts",
+    "autodeposit:verify-closed-route-policy": "bun scripts/verify-autodeposit-closed-route-policy.ts",
     "same-mint:swap": "cargo run -p loyal-yield-orchestrator --bin same-mint-reserve-swap --",
     "same-mint:monitor": "cargo run -p loyal-yield-orchestrator --bin same-mint-yield-monitor --",
     "fleet:planner": "cargo run -p loyal-yield-orchestrator --bin fleet-opportunity-planner --",

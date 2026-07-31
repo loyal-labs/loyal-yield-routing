@@ -201,6 +201,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0032_idle_vault_decision_lookup_index.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 33,
+        name: "autodeposit_retry_controls",
+        sql: include_str!("../../migrations/0033_autodeposit_retry_controls.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

@@ -273,11 +273,13 @@ describe("runtime dependency boundary", () => {
       )
     ).text();
 
+    // Both hand-back paths clamp: the retryable release and the terminal
+    // cancel taken when the route policy is gone from the chain.
     expect(
       executorSource.match(
         /LEAST\(\s+l\.original_amount_raw,\s+l\.remaining_amount_raw \+ i\.amount_raw\s+\)/g
       )
-    ).toHaveLength(1);
+    ).toHaveLength(2);
     expect(
       triggerSource.match(
         /LEAST\(\s+lot\.original_amount_raw,\s+lot\.remaining_amount_raw \+ item\.amount_raw\s+\)/g

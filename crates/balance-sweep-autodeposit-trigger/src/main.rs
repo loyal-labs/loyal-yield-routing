@@ -25,6 +25,11 @@ const USDC_MINT_ADDRESS: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const STALE_REQUESTED_SLOT_SECONDS: i64 = 15 * 60;
 const REQUESTED_SLOT_TIMEOUT_ERROR: &str = "Autodeposit request timed out before worker selection.";
 const MAX_DEBOUNCED_WAKEUPS: u64 = 1000;
+const ROUTE_POLICY_CHAIN_CHECK_BATCH: usize = 100;
+const ROUTE_POLICY_CHAIN_CHECK_TIMEOUT_SECONDS: u64 = 15;
+/// A lot that has failed this many autodeposit attempts is dead-lettered rather
+/// than rescheduled. Permanent failures otherwise retry on every worker tick.
+const MAX_AUTODEPOSIT_LOT_ATTEMPTS: i32 = 6;
 const DEFAULT_REALTIME_HINT_QUEUE_CAPACITY: usize = 1024;
 const DEFAULT_AUTODEPOSIT_WAKE_CHANNEL: &str = "loyal_yield_autodeposit_wakeup";
 
@@ -83,6 +88,10 @@ struct Args {
     execute_eligible: bool,
     #[arg(long, env = "BALANCE_SWEEP_EXECUTOR_COMMAND")]
     executor_command: Option<String>,
+    /// Used to confirm a vault's route policy still exists on chain before an
+    /// executor subprocess is spawned. Without it the guard stays DB-only.
+    #[arg(long, env = "SOLANA_RPC_URL")]
+    solana_rpc_url: Option<String>,
     #[arg(long, default_value_t = 25)]
     execute_limit: i64,
     #[arg(
@@ -122,6 +131,7 @@ struct ExecutorOutcome {
     executions_succeeded: usize,
     executions_failed: usize,
     missing_route_policy_slots_failed: i64,
+    closed_onchain_route_policy_slots_canceled: i64,
     stale_requested_slots_failed: i64,
     stale_claims_released: i64,
 }
@@ -309,11 +319,22 @@ async fn main() -> Result<()> {
             let execution_outcome = execute_eligible_targets_once(
                 &pool,
                 executor_command,
+                args.solana_rpc_url.as_deref(),
                 args.execute_limit,
                 args.stale_selected_claim_seconds,
                 &hinted_slot_ids,
             )
             .await?;
+            if execution_outcome.closed_onchain_route_policy_slots_canceled > 0 {
+                OperationalError::new(
+                    "autodeposit_route_policy_closed_on_chain",
+                    "verify_autodeposit_route_policy_on_chain",
+                    "autodeposit slots were canceled because their route policy is closed on chain",
+                )
+                .retryable(false)
+                .recovery_required(true)
+                .emit();
+            }
             if execution_outcome.missing_route_policy_slots_failed > 0 {
                 OperationalError::new(
                     "autodeposit_route_policy_missing",
@@ -351,6 +372,8 @@ async fn main() -> Result<()> {
                 executions_failed = execution_outcome.executions_failed,
                 missing_route_policy_slots_failed =
                     execution_outcome.missing_route_policy_slots_failed,
+                closed_onchain_route_policy_slots_canceled =
+                    execution_outcome.closed_onchain_route_policy_slots_canceled,
                 stale_requested_slots_failed = execution_outcome.stale_requested_slots_failed,
                 stale_claims_released = execution_outcome.stale_claims_released,
                 "scanned eligible autodeposit lots for execution"
@@ -505,6 +528,7 @@ fn autodeposit_wakeup_from_notification(payload: &str) -> Option<i64> {
 async fn execute_eligible_targets_once(
     pool: &PgPool,
     executor_command: &str,
+    solana_rpc_url: Option<&str>,
     limit: i64,
     stale_selected_claim_seconds: i64,
     hinted_slot_ids: &[i64],
@@ -513,6 +537,12 @@ async fn execute_eligible_targets_once(
         fail_slots_without_active_earn_route_policy_once(pool, limit)
             .await
             .inspect_err(|_| emit_execution_queue_preparation_failed())?;
+    let closed_onchain_route_policy_slots_canceled = match solana_rpc_url {
+        Some(rpc_url) => cancel_slots_with_closed_onchain_route_policy_once(pool, rpc_url, limit)
+            .await
+            .inspect_err(|_| emit_execution_queue_preparation_failed())?,
+        None => 0,
+    };
     let stale_requested_slots_failed = fail_stale_requested_slots_once(pool, limit)
         .await
         .inspect_err(|_| emit_execution_queue_preparation_failed())?;
@@ -526,6 +556,7 @@ async fn execute_eligible_targets_once(
     let mut outcome = ExecutorOutcome {
         targets_scanned: targets.len(),
         missing_route_policy_slots_failed,
+        closed_onchain_route_policy_slots_canceled,
         stale_requested_slots_failed,
         stale_claims_released,
         ..ExecutorOutcome::default()
@@ -678,6 +709,255 @@ async fn fail_slots_without_active_earn_route_policy_once(
     .await?;
 
     Ok(rows.len() as i64)
+}
+
+/// A vault whose Squads route policy was closed on chain still keeps its
+/// `route_policies` row marked active, so the DB-only guard above lets the slot
+/// through and the executor burns a subprocess only to die on
+/// `AccountNotFound: pubkey=<policy_account>`. Resolve the binding against the
+/// chain first and cancel those slots here instead.
+///
+/// This is deliberately fail-open: an RPC outage must not cancel healthy work,
+/// so a failed lookup leaves every candidate slot untouched.
+async fn cancel_slots_with_closed_onchain_route_policy_once(
+    pool: &PgPool,
+    rpc_url: &str,
+    limit: i64,
+) -> Result<i64> {
+    if limit <= 0 {
+        return Ok(0);
+    }
+
+    let candidates = load_slots_awaiting_route_policy_chain_check(pool, limit).await?;
+    if candidates.is_empty() {
+        return Ok(0);
+    }
+
+    let policy_accounts: Vec<String> = candidates
+        .iter()
+        .map(|candidate| candidate.policy_account.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let missing = match missing_onchain_accounts(rpc_url, &policy_accounts).await {
+        Ok(missing) => missing,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                candidate_slots = candidates.len(),
+                "route policy chain check failed; leaving autodeposit slots queued"
+            );
+            OperationalError::new(
+                "autodeposit_route_policy_chain_check_failed",
+                "verify_autodeposit_route_policy_on_chain",
+                "autodeposit route policy chain check could not reach the RPC",
+            )
+            .retryable(true)
+            .recovery_required(false)
+            .emit();
+            return Ok(0);
+        }
+    };
+    if missing.is_empty() {
+        return Ok(0);
+    }
+
+    let mut canceled = 0;
+    for candidate in candidates
+        .iter()
+        .filter(|candidate| missing.contains(&candidate.policy_account))
+    {
+        canceled += cancel_slot_for_closed_route_policy(pool, candidate).await?;
+    }
+    Ok(canceled)
+}
+
+#[derive(Debug, Clone)]
+struct SlotRoutePolicyBinding {
+    slot_id: i64,
+    target_id: i64,
+    policy_account: String,
+}
+
+async fn load_slots_awaiting_route_policy_chain_check(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<SlotRoutePolicyBinding>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            slot.id AS slot_id,
+            slot.target_id AS target_id,
+            policy.policy_account AS policy_account
+        FROM loyal_yield.balance_sweep_scheduled_slots AS slot
+        JOIN loyal_yield.balance_sweep_targets AS target
+          ON target.id = slot.target_id
+        JOIN loyal_yield.managed_vaults AS managed
+          ON managed.settings = target.settings
+         AND managed.vault_index = target.vault_index
+         AND managed.vault_pubkey = target.vault_pubkey
+         AND managed.active = true
+        JOIN loyal_yield.route_policies AS policy
+          ON policy.id = managed.active_policy_id
+         AND policy.active = true
+         AND policy.authority = target.authority
+         AND policy.settings = target.settings
+         AND policy.vault_index = target.vault_index
+         AND policy.vault_pubkey = target.vault_pubkey
+         AND 'same_mint_kamino' = ANY(policy.route_modes)
+        WHERE slot.status IN ('scheduled', 'requested')
+          AND slot.eligible_after <= now()
+          AND target.active = true
+          AND target.lifecycle_status = 'active'
+          AND target.token_mint = $2
+          AND slot.token_mint = target.token_mint
+        ORDER BY slot.eligible_after ASC, slot.id ASC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .bind(USDC_MINT_ADDRESS)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(SlotRoutePolicyBinding {
+                slot_id: row.try_get("slot_id")?,
+                target_id: row.try_get("target_id")?,
+                policy_account: row.try_get("policy_account")?,
+            })
+        })
+        .collect()
+}
+
+/// Cancel the slot, dead-letter its open lots, and pause the target so the
+/// projector stops minting fresh lots against a vault that cannot accept them.
+/// Re-onboarding a route policy reactivates the target through the normal
+/// lifecycle path.
+async fn cancel_slot_for_closed_route_policy(
+    pool: &PgPool,
+    binding: &SlotRoutePolicyBinding,
+) -> Result<i64> {
+    let last_error = format!(
+        "Autodeposit route policy {} is not present on chain; canceling the slot instead of executing.",
+        binding.policy_account
+    );
+    let mut tx = pool.begin().await?;
+
+    let canceled = sqlx::query(
+        r#"
+        UPDATE loyal_yield.balance_sweep_scheduled_slots
+        SET status = 'canceled',
+            claim_token = NULL,
+            last_error = $2,
+            updated_at = now()
+        WHERE id = $1
+          AND status IN ('scheduled', 'requested')
+        RETURNING id
+        "#,
+    )
+    .bind(binding.slot_id)
+    .bind(&last_error)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let Some(_) = canceled else {
+        tx.commit().await?;
+        return Ok(0);
+    };
+
+    sqlx::query(
+        r#"
+        UPDATE loyal_yield.balance_sweep_surplus_lots
+        SET status = 'suppressed',
+            updated_at = now()
+        WHERE scheduled_slot_id = $1
+          AND status = 'open'
+        "#,
+    )
+    .bind(binding.slot_id)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE loyal_yield.balance_sweep_targets
+        SET active = false,
+            lifecycle_status = 'pending_policy',
+            last_seen_at = now()
+        WHERE id = $1
+          AND active = true
+          AND lifecycle_status = 'active'
+        "#,
+    )
+    .bind(binding.target_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    tracing::warn!(
+        target_id = binding.target_id,
+        scheduled_slot_id = binding.slot_id,
+        policy_account = binding.policy_account,
+        "canceled autodeposit slot whose route policy is closed on chain"
+    );
+    Ok(1)
+}
+
+/// `getMultipleAccounts` with a zero-length data slice: existence is all this
+/// check needs, and the slice keeps large policy payloads off the wire.
+async fn missing_onchain_accounts(rpc_url: &str, accounts: &[String]) -> Result<HashSet<String>> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(
+            ROUTE_POLICY_CHAIN_CHECK_TIMEOUT_SECONDS,
+        ))
+        .build()?;
+    let mut missing = HashSet::new();
+    for chunk in accounts.chunks(ROUTE_POLICY_CHAIN_CHECK_BATCH) {
+        let response = client
+            .post(rpc_url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getMultipleAccounts",
+                "params": [
+                    chunk,
+                    {
+                        "encoding": "base64",
+                        "commitment": "confirmed",
+                        "dataSlice": { "offset": 0, "length": 0 },
+                    },
+                ],
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<serde_json::Value>()
+            .await?;
+        if let Some(error) = response.get("error") {
+            anyhow::bail!("getMultipleAccounts returned an RPC error: {error}");
+        }
+        let values = response
+            .get("result")
+            .and_then(|result| result.get("value"))
+            .and_then(serde_json::Value::as_array)
+            .context("getMultipleAccounts response had no result.value array")?;
+        if values.len() != chunk.len() {
+            anyhow::bail!(
+                "getMultipleAccounts returned {} values for {} requested accounts",
+                values.len(),
+                chunk.len()
+            );
+        }
+        for (account, value) in chunk.iter().zip(values) {
+            if value.is_null() {
+                missing.insert(account.clone());
+            }
+        }
+    }
+    Ok(missing)
 }
 
 async fn fail_stale_requested_slots_once(pool: &PgPool, limit: i64) -> Result<i64> {
@@ -1351,6 +1631,12 @@ async fn lock_executable_slot(
     Ok(row.is_some())
 }
 
+/// Carry the lots this slot could not consume onto a fresh slot.
+///
+/// Two guards keep a permanently broken target from looping here. Lots that
+/// have burned through their attempt budget are dead-lettered instead of moved,
+/// and the replacement slot never inherits an `eligible_after` in the past, so
+/// a rescheduled lot has to wait out the backoff the failure path wrote.
 async fn move_residual_open_lots_to_next_slot(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     scheduled_slot_id: Option<i64>,
@@ -1361,17 +1647,33 @@ async fn move_residual_open_lots_to_next_slot(
 
     sqlx::query(
         r#"
+        UPDATE loyal_yield.balance_sweep_surplus_lots
+        SET status = 'suppressed',
+            updated_at = now()
+        WHERE scheduled_slot_id = $1
+          AND status = 'open'
+          AND autodeposit_attempt_count >= $2
+        "#,
+    )
+    .bind(scheduled_slot_id)
+    .bind(MAX_AUTODEPOSIT_LOT_ATTEMPTS)
+    .execute(&mut **tx)
+    .await?;
+
+    sqlx::query(
+        r#"
         WITH residual AS (
             SELECT
                 slot.target_id,
                 slot.token_mint,
-                MAX(lot.eligible_after) AS eligible_after
+                GREATEST(MAX(lot.eligible_after), now()) AS eligible_after
             FROM loyal_yield.balance_sweep_scheduled_slots AS slot
             JOIN loyal_yield.balance_sweep_surplus_lots AS lot
               ON lot.scheduled_slot_id = slot.id
             WHERE slot.id = $1
               AND lot.status = 'open'
               AND lot.remaining_amount_raw > 0
+              AND lot.autodeposit_attempt_count < $2
             GROUP BY slot.target_id, slot.token_mint
         ),
         inserted_slot AS (
@@ -1388,9 +1690,11 @@ async fn move_residual_open_lots_to_next_slot(
         WHERE lot.scheduled_slot_id = $1
           AND lot.status = 'open'
           AND lot.remaining_amount_raw > 0
+          AND lot.autodeposit_attempt_count < $2
         "#,
     )
     .bind(scheduled_slot_id)
+    .bind(MAX_AUTODEPOSIT_LOT_ATTEMPTS)
     .execute(&mut **tx)
     .await?;
     Ok(())

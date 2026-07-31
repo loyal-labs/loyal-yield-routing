@@ -177,12 +177,32 @@ class MissingActiveEarnRoutePolicyError extends Error {
   }
 }
 
+/// Neon still lists the route policy as active but the Squads policy account is
+/// gone from the chain, usually because the owner exited Earn. Retrying cannot
+/// help: every attempt dies in the same place until the vault is re-onboarded.
+export class ClosedOnChainRoutePolicyError extends Error {
+  readonly targetId: bigint;
+  readonly policyAccount: string;
+
+  constructor(targetId: bigint, policyAccount: string) {
+    super(
+      `Autodeposit route policy ${policyAccount} for target ${targetId} is not present on chain.`
+    );
+    this.name = "ClosedOnChainRoutePolicyError";
+    this.targetId = targetId;
+    this.policyAccount = policyAccount;
+  }
+}
+
 const DEFAULT_COMMITMENT = "confirmed";
 const DEFAULT_LOCAL_SAME_MINT_COMMAND = ["bun", "run", "same-mint:swap", "--"] as const;
 const SAME_MINT_ROUTE_MODE = "same_mint_kamino";
 const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDC_DECIMALS = 6;
 const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
+/// Caps the retry delay at 5min * 2^5 = 160 minutes. The trigger's attempt cap
+/// dead-letters the lot before the backoff would grow past that anyway.
+const MAX_AUTODEPOSIT_RETRY_BACKOFF_DOUBLINGS = 5;
 const AUTODEPOSIT_PULL_FEE_PAYER_MIN_LAMPORTS = 50_000_000;
 
 export function isMissingAutodepositTokenDelegateFailure(
@@ -193,6 +213,24 @@ export function isMissingAutodepositTokenDelegateFailure(
     message.includes("Autodeposit pull simulation failed") &&
     message.includes("Program log: Error: owner does not match")
   );
+}
+
+/// `same-mint-reserve-swap` reports a missing account as a bare
+/// `AccountNotFound: pubkey=<address>` from the Solana RPC client. Only treat it
+/// as a closed route policy when the address is the route policy this target is
+/// bound to; any other missing account is a different (possibly transient)
+/// problem and stays on the normal retry path.
+export function closedRoutePolicyAccountFromStderr(
+  stderr: string,
+  routePolicyAccount: string
+): string | null {
+  const pattern = /AccountNotFound: pubkey=([1-9A-HJ-NP-Za-km-z]{32,44})/g;
+  for (const match of stderr.matchAll(pattern)) {
+    if (match[1] === routePolicyAccount) {
+      return match[1];
+    }
+  }
+  return null;
 }
 const AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS = 50_000_000;
 const SOLANA_WEEK_NOTIFY_ENDPOINT_ENV = "SOLANA_WEEK_NOTIFY_ENDPOINT";
@@ -940,7 +978,7 @@ async function completeAutodepositLotClaim(args: {
   `;
 }
 
-async function releaseAutodepositLotClaim(args: {
+export async function releaseAutodepositLotClaim(args: {
   neon: AppModules["neon"];
   databaseUrl: string;
   claimToken: string;
@@ -965,7 +1003,22 @@ async function releaseAutodepositLotClaim(args: {
             l.remaining_amount_raw + i.amount_raw
           ),
           status = 'open',
-          eligible_after = now() + (${PRE_SEND_FAILURE_RETRY_DELAY_SECONDS} * interval '1 second'),
+          autodeposit_attempt_count = l.autodeposit_attempt_count + 1,
+          -- Exponential backoff off the attempt this failure just recorded, so
+          -- a target that cannot succeed stops occupying a worker tick every
+          -- few minutes. The trigger dead-letters the lot once the attempt
+          -- budget runs out.
+          eligible_after = now() + (
+            ${PRE_SEND_FAILURE_RETRY_DELAY_SECONDS}::double precision
+              * power(
+                  2,
+                  LEAST(
+                    l.autodeposit_attempt_count,
+                    ${MAX_AUTODEPOSIT_RETRY_BACKOFF_DOUBLINGS}::integer
+                  )
+                )
+              * interval '1 second'
+          ),
           updated_at = now()
       FROM loyal_yield.balance_sweep_lot_claim_items i
       JOIN loyal_yield.balance_sweep_wallet_balance_events e
@@ -1006,6 +1059,76 @@ async function releaseAutodepositLotClaim(args: {
     )
     UPDATE loyal_yield.balance_sweep_scheduled_slots
     SET status = 'failed',
+        claim_token = NULL,
+        last_error = ${args.lastError},
+        updated_at = now()
+    WHERE claim_token IN (SELECT claim_token FROM updated_claim)
+  `;
+}
+
+/// Terminal counterpart to `releaseAutodepositLotClaim`. The lots are handed
+/// back at their original size so the balance stays accounted for, but they are
+/// suppressed rather than reopened and the target is paused, because nothing
+/// about this target can succeed until a route policy exists on chain again.
+export async function cancelAutodepositLotClaimForClosedRoutePolicy(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  claimToken: string;
+  lastError: string;
+}) {
+  const sql = args.neon(args.databaseUrl);
+  await sql`
+    WITH selected_claim AS (
+      SELECT c.claim_token
+      FROM loyal_yield.balance_sweep_lot_claims c
+      JOIN loyal_yield.balance_sweep_targets t
+        ON t.id = c.target_id
+      WHERE c.claim_token = ${args.claimToken}
+        AND c.status = 'selected'
+        AND t.token_mint = ${USDC_MINT_ADDRESS}
+    ),
+    suppressed AS (
+      UPDATE loyal_yield.balance_sweep_surplus_lots l
+      SET remaining_amount_raw = LEAST(
+            l.original_amount_raw,
+            l.remaining_amount_raw + i.amount_raw
+          ),
+          status = 'suppressed',
+          updated_at = now()
+      FROM loyal_yield.balance_sweep_lot_claim_items i
+      JOIN loyal_yield.balance_sweep_lot_claims c
+        ON c.claim_token = i.claim_token
+      JOIN loyal_yield.balance_sweep_targets t
+        ON t.id = c.target_id
+      WHERE i.claim_token = (SELECT claim_token FROM selected_claim)
+        AND l.id = i.lot_id
+        AND l.target_id = c.target_id
+        AND t.token_mint = ${USDC_MINT_ADDRESS}
+      RETURNING l.id
+    ),
+    paused_target AS (
+      UPDATE loyal_yield.balance_sweep_targets t
+      SET active = false,
+          lifecycle_status = 'pending_policy',
+          last_seen_at = now()
+      FROM loyal_yield.balance_sweep_lot_claims c
+      WHERE c.claim_token = (SELECT claim_token FROM selected_claim)
+        AND c.target_id = t.id
+        AND t.active
+        AND t.lifecycle_status = 'active'
+        AND EXISTS (SELECT 1 FROM suppressed)
+      RETURNING t.id
+    ),
+    updated_claim AS (
+      UPDATE loyal_yield.balance_sweep_lot_claims
+      SET status = 'released',
+          updated_at = now()
+      WHERE claim_token = (SELECT claim_token FROM selected_claim)
+        AND EXISTS (SELECT 1 FROM suppressed)
+      RETURNING claim_token
+    )
+    UPDATE loyal_yield.balance_sweep_scheduled_slots
+    SET status = 'canceled',
         claim_token = NULL,
         last_error = ${args.lastError},
         updated_at = now()
@@ -1331,6 +1454,13 @@ async function runSameMintReserveTopUp(args: {
   const result = { command, exitCode, stdout, stderr, json };
 
   if (exitCode !== 0) {
+    const closedPolicyAccount = closedRoutePolicyAccountFromStderr(
+      stderr,
+      args.target.routePolicyAccount
+    );
+    if (closedPolicyAccount) {
+      throw new ClosedOnChainRoutePolicyError(args.target.id, closedPolicyAccount);
+    }
     throw new Error(
       `same-mint Kamino top-up command failed with exit code ${exitCode}: ${JSON.stringify(
         summarizeTopUpResult(result)
@@ -2549,14 +2679,23 @@ async function main() {
   } catch (error) {
     if (!pullSent && lotClaim?.status === "selected" && lotClaim.claimToken) {
       const lastError = error instanceof Error ? error.message : String(error);
-      await releaseAutodepositLotClaim({
-        neon: appModules.neon,
-        databaseUrl,
-        claimToken: lotClaim.claimToken,
-        lastError: lastError.slice(0, 4_000),
-        pauseTargetForMissingDelegate:
-          isMissingAutodepositTokenDelegateFailure(error),
-      });
+      if (error instanceof ClosedOnChainRoutePolicyError) {
+        await cancelAutodepositLotClaimForClosedRoutePolicy({
+          neon: appModules.neon,
+          databaseUrl,
+          claimToken: lotClaim.claimToken,
+          lastError: lastError.slice(0, 4_000),
+        });
+      } else {
+        await releaseAutodepositLotClaim({
+          neon: appModules.neon,
+          databaseUrl,
+          claimToken: lotClaim.claimToken,
+          lastError: lastError.slice(0, 4_000),
+          pauseTargetForMissingDelegate:
+            isMissingAutodepositTokenDelegateFailure(error),
+        });
+      }
     }
     throw error;
   }
