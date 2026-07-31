@@ -1813,7 +1813,7 @@ async fn deplete_lots_newest_first(
           AND lot.status = 'open'
           AND lot.remaining_amount_raw > 0
         ORDER BY lot.created_at DESC, lot.id DESC
-        FOR UPDATE
+        FOR UPDATE OF lot
         "#,
     )
     .bind(target_id)

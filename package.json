@@ -59,6 +59,7 @@
     "verify:hub-kani-impl": "bash scripts/verify-hub-kani-impl.sh",
     "verify:realtime:render-config": "bun scripts/verify-realtime-render-config.ts",
     "verify:realtime:sse": "bun scripts/verify-realtime-sse-smoke.ts",
+    "verify:balance-sweep-deadlock": "bash scripts/verify-balance-sweep-deadlock.sh",
     "verify:admin-rebalance-index": "bash scripts/verify-admin-rebalance-index.sh",
     "verify:reusable-alts": "bash scripts/verify-reusable-alts.sh",
     "verify:reusable-alts:schema": "cargo run -p loyal-yield-orchestrator --bin yield-migrations -- --verify-reusable-alts",
