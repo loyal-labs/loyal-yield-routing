@@ -15,33 +15,45 @@ RUN apt-get update \
 RUN cargo install cargo-chef --locked
 WORKDIR /app
 
+# Only Rust build inputs land in these stages, so edits to render.yaml, docs,
+# scripts, or workflows no longer invalidate the cook and build layers.
 FROM chef AS planner
-COPY . .
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates crates
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
+# Cook and build must select the same packages and bins in a single invocation.
+# Splitting them narrows feature resolution on the second call, which changes the
+# fingerprint of hyper, hyper-util, tower, and tower-http and forces every crate
+# above them to recompile.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo chef cook --release \
         -p kamino-reserve-monitor \
         -p balance-sweep-ata-monitor \
         -p loyal-timescale-migrations \
-        --recipe-path recipe.json \
-    && cargo chef cook --release \
         -p loyal-yield-orchestrator \
+        --bin kamino-reserve-monitor \
+        --bin balance-sweep-ata-monitor \
+        --bin loyal-timescale-migrations \
         --bin yield-migrations \
         --recipe-path recipe.json
 
-COPY . .
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY .sqlx .sqlx
+COPY crates crates
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo build --release \
         -p kamino-reserve-monitor \
         -p balance-sweep-ata-monitor \
         -p loyal-timescale-migrations \
-    && cargo build --release \
         -p loyal-yield-orchestrator \
+        --bin kamino-reserve-monitor \
+        --bin balance-sweep-ata-monitor \
+        --bin loyal-timescale-migrations \
         --bin yield-migrations \
     && cp /app/target/release/kamino-reserve-monitor /usr/local/bin/kamino-reserve-monitor \
     && cp /app/target/release/balance-sweep-ata-monitor /usr/local/bin/balance-sweep-ata-monitor \
