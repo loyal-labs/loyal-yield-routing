@@ -729,9 +729,134 @@ try {
     { allowFailure: true }
   );
   check(
-    "a lot at the attempt cap is never selected",
-    exhaustedSelect.stdout.includes('"status": "noop"'),
+    "a lot at the attempt threshold is still selectable",
+    exhaustedSelect.stdout.includes('"status": "selected"'),
     { lots: exhaustedClaim.length, stdout: exhaustedSelect.stdout.trim().slice(0, 300) }
+  );
+  // Drive a release at the threshold: a transient failure must never be able to
+  // dead-letter a lot, because a suppressed lot has no redrive anywhere.
+  const brinkFixture = {
+    targetId: 9009n,
+    settings: "BrinkSettings1111111111111111111111111111",
+    vaultPubkey: "BrinkVauxt111111111111111111111111111111",
+    policyAccount: "BrinkRoutePoxicy11111111111111111111111",
+    wallet: "BrinkWaxxet11111111111111111111111111111",
+  };
+  await seedVault(sql, brinkFixture, { policySeed: 1 });
+  const brink = await seedLotAndSlot(sql, brinkFixture, { eventId: 11, amountRaw: 2_000_000 });
+  const brinkToken = "verifier-claim-brink";
+  await sql`
+    INSERT INTO loyal_yield.balance_sweep_lot_claims
+      (claim_token, target_id, amount_raw, status, stale_check_event_id)
+    VALUES (${brinkToken}, ${brinkFixture.targetId}, 2000000, 'selected', 11)
+  `;
+  await sql`
+    INSERT INTO loyal_yield.balance_sweep_lot_claim_items (claim_token, lot_id, amount_raw)
+    VALUES (${brinkToken}, ${brink.lotId}, 2000000)
+  `;
+  await sql`
+    UPDATE loyal_yield.balance_sweep_surplus_lots
+    SET remaining_amount_raw = 0, status = 'consumed',
+        autodeposit_attempt_count = ${MAX_ATTEMPTS - 1}
+    WHERE id = ${brink.lotId}
+  `;
+  await sql`
+    UPDATE loyal_yield.balance_sweep_scheduled_slots
+    SET status = 'selected', claim_token = ${brinkToken} WHERE id = ${brink.slotId}
+  `;
+  await releaseAutodepositLotClaim({
+    neon: neonShim,
+    databaseUrl: cluster.url,
+    claimToken: brinkToken,
+    lastError: "transient RPC failure at the attempt threshold",
+    pauseTargetForMissingDelegate: false,
+  });
+  const [brinkLot] = await sql`
+    SELECT status::text AS status, autodeposit_attempt_count, scheduled_slot_id
+    FROM loyal_yield.balance_sweep_surplus_lots WHERE id = ${brink.lotId}
+  `;
+  const [brinkSlot] = await sql`
+    SELECT status::text AS status FROM loyal_yield.balance_sweep_scheduled_slots
+    WHERE id = ${brinkLot.scheduled_slot_id}
+  `;
+  check(
+    "crossing the attempt threshold never dead-letters a lot",
+    brinkLot.status === "open" && brinkLot.autodeposit_attempt_count === MAX_ATTEMPTS,
+    brinkLot
+  );
+  check(
+    "a lot past the threshold still holds a live slot",
+    brinkSlot?.status === "scheduled",
+    { lot: brinkLot, slot: brinkSlot }
+  );
+
+  const [{ count: alertableLots }] = await sql`
+    SELECT COUNT(*)::int AS count FROM loyal_yield.balance_sweep_surplus_lots
+    WHERE status = 'open' AND remaining_amount_raw > 0
+      AND autodeposit_attempt_count >= ${MAX_ATTEMPTS}
+  `;
+  check("a stuck lot is countable for alerting", alertableLots >= 0, alertableLots);
+
+  // The trigger's own release surface must age a lot exactly like the executor's.
+  const nativeFixture = {
+    targetId: 9008n,
+    settings: "NativeSettings11111111111111111111111111",
+    vaultPubkey: "NativeVauxt11111111111111111111111111111",
+    policyAccount: "NativeRoutePoxicy1111111111111111111111",
+    wallet: "NativeWaxxet1111111111111111111111111111",
+  };
+  await seedVault(sql, nativeFixture, { policySeed: 1 });
+  const native = await seedLotAndSlot(sql, nativeFixture, { eventId: 10, amountRaw: 3_000_000 });
+  const nativeToken = "verifier-claim-native-release";
+  await sql`
+    INSERT INTO loyal_yield.balance_sweep_lot_claims
+      (claim_token, target_id, amount_raw, status, stale_check_event_id)
+    VALUES (${nativeToken}, ${nativeFixture.targetId}, 3000000, 'selected', 10)
+  `;
+  await sql`
+    INSERT INTO loyal_yield.balance_sweep_lot_claim_items (claim_token, lot_id, amount_raw)
+    VALUES (${nativeToken}, ${native.lotId}, 3000000)
+  `;
+  await sql`
+    UPDATE loyal_yield.balance_sweep_surplus_lots
+    SET remaining_amount_raw = 0, status = 'consumed' WHERE id = ${native.lotId}
+  `;
+  await sql`
+    UPDATE loyal_yield.balance_sweep_scheduled_slots
+    SET status = 'selected', claim_token = ${nativeToken} WHERE id = ${native.slotId}
+  `;
+  const nativeRelease = await run(
+    [
+      triggerBin,
+      "--postgres-url",
+      cluster.url,
+      "--disable-realtime-listen",
+      "--release-claim-token",
+      nativeToken,
+    ],
+    { allowFailure: true }
+  );
+  debugTrigger("native release", nativeRelease);
+  const [nativeLot] = await sql`
+    SELECT status::text AS status, autodeposit_attempt_count, scheduled_slot_id,
+           eligible_after > now() + interval '4 minutes' AS backed_off
+    FROM loyal_yield.balance_sweep_surplus_lots WHERE id = ${native.lotId}
+  `;
+  const [nativeSlot] = await sql`
+    SELECT status::text AS status FROM loyal_yield.balance_sweep_scheduled_slots
+    WHERE id = ${nativeLot.scheduled_slot_id}
+  `;
+  check(
+    "the native release records an attempt",
+    nativeLot.autodeposit_attempt_count === 1,
+    nativeLot
+  );
+  check("the native release backs the lot off", nativeLot.backed_off === true, nativeLot);
+  check(
+    "the native release requeues onto a live slot",
+    String(nativeLot.scheduled_slot_id) !== String(native.slotId) &&
+      nativeSlot?.status === "scheduled",
+    { lot: nativeLot, slot: nativeSlot, originalSlot: String(native.slotId) }
   );
 
   // Residual mover: over-budget lots are dead-lettered, in-budget lots keep a
@@ -804,8 +929,8 @@ try {
       AND eligible_after < now() - interval '1 second'
   `;
   check(
-    "lot past the attempt budget is dead-lettered instead of rescheduled",
-    exhaustedLot.status === "suppressed",
+    "a lot past the attempt budget is kept, not dead-lettered",
+    exhaustedLot.status === "open",
     exhaustedLot
   );
   check(

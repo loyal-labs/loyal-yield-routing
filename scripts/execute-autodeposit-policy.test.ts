@@ -283,7 +283,7 @@ describe("runtime dependency boundary", () => {
     ).toHaveLength(2);
     expect(
       triggerSource.match(
-        /LEAST\(\s+lot\.original_amount_raw,\s+lot\.remaining_amount_raw \+ item\.amount_raw\s+\)/g
+        /LEAST\(\s*lot\.original_amount_raw,\s*lot\.remaining_amount_raw \+ item\.amount_raw\s*\)/g
       )
     ).toHaveLength(2);
   });

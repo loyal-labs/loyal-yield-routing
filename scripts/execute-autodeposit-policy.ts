@@ -203,9 +203,6 @@ const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
 /// Caps the retry delay at 5min * 2^5 = 160 minutes. The attempt cap
 /// dead-letters the lot before the backoff would grow past that anyway.
 const MAX_AUTODEPOSIT_RETRY_BACKOFF_DOUBLINGS = 5;
-/// Must match MAX_AUTODEPOSIT_LOT_ATTEMPTS in the autodeposit trigger: both
-/// this claim path and the trigger's own claim CLI select and carry lots.
-const MAX_AUTODEPOSIT_LOT_ATTEMPTS = 6;
 const AUTODEPOSIT_PULL_FEE_PAYER_MIN_LAMPORTS = 50_000_000;
 
 export function isMissingAutodepositTokenDelegateFailure(
@@ -750,10 +747,6 @@ async function claimAutodepositLots(args: {
         )
         AND l.status = 'open'
         AND l.remaining_amount_raw > 0
-        -- Enforced before selection, not just on the residual path: a lot that
-        -- is always fully consumed never becomes a residual, so a cap applied
-        -- only afterwards would never bind.
-        AND l.autodeposit_attempt_count < ${MAX_AUTODEPOSIT_LOT_ATTEMPTS}::integer
         AND (
           ${args.scheduledSlotId !== null}
           OR l.eligible_after <= now()
@@ -840,20 +833,9 @@ async function claimAutodepositLots(args: {
         AND l.remaining_amount_raw >= i.amount_raw
       RETURNING l.id
     ),
-    -- Mirrors move_residual_open_lots_to_next_slot in the trigger: lots past
-    -- the attempt budget are dead-lettered instead of carried forward, and the
-    -- replacement slot never inherits an eligible_after that already elapsed.
-    suppressed_exhausted_lots AS (
-      UPDATE loyal_yield.balance_sweep_surplus_lots l
-      SET status = 'suppressed',
-          updated_at = now()
-      WHERE ${args.scheduledSlotId !== null}
-        AND l.scheduled_slot_id = ${args.scheduledSlotId?.toString() ?? null}
-        AND l.status = 'open'
-        AND l.autodeposit_attempt_count >= ${MAX_AUTODEPOSIT_LOT_ATTEMPTS}::integer
-        AND EXISTS (SELECT 1 FROM inserted_claim)
-      RETURNING l.id
-    ),
+    -- Mirrors move_residual_open_lots_to_next_slot in the trigger: the
+    -- replacement slot never inherits an eligible_after that already elapsed,
+    -- so a lot that was backed off stays backed off.
     residual_slot AS (
       INSERT INTO loyal_yield.balance_sweep_scheduled_slots (
         target_id,
@@ -871,8 +853,6 @@ async function claimAutodepositLots(args: {
         AND l.scheduled_slot_id = ${args.scheduledSlotId?.toString() ?? null}
         AND l.status = 'open'
         AND l.remaining_amount_raw > 0
-        AND l.autodeposit_attempt_count < ${MAX_AUTODEPOSIT_LOT_ATTEMPTS}::integer
-        AND NOT EXISTS (SELECT 1 FROM suppressed_exhausted_lots s WHERE s.id = l.id)
         AND EXISTS (SELECT 1 FROM inserted_claim)
       HAVING COUNT(*) > 0
       RETURNING id
@@ -885,8 +865,6 @@ async function claimAutodepositLots(args: {
         AND l.scheduled_slot_id = ${args.scheduledSlotId?.toString() ?? null}
         AND l.status = 'open'
         AND l.remaining_amount_raw > 0
-        AND l.autodeposit_attempt_count < ${MAX_AUTODEPOSIT_LOT_ATTEMPTS}::integer
-        AND NOT EXISTS (SELECT 1 FROM suppressed_exhausted_lots s WHERE s.id = l.id)
         AND EXISTS (SELECT 1 FROM residual_slot)
       RETURNING l.id
     ),
@@ -1078,7 +1056,6 @@ export async function releaseAutodepositLotClaim(args: {
         'scheduled'
       FROM claimed_lots
       WHERE restored_amount_raw > 0
-        AND next_attempt_count < ${MAX_AUTODEPOSIT_LOT_ATTEMPTS}::integer
       GROUP BY target_id, token_mint
       RETURNING id
     ),
@@ -1087,22 +1064,20 @@ export async function releaseAutodepositLotClaim(args: {
       SET remaining_amount_raw = claimed.restored_amount_raw,
           -- Exponential backoff off the attempt this failure just recorded, so
           -- a target that cannot succeed stops occupying a worker tick every
-          -- few minutes. A lot whose budget this attempt exhausts is
-          -- dead-lettered instead of reopened.
+          -- few minutes.
+          --
+          -- The backoff bounds the retry RATE; it deliberately does not bound
+          -- the lot's lifetime. Everything that is not a classified permanent
+          -- failure lands here, including transient fee-payer, simulation and
+          -- RPC errors, and a suppressed lot has no redrive anywhere in the system.
+          -- Dead-lettering on an attempt count would let a long RPC outage
+          -- permanently destroy a user's autodeposit. Permanent failures are
+          -- terminated by classification instead — see
+          -- cancelAutodepositLotClaimForClosedRoutePolicy.
           autodeposit_attempt_count = claimed.next_attempt_count,
           eligible_after = claimed.next_eligible_after,
-          status = CASE
-            WHEN claimed.next_attempt_count >= ${MAX_AUTODEPOSIT_LOT_ATTEMPTS}::integer
-              OR claimed.restored_amount_raw = 0
-            THEN 'suppressed'::loyal_yield.balance_sweep_surplus_lot_status
-            ELSE 'open'::loyal_yield.balance_sweep_surplus_lot_status
-          END,
-          scheduled_slot_id = CASE
-            WHEN claimed.next_attempt_count < ${MAX_AUTODEPOSIT_LOT_ATTEMPTS}::integer
-              AND claimed.restored_amount_raw > 0
-            THEN COALESCE((SELECT id FROM retry_slot), l.scheduled_slot_id)
-            ELSE l.scheduled_slot_id
-          END,
+          status = 'open',
+          scheduled_slot_id = COALESCE((SELECT id FROM retry_slot), l.scheduled_slot_id),
           updated_at = now()
       FROM claimed_lots AS claimed
       WHERE l.id = claimed.id

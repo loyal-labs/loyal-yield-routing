@@ -27,9 +27,21 @@ const REQUESTED_SLOT_TIMEOUT_ERROR: &str = "Autodeposit request timed out before
 const MAX_DEBOUNCED_WAKEUPS: u64 = 1000;
 const ROUTE_POLICY_CHAIN_CHECK_BATCH: usize = 100;
 const ROUTE_POLICY_CHAIN_CHECK_TIMEOUT_SECONDS: u64 = 15;
-/// A lot that has failed this many autodeposit attempts is dead-lettered rather
-/// than rescheduled. Permanent failures otherwise retry on every worker tick.
-const MAX_AUTODEPOSIT_LOT_ATTEMPTS: i32 = 6;
+/// Attempts past which a lot is reported as stuck.
+///
+/// This raises an alert; it deliberately does not terminate the lot. Every
+/// failure that is not a classified permanent one — transient fee-payer,
+/// simulation and RPC errors included — reaches the release path, and a
+/// suppressed lot has no redrive anywhere in the system, so dead-lettering on
+/// an attempt count would let a long outage permanently destroy a user's
+/// autodeposit. The exponential backoff bounds the retry rate instead, and
+/// classified permanent failures are terminated on sight.
+const AUTODEPOSIT_LOT_ATTEMPT_ALERT_THRESHOLD: i32 = 6;
+/// Must match PRE_SEND_FAILURE_RETRY_DELAY_SECONDS and
+/// MAX_AUTODEPOSIT_RETRY_BACKOFF_DOUBLINGS in the autodeposit executor: both
+/// surfaces release claims and must age a lot the same way.
+const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS: f64 = 5.0 * 60.0;
+const MAX_AUTODEPOSIT_RETRY_BACKOFF_DOUBLINGS: i32 = 5;
 const DEFAULT_REALTIME_HINT_QUEUE_CAPACITY: usize = 1024;
 const DEFAULT_AUTODEPOSIT_WAKE_CHANNEL: &str = "loyal_yield_autodeposit_wakeup";
 
@@ -134,6 +146,7 @@ struct ExecutorOutcome {
     closed_onchain_route_policy_slots_canceled: i64,
     stale_requested_slots_failed: i64,
     stale_claims_released: i64,
+    lots_past_attempt_alert_threshold: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -355,6 +368,16 @@ async fn main() -> Result<()> {
                 .recovery_required(true)
                 .emit();
             }
+            if execution_outcome.lots_past_attempt_alert_threshold > 0 {
+                OperationalError::new(
+                    "autodeposit_lot_retry_budget_exceeded",
+                    "review_stuck_autodeposit_lots",
+                    "autodeposit lots kept failing past their retry alert threshold",
+                )
+                .retryable(true)
+                .recovery_required(true)
+                .emit();
+            }
             if execution_outcome.stale_claims_released > 0 {
                 OperationalError::new(
                     "autodeposit_stale_claim_released",
@@ -376,6 +399,8 @@ async fn main() -> Result<()> {
                     execution_outcome.closed_onchain_route_policy_slots_canceled,
                 stale_requested_slots_failed = execution_outcome.stale_requested_slots_failed,
                 stale_claims_released = execution_outcome.stale_claims_released,
+                lots_past_attempt_alert_threshold =
+                    execution_outcome.lots_past_attempt_alert_threshold,
                 "scanned eligible autodeposit lots for execution"
             );
         }
@@ -550,6 +575,7 @@ async fn execute_eligible_targets_once(
         release_stale_selected_claims_once(pool, stale_selected_claim_seconds, limit)
             .await
             .inspect_err(|_| emit_execution_queue_preparation_failed())?;
+    let lots_past_attempt_alert_threshold = count_lots_past_attempt_alert_threshold(pool).await?;
     let targets = load_executable_targets(pool, limit, hinted_slot_ids)
         .await
         .inspect_err(|_| emit_execution_queue_preparation_failed())?;
@@ -559,6 +585,7 @@ async fn execute_eligible_targets_once(
         closed_onchain_route_policy_slots_canceled,
         stale_requested_slots_failed,
         stale_claims_released,
+        lots_past_attempt_alert_threshold,
         ..ExecutorOutcome::default()
     };
     for target in targets {
@@ -866,7 +893,7 @@ async fn cancel_slot_for_closed_route_policy(
         WHERE slot.id = $1
           AND slot.target_id = $2
           AND policy.policy_account = $3
-        FOR UPDATE OF policy
+        FOR UPDATE OF managed, policy
         "#,
     )
     .bind(binding.slot_id)
@@ -999,6 +1026,24 @@ async fn missing_onchain_accounts(rpc_url: &str, accounts: &[String]) -> Result<
         }
     }
     Ok(missing)
+}
+
+/// Replaces the terminal attempt cap. A lot that keeps failing is surfaced for
+/// a human instead of being dead-lettered, because the release path cannot tell
+/// a permanent failure from a long outage and a suppressed lot never comes back.
+async fn count_lots_past_attempt_alert_threshold(pool: &PgPool) -> Result<i64> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)::bigint
+        FROM loyal_yield.balance_sweep_surplus_lots
+        WHERE status = 'open'
+          AND remaining_amount_raw > 0
+          AND autodeposit_attempt_count >= $1
+        "#,
+    )
+    .bind(AUTODEPOSIT_LOT_ATTEMPT_ALERT_THRESHOLD)
+    .fetch_one(pool)
+    .await?)
 }
 
 async fn fail_stale_requested_slots_once(pool: &PgPool, limit: i64) -> Result<i64> {
@@ -1378,16 +1423,57 @@ async fn release_claim_once(pool: &PgPool, claim_token: &str) -> Result<ClaimOut
               AND event.mint = target.token_mint
               AND target.token_mint = $2
         ),
+        -- Same lifecycle as the executor's release path: record the attempt,
+        -- back the lot off, and hand it a live slot. A claim that consumed a
+        -- lot in full left it on the slot this release marks 'failed', and no
+        -- executable scan can select a lot whose slot is failed.
+        claimed_lots AS (
+            SELECT
+                lot.id,
+                claim.target_id,
+                target.token_mint,
+                LEAST(lot.original_amount_raw, lot.remaining_amount_raw + item.amount_raw)
+                    AS restored_amount_raw,
+                lot.autodeposit_attempt_count + 1 AS next_attempt_count,
+                now() + (
+                    $3::double precision
+                        * power(2, LEAST(lot.autodeposit_attempt_count, $4::integer))
+                        * interval '1 second'
+                ) AS next_eligible_after
+            FROM matched_items AS item
+            JOIN loyal_yield.balance_sweep_surplus_lots AS lot
+              ON lot.id = item.lot_id
+            JOIN loyal_yield.balance_sweep_lot_claims AS claim
+              ON claim.claim_token = $1
+            JOIN loyal_yield.balance_sweep_targets AS target
+              ON target.id = claim.target_id
+        ),
+        retry_slot AS (
+            INSERT INTO loyal_yield.balance_sweep_scheduled_slots
+                (target_id, token_mint, eligible_after, status)
+            SELECT
+                target_id,
+                token_mint,
+                GREATEST(MAX(next_eligible_after), now()),
+                'scheduled'
+            FROM claimed_lots
+            WHERE restored_amount_raw > 0
+            GROUP BY target_id, token_mint
+            RETURNING id
+        ),
         restored AS (
             UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
-            SET remaining_amount_raw = LEAST(
-                    lot.original_amount_raw,
-                    lot.remaining_amount_raw + item.amount_raw
-                ),
+            SET remaining_amount_raw = claimed.restored_amount_raw,
+                autodeposit_attempt_count = claimed.next_attempt_count,
+                eligible_after = claimed.next_eligible_after,
                 status = 'open',
+                scheduled_slot_id = COALESCE(
+                    (SELECT id FROM retry_slot),
+                    lot.scheduled_slot_id
+                ),
                 updated_at = now()
-            FROM matched_items AS item
-            WHERE lot.id = item.lot_id
+            FROM claimed_lots AS claimed
+            WHERE lot.id = claimed.id
             RETURNING lot.id
         )
         UPDATE loyal_yield.balance_sweep_lot_claims
@@ -1400,6 +1486,8 @@ async fn release_claim_once(pool: &PgPool, claim_token: &str) -> Result<ClaimOut
     )
     .bind(claim_token)
     .bind(USDC_MINT_ADDRESS)
+    .bind(PRE_SEND_FAILURE_RETRY_DELAY_SECONDS)
+    .bind(MAX_AUTODEPOSIT_RETRY_BACKOFF_DOUBLINGS)
     .execute(&mut *tx)
     .await?;
     if update.rows_affected() > 0 {
@@ -1688,21 +1776,6 @@ async fn move_residual_open_lots_to_next_slot(
 
     sqlx::query(
         r#"
-        UPDATE loyal_yield.balance_sweep_surplus_lots
-        SET status = 'suppressed',
-            updated_at = now()
-        WHERE scheduled_slot_id = $1
-          AND status = 'open'
-          AND autodeposit_attempt_count >= $2
-        "#,
-    )
-    .bind(scheduled_slot_id)
-    .bind(MAX_AUTODEPOSIT_LOT_ATTEMPTS)
-    .execute(&mut **tx)
-    .await?;
-
-    sqlx::query(
-        r#"
         WITH residual AS (
             SELECT
                 slot.target_id,
@@ -1714,7 +1787,6 @@ async fn move_residual_open_lots_to_next_slot(
             WHERE slot.id = $1
               AND lot.status = 'open'
               AND lot.remaining_amount_raw > 0
-              AND lot.autodeposit_attempt_count < $2
             GROUP BY slot.target_id, slot.token_mint
         ),
         inserted_slot AS (
@@ -1731,11 +1803,9 @@ async fn move_residual_open_lots_to_next_slot(
         WHERE lot.scheduled_slot_id = $1
           AND lot.status = 'open'
           AND lot.remaining_amount_raw > 0
-          AND lot.autodeposit_attempt_count < $2
         "#,
     )
     .bind(scheduled_slot_id)
-    .bind(MAX_AUTODEPOSIT_LOT_ATTEMPTS)
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -1765,7 +1835,6 @@ async fn lock_eligible_lots(
           AND target.token_mint = $2
           AND lot.status = 'open'
           AND lot.remaining_amount_raw > 0
-          AND lot.autodeposit_attempt_count < $4
           AND ($3::bigint IS NOT NULL OR lot.eligible_after <= now())
           AND ($3::bigint IS NULL OR lot.scheduled_slot_id = $3::bigint)
         ORDER BY lot.eligible_after ASC, lot.created_at ASC, lot.id ASC
@@ -1775,7 +1844,6 @@ async fn lock_eligible_lots(
     .bind(target_id)
     .bind(USDC_MINT_ADDRESS)
     .bind(scheduled_slot_id)
-    .bind(MAX_AUTODEPOSIT_LOT_ATTEMPTS)
     .fetch_all(&mut **tx)
     .await?;
     rows.into_iter()
