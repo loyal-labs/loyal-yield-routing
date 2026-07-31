@@ -262,6 +262,8 @@ projects:
                 value: https://askloyal.com/api/solana-week/sweep-notify
               - key: SOLANA_WEEK_NOTIFY_SECRET
                 sync: false
+              - key: YIELD_ALT_CLUSTER
+                value: mainnet-beta
               - key: RUST_LOG
                 value: warn,balance_sweep_autodeposit_trigger=info
 
