@@ -1131,7 +1131,8 @@ WHERE state.reserve = $1
         AND observation_floor.account_data_hash = state.account_data_hash
      )
      OR (
-            observation_floor.floor_slot > state.slot
+            observation_floor.state_valid
+        AND observation_floor.floor_slot > state.slot
         AND observation_floor.floor_slot - state.slot <= {slot_tolerance}
      )
   )
@@ -1224,9 +1225,11 @@ WHERE state.reserve = $1
      -- verifier loses to LaserStream on every active reserve and the reserve
      -- can never re-enter the verified view. Strictly trailing only: an
      -- equal-slot read must still win on hash, which is the overlapping-monitor
-     -- fence.
+     -- fence. An invalid floor never tolerates, because it reports the account
+     -- itself as unusable rather than merely moved on.
      OR (
-            observation_floor.floor_slot > $4
+            observation_floor.state_valid
+        AND observation_floor.floor_slot > $4
         AND observation_floor.floor_slot - $4 <= {slot_tolerance}
      )
   )
@@ -1328,9 +1331,12 @@ WHERE verification.reserve = observation_floor.reserve
   -- Only evict once the verification has trailed the floor past the tolerance.
   -- Evicting on the first newer LaserStream observation is what made the
   -- verified view flap on every active reserve. An equal-slot conflict is not
-  -- staleness but a genuine disagreement, so it is still evicted immediately.
+  -- staleness but a genuine disagreement, so it is still evicted immediately,
+  -- and so is any invalid floor: that floor reports the reserve account as
+  -- unusable, which must fence routability now rather than after the window.
   AND (
-        verification.verified_slot = observation_floor.floor_slot
+        NOT observation_floor.state_valid
+     OR verification.verified_slot = observation_floor.floor_slot
      OR observation_floor.floor_slot - verification.verified_slot > {slot_tolerance}
   )
   AND (
@@ -1465,6 +1471,12 @@ WITH input AS (
             -- counts as staleness. Deferring every trailing read is what kept
             -- an evicted reserve from ever re-entering the verified view.
             input.prior_floor_slot - input.verified_slot > {slot_tolerance}
+         OR (
+                -- An invalid floor reports the reserve account as unusable, so
+                -- it fences at any distance rather than after the window.
+                input.verified_slot < input.prior_floor_slot
+            AND input.prior_floor_state_valid = false
+         )
          OR (
                 input.verified_slot = input.prior_floor_slot
             AND (

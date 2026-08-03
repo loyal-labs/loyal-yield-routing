@@ -9,7 +9,7 @@
 --   psql -v ON_ERROR_STOP=1 -d loyal_timescale_scratch \
 --     -f crates/loyal-timescale-migrations/fixtures/0006_verification_slot_tolerance_scenario.sql
 --
--- Expected: visible = 1, 1, 1, 0, 0.
+-- Expected: visible = 1, 1, 1, 0, 0, 0.
 -- Against the 0005 view the second case returns 0, which is the livelock this
 -- migration removes: a confirmed verification is evicted by the first newer
 -- LaserStream observation and the next HTTP read loses the same race.
@@ -72,4 +72,12 @@ SELECT 'floor +151 slots (past tolerance)' AS scenario,
 UPDATE kamino.reserve_confirmed_observation_floors
 SET floor_slot = 1000, account_data_hash = 'HASH_B', state_valid = true WHERE reserve = 'RSV';
 SELECT 'equal slot, conflicting hash (fence must hold)' AS scenario,
+       count(*) AS visible FROM kamino.latest_verified_reserve_updates;
+
+-- An invalid floor is written when the stream saw a wrong-owner or undecodable
+-- reserve account, which fences routability immediately by contract. Sitting
+-- inside the slot tolerance must not grant it another window of visibility.
+UPDATE kamino.reserve_confirmed_observation_floors
+SET floor_slot = 1010, account_data_hash = NULL, state_valid = false WHERE reserve = 'RSV';
+SELECT 'invalid floor inside tolerance (must fence)' AS scenario,
        count(*) AS visible FROM kamino.latest_verified_reserve_updates;

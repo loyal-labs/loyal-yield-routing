@@ -20,7 +20,6 @@ use kamino_reserve_monitor::timescale::{
 };
 use sqlx::postgres::PgPoolOptions;
 
-const RESERVE: &str = "TESTRESERVE1111111111111111111111111111111";
 const BASE_SLOT: i64 = 1_000;
 const HASH_VERIFIED: &str = "HASH_VERIFIED";
 const HASH_STREAM: &str = "HASH_STREAM";
@@ -33,21 +32,26 @@ fn test_database_url() -> Option<String> {
 
 /// Seeds one reserve whose HTTP-owned state sits at `BASE_SLOT`, with the
 /// LaserStream observation floor placed at `floor_slot` carrying `floor_hash`.
-async fn seed(pool: &sqlx::PgPool, floor_slot: i64, floor_hash: &str) -> Result<()> {
+async fn seed(
+    pool: &sqlx::PgPool,
+    reserve: &str,
+    floor_slot: i64,
+    floor_hash: Option<&str>,
+) -> Result<()> {
     sqlx::query("DELETE FROM kamino.reserve_confirmed_verifications WHERE reserve = $1")
-        .bind(RESERVE)
+        .bind(reserve)
         .execute(pool)
         .await?;
     sqlx::query("DELETE FROM kamino.reserve_confirmed_observation_floors WHERE reserve = $1")
-        .bind(RESERVE)
+        .bind(reserve)
         .execute(pool)
         .await?;
     sqlx::query("DELETE FROM kamino.reserve_current_states WHERE reserve = $1")
-        .bind(RESERVE)
+        .bind(reserve)
         .execute(pool)
         .await?;
     sqlx::query("DELETE FROM kamino.reserve_updates WHERE reserve = $1")
-        .bind(RESERVE)
+        .bind(reserve)
         .execute(pool)
         .await?;
 
@@ -69,7 +73,7 @@ async fn seed(pool: &sqlx::PgPool, floor_slot: i64, floor_hash: &str) -> Result<
         )
         "#,
     )
-    .bind(RESERVE)
+    .bind(reserve)
     .bind(BASE_SLOT)
     .bind(HASH_VERIFIED)
     .execute(pool)
@@ -84,7 +88,7 @@ async fn seed(pool: &sqlx::PgPool, floor_slot: i64, floor_hash: &str) -> Result<
         FROM kamino.reserve_updates WHERE reserve = $1
         "#,
     )
-    .bind(RESERVE)
+    .bind(reserve)
     .execute(pool)
     .await?;
 
@@ -92,21 +96,25 @@ async fn seed(pool: &sqlx::PgPool, floor_slot: i64, floor_hash: &str) -> Result<
         r#"
         INSERT INTO kamino.reserve_confirmed_observation_floors (
           reserve, floor_slot, account_data_hash, state_valid, source, source_rank, observed_at
-        ) VALUES ($1, $2, $3, true, 'laserstream_grpc', 1, now())
+        ) VALUES ($1, $2, $3, $4, 'laserstream_grpc', 1, now())
         "#,
     )
-    .bind(RESERVE)
+    .bind(reserve)
     .bind(floor_slot)
     .bind(floor_hash)
+    // A floor with no hash is the malformed-stream marker the monitor writes for
+    // a wrong-owner or undecodable reserve account; the schema ties the two
+    // together, so deriving state_valid here keeps the fixture honest.
+    .bind(floor_hash.is_some())
     .execute(pool)
     .await?;
 
     Ok(())
 }
 
-fn verification(verified_slot: i64) -> ConfirmedStateVerification {
+fn verification(reserve: &str, verified_slot: i64) -> ConfirmedStateVerification {
     ConfirmedStateVerification {
-        reserve: RESERVE.to_string(),
+        reserve: reserve.to_string(),
         account_data_hash: HASH_VERIFIED.to_string(),
         verified_slot,
         verified_at: chrono::Utc::now(),
@@ -116,7 +124,12 @@ fn verification(verified_slot: i64) -> ConfirmedStateVerification {
     }
 }
 
-async fn deferred_for(floor_slot: i64, floor_hash: &str, verified_slot: i64) -> Result<bool> {
+async fn deferred_for(
+    reserve: &str,
+    floor_slot: i64,
+    floor_hash: Option<&str>,
+    verified_slot: i64,
+) -> Result<bool> {
     let url = test_database_url().expect("checked by caller");
     let pool = PgPoolOptions::new()
         .max_connections(2)
@@ -124,15 +137,15 @@ async fn deferred_for(floor_slot: i64, floor_hash: &str, verified_slot: i64) -> 
         .connect(&url)
         .await
         .context("connect test database")?;
-    seed(&pool, floor_slot, floor_hash).await?;
+    seed(&pool, reserve, floor_slot, floor_hash).await?;
 
     let sink = TimescaleSink::connect(TimescaleSinkConfig::new(url.clone()))
         .await
         .context("connect TimescaleSink")?;
     let outcome = sink
-        .verify_confirmed_states(&[verification(verified_slot)])
+        .verify_confirmed_states(&[verification(reserve, verified_slot)])
         .await?;
-    Ok(outcome.deferred.contains(RESERVE))
+    Ok(outcome.deferred.contains(reserve))
 }
 
 #[tokio::test]
@@ -146,7 +159,13 @@ async fn trailing_confirmed_read_within_tolerance_is_admitted() -> Result<()> {
     // LaserStream moved ten slots ahead with different account data, which is
     // the ordinary outcome of a confirmed HTTP read racing the stream. Deferring
     // this is what prevented an evicted reserve from ever re-entering.
-    let deferred = deferred_for(BASE_SLOT + 10, HASH_STREAM, BASE_SLOT).await?;
+    let deferred = deferred_for(
+        "RESERVE_TRAILING_WITHIN_TOLERANCE",
+        BASE_SLOT + 10,
+        Some(HASH_STREAM),
+        BASE_SLOT,
+    )
+    .await?;
     assert!(
         !deferred,
         "a confirmed read trailing the floor by 10 slots must not be deferred"
@@ -164,7 +183,13 @@ async fn trailing_confirmed_read_past_tolerance_is_deferred() -> Result<()> {
 
     // Past the tolerance the read is genuinely stale, so staleness stays bounded
     // rather than merely tolerated.
-    let deferred = deferred_for(BASE_SLOT + 200, HASH_STREAM, BASE_SLOT).await?;
+    let deferred = deferred_for(
+        "RESERVE_TRAILING_PAST_TOLERANCE",
+        BASE_SLOT + 200,
+        Some(HASH_STREAM),
+        BASE_SLOT,
+    )
+    .await?;
     assert!(
         deferred,
         "a confirmed read trailing the floor past the tolerance must be deferred"
@@ -183,10 +208,63 @@ async fn equal_slot_conflicting_hash_stays_fenced() -> Result<()> {
     // Two observers disagreeing about the same slot is a conflict, not lag. The
     // slot difference is zero and therefore trivially inside the tolerance, so
     // this is exactly the case a subtraction-only guard would wrongly admit.
-    let deferred = deferred_for(BASE_SLOT, HASH_STREAM, BASE_SLOT).await?;
+    let deferred = deferred_for(
+        "RESERVE_EQUAL_SLOT_CONFLICT",
+        BASE_SLOT,
+        Some(HASH_STREAM),
+        BASE_SLOT,
+    )
+    .await?;
     assert!(
         deferred,
         "an equal-slot read conflicting on hash must stay fenced"
     );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KAMINO_VERIFICATION_TEST_DATABASE_URL pointing at a throwaway database with migrations 0001-0006 applied"]
+async fn invalid_floor_within_tolerance_stays_fenced() -> Result<()> {
+    if test_database_url().is_none() {
+        eprintln!("skipping: KAMINO_VERIFICATION_TEST_DATABASE_URL is not set");
+        return Ok(());
+    }
+
+    // A floor with no hash is what the monitor writes when the stream saw a
+    // wrong-owner or undecodable reserve account, and that fences routability
+    // immediately by contract. Being inside the slot tolerance must not buy such
+    // a reserve another window of visibility.
+    let deferred = deferred_for(
+        "RESERVE_INVALID_FLOOR_WITHIN_TOLERANCE",
+        BASE_SLOT + 10,
+        None,
+        BASE_SLOT,
+    )
+    .await?;
+    assert!(
+        deferred,
+        "an invalid floor must fence at any distance, including inside the tolerance"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KAMINO_VERIFICATION_TEST_DATABASE_URL pointing at a throwaway database with migrations 0001-0006 applied"]
+async fn invalid_floor_one_slot_ahead_stays_fenced() -> Result<()> {
+    if test_database_url().is_none() {
+        eprintln!("skipping: KAMINO_VERIFICATION_TEST_DATABASE_URL is not set");
+        return Ok(());
+    }
+
+    // The tightest possible trailing distance, where a slot-difference guard is
+    // most tempted to treat the floor as ordinary drift.
+    let deferred = deferred_for(
+        "RESERVE_INVALID_FLOOR_ONE_SLOT",
+        BASE_SLOT + 1,
+        None,
+        BASE_SLOT,
+    )
+    .await?;
+    assert!(deferred, "an invalid floor one slot ahead must still fence");
     Ok(())
 }

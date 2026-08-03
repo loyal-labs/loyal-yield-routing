@@ -90,8 +90,15 @@ WHERE observation_floor.reserve IS NULL
    -- trailing means the verification has actually gone stale. Strictly
    -- trailing only: at an equal slot the hash branch above is the
    -- overlapping-monitor fence and must keep deciding on its own.
+   --
+   -- state_valid is required. An invalid floor is written when the stream saw a
+   -- wrong-owner or undecodable reserve account, which fences routability
+   -- immediately by contract; tolerating it would keep an unroutable reserve
+   -- visible for the whole window. Tolerance covers ordinary hash drift on a
+   -- valid floor, never a floor that says the account itself is unusable.
    OR (
-        observation_floor.floor_slot > verification.verified_slot
+        observation_floor.state_valid
+    AND observation_floor.floor_slot > verification.verified_slot
     AND observation_floor.floor_slot - verification.verified_slot
         <= kamino.confirmed_verification_slot_tolerance()
    );
