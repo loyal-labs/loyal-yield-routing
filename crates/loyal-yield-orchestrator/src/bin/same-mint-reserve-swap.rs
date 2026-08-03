@@ -162,7 +162,17 @@ const LOOKUP_TABLE_ROUTE_LEASE_MINUTES: i64 = 10;
 const LOOKUP_TABLE_PREPARED_LEASE_MINUTES: i64 = 5;
 const MAX_KAMINO_OBLIGATION_RENT_LAMPORTS: u64 = 25_000_000;
 const DEFAULT_FLEET_WORKER_POLL_MILLISECONDS: u64 = 250;
-const FLEET_HEALTH_OBSERVATION_INTERVAL_MILLISECONDS: u64 = 1_000;
+// Health emission reads `loyal_yield.fleet_orchestration_status`, a plain view
+// whose CTE chain re-aggregates the opportunity, outbox, and submission tables
+// from scratch on every call — roughly 2s against production. At a 1s interval
+// the revalidate, execute, and reconcile processes each kept a backend busy on
+// that aggregate continuously, which is what starved every worker's pool on
+// 2026-08-03. This is observability only: nothing on the claim or transition
+// write path reads it, and stuck-stage thresholds come from the durable
+// recovery poll interval, not from this constant. Widening it cuts the
+// concurrent hit rate proportionally; the materialized-view follow-up removes
+// the per-read cost itself.
+const FLEET_HEALTH_OBSERVATION_INTERVAL_MILLISECONDS: u64 = 10_000;
 const DEFAULT_FLEET_WORKER_LEASE_SECONDS: i64 = 120;
 const DEFAULT_FLEET_REVALIDATE_CONCURRENCY: usize = 16;
 const MAX_FEE_PAYER_SHARD_CANDIDATES: usize = 16;
