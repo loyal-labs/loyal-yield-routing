@@ -32,6 +32,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "kamino_confirmed_state_verification",
         sql: include_str!("../migrations/0005_kamino_confirmed_state_verification.sql"),
     },
+    Migration {
+        version: 6,
+        name: "kamino_verification_slot_tolerance",
+        sql: include_str!("../migrations/0006_kamino_verification_slot_tolerance.sql"),
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal";
@@ -130,6 +135,21 @@ async fn validate_kamino_market_verification_schema(pool: &PgPool) -> Result<(),
         if !exists {
             return Err(format!("missing Timescale relation kamino.{relation}").into());
         }
+    }
+
+    // The monitor's admission and eviction SQL and the verified-updates view
+    // all read the tolerance from this function, so a missing or renamed
+    // function silently changes eligibility rather than failing loudly.
+    let tolerance_slots: i64 = sqlx::query_scalar(
+        "SELECT kamino.confirmed_verification_slot_tolerance()",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|error| {
+        format!("missing Timescale function kamino.confirmed_verification_slot_tolerance: {error}")
+    })?;
+    if tolerance_slots < 0 {
+        return Err("Kamino confirmed verification slot tolerance must not be negative".into());
     }
 
     let verification_columns: i64 = sqlx::query_scalar(
