@@ -11,6 +11,7 @@ use crate::rpc_safety::redacted_external_error;
 
 pub const DEFAULT_LISTENER_RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_millis(250);
 pub const DEFAULT_LISTENER_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(5);
+pub const DEFAULT_LISTENER_MAX_CONNECTION_AGE: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BoundedReconnectBackoff {
@@ -46,6 +47,7 @@ impl BoundedReconnectBackoff {
 pub struct DurablePgWakeupListener {
     channel: String,
     listener: Option<PgListener>,
+    connected_at: Option<Instant>,
     backoff: BoundedReconnectBackoff,
     next_reconnect_at: Instant,
 }
@@ -107,6 +109,7 @@ impl DurablePgWakeupListener {
         Ok(Self {
             channel,
             listener: None,
+            connected_at: None,
             backoff: BoundedReconnectBackoff::new(initial_backoff, maximum_backoff)?,
             next_reconnect_at: Instant::now(),
         })
@@ -117,6 +120,17 @@ impl DurablePgWakeupListener {
     }
 
     pub async fn wait(&mut self, pool: &PgPool, recovery_poll: Duration) -> DurablePgWakeupEvent {
+        if self.connected_at.is_some_and(|connected_at| {
+            connected_at.elapsed() >= DEFAULT_LISTENER_MAX_CONNECTION_AGE
+        }) {
+            // Recycle long-lived LISTEN sessions so an anomalous backend cannot
+            // pin PostgreSQL's xmin horizon indefinitely. Callers perform a
+            // durable scan at every reconnect boundary, so notifications remain
+            // wake-up hints rather than the source of truth.
+            self.listener = None;
+            self.connected_at = None;
+        }
+
         if self.listener.is_none() {
             let now = Instant::now();
             if now < self.next_reconnect_at {
@@ -127,6 +141,7 @@ impl DurablePgWakeupListener {
                 Ok(mut listener) => match listener.listen(&self.channel).await {
                     Ok(()) => {
                         self.listener = Some(listener);
+                        self.connected_at = Some(Instant::now());
                         self.backoff.reset();
                         return DurablePgWakeupEvent::Reconnected;
                     }
@@ -160,6 +175,7 @@ impl DurablePgWakeupListener {
             Err(_) => DurablePgWakeupEvent::RecoveryPollElapsed,
             Ok(Err(error)) => {
                 self.listener = None;
+                self.connected_at = None;
                 let retry_after = self.backoff.record_failure();
                 self.next_reconnect_at = Instant::now() + retry_after;
                 DurablePgWakeupEvent::Disconnected {
