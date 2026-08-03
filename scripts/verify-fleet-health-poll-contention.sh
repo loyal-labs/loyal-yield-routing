@@ -1,25 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Isolated end-to-end verification for ASK-1978 part 1.
+# Isolated end-to-end verification for ASK-1978 health-poll contention.
 #
-# Reproduces the 2026-08-03 pool-starvation mechanism against an ephemeral
-# local Postgres and shows the widened health-observation interval removes it.
+# Covers two claims:
 #
-# The production shape being modelled:
-#   * `loyal_yield.fleet_orchestration_status` is a plain view whose CTE chain
-#     re-aggregates from scratch on every read (~2s measured in production).
-#   * Three worker processes (revalidate, execute, reconcile) each emit health
-#     on a shared interval, awaiting the read inline under
-#     `MissedTickBehavior::Skip`.
-#   * When the read is slower than the interval, every process runs the
-#     aggregate back-to-back at ~100% duty and holds a pooled connection while
-#     it does, so unrelated work cannot acquire one.
+#   A. The reconciler's health emission is governed by the health interval.
+#      Its outer loop used to call emit_fleet_reconciler_health unconditionally,
+#      so an idle reconciler re-ran the expensive fleet_orchestration_status
+#      aggregate on every 250ms recovery poll no matter what the interval said.
 #
-# A worker's checked-out sqlx connection is modelled by a role with a hard
-# CONNECTION LIMIT: pollers connect per iteration and hold a slot only while
-# querying, so a victim client failing to connect is the same starvation the
-# `PoolTimedOut` errors reported.
+#   B. That load is what exhausts a downstream worker's connection pool. The
+#      victim here is modelled on balance-sweep-ata-projector, which really does
+#      run max_connections=5 with acquire_timeout=5s
+#      (crates/balance-sweep-ata-observations/src/lib.rs) and really did exit
+#      with PoolTimedOut on 2026-08-03.
+#
+# What this deliberately does NOT do: manufacture a connection failure. Nothing
+# here caps the server's connection count, and the production PoolTimedOut is
+# not reproduced. Neon's compute has far less headroom than a developer machine,
+# so at the real three-process shape a laptop shows almost no contention, and
+# inflating the reader count until timeouts appear would only be a different
+# fabricated failure. Part B therefore asserts the causal input — the backend
+# time the health poll takes from a realistically sized pool — and reports
+# victim latency as directional evidence only.
 #
 # Uses no production credentials, no Render deployment, no Neon branch, and no
 # external network access.
@@ -28,44 +32,64 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 worker_source="$repo_root/crates/loyal-yield-orchestrator/src/bin/same-mint-reserve-swap.rs"
 health_source="$repo_root/crates/loyal-yield-orchestrator/src/fleet_orchestration/health.rs"
 
-# The constant under test, and the value it regressed from.
 expected_interval_ms="${FLEET_HEALTH_INTERVAL_MS:-10000}"
-regressed_interval_ms="${FLEET_HEALTH_REGRESSED_INTERVAL_MS:-1000}"
-# Worker processes sharing the constant: revalidate, execute, reconcile.
-poller_count="${FLEET_HEALTH_POLLERS:-3}"
-# Connection budget the pollers contend for.
-connection_limit="${FLEET_HEALTH_CONNECTION_LIMIT:-3}"
+recovery_poll_ms="${FLEET_HEALTH_RECOVERY_POLL_MS:-250}"
 arm_seconds="${FLEET_HEALTH_ARM_SECONDS:-20}"
-# Target cost for the synthetic status view. Must land above the regressed
-# interval and below the fixed one, or neither arm proves anything.
 target_view_ms="${FLEET_HEALTH_TARGET_VIEW_MS:-2000}"
+
+# Victim pool shape, taken from balance-sweep-ata-observations defaults.
+victim_pool_size="${FLEET_HEALTH_VICTIM_POOL:-5}"
+victim_acquire_timeout_ms="${FLEET_HEALTH_VICTIM_ACQUIRE_TIMEOUT_MS:-5000}"
+victim_request_interval_ms="${FLEET_HEALTH_VICTIM_REQUEST_MS:-100}"
+
+# Production shape: revalidate, execute, and reconcile share the constant.
+load_sessions="${FLEET_HEALTH_LOAD_SESSIONS:-3}"
 
 fail() {
   echo "FAIL: $*" >&2
   exit 1
 }
 
-for command_name in initdb pg_ctl psql rg awk; do
+for command_name in initdb pg_ctl psql rg awk python3; do
   command -v "$command_name" >/dev/null || fail "$command_name is required"
-done
-
-for value in "$expected_interval_ms" "$regressed_interval_ms" "$poller_count" \
-  "$connection_limit" "$arm_seconds" "$target_view_ms"; do
-  case "$value" in
-    ''|*[!0-9]*) fail "numeric settings must be positive integers (got '$value')" ;;
-  esac
 done
 
 echo "== Static assertions against worker source"
 
-# 1. The constant actually carries the fixed value.
 rg --quiet \
   "^const FLEET_HEALTH_OBSERVATION_INTERVAL_MILLISECONDS: u64 = 10_000;$" \
   "$worker_source" ||
   fail "FLEET_HEALTH_OBSERVATION_INTERVAL_MILLISECONDS is not 10_000"
 
-# 2. Both health emitters still read the status view, so the constant still
-#    governs the load this verifier measures.
+# Enumerate every health emitter callsite. A new ungated one is exactly the
+# regression this section exists to catch, so the counts are pinned. Each count
+# includes the emitter's own `async fn` definition line.
+reconciler_occurrences="$(rg --count --fixed-strings "emit_fleet_reconciler_health(" "$worker_source" || true)"
+worker_occurrences="$(rg --count --fixed-strings "emit_fleet_worker_health(" "$worker_source" || true)"
+# Reconciler: inner select arm + gated outer-loop call, plus the definition.
+[[ "$reconciler_occurrences" == "3" ]] ||
+  fail "expected 3 emit_fleet_reconciler_health occurrences (2 callsites + definition), found ${reconciler_occurrences:-0}"
+# Worker: --once path, FleetWorkerWakeup::Health arm, final report, plus the definition.
+[[ "$worker_occurrences" == "4" ]] ||
+  fail "expected 4 emit_fleet_worker_health occurrences (3 callsites + definition), found ${worker_occurrences:-0}"
+
+# The reconciler's outer-loop emission must be gated, and both reconciler emit
+# paths must record the emission so the gate stays accurate.
+rg --fixed-strings --quiet "let health_due = options.once" "$worker_source" ||
+  fail "reconciler outer-loop health emission is not gated by a health_due check"
+rg --fixed-strings --quiet \
+  "last_health_emit.is_none_or(|last| last.elapsed() >= health_emit_interval)" \
+  "$worker_source" ||
+  fail "health_due does not compare against the health emit interval"
+emit_stamps="$(rg --count --fixed-strings "last_health_emit = Some(tokio::time::Instant::now());" "$worker_source" || true)"
+[[ "$emit_stamps" == "2" ]] ||
+  fail "expected both reconciler emit paths to stamp last_health_emit, found ${emit_stamps:-0}"
+
+# Worker lanes reach their periodic emission only through the health-interval
+# wakeup; the remaining callsites are the --once and final-report paths.
+rg --fixed-strings --quiet "FleetWorkerWakeup::Health => {" "$worker_source" ||
+  fail "worker lane no longer routes periodic health through FleetWorkerWakeup::Health"
+
 for emitter in emit_fleet_worker_health emit_fleet_reconciler_health; do
   awk -v fn="async fn $emitter" '
     index($0, fn) { capture = 1 }
@@ -75,29 +99,28 @@ for emitter in emit_fleet_worker_health emit_fleet_reconciler_health; do
     fail "$emitter no longer reads fleet_orchestration_status"
 done
 
-# 3. Skip behaviour must stay: without it a widened interval would queue missed
-#    ticks and reproduce the same back-to-back load.
 skip_sites="$(rg --count --fixed-strings \
   "health_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip)" \
   "$worker_source" || true)"
 [[ "$skip_sites" == "2" ]] ||
   fail "expected 2 health_interval Skip sites, found ${skip_sites:-0}"
 
-# 4. Stuck-stage thresholds must remain driven by the recovery poll interval,
-#    not by the health interval — otherwise widening it would silently move
-#    detection thresholds instead of only the sampling rate.
+# Widening the interval must not move stuck-stage thresholds: those derive from
+# the recovery poll interval, a separate input.
 rg --fixed-strings --quiet \
   "FleetStageHealthPolicy::for_recovery_poll(recovery_poll_interval_milliseconds)" \
   "$health_source" ||
   fail "stuck-stage policy no longer derives from the recovery poll interval"
 
-echo "PASS: constant is 10_000; both emitters unchanged; Skip intact; thresholds independent"
+echo "PASS: constant 10_000; 2 reconciler + 3 worker callsites, outer loop gated"
+echo "PASS: both reconciler emit paths stamp last_health_emit; Skip intact; thresholds independent"
 echo
 
 scratch_dir="$(mktemp -d "${TMPDIR:-/tmp}/fleet-health-poll.XXXXXX")"
 data_dir="$scratch_dir/data"
 socket_dir="$scratch_dir/socket"
-mkdir -p "$socket_dir"
+slots_dir="$scratch_dir/slots"
+mkdir -p "$socket_dir" "$slots_dir"
 port="$((56432 + RANDOM % 1000))"
 server_started=0
 
@@ -110,12 +133,14 @@ cleanup() {
 trap cleanup EXIT
 
 initdb -D "$data_dir" -A trust --no-locale -E UTF8 >/dev/null
+# Generous server limit on purpose: the victim's own pool is the only bounded
+# resource, so nothing here can fail by server-side admission refusal.
 pg_ctl -D "$data_dir" \
-  -o "-F -k '$socket_dir' -p $port -c listen_addresses=127.0.0.1 -c max_connections=40" \
+  -o "-F -k '$socket_dir' -p $port -c listen_addresses=127.0.0.1 -c max_connections=200" \
   -w start >/dev/null
 server_started=1
 
-admin_args=(
+psql_args=(
   -X
   --set=ON_ERROR_STOP=1
   --host="$socket_dir"
@@ -124,35 +149,16 @@ admin_args=(
   --dbname=postgres
 )
 
-# Pollers and the victim share this bounded role, standing in for a worker pool.
-psql "${admin_args[@]}" >/dev/null <<SQL
-CREATE ROLE fleet_worker LOGIN CONNECTION LIMIT $connection_limit;
-CREATE SCHEMA loyal_yield AUTHORIZATION fleet_worker;
-
-CREATE TABLE loyal_yield.victim_probe (
-  id BIGINT PRIMARY KEY,
-  note TEXT NOT NULL
-);
-INSERT INTO loyal_yield.victim_probe
-SELECT g, 'probe' FROM generate_series(1, 64) AS g;
-SQL
-
-worker_args=(
-  -X
-  --set=ON_ERROR_STOP=1
-  --host="$socket_dir"
-  --port="$port"
-  --username=fleet_worker
-  --dbname=postgres
-)
-
-seed_rows="${FLEET_HEALTH_SEED_ROWS:-120000}"
+status_query="SELECT * FROM loyal_yield.fleet_orchestration_status WHERE cluster = 'mainnet-beta' ORDER BY opportunity_state NULLS LAST;"
+# Representative downstream unit of work, not a trivial probe: it has to be real
+# enough that contention shows up as a longer connection hold.
+victim_query="SELECT opportunity_state, count(*), avg(value_bps) FROM loyal_yield.rebalance_opportunities WHERE vault_id % 97 = 0 GROUP BY opportunity_state;"
 
 build_status_view() {
-  local rows="$1"
-  psql "${admin_args[@]}" --set=rows="$rows" >/dev/null <<'SQL'
+  psql "${psql_args[@]}" --set=rows="$1" >/dev/null <<'SQL'
 DROP VIEW IF EXISTS loyal_yield.fleet_orchestration_status;
 DROP TABLE IF EXISTS loyal_yield.rebalance_opportunities;
+CREATE SCHEMA IF NOT EXISTS loyal_yield;
 
 CREATE TABLE loyal_yield.rebalance_opportunities (
   id BIGINT PRIMARY KEY,
@@ -177,8 +183,11 @@ FROM generate_series(1, :rows) AS g;
 
 ANALYZE loyal_yield.rebalance_opportunities;
 
--- Mirrors the production shape: several independent full-scan aggregate CTEs
--- with no shared intermediate, recomputed on every read.
+-- Mirrors the production shape: independent full-scan aggregate CTEs with no
+-- shared intermediate, recomputed on every read. The readers below select all
+-- columns, as the worker does; a bare count(*) would let the planner drop the
+-- LEFT JOINs (inlined CTEs are provably unique on their GROUP BY keys) and
+-- three of the four CTEs would never run.
 CREATE VIEW loyal_yield.fleet_orchestration_status AS
 WITH opportunity_status AS (
   SELECT cluster, opportunity_state,
@@ -217,184 +226,230 @@ FROM opportunity_status o
 LEFT JOIN queue_status q USING (cluster, opportunity_state)
 LEFT JOIN outbox_status x USING (cluster, opportunity_state)
 LEFT JOIN submission_status s USING (cluster, opportunity_state);
-
-GRANT USAGE ON SCHEMA loyal_yield TO fleet_worker;
-GRANT SELECT ON ALL TABLES IN SCHEMA loyal_yield TO fleet_worker;
 SQL
 }
 
 now_ms() { python3 -c 'import time; print(int(time.time()*1000))'; }
+sleep_ms() {
+  if [[ "$1" -gt 0 ]]; then
+    python3 -c "import time,sys; time.sleep(int(sys.argv[1])/1000)" "$1"
+  fi
+}
 
-measure_view_ms() {
-  local start_ms end_ms
-  start_ms="$(now_ms)"
-  psql "${worker_args[@]}" --tuples-only --no-align \
-    --command="SELECT * FROM loyal_yield.fleet_orchestration_status WHERE cluster = 'mainnet-beta' ORDER BY opportunity_state NULLS LAST;" >/dev/null
-  end_ms="$(now_ms)"
-  echo "$((end_ms - start_ms))"
+run_status_query() {
+  psql "${psql_args[@]}" --quiet --tuples-only --no-align --command="$status_query" >/dev/null 2>&1 || true
 }
 
 echo "== Calibrating synthetic status view to ~${target_view_ms}ms"
+seed_rows="${FLEET_HEALTH_SEED_ROWS:-120000}"
 build_status_view "$seed_rows"
-view_ms="$(measure_view_ms)"
-
-# One proportional correction is enough to land inside the required band.
+start_ms="$(now_ms)"; run_status_query; view_ms="$(( $(now_ms) - start_ms ))"
 if [[ "$view_ms" -gt 0 ]]; then
   scaled_rows="$(( seed_rows * target_view_ms / view_ms ))"
   [[ "$scaled_rows" -lt 20000 ]] && scaled_rows=20000
   [[ "$scaled_rows" -gt 4000000 ]] && scaled_rows=4000000
-  if [[ "$scaled_rows" != "$seed_rows" ]]; then
-    build_status_view "$scaled_rows"
-    seed_rows="$scaled_rows"
-    view_ms="$(measure_view_ms)"
-  fi
+  build_status_view "$scaled_rows"
+  seed_rows="$scaled_rows"
+  start_ms="$(now_ms)"; run_status_query; view_ms="$(( $(now_ms) - start_ms ))"
 fi
-
-echo "  rows=$seed_rows  view cost=${view_ms}ms"
-
-# The whole argument depends on the read being slower than the old interval and
-# faster than the new one. Refuse to report a result outside that band.
-[[ "$view_ms" -gt "$regressed_interval_ms" ]] ||
-  fail "view cost ${view_ms}ms must exceed the regressed interval ${regressed_interval_ms}ms for the reproduction to be meaningful"
+echo "  rows=$seed_rows  status view cost=${view_ms}ms  worker processes=$load_sessions"
+[[ "$view_ms" -gt "$recovery_poll_ms" ]] ||
+  fail "status view cost ${view_ms}ms must exceed the ${recovery_poll_ms}ms recovery poll for the ungated path to run back-to-back"
 [[ "$view_ms" -lt "$expected_interval_ms" ]] ||
-  fail "view cost ${view_ms}ms must stay under the fixed interval ${expected_interval_ms}ms"
-echo "PASS: ${regressed_interval_ms}ms < ${view_ms}ms < ${expected_interval_ms}ms"
+  fail "status view cost ${view_ms}ms must stay under the ${expected_interval_ms}ms health interval"
+echo "PASS: ${recovery_poll_ms}ms < ${view_ms}ms < ${expected_interval_ms}ms"
+
+# Calibrate the victim's offered rate to its own uncontended cost so that an
+# idle database needs ~1 concurrent connection. The pool then has 5x headroom,
+# and only a real contention multiplier above 5x can exhaust it — which is the
+# property under test, rather than a rate chosen to guarantee failure.
+run_victim_query() {
+  psql "${psql_args[@]}" --quiet --tuples-only --no-align --command="$victim_query" >/dev/null 2>&1 || true
+}
+start_ms="$(now_ms)"; run_victim_query; victim_ms="$(( $(now_ms) - start_ms ))"
+if [[ -z "${FLEET_HEALTH_VICTIM_REQUEST_MS:-}" ]]; then
+  victim_request_interval_ms="$victim_ms"
+  [[ "$victim_request_interval_ms" -lt 25 ]] && victim_request_interval_ms=25
+fi
+echo "  victim query cost=${victim_ms}ms uncontended; offered every ${victim_request_interval_ms}ms (~1 connection of $victim_pool_size)"
 echo
 
-run_arm() {
-  local label="$1" interval_ms="$2" arm_dir="$3"
-  mkdir -p "$arm_dir"
+# --- Part A: reconciler emission cadence ------------------------------------
+# Models the reconciler outer loop: claim nothing, optionally emit health, then
+# wait one recovery poll. `ungated` is the pre-fix behaviour, `gated` is the fix.
+reconciler_cadence() {
+  local mode="$1" out="$2"
   local deadline=$(( $(now_ms) + arm_seconds * 1000 ))
-  local pids=()
-
-  local poller
-  for (( poller = 1; poller <= poller_count; poller++ )); do
-    (
-      local busy_ms=0 iterations=0 started elapsed remaining
-      # Independent Render services start at different times, so their health
-      # ticks are not phase-locked. Spread the initial offset across the
-      # interval rather than firing all pollers on the same edge.
-      python3 -c "import time,sys; time.sleep(int(sys.argv[1])/1000)" \
-        "$(( interval_ms * (poller - 1) / poller_count ))"
-      while [[ "$(now_ms)" -lt "$deadline" ]]; do
-        started="$(now_ms)"
-        psql "${worker_args[@]}" --quiet --tuples-only --no-align \
-          --command="SELECT * FROM loyal_yield.fleet_orchestration_status WHERE cluster = 'mainnet-beta' ORDER BY opportunity_state NULLS LAST;" \
-          >/dev/null 2>&1 || true
-        elapsed=$(( $(now_ms) - started ))
-        busy_ms=$(( busy_ms + elapsed ))
-        iterations=$(( iterations + 1 ))
-        # tokio interval + MissedTickBehavior::Skip: a tick already due when the
-        # await finishes fires immediately, so only a positive remainder sleeps.
-        remaining=$(( interval_ms - elapsed ))
-        if [[ "$remaining" -gt 0 ]]; then
-          python3 -c "import time,sys; time.sleep(int(sys.argv[1])/1000)" "$remaining"
-        fi
-      done
-      echo "$busy_ms $iterations" >"$arm_dir/poller-$poller"
-    ) &
-    pids+=($!)
+  local reads=0 last_emit=0 now
+  while [[ "$(now_ms)" -lt "$deadline" ]]; do
+    now="$(now_ms)"
+    if [[ "$mode" == "ungated" ]] || [[ $(( now - last_emit )) -ge "$expected_interval_ms" ]]; then
+      run_status_query
+      reads=$(( reads + 1 ))
+      last_emit="$now"
+    fi
+    sleep_ms "$recovery_poll_ms"
   done
-
-  # Victim: unrelated work needing a connection from the same budget.
-  (
-    local attempts=0 failures=0 started elapsed
-    : >"$arm_dir/victim-latencies"
-    while [[ "$(now_ms)" -lt "$deadline" ]]; do
-      started="$(now_ms)"
-      if psql "${worker_args[@]}" --quiet --tuples-only --no-align \
-        --command="SELECT count(*) FROM loyal_yield.victim_probe;" >/dev/null 2>&1; then
-        elapsed=$(( $(now_ms) - started ))
-        echo "$elapsed" >>"$arm_dir/victim-latencies"
-      else
-        failures=$(( failures + 1 ))
-      fi
-      attempts=$(( attempts + 1 ))
-      python3 -c "import time; time.sleep(0.1)"
-    done
-    echo "$attempts $failures" >"$arm_dir/victim"
-  ) &
-  pids+=($!)
-
-  local pid
-  for pid in "${pids[@]}"; do
-    wait "$pid" || true
-  done
-
-  local total_busy=0 total_iterations=0 fields
-  for (( poller = 1; poller <= poller_count; poller++ )); do
-    fields="$(cat "$arm_dir/poller-$poller")"
-    total_busy=$(( total_busy + $(echo "$fields" | awk '{print $1}') ))
-    total_iterations=$(( total_iterations + $(echo "$fields" | awk '{print $2}') ))
-  done
-
-  local wall_ms=$(( arm_seconds * 1000 ))
-  # Backend-seconds of status-view work per wall-second, summed over pollers.
-  local duty_pct=$(( total_busy * 100 / (wall_ms * poller_count) ))
-  local attempts failures victim_p95
-  attempts="$(awk '{print $1}' "$arm_dir/victim")"
-  failures="$(awk '{print $2}' "$arm_dir/victim")"
-  victim_p95="$(sort -n "$arm_dir/victim-latencies" | awk '
-    { values[NR] = $1 }
-    END {
-      if (NR == 0) { print "n/a"; exit }
-      idx = int(NR * 0.95); if (idx < 1) idx = 1
-      print values[idx]
-    }')"
-
-  printf '%s %s %s %s %s %s\n' \
-    "$total_iterations" "$duty_pct" "$attempts" "$failures" "$victim_p95" "$total_busy" \
-    >"$arm_dir/summary"
-
-  echo "  $label: reads=$total_iterations  duty=${duty_pct}%  victim_attempts=$attempts  victim_conn_failures=$failures  victim_p95=${victim_p95}ms"
+  echo "$reads" >"$out"
 }
 
-echo "== Arm A (negative self-test): regressed interval ${regressed_interval_ms}ms"
-run_arm "regressed" "$regressed_interval_ms" "$scratch_dir/arm-a"
-read -r a_reads a_duty a_attempts a_failures a_p95 a_busy <"$scratch_dir/arm-a/summary"
+echo "== Part A: idle reconciler emission cadence (${arm_seconds}s, ${recovery_poll_ms}ms recovery poll)"
+reconciler_cadence ungated "$scratch_dir/cadence-ungated"
+reconciler_cadence gated "$scratch_dir/cadence-gated"
+ungated_reads="$(cat "$scratch_dir/cadence-ungated")"
+gated_reads="$(cat "$scratch_dir/cadence-gated")"
+expected_gated=$(( arm_seconds * 1000 / expected_interval_ms + 1 ))
+echo "  ungated (pre-fix): $ungated_reads status-view reads"
+echo "  gated   (fix):     $gated_reads status-view reads"
+
+[[ "$ungated_reads" -gt "$(( expected_gated * 3 ))" ]] ||
+  fail "negative control did not reproduce back-to-back reads ($ungated_reads); harness proves nothing"
+echo "PASS: ungated reconciler reproduced $ungated_reads reads in ${arm_seconds}s"
+[[ "$gated_reads" -le "$(( expected_gated + 1 ))" ]] ||
+  fail "gated reconciler emitted $gated_reads reads, expected at most $(( expected_gated + 1 ))"
+echo "PASS: gated reconciler held to $gated_reads reads (interval allows ~$expected_gated)"
 echo
 
-echo "== Arm B (fixed): interval ${expected_interval_ms}ms"
-run_arm "fixed" "$expected_interval_ms" "$scratch_dir/arm-b"
-read -r b_reads b_duty b_attempts b_failures b_p95 b_busy <"$scratch_dir/arm-b/summary"
+# --- Part B: database time the health poll takes from a real pool ------------
+# What production actually died of is a client-side pool acquisition timeout.
+# That cannot be reproduced honestly here: Neon's compute has far less headroom
+# than a developer machine, so at the real three-process shape a laptop shows
+# almost no contention. Inflating the reader count until timeouts appear would
+# manufacture a different failure, which is what the first version of this
+# script did wrong.
+#
+# So this part asserts the causal input instead: the backend-time the health
+# poll takes away from a pool sized exactly like balance-sweep-ata-projector's
+# (5 connections, 5s acquire timeout). Victim acquire and query latency are
+# reported alongside as directional evidence, not asserted as failures.
+acquire_slot() {
+  local deadline=$(( $(now_ms) + victim_acquire_timeout_ms )) slot
+  while :; do
+    for (( slot = 1; slot <= victim_pool_size; slot++ )); do
+      if mkdir "$slots_dir/$slot" 2>/dev/null; then
+        echo "$slot"
+        return 0
+      fi
+    done
+    if [[ "$(now_ms)" -ge "$deadline" ]]; then
+      return 1
+    fi
+    sleep_ms 10
+  done
+}
+
+run_load_arm() {
+  local mode="$1" arm_dir="$2"
+  mkdir -p "$arm_dir"
+  rm -rf "${slots_dir:?}"/*
+  local results="$arm_dir/results"
+  : >"$results"
+  local deadline=$(( $(now_ms) + arm_seconds * 1000 ))
+  local load_pids=() victim_pids=() session pid
+
+  # Production shape: three processes share the constant. `continuous` is the
+  # ungated reconciler re-reading back-to-back; `interval` is all three paced.
+  for (( session = 1; session <= load_sessions; session++ )); do
+    (
+      busy_ms=0
+      reads=0
+      sleep_ms "$(( expected_interval_ms * (session - 1) / load_sessions ))"
+      while [[ "$(now_ms)" -lt "$deadline" ]]; do
+        started="$(now_ms)"
+        run_status_query
+        elapsed=$(( $(now_ms) - started ))
+        busy_ms=$(( busy_ms + elapsed ))
+        reads=$(( reads + 1 ))
+        if [[ "$mode" == "interval" ]]; then
+          sleep_ms "$(( expected_interval_ms - elapsed ))"
+        fi
+      done
+      echo "$busy_ms $reads" >"$arm_dir/load-$session"
+    ) &
+    load_pids+=($!)
+  done
+
+  while [[ "$(now_ms)" -lt "$deadline" ]]; do
+    (
+      queued="$(now_ms)"
+      if slot="$(acquire_slot)"; then
+        acquired="$(now_ms)"
+        run_victim_query
+        rmdir "$slots_dir/$slot" 2>/dev/null || true
+        echo "ok $(( acquired - queued )) $(( $(now_ms) - acquired ))" >>"$results"
+      else
+        echo "timeout $victim_acquire_timeout_ms 0" >>"$results"
+      fi
+    ) &
+    victim_pids+=($!)
+    sleep_ms "$victim_request_interval_ms"
+  done
+
+  for pid in "${victim_pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+  for pid in "${load_pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+
+  local total_busy=0 total_reads=0 fields
+  for (( session = 1; session <= load_sessions; session++ )); do
+    fields="$(cat "$arm_dir/load-$session")"
+    total_busy=$(( total_busy + $(echo "$fields" | awk '{print $1}') ))
+    total_reads=$(( total_reads + $(echo "$fields" | awk '{print $2}') ))
+  done
+  # Backend-seconds of status-view work per wall-second, summed over processes.
+  local duty_pct=$(( total_busy * 100 / (arm_seconds * 1000 * load_sessions) ))
+
+  local total timeouts acquire_p95 query_p95
+  total="$(wc -l <"$results" | tr -d ' ')"
+  timeouts="$(awk '$1 == "timeout"' "$results" | wc -l | tr -d ' ')"
+  percentile() {
+    awk -v col="$1" '$1 == "ok" {print $col}' "$results" | sort -n | awk '
+      { v[NR] = $1 }
+      END { if (NR == 0) { print "n/a"; exit } i = int(NR * 0.95); if (i < 1) i = 1; print v[i] }'
+  }
+  acquire_p95="$(percentile 2)"
+  query_p95="$(percentile 3)"
+
+  printf '%s %s %s %s %s %s\n' \
+    "$total_busy" "$total_reads" "$duty_pct" "$total" "$timeouts" "$acquire_p95" \
+    >"$arm_dir/summary"
+  echo "  $mode: status_backend_time=${total_busy}ms over $total_reads reads (duty ${duty_pct}%)"
+  echo "     victim requests=$total  acquire_timeouts=$timeouts  acquire_p95=${acquire_p95}ms  query_p95=${query_p95}ms"
+}
+
+echo "== Part B: status-view backend time against a projector-shaped pool"
+echo "   ($load_sessions worker processes; victim pool $victim_pool_size, acquire timeout ${victim_acquire_timeout_ms}ms)"
+echo "-- Arm 1 (negative control): reconciler ungated, reading back-to-back"
+run_load_arm continuous "$scratch_dir/load-continuous"
+read -r c_busy c_reads c_duty c_total c_timeouts c_acquire <"$scratch_dir/load-continuous/summary"
+echo "-- Arm 2 (fixed): all processes paced by the ${expected_interval_ms}ms interval"
+run_load_arm interval "$scratch_dir/load-interval"
+read -r i_busy i_reads i_duty i_total i_timeouts i_acquire <"$scratch_dir/load-interval/summary"
 echo
 
 echo "== Assertions"
+[[ "$c_duty" -ge 80 ]] ||
+  fail "negative control only reached ${c_duty}% duty; it must saturate to prove anything"
+echo "PASS: ungated load held the status view at ${c_duty}% duty ($c_reads reads)"
 
-# Negative self-test: if the regressed arm did not actually starve the budget,
-# the fixed arm passing proves nothing.
-[[ "$a_failures" -gt 0 ]] ||
-  fail "negative self-test did not reproduce starvation at ${regressed_interval_ms}ms; harness proves nothing"
-echo "PASS: regressed interval reproduced $a_failures victim connection failures"
+[[ "$i_duty" -lt 40 ]] ||
+  fail "interval-paced load still ran at ${i_duty}% duty"
+echo "PASS: interval-paced load dropped to ${i_duty}% duty ($i_reads reads)"
 
-[[ "$a_duty" -ge 80 ]] ||
-  fail "regressed arm duty cycle ${a_duty}% should approach saturation"
-echo "PASS: regressed interval kept pollers at ${a_duty}% duty (back-to-back reads)"
+[[ $(( i_busy * 3 )) -le "$c_busy" ]] ||
+  fail "status-view backend time did not fall at least 3x (${c_busy}ms -> ${i_busy}ms)"
+echo "PASS: status-view backend time fell ${c_busy}ms -> ${i_busy}ms"
 
-# Not asserted as zero: with the pool sized to the poller count, any moment all
-# pollers happen to overlap still locks the victim out briefly. The claim is
-# that starvation stops being the steady state, so require a large relative
-# drop and a low absolute rate.
-[[ $(( b_failures * 5 )) -le "$a_failures" ]] ||
-  fail "fixed interval did not reduce victim connection failures 5x ($a_failures -> $b_failures)"
-[[ $(( b_failures * 10 )) -lt "$b_attempts" ]] ||
-  fail "fixed interval still failed $b_failures of $b_attempts victim connections (>10%)"
-echo "PASS: victim connection failures fell $a_failures -> $b_failures (of $b_attempts attempts)"
-
-[[ "$b_duty" -lt 40 ]] ||
-  fail "fixed arm duty cycle ${b_duty}% should be well below saturation"
-echo "PASS: fixed interval dropped duty cycle to ${b_duty}%"
-
-[[ "$b_reads" -lt "$a_reads" ]] ||
-  fail "fixed interval did not reduce status-view read count ($b_reads vs $a_reads)"
-echo "PASS: status-view reads fell from $a_reads to $b_reads"
-
+# Directional only. This machine has too much headroom for the pool to time out
+# at the production process count, so a timeout here is a bonus, not the proof.
+[[ "$i_timeouts" -le "$c_timeouts" ]] ||
+  fail "interval-paced arm produced more acquire timeouts ($c_timeouts -> $i_timeouts)"
+echo "PASS: victim acquire timeouts did not regress ($c_timeouts -> $i_timeouts)"
 echo
+
 echo "PASS: fleet health-poll contention verification"
-echo "  synthetic view cost:        ${view_ms}ms (rows=$seed_rows)"
-echo "  worker pollers:             $poller_count against CONNECTION LIMIT $connection_limit"
-echo "  arm duration:               ${arm_seconds}s each"
-echo "  reads   ${regressed_interval_ms}ms -> ${expected_interval_ms}ms:  $a_reads -> $b_reads"
-echo "  duty    ${regressed_interval_ms}ms -> ${expected_interval_ms}ms:  ${a_duty}% -> ${b_duty}%"
-echo "  victim connection failures: $a_failures -> $b_failures"
-echo "  victim p95 latency:         ${a_p95}ms -> ${b_p95}ms"
+echo "  status view cost:              ${view_ms}ms (rows=$seed_rows)"
+echo "  idle reconciler reads/${arm_seconds}s:     $ungated_reads ungated -> $gated_reads gated"
+echo "  status-view backend time:      ${c_busy}ms -> ${i_busy}ms"
+echo "  status-view duty cycle:        ${c_duty}% -> ${i_duty}%"
+echo "  victim pool:                   $victim_pool_size connections, ${victim_acquire_timeout_ms}ms acquire timeout"
+echo "  victim acquire p95:            ${c_acquire}ms -> ${i_acquire}ms"
+echo "  victim acquire timeouts:       $c_timeouts -> $i_timeouts (not the proof; see Part B note)"
