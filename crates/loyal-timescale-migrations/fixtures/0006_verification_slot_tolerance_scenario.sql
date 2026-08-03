@@ -9,7 +9,7 @@
 --   psql -v ON_ERROR_STOP=1 -d loyal_timescale_scratch \
 --     -f crates/loyal-timescale-migrations/fixtures/0006_verification_slot_tolerance_scenario.sql
 --
--- Expected: visible = 1, 1, 1, 0.
+-- Expected: visible = 1, 1, 1, 0, 0.
 -- Against the 0005 view the second case returns 0, which is the livelock this
 -- migration removes: a confirmed verification is evicted by the first newer
 -- LaserStream observation and the next HTTP read loses the same race.
@@ -64,4 +64,12 @@ SELECT 'floor +150 slots (at tolerance bound)' AS scenario,
 -- staleness stays bounded rather than merely being tolerated.
 UPDATE kamino.reserve_confirmed_observation_floors SET floor_slot = 1151 WHERE reserve = 'RSV';
 SELECT 'floor +151 slots (past tolerance)' AS scenario,
+       count(*) AS visible FROM kamino.latest_verified_reserve_updates;
+
+-- The tolerance must not swallow the equal-slot fence. Two monitors disagreeing
+-- about the same slot is a conflict, not staleness, so it stays fail-closed
+-- even though the slot difference is zero and trivially within tolerance.
+UPDATE kamino.reserve_confirmed_observation_floors
+SET floor_slot = 1000, account_data_hash = 'HASH_B', state_valid = true WHERE reserve = 'RSV';
+SELECT 'equal slot, conflicting hash (fence must hold)' AS scenario,
        count(*) AS visible FROM kamino.latest_verified_reserve_updates;

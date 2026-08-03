@@ -87,6 +87,11 @@ WHERE observation_floor.reserve IS NULL
     AND observation_floor.account_data_hash = current_state.account_data_hash
    )
    -- Trailing the floor is expected on an active reserve; only unbounded
-   -- trailing means the verification has actually gone stale.
-   OR observation_floor.floor_slot - verification.verified_slot
-      <= kamino.confirmed_verification_slot_tolerance();
+   -- trailing means the verification has actually gone stale. Strictly
+   -- trailing only: at an equal slot the hash branch above is the
+   -- overlapping-monitor fence and must keep deciding on its own.
+   OR (
+        observation_floor.floor_slot > verification.verified_slot
+    AND observation_floor.floor_slot - verification.verified_slot
+        <= kamino.confirmed_verification_slot_tolerance()
+   );

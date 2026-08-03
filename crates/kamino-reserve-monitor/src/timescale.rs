@@ -1130,7 +1130,10 @@ WHERE state.reserve = $1
             observation_floor.state_valid
         AND observation_floor.account_data_hash = state.account_data_hash
      )
-     OR observation_floor.floor_slot - state.slot <= {slot_tolerance}
+     OR (
+            observation_floor.floor_slot > state.slot
+        AND observation_floor.floor_slot - state.slot <= {slot_tolerance}
+     )
   )
   AND (
         prior_verification.reserve IS NULL
@@ -1219,8 +1222,13 @@ WHERE state.reserve = $1
      )
      -- Admit a confirmed read that merely trails the floor. Without this the
      -- verifier loses to LaserStream on every active reserve and the reserve
-     -- can never re-enter the verified view.
-     OR observation_floor.floor_slot - $4 <= {slot_tolerance}
+     -- can never re-enter the verified view. Strictly trailing only: an
+     -- equal-slot read must still win on hash, which is the overlapping-monitor
+     -- fence.
+     OR (
+            observation_floor.floor_slot > $4
+        AND observation_floor.floor_slot - $4 <= {slot_tolerance}
+     )
   )
 ON CONFLICT (reserve) DO UPDATE
 SET state_event_id = EXCLUDED.state_event_id,
@@ -1319,8 +1327,12 @@ WHERE verification.reserve = observation_floor.reserve
   AND verification.verified_slot <= observation_floor.floor_slot
   -- Only evict once the verification has trailed the floor past the tolerance.
   -- Evicting on the first newer LaserStream observation is what made the
-  -- verified view flap on every active reserve.
-  AND observation_floor.floor_slot - verification.verified_slot > {slot_tolerance}
+  -- verified view flap on every active reserve. An equal-slot conflict is not
+  -- staleness but a genuine disagreement, so it is still evicted immediately.
+  AND (
+        verification.verified_slot = observation_floor.floor_slot
+     OR observation_floor.floor_slot - verification.verified_slot > {slot_tolerance}
+  )
   AND (
         NOT observation_floor.state_valid
      OR observation_floor.account_data_hash <> state.account_data_hash
@@ -1345,6 +1357,7 @@ fn verify_confirmed_states_sql(schema: &str) -> String {
         quote_ident(schema),
         quote_ident("reserve_confirmed_observation_floors")
     );
+    let slot_tolerance = qualified_slot_tolerance(schema);
     format!(
         r#"
 WITH input AS (
@@ -1447,7 +1460,11 @@ WITH input AS (
     WHERE input.state_valid = true
       AND input.prior_floor_slot IS NOT NULL
       AND (
-            input.verified_slot < input.prior_floor_slot
+            -- Trailing the floor is the normal outcome of a confirmed read
+            -- racing LaserStream, so only trailing past the shared tolerance
+            -- counts as staleness. Deferring every trailing read is what kept
+            -- an evicted reserve from ever re-entering the verified view.
+            input.prior_floor_slot - input.verified_slot > {slot_tolerance}
          OR (
                 input.verified_slot = input.prior_floor_slot
             AND (
