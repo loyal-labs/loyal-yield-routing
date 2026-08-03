@@ -1065,6 +1065,17 @@ fn dedupe_lookup_sql(schema: &str) -> String {
     format!("SELECT event_id FROM {qualified_dedupe} WHERE dedupe_key = $1")
 }
 
+/// Single source of truth for how far a confirmed verification may trail the
+/// LaserStream observation floor. The verified-updates view reads the same
+/// function, so admission, eviction, and visibility cannot drift apart.
+fn qualified_slot_tolerance(schema: &str) -> String {
+    format!(
+        "{}.{}()",
+        quote_ident(schema),
+        quote_ident("confirmed_verification_slot_tolerance")
+    )
+}
+
 fn upsert_current_state_sql(schema: &str) -> String {
     let qualified_updates = format!("{}.{}", quote_ident(schema), quote_ident("reserve_updates"));
     let qualified_current = format!(
@@ -1082,6 +1093,7 @@ fn upsert_current_state_sql(schema: &str) -> String {
         quote_ident(schema),
         quote_ident("reserve_confirmed_verifications")
     );
+    let slot_tolerance = qualified_slot_tolerance(schema);
     format!(
         r#"
 INSERT INTO {qualified_current} AS current (
@@ -1107,8 +1119,10 @@ WHERE state.reserve = $1
   AND state.source IN ('http_snapshot', 'http_confirmed_refresh')
   AND $6 IN ('http_snapshot', 'http_confirmed_refresh')
   AND state.source_commitment = 'confirmed'
-  -- At or below the floor, only the exact valid floor hash may own the
-  -- pointer. This fences equal-slot observations from overlapping monitors.
+  -- At or below the floor, the exact valid floor hash or a bounded trailing
+  -- margin may own the pointer. This still fences equal-slot observations from
+  -- overlapping monitors, but it no longer requires an HTTP read to outrun the
+  -- LaserStream floor, which it cannot do on an active reserve.
   AND (
         observation_floor.reserve IS NULL
      OR state.slot > observation_floor.floor_slot
@@ -1116,6 +1130,7 @@ WHERE state.reserve = $1
             observation_floor.state_valid
         AND observation_floor.account_data_hash = state.account_data_hash
      )
+     OR observation_floor.floor_slot - state.slot <= {slot_tolerance}
   )
   AND (
         prior_verification.reserve IS NULL
@@ -1178,6 +1193,7 @@ fn upsert_confirmed_verification_sql(schema: &str) -> String {
         quote_ident(schema),
         quote_ident("reserve_confirmed_observation_floors")
     );
+    let slot_tolerance = qualified_slot_tolerance(schema);
     format!(
         r#"
 INSERT INTO {qualified_verifications} AS current (
@@ -1201,6 +1217,10 @@ WHERE state.reserve = $1
             observation_floor.state_valid
         AND observation_floor.account_data_hash = state.account_data_hash
      )
+     -- Admit a confirmed read that merely trails the floor. Without this the
+     -- verifier loses to LaserStream on every active reserve and the reserve
+     -- can never re-enter the verified view.
+     OR observation_floor.floor_slot - $4 <= {slot_tolerance}
   )
 ON CONFLICT (reserve) DO UPDATE
 SET state_event_id = EXCLUDED.state_event_id,
@@ -1232,6 +1252,7 @@ fn advance_confirmed_observation_floor_sql(schema: &str) -> String {
         quote_ident(schema),
         quote_ident("reserve_confirmed_observation_floors")
     );
+    let slot_tolerance = qualified_slot_tolerance(schema);
     format!(
         r#"
 WITH observation_lock AS MATERIALIZED (
@@ -1296,6 +1317,10 @@ WHERE verification.reserve = observation_floor.reserve
   AND verification.state_event_id = state.state_event_id
   AND verification.account_data_hash = state.account_data_hash
   AND verification.verified_slot <= observation_floor.floor_slot
+  -- Only evict once the verification has trailed the floor past the tolerance.
+  -- Evicting on the first newer LaserStream observation is what made the
+  -- verified view flap on every active reserve.
+  AND observation_floor.floor_slot - verification.verified_slot > {slot_tolerance}
   AND (
         NOT observation_floor.state_valid
      OR observation_floor.account_data_hash <> state.account_data_hash
