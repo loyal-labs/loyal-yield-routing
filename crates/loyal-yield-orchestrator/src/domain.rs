@@ -11,6 +11,9 @@ use crate::OrchestratorError;
 pub const ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY: &str = "redeemable_liquidity_amount";
 pub const AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED: &str =
     "kamino_obligation_collateral_deposited_amount";
+/// Tracks a Kamino vault whose allocation is controlled outside the fleet
+/// optimizer and remains pinned to Kamino's main market.
+pub const FIXED_KAMINO_MAIN_ROUTE_MODE: &str = "fixed_kamino_main";
 /// Maximum positive redeemable-liquidity accrual that a fused queue handoff
 /// may bind from its fresh chain read without replanning the opportunity.
 pub const MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM: i64 = 100;

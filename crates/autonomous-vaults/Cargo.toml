@@ -20,3 +20,4 @@ solana-client = "2.3"
 solana-sdk.workspace = true
 solana-system-interface.workspace = true
 spl-token.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread"] }

@@ -92,8 +92,9 @@ use loyal_yield_orchestrator::{
     ResolvedLookupTableBundle, ResolverTableCandidate, SameMintRebalanceInput,
     SameMintRebalanceResult, SharedMarketCatalogReadiness, SharedMarketCatalogRouteValidation,
     SharedMarketCatalogRouteValidationState, SnapshotId, VaultId,
-    AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM,
-    ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY, STANDARD_POLICY_AUTHORITY,
+    AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, FIXED_KAMINO_MAIN_ROUTE_MODE,
+    MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+    STANDARD_POLICY_AUTHORITY,
 };
 use loyal_yield_router::timescale::{TimescaleRouterClient, TimescaleRouterClientConfig};
 use num_bigint::BigUint;
@@ -4329,7 +4330,7 @@ async fn load_fleet_position_sweep_vaults(
         WHERE v.active = TRUE
           AND p.active = TRUE
           AND $1 = ANY(p.delegated_signers)
-          AND $2 = ANY(p.route_modes)
+          AND p.route_modes && $2::TEXT[]
           AND p.stable_mints && $3::TEXT[]
           AND p.kamino_liquidity_mints && $3::TEXT[]
           AND cardinality(p.kamino_markets) > 0
@@ -4341,7 +4342,10 @@ async fn load_fleet_position_sweep_vaults(
         "#,
     )
     .bind(STANDARD_POLICY_AUTHORITY)
-    .bind(SAME_MINT_ROUTE_MODE)
+    .bind(vec![
+        SAME_MINT_ROUTE_MODE.to_owned(),
+        FIXED_KAMINO_MAIN_ROUTE_MODE.to_owned(),
+    ])
     .bind(enabled_mints)
     .fetch_all(pool)
     .await?;
@@ -4569,17 +4573,16 @@ async fn reconcile_fleet_position_sweep_vault(
             "active sweep vault identity changed during the full sweep".to_owned(),
         ));
     }
-    // Cohort predicate `$2 = ANY(p.route_modes)`. This is the same condition
-    // `validate_vault_policy` enforces elsewhere, checked inline instead of
-    // through it because leaving the cohort mid-sweep is a policy replacement to
-    // report rather than an invariant to page on.
+    // The sweep tracks optimizer-managed and fixed-main Kamino vaults. Only the
+    // former enters fleet opportunity planning; the latter is observed solely
+    // so its current reserve and idle balances remain authoritative for AUM.
     if !vault
         .route_modes
         .iter()
-        .any(|mode| mode == SAME_MINT_ROUTE_MODE)
+        .any(|mode| mode == SAME_MINT_ROUTE_MODE || mode == FIXED_KAMINO_MAIN_ROUTE_MODE)
     {
         return Ok(FleetPositionSweepTaskOutcome::Superseded(
-            "active policy no longer allows the same-mint route mode".to_owned(),
+            "active policy is no longer in a tracked Kamino route mode".to_owned(),
         ));
     }
     if !vault
@@ -4694,7 +4697,35 @@ async fn reconcile_fleet_position_sweep_vault(
         "transactions_sent": false,
     });
     match runtime.client.reconcile_vault(vault.id, state).await {
-        Ok(_) => Ok(FleetPositionSweepTaskOutcome::Refreshed),
+        Ok(_) => {
+            let position = preview.positions.first().ok_or_else(|| {
+                FleetPositionSweepVaultError::invariant(
+                    "position sweep produced no tracked Kamino reserve",
+                )
+            })?;
+            runtime
+                .client
+                .record_current_idle_token_balance(CurrentIdleTokenBalance {
+                    vault_id: vault.id,
+                    mint: position.liquidity_mint.clone(),
+                    amount_raw: i64::try_from(position.vault_liquidity_amount_raw).map_err(
+                        |_| {
+                            FleetPositionSweepVaultError::invariant(
+                                "idle vault balance does not fit Postgres BIGINT",
+                            )
+                        },
+                    )?,
+                    owner: vault.vault_pubkey.clone(),
+                    token_account: position.vault_liquidity_ata.clone(),
+                    observed_slot: preview.observed_slot,
+                    observed_at: Utc::now(),
+                    source_commitment: "finalized".to_owned(),
+                    updated_at: Utc::now(),
+                })
+                .await
+                .map_err(|error| FleetPositionSweepVaultError::from_orchestrator(&error))?;
+            Ok(FleetPositionSweepTaskOutcome::Refreshed)
+        }
         Err(OrchestratorError::StaleVaultObservation { .. }) => {
             Ok(FleetPositionSweepTaskOutcome::Stale)
         }

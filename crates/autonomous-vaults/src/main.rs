@@ -12,10 +12,11 @@ use loyal_actions::{
     derive_kamino_user_metadata, derive_squads_v4_vault,
     execute_program_interaction_policy_instruction, execute_sync_transaction_instruction,
     handoff_settings_signer_instruction, ASSOCIATED_TOKEN_PROGRAM_ID, KAMINO_FARMS_PROGRAM_ID,
-    KAMINO_LEND_PROGRAM_ID, SQUADS_V4_PROGRAM_ID, USDC_MINT,
+    KAMINO_LEND_PROGRAM_ID, KAMINO_MAIN_MARKET, SQUADS_V4_PROGRAM_ID, USDC_MINT,
 };
 use loyal_yield_orchestrator::{
     keypair_from_env, policy_keypair_from_env, rpc_safety::validate_rpc_genesis_hash,
+    NeonSqlClient, NeonSqlConfig, PolicyMatchInput, FIXED_KAMINO_MAIN_ROUTE_MODE,
 };
 use solana_client::{
     rpc_client::RpcClient,
@@ -138,6 +139,12 @@ fn main() -> Result<()> {
         "verify-all" => verify_all(
             &rpc,
             &path,
+            persisted.as_ref().context("Smart Account state is missing")?,
+            &deployment,
+            &delegated,
+        ),
+        "sync-routing-control-plane" => sync_routing_control_plane(
+            &rpc,
             persisted.as_ref().context("Smart Account state is missing")?,
             &deployment,
             &delegated,
@@ -4497,6 +4504,101 @@ fn verify_all(
         println!("final_policy={policy}");
     }
     println!("overall_verdict=PASS");
+    Ok(())
+}
+
+fn sync_routing_control_plane(
+    rpc: &RpcClient,
+    state: &VaultState,
+    deployment: &solana_sdk::signature::Keypair,
+    delegated: &solana_sdk::signature::Keypair,
+) -> Result<()> {
+    let smart = state
+        .smart_account
+        .as_ref()
+        .context("Smart Account record is missing")?;
+    if smart.status != SmartAccountStatus::Finalized {
+        bail!("Smart Account is not finalized");
+    }
+
+    let (settings, vault, plan) = load_kamino_plan(rpc, state, deployment, delegated)?;
+    if settings.to_string() != smart.settings || vault.to_string() != smart.vault {
+        bail!("Kamino plan does not match the recorded autonomous vault identity");
+    }
+    for kind in [
+        KaminoPolicyKind::Operations,
+        KaminoPolicyKind::InitObligation,
+    ] {
+        verify_policy_account(
+            rpc,
+            &plan,
+            kind,
+            settings,
+            deployment.pubkey(),
+            delegated.pubkey(),
+        )?;
+    }
+
+    let kamino = state.kamino.as_ref().context("Kamino record is missing")?;
+    let operations = kamino
+        .operations_policy
+        .as_ref()
+        .context("Kamino operations policy record is missing")?;
+    let setup = kamino
+        .init_obligation_policy
+        .as_ref()
+        .context("Kamino init-obligation policy record is missing")?;
+    if operations.status != PolicyStatus::Finalized || setup.status != PolicyStatus::Finalized {
+        bail!("Kamino routing policies must both be finalized before control-plane sync");
+    }
+
+    let markets = vec![KAMINO_MAIN_MARKET.to_string()];
+    let stable_mints = vec![USDC_MINT.to_string()];
+    let common = |record: &PolicyRecord, route_mode: String| -> Result<PolicyMatchInput> {
+        Ok(PolicyMatchInput {
+            signature: record
+                .creation_signature
+                .clone()
+                .context("finalized Kamino policy is missing its creation signature")?,
+            slot: record
+                .finalized_slot
+                .context("finalized Kamino policy is missing its finalized slot")?,
+            settings: smart.settings.clone(),
+            authority: deployment.pubkey().to_string(),
+            policy_seed: record.seed,
+            policy_account: record.policy.clone(),
+            vault_index: smart.vault_index,
+            vault_pubkey: smart.vault.clone(),
+            delegated_signers: vec![delegated.pubkey().to_string()],
+            threshold: 1,
+            route_modes: vec![route_mode],
+            stable_mints: stable_mints.clone(),
+            kamino_markets: markets.clone(),
+            kamino_liquidity_mints: stable_mints.clone(),
+            universe_preset: Some("autonomous_fixed_main_v1".to_owned()),
+            risk_profile: Some("fixed_main_market".to_owned()),
+            swap_lanes: serde_json::Value::Array(Vec::new()),
+        })
+    };
+
+    let database_url = env::var("NEON_DATABASE_URL").context("NEON_DATABASE_URL is not set")?;
+    let operations_match = common(operations, FIXED_KAMINO_MAIN_ROUTE_MODE.to_owned())?;
+    let setup_match = common(setup, format!("{FIXED_KAMINO_MAIN_ROUTE_MODE}_setup"))?;
+    let runtime = tokio::runtime::Runtime::new().context("create routing sync runtime")?;
+    let (stored, stored_setup) = runtime.block_on(async {
+        let client = NeonSqlClient::connect(NeonSqlConfig::new(database_url)).await?;
+        client
+            .record_route_and_setup_policy_match(operations_match, setup_match)
+            .await
+    })?;
+
+    println!(
+        "routing_control_plane_sync=PASS vault_id={} route_policy_id={} setup_policy_id={} route_mode={} optimizer_eligible=false transactions_sent=false",
+        stored.vault.id.as_i64(),
+        stored.policy.id.as_i64(),
+        stored_setup.id.as_i64(),
+        FIXED_KAMINO_MAIN_ROUTE_MODE,
+    );
     Ok(())
 }
 
