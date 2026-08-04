@@ -195,6 +195,18 @@ export function isMissingAutodepositTokenDelegateFailure(
   );
 }
 const AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS = 50_000_000;
+const AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS = 240_000;
+const AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS = 10_000;
+const AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS_ENV =
+  "AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS";
+const AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS_ENV =
+  "AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS";
+const AUTODEPOSIT_TOP_UP_ALT_RETRY_ATTEMPTS = 3;
+const AUTODEPOSIT_TOP_UP_ALT_RETRY_DELAY_MS = 20_000;
+const AUTODEPOSIT_TOP_UP_ALT_RETRY_ATTEMPTS_ENV =
+  "AUTODEPOSIT_TOP_UP_ALT_RETRY_ATTEMPTS";
+const AUTODEPOSIT_TOP_UP_ALT_RETRY_DELAY_MS_ENV =
+  "AUTODEPOSIT_TOP_UP_ALT_RETRY_DELAY_MS";
 const SOLANA_WEEK_NOTIFY_ENDPOINT_ENV = "SOLANA_WEEK_NOTIFY_ENDPOINT";
 const SOLANA_WEEK_NOTIFY_SECRET_ENV = "SOLANA_WEEK_NOTIFY_SECRET";
 const SOLANA_WEEK_NOTIFY_TIMEOUT_MS = 5_000;
@@ -1290,7 +1302,7 @@ function splitSimpleCommand(command: string): string[] {
   return parts.map((part) => part.replace(/^"|"$/g, ""));
 }
 
-async function runSameMintReserveTopUp(args: {
+export async function runSameMintReserveTopUp(args: {
   amountRaw: bigint;
   execute: boolean;
   reserve: string;
@@ -1376,6 +1388,312 @@ function summarizeTopUpResult(result: SameMintTopUpResult) {
     stdoutTail: tailLines(result.stdout, 16).map(redactSensitiveText),
     stderrTail: tailLines(result.stderr, 16).map(redactSensitiveText),
   };
+}
+
+export type TopUpLookupTableCoverage = {
+  status: "ready" | "pending" | "blocked" | "unknown";
+  reason: string | null;
+  acceptedBy: "reusable_ready" | "funding_deferred" | "account_creation_deferred" | null;
+  blocker: string | null;
+  missingAddressCount: number | null;
+  packetFits: boolean | null;
+  reusableReady: boolean | null;
+  reusableSimulationError: string | null;
+  rolloutMode: string | null;
+  sharedCatalogState: string | null;
+  staticCoverage: boolean | null;
+  tableCount: number | null;
+  vaultLiquidityTokenAccountMissing: boolean | null;
+};
+
+function unknownCoverage(reason: string): TopUpLookupTableCoverage {
+  return {
+    status: "unknown",
+    reason,
+    acceptedBy: null,
+    blocker: null,
+    missingAddressCount: null,
+    packetFits: null,
+    reusableReady: null,
+    reusableSimulationError: null,
+    rolloutMode: null,
+    sharedCatalogState: null,
+    staticCoverage: null,
+    tableCount: null,
+    vaultLiquidityTokenAccountMissing: null,
+  };
+}
+
+function isAccountNotInitializedSimulationError(error: string): boolean {
+  const normalized = error.toLowerCase();
+  return (
+    normalized.includes("accountnotinitialized") ||
+    normalized.includes("account not initialized") ||
+    normalized.includes("custom(3012)") ||
+    normalized.includes("custom program error: 0xbc4")
+  );
+}
+
+function readVaultLiquidityTokenAccountMissing(
+  result: SameMintTopUpResult,
+  reserve: string
+): boolean | null {
+  for (const key of ["activeChainReconcile", "chainReconcile"]) {
+    const preview = readRecord(result.json?.[key]);
+    const positions = Array.isArray(preview?.positions) ? preview.positions : [];
+    for (const entry of positions) {
+      const position = readRecord(entry);
+      if (position?.reserve?.toString() !== reserve) {
+        continue;
+      }
+      const exists = position.vaultLiquidityTokenAccountExists;
+      if (typeof exists === "boolean") {
+        return !exists;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Mirrors `require_missing_token_account_deferred_simulation_coverage` in
+ * same-mint-reserve-swap. `pending` means the reusable provisioner still has work to do
+ * and waiting can clear it; `blocked` means the route itself is failing and waiting
+ * cannot.
+ */
+export function readTopUpLookupTableCoverage(
+  result: SameMintTopUpResult,
+  reserve: string
+): TopUpLookupTableCoverage {
+  const resolution = readRecord(result.json?.lookupTableResolution);
+  if (!resolution) {
+    return unknownCoverage("missing_lookup_table_resolution");
+  }
+  const reusable = readRecord(resolution.reusable);
+  const rollout = readRecord(resolution.rollout);
+  if (!reusable || !rollout) {
+    return unknownCoverage("incomplete_lookup_table_resolution");
+  }
+
+  const selection = readRecord(resolution.selection);
+  const sharedCatalog = readRecord(resolution.sharedMarketCatalog);
+  const missingAddresses = Array.isArray(reusable.missingAddresses)
+    ? reusable.missingAddresses
+    : [];
+  const tables = Array.isArray(reusable.tables) ? reusable.tables : [];
+  const packetFits =
+    typeof reusable.packetFits === "boolean" ? reusable.packetFits : null;
+  const compiledMessageSize = readRecord(reusable.transaction)?.packetSizeBytes;
+  const rolloutMode = rollout.mode?.toString() ?? null;
+  const sharedCatalogState = sharedCatalog?.state?.toString() ?? null;
+  const blocker = selection?.blocker?.toString() ?? null;
+  const reusableSimulationError = reusable.simulationError?.toString() ?? null;
+  const vaultLiquidityTokenAccountMissing =
+    readVaultLiquidityTokenAccountMissing(result, reserve);
+
+  const runtimeEnabled =
+    rolloutMode === "reusable_only" && rollout.forceLegacy !== true;
+  const sharedCatalogCovered = sharedCatalogState === "covered";
+  const staticCoverage =
+    runtimeEnabled &&
+    sharedCatalogCovered &&
+    missingAddresses.length === 0 &&
+    packetFits === true &&
+    tables.length > 0 &&
+    typeof compiledMessageSize === "number";
+  const reusableReady = reusable.ready === true && sharedCatalogCovered;
+
+  const acceptedBy = runtimeEnabled && reusableReady
+    ? "reusable_ready"
+    : staticCoverage && blocker?.startsWith("route_funding_required:")
+      ? "funding_deferred"
+      : staticCoverage &&
+          vaultLiquidityTokenAccountMissing === true &&
+          reusableSimulationError !== null &&
+          isAccountNotInitializedSimulationError(reusableSimulationError)
+        ? "account_creation_deferred"
+        : null;
+
+  const status = acceptedBy
+    ? "ready"
+    : staticCoverage
+      ? "blocked"
+      : "pending";
+
+  return {
+    status,
+    reason: acceptedBy
+      ? null
+      : staticCoverage
+        ? "reusable_coverage_is_complete_but_the_route_simulation_is_not_a_deferrable_prerequisite"
+        : "reusable_coverage_is_incomplete",
+    acceptedBy,
+    blocker,
+    missingAddressCount: missingAddresses.length,
+    packetFits,
+    reusableReady,
+    reusableSimulationError,
+    rolloutMode,
+    sharedCatalogState,
+    staticCoverage,
+    tableCount: tables.length,
+    vaultLiquidityTokenAccountMissing,
+  };
+}
+
+export type TopUpLookupTableReadiness = {
+  status: "ready" | "blocked" | "unknown" | "timed_out";
+  attempts: number;
+  waitedMs: number;
+  coverage: TopUpLookupTableCoverage;
+  dryRun: SameMintTopUpResult;
+};
+
+export async function awaitTopUpLookupTableReadiness(args: {
+  dryRun: SameMintTopUpResult;
+  refreshDryRun: () => Promise<SameMintTopUpResult>;
+  reserve: string;
+  timeoutMs: number;
+  pollIntervalMs: number;
+  now?: () => number;
+  sleep?: (milliseconds: number) => Promise<void>;
+}): Promise<TopUpLookupTableReadiness> {
+  const now = args.now ?? (() => Date.now());
+  const sleep = args.sleep ?? defaultSleep;
+  const pollIntervalMs = Math.max(1, args.pollIntervalMs);
+  const maxAttempts = Math.max(
+    1,
+    Math.floor(args.timeoutMs / pollIntervalMs) + 1
+  );
+  const startedAt = now();
+  let dryRun = args.dryRun;
+  let coverage = readTopUpLookupTableCoverage(dryRun, args.reserve);
+  let attempts = 1;
+
+  while (coverage.status === "pending") {
+    const waitedMs = now() - startedAt;
+    if (
+      attempts >= maxAttempts ||
+      waitedMs + pollIntervalMs > args.timeoutMs
+    ) {
+      return { status: "timed_out", attempts, waitedMs, coverage, dryRun };
+    }
+    await sleep(pollIntervalMs);
+    dryRun = await args.refreshDryRun();
+    attempts += 1;
+    coverage = readTopUpLookupTableCoverage(dryRun, args.reserve);
+  }
+
+  return {
+    status: coverage.status,
+    attempts,
+    waitedMs: now() - startedAt,
+    coverage,
+    dryRun,
+  };
+}
+
+/**
+ * The pull moves user funds, so anything short of a confirmed-ready resolution has to
+ * stop here: a stalled provisioner, a route the reusable resolver rejects, and an
+ * unreadable resolution all mean the top-up leg cannot be trusted to land.
+ */
+export function assertLookupTableReadinessBeforePull(
+  readiness: TopUpLookupTableReadiness
+): void {
+  if (readiness.status === "ready") {
+    return;
+  }
+  throw new Error(
+    `Kamino top-up reusable lookup-table coverage is ${readiness.status} after ` +
+      `${readiness.waitedMs}ms across ${readiness.attempts} dry runs; refusing to pull. ` +
+      `coverage=${JSON.stringify(readiness.coverage)}`
+  );
+}
+
+const TOP_UP_LOOKUP_TABLE_COVERAGE_MARKERS = [
+  "initial reserve deposit ALT coverage is incomplete before wallet funding",
+  "reusable lookup-table coverage is incomplete or the exact simulation failure",
+  "reusable lookup-table coverage/packet/catalog gate failed before prerequisite transaction",
+  "reusable-only runtime requires complete reusable ALT coverage and simulation",
+] as const;
+
+export function isLookupTableCoverageTopUpFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return TOP_UP_LOOKUP_TABLE_COVERAGE_MARKERS.some((marker) =>
+    message.includes(marker)
+  );
+}
+
+export function classifyTopUpFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (isLookupTableCoverageTopUpFailure(error)) {
+    return "alt_coverage_pending";
+  }
+  if (message.includes("unable to confirm transaction")) {
+    return "confirm_timeout";
+  }
+  if (message.includes("BlockhashNotFound")) {
+    return "blockhash_not_found";
+  }
+  if (message.includes("lookup-table usage lease races")) {
+    return "lookup_table_lease_race";
+  }
+  if (message.includes("preflight blocked")) {
+    return "preflight_blocked";
+  }
+  return "unclassified";
+}
+
+export async function runTopUpWithLookupTableRetry(args: {
+  attempt: () => Promise<SameMintTopUpResult>;
+  attempts: number;
+  delayMs: number;
+  onRetry?: (info: { attempt: number; error: unknown }) => void;
+  sleep?: (milliseconds: number) => Promise<void>;
+}): Promise<SameMintTopUpResult> {
+  const sleep = args.sleep ?? defaultSleep;
+  const maxAttempts = Math.max(1, args.attempts);
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await args.attempt();
+    } catch (error) {
+      lastError = error;
+      if (
+        attempt >= maxAttempts ||
+        !isLookupTableCoverageTopUpFailure(error)
+      ) {
+        throw error;
+      }
+      args.onRetry?.({ attempt, error });
+      await sleep(args.delayMs);
+    }
+  }
+
+  throw lastError;
+}
+
+function summarizeLookupTableReadiness(readiness: TopUpLookupTableReadiness) {
+  return {
+    status: readiness.status,
+    attempts: readiness.attempts,
+    waitedMs: readiness.waitedMs,
+    coverage: readiness.coverage,
+  };
+}
+
+function defaultSleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function readEnvInteger(name: string, fallback: number): number {
+  const value = process.env[name]?.trim();
+  if (!value || !/^\d+$/.test(value)) {
+    return fallback;
+  }
+  return Number(value);
 }
 
 function requireTopUpFeePayer(
@@ -2336,6 +2654,10 @@ async function main() {
         pull: summarizeSimulation(pullSimulation),
         kaminoTopUp: summarizeTopUpResult(topUpDryRun),
       },
+      kaminoTopUpLookupTableCoverage: readTopUpLookupTableCoverage(
+        topUpDryRun,
+        topUpReserve
+      ),
       lotClaim: lotClaim ? summarizeLotClaim(lotClaim) : null,
       sendsTransactions: options.execute,
     };
@@ -2346,6 +2668,31 @@ async function main() {
     }
 
     assertExecutablePreflight({ pullSimulation, topUpDryRun });
+
+    const lookupTableReadiness = await awaitTopUpLookupTableReadiness({
+      dryRun: topUpDryRun,
+      pollIntervalMs: readEnvInteger(
+        AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS_ENV,
+        AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS
+      ),
+      refreshDryRun: () =>
+        runSameMintReserveTopUp({
+          amountRaw: executionAmountRaw,
+          execute: false,
+          reserve: topUpReserve,
+          rpcUrl,
+          target,
+        }),
+      reserve: topUpReserve,
+      timeoutMs: readEnvInteger(
+        AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS_ENV,
+        AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS
+      ),
+    });
+    assertLookupTableReadinessBeforePull(lookupTableReadiness);
+    const lookupTableReadinessSummary = summarizeLookupTableReadiness(
+      lookupTableReadiness
+    );
 
     const { result: pullSend, safety: topUpFeePayerSafety } =
       await runAfterFeePayerSolSafety({
@@ -2386,15 +2733,37 @@ async function main() {
     let topUpExecute: SameMintTopUpResult;
     let topUpExecution: { signature: string; confirmedSlot: bigint };
     try {
-      topUpExecute = await runSameMintReserveTopUp({
-        amountRaw: executionAmountRaw,
-        execute: true,
-        reserve: topUpReserve,
-        rpcUrl,
-        target,
+      topUpExecute = await runTopUpWithLookupTableRetry({
+        attempt: () =>
+          runSameMintReserveTopUp({
+            amountRaw: executionAmountRaw,
+            execute: true,
+            reserve: topUpReserve,
+            rpcUrl,
+            target,
+          }),
+        attempts: readEnvInteger(
+          AUTODEPOSIT_TOP_UP_ALT_RETRY_ATTEMPTS_ENV,
+          AUTODEPOSIT_TOP_UP_ALT_RETRY_ATTEMPTS
+        ),
+        delayMs: readEnvInteger(
+          AUTODEPOSIT_TOP_UP_ALT_RETRY_DELAY_MS_ENV,
+          AUTODEPOSIT_TOP_UP_ALT_RETRY_DELAY_MS
+        ),
+        onRetry: ({ attempt, error }) => {
+          console.error(
+            JSON.stringify({
+              status: "kamino_top_up_lookup_table_retry",
+              attempt,
+              executionId: executionRecord.executionId,
+              error: error instanceof Error ? error.message : String(error),
+            })
+          );
+        },
       });
       topUpExecution = requireTopUpExecution(topUpExecute);
     } catch (error) {
+      const failureKind = classifyTopUpFailure(error);
       await markAutodepositExecutionFailed({
         neon: appModules.neon,
         databaseUrl,
@@ -2410,7 +2779,9 @@ async function main() {
           status: "partial_executed_pull_top_up_blocked",
           kaminoTopUpError:
             error instanceof Error ? error.message : String(error),
+          kaminoTopUpFailureKind: failureKind,
           kaminoTopUpDryRun: summarizeTopUpResult(topUpDryRun),
+          kaminoTopUpLookupTableReadiness: lookupTableReadinessSummary,
           topUpFeePayerSafety,
           vaultPostPullRaw: vaultPostPullRaw.toString(),
         },
@@ -2431,6 +2802,8 @@ async function main() {
             topUpFeePayerSafety,
             kaminoTopUpError:
               error instanceof Error ? error.message : String(error),
+            kaminoTopUpFailureKind: failureKind,
+            kaminoTopUpLookupTableReadiness: lookupTableReadinessSummary,
           },
           null,
           2
@@ -2510,6 +2883,7 @@ async function main() {
                 topUpObservedPosition.observedSlot?.toString() ?? null,
             }
           : null,
+        kaminoTopUpLookupTableReadiness: lookupTableReadinessSummary,
         topUpFeePayerSafety,
         vaultPostDepositRaw: vaultPostDepositRaw.toString(),
         yieldDepositRecord,
@@ -2539,6 +2913,7 @@ async function main() {
           vaultPostDepositRaw: vaultPostDepositRaw.toString(),
           topUpFeePayerSafety,
           kaminoTopUpExecution: summarizeTopUpResult(topUpExecute),
+          kaminoTopUpLookupTableReadiness: lookupTableReadinessSummary,
           yieldDepositRecord,
           solanaWeekNotify,
         },
