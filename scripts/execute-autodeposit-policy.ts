@@ -1390,30 +1390,91 @@ function summarizeTopUpResult(result: SameMintTopUpResult) {
   };
 }
 
-export type TopUpLookupTableCoverage =
-  | { status: "unknown"; reason: string }
-  | {
-      status: "ready" | "incomplete";
-      blocker: string | null;
-      missingAddressCount: number;
-      packetFits: boolean | null;
-      rolloutMode: string | null;
-      sharedCatalogState: string | null;
-      tableCount: number;
-    };
+export type TopUpLookupTableCoverage = {
+  status: "ready" | "pending" | "blocked" | "unknown";
+  reason: string | null;
+  acceptedBy: "reusable_ready" | "funding_deferred" | "account_creation_deferred" | null;
+  blocker: string | null;
+  missingAddressCount: number | null;
+  packetFits: boolean | null;
+  reusableReady: boolean | null;
+  reusableSimulationError: string | null;
+  rolloutMode: string | null;
+  sharedCatalogState: string | null;
+  staticCoverage: boolean | null;
+  tableCount: number | null;
+  vaultLiquidityTokenAccountMissing: boolean | null;
+};
 
+function unknownCoverage(reason: string): TopUpLookupTableCoverage {
+  return {
+    status: "unknown",
+    reason,
+    acceptedBy: null,
+    blocker: null,
+    missingAddressCount: null,
+    packetFits: null,
+    reusableReady: null,
+    reusableSimulationError: null,
+    rolloutMode: null,
+    sharedCatalogState: null,
+    staticCoverage: null,
+    tableCount: null,
+    vaultLiquidityTokenAccountMissing: null,
+  };
+}
+
+function isAccountNotInitializedSimulationError(error: string): boolean {
+  const normalized = error.toLowerCase();
+  return (
+    normalized.includes("accountnotinitialized") ||
+    normalized.includes("account not initialized") ||
+    normalized.includes("custom(3012)") ||
+    normalized.includes("custom program error: 0xbc4")
+  );
+}
+
+function readVaultLiquidityTokenAccountMissing(
+  result: SameMintTopUpResult,
+  reserve: string
+): boolean | null {
+  for (const key of ["activeChainReconcile", "chainReconcile"]) {
+    const preview = readRecord(result.json?.[key]);
+    const positions = Array.isArray(preview?.positions) ? preview.positions : [];
+    for (const entry of positions) {
+      const position = readRecord(entry);
+      if (position?.reserve?.toString() !== reserve) {
+        continue;
+      }
+      const exists = position.vaultLiquidityTokenAccountExists;
+      if (typeof exists === "boolean") {
+        return !exists;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Mirrors `require_missing_token_account_deferred_simulation_coverage` in
+ * same-mint-reserve-swap. `pending` means the reusable provisioner still has work to do
+ * and waiting can clear it; `blocked` means the route itself is failing and waiting
+ * cannot.
+ */
 export function readTopUpLookupTableCoverage(
-  result: SameMintTopUpResult
+  result: SameMintTopUpResult,
+  reserve: string
 ): TopUpLookupTableCoverage {
   const resolution = readRecord(result.json?.lookupTableResolution);
   if (!resolution) {
-    return { status: "unknown", reason: "missing_lookup_table_resolution" };
+    return unknownCoverage("missing_lookup_table_resolution");
   }
   const reusable = readRecord(resolution.reusable);
   const rollout = readRecord(resolution.rollout);
   if (!reusable || !rollout) {
-    return { status: "unknown", reason: "incomplete_lookup_table_resolution" };
+    return unknownCoverage("incomplete_lookup_table_resolution");
   }
+
   const selection = readRecord(resolution.selection);
   const sharedCatalog = readRecord(resolution.sharedMarketCatalog);
   const missingAddresses = Array.isArray(reusable.missingAddresses)
@@ -1425,27 +1486,63 @@ export function readTopUpLookupTableCoverage(
   const compiledMessageSize = readRecord(reusable.transaction)?.packetSizeBytes;
   const rolloutMode = rollout.mode?.toString() ?? null;
   const sharedCatalogState = sharedCatalog?.state?.toString() ?? null;
-  const covered =
-    rolloutMode === "reusable_only" &&
-    rollout.forceLegacy !== true &&
-    sharedCatalogState === "covered" &&
+  const blocker = selection?.blocker?.toString() ?? null;
+  const reusableSimulationError = reusable.simulationError?.toString() ?? null;
+  const vaultLiquidityTokenAccountMissing =
+    readVaultLiquidityTokenAccountMissing(result, reserve);
+
+  const runtimeEnabled =
+    rolloutMode === "reusable_only" && rollout.forceLegacy !== true;
+  const sharedCatalogCovered = sharedCatalogState === "covered";
+  const staticCoverage =
+    runtimeEnabled &&
+    sharedCatalogCovered &&
     missingAddresses.length === 0 &&
     packetFits === true &&
     tables.length > 0 &&
     typeof compiledMessageSize === "number";
+  const reusableReady = reusable.ready === true && sharedCatalogCovered;
+
+  const acceptedBy = runtimeEnabled && reusableReady
+    ? "reusable_ready"
+    : staticCoverage && blocker?.startsWith("route_funding_required:")
+      ? "funding_deferred"
+      : staticCoverage &&
+          vaultLiquidityTokenAccountMissing === true &&
+          reusableSimulationError !== null &&
+          isAccountNotInitializedSimulationError(reusableSimulationError)
+        ? "account_creation_deferred"
+        : null;
+
+  const status = acceptedBy
+    ? "ready"
+    : staticCoverage
+      ? "blocked"
+      : "pending";
+
   return {
-    status: covered ? "ready" : "incomplete",
-    blocker: selection?.blocker?.toString() ?? null,
+    status,
+    reason: acceptedBy
+      ? null
+      : staticCoverage
+        ? "reusable_coverage_is_complete_but_the_route_simulation_is_not_a_deferrable_prerequisite"
+        : "reusable_coverage_is_incomplete",
+    acceptedBy,
+    blocker,
     missingAddressCount: missingAddresses.length,
     packetFits,
+    reusableReady,
+    reusableSimulationError,
     rolloutMode,
     sharedCatalogState,
+    staticCoverage,
     tableCount: tables.length,
+    vaultLiquidityTokenAccountMissing,
   };
 }
 
 export type TopUpLookupTableReadiness = {
-  status: "ready" | "unknown" | "timed_out";
+  status: "ready" | "blocked" | "unknown" | "timed_out";
   attempts: number;
   waitedMs: number;
   coverage: TopUpLookupTableCoverage;
@@ -1455,6 +1552,7 @@ export type TopUpLookupTableReadiness = {
 export async function awaitTopUpLookupTableReadiness(args: {
   dryRun: SameMintTopUpResult;
   refreshDryRun: () => Promise<SameMintTopUpResult>;
+  reserve: string;
   timeoutMs: number;
   pollIntervalMs: number;
   now?: () => number;
@@ -1469,10 +1567,10 @@ export async function awaitTopUpLookupTableReadiness(args: {
   );
   const startedAt = now();
   let dryRun = args.dryRun;
-  let coverage = readTopUpLookupTableCoverage(dryRun);
+  let coverage = readTopUpLookupTableCoverage(dryRun, args.reserve);
   let attempts = 1;
 
-  while (coverage.status === "incomplete") {
+  while (coverage.status === "pending") {
     const waitedMs = now() - startedAt;
     if (
       attempts >= maxAttempts ||
@@ -1483,16 +1581,34 @@ export async function awaitTopUpLookupTableReadiness(args: {
     await sleep(pollIntervalMs);
     dryRun = await args.refreshDryRun();
     attempts += 1;
-    coverage = readTopUpLookupTableCoverage(dryRun);
+    coverage = readTopUpLookupTableCoverage(dryRun, args.reserve);
   }
 
   return {
-    status: coverage.status === "ready" ? "ready" : "unknown",
+    status: coverage.status,
     attempts,
     waitedMs: now() - startedAt,
     coverage,
     dryRun,
   };
+}
+
+/**
+ * The pull moves user funds, so anything short of a confirmed-ready resolution has to
+ * stop here: a stalled provisioner, a route the reusable resolver rejects, and an
+ * unreadable resolution all mean the top-up leg cannot be trusted to land.
+ */
+export function assertLookupTableReadinessBeforePull(
+  readiness: TopUpLookupTableReadiness
+): void {
+  if (readiness.status === "ready") {
+    return;
+  }
+  throw new Error(
+    `Kamino top-up reusable lookup-table coverage is ${readiness.status} after ` +
+      `${readiness.waitedMs}ms across ${readiness.attempts} dry runs; refusing to pull. ` +
+      `coverage=${JSON.stringify(readiness.coverage)}`
+  );
 }
 
 const TOP_UP_LOOKUP_TABLE_COVERAGE_MARKERS = [
@@ -2538,7 +2654,10 @@ async function main() {
         pull: summarizeSimulation(pullSimulation),
         kaminoTopUp: summarizeTopUpResult(topUpDryRun),
       },
-      kaminoTopUpLookupTableCoverage: readTopUpLookupTableCoverage(topUpDryRun),
+      kaminoTopUpLookupTableCoverage: readTopUpLookupTableCoverage(
+        topUpDryRun,
+        topUpReserve
+      ),
       lotClaim: lotClaim ? summarizeLotClaim(lotClaim) : null,
       sendsTransactions: options.execute,
     };
@@ -2564,20 +2683,13 @@ async function main() {
           rpcUrl,
           target,
         }),
+      reserve: topUpReserve,
       timeoutMs: readEnvInteger(
         AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS_ENV,
         AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS
       ),
     });
-    if (lookupTableReadiness.status === "timed_out") {
-      throw new Error(
-        `Kamino top-up reusable lookup-table coverage is still incomplete after ` +
-          `${lookupTableReadiness.waitedMs}ms across ${lookupTableReadiness.attempts} dry runs; ` +
-          `refusing to pull. coverage=${JSON.stringify(
-            lookupTableReadiness.coverage
-          )}`
-      );
-    }
+    assertLookupTableReadinessBeforePull(lookupTableReadiness);
     const lookupTableReadinessSummary = summarizeLookupTableReadiness(
       lookupTableReadiness
     );

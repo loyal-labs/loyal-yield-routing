@@ -12,17 +12,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  assertLookupTableReadinessBeforePull,
   awaitTopUpLookupTableReadiness,
   classifyTopUpFailure,
   readTopUpLookupTableCoverage,
   runSameMintReserveTopUp,
   runTopUpWithLookupTableRetry,
+  type TopUpLookupTableReadiness,
 } from "./execute-autodeposit-policy";
 
 type StubDryRunMode =
   | "covered"
   | "incomplete"
   | "funding_required"
+  | "missing_vault_ata"
+  | "route_simulation_failed"
   | "no_resolution";
 type StubExecuteMode = "alt_coverage_error" | "confirm_timeout" | "executed";
 type StubPlan = { dryRuns: StubDryRunMode[]; executes: StubExecuteMode[] };
@@ -116,6 +120,15 @@ function executeRun(): Promise<
 
 const noWait = async (): Promise<void> => {};
 
+function pullProceeds(readiness: TopUpLookupTableReadiness): boolean {
+  try {
+    assertLookupTableReadinessBeforePull(readiness);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function scenarioSteadyStateStaysFast(directory: string): Promise<void> {
   console.log("\nsteady state: covered coverage never delays the pull");
   installPlan(directory, { dryRuns: ["covered"], executes: ["executed"] });
@@ -124,6 +137,7 @@ async function scenarioSteadyStateStaysFast(directory: string): Promise<void> {
     dryRun: await dryRun(),
     pollIntervalMs: 10_000,
     refreshDryRun: dryRun,
+    reserve: DEPOSIT_RESERVE,
     sleep: noWait,
     timeoutMs: 240_000,
   });
@@ -148,11 +162,12 @@ async function scenarioFundingBlockerIsReady(directory: string): Promise<void> {
   });
 
   const result = await dryRun();
-  const coverage = readTopUpLookupTableCoverage(result);
+  const coverage = readTopUpLookupTableCoverage(result, DEPOSIT_RESERVE);
   const readiness = await awaitTopUpLookupTableReadiness({
     dryRun: result,
     pollIntervalMs: 10_000,
     refreshDryRun: dryRun,
+    reserve: DEPOSIT_RESERVE,
     sleep: noWait,
     timeoutMs: 240_000,
   });
@@ -177,6 +192,7 @@ async function scenarioIncidentRaceWaits(directory: string): Promise<void> {
     dryRun: await dryRun(),
     pollIntervalMs: 10_000,
     refreshDryRun: dryRun,
+    reserve: DEPOSIT_RESERVE,
     sleep: noWait,
     timeoutMs: 240_000,
   });
@@ -198,6 +214,7 @@ async function scenarioNeverReadyAborts(directory: string): Promise<void> {
     dryRun: await dryRun(),
     pollIntervalMs: 10_000,
     refreshDryRun: dryRun,
+    reserve: DEPOSIT_RESERVE,
     sleep: noWait,
     timeoutMs: 25_000,
   });
@@ -205,10 +222,11 @@ async function scenarioNeverReadyAborts(directory: string): Promise<void> {
   check("gate times out", readiness.status === "timed_out", readiness.status);
   check("timeout is bounded", readiness.attempts <= 4, readiness.attempts);
   check(
-    "coverage is reported as incomplete, not unknown",
-    readiness.coverage.status === "incomplete",
+    "coverage is reported as pending, not unknown",
+    readiness.coverage.status === "pending",
     readiness.coverage
   );
+  check("the pull is refused", !pullProceeds(readiness));
   check(
     "no execute leg ran",
     !readInvocations(directory).includes("execute"),
@@ -216,25 +234,108 @@ async function scenarioNeverReadyAborts(directory: string): Promise<void> {
   );
 }
 
-async function scenarioUnknownShapeDoesNotBlock(directory: string): Promise<void> {
-  console.log("\nunreadable resolution: availability is preserved");
+async function scenarioMissingVaultAtaIsReady(directory: string): Promise<void> {
+  console.log(
+    "\nbrand-new vault: a missing vault USDC ATA is a deferrable prerequisite"
+  );
+  installPlan(directory, {
+    dryRuns: ["missing_vault_ata"],
+    executes: ["executed"],
+  });
+
+  const result = await dryRun();
+  const coverage = readTopUpLookupTableCoverage(result, DEPOSIT_RESERVE);
+  const readiness = await awaitTopUpLookupTableReadiness({
+    dryRun: result,
+    pollIntervalMs: 10_000,
+    refreshDryRun: dryRun,
+    reserve: DEPOSIT_RESERVE,
+    sleep: noWait,
+    timeoutMs: 240_000,
+  });
+
+  check(
+    "AccountNotInitialized on a missing vault ATA is accepted",
+    coverage.acceptedBy === "account_creation_deferred",
+    coverage
+  );
+  check("the pull proceeds", pullProceeds(readiness));
+  check("gate does not stall", readiness.attempts === 1, readiness.attempts);
+}
+
+async function scenarioRouteSimulationFailureBlocks(
+  directory: string
+): Promise<void> {
+  console.log(
+    "\ncomplete coverage, failing route: the gate must not wave the pull through"
+  );
+  installPlan(directory, {
+    dryRuns: ["route_simulation_failed"],
+    executes: ["executed"],
+  });
+
+  const result = await dryRun();
+  const coverage = readTopUpLookupTableCoverage(result, DEPOSIT_RESERVE);
+  const readiness = await awaitTopUpLookupTableReadiness({
+    dryRun: result,
+    pollIntervalMs: 10_000,
+    refreshDryRun: dryRun,
+    reserve: DEPOSIT_RESERVE,
+    sleep: noWait,
+    timeoutMs: 240_000,
+  });
+
+  check(
+    "static coverage alone is not treated as ready",
+    coverage.status === "blocked",
+    coverage
+  );
+  check(
+    "static coverage is still reported as complete",
+    coverage.staticCoverage === true,
+    coverage.staticCoverage
+  );
+  check("gate reports blocked", readiness.status === "blocked", readiness.status);
+  check(
+    "the gate does not waste the timeout polling an unfixable route",
+    readiness.attempts === 1,
+    readiness.attempts
+  );
+  check("the pull is refused", !pullProceeds(readiness));
+  check(
+    "no execute leg ran",
+    !readInvocations(directory).includes("execute"),
+    readInvocations(directory)
+  );
+}
+
+async function scenarioUnknownShapeFailsClosed(directory: string): Promise<void> {
+  console.log("\nunreadable resolution: the gate fails closed");
   installPlan(directory, { dryRuns: ["no_resolution"], executes: ["executed"] });
 
   const readiness = await awaitTopUpLookupTableReadiness({
     dryRun: await dryRun(),
     pollIntervalMs: 10_000,
     refreshDryRun: dryRun,
+    reserve: DEPOSIT_RESERVE,
     sleep: noWait,
     timeoutMs: 25_000,
   });
 
   check("gate reports unknown", readiness.status === "unknown", readiness.status);
-  check("gate does not block", readiness.attempts === 1, readiness.attempts);
+  check(
+    "the pull is refused rather than defaulting to the old behaviour",
+    !pullProceeds(readiness)
+  );
   check(
     "reason is recorded for the evidence trail",
-    readiness.coverage.status === "unknown" &&
-      readiness.coverage.reason === "missing_lookup_table_resolution",
+    readiness.coverage.reason === "missing_lookup_table_resolution",
     readiness.coverage
+  );
+  check(
+    "no execute leg ran",
+    !readInvocations(directory).includes("execute"),
+    readInvocations(directory)
   );
 }
 
@@ -328,14 +429,22 @@ function scenarioGatePrecedesThePull(): void {
     "utf8"
   );
   const gateIndex = source.indexOf("await awaitTopUpLookupTableReadiness({");
+  const assertIndex = source.indexOf(
+    "assertLookupTableReadinessBeforePull(lookupTableReadiness)"
+  );
   const sendIndex = source.indexOf("sendPreparedOperation({");
   const recordIndex = source.indexOf("await recordPullExecution({");
 
   check("the gate is wired into the executor", gateIndex > 0, gateIndex);
   check(
+    "the executor asserts readiness rather than inspecting the status inline",
+    assertIndex > gateIndex,
+    { gateIndex, assertIndex }
+  );
+  check(
     "the gate runs before the pull is sent",
-    gateIndex > 0 && sendIndex > gateIndex,
-    { gateIndex, sendIndex }
+    gateIndex > 0 && sendIndex > gateIndex && sendIndex > assertIndex,
+    { assertIndex, gateIndex, sendIndex }
   );
   check(
     "the gate runs before the pull is recorded",
@@ -421,11 +530,64 @@ const incompleteResolution = {
   },
 };
 
+const missingVaultAtaResolution = {
+  ...coveredResolution,
+  selection: {
+    kind: "blocked",
+    blocker:
+      "route_simulation_failed: AnchorError caused by account: user_destination_liquidity. Error Code: AccountNotInitialized",
+    tableIds: [38, 34, 35],
+  },
+  reusable: {
+    ...coveredResolution.reusable,
+    ready: false,
+    simulationSucceeded: false,
+    simulationError:
+      "AnchorError caused by account: user_destination_liquidity. Error Code: AccountNotInitialized. Error Number: 3012",
+  },
+};
+
+const routeSimulationFailedResolution = {
+  ...coveredResolution,
+  selection: {
+    kind: "blocked",
+    blocker:
+      "route_simulation_failed: Program KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD failed: custom program error: 0x1771",
+    tableIds: [38, 34, 35],
+  },
+  reusable: {
+    ...coveredResolution.reusable,
+    ready: false,
+    simulationSucceeded: false,
+    simulationError:
+      "Program KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD failed: custom program error: 0x1771",
+  },
+};
+
 const resolutions = {
   covered: coveredResolution,
   funding_required: fundingRequiredResolution,
   incomplete: incompleteResolution,
+  missing_vault_ata: missingVaultAtaResolution,
+  route_simulation_failed: routeSimulationFailedResolution,
 };
+
+function chainReconcile(vaultAtaExists) {
+  return {
+    observedSlot: 437209467,
+    positions: [
+      {
+        reserve: "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",
+        market: "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+        obligation: "5YjZj3dk61a8HNYK2jSUWGv3tBBzTp29sfPqewJbra9h",
+        obligationExists: true,
+        vaultLiquidityAta: "APrV6SXX5KxTdvtqfSqxsby8p2d9PATVoBKyc7EKar8f",
+        vaultLiquidityTokenAccountExists: vaultAtaExists,
+        vaultLiquidityAmountRaw: "0",
+      },
+    ],
+  };
+}
 
 if (!isExecute) {
   const body = {
@@ -441,6 +603,8 @@ if (!isExecute) {
     fundingTransaction: { simulationError: null },
     policyDeposit: { signer: "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5" },
     policyDepositTransaction: { simulationError: null },
+    chainReconcile: chainReconcile(mode !== "missing_vault_ata"),
+    activeChainReconcile: chainReconcile(mode !== "missing_vault_ata"),
   };
   if (mode !== "no_resolution") {
     body.lookupTableResolution = resolutions[mode];
@@ -505,7 +669,9 @@ async function main(): Promise<void> {
     await scenarioFundingBlockerIsReady(directory);
     await scenarioIncidentRaceWaits(directory);
     await scenarioNeverReadyAborts(directory);
-    await scenarioUnknownShapeDoesNotBlock(directory);
+    await scenarioMissingVaultAtaIsReady(directory);
+    await scenarioRouteSimulationFailureBlocks(directory);
+    await scenarioUnknownShapeFailsClosed(directory);
     await scenarioExecuteRetryRecovers(directory);
     await scenarioRetryDoesNotMaskOtherFailures(directory);
     scenarioClassifiesProductionFailures();
