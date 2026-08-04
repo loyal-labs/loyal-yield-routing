@@ -59,6 +59,7 @@
     "verify:hub-kani-impl": "bash scripts/verify-hub-kani-impl.sh",
     "verify:autodeposit-alt-readiness": "bun scripts/verify-autodeposit-alt-readiness.ts",
     "verify:idle-deposit-reconcile": "cargo run -p loyal-yield-orchestrator --bin verify-idle-deposit-reconcile",
+    "verify:autodeposit-closed-route-policy": "bun scripts/verify-autodeposit-closed-route-policy.ts",
     "verify:realtime:render-config": "bun scripts/verify-realtime-render-config.ts",
     "verify:realtime:sse": "bun scripts/verify-realtime-sse-smoke.ts",
     "verify:balance-sweep-deadlock": "bash scripts/verify-balance-sweep-deadlock.sh",
