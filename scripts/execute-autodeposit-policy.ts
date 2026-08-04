@@ -194,6 +194,28 @@ export function isMissingAutodepositTokenDelegateFailure(
     message.includes("Program log: Error: owner does not match")
   );
 }
+
+const CLOSED_ROUTE_POLICY_PATTERN =
+  /policy account ([1-9A-HJ-NP-Za-km-z]{32,44}) does not exist/;
+
+/**
+ * A full withdrawal closes the Squads route policy on chain and reclaims its rent, but
+ * nothing tells this database. The stale `route_policies.active = true` keeps the target
+ * eligible forever, so every scheduled slot spawns a dry run that can only fail. Only
+ * treat the target's own route policy as closed; the setup policy and any other account
+ * named in an error are out of scope here.
+ */
+export function readClosedRoutePolicyAccount(
+  error: unknown,
+  routePolicyAccount: string
+): string | null {
+  const message = error instanceof Error ? error.message : String(error);
+  const match = message.match(CLOSED_ROUTE_POLICY_PATTERN);
+  if (!match || match[1] !== routePolicyAccount) {
+    return null;
+  }
+  return match[1];
+}
 const AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS = 50_000_000;
 const AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS = 240_000;
 const AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS = 10_000;
@@ -1043,6 +1065,47 @@ async function markScheduledSlotFailed(args: {
       AND target_id = ${args.targetId.toString()}
       AND status IN ('scheduled', 'requested')
   `;
+}
+
+export type ClosedRoutePolicyReconciliation =
+  | { status: "skipped"; reason: "policy_account_still_exists" }
+  | { status: "reconciled"; policyAccount: string; deactivatedPolicyIds: string[] };
+
+/**
+ * Reconciles a single stale route policy against chain truth. The on-chain read is the
+ * authority: an error string alone must never be enough to deactivate a policy, because
+ * a transient null from the worker's RPC would otherwise disable a live target.
+ */
+export async function reconcileClosedRoutePolicy(args: {
+  connection: Pick<Connection, "getAccountInfo">;
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  policyAccount: PublicKey;
+}): Promise<ClosedRoutePolicyReconciliation> {
+  const accountInfo = await args.connection.getAccountInfo(
+    args.policyAccount,
+    DEFAULT_COMMITMENT
+  );
+  if (accountInfo !== null) {
+    return { status: "skipped", reason: "policy_account_still_exists" };
+  }
+
+  const policyAccount = args.policyAccount.toBase58();
+  const sql = args.neon(args.databaseUrl);
+  const rows = await sql`
+    UPDATE loyal_yield.route_policies
+    SET active = false, last_seen_at = now()
+    WHERE policy_account = ${policyAccount}
+      AND active
+    RETURNING id
+  `;
+  return {
+    status: "reconciled",
+    policyAccount,
+    deactivatedPolicyIds: rows.map((row) =>
+      readRequiredString((row as Record<string, unknown>).id, "route_policy.id")
+    ),
+  };
 }
 
 async function getTokenBalanceRaw(
@@ -2932,6 +2995,26 @@ async function main() {
         pauseTargetForMissingDelegate:
           isMissingAutodepositTokenDelegateFailure(error),
       });
+    }
+    const closedRoutePolicy = readClosedRoutePolicyAccount(
+      error,
+      target.routePolicyAccount
+    );
+    if (closedRoutePolicy) {
+      const reconciliation = await reconcileClosedRoutePolicy({
+        connection,
+        databaseUrl,
+        neon: appModules.neon,
+        policyAccount: new PublicKeyCtor(closedRoutePolicy),
+      });
+      console.log(
+        JSON.stringify({
+          status: "closed_route_policy_reconciliation",
+          targetId: target.id.toString(),
+          routePolicyAccount: closedRoutePolicy,
+          reconciliation,
+        })
+      );
     }
     throw error;
   }
