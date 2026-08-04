@@ -3582,6 +3582,15 @@ async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box
     ));
     health_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     health_interval.tick().await;
+    // `health_interval` only paces the inner select arm, which runs while
+    // reconciliation tasks are in flight. An idle reconciler claims nothing,
+    // breaks out of that arm immediately, and reaches the outer-loop emission
+    // below on every pass of a 250ms recovery poll. Both paths share this rate
+    // limit so the expensive `fleet_orchestration_status` read stays governed
+    // by the health interval instead of the poll interval.
+    let health_emit_interval =
+        Duration::from_millis(FLEET_HEALTH_OBSERVATION_INTERVAL_MILLISECONDS);
+    let mut last_health_emit: Option<tokio::time::Instant> = None;
     let mut position_sweep = FleetPositionSweepCoordinator::new(Duration::from_secs(
         options.position_sweep_interval_seconds,
     ));
@@ -3651,6 +3660,7 @@ async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box
                         &position_sweep,
                     )
                     .await?;
+                    last_health_emit = Some(tokio::time::Instant::now());
                     continue;
                 }
             };
@@ -3774,22 +3784,31 @@ async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box
             false
         };
 
-        emit_fleet_reconciler_health(
-            &client,
-            &options,
-            claimed,
-            completed,
-            deferred,
-            outer_task_failure_count,
-            outer_task_panic_count,
-            outer_task_join_failure_count,
-            outer_task_fenced_deferral_count,
-            outer_task_fenced_deferral_failure_count,
-            first_outer_task_error.as_deref(),
-            wakeup_listener.is_connected(),
-            &position_sweep,
-        )
-        .await?;
+        // A `--once` run must always report before exiting; otherwise emit only
+        // when the health interval is actually due. Without this gate an idle
+        // reconciler re-ran the `fleet_orchestration_status` aggregate on every
+        // 250ms recovery poll, which is the load the interval is meant to cap.
+        let health_due = options.once
+            || last_health_emit.is_none_or(|last| last.elapsed() >= health_emit_interval);
+        if health_due {
+            emit_fleet_reconciler_health(
+                &client,
+                &options,
+                claimed,
+                completed,
+                deferred,
+                outer_task_failure_count,
+                outer_task_panic_count,
+                outer_task_join_failure_count,
+                outer_task_fenced_deferral_count,
+                outer_task_fenced_deferral_failure_count,
+                first_outer_task_error.as_deref(),
+                wakeup_listener.is_connected(),
+                &position_sweep,
+            )
+            .await?;
+            last_health_emit = Some(tokio::time::Instant::now());
+        }
         if options.once {
             break;
         }
