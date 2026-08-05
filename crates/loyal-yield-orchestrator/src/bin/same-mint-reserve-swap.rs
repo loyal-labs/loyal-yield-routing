@@ -62,18 +62,21 @@ use loyal_yield_orchestrator::sqlx::{
 use loyal_yield_orchestrator::{
     enabled_stable_mints_from_env, enabled_stable_mints_hash,
     fleet_orchestration::{
-        code_owned_stablecoin_valuations, evaluate_fresh_route_economics,
-        fleet_stage_health_report, fleet_worker_role_probe, maximum_target_inflight_usd_micros,
-        observe_market_epoch, outer_task_failure_recovery, project_fleet_route_source_evidence,
-        projected_target_apy_bps, validate_fleet_route_kind_binding,
+        classify_idle_deposit_post_effect, code_owned_stablecoin_valuations,
+        evaluate_fresh_route_economics, fleet_stage_health_report, fleet_worker_role_probe,
+        maximum_target_inflight_usd_micros, observe_market_epoch, outer_task_failure_recovery,
+        project_fleet_route_source_evidence, projected_target_apy_bps, reconciliation_is_stalled,
+        reconciliation_retry_delay_seconds, validate_fleet_route_kind_binding,
         validate_fleet_route_source_evidence, DurablePgWakeupEvent, DurablePgWakeupListener,
         EconomicPolicy, FleetObservationConfig, FleetRouteSourceEvidence,
         FleetRouteSourceKind as SameMintRouteSourceKind, FleetWorkerRole, FreshRouteEconomicsInput,
+        IdleDepositPostEffectDecision, IdleDepositPostEffectObservation, IdleDepositRouteContract,
         ImmutableMarketEpoch, OpportunityInput, OuterTaskFailureKind, RebalanceOpportunityAdvance,
         RebalanceOpportunityClaimKind, RebalanceOpportunityLease, RebalanceOpportunityRecord,
-        RebalanceOpportunityState, RouteFeePayerKind, RouteFeePayerShardConfig, RouteFeePolicy,
-        SignedRouteSubmissionAdvance, SignedRouteSubmissionInput, SignedRouteSubmissionLease,
-        SignedRouteSubmissionState, TargetCapacityObservation, TargetCapacityReservationInput,
+        RebalanceOpportunityState, ReconciliationStallLatch, RouteFeePayerKind,
+        RouteFeePayerShardConfig, RouteFeePolicy, SignedRouteSubmissionAdvance,
+        SignedRouteSubmissionInput, SignedRouteSubmissionLease, SignedRouteSubmissionState,
+        TargetCapacityObservation, TargetCapacityReservationInput,
         MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS,
     },
     lookup_table_manifest_hash as control_plane_lookup_table_manifest_hash,
@@ -4910,7 +4913,11 @@ async fn reconcile_signed_route_submission(
                         &lease,
                         SignedRouteSubmissionAdvance::Deferred {
                             checked_at: Utc::now(),
-                            next_poll_at: Utc::now() + ChronoDuration::seconds(2),
+                            next_poll_at: deferred_reconciliation_poll_at(
+                                &lease,
+                                "expiry_effect_check",
+                                &detail,
+                            ),
                             error_detail: Some(detail.clone()),
                         },
                     )
@@ -4941,7 +4948,11 @@ async fn reconcile_signed_route_submission(
                     &lease,
                     SignedRouteSubmissionAdvance::Deferred {
                         checked_at: Utc::now(),
-                        next_poll_at: Utc::now() + ChronoDuration::seconds(1),
+                        next_poll_at: deferred_reconciliation_poll_at(
+                            &lease,
+                            "post_effect_reconciliation",
+                            &detail,
+                        ),
                         error_detail: Some(detail.clone()),
                     },
                 )
@@ -4952,6 +4963,49 @@ async fn reconcile_signed_route_submission(
             Ok(false)
         }
     }
+}
+
+/// Submissions already reported as stalled by this worker.
+static RECONCILIATION_STALLS: ReconciliationStallLatch = ReconciliationStallLatch::new();
+
+/// Schedules the next attempt for a submission that could not reach a terminal
+/// state, and reports a submission whose failure has outlived every transient
+/// explanation. Reconciliation never gives up on a confirmed money movement, so
+/// the backoff is what stops a permanently failing predicate from polling chain
+/// state once a second forever.
+fn deferred_reconciliation_poll_at(
+    lease: &SignedRouteSubmissionLease,
+    lane: &str,
+    detail: &str,
+) -> DateTime<Utc> {
+    let attempt_count = lease.submission.confirmation_attempt_count;
+    let delay_seconds = reconciliation_retry_delay_seconds(attempt_count);
+    if reconciliation_is_stalled(attempt_count) && RECONCILIATION_STALLS.claim(lease.submission.id)
+    {
+        OperationalError::new(
+            "fleet_reconciliation_stalled",
+            "reconcile_fleet_rebalance_submission",
+            "fleet route submission reconciliation has not reached a terminal state",
+        )
+        .retryable(true)
+        .recovery_required(true)
+        .emit();
+        eprintln!(
+            "{}",
+            json!({
+                "status": "fleet_reconciliation_stalled",
+                "lane": lane,
+                "submissionId": lease.submission.id,
+                "decisionId": lease.submission.decision_id.map(DecisionId::as_i64),
+                "submissionState": lease.submission.state.as_str(),
+                "signature": lease.submission.transaction_signature,
+                "attemptCount": attempt_count,
+                "retryDelaySeconds": delay_seconds,
+                "reason": detail,
+            })
+        );
+    }
+    Utc::now() + ChronoDuration::seconds(delay_seconds)
 }
 
 enum ExpiredRouteCheckOutcome {
@@ -5266,26 +5320,37 @@ async fn reconcile_idle_submission_effect(
     let vault = reconciliation_vault(runtime, opportunity).await?;
     let idle_token_account =
         required_plan_string(&opportunity.execution_plan, "idle_token_account")?;
+    let contract = IdleDepositRouteContract {
+        confirmed_slot,
+        liquidity_mint: &opportunity.liquidity_mint,
+        idle_token_account: &idle_token_account,
+        deposited_amount_raw: opportunity.amount_raw,
+        baseline_idle_amount_raw: optional_plan_i64(
+            &opportunity.execution_plan,
+            "idle_vault_liquidity_amount_raw",
+        ),
+    };
     let current = runtime.client.current_positions(vault.id).await?;
     let current_idle = runtime
         .client
         .current_idle_token_balance(vault.id, &opportunity.liquidity_mint)
         .await?;
-    let expected_idle_after = current_idle
-        .as_ref()
-        .map(|balance| balance.amount_raw.saturating_sub(opportunity.amount_raw))
-        .unwrap_or_default()
-        .max(0);
+    // The projections usually observe the deposit before the reconciler runs.
+    // Closing against them keeps the common path off the RPC preview entirely.
     if let (Some(target), Some(idle)) = (
         current
             .iter()
             .find(|position| position.reserve == opportunity.target_reserve),
         current_idle.as_ref(),
     ) {
-        if target.observed_slot >= confirmed_slot
-            && idle.observed_slot >= confirmed_slot
-            && target.amount_raw > 0
-            && idle.amount_raw <= expected_idle_after
+        let projected = IdleDepositPostEffectObservation {
+            observed_slot: target.observed_slot.min(idle.observed_slot),
+            target_liquidity_mint: &target.liquidity_mint,
+            vault_liquidity_ata: &idle.token_account,
+            idle_amount_raw: idle.amount_raw,
+        };
+        if let IdleDepositPostEffectDecision::Reconcile(residual) =
+            classify_idle_deposit_post_effect(contract, projected)
         {
             runtime
                 .client
@@ -5297,7 +5362,19 @@ async fn reconcile_idle_submission_effect(
                     },
                 )
                 .await?;
-            return Ok(target.observed_slot.min(idle.observed_slot));
+            println!(
+                "{}",
+                json!({
+                    "status": "fleet_idle_deposit_reconciled",
+                    "decisionId": decision_id.as_i64(),
+                    "source": "current_state_projection",
+                    "observedSlot": projected.observed_slot,
+                    "idleResidualRaw": residual.idle_amount_raw,
+                    "plannedResidualRaw": residual.planned_residual_raw,
+                    "unexplainedIdleSurplusRaw": residual.unexplained_surplus_raw,
+                })
+            );
+            return Ok(projected.observed_slot);
         }
     }
 
@@ -5323,16 +5400,31 @@ async fn reconcile_idle_submission_effect(
     )
     .await?;
     let target = chain_position_for_reserve(&preview, &opportunity.target_reserve)?;
-    if target.liquidity_mint != opportunity.liquidity_mint || target.amount_raw == 0 {
-        return Err(
-            "confirmed idle deposit effect is not yet visible in the target reserve".into(),
-        );
-    }
-    if target.vault_liquidity_ata != idle_token_account
-        || i64::try_from(target.vault_liquidity_amount_raw)? > expected_idle_after
-    {
-        return Err("confirmed idle deposit effect is not yet visible in the idle ATA".into());
-    }
+    let observed = IdleDepositPostEffectObservation {
+        observed_slot: preview.observed_slot,
+        target_liquidity_mint: &target.liquidity_mint,
+        vault_liquidity_ata: &target.vault_liquidity_ata,
+        idle_amount_raw: i64::try_from(target.vault_liquidity_amount_raw)?,
+    };
+    let residual = match classify_idle_deposit_post_effect(contract, observed) {
+        IdleDepositPostEffectDecision::Reconcile(residual) => residual,
+        IdleDepositPostEffectDecision::ObservationPredatesConfirmation {
+            observed_slot,
+            confirmed_slot,
+        } => {
+            return Err(format!(
+                "idle deposit chain preview slot {observed_slot} predates confirmed slot {confirmed_slot}"
+            )
+            .into())
+        }
+        IdleDepositPostEffectDecision::IdentityMismatch { field } => {
+            return Err(format!(
+                "idle deposit chain preview {} does not match the executed route",
+                field.as_str()
+            )
+            .into())
+        }
+    };
     let snapshot = runtime
         .client
         .reconcile_vault(vault.id, chain_preview_reconciled_state(&preview)?)
@@ -5361,6 +5453,18 @@ async fn reconcile_idle_submission_effect(
             },
         )
         .await?;
+    println!(
+        "{}",
+        json!({
+            "status": "fleet_idle_deposit_reconciled",
+            "decisionId": decision_id.as_i64(),
+            "source": "chain_reconcile_preview",
+            "observedSlot": preview.observed_slot,
+            "idleResidualRaw": residual.idle_amount_raw,
+            "plannedResidualRaw": residual.planned_residual_raw,
+            "unexplainedIdleSurplusRaw": residual.unexplained_surplus_raw,
+        })
+    );
     Ok(snapshot.observed_slot)
 }
 
