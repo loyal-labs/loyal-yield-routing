@@ -39,6 +39,7 @@ const DIRTY_LEASE_SECONDS: i64 = 60;
 const DEFAULT_QUEUE_CONNECTIONS: u32 = 20;
 const DEFAULT_ESTIMATED_COST_USD_MICROS: i64 = 100_000;
 const PLANNER_MAXIMUM_CYCLE_BACKOFF_SECONDS: u64 = 30;
+const PLANNER_RECOVERY_VERIFICATION_CYCLES: usize = 10_000;
 const PRIORITY_VERSION: &str = "lost-yield-service-net-reserve-capacity-v3";
 
 #[derive(Debug)]
@@ -1157,6 +1158,87 @@ fn planner_cycle_backoff(consecutive_failures: u32) -> Duration {
     Duration::from_secs(seconds)
 }
 
+fn error_chain<'a>(
+    error: &'a (dyn Error + 'static),
+) -> impl Iterator<Item = &'a (dyn Error + 'static)> {
+    std::iter::successors(Some(error), |source| (*source).source())
+}
+
+fn is_retryable_postgres_sqlstate(code: &str) -> bool {
+    code.starts_with("08")
+        || matches!(
+            code,
+            "40001" | "40P01" | "53300" | "53400" | "55P03" | "57P01" | "57P02" | "57P03"
+        )
+}
+
+/// Classifies only failures that can clear while the already-validated pools
+/// remain usable. Store invariants, decode/schema errors, bad SQL, and unknown
+/// failures must escape to `main` so Render restarts and pages the worker.
+fn is_retryable_sqlx_error(error: &loyal_yield_orchestrator::sqlx::Error) -> bool {
+    use loyal_yield_orchestrator::sqlx::Error as SqlxError;
+
+    match error {
+        SqlxError::Io(_)
+        | SqlxError::Tls(_)
+        | SqlxError::PoolTimedOut
+        | SqlxError::WorkerCrashed
+        | SqlxError::BeginFailed => true,
+        SqlxError::Database(database) => database
+            .code()
+            .as_deref()
+            .is_some_and(is_retryable_postgres_sqlstate),
+        _ => false,
+    }
+}
+
+fn is_retryable_planner_cycle_error(error: &(dyn Error + 'static)) -> bool {
+    error_chain(error).any(|source| {
+        source
+            .downcast_ref::<loyal_yield_orchestrator::sqlx::Error>()
+            .is_some_and(is_retryable_sqlx_error)
+    })
+}
+
+/// Runs the exact production recovery classifier and backoff policy at a load
+/// larger than the current managed-vault fleet without opening external pools.
+/// The outer verifier starts this through the real worker binary.
+fn run_planner_recovery_verification_probe() -> Result<Value, Box<dyn Error>> {
+    let mut maximum_backoff = Duration::ZERO;
+    for index in 0..PLANNER_RECOVERY_VERIFICATION_CYCLES {
+        let error = OrchestratorError::Sqlx(loyal_yield_orchestrator::sqlx::Error::PoolTimedOut);
+        if !is_retryable_planner_cycle_error(&error) {
+            return Err(format!("transient pool timeout was fatal at cycle {index}").into());
+        }
+        maximum_backoff = maximum_backoff.max(planner_cycle_backoff(
+            u32::try_from(index + 1).unwrap_or(u32::MAX),
+        ));
+    }
+
+    let invariant =
+        OrchestratorError::StoreInvariant("verification invariant must remain fatal".to_owned());
+    if is_retryable_planner_cycle_error(&invariant) {
+        return Err("store invariant was incorrectly classified as retryable".into());
+    }
+    let closed_pool = OrchestratorError::Sqlx(loyal_yield_orchestrator::sqlx::Error::PoolClosed);
+    if is_retryable_planner_cycle_error(&closed_pool) {
+        return Err("closed pool was incorrectly classified as retryable".into());
+    }
+    if maximum_backoff != Duration::from_secs(PLANNER_MAXIMUM_CYCLE_BACKOFF_SECONDS) {
+        return Err("planner recovery backoff did not reach its bounded ceiling".into());
+    }
+
+    Ok(json!({
+        "status": "pass",
+        "worker": "loyal-fleet-opportunity-planner",
+        "simulatedCycleCount": PLANNER_RECOVERY_VERIFICATION_CYCLES,
+        "retryableTransientCycleCount": PLANNER_RECOVERY_VERIFICATION_CYCLES,
+        "fatalInvariantCount": 1,
+        "fatalClosedPoolCount": 1,
+        "maximumBackoffSeconds": maximum_backoff.as_secs(),
+    }))
+}
+
 fn planner_owner(cluster: &str) -> String {
     format!(
         "fleet-opportunity-planner:{cluster}:{}:{}",
@@ -1171,6 +1253,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!(
             "{}",
             serde_json::to_string(&fleet_worker_role_probe(FleetWorkerRole::Planner))?
+        );
+        return Ok(());
+    }
+    if env::args().skip(1).eq(["--recovery-verification-probe"]) {
+        println!(
+            "{}",
+            serde_json::to_string(&run_planner_recovery_verification_probe()?)?
         );
         return Ok(());
     }
@@ -1433,7 +1522,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             // A one-shot run has no next cycle to recover into, so it keeps
             // reporting failure to its caller.
             Err(error) if options.once => return Err(error),
-            Err(error) => {
+            Err(error) if is_retryable_planner_cycle_error(error.as_ref()) => {
                 consecutive_cycle_failures = consecutive_cycle_failures.saturating_add(1);
                 let backoff = planner_cycle_backoff(consecutive_cycle_failures);
                 OperationalError::new(
@@ -1462,6 +1551,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 tokio::time::sleep(backoff).await;
                 continue;
             }
+            // Unknown failures and invariant violations must still terminate
+            // the process. Keeping a logically dead planner alive would hide
+            // fleet-wide non-progress from Render's restart supervision.
+            Err(error) => return Err(error),
         }
         if options.once {
             break;

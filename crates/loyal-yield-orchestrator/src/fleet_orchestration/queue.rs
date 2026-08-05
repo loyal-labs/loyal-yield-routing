@@ -1721,7 +1721,15 @@ impl NeonSqlClient {
             });
         }
 
-        tx.commit().await?;
+        if let Err(error) = tx.commit().await {
+            if is_opportunity_commit_lifetime_fence(&error) {
+                return Err(OrchestratorError::OpportunityDeferredBehindEpochLifetime {
+                    vault_id: input.vault_id,
+                    stage: "database_commit_fence",
+                });
+            }
+            return Err(error.into());
+        }
         Ok(opportunity)
     }
 
@@ -5068,6 +5076,14 @@ fn is_active_opportunity_slot_conflict(error: &sqlx::Error) -> bool {
     };
     database_error.code().as_deref() == Some("23505")
         && database_error.constraint() == Some("active_rebalance_opportunity_slots_pkey")
+}
+
+fn is_opportunity_commit_lifetime_fence(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .and_then(|database| database.code())
+        .as_deref()
+        == Some("LY001")
 }
 
 pub fn rebalance_opportunity_idempotency_key(input: &RebalanceOpportunityInput) -> String {
