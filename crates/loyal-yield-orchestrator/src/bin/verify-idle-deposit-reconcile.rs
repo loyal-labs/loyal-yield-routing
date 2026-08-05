@@ -16,12 +16,21 @@
 //! ATA is exactly empty". The decision never left `confirming`, and the unique
 //! partial index over non-terminal decisions froze the vault for 9h38m.
 
-use std::{error::Error, process::ExitCode};
+use std::{
+    error::Error,
+    process::ExitCode,
+    sync::{
+        atomic::{AtomicUsize, Ordering as AtomicOrdering},
+        Arc,
+    },
+    thread,
+};
 
 use loyal_yield_orchestrator::fleet_orchestration::{
     classify_idle_deposit_post_effect, reconciliation_is_stalled,
     reconciliation_retry_delay_seconds, IdleDepositIdentityField, IdleDepositPostEffectDecision,
-    IdleDepositPostEffectObservation, IdleDepositRouteContract, RECONCILIATION_FAST_RETRY_ATTEMPTS,
+    IdleDepositPostEffectObservation, IdleDepositRouteContract, ReconciliationStallLatch,
+    MAX_LATCHED_RECONCILIATION_STALLS, RECONCILIATION_FAST_RETRY_ATTEMPTS,
     RECONCILIATION_MAX_RETRY_SECONDS, RECONCILIATION_MIN_RETRY_SECONDS,
     RECONCILIATION_STALL_ATTEMPTS,
 };
@@ -448,10 +457,67 @@ fn verify_retry_schedule() -> VerifyResult<()> {
     Ok(())
 }
 
+/// Check 9 — the operator signal is one-shot. `reconciliation_is_stalled` stays
+/// true for every later attempt, so without a latch a permanently stuck
+/// submission would alert once per retry forever. ASK-2027 would have produced
+/// one signal per minute for as long as it was stuck.
+fn verify_stall_latch() -> VerifyResult<()> {
+    let latch = ReconciliationStallLatch::new();
+    ensure(latch.claim(1_244), "the first stall claim must be granted")?;
+    for attempt in 0..10_000 {
+        ensure(
+            !latch.claim(1_244),
+            &format!("repeat claim {attempt} for a latched submission must be refused"),
+        )?;
+    }
+    ensure(
+        latch.claim(1_245) && !latch.claim(1_245) && latch.claim(1_246),
+        "each submission must be latched independently",
+    )?;
+
+    // Concurrent reconciler tasks share one latch; exactly one may report.
+    let shared = Arc::new(ReconciliationStallLatch::new());
+    let granted = Arc::new(AtomicUsize::new(0));
+    let mut threads = Vec::new();
+    for _ in 0..16 {
+        let latch = Arc::clone(&shared);
+        let granted = Arc::clone(&granted);
+        threads.push(thread::spawn(move || {
+            for _ in 0..512 {
+                if latch.claim(4_944) {
+                    granted.fetch_add(1, AtomicOrdering::SeqCst);
+                }
+            }
+        }));
+    }
+    for thread in threads {
+        thread.join().map_err(|_| "stall latch thread panicked")?;
+    }
+    ensure(
+        granted.load(AtomicOrdering::SeqCst) == 1,
+        "concurrent claims on one submission must grant exactly one report",
+    )?;
+
+    // The latch is bounded, and reaching the bound re-arms rather than
+    // silences: a signal that can be starved by unrelated stalls is worse than
+    // an occasional repeat.
+    let bounded = ReconciliationStallLatch::new();
+    for submission in 0..i64::try_from(MAX_LATCHED_RECONCILIATION_STALLS)? {
+        ensure(
+            bounded.claim(submission),
+            &format!("distinct submission {submission} must be granted a report"),
+        )?;
+    }
+    ensure(
+        bounded.claim(i64::try_from(MAX_LATCHED_RECONCILIATION_STALLS)?) && bounded.claim(0),
+        "reaching the latch bound must re-arm reporting rather than drop it",
+    )
+}
+
 type NamedCheck = (&'static str, fn() -> VerifyResult<()>);
 
 fn main() -> ExitCode {
-    let checks: [NamedCheck; 8] = [
+    let checks: [NamedCheck; 9] = [
         ("ask_2027_incident_replay", verify_incident_replay),
         ("residual_neighbourhood", verify_residual_neighbourhood),
         ("fast_path_reachability", verify_fast_path_reachability),
@@ -469,6 +535,7 @@ fn main() -> ExitCode {
         ),
         ("residual_evidence", verify_residual_evidence),
         ("retry_schedule", verify_retry_schedule),
+        ("stall_latch", verify_stall_latch),
     ];
 
     let mut failures = Vec::new();

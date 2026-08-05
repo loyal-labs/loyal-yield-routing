@@ -73,9 +73,10 @@ use loyal_yield_orchestrator::{
         IdleDepositPostEffectDecision, IdleDepositPostEffectObservation, IdleDepositRouteContract,
         ImmutableMarketEpoch, OpportunityInput, OuterTaskFailureKind, RebalanceOpportunityAdvance,
         RebalanceOpportunityClaimKind, RebalanceOpportunityLease, RebalanceOpportunityRecord,
-        RebalanceOpportunityState, RouteFeePayerKind, RouteFeePayerShardConfig, RouteFeePolicy,
-        SignedRouteSubmissionAdvance, SignedRouteSubmissionInput, SignedRouteSubmissionLease,
-        SignedRouteSubmissionState, TargetCapacityObservation, TargetCapacityReservationInput,
+        RebalanceOpportunityState, ReconciliationStallLatch, RouteFeePayerKind,
+        RouteFeePayerShardConfig, RouteFeePolicy, SignedRouteSubmissionAdvance,
+        SignedRouteSubmissionInput, SignedRouteSubmissionLease, SignedRouteSubmissionState,
+        TargetCapacityObservation, TargetCapacityReservationInput,
         MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS,
     },
     lookup_table_manifest_hash as control_plane_lookup_table_manifest_hash,
@@ -4964,6 +4965,9 @@ async fn reconcile_signed_route_submission(
     }
 }
 
+/// Submissions already reported as stalled by this worker.
+static RECONCILIATION_STALLS: ReconciliationStallLatch = ReconciliationStallLatch::new();
+
 /// Schedules the next attempt for a submission that could not reach a terminal
 /// state, and reports a submission whose failure has outlived every transient
 /// explanation. Reconciliation never gives up on a confirmed money movement, so
@@ -4976,8 +4980,17 @@ fn deferred_reconciliation_poll_at(
 ) -> DateTime<Utc> {
     let attempt_count = lease.submission.confirmation_attempt_count;
     let delay_seconds = reconciliation_retry_delay_seconds(attempt_count);
-    if reconciliation_is_stalled(attempt_count) {
-        println!(
+    if reconciliation_is_stalled(attempt_count) && RECONCILIATION_STALLS.claim(lease.submission.id)
+    {
+        OperationalError::new(
+            "fleet_reconciliation_stalled",
+            "reconcile_fleet_rebalance_submission",
+            "fleet route submission reconciliation has not reached a terminal state",
+        )
+        .retryable(true)
+        .recovery_required(true)
+        .emit();
+        eprintln!(
             "{}",
             json!({
                 "status": "fleet_reconciliation_stalled",

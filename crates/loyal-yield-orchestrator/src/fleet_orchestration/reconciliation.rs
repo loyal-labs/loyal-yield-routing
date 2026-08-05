@@ -13,6 +13,9 @@
 //! unsatisfiable as soon as one lamport of unrelated movement arrives. Residual
 //! balances stay in the decision as evidence instead.
 
+use std::collections::BTreeSet;
+use std::sync::Mutex;
+
 /// Route identity and planned amounts carried by a confirmed idle-vault
 /// deposit, taken from the opportunity that produced the submission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,4 +175,56 @@ pub fn reconciliation_retry_delay_seconds(attempt_count: i32) -> i64 {
 /// Whether a submission has failed long enough to deserve an operator signal.
 pub fn reconciliation_is_stalled(attempt_count: i32) -> bool {
     attempt_count >= RECONCILIATION_STALL_ATTEMPTS
+}
+
+/// Submissions whose stall has already been reported to operators.
+///
+/// `reconciliation_is_stalled` stays true for every attempt once it trips, so
+/// an unlatched signal repeats for as long as the submission is stuck — which
+/// for a permanently failing predicate is forever. The latch makes the operator
+/// signal one-shot per submission; the submission row's attempt count and error
+/// detail remain the live state of record for anything watching progress.
+///
+/// A worker restart re-arms the latch by construction, which is the intended
+/// behaviour: a stall that survives a restart is worth saying again.
+#[derive(Debug)]
+pub struct ReconciliationStallLatch {
+    reported: Mutex<BTreeSet<i64>>,
+}
+
+/// Bound on tracked submissions. Reaching it re-arms the latch rather than
+/// silencing it: this many distinct stalls is itself an incident, and one
+/// repeated signal is the cheaper failure.
+pub const MAX_LATCHED_RECONCILIATION_STALLS: usize = 1024;
+
+impl ReconciliationStallLatch {
+    pub const fn new() -> Self {
+        Self {
+            reported: Mutex::new(BTreeSet::new()),
+        }
+    }
+
+    /// Claims the right to report this submission's stall, returning true to
+    /// exactly one caller per submission even under concurrent reconciler
+    /// tasks.
+    pub fn claim(&self, submission_id: i64) -> bool {
+        let Ok(mut reported) = self.reported.lock() else {
+            // A poisoned latch must not silence an operator signal.
+            return true;
+        };
+        if reported.contains(&submission_id) {
+            return false;
+        }
+        if reported.len() >= MAX_LATCHED_RECONCILIATION_STALLS {
+            reported.clear();
+        }
+        reported.insert(submission_id);
+        true
+    }
+}
+
+impl Default for ReconciliationStallLatch {
+    fn default() -> Self {
+        Self::new()
+    }
 }
