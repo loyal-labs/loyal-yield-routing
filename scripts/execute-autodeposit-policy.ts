@@ -102,7 +102,7 @@ type CliOptions = {
   targetId: bigint | null;
 };
 
-type EligibleTarget = {
+export type EligibleTarget = {
   id: bigint;
   settings: string;
   vaultIndex: number;
@@ -114,7 +114,9 @@ type EligibleTarget = {
   vaultTokenAta: string;
   tokenMint: string;
   sweepPolicyAccount: string;
+  routePolicyId: bigint;
   routePolicyAccount: string;
+  routePolicyLastSeenSlot: bigint;
   routePolicySeed: bigint;
   routeModes: string[];
   recurringDelegation: string;
@@ -171,14 +173,21 @@ class MissingActiveEarnRoutePolicyError extends Error {
   readonly targetId: bigint;
 
   constructor(targetId: bigint) {
-    super(`Autodeposit target ${targetId} does not have an active Earn route policy.`);
+    super(
+      `Autodeposit target ${targetId} does not have an active Earn route policy.`
+    );
     this.name = "MissingActiveEarnRoutePolicyError";
     this.targetId = targetId;
   }
 }
 
 const DEFAULT_COMMITMENT = "confirmed";
-const DEFAULT_LOCAL_SAME_MINT_COMMAND = ["bun", "run", "same-mint:swap", "--"] as const;
+const DEFAULT_LOCAL_SAME_MINT_COMMAND = [
+  "bun",
+  "run",
+  "same-mint:swap",
+  "--",
+] as const;
 const SAME_MINT_ROUTE_MODE = "same_mint_kamino";
 const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDC_DECIMALS = 6;
@@ -193,6 +202,29 @@ export function isMissingAutodepositTokenDelegateFailure(
     message.includes("Autodeposit pull simulation failed") &&
     message.includes("Program log: Error: owner does not match")
   );
+}
+
+const CLOSED_ROUTE_POLICY_PATTERN =
+  /policy account ([1-9A-HJ-NP-Za-km-z]{32,44}) does not exist/;
+const CLOSED_ROUTE_POLICY_COMMITMENT = "finalized";
+
+/**
+ * A full withdrawal closes the Squads route policy on chain and reclaims its rent, but
+ * nothing tells this database. The stale `route_policies.active = true` keeps the target
+ * eligible forever, so every scheduled slot spawns a dry run that can only fail. Only
+ * treat the target's own route policy as closed; the setup policy and any other account
+ * named in an error are out of scope here.
+ */
+export function readClosedRoutePolicyAccount(
+  error: unknown,
+  routePolicyAccount: string
+): string | null {
+  const message = error instanceof Error ? error.message : String(error);
+  const match = message.match(CLOSED_ROUTE_POLICY_PATTERN);
+  if (!match || match[1] !== routePolicyAccount) {
+    return null;
+  }
+  return match[1];
 }
 const AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS = 50_000_000;
 const AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS = 240_000;
@@ -300,7 +332,10 @@ export function computeSweepAmount(
     cappedByMaxPerPeriod = true;
   }
 
-  if (input.remainingAllowanceRaw !== null && input.remainingAllowanceRaw !== undefined) {
+  if (
+    input.remainingAllowanceRaw !== null &&
+    input.remainingAllowanceRaw !== undefined
+  ) {
     if (input.remainingAllowanceRaw <= BigInt(0)) {
       return {
         kind: "allowance_exhausted",
@@ -408,7 +443,9 @@ function parseOptions(argv: string[]): CliOptions {
     if (arg === "--scheduled-slot-id") {
       const value = argv[index + 1];
       if (!value || !/^\d+$/.test(value)) {
-        throw new Error("--scheduled-slot-id requires an unsigned integer value.");
+        throw new Error(
+          "--scheduled-slot-id requires an unsigned integer value."
+        );
       }
       scheduledSlotId = BigInt(value);
       index += 1;
@@ -473,6 +510,8 @@ async function loadEligibleTarget(
       t.period_length_seconds,
       t.start_timestamp,
       rp.policy_account AS route_policy_account,
+      rp.id AS route_policy_id,
+      rp.last_seen_slot AS route_policy_last_seen_slot,
       rp.policy_seed AS route_policy_seed,
       rp.route_modes AS route_modes,
       yp.current_reserve,
@@ -480,7 +519,12 @@ async function loadEligibleTarget(
       yp.current_liquidity_mint
     FROM loyal_yield.balance_sweep_targets t
     LEFT JOIN LATERAL (
-      SELECT policy_account, policy_seed, route_modes
+      SELECT
+        rp.id,
+        rp.policy_account,
+        rp.last_seen_slot,
+        rp.policy_seed,
+        rp.route_modes
       FROM loyal_yield.managed_vaults mv
       JOIN loyal_yield.route_policies rp
         ON mv.active_policy_id = rp.id
@@ -519,7 +563,9 @@ async function loadEligibleTarget(
     return null;
   }
   if (rows.length > 1 && targetId === null) {
-    throw new Error("Multiple eligible autodeposit targets found; pass --target-id.");
+    throw new Error(
+      "Multiple eligible autodeposit targets found; pass --target-id."
+    );
   }
 
   const row = rows[0] as Record<string, unknown>;
@@ -535,7 +581,10 @@ async function loadEligibleTarget(
     vaultIndex: Number(readRequiredString(row.vault_index, "vault_index")),
     wallet: readRequiredString(row.wallet, "wallet"),
     walletUsdcAta: readRequiredString(row.wallet_usdc_ata, "wallet_usdc_ata"),
-    walletTokenAta: readRequiredString(row.wallet_token_ata, "wallet_token_ata"),
+    walletTokenAta: readRequiredString(
+      row.wallet_token_ata,
+      "wallet_token_ata"
+    ),
     vaultPubkey: readRequiredString(row.vault_pubkey, "vault_pubkey"),
     vaultUsdcAta: readRequiredString(row.vault_usdc_ata, "vault_usdc_ata"),
     vaultTokenAta: readRequiredString(row.vault_token_ata, "vault_token_ata"),
@@ -544,21 +593,39 @@ async function loadEligibleTarget(
       row.sweep_policy_account,
       "sweep_policy_account"
     ),
+    routePolicyId: BigInt(
+      readRequiredString(row.route_policy_id, "route_policy_id")
+    ),
     routePolicyAccount,
-    routePolicySeed: BigInt(readRequiredString(row.route_policy_seed, "route_policy_seed")),
+    routePolicyLastSeenSlot: BigInt(
+      readRequiredString(
+        row.route_policy_last_seen_slot,
+        "route_policy_last_seen_slot"
+      )
+    ),
+    routePolicySeed: BigInt(
+      readRequiredString(row.route_policy_seed, "route_policy_seed")
+    ),
     routeModes: readStringArray(row.route_modes, "route_modes"),
     recurringDelegation: readRequiredString(
       row.recurring_delegation,
       "recurring_delegation"
     ),
     walletBalanceFloorRaw: BigInt(
-      readRequiredString(row.wallet_balance_floor_raw, "wallet_balance_floor_raw")
+      readRequiredString(
+        row.wallet_balance_floor_raw,
+        "wallet_balance_floor_raw"
+      )
     ),
     maxAmountPerPeriodRaw: row.max_amount_per_period
-      ? BigInt(readRequiredString(row.max_amount_per_period, "max_amount_per_period"))
+      ? BigInt(
+          readRequiredString(row.max_amount_per_period, "max_amount_per_period")
+        )
       : null,
     periodLengthSeconds: row.period_length_seconds
-      ? BigInt(readRequiredString(row.period_length_seconds, "period_length_seconds"))
+      ? BigInt(
+          readRequiredString(row.period_length_seconds, "period_length_seconds")
+        )
       : null,
     startTimestamp: row.start_timestamp
       ? BigInt(readRequiredString(row.start_timestamp, "start_timestamp"))
@@ -614,7 +681,9 @@ function parseClaimRows(
         const lot = item as Record<string, unknown>;
         return {
           lotId: BigInt(readRequiredString(lot.lot_id, "claim.lot_id")),
-          amountRaw: BigInt(readRequiredString(lot.amount_raw, "claim.amount_raw")),
+          amountRaw: BigInt(
+            readRequiredString(lot.amount_raw, "claim.amount_raw")
+          ),
         };
       })
     : [];
@@ -754,11 +823,15 @@ async function claimAutodepositLots(args: {
           COALESCE((SELECT SUM(remaining_amount_raw) FROM eligible), 0),
           GREATEST(${args.walletBalanceRaw.toString()}::bigint - ${args.walletBalanceFloorRaw.toString()}::bigint, 0),
           CASE
-            WHEN COALESCE(${args.maxAmountPerPeriodRaw?.toString() ?? null}::bigint, 0) > 0
+            WHEN COALESCE(${
+              args.maxAmountPerPeriodRaw?.toString() ?? null
+            }::bigint, 0) > 0
             THEN ${args.maxAmountPerPeriodRaw?.toString() ?? null}::bigint
             ELSE 9223372036854775807
           END,
-          COALESCE(${args.remainingAllowanceRaw?.toString() ?? null}::bigint, 9223372036854775807)
+          COALESCE(${
+            args.remainingAllowanceRaw?.toString() ?? null
+          }::bigint, 9223372036854775807)
         ) AS amount_raw,
         (SELECT event_id FROM stale) AS stale_check_event_id
     ),
@@ -879,10 +952,14 @@ async function claimAutodepositLots(args: {
     noop_reason AS (
       SELECT CASE
         WHEN NOT EXISTS (SELECT 1 FROM target_guard) THEN 'target_not_active'
-        WHEN ${args.scheduledSlotId !== null} AND NOT EXISTS (SELECT 1 FROM slot_guard) THEN 'scheduled_slot_not_available'
+        WHEN ${
+          args.scheduledSlotId !== null
+        } AND NOT EXISTS (SELECT 1 FROM slot_guard) THEN 'scheduled_slot_not_available'
         WHEN COALESCE((SELECT event_id FROM processed), 0) < (SELECT event_id FROM stale) THEN 'newer_unprocessed_wallet_event'
         WHEN ${args.walletBalanceRaw.toString()}::bigint - ${args.walletBalanceFloorRaw.toString()}::bigint <= 0 THEN 'wallet_balance_not_above_floor'
-        WHEN COALESCE(${args.remainingAllowanceRaw?.toString() ?? null}::bigint, 1) <= 0 THEN 'allowance_exhausted'
+        WHEN COALESCE(${
+          args.remainingAllowanceRaw?.toString() ?? null
+        }::bigint, 1) <= 0 THEN 'allowance_exhausted'
         WHEN COALESCE((SELECT SUM(remaining_amount_raw) FROM eligible), 0) <= 0 THEN 'no_eligible_lots'
         ELSE 'claim_not_created'
       END AS reason
@@ -1045,6 +1122,153 @@ async function markScheduledSlotFailed(args: {
   `;
 }
 
+export type ClosedRoutePolicyReconciliation =
+  | {
+      status: "skipped";
+      reason:
+        | "policy_account_exists_at_first_finalized_probe"
+        | "policy_account_exists_at_second_finalized_probe"
+        | "policy_binding_changed";
+      firstFinalizedContextSlot: number;
+      secondFinalizedContextSlot: number | null;
+    }
+  | {
+      status: "reconciled";
+      policyAccount: string;
+      deactivatedPolicyIds: string[];
+      firstFinalizedContextSlot: number;
+      secondFinalizedContextSlot: number;
+    };
+
+type ClosedRoutePolicyTarget = Pick<
+  EligibleTarget,
+  | "routePolicyId"
+  | "routePolicyAccount"
+  | "routePolicyLastSeenSlot"
+  | "settings"
+  | "vaultIndex"
+  | "vaultPubkey"
+>;
+
+/**
+ * Reconciles a single stale route policy against chain truth. The on-chain read is the
+ * authority: an error string alone must never be enough to deactivate a policy, because
+ * a transient null from the worker's RPC would otherwise disable a live target.
+ */
+export async function reconcileClosedRoutePolicy(args: {
+  connection: Pick<Connection, "getAccountInfoAndContext">;
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  target: ClosedRoutePolicyTarget;
+}): Promise<ClosedRoutePolicyReconciliation> {
+  const policyAccount = new PublicKey(args.target.routePolicyAccount);
+  const firstProbe = await args.connection.getAccountInfoAndContext(
+    policyAccount,
+    CLOSED_ROUTE_POLICY_COMMITMENT
+  );
+  if (firstProbe.value !== null) {
+    return {
+      status: "skipped",
+      reason: "policy_account_exists_at_first_finalized_probe",
+      firstFinalizedContextSlot: firstProbe.context.slot,
+      secondFinalizedContextSlot: null,
+    };
+  }
+
+  // A second read fenced to the first finalized context prevents one transient
+  // null from authorizing a destructive database transition. If the policy was
+  // recreated after the first read, the second read observes it and fails shut.
+  const secondProbe = await args.connection.getAccountInfoAndContext(
+    policyAccount,
+    {
+      commitment: CLOSED_ROUTE_POLICY_COMMITMENT,
+      minContextSlot: firstProbe.context.slot,
+    }
+  );
+  if (secondProbe.value !== null) {
+    return {
+      status: "skipped",
+      reason: "policy_account_exists_at_second_finalized_probe",
+      firstFinalizedContextSlot: firstProbe.context.slot,
+      secondFinalizedContextSlot: secondProbe.context.slot,
+    };
+  }
+
+  const policyAccountText = policyAccount.toBase58();
+  const sql = args.neon(args.databaseUrl);
+  const rows = await sql`
+    WITH locked_policy AS (
+      SELECT policy.id
+      FROM loyal_yield.route_policies policy
+      JOIN loyal_yield.managed_vaults vault
+        ON vault.active_policy_id = policy.id
+       AND vault.active
+       AND vault.settings = ${args.target.settings}
+       AND vault.vault_index = ${args.target.vaultIndex}
+       AND vault.vault_pubkey = ${args.target.vaultPubkey}
+      WHERE policy.id = ${args.target.routePolicyId.toString()}
+        AND policy.policy_account = ${policyAccountText}
+        AND policy.last_seen_slot = ${args.target.routePolicyLastSeenSlot.toString()}
+        AND policy.active
+      FOR UPDATE OF policy
+    )
+    UPDATE loyal_yield.route_policies policy
+    SET active = false, last_seen_at = now()
+    FROM locked_policy
+    WHERE policy.id = locked_policy.id
+    RETURNING policy.id
+  `;
+  const deactivatedPolicyIds = rows.map((row) =>
+    readRequiredString((row as Record<string, unknown>).id, "route_policy.id")
+  );
+  if (deactivatedPolicyIds.length === 0) {
+    return {
+      status: "skipped",
+      reason: "policy_binding_changed",
+      firstFinalizedContextSlot: firstProbe.context.slot,
+      secondFinalizedContextSlot: secondProbe.context.slot,
+    };
+  }
+  return {
+    status: "reconciled",
+    policyAccount: policyAccountText,
+    deactivatedPolicyIds,
+    firstFinalizedContextSlot: firstProbe.context.slot,
+    secondFinalizedContextSlot: secondProbe.context.slot,
+  };
+}
+
+/**
+ * Handles the error-side reconciliation boundary shared by production and the
+ * isolated worker verifier. A dry run is observational by contract and never
+ * reaches either RPC or Neon, even when its simulation reports a closed policy.
+ */
+export async function reconcileClosedRoutePolicyFailure(args: {
+  execute: boolean;
+  error: unknown;
+  connection: Pick<Connection, "getAccountInfoAndContext">;
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  target: ClosedRoutePolicyTarget;
+}): Promise<ClosedRoutePolicyReconciliation | null> {
+  if (!args.execute) {
+    return null;
+  }
+  const closedRoutePolicy = readClosedRoutePolicyAccount(
+    args.error,
+    args.target.routePolicyAccount
+  );
+  if (!closedRoutePolicy) {
+    return null;
+  }
+  return reconcileClosedRoutePolicy({
+    connection: args.connection,
+    databaseUrl: args.databaseUrl,
+    neon: args.neon,
+    target: args.target,
+  });
+}
+
 async function getTokenBalanceRaw(
   connection: Connection,
   tokenAccount: PublicKey
@@ -1092,7 +1316,9 @@ async function loadRecurringDelegationAllowance(args: {
     args.appModules.SUBSCRIPTION_RECURRING_DELEGATION_DATA_LEN
   ) {
     throw new Error(
-      `Recurring delegation account ${args.recurringDelegation.toBase58()} has unexpected data length ${account.data.length}.`
+      `Recurring delegation account ${args.recurringDelegation.toBase58()} has unexpected data length ${
+        account.data.length
+      }.`
     );
   }
   const discriminator =
@@ -1140,11 +1366,10 @@ function readU64Le(data: Uint8Array, offset: number, label: string): bigint {
   if (offset < 0 || offset + 8 > data.length) {
     throw new Error(`Recurring delegation account is missing ${label}.`);
   }
-  return new DataView(
-    data.buffer,
-    data.byteOffset + offset,
-    8
-  ).getBigUint64(0, true);
+  return new DataView(data.buffer, data.byteOffset + offset, 8).getBigUint64(
+    0,
+    true
+  );
 }
 
 function estimateNextResetAt(
@@ -1172,8 +1397,7 @@ function summarizeAllowance(allowance: RecurringDelegationAllowance) {
   return {
     amountPerPeriodRaw: allowance.amountPerPeriodRaw.toString(),
     amountPulledInPeriodRaw: allowance.amountPulledInPeriodRaw.toString(),
-    remainingAmountInPeriodRaw:
-      allowance.remainingAmountInPeriodRaw.toString(),
+    remainingAmountInPeriodRaw: allowance.remainingAmountInPeriodRaw.toString(),
     amountPerPeriodUi:
       Number(allowance.amountPerPeriodRaw) / 10 ** USDC_DECIMALS,
     amountPulledInPeriodUi:
@@ -1255,7 +1479,9 @@ async function sendPreparedOperation(args: {
   );
   if (confirmation.value.err) {
     throw new Error(
-      `Transaction ${signature} failed: ${JSON.stringify(confirmation.value.err)}`
+      `Transaction ${signature} failed: ${JSON.stringify(
+        confirmation.value.err
+      )}`
     );
   }
   const parsed = await args.connection.getTransaction(signature, {
@@ -1393,7 +1619,11 @@ function summarizeTopUpResult(result: SameMintTopUpResult) {
 export type TopUpLookupTableCoverage = {
   status: "ready" | "pending" | "blocked" | "unknown";
   reason: string | null;
-  acceptedBy: "reusable_ready" | "funding_deferred" | "account_creation_deferred" | null;
+  acceptedBy:
+    | "reusable_ready"
+    | "funding_deferred"
+    | "account_creation_deferred"
+    | null;
   blocker: string | null;
   missingAddressCount: number | null;
   packetFits: boolean | null;
@@ -1440,7 +1670,9 @@ function readVaultLiquidityTokenAccountMissing(
 ): boolean | null {
   for (const key of ["activeChainReconcile", "chainReconcile"]) {
     const preview = readRecord(result.json?.[key]);
-    const positions = Array.isArray(preview?.positions) ? preview.positions : [];
+    const positions = Array.isArray(preview?.positions)
+      ? preview.positions
+      : [];
     for (const entry of positions) {
       const position = readRecord(entry);
       if (position?.reserve?.toString() !== reserve) {
@@ -1503,30 +1735,27 @@ export function readTopUpLookupTableCoverage(
     typeof compiledMessageSize === "number";
   const reusableReady = reusable.ready === true && sharedCatalogCovered;
 
-  const acceptedBy = runtimeEnabled && reusableReady
-    ? "reusable_ready"
-    : staticCoverage && blocker?.startsWith("route_funding_required:")
+  const acceptedBy =
+    runtimeEnabled && reusableReady
+      ? "reusable_ready"
+      : staticCoverage && blocker?.startsWith("route_funding_required:")
       ? "funding_deferred"
       : staticCoverage &&
-          vaultLiquidityTokenAccountMissing === true &&
-          reusableSimulationError !== null &&
-          isAccountNotInitializedSimulationError(reusableSimulationError)
-        ? "account_creation_deferred"
-        : null;
+        vaultLiquidityTokenAccountMissing === true &&
+        reusableSimulationError !== null &&
+        isAccountNotInitializedSimulationError(reusableSimulationError)
+      ? "account_creation_deferred"
+      : null;
 
-  const status = acceptedBy
-    ? "ready"
-    : staticCoverage
-      ? "blocked"
-      : "pending";
+  const status = acceptedBy ? "ready" : staticCoverage ? "blocked" : "pending";
 
   return {
     status,
     reason: acceptedBy
       ? null
       : staticCoverage
-        ? "reusable_coverage_is_complete_but_the_route_simulation_is_not_a_deferrable_prerequisite"
-        : "reusable_coverage_is_incomplete",
+      ? "reusable_coverage_is_complete_but_the_route_simulation_is_not_a_deferrable_prerequisite"
+      : "reusable_coverage_is_incomplete",
     acceptedBy,
     blocker,
     missingAddressCount: missingAddresses.length,
@@ -1572,10 +1801,7 @@ export async function awaitTopUpLookupTableReadiness(args: {
 
   while (coverage.status === "pending") {
     const waitedMs = now() - startedAt;
-    if (
-      attempts >= maxAttempts ||
-      waitedMs + pollIntervalMs > args.timeoutMs
-    ) {
+    if (attempts >= maxAttempts || waitedMs + pollIntervalMs > args.timeoutMs) {
       return { status: "timed_out", attempts, waitedMs, coverage, dryRun };
     }
     await sleep(pollIntervalMs);
@@ -1661,10 +1887,7 @@ export async function runTopUpWithLookupTableRetry(args: {
       return await args.attempt();
     } catch (error) {
       lastError = error;
-      if (
-        attempt >= maxAttempts ||
-        !isLookupTableCoverageTopUpFailure(error)
-      ) {
+      if (attempt >= maxAttempts || !isLookupTableCoverageTopUpFailure(error)) {
         throw error;
       }
       args.onRetry?.({ attempt, error });
@@ -1718,7 +1941,9 @@ export async function assertSolBalance(args: {
   );
   if (balanceLamports < args.minimumLamports) {
     throw new Error(
-      `${args.role} ${args.feePayer.toBase58()} has ${balanceLamports} lamports; ` +
+      `${
+        args.role
+      } ${args.feePayer.toBase58()} has ${balanceLamports} lamports; ` +
         `${args.minimumLamports} required.`
     );
   }
@@ -1812,8 +2037,8 @@ async function notifySolanaWeekSweep(args: {
       error: abortController.signal.aborted
         ? `notification timed out after ${SOLANA_WEEK_NOTIFY_TIMEOUT_MS}ms`
         : error instanceof Error
-          ? error.message
-          : String(error),
+        ? error.message
+        : String(error),
     };
   } finally {
     clearTimeout(timeout);
@@ -1903,7 +2128,9 @@ async function recordPullExecution(args: {
   destinationPostBalanceRaw: bigint;
 }): Promise<{ dedupeKey: string; executionId: string }> {
   const sql = args.neon(args.databaseUrl);
-  const dedupeKey = `${args.target.id.toString()}:autodeposit-pull:${args.signature}`;
+  const dedupeKey = `${args.target.id.toString()}:autodeposit-pull:${
+    args.signature
+  }`;
   const rows = await sql`
     WITH inserted AS (
       INSERT INTO loyal_yield.balance_sweep_executions (
@@ -1942,8 +2169,12 @@ async function recordPullExecution(args: {
         ${args.destinationPreBalanceRaw.toString()},
         ${args.destinationPostBalanceRaw.toString()},
         'confirmed',
-        ${JSON.stringify({ source: "single-vault-autodeposit-executor" })}::jsonb,
-        ${JSON.stringify({ sequence: "subscription_pull_then_kamino_deposit" })}::jsonb,
+        ${JSON.stringify({
+          source: "single-vault-autodeposit-executor",
+        })}::jsonb,
+        ${JSON.stringify({
+          sequence: "subscription_pull_then_kamino_deposit",
+        })}::jsonb,
         now(),
         now(),
         ${dedupeKey}
@@ -2139,10 +2370,12 @@ async function recordAutodepositYieldDeposit(args: {
       sameCurrentHolding && args.observedCurrentAmountRaw !== null
         ? args.observedCurrentAmountRaw
         : sameCurrentHolding
-          ? currentAmountRaw + args.amountRaw
-          : currentAmountRaw;
+        ? currentAmountRaw + args.amountRaw
+        : currentAmountRaw;
     nextPrincipalRaw = principalAmountRaw + args.amountRaw;
-    holdingDeltaRaw = sameCurrentHolding ? nextAmountRaw - currentAmountRaw : null;
+    holdingDeltaRaw = sameCurrentHolding
+      ? nextAmountRaw - currentAmountRaw
+      : null;
 
     await sql`
       UPDATE loyal_yield.user_yield_positions
@@ -2278,7 +2511,9 @@ async function recordAutodepositYieldDeposit(args: {
       current_liquidity_mint = ${args.liquidityMint},
       current_market = ${args.market},
       current_observed_at = ${now},
-      current_observed_slot = ${(args.observedSlot ?? args.depositSlot).toString()},
+      current_observed_slot = ${(
+        args.observedSlot ?? args.depositSlot
+      ).toString()},
       current_reserve = ${args.targetReserve},
       last_holding_event_id = ${eventId},
       last_confirmed_slot = ${args.depositSlot.toString()},
@@ -2346,8 +2581,12 @@ function summarizeSimulationFailure(summary: SimulationSummary): string {
   return JSON.stringify(summarizeSimulation(summary));
 }
 
-function topUpPolicySimulationError(result: SameMintTopUpResult): string | null {
-  const policyDepositTransaction = readRecord(result.json?.policyDepositTransaction);
+function topUpPolicySimulationError(
+  result: SameMintTopUpResult
+): string | null {
+  const policyDepositTransaction = readRecord(
+    result.json?.policyDepositTransaction
+  );
   return policyDepositTransaction?.simulationError?.toString() ?? null;
 }
 
@@ -2472,7 +2711,8 @@ async function main() {
           scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
           walletBalanceRaw: walletBalanceRaw.toString(),
           walletBalanceFloorRaw: effectiveFloorRaw.toString(),
-          persistedWalletBalanceFloorRaw: target.walletBalanceFloorRaw.toString(),
+          persistedWalletBalanceFloorRaw:
+            target.walletBalanceFloorRaw.toString(),
           overrideFloorRaw: options.overrideFloorRaw?.toString() ?? null,
           excessRaw: sweepDecision.excessRaw.toString(),
           subscriptionAllowance: summarizeAllowance(allowance),
@@ -2519,7 +2759,9 @@ async function main() {
       };
     } else {
       if (!options.claimToken) {
-        throw new Error("--claim-token is required when executing with lot claims.");
+        throw new Error(
+          "--claim-token is required when executing with lot claims."
+        );
       }
       lotClaim = await claimAutodepositLots({
         neon: appModules.neon,
@@ -2618,7 +2860,9 @@ async function main() {
         reserve: topUpReserve,
         market: topUpMarket,
         liquidityMint: topUpLiquidityMint,
-        source: target.currentReserve ? "active_yield_position" : "default_earn_target",
+        source: target.currentReserve
+          ? "active_yield_position"
+          : "default_earn_target",
       },
       excessRaw: sweepDecision.excessRaw.toString(),
       amountRaw: executionAmountRaw.toString(),
@@ -2690,9 +2934,8 @@ async function main() {
       ),
     });
     assertLookupTableReadinessBeforePull(lookupTableReadiness);
-    const lookupTableReadinessSummary = summarizeLookupTableReadiness(
-      lookupTableReadiness
-    );
+    const lookupTableReadinessSummary =
+      summarizeLookupTableReadiness(lookupTableReadiness);
 
     const { result: pullSend, safety: topUpFeePayerSafety } =
       await runAfterFeePayerSolSafety({
@@ -2707,7 +2950,10 @@ async function main() {
           }),
       });
     pullSent = true;
-    const walletPostPullRaw = await getTokenBalanceRaw(connection, walletUsdcAta);
+    const walletPostPullRaw = await getTokenBalanceRaw(
+      connection,
+      walletUsdcAta
+    );
     const vaultPostPullRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
     const executionRecord = await recordPullExecution({
       neon: appModules.neon,
@@ -2817,7 +3063,10 @@ async function main() {
       topUpExecute,
       topUpReserve
     );
-    const vaultPostDepositRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
+    const vaultPostDepositRaw = await getTokenBalanceRaw(
+      connection,
+      vaultUsdcAta
+    );
     let yieldDepositRecord: Awaited<
       ReturnType<typeof recordAutodepositYieldDeposit>
     >;
@@ -2932,6 +3181,24 @@ async function main() {
         pauseTargetForMissingDelegate:
           isMissingAutodepositTokenDelegateFailure(error),
       });
+    }
+    const reconciliation = await reconcileClosedRoutePolicyFailure({
+      connection,
+      databaseUrl,
+      error,
+      execute: options.execute,
+      neon: appModules.neon,
+      target,
+    });
+    if (reconciliation) {
+      console.log(
+        JSON.stringify({
+          status: "closed_route_policy_reconciliation",
+          targetId: target.id.toString(),
+          routePolicyAccount: target.routePolicyAccount,
+          reconciliation,
+        })
+      );
     }
     throw error;
   }

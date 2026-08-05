@@ -19,9 +19,18 @@ const SAME_MINT_ROUTE_MODE: &str = "same_mint_kamino";
 const USD_MICROS_PER_USD: i64 = 1_000_000;
 /// Domain-separates optimizer epochs whose durable row lifetime is the
 /// longest complete-mint envelope while each route retains its own mint
-/// lifetime. Historical global-minimum epoch rows remain immutable under
-/// their pre-v2 fingerprints instead of colliding during rollout.
-const MARKET_EPOCH_FINGERPRINT_DOMAIN: &[u8] = b"loyal-yield-market-epoch-envelope-v2";
+/// lifetime. Historical epoch rows remain immutable under their pre-v3
+/// fingerprints instead of colliding during rollout.
+///
+/// v3 additionally covers `MarketMintBlocker::detail`. v2 hashed only the
+/// blocker code and reserve, so every value a detail interpolates was outside
+/// the key. That is inert while a mint is complete, because its reserves are
+/// hashed in full, but an incomplete mint contributes no reserves at all
+/// (see the `complete` gate below) and pins `expires_at` to `None`. Its
+/// details still carry live slot lag and economic expiry, so two reads of an
+/// unchanged complete frontier re-derived one key over two different
+/// `market_state` bodies and the durable upsert rejected the second.
+const MARKET_EPOCH_FINGERPRINT_DOMAIN: &[u8] = b"loyal-yield-market-epoch-envelope-v3";
 /// A one-millidollar stablecoin price bucket (roughly 10 bps near $1) avoids
 /// turning harmless oracle ticks into full-fleet planning work while still
 /// waking promptly on economically material depegs.
@@ -2781,6 +2790,12 @@ fn market_epoch_fingerprint(
                 &mut hasher,
                 blocker.reserve.as_deref().unwrap_or_default().as_bytes(),
             );
+            // The detail is persisted verbatim inside the immutable epoch
+            // evidence, so it must be part of the key that claims that
+            // evidence. Blocked reserves are excluded from `reserves`, which
+            // makes this the only channel through which their observation
+            // reaches the durable row.
+            hash_part(&mut hasher, blocker.detail.as_bytes());
         }
     }
     for reserve in reserves {

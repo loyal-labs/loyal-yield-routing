@@ -780,10 +780,12 @@ impl NeonSqlClient {
             || epoch.expires_at != input.expires_at
             || epoch.market_state != input.market_state
         {
-            return Err(OrchestratorError::StoreInvariant(format!(
-                "optimizer epoch key {:?} collided with different immutable evidence",
-                input.epoch_key
-            )));
+            // The stored row stays authoritative and immutable. A conflict
+            // means this observation may not claim that key, not that the
+            // store is corrupt, so callers re-observe rather than die.
+            return Err(OrchestratorError::OptimizerEpochEvidenceConflict {
+                epoch_key: input.epoch_key.clone(),
+            });
         }
         tx.commit().await?;
         Ok(epoch)
@@ -1316,14 +1318,23 @@ impl NeonSqlClient {
                 input.optimizer_epoch_id
             ))
         })?;
+        // A foreign cluster or a route lifetime that outlives its own epoch is
+        // a planning defect and stays a hard invariant. Merely running out of
+        // usable lifetime is wall-clock passage, which the next wave fixes on
+        // its own, so it is separated out as a deferral below.
         if epoch.try_get::<String, _>("cluster")? != input.cluster
             || epoch.try_get::<DateTime<Utc>, _>("expires_at")? < input.expires_at
-            || !epoch.try_get::<bool, _>("publication_lifetime_ready")?
         {
             return Err(OrchestratorError::StoreInvariant(
-                "opportunity cluster/lifetime exceeds or has less than the minimum usable optimizer epoch evidence"
+                "opportunity cluster/lifetime exceeds the immutable optimizer epoch evidence"
                     .to_owned(),
             ));
+        }
+        if !epoch.try_get::<bool, _>("publication_lifetime_ready")? {
+            return Err(OrchestratorError::OpportunityDeferredBehindEpochLifetime {
+                vault_id: input.vault_id,
+                stage: "before_insert",
+            });
         }
 
         let initial_state = if let Some(request_id) = input.provisioning_request_id {
@@ -1638,10 +1649,10 @@ impl NeonSqlClient {
                 .fetch_one(&mut *tx)
                 .await?;
                 if !publication_lifetime_ready {
-                    return Err(OrchestratorError::StoreInvariant(
-                        "rebalance opportunity publication lost its minimum usable market-epoch lifetime before insertion"
-                            .to_owned(),
-                    ));
+                    return Err(OrchestratorError::OpportunityDeferredBehindEpochLifetime {
+                        vault_id: input.vault_id,
+                        stage: "before_insertion",
+                    });
                 }
                 sqlx::query(
                     r#"
@@ -1704,13 +1715,21 @@ impl NeonSqlClient {
         .fetch_one(&mut *tx)
         .await?;
         if !publication_lifetime_ready {
-            return Err(OrchestratorError::StoreInvariant(
-                "rebalance opportunity publication lost its minimum usable market-epoch lifetime before commit"
-                    .to_owned(),
-            ));
+            return Err(OrchestratorError::OpportunityDeferredBehindEpochLifetime {
+                vault_id: input.vault_id,
+                stage: "before_commit",
+            });
         }
 
-        tx.commit().await?;
+        if let Err(error) = tx.commit().await {
+            if is_opportunity_commit_lifetime_fence(&error) {
+                return Err(OrchestratorError::OpportunityDeferredBehindEpochLifetime {
+                    vault_id: input.vault_id,
+                    stage: "database_commit_fence",
+                });
+            }
+            return Err(error.into());
+        }
         Ok(opportunity)
     }
 
@@ -5057,6 +5076,14 @@ fn is_active_opportunity_slot_conflict(error: &sqlx::Error) -> bool {
     };
     database_error.code().as_deref() == Some("23505")
         && database_error.constraint() == Some("active_rebalance_opportunity_slots_pkey")
+}
+
+fn is_opportunity_commit_lifetime_fence(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .and_then(|database| database.code())
+        .as_deref()
+        == Some("LY001")
 }
 
 pub fn rebalance_opportunity_idempotency_key(input: &RebalanceOpportunityInput) -> String {

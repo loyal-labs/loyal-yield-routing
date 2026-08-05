@@ -94,6 +94,23 @@ pub enum OrchestratorError {
         slot_opportunity_state: Option<String>,
         reason: &'static str,
     },
+    /// The market snapshot re-derived an epoch key that is already stored under
+    /// different immutable evidence. The stored row stays authoritative and the
+    /// caller must re-observe instead of publishing against ambiguous evidence.
+    /// This is recoverable by construction: no route may be admitted, but the
+    /// planning process has nothing to repair.
+    #[error("optimizer epoch key {epoch_key} is stored under different immutable evidence")]
+    OptimizerEpochEvidenceConflict { epoch_key: String },
+    /// The optimizer epoch backing this publication fell below the minimum
+    /// usable lifetime while the wave was being written. Wall-clock passage is
+    /// not a store defect, so the opportunity is deferred to the next wave.
+    #[error(
+        "opportunity for vault {vault_id} lost the minimum usable optimizer epoch lifetime at {stage}"
+    )]
+    OpportunityDeferredBehindEpochLifetime {
+        vault_id: VaultId,
+        stage: &'static str,
+    },
 }
 
 impl OrchestratorError {
