@@ -38,6 +38,7 @@ const DEFAULT_DIRTY_BATCH_SIZE: usize = 256;
 const DIRTY_LEASE_SECONDS: i64 = 60;
 const DEFAULT_QUEUE_CONNECTIONS: u32 = 20;
 const DEFAULT_ESTIMATED_COST_USD_MICROS: i64 = 100_000;
+const PLANNER_MAXIMUM_CYCLE_BACKOFF_SECONDS: u64 = 30;
 const PRIORITY_VERSION: &str = "lost-yield-service-net-reserve-capacity-v3";
 
 #[derive(Debug)]
@@ -386,6 +387,7 @@ fn opportunity_execution_plan(
 struct PublishWaveResult {
     published: usize,
     deferred_contention: usize,
+    deferred_lifetime: usize,
 }
 
 fn is_publish_contention(error: &OrchestratorError) -> bool {
@@ -393,6 +395,16 @@ fn is_publish_contention(error: &OrchestratorError) -> bool {
         error,
         OrchestratorError::OpportunityDeferredBehindLease { .. }
             | OrchestratorError::OpportunityDeferredBehindActiveSlot { .. }
+    )
+}
+
+/// The optimizer epoch crossed the minimum usable lifetime while this wave was
+/// being written. The route is simply not publishable against that evidence
+/// any more; the next observation republishes it against a fresh epoch.
+fn is_publish_lifetime_deferral(error: &OrchestratorError) -> bool {
+    matches!(
+        error,
+        OrchestratorError::OpportunityDeferredBehindEpochLifetime { .. }
     )
 }
 
@@ -455,6 +467,26 @@ async fn publish_wave(
                         "slotOpportunityState": slot_opportunity_state,
                         "reason": reason,
                         "durableRecoveryRequired": true,
+                    })
+                );
+            }
+            Err(error) if is_publish_lifetime_deferral(&error) => {
+                summary.deferred_lifetime += 1;
+                let stage = match &error {
+                    OrchestratorError::OpportunityDeferredBehindEpochLifetime { stage, .. } => {
+                        *stage
+                    }
+                    _ => unreachable!("publish lifetime classification must stay exhaustive"),
+                };
+                eprintln!(
+                    "{}",
+                    json!({
+                        "status": "fleet_opportunity_publish_deferred",
+                        "vaultId": vault_id.as_i64(),
+                        "reason": "optimizer_epoch_lifetime_exhausted",
+                        "stage": stage,
+                        "durableRecoveryRequired": false,
+                        "republishedOnNextObservation": true,
                     })
                 );
             }
@@ -725,16 +757,44 @@ async fn run_live_once(
         observation.market_epoch.optimizer_epoch_id
     } else {
         let durable_epoch = observation.market_epoch.durable_optimizer_epoch_evidence();
-        neon.upsert_optimizer_epoch(OptimizerEpochInput {
-            cluster: options.cluster.clone(),
-            epoch_key: durable_epoch.fingerprint.clone(),
-            market_slot: durable_epoch.maximum_market_slot.unwrap_or_default(),
-            observed_at: durable_epoch.captured_at,
-            expires_at: durable_epoch.optimizer_envelope_expires_at(),
-            market_state: serde_json::to_value(&durable_epoch)?,
-        })
-        .await?
-        .id
+        let upserted = neon
+            .upsert_optimizer_epoch(OptimizerEpochInput {
+                cluster: options.cluster.clone(),
+                epoch_key: durable_epoch.fingerprint.clone(),
+                market_slot: durable_epoch.maximum_market_slot.unwrap_or_default(),
+                observed_at: durable_epoch.captured_at,
+                expires_at: durable_epoch.optimizer_envelope_expires_at(),
+                market_state: serde_json::to_value(&durable_epoch)?,
+            })
+            .await;
+        match upserted {
+            Ok(epoch) => epoch.id,
+            // The key is already claimed by different immutable evidence. The
+            // stored row wins; publishing this wave against it would admit
+            // routes under evidence they were not planned from. Re-observing
+            // is the whole remedy, so this wave ends non-mutating instead of
+            // taking the process down with it.
+            Err(OrchestratorError::OptimizerEpochEvidenceConflict { epoch_key }) => {
+                return Ok(LivePlanningRun {
+                    output: json!({
+                        "status": "optimizer_epoch_evidence_conflict",
+                        "reason": "epoch_key_stored_under_different_immutable_evidence",
+                        "mutating": false,
+                        "planningScope": if scoped_vault_ids.is_some() { "dirty_cohort" } else { "full_fleet" },
+                        "optimizerEpochKey": epoch_key,
+                        "observation": observation.stats,
+                        "expiredOpportunitiesSwept": expired_opportunities_swept,
+                        "observationMicros": observed_micros,
+                        "observationAndPlanningMicros": planned_micros,
+                        "elapsedMicros": started.elapsed().as_micros(),
+                        "reobservationScheduled": true,
+                    }),
+                    evidence: None,
+                    fallback_to_full: scoped_vault_ids.is_some(),
+                });
+            }
+            Err(error) => return Err(error.into()),
+        }
     };
     for selected in &wave.selected {
         let observed = by_id
@@ -838,10 +898,11 @@ async fn run_live_once(
     } else {
         let classified_publish_count = publish
             .published
-            .saturating_add(publish.deferred_contention);
+            .saturating_add(publish.deferred_contention)
+            .saturating_add(publish.deferred_lifetime);
         if classified_publish_count != queue_input_count {
             return Err(format!(
-                "published and contention-deferred opportunities {classified_publish_count} do not partition queue inputs {queue_input_count}"
+                "published, contention-deferred, and lifetime-deferred opportunities {classified_publish_count} do not partition queue inputs {queue_input_count}"
             )
             .into());
         }
@@ -851,6 +912,7 @@ async fn run_live_once(
         .deferred
         .len()
         .saturating_add(publish.deferred_contention)
+        .saturating_add(publish.deferred_lifetime)
         .saturating_add(mint_lifetime_deferred_count);
     // This durable denominator is the economically admitted frontier that the
     // queue must drain, not every pre-economic route candidate. Capacity- and
@@ -970,13 +1032,19 @@ async fn run_live_once(
             "mintLifetimeDeferredCount".to_owned(),
             json!(mint_lifetime_deferred_count),
         );
+        fields.insert(
+            "publishLifetimeDeferredCount".to_owned(),
+            json!(publish.deferred_lifetime),
+        );
         fields.insert("marketWakePolicy".to_owned(), market_wake_policy_evidence());
     }
     Ok(LivePlanningRun {
         output,
         evidence: Some(evidence),
         fallback_to_full: scoped_vault_ids.is_some()
-            && (publish.deferred_contention > 0 || mint_lifetime_deferred_count > 0),
+            && (publish.deferred_contention > 0
+                || publish.deferred_lifetime > 0
+                || mint_lifetime_deferred_count > 0),
     })
 }
 
@@ -1074,6 +1142,19 @@ fn dirty_vault_ids(leases: &[FleetPlanningDirtyVaultLease]) -> Vec<i64> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+/// Backs a failing planner cycle off exponentially up to a bounded ceiling.
+///
+/// The planner is the only writer of its own dirty-hint leases, so retrying
+/// fast is safe; the ceiling exists so a sustained outage does not turn the
+/// recovery poll into a hot loop against Neon or Timescale.
+fn planner_cycle_backoff(consecutive_failures: u32) -> Duration {
+    let seconds = 1u64
+        .checked_shl(consecutive_failures.saturating_sub(1).min(u32::BITS - 1))
+        .unwrap_or(PLANNER_MAXIMUM_CYCLE_BACKOFF_SECONDS)
+        .min(PLANNER_MAXIMUM_CYCLE_BACKOFF_SECONDS);
+    Duration::from_secs(seconds)
 }
 
 fn planner_owner(cluster: &str) -> String {
@@ -1185,9 +1266,16 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let mut current_market_epoch_key = None::<String>;
     let mut current_material_frontier_fingerprint = None::<String>;
     let mut current_material_frontier = None::<MaterialMarketFrontier>;
+    let mut consecutive_cycle_failures = 0u32;
     loop {
-        neon.heartbeat_fleet_planning_cluster(&options.cluster)
-            .await?;
+        // One planning cycle is the supervision unit. Startup already
+        // fail-fast validated config, migrations, and both pools, so anything
+        // that fails here is a transient store or market condition. Exiting
+        // would only hand the same work to a fresh process after losing the
+        // wakeup listener and the in-memory market baseline.
+        let cycle: Result<(), Box<dyn Error>> = async {
+            neon.heartbeat_fleet_planning_cluster(&options.cluster)
+                .await?;
         if Instant::now() < next_full_sweep_at && Instant::now() >= next_market_probe_at {
             next_market_probe_at = Instant::now() + market_probe_interval;
             match observe_market_epoch(&timescale, &config).await {
@@ -1335,6 +1423,44 @@ async fn run() -> Result<(), Box<dyn Error>> {
                     }
                     print_output(&dirty_run.output, options.json)?;
                 }
+            }
+            }
+            Ok(())
+        }
+        .await;
+        match cycle {
+            Ok(()) => consecutive_cycle_failures = 0,
+            // A one-shot run has no next cycle to recover into, so it keeps
+            // reporting failure to its caller.
+            Err(error) if options.once => return Err(error),
+            Err(error) => {
+                consecutive_cycle_failures = consecutive_cycle_failures.saturating_add(1);
+                let backoff = planner_cycle_backoff(consecutive_cycle_failures);
+                OperationalError::new(
+                    "fleet_opportunity_planner_cycle_failed",
+                    "run_fleet_opportunity_planner_cycle",
+                    "Fleet opportunity planner cycle failed and will retry",
+                )
+                .retryable(true)
+                .recovery_required(false)
+                .emit();
+                // The alert channel deliberately carries only stable
+                // classifications, so the operator-facing cause goes to stderr
+                // alongside it. Losing that text is what made this failure
+                // mode expensive to diagnose.
+                eprintln!(
+                    "{}",
+                    json!({
+                        "status": "fleet_opportunity_planner_cycle_failed",
+                        "consecutiveFailures": consecutive_cycle_failures,
+                        "retryAfterMilliseconds": u64::try_from(backoff.as_millis())
+                            .unwrap_or(u64::MAX),
+                        "error": error.to_string(),
+                        "durableRecoveryPollingActive": true,
+                    })
+                );
+                tokio::time::sleep(backoff).await;
+                continue;
             }
         }
         if options.once {
