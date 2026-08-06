@@ -57,6 +57,8 @@
     "verify:qedgen:kani-impl": "bash scripts/verify-qedgen-kani-impl.sh",
     "verify:qedgen:kani-impl:full": "KANI_IMPL_SCOPE=full bash scripts/verify-qedgen-kani-impl.sh",
     "verify:hub-kani-impl": "bash scripts/verify-hub-kani-impl.sh",
+    "render:services": "bun scripts/render-services-table.ts",
+    "render:services:redeploy": "bun scripts/render-services-redeploy.ts",
     "verify:autodeposit-alt-readiness": "bun scripts/verify-autodeposit-alt-readiness.ts",
     "verify:idle-deposit-reconcile": "cargo run -p loyal-yield-orchestrator --bin verify-idle-deposit-reconcile",
     "verify:autodeposit-closed-route-policy": "bun scripts/verify-autodeposit-closed-route-policy.ts",
