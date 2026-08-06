@@ -10,11 +10,7 @@ use sqlx::{
     FromRow, PgPool, Row,
 };
 
-use crate::{
-    apy::ReserveSnapshot,
-    targets::{ReserveTarget, SupportedReserveRecord},
-    ReserveDiff,
-};
+use loyal_kamino_codec::{ReserveDiff, ReserveSnapshot, ReserveTarget, SupportedReserveRecord};
 
 const TABLE_NAME: &str = "reserve_updates";
 const HTTP_SNAPSHOT_SOURCE: &str = "http_snapshot";

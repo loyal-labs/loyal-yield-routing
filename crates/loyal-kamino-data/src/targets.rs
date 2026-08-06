@@ -14,22 +14,10 @@ use loyal_actions::{
     PYUSD_MINT, SUSDE_MINT, SYRUP_USDC_MINT, USCC_MINT, USD1_MINT, USDC_MINT, USDE_MINT, USDG_MINT,
     USDS_MINT, USDT_MINT,
 };
+pub use loyal_kamino_codec::{ReserveTarget, SupportedReserveRecord};
 use reqwest::blocking::Client;
-use serde::{de, Deserialize, Deserializer, Serialize};
+use serde::{de, Deserialize, Deserializer};
 use solana_sdk::pubkey::Pubkey;
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ReserveTarget {
-    pub reserve: Pubkey,
-    pub market: Option<Pubkey>,
-    pub market_name: Option<String>,
-    pub symbol: Option<String>,
-    pub liquidity_mint: Option<Pubkey>,
-    pub api_supply_apy: Option<f64>,
-    pub api_borrow_apy: Option<f64>,
-    pub api_total_supply_usd: Option<f64>,
-    pub api_total_borrow_usd: Option<f64>,
-}
 
 #[derive(Debug, Clone)]
 pub struct SupportedMarket {
@@ -42,16 +30,6 @@ pub struct SupportedMarket {
 pub struct SupportedMint {
     pub mint: Pubkey,
     pub symbol: &'static str,
-}
-
-#[derive(Debug, Clone)]
-pub struct SupportedReserveRecord {
-    pub reserve: Pubkey,
-    pub market: Pubkey,
-    pub market_name: Option<String>,
-    pub symbol: Option<String>,
-    pub liquidity_mint: Pubkey,
-    pub risk_baskets: Vec<String>,
 }
 
 pub struct KaminoApi {

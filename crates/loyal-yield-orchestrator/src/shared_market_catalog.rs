@@ -1,20 +1,20 @@
 use chrono::{DateTime, Utc};
-use klend_interface::{
-    from_account_data, pda::lending_market_authority, state::Reserve, FARMS_PROGRAM_ID,
-    KLEND_PROGRAM_ID,
-};
+use klend_interface::{FARMS_PROGRAM_ID, KLEND_PROGRAM_ID};
 use loyal_actions::{SharedMarketRole, ASSOCIATED_TOKEN_PROGRAM_ID};
+pub use loyal_kamino_codec::{
+    decode_kamino_reserve_account, validate_supported_reserve, KaminoReserveCatalogAccount,
+    SharedMarketCatalogError,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use solana_client::rpc_client::RpcClient;
 #[allow(deprecated)]
 use solana_sdk::system_program;
-use solana_sdk::{account::Account, commitment_config::CommitmentConfig, pubkey::Pubkey};
+use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
 use std::{
     collections::{BTreeMap, BTreeSet},
     str::FromStr,
 };
-use thiserror::Error;
 
 use crate::{
     lookup_table_manifest_address_records_hash, LookupTableManifestAddressRecord,
@@ -35,23 +35,6 @@ pub struct SupportedKaminoReserve {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KaminoReserveCatalogAccount {
-    pub reserve: Pubkey,
-    pub market: Pubkey,
-    pub market_authority: Pubkey,
-    pub liquidity_mint: Pubkey,
-    pub liquidity_token_program: Pubkey,
-    pub liquidity_supply: Pubkey,
-    pub collateral_mint: Pubkey,
-    pub collateral_supply: Pubkey,
-    pub collateral_farm: Option<Pubkey>,
-    pub pyth_oracle: Option<Pubkey>,
-    pub switchboard_price_oracle: Option<Pubkey>,
-    pub switchboard_twap_oracle: Option<Pubkey>,
-    pub scope_prices: Option<Pubkey>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FinalizedKaminoReserveCatalog {
     /// Lowest finalized RPC context slot across all account batches.
     pub source_slot: u64,
@@ -69,52 +52,6 @@ pub struct DerivedSharedMarketCatalog {
     pub ordered_address_hash: String,
     /// Hash of the ordered reserve/market/mint identity tuples.
     pub reserve_set_hash: String,
-}
-
-#[derive(Debug, Error)]
-pub enum SharedMarketCatalogError {
-    #[error("shared-market catalog requires at least one active safe supported reserve")]
-    EmptySupportedReserveSet,
-    #[error("supported reserve row has invalid {field} pubkey {value}")]
-    InvalidSupportedPubkey { field: &'static str, value: String },
-    #[error("supported reserve {reserve} is duplicated")]
-    DuplicateSupportedReserve { reserve: String },
-    #[error(
-        "shared-market catalog has {actual} supported reserves, exceeding the single finalized RPC snapshot limit {limit}"
-    )]
-    TooManySupportedReserves { actual: usize, limit: usize },
-    #[error("finalized RPC account for supported reserve {reserve} is missing")]
-    MissingReserveAccount { reserve: Pubkey },
-    #[error("reserve {reserve} is owned by {actual}, expected Kamino lend program {expected}")]
-    InvalidReserveOwner {
-        reserve: Pubkey,
-        actual: Pubkey,
-        expected: Pubkey,
-    },
-    #[error("reserve {reserve} account data could not be decoded: {detail}")]
-    InvalidReserveData { reserve: Pubkey, detail: String },
-    #[error(
-        "reserve {reserve} finalized market {actual} does not match supported-reserve market {expected}"
-    )]
-    MarketMismatch {
-        reserve: Pubkey,
-        actual: Pubkey,
-        expected: Pubkey,
-    },
-    #[error(
-        "reserve {reserve} finalized liquidity mint {actual} does not match supported-reserve mint {expected}"
-    )]
-    LiquidityMintMismatch {
-        reserve: Pubkey,
-        actual: Pubkey,
-        expected: Pubkey,
-    },
-    #[error("finalized reserve RPC request failed: {0}")]
-    Rpc(String),
-    #[error("finalized reserve RPC returned an inconsistent account batch")]
-    InconsistentRpcBatch,
-    #[error("shared-market catalog address count exceeds PostgreSQL INTEGER")]
-    AddressCountOverflow,
 }
 
 pub fn load_finalized_kamino_reserve_catalog(
@@ -171,74 +108,6 @@ pub fn load_finalized_kamino_reserve_catalog(
         max_source_slot: source_slot,
         reserves: decoded,
     })
-}
-
-pub fn decode_kamino_reserve_account(
-    reserve: Pubkey,
-    account: &Account,
-) -> Result<KaminoReserveCatalogAccount, SharedMarketCatalogError> {
-    if account.owner != KLEND_PROGRAM_ID {
-        return Err(SharedMarketCatalogError::InvalidReserveOwner {
-            reserve,
-            actual: account.owner,
-            expected: KLEND_PROGRAM_ID,
-        });
-    }
-    let state = from_account_data::<Reserve>(&account.data).map_err(|error| {
-        SharedMarketCatalogError::InvalidReserveData {
-            reserve,
-            detail: error.to_string(),
-        }
-    })?;
-    Ok(KaminoReserveCatalogAccount {
-        reserve,
-        market: state.lending_market,
-        market_authority: lending_market_authority(&KLEND_PROGRAM_ID, &state.lending_market).0,
-        liquidity_mint: state.liquidity.mint_pubkey,
-        liquidity_token_program: state.liquidity.token_program,
-        liquidity_supply: state.liquidity.supply_vault,
-        collateral_mint: state.collateral.mint_pubkey,
-        collateral_supply: state.collateral.supply_vault,
-        collateral_farm: non_default_pubkey(state.farm_collateral),
-        pyth_oracle: non_default_pubkey(state.config.token_info.pyth_configuration.price),
-        switchboard_price_oracle: non_default_pubkey(
-            state
-                .config
-                .token_info
-                .switchboard_configuration
-                .price_aggregator,
-        ),
-        switchboard_twap_oracle: non_default_pubkey(
-            state
-                .config
-                .token_info
-                .switchboard_configuration
-                .twap_aggregator,
-        ),
-        scope_prices: non_default_pubkey(state.config.token_info.scope_configuration.price_feed),
-    })
-}
-
-pub fn validate_supported_reserve(
-    decoded: &KaminoReserveCatalogAccount,
-    expected_market: Pubkey,
-    expected_liquidity_mint: Pubkey,
-) -> Result<(), SharedMarketCatalogError> {
-    if decoded.market != expected_market {
-        return Err(SharedMarketCatalogError::MarketMismatch {
-            reserve: decoded.reserve,
-            actual: decoded.market,
-            expected: expected_market,
-        });
-    }
-    if decoded.liquidity_mint != expected_liquidity_mint {
-        return Err(SharedMarketCatalogError::LiquidityMintMismatch {
-            reserve: decoded.reserve,
-            actual: decoded.liquidity_mint,
-            expected: expected_liquidity_mint,
-        });
-    }
-    Ok(())
 }
 
 pub fn derive_shared_market_catalog(
@@ -394,10 +263,6 @@ fn parse_supported_pubkey(
     })
 }
 
-fn non_default_pubkey(address: Pubkey) -> Option<Pubkey> {
-    (address != Pubkey::default()).then_some(address)
-}
-
 fn add_catalog_role(
     roles: &mut BTreeMap<String, (BTreeSet<SharedMarketRole>, bool)>,
     address: Pubkey,
@@ -422,7 +287,8 @@ fn length_prefixed_hash<'a>(values: impl IntoIterator<Item = &'a str>) -> String
 mod tests {
     use super::*;
     use bytemuck::{bytes_of, Zeroable};
-    use klend_interface::state::SplDiscriminate;
+    use klend_interface::state::{Reserve, SplDiscriminate};
+    use solana_sdk::account::Account;
 
     fn reserve_account(market: Pubkey, liquidity_mint: Pubkey, seed: u8) -> (Pubkey, Account) {
         let reserve_address = Pubkey::new_unique();

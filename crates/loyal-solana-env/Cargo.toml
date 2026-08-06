@@ -1,0 +1,12 @@
+[package]
+name = "loyal-solana-env"
+version = "0.1.0"
+edition = "2021"
+description = "Credential-safe Solana signer and RPC environment helpers for Loyal"
+
+[dependencies]
+bs58 = "0.5"
+reqwest = { version = "0.12", default-features = false }
+serde_json = "1"
+solana-sdk.workspace = true
+thiserror = "2"

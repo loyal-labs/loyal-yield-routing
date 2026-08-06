@@ -4,7 +4,7 @@ use klend_interface::{state::Reserve, Fraction};
 use serde::Serialize;
 use solana_sdk::pubkey::Pubkey;
 
-use crate::targets::ReserveTarget;
+use crate::ReserveTarget;
 
 const SLOTS_PER_SECOND: f64 = 2.0;
 const SECONDS_PER_YEAR: f64 = 365.25 * 24.0 * 60.0 * 60.0;

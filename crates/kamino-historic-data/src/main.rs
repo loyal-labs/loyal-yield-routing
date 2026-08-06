@@ -13,14 +13,15 @@ use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::TimeZone;
 use chrono::{DateTime, Utc};
-use kamino_reserve_monitor::{
-    diff_snapshot, snapshot_from_account, snapshot_from_account_at,
-    source::{UpdateSourceMetadata, CONFIRMED_COMMITMENT},
+use klend_interface::KLEND_PROGRAM_ID;
+use loyal_kamino_codec::{
+    diff_snapshot, snapshot_from_account, snapshot_from_account_at, ReserveDiff, ReserveSnapshot,
+};
+use loyal_kamino_data::{
+    source_metadata::{UpdateSourceMetadata, CONFIRMED_COMMITMENT},
     targets::{KaminoApi, ReserveTarget},
     timescale::{ReserveUpdateRecord, TimescaleSink, TimescaleSinkConfig},
-    ReserveDiff, ReserveSnapshot,
 };
-use klend_interface::KLEND_PROGRAM_ID;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use solana_sdk::pubkey::Pubkey;
@@ -287,7 +288,7 @@ async fn run() -> Result<()> {
 async fn fetch_supported_reserves_blocking(
     kamino_api_base: String,
     timeout_secs: u64,
-) -> Result<Vec<kamino_reserve_monitor::targets::SupportedReserveRecord>> {
+) -> Result<Vec<loyal_kamino_codec::SupportedReserveRecord>> {
     tokio::task::spawn_blocking(move || {
         let api = KaminoApi::new(kamino_api_base, Duration::from_secs(timeout_secs))?;
         api.fetch_supported_reserves()

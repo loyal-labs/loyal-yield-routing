@@ -1,0 +1,13 @@
+[package]
+name = "loyal-kamino-codec"
+version = "0.1.0"
+edition = "2021"
+description = "Pure Kamino reserve decoding and APY calculations for Loyal"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+klend-interface = { git = "https://github.com/Kamino-Finance/klend" }
+serde = { version = "1", features = ["derive"] }
+solana-sdk.workspace = true
+thiserror = "2"

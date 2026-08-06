@@ -36,7 +36,7 @@ const WEBSOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const SUBSCRIPTION_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 pub const LASERSTREAM_SOURCE: &str = "laserstream_grpc";
 pub const WEBSOCKET_SOURCE: &str = "websocket";
-pub const CONFIRMED_COMMITMENT: &str = "confirmed";
+pub use loyal_kamino_data::source_metadata::{UpdateSourceMetadata, CONFIRMED_COMMITMENT};
 
 #[derive(Clone, Copy, Debug)]
 pub struct SubscriptionConfig {
@@ -44,12 +44,6 @@ pub struct SubscriptionConfig {
     pub reconnect_base_delay: Duration,
     pub reconnect_max_delay: Duration,
     pub heartbeat_interval: Duration,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct UpdateSourceMetadata {
-    pub source: &'static str,
-    pub source_commitment: &'static str,
 }
 
 #[derive(Debug)]

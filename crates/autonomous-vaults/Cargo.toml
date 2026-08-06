@@ -12,7 +12,9 @@ borsh.workspace = true
 bytemuck = "1"
 klend-interface = { git = "https://github.com/Kamino-Finance/klend" }
 loyal-actions = { path = "../loyal-actions" }
-loyal-yield-orchestrator = { path = "../loyal-yield-orchestrator" }
+loyal-kamino-codec = { path = "../loyal-kamino-codec" }
+loyal-solana-env = { path = "../loyal-solana-env" }
+loyal-yield-store = { path = "../loyal-yield-store" }
 meteora-dlmm-commons = { package = "commons", git = "https://github.com/MeteoraAg/dlmm-sdk", rev = "fb02e51ae677bbd18e76543f702dae40632426db" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -33,7 +33,7 @@ use loyal_actions::{
     SquadsDataValueView, SquadsInstructionConstraintView, ASSOCIATED_TOKEN_PROGRAM_ID,
     KAMINO_INIT_OBLIGATION_DISCRIMINATOR, KAMINO_LEND_PROGRAM_ID, USDC_MINT,
 };
-use loyal_yield_orchestrator::{decode_kamino_reserve_account, KaminoReserveCatalogAccount};
+use loyal_kamino_codec::{decode_kamino_reserve_account, KaminoReserveCatalogAccount};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey;
 use solana_sdk::{
