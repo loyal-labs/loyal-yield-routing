@@ -21390,6 +21390,7 @@ mod tests {
             e2e_deposit_amount_raw: None,
             execute,
             prepare_only: false,
+            read_only: false,
             fused_execute: false,
             optimization_cycle: true,
             reconcile_from_chain,

@@ -1986,8 +1986,16 @@ mod tests {
     }
 
     fn safe_target(reserve: &str) -> SupportedReserveLatestRow {
+        let observed_at = Utc::now();
         SupportedReserveLatestRow {
-            observed_at: Utc::now(),
+            state_event_id: 1,
+            account_data_hash: "account-data-hash".to_owned(),
+            state_observed_at: observed_at,
+            state_slot: 100,
+            verified_at: observed_at,
+            verified_slot: 100,
+            verification_commitment: "confirmed".to_owned(),
+            observed_at,
             slot: 100,
             reserve: reserve.to_owned(),
             market: Some(ALLOWED_MARKET.to_owned()),
