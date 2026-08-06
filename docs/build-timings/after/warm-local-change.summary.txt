@@ -1,0 +1,3 @@
+scenario=warm-local-change
+elapsed_seconds=23
+exit_status=0
