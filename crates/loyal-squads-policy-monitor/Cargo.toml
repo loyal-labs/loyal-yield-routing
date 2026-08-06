@@ -5,17 +5,17 @@ edition = "2021"
 description = "Helius websocket monitor for Loyal Squads yield-route policies"
 
 [dependencies]
-base64 = "0.22"
+base64.workspace = true
 bincode = "1.3"
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
-clap = { version = "4", features = ["derive", "env"] }
-futures-util = "0.3"
+chrono = { workspace = true, default-features = false, features = ["clock", "serde"] }
+clap = { workspace = true, features = ["derive", "env"] }
+futures-util.workspace = true
 loyal-actions = { path = "../loyal-actions" }
 loyal-yield-store = { path = "../loyal-yield-store" }
-serde = { version = "1", features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
 serde_json = "1"
 solana-sdk.workspace = true
 spl-token.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
