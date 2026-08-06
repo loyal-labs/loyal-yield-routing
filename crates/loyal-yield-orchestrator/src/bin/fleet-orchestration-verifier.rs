@@ -5453,9 +5453,13 @@ async fn run_database_checks(
         .as_ref()
         .err()
         .map(ToString::to_string);
-    let commit_publication_rejected_during_commit = commit_publication_error
-        .as_deref()
-        .is_some_and(|error| error.contains("active rebalance opportunity cannot commit"));
+    let commit_publication_rejected_during_commit = matches!(
+        commit_publication_result.as_ref().err(),
+        Some(OrchestratorError::OpportunityDeferredBehindEpochLifetime {
+            stage: "database_commit_fence",
+            ..
+        })
+    );
     let commit_publication_rows: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM loyal_yield.rebalance_opportunities WHERE cluster = $1 AND vault_id = $2",
     )
