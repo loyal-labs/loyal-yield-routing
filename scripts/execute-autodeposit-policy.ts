@@ -2208,12 +2208,22 @@ export function isTopUpPreflightBlockedFailure(error: unknown): boolean {
  * A blocked route cannot be waited out, so it must not reach the readiness gate: that
  * gate can only describe lookup-table coverage, and would report a route fault as an
  * ALT fault. Failing here keeps the blocker text attached to the failure.
+ *
+ * Blockers on their own are not fatal. The initial-deposit mode this flow borrows models
+ * a wallet-funded deposit, so its wallet-funding leg is always unmet here: the vault is
+ * funded by the pull, which has not run at dry-run time. The coverage gate already
+ * accepts that as `funding_deferred`. What is unrecoverable is a policy plan that never
+ * built, and the binary only omits the lookup-table resolution in exactly that case, so
+ * the missing resolution -- not the presence of blockers -- is the signal to stop.
  */
 export function assertNoTopUpPreflightBlockers(
   dryRun: SameMintTopUpResult
 ): void {
   const blockers = readTopUpPreflightBlockers(dryRun);
   if (blockers.length === 0) {
+    return;
+  }
+  if (readRecord(dryRun.json?.lookupTableResolution)) {
     return;
   }
   const missingObligation = readMissingDepositObligation(dryRun);

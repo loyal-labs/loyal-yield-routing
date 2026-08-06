@@ -41,6 +41,11 @@ const STALE_MARKET = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF";
 const LIVE_RESERVE = "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z";
 const LIVE_MARKET = "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8";
 const OTHER_RESERVE = "GTzdvEf7bAosdzCjgcA2Nxs3fMVMMK139P1SW3rYgqTs";
+/** A route whose plan builds, but whose wallet-funding leg is unmet at dry-run time. */
+const FUNDING_DEFERRED_RESERVE = "5cjp3WNfEGghXJx5rvqF1SNCxETq2Cr1CudFNiGpoqKy";
+/** Verbatim from production after the fix deployed. */
+const FUNDING_BLOCKER =
+  "wallet USDC balance 870715 is below needed funding amount 1256712";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const OTHER_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 const MISSING_OBLIGATION = "HfwZYDSnbmqCDj73j417ERft53uoTqw8djsEoaXYwhf3";
@@ -185,6 +190,8 @@ function installPlan(directory: string): void {
       blockedReserve: STALE_RESERVE,
       blocker: PRODUCTION_BLOCKER,
       healthyReserve: LIVE_RESERVE,
+      fundingDeferredReserve: FUNDING_DEFERRED_RESERVE,
+      fundingBlocker: FUNDING_BLOCKER,
     }),
     "utf8"
   );
@@ -263,6 +270,7 @@ async function scenarioProductionMisreportIsFixed(
   console.log("\nthe blocked route is no longer reported as unknown ALT coverage");
   installPlan(directory);
   const blocked = await dryRun(STALE_RESERVE);
+  blockedFixture = blocked;
 
   check(
     "the dry run reproduces production: exit 0, null resolution",
@@ -539,6 +547,64 @@ function scenarioHealthyTargetsAreUntouched(): void {
     firstDeposit
   );
 }
+
+/**
+ * Regression guard for the production incident of 2026-08-06 14:11 UTC: the first fix
+ * rejected every preflight blocker, including the wallet-funding leg that is unmet on
+ * every autodeposit dry run by construction. Targets whose coverage was already `ready`
+ * started failing as preflight_blocked.
+ */
+async function scenarioDeferrableBlockersStillProceed(
+  directory: string
+): Promise<void> {
+  console.log("\nregression: a deferrable funding blocker must not stop the pull");
+  installPlan(directory);
+  const deferred = await dryRun(FUNDING_DEFERRED_RESERVE);
+
+  check(
+    "the dry run reports the funding blocker",
+    readTopUpPreflightBlockers(deferred).includes(FUNDING_BLOCKER),
+    readTopUpPreflightBlockers(deferred)
+  );
+  check(
+    "but it still carries a built lookup-table resolution",
+    deferred.json?.lookupTableResolution !== null &&
+      deferred.json?.lookupTableResolution !== undefined
+  );
+
+  let thrown: unknown = null;
+  try {
+    assertNoTopUpPreflightBlockers(deferred);
+  } catch (error) {
+    thrown = error;
+  }
+  check(
+    "the preflight gate lets it through",
+    thrown === null,
+    thrown instanceof Error ? thrown.message.slice(0, 200) : thrown
+  );
+
+  const coverage = readTopUpLookupTableCoverage(deferred, FUNDING_DEFERRED_RESERVE);
+  check(
+    "coverage still resolves as ready so the pull can proceed",
+    coverage.status === "ready",
+    coverage
+  );
+  check(
+    "a plan that never built is still rejected",
+    (() => {
+      try {
+        assertNoTopUpPreflightBlockers(blockedFixture!);
+        return false;
+      } catch {
+        return true;
+      }
+    })(),
+    "missing-obligation case must still throw"
+  );
+}
+
+let blockedFixture: Awaited<ReturnType<typeof dryRun>> | null = null;
 
 function scenarioMatchingRowIsValidated(): void {
   console.log("\nreview 3: a matching pointer row is validated, not trusted blindly");
@@ -856,6 +922,38 @@ if (reserve === plan.blockedReserve) {
   process.exit(0);
 }
 
+// The plan builds and the resolution is present, but the borrowed initial-deposit mode
+// reports its wallet-funding leg as unmet because the pull has not run yet. Production
+// treats this as funding_deferred and proceeds.
+if (reserve === plan.fundingDeferredReserve) {
+  console.log(
+    JSON.stringify({
+      status: "initial_deposit_dry_run",
+      sendsTransactions: false,
+      preflightBlockers: [plan.fundingBlocker],
+      policyDeposit: { signer: "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ" },
+      policyDepositTransaction: {
+        feePayer: "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+        simulationError: null,
+      },
+      lookupTableResolution: {
+        reusable: {
+          ready: true,
+          missingAddresses: [],
+          packetFits: true,
+          tables: [{ tableId: 140 }],
+          transaction: { packetSizeBytes: 435 },
+          simulationError: null,
+        },
+        rollout: { mode: "reusable_only", forceLegacy: false },
+        selection: { blocker: "route_funding_required:vault_usdc" },
+        sharedMarketCatalog: { state: "covered" },
+      },
+    })
+  );
+  process.exit(0);
+}
+
 // An unreadable resolution with no blockers: the genuinely unknown case.
 if (reserve !== plan.healthyReserve) {
   console.log(
@@ -915,6 +1013,7 @@ async function main(): Promise<void> {
     await scenarioDryRunNeverMutates(directory);
     scenarioGuardsNeverRedirect();
     scenarioHealthyTargetsAreUntouched();
+    await scenarioDeferrableBlockersStillProceed(directory);
     scenarioMatchingRowIsValidated();
     await scenarioPositionsAreScopedToVault(directory);
     scenarioLostRaceStopsTheAttempt();
