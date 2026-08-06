@@ -55,6 +55,7 @@ use loyal_actions::{
     YIELD_ROUTE_WITHDRAW_ACTION_SEED,
 };
 use loyal_observability::{init_from_env, OperationalError};
+use loyal_yield_orchestrator::sqlx;
 use loyal_yield_orchestrator::sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
     PgPool, Row,
@@ -2496,7 +2497,7 @@ enum PlanBlocker {
 }
 
 #[tokio::main]
-async fn main() {
+pub async fn run_main() {
     let args = env::args().skip(1).collect::<Vec<_>>();
     match run_startup_probe(&args) {
         Ok(true) => return,

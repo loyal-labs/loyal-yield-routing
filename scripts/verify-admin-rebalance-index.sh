@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-migration="$repo_root/crates/loyal-yield-orchestrator/migrations/0032_idle_vault_decision_lookup_index.sql"
+migration="$repo_root/crates/loyal-yield-store/migrations/0032_idle_vault_decision_lookup_index.sql"
 runner="$repo_root/crates/loyal-yield-orchestrator/src/bin/yield-migrations.rs"
 index_name="rebalance_decisions_idle_signature_id_idx"
 

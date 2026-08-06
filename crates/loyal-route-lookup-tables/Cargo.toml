@@ -1,0 +1,18 @@
+[package]
+name = "loyal-route-lookup-tables"
+version = "0.1.0"
+edition = "2021"
+description = "Reusable route Address Lookup Table planning and persistence for Loyal"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+loyal-actions = { path = "../loyal-actions" }
+loyal-solana-env = { path = "../loyal-solana-env" }
+loyal-yield-store = { path = "../loyal-yield-store" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+solana-sdk.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["chrono", "json", "postgres", "runtime-tokio-rustls"] }
+thiserror = "2"
+tokio = { version = "1", features = ["time"] }

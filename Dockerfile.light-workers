@@ -33,6 +33,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         -p balance-sweep-ata-projector \
         -p balance-sweep-autodeposit-trigger \
         -p loyal-yield-realtime \
+        -p loyal-fleet-worker \
         -p loyal-yield-orchestrator \
         --bin balance-sweep-ata-projector \
         --bin balance-sweep-autodeposit-trigger \
@@ -54,6 +55,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         -p balance-sweep-ata-projector \
         -p balance-sweep-autodeposit-trigger \
         -p loyal-yield-realtime \
+        -p loyal-fleet-worker \
         -p loyal-yield-orchestrator \
         --bin balance-sweep-ata-projector \
         --bin balance-sweep-autodeposit-trigger \

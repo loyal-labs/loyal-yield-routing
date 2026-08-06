@@ -36,7 +36,7 @@ const RUNTIME_DIGEST_INPUTS: [&str; 14] = [
     "crates/loyal-timescale-migrations",
     "crates/loyal-yield-orchestrator/Cargo.toml",
     "crates/loyal-yield-orchestrator/src",
-    "crates/loyal-yield-orchestrator/migrations",
+    "crates/loyal-yield-store/migrations",
     "crates/loyal-yield-router/Cargo.toml",
     "crates/loyal-yield-router/src",
     "scripts/kamino-monitor-predeploy.sh",

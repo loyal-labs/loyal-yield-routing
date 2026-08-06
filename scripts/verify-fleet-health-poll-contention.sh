@@ -29,7 +29,7 @@ set -euo pipefail
 # external network access.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-worker_source="$repo_root/crates/loyal-yield-orchestrator/src/bin/same-mint-reserve-swap.rs"
+worker_source="$repo_root/crates/loyal-fleet-worker/src/lib.rs"
 health_source="$repo_root/crates/loyal-yield-orchestrator/src/fleet_orchestration/health.rs"
 
 expected_interval_ms="${FLEET_HEALTH_INTERVAL_MS:-10000}"

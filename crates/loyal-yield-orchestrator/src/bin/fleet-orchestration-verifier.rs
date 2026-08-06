@@ -1040,7 +1040,7 @@ fn collect_local_evidence(repository_root: &Path) -> Result<LocalEvidence, Box<d
     for (version, name, file_name) in VERIFIED_MIGRATIONS {
         let bytes = fs::read(
             repository_root
-                .join("crates/loyal-yield-orchestrator/migrations")
+                .join("crates/loyal-yield-store/migrations")
                 .join(file_name),
         )?;
         migration_files.push((version, name, file_name, bytes));
@@ -8525,7 +8525,7 @@ async fn migration_repository_checks(
     let mut migrations = Vec::new();
     for (version, name, file_name) in VERIFIED_MIGRATIONS {
         let path = repository_root
-            .join("crates/loyal-yield-orchestrator/migrations")
+            .join("crates/loyal-yield-store/migrations")
             .join(file_name);
         match fs::read(&path) {
             Ok(sql) => migrations.push((version, name, path, sql)),
@@ -10216,7 +10216,7 @@ fn production_migration_subcheck(binding: &ProductionEvidenceBinding) -> Subchec
     for (version, expected_name, file_name) in VERIFIED_MIGRATIONS {
         let path = binding
             .repository_root
-            .join("crates/loyal-yield-orchestrator/migrations")
+            .join("crates/loyal-yield-store/migrations")
             .join(file_name);
         let expected_checksum = fs::read(path)
             .map(|bytes| sha256_hex(&bytes))

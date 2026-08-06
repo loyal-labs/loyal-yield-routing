@@ -44,14 +44,14 @@ cd "$repo_root"
 output_dir="docs/build-timings/$label"
 mkdir -p "$output_dir"
 
-read -r -a cargo_selection <<<"${BUILD_TIMINGS_CARGO_ARGS:--p loyal-yield-orchestrator --bin same-mint-reserve-swap}"
+read -r -a cargo_selection <<<"${BUILD_TIMINGS_CARGO_ARGS:--p loyal-fleet-worker --bin same-mint-reserve-swap}"
 
 if [[ -n "${BUILD_TIMINGS_TOUCH_FILE:-}" ]]; then
   touch_file=$BUILD_TIMINGS_TOUCH_FILE
 elif [[ -f crates/loyal-yield-store/src/store.rs ]]; then
   touch_file=crates/loyal-yield-store/src/store.rs
 else
-  touch_file=crates/loyal-yield-orchestrator/src/store.rs
+  touch_file=crates/loyal-fleet-worker/src/lib.rs
 fi
 
 write_metadata() {

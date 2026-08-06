@@ -54,10 +54,6 @@ name = "same-mint-monitor-e2e"
 path = "src/bin/same-mint-monitor-e2e.rs"
 
 [[bin]]
-name = "same-mint-reserve-swap"
-path = "src/bin/same-mint-reserve-swap.rs"
-
-[[bin]]
 name = "same-mint-yield-monitor"
 path = "src/bin/same-mint-yield-monitor.rs"
 
@@ -83,6 +79,7 @@ klend-interface = { git = "https://github.com/Kamino-Finance/klend" }
 loyal-actions = { path = "../loyal-actions" }
 loyal-kamino-codec = { path = "../loyal-kamino-codec" }
 loyal-observability = { path = "../loyal-observability" }
+loyal-route-lookup-tables = { path = "../loyal-route-lookup-tables" }
 loyal-solana-env = { path = "../loyal-solana-env" }
 loyal-yield-router = { path = "../loyal-yield-router" }
 loyal-yield-store = { path = "../loyal-yield-store" }
