@@ -109,13 +109,12 @@ site.
 2.3 `solana-client` and `solana-pubsub-client`; the 3.1 decoder hidden inside
 LaserStream is not a compatible replacement for that boundary.
 
-The earlier build plan anticipated two Anchor generations through
-`klend-interface` and the Meteora `commons` SDK. The refreshed dependency tree
-contains one `anchor-lang` generation, 0.31.1, so there is no current Anchor
-duplicate to fix. `autonomous-vaults` remains excluded from `default-members`
-and all worker images because it is an operator CLI with the Meteora SDK graph.
-Recheck with:
+The dependency tree also contains two upstream-pinned Anchor generations.
+Meteora `commons` brings `anchor-lang`/`anchor-spl` 0.31.1, while Squads v4
+brings 0.32.1. They cannot be aligned from this repository. Keep
+`autonomous-vaults` excluded from `default-members` and all worker images
+because it is an operator CLI with the Meteora SDK graph. Recheck with:
 
 ```sh
-cargo tree -p autonomous-vaults | rg 'anchor-(lang|client|spl)'
+cargo tree --workspace --duplicates | rg -C 3 'anchor-(lang|spl) v0\.(31|32)'
 ```
