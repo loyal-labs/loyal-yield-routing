@@ -202,9 +202,10 @@ const FLEET_POSITION_SWEEP_TRANSPORT_ALERT_AFTER_FAILURES: u32 = 12;
 const FLEET_POSITION_SWEEP_TRANSPORT_ALERT_REPEAT_FAILURES: u32 = 60;
 /// Consecutive per-vault transport failures before the first operational error
 /// is emitted. Unlike the initialization counter above this one is not driven by
-/// a retry timer: a broad upstream outage fails every vault in the concurrent
-/// batch and crosses this threshold within a single sweep, while an isolated
-/// vault flake resets it on the next refreshed vault.
+/// a retry timer, so it pairs with the wave gate in
+/// [`FleetPositionSweepVaultTransportStreak`]: the count alone is satisfied
+/// instantly by one concurrent wave, and the wave gate supplies the elapsed time
+/// that distinguishes a sustained outage from a blip.
 const FLEET_POSITION_SWEEP_VAULT_TRANSPORT_ALERT_AFTER_FAILURES: u32 = 12;
 /// Additional consecutive per-vault transport failures between repeat emissions
 /// once the threshold above is crossed.
@@ -530,6 +531,69 @@ fn record_transport_failure(counter: &mut u32, alert_after: u32, alert_repeat: u
     *counter >= alert_after && elapsed % alert_repeat == 0
 }
 
+/// An uninterrupted run of per-vault transport failures, tracked with the waves
+/// it spans rather than the failure count alone.
+///
+/// The count on its own cannot separate a sustained outage from an instantaneous
+/// one. A wave dispatches `concurrency` vaults simultaneously, so a sub-second
+/// upstream blip fails the whole wave at once and drives the count past any
+/// threshold below the concurrency in a few milliseconds. Requiring the run to
+/// survive into a later wave is what makes elapsed time part of the decision:
+/// the next wave only starts after the previous one has been awaited, so a
+/// second wave of failures proves the outage outlived a full round trip instead
+/// of landing inside one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FleetPositionSweepVaultTransportStreak {
+    failures: u32,
+    first_wave: Option<u64>,
+    last_wave: Option<u64>,
+    failures_at_last_emission: Option<u32>,
+}
+
+impl FleetPositionSweepVaultTransportStreak {
+    /// Records one failure in `wave` and reports whether it should emit.
+    ///
+    /// The repeat cadence counts from the previous emission rather than from
+    /// `alert_after`, so the wave gate can delay the first emission without
+    /// pushing every later one off the modular schedule. Counting from
+    /// `alert_after` would mean a run that first became eligible at 13 failures
+    /// stayed silent until 72.
+    fn record(&mut self, wave: u64, alert_after: u32, alert_repeat: u32) -> bool {
+        self.failures = self.failures.saturating_add(1);
+        self.first_wave.get_or_insert(wave);
+        self.last_wave = Some(wave);
+
+        if self.failures < alert_after || !self.spans_multiple_waves() {
+            return false;
+        }
+        let due = match self.failures_at_last_emission {
+            None => true,
+            Some(emitted_at) => self.failures.saturating_sub(emitted_at) >= alert_repeat,
+        };
+        if due {
+            self.failures_at_last_emission = Some(self.failures);
+        }
+        due
+    }
+
+    /// Any vault reaching a verdict without a transport fault ends the run, so
+    /// the wave span above only ever measures uninterrupted unavailability.
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn spans_multiple_waves(&self) -> bool {
+        match (self.first_wave, self.last_wave) {
+            (Some(first), Some(last)) => last > first,
+            _ => false,
+        }
+    }
+
+    fn failures(&self) -> u32 {
+        self.failures
+    }
+}
+
 /// Reports whether a database failure means the query no longer matches the
 /// schema, which no amount of retrying repairs. Everything else — pool
 /// timeouts, dropped connections, transient server errors — is connectivity.
@@ -677,7 +741,8 @@ struct FleetPositionSweepCoordinator {
     active: Option<FleetPositionSweepRun>,
     latest: Option<FleetPositionSweepMetrics>,
     consecutive_transport_failures: u32,
-    consecutive_vault_transport_failures: u32,
+    vault_transport_streak: FleetPositionSweepVaultTransportStreak,
+    vault_wave_sequence: u64,
 }
 
 impl FleetPositionSweepCoordinator {
@@ -689,8 +754,16 @@ impl FleetPositionSweepCoordinator {
             active: None,
             latest: None,
             consecutive_transport_failures: 0,
-            consecutive_vault_transport_failures: 0,
+            vault_transport_streak: FleetPositionSweepVaultTransportStreak::default(),
+            vault_wave_sequence: 0,
         }
+    }
+
+    /// Opens a new concurrent wave. Every vault in one wave is dispatched
+    /// simultaneously, so the wave is the smallest unit that carries real
+    /// elapsed time between failures.
+    fn begin_vault_wave(&mut self) {
+        self.vault_wave_sequence = self.vault_wave_sequence.saturating_add(1);
     }
 
     fn due(&self) -> bool {
@@ -761,31 +834,30 @@ impl FleetPositionSweepCoordinator {
     ///
     /// Invariant failures always emit because each one names a specific vault
     /// whose policy or on-chain identity needs inspection. Transport failures
-    /// emit only once enough consecutive vaults fail to distinguish an upstream
-    /// outage from the isolated flake that the next sweep repairs on its own.
+    /// emit only once the consecutive run both crosses the threshold and
+    /// outlives the wave it started in, which is what separates a sustained
+    /// upstream outage from the instantaneous blip the next sweep repairs on
+    /// its own.
     fn record_vault_failure(&mut self, kind: FleetPositionSweepVaultFailureKind) -> bool {
         match kind {
             FleetPositionSweepVaultFailureKind::Invariant => {
-                self.consecutive_vault_transport_failures = 0;
+                self.vault_transport_streak.reset();
                 true
             }
-            FleetPositionSweepVaultFailureKind::Transport => record_transport_failure(
-                &mut self.consecutive_vault_transport_failures,
+            FleetPositionSweepVaultFailureKind::Transport => self.vault_transport_streak.record(
+                self.vault_wave_sequence,
                 FLEET_POSITION_SWEEP_VAULT_TRANSPORT_ALERT_AFTER_FAILURES,
                 FLEET_POSITION_SWEEP_VAULT_TRANSPORT_ALERT_REPEAT_FAILURES,
             ),
         }
     }
 
-    /// Any vault that reached a verdict without a transport fault ends the
-    /// consecutive run, so the threshold below only ever measures an
-    /// uninterrupted stretch of upstream unavailability.
     fn record_vault_transport_success(&mut self) {
-        self.consecutive_vault_transport_failures = 0;
+        self.vault_transport_streak.reset();
     }
 
     fn consecutive_vault_transport_failures(&self) -> u32 {
-        self.consecutive_vault_transport_failures
+        self.vault_transport_streak.failures()
     }
 
     fn record_progress(&mut self) {
@@ -4148,6 +4220,7 @@ async fn advance_fleet_position_sweep(
         )
     };
     let batch_cursor = batch.last().map(|entry| entry.vault.id.as_i64());
+    coordinator.begin_vault_wave();
     let outcomes = reconcile_fleet_position_sweep_batch(
         runtime,
         batch,
