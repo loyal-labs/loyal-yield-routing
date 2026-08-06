@@ -1251,6 +1251,10 @@ struct CliOptions {
     e2e_deposit_amount_raw: Option<u64>,
     execute: bool,
     prepare_only: bool,
+    /// Suppresses every database write a dry run would otherwise make, so an
+    /// operator can inspect a route without registering readiness, provisioning
+    /// demand, or usage leases. Cannot be combined with a mode that must persist.
+    read_only: bool,
     fused_execute: bool,
     optimization_cycle: bool,
     reconcile_from_chain: bool,
@@ -1436,6 +1440,7 @@ impl SameMintRouteExecutionRequest {
                 SameMintRouteExecutionMode::Revalidate
                     | SameMintRouteExecutionMode::RevalidateAndExecute
             ),
+            read_only: false,
             fused_execute: self.mode == SameMintRouteExecutionMode::RevalidateAndExecute,
             optimization_cycle: true,
             reconcile_from_chain: true,
@@ -14026,6 +14031,12 @@ async fn persist_route_lookup_table_resolution(
     acquire_route_lease: bool,
     request_provisioning: bool,
 ) -> Result<Option<i64>, Box<dyn Error>> {
+    // A read-only inspection must not register readiness, provisioning demand, or
+    // usage leases. Returning no provisioning request id is honest here: nothing
+    // was requested, so nothing can be waited on.
+    if options.read_only {
+        return Ok(None);
+    }
     let selected_table_ids = resolution.selected_table_ids();
     let selected_table_count = i32::try_from(selected_table_ids.len())?;
     let required_count = i32::try_from(resolution.required_addresses.len())?;
@@ -19643,6 +19654,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     let mut e2e_deposit_amount_raw = None;
     let mut execute = false;
     let mut prepare_only = false;
+    let mut read_only = false;
     let mut optimization_cycle = false;
     let mut reconcile_from_chain = false;
     let mut reconcile_current_positions = false;
@@ -19793,6 +19805,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
             }
             "--execute" => execute = true,
             "--prepare-only" => prepare_only = true,
+            "--read-only" => read_only = true,
             "--optimization-cycle" => optimization_cycle = true,
             "--reconcile-from-chain" => reconcile_from_chain = true,
             "--reconcile-current-positions" => reconcile_current_positions = true,
@@ -19935,6 +19948,12 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
     if update_active_policy && !update_policy {
         return Err("--update-active-policy requires --update-policy".to_owned());
     }
+    if read_only && (execute || prepare_only) {
+        return Err(
+            "--read-only cannot be combined with --execute or --prepare-only, which must persist"
+                .to_owned(),
+        );
+    }
     if source_reserve.is_some() != target_reserve.is_some() {
         return Err("--source-reserve and --target-reserve must be provided together".to_owned());
     }
@@ -20034,6 +20053,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliOptions, Stri
         e2e_deposit_amount_raw,
         execute,
         prepare_only,
+        read_only,
         fused_execute: false,
         optimization_cycle,
         reconcile_from_chain,
@@ -22069,8 +22089,8 @@ mod tests {
 
 fn print_help() {
     println!(
-         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> --cluster <mainnet-beta|devnet|testnet|localnet> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--deposit-main-usdc <AMOUNT_RAW> | --deposit-reserve <RESERVE> <AMOUNT_RAW> | --deposit-idle-vault-reserve <RESERVE> <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--execute | --prepare-only]\n\n\
-         Dry-run is the default. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and requires YIELD_ALT_CLUSTER or --cluster. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and POLICY_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Policy create/update, obligation setup, initial/idle policy deposits, same-mint moves, full withdrawal, wallet recovery, and policy cleanup all use the same Neon rollout, typed-manifest, readiness, usage-lease, fresh-RPC, exact-v0, and immediate pre-send resolver path. The wallet-to-vault funding transaction is deliberately ALT-free. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for same-mint route work; it requires explicit source/target reserves plus --reconcile-from-chain and either --execute or --prepare-only. --prepare-only builds and simulates the exact route and persists reusable readiness/provisioning demand without creating a rebalance decision, acquiring a route lease, or sending a transaction. --execute uses POLICY_KEYPAIR as fee payer and delegated signer, requires reusable_only rollout state with force_legacy disabled, fresh-verifies every selected reusable ALT against RPC, compiles and simulates the exact v0 transaction, and fails before the decision or send when readiness or leases are invalid. Missing reusable coverage records an idempotent provisioning request for the dedicated provisioner; this route process never creates or extends ALTs. Legacy, shadow, prefer_reusable, and force_legacy control states fail closed because legacy ALT resolution has been removed. Add --deposit-idle-vault-reserve for router-owned USDC already inside the vault; execute mode requires expected idle token account, observed slot/time, mint, amount, target APY, and edge, uses POLICY_KEYPAIR as fee payer/delegated signer for target obligation setup when needed and for deposit, and does not read SOLANA_TESTING_PK. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and POLICY_KEYPAIR for the policy deposit; --deposit-reserve allows choosing a non-Main Safe USDC reserve when Main is already the APY winner. Full withdraw mode uses POLICY_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
+         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> --cluster <mainnet-beta|devnet|testnet|localnet> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--deposit-main-usdc <AMOUNT_RAW> | --deposit-reserve <RESERVE> <AMOUNT_RAW> | --deposit-idle-vault-reserve <RESERVE> <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--execute | --prepare-only | --read-only]\n\n\
+         Dry-run is the default, and still records lookup-table readiness and provisioning demand so the readiness wait loop can make progress; add --read-only to suppress every database write for pure inspection. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and requires YIELD_ALT_CLUSTER or --cluster. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and POLICY_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Policy create/update, obligation setup, initial/idle policy deposits, same-mint moves, full withdrawal, wallet recovery, and policy cleanup all use the same Neon rollout, typed-manifest, readiness, usage-lease, fresh-RPC, exact-v0, and immediate pre-send resolver path. The wallet-to-vault funding transaction is deliberately ALT-free. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for same-mint route work; it requires explicit source/target reserves plus --reconcile-from-chain and either --execute or --prepare-only. --prepare-only builds and simulates the exact route and persists reusable readiness/provisioning demand without creating a rebalance decision, acquiring a route lease, or sending a transaction. --execute uses POLICY_KEYPAIR as fee payer and delegated signer, requires reusable_only rollout state with force_legacy disabled, fresh-verifies every selected reusable ALT against RPC, compiles and simulates the exact v0 transaction, and fails before the decision or send when readiness or leases are invalid. Missing reusable coverage records an idempotent provisioning request for the dedicated provisioner; this route process never creates or extends ALTs. Legacy, shadow, prefer_reusable, and force_legacy control states fail closed because legacy ALT resolution has been removed. Add --deposit-idle-vault-reserve for router-owned USDC already inside the vault; execute mode requires expected idle token account, observed slot/time, mint, amount, target APY, and edge, uses POLICY_KEYPAIR as fee payer/delegated signer for target obligation setup when needed and for deposit, and does not read SOLANA_TESTING_PK. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and POLICY_KEYPAIR for the policy deposit; --deposit-reserve allows choosing a non-Main Safe USDC reserve when Main is already the APY winner. Full withdraw mode uses POLICY_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
          op run --env-file=.env.1password -- bun run same-mint:swap -- --settings <PUBKEY> --vault-index 1 --reconcile-from-chain --seed-from-user-position"
     );
 }
