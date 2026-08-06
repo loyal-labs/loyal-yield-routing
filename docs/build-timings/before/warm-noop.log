@@ -1,0 +1,32 @@
+warning: field `swap_lanes` is never read
+    --> crates/loyal-yield-orchestrator/src/bin/same-mint-reserve-swap.rs:1551:5
+     |
+1535 | struct SelectedVault {
+     |        ------------- field in this struct
+...
+1551 |     swap_lanes: Value,
+     |     ^^^^^^^^^^
+     |
+     = note: `SelectedVault` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+     = note: `#[warn(dead_code)]` on by default
+
+warning: function `load_kamino_reserve_summary` is never used
+     --> crates/loyal-yield-orchestrator/src/bin/same-mint-reserve-swap.rs:18917:4
+      |
+18917 | fn load_kamino_reserve_summary(
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `load_kamino_obligation_summary` is never used
+     --> crates/loyal-yield-orchestrator/src/bin/same-mint-reserve-swap.rs:19065:4
+      |
+19065 | fn load_kamino_obligation_summary(
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `account_exists_with_owner` is never used
+     --> crates/loyal-yield-orchestrator/src/bin/same-mint-reserve-swap.rs:19366:4
+      |
+19366 | fn account_exists_with_owner(
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `loyal-yield-orchestrator` (bin "same-mint-reserve-swap") generated 4 warnings
+    Finished `release` profile [optimized] target(s) in 0.59s
