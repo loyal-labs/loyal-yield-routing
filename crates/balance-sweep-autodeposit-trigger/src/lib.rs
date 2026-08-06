@@ -11,6 +11,9 @@ pub const AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE: i32 = 20;
 pub const AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE_ENV: &str =
     "AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE";
 pub const AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE: i32 = 21;
+pub const AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE_ENV: &str =
+    "AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE";
+pub const AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE: i32 = 22;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExecutorFailureAlert {
@@ -30,6 +33,13 @@ pub fn executor_failure_alert(exit_code: Option<i32>) -> ExecutorFailureAlert {
             code: "yield_persistence_failed",
             operation: "persist_autodeposit_yield_position",
             summary: "autodeposit top-up succeeded but yield persistence failed",
+        },
+        // The route itself is unexecutable and no funds moved. Waiting cannot clear it,
+        // so it must not page as a lookup-table or top-up fault.
+        Some(AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE) => ExecutorFailureAlert {
+            code: "autodeposit_preflight_blocked",
+            operation: "preflight_autodeposit_route",
+            summary: "autodeposit route preflight blocked before any funds moved",
         },
         _ => ExecutorFailureAlert {
             code: "autodeposit_executor_failed",

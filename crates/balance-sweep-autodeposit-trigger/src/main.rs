@@ -10,7 +10,8 @@ use balance_sweep_autodeposit_trigger::{
     compute_sweep_amount, executor_failure_alert, initial_surplus_amount,
     positive_delta_surplus_amount, scheduled_eligible_after, surplus_lot_classification_db_value,
     SweepAmountDecision, SweepCaps, AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE,
-    AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE_ENV, AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE,
+    AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE_ENV, AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE,
+    AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE_ENV, AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE,
     AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE_ENV,
 };
 use chrono::{DateTime, Utc};
@@ -558,6 +559,10 @@ async fn execute_eligible_targets_once(
             .env(
                 AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE_ENV,
                 AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE.to_string(),
+            )
+            .env(
+                AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE_ENV,
+                AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE.to_string(),
             )
             .status()
             .with_context(|| format!("spawn autodeposit executor for target {}", target.target_id))

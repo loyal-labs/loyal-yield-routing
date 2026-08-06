@@ -243,13 +243,16 @@ const AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE_ENV =
   "AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE";
 const AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE_ENV =
   "AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE";
+const AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE_ENV =
+  "AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE";
 const SOLANA_WEEK_NOTIFY_ENDPOINT_ENV = "SOLANA_WEEK_NOTIFY_ENDPOINT";
 const SOLANA_WEEK_NOTIFY_SECRET_ENV = "SOLANA_WEEK_NOTIFY_SECRET";
 const SOLANA_WEEK_NOTIFY_TIMEOUT_MS = 5_000;
 
 type AutodepositExecutorFailureCode =
   | "kamino_top_up_failed"
-  | "yield_persistence_failed";
+  | "yield_persistence_failed"
+  | "preflight_blocked";
 
 const AUTODEPOSIT_EXECUTOR_FAILURE_EXIT_CODE_ENVS: Record<
   AutodepositExecutorFailureCode,
@@ -257,6 +260,7 @@ const AUTODEPOSIT_EXECUTOR_FAILURE_EXIT_CODE_ENVS: Record<
 > = {
   kamino_top_up_failed: AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE_ENV,
   yield_persistence_failed: AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE_ENV,
+  preflight_blocked: AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE_ENV,
 };
 
 export function autodepositExecutorFailureExitCode(
@@ -1298,6 +1302,276 @@ export async function reconcileClosedRoutePolicyFailure(args: {
   });
 }
 
+const CURRENT_RESERVE_PROJECTION_MAX_AGE_SECONDS = 900;
+const CURRENT_RESERVE_PROJECTION_MAX_AGE_SECONDS_ENV =
+  "AUTODEPOSIT_CURRENT_RESERVE_PROJECTION_MAX_AGE_SECONDS";
+const UNRESOLVED_CURRENT_RESERVE_MARKER =
+  "Autodeposit target reserve could not be resolved against chain truth";
+
+export function isUnresolvedCurrentReserveFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(UNRESOLVED_CURRENT_RESERVE_MARKER);
+}
+
+export type LiveVaultPosition = {
+  reserve: string;
+  market: string;
+  liquidityMint: string;
+  amountRaw: bigint;
+  observedSlot: bigint | null;
+  observedAt: Date | null;
+};
+
+export type CurrentReserveResolution =
+  | {
+      status: "unchanged";
+      reason: "no_current_reserve" | "current_reserve_is_live";
+      /** True when the projection backing the kept pointer is older than the bound. */
+      projectionStale?: boolean;
+      liveReserves?: string[];
+    }
+  | {
+      status: "unresolved";
+      reason:
+        | "no_live_position"
+        | "multiple_live_positions"
+        | "stale_projection"
+        | "liquidity_mint_mismatch";
+      currentReserve: string;
+      liveReserves: string[];
+    }
+  | {
+      status: "reconciled";
+      from: string;
+      to: LiveVaultPosition;
+    };
+
+type CurrentReserveTarget = Pick<
+  EligibleTarget,
+  "currentReserve" | "tokenMint" | "settings" | "vaultIndex" | "wallet"
+>;
+
+/**
+ * Decides which reserve the top-up should target when the stored pointer disagrees with
+ * the vault's observed holdings. The pointer is not authority: a full rebalance can move
+ * every lot to another market without updating it, and depositing into the stale reserve
+ * then fails because the vault has no obligation there.
+ *
+ * Redirecting moves user funds, so this only overrides on an unambiguous, fresh
+ * observation of exactly one live position in the expected mint. Anything else is left
+ * unresolved for the caller to fail on, because guessing a destination is worse than
+ * stopping.
+ */
+export function resolveCurrentReserve(args: {
+  target: CurrentReserveTarget;
+  positions: LiveVaultPosition[];
+  now?: Date;
+  maxProjectionAgeSeconds?: number;
+}): CurrentReserveResolution {
+  const currentReserve = args.target.currentReserve;
+  if (!currentReserve) {
+    return { status: "unchanged", reason: "no_current_reserve" };
+  }
+  const live = args.positions.filter((position) => position.amountRaw > 0);
+  const liveReserves = live.map((position) => position.reserve);
+  const now = args.now ?? new Date();
+  const maxAgeSeconds =
+    args.maxProjectionAgeSeconds ?? CURRENT_RESERVE_PROJECTION_MAX_AGE_SECONDS;
+  const isFresh = (observedAt: Date | null): boolean =>
+    observedAt !== null &&
+    now.getTime() - observedAt.getTime() <= maxAgeSeconds * 1_000;
+
+  const matched = live.find((position) => position.reserve === currentReserve);
+  if (matched) {
+    if (matched.liquidityMint !== args.target.tokenMint) {
+      return {
+        status: "unresolved",
+        reason: "liquidity_mint_mismatch",
+        currentReserve,
+        liveReserves,
+      };
+    }
+    // Keeping the pointer is a no-op rather than a redirect, so a lagging projection
+    // must not turn a healthy target into a failure: that would convert projector lag
+    // into an outage. Report the staleness so it stays visible, and let the next pass
+    // reconcile once the projection catches up.
+    return {
+      status: "unchanged",
+      reason: "current_reserve_is_live",
+      projectionStale: !isFresh(matched.observedAt),
+      liveReserves,
+    };
+  }
+  if (live.length === 0) {
+    return {
+      status: "unresolved",
+      reason: "no_live_position",
+      currentReserve,
+      liveReserves,
+    };
+  }
+  if (live.length > 1) {
+    return {
+      status: "unresolved",
+      reason: "multiple_live_positions",
+      currentReserve,
+      liveReserves,
+    };
+  }
+  const [only] = live;
+  if (only.liquidityMint !== args.target.tokenMint) {
+    return {
+      status: "unresolved",
+      reason: "liquidity_mint_mismatch",
+      currentReserve,
+      liveReserves,
+    };
+  }
+  if (!isFresh(only.observedAt)) {
+    return {
+      status: "unresolved",
+      reason: "stale_projection",
+      currentReserve,
+      liveReserves,
+    };
+  }
+  return { status: "reconciled", from: currentReserve, to: only };
+}
+
+export function assertResolvedCurrentReserve(
+  resolution: CurrentReserveResolution
+): void {
+  if (resolution.status !== "unresolved") {
+    return;
+  }
+  throw new Error(
+    `${UNRESOLVED_CURRENT_RESERVE_MARKER}; refusing to pull. ` +
+      `resolution=${JSON.stringify({
+        reason: resolution.reason,
+        currentReserve: resolution.currentReserve,
+        liveReserves: resolution.liveReserves,
+      })}`
+  );
+}
+
+/**
+ * The pointer update is a compare-and-set, so an empty result means another writer moved
+ * the pointer between the read and the write. Its observation is at least as fresh as
+ * this one, so this attempt must stop rather than route on a projection that has already
+ * been superseded. The next scheduled slot re-resolves from the winner's state.
+ */
+export function assertReconciliationPersisted(args: {
+  persistedPositionIds: string[];
+  from: string;
+  to: string;
+}): void {
+  if (args.persistedPositionIds.length === 1) {
+    return;
+  }
+  throw new Error(
+    `${UNRESOLVED_CURRENT_RESERVE_MARKER}; refusing to pull. ` +
+      `resolution=${JSON.stringify({
+        reason: "lost_reconciliation_race",
+        currentReserve: args.from,
+        reconciledTo: args.to,
+        persistedPositionIds: args.persistedPositionIds,
+      })}`
+  );
+}
+
+export async function loadLiveVaultPositions(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  target: Pick<EligibleTarget, "settings" | "vaultIndex" | "vaultPubkey">;
+}): Promise<LiveVaultPosition[]> {
+  const sql = args.neon(args.databaseUrl);
+  // Nothing enforces one managed vault per (settings, vault_index), and a replaced or
+  // deactivated vault keeps its position rows. Scoping on the full identity stops a
+  // stale sibling from either redirecting the deposit or faking ambiguity.
+  const rows = await sql`
+    SELECT position.reserve,
+           position.market,
+           position.liquidity_mint,
+           position.amount_raw,
+           position.observed_slot,
+           position.observed_at
+    FROM loyal_yield.vault_reserve_positions_current position
+    JOIN loyal_yield.managed_vaults vault
+      ON vault.id = position.vault_id
+     AND vault.settings = ${args.target.settings}
+     AND vault.vault_index = ${args.target.vaultIndex}
+     AND vault.vault_pubkey = ${args.target.vaultPubkey}
+     AND vault.active
+    WHERE position.amount_raw > 0
+    ORDER BY position.reserve
+  `;
+  return rows.map((row) => {
+    const record = row as Record<string, unknown>;
+    const observedAt = record.observed_at;
+    const observedSlot = record.observed_slot;
+    return {
+      reserve: readRequiredString(record.reserve, "position.reserve"),
+      market: readRequiredString(record.market, "position.market"),
+      liquidityMint: readRequiredString(
+        record.liquidity_mint,
+        "position.liquidity_mint"
+      ),
+      amountRaw: BigInt(
+        readRequiredString(record.amount_raw, "position.amount_raw")
+      ),
+      observedSlot:
+        observedSlot === null || observedSlot === undefined
+          ? null
+          : BigInt(observedSlot.toString()),
+      observedAt:
+        observedAt === null || observedAt === undefined
+          ? null
+          : new Date(observedAt.toString()),
+    };
+  });
+}
+
+/**
+ * Writes the corrected pointer back so the next scheduled slot starts from chain truth
+ * instead of repeating the same resolution. Guarded on the stale value so a concurrent
+ * writer that already fixed the row wins instead of being overwritten.
+ */
+export async function persistReconciledCurrentReserve(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  target: Pick<
+    EligibleTarget,
+    "settings" | "vaultIndex" | "wallet" | "vaultPubkey"
+  >;
+  from: string;
+  to: LiveVaultPosition;
+}): Promise<string[]> {
+  const sql = args.neon(args.databaseUrl);
+  const rows = await sql`
+    UPDATE loyal_yield.user_yield_positions position
+    SET current_reserve = ${args.to.reserve},
+        current_market = ${args.to.market},
+        current_liquidity_mint = ${args.to.liquidityMint},
+        current_amount_raw = ${args.to.amountRaw.toString()},
+        current_observed_slot = ${args.to.observedSlot?.toString() ?? null},
+        current_observed_at = ${args.to.observedAt?.toISOString() ?? null},
+        updated_at = now()
+    WHERE position.settings = ${args.target.settings}
+      AND position.vault_index = ${args.target.vaultIndex}
+      AND position.vault_pubkey = ${args.target.vaultPubkey}
+      AND position.wallet_address = ${args.target.wallet}
+      AND position.status = 'active'
+      AND position.current_reserve = ${args.from}
+    RETURNING position.id
+  `;
+  return rows.map((row) =>
+    readRequiredString(
+      (row as Record<string, unknown>).id,
+      "user_yield_position.id"
+    )
+  );
+}
+
 async function getTokenBalanceRaw(
   connection: Connection,
   tokenAccount: PublicKey
@@ -1665,6 +1939,45 @@ export type TopUpLookupTableCoverage = {
   vaultLiquidityTokenAccountMissing: boolean | null;
 };
 
+export function readTopUpPreflightBlockers(
+  result: SameMintTopUpResult
+): string[] {
+  const blockers = result.json?.preflightBlockers;
+  if (!Array.isArray(blockers)) {
+    return [];
+  }
+  return blockers
+    .map((blocker) => blocker?.toString() ?? "")
+    .filter((blocker) => blocker.length > 0);
+}
+
+const MISSING_DEPOSIT_OBLIGATION_PATTERN =
+  /deposit obligation ([1-9A-HJ-NP-Za-km-z]{32,44}) is missing for reserve ([1-9A-HJ-NP-Za-km-z]{32,44})/;
+
+/**
+ * A missing obligation is recoverable by a setup transaction, unlike the other preflight
+ * blockers. Naming it separately keeps that population countable so it can be handled on
+ * its own terms instead of hiding inside a generic blocked-route bucket.
+ */
+export function readMissingDepositObligation(
+  result: SameMintTopUpResult
+): { obligation: string; reserve: string } | null {
+  for (const blocker of readTopUpPreflightBlockers(result)) {
+    const match = blocker.match(MISSING_DEPOSIT_OBLIGATION_PATTERN);
+    if (match) {
+      return { obligation: match[1], reserve: match[2] };
+    }
+  }
+  return null;
+}
+
+function blockedCoverage(
+  reason: string,
+  blocker: string | null
+): TopUpLookupTableCoverage {
+  return { ...unknownCoverage(reason), status: "blocked", blocker };
+}
+
 function unknownCoverage(reason: string): TopUpLookupTableCoverage {
   return {
     status: "unknown",
@@ -1728,6 +2041,19 @@ export function readTopUpLookupTableCoverage(
 ): TopUpLookupTableCoverage {
   const resolution = readRecord(result.json?.lookupTableResolution);
   if (!resolution) {
+    // The binary only builds a lookup-table phase once the policy plan exists, so a
+    // plan that failed preflight leaves this field null. Reporting that as unknown ALT
+    // coverage sends operators to the provisioner for a fault that lives in the route.
+    const blockers = readTopUpPreflightBlockers(result);
+    if (blockers.length > 0) {
+      const missingObligation = readMissingDepositObligation(result);
+      return blockedCoverage(
+        missingObligation
+          ? "route_deposit_obligation_missing"
+          : "route_preflight_blocked",
+        blockers[0]
+      );
+    }
     return unknownCoverage("missing_lookup_table_resolution");
   }
   const reusable = readRecord(resolution.reusable);
@@ -1859,10 +2185,43 @@ export function assertLookupTableReadinessBeforePull(
   if (readiness.status === "ready") {
     return;
   }
+  // The dry-run summary carries `preflightBlockers`, which is where a failed policy
+  // plan records why. Serializing only the coverage hides that reason completely and
+  // leaves the alert pointing at the lookup-table subsystem.
   throw new Error(
     `Kamino top-up reusable lookup-table coverage is ${readiness.status} after ` +
       `${readiness.waitedMs}ms across ${readiness.attempts} dry runs; refusing to pull. ` +
-      `coverage=${JSON.stringify(readiness.coverage)}`
+      `coverage=${JSON.stringify(readiness.coverage)} ` +
+      `topUp=${JSON.stringify(summarizeTopUpResult(readiness.dryRun))}`
+  );
+}
+
+const TOP_UP_PREFLIGHT_BLOCKED_MARKER =
+  "Kamino top-up dry run reported preflight blockers";
+
+export function isTopUpPreflightBlockedFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(TOP_UP_PREFLIGHT_BLOCKED_MARKER);
+}
+
+/**
+ * A blocked route cannot be waited out, so it must not reach the readiness gate: that
+ * gate can only describe lookup-table coverage, and would report a route fault as an
+ * ALT fault. Failing here keeps the blocker text attached to the failure.
+ */
+export function assertNoTopUpPreflightBlockers(
+  dryRun: SameMintTopUpResult
+): void {
+  const blockers = readTopUpPreflightBlockers(dryRun);
+  if (blockers.length === 0) {
+    return;
+  }
+  const missingObligation = readMissingDepositObligation(dryRun);
+  throw new Error(
+    `${TOP_UP_PREFLIGHT_BLOCKED_MARKER}; refusing to pull. ` +
+      `blockers=${JSON.stringify(blockers)} ` +
+      `missingDepositObligation=${JSON.stringify(missingObligation)} ` +
+      `topUp=${JSON.stringify(summarizeTopUpResult(dryRun))}`
   );
 }
 
@@ -2638,6 +2997,10 @@ function assertExecutablePreflight(args: {
       )}`
     );
   }
+  // A plan that never built produces no policy-deposit transaction and therefore no
+  // simulation error, so the checks above pass and the failure surfaces later as
+  // unreadable ALT coverage. Blockers are the direct signal.
+  assertNoTopUpPreflightBlockers(args.topUpDryRun);
 }
 
 async function main() {
@@ -2845,12 +3208,56 @@ async function main() {
       amountRaw: executionAmountRaw,
       cluster: appModules.LoyalCluster.MainnetBeta,
     });
+    // The stored pointer can outlive the position it names, so reconcile it against the
+    // observed holdings before choosing a destination for user funds.
+    const currentReserveResolution = target.currentReserve
+      ? resolveCurrentReserve({
+          maxProjectionAgeSeconds: readEnvInteger(
+            CURRENT_RESERVE_PROJECTION_MAX_AGE_SECONDS_ENV,
+            CURRENT_RESERVE_PROJECTION_MAX_AGE_SECONDS
+          ),
+          positions: await loadLiveVaultPositions({
+            databaseUrl,
+            neon: appModules.neon,
+            target,
+          }),
+          target,
+        })
+      : ({ status: "unchanged", reason: "no_current_reserve" } as const);
+    assertResolvedCurrentReserve(currentReserveResolution);
+    let reconciledCurrentReservePositionIds: string[] = [];
+    if (currentReserveResolution.status === "reconciled" && options.execute) {
+      reconciledCurrentReservePositionIds =
+        await persistReconciledCurrentReserve({
+          databaseUrl,
+          from: currentReserveResolution.from,
+          neon: appModules.neon,
+          target,
+          to: currentReserveResolution.to,
+        });
+      assertReconciliationPersisted({
+        from: currentReserveResolution.from,
+        persistedPositionIds: reconciledCurrentReservePositionIds,
+        to: currentReserveResolution.to.reserve,
+      });
+    }
+    const reconciledReserve =
+      currentReserveResolution.status === "reconciled"
+        ? currentReserveResolution.to
+        : null;
+
     const topUpReserve =
-      target.currentReserve ?? defaultEarnTarget.reserve.toBase58();
+      reconciledReserve?.reserve ??
+      target.currentReserve ??
+      defaultEarnTarget.reserve.toBase58();
     const topUpMarket =
-      target.currentMarket ?? defaultEarnTarget.market.toBase58();
+      reconciledReserve?.market ??
+      target.currentMarket ??
+      defaultEarnTarget.market.toBase58();
     const topUpLiquidityMint =
-      target.currentLiquidityMint ?? pull.persistence.liquidityMint;
+      reconciledReserve?.liquidityMint ??
+      target.currentLiquidityMint ??
+      pull.persistence.liquidityMint;
     if (topUpLiquidityMint !== pull.persistence.liquidityMint) {
       throw new Error(
         `Autodeposit top-up liquidity mint ${topUpLiquidityMint} does not match pulled mint ${pull.persistence.liquidityMint}.`
@@ -2889,9 +3296,27 @@ async function main() {
         reserve: topUpReserve,
         market: topUpMarket,
         liquidityMint: topUpLiquidityMint,
-        source: target.currentReserve
-          ? "active_yield_position"
-          : "default_earn_target",
+        source: reconciledReserve
+          ? "reconciled_chain_projection"
+          : target.currentReserve
+            ? "active_yield_position"
+            : "default_earn_target",
+      },
+      currentReserveReconciliation: {
+        ...currentReserveResolution,
+        ...(currentReserveResolution.status === "reconciled"
+          ? {
+              to: {
+                ...currentReserveResolution.to,
+                amountRaw: currentReserveResolution.to.amountRaw.toString(),
+                observedSlot:
+                  currentReserveResolution.to.observedSlot?.toString() ?? null,
+                observedAt:
+                  currentReserveResolution.to.observedAt?.toISOString() ?? null,
+              },
+            }
+          : {}),
+        persistedPositionIds: reconciledCurrentReservePositionIds,
       },
       excessRaw: sweepDecision.excessRaw.toString(),
       amountRaw: executionAmountRaw.toString(),
@@ -3205,6 +3630,15 @@ async function main() {
       )
     );
   } catch (error) {
+    // A blocked route never moved funds, so it deserves its own exit code rather than
+    // the generic 1 that every unclassified failure shares.
+    if (
+      !process.exitCode &&
+      (isTopUpPreflightBlockedFailure(error) ||
+        isUnresolvedCurrentReserveFailure(error))
+    ) {
+      process.exitCode = autodepositExecutorFailureExitCode("preflight_blocked");
+    }
     if (!pullSent && lotClaim?.status === "selected" && lotClaim.claimToken) {
       const lastError = error instanceof Error ? error.message : String(error);
       await releaseAutodepositLotClaim({
