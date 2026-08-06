@@ -14,6 +14,8 @@ pub const AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE: i32 = 21;
 pub const AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE_ENV: &str =
     "AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE";
 pub const AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE: i32 = 22;
+pub const AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE_ENV: &str = "AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE";
+pub const AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE: i32 = 23;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExecutorFailureAlert {
@@ -22,30 +24,38 @@ pub struct ExecutorFailureAlert {
     pub summary: &'static str,
 }
 
-pub fn executor_failure_alert(exit_code: Option<i32>) -> ExecutorFailureAlert {
+/// Returns the alert an executor exit deserves, or `None` when the exit reports a
+/// correct decision rather than a fault.
+///
+/// Not every unsuccessful exit is an incident. A target whose vault is confirmed empty
+/// has nothing to deposit into, so the executor declining to pull is the system working.
+/// Paging on it produces an alert that no operator action can clear, which trains the
+/// fleet's real failures to be ignored.
+pub fn executor_failure_alert(exit_code: Option<i32>) -> Option<ExecutorFailureAlert> {
     match exit_code {
-        Some(AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE) => ExecutorFailureAlert {
+        Some(AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE) => Some(ExecutorFailureAlert {
             code: "kamino_top_up_failed",
             operation: "top_up_autodeposit_to_kamino",
             summary: "autodeposit pull succeeded but Kamino top-up failed",
-        },
-        Some(AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE) => ExecutorFailureAlert {
+        }),
+        Some(AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE) => Some(ExecutorFailureAlert {
             code: "yield_persistence_failed",
             operation: "persist_autodeposit_yield_position",
             summary: "autodeposit top-up succeeded but yield persistence failed",
-        },
+        }),
         // The route itself is unexecutable and no funds moved. Waiting cannot clear it,
         // so it must not page as a lookup-table or top-up fault.
-        Some(AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE) => ExecutorFailureAlert {
+        Some(AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE) => Some(ExecutorFailureAlert {
             code: "autodeposit_preflight_blocked",
             operation: "preflight_autodeposit_route",
             summary: "autodeposit route preflight blocked before any funds moved",
-        },
-        _ => ExecutorFailureAlert {
+        }),
+        Some(AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE) => None,
+        _ => Some(ExecutorFailureAlert {
             code: "autodeposit_executor_failed",
             operation: "execute_eligible_autodeposit_target",
             summary: "autodeposit executor exited unsuccessfully",
-        },
+        }),
     }
 }
 
