@@ -72,47 +72,47 @@ const REQUIRED_MIGRATIONS: [(i64, &str, &str); 9] = [
     (
         23,
         "value_priority_rebalance_queue",
-        include_str!("../../migrations/0023_value_priority_rebalance_queue.sql"),
+        include_str!("../../../loyal-yield-store/migrations/0023_value_priority_rebalance_queue.sql"),
     ),
     (
         24,
         "fleet_route_confirmer",
-        include_str!("../../migrations/0024_fleet_route_confirmer.sql"),
+        include_str!("../../../loyal-yield-store/migrations/0024_fleet_route_confirmer.sql"),
     ),
     (
         25,
         "fee_only_route_payer_shards",
-        include_str!("../../migrations/0025_fee_only_route_payer_shards.sql"),
+        include_str!("../../../loyal-yield-store/migrations/0025_fee_only_route_payer_shards.sql"),
     ),
     (
         26,
         "target_capacity_reservations",
-        include_str!("../../migrations/0026_target_capacity_reservations.sql"),
+        include_str!("../../../loyal-yield-store/migrations/0026_target_capacity_reservations.sql"),
     ),
     (
         27,
         "rebalance_opportunity_attempt_generations",
-        include_str!("../../migrations/0027_rebalance_opportunity_attempt_generations.sql"),
+        include_str!("../../../loyal-yield-store/migrations/0027_rebalance_opportunity_attempt_generations.sql"),
     ),
     (
         28,
         "reusable_alt_terminal_repair",
-        include_str!("../../migrations/0028_reusable_alt_terminal_repair.sql"),
+        include_str!("../../../loyal-yield-store/migrations/0028_reusable_alt_terminal_repair.sql"),
     ),
     (
         29,
         "fleet_commit_lifetime_fences",
-        include_str!("../../migrations/0029_fleet_commit_lifetime_fences.sql"),
+        include_str!("../../../loyal-yield-store/migrations/0029_fleet_commit_lifetime_fences.sql"),
     ),
     (
         30,
         "fused_queue_accrual_binding",
-        include_str!("../../migrations/0030_fused_queue_accrual_binding.sql"),
+        include_str!("../../../loyal-yield-store/migrations/0030_fused_queue_accrual_binding.sql"),
     ),
     (
         31,
         "fleet_commit_lifetime_fence_errcode",
-        include_str!("../../migrations/0031_fleet_commit_lifetime_fence_errcode.sql"),
+        include_str!("../../../loyal-yield-store/migrations/0031_fleet_commit_lifetime_fence_errcode.sql"),
     ),
 ];
 

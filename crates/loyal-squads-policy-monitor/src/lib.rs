@@ -7,7 +7,7 @@ use loyal_actions::{
     DetectedYieldRouteMode, DetectedYieldRoutePolicy, KaminoStableRiskProfile,
     SquadsSettingsActionView, YieldRouteUniversePreset, SQUADS_SMART_ACCOUNT_PROGRAM_ID,
 };
-use loyal_yield_orchestrator::{
+use loyal_yield_store::{
     BalanceSweepExecutionInput, BalanceSweepPolicyMatchInput, OrchestratorConfig,
     OrchestratorError, OrchestratorStore, PolicyMatchInput,
 };

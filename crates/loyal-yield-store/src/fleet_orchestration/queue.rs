@@ -1,4 +1,3 @@
-use super::observation::MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS;
 use crate::{
     DecisionId, NeonSqlClient, OrchestratorError, SnapshotId, VaultId, ACTIVE_DECISION_STATUSES,
 };
@@ -10,6 +9,7 @@ use sqlx::Row;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const REBALANCE_OPPORTUNITY_WAKEUP_CHANNEL: &str = "loyal_yield_rebalance_wakeup";
+pub const MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS: i64 = 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizerEpochInput {

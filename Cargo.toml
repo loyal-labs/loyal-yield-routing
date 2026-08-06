@@ -12,6 +12,7 @@ default-members = [
     "crates/loyal-squads-policy-monitor",
     "crates/loyal-timescale-migrations",
     "crates/loyal-yield-orchestrator",
+    "crates/loyal-yield-store",
     "crates/loyal-yield-realtime",
     "crates/loyal-yield-realtime-core",
     "crates/loyal-yield-router",

@@ -1084,7 +1084,7 @@ dependencies = [
  "helius-laserstream",
  "loyal-actions",
  "loyal-observability",
- "loyal-yield-orchestrator",
+ "loyal-yield-store",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1106,7 +1106,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "futures-util",
- "loyal-yield-orchestrator",
+ "loyal-yield-store",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1121,7 +1121,7 @@ dependencies = [
  "balance-sweep-ata-observations",
  "clap",
  "loyal-observability",
- "loyal-yield-orchestrator",
+ "loyal-yield-store",
  "tokio",
  "tracing",
 ]
@@ -3637,7 +3637,7 @@ dependencies = [
  "clap",
  "futures-util",
  "loyal-actions",
- "loyal-yield-orchestrator",
+ "loyal-yield-store",
  "rustls 0.23.40",
  "serde",
  "serde_json",
@@ -3670,6 +3670,7 @@ dependencies = [
  "loyal-actions",
  "loyal-observability",
  "loyal-yield-router",
+ "loyal-yield-store",
  "num-bigint 0.4.6",
  "num-traits",
  "reqwest 0.12.28",
@@ -3729,6 +3730,18 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tokio",
+]
+
+[[package]]
+name = "loyal-yield-store"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

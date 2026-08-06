@@ -3,7 +3,7 @@ use std::{error::Error, fmt, str::FromStr, time::Duration};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use futures_util::future::BoxFuture;
-use loyal_yield_orchestrator::{BalanceSweepTargetId, WalletAtaBalanceUpdateInput};
+use loyal_yield_store::{BalanceSweepTargetId, WalletAtaBalanceUpdateInput};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};

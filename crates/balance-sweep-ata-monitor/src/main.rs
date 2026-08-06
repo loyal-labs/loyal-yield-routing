@@ -21,7 +21,7 @@ use chrono::Utc;
 use clap::{Parser, ValueEnum};
 use loyal_actions::USDC_MINT;
 use loyal_observability::{init_from_env, OperationalError};
-use loyal_yield_orchestrator::{OrchestratorConfig, OrchestratorError, OrchestratorStore};
+use loyal_yield_store::{OrchestratorConfig, OrchestratorError, OrchestratorStore};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
 use tokio::{sync::mpsc, task::JoinHandle, time};

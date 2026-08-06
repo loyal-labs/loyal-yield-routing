@@ -7,7 +7,7 @@ use balance_sweep_ata_observations::{
 };
 use clap::Parser;
 use loyal_observability::{init_from_env, OperationalError};
-use loyal_yield_orchestrator::{
+use loyal_yield_store::{
     OrchestratorConfig, OrchestratorError, OrchestratorStore, ProjectedWalletAtaBalanceUpdateInput,
 };
 use tokio::time;
