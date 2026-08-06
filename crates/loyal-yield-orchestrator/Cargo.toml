@@ -3,6 +3,75 @@ name = "loyal-yield-orchestrator"
 version = "0.1.0"
 edition = "2021"
 description = "Postgres-backed orchestration state for Loyal yield routing"
+autobins = false
+
+[[bin]]
+name = "fleet-opportunity-planner"
+path = "src/bin/fleet-opportunity-planner.rs"
+
+[[bin]]
+name = "fleet-orchestration-production-evidence"
+path = "src/bin/fleet-orchestration-production-evidence.rs"
+
+[[bin]]
+name = "fleet-orchestration-runtime-evidence"
+path = "src/bin/fleet-orchestration-runtime-evidence.rs"
+
+[[bin]]
+name = "fleet-orchestration-verifier"
+path = "src/bin/fleet-orchestration-verifier.rs"
+
+[[bin]]
+name = "fleet-route-confirmer"
+path = "src/bin/fleet-route-confirmer.rs"
+
+[[bin]]
+name = "loyal-hub-mainnet-route-files"
+path = "src/bin/loyal-hub-mainnet-route-files.rs"
+
+[[bin]]
+name = "route-lookup-table-alert-monitor"
+path = "src/bin/route-lookup-table-alert-monitor.rs"
+
+[[bin]]
+name = "route-lookup-table-cleanup"
+path = "src/bin/route-lookup-table-cleanup.rs"
+
+[[bin]]
+name = "route-lookup-table-legacy-import"
+path = "src/bin/route-lookup-table-legacy-import.rs"
+
+[[bin]]
+name = "route-lookup-table-provisioner"
+path = "src/bin/route-lookup-table-provisioner.rs"
+
+[[bin]]
+name = "route-lookup-table-shared-catalog"
+path = "src/bin/route-lookup-table-shared-catalog.rs"
+
+[[bin]]
+name = "same-mint-monitor-e2e"
+path = "src/bin/same-mint-monitor-e2e.rs"
+
+[[bin]]
+name = "same-mint-reserve-swap"
+path = "src/bin/same-mint-reserve-swap.rs"
+
+[[bin]]
+name = "same-mint-yield-monitor"
+path = "src/bin/same-mint-yield-monitor.rs"
+
+[[bin]]
+name = "verify-idle-deposit-reconcile"
+path = "src/bin/verify-idle-deposit-reconcile.rs"
+
+[[bin]]
+name = "verify-reusable-alt-db"
+path = "src/bin/verify-reusable-alt-db.rs"
+
+[[bin]]
+name = "yield-migrations"
+path = "src/bin/yield-migrations.rs"
 
 [dependencies]
 bincode = "1.3"

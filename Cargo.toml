@@ -1,5 +1,21 @@
 [workspace]
 members = ["crates/*"]
+default-members = [
+    "crates/balance-sweep-ata-monitor",
+    "crates/balance-sweep-ata-observations",
+    "crates/balance-sweep-ata-projector",
+    "crates/balance-sweep-autodeposit-trigger",
+    "crates/kamino-reserve-monitor",
+    "crates/loyal-actions",
+    "crates/loyal-hub-abi",
+    "crates/loyal-observability",
+    "crates/loyal-squads-policy-monitor",
+    "crates/loyal-timescale-migrations",
+    "crates/loyal-yield-orchestrator",
+    "crates/loyal-yield-realtime",
+    "crates/loyal-yield-realtime-core",
+    "crates/loyal-yield-router",
+]
 resolver = "2"
 
 [workspace.dependencies]
@@ -10,3 +26,10 @@ solana-program = "2.3.0"
 solana-sdk = "2.3.1"
 solana-system-interface = { version = "1.0.0", features = ["bincode"] }
 spl-token = "8.0.0"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+opt-level = 1

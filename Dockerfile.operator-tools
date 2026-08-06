@@ -1,0 +1,80 @@
+# syntax=docker/dockerfile:1.7
+
+FROM rust:1.89-bookworm AS chef
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        clang \
+        git \
+        libssl-dev \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN cargo install cargo-chef --locked
+WORKDIR /app
+
+FROM chef AS planner
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates crates
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+# Cook and build must select the same packages and bins in one invocation.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo chef cook --release \
+        -p loyal-timescale-migrations \
+        -p loyal-yield-orchestrator \
+        --bin loyal-timescale-migrations \
+        --bin fleet-orchestration-verifier \
+        --bin fleet-orchestration-production-evidence \
+        --bin same-mint-monitor-e2e \
+        --bin route-lookup-table-shared-catalog \
+        --bin route-lookup-table-alert-monitor \
+        --bin route-lookup-table-legacy-import \
+        --bin route-lookup-table-cleanup \
+        --recipe-path recipe.json
+
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY .sqlx .sqlx
+COPY crates crates
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo build --release \
+        -p loyal-timescale-migrations \
+        -p loyal-yield-orchestrator \
+        --bin loyal-timescale-migrations \
+        --bin fleet-orchestration-verifier \
+        --bin fleet-orchestration-production-evidence \
+        --bin same-mint-monitor-e2e \
+        --bin route-lookup-table-shared-catalog \
+        --bin route-lookup-table-alert-monitor \
+        --bin route-lookup-table-legacy-import \
+        --bin route-lookup-table-cleanup \
+    && cp /app/target/release/loyal-timescale-migrations /usr/local/bin/loyal-timescale-migrations \
+    && cp /app/target/release/fleet-orchestration-verifier /usr/local/bin/fleet-orchestration-verifier \
+    && cp /app/target/release/fleet-orchestration-production-evidence /usr/local/bin/fleet-orchestration-production-evidence \
+    && cp /app/target/release/same-mint-monitor-e2e /usr/local/bin/same-mint-monitor-e2e \
+    && cp /app/target/release/route-lookup-table-shared-catalog /usr/local/bin/route-lookup-table-shared-catalog \
+    && cp /app/target/release/route-lookup-table-alert-monitor /usr/local/bin/route-lookup-table-alert-monitor \
+    && cp /app/target/release/route-lookup-table-legacy-import /usr/local/bin/route-lookup-table-legacy-import \
+    && cp /app/target/release/route-lookup-table-cleanup /usr/local/bin/route-lookup-table-cleanup
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/local/bin/loyal-timescale-migrations /usr/local/bin/loyal-timescale-migrations
+COPY --from=builder /usr/local/bin/fleet-orchestration-verifier /usr/local/bin/fleet-orchestration-verifier
+COPY --from=builder /usr/local/bin/fleet-orchestration-production-evidence /usr/local/bin/fleet-orchestration-production-evidence
+COPY --from=builder /usr/local/bin/same-mint-monitor-e2e /usr/local/bin/same-mint-monitor-e2e
+COPY --from=builder /usr/local/bin/route-lookup-table-shared-catalog /usr/local/bin/route-lookup-table-shared-catalog
+COPY --from=builder /usr/local/bin/route-lookup-table-alert-monitor /usr/local/bin/route-lookup-table-alert-monitor
+COPY --from=builder /usr/local/bin/route-lookup-table-legacy-import /usr/local/bin/route-lookup-table-legacy-import
+COPY --from=builder /usr/local/bin/route-lookup-table-cleanup /usr/local/bin/route-lookup-table-cleanup
+
+CMD ["/usr/local/bin/fleet-orchestration-verifier", "--help"]

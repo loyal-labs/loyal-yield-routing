@@ -12,7 +12,7 @@ futures-util = "0.3"
 loyal-observability = { path = "../loyal-observability" }
 loyal-yield-realtime-core = { path = "../loyal-yield-realtime-core" }
 serde = { version = "1", features = ["derive"] }
-sqlx = { version = "0.8", default-features = false, features = ["chrono", "json", "macros", "postgres", "runtime-tokio-rustls"] }
+sqlx = { version = "0.8", default-features = false, features = ["chrono", "json", "postgres", "runtime-tokio-rustls"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
 tokio-stream = "0.1"
 tower-http = { version = "0.6", features = ["cors"] }
