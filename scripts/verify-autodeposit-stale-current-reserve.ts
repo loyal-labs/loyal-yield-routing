@@ -22,6 +22,7 @@ import {
   assertResolvedCurrentReserve,
   autodepositExecutorFailureExitCode,
   readMissingDepositObligation,
+  isPullResolvedTopUpBlocker,
   isTopUpPreflightBlockedFailure,
   isUnresolvedCurrentReserveFailure,
   loadLiveVaultPositions,
@@ -46,6 +47,11 @@ const FUNDING_DEFERRED_RESERVE = "5cjp3WNfEGghXJx5rvqF1SNCxETq2Cr1CudFNiGpoqKy";
 /** Verbatim from production after the fix deployed. */
 const FUNDING_BLOCKER =
   "wallet USDC balance 870715 is below needed funding amount 1256712";
+/** A route whose plan builds but whose funding-wallet ATA the pull will never create. */
+const WALLET_ATA_MISSING_RESERVE = "GTzdvEf7bAosdzCjgcA2Nxs3fMVMMK139P1SW3rYgqTt";
+const WALLET_ATA_BLOCKER =
+  "wallet USDC ATA 8SoPTUZ4tcSXHJ3M4WMV6sMCAiAb26S2H51h34Pb24Ce does not exist for " +
+  "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const OTHER_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 const MISSING_OBLIGATION = "HfwZYDSnbmqCDj73j417ERft53uoTqw8djsEoaXYwhf3";
@@ -192,6 +198,8 @@ function installPlan(directory: string): void {
       healthyReserve: LIVE_RESERVE,
       fundingDeferredReserve: FUNDING_DEFERRED_RESERVE,
       fundingBlocker: FUNDING_BLOCKER,
+      walletAtaMissingReserve: WALLET_ATA_MISSING_RESERVE,
+      walletAtaBlocker: WALLET_ATA_BLOCKER,
     }),
     "utf8"
   );
@@ -590,6 +598,49 @@ async function scenarioDeferrableBlockersStillProceed(
     coverage.status === "ready",
     coverage
   );
+  // The pull funds the vault ATA, not the funding wallet's, so this blocker outlives it
+  // and would fail the execute leg with the user's funds already in the vault.
+  const walletAtaMissing = await dryRun(WALLET_ATA_MISSING_RESERVE);
+  let walletAtaError: unknown = null;
+  try {
+    assertNoTopUpPreflightBlockers(walletAtaMissing);
+  } catch (error) {
+    walletAtaError = error;
+  }
+  const walletAtaMessage =
+    walletAtaError instanceof Error ? walletAtaError.message : "";
+  check(
+    "a missing funding-wallet ATA is rejected before the pull",
+    walletAtaError !== null,
+    readTopUpPreflightBlockers(walletAtaMissing)
+  );
+  check(
+    "it is rejected even though the resolution is built and coverage is ready",
+    walletAtaMissing.json?.lookupTableResolution !== null &&
+      readTopUpLookupTableCoverage(walletAtaMissing, WALLET_ATA_MISSING_RESERVE)
+        .status === "ready",
+    readTopUpLookupTableCoverage(walletAtaMissing, WALLET_ATA_MISSING_RESERVE)
+  );
+  check(
+    "the error separates the blocker the pull cannot clear",
+    walletAtaMessage.includes("unresolvableBlockers") &&
+      walletAtaMessage.includes("does not exist for") &&
+      !walletAtaMessage.includes('unresolvableBlockers=["wallet USDC balance'),
+    walletAtaMessage.slice(0, 240)
+  );
+  check(
+    "the missing-ATA failure is classified as preflight blocked",
+    isTopUpPreflightBlockedFailure(walletAtaError)
+  );
+  check(
+    "only the exact low-balance blocker is treated as pull-resolved",
+    isPullResolvedTopUpBlocker(FUNDING_BLOCKER) &&
+      !isPullResolvedTopUpBlocker(WALLET_ATA_BLOCKER) &&
+      !isPullResolvedTopUpBlocker(PRODUCTION_BLOCKER) &&
+      !isPullResolvedTopUpBlocker(
+        `${FUNDING_BLOCKER} and wallet USDC ATA missing`
+      )
+  );
   check(
     "a plan that never built is still rejected",
     (() => {
@@ -925,6 +976,38 @@ if (reserve === plan.blockedReserve) {
 // The plan builds and the resolution is present, but the borrowed initial-deposit mode
 // reports its wallet-funding leg as unmet because the pull has not run yet. Production
 // treats this as funding_deferred and proceeds.
+// The plan builds, but the funding wallet has no USDC ATA. The pull funds the vault ATA
+// and never this one, so the blocker survives into execute mode, which rejects it after
+// the user's funds have already moved.
+if (reserve === plan.walletAtaMissingReserve) {
+  console.log(
+    JSON.stringify({
+      status: "initial_deposit_dry_run",
+      sendsTransactions: false,
+      preflightBlockers: [plan.walletAtaBlocker, plan.fundingBlocker],
+      policyDeposit: { signer: "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ" },
+      policyDepositTransaction: {
+        feePayer: "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+        simulationError: null,
+      },
+      lookupTableResolution: {
+        reusable: {
+          ready: true,
+          missingAddresses: [],
+          packetFits: true,
+          tables: [{ tableId: 140 }],
+          transaction: { packetSizeBytes: 435 },
+          simulationError: null,
+        },
+        rollout: { mode: "reusable_only", forceLegacy: false },
+        selection: { blocker: "route_funding_required:vault_usdc" },
+        sharedMarketCatalog: { state: "covered" },
+      },
+    })
+  );
+  process.exit(0);
+}
+
 if (reserve === plan.fundingDeferredReserve) {
   console.log(
     JSON.stringify({

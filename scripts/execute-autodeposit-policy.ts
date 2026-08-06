@@ -2199,6 +2199,25 @@ export function assertLookupTableReadinessBeforePull(
 const TOP_UP_PREFLIGHT_BLOCKED_MARKER =
   "Kamino top-up dry run reported preflight blockers";
 
+/**
+ * The only blocker the pull clears. `funding_needed_raw` is computed against the vault
+ * balance, so once the pull lands the shortfall is zero and this blocker disappears on
+ * the execute pass.
+ *
+ * Every other funding blocker survives the pull. A missing funding-wallet ATA is the
+ * dangerous one: the pull funds the vault ATA, never that wallet's, so the blocker is
+ * still there when the execute leg re-runs preflight -- and the binary rejects any
+ * non-empty blocker set before submitting. That failure lands after user funds have
+ * already moved, stranding them in the vault ATA. Matching exactly means an unexpected
+ * blocker fails closed.
+ */
+const PULL_RESOLVED_BLOCKER_PATTERN =
+  /^wallet USDC balance \d+ is below needed funding amount \d+$/;
+
+export function isPullResolvedTopUpBlocker(blocker: string): boolean {
+  return PULL_RESOLVED_BLOCKER_PATTERN.test(blocker.trim());
+}
+
 export function isTopUpPreflightBlockedFailure(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes(TOP_UP_PREFLIGHT_BLOCKED_MARKER);
@@ -2223,13 +2242,20 @@ export function assertNoTopUpPreflightBlockers(
   if (blockers.length === 0) {
     return;
   }
-  if (readRecord(dryRun.json?.lookupTableResolution)) {
+  const unresolvableBlockers = blockers.filter(
+    (blocker) => !isPullResolvedTopUpBlocker(blocker)
+  );
+  if (
+    unresolvableBlockers.length === 0 &&
+    readRecord(dryRun.json?.lookupTableResolution)
+  ) {
     return;
   }
   const missingObligation = readMissingDepositObligation(dryRun);
   throw new Error(
     `${TOP_UP_PREFLIGHT_BLOCKED_MARKER}; refusing to pull. ` +
       `blockers=${JSON.stringify(blockers)} ` +
+      `unresolvableBlockers=${JSON.stringify(unresolvableBlockers)} ` +
       `missingDepositObligation=${JSON.stringify(missingObligation)} ` +
       `topUp=${JSON.stringify(summarizeTopUpResult(dryRun))}`
   );
