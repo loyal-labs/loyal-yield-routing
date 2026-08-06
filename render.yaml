@@ -23,8 +23,6 @@ projects:
                 value: https://loyal-clickstack.onrender.com
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
-              - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-97f98e1d9c40b2a774fcddce219ceb2571050eae
               - key: TIMESCALEDB_URL
                 sync: false
               - key: SOLANA_RPC_URL
@@ -60,8 +58,6 @@ projects:
                 value: https://loyal-clickstack.onrender.com
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
-              - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -107,8 +103,6 @@ projects:
                 value: https://loyal-clickstack.onrender.com
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
-              - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -158,8 +152,6 @@ projects:
                 value: https://loyal-clickstack.onrender.com
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
-              - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
               - key: NEON_DATABASE_URL
                 sync: false
               - key: REALTIME_AUTH_SECRET
@@ -207,8 +199,6 @@ projects:
                 value: https://loyal-clickstack.onrender.com
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
-              - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -238,8 +228,6 @@ projects:
                 value: https://loyal-clickstack.onrender.com
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
-              - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
               - key: NEON_DATABASE_URL
                 sync: false
               - key: SOLANA_RPC_URL
@@ -287,8 +275,6 @@ projects:
                 value: https://loyal-clickstack.onrender.com
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
-              - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-97f98e1d9c40b2a774fcddce219ceb2571050eae
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -318,8 +304,6 @@ projects:
                 value: https://loyal-clickstack.onrender.com
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
-              - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-97f98e1d9c40b2a774fcddce219ceb2571050eae
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -355,8 +339,6 @@ projects:
                 value: https://loyal-clickstack.onrender.com
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
-              - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-97f98e1d9c40b2a774fcddce219ceb2571050eae
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -392,8 +374,6 @@ projects:
                 value: https://loyal-clickstack.onrender.com
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
-              - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-97f98e1d9c40b2a774fcddce219ceb2571050eae
               - key: NEON_DATABASE_URL
                 sync: false
               - key: SOLANA_RPC_URL
@@ -423,8 +403,6 @@ projects:
                 value: https://loyal-clickstack.onrender.com
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
-              - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-fbf4f56ef35aa96518136db7b86fc925a8ffa6c1
               - key: NEON_DATABASE_URL
                 sync: false
               - key: SOLANA_RPC_URL
@@ -454,8 +432,6 @@ projects:
                 value: https://loyal-clickstack.onrender.com
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
-              - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-97f98e1d9c40b2a774fcddce219ceb2571050eae
               - key: NEON_DATABASE_URL
                 sync: false
               - key: SOLANA_RPC_URL
@@ -493,8 +469,6 @@ projects:
                 value: https://loyal-clickstack.onrender.com
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
-              - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL
@@ -524,8 +498,6 @@ projects:
                 value: https://loyal-clickstack.onrender.com
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
-              - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
               - key: NEON_DATABASE_URL
                 sync: false
               - key: BALANCE_SWEEP_EXECUTE_ELIGIBLE
@@ -553,8 +525,6 @@ projects:
                 value: https://loyal-clickstack.onrender.com
               - key: OBSERVABILITY_INGESTION_API_KEY
                 sync: false
-              - key: OBSERVABILITY_SERVICE_VERSION
-                value: sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
               - key: NEON_DATABASE_URL
                 sync: false
               - key: TIMESCALEDB_URL

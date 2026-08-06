@@ -62,6 +62,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM debian:bookworm-slim AS runtime
 
+ARG LOYAL_IMAGE_VERSION
+ENV LOYAL_IMAGE_VERSION=${LOYAL_IMAGE_VERSION}
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*

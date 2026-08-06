@@ -41,8 +41,11 @@ pub const ENABLED_ENV: &str = "OBSERVABILITY_ENABLED";
 /// Sets `deployment.environment.name` on exported records.
 pub const ENVIRONMENT_ENV: &str = "OBSERVABILITY_ENVIRONMENT";
 
-/// Overrides the service version discovered from `RENDER_GIT_COMMIT`.
+/// Overrides the service version embedded in the image or discovered from Render.
 pub const SERVICE_VERSION_ENV: &str = "OBSERVABILITY_SERVICE_VERSION";
+
+/// Immutable version embedded by the worker image build.
+pub const IMAGE_VERSION_ENV: &str = "LOYAL_IMAGE_VERSION";
 
 /// Sets the shared base OTLP endpoint for logs, metrics, and traces.
 pub const OTLP_ENDPOINT_ENV: &str = "OBSERVABILITY_OTLP_ENDPOINT";
@@ -91,6 +94,7 @@ impl ObservabilityConfig {
             deployment_environment: non_empty_env(ENVIRONMENT_ENV)
                 .unwrap_or_else(|| "unknown".to_owned()),
             service_version: non_empty_env(SERVICE_VERSION_ENV)
+                .or_else(|| non_empty_env(IMAGE_VERSION_ENV))
                 .or_else(|| non_empty_env("RENDER_GIT_COMMIT")),
             service_instance_id: non_empty_env("RENDER_INSTANCE_ID"),
             render_service_id: non_empty_env("RENDER_SERVICE_ID"),
@@ -161,6 +165,7 @@ impl OperationalError {
                 {
                     loyal.wallet.address = wallet_address.as_str(),
                     error_code = self.code,
+                    loyal.error.code = self.code,
                     operation = self.operation,
                     retryable = self.retryable,
                     recovery_required = self.recovery_required,
@@ -172,6 +177,7 @@ impl OperationalError {
                 name: "loyal.operational_error",
                 target: OPERATIONAL_ERROR_TARGET,
                 error_code = self.code,
+                loyal.error.code = self.code,
                 operation = self.operation,
                 retryable = self.retryable,
                 recovery_required = self.recovery_required,

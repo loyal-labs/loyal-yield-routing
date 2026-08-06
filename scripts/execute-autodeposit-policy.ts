@@ -239,9 +239,38 @@ const AUTODEPOSIT_TOP_UP_ALT_RETRY_ATTEMPTS_ENV =
   "AUTODEPOSIT_TOP_UP_ALT_RETRY_ATTEMPTS";
 const AUTODEPOSIT_TOP_UP_ALT_RETRY_DELAY_MS_ENV =
   "AUTODEPOSIT_TOP_UP_ALT_RETRY_DELAY_MS";
+const AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE_ENV =
+  "AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE";
+const AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE_ENV =
+  "AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE";
 const SOLANA_WEEK_NOTIFY_ENDPOINT_ENV = "SOLANA_WEEK_NOTIFY_ENDPOINT";
 const SOLANA_WEEK_NOTIFY_SECRET_ENV = "SOLANA_WEEK_NOTIFY_SECRET";
 const SOLANA_WEEK_NOTIFY_TIMEOUT_MS = 5_000;
+
+type AutodepositExecutorFailureCode =
+  | "kamino_top_up_failed"
+  | "yield_persistence_failed";
+
+const AUTODEPOSIT_EXECUTOR_FAILURE_EXIT_CODE_ENVS: Record<
+  AutodepositExecutorFailureCode,
+  string
+> = {
+  kamino_top_up_failed: AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE_ENV,
+  yield_persistence_failed: AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE_ENV,
+};
+
+export function autodepositExecutorFailureExitCode(
+  failureCode: AutodepositExecutorFailureCode,
+  environment: Record<string, string | undefined> = process.env
+): number {
+  const raw =
+    environment[AUTODEPOSIT_EXECUTOR_FAILURE_EXIT_CODE_ENVS[failureCode]];
+  if (!raw) {
+    return 1;
+  }
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 2 && parsed <= 125 ? parsed : 1;
+}
 
 async function loadAppModules(): Promise<AppModules> {
   const [
@@ -3055,7 +3084,9 @@ async function main() {
           2
         )
       );
-      process.exitCode = 1;
+      process.exitCode = autodepositExecutorFailureExitCode(
+        "kamino_top_up_failed"
+      );
       return;
     }
 
@@ -3114,6 +3145,9 @@ async function main() {
           kaminoDepositSlot: topUpExecution.confirmedSlot.toString(),
         },
       });
+      process.exitCode = autodepositExecutorFailureExitCode(
+        "yield_persistence_failed"
+      );
       throw error;
     }
     await updateExecutionEvidence({
@@ -3216,6 +3250,8 @@ if (import.meta.main) {
         2
       )
     );
-    process.exitCode = 1;
+    if (!process.exitCode) {
+      process.exitCode = 1;
+    }
   });
 }

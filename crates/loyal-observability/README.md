@@ -56,6 +56,7 @@ OperationalError::new(
 Each operational event contains:
 
 - `error_code`: a stable machine-readable code;
+- `loyal.error.code`: the same stable code under the shared ClickStack alert attribute;
 - `operation`: a stable operation name;
 - `message`: a short operator-facing description;
 - `retryable`: whether retrying is expected to be safe;
@@ -304,7 +305,8 @@ All remote export is disabled by default. One switch enables or disables operati
 | --- | --- |
 | `OBSERVABILITY_ENABLED` | Enables operational error logs, workflow metrics, and workflow traces together |
 | `OBSERVABILITY_ENVIRONMENT` | Sets `deployment.environment.name`; defaults to `unknown` |
-| `OBSERVABILITY_SERVICE_VERSION` | Sets the service version; falls back to `RENDER_GIT_COMMIT` |
+| `OBSERVABILITY_SERVICE_VERSION` | Optional service-version override |
+| `LOYAL_IMAGE_VERSION` | Immutable version embedded by Loyal worker-image builds |
 | `OBSERVABILITY_OTLP_ENDPOINT` | Sets the shared base HTTP OTLP endpoint for logs, metrics, and traces |
 | `OBSERVABILITY_INGESTION_API_KEY` | Server-only ClickStack ingestion key used as the `authorization` header |
 | `OTEL_METRIC_EXPORT_INTERVAL` | Metric export interval in milliseconds; defaults to `60000` |
@@ -323,7 +325,10 @@ Render metadata is discovered automatically:
 - `RENDER_SERVICE_NAME` maps to `service.name`;
 - `RENDER_INSTANCE_ID` maps to `service.instance.id`;
 - `RENDER_SERVICE_ID` maps to `render.service.id`;
-- `RENDER_GIT_COMMIT` maps to `service.version` unless explicitly overridden.
+- `service.version` resolves from `OBSERVABILITY_SERVICE_VERSION`, then
+  `LOYAL_IMAGE_VERSION`, then `RENDER_GIT_COMMIT`. Image-backed workers normally
+  use the embedded image version because Render does not expose their deployed
+  image tag as a documented runtime variable.
 
 ## Verification
 

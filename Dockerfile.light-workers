@@ -110,6 +110,9 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 
 FROM debian:bookworm-slim AS runtime
 
+ARG LOYAL_IMAGE_VERSION
+ENV LOYAL_IMAGE_VERSION=${LOYAL_IMAGE_VERSION}
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*

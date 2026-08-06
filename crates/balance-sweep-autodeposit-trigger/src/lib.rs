@@ -5,6 +5,40 @@ use thiserror::Error;
 const AUTODEPOSIT_SCHEDULE_DELAY: Duration = Duration::hours(1);
 const LEGACY_SURPLUS_CLASSIFICATION_DB_VALUE: &str = "unknown";
 
+pub const AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE_ENV: &str =
+    "AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE";
+pub const AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE: i32 = 20;
+pub const AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE_ENV: &str =
+    "AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE";
+pub const AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE: i32 = 21;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExecutorFailureAlert {
+    pub code: &'static str,
+    pub operation: &'static str,
+    pub summary: &'static str,
+}
+
+pub fn executor_failure_alert(exit_code: Option<i32>) -> ExecutorFailureAlert {
+    match exit_code {
+        Some(AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE) => ExecutorFailureAlert {
+            code: "kamino_top_up_failed",
+            operation: "top_up_autodeposit_to_kamino",
+            summary: "autodeposit pull succeeded but Kamino top-up failed",
+        },
+        Some(AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE) => ExecutorFailureAlert {
+            code: "yield_persistence_failed",
+            operation: "persist_autodeposit_yield_position",
+            summary: "autodeposit top-up succeeded but yield persistence failed",
+        },
+        _ => ExecutorFailureAlert {
+            code: "autodeposit_executor_failed",
+            operation: "execute_eligible_autodeposit_target",
+            summary: "autodeposit executor exited unsuccessfully",
+        },
+    }
+}
+
 pub fn surplus_lot_classification_db_value() -> &'static str {
     LEGACY_SURPLUS_CLASSIFICATION_DB_VALUE
 }

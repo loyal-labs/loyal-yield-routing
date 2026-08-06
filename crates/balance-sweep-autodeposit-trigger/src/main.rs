@@ -7,8 +7,11 @@ use std::{
 
 use anyhow::{Context, Result};
 use balance_sweep_autodeposit_trigger::{
-    compute_sweep_amount, initial_surplus_amount, positive_delta_surplus_amount,
-    scheduled_eligible_after, surplus_lot_classification_db_value, SweepAmountDecision, SweepCaps,
+    compute_sweep_amount, executor_failure_alert, initial_surplus_amount,
+    positive_delta_surplus_amount, scheduled_eligible_after, surplus_lot_classification_db_value,
+    SweepAmountDecision, SweepCaps, AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE,
+    AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE_ENV, AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE,
+    AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE_ENV,
 };
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -548,6 +551,14 @@ async fn execute_eligible_targets_once(
                 target.scheduled_slot_id,
                 &claim_token,
             ))
+            .env(
+                AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE_ENV,
+                AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE.to_string(),
+            )
+            .env(
+                AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE_ENV,
+                AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE.to_string(),
+            )
             .status()
             .with_context(|| format!("spawn autodeposit executor for target {}", target.target_id))
             .inspect_err(|_| {
@@ -564,21 +575,19 @@ async fn execute_eligible_targets_once(
             outcome.executions_succeeded += 1;
         } else {
             outcome.executions_failed += 1;
+            let alert = executor_failure_alert(status.code());
             tracing::warn!(
                 target_id = target.target_id,
                 scheduled_slot_id = target.scheduled_slot_id,
                 claim_token,
                 status = ?status,
+                executor_failure_code = alert.code,
                 "autodeposit executor exited unsuccessfully"
             );
-            OperationalError::new(
-                "autodeposit_executor_failed",
-                "execute_eligible_autodeposit_target",
-                "autodeposit executor exited unsuccessfully",
-            )
-            .retryable(false)
-            .recovery_required(true)
-            .emit();
+            OperationalError::new(alert.code, alert.operation, alert.summary)
+                .retryable(false)
+                .recovery_required(true)
+                .emit();
         }
     }
     Ok(outcome)
