@@ -2365,12 +2365,38 @@ fn should_skip_zero_user_yield_position_close(snapshot_context: &Value) -> bool 
         return true;
     }
 
-    // Collateral snapshots are planner input; they are not proof that app-visible
-    // Earn principal is gone.
+    // Collateral snapshots are planner input, so zero deposited collateral is not on its
+    // own proof that app-visible Earn principal is gone: a rebalance parks the funds in
+    // the vault's own token account between the withdraw and the deposit, and a snapshot
+    // taken in that window reads zero while nothing was lost.
+    //
+    // What settles it is the idle balance recorded alongside. Zero deposited *and* zero
+    // idle means the funds left the vault entirely, which is the one reading that
+    // justifies closing a user's position. Anything else — funds still parked, or a
+    // snapshot that never recorded the idle balance at all — stays skipped, because the
+    // cost of closing a live position far exceeds the cost of leaving a dead one open.
     let amount_semantics = snapshot_context
         .get("amount_semantics")
         .and_then(Value::as_str);
-    amount_semantics == Some(AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED)
+    if amount_semantics != Some(AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED) {
+        return false;
+    }
+    !snapshot_context
+        .get("idle_vault_liquidity_amount_raw")
+        .and_then(json_u128)
+        .is_some_and(|idle| idle == 0)
+}
+
+/// Reads a non-negative integer that may have been stored as a number or a string.
+///
+/// Raw token amounts exceed what JSON numbers carry safely, so writers legitimately emit
+/// them either way. A value that cannot be read as one is rejected rather than defaulted:
+/// this feeds a close decision, where an unreadable balance must not pass as zero.
+fn json_u128(value: &Value) -> Option<u128> {
+    value
+        .as_u64()
+        .map(u128::from)
+        .or_else(|| value.as_str().and_then(|raw| raw.parse::<u128>().ok()))
 }
 
 async fn fetch_rebalance_input_vault_for_update(
@@ -3263,8 +3289,21 @@ mod tests {
 
     #[test]
     fn zero_app_position_close_skips_chain_reconcile_preview() {
+        // A preview is skipped on kind alone, even carrying proof of a zero idle
+        // balance, because it describes an intended state rather than an observed one.
         let context = json!({
             "kind": SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND,
+            "amount_semantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
+            "idle_vault_liquidity_amount_raw": 0,
+        });
+
+        assert!(should_skip_zero_user_yield_position_close(&context));
+    }
+
+    #[test]
+    fn zero_app_position_close_skips_collateral_snapshot_without_idle_evidence() {
+        let context = json!({
+            "source": "some_other_reconcile",
             "amount_semantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
         });
 
@@ -3272,13 +3311,49 @@ mod tests {
     }
 
     #[test]
-    fn zero_app_position_close_skips_collateral_amount_semantics() {
+    fn zero_app_position_close_skips_collateral_snapshot_with_funds_still_parked() {
+        // The rebalance window: nothing deposited, but the funds are sitting in the
+        // vault waiting to be moved onward. Closing here would erase a live position.
         let context = json!({
-            "source": "some_other_reconcile",
+            "source": "fleet_position_sweep",
             "amount_semantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
+            "idle_vault_liquidity_amount_raw": 1_000_003,
         });
 
         assert!(should_skip_zero_user_yield_position_close(&context));
+    }
+
+    #[test]
+    fn zero_app_position_close_allows_collateral_snapshot_with_zero_idle_balance() {
+        let context = json!({
+            "source": "fleet_position_sweep",
+            "amount_semantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
+            "idle_vault_liquidity_amount_raw": 0,
+        });
+
+        assert!(!should_skip_zero_user_yield_position_close(&context));
+    }
+
+    #[test]
+    fn zero_app_position_close_reads_string_encoded_idle_balances() {
+        // Raw amounts outrun JSON's safe integer range, so writers may emit strings.
+        // An unreadable value must not be mistaken for a zero balance.
+        let zero = json!({
+            "amount_semantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
+            "idle_vault_liquidity_amount_raw": "0",
+        });
+        let funded = json!({
+            "amount_semantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
+            "idle_vault_liquidity_amount_raw": "1000003",
+        });
+        let unreadable = json!({
+            "amount_semantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
+            "idle_vault_liquidity_amount_raw": Value::Null,
+        });
+
+        assert!(!should_skip_zero_user_yield_position_close(&zero));
+        assert!(should_skip_zero_user_yield_position_close(&funded));
+        assert!(should_skip_zero_user_yield_position_close(&unreadable));
     }
 
     #[test]

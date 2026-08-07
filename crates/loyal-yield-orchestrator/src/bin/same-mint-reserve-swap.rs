@@ -4795,6 +4795,12 @@ async fn reconcile_fleet_position_sweep_vault(
 
     let mut state = chain_preview_reconciled_state(&preview)
         .map_err(|error| FleetPositionSweepVaultError::invariant(error.to_string()))?;
+    // Deposited collateral alone cannot say whether a vault is empty. A rebalance
+    // withdraws into the vault's own token account before depositing onward, so a sweep
+    // landing in that window reads zero collateral while the funds are untouched.
+    // Recording the idle balance beside it is what lets a consumer tell "emptied" from
+    // "in flight" instead of guessing.
+    let idle_vault_liquidity_amount_raw = idle_vault_liquidity_by_mint(&preview);
     state.context = json!({
         "kind": "fleet_position_sweep",
         "cluster": universe.cluster,
@@ -4803,6 +4809,7 @@ async fn reconcile_fleet_position_sweep_vault(
         "catalog_revision_id": universe.catalog_revision_id,
         "catalog_source_slot": universe.catalog_source_slot,
         "amount_semantics": AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
+        "idle_vault_liquidity_amount_raw": idle_vault_liquidity_amount_raw,
         "signer_loaded": false,
         "transactions_sent": false,
     });
@@ -4841,6 +4848,34 @@ async fn reconcile_fleet_position_sweep_vault(
         }
         Err(error) => Err(FleetPositionSweepVaultError::from_orchestrator(&error)),
     }
+}
+
+/// Totals the vault's idle liquidity across the mints the preview covers.
+///
+/// Positions repeat their vault's balance once per reserve, so the value is deduplicated
+/// per mint before summing; counting it once per reserve would multiply a single balance
+/// by the reserve count. A preview with no positions yields `None` rather than zero,
+/// because "we observed nothing" must never be recorded as "we observed no funds".
+fn idle_vault_liquidity_by_mint(preview: &ChainReconcilePreview) -> Option<u128> {
+    if preview.positions.is_empty() {
+        return None;
+    }
+    let by_mint = preview
+        .positions
+        .iter()
+        .map(|position| {
+            (
+                position.liquidity_mint.as_str(),
+                position.vault_liquidity_amount_raw,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    Some(
+        by_mint
+            .values()
+            .map(|amount| u128::from(*amount))
+            .sum::<u128>(),
+    )
 }
 
 async fn reconcile_signed_route_submission(
