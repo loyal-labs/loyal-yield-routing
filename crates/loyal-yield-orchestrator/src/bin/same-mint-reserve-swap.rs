@@ -15650,10 +15650,15 @@ async fn load_chain_reconcile_preview_from_runtime(
                 .ok_or("shared reserve batch omitted a requested reserve")?
                 .0
                 .clone();
+            // The reserve carries its own token program, and an ATA derived under the
+            // wrong one resolves to an address that simply does not exist. That reads
+            // back as a zero balance, which downstream is treated as proof the vault is
+            // empty — so for a Token-2022 mint a hard-coded program would let a funded
+            // vault be reported as drained.
             let vault_liquidity_ata = derive_associated_token_address(
                 &vault_pubkey,
                 &summary.liquidity_mint,
-                &spl_token::ID,
+                &summary.liquidity_token_program,
             );
             let (obligation_account, _) = obligation(
                 &KLEND_PROGRAM_ID,
@@ -15904,7 +15909,7 @@ fn load_chain_reconcile_preview_from_rpc(
         let vault_liquidity_ata = derive_associated_token_address(
             &vault_pubkey,
             &reserve_summary.liquidity_mint,
-            &spl_token::ID,
+            &reserve_summary.liquidity_token_program,
         );
         let (vault_liquidity_amount_raw, vault_liquidity_token_account_exists) =
             load_spl_token_account_amount_at_or_after(
