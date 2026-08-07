@@ -1,6 +1,15 @@
 name: operator-tools-image
 
 on:
+  pull_request:
+    paths:
+      - .github/workflows/operator-tools-image.yml
+      - Cargo.lock
+      - Cargo.toml
+      - Dockerfile.operator-tools
+      - rust-toolchain.toml
+      - .sqlx/**
+      - crates/**
   workflow_dispatch:
 
 permissions:
@@ -23,6 +32,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
+        if: github.event_name == 'workflow_dispatch'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -34,10 +44,31 @@ jobs:
         with:
           context: .
           file: Dockerfile.operator-tools
-          push: true
+          push: ${{ github.event_name == 'workflow_dispatch' }}
+          load: ${{ github.event_name == 'pull_request' }}
           platforms: linux/amd64
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/operator-tools:sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=operator-tools
           cache-to: type=gha,scope=operator-tools,mode=max
+
+      - name: Pull dispatched image for runtime probe
+        if: github.event_name == 'workflow_dispatch'
+        run: docker pull --platform linux/amd64 "${REGISTRY}/${IMAGE_NAMESPACE}/operator-tools:sha-${GITHUB_SHA}"
+
+      - name: Probe operator image contents and command
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/operator-tools:sha-${{ github.sha }}
+          PROBE_BINARIES: >-
+            loyal-timescale-migrations fleet-orchestration-verifier
+            fleet-orchestration-production-evidence same-mint-monitor-e2e
+            route-lookup-table-shared-catalog route-lookup-table-alert-monitor
+            route-lookup-table-legacy-import route-lookup-table-cleanup
+        run: |
+          docker image inspect --format '{{.Os}}/{{.Architecture}}' "$IMAGE" | grep -Fx 'linux/amd64'
+          docker run --rm --network=none --read-only --cap-drop=ALL \
+            --env PROBE_BINARIES --security-opt=no-new-privileges --entrypoint sh "$IMAGE" -c \
+            'for binary in $PROBE_BINARIES; do test -x "/usr/local/bin/$binary"; done'
+          docker run --rm --network=none --read-only --cap-drop=ALL \
+            --security-opt=no-new-privileges "$IMAGE" >/dev/null

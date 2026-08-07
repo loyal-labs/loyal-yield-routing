@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Complete local E2E verification for the ASK-1973 crate-boundary refactor.
+# Complete isolated merge verification for the ASK-1973 crate-boundary refactor.
 #
-# The verifier deliberately combines five independent proof surfaces:
+# The verifier deliberately combines seven independent proof surfaces:
 #   1. release builds of every durable fleet binary from its owning crate;
-#   2. the production-sized isolated database verifier;
+#   2. successful planner, revalidator, executor, confirmer, reconciler, and
+#      provisioner lifecycle contracts over the real store and transaction code;
 #   3. a 10,000-vault deterministic planner replay;
-#   4. one real, concurrent, one-shot run of all six production fleet roles,
-#      including a 4,160-job fail-closed worker queue cohort;
-#   5. the production-shaped fleet health-poll contention harness.
+#   4. a controlled production transaction compile/simulate/sign/send probe;
+#   5. exact, side-effect-free startup probes for all six production roles;
+#   6. a 4,160-job fail-closed negative-control worker cohort;
+#   7. the production-shaped fleet health-poll contention harness.
 #
 # It never reads or writes production databases, RPCs, Render, or registries.
-# POLICY_KEYPAIR is required only because the production worker startup path
-# rejects a silently mis-mounted signer. The process-level queue contains only
-# deliberately incomplete local fixtures that must fail before a chain read or
-# transaction, and OBSERVABILITY_ENABLED=false prevents remote telemetry.
+# POLICY_KEYPAIR is required because both the real worker startup path and the
+# controlled transaction probe reject a silently mis-mounted signer. The
+# process-level queue contains only deliberately incomplete local fixtures that
+# must fail before a chain read or transaction, and OBSERVABILITY_ENABLED=false
+# prevents remote telemetry.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
@@ -23,6 +26,32 @@ cd "$repo_root"
 fail() {
   echo "FAIL: $*" >&2
   exit 1
+}
+
+require_subcheck() {
+  local name="$1"
+  jq -e --arg name "$name" '
+    [.checks[].subchecks[]? | select(.name == $name and .verdict == "PASS")]
+    | length == 1
+  ' "$evidence_dir/isolated-database-verifier.json" >/dev/null ||
+    fail "required isolated lifecycle subcheck did not pass exactly once: $name"
+}
+
+probe_role() {
+  local expected_role="$1"
+  local output_file="$2"
+  shift 2
+  "$@" >"$output_file"
+  jq -e --arg role "$expected_role" '
+    .schemaVersion == 1
+    and .event == "fleet_worker_role_probe"
+    and .status == "pass"
+    and .role == $role
+    and .networkAccessed == false
+    and .secretsLoaded == false
+    and .databaseMutated == false
+    and .transactionSent == false
+  ' "$output_file" >/dev/null || fail "$expected_role role probe violated its contract"
 }
 
 for command_name in bun cargo initdb pg_ctl createdb psql jq rg awk python3; do
@@ -97,53 +126,7 @@ database_url="postgresql://$(id -un)@127.0.0.1:$port/fleet_verify"
 NEON_DATABASE_URL="$database_url" target/release/yield-migrations --apply \
   >"$evidence_dir/migrations.log"
 
-# The planner uses only these two Timescale relations during the process-level
-# pass. They are recreated locally with the production column contract; no
-# Timescale extension or external database is involved.
-psql -X --set=ON_ERROR_STOP=1 "$database_url" >/dev/null <<'SQL'
-CREATE SCHEMA kamino;
-
-CREATE TABLE kamino.supported_reserves (
-  market TEXT NOT NULL,
-  liquidity_mint TEXT NOT NULL,
-  reserve TEXT NOT NULL,
-  market_name TEXT,
-  symbol TEXT,
-  risk_baskets TEXT[] NOT NULL DEFAULT '{}',
-  source TEXT NOT NULL DEFAULT 'kamino-api',
-  active BOOLEAN NOT NULL DEFAULT TRUE,
-  fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE kamino.latest_verified_reserve_updates (
-  event_id BIGINT NOT NULL,
-  account_data_hash TEXT NOT NULL,
-  observed_at TIMESTAMPTZ NOT NULL,
-  slot BIGINT NOT NULL,
-  verified_at TIMESTAMPTZ NOT NULL,
-  verified_slot BIGINT NOT NULL,
-  verification_commitment TEXT NOT NULL,
-  verification_source TEXT NOT NULL,
-  reserve TEXT NOT NULL,
-  market TEXT,
-  market_name TEXT,
-  liquidity_mint TEXT NOT NULL,
-  symbol TEXT,
-  mint_decimals INTEGER NOT NULL,
-  reserve_last_update_slot BIGINT NOT NULL,
-  reserve_last_update_stale BOOLEAN NOT NULL,
-  reserve_price_status SMALLINT NOT NULL,
-  available_amount DOUBLE PRECISION NOT NULL,
-  borrowed_amount DOUBLE PRECISION NOT NULL,
-  total_supply_amount DOUBLE PRECISION NOT NULL,
-  market_price_usd DOUBLE PRECISION NOT NULL,
-  market_price_last_updated_ts BIGINT NOT NULL,
-  utilization DOUBLE PRECISION NOT NULL,
-  borrow_apy DOUBLE PRECISION NOT NULL,
-  supply_apy DOUBLE PRECISION NOT NULL
-);
-SQL
-echo "PASS: migrations 1-32 and the isolated market-read contract are available"
+echo "PASS: migrations 1-32 are available in disposable PostgreSQL"
 echo
 
 echo "== Production-sized isolated database verification"
@@ -161,7 +144,32 @@ jq -e '
   and .firstBlockingCheck == null
 ' "$evidence_dir/isolated-database-verifier.json" >/dev/null || \
   fail "isolated database verifier did not pass"
+
+for lifecycle_subcheck in \
+  economic_priority_order \
+  bounded_accrual_preserves_discovery_and_binds_signed_decision \
+  ready_revalidate_waiting_lanes_are_isolated \
+  signed_submission_links_decision_and_terminalizes_after_explicit_transitions \
+  subscription_hint_only_accelerates_authoritative_confirmation_poll \
+  confirmer_reclaims_and_renews_exact_semantic_conflicts \
+  reconciler_reclaims_and_renews_exact_semantic_conflicts \
+  reconciled_volume_counts_unique_submission_exactly_once \
+  runtime_alt_and_db_execution_measurements; do
+  require_subcheck "$lifecycle_subcheck"
+done
+jq -e '
+  [.checks[].subchecks[]? | select(.name == "runtime_alt_and_db_execution_measurements")]
+  | length == 1
+    and .[0].evidence.alt.typedProvisionerDryRunPlans == 1
+    and .[0].evidence.alt.reusableV2Plans == 1
+    and .[0].evidence.alt.staleFenceCommits == 0
+    and .[0].evidence.execution.databaseDeadlocks == 0
+    and .[0].evidence.execution.duplicateActiveVaultMovements == 0
+    and .[0].evidence.execution.overlappingLaneLimitViolations == 0
+' "$evidence_dir/isolated-database-verifier.json" >/dev/null || \
+  fail "isolated lifecycle measurements did not prove provisioner and execution safety"
 echo "PASS: 4,160 runnable + 10,000 ALT-cold + 10,000 inert load and concurrency/fence checks"
+echo "PASS: successful durable lifecycle reached ready, signed, submitted, confirmed, reconciled, and completed"
 echo
 
 echo "== 10,000-vault planning replay"
@@ -182,9 +190,120 @@ jq -e '
 echo "PASS: 10,000-vault planner replay stayed ordered and below its 10-second p95 gate"
 echo
 
-echo "== Concurrent one-shot run of all six production fleet roles"
+echo "== Controlled transaction and six-role contract probes"
+target/release/same-mint-reserve-swap --fleet-controlled-transaction-probe \
+  >"$evidence_dir/controlled-transaction-probe.json"
+jq -e '
+  .schemaVersion == 1
+  and .event == "fleet_transaction_runtime_probe"
+  and .externalNetworkAccessed == false
+  and .productionTransactionSent == false
+  and .execution.identicalByteRebroadcastAttempts == 2
+  and .execution.rebroadcastByteMismatches == 0
+  and .execution.postConfirmReads == 1
+  and .execution.minContextSlotViolations == 0
+  and .execution.policyExecutionSignedByPolicyKeypair == true
+  and .execution.altMutationsAuthorizedAndPaidByPolicyKeypair == true
+  and .execution.shardIsFinalFeePayer == true
+  and .execution.policyIsSecondStaticSigner == true
+  and .execution.finalManifestAndAltCoverageMatch == true
+  and .execution.finalPacketSimulationFeeAndHashesMatch == true
+  and .execution.setupIdleAndFarmInitUsePolicyPayer == true
+  and .execution.shardRegistryKeypairMatch == true
+  and .execution.boundedRankedFailover == true
+' "$evidence_dir/controlled-transaction-probe.json" >/dev/null || \
+  fail "controlled production transaction probe did not prove every invariant"
+
+probe_role planner "$evidence_dir/planner-role-probe.json" \
+  target/release/fleet-opportunity-planner --role-probe
+probe_role revalidator "$evidence_dir/revalidator-role-probe.json" \
+  target/release/same-mint-reserve-swap --fleet-worker revalidate --role-probe
+probe_role executor "$evidence_dir/executor-role-probe.json" \
+  target/release/same-mint-reserve-swap --fleet-worker execute --role-probe
+probe_role confirmer "$evidence_dir/confirmer-role-probe.json" \
+  target/release/fleet-route-confirmer --role-probe
+probe_role reconciler "$evidence_dir/reconciler-role-probe.json" \
+  target/release/same-mint-reserve-swap --fleet-reconciler --role-probe
+probe_role priority_provisioner "$evidence_dir/priority-provisioner-role-probe.json" \
+  target/release/route-lookup-table-provisioner --role-probe
+
+jq -n \
+  --slurpfile database "$evidence_dir/isolated-database-verifier.json" \
+  --slurpfile planner "$evidence_dir/planner-replay.json" \
+  --slurpfile transaction "$evidence_dir/controlled-transaction-probe.json" \
+  --slurpfile plannerRole "$evidence_dir/planner-role-probe.json" \
+  --slurpfile revalidatorRole "$evidence_dir/revalidator-role-probe.json" \
+  --slurpfile executorRole "$evidence_dir/executor-role-probe.json" \
+  --slurpfile confirmerRole "$evidence_dir/confirmer-role-probe.json" \
+  --slurpfile reconcilerRole "$evidence_dir/reconciler-role-probe.json" \
+  --slurpfile provisionerRole "$evidence_dir/priority-provisioner-role-probe.json" '
+  def passed($name):
+    [$database[0].checks[].subchecks[]?
+      | select(.name == $name and .verdict == "PASS")]
+    | length == 1;
+  {
+    schemaVersion: 1,
+    event: "ask_1973_successful_role_lifecycle",
+    status: "PASS",
+    isolated: true,
+    productionMutation: false,
+    roles: {
+      planner: {
+        entrypoint: ($plannerRole[0].status == "pass"),
+        successfulWork: ($planner[0].status == "pass"
+          and $planner[0].inputCount == 10000
+          and $planner[0].rounds == 7
+          and $planner[0].economicPriorityOrdered == true)
+      },
+      revalidator: {
+        entrypoint: ($revalidatorRole[0].status == "pass"),
+        successfulWork: (
+          passed("bounded_accrual_preserves_discovery_and_binds_signed_decision")
+          and passed("ready_revalidate_waiting_lanes_are_isolated")
+        )
+      },
+      executor: {
+        entrypoint: ($executorRole[0].status == "pass"),
+        successfulWork: (
+          passed("signed_submission_links_decision_and_terminalizes_after_explicit_transitions")
+          and $transaction[0].execution.identicalByteRebroadcastAttempts == 2
+        )
+      },
+      confirmer: {
+        entrypoint: ($confirmerRole[0].status == "pass"),
+        successfulWork: (
+          passed("subscription_hint_only_accelerates_authoritative_confirmation_poll")
+          and passed("confirmer_reclaims_and_renews_exact_semantic_conflicts")
+        )
+      },
+      reconciler: {
+        entrypoint: ($reconcilerRole[0].status == "pass"),
+        successfulWork: (
+          passed("reconciler_reclaims_and_renews_exact_semantic_conflicts")
+          and passed("reconciled_volume_counts_unique_submission_exactly_once")
+        )
+      },
+      priorityProvisioner: {
+        entrypoint: ($provisionerRole[0].status == "pass"),
+        successfulWork: ([
+          $database[0].checks[].subchecks[]?
+          | select(.name == "runtime_alt_and_db_execution_measurements")
+        ][0].evidence.alt.typedProvisionerDryRunPlans == 1)
+      }
+    }
+  }
+' >"$evidence_dir/successful-role-lifecycle.json"
+jq -e '
+  .status == "PASS"
+  and ([.roles[] | .entrypoint and .successfulWork] | all)
+' "$evidence_dir/successful-role-lifecycle.json" >/dev/null ||
+  fail "one or more fleet roles lack successful-work evidence"
+echo "PASS: real transaction code compiled, simulated, signed, mock-sent, rebroadcast, and fenced"
+echo "PASS: all six production roles have exact entrypoint and successful-work evidence"
+echo
+
+echo "== Negative-control process load for the real revalidator and executor"
 export NEON_DATABASE_URL="$database_url"
-export TIMESCALEDB_URL="$database_url"
 export SOLANA_RPC_URL="http://127.0.0.1:18999"
 export SOLANA_WS_URL="ws://127.0.0.1:18999"
 export YIELD_ALT_CLUSTER="localnet"
@@ -328,10 +447,10 @@ process_load_seeded="$(psql -X -At "$database_url" -c \
 [[ "$process_load_seeded" == "4160" ]] || \
   fail "expected 4,160 process-load jobs, seeded $process_load_seeded"
 
-# Every RPC-owning role proves its explicit cluster binding at startup. Serve
-# only getGenesisHash with a non-canonical hash accepted exclusively for
-# localnet. Any accidental transaction, account, fee, or status call receives
-# a JSON-RPC method-not-found response and therefore fails closed.
+# The negative-control workers prove their explicit cluster binding at startup.
+# Serve only getGenesisHash with a non-canonical hash accepted exclusively for
+# localnet. Any accidental transaction, account, fee, or status call receives a
+# JSON-RPC method-not-found response and therefore fails closed.
 bun -e '
   Bun.serve({
     hostname: "127.0.0.1",
@@ -367,14 +486,10 @@ for _ in {1..50}; do
 done
 [[ "$rpc_ready" -eq 1 ]] || fail "isolated Solana RPC stub did not start"
 
-fleet_labels=(planner revalidator executor confirmer reconciler priority-provisioner)
+fleet_labels=(revalidator-negative-control executor-negative-control)
 fleet_commands=(
-  "target/release/fleet-opportunity-planner --once --poll-interval-seconds 1 --full-sweep-interval-seconds 30 --dirty-batch-size 256 --max-opportunities-per-wave 128"
   "target/release/same-mint-reserve-swap --fleet-worker revalidate --once --concurrency 16 --fused-execute-concurrency 8 --poll-interval-milliseconds 250"
   "target/release/same-mint-reserve-swap --fleet-worker execute --once --concurrency 4 --poll-interval-milliseconds 250"
-  "target/release/fleet-route-confirmer --execute --once --batch-size 128 --broadcast-concurrency 16 --poll-interval-milliseconds 1000"
-  "target/release/same-mint-reserve-swap --fleet-reconciler --once --concurrency 64 --batch-size 32 --poll-interval-milliseconds 250 --position-sweep-interval-seconds 300"
-  "target/release/route-lookup-table-provisioner --cluster localnet --execute --max-operations 32 --concurrency 8 --rate-limit-ms 250"
 )
 
 for index in "${!fleet_labels[@]}"; do
@@ -398,7 +513,7 @@ while :; do
   done
   [[ "$running" -eq 0 ]] && break
   if [[ "$SECONDS" -ge "$deadline" ]]; then
-    fail "$running fleet role(s) did not finish their one-shot pass within 360 seconds"
+    fail "$running negative-control worker(s) did not finish within 360 seconds"
   fi
   sleep 1
 done
@@ -416,7 +531,7 @@ done
 fleet_pids=()
 
 for label in "${fleet_labels[@]}"; do
-  if rg --quiet 'fatal|panicked|transition_failed|join_failed' "$evidence_dir/$label.log"; then
+  if rg --quiet 'fatal|panicked|transition_failed|join_failed|recovery_required' "$evidence_dir/$label.log"; then
     fail "$label emitted a fatal worker condition"
   fi
 done
@@ -424,14 +539,12 @@ unexpected_rpc_methods="$(rg -v '^getGenesisHash$' "$evidence_dir/rpc-stub.log" 
 [[ -z "$unexpected_rpc_methods" ]] || fail \
   "fleet startup attempted an unexpected RPC method"
 genesis_request_count="$(rg --count '^getGenesisHash$' "$evidence_dir/rpc-stub.log" || true)"
-[[ "${genesis_request_count:-0}" -ge 5 ]] || fail \
-  "expected at least five localnet genesis checks, observed ${genesis_request_count:-0}"
-rg --quiet '"status":"fleet_worker_healthy"' "$evidence_dir/revalidator.log" || \
+[[ "${genesis_request_count:-0}" == "2" ]] || fail \
+  "expected exactly two localnet genesis checks, observed ${genesis_request_count:-0}"
+rg --quiet '"status":"fleet_worker_healthy"' "$evidence_dir/revalidator-negative-control.log" || \
   fail "revalidator did not emit its one-shot health result"
-rg --quiet '"status":"fleet_worker_healthy"' "$evidence_dir/executor.log" || \
+rg --quiet '"status":"fleet_worker_healthy"' "$evidence_dir/executor-negative-control.log" || \
   fail "executor did not emit its one-shot health result"
-rg --quiet '"status":"fleet_reconciler_healthy"' "$evidence_dir/reconciler.log" || \
-  fail "reconciler did not emit its one-shot health result"
 IFS='|' read -r process_load_failed process_load_leased process_load_terminal_reason <<<"$(
   psql -X -At "$database_url" -c \
     "SELECT count(*) FILTER (WHERE opportunity_state = 'failed'), count(*) FILTER (WHERE opportunity_state = 'leased'), count(*) FILTER (WHERE terminal_reason IS NOT NULL) FROM loyal_yield.rebalance_opportunities WHERE idempotency_key LIKE 'ask1973-process-load-%'"
@@ -442,7 +555,7 @@ IFS='|' read -r process_load_failed process_load_leased process_load_terminal_re
   fail "$process_load_leased process-load leases remained after worker exit"
 [[ "$process_load_terminal_reason" == "4160" ]] || \
   fail "expected a terminal reason for all process-load jobs, observed $process_load_terminal_reason"
-echo "PASS: all six production roles exited cleanly and real workers terminalized 4,160 fail-closed jobs"
+echo "PASS: real workers terminalized 4,160 poison jobs with no unexpected RPC or stranded lease"
 echo
 
 echo "== Fleet health-poll load and contention verification"
@@ -454,5 +567,5 @@ rg --fixed-strings --quiet "PASS: fleet health-poll contention verification" \
 echo "PASS: production-shaped health-poll load stayed interval-paced"
 echo
 
-echo "PASS: ASK-1973 isolated fleet E2E verification"
+echo "PASS: ASK-1973 isolated merge verification"
 echo "evidence directory: $evidence_dir"

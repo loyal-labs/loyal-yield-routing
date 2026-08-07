@@ -1,6 +1,19 @@
 name: worker-images
 
 on:
+  pull_request:
+    paths:
+      - .github/workflows/worker-images.yml
+      - Cargo.lock
+      - Cargo.toml
+      - Dockerfile.laserstream-workers
+      - Dockerfile.light-workers
+      - rust-toolchain.toml
+      - .sqlx/**
+      - crates/**
+      - packages/loyal-actions/**
+      - scripts/execute-autodeposit-policy.ts
+      - scripts/kamino-monitor-predeploy.sh
   workflow_dispatch:
     inputs:
       images:
@@ -30,19 +43,27 @@ jobs:
         include:
           - image: laserstream-workers
             dockerfile: Dockerfile.laserstream-workers
+            probe_binaries: >-
+              kamino-reserve-monitor balance-sweep-ata-monitor
+              loyal-timescale-migrations yield-migrations
           - image: light-workers
             dockerfile: Dockerfile.light-workers
+            probe_binaries: >-
+              balance-sweep-ata-projector balance-sweep-autodeposit-trigger
+              loyal-yield-realtime yield-migrations same-mint-reserve-swap
+              same-mint-yield-monitor fleet-opportunity-planner
+              fleet-route-confirmer route-lookup-table-provisioner
     steps:
       - name: Check out repository
-        if: inputs.images == 'both' || inputs.images == matrix.image
+        if: github.event_name == 'pull_request' || inputs.images == 'both' || inputs.images == matrix.image
         uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        if: inputs.images == 'both' || inputs.images == matrix.image
+        if: github.event_name == 'pull_request' || inputs.images == 'both' || inputs.images == matrix.image
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        if: inputs.images == 'both' || inputs.images == matrix.image
+        if: github.event_name == 'workflow_dispatch' && (inputs.images == 'both' || inputs.images == matrix.image)
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -50,12 +71,13 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push image
-        if: inputs.images == 'both' || inputs.images == matrix.image
+        if: github.event_name == 'pull_request' || inputs.images == 'both' || inputs.images == matrix.image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          push: true
+          push: ${{ github.event_name == 'workflow_dispatch' }}
+          load: ${{ github.event_name == 'pull_request' }}
           platforms: linux/amd64
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:sha-${{ github.sha }}
           build-args: |
@@ -64,3 +86,39 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
+
+      - name: Pull dispatched image for runtime probe
+        if: github.event_name == 'workflow_dispatch' && (inputs.images == 'both' || inputs.images == matrix.image)
+        run: docker pull --platform linux/amd64 "${REGISTRY}/${IMAGE_NAMESPACE}/${{ matrix.image }}:sha-${GITHUB_SHA}"
+
+      - name: Probe runtime image contents
+        if: github.event_name == 'pull_request' || inputs.images == 'both' || inputs.images == matrix.image
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:sha-${{ github.sha }}
+          PROBE_BINARIES: ${{ matrix.probe_binaries }}
+        run: |
+          docker image inspect --format '{{.Os}}/{{.Architecture}}' "$IMAGE" | grep -Fx 'linux/amd64'
+          docker run --rm --network=none --read-only --cap-drop=ALL \
+            --env PROBE_BINARIES --security-opt=no-new-privileges --entrypoint sh "$IMAGE" -c \
+            'for binary in $PROBE_BINARIES; do test -x "/usr/local/bin/$binary"; done'
+
+      - name: Probe all fleet role entrypoints
+        if: matrix.image == 'light-workers' && (github.event_name == 'pull_request' || inputs.images == 'both' || inputs.images == matrix.image)
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:sha-${{ github.sha }}
+        run: |
+          probe_role() {
+            expected_role="$1"
+            shift
+            output="$(docker run --rm --network=none --read-only --cap-drop=ALL \
+              --security-opt=no-new-privileges --entrypoint "$1" "$IMAGE" "${@:2}")"
+            jq -e --arg role "$expected_role" \
+              '.schemaVersion == 1 and .event == "fleet_worker_role_probe" and .status == "pass" and .role == $role and .networkAccessed == false and .secretsLoaded == false and .databaseMutated == false and .transactionSent == false' \
+              <<<"$output" >/dev/null
+          }
+          probe_role planner /usr/local/bin/fleet-opportunity-planner --role-probe
+          probe_role revalidator /usr/local/bin/same-mint-reserve-swap --fleet-worker revalidate --role-probe
+          probe_role executor /usr/local/bin/same-mint-reserve-swap --fleet-worker execute --role-probe
+          probe_role confirmer /usr/local/bin/fleet-route-confirmer --role-probe
+          probe_role reconciler /usr/local/bin/same-mint-reserve-swap --fleet-reconciler --role-probe
+          probe_role priority_provisioner /usr/local/bin/route-lookup-table-provisioner --role-probe
