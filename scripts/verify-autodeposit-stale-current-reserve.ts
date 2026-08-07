@@ -134,9 +134,39 @@ type PointerRow = {
   status: string;
 };
 
+type ReleaseSelectorLifecycle = {
+  now: Date;
+  targetActive: boolean;
+  targetLifecycleStatus: "active" | "pending_delegation";
+  slotStatus: "selected" | "scheduled" | "requested" | "failed";
+  slotEligibleAfter: Date;
+  slotClaimToken: string | null;
+  lotStatus: "consumed" | "open";
+  lotEligibleAfter: Date;
+  lotRemainingAmountRaw: bigint;
+  claimStatus: "selected" | "released";
+};
+
+function selectorLoadsReleasedSlot(
+  lifecycle: ReleaseSelectorLifecycle,
+  at: Date
+): boolean {
+  return (
+    lifecycle.targetActive &&
+    lifecycle.targetLifecycleStatus === "active" &&
+    (lifecycle.slotStatus === "scheduled" ||
+      lifecycle.slotStatus === "requested") &&
+    lifecycle.slotEligibleAfter.getTime() <= at.getTime() &&
+    lifecycle.lotStatus === "open" &&
+    lifecycle.lotRemainingAmountRaw > 0 &&
+    lifecycle.claimStatus !== "selected"
+  );
+}
+
 function createFakeNeon(state: {
   positions: LiveVaultPosition[];
   pointer: PointerRow;
+  releaseLifecycle?: ReleaseSelectorLifecycle;
 }) {
   const statements: { sql: string; values: unknown[] }[] = [];
   const neon =
@@ -172,6 +202,47 @@ function createFakeNeon(state: {
         state.pointer.current_market = market;
         state.pointer.current_liquidity_mint = liquidityMint;
         return [{ id: state.pointer.id }];
+      }
+
+      if (
+        state.releaseLifecycle &&
+        /WITH selected_claim AS/i.test(sql) &&
+        /UPDATE loyal_yield\.balance_sweep_scheduled_slots/i.test(sql)
+      ) {
+        const retryDelays = values.filter(
+          (value): value is number => typeof value === "number"
+        );
+        const lotRetryDelaySeconds = retryDelays[0];
+        const slotRetryDelaySeconds = retryDelays[1];
+        if (
+          lotRetryDelaySeconds !== undefined &&
+          /status = 'open'.*eligible_after = now\(\) \+ \( \? \* interval '1 second'\)/i.test(
+            sql
+          )
+        ) {
+          state.releaseLifecycle.lotStatus = "open";
+          state.releaseLifecycle.lotRemainingAmountRaw = BigInt(1);
+          state.releaseLifecycle.lotEligibleAfter = new Date(
+            state.releaseLifecycle.now.getTime() + lotRetryDelaySeconds * 1_000
+          );
+        }
+        if (/SET status = 'released'/i.test(sql)) {
+          state.releaseLifecycle.claimStatus = "released";
+        }
+        if (
+          slotRetryDelaySeconds !== undefined &&
+          /UPDATE loyal_yield\.balance_sweep_scheduled_slots SET status = 'scheduled', claim_token = NULL, eligible_after = now\(\) \+ \( \? \* interval '1 second'\)/i.test(
+            sql
+          )
+        ) {
+          state.releaseLifecycle.slotStatus = "scheduled";
+          state.releaseLifecycle.slotClaimToken = null;
+          state.releaseLifecycle.slotEligibleAfter = new Date(
+            state.releaseLifecycle.now.getTime() + slotRetryDelaySeconds * 1_000
+          );
+        } else {
+          state.releaseLifecycle.slotStatus = "failed";
+        }
       }
 
       return [];
@@ -925,6 +996,36 @@ async function scenarioDrainedVaultBacksOffWithoutPaging(): Promise<void> {
       ? missingProjection.message.slice(0, 160)
       : missingProjection
   );
+  const wrongMintResolution = resolveCurrentReserve({
+    positions: [
+      position({
+        reserve: OTHER_RESERVE,
+        liquidityMint: OTHER_MINT,
+        amountRaw: BigInt(0),
+      }),
+    ],
+    target,
+  });
+  check(
+    "a missing target-mint projection remains explicitly unresolved",
+    wrongMintResolution.status === "unresolved" &&
+      wrongMintResolution.reason === "no_live_position",
+    wrongMintResolution
+  );
+  let wrongMintProjection: unknown = null;
+  try {
+    assertResolvedCurrentReserve(wrongMintResolution);
+  } catch (error) {
+    wrongMintProjection = error;
+  }
+  check(
+    "a fresh zero observation for another mint does not prove this target drained",
+    isUnresolvedCurrentReserveFailure(wrongMintProjection) &&
+      !isDrainedVaultFailure(wrongMintProjection),
+    wrongMintProjection instanceof Error
+      ? wrongMintProjection.message.slice(0, 180)
+      : wrongMintProjection
+  );
   check(
     "an ambiguous vault is not treated as a drained vault",
     !isDrainedVaultFailure(
@@ -978,7 +1079,11 @@ async function scenarioDrainedVaultBacksOffWithoutPaging(): Promise<void> {
     unclassifiedDisposition
   );
 
-  const state = {
+  const state: {
+    positions: LiveVaultPosition[];
+    pointer: PointerRow;
+    releaseLifecycle: ReleaseSelectorLifecycle;
+  } = {
     positions: [],
     pointer: {
       id: "4542",
@@ -986,6 +1091,18 @@ async function scenarioDrainedVaultBacksOffWithoutPaging(): Promise<void> {
       current_market: STALE_MARKET,
       current_liquidity_mint: USDC_MINT,
       status: "active",
+    },
+    releaseLifecycle: {
+      now: new Date("2026-08-07T00:00:00Z"),
+      targetActive: true,
+      targetLifecycleStatus: "active" as const,
+      slotStatus: "selected" as const,
+      slotEligibleAfter: new Date("2026-08-07T00:00:00Z"),
+      slotClaimToken: "autodeposit-trigger:4542:234781:1",
+      lotStatus: "consumed" as const,
+      lotEligibleAfter: new Date("2026-08-07T00:00:00Z"),
+      lotRemainingAmountRaw: BigInt(0),
+      claimStatus: "selected" as const,
     },
   };
   const { neon, statements } = createFakeNeon(state);
@@ -1009,6 +1126,43 @@ async function scenarioDrainedVaultBacksOffWithoutPaging(): Promise<void> {
       release?.sql ?? ""
     ),
     release?.sql
+  );
+  check(
+    "the owning slot is requeued with the same long deadline",
+    state.releaseLifecycle.slotStatus === "scheduled" &&
+      state.releaseLifecycle.slotClaimToken === null &&
+      state.releaseLifecycle.slotEligibleAfter.getTime() ===
+        state.releaseLifecycle.lotEligibleAfter.getTime(),
+    state.releaseLifecycle
+  );
+  check(
+    "the released slot is not selectable before the six-hour deadline",
+    !selectorLoadsReleasedSlot(
+      state.releaseLifecycle,
+      new Date(state.releaseLifecycle.now.getTime() + 6 * 60 * 60 * 1_000 - 1)
+    )
+  );
+  check(
+    "the full trigger selector can load the released slot after six hours",
+    selectorLoadsReleasedSlot(
+      state.releaseLifecycle,
+      new Date(state.releaseLifecycle.now.getTime() + 6 * 60 * 60 * 1_000)
+    )
+  );
+  const triggerSource = readFileSync(
+    join(
+      import.meta.dir,
+      "../crates/balance-sweep-autodeposit-trigger/src/main.rs"
+    ),
+    "utf8"
+  );
+  check(
+    "the modeled retry lifecycle matches the production selector predicates",
+    /slot\.status IN \('scheduled', 'requested'\)/.test(triggerSource) &&
+      /slot\.eligible_after <= now\(\)/.test(triggerSource) &&
+      /lot\.status = 'open'/.test(triggerSource) &&
+      /lot\.remaining_amount_raw > 0/.test(triggerSource),
+    "selector contract drifted"
   );
 
   const { neon: defaultNeon, statements: defaultStatements } =

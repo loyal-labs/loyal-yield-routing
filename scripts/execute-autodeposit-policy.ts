@@ -1142,8 +1142,9 @@ export async function releaseAutodepositLotClaim(args: {
       RETURNING claim_token
     )
     UPDATE loyal_yield.balance_sweep_scheduled_slots
-    SET status = 'failed',
+    SET status = 'scheduled',
         claim_token = NULL,
+        eligible_after = now() + (${retryDelaySeconds} * interval '1 second'),
         last_error = ${args.lastError},
         updated_at = now()
     WHERE claim_token IN (SELECT claim_token FROM updated_claim)
@@ -1476,8 +1477,11 @@ export function resolveCurrentReserve(args: {
     // proof the user withdrew everything, which no retry can change; a silent projector
     // is a fault that must keep paging. Only a fresh row can tell them apart.
     const drainConfirmed =
-      args.positions.length > 0 &&
-      args.positions.some((position) => isFresh(position.observedAt));
+      args.positions.some(
+        (position) =>
+          position.liquidityMint === args.target.tokenMint &&
+          isFresh(position.observedAt)
+      );
     return {
       status: "unresolved",
       reason: drainConfirmed ? "vault_drained" : "no_live_position",
