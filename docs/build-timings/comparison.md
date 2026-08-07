@@ -42,17 +42,16 @@ are in [`before`](before/) and [`after`](after/).
   `cargo test --workspace --locked`, the extracted-crate narrow builds,
   `bun run test:squads`, the historical `bun run test:squads:e2e` replay, the
   ABI/spec drift gate, SQLx offline metadata check, and lint pass.
-- The configured QEDGen executable is not installed at
-  `/Users/zotho/.agents/skills/qedgen/tools/qedgen`. A local source build of the
-  repository-documented QEDGen 2.30.0 reaches 100% operation coverage but exits
-  on three pre-existing P1 spec warnings: `set_lane_count` invariant
-  preservation and the unbound `initialize_config` / `set_admin` auth names.
-- `cargo public-api` confirms that the facade exports remain present, but its
-  diff is not empty because rustdoc records moved definitions under their new
-  owning crates. It therefore reports canonical ownership-path changes even
-  though the orchestrator continues to re-export the source-level paths.
-- Authoritative image verification remains unavailable on this host. Docker is
-  absent; the only previously bootable Podman VM has a full root filesystem,
-  and both fresh VMs fail their CoreOS Ignition user-creation step. The PR
-  workflows now perform non-pushing linux/amd64 builds and runtime probes for
-  all three images, so those checks must pass before merge.
+- A local source build of the repository-documented QEDGen 2.30.0 passes the
+  active ABI drift, 25/25-operation coverage, Pinocchio probe, and generated
+  proptest gates after aligning the specification's authorization and lane
+  invariants with the implementation.
+- `bun run verify:ask-1973-public-api` compiles 488 pinned legacy orchestrator
+  facade paths. `cargo public-api` remains an ownership audit rather than a
+  source-compatibility gate because rustdoc attributes re-exported definitions
+  to their new canonical crates.
+- Authoritative image verification remains unavailable on this ARM host. A
+  dedicated Podman VM reached the linux/amd64 cargo-chef stage, where Rust 1.89
+  reproducibly failed in `rustc -vV` under QEMU before repository code was
+  compiled. The PR workflows perform non-pushing linux/amd64 builds and runtime
+  probes for all three images, so those checks must pass before merge.

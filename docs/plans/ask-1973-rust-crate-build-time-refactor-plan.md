@@ -430,12 +430,14 @@ should not.
 
 ### Behavior-preservation checks specific to code motion
 
-- After Phase 2, confirm the public surface is byte-identical:
+- After Phase 2, confirm every legacy orchestrator facade path still compiles:
   ```sh
-  cargo public-api -p loyal-yield-orchestrator --diff-git-checkouts main HEAD
+  bun run verify:ask-1973-public-api
   ```
-  (or, without that tool, diff `cargo doc --no-deps` JSON output). The expected
-  diff is **empty** — the orchestrator re-exports everything it moved.
+  The pinned compile-only fixture covers the source-level compatibility
+  contract. `cargo public-api` remains useful as an ownership audit, but its
+  diff is intentionally non-empty because rustdoc attributes re-exported
+  definitions to their new canonical crates.
 - After Phase 2/3, confirm `.sqlx` is unchanged:
   ```sh
   cargo sqlx prepare --workspace --check
@@ -461,6 +463,7 @@ should not.
 | One image without the other | Dispatch `worker-images` with `images: light-workers`; assert the laserstream job is skipped. |
 | Timings recorded | `docs/build-timings/after/` for all four scenarios plus per-image compile/export/cache-export phases pulled from `--progress=plain`. |
 | Proof-surface checks pass | `bun run test:squads`, `bun run verify:qedgen`, `bun run verify:hub-abi-spec-drift`. |
+| Legacy orchestrator imports remain compatible | `bun run verify:ask-1973-public-api` compiles the pinned facade fixture. |
 | Boundary rules documented | `docs/rust-crate-boundaries.md`. |
 
 ### Expected direction of the numbers
