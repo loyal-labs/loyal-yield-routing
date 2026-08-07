@@ -23,14 +23,17 @@ pub use runtime_evidence::*;
 pub use source_evidence::*;
 
 pub mod capacity {
+    #[doc(inline)]
     pub use loyal_yield_store::fleet_orchestration::capacity::*;
 }
 
 pub mod domain {
+    #[doc(inline)]
     pub use loyal_yield_store::fleet_orchestration::domain::*;
 }
 
 pub mod queue {
+    #[doc(inline)]
     pub use loyal_yield_store::fleet_orchestration::queue::*;
 }
 

@@ -1,6 +1,7 @@
 pub mod fleet_orchestration;
 pub mod lookup_table_alerts;
 pub mod lookup_tables {
+    #[doc(inline)]
     pub use loyal_route_lookup_tables::lookup_tables::*;
 }
 mod shared_market_catalog;
@@ -12,6 +13,7 @@ pub mod rpc_safety {
 
 pub use lookup_table_alerts::*;
 pub use lookup_tables::*;
+#[doc(inline)]
 pub use loyal_route_lookup_tables::{NeonSqlClient, OrchestratorStore};
 pub use loyal_solana_env::{
     keypair_from_env, keypair_from_hex, keypair_from_string, policy_keypair_from_env,
@@ -20,8 +22,11 @@ pub use loyal_solana_env::{
     POLICY_KEYPAIR_ENV, SOLANA_TESTING_PK_ENV, STANDARD_POLICY_AUTHORITY, YIELD_ROUTER_KEYPAIR_ENV,
     YIELD_ROUTE_FEE_PAYER_KEYPAIRS_ENV,
 };
+#[doc(inline)]
 pub use loyal_yield_store::domain::*;
+#[doc(inline)]
 pub use loyal_yield_store::types::*;
+#[doc(inline)]
 pub use loyal_yield_store::{sqlx, OrchestratorError, RouteLookupTableProvisioningLock};
 pub use shared_market_catalog::{
     decode_kamino_reserve_account, derive_shared_market_catalog,
