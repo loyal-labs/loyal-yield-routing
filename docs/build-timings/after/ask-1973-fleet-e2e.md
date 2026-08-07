@@ -53,9 +53,12 @@ transaction.
 
 Both image workflows now run on relevant pull requests. They build without
 pushing, target `linux/amd64`, exercise cargo-chef and every final stage, assert
-the runtime image platform and executable set, run all six fleet role probes in
-`light-workers`, and run the declared operator-tools command. Manual dispatch
-keeps the existing immutable GHCR push behavior and probes the pulled image.
+the runtime image platform, revision label, embedded worker version, declared
+command, executable set, laserstream predeploy helper, and the light image's Bun
+runtime/script/dependency paths. They run all six fleet role probes in
+`light-workers` and execute the declared operator-tools command. Manual dispatch
+keeps the existing immutable GHCR push behavior, emits explicit max-mode SLSA
+provenance required by the deployment verifier, and probes the pulled image.
 
 The equivalent local command is:
 

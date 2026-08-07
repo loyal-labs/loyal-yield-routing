@@ -50,6 +50,7 @@ jobs:
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/operator-tools:sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
+          provenance: ${{ github.event_name == 'workflow_dispatch' && 'mode=max' || 'false' }}
           cache-from: type=gha,scope=operator-tools
           cache-to: type=gha,scope=operator-tools,mode=max
 
@@ -67,6 +68,9 @@ jobs:
             route-lookup-table-legacy-import route-lookup-table-cleanup
         run: |
           docker image inspect --format '{{.Os}}/{{.Architecture}}' "$IMAGE" | grep -Fx 'linux/amd64'
+          docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE" | grep -Fx "$GITHUB_SHA"
+          docker image inspect "$IMAGE" | jq -e \
+            '.[0].Config.Cmd == ["/usr/local/bin/fleet-orchestration-verifier", "--help"]' >/dev/null
           docker run --rm --network=none --read-only --cap-drop=ALL \
             --env PROBE_BINARIES --security-opt=no-new-privileges --entrypoint sh "$IMAGE" -c \
             'for binary in $PROBE_BINARIES; do test -x "/usr/local/bin/$binary"; done'

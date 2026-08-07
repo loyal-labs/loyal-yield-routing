@@ -65,12 +65,42 @@ build_image() {
     --file "$dockerfile" \
     --tag "$image" \
     --build-arg "LOYAL_IMAGE_VERSION=sha-$head_commit" \
+    --label "org.opencontainers.image.revision=$head_commit" \
     . >"$evidence_dir/$label-build.log" 2>&1; then
     tail -80 "$evidence_dir/$label-build.log" >&2
     fail "$label image build failed"
   fi
   [[ "$("${container_command[@]}" image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" == "$image_platform" ]] ||
     fail "$label image is not $image_platform"
+}
+
+probe_image_contract() {
+  local label="$1"
+  local image="$2"
+  local expected_cmd_json="$3"
+  local expected_version="$4"
+  shift 4
+  local inspect_file="$evidence_dir/$label-inspect.json"
+  "${container_command[@]}" image inspect "$image" >"$inspect_file"
+  jq -e \
+    --arg revision "$head_commit" \
+    --argjson expectedCmd "$expected_cmd_json" \
+    --arg version "$expected_version" '
+      .[0].Config.Cmd == $expectedCmd
+      and .[0].Config.Labels["org.opencontainers.image.revision"] == $revision
+      and ($version == "" or (.[0].Config.Env | index($version)) != null)
+    ' "$inspect_file" >/dev/null || fail "$label image metadata contract failed"
+
+  local paths="$*"
+  if [[ -n "$paths" ]]; then
+    "${container_command[@]}" run --rm --network=none --read-only --cap-drop=ALL \
+      --security-opt=no-new-privileges --env "PROBE_PATHS=$paths" \
+      --entrypoint sh "$image" -c \
+      'for path in $PROBE_PATHS; do test -e "$path"; done
+       case " $PROBE_PATHS " in *" /usr/local/bin/bun "*) test -x /usr/local/bin/bun;; esac
+       case " $PROBE_PATHS " in *" /usr/local/bin/kamino-monitor-predeploy "*) test -x /usr/local/bin/kamino-monitor-predeploy;; esac' \
+      >"$evidence_dir/$label-paths.log" 2>&1 || fail "$label runtime path probe failed"
+  fi
 }
 
 probe_binaries() {
@@ -107,6 +137,10 @@ probe_role() {
 }
 
 build_image light-workers Dockerfile.light-workers "$light_image"
+probe_image_contract light-workers "$light_image" \
+  '["/usr/local/bin/balance-sweep-ata-projector"]' \
+  "LOYAL_IMAGE_VERSION=sha-$head_commit" \
+  /usr/local/bin/bun /app/scripts/execute-autodeposit-policy.ts /app/node_modules
 probe_binaries light-workers "$light_image" \
   balance-sweep-ata-projector \
   balance-sweep-autodeposit-trigger \
@@ -129,6 +163,10 @@ probe_role priority_provisioner "$light_image" \
   /usr/local/bin/route-lookup-table-provisioner --role-probe
 
 build_image laserstream-workers Dockerfile.laserstream-workers "$laserstream_image"
+probe_image_contract laserstream-workers "$laserstream_image" \
+  '["/usr/local/bin/kamino-reserve-monitor"]' \
+  "LOYAL_IMAGE_VERSION=sha-$head_commit" \
+  /usr/local/bin/kamino-monitor-predeploy
 probe_binaries laserstream-workers "$laserstream_image" \
   kamino-reserve-monitor \
   balance-sweep-ata-monitor \
@@ -136,6 +174,8 @@ probe_binaries laserstream-workers "$laserstream_image" \
   yield-migrations
 
 build_image operator-tools Dockerfile.operator-tools "$operator_image"
+probe_image_contract operator-tools "$operator_image" \
+  '["/usr/local/bin/fleet-orchestration-verifier", "--help"]' ""
 probe_binaries operator-tools "$operator_image" \
   loyal-timescale-migrations \
   fleet-orchestration-verifier \

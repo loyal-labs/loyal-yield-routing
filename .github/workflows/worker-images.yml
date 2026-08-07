@@ -6,8 +6,10 @@ on:
       - .github/workflows/worker-images.yml
       - Cargo.lock
       - Cargo.toml
+      - bun.lock
       - Dockerfile.laserstream-workers
       - Dockerfile.light-workers
+      - package.json
       - rust-toolchain.toml
       - .sqlx/**
       - crates/**
@@ -43,16 +45,22 @@ jobs:
         include:
           - image: laserstream-workers
             dockerfile: Dockerfile.laserstream-workers
+            expected_cmd: /usr/local/bin/kamino-reserve-monitor
             probe_binaries: >-
               kamino-reserve-monitor balance-sweep-ata-monitor
               loyal-timescale-migrations yield-migrations
+            probe_paths: /usr/local/bin/kamino-monitor-predeploy
           - image: light-workers
             dockerfile: Dockerfile.light-workers
+            expected_cmd: /usr/local/bin/balance-sweep-ata-projector
             probe_binaries: >-
               balance-sweep-ata-projector balance-sweep-autodeposit-trigger
               loyal-yield-realtime yield-migrations same-mint-reserve-swap
               same-mint-yield-monitor fleet-opportunity-planner
               fleet-route-confirmer route-lookup-table-provisioner
+            probe_paths: >-
+              /usr/local/bin/bun /app/scripts/execute-autodeposit-policy.ts
+              /app/node_modules
     steps:
       - name: Check out repository
         if: github.event_name == 'pull_request' || inputs.images == 'both' || inputs.images == matrix.image
@@ -84,6 +92,7 @@ jobs:
             LOYAL_IMAGE_VERSION=sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
+          provenance: ${{ github.event_name == 'workflow_dispatch' && 'mode=max' || 'false' }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
 
@@ -95,12 +104,20 @@ jobs:
         if: github.event_name == 'pull_request' || inputs.images == 'both' || inputs.images == matrix.image
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:sha-${{ github.sha }}
+          EXPECTED_CMD: ${{ matrix.expected_cmd }}
           PROBE_BINARIES: ${{ matrix.probe_binaries }}
+          PROBE_PATHS: ${{ matrix.probe_paths }}
         run: |
           docker image inspect --format '{{.Os}}/{{.Architecture}}' "$IMAGE" | grep -Fx 'linux/amd64'
+          docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE" | grep -Fx "$GITHUB_SHA"
+          docker image inspect "$IMAGE" | jq -e --arg cmd "$EXPECTED_CMD" --arg version "LOYAL_IMAGE_VERSION=sha-$GITHUB_SHA" \
+            '.[0].Config.Cmd == [$cmd] and (.[0].Config.Env | index($version)) != null' >/dev/null
           docker run --rm --network=none --read-only --cap-drop=ALL \
-            --env PROBE_BINARIES --security-opt=no-new-privileges --entrypoint sh "$IMAGE" -c \
-            'for binary in $PROBE_BINARIES; do test -x "/usr/local/bin/$binary"; done'
+            --env PROBE_BINARIES --env PROBE_PATHS --security-opt=no-new-privileges --entrypoint sh "$IMAGE" -c \
+            'for binary in $PROBE_BINARIES; do test -x "/usr/local/bin/$binary"; done
+             for path in $PROBE_PATHS; do test -e "$path"; done
+             case " $PROBE_PATHS " in *" /usr/local/bin/bun "*) test -x /usr/local/bin/bun;; esac
+             case " $PROBE_PATHS " in *" /usr/local/bin/kamino-monitor-predeploy "*) test -x /usr/local/bin/kamino-monitor-predeploy;; esac'
 
       - name: Probe all fleet role entrypoints
         if: matrix.image == 'light-workers' && (github.event_name == 'pull_request' || inputs.images == 'both' || inputs.images == matrix.image)
