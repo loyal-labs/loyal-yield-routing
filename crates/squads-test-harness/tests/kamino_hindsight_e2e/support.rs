@@ -1,3 +1,4 @@
+#[allow(clippy::too_many_arguments)]
 fn build_rebalance_transaction(
     vault: Pubkey,
     signer: Pubkey,

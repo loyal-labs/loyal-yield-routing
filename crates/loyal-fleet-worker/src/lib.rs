@@ -1549,6 +1549,7 @@ struct SelectedVault {
     stable_mints: Vec<String>,
     kamino_markets: Vec<String>,
     kamino_liquidity_mints: Vec<String>,
+    #[allow(dead_code)]
     swap_lanes: Value,
 }
 
@@ -3103,7 +3104,7 @@ fn parse_fleet_worker_options(
     if claim_kind == RebalanceOpportunityClaimKind::Execute && fused_execute_concurrency != 0 {
         return Err("the execute lane cannot enable fused revalidate execution".into());
     }
-    if lease_seconds < 30 || lease_seconds > 900 {
+    if !(30..=900).contains(&lease_seconds) {
         return Err("fleet worker lease seconds must be in 30..=900".into());
     }
     if poll_interval_milliseconds == 0 || poll_interval_milliseconds > 60_000 {
@@ -3193,7 +3194,7 @@ fn parse_fleet_reconciler_options(
     if !(1..=256).contains(&batch_size) {
         return Err("fleet reconciler batch size must be in 1..=256".into());
     }
-    if lease_seconds < 30 || lease_seconds > 900 {
+    if !(30..=900).contains(&lease_seconds) {
         return Err("fleet reconciler lease seconds must be in 30..=900".into());
     }
     if poll_interval_milliseconds == 0 || poll_interval_milliseconds > 60_000 {
@@ -5997,6 +5998,7 @@ async fn finish_fleet_worker_task(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn emit_fleet_worker_health(
     client: &NeonSqlClient,
     options: &FleetWorkerOptions,
@@ -9485,6 +9487,7 @@ async fn run_initial_reserve_deposit_flow(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_idle_vault_deposit_flow(
     options: &mut CliOptions,
     client: &NeonSqlClient,
@@ -10053,7 +10056,7 @@ async fn run_idle_vault_deposit_flow(
                 "writesCurrentPositions": false,
                 "sendsTransactions": false,
                 "reason": blocker_reason,
-                "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, &deposit_position, amount_raw, db_idle.as_ref(), options),
+                "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, deposit_position, amount_raw, db_idle.as_ref(), options),
                 "preflightBlockers": idle_vault_deposit_blocker_messages(&blockers),
                 "lookupTableResolution": idle_lookup_table_evidence.clone(),
             }))?
@@ -10076,7 +10079,7 @@ async fn run_idle_vault_deposit_flow(
                 "writesDecision": false,
                 "writesCurrentPositions": false,
                 "sendsTransactions": false,
-                "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, &deposit_position, amount_raw, db_idle.as_ref(), options),
+                "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, deposit_position, amount_raw, db_idle.as_ref(), options),
                 "vault": vault_json(vault),
                 "vaultUsdcAta": vault_usdc_ata.to_string(),
                 "chainReconcile": chain_reconcile_preview_json(initial_preview),
@@ -10111,7 +10114,7 @@ async fn run_idle_vault_deposit_flow(
                 "writesCurrentPositions": false,
                 "sendsTransactions": false,
                 "retry": "next_monitor_cycle_after_provisioning",
-                "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, &deposit_position, amount_raw, db_idle.as_ref(), options),
+                "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, deposit_position, amount_raw, db_idle.as_ref(), options),
                 "preflightBlockers": preflight_blockers,
                 "setupObligationBeforeDeposit": setup_obligation_before_deposit,
                 "missingObligationSetup": missing_obligation_setup_dry_run,
@@ -10236,7 +10239,7 @@ async fn run_idle_vault_deposit_flow(
                 "writesDecision": false,
                 "writesCurrentPositions": false,
                 "sendsTransactions": false,
-                "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, &deposit_position, amount_raw, db_idle.as_ref(), options),
+                "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, deposit_position, amount_raw, db_idle.as_ref(), options),
                 "preflightBlockers": preflight_blockers,
                 "setupObligationBeforeDeposit": setup_obligation_before_deposit,
                 "missingObligationSetup": missing_obligation_setup_dry_run,
@@ -10308,7 +10311,7 @@ async fn run_idle_vault_deposit_flow(
                 "writesDecision": blocked_decision.is_some(),
                 "writesCurrentPositions": false,
                 "sendsTransactions": false,
-                "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, &deposit_position, amount_raw, db_idle.as_ref(), options),
+                "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, deposit_position, amount_raw, db_idle.as_ref(), options),
                 "preflightBlockers": preflight_blockers,
                 "decisionId": blocked_decision.as_ref().map(|decision| decision.id.as_i64()),
                 "blockedDecision": blocked_decision.as_ref().map(idle_vault_deposit_decision_json),
@@ -11222,6 +11225,7 @@ fn idle_vault_deposit_decision_json(decision: &RebalanceDecision) -> Value {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn repair_idle_vault_deposit_partial_pull_history(
     client: &NeonSqlClient,
     vault: &SelectedVault,
@@ -11372,6 +11376,7 @@ async fn repair_idle_vault_deposit_partial_pull_history(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn repair_idle_vault_deposit_app_history_in_tx(
     tx: &mut loyal_yield_orchestrator::sqlx::Transaction<
         '_,
@@ -12483,6 +12488,7 @@ async fn run_full_reserve_withdraw_flow(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_vault_usdc_recovery_transaction(
     rpc: &RpcClient,
     lookup_table_accounts: &[AddressLookupTableAccount],
@@ -12942,6 +12948,7 @@ fn same_mint_readiness_rpc_failure(error: &dyn std::fmt::Display) -> String {
     safe_same_mint_operational_error_with_context("simulation_rpc_failed", error)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn resolve_route_lookup_tables(
     client: &NeonSqlClient,
     rpc: &RpcClient,
@@ -13256,6 +13263,7 @@ fn fleet_transaction_fee_budget(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn prepare_queue_signed_route_handoff(
     client: &NeonSqlClient,
     route_runtime: Option<&SameMintRouteRuntime>,
@@ -14055,6 +14063,7 @@ async fn active_lookup_table_binding_fingerprint(
     Ok((stable_fingerprint_owned(&parts), binding_id))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn persist_route_lookup_table_resolution(
     client: &NeonSqlClient,
     options: &CliOptions,
@@ -14325,6 +14334,7 @@ fn ensure_lookup_table_resolution_unchanged(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn resolve_route_lookup_tables_immediately_before_send(
     client: &NeonSqlClient,
     rpc: &RpcClient,
@@ -15313,6 +15323,7 @@ fn load_chain_reconcile_preview_with_min_context(
     load_chain_reconcile_preview_from_rpc(&rpc, vault, reserves, min_context_slot)
 }
 
+#[allow(clippy::type_complexity)]
 fn get_multiple_accounts_batched(
     rpc: &RpcClient,
     pubkeys: &[Pubkey],
@@ -15361,6 +15372,7 @@ fn get_multiple_accounts_batched(
     Ok((values, requests))
 }
 
+#[allow(clippy::type_complexity)]
 async fn load_cached_reserve_summaries(
     runtime: &SameMintRouteRuntime,
     reserves: &[Pubkey],
@@ -15881,7 +15893,7 @@ fn load_chain_reconcile_preview_from_rpc(
     let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
     let (vault_user_metadata, _) = user_metadata(&KLEND_PROGRAM_ID, &vault_pubkey);
     let vault_user_metadata_exists = account_exists_with_owner_at_or_after(
-        &rpc,
+        rpc,
         &vault_user_metadata,
         &KLEND_PROGRAM_ID,
         min_context_slot,
@@ -15901,7 +15913,7 @@ fn load_chain_reconcile_preview_from_rpc(
         let reserve = reserve_pubkeys[reserve_index];
         reserve_index += 1;
         let reserve_summary =
-            load_kamino_reserve_summary_at_or_after(&rpc, &reserve, min_context_slot)?;
+            load_kamino_reserve_summary_at_or_after(rpc, &reserve, min_context_slot)?;
         let vault_liquidity_ata = derive_associated_token_address(
             &vault_pubkey,
             &reserve_summary.liquidity_mint,
@@ -15909,7 +15921,7 @@ fn load_chain_reconcile_preview_from_rpc(
         );
         let (vault_liquidity_amount_raw, vault_liquidity_token_account_exists) =
             load_spl_token_account_amount_at_or_after(
-                &rpc,
+                rpc,
                 &vault_liquidity_ata,
                 &reserve_summary.liquidity_mint,
                 min_context_slot,
@@ -15926,7 +15938,7 @@ fn load_chain_reconcile_preview_from_rpc(
             &Pubkey::default(),
         );
         let obligation_summary = load_kamino_obligation_summary_at_or_after(
-            &rpc,
+            rpc,
             &obligation_account,
             &vault_pubkey,
             &reserve_summary.market,
@@ -15942,7 +15954,7 @@ fn load_chain_reconcile_preview_from_rpc(
             if let Some(collateral_farm) = reserve_summary.collateral_farm {
                 let (farm_user_state, _) = farms_user_state(&collateral_farm, &obligation_account);
                 let exists = account_exists_with_owner_at_or_after(
-                    &rpc,
+                    rpc,
                     &farm_user_state,
                     &FARMS_PROGRAM_ID,
                     min_context_slot,
@@ -16185,8 +16197,8 @@ fn summarize_policy_account(
     let instruction_count = constraints.len();
 
     for constraint in &constraints {
-        let discriminator = instruction_discriminator(&constraint);
-        let route_step = kamino_route_step(&constraint, discriminator.as_deref());
+        let discriminator = instruction_discriminator(constraint);
+        let route_step = kamino_route_step(constraint, discriminator.as_deref());
         let markets = if let Some(step) = route_step {
             let account_index = match step {
                 KAMINO_WITHDRAW_ROUTE_STEP | KAMINO_DEPOSIT_ROUTE_STEP => 2,
@@ -16194,10 +16206,10 @@ fn summarize_policy_account(
                 KAMINO_REFRESH_OBLIGATION_ROUTE_STEP => 0,
                 _ => 1,
             };
-            pubkeys_for_account(&constraint, account_index).unwrap_or_default()
+            pubkeys_for_account(constraint, account_index).unwrap_or_default()
         } else if constraint.program_id == KLEND_PROGRAM_ID {
-            let mut markets = pubkeys_for_account(&constraint, 1).unwrap_or_default();
-            markets.extend(pubkeys_for_account(&constraint, 2).unwrap_or_default());
+            let mut markets = pubkeys_for_account(constraint, 1).unwrap_or_default();
+            markets.extend(pubkeys_for_account(constraint, 2).unwrap_or_default());
             unique_pubkeys(markets)
         } else {
             Vec::new()
@@ -16209,9 +16221,9 @@ fn summarize_policy_account(
             || route_step == Some(KAMINO_DEPOSIT_ROUTE_STEP)
             || (route_step.is_none() && constraint.program_id == KLEND_PROGRAM_ID)
         {
-            let mut liquidity_mints = pubkeys_for_account(&constraint, 5).unwrap_or_default();
+            let mut liquidity_mints = pubkeys_for_account(constraint, 5).unwrap_or_default();
             liquidity_mints.extend(account_data_pubkeys_for_account(
-                &constraint,
+                constraint,
                 5,
                 SPL_TOKEN_ACCOUNT_MINT_OFFSET as u64,
                 Some(spl_token::ID),
@@ -17713,6 +17725,7 @@ fn build_route_execution_plan(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_initial_reserve_deposit_policy_plan(
     vault: &SelectedVault,
     preview: &ChainReconcilePreview,
@@ -18763,9 +18776,7 @@ fn decoded_route_instruction_constraint_indexes(
         decoded_instruction_index(decoded, KAMINO_WITHDRAW_ROUTE_STEP, "Kamino withdraw route")?;
     let deposit =
         decoded_instruction_index(decoded, KAMINO_DEPOSIT_ROUTE_STEP, "Kamino deposit route")?;
-    let mut indexes = Vec::new();
-    indexes.push(u8::try_from(withdraw)?);
-    indexes.push(u8::try_from(deposit)?);
+    let indexes = vec![u8::try_from(withdraw)?, u8::try_from(deposit)?];
     Ok(indexes)
 }
 
@@ -18950,6 +18961,7 @@ impl KaminoReserveSummary {
     }
 }
 
+#[allow(dead_code)]
 fn load_kamino_reserve_summary(
     rpc: &RpcClient,
     reserve: &Pubkey,
@@ -18997,7 +19009,7 @@ fn decode_kamino_reserve_summary(
         collateral_mint: reserve_state.collateral.mint_pubkey,
         collateral_supply: reserve_state.collateral.supply_vault,
         collateral_total_supply: reserve_state.collateral.mint_total_supply,
-        total_liquidity_scaled: reserve_total_liquidity_scaled(&reserve_state)?,
+        total_liquidity_scaled: reserve_total_liquidity_scaled(reserve_state)?,
         collateral_farm: if reserve_state.farm_collateral == Pubkey::default() {
             None
         } else {
@@ -19056,7 +19068,7 @@ fn subtract_scaled_fraction(
     label: &'static str,
 ) -> Result<(), Box<dyn Error>> {
     let amount = BigUint::from(amount);
-    if (&*total) < &amount {
+    if *total < amount {
         return Err(format!("reserve total liquidity underflow subtracting {label}").into());
     }
     *total -= amount;
@@ -19098,6 +19110,7 @@ struct KaminoObligationSummary {
     borrow_reserves: Vec<String>,
 }
 
+#[allow(dead_code)]
 fn load_kamino_obligation_summary(
     rpc: &RpcClient,
     obligation_account: &Pubkey,
@@ -19399,6 +19412,7 @@ fn load_obligation_account_proof(
     })
 }
 
+#[allow(dead_code)]
 fn account_exists_with_owner(
     rpc: &RpcClient,
     pubkey: &Pubkey,
@@ -19654,7 +19668,7 @@ async fn load_active_decision(
         "#,
     )
     .bind(vault_id.as_i64())
-    .bind(&["planned", "simulating", "ready", "submitted", "confirming"])
+    .bind(["planned", "simulating", "ready", "submitted", "confirming"])
     .fetch_optional(pool)
     .await?;
 
@@ -20333,6 +20347,7 @@ fn validate_monitor_expectations(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn blocker_report(
     options: &CliOptions,
     reserve_move: &ReserveMove,
@@ -21068,6 +21083,7 @@ fn same_mint_input_json(input: &SameMintRebalanceInput) -> Value {
     })
 }
 
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -21782,9 +21798,10 @@ mod tests {
             accounts: Vec::new(),
             data: vec![0xff, 0x01, 0x02],
         };
-        let error = guard_lookup_table_mutations(&[malformed.clone()], "route execution")
-            .unwrap_err()
-            .to_string();
+        let error =
+            guard_lookup_table_mutations(std::slice::from_ref(&malformed), "route execution")
+                .unwrap_err()
+                .to_string();
         assert!(error.contains("Address Lookup Table unknown instruction"));
 
         let error = build_program_interaction_policy_execution_instruction(

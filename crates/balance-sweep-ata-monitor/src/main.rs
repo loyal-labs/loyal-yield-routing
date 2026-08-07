@@ -204,8 +204,10 @@ async fn run() -> Result<()> {
 }
 
 async fn connect_earn_apy_refresher(args: &Args) -> Result<EarnApySnapshotRefresher> {
-    let mut config = EarnApyRefreshConfig::default();
-    config.strategies = parse_earn_apy_strategies(&args.earn_apy_risk_profiles)?;
+    let config = EarnApyRefreshConfig {
+        strategies: parse_earn_apy_strategies(&args.earn_apy_risk_profiles)?,
+        ..EarnApyRefreshConfig::default()
+    };
     EarnApySnapshotRefresher::connect(&args.timescaledb_url, &args.postgres_url, config).await
 }
 

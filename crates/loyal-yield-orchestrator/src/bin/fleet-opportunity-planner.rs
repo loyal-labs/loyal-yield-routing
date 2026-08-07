@@ -66,7 +66,7 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
         json: false,
         count: 10_000,
         rounds: 7,
-        seed: 0x4c4f_5941_4c,
+        seed: 0x004c_4f59_414c,
         cluster: env::var(CLUSTER_ENV).unwrap_or_else(|_| DEFAULT_CLUSTER.to_owned()),
         poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
         full_sweep_interval_seconds: DEFAULT_FULL_SWEEP_INTERVAL_SECONDS,
@@ -543,6 +543,7 @@ fn annotate_full_sweep_schedule(run: &mut LivePlanningRun, delay: Duration) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_live_once(
     options: &Options,
     neon: &NeonSqlClient,
@@ -692,7 +693,7 @@ async fn run_live_once(
         &WaveLimits {
             max_opportunities: options.max_opportunities_per_wave,
             max_notional_usd_micros: 1_000_000_000_000_000,
-            max_per_tenant: options.max_opportunities_per_wave.min(64).max(1),
+            max_per_tenant: options.max_opportunities_per_wave.clamp(1, 64),
             // The durable 64-lane executor is the admission ceiling. The
             // planner must not recreate a smaller fleet-wide bottleneck from
             // a speculative POLICY fee payer before shard selection.

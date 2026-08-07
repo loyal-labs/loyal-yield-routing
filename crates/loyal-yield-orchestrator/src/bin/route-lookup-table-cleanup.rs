@@ -680,7 +680,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             "table": candidate.table_address.to_string(),
             "owner": candidate.owner.to_string(),
             "authority": candidate.authority.map(|authority| authority.to_string()),
-            "status": lookup_table_status(&candidate, current_slot),
+            "status": lookup_table_status(candidate, current_slot),
             "addressCount": candidate.address_count,
             "lamportsReclaimable": candidate.lamports.to_string(),
             "lastExtendedSlot": candidate.last_extended_slot,
@@ -1540,6 +1540,7 @@ async fn rpc_call(
         .ok_or_else(|| format!("RPC {method} response did not include result").into())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn finalized_close_transaction_evidence(
     http: &reqwest::Client,
     rpc_url: &str,
@@ -1714,7 +1715,7 @@ async fn finalized_close_transaction_evidence(
         .iter()
         .map(|value| {
             account_key_from_value(value)
-                .ok_or_else(|| "finalized cleanup transaction contained an invalid account key")
+                .ok_or("finalized cleanup transaction contained an invalid account key")
         })
         .collect::<Result<Vec<_>, _>>()?;
     let pre_balances = meta
@@ -3063,6 +3064,7 @@ fn set_candidate_execution(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_cleanup_instruction_batch(
     database: &NeonSqlClient,
     rpc: &RpcClient,
@@ -3382,6 +3384,7 @@ fn simulate_cleanup_transaction(
     }))
 }
 
+#[allow(clippy::result_large_err)]
 fn retry_minimum_context_slot<T>(
     mut operation: impl FnMut() -> Result<T, ClientError>,
 ) -> Result<T, ClientError> {
@@ -4000,7 +4003,7 @@ mod tests {
         pre_cleanup.close_recipient = None;
         pre_cleanup.reclaimed_lamports = None;
         assert_eq!(
-            approved_imported_legacy_fleet_hash(&[closed.clone()]),
+            approved_imported_legacy_fleet_hash(std::slice::from_ref(&closed)),
             approved_imported_legacy_fleet_hash(&[pre_cleanup]),
             "immutable fleet approval must survive partial cleanup retries"
         );

@@ -652,6 +652,7 @@ fn transfer_checked<'info>(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn transfer_checked_signed<'info>(
     program_id: &Pubkey,
     source: &AccountInfo<'info>,
@@ -689,6 +690,7 @@ fn transfer_checked_signed<'info>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mint_to_checked_signed<'info>(
     program_id: &Pubkey,
     mint: &AccountInfo<'info>,
@@ -723,6 +725,7 @@ fn mint_to_checked_signed<'info>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn burn_checked_signed<'info>(
     program_id: &Pubkey,
     source: &AccountInfo<'info>,

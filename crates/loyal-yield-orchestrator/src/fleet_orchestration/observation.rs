@@ -1660,7 +1660,7 @@ fn reserve_economic_expires_at(
 }
 
 fn ratio_to_ppm(value: f64) -> Result<i64, FleetObservationError> {
-    if !value.is_finite() || value < 0.0 || value > 1.000_001 {
+    if !value.is_finite() || !(0.0..=1.000_001).contains(&value) {
         return Err(FleetObservationError::ArithmeticOverflow);
     }
     Ok((value * 1_000_000.0).round() as i64)

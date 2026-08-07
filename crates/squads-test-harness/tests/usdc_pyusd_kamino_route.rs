@@ -37,7 +37,7 @@ use squads_test_harness::{
     USDC_DECIMALS, USDC_MINT, WRAPPED_SOL_MINT,
 };
 
-const PACKET_DATA_SIZE: usize = solana_sdk::packet::PACKET_DATA_SIZE as usize;
+const PACKET_DATA_SIZE: usize = solana_sdk::packet::PACKET_DATA_SIZE;
 const MAX_POLICY_ACCOUNT_DATA_BYTES_WITHOUT_FALLBACK: usize = 10 * 1024;
 
 #[test]
@@ -1259,7 +1259,7 @@ fn swap_policy_rejects_third_party_jupiter_output_destination() {
     .expect("build swap action");
     try_send_instructions_with_heap_frame(
         &mut context.svm,
-        &[swap_action.instruction.clone()],
+        std::slice::from_ref(&swap_action.instruction),
         &context.wallet,
         &[],
     )
@@ -2061,14 +2061,14 @@ fn same_mint_obligation_ready_policy_shape_fits_single_policy_packet_and_account
     let policy_create_packet_bytes_with_alt = packet_bytes_for_instructions_with_lookup_tables(
         &route_action_setup.instructions,
         &context.wallet,
-        &[policy_create_lookup_table.clone()],
+        std::slice::from_ref(&policy_create_lookup_table),
     )
     .expect("measure ALT-backed policy create transaction packet");
     let harness_policy_create_packet_bytes_with_alt =
         packet_bytes_for_instructions_with_heap_frame_and_lookup_tables(
             &route_action_setup.instructions,
             &context.wallet,
-            &[policy_create_lookup_table.clone()],
+            std::slice::from_ref(&policy_create_lookup_table),
         )
         .expect("measure ALT-backed policy create transaction packet");
     assert!(

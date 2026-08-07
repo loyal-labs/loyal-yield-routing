@@ -1333,20 +1333,18 @@ async fn process_leased_operation(
     if requires_chain_first_reconciliation(
         has_unreconciled_persisted_signature(&leased),
         chain_effect_is_possible(&leased, &chain),
-    ) {
-        if reconcile_existing_operation(
-            client,
-            rpc,
-            options,
-            &lease,
-            &leased,
-            &persisted_membership,
-            &chain,
-        )
-        .await?
-        {
-            return Ok(LeasedOperationOutcome::Processed);
-        }
+    ) && reconcile_existing_operation(
+        client,
+        rpc,
+        options,
+        &lease,
+        &leased,
+        &persisted_membership,
+        &chain,
+    )
+    .await?
+    {
+        return Ok(LeasedOperationOutcome::Processed);
     }
 
     if options.mode == RunMode::Execute

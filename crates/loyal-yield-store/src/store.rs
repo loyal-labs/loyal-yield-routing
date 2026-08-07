@@ -466,8 +466,8 @@ impl NeonSqlClient {
         event: PolicyMatchInput,
     ) -> Result<StoredPolicyMatch, OrchestratorError> {
         let mut tx = self.pool.begin().await?;
-        let policy = upsert_policy(&mut *tx, &event).await?;
-        let vault = upsert_vault(&mut *tx, policy.id, &event).await?;
+        let policy = upsert_policy(&mut tx, &event).await?;
+        let vault = upsert_vault(&mut tx, policy.id, &event).await?;
         tx.commit().await?;
         Ok(StoredPolicyMatch { policy, vault })
     }
@@ -478,10 +478,10 @@ impl NeonSqlClient {
         setup_event: PolicyMatchInput,
     ) -> Result<(StoredPolicyMatch, RoutePolicy), OrchestratorError> {
         let mut tx = self.pool.begin().await?;
-        let route_policy = upsert_policy(&mut *tx, &route_event).await?;
-        let setup_policy = upsert_policy(&mut *tx, &setup_event).await?;
+        let route_policy = upsert_policy(&mut tx, &route_event).await?;
+        let setup_policy = upsert_policy(&mut tx, &setup_event).await?;
         let vault =
-            upsert_vault_with_setup(&mut *tx, route_policy.id, setup_policy.id, &route_event)
+            upsert_vault_with_setup(&mut tx, route_policy.id, setup_policy.id, &route_event)
                 .await?;
         tx.commit().await?;
         Ok((
@@ -665,7 +665,7 @@ impl NeonSqlClient {
         Fut: Future<Output = Result<Vec<ProjectedWalletAtaBalanceUpdateInput>, OrchestratorError>>,
     {
         let mut tx = self.pool.begin().await?;
-        let last_event_id = lock_projection_offset(&mut *tx, consumer_name).await?;
+        let last_event_id = lock_projection_offset(&mut tx, consumer_name).await?;
         let updates = fetch_after_cursor(last_event_id, batch_limit).await?;
         let mut projected_count = 0_usize;
         let mut next_event_id = last_event_id;
@@ -675,7 +675,7 @@ impl NeonSqlClient {
                 continue;
             }
             record_projected_wallet_ata_balance_update_in_tx(
-                &mut *tx,
+                &mut tx,
                 projected.event_id,
                 projected.update,
             )
@@ -1026,7 +1026,7 @@ impl NeonSqlClient {
         }
 
         let mut tx = self.pool.begin().await?;
-        let vault = fetch_managed_vault_for_update(&mut *tx, vault_id).await?;
+        let vault = fetch_managed_vault_for_update(&mut tx, vault_id).await?;
 
         // The managed-vault row serializes projectors for this vault. Reject an
         // older RPC response before changing either the current-snapshot flag
@@ -1063,7 +1063,7 @@ impl NeonSqlClient {
                 });
             }
             if state.observed_slot == current.observed_slot {
-                let positions = current_positions_for_update(&mut *tx, vault_id).await?;
+                let positions = current_positions_for_update(&mut tx, vault_id).await?;
                 if reconciled_positions_equal(&state.positions, &positions)? {
                     tx.commit().await?;
                     return Ok(PositionSnapshot {
@@ -1201,7 +1201,7 @@ impl NeonSqlClient {
         .await?;
 
         close_zero_user_yield_positions_for_vault(
-            &mut *tx,
+            &mut tx,
             &vault,
             SnapshotId(snapshot_row.id),
             snapshot_row.observed_slot,
@@ -1232,11 +1232,11 @@ impl NeonSqlClient {
         config: PlannerConfig,
     ) -> Result<PlanOutcome, OrchestratorError> {
         let mut tx = self.pool.begin().await?;
-        let _ = fetch_managed_vault_for_update(&mut *tx, vault_id).await?;
+        let _ = fetch_managed_vault_for_update(&mut tx, vault_id).await?;
 
-        if active_decision_exists(&mut *tx, vault_id).await? {
+        if active_decision_exists(&mut tx, vault_id).await? {
             let decision =
-                insert_skipped_decision(&mut *tx, vault_id, SkipReason::ActiveDecision).await?;
+                insert_skipped_decision(&mut tx, vault_id, SkipReason::ActiveDecision).await?;
             tx.commit().await?;
             return Ok(PlanOutcome::skipped(
                 vault_id,
@@ -1245,11 +1245,11 @@ impl NeonSqlClient {
             ));
         }
 
-        let positions = current_positions_for_update(&mut *tx, vault_id).await?;
+        let positions = current_positions_for_update(&mut tx, vault_id).await?;
         let planned = match draft_same_mint_decision(&positions, &reserve_scores, config) {
             Ok(value) => value,
             Err(reason) => {
-                let decision = insert_skipped_decision(&mut *tx, vault_id, reason).await?;
+                let decision = insert_skipped_decision(&mut tx, vault_id, reason).await?;
                 tx.commit().await?;
                 return Ok(PlanOutcome::skipped(
                     vault_id,
@@ -1260,7 +1260,7 @@ impl NeonSqlClient {
         };
 
         let row =
-            insert_planned_decision(&mut *tx, vault_id, &planned, config.estimated_cost_lamports)
+            insert_planned_decision(&mut tx, vault_id, &planned, config.estimated_cost_lamports)
                 .await?;
         let decision = from_row_to_decision(row)?;
         tx.commit().await?;
@@ -1273,11 +1273,11 @@ impl NeonSqlClient {
         input: PlannedRebalanceDecisionInput,
     ) -> Result<PlanOutcome, OrchestratorError> {
         let mut tx = self.pool.begin().await?;
-        let _ = fetch_managed_vault_for_update(&mut *tx, vault_id).await?;
+        let _ = fetch_managed_vault_for_update(&mut tx, vault_id).await?;
 
-        if active_decision_exists(&mut *tx, vault_id).await? {
+        if active_decision_exists(&mut tx, vault_id).await? {
             let decision =
-                insert_skipped_decision(&mut *tx, vault_id, SkipReason::ActiveDecision).await?;
+                insert_skipped_decision(&mut tx, vault_id, SkipReason::ActiveDecision).await?;
             tx.commit().await?;
             return Ok(PlanOutcome::skipped(
                 vault_id,
@@ -1331,7 +1331,7 @@ impl NeonSqlClient {
         };
 
         let row =
-            insert_planned_decision(&mut *tx, vault_id, &planned, input.estimated_cost_lamports)
+            insert_planned_decision(&mut tx, vault_id, &planned, input.estimated_cost_lamports)
                 .await?;
         let decision = from_row_to_decision(row)?;
         tx.commit().await?;
@@ -1344,11 +1344,11 @@ impl NeonSqlClient {
         input: IdleVaultDepositDecisionInput,
     ) -> Result<PlanOutcome, OrchestratorError> {
         let mut tx = self.pool.begin().await?;
-        let _ = fetch_managed_vault_for_update(&mut *tx, vault_id).await?;
+        let _ = fetch_managed_vault_for_update(&mut tx, vault_id).await?;
 
-        if active_decision_exists(&mut *tx, vault_id).await? {
+        if active_decision_exists(&mut tx, vault_id).await? {
             let decision =
-                insert_skipped_decision(&mut *tx, vault_id, SkipReason::ActiveDecision).await?;
+                insert_skipped_decision(&mut tx, vault_id, SkipReason::ActiveDecision).await?;
             tx.commit().await?;
             return Ok(PlanOutcome::skipped(
                 vault_id,
@@ -1380,7 +1380,7 @@ impl NeonSqlClient {
         };
 
         let row =
-            insert_planned_decision(&mut *tx, vault_id, &planned, input.estimated_cost_lamports)
+            insert_planned_decision(&mut tx, vault_id, &planned, input.estimated_cost_lamports)
                 .await?;
         let decision = from_row_to_decision(row)?;
         tx.commit().await?;
@@ -1494,12 +1494,12 @@ impl NeonSqlClient {
         input: SameMintRebalanceInput,
     ) -> Result<SameMintRebalanceResult, OrchestratorError> {
         let mut tx = self.pool.begin().await?;
-        let vault = fetch_rebalance_input_vault_for_update(&mut *tx, &input).await?;
+        let vault = fetch_rebalance_input_vault_for_update(&mut tx, &input).await?;
         let vault_id = vault.id;
 
-        if active_decision_exists(&mut *tx, vault_id).await? {
+        if active_decision_exists(&mut tx, vault_id).await? {
             let decision =
-                insert_skipped_decision(&mut *tx, vault_id, SkipReason::ActiveDecision).await?;
+                insert_skipped_decision(&mut tx, vault_id, SkipReason::ActiveDecision).await?;
             let decision = from_row_to_decision(decision)?;
             tx.commit().await?;
             return Ok(same_mint_result_from_decision(
@@ -1511,7 +1511,7 @@ impl NeonSqlClient {
             ));
         }
 
-        let positions = current_positions_for_update(&mut *tx, vault_id).await?;
+        let positions = current_positions_for_update(&mut tx, vault_id).await?;
         if let Err(reason) = validate_same_mint_input(&input, &positions, None) {
             tx.commit().await?;
             return Ok(same_mint_error_result(vault_id, input, reason));
@@ -1537,7 +1537,7 @@ impl NeonSqlClient {
             execution_plan: same_mint_execution_plan(&input),
         };
         let row =
-            insert_planned_decision(&mut *tx, vault_id, &planned, input.estimated_cost_lamports)
+            insert_planned_decision(&mut tx, vault_id, &planned, input.estimated_cost_lamports)
                 .await?;
         let decision = from_row_to_decision(row)?;
         tx.commit().await?;
@@ -1678,7 +1678,7 @@ impl NeonSqlClient {
         input: ConfirmSameMintRebalanceInput,
     ) -> Result<SameMintRebalanceResult, OrchestratorError> {
         let mut tx = self.pool.begin().await?;
-        let decision = fetch_decision_for_update(&mut *tx, input.decision_id).await?;
+        let decision = fetch_decision_for_update(&mut tx, input.decision_id).await?;
         if decision.status == DecisionStatus::Confirmed {
             ensure_same_mint_confirm_repeat_matches(&decision, &input)?;
             tx.commit().await?;
@@ -1686,8 +1686,8 @@ impl NeonSqlClient {
         }
         ensure_confirmable_same_mint_decision(&decision)?;
         ensure_same_mint_route_amount_semantics(&decision)?;
-        let vault = fetch_managed_vault_for_update(&mut *tx, decision.vault_id).await?;
-        let current = current_positions_for_update(&mut *tx, decision.vault_id).await?;
+        let vault = fetch_managed_vault_for_update(&mut tx, decision.vault_id).await?;
+        let current = current_positions_for_update(&mut tx, decision.vault_id).await?;
         let source_reserve = required_decision_field(&decision.source_reserve, "source_reserve")?;
         let target_reserve = required_decision_field(&decision.target_reserve, "target_reserve")?;
         let liquidity_mint = required_decision_field(&decision.liquidity_mint, "liquidity_mint")?;
@@ -1697,7 +1697,7 @@ impl NeonSqlClient {
 
         if let Some(post_snapshot_id) = input.post_snapshot_id {
             let decision = update_confirmed_decision(
-                &mut *tx,
+                &mut tx,
                 input.decision_id,
                 &input.signature,
                 input.submitted_slot,
@@ -1857,7 +1857,7 @@ impl NeonSqlClient {
         .await?;
 
         let decision = update_confirmed_decision(
-            &mut *tx,
+            &mut tx,
             input.decision_id,
             &input.signature,
             input.submitted_slot,
@@ -1875,7 +1875,7 @@ impl NeonSqlClient {
         advance: DecisionAdvance,
     ) -> Result<RebalanceDecision, OrchestratorError> {
         let mut tx = self.pool.begin().await?;
-        let decision = fetch_decision_for_update(&mut *tx, decision_id).await?;
+        let decision = fetch_decision_for_update(&mut tx, decision_id).await?;
         ensure_terminal_repeat_matches(&decision, &advance)?;
         let transition = state_transition(decision.status, advance)?;
         if transition.idempotent {
@@ -2381,10 +2381,10 @@ fn should_skip_zero_user_yield_position_close(snapshot_context: &Value) -> bool 
     if amount_semantics != Some(AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED) {
         return false;
     }
-    !snapshot_context
+    snapshot_context
         .get("idle_vault_liquidity_amount_raw")
         .and_then(json_u128)
-        .is_some_and(|idle| idle == 0)
+        .is_none_or(|idle| idle != 0)
 }
 
 /// Reads a non-negative integer that may have been stored as a number or a string.
@@ -3236,6 +3236,7 @@ fn same_mint_result_from_confirmed_decision(
     }
 }
 
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1107,10 +1107,7 @@ fn create_associated_token_account_idempotent_instruction(
     }
 }
 
-pub fn policy_record<'a>(
-    record: &'a MeteoraRecord,
-    kind: MeteoraPolicyKind,
-) -> Option<&'a PolicyRecord> {
+pub fn policy_record(record: &MeteoraRecord, kind: MeteoraPolicyKind) -> Option<&PolicyRecord> {
     match kind {
         MeteoraPolicyKind::AddLiquidity => record.add_liquidity_policy.as_ref(),
         MeteoraPolicyKind::RemoveLiquidity => record.remove_liquidity_policy.as_ref(),

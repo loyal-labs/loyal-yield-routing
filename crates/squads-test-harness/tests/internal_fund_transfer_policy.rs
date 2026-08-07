@@ -158,6 +158,7 @@ impl InternalFundTransferFixture {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn transfer(
         &mut self,
         source_index: u8,

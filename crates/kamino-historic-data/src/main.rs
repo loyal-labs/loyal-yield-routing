@@ -423,7 +423,7 @@ async fn run_substreams_backfill(
         start_block = stop_block;
     }
 
-    if let Some(writer) = jsonl.as_deref_mut() {
+    if let Some(writer) = jsonl {
         writer.flush().context("flush Substreams backfill JSONL")?;
     }
     tracing::info!(
@@ -660,6 +660,7 @@ fn parallel_eta(elapsed: Duration, completed_chunks: u64, total_chunks: u64) -> 
         .then(|| Duration::from_secs_f64(seconds))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_substreams_grpc_chunk(
     args: &Args,
     filter: &str,
@@ -978,6 +979,7 @@ async fn run_substreams_grpc_chunk(
     Ok(rows)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_substreams_cli_chunk(
     args: &Args,
     filter: &str,
@@ -1697,7 +1699,7 @@ fn decode_pubkey_bytes(bytes: &[u8], label: &str) -> Result<Pubkey> {
         );
     }
     let mut array = [0_u8; 32];
-    array.copy_from_slice(&bytes);
+    array.copy_from_slice(bytes);
     Ok(Pubkey::new_from_array(array))
 }
 
@@ -1741,6 +1743,7 @@ fn format_duration(duration: Duration) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_owned_update(
     metadata: UpdateSourceMetadata,
     target: &ReserveTarget,

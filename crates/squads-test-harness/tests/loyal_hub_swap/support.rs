@@ -139,7 +139,7 @@ fn setup_fixture(with_jupiter: bool) -> Option<HubSwapFixture> {
     .expect("build LoyalHub/Jupiter swap action");
     try_send_instructions(
         &mut context.svm,
-        &[swap_action.instruction.clone()],
+        std::slice::from_ref(&swap_action.instruction),
         &context.wallet,
         &[],
     )

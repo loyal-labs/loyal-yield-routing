@@ -53,7 +53,7 @@ pub struct AutonomousTreasuryReturnPolicies {
 }
 
 impl AutonomousTreasuryReturnPolicies {
-    pub fn policy(self: &Self, kind: TreasuryReturnKind) -> &TreasuryReturnPolicyPlan {
+    pub fn policy(&self, kind: TreasuryReturnKind) -> &TreasuryReturnPolicyPlan {
         match kind {
             TreasuryReturnKind::Loyal => &self.loyal,
             TreasuryReturnKind::Usdc => &self.usdc,

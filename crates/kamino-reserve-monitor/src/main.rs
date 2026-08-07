@@ -442,12 +442,13 @@ async fn seed_http_snapshots(
         "initial confirmed reserve snapshot completed"
     );
 
-    if let Some(writer) = jsonl.as_deref_mut() {
+    if let Some(writer) = jsonl {
         writer.flush().context("flush seed JSONL")?;
     }
     Ok(seed_slot)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_event_loop(
     mut rx: mpsc::UnboundedReceiver<AccountUpdateEvent>,
     mut confirmed_rx: mpsc::UnboundedReceiver<ConfirmedRefreshEvent>,
@@ -699,7 +700,7 @@ async fn run_event_loop(
         }
     }
 
-    if let Some(writer) = jsonl.as_deref_mut() {
+    if let Some(writer) = jsonl {
         writer.flush().context("flush JSONL before shutdown")?;
     }
     Ok(())
@@ -891,6 +892,7 @@ fn count_subscription_states(
     counts
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_account_data(
     metadata: UpdateSourceMetadata,
     target: &ReserveTarget,
@@ -952,6 +954,7 @@ async fn persist_owned_update(
     Ok(insert_outcome)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_owned_update(
     metadata: UpdateSourceMetadata,
     target: &ReserveTarget,

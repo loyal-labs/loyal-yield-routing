@@ -676,6 +676,7 @@ fn approved_inventory_fleet_hash(inventory: &[InventoryTable]) -> String {
     ordered_address_hash(&parts)
 }
 
+#[allow(clippy::type_complexity)]
 fn verify_fleet(
     rpc: &RpcClient,
     sources: &[LegacyLookupTableImportSource],

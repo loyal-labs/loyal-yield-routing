@@ -716,6 +716,7 @@ pub fn loyal_hub_initialize_config_data(
     Ok(data)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn loyal_hub_initialize_config_instruction(
     payer: Pubkey,
     admin: Pubkey,
@@ -739,6 +740,7 @@ pub fn loyal_hub_initialize_config_instruction(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn loyal_hub_initialize_config_instruction_for_program(
     program_id: Pubkey,
     payer: Pubkey,
@@ -1132,6 +1134,7 @@ pub fn loyal_hub_withdraw_inventory_instruction_with_source_for_program(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn loyal_hub_withdraw_inventory_instruction_with_source_for_program_with_token_program(
     program_id: Pubkey,
     admin: Pubkey,
@@ -1249,6 +1252,7 @@ pub fn loyal_hub_swap_exact_in_instruction(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn loyal_hub_swap_exact_in_instruction_with_token_programs(
     user_vault: Pubkey,
     user_input: Pubkey,
@@ -1274,6 +1278,7 @@ pub fn loyal_hub_swap_exact_in_instruction_with_token_programs(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn loyal_hub_swap_exact_in_instruction_for_program(
     program_id: Pubkey,
     user_vault: Pubkey,
@@ -1298,6 +1303,7 @@ pub fn loyal_hub_swap_exact_in_instruction_for_program(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn loyal_hub_swap_exact_in_instruction_for_program_with_token_programs(
     program_id: Pubkey,
     user_vault: Pubkey,

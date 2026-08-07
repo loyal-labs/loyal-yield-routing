@@ -4739,7 +4739,7 @@ async fn verify_atomic_binding_activation_fence(
         WHERE id = ANY($1) ORDER BY id
         "#,
     )
-    .bind(&contenders.iter().map(|row| row.id).collect::<Vec<_>>())
+    .bind(contenders.iter().map(|row| row.id).collect::<Vec<_>>())
     .fetch_all(client.pool())
     .await?;
     let desired = loyal_yield_orchestrator::sqlx::query(

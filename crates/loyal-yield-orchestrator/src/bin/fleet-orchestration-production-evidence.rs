@@ -2976,14 +2976,14 @@ async fn collect_alt_repair_evidence(
         let preserved = count.is_some_and(|count| {
             evidence.authority == STANDARD_POLICY_AUTHORITY
                 && evidence.persisted_addresses.len() >= count
-                && ordered_address_hash(&evidence.persisted_addresses[..count].to_vec())
+                && ordered_address_hash(&evidence.persisted_addresses[..count])
                     == evidence.finalized_address_hash
                 && chain.is_some_and(|account| {
                     account.owner == alt_program_id
                         && account.active
                         && account.authority.as_deref() == Some(STANDARD_POLICY_AUTHORITY)
                         && account.addresses.len() >= count
-                        && ordered_address_hash(&account.addresses[..count].to_vec())
+                        && ordered_address_hash(&account.addresses[..count])
                             == evidence.finalized_address_hash
                 })
         });

@@ -2079,7 +2079,7 @@ fn deterministic_evidence() -> Result<DeterministicEvidence, String> {
     .map_err(|error| format!("{error:?}"))?;
 
     let started = Instant::now();
-    let benchmark = run_deterministic_benchmark(10_000, 0x4c4f_5941_4c)
+    let benchmark = run_deterministic_benchmark(10_000, 0x004c_4f59_414c)
         .map_err(|error| format!("{error:?}"))?;
     let benchmark_millis = started.elapsed().as_millis();
 
@@ -8895,12 +8895,10 @@ fn implementation_checks(
                     } else {
                         "deterministic in-memory plus isolated PostgreSQL queue evidence"
                     }
+                } else if runtime_was_run {
+                    "deterministic plus source-bound current-fleet evidence"
                 } else {
-                    if runtime_was_run {
-                        "deterministic plus source-bound current-fleet evidence"
-                    } else {
-                        "deterministic in-memory evidence only"
-                    }
+                    "deterministic in-memory evidence only"
                 },
                 "unverified": [
                     "every eligible current vault considered from one non-expired epoch",
@@ -9265,8 +9263,8 @@ fn load_production_evidence(
             path.as_str()
                 == "crates/loyal-yield-orchestrator/src/bin/fleet-orchestration-verifier.rs"
         });
-    if !artifact_head_is_checkout
-        && !(artifact_head_is_ancestor && post_evidence_diff_is_verifier_only)
+    if !(artifact_head_is_checkout
+        || artifact_head_is_ancestor && post_evidence_diff_is_verifier_only)
     {
         return Err(
             "production evidence HEAD differs outside the independent verifier source".into(),
@@ -11249,7 +11247,7 @@ fn production_complete_fleet_subcheck(binding: &ProductionEvidenceBinding) -> Su
     ]
     .into_iter()
     .all(|key| {
-        status_metric(queue, key).map_or(false, |value| {
+        status_metric(queue, key).is_some_and(|value| {
             value.is_null()
                 || value
                     .as_i64()

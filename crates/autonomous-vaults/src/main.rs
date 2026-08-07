@@ -1201,12 +1201,12 @@ fn inspect_meteora(
     Ok(())
 }
 
-fn meteora_policy_plan<'a>(
-    plan: &'a meteora::MeteoraPlan,
+fn meteora_policy_plan(
+    plan: &meteora::MeteoraPlan,
     kind: meteora::MeteoraPolicyKind,
 ) -> (
-    &'a loyal_actions::autonomous_vaults::MeteoraPolicyPlan,
-    &'a [loyal_actions::SquadsInstructionConstraintView],
+    &loyal_actions::autonomous_vaults::MeteoraPolicyPlan,
+    &[loyal_actions::SquadsInstructionConstraintView],
 ) {
     match kind {
         meteora::MeteoraPolicyKind::AddLiquidity => {
@@ -1221,12 +1221,12 @@ fn meteora_policy_plan<'a>(
     }
 }
 
-fn meteora_shard_policy_plan<'a>(
-    shard: &'a meteora::MeteoraPolicyShardPlan,
+fn meteora_shard_policy_plan(
+    shard: &meteora::MeteoraPolicyShardPlan,
     kind: meteora::MeteoraPolicyKind,
 ) -> (
-    &'a loyal_actions::autonomous_vaults::MeteoraPolicyPlan,
-    &'a [loyal_actions::SquadsInstructionConstraintView],
+    &loyal_actions::autonomous_vaults::MeteoraPolicyPlan,
+    &[loyal_actions::SquadsInstructionConstraintView],
 ) {
     match kind {
         meteora::MeteoraPolicyKind::AddLiquidity => {
@@ -1794,7 +1794,7 @@ fn verify_meteora_acquisition(
         .copied()
         .context("Meteora acquisition evidence is missing after LOYAL")?;
     if before_usdc.checked_sub(input) != Some(after_usdc)
-        || after_loyal.checked_sub(before_loyal).unwrap_or(0) < minimum
+        || after_loyal.saturating_sub(before_loyal) < minimum
         || after.get("deployment_loyal_exists") != Some(&1)
     {
         bail!("direct Meteora LOYAL dust acquisition does not match exact RPC balance deltas");
@@ -2111,10 +2111,10 @@ fn expand_meteora_position(
             }
             continue;
         }
-        if plan.position_upper_bin_id == target_upper_bin_id {
-            if meteora_live_step(state, &step_name)?.status == PolicyStatus::Finalized {
-                continue;
-            }
+        if plan.position_upper_bin_id == target_upper_bin_id
+            && meteora_live_step(state, &step_name)?.status == PolicyStatus::Finalized
+        {
+            continue;
         }
         expand_meteora_position_step(
             rpc,
@@ -3601,11 +3601,11 @@ fn build_meteora_liquidity_policy_execution(
     ))
 }
 
-fn meteora_policy_record_for_range<'a>(
-    state: &'a VaultState,
+fn meteora_policy_record_for_range(
+    state: &VaultState,
     kind: meteora::MeteoraPolicyKind,
     range: meteora::BinRange,
-) -> Result<&'a PolicyRecord> {
+) -> Result<&PolicyRecord> {
     let record = state
         .meteora
         .as_ref()
@@ -5132,6 +5132,7 @@ fn create_or_resume_return_policy(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finalize_return_policy_record(
     rpc: &RpcClient,
     path: &std::path::PathBuf,
@@ -6000,6 +6001,7 @@ fn create_or_resume_kamino_policy(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finalize_policy_record(
     rpc: &RpcClient,
     path: &std::path::PathBuf,
@@ -6143,7 +6145,7 @@ fn build_policy_transaction(
     let (blockhash, last_valid_block_height) =
         rpc.get_latest_blockhash_with_commitment(CommitmentConfig::finalized())?;
     let transaction = Transaction::new_signed_with_payer(
-        &[instruction.clone()],
+        std::slice::from_ref(instruction),
         Some(&deployment.pubkey()),
         &[deployment],
         blockhash,
@@ -6409,6 +6411,7 @@ fn reinit_kamino_obligation(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn init_kamino_obligation_step(
     rpc: &RpcClient,
     path: &std::path::PathBuf,

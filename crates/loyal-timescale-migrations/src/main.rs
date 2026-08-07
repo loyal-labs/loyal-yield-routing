@@ -161,7 +161,7 @@ async fn validate_kamino_market_verification_schema(pool: &PgPool) -> Result<(),
           AND column_name = ANY($1)
         "#,
     )
-    .bind(&[
+    .bind([
         "reserve",
         "state_event_id",
         "account_data_hash",
@@ -185,7 +185,7 @@ async fn validate_kamino_market_verification_schema(pool: &PgPool) -> Result<(),
           AND column_name = ANY($1)
         "#,
     )
-    .bind(&[
+    .bind([
         "reserve",
         "state_event_id",
         "account_data_hash",
@@ -208,7 +208,7 @@ async fn validate_kamino_market_verification_schema(pool: &PgPool) -> Result<(),
           AND column_name = ANY($1)
         "#,
     )
-    .bind(&[
+    .bind([
         "reserve",
         "floor_slot",
         "observation_id",
@@ -233,7 +233,7 @@ async fn validate_kamino_market_verification_schema(pool: &PgPool) -> Result<(),
           AND column_name = ANY($1)
         "#,
     )
-    .bind(&[
+    .bind([
         "reserve_last_update_slot",
         "reserve_price_status",
         "market_price_last_updated_ts",
@@ -360,7 +360,7 @@ async fn validate_ata_stream_schema(pool: &PgPool, schema: &str) -> Result<(), B
         "#,
     )
     .bind(schema)
-    .bind(&[
+    .bind([
         "event_id",
         "cluster",
         "target_id",
@@ -398,7 +398,7 @@ async fn validate_ata_stream_schema(pool: &PgPool, schema: &str) -> Result<(), B
         "#,
     )
     .bind(schema)
-    .bind(&[
+    .bind([
         "source_commitment",
         "wallet_usdc_ata",
         "slot",

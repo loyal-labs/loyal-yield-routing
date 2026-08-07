@@ -1,3 +1,5 @@
+#![allow(clippy::result_large_err)]
+
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use clap::ValueEnum;
 use futures_util::{future::BoxFuture, SinkExt, StreamExt};

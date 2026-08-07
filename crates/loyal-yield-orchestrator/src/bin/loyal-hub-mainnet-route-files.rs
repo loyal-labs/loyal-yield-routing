@@ -288,6 +288,7 @@ fn build_route_deposit_instructions(
     Ok(instructions)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_policy_setup_instructions(
     vault: Pubkey,
     source: &ReserveSummary,

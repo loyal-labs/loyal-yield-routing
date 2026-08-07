@@ -228,6 +228,7 @@ fn score_for(position: &CurrentReservePosition, scored: &HashMap<&str, i64>) -> 
         .unwrap_or_default()
 }
 
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;
