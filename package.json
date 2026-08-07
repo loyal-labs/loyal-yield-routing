@@ -70,6 +70,8 @@
     "verify:fleet-health-poll": "bash scripts/verify-fleet-health-poll-contention.sh",
     "verify:ask-1973-fleet-e2e": "bash scripts/verify-ask-1973-fleet-e2e.sh",
     "verify:ask-1973-images": "bash scripts/verify-ask-1973-images.sh",
+    "verify:ask-1973-clickstack": "bash scripts/verify-ask-1973-clickstack.sh",
+    "verify:ask-1973-deployment": "bash scripts/verify-ask-1973-deployment.sh",
     "verify:admin-rebalance-index": "bash scripts/verify-admin-rebalance-index.sh",
     "verify:reusable-alts": "bash scripts/verify-reusable-alts.sh",
     "verify:reusable-alts:schema": "cargo run -p loyal-yield-orchestrator --bin yield-migrations -- --verify-reusable-alts",

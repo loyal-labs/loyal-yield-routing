@@ -9347,17 +9347,16 @@ fn env_value_fingerprint(nonce: &str, key: &str, value: &str) -> String {
 }
 
 fn role_service_scoped_env_keys(env_keys: &BTreeSet<String>) -> BTreeSet<String> {
-    env_keys
-        .iter()
-        .filter(|key| !key.starts_with("OBSERVABILITY_"))
-        .cloned()
-        .collect()
+    env_keys.clone()
 }
 
 fn role_scope_value_keys(name: &str, env_keys: &BTreeSet<String>) -> BTreeSet<String> {
     role_service_scoped_env_keys(env_keys)
         .into_iter()
         .filter(|key| key.as_str() != "RUST_LOG")
+        // Presence is required, but the local verifier does not need the
+        // ingestion secret and must never place it in evidence.
+        .filter(|key| key.as_str() != "OBSERVABILITY_INGESTION_API_KEY")
         .filter(|key| {
             !matches!(
                 key.as_str(),
@@ -9375,6 +9374,7 @@ fn monitor_scope_value_keys(env_keys: &BTreeSet<String>) -> BTreeSet<String> {
     env_keys
         .iter()
         .filter(|key| key.as_str() != "RUST_LOG")
+        .filter(|key| key.as_str() != "OBSERVABILITY_INGESTION_API_KEY")
         .cloned()
         .collect()
 }
@@ -9383,6 +9383,9 @@ fn expected_env_value(key: &str) -> Option<String> {
     match key {
         "YIELD_ALT_CLUSTER" => Some(PRODUCTION_CLUSTER.to_owned()),
         "KAMINO_UPDATE_SOURCE" => Some("laserstream".to_owned()),
+        "OBSERVABILITY_ENABLED" => Some("true".to_owned()),
+        "OBSERVABILITY_ENVIRONMENT" => Some("production".to_owned()),
+        "OBSERVABILITY_OTLP_ENDPOINT" => Some("https://loyal-clickstack.onrender.com".to_owned()),
         // A blank fee-payer pool is a valid explicit configuration: the
         // route workers intentionally fall back to POLICY_KEYPAIR.
         "YIELD_ROUTE_FEE_PAYER_KEYPAIRS" => env::var(key).ok(),
@@ -10368,6 +10371,7 @@ fn production_render_subcheck(
                 == Some(expected_role.pre_deploy_command.as_str())
             && live_env.as_ref() == Some(&expected_live_env)
             && blueprint_env.as_ref() == Some(&expected_role.env_keys)
+            && role.and_then(|role| value_bool(role, "observabilityBoundaryPasses")) == Some(true)
             && expected_fingerprints.is_some()
             && reported_fingerprints == expected_fingerprints
             && role
@@ -10848,6 +10852,7 @@ fn production_confirmed_market_data_plane_subcheck(
         && required_monitor_env_keys.is_subset(&expected_monitor.env_keys)
         && live_env_keys.as_ref() == Some(&expected_monitor.env_keys)
         && reported_blueprint_env_keys.as_ref() == Some(&expected_monitor.env_keys)
+        && value_bool(monitor, "observabilityBoundaryPasses") == Some(true)
         && expected_monitor_fingerprints.is_some()
         && reported_monitor_fingerprints == expected_monitor_fingerprints
         && value_string(deploy, "status") == Some("live")
@@ -12595,5 +12600,26 @@ mod tests {
             "planner_executor_source_evidence_is_kind_scoped"
         );
         assert_eq!(result.verdict, Verdict::Pass);
+    }
+
+    #[test]
+    fn live_role_scope_keeps_observability_keys_without_fingerprinting_secret() {
+        let keys = [
+            "NEON_DATABASE_URL",
+            "OBSERVABILITY_ENABLED",
+            "OBSERVABILITY_ENVIRONMENT",
+            "OBSERVABILITY_OTLP_ENDPOINT",
+            "OBSERVABILITY_INGESTION_API_KEY",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+
+        assert_eq!(role_service_scoped_env_keys(&keys), keys);
+        let fingerprinted = role_scope_value_keys("loyal-fleet-opportunity-planner", &keys);
+        assert!(fingerprinted.contains("OBSERVABILITY_ENABLED"));
+        assert!(fingerprinted.contains("OBSERVABILITY_ENVIRONMENT"));
+        assert!(fingerprinted.contains("OBSERVABILITY_OTLP_ENDPOINT"));
+        assert!(!fingerprinted.contains("OBSERVABILITY_INGESTION_API_KEY"));
     }
 }

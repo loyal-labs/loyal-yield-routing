@@ -84,3 +84,58 @@ registry image identities, pinned Render service revisions, a fresh source-bound
 production evidence artifact, Neon lifecycle transitions, ClickStack role
 evidence, and finalized Solana evidence. No image was pushed, no service was
 deployed, and no production database or RPC was mutated by this verification.
+
+## Two-phase deployment gate
+
+After the pull-request image jobs pass and an operator publishes both immutable
+images from one source commit, pin those exact references in `render.yaml` and
+commit the pin. From that clean checkout, capture the read-only pre-deploy
+runtime proof and production baseline:
+
+```sh
+op run --env-file=/Users/zotho/Dev/loyal/.env.1password.loyal-noncritical-env -- \
+  bun run verify:ask-1973-deployment pre-deploy \
+    --light-image ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-<image-source-commit> \
+    --heavy-image ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-<image-source-commit> \
+    --evidence-dir /tmp/ask1973-pre-deploy
+```
+
+The pre-deploy phase pulls and inspects the native Linux/amd64 registry
+manifests and provenance, probes the images, runs the deterministic and isolated
+database evidence on disposable PostgreSQL, and requires implementation Checks
+1-7 to pass. The image source commit may precede the pin commit only by the
+verifier's explicit source-binding allowlist; arbitrary source drift fails.
+
+Only after an explicit deployment order, record the UTC cutover timestamp and
+run the post-deploy phase. Load the ClickStack access key into the environment
+without putting it in command arguments:
+
+```sh
+set -a
+. /Users/zotho/Dev/loyal/.env.clickstack
+set +a
+op run --env-file=/Users/zotho/Dev/loyal/.env.1password.loyal-noncritical-env -- \
+  bun run verify:ask-1973-deployment post-deploy \
+    --runtime-evidence /tmp/ask1973-pre-deploy/runtime-evidence.json \
+    --baseline /tmp/ask1973-pre-deploy/production-baseline.json \
+    --cutover-at <UTC-RFC3339> \
+    --evidence-dir /tmp/ask1973-post-deploy
+```
+
+This phase is read-only. It requires the clean Blueprint, the six live Render
+roles, immutable manifest digests and env boundaries, migrations, current
+Timescale data, post-cutover Neon lifecycle transitions, finalized Solana
+effects, and Checks 1-11 to pass. It also queries the deployed ClickStack v2 API
+for post-cutover error/fatal, panic, transition, join, and recovery-required
+signals for every role.
+
+ClickStack's Loyal OTLP log channel intentionally exports operational errors
+only. Therefore zero matching ClickStack rows is a negative error gate, not
+successful-work evidence. Successful planner-to-reconciler and provisioner work
+must come from the independent Neon and finalized-chain end-state measurements.
+The Render gate now requires all four observability env keys on every fleet role
+and validates the fixed non-secret values; the ingestion key is presence-checked
+but never copied to evidence.
+
+Neither phase builds or pushes images, deploys services, mutates production
+data, signs, or sends transactions. Existing output files are never overwritten.

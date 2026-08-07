@@ -528,6 +528,7 @@ fn role_scope_value_keys(name: &str, env_keys: &BTreeSet<String>) -> BTreeSet<St
     env_keys
         .iter()
         .filter(|key| key.as_str() != "RUST_LOG")
+        .filter(|key| key.as_str() != "OBSERVABILITY_INGESTION_API_KEY")
         .filter(|key| {
             key.as_str() != "HELIUS_API_KEY"
                 && key.as_str() != "LASERSTREAM_ENDPOINT"
@@ -543,6 +544,7 @@ fn monitor_scope_value_keys(env_keys: &BTreeSet<String>) -> BTreeSet<String> {
     env_keys
         .iter()
         .filter(|key| key.as_str() != "RUST_LOG")
+        .filter(|key| key.as_str() != "OBSERVABILITY_INGESTION_API_KEY")
         .cloned()
         .collect()
 }
@@ -677,6 +679,10 @@ fn role_env_boundaries(name: &str, keys: &BTreeSet<String>) -> (bool, Vec<String
     require("NEON_DATABASE_URL", &mut failures);
     require("YIELD_ALT_CLUSTER", &mut failures);
     require("RUST_LOG", &mut failures);
+    require("OBSERVABILITY_ENABLED", &mut failures);
+    require("OBSERVABILITY_ENVIRONMENT", &mut failures);
+    require("OBSERVABILITY_OTLP_ENDPOINT", &mut failures);
+    require("OBSERVABILITY_INGESTION_API_KEY", &mut failures);
     match name {
         "loyal-fleet-opportunity-planner" => {
             require("TIMESCALEDB_URL", &mut failures);
@@ -816,6 +822,22 @@ async fn collect_market_monitor_render_evidence(
         scope_fingerprint_nonce,
         monitor_scope_value_keys(&live_env_keys),
     );
+    let observability_boundary_passes = live_env
+        .get("OBSERVABILITY_ENABLED")
+        .and_then(Option::as_deref)
+        == Some("true")
+        && live_env
+            .get("OBSERVABILITY_ENVIRONMENT")
+            .and_then(Option::as_deref)
+            == Some("production")
+        && live_env
+            .get("OBSERVABILITY_OTLP_ENDPOINT")
+            .and_then(Option::as_deref)
+            == Some("https://loyal-clickstack.onrender.com")
+        && live_env
+            .get("OBSERVABILITY_INGESTION_API_KEY")
+            .and_then(Option::as_deref)
+            .is_some_and(|value| !value.trim().is_empty());
     let data_scope_verified = env_response.is_ok()
         && live_env
             .get("TIMESCALEDB_URL")
@@ -830,7 +852,8 @@ async fn collect_market_monitor_render_evidence(
         && live_env
             .get("KAMINO_UPDATE_SOURCE")
             .and_then(Option::as_deref)
-            == Some("laserstream");
+            == Some("laserstream")
+        && observability_boundary_passes;
     let raw_command = service.and_then(|service| {
         json_string(service, "/serviceDetails/envSpecificDetails/dockerCommand")
     });
@@ -915,6 +938,7 @@ async fn collect_market_monitor_render_evidence(
             "envValueFingerprints": env_value_fingerprints,
             "envKeyBoundaryExact": env_key_boundary_exact,
             "dataScopeVerified": data_scope_verified,
+            "observabilityBoundaryPasses": observability_boundary_passes,
             "latestDeploy": latest_deploy.map(|deploy| json!({
                 "id": json_string(deploy, "/id"),
                 "status": deploy_status,
@@ -1043,6 +1067,26 @@ async fn collect_render_evidence(
         );
         let (mut env_boundary_passes, mut env_failures) =
             role_env_boundaries(&expected_service.name, &live_env_keys);
+        let observability_boundary_passes = live_env
+            .get("OBSERVABILITY_ENABLED")
+            .and_then(Option::as_deref)
+            == Some("true")
+            && live_env
+                .get("OBSERVABILITY_ENVIRONMENT")
+                .and_then(Option::as_deref)
+                == Some("production")
+            && live_env
+                .get("OBSERVABILITY_OTLP_ENDPOINT")
+                .and_then(Option::as_deref)
+                == Some("https://loyal-clickstack.onrender.com")
+            && live_env
+                .get("OBSERVABILITY_INGESTION_API_KEY")
+                .and_then(Option::as_deref)
+                .is_some_and(|value| !value.trim().is_empty());
+        if !observability_boundary_passes {
+            env_boundary_passes = false;
+            env_failures.push("invalid:OBSERVABILITY_export_boundary".to_owned());
+        }
         let (blueprint_env_boundary_passes, blueprint_env_failures) =
             role_env_boundaries(&expected_service.name, &expected_service.env_keys);
         let requires_standard_policy = matches!(
@@ -1175,6 +1219,7 @@ async fn collect_render_evidence(
             "envValueFingerprints": env_value_fingerprints,
             "envBoundaryPasses": env_boundary_passes,
             "envBoundaryFailures": env_failures,
+            "observabilityBoundaryPasses": observability_boundary_passes,
             "blueprintEnvKeys": expected_service.env_keys,
             "blueprintEnvBoundaryPasses": blueprint_env_boundary_passes,
             "blueprintEnvBoundaryFailures": blueprint_env_failures,
@@ -5626,4 +5671,48 @@ async fn main() -> Result<ExitCode, Box<dyn Error>> {
         return Ok(ExitCode::SUCCESS);
     };
     run(options).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn planner_env_keys() -> BTreeSet<String> {
+        [
+            "NEON_DATABASE_URL",
+            "YIELD_ALT_CLUSTER",
+            "RUST_LOG",
+            "TIMESCALEDB_URL",
+            "OBSERVABILITY_ENABLED",
+            "OBSERVABILITY_ENVIRONMENT",
+            "OBSERVABILITY_OTLP_ENDPOINT",
+            "OBSERVABILITY_INGESTION_API_KEY",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    }
+
+    #[test]
+    fn fleet_role_env_boundary_requires_complete_observability_config() {
+        let complete = planner_env_keys();
+        assert_eq!(
+            role_env_boundaries("loyal-fleet-opportunity-planner", &complete),
+            (true, Vec::new())
+        );
+
+        for required in [
+            "OBSERVABILITY_ENABLED",
+            "OBSERVABILITY_ENVIRONMENT",
+            "OBSERVABILITY_OTLP_ENDPOINT",
+            "OBSERVABILITY_INGESTION_API_KEY",
+        ] {
+            let mut missing = complete.clone();
+            missing.remove(required);
+            let (passed, failures) =
+                role_env_boundaries("loyal-fleet-opportunity-planner", &missing);
+            assert!(!passed);
+            assert!(failures.contains(&format!("missing:{required}")));
+        }
+    }
 }
