@@ -147,12 +147,13 @@ immutable SHA tags or image digests. Do not use `latest` as the only service
 image reference.
 
 Operator-only binaries are deliberately excluded from the production images.
-Build `Dockerfile.operator-tools` only through the manually dispatched
-`.github/workflows/operator-tools-image.yml` workflow. Its immutable
-`operator-tools:sha-<commit>` image contains `loyal-timescale-migrations`, the
-fleet verifier and production-evidence tools, `same-mint-monitor-e2e`, and the
-shared-catalog, alert-monitor, legacy-import, and cleanup lookup-table tools.
-No Render service is pinned to this image.
+Build `Dockerfile.operator-tools` only through
+`.github/workflows/operator-tools-image.yml`. Pull requests build and probe the
+image without pushing it; manual dispatch publishes the immutable
+`operator-tools:sha-<commit>` image. It contains `loyal-timescale-migrations`,
+the fleet verifier and production-evidence tools, `same-mint-monitor-e2e`, and
+the shared-catalog, alert-monitor, legacy-import, and cleanup lookup-table
+tools. No Render service is pinned to this image.
 
 The production/staging stream-selector code in this change is not active on
 Render until the repo change is committed, the `worker-images` workflow builds
