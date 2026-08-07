@@ -192,6 +192,14 @@ const SAME_MINT_ROUTE_MODE = "same_mint_kamino";
 const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDC_DECIMALS = 6;
 const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
+/**
+ * Backoff for a target that is correct but has nothing to act on. The five-minute
+ * failure cadence exists to recover from transient faults; applying it to a vault the
+ * user emptied burns a slot every five minutes forever. The lots stay claimable so a new
+ * deposit still resumes the sweep, just on a cadence that matches how fast that can
+ * plausibly change.
+ */
+const NOT_ACTIONABLE_RETRY_DELAY_SECONDS = 6 * 60 * 60;
 const AUTODEPOSIT_PULL_FEE_PAYER_MIN_LAMPORTS = 50_000_000;
 
 export function isMissingAutodepositTokenDelegateFailure(
@@ -245,6 +253,8 @@ const AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE_ENV =
   "AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE";
 const AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE_ENV =
   "AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE";
+const AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE_ENV =
+  "AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE";
 const SOLANA_WEEK_NOTIFY_ENDPOINT_ENV = "SOLANA_WEEK_NOTIFY_ENDPOINT";
 const SOLANA_WEEK_NOTIFY_SECRET_ENV = "SOLANA_WEEK_NOTIFY_SECRET";
 const SOLANA_WEEK_NOTIFY_TIMEOUT_MS = 5_000;
@@ -252,7 +262,8 @@ const SOLANA_WEEK_NOTIFY_TIMEOUT_MS = 5_000;
 type AutodepositExecutorFailureCode =
   | "kamino_top_up_failed"
   | "yield_persistence_failed"
-  | "preflight_blocked";
+  | "preflight_blocked"
+  | "not_actionable";
 
 const AUTODEPOSIT_EXECUTOR_FAILURE_EXIT_CODE_ENVS: Record<
   AutodepositExecutorFailureCode,
@@ -261,6 +272,7 @@ const AUTODEPOSIT_EXECUTOR_FAILURE_EXIT_CODE_ENVS: Record<
   kamino_top_up_failed: AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE_ENV,
   yield_persistence_failed: AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE_ENV,
   preflight_blocked: AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE_ENV,
+  not_actionable: AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE_ENV,
 };
 
 export function autodepositExecutorFailureExitCode(
@@ -1062,14 +1074,17 @@ async function completeAutodepositLotClaim(args: {
   `;
 }
 
-async function releaseAutodepositLotClaim(args: {
+export async function releaseAutodepositLotClaim(args: {
   neon: AppModules["neon"];
   databaseUrl: string;
   claimToken: string;
   lastError: string;
   pauseTargetForMissingDelegate: boolean;
+  retryDelaySeconds?: number;
 }) {
   const sql = args.neon(args.databaseUrl);
+  const retryDelaySeconds =
+    args.retryDelaySeconds ?? PRE_SEND_FAILURE_RETRY_DELAY_SECONDS;
   await sql`
     WITH selected_claim AS (
       SELECT c.claim_token
@@ -1087,7 +1102,7 @@ async function releaseAutodepositLotClaim(args: {
             l.remaining_amount_raw + i.amount_raw
           ),
           status = 'open',
-          eligible_after = now() + (${PRE_SEND_FAILURE_RETRY_DELAY_SECONDS} * interval '1 second'),
+          eligible_after = now() + (${retryDelaySeconds} * interval '1 second'),
           updated_at = now()
       FROM loyal_yield.balance_sweep_lot_claim_items i
       JOIN loyal_yield.balance_sweep_wallet_balance_events e
@@ -1313,6 +1328,58 @@ export function isUnresolvedCurrentReserveFailure(error: unknown): boolean {
   return message.includes(UNRESOLVED_CURRENT_RESERVE_MARKER);
 }
 
+/**
+ * True when the refusal to pull was caused by a vault confirmed to hold nothing, rather
+ * than by a fault. The distinction drives both the retry cadence and whether the exit
+ * pages, so it is matched on the serialized reason the resolution itself emitted instead
+ * of on prose that could drift.
+ */
+export function isDrainedVaultFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    isUnresolvedCurrentReserveFailure(error) &&
+    message.includes('"reason":"vault_drained"')
+  );
+}
+
+export type AutodepositFailureDisposition = {
+  /** Null when the failure is unclassified and keeps the generic exit code. */
+  failureCode: AutodepositExecutorFailureCode | null;
+  retryDelaySeconds: number;
+};
+
+/**
+ * Maps a pre-send failure to how loudly it should exit and how soon it should be retried.
+ *
+ * These two answers have to be decided together. An exit that pages but backs off for
+ * hours hides a live fault, and an exit that stays quiet but retries every five minutes
+ * silently burns slots forever. Keeping the pair in one place is also what makes the
+ * decision reachable from the verifier.
+ */
+export function autodepositFailureDisposition(
+  error: unknown
+): AutodepositFailureDisposition {
+  if (isDrainedVaultFailure(error)) {
+    return {
+      failureCode: "not_actionable",
+      retryDelaySeconds: NOT_ACTIONABLE_RETRY_DELAY_SECONDS,
+    };
+  }
+  if (
+    isTopUpPreflightBlockedFailure(error) ||
+    isUnresolvedCurrentReserveFailure(error)
+  ) {
+    return {
+      failureCode: "preflight_blocked",
+      retryDelaySeconds: PRE_SEND_FAILURE_RETRY_DELAY_SECONDS,
+    };
+  }
+  return {
+    failureCode: null,
+    retryDelaySeconds: PRE_SEND_FAILURE_RETRY_DELAY_SECONDS,
+  };
+}
+
 export type LiveVaultPosition = {
   reserve: string;
   market: string;
@@ -1334,6 +1401,7 @@ export type CurrentReserveResolution =
       status: "unresolved";
       reason:
         | "no_live_position"
+        | "vault_drained"
         | "multiple_live_positions"
         | "stale_projection"
         | "liquidity_mint_mismatch";
@@ -1403,9 +1471,16 @@ export function resolveCurrentReserve(args: {
     };
   }
   if (live.length === 0) {
+    // "Every reserve reads zero" and "the projector gave us nothing" arrive here as the
+    // same empty list, but they are opposite conditions. A fresh zero observation is
+    // proof the user withdrew everything, which no retry can change; a silent projector
+    // is a fault that must keep paging. Only a fresh row can tell them apart.
+    const drainConfirmed =
+      args.positions.length > 0 &&
+      args.positions.some((position) => isFresh(position.observedAt));
     return {
       status: "unresolved",
-      reason: "no_live_position",
+      reason: drainConfirmed ? "vault_drained" : "no_live_position",
       currentReserve,
       liveReserves,
     };
@@ -1488,6 +1563,11 @@ export async function loadLiveVaultPositions(args: {
   // Nothing enforces one managed vault per (settings, vault_index), and a replaced or
   // deactivated vault keeps its position rows. Scoping on the full identity stops a
   // stale sibling from either redirecting the deposit or faking ambiguity.
+  //
+  // Zero-amount rows are kept deliberately. They carry the observation timestamp that
+  // separates "the vault is confirmed empty" from "the projector told us nothing", and
+  // those two cases deserve opposite handling. Callers filter for live amounts
+  // themselves.
   const rows = await sql`
     SELECT position.reserve,
            position.market,
@@ -1502,7 +1582,6 @@ export async function loadLiveVaultPositions(args: {
      AND vault.vault_index = ${args.target.vaultIndex}
      AND vault.vault_pubkey = ${args.target.vaultPubkey}
      AND vault.active
-    WHERE position.amount_raw > 0
     ORDER BY position.reserve
   `;
   return rows.map((row) => {
@@ -3667,13 +3746,13 @@ async function main() {
     );
   } catch (error) {
     // A blocked route never moved funds, so it deserves its own exit code rather than
-    // the generic 1 that every unclassified failure shares.
-    if (
-      !process.exitCode &&
-      (isTopUpPreflightBlockedFailure(error) ||
-        isUnresolvedCurrentReserveFailure(error))
-    ) {
-      process.exitCode = autodepositExecutorFailureExitCode("preflight_blocked");
+    // the generic 1 that every unclassified failure shares, and a vault confirmed empty
+    // deserves neither an alert nor the fast retry cadence.
+    const disposition = autodepositFailureDisposition(error);
+    if (!process.exitCode && disposition.failureCode) {
+      process.exitCode = autodepositExecutorFailureExitCode(
+        disposition.failureCode
+      );
     }
     if (!pullSent && lotClaim?.status === "selected" && lotClaim.claimToken) {
       const lastError = error instanceof Error ? error.message : String(error);
@@ -3684,6 +3763,7 @@ async function main() {
         lastError: lastError.slice(0, 4_000),
         pauseTargetForMissingDelegate:
           isMissingAutodepositTokenDelegateFailure(error),
+        retryDelaySeconds: disposition.retryDelaySeconds,
       });
     }
     const reconciliation = await reconcileClosedRoutePolicyFailure({

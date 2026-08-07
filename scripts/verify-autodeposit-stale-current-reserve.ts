@@ -21,12 +21,15 @@ import {
   assertReconciliationPersisted,
   assertResolvedCurrentReserve,
   autodepositExecutorFailureExitCode,
+  autodepositFailureDisposition,
   readMissingDepositObligation,
+  isDrainedVaultFailure,
   isPullResolvedTopUpBlocker,
   isTopUpPreflightBlockedFailure,
   isUnresolvedCurrentReserveFailure,
   loadLiveVaultPositions,
   persistReconciledCurrentReserve,
+  releaseAutodepositLotClaim,
   readTopUpLookupTableCoverage,
   readTopUpPreflightBlockers,
   resolveCurrentReserve,
@@ -143,16 +146,17 @@ function createFakeNeon(state: {
       statements.push({ sql, values });
 
       if (/FROM loyal_yield\.vault_reserve_positions_current/i.test(sql)) {
-        return state.positions
-          .filter((entry) => entry.amountRaw > 0)
-          .map((entry) => ({
-            reserve: entry.reserve,
-            market: entry.market,
-            liquidity_mint: entry.liquidityMint,
-            amount_raw: entry.amountRaw.toString(),
-            observed_slot: entry.observedSlot?.toString() ?? null,
-            observed_at: entry.observedAt?.toISOString() ?? null,
-          }));
+        // The projection table holds a row per known reserve whether or not it carries a
+        // balance, and the query no longer filters them out. Returning zero rows here is
+        // what lets the drained-vault case be told apart from a silent projector.
+        return state.positions.map((entry) => ({
+          reserve: entry.reserve,
+          market: entry.market,
+          liquidity_mint: entry.liquidityMint,
+          amount_raw: entry.amountRaw.toString(),
+          observed_slot: entry.observedSlot?.toString() ?? null,
+          observed_at: entry.observedAt?.toISOString() ?? null,
+        }));
       }
 
       if (/UPDATE loyal_yield\.user_yield_positions/i.test(sql)) {
@@ -476,6 +480,13 @@ function scenarioGuardsNeverRedirect(): void {
     reason: string;
   }[] = [
     { name: "no live position", positions: [], reason: "no_live_position" },
+    {
+      name: "every reserve zero but never freshly observed",
+      positions: [
+        position({ reserve: LIVE_RESERVE, amountRaw: BigInt(0), observedAt: stale }),
+      ],
+      reason: "no_live_position",
+    },
     {
       name: "two live positions",
       positions: [
@@ -862,6 +873,160 @@ async function scenarioMissingObligationIsCountable(
   );
 }
 
+/**
+ * The condition target 4542 sat in for 700 consecutive attempts: the user withdrew
+ * everything, so no reserve can be reconciled toward and no retry can ever succeed. The
+ * refusal to pull is correct; retrying it every five minutes and paging each time is not.
+ */
+async function scenarioDrainedVaultBacksOffWithoutPaging(): Promise<void> {
+  console.log("\nASK-2051 follow-up: a drained vault backs off instead of paging");
+
+  const drained = resolveCurrentReserve({
+    positions: [
+      position({ reserve: STALE_RESERVE, market: STALE_MARKET, amountRaw: BigInt(0) }),
+      position({ reserve: LIVE_RESERVE, amountRaw: BigInt(0) }),
+    ],
+    target,
+  });
+  check(
+    "a freshly observed empty vault is classified as drained",
+    drained.status === "unresolved" && drained.reason === "vault_drained",
+    drained
+  );
+
+  let thrown: unknown = null;
+  try {
+    assertResolvedCurrentReserve(drained);
+  } catch (error) {
+    thrown = error;
+  }
+  check("a drained vault still refuses to pull", thrown !== null);
+  check(
+    "the drained vault is classified as not actionable",
+    isDrainedVaultFailure(thrown),
+    thrown instanceof Error ? thrown.message.slice(0, 160) : thrown
+  );
+
+  // The separation has to hold in both directions, or the quiet exit code would start
+  // swallowing genuine faults that also stop before funds move.
+  let missingProjection: unknown = null;
+  try {
+    assertResolvedCurrentReserve(
+      resolveCurrentReserve({ positions: [], target })
+    );
+  } catch (error) {
+    missingProjection = error;
+  }
+  check(
+    "a silent projector is not treated as a drained vault",
+    isUnresolvedCurrentReserveFailure(missingProjection) &&
+      !isDrainedVaultFailure(missingProjection),
+    missingProjection instanceof Error
+      ? missingProjection.message.slice(0, 160)
+      : missingProjection
+  );
+  check(
+    "an ambiguous vault is not treated as a drained vault",
+    !isDrainedVaultFailure(
+      new Error(
+        'Autodeposit target reserve could not be resolved against chain truth; ' +
+          'refusing to pull. resolution={"reason":"multiple_live_positions"}'
+      )
+    )
+  );
+  check(
+    "a top-up preflight block is not treated as a drained vault",
+    !isDrainedVaultFailure(new Error(PRODUCTION_BLOCKER))
+  );
+
+  check(
+    "the drained vault reports the quiet exit code, not the blocked-route one",
+    autodepositExecutorFailureExitCode("not_actionable", {
+      AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE: "23",
+      AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE: "22",
+    }) === 23
+  );
+
+  // The exit code and the retry cadence are decided together, so the pairing itself is
+  // asserted rather than only its two halves.
+  const drainedDisposition = autodepositFailureDisposition(thrown);
+  check(
+    "a drained vault exits quietly and waits six hours",
+    drainedDisposition.failureCode === "not_actionable" &&
+      drainedDisposition.retryDelaySeconds === 6 * 60 * 60,
+    drainedDisposition
+  );
+  const blockedDisposition = autodepositFailureDisposition(
+    new Error(
+      "Kamino top-up dry run reported preflight blockers; refusing to pull. " +
+        `blockers=${JSON.stringify([PRODUCTION_BLOCKER])}`
+    )
+  );
+  check(
+    "a blocked route still pages and keeps the five-minute cadence",
+    blockedDisposition.failureCode === "preflight_blocked" &&
+      blockedDisposition.retryDelaySeconds === 5 * 60,
+    blockedDisposition
+  );
+  const unclassifiedDisposition = autodepositFailureDisposition(
+    new Error("BlockhashNotFound")
+  );
+  check(
+    "an unclassified failure keeps the generic exit and the fast cadence",
+    unclassifiedDisposition.failureCode === null &&
+      unclassifiedDisposition.retryDelaySeconds === 5 * 60,
+    unclassifiedDisposition
+  );
+
+  const state = {
+    positions: [],
+    pointer: {
+      id: "4542",
+      current_reserve: STALE_RESERVE,
+      current_market: STALE_MARKET,
+      current_liquidity_mint: USDC_MINT,
+      status: "active",
+    },
+  };
+  const { neon, statements } = createFakeNeon(state);
+  await releaseAutodepositLotClaim({
+    claimToken: "autodeposit-trigger:4542:234781:1",
+    databaseUrl: DATABASE_URL,
+    lastError: thrown instanceof Error ? thrown.message : String(thrown),
+    neon,
+    pauseTargetForMissingDelegate: false,
+    retryDelaySeconds: 6 * 60 * 60,
+  });
+  const release = statements.at(-1);
+  check(
+    "the release backs the lots off by the long delay",
+    release?.values.includes(6 * 60 * 60) === true,
+    release?.values
+  );
+  check(
+    "the backoff is bound into eligible_after rather than hard-coded",
+    /eligible_after = now\(\) \+ \( \? \* interval '1 second'\)/i.test(
+      release?.sql ?? ""
+    ),
+    release?.sql
+  );
+
+  const { neon: defaultNeon, statements: defaultStatements } =
+    createFakeNeon(state);
+  await releaseAutodepositLotClaim({
+    claimToken: "autodeposit-trigger:4542:234782:1",
+    databaseUrl: DATABASE_URL,
+    lastError: "BlockhashNotFound",
+    neon: defaultNeon,
+    pauseTargetForMissingDelegate: false,
+  });
+  check(
+    "an ordinary failure keeps the five-minute retry cadence",
+    defaultStatements.at(-1)?.values.includes(5 * 60) === true,
+    defaultStatements.at(-1)?.values
+  );
+}
+
 function scenarioExitCodeIsDistinct(): void {
   console.log("\nthe blocked route reports its own exit code");
   check(
@@ -1101,6 +1266,7 @@ async function main(): Promise<void> {
     await scenarioPositionsAreScopedToVault(directory);
     scenarioLostRaceStopsTheAttempt();
     await scenarioMissingObligationIsCountable(directory);
+    await scenarioDrainedVaultBacksOffWithoutPaging();
     scenarioExitCodeIsDistinct();
     await scenarioProductionShapedLoad(directory);
   } finally {

@@ -10,7 +10,8 @@ use balance_sweep_autodeposit_trigger::{
     compute_sweep_amount, executor_failure_alert, initial_surplus_amount,
     positive_delta_surplus_amount, scheduled_eligible_after, surplus_lot_classification_db_value,
     SweepAmountDecision, SweepCaps, AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE,
-    AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE_ENV, AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE,
+    AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE_ENV, AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE,
+    AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE_ENV, AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE,
     AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE_ENV, AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE,
     AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE_ENV,
 };
@@ -125,6 +126,7 @@ struct ExecutorOutcome {
     executions_attempted: usize,
     executions_succeeded: usize,
     executions_failed: usize,
+    executions_not_actionable: usize,
     missing_route_policy_slots_failed: i64,
     stale_requested_slots_failed: i64,
     stale_claims_released: i64,
@@ -564,6 +566,10 @@ async fn execute_eligible_targets_once(
                 AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE_ENV,
                 AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE.to_string(),
             )
+            .env(
+                AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE_ENV,
+                AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE.to_string(),
+            )
             .status()
             .with_context(|| format!("spawn autodeposit executor for target {}", target.target_id))
             .inspect_err(|_| {
@@ -578,9 +584,8 @@ async fn execute_eligible_targets_once(
             })?;
         if status.success() {
             outcome.executions_succeeded += 1;
-        } else {
+        } else if let Some(alert) = executor_failure_alert(status.code()) {
             outcome.executions_failed += 1;
-            let alert = executor_failure_alert(status.code());
             tracing::warn!(
                 target_id = target.target_id,
                 scheduled_slot_id = target.scheduled_slot_id,
@@ -593,6 +598,18 @@ async fn execute_eligible_targets_once(
                 .retryable(false)
                 .recovery_required(true)
                 .emit();
+        } else {
+            // Counted apart from failures: the executor decided correctly that this
+            // target has nothing to deposit into, so folding it into the failure count
+            // would keep an operator hunting for a fault that does not exist.
+            outcome.executions_not_actionable += 1;
+            tracing::info!(
+                target_id = target.target_id,
+                scheduled_slot_id = target.scheduled_slot_id,
+                claim_token,
+                status = ?status,
+                "autodeposit target is not actionable and was backed off without alerting"
+            );
         }
     }
     Ok(outcome)
