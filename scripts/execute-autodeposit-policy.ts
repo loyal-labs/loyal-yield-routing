@@ -201,6 +201,73 @@ const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
  */
 const NOT_ACTIONABLE_RETRY_DELAY_SECONDS = 6 * 60 * 60;
 const AUTODEPOSIT_PULL_FEE_PAYER_MIN_LAMPORTS = 50_000_000;
+/**
+ * Balance at which the fee payer is reported as running low while it still works.
+ *
+ * Sized for roughly twelve hours of warning before the hard floor stops the fleet. Over
+ * the 21 days to 2026-08-07 the signer spent 12.94 SOL, of which only 0.036 SOL was
+ * transaction fees; the rest is rent for accounts the routes create. That makes the drain
+ * bursty rather than steady, so the headroom is set from the 90th percentile of observed
+ * rolling twelve-hour burn (0.494 SOL) instead of the mean (0.108 SOL), which would be
+ * outrun by any ordinary busy period.
+ *
+ * A louder threshold is not free: sized to the 95th percentile it would sit at 1.95 SOL
+ * and fire against almost every top-up the wallet has ever received.
+ */
+const AUTODEPOSIT_FEE_PAYER_LOW_LAMPORTS = 550_000_000;
+const AUTODEPOSIT_FEE_PAYER_LOW_LAMPORTS_ENV =
+  "AUTODEPOSIT_FEE_PAYER_LOW_LAMPORTS";
+/** Grepped by the alerting pipeline; changing it silently disables the warning. */
+export const AUTODEPOSIT_FEE_PAYER_LOW_MARKER = "autodeposit_fee_payer_low";
+export const AUTODEPOSIT_FEE_PAYER_EXHAUSTED_MARKER =
+  "autodeposit fee payer is out of SOL";
+
+export function feePayerLowLamports(
+  environment: Record<string, string | undefined> = process.env
+): number {
+  const raw = environment[AUTODEPOSIT_FEE_PAYER_LOW_LAMPORTS_ENV];
+  if (!raw) {
+    return AUTODEPOSIT_FEE_PAYER_LOW_LAMPORTS;
+  }
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 0
+    ? parsed
+    : AUTODEPOSIT_FEE_PAYER_LOW_LAMPORTS;
+}
+
+/**
+ * Reports a fee payer that still covers the next transaction but is heading for empty.
+ *
+ * Emitted on the way past rather than as a failure: the run continues normally. The
+ * balance and the shortfall are structured so an operator can act without reconstructing
+ * them from prose.
+ */
+export function reportFeePayerBalance(args: {
+  feePayer: string;
+  balanceLamports: number;
+  minimumLamports: number;
+  role: string;
+  lowLamports?: number;
+}): boolean {
+  const lowLamports = args.lowLamports ?? feePayerLowLamports();
+  if (args.balanceLamports >= lowLamports) {
+    return false;
+  }
+  console.warn(
+    JSON.stringify({
+      status: AUTODEPOSIT_FEE_PAYER_LOW_MARKER,
+      role: args.role,
+      feePayer: args.feePayer,
+      balanceLamports: args.balanceLamports,
+      lowLamports,
+      minimumLamports: args.minimumLamports,
+      remainingTransactions: Math.floor(
+        args.balanceLamports / args.minimumLamports
+      ),
+    })
+  );
+  return true;
+}
 
 export function isMissingAutodepositTokenDelegateFailure(
   error: unknown
@@ -255,6 +322,8 @@ const AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE_ENV =
   "AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE";
 const AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE_ENV =
   "AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE";
+const AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE_ENV =
+  "AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE";
 const SOLANA_WEEK_NOTIFY_ENDPOINT_ENV = "SOLANA_WEEK_NOTIFY_ENDPOINT";
 const SOLANA_WEEK_NOTIFY_SECRET_ENV = "SOLANA_WEEK_NOTIFY_SECRET";
 const SOLANA_WEEK_NOTIFY_TIMEOUT_MS = 5_000;
@@ -263,7 +332,8 @@ type AutodepositExecutorFailureCode =
   | "kamino_top_up_failed"
   | "yield_persistence_failed"
   | "preflight_blocked"
-  | "not_actionable";
+  | "not_actionable"
+  | "fee_payer_exhausted";
 
 const AUTODEPOSIT_EXECUTOR_FAILURE_EXIT_CODE_ENVS: Record<
   AutodepositExecutorFailureCode,
@@ -273,6 +343,7 @@ const AUTODEPOSIT_EXECUTOR_FAILURE_EXIT_CODE_ENVS: Record<
   yield_persistence_failed: AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE_ENV,
   preflight_blocked: AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE_ENV,
   not_actionable: AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE_ENV,
+  fee_payer_exhausted: AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE_ENV,
 };
 
 export function autodepositExecutorFailureExitCode(
@@ -1140,6 +1211,24 @@ export async function releaseAutodepositLotClaim(args: {
       WHERE claim_token = (SELECT claim_token FROM selected_claim)
         AND EXISTS (SELECT 1 FROM restored)
       RETURNING claim_token
+    ),
+    -- The replacement slot is created when the claim is taken, so it already carries the
+    -- deadline the lots had *before* this failure. Only the slot deadline gates the next
+    -- attempt: with a scheduled slot in hand the claim query skips the lot's own
+    -- eligible_after entirely. Pushing the slot out here is what makes a long backoff
+    -- take effect on the next attempt rather than one full cycle later.
+    delayed_slot AS (
+      UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
+      SET eligible_after = GREATEST(
+            slot.eligible_after,
+            now() + (${retryDelaySeconds} * interval '1 second')
+          ),
+          updated_at = now()
+      FROM loyal_yield.balance_sweep_surplus_lots AS lot
+      WHERE lot.scheduled_slot_id = slot.id
+        AND lot.id IN (SELECT id FROM restored)
+        AND slot.status IN ('scheduled', 'requested')
+      RETURNING slot.id
     )
     UPDATE loyal_yield.balance_sweep_scheduled_slots
     SET status = 'scheduled',
@@ -1343,6 +1432,20 @@ export function isDrainedVaultFailure(error: unknown): boolean {
   );
 }
 
+/**
+ * True when the run stopped because a fee payer cannot cover the next transaction.
+ *
+ * This is the fleet's most operationally actionable failure and its least self-evident
+ * one: it stops every target at once, no code change can clear it, and the only fix is
+ * sending SOL. Matched on the shared shape both balance guards emit — a role, the signer,
+ * the observed lamports, and the requirement — so it cannot be confused with an ordinary
+ * insufficient-funds error from somewhere else in the transaction.
+ */
+export function isFeePayerExhaustedFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /fee payer \w+ has \d+ lamports; \d+ required\./.test(message);
+}
+
 export type AutodepositFailureDisposition = {
   /** Null when the failure is unclassified and keeps the generic exit code. */
   failureCode: AutodepositExecutorFailureCode | null;
@@ -1360,6 +1463,16 @@ export type AutodepositFailureDisposition = {
 export function autodepositFailureDisposition(
   error: unknown
 ): AutodepositFailureDisposition {
+  // Checked first: an empty fee payer stops the run before any route reasoning, so
+  // classifying it as anything else would bury a fleet-wide outage under a per-target
+  // diagnosis. The fast retry cadence is kept deliberately, so the fleet resumes on its
+  // own within minutes of a top-up rather than waiting out a backoff.
+  if (isFeePayerExhaustedFailure(error)) {
+    return {
+      failureCode: "fee_payer_exhausted",
+      retryDelaySeconds: PRE_SEND_FAILURE_RETRY_DELAY_SECONDS,
+    };
+  }
   if (isDrainedVaultFailure(error)) {
     return {
       failureCode: "not_actionable",
@@ -1476,12 +1589,16 @@ export function resolveCurrentReserve(args: {
     // same empty list, but they are opposite conditions. A fresh zero observation is
     // proof the user withdrew everything, which no retry can change; a silent projector
     // is a fault that must keep paging. Only a fresh row can tell them apart.
-    const drainConfirmed =
-      args.positions.some(
-        (position) =>
-          position.liquidityMint === args.target.tokenMint &&
-          isFresh(position.observedAt)
-      );
+    //
+    // The evidence must come from the target's own mint. The loader returns every mint
+    // the vault touches, so a fresh row for an unrelated mint would otherwise vouch for
+    // a target whose own projection is missing entirely — silencing a real projector
+    // failure as a drained vault.
+    const drainConfirmed = args.positions.some(
+      (position) =>
+        position.liquidityMint === args.target.tokenMint &&
+        isFresh(position.observedAt)
+    );
     return {
       status: "unresolved",
       reason: drainConfirmed ? "vault_drained" : "no_live_position",
@@ -2454,6 +2571,12 @@ export async function assertSolBalance(args: {
         `${args.minimumLamports} required.`
     );
   }
+  reportFeePayerBalance({
+    balanceLamports,
+    feePayer: args.feePayer.toBase58(),
+    minimumLamports: args.minimumLamports,
+    role: args.role,
+  });
 }
 
 export async function assertFeePayerSol(args: {
@@ -2470,6 +2593,12 @@ export async function assertFeePayerSol(args: {
         `${AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS} required. Refusing to pull user funds.`
     );
   }
+  reportFeePayerBalance({
+    balanceLamports,
+    feePayer: args.feePayer.toBase58(),
+    minimumLamports: AUTODEPOSIT_TOP_UP_FEE_PAYER_MIN_LAMPORTS,
+    role: "Kamino top-up fee payer",
+  });
   return {
     feePayer: args.feePayer.toBase58(),
     balanceLamports,

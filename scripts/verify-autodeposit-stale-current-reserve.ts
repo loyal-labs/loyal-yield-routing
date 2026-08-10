@@ -22,14 +22,17 @@ import {
   assertResolvedCurrentReserve,
   autodepositExecutorFailureExitCode,
   autodepositFailureDisposition,
+  AUTODEPOSIT_FEE_PAYER_LOW_MARKER,
   readMissingDepositObligation,
   isDrainedVaultFailure,
+  isFeePayerExhaustedFailure,
   isPullResolvedTopUpBlocker,
   isTopUpPreflightBlockedFailure,
   isUnresolvedCurrentReserveFailure,
   loadLiveVaultPositions,
   persistReconciledCurrentReserve,
   releaseAutodepositLotClaim,
+  reportFeePayerBalance,
   readTopUpLookupTableCoverage,
   readTopUpPreflightBlockers,
   resolveCurrentReserve,
@@ -996,35 +999,59 @@ async function scenarioDrainedVaultBacksOffWithoutPaging(): Promise<void> {
       ? missingProjection.message.slice(0, 160)
       : missingProjection
   );
-  const wrongMintResolution = resolveCurrentReserve({
+  // The loader returns every mint the vault touches, so drain evidence has to name the
+  // target's own mint. A fresh row for a different mint vouching for a missing USDC
+  // projection would silence a real projector failure as a drained vault.
+  const foreignMintOnly = resolveCurrentReserve({
     positions: [
       position({
-        reserve: OTHER_RESERVE,
-        liquidityMint: OTHER_MINT,
         amountRaw: BigInt(0),
+        liquidityMint: OTHER_MINT,
+        reserve: OTHER_RESERVE,
       }),
     ],
     target,
   });
   check(
-    "a missing target-mint projection remains explicitly unresolved",
-    wrongMintResolution.status === "unresolved" &&
-      wrongMintResolution.reason === "no_live_position",
-    wrongMintResolution
+    "a fresh zero row for another mint does not prove this vault is drained",
+    foreignMintOnly.status === "unresolved" &&
+      foreignMintOnly.reason === "no_live_position",
+    foreignMintOnly
   );
-  let wrongMintProjection: unknown = null;
+  let foreignMintProjection: unknown = null;
   try {
-    assertResolvedCurrentReserve(wrongMintResolution);
+    assertResolvedCurrentReserve(foreignMintOnly);
   } catch (error) {
-    wrongMintProjection = error;
+    foreignMintProjection = error;
   }
   check(
     "a fresh zero observation for another mint does not prove this target drained",
-    isUnresolvedCurrentReserveFailure(wrongMintProjection) &&
-      !isDrainedVaultFailure(wrongMintProjection),
-    wrongMintProjection instanceof Error
-      ? wrongMintProjection.message.slice(0, 180)
-      : wrongMintProjection
+    isUnresolvedCurrentReserveFailure(foreignMintProjection) &&
+      !isDrainedVaultFailure(foreignMintProjection),
+    foreignMintProjection instanceof Error
+      ? foreignMintProjection.message.slice(0, 180)
+      : foreignMintProjection
+  );
+  const staleTargetMint = resolveCurrentReserve({
+    positions: [
+      position({
+        amountRaw: BigInt(0),
+        observedAt: new Date(Date.now() - 3_600_000),
+        reserve: STALE_RESERVE,
+      }),
+      position({
+        amountRaw: BigInt(0),
+        liquidityMint: OTHER_MINT,
+        reserve: OTHER_RESERVE,
+      }),
+    ],
+    target,
+  });
+  check(
+    "a stale target-mint row is not rescued by a fresh foreign-mint row",
+    staleTargetMint.status === "unresolved" &&
+      staleTargetMint.reason === "no_live_position",
+    staleTargetMint
   );
   check(
     "an ambiguous vault is not treated as a drained vault",
@@ -1164,6 +1191,18 @@ async function scenarioDrainedVaultBacksOffWithoutPaging(): Promise<void> {
       /lot\.remaining_amount_raw > 0/.test(triggerSource),
     "selector contract drifted"
   );
+  // Only the slot deadline gates the next attempt, so delaying the lot alone would let
+  // the replacement slot fire on its old, short deadline and make the backoff arrive a
+  // full cycle late.
+  check(
+    "the replacement scheduled slot is pushed out by the same delay",
+    /UPDATE loyal_yield\.balance_sweep_scheduled_slots AS slot/i.test(
+      release?.sql ?? ""
+    ) &&
+      /SET eligible_after = GREATEST\(/i.test(release?.sql ?? "") &&
+      /slot\.status IN \('scheduled', 'requested'\)/i.test(release?.sql ?? ""),
+    release?.sql
+  );
 
   const { neon: defaultNeon, statements: defaultStatements } =
     createFakeNeon(state);
@@ -1179,6 +1218,100 @@ async function scenarioDrainedVaultBacksOffWithoutPaging(): Promise<void> {
     defaultStatements.at(-1)?.values.includes(5 * 60) === true,
     defaultStatements.at(-1)?.values
   );
+}
+
+/**
+ * The 2026-08-07 outage: the shared signer ran out of SOL and every target stopped at
+ * once, but the alert read "executor exited unsuccessfully" — the same bucket as any
+ * unclassified fault. The one failure an operator can clear in two minutes was the one
+ * the alert did not name.
+ */
+function scenarioFeePayerExhaustionIsNamed(): void {
+  console.log("\n2026-08-07 outage: an empty fee payer names its own remedy");
+
+  // Verbatim from production.
+  const pullFailure = new Error(
+    "Autodeposit pull fee payer 62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5 " +
+      "has 1004469 lamports; 50000000 required."
+  );
+  const topUpFailure = new Error(
+    "Kamino top-up fee payer 62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5 " +
+      "has 1004469 lamports; 50000000 required. Refusing to pull user funds."
+  );
+
+  for (const [name, failure] of [
+    ["the pull guard", pullFailure],
+    ["the top-up guard", topUpFailure],
+  ] as const) {
+    check(
+      `${name} is recognised as an exhausted fee payer`,
+      isFeePayerExhaustedFailure(failure)
+    );
+    const disposition = autodepositFailureDisposition(failure);
+    check(
+      `${name} reports the fee-payer code and keeps the fast retry`,
+      disposition.failureCode === "fee_payer_exhausted" &&
+        disposition.retryDelaySeconds === 5 * 60,
+      disposition
+    );
+  }
+
+  check(
+    "it no longer falls into the generic unclassified bucket",
+    autodepositFailureDisposition(pullFailure).failureCode !== null
+  );
+  check(
+    "the exhausted fee payer is not mistaken for a drained vault",
+    !isDrainedVaultFailure(pullFailure)
+  );
+  check(
+    "an unrelated funds error is not classified as an exhausted fee payer",
+    !isFeePayerExhaustedFailure(
+      new Error("Transfer: insufficient lamports 100, need 200")
+    ) &&
+      !isFeePayerExhaustedFailure(
+        new Error("wallet USDC balance 870715 is below needed funding amount 1256712")
+      )
+  );
+  check(
+    "the exit code is distinct from every other classified failure",
+    autodepositExecutorFailureExitCode("fee_payer_exhausted", {
+      AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE: "24",
+    }) === 24
+  );
+
+  // The warning has to fire while the signer still works, or it is just a second way of
+  // learning the fleet already stopped.
+  const warned: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (line: string) => warned.push(line);
+  try {
+    const low = reportFeePayerBalance({
+      balanceLamports: 60_000_000,
+      feePayer: "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+      lowLamports: 150_000_000,
+      minimumLamports: 50_000_000,
+      role: "Autodeposit pull fee payer",
+    });
+    const healthy = reportFeePayerBalance({
+      balanceLamports: 400_000_000,
+      feePayer: "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+      lowLamports: 150_000_000,
+      minimumLamports: 50_000_000,
+      role: "Autodeposit pull fee payer",
+    });
+    check("a signer above the floor but running low still warns", low);
+    check("a healthy signer stays silent", !healthy && warned.length === 1);
+    check(
+      "the warning carries the balance and the remaining headroom",
+      warned[0]?.includes(AUTODEPOSIT_FEE_PAYER_LOW_MARKER) === true &&
+        warned[0]?.includes('"balanceLamports":60000000') === true &&
+        warned[0]?.includes('"remainingTransactions":1') === true,
+      warned[0]
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
 }
 
 function scenarioExitCodeIsDistinct(): void {
@@ -1421,6 +1554,7 @@ async function main(): Promise<void> {
     scenarioLostRaceStopsTheAttempt();
     await scenarioMissingObligationIsCountable(directory);
     await scenarioDrainedVaultBacksOffWithoutPaging();
+    scenarioFeePayerExhaustionIsNamed();
     scenarioExitCodeIsDistinct();
     await scenarioProductionShapedLoad(directory);
   } finally {

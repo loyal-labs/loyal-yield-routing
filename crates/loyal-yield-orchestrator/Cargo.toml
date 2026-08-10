@@ -58,6 +58,10 @@ name = "same-mint-yield-monitor"
 path = "src/bin/same-mint-yield-monitor.rs"
 
 [[bin]]
+name = "signer-balance-monitor"
+path = "src/bin/signer-balance-monitor.rs"
+
+[[bin]]
 name = "verify-idle-deposit-reconcile"
 path = "src/bin/verify-idle-deposit-reconcile.rs"
 

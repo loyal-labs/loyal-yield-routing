@@ -35,6 +35,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         --bin route-lookup-table-alert-monitor \
         --bin route-lookup-table-legacy-import \
         --bin route-lookup-table-cleanup \
+        --bin signer-balance-monitor \
         --recipe-path recipe.json
 
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
@@ -53,6 +54,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         --bin route-lookup-table-alert-monitor \
         --bin route-lookup-table-legacy-import \
         --bin route-lookup-table-cleanup \
+        --bin signer-balance-monitor \
     && cp /app/target/release/loyal-timescale-migrations /usr/local/bin/loyal-timescale-migrations \
     && cp /app/target/release/fleet-orchestration-verifier /usr/local/bin/fleet-orchestration-verifier \
     && cp /app/target/release/fleet-orchestration-production-evidence /usr/local/bin/fleet-orchestration-production-evidence \
@@ -60,7 +62,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp /app/target/release/route-lookup-table-shared-catalog /usr/local/bin/route-lookup-table-shared-catalog \
     && cp /app/target/release/route-lookup-table-alert-monitor /usr/local/bin/route-lookup-table-alert-monitor \
     && cp /app/target/release/route-lookup-table-legacy-import /usr/local/bin/route-lookup-table-legacy-import \
-    && cp /app/target/release/route-lookup-table-cleanup /usr/local/bin/route-lookup-table-cleanup
+    && cp /app/target/release/route-lookup-table-cleanup /usr/local/bin/route-lookup-table-cleanup \
+    && cp /app/target/release/signer-balance-monitor /usr/local/bin/signer-balance-monitor
 
 FROM debian:bookworm-slim AS runtime
 
@@ -76,5 +79,6 @@ COPY --from=builder /usr/local/bin/route-lookup-table-shared-catalog /usr/local/
 COPY --from=builder /usr/local/bin/route-lookup-table-alert-monitor /usr/local/bin/route-lookup-table-alert-monitor
 COPY --from=builder /usr/local/bin/route-lookup-table-legacy-import /usr/local/bin/route-lookup-table-legacy-import
 COPY --from=builder /usr/local/bin/route-lookup-table-cleanup /usr/local/bin/route-lookup-table-cleanup
+COPY --from=builder /usr/local/bin/signer-balance-monitor /usr/local/bin/signer-balance-monitor
 
 CMD ["/usr/local/bin/fleet-orchestration-verifier", "--help"]

@@ -66,6 +66,7 @@ jobs:
             fleet-orchestration-production-evidence same-mint-monitor-e2e
             route-lookup-table-shared-catalog route-lookup-table-alert-monitor
             route-lookup-table-legacy-import route-lookup-table-cleanup
+            signer-balance-monitor
         run: |
           docker image inspect --format '{{.Os}}/{{.Architecture}}' "$IMAGE" | grep -Fx 'linux/amd64'
           docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE" | grep -Fx "$GITHUB_SHA"

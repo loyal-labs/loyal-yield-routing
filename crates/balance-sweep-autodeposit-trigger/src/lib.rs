@@ -16,6 +16,9 @@ pub const AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE_ENV: &str =
 pub const AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE: i32 = 22;
 pub const AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE_ENV: &str = "AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE";
 pub const AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE: i32 = 23;
+pub const AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE_ENV: &str =
+    "AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE";
+pub const AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE: i32 = 24;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExecutorFailureAlert {
@@ -49,6 +52,14 @@ pub fn executor_failure_alert(exit_code: Option<i32>) -> Option<ExecutorFailureA
             code: "autodeposit_preflight_blocked",
             operation: "preflight_autodeposit_route",
             summary: "autodeposit route preflight blocked before any funds moved",
+        }),
+        // Names the remedy rather than the symptom. This failure stops every target at
+        // once and no code change can clear it, so an operator reading the alert should
+        // not have to work out that the answer is to send SOL.
+        Some(AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE) => Some(ExecutorFailureAlert {
+            code: "autodeposit_fee_payer_exhausted",
+            operation: "fund_autodeposit_fee_payer",
+            summary: "autodeposit fee payer is out of SOL; top up the delegated signer",
         }),
         Some(AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE) => None,
         _ => Some(ExecutorFailureAlert {
