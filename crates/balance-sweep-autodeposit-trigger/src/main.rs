@@ -128,9 +128,15 @@ struct ExecutorOutcome {
     executions_succeeded: usize,
     executions_failed: usize,
     executions_not_actionable: usize,
-    missing_route_policy_slots_failed: i64,
     stale_requested_slots_failed: i64,
     stale_claims_released: i64,
+}
+
+#[derive(Debug, Default)]
+struct MissingRoutePolicyPauseOutcome {
+    targets_paused: i64,
+    lots_suppressed: i64,
+    slots_canceled: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -278,6 +284,11 @@ async fn main() -> Result<()> {
     let mut pending_slot_hints = SlotHintQueue::new(args.realtime_hint_queue_capacity);
     loop {
         drain_available_slot_hints(&mut realtime_hint_receiver, &mut pending_slot_hints);
+        let pause_outcome =
+            pause_targets_without_active_earn_route_policy_once(&pool, args.batch_limit)
+                .await
+                .inspect_err(|_| emit_missing_route_policy_pause_failed())?;
+        log_missing_route_policy_pause(&pause_outcome);
         let outcome = project_surplus_lots_once(&pool, args.batch_limit)
             .await
             .inspect_err(|_| {
@@ -321,16 +332,6 @@ async fn main() -> Result<()> {
                 &hinted_slot_ids,
             )
             .await?;
-            if execution_outcome.missing_route_policy_slots_failed > 0 {
-                OperationalError::new(
-                    "autodeposit_route_policy_missing",
-                    "validate_autodeposit_route_policy",
-                    "autodeposit slots failed because an active route policy was missing",
-                )
-                .retryable(false)
-                .recovery_required(true)
-                .emit();
-            }
             if execution_outcome.stale_requested_slots_failed > 0 {
                 OperationalError::new(
                     "autodeposit_requested_slot_timed_out",
@@ -356,8 +357,6 @@ async fn main() -> Result<()> {
                 executions_attempted = execution_outcome.executions_attempted,
                 executions_succeeded = execution_outcome.executions_succeeded,
                 executions_failed = execution_outcome.executions_failed,
-                missing_route_policy_slots_failed =
-                    execution_outcome.missing_route_policy_slots_failed,
                 stale_requested_slots_failed = execution_outcome.stale_requested_slots_failed,
                 stale_claims_released = execution_outcome.stale_claims_released,
                 "scanned eligible autodeposit lots for execution"
@@ -516,10 +515,6 @@ async fn execute_eligible_targets_once(
     stale_selected_claim_seconds: i64,
     hinted_slot_ids: &[i64],
 ) -> Result<ExecutorOutcome> {
-    let missing_route_policy_slots_failed =
-        fail_slots_without_active_earn_route_policy_once(pool, limit)
-            .await
-            .inspect_err(|_| emit_execution_queue_preparation_failed())?;
     let stale_requested_slots_failed = fail_stale_requested_slots_once(pool, limit)
         .await
         .inspect_err(|_| emit_execution_queue_preparation_failed())?;
@@ -532,7 +527,6 @@ async fn execute_eligible_targets_once(
         .inspect_err(|_| emit_execution_queue_preparation_failed())?;
     let mut outcome = ExecutorOutcome {
         targets_scanned: targets.len(),
-        missing_route_policy_slots_failed,
         stale_requested_slots_failed,
         stale_claims_released,
         ..ExecutorOutcome::default()
@@ -642,6 +636,29 @@ fn emit_execution_queue_preparation_failed() {
     .emit();
 }
 
+fn emit_missing_route_policy_pause_failed() {
+    OperationalError::new(
+        "autodeposit_missing_route_policy_pause_failed",
+        "pause_autodeposit_without_route_policy",
+        "autodeposit targets could not be paused after route policies were missing",
+    )
+    .retryable(true)
+    .recovery_required(true)
+    .emit();
+}
+
+fn log_missing_route_policy_pause(outcome: &MissingRoutePolicyPauseOutcome) {
+    if outcome.targets_paused == 0 {
+        return;
+    }
+    tracing::info!(
+        targets_paused = outcome.targets_paused,
+        lots_suppressed = outcome.lots_suppressed,
+        slots_canceled = outcome.slots_canceled,
+        "paused autodeposit targets whose Earn route policy was missing"
+    );
+}
+
 fn emit_realtime_listener_failed() {
     OperationalError::new(
         "autodeposit_realtime_listener_failed",
@@ -653,27 +670,22 @@ fn emit_realtime_listener_failed() {
     .emit();
 }
 
-async fn fail_slots_without_active_earn_route_policy_once(
+async fn pause_targets_without_active_earn_route_policy_once(
     pool: &PgPool,
     limit: i64,
-) -> Result<i64> {
+) -> Result<MissingRoutePolicyPauseOutcome> {
     if limit <= 0 {
-        return Ok(0);
+        return Ok(MissingRoutePolicyPauseOutcome::default());
     }
 
-    let rows = sqlx::query(
+    let row = sqlx::query(
         r#"
-        WITH doomed_slots AS (
-            SELECT slot.id, slot.target_id
-            FROM loyal_yield.balance_sweep_scheduled_slots AS slot
-            JOIN loyal_yield.balance_sweep_targets AS target
-              ON target.id = slot.target_id
-            WHERE slot.status IN ('scheduled', 'requested')
-              AND slot.eligible_after <= now()
-              AND target.active = true
+        WITH missing_policy_targets AS (
+            SELECT target.id
+            FROM loyal_yield.balance_sweep_targets AS target
+            WHERE target.active = true
               AND target.lifecycle_status = 'active'
               AND target.token_mint = $2
-              AND slot.token_mint = target.token_mint
               AND NOT EXISTS (
                   SELECT 1
                   FROM loyal_yield.managed_vaults AS managed
@@ -690,30 +702,55 @@ async fn fail_slots_without_active_earn_route_policy_once(
                     AND managed.vault_index = target.vault_index
                     AND managed.vault_pubkey = target.vault_pubkey
               )
-            ORDER BY slot.eligible_after ASC, slot.id ASC
+            ORDER BY target.id ASC
             LIMIT $1
-            FOR UPDATE OF slot SKIP LOCKED
+            FOR UPDATE OF target SKIP LOCKED
+        ),
+        paused_targets AS (
+            UPDATE loyal_yield.balance_sweep_targets AS target
+            SET active = false,
+                lifecycle_status = 'paused_missing_position',
+                last_seen_at = now()
+            FROM missing_policy_targets AS missing
+            WHERE target.id = missing.id
+              AND target.active = true
+              AND target.lifecycle_status = 'active'
+            RETURNING target.id
+        ),
+        suppressed_lots AS (
+            UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
+            SET status = 'suppressed',
+                updated_at = now()
+            WHERE lot.target_id IN (SELECT id FROM paused_targets)
+              AND lot.status = 'open'
+              AND lot.remaining_amount_raw > 0
+            RETURNING lot.id
+        ),
+        canceled_slots AS (
+            UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
+            SET status = 'canceled',
+                last_error = 'reconciled: autodeposit paused, Earn position closed',
+                updated_at = now()
+            WHERE slot.target_id IN (SELECT id FROM paused_targets)
+              AND slot.status IN ('failed', 'released')
+            RETURNING slot.id
         )
-        UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
-        SET status = 'failed',
-            claim_token = NULL,
-            last_error = format(
-                'Autodeposit target %s does not have an active Earn route policy.',
-                doomed.target_id
-            ),
-            updated_at = now()
-        FROM doomed_slots AS doomed
-        WHERE slot.id = doomed.id
-          AND slot.status IN ('scheduled', 'requested')
-        RETURNING slot.id
+        SELECT
+            (SELECT COUNT(*) FROM paused_targets)::bigint AS targets_paused,
+            (SELECT COUNT(*) FROM suppressed_lots)::bigint AS lots_suppressed,
+            (SELECT COUNT(*) FROM canceled_slots)::bigint AS slots_canceled
         "#,
     )
     .bind(limit)
     .bind(USDC_MINT_ADDRESS)
-    .fetch_all(pool)
+    .fetch_one(pool)
     .await?;
 
-    Ok(rows.len() as i64)
+    Ok(MissingRoutePolicyPauseOutcome {
+        targets_paused: row.try_get("targets_paused")?,
+        lots_suppressed: row.try_get("lots_suppressed")?,
+        slots_canceled: row.try_get("slots_canceled")?,
+    })
 }
 
 async fn fail_stale_requested_slots_once(pool: &PgPool, limit: i64) -> Result<i64> {
@@ -882,6 +919,22 @@ async fn load_executable_targets(
           AND slot.token_mint = target.token_mint
           AND slot.status IN ('scheduled', 'requested')
           AND slot.eligible_after <= now()
+          AND EXISTS (
+              SELECT 1
+              FROM loyal_yield.managed_vaults AS managed
+              JOIN loyal_yield.route_policies AS policy
+                ON policy.id = managed.active_policy_id
+               AND policy.active = true
+               AND policy.authority = target.authority
+               AND policy.settings = target.settings
+               AND policy.vault_index = target.vault_index
+               AND policy.vault_pubkey = target.vault_pubkey
+               AND 'same_mint_kamino' = ANY(policy.route_modes)
+              WHERE managed.active = true
+                AND managed.settings = target.settings
+                AND managed.vault_index = target.vault_index
+                AND managed.vault_pubkey = target.vault_pubkey
+          )
           AND EXISTS (
               SELECT 1
               FROM loyal_yield.balance_sweep_surplus_lots AS lot
@@ -1684,7 +1737,24 @@ async fn fetch_events_after(
             event.delta_amount_raw,
             event.observed_at,
             event.txn_signature,
-            target.active AND target.lifecycle_status = 'active' AS target_active,
+            target.active
+                AND target.lifecycle_status = 'active'
+                AND EXISTS (
+                    SELECT 1
+                    FROM loyal_yield.managed_vaults AS managed
+                    JOIN loyal_yield.route_policies AS policy
+                      ON policy.id = managed.active_policy_id
+                     AND policy.active = true
+                     AND policy.authority = target.authority
+                     AND policy.settings = target.settings
+                     AND policy.vault_index = target.vault_index
+                     AND policy.vault_pubkey = target.vault_pubkey
+                     AND 'same_mint_kamino' = ANY(policy.route_modes)
+                    WHERE managed.active = true
+                      AND managed.settings = target.settings
+                      AND managed.vault_index = target.vault_index
+                      AND managed.vault_pubkey = target.vault_pubkey
+                ) AS target_active,
             target.wallet_balance_floor_raw
         FROM loyal_yield.balance_sweep_wallet_balance_events AS event
         JOIN loyal_yield.balance_sweep_targets AS target

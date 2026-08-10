@@ -63,6 +63,7 @@
     "verify:autodeposit-alt-readiness": "bun scripts/verify-autodeposit-alt-readiness.ts",
     "verify:idle-deposit-reconcile": "cargo run -p loyal-yield-orchestrator --bin verify-idle-deposit-reconcile",
     "verify:autodeposit-closed-route-policy": "bun scripts/verify-autodeposit-closed-route-policy.ts",
+    "verify:autodeposit-missing-route-policy-pause": "bash scripts/verify-autodeposit-missing-route-policy-pause.sh",
     "verify:autodeposit-stale-current-reserve": "bun scripts/verify-autodeposit-stale-current-reserve.ts",
     "verify:farm-state-rent-recovery": "bun scripts/verify-farm-state-rent-recovery.ts",
     "verify:pr33-worker-recovery-e2e": "bun scripts/verify-pr33-worker-recovery-e2e.ts",
