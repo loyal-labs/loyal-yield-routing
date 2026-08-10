@@ -1,2 +1,3 @@
-status=unavailable
-reason=docker command not found
+status=superseded
+reason=local docker unavailable on this ARM host; authoritative image timings now come from GitHub Actions
+see=docs/build-timings/comparison.md
