@@ -1,3 +1,16 @@
+//! Pure Kamino reserve decoding — no RPC, no stream client.
+//!
+//! This crate exists so that consumers which only need to *decode* reserve
+//! accounts do not have to depend on a package that also ships a laserstream
+//! client. `kamino-historic-data` is the motivating case: depending on
+//! `kamino-reserve-monitor` for two record types pulled in `helius-laserstream`,
+//! and with it the entire Solana 3.1 / agave / prost-0.14 generation alongside
+//! the 2.3 generation we pin.
+//!
+//! Keep `solana-client`, `solana-rpc-client`, `reqwest`, and `helius-laserstream`
+//! out of this crate's manifest. RPC-fetching wrappers belong in the
+//! orchestrator or the monitor; only decoding belongs here.
+
 pub mod apy;
 mod catalog;
 
