@@ -1,3 +1,14 @@
+//! Shared SQL/domain layer for the yield-routing workers.
+//!
+//! This crate carries no Solana, RPC, or observability dependencies on purpose:
+//! it is what the small workers depend on instead of pulling the whole
+//! orchestrator graph. Keep it that way — a heavyweight dependency added here
+//! lands in every worker image.
+//!
+//! Adding a dependency also edits `Cargo.toml`, which moves `recipe.json` and
+//! invalidates the `cargo chef cook` layer shared by all three images. Changes
+//! confined to crate source leave `recipe.json` byte-identical and reuse it.
+
 pub mod domain;
 pub mod fleet_orchestration;
 mod store;
