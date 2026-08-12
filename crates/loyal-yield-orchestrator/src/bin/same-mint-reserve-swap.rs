@@ -84,16 +84,17 @@ use loyal_yield_orchestrator::{
     route_fee_payer_keypairs_from_env,
     rpc_safety::{redacted_external_error, validate_rpc_endpoint, validate_rpc_genesis_hash},
     shared_market_manifest_addresses, shared_market_manifest_hash, solana_testing_keypair_from_env,
-    standard_policy_keypair_from_env, vault_manifest_addresses, vault_manifest_hash,
-    ConfirmSameMintRebalanceInput, CurrentIdleTokenBalance, DecisionAdvance, DecisionId,
-    DecisionStatus, EarnUniverse, EffectiveLookupTableRollout, IdleVaultDepositDecisionInput,
-    LookupTableAllocationKind, LookupTableManifestSubject, LookupTableProvisioningRequestUpsert,
-    LookupTableReadinessRecord, LookupTableReadinessStatus, LookupTableRolloutMode,
-    LookupTableSelectionKind, LookupTableSimulationState, LookupTableUsageLeaseBundle,
-    LookupTableUsageLeaseKind, NeonSqlClient, NeonSqlConfig, OrchestratorError, PlanOutcomeStatus,
-    PolicyMatchInput, RebalanceDecision, ReconciledReservePosition, ReconciledVaultState,
-    ResolvedLookupTableBundle, ResolverTableCandidate, SameMintRebalanceInput,
-    SameMintRebalanceResult, SharedMarketCatalogReadiness, SharedMarketCatalogRouteValidation,
+    standard_policy_keypair_from_env, supported_stable_mints, vault_manifest_addresses,
+    vault_manifest_hash, ConfirmSameMintRebalanceInput, CurrentIdleTokenBalance, DecisionAdvance,
+    DecisionId, DecisionStatus, EarnUniverse, EffectiveLookupTableRollout,
+    IdleVaultDepositDecisionInput, LookupTableAllocationKind, LookupTableManifestSubject,
+    LookupTableProvisioningRequestUpsert, LookupTableReadinessRecord, LookupTableReadinessStatus,
+    LookupTableRolloutMode, LookupTableSelectionKind, LookupTableSimulationState,
+    LookupTableUsageLeaseBundle, LookupTableUsageLeaseKind, NeonSqlClient, NeonSqlConfig,
+    OrchestratorError, PlanOutcomeStatus, PolicyMatchInput, RebalanceDecision,
+    ReconciledReservePosition, ReconciledVaultState, ResolvedLookupTableBundle,
+    ResolverTableCandidate, SameMintRebalanceInput, SameMintRebalanceResult,
+    SharedMarketCatalogReadiness, SharedMarketCatalogRouteValidation,
     SharedMarketCatalogRouteValidationState, SnapshotId, VaultId,
     AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, FIXED_KAMINO_MAIN_ROUTE_MODE,
     MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
@@ -4518,11 +4519,10 @@ async fn load_fleet_position_sweep_universe(
             "fleet position sweep requires the exact active shared-market catalog generation",
         ));
     }
-    let expected_enabled_mints_hash =
-        enabled_stable_mints_hash(enabled_mints).map_err(FleetPositionSweepInitError::invariant)?;
-    if head.enabled_mints_hash != expected_enabled_mints_hash {
+    let expected_catalog_mints_hash = position_sweep_catalog_mints_hash(enabled_mints)?;
+    if head.enabled_mints_hash != expected_catalog_mints_hash {
         return Err(FleetPositionSweepInitError::invariant(
-            "fleet position sweep enabled mints do not match the active shared-market catalog",
+            "fleet position sweep requires the complete supported stable-mint shared-market catalog",
         ));
     }
 
@@ -4595,6 +4595,27 @@ async fn load_fleet_position_sweep_universe(
         catalog_source_slot: head.source_slot,
         reserves,
     })
+}
+
+/// The runtime allowlist controls new routing work, while the shared catalog is
+/// read/exit infrastructure and must retain the complete supported universe.
+/// Keeping those identities separate lets a USDC-only dark deploy observe and
+/// reconcile safely without enabling another mint.
+fn position_sweep_catalog_mints_hash(
+    runtime_enabled_mints: &[String],
+) -> Result<String, FleetPositionSweepInitError> {
+    let supported_mints = supported_stable_mints();
+    let supported = supported_mints.iter().collect::<BTreeSet<_>>();
+    if runtime_enabled_mints.is_empty()
+        || runtime_enabled_mints
+            .iter()
+            .any(|mint| !supported.contains(mint))
+    {
+        return Err(FleetPositionSweepInitError::invariant(
+            "fleet position sweep runtime mints must be a non-empty supported subset",
+        ));
+    }
+    enabled_stable_mints_hash(&supported_mints).map_err(FleetPositionSweepInitError::invariant)
 }
 
 async fn reconcile_fleet_position_sweep_batch(
@@ -21162,6 +21183,27 @@ mod tests {
     use super::*;
 
     const CREDENTIAL_BEARING_RPC_ERROR: &str = "sendTransaction failed with HTTP 401 Unauthorized at https://user:password@example.test/private/path?api-key=query-secret access_token=header-secret";
+
+    #[test]
+    fn position_sweep_catalog_hash_is_independent_of_dark_runtime_gate() {
+        let supported_mints = supported_stable_mints();
+        let full_catalog_hash = enabled_stable_mints_hash(&supported_mints).unwrap();
+
+        assert_eq!(
+            position_sweep_catalog_mints_hash(&[USDC_MINT.to_string()]).unwrap(),
+            full_catalog_hash
+        );
+        assert_eq!(
+            position_sweep_catalog_mints_hash(&supported_mints).unwrap(),
+            full_catalog_hash
+        );
+    }
+
+    #[test]
+    fn position_sweep_catalog_hash_rejects_an_invalid_runtime_cohort() {
+        assert!(position_sweep_catalog_mints_hash(&[]).is_err());
+        assert!(position_sweep_catalog_mints_hash(&["unsupported".to_owned()]).is_err());
+    }
 
     fn fleet_worker_completion_identity<'a>(
         opportunity_id: i64,
