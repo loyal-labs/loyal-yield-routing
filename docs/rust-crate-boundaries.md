@@ -35,6 +35,14 @@ policy-byte, account-planning, and protocol topology contracts belong in
 `loyal-kamino-codec`. Do not add new shared contracts to
 `loyal-yield-orchestrator`.
 
+`loyal-yield-store` also keeps its `[dev-dependencies]` free of Solana, RPC, and
+observability crates, so its tests stay as cheap to build as the crate itself.
+Where a store invariant needs a mint address, keep the address in
+`domain::SUPPORTED_IDLE_DEPOSIT_MINTS` as a base58 string rather than importing
+the typed constant from `loyal-actions`. `stable_mints` in
+`loyal-yield-orchestrator` stays the typed source of truth and owns the parity
+test that pins the two lists together.
+
 `loyal-kamino-data` is the non-stream integration layer for the Kamino HTTP
 catalog and Timescale sink. It exists so `kamino-historic-data` can reuse those
 integrations without depending on the LaserStream monitor package.

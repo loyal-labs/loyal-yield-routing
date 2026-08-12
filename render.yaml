@@ -10,7 +10,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-97f98e1d9c40b2a774fcddce219ceb2571050eae
+              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-0e119f301d633f4c849d7bec15a17ba818f00dcf
             preDeployCommand: /usr/local/bin/kamino-monitor-predeploy
             dockerCommand: /usr/local/bin/kamino-reserve-monitor --confirmed-refresh-interval-secs 1
             maxShutdownDelaySeconds: 60
@@ -262,7 +262,7 @@ projects:
             plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-97f98e1d9c40b2a774fcddce219ceb2571050eae
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4a0242d31f0b0a534786bbd084ef92f76e2db800
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/fleet-opportunity-planner --poll-interval-seconds 1 --full-sweep-interval-seconds 30 --dirty-batch-size 256 --max-opportunities-per-wave 128
             maxShutdownDelaySeconds: 60
@@ -291,7 +291,7 @@ projects:
             plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-97f98e1d9c40b2a774fcddce219ceb2571050eae
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4a0242d31f0b0a534786bbd084ef92f76e2db800
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-worker revalidate --concurrency 16 --fused-execute-concurrency 8 --poll-interval-milliseconds 250
             maxShutdownDelaySeconds: 60
@@ -326,7 +326,7 @@ projects:
             plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-97f98e1d9c40b2a774fcddce219ceb2571050eae
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4a0242d31f0b0a534786bbd084ef92f76e2db800
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-worker execute --concurrency 4 --poll-interval-milliseconds 250
             maxShutdownDelaySeconds: 60
@@ -361,7 +361,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-97f98e1d9c40b2a774fcddce219ceb2571050eae
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4a0242d31f0b0a534786bbd084ef92f76e2db800
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/fleet-route-confirmer --execute --batch-size 128 --broadcast-concurrency 16 --poll-interval-milliseconds 1000
             maxShutdownDelaySeconds: 60
@@ -390,7 +390,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-fbf4f56ef35aa96518136db7b86fc925a8ffa6c1
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4a0242d31f0b0a534786bbd084ef92f76e2db800
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-reconciler --concurrency 64 --batch-size 32 --poll-interval-milliseconds 250 --position-sweep-interval-seconds 300
             maxShutdownDelaySeconds: 60
@@ -419,7 +419,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-97f98e1d9c40b2a774fcddce219ceb2571050eae
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4a0242d31f0b0a534786bbd084ef92f76e2db800
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/route-lookup-table-provisioner --execute --watch --max-operations 32 --concurrency 8 --rate-limit-ms 250
             maxShutdownDelaySeconds: 60

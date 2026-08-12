@@ -26,7 +26,7 @@ use kamino_reserve_monitor::{
     timescale::{
         ConfirmedStateVerification, ReserveUpdateRecord, TimescaleSink, TimescaleSinkConfig,
     },
-    verification::{ConfirmedRefreshEvent, ConfirmedReserveState, ConfirmedReserveVerifier},
+    verification::{ConfirmedReserveState, ConfirmedReserveVerifier},
     ReserveDiff, ReserveSnapshot,
 };
 use klend_interface::KLEND_PROGRAM_ID;
@@ -34,7 +34,7 @@ use loyal_observability::{init_from_env, OperationalError};
 use solana_sdk::pubkey::Pubkey;
 use tokio::{
     sync::mpsc,
-    task::JoinHandle,
+    task::{JoinHandle, JoinSet},
     time::{Instant, MissedTickBehavior},
 };
 
@@ -231,7 +231,6 @@ async fn run() -> Result<()> {
         .map(|target| (target.reserve, target))
         .collect::<HashMap<_, _>>();
     let (tx, rx) = mpsc::unbounded_channel();
-    let (confirmed_tx, confirmed_rx) = mpsc::unbounded_channel();
     let (catalog_tx, catalog_rx) = mpsc::unbounded_channel();
     let subscription_config = SubscriptionConfig {
         max_reconnect_attempts: args.max_reconnect_attempts,
@@ -271,12 +270,6 @@ async fn run() -> Result<()> {
             )
         }
     };
-    let confirmed_refresh_worker = confirmed_verifier.spawn_periodic(
-        targets.iter().map(|target| target.reserve).collect(),
-        Duration::from_secs(args.confirmed_refresh_interval_secs),
-        confirmed_tx,
-        running.clone(),
-    );
     let supported_reserve_catalog_worker = spawn_supported_reserve_catalog_refresh(
         timescale.clone(),
         args.kamino_api_base.clone(),
@@ -289,9 +282,10 @@ async fn run() -> Result<()> {
 
     let result = run_event_loop(
         rx,
-        confirmed_rx,
         catalog_rx,
         target_by_reserve,
+        confirmed_verifier,
+        Duration::from_secs(args.confirmed_refresh_interval_secs),
         processing,
         &timescale,
         &mut snapshots,
@@ -307,18 +301,12 @@ async fn run() -> Result<()> {
             tracing::warn!(error = %err, "timed out waiting for subscription worker shutdown");
         }
         if let Err(err) =
-            tokio::time::timeout(Duration::from_secs(10), confirmed_refresh_worker).await
-        {
-            tracing::warn!(error = %err, "timed out waiting for confirmed refresh worker shutdown");
-        }
-        if let Err(err) =
             tokio::time::timeout(Duration::from_secs(10), supported_reserve_catalog_worker).await
         {
             tracing::warn!(error = %err, "timed out waiting for supported reserve catalog worker shutdown");
         }
     } else {
         subscription_worker.abort();
-        confirmed_refresh_worker.abort();
         supported_reserve_catalog_worker.abort();
     }
     result
@@ -451,9 +439,10 @@ async fn seed_http_snapshots(
 #[allow(clippy::too_many_arguments)]
 async fn run_event_loop(
     mut rx: mpsc::UnboundedReceiver<AccountUpdateEvent>,
-    mut confirmed_rx: mpsc::UnboundedReceiver<ConfirmedRefreshEvent>,
     mut catalog_rx: mpsc::UnboundedReceiver<SupportedReserveCatalogRefreshEvent>,
     mut target_by_reserve: HashMap<Pubkey, ReserveTarget>,
+    confirmed_verifier: ConfirmedReserveVerifier,
+    confirmed_refresh_interval: Duration,
     processing: ProcessingConfig,
     timescale: &TimescaleSink,
     snapshots: &mut HashMap<Pubkey, ReserveSnapshot>,
@@ -472,10 +461,22 @@ async fn run_event_loop(
     timeout_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut status_tick = tokio::time::interval(status_log_interval);
     status_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut confirmed_refresh_tick = tokio::time::interval_at(
+        Instant::now() + confirmed_refresh_interval,
+        confirmed_refresh_interval,
+    );
+    // A missed timer is one pending desire for fresh state, not one queued job
+    // per elapsed interval. The JoinSet is kept empty or contains exactly one
+    // RPC fetch; dropping it aborts that fetch on every event-loop exit path.
+    confirmed_refresh_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut confirmed_refresh_tasks =
+        JoinSet::<(Instant, Result<Vec<ConfirmedReserveState>>)>::new();
     let mut updates_processed = 0_u64;
     let mut last_status_updates_processed = 0_u64;
+    let mut confirmed_refreshes_started = 0_u64;
     let mut confirmed_refreshes_completed = 0_u64;
     let mut confirmed_states_verified = 0_u64;
+    let mut last_confirmed_fetch_to_commit_ms = 0_u128;
     let mut catalog_refreshes_completed = 0_u64;
     let mut catalog_refreshes_failed = 0_u64;
     let mut permanent_subscription_failure_reported = false;
@@ -584,12 +585,21 @@ async fn run_event_loop(
                     }
                 }
             }
-            refresh = confirmed_rx.recv() => {
-                let Some(refresh) = refresh else {
-                    bail!("confirmed refresh channel disconnected unexpectedly");
-                };
+            _ = confirmed_refresh_tick.tick(), if confirmed_refresh_tasks.is_empty() => {
+                let verifier = confirmed_verifier.clone();
+                let reserves = target_by_reserve.keys().copied().collect::<Vec<_>>();
+                confirmed_refreshes_started = confirmed_refreshes_started.saturating_add(1);
+                confirmed_refresh_tasks.spawn(async move {
+                    let fetch_started_at = Instant::now();
+                    let result = verifier.fetch(&reserves).await;
+                    (fetch_started_at, result)
+                });
+            }
+            completed = confirmed_refresh_tasks.join_next(), if !confirmed_refresh_tasks.is_empty() => {
+                let completed = completed.context("confirmed refresh task set became empty unexpectedly")?;
+                let (fetch_started_at, refresh) = completed.context("confirmed refresh task failed")?;
                 match refresh {
-                    ConfirmedRefreshEvent::Refreshed(states) => {
+                    Ok(states) => {
                         let outcome = refresh_confirmed_snapshots(
                             states,
                             "http_confirmed_refresh",
@@ -599,10 +609,13 @@ async fn run_event_loop(
                             snapshots,
                             jsonl.as_deref_mut(),
                         ).await?;
+                        let fetch_to_commit_ms = fetch_started_at.elapsed().as_millis();
+                        last_confirmed_fetch_to_commit_ms = fetch_to_commit_ms;
                         confirmed_refreshes_completed = confirmed_refreshes_completed.saturating_add(1);
                         confirmed_states_verified = confirmed_states_verified
                             .saturating_add(outcome.verified as u64);
                         tracing::info!(
+                            fetch_to_commit_ms,
                             verified = outcome.verified,
                             deferred_states = outcome.deferred_states,
                             invalid_states = outcome.invalid_states,
@@ -611,8 +624,12 @@ async fn run_event_loop(
                             "confirmed reserve refresh completed"
                         );
                     }
-                    ConfirmedRefreshEvent::Failed(error) => {
-                        tracing::warn!(%error, "confirmed reserve refresh failed; existing watermarks were not advanced");
+                    Err(error) => {
+                        tracing::warn!(
+                            fetch_to_failure_ms = fetch_started_at.elapsed().as_millis(),
+                            error = %format!("{error:#}"),
+                            "confirmed reserve refresh failed; existing watermarks were not advanced"
+                        );
                     }
                 }
             }
@@ -672,8 +689,11 @@ async fn run_event_loop(
                     failed = states.failed,
                     stopped = states.stopped,
                     total_reserves = subscription_states.len(),
+                    confirmed_refreshes_started,
                     confirmed_refreshes_completed,
                     confirmed_states_verified,
+                    confirmed_refresh_in_flight = !confirmed_refresh_tasks.is_empty(),
+                    last_confirmed_fetch_to_commit_ms,
                     catalog_refreshes_completed,
                     catalog_refreshes_failed,
                     "reserve monitor status"
@@ -700,6 +720,7 @@ async fn run_event_loop(
         }
     }
 
+    confirmed_refresh_tasks.shutdown().await;
     if let Some(writer) = jsonl {
         writer.flush().context("flush JSONL before shutdown")?;
     }

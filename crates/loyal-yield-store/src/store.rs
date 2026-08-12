@@ -1,7 +1,7 @@
 use crate::domain::{
-    draft_same_mint_decision, route_amount_evidence, state_transition, PlannedDecision,
-    AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM,
-    ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+    draft_same_mint_decision, route_amount_evidence, state_transition,
+    supported_idle_deposit_mints, PlannedDecision, AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
+    MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
 use crate::fleet_orchestration::{
     RebalanceOpportunityLease, RebalanceOpportunityRecord, SignedRouteSubmissionInput,
@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgConnection, PgPool, Postgres, Row, Transaction};
-use std::future::Future;
+use std::{collections::BTreeSet, future::Future};
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_loyal_yield_orchestration.sql");
 const MIGRATION_0002: &str = include_str!("../migrations/0002_balance_sweep_surplus_lots.sql");
@@ -34,6 +34,16 @@ const MIGRATION_0012: &str =
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VaultPublicationScope {
+    /// A bounded post-confirm/read repair. It may upsert what was observed but
+    /// cannot erase unseen reserves, erase unseen idle mints, or close rows.
+    ObservedSubset,
+    /// One RPC epoch containing every policy reserve plus all six product
+    /// idle ATAs. Only this scope is allowed to replace current vault state.
+    CompleteProductVault,
+}
 
 #[derive(Clone)]
 pub struct NeonSqlClient {
@@ -953,80 +963,116 @@ impl NeonSqlClient {
         &self,
         balance: CurrentIdleTokenBalance,
     ) -> Result<CurrentIdleTokenBalance, OrchestratorError> {
-        let row = sqlx::query(
-            r#"
-            INSERT INTO loyal_yield.vault_idle_token_balances_current
-                (vault_id, mint, amount_raw, owner, token_account, observed_slot, observed_at, source_commitment, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
-            ON CONFLICT (vault_id, mint) DO UPDATE SET
-                amount_raw = CASE
-                    WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
-                    THEN EXCLUDED.amount_raw
-                    ELSE loyal_yield.vault_idle_token_balances_current.amount_raw
-                END,
-                owner = CASE
-                    WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
-                    THEN EXCLUDED.owner
-                    ELSE loyal_yield.vault_idle_token_balances_current.owner
-                END,
-                token_account = CASE
-                    WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
-                    THEN EXCLUDED.token_account
-                    ELSE loyal_yield.vault_idle_token_balances_current.token_account
-                END,
-                observed_slot = GREATEST(loyal_yield.vault_idle_token_balances_current.observed_slot, EXCLUDED.observed_slot),
-                observed_at = CASE
-                    WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
-                    THEN EXCLUDED.observed_at
-                    ELSE loyal_yield.vault_idle_token_balances_current.observed_at
-                END,
-                source_commitment = CASE
-                    WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
-                    THEN EXCLUDED.source_commitment
-                    ELSE loyal_yield.vault_idle_token_balances_current.source_commitment
-                END,
-                updated_at = CASE
-                    WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
-                    THEN now()
-                    ELSE loyal_yield.vault_idle_token_balances_current.updated_at
-                END
-            RETURNING
-                vault_id,
-                mint,
-                amount_raw,
-                owner,
-                token_account,
-                observed_slot,
-                observed_at,
-                source_commitment,
-                updated_at
-            "#,
-        )
-        .bind(balance.vault_id.as_i64())
-        .bind(&balance.mint)
-        .bind(balance.amount_raw)
-        .bind(&balance.owner)
-        .bind(&balance.token_account)
-        .bind(balance.observed_slot)
-        .bind(balance.observed_at)
-        .bind(&balance.source_commitment)
-        .fetch_one(&self.pool)
-        .await?;
-
-        current_idle_token_balance_from_row(&row)
+        let mut connection = self.pool.acquire().await?;
+        upsert_current_idle_token_balance(&mut connection, &balance).await
     }
 
-    pub async fn reconcile_vault(
+    pub async fn apply_observed_patch(
         &self,
         vault_id: VaultId,
         state: ReconciledVaultState,
+    ) -> Result<PositionSnapshot, OrchestratorError> {
+        self.reconcile_vault_transaction(
+            vault_id,
+            state,
+            Vec::new(),
+            VaultPublicationScope::ObservedSubset,
+        )
+        .await
+    }
+
+    /// Atomically records a bounded reserve/idle observation. This is
+    /// intentionally non-destructive and cannot become a complete planning
+    /// epoch unless a later complete publication observes every required row
+    /// at the same slot.
+    pub async fn apply_observed_patch_with_idle_token_balances(
+        &self,
+        vault_id: VaultId,
+        state: ReconciledVaultState,
+        idle_balances: Vec<CurrentIdleTokenBalance>,
+    ) -> Result<PositionSnapshot, OrchestratorError> {
+        if state.positions.is_empty() {
+            return Err(OrchestratorError::EmptySnapshot);
+        }
+        validate_observed_idle_token_balances(vault_id, &state, None, &idle_balances)?;
+        self.reconcile_vault_transaction(
+            vault_id,
+            state,
+            idle_balances,
+            VaultPublicationScope::ObservedSubset,
+        )
+        .await
+    }
+
+    /// Atomically publishes one reserve-position snapshot and the complete idle
+    /// balance set derived from that same RPC observation. The planner must
+    /// never observe a new position snapshot beside a partially refreshed set
+    /// of mint rows.
+    pub async fn publish_complete_vault(
+        &self,
+        vault_id: VaultId,
+        state: ReconciledVaultState,
+        idle_balances: Vec<CurrentIdleTokenBalance>,
+    ) -> Result<PositionSnapshot, OrchestratorError> {
+        if state.positions.is_empty() {
+            return Err(OrchestratorError::EmptySnapshot);
+        }
+        validate_atomic_idle_token_balances(vault_id, &state, None, &idle_balances)?;
+        self.reconcile_vault_transaction(
+            vault_id,
+            state,
+            idle_balances,
+            VaultPublicationScope::CompleteProductVault,
+        )
+        .await
+    }
+
+    async fn reconcile_vault_transaction(
+        &self,
+        vault_id: VaultId,
+        mut state: ReconciledVaultState,
+        idle_balances: Vec<CurrentIdleTokenBalance>,
+        publication_scope: VaultPublicationScope,
     ) -> Result<PositionSnapshot, OrchestratorError> {
         if state.positions.is_empty() {
             return Err(OrchestratorError::EmptySnapshot);
         }
 
+        let publication_scope_name = match publication_scope {
+            VaultPublicationScope::ObservedSubset => "observed_subset",
+            VaultPublicationScope::CompleteProductVault => "complete_product_vault",
+        };
+        match &mut state.context {
+            Value::Object(context) => {
+                context.insert(
+                    "publication_scope".to_owned(),
+                    Value::String(publication_scope_name.to_owned()),
+                );
+            }
+            previous => {
+                *previous = json!({
+                    "publication_scope": publication_scope_name,
+                    "source_context": previous.take(),
+                });
+            }
+        }
+
         let mut tx = self.pool.begin().await?;
         let vault = fetch_managed_vault_for_update(&mut tx, vault_id).await?;
+        validate_observed_idle_token_balances(
+            vault_id,
+            &state,
+            Some(&vault.vault_pubkey),
+            &idle_balances,
+        )?;
+        if publication_scope == VaultPublicationScope::CompleteProductVault {
+            validate_atomic_idle_token_balances(
+                vault_id,
+                &state,
+                Some(&vault.vault_pubkey),
+                &idle_balances,
+            )?;
+        }
 
         // The managed-vault row serializes projectors for this vault. Reject an
         // older RPC response before changing either the current-snapshot flag
@@ -1064,9 +1110,26 @@ impl NeonSqlClient {
             }
             if state.observed_slot == current.observed_slot {
                 let positions = current_positions_for_update(&mut tx, vault_id).await?;
-                if reconciled_positions_equal(&state.positions, &positions)? {
-                    tx.commit().await?;
-                    return Ok(PositionSnapshot {
+                let positions_match = match publication_scope {
+                    VaultPublicationScope::CompleteProductVault => {
+                        reconciled_positions_equal(&state.positions, &positions)?
+                    }
+                    VaultPublicationScope::ObservedSubset => {
+                        reconciled_positions_are_subset(&state.positions, &positions)?
+                    }
+                };
+                if positions_match {
+                    match publication_scope {
+                        VaultPublicationScope::CompleteProductVault => {
+                            validate_same_slot_atomic_idle_set(&mut tx, vault_id, &idle_balances)
+                                .await?;
+                        }
+                        VaultPublicationScope::ObservedSubset => {
+                            validate_same_slot_idle_subset(&mut tx, vault_id, &idle_balances)
+                                .await?;
+                        }
+                    }
+                    let snapshot = PositionSnapshot {
                         id: SnapshotId(current.id),
                         vault_id: VaultId(current.vault_id),
                         policy_id: PolicyId(current.policy_id),
@@ -1076,7 +1139,9 @@ impl NeonSqlClient {
                         lock_attempt_id: current.lock_attempt_id,
                         is_current: current.is_current,
                         context: current.context,
-                    });
+                    };
+                    tx.commit().await?;
+                    return Ok(snapshot);
                 }
                 return Err(OrchestratorError::ConflictingVaultObservation {
                     vault_id,
@@ -1189,27 +1254,34 @@ impl NeonSqlClient {
             .await?;
         }
 
-        sqlx::query!(
-            r#"
-            DELETE FROM loyal_yield.vault_reserve_positions_current
-            WHERE vault_id = $1 AND NOT (reserve = ANY($2))
-            "#,
-            vault_id.as_i64(),
-            &observed_reserves
-        )
-        .execute(&mut *tx)
-        .await?;
+        if publication_scope == VaultPublicationScope::CompleteProductVault {
+            sqlx::query(
+                r#"
+                DELETE FROM loyal_yield.vault_reserve_positions_current
+                WHERE vault_id = $1 AND NOT (reserve = ANY($2))
+                "#,
+            )
+            .bind(vault_id.as_i64())
+            .bind(&observed_reserves)
+            .execute(&mut *tx)
+            .await?;
 
-        close_zero_user_yield_positions_for_vault(
-            &mut tx,
-            &vault,
-            SnapshotId(snapshot_row.id),
-            snapshot_row.observed_slot,
-            snapshot_row.observed_at,
-            &snapshot_row.context,
-        )
-        .await?;
+            close_zero_user_yield_positions_for_vault(
+                &mut tx,
+                &vault,
+                SnapshotId(snapshot_row.id),
+                snapshot_row.observed_slot,
+                snapshot_row.observed_at,
+                &snapshot_row.context,
+            )
+            .await?;
 
+            upsert_atomic_idle_token_balances(&mut tx, vault_id, &idle_balances).await?;
+        } else {
+            for balance in &idle_balances {
+                upsert_current_idle_token_balance(&mut tx, balance).await?;
+            }
+        }
         tx.commit().await?;
 
         Ok(PositionSnapshot {
@@ -1943,6 +2015,319 @@ impl NeonSqlClient {
     }
 }
 
+fn validate_atomic_idle_token_balances(
+    vault_id: VaultId,
+    state: &ReconciledVaultState,
+    expected_owner: Option<&str>,
+    idle_balances: &[CurrentIdleTokenBalance],
+) -> Result<(), OrchestratorError> {
+    validate_observed_idle_token_balances(vault_id, state, expected_owner, idle_balances)?;
+    let product_mints = supported_idle_deposit_mints()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let observed_mints = idle_balances
+        .iter()
+        .map(|balance| balance.mint.clone())
+        .collect::<BTreeSet<_>>();
+    if observed_mints != product_mints {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "complete product vault publication requires exactly {product_mints:?}, observed {observed_mints:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_observed_idle_token_balances(
+    vault_id: VaultId,
+    state: &ReconciledVaultState,
+    expected_owner: Option<&str>,
+    idle_balances: &[CurrentIdleTokenBalance],
+) -> Result<(), OrchestratorError> {
+    let product_mints = supported_idle_deposit_mints()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let mut observed_mints = BTreeSet::new();
+    let mut token_accounts = BTreeSet::new();
+    for balance in idle_balances {
+        if balance.vault_id != vault_id {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "atomic idle balance vault {} does not match reconciled vault {}",
+                balance.vault_id, vault_id
+            )));
+        }
+        if balance.observed_slot != state.observed_slot {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "atomic idle balance slot {} does not match reconciled slot {}",
+                balance.observed_slot, state.observed_slot
+            )));
+        }
+        if balance.amount_raw < 0
+            || balance.mint.is_empty()
+            || balance.owner.is_empty()
+            || balance.token_account.is_empty()
+            || balance.source_commitment.is_empty()
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "atomic idle balances require non-negative amounts and complete identity"
+                    .to_owned(),
+            ));
+        }
+        if !product_mints.contains(&balance.mint) {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "atomic idle balance mint {} is not an Earn product mint",
+                balance.mint
+            )));
+        }
+        if expected_owner.is_some_and(|owner| owner != balance.owner) {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "atomic idle balance owner {} does not match managed vault owner",
+                balance.owner
+            )));
+        }
+        if !observed_mints.insert(balance.mint.clone()) {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "atomic idle balance set repeats mint {}",
+                balance.mint
+            )));
+        }
+        if !token_accounts.insert(balance.token_account.clone()) {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "atomic idle balance set repeats token account {}",
+                balance.token_account
+            )));
+        }
+    }
+    Ok(())
+}
+
+async fn upsert_atomic_idle_token_balances(
+    tx: &mut Transaction<'_, Postgres>,
+    vault_id: VaultId,
+    idle_balances: &[CurrentIdleTokenBalance],
+) -> Result<(), OrchestratorError> {
+    for balance in idle_balances {
+        let existing = sqlx::query(
+            r#"
+            SELECT
+                vault_id,
+                mint,
+                amount_raw,
+                owner,
+                token_account,
+                observed_slot,
+                observed_at,
+                source_commitment,
+                updated_at
+            FROM loyal_yield.vault_idle_token_balances_current
+            WHERE vault_id = $1 AND mint = $2
+            FOR UPDATE
+            "#,
+        )
+        .bind(balance.vault_id.as_i64())
+        .bind(&balance.mint)
+        .fetch_optional(&mut **tx)
+        .await?
+        .map(|row| current_idle_token_balance_from_row(&row))
+        .transpose()?;
+        if let Some(existing) = existing {
+            if existing.observed_slot > balance.observed_slot {
+                return Err(OrchestratorError::StaleVaultObservation {
+                    vault_id: balance.vault_id,
+                    observed_slot: balance.observed_slot,
+                    current_slot: existing.observed_slot,
+                });
+            }
+            if existing.observed_slot == balance.observed_slot {
+                validate_same_slot_atomic_idle_repeat(&existing, balance)?;
+                continue;
+            }
+        }
+        upsert_current_idle_token_balance(tx, balance).await?;
+    }
+    let observed_mints = idle_balances
+        .iter()
+        .map(|balance| balance.mint.as_str())
+        .collect::<Vec<_>>();
+    sqlx::query(
+        r#"
+        DELETE FROM loyal_yield.vault_idle_token_balances_current
+        WHERE vault_id = $1
+          AND NOT (mint = ANY($2::TEXT[]))
+        "#,
+    )
+    .bind(vault_id.as_i64())
+    .bind(&observed_mints)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn validate_same_slot_atomic_idle_set(
+    tx: &mut Transaction<'_, Postgres>,
+    vault_id: VaultId,
+    incoming: &[CurrentIdleTokenBalance],
+) -> Result<(), OrchestratorError> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            vault_id,
+            mint,
+            amount_raw,
+            owner,
+            token_account,
+            observed_slot,
+            observed_at,
+            source_commitment,
+            updated_at
+        FROM loyal_yield.vault_idle_token_balances_current
+        WHERE vault_id = $1
+        ORDER BY mint
+        FOR UPDATE
+        "#,
+    )
+    .bind(vault_id.as_i64())
+    .fetch_all(&mut **tx)
+    .await?;
+    let existing = rows
+        .iter()
+        .map(current_idle_token_balance_from_row)
+        .collect::<Result<Vec<_>, _>>()?;
+    if existing.len() != incoming.len() {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "atomic idle balance set for vault {vault_id} conflicts at repeated snapshot slot"
+        )));
+    }
+    let incoming_by_mint = incoming
+        .iter()
+        .map(|balance| (balance.mint.as_str(), balance))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for balance in &existing {
+        let Some(incoming) = incoming_by_mint.get(balance.mint.as_str()) else {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "atomic idle balance set for vault {vault_id} conflicts at repeated snapshot slot"
+            )));
+        };
+        validate_same_slot_atomic_idle_repeat(balance, incoming)?;
+    }
+    Ok(())
+}
+
+async fn validate_same_slot_idle_subset(
+    tx: &mut Transaction<'_, Postgres>,
+    vault_id: VaultId,
+    incoming: &[CurrentIdleTokenBalance],
+) -> Result<(), OrchestratorError> {
+    for balance in incoming {
+        let existing = sqlx::query(
+            r#"
+            SELECT
+                vault_id, mint, amount_raw, owner, token_account,
+                observed_slot, observed_at, source_commitment, updated_at
+            FROM loyal_yield.vault_idle_token_balances_current
+            WHERE vault_id = $1 AND mint = $2
+            FOR UPDATE
+            "#,
+        )
+        .bind(vault_id.as_i64())
+        .bind(&balance.mint)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if let Some(existing) = existing {
+            validate_same_slot_atomic_idle_repeat(
+                &current_idle_token_balance_from_row(&existing)?,
+                balance,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_same_slot_atomic_idle_repeat(
+    existing: &CurrentIdleTokenBalance,
+    incoming: &CurrentIdleTokenBalance,
+) -> Result<(), OrchestratorError> {
+    if existing.vault_id != incoming.vault_id
+        || existing.mint != incoming.mint
+        || existing.amount_raw != incoming.amount_raw
+        || existing.owner != incoming.owner
+        || existing.token_account != incoming.token_account
+        || existing.observed_slot != incoming.observed_slot
+    {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "atomic idle balance for vault {} mint {} conflicts at observed slot {}",
+            incoming.vault_id, incoming.mint, incoming.observed_slot
+        )));
+    }
+    Ok(())
+}
+
+async fn upsert_current_idle_token_balance(
+    connection: &mut PgConnection,
+    balance: &CurrentIdleTokenBalance,
+) -> Result<CurrentIdleTokenBalance, OrchestratorError> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.vault_idle_token_balances_current
+            (vault_id, mint, amount_raw, owner, token_account, observed_slot, observed_at, source_commitment, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+        ON CONFLICT (vault_id, mint) DO UPDATE SET
+            amount_raw = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
+                THEN EXCLUDED.amount_raw
+                ELSE loyal_yield.vault_idle_token_balances_current.amount_raw
+            END,
+            owner = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
+                THEN EXCLUDED.owner
+                ELSE loyal_yield.vault_idle_token_balances_current.owner
+            END,
+            token_account = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
+                THEN EXCLUDED.token_account
+                ELSE loyal_yield.vault_idle_token_balances_current.token_account
+            END,
+            observed_slot = GREATEST(loyal_yield.vault_idle_token_balances_current.observed_slot, EXCLUDED.observed_slot),
+            observed_at = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
+                THEN EXCLUDED.observed_at
+                ELSE loyal_yield.vault_idle_token_balances_current.observed_at
+            END,
+            source_commitment = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
+                THEN EXCLUDED.source_commitment
+                ELSE loyal_yield.vault_idle_token_balances_current.source_commitment
+            END,
+            updated_at = CASE
+                WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
+                THEN now()
+                ELSE loyal_yield.vault_idle_token_balances_current.updated_at
+            END
+        RETURNING
+            vault_id,
+            mint,
+            amount_raw,
+            owner,
+            token_account,
+            observed_slot,
+            observed_at,
+            source_commitment,
+            updated_at
+        "#,
+    )
+    .bind(balance.vault_id.as_i64())
+    .bind(&balance.mint)
+    .bind(balance.amount_raw)
+    .bind(&balance.owner)
+    .bind(&balance.token_account)
+    .bind(balance.observed_slot)
+    .bind(balance.observed_at)
+    .bind(&balance.source_commitment)
+    .fetch_one(connection)
+    .await?;
+
+    current_idle_token_balance_from_row(&row)
+}
+
 fn reconciled_positions_equal(
     incoming: &[ReconciledReservePosition],
     current: &[CurrentReservePosition],
@@ -1966,6 +2351,27 @@ fn reconciled_positions_equal(
             || current_position.borrow_apy_bps != incoming_position.borrow_apy_bps
             || current_position.planning_metadata != incoming_position.planning_metadata
         {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn reconciled_positions_are_subset(
+    incoming: &[ReconciledReservePosition],
+    current: &[CurrentReservePosition],
+) -> Result<bool, OrchestratorError> {
+    for incoming_position in incoming {
+        let Some(current_position) = current
+            .iter()
+            .find(|position| position.reserve == incoming_position.reserve)
+        else {
+            return Ok(false);
+        };
+        if !reconciled_positions_equal(
+            std::slice::from_ref(incoming_position),
+            std::slice::from_ref(current_position),
+        )? {
             return Ok(false);
         }
     }
@@ -3240,6 +3646,408 @@ fn same_mint_result_from_confirmed_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::{
+        IDLE_DEPOSIT_MINT_CASH, IDLE_DEPOSIT_MINT_PYUSD, IDLE_DEPOSIT_MINT_USDC,
+        IDLE_DEPOSIT_MINT_USDG, IDLE_DEPOSIT_MINT_USDS, IDLE_DEPOSIT_MINT_USDT,
+    };
+
+    fn atomic_idle_state() -> (VaultId, ReconciledVaultState, Vec<CurrentIdleTokenBalance>) {
+        let vault_id = VaultId(419);
+        let observed_at = Utc::now();
+        let position = |reserve: &str, mint: &str| ReconciledReservePosition {
+            reserve: reserve.to_owned(),
+            market: Some("market".to_owned()),
+            liquidity_mint: mint.to_owned(),
+            amount_raw: 0,
+            supply_apy_bps: Some(100),
+            borrow_apy_bps: None,
+            planning_metadata: json!({}),
+        };
+        let balance = |mint: &str, token_account: &str| CurrentIdleTokenBalance {
+            vault_id,
+            mint: mint.to_owned(),
+            amount_raw: 1,
+            owner: "vault-owner".to_owned(),
+            token_account: token_account.to_owned(),
+            observed_slot: 77,
+            observed_at,
+            source_commitment: "finalized".to_owned(),
+            updated_at: observed_at,
+        };
+        (
+            vault_id,
+            ReconciledVaultState {
+                observed_slot: 77,
+                observed_at: Some(observed_at),
+                chain_slot: Some(77),
+                lock_attempt_id: None,
+                context: json!({"kind": "fleet_position_sweep"}),
+                positions: vec![
+                    position("usdc-main", IDLE_DEPOSIT_MINT_USDC),
+                    position("usdc-prime", IDLE_DEPOSIT_MINT_USDC),
+                    position("pyusd-main", IDLE_DEPOSIT_MINT_PYUSD),
+                ],
+            },
+            vec![
+                balance(IDLE_DEPOSIT_MINT_CASH, "cash-ata"),
+                balance(IDLE_DEPOSIT_MINT_USDG, "usdg-ata"),
+                balance(IDLE_DEPOSIT_MINT_PYUSD, "pyusd-ata"),
+                balance(IDLE_DEPOSIT_MINT_USDC, "usdc-ata"),
+                balance(IDLE_DEPOSIT_MINT_USDT, "usdt-ata"),
+                balance(IDLE_DEPOSIT_MINT_USDS, "usds-ata"),
+            ],
+        )
+    }
+
+    #[test]
+    fn atomic_idle_snapshot_requires_complete_one_row_per_mint_at_the_same_slot() {
+        let (vault_id, state, balances) = atomic_idle_state();
+        validate_atomic_idle_token_balances(vault_id, &state, Some("vault-owner"), &balances)
+            .unwrap();
+
+        assert!(validate_atomic_idle_token_balances(
+            vault_id,
+            &state,
+            Some("vault-owner"),
+            &balances[..1],
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("requires exactly"));
+
+        let mut wrong_slot = balances.clone();
+        wrong_slot[1].observed_slot += 1;
+        assert!(validate_atomic_idle_token_balances(
+            vault_id,
+            &state,
+            Some("vault-owner"),
+            &wrong_slot,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("does not match reconciled slot"));
+    }
+
+    #[test]
+    fn atomic_idle_snapshot_rejects_duplicate_mints_and_wrong_vault_identity() {
+        let (vault_id, state, balances) = atomic_idle_state();
+        let mut duplicate = balances.clone();
+        duplicate[1].mint = IDLE_DEPOSIT_MINT_USDC.to_owned();
+        assert!(validate_atomic_idle_token_balances(
+            vault_id,
+            &state,
+            Some("vault-owner"),
+            &duplicate,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("repeats mint"));
+
+        let mut wrong_vault = balances;
+        wrong_vault[0].vault_id = VaultId(420);
+        assert!(validate_atomic_idle_token_balances(
+            vault_id,
+            &state,
+            Some("vault-owner"),
+            &wrong_vault,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("does not match reconciled vault"));
+    }
+
+    #[test]
+    fn atomic_idle_snapshot_accepts_all_policy_mints_and_rejects_unsupported_mints() {
+        let (vault_id, state, mut balances) = atomic_idle_state();
+        validate_atomic_idle_token_balances(vault_id, &state, Some("vault-owner"), &balances)
+            .unwrap();
+
+        balances[3].mint = "not-a-policy-mint".to_owned();
+        assert!(validate_atomic_idle_token_balances(
+            vault_id,
+            &state,
+            Some("vault-owner"),
+            &balances,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("is not an Earn product mint"));
+    }
+
+    #[test]
+    fn observed_subset_is_non_destructive_but_not_a_complete_epoch() {
+        let (vault_id, state, balances) = atomic_idle_state();
+        validate_observed_idle_token_balances(
+            vault_id,
+            &state,
+            Some("vault-owner"),
+            &balances[..1],
+        )
+        .unwrap();
+        assert!(validate_atomic_idle_token_balances(
+            vault_id,
+            &state,
+            Some("vault-owner"),
+            &balances[..1],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn atomic_idle_same_slot_repeat_is_equality_only() {
+        let (_, _, balances) = atomic_idle_state();
+        let existing = &balances[0];
+
+        validate_same_slot_atomic_idle_repeat(existing, existing).unwrap();
+
+        let mut conflicting_amount = existing.clone();
+        conflicting_amount.amount_raw += 1;
+        assert!(
+            validate_same_slot_atomic_idle_repeat(existing, &conflicting_amount)
+                .unwrap_err()
+                .to_string()
+                .contains("conflicts at observed slot")
+        );
+
+        let mut conflicting_account = existing.clone();
+        conflicting_account.token_account = "different-usdc-ata".to_owned();
+        assert!(
+            validate_same_slot_atomic_idle_repeat(existing, &conflicting_account)
+                .unwrap_err()
+                .to_string()
+                .contains("conflicts at observed slot")
+        );
+    }
+
+    #[tokio::test]
+    async fn atomic_idle_write_failure_rolls_back_reserve_epoch() {
+        let (Ok(database_url), Ok(expected_data_dir)) = (
+            std::env::var("EARN_ROUTER_ATOMIC_RECONCILE_TEST_DATABASE_URL"),
+            std::env::var("EARN_ROUTER_ATOMIC_RECONCILE_TEST_DATA_DIR"),
+        ) else {
+            eprintln!(
+                "skipping isolated Postgres rollback proof; use the dedicated verifier script"
+            );
+            return;
+        };
+        let client = NeonSqlClient::connect(NeonSqlConfig::new(database_url))
+            .await
+            .unwrap();
+
+        // This test mutates only a verifier-owned local Postgres cluster. Check
+        // the server-reported data directory before applying any schema or row.
+        let actual_data_dir: String = sqlx::query_scalar("SHOW data_directory")
+            .fetch_one(client.pool())
+            .await
+            .unwrap();
+        let expected_data_dir = std::fs::canonicalize(expected_data_dir).unwrap();
+        let actual_data_dir = std::fs::canonicalize(actual_data_dir).unwrap();
+        assert_eq!(actual_data_dir, expected_data_dir);
+        assert!(actual_data_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("earn-router-atomic-")));
+        let server_address: String =
+            sqlx::query_scalar("SELECT COALESCE(inet_server_addr()::TEXT, '')")
+                .fetch_one(client.pool())
+                .await
+                .unwrap();
+        assert!(
+            server_address.starts_with("127.0.0.1") || server_address.starts_with("::1"),
+            "atomic rollback verifier requires loopback Postgres, got {server_address}"
+        );
+
+        client.apply_migrations().await.unwrap();
+        run_atomic_idle_rollback_fixture(&client).await;
+    }
+
+    async fn run_atomic_idle_rollback_fixture(client: &NeonSqlClient) {
+        let product_mints = supported_idle_deposit_mints();
+        let policy_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO loyal_yield.route_policies
+                (settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
+                 delegated_signers, threshold, route_modes, stable_mints, kamino_markets,
+                 kamino_liquidity_mints, swap_lanes, last_seen_slot, last_seen_signature)
+            VALUES
+                ('atomic-settings', 'atomic-authority', 1, 'atomic-policy', 0, 'vault-owner',
+                 ARRAY['delegate'], 1, ARRAY['same_mint_kamino'], $1,
+                 ARRAY['market'], $1, '[]'::jsonb, 1, 'signature')
+            RETURNING id
+            "#,
+        )
+        .bind(&product_mints)
+        .fetch_one(client.pool())
+        .await
+        .unwrap();
+        let vault_id = VaultId(
+            sqlx::query_scalar(
+                r#"
+                INSERT INTO loyal_yield.managed_vaults
+                    (settings, vault_index, vault_pubkey, active_policy_id)
+                VALUES ('atomic-settings', 0, 'vault-owner', $1)
+                RETURNING id
+                "#,
+            )
+            .bind(policy_id)
+            .fetch_one(client.pool())
+            .await
+            .unwrap(),
+        );
+
+        let (_, mut baseline_state, mut baseline_idle) = atomic_idle_state();
+        for balance in &mut baseline_idle {
+            balance.vault_id = vault_id;
+        }
+        client
+            .publish_complete_vault(vault_id, baseline_state.clone(), baseline_idle.clone())
+            .await
+            .unwrap();
+
+        sqlx::query(
+            r#"
+            CREATE FUNCTION loyal_yield.fail_atomic_idle_slot_78()
+            RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                IF NEW.observed_slot = 78 THEN
+                    RAISE EXCEPTION 'injected idle publication failure';
+                END IF;
+                RETURN NEW;
+            END
+            $$
+            "#,
+        )
+        .execute(client.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            CREATE TRIGGER fail_atomic_idle_slot_78
+            BEFORE INSERT OR UPDATE ON loyal_yield.vault_idle_token_balances_current
+            FOR EACH ROW EXECUTE FUNCTION loyal_yield.fail_atomic_idle_slot_78()
+            "#,
+        )
+        .execute(client.pool())
+        .await
+        .unwrap();
+
+        baseline_state.observed_slot = 78;
+        baseline_state.chain_slot = Some(78);
+        baseline_state.positions[0].amount_raw = 99;
+        for balance in &mut baseline_idle {
+            balance.observed_slot = 78;
+            balance.amount_raw = 99;
+        }
+        let error = client
+            .publish_complete_vault(vault_id, baseline_state, baseline_idle)
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("injected idle publication failure"));
+
+        let current_position_slots = sqlx::query_scalar::<_, i64>(
+            "SELECT DISTINCT observed_slot FROM loyal_yield.vault_reserve_positions_current WHERE vault_id = $1",
+        )
+        .bind(vault_id.as_i64())
+        .fetch_all(client.pool())
+        .await
+        .unwrap();
+        let current_idle_slots = sqlx::query_scalar::<_, i64>(
+            "SELECT DISTINCT observed_slot FROM loyal_yield.vault_idle_token_balances_current WHERE vault_id = $1",
+        )
+        .bind(vault_id.as_i64())
+        .fetch_all(client.pool())
+        .await
+        .unwrap();
+        let current_snapshot_slot: i64 = sqlx::query_scalar(
+            "SELECT observed_slot FROM loyal_yield.vault_position_snapshots WHERE vault_id = $1 AND is_current",
+        )
+        .bind(vault_id.as_i64())
+        .fetch_one(client.pool())
+        .await
+        .unwrap();
+        let mixed_epoch_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT count(*)::BIGINT
+            FROM loyal_yield.vault_reserve_positions_current position
+            JOIN loyal_yield.vault_idle_token_balances_current idle
+              ON idle.vault_id = position.vault_id
+            WHERE position.vault_id = $1
+              AND position.observed_slot <> idle.observed_slot
+            "#,
+        )
+        .bind(vault_id.as_i64())
+        .fetch_one(client.pool())
+        .await
+        .unwrap();
+
+        assert_eq!(current_position_slots, vec![77]);
+        assert_eq!(current_idle_slots, vec![77]);
+        assert_eq!(current_snapshot_slot, 77);
+        assert_eq!(mixed_epoch_count, 0);
+
+        sqlx::query("DROP TRIGGER fail_atomic_idle_slot_78 ON loyal_yield.vault_idle_token_balances_current")
+            .execute(client.pool())
+            .await
+            .unwrap();
+        let (_, mut subset_state, mut subset_idle) = atomic_idle_state();
+        subset_state.observed_slot = 78;
+        subset_state.chain_slot = Some(78);
+        subset_state.positions.truncate(1);
+        subset_idle.truncate(1);
+        subset_idle[0].vault_id = vault_id;
+        subset_idle[0].observed_slot = 78;
+        client
+            .apply_observed_patch_with_idle_token_balances(vault_id, subset_state, subset_idle)
+            .await
+            .unwrap();
+        assert_eq!(complete_epoch_count(client, vault_id).await, 0);
+
+        let (_, mut complete_state, mut complete_idle) = atomic_idle_state();
+        complete_state.observed_slot = 79;
+        complete_state.chain_slot = Some(79);
+        for balance in &mut complete_idle {
+            balance.vault_id = vault_id;
+            balance.observed_slot = 79;
+        }
+        client
+            .publish_complete_vault(vault_id, complete_state, complete_idle)
+            .await
+            .unwrap();
+        assert_eq!(complete_epoch_count(client, vault_id).await, 1);
+    }
+
+    async fn complete_epoch_count(client: &NeonSqlClient, vault_id: VaultId) -> i64 {
+        let product_mints = supported_idle_deposit_mints();
+        sqlx::query_scalar(
+            r#"
+            SELECT count(*)::BIGINT
+            FROM loyal_yield.vault_position_snapshots snapshot
+            WHERE snapshot.vault_id = $1
+              AND snapshot.is_current = TRUE
+              AND snapshot.context->>'publication_scope' = 'complete_product_vault'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM loyal_yield.vault_reserve_positions_current position
+                  WHERE position.vault_id = snapshot.vault_id
+                    AND position.observed_slot <> snapshot.observed_slot
+              )
+              AND (
+                  SELECT count(*)
+                  FROM loyal_yield.vault_idle_token_balances_current idle
+                  WHERE idle.vault_id = snapshot.vault_id
+                    AND idle.mint = ANY($2::TEXT[])
+                    AND idle.observed_slot = snapshot.observed_slot
+              ) = cardinality($2::TEXT[])
+            "#,
+        )
+        .bind(vault_id.as_i64())
+        .bind(&product_mints)
+        .fetch_one(client.pool())
+        .await
+        .unwrap()
+    }
 
     fn same_mint_decision(execution_plan: Value, amount_raw: Option<i64>) -> RebalanceDecision {
         RebalanceDecision {

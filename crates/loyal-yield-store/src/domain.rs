@@ -17,6 +17,35 @@ pub const FIXED_KAMINO_MAIN_ROUTE_MODE: &str = "fixed_kamino_main";
 /// Maximum positive redeemable-liquidity accrual that a fused queue handoff
 /// may bind from its fresh chain read without replanning the opportunity.
 pub const MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM: i64 = 100;
+/// Idle-deposit mints of the canonical Earn universe, base58 encoded.
+///
+/// `loyal_yield_orchestrator::stable_mints::EarnUniverse` is the typed source
+/// of truth. This crate stays free of the Solana dependency graph so the small
+/// workers do not pull it into their images, so the addresses are repeated here
+/// as plain strings; `stable_mints` owns the parity test that pins them.
+pub(crate) const IDLE_DEPOSIT_MINT_CASH: &str = "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH";
+pub(crate) const IDLE_DEPOSIT_MINT_USDG: &str = "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH";
+pub(crate) const IDLE_DEPOSIT_MINT_PYUSD: &str = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo";
+pub(crate) const IDLE_DEPOSIT_MINT_USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+pub(crate) const IDLE_DEPOSIT_MINT_USDT: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+pub(crate) const IDLE_DEPOSIT_MINT_USDS: &str = "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA";
+/// Ordered to match `EarnUniverse::canonical()`.
+pub const SUPPORTED_IDLE_DEPOSIT_MINTS: [&str; 6] = [
+    IDLE_DEPOSIT_MINT_CASH,
+    IDLE_DEPOSIT_MINT_USDG,
+    IDLE_DEPOSIT_MINT_PYUSD,
+    IDLE_DEPOSIT_MINT_USDC,
+    IDLE_DEPOSIT_MINT_USDT,
+    IDLE_DEPOSIT_MINT_USDS,
+];
+
+/// Mints a complete product-vault publication must account for.
+pub fn supported_idle_deposit_mints() -> Vec<String> {
+    SUPPORTED_IDLE_DEPOSIT_MINTS
+        .iter()
+        .map(|mint| (*mint).to_owned())
+        .collect()
+}
 
 #[derive(Debug, Clone)]
 pub struct PlannedDecision {

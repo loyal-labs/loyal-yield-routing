@@ -1483,9 +1483,9 @@ async fn collect_market_timescale_evidence_once(
     captured_at: DateTime<Utc>,
 ) -> MarketDataPlaneEvidence {
     let source_checksum = sha256_hex(TIMESCALE_MARKET_MIGRATION_SQL.as_bytes());
-    // The production Blueprint intentionally omits EARN_ROUTER_ENABLED_STABLE_MINTS,
-    // so the live planner uses the canonical code-owned six-mint default. Do
-    // not let the collector's local shell environment narrow this denominator.
+    // Readiness always assesses the complete code-owned six-mint universe,
+    // independently of the runtime rollout subset. Do not let the collector's
+    // local shell environment narrow this denominator.
     let enabled_mints = supported_stable_mints();
     let Some(database_url) = env::var("TIMESCALEDB_URL")
         .ok()

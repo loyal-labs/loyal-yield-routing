@@ -13,9 +13,9 @@ use loyal_yield_orchestrator::fleet_orchestration::{
     observe_market_epoch, plan_capacity_aware_wave, route_fee_budget, run_deterministic_benchmark,
     CapacityBand, DurablePgWakeupEvent, DurablePgWakeupListener, EconomicPolicy,
     FleetObservationConfig, FleetPlanningDirtyVaultLease, FleetPlanningStateInput, FleetWorkerRole,
-    MaterialMarketFrontier, ObservedFleetOpportunity, ObservedSourceKind, OptimizerEpochInput,
-    RebalanceOpportunityInput, RouteFeePolicy, TargetCapacityCurve, WaveLimits,
-    MARKET_MATERIAL_CAPACITY_DRIFT_PPM, MARKET_WAKE_PRICE_BUCKET_USD_MICROS,
+    IneligibleReason, MaterialMarketFrontier, ObservedFleetOpportunity, ObservedSourceKind,
+    OptimizerEpochInput, RebalanceOpportunityInput, RouteFeePolicy, TargetCapacityCurve,
+    WaveLimits, MARKET_MATERIAL_CAPACITY_DRIFT_PPM, MARKET_WAKE_PRICE_BUCKET_USD_MICROS,
     MAXIMUM_CONFIRMED_VERIFICATION_AGE_SECONDS, MAXIMUM_RESERVE_ECONOMIC_SLOT_LAG,
     MAXIMUM_SUPPORTED_RESERVE_CATALOG_AGE_SECONDS, MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS,
     RESERVE_ECONOMIC_EXPIRY_MILLIS_PER_SLOT,
@@ -155,6 +155,33 @@ fn percentile_95(sorted: &[u128]) -> u128 {
     sorted[index]
 }
 
+fn rejection_reason_counts<'a>(
+    reasons: impl Iterator<Item = &'a IneligibleReason>,
+) -> BTreeMap<&'static str, usize> {
+    let mut counts = BTreeMap::new();
+    for reason in reasons {
+        let key = match reason {
+            IneligibleReason::InvalidIdentity => "invalid_identity",
+            IneligibleReason::InvalidNotional => "invalid_notional",
+            IneligibleReason::InvalidApy => "invalid_apy",
+            IneligibleReason::InvalidConfidence => "invalid_confidence",
+            IneligibleReason::InvalidExpectedServiceTime => "invalid_expected_service_time",
+            IneligibleReason::InvalidHoldingHorizon => "invalid_holding_horizon",
+            IneligibleReason::InvalidCost => "invalid_cost",
+            IneligibleReason::BelowMinimumNotional => "below_minimum_notional",
+            IneligibleReason::NonPositiveEdge => "non_positive_edge",
+            IneligibleReason::BelowMinimumEdge => "below_minimum_edge",
+            IneligibleReason::ExpectedGainDoesNotCoverCost { .. } => {
+                "expected_gain_does_not_cover_cost"
+            }
+            IneligibleReason::BelowMinimumNetGain { .. } => "below_minimum_net_gain",
+            IneligibleReason::TargetCapacityExhausted => "target_capacity_exhausted",
+        };
+        *counts.entry(key).or_default() += 1;
+    }
+    counts
+}
+
 fn run_benchmark(options: &Options) -> Result<Value, Box<dyn Error>> {
     let mut elapsed_micros = Vec::with_capacity(options.rounds);
     let mut last = None;
@@ -185,6 +212,9 @@ fn run_benchmark(options: &Options) -> Result<Value, Box<dyn Error>> {
         "selectedCount": result.selected_count,
         "deferredCount": result.deferred_count,
         "rejectedCount": result.rejected_count,
+        "rejectionReasonCounts": rejection_reason_counts(
+            result.wave.rejected.iter().map(|rejected| &rejected.reason),
+        ),
         "selectedNotionalUsdMicros": result.selected_notional_usd_micros,
         "selectedLostYieldUsdMicrosPerHour": result.selected_lost_yield_usd_micros_per_hour,
         "deterministicDigest": result.deterministic_digest,
@@ -948,6 +978,8 @@ async fn run_live_once(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
+    let rejection_reason_counts =
+        rejection_reason_counts(wave.rejected.iter().map(|rejected| &rejected.reason));
     let evidence = PlanningEvidence {
         optimizer_epoch_key: observation.market_epoch.fingerprint.clone(),
         material_frontier_fingerprint: material_frontier_fingerprint.clone(),
@@ -1014,6 +1046,10 @@ async fn run_live_once(
     })).collect::<Vec<_>>(),
     });
     if let Some(fields) = output.as_object_mut() {
+        fields.insert(
+            "rejectionReasonCounts".to_owned(),
+            json!(rejection_reason_counts),
+        );
         fields.insert(
             "materialMarketFrontierFingerprint".to_owned(),
             json!(material_frontier_fingerprint),

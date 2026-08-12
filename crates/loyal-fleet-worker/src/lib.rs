@@ -85,16 +85,17 @@ use loyal_yield_orchestrator::{
     route_fee_payer_keypairs_from_env,
     rpc_safety::{redacted_external_error, validate_rpc_endpoint, validate_rpc_genesis_hash},
     shared_market_manifest_addresses, shared_market_manifest_hash, solana_testing_keypair_from_env,
-    standard_policy_keypair_from_env, vault_manifest_addresses, vault_manifest_hash,
-    ConfirmSameMintRebalanceInput, CurrentIdleTokenBalance, DecisionAdvance, DecisionId,
-    DecisionStatus, EffectiveLookupTableRollout, IdleVaultDepositDecisionInput,
-    LookupTableAllocationKind, LookupTableManifestSubject, LookupTableProvisioningRequestUpsert,
-    LookupTableReadinessRecord, LookupTableReadinessStatus, LookupTableRolloutMode,
-    LookupTableSelectionKind, LookupTableSimulationState, LookupTableUsageLeaseBundle,
-    LookupTableUsageLeaseKind, NeonSqlClient, NeonSqlConfig, OrchestratorError, PlanOutcomeStatus,
-    PolicyMatchInput, RebalanceDecision, ReconciledReservePosition, ReconciledVaultState,
-    ResolvedLookupTableBundle, ResolverTableCandidate, SameMintRebalanceInput,
-    SameMintRebalanceResult, SharedMarketCatalogReadiness, SharedMarketCatalogRouteValidation,
+    standard_policy_keypair_from_env, supported_stable_mints, vault_manifest_addresses,
+    vault_manifest_hash, ConfirmSameMintRebalanceInput, CurrentIdleTokenBalance, DecisionAdvance,
+    DecisionId, DecisionStatus, EarnUniverse, EffectiveLookupTableRollout,
+    IdleVaultDepositDecisionInput, LookupTableAllocationKind, LookupTableManifestSubject,
+    LookupTableProvisioningRequestUpsert, LookupTableReadinessRecord, LookupTableReadinessStatus,
+    LookupTableRolloutMode, LookupTableSelectionKind, LookupTableSimulationState,
+    LookupTableUsageLeaseBundle, LookupTableUsageLeaseKind, NeonSqlClient, NeonSqlConfig,
+    OrchestratorError, PlanOutcomeStatus, PolicyMatchInput, RebalanceDecision,
+    ReconciledReservePosition, ReconciledVaultState, ResolvedLookupTableBundle,
+    ResolverTableCandidate, SameMintRebalanceInput, SameMintRebalanceResult,
+    SharedMarketCatalogReadiness, SharedMarketCatalogRouteValidation,
     SharedMarketCatalogRouteValidationState, SnapshotId, VaultId,
     AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, FIXED_KAMINO_MAIN_ROUTE_MODE,
     MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
@@ -1597,7 +1598,16 @@ struct ChainReconcilePreview {
     vault_user_metadata: String,
     vault_user_metadata_exists: bool,
     positions: Vec<ChainPositionSummary>,
+    idle_token_balances: Vec<IdleTokenBalanceObservation>,
     rpc_account_reads: FleetRpcAccountReadEvidence,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct IdleTokenBalanceObservation {
+    mint: String,
+    token_program: String,
+    token_account: String,
+    amount_raw: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -4511,11 +4521,10 @@ async fn load_fleet_position_sweep_universe(
             "fleet position sweep requires the exact active shared-market catalog generation",
         ));
     }
-    let expected_enabled_mints_hash =
-        enabled_stable_mints_hash(enabled_mints).map_err(FleetPositionSweepInitError::invariant)?;
-    if head.enabled_mints_hash != expected_enabled_mints_hash {
+    let expected_catalog_mints_hash = position_sweep_catalog_mints_hash(enabled_mints)?;
+    if head.enabled_mints_hash != expected_catalog_mints_hash {
         return Err(FleetPositionSweepInitError::invariant(
-            "fleet position sweep enabled mints do not match the active shared-market catalog",
+            "fleet position sweep requires the complete supported stable-mint shared-market catalog",
         ));
     }
 
@@ -4588,6 +4597,27 @@ async fn load_fleet_position_sweep_universe(
         catalog_source_slot: head.source_slot,
         reserves,
     })
+}
+
+/// The runtime allowlist controls new routing work, while the shared catalog is
+/// read/exit infrastructure and must retain the complete supported universe.
+/// Keeping those identities separate lets a USDC-only dark deploy observe and
+/// reconcile safely without enabling another mint.
+fn position_sweep_catalog_mints_hash(
+    runtime_enabled_mints: &[String],
+) -> Result<String, FleetPositionSweepInitError> {
+    let supported_mints = supported_stable_mints();
+    let supported = supported_mints.iter().collect::<BTreeSet<_>>();
+    if runtime_enabled_mints.is_empty()
+        || runtime_enabled_mints
+            .iter()
+            .any(|mint| !supported.contains(mint))
+    {
+        return Err(FleetPositionSweepInitError::invariant(
+            "fleet position sweep runtime mints must be a non-empty supported subset",
+        ));
+    }
+    enabled_stable_mints_hash(&supported_mints).map_err(FleetPositionSweepInitError::invariant)
 }
 
 async fn reconcile_fleet_position_sweep_batch(
@@ -4802,7 +4832,11 @@ async fn reconcile_fleet_position_sweep_vault(
     // landing in that window reads zero collateral while the funds are untouched.
     // Recording the idle balance beside it is what lets a consumer tell "emptied" from
     // "in flight" instead of guessing.
-    let idle_vault_liquidity_amount_raw = idle_vault_liquidity_by_mint(&preview);
+    let idle_vault_liquidity_amount_raw = preview
+        .idle_token_balances
+        .iter()
+        .map(|balance| u128::from(balance.amount_raw))
+        .sum::<u128>();
     state.context = json!({
         "kind": "fleet_position_sweep",
         "cluster": universe.cluster,
@@ -4815,69 +4849,39 @@ async fn reconcile_fleet_position_sweep_vault(
         "signer_loaded": false,
         "transactions_sent": false,
     });
-    match runtime.client.reconcile_vault(vault.id, state).await {
-        Ok(_) => {
-            let position = preview.positions.first().ok_or_else(|| {
-                FleetPositionSweepVaultError::invariant(
-                    "position sweep produced no tracked Kamino reserve",
-                )
-            })?;
-            runtime
-                .client
-                .record_current_idle_token_balance(CurrentIdleTokenBalance {
-                    vault_id: vault.id,
-                    mint: position.liquidity_mint.clone(),
-                    amount_raw: i64::try_from(position.vault_liquidity_amount_raw).map_err(
-                        |_| {
-                            FleetPositionSweepVaultError::invariant(
-                                "idle vault balance does not fit Postgres BIGINT",
-                            )
-                        },
-                    )?,
-                    owner: vault.vault_pubkey.clone(),
-                    token_account: position.vault_liquidity_ata.clone(),
-                    observed_slot: preview.observed_slot,
-                    observed_at: Utc::now(),
-                    source_commitment: "finalized".to_owned(),
-                    updated_at: Utc::now(),
-                })
-                .await
-                .map_err(|error| FleetPositionSweepVaultError::from_orchestrator(&error))?;
-            Ok(FleetPositionSweepTaskOutcome::Refreshed)
-        }
+    let observed_at = Utc::now();
+    let idle_balances = preview
+        .idle_token_balances
+        .iter()
+        .map(|balance| {
+            Ok(CurrentIdleTokenBalance {
+                vault_id: vault.id,
+                mint: balance.mint.clone(),
+                amount_raw: i64::try_from(balance.amount_raw).map_err(|_| {
+                    FleetPositionSweepVaultError::invariant(
+                        "idle vault balance does not fit Postgres BIGINT",
+                    )
+                })?,
+                owner: vault.vault_pubkey.clone(),
+                token_account: balance.token_account.clone(),
+                observed_slot: preview.observed_slot,
+                observed_at,
+                source_commitment: "finalized".to_owned(),
+                updated_at: observed_at,
+            })
+        })
+        .collect::<Result<Vec<_>, FleetPositionSweepVaultError>>()?;
+    match runtime
+        .client
+        .publish_complete_vault(vault.id, state, idle_balances)
+        .await
+    {
+        Ok(_) => Ok(FleetPositionSweepTaskOutcome::Refreshed),
         Err(OrchestratorError::StaleVaultObservation { .. }) => {
             Ok(FleetPositionSweepTaskOutcome::Stale)
         }
         Err(error) => Err(FleetPositionSweepVaultError::from_orchestrator(&error)),
     }
-}
-
-/// Totals the vault's idle liquidity across the mints the preview covers.
-///
-/// Positions repeat their vault's balance once per reserve, so the value is deduplicated
-/// per mint before summing; counting it once per reserve would multiply a single balance
-/// by the reserve count. A preview with no positions yields `None` rather than zero,
-/// because "we observed nothing" must never be recorded as "we observed no funds".
-fn idle_vault_liquidity_by_mint(preview: &ChainReconcilePreview) -> Option<u128> {
-    if preview.positions.is_empty() {
-        return None;
-    }
-    let by_mint = preview
-        .positions
-        .iter()
-        .map(|position| {
-            (
-                position.liquidity_mint.as_str(),
-                position.vault_liquidity_amount_raw,
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    Some(
-        by_mint
-            .values()
-            .map(|amount| u128::from(*amount))
-            .sum::<u128>(),
-    )
 }
 
 async fn reconcile_signed_route_submission(
@@ -5253,10 +5257,15 @@ async fn inspect_expired_route(
                 "idle_token_account",
             )?)?;
             let liquidity_mint = Pubkey::from_str(&opportunity.liquidity_mint)?;
+            let token_program = EarnUniverse::canonical()
+                .asset(&opportunity.liquidity_mint)
+                .ok_or("idle deposit mint is outside the Earn universe")?
+                .token_program;
             let (idle_amount, idle_account_exists) = load_spl_token_account_amount_at_or_after(
                 runtime.rpc.as_ref(),
                 &idle_token_account,
                 &liquidity_mint,
+                &token_program,
                 Some(minimum_slot),
             )?;
             if !idle_account_exists || i64::try_from(idle_amount)? != opportunity.amount_raw {
@@ -5407,7 +5416,7 @@ async fn reconcile_reserve_submission_effect(
     ensure_post_confirm_chain_reconcile_state(&decision, &post_state)?;
     let snapshot = runtime
         .client
-        .reconcile_vault(decision.vault_id, post_state)
+        .apply_observed_patch(decision.vault_id, post_state)
         .await?;
     runtime
         .client
@@ -5542,7 +5551,7 @@ async fn reconcile_idle_submission_effect(
     };
     let snapshot = runtime
         .client
-        .reconcile_vault(vault.id, chain_preview_reconciled_state(&preview)?)
+        .apply_observed_patch(vault.id, chain_preview_reconciled_state(&preview)?)
         .await?;
     runtime
         .client
@@ -6903,7 +6912,7 @@ async fn run_with_runtime(
             .as_ref()
             .ok_or("--execute requires --reconcile-from-chain")?;
         let state = chain_preview_reconciled_state(preview)?;
-        let snapshot = client.reconcile_vault(vault.id, state).await?;
+        let snapshot = client.apply_observed_patch(vault.id, state).await?;
         reconciled_snapshot_id = Some(snapshot.id);
         db_positions = load_position_summaries(&client, vault.id).await?;
     } else if should_write_current_positions_from_user_seed {
@@ -6917,7 +6926,7 @@ async fn run_with_runtime(
             options.direction,
         )?;
         let state = user_position_seed_reconciled_state(seed, &reserve_move, &target_market)?;
-        let snapshot = client.reconcile_vault(vault.id, state).await?;
+        let snapshot = client.apply_observed_patch(vault.id, state).await?;
         reconciled_snapshot_id = Some(snapshot.id);
         db_positions = load_position_summaries(&client, vault.id).await?;
     }
@@ -9092,7 +9101,7 @@ async fn run_initial_reserve_deposit_flow(
         derive_associated_token_address(&wallet_signer.pubkey(), &USDC_MINT, &spl_token::ID);
     let vault_usdc_ata = derive_associated_token_address(&vault_pubkey, &USDC_MINT, &spl_token::ID);
     let (wallet_usdc_amount_raw, wallet_usdc_account_exists) =
-        load_spl_token_account_amount(&rpc, &wallet_usdc_ata, &USDC_MINT)?;
+        load_spl_token_account_amount(&rpc, &wallet_usdc_ata, &USDC_MINT, &spl_token::ID)?;
     let funding_needed_raw = amount_raw.saturating_sub(deposit_position.vault_liquidity_amount_raw);
     let mut blockers = Vec::new();
     if !wallet_usdc_account_exists {
@@ -9426,7 +9435,7 @@ async fn run_initial_reserve_deposit_flow(
     let post_preview =
         load_chain_reconcile_preview(&options.rpc_url, vault, &[deposit_reserve.to_owned()])?;
     let snapshot = client
-        .reconcile_vault(vault.id, chain_preview_reconciled_state(&post_preview)?)
+        .apply_observed_patch(vault.id, chain_preview_reconciled_state(&post_preview)?)
         .await?;
     let result = InitialDepositSubmitResult {
         funding_signature: Some(funding_signature.to_string()),
@@ -9487,6 +9496,27 @@ async fn run_initial_reserve_deposit_flow(
     Ok(())
 }
 
+fn resolve_idle_deposit_identity(
+    vault: &Pubkey,
+    liquidity_mint: &str,
+    declared_token_program: &str,
+) -> Result<(Pubkey, Pubkey), String> {
+    let universe = EarnUniverse::canonical();
+    let asset = universe
+        .asset(liquidity_mint)
+        .ok_or_else(|| "idle deposit target mint is outside the Earn universe".to_owned())?;
+    if declared_token_program != asset.token_program.to_string() {
+        return Err(format!(
+            "idle deposit token program {} does not match Earn asset {}",
+            declared_token_program, asset.token_program
+        ));
+    }
+    Ok((
+        asset.mint,
+        derive_associated_token_address(vault, &asset.mint, &asset.token_program),
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_idle_vault_deposit_flow(
     options: &mut CliOptions,
@@ -9514,14 +9544,18 @@ async fn run_idle_vault_deposit_flow(
         )
     })?;
     let deposit_position = chain_position_for_reserve(initial_preview, deposit_reserve)?;
-    let vault_usdc_ata = derive_associated_token_address(&vault_pubkey, &USDC_MINT, &spl_token::ID);
+    let (liquidity_mint, vault_idle_token_ata) = resolve_idle_deposit_identity(
+        &vault_pubkey,
+        &deposit_position.liquidity_mint,
+        &deposit_position.liquidity_token_program,
+    )?;
     let db_idle = client
-        .current_idle_token_balance(vault.id, &USDC_MINT.to_string())
+        .current_idle_token_balance(vault.id, &liquidity_mint.to_string())
         .await?;
     let amount_i64 = i64::try_from(amount_raw)
         .map_err(|_| "idle vault deposit amount does not fit Postgres BIGINT")?;
     let live_idle_amount_i64 = i64::try_from(deposit_position.vault_liquidity_amount_raw)
-        .map_err(|_| "live idle vault USDC amount does not fit Postgres BIGINT")?;
+        .map_err(|_| "live idle vault token amount does not fit Postgres BIGINT")?;
     let mut active_preview = initial_preview.clone();
     let mut reloaded_policy_preflight: Option<PolicyAccountPreflight> = None;
     let mut setup_obligation_before_deposit = false;
@@ -9533,27 +9567,21 @@ async fn run_idle_vault_deposit_flow(
     let mut missing_obligation_setup_result: Option<Value> = None;
 
     let mut blockers: Vec<IdleVaultDepositBlocker> = Vec::new();
-    if deposit_position.liquidity_mint != USDC_MINT.to_string() {
+    if deposit_position.vault_liquidity_ata != vault_idle_token_ata.to_string() {
         blockers.push(IdleVaultDepositBlocker::safety(format!(
-            "target reserve {} liquidity mint {} is not USDC {}",
-            deposit_position.reserve, deposit_position.liquidity_mint, USDC_MINT
-        )));
-    }
-    if deposit_position.vault_liquidity_ata != vault_usdc_ata.to_string() {
-        blockers.push(IdleVaultDepositBlocker::safety(format!(
-            "chain preview vault liquidity ATA {} does not match derived vault USDC ATA {}",
-            deposit_position.vault_liquidity_ata, vault_usdc_ata
+            "chain preview vault liquidity ATA {} does not match derived vault token ATA {}",
+            deposit_position.vault_liquidity_ata, vault_idle_token_ata
         )));
     }
     if !deposit_position.vault_liquidity_token_account_exists {
         blockers.push(IdleVaultDepositBlocker::safety(format!(
-            "vault idle USDC ATA {} does not exist",
-            vault_usdc_ata
+            "vault idle token ATA {} does not exist",
+            vault_idle_token_ata
         )));
     }
     if deposit_position.vault_liquidity_amount_raw < amount_raw {
         blockers.push(IdleVaultDepositBlocker::source_stale(format!(
-            "live vault idle USDC balance {} is below planned deposit amount {}",
+            "live vault idle token balance {} is below planned deposit amount {}",
             deposit_position.vault_liquidity_amount_raw, amount_raw
         )));
     }
@@ -9595,16 +9623,16 @@ async fn run_idle_vault_deposit_flow(
 
     match db_idle.as_ref() {
         Some(balance) => {
-            if balance.mint != USDC_MINT.to_string() {
+            if balance.mint != liquidity_mint.to_string() {
                 blockers.push(IdleVaultDepositBlocker::safety(format!(
-                    "DB idle mint {} does not match USDC {}",
-                    balance.mint, USDC_MINT
+                    "DB idle mint {} does not match route mint {}",
+                    balance.mint, liquidity_mint
                 )));
             }
-            if balance.token_account != vault_usdc_ata.to_string() {
+            if balance.token_account != vault_idle_token_ata.to_string() {
                 blockers.push(IdleVaultDepositBlocker::safety(format!(
-                    "DB idle token account {} does not match vault USDC ATA {}",
-                    balance.token_account, vault_usdc_ata
+                    "DB idle token account {} does not match vault token ATA {}",
+                    balance.token_account, vault_idle_token_ata
                 )));
             }
             if balance.amount_raw != amount_i64 {
@@ -9625,7 +9653,7 @@ async fn run_idle_vault_deposit_flow(
                         "expected idle token account {} does not match DB row {}",
                         expected_account, balance.token_account
                     );
-                    if balance.token_account == vault_usdc_ata.to_string() {
+                    if balance.token_account == vault_idle_token_ata.to_string() {
                         blockers.push(IdleVaultDepositBlocker::source_stale(reason));
                     } else {
                         blockers.push(IdleVaultDepositBlocker::safety(reason));
@@ -9651,24 +9679,25 @@ async fn run_idle_vault_deposit_flow(
             }
         }
         None => blockers.push(IdleVaultDepositBlocker::safety(format!(
-            "missing loyal_yield.vault_idle_token_balances_current row for vault {} USDC",
-            vault.id.as_i64()
+            "missing loyal_yield.vault_idle_token_balances_current row for vault {} mint {}",
+            vault.id.as_i64(),
+            liquidity_mint
         ))),
     }
 
     if let Some(expected_account) = &options.expected_idle_token_account {
-        if expected_account != &vault_usdc_ata.to_string() {
+        if expected_account != &vault_idle_token_ata.to_string() {
             blockers.push(IdleVaultDepositBlocker::safety(format!(
-                "expected idle token account {} does not match derived vault USDC ATA {}",
-                expected_account, vault_usdc_ata
+                "expected idle token account {} does not match derived vault token ATA {}",
+                expected_account, vault_idle_token_ata
             )));
         }
     }
     if let Some(expected_mint) = &options.expected_liquidity_mint {
-        if expected_mint != &USDC_MINT.to_string() {
+        if expected_mint != &liquidity_mint.to_string() {
             blockers.push(IdleVaultDepositBlocker::safety(format!(
-                "expected liquidity mint {} does not match USDC {}",
-                expected_mint, USDC_MINT
+                "expected liquidity mint {} does not match route mint {}",
+                expected_mint, liquidity_mint
             )));
         }
     }
@@ -10007,9 +10036,9 @@ async fn run_idle_vault_deposit_flow(
         Some(IdleVaultDepositDecisionInput {
             target_reserve: deposit_reserve.to_owned(),
             target_market: Some(deposit_position.market.clone()),
-            liquidity_mint: USDC_MINT.to_string(),
+            liquidity_mint: liquidity_mint.to_string(),
             amount_raw: amount_i64,
-            idle_token_account: vault_usdc_ata.to_string(),
+            idle_token_account: vault_idle_token_ata.to_string(),
             idle_observed_slot: options.expected_idle_observed_slot.ok_or(
                 "--deposit-idle-vault-reserve --execute requires --expected-idle-observed-slot",
             )?,
@@ -10081,7 +10110,7 @@ async fn run_idle_vault_deposit_flow(
                 "sendsTransactions": false,
                 "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, deposit_position, amount_raw, db_idle.as_ref(), options),
                 "vault": vault_json(vault),
-                "vaultUsdcAta": vault_usdc_ata.to_string(),
+                "vaultIdleTokenAta": vault_idle_token_ata.to_string(),
                 "chainReconcile": chain_reconcile_preview_json(initial_preview),
                 "policyPreflight": policy_route_preflight_json(vault, &ReserveMove {
                     source_reserve: deposit_reserve.to_owned(),
@@ -10140,7 +10169,8 @@ async fn run_idle_vault_deposit_flow(
         let synced_idle = record_live_idle_vault_balance(
             client,
             vault,
-            &vault_usdc_ata.to_string(),
+            &liquidity_mint.to_string(),
+            &vault_idle_token_ata.to_string(),
             initial_preview,
             deposit_position,
         )
@@ -10150,7 +10180,8 @@ async fn run_idle_vault_deposit_flow(
         if let Some(sync_conflict) = live_idle_vault_balance_sync_conflict(
             &synced_idle,
             vault,
-            &vault_usdc_ata.to_string(),
+            &liquidity_mint.to_string(),
+            &vault_idle_token_ata.to_string(),
             initial_preview,
             live_idle_amount_i64,
         ) {
@@ -10918,16 +10949,16 @@ async fn run_idle_vault_deposit_flow(
         )?;
         let post_reconcile_state = chain_preview_reconciled_state(&post_preview)?;
         let post_snapshot = client
-            .reconcile_vault(vault.id, post_reconcile_state)
+            .apply_observed_patch(vault.id, post_reconcile_state)
             .await?;
         let post_deposit_position = chain_position_for_reserve(&post_preview, deposit_reserve)?;
         let idle_after = client
             .record_current_idle_token_balance(CurrentIdleTokenBalance {
                 vault_id: vault.id,
-                mint: USDC_MINT.to_string(),
+                mint: liquidity_mint.to_string(),
                 amount_raw: i64::try_from(post_deposit_position.vault_liquidity_amount_raw)?,
                 owner: vault.vault_pubkey.clone(),
-                token_account: vault_usdc_ata.to_string(),
+                token_account: vault_idle_token_ata.to_string(),
                 observed_slot: post_preview.observed_slot,
                 observed_at: Utc::now(),
                 source_commitment: "confirmed".to_owned(),
@@ -10992,7 +11023,7 @@ async fn run_idle_vault_deposit_flow(
             "sendsTransactions": true,
             "deposit": idle_vault_deposit_request_json(vault, deposit_reserve, active_deposit_position, amount_raw, db_idle.as_ref(), options),
             "vault": vault_json(vault),
-            "vaultUsdcAta": vault_usdc_ata.to_string(),
+            "vaultIdleTokenAta": vault_idle_token_ata.to_string(),
             "setupObligationBeforeDeposit": setup_obligation_before_deposit,
             "missingObligationSetup": missing_obligation_setup_result,
             "preparedDecision": idle_vault_deposit_decision_json(&decision),
@@ -11091,7 +11122,8 @@ fn idle_vault_deposit_requires_lookup_table_provisioning(
 async fn record_live_idle_vault_balance(
     client: &NeonSqlClient,
     vault: &SelectedVault,
-    vault_usdc_ata: &str,
+    liquidity_mint: &str,
+    vault_idle_token_ata: &str,
     preview: &ChainReconcilePreview,
     deposit_position: &ChainPositionSummary,
 ) -> Result<CurrentIdleTokenBalance, Box<dyn Error>> {
@@ -11099,11 +11131,11 @@ async fn record_live_idle_vault_balance(
     Ok(client
         .record_current_idle_token_balance(CurrentIdleTokenBalance {
             vault_id: vault.id,
-            mint: USDC_MINT.to_string(),
+            mint: liquidity_mint.to_owned(),
             amount_raw: i64::try_from(deposit_position.vault_liquidity_amount_raw)
-                .map_err(|_| "live idle vault USDC amount does not fit Postgres BIGINT")?,
+                .map_err(|_| "live idle vault token amount does not fit Postgres BIGINT")?,
             owner: vault.vault_pubkey.clone(),
-            token_account: vault_usdc_ata.to_owned(),
+            token_account: vault_idle_token_ata.to_owned(),
             observed_slot: preview.observed_slot,
             observed_at: now,
             source_commitment: "confirmed".to_owned(),
@@ -11115,14 +11147,15 @@ async fn record_live_idle_vault_balance(
 fn live_idle_vault_balance_sync_conflict(
     balance: &CurrentIdleTokenBalance,
     vault: &SelectedVault,
-    vault_usdc_ata: &str,
+    liquidity_mint: &str,
+    vault_idle_token_ata: &str,
     preview: &ChainReconcilePreview,
     expected_amount_raw: i64,
 ) -> Option<String> {
-    if balance.mint != USDC_MINT.to_string() {
+    if balance.mint != liquidity_mint {
         return Some(format!(
-            "DB returned idle mint {}, expected USDC {}",
-            balance.mint, USDC_MINT
+            "DB returned idle mint {}, expected route mint {}",
+            balance.mint, liquidity_mint
         ));
     }
     if balance.amount_raw != expected_amount_raw {
@@ -11137,10 +11170,10 @@ fn live_idle_vault_balance_sync_conflict(
             balance.owner, vault.vault_pubkey
         ));
     }
-    if balance.token_account != vault_usdc_ata {
+    if balance.token_account != vault_idle_token_ata {
         return Some(format!(
-            "DB returned idle token account {}, expected vault USDC ATA {}",
-            balance.token_account, vault_usdc_ata
+            "DB returned idle token account {}, expected vault token ATA {}",
+            balance.token_account, vault_idle_token_ata
         ));
     }
     if balance.observed_slot < preview.observed_slot {
@@ -11171,7 +11204,7 @@ fn idle_vault_deposit_request_json(
         "sourceKind": "idle_vault",
         "reserve": deposit_reserve,
         "market": deposit_position.market,
-        "liquidityMint": USDC_MINT.to_string(),
+        "liquidityMint": deposit_position.liquidity_mint,
         "amountRaw": amount_raw.to_string(),
         "idleVaultLiquidityAmountRaw": amount_raw.to_string(),
         "idleTokenAccount": deposit_position.vault_liquidity_ata,
@@ -11731,7 +11764,7 @@ async fn run_reconcile_current_positions_flow(
     preview: &ChainReconcilePreview,
 ) -> Result<(), Box<dyn Error>> {
     let snapshot = client
-        .reconcile_vault(vault.id, chain_preview_reconciled_state(preview)?)
+        .apply_observed_patch(vault.id, chain_preview_reconciled_state(preview)?)
         .await?;
     println!(
         "{}",
@@ -11798,7 +11831,7 @@ async fn run_full_reserve_withdraw_flow(
     let vault_usdc_ata = derive_associated_token_address(&vault_pubkey, &USDC_MINT, &spl_token::ID);
     let authority_account_before = load_account_proof(&rpc, &authority_signer.pubkey())?;
     let (wallet_usdc_before_raw, wallet_usdc_before_exists) =
-        load_spl_token_account_amount(&rpc, &wallet_usdc_ata, &USDC_MINT)?;
+        load_spl_token_account_amount(&rpc, &wallet_usdc_ata, &USDC_MINT, &spl_token::ID)?;
     let vault_usdc_ata_before = load_account_proof(&rpc, &vault_usdc_ata)?;
     let policy_account_before = load_account_proof(&rpc, &policy_account_pubkey)?;
     let setup_policy_account_before = setup_policy_account_pubkey
@@ -12204,7 +12237,7 @@ async fn run_full_reserve_withdraw_flow(
     let signature = submitted_withdraw.signature.clone();
     let confirmed_slot = submitted_withdraw.confirmed_slot;
     let (vault_usdc_after_withdraw_raw, vault_usdc_after_withdraw_exists) =
-        load_spl_token_account_amount(&rpc, &vault_usdc_ata, &USDC_MINT)?;
+        load_spl_token_account_amount(&rpc, &vault_usdc_ata, &USDC_MINT, &spl_token::ID)?;
     if !vault_usdc_after_withdraw_exists {
         return Err(format!(
             "vault USDC ATA {} is missing after Kamino withdraw",
@@ -12322,7 +12355,7 @@ async fn run_full_reserve_withdraw_flow(
     )?;
     let authority_account_after = load_account_proof(&rpc, &authority_signer.pubkey())?;
     let (wallet_usdc_after_raw, wallet_usdc_after_exists) =
-        load_spl_token_account_amount(&rpc, &wallet_usdc_ata, &USDC_MINT)?;
+        load_spl_token_account_amount(&rpc, &wallet_usdc_ata, &USDC_MINT, &spl_token::ID)?;
     let vault_usdc_ata_after = load_account_proof(&rpc, &vault_usdc_ata)?;
     let policy_account_after = load_account_proof(&rpc, &policy_account_pubkey)?;
     let setup_policy_account_after = setup_policy_account_pubkey
@@ -12330,7 +12363,7 @@ async fn run_full_reserve_withdraw_flow(
         .map(|pubkey| load_account_proof(&rpc, pubkey))
         .transpose()?;
     let snapshot = client
-        .reconcile_vault(vault.id, chain_preview_reconciled_state(&post_preview)?)
+        .apply_observed_patch(vault.id, chain_preview_reconciled_state(&post_preview)?)
         .await?;
     let inactive = deactivate_vault_policy_after_full_withdraw(client, vault).await?;
 
@@ -15629,6 +15662,16 @@ async fn load_chain_reconcile_preview_from_runtime(
         }
     }
     let mut positions = Vec::with_capacity(reserve_pubkeys.len());
+    let idle_accounts = EarnUniverse::canonical()
+        .assets
+        .into_iter()
+        .map(|asset| {
+            let token_account =
+                derive_associated_token_address(&vault_pubkey, &asset.mint, &asset.token_program);
+            (token_account, asset)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut idle_token_balances = Vec::with_capacity(idle_accounts.len());
     let mut processed = BTreeSet::new();
     let mut observed_slots = Vec::new();
     let mut vault_user_metadata_exists = false;
@@ -15656,6 +15699,7 @@ async fn load_chain_reconcile_preview_from_runtime(
             if let Some(policy) = policy_account.filter(|_| !policy_is_cached) {
                 account_keys.insert(policy);
             }
+            account_keys.extend(idle_accounts.keys().copied());
         }
         for reserve in &round_reserves {
             let summary = summaries
@@ -15735,6 +15779,22 @@ async fn load_chain_reconcile_preview_from_runtime(
                     .ok_or_else(|| format!("policy account {policy} does not exist"))?;
                 cache_policy_account(runtime, policy, account, *context_slot, optimizer_epoch_id)?;
             }
+            for (token_account, asset) in &idle_accounts {
+                let (amount_raw, _) = decode_spl_token_account_amount(
+                    accounts
+                        .get(token_account)
+                        .and_then(|(account, _)| account.as_ref()),
+                    token_account,
+                    &asset.mint,
+                    &asset.token_program,
+                )?;
+                idle_token_balances.push(IdleTokenBalanceObservation {
+                    mint: asset.mint.to_string(),
+                    token_program: asset.token_program.to_string(),
+                    token_account: token_account.to_string(),
+                    amount_raw,
+                });
+            }
         }
 
         let mut refreshed_reserves = Vec::with_capacity(derived.len());
@@ -15807,6 +15867,7 @@ async fn load_chain_reconcile_preview_from_runtime(
                         .and_then(|(account, _)| account.as_ref()),
                     &vault_liquidity_ata,
                     &summary.liquidity_mint,
+                    &summary.liquidity_token_program,
                 )?;
             let obligation_summary = decode_kamino_obligation_summary(
                 accounts
@@ -15881,6 +15942,7 @@ async fn load_chain_reconcile_preview_from_runtime(
         vault_user_metadata: vault_user_metadata.to_string(),
         vault_user_metadata_exists,
         positions,
+        idle_token_balances,
         rpc_account_reads: evidence,
     })
 }
@@ -15912,6 +15974,24 @@ fn load_chain_reconcile_preview_from_rpc(
         }
     }
     let mut positions = Vec::with_capacity(reserve_pubkeys.len());
+    let mut idle_token_balances = Vec::with_capacity(6);
+    for asset in EarnUniverse::canonical().assets {
+        let token_account =
+            derive_associated_token_address(&vault_pubkey, &asset.mint, &asset.token_program);
+        let (amount_raw, _) = load_spl_token_account_amount_at_or_after(
+            rpc,
+            &token_account,
+            &asset.mint,
+            &asset.token_program,
+            min_context_slot,
+        )?;
+        idle_token_balances.push(IdleTokenBalanceObservation {
+            mint: asset.mint.to_string(),
+            token_program: asset.token_program.to_string(),
+            token_account: token_account.to_string(),
+            amount_raw,
+        });
+    }
 
     let mut reserve_index = 0;
     while reserve_index < reserve_pubkeys.len() {
@@ -15929,6 +16009,7 @@ fn load_chain_reconcile_preview_from_rpc(
                 rpc,
                 &vault_liquidity_ata,
                 &reserve_summary.liquidity_mint,
+                &reserve_summary.liquidity_token_program,
                 min_context_slot,
             )?;
 
@@ -16013,6 +16094,7 @@ fn load_chain_reconcile_preview_from_rpc(
         vault_user_metadata: vault_user_metadata.to_string(),
         vault_user_metadata_exists,
         positions,
+        idle_token_balances,
         rpc_account_reads: FleetRpcAccountReadEvidence::default(),
     })
 }
@@ -17485,9 +17567,20 @@ fn build_route_execution_plan(
         )
         .into());
     }
+    if source.liquidity_token_program != target.liquidity_token_program {
+        return Err(format!(
+            "source token program {} does not match target token program {}",
+            source.liquidity_token_program, target.liquidity_token_program
+        )
+        .into());
+    }
     let planned_liquidity_mint = Pubkey::from_str(&input.liquidity_mint)?;
-    let vault_liquidity_ata =
-        derive_associated_token_address(&vault_pubkey, &planned_liquidity_mint, &spl_token::ID);
+    let planned_token_program = Pubkey::from_str(&source.liquidity_token_program)?;
+    let vault_liquidity_ata = derive_associated_token_address(
+        &vault_pubkey,
+        &planned_liquidity_mint,
+        &planned_token_program,
+    );
 
     let refresh_positions = obligation_refresh_positions_for_route(preview, source, target)?;
     let refresh_reserves = refresh_positions
@@ -18222,7 +18315,7 @@ async fn execute_prepared_same_mint_route_inner(
     let post_reconcile_state = chain_preview_reconciled_state(&post_reconcile_preview)?;
     ensure_post_confirm_chain_reconcile_state(decision, &post_reconcile_state)?;
     let post_snapshot = client
-        .reconcile_vault(decision.vault_id, post_reconcile_state)
+        .apply_observed_patch(decision.vault_id, post_reconcile_state)
         .await?;
     let confirmed = client
         .confirm_same_mint_rebalance(ConfirmSameMintRebalanceInput {
@@ -19273,14 +19366,22 @@ fn load_spl_token_account_amount(
     rpc: &RpcClient,
     token_account: &Pubkey,
     expected_mint: &Pubkey,
+    expected_token_program: &Pubkey,
 ) -> Result<(u64, bool), Box<dyn Error>> {
-    load_spl_token_account_amount_at_or_after(rpc, token_account, expected_mint, None)
+    load_spl_token_account_amount_at_or_after(
+        rpc,
+        token_account,
+        expected_mint,
+        expected_token_program,
+        None,
+    )
 }
 
 fn load_spl_token_account_amount_at_or_after(
     rpc: &RpcClient,
     token_account: &Pubkey,
     expected_mint: &Pubkey,
+    expected_token_program: &Pubkey,
     min_context_slot: Option<u64>,
 ) -> Result<(u64, bool), Box<dyn Error>> {
     let response = rpc.get_account_with_config(
@@ -19292,22 +19393,27 @@ fn load_spl_token_account_amount_at_or_after(
             ..RpcAccountInfoConfig::default()
         },
     )?;
-    decode_spl_token_account_amount(response.value.as_ref(), token_account, expected_mint)
+    decode_spl_token_account_amount(
+        response.value.as_ref(),
+        token_account,
+        expected_mint,
+        expected_token_program,
+    )
 }
 
 fn decode_spl_token_account_amount(
     account: Option<&Account>,
     token_account: &Pubkey,
     expected_mint: &Pubkey,
+    expected_token_program: &Pubkey,
 ) -> Result<(u64, bool), Box<dyn Error>> {
     let Some(account) = account else {
         return Ok((0, false));
     };
-    if account.owner != spl_token::ID {
+    if account.owner != *expected_token_program {
         return Err(format!(
             "token account {token_account} is owned by {}, expected {}",
-            account.owner,
-            spl_token::ID
+            account.owner, expected_token_program
         )
         .into());
     }
@@ -21095,6 +21201,27 @@ mod tests {
 
     const CREDENTIAL_BEARING_RPC_ERROR: &str = "sendTransaction failed with HTTP 401 Unauthorized at https://user:password@example.test/private/path?api-key=query-secret access_token=header-secret";
 
+    #[test]
+    fn position_sweep_catalog_hash_is_independent_of_dark_runtime_gate() {
+        let supported_mints = supported_stable_mints();
+        let full_catalog_hash = enabled_stable_mints_hash(&supported_mints).unwrap();
+
+        assert_eq!(
+            position_sweep_catalog_mints_hash(&[USDC_MINT.to_string()]).unwrap(),
+            full_catalog_hash
+        );
+        assert_eq!(
+            position_sweep_catalog_mints_hash(&supported_mints).unwrap(),
+            full_catalog_hash
+        );
+    }
+
+    #[test]
+    fn position_sweep_catalog_hash_rejects_an_invalid_runtime_cohort() {
+        assert!(position_sweep_catalog_mints_hash(&[]).is_err());
+        assert!(position_sweep_catalog_mints_hash(&["unsupported".to_owned()]).is_err());
+    }
+
     fn fleet_worker_completion_identity<'a>(
         opportunity_id: i64,
         route_fingerprint: Option<&'a str>,
@@ -21446,8 +21573,8 @@ mod tests {
             setup_obligation_reserve: None,
             e2e_deposit_amount_raw: None,
             execute,
-            prepare_only: false,
             read_only: false,
+            prepare_only: false,
             fused_execute: false,
             optimization_cycle: true,
             reconcile_from_chain,
@@ -21589,6 +21716,7 @@ mod tests {
             vault_user_metadata: metadata.to_string(),
             vault_user_metadata_exists: true,
             rpc_account_reads: FleetRpcAccountReadEvidence::default(),
+            idle_token_balances: Vec::new(),
             positions: vec![ChainPositionSummary {
                 reserve: reserve.to_string(),
                 market: market.to_string(),
