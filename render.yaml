@@ -10,7 +10,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-97f98e1d9c40b2a774fcddce219ceb2571050eae
+              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-0e119f301d633f4c849d7bec15a17ba818f00dcf
             preDeployCommand: /usr/local/bin/kamino-monitor-predeploy
             dockerCommand: /usr/local/bin/kamino-reserve-monitor --confirmed-refresh-interval-secs 1
             maxShutdownDelaySeconds: 60

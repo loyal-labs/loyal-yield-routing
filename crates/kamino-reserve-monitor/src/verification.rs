@@ -1,21 +1,10 @@
-use std::{
-    collections::BTreeSet,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    time::Duration,
-};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{account::Account, commitment_config::CommitmentConfig, pubkey::Pubkey};
-use tokio::{
-    sync::mpsc,
-    task::JoinHandle,
-    time::{self, Instant, MissedTickBehavior},
-};
+use tokio::time::Instant;
 
 /// Solana `getMultipleAccounts` accepts at most 100 addresses per request.
 pub const CONFIRMED_REFRESH_BATCH_SIZE: usize = 100;
@@ -31,12 +20,6 @@ pub struct ConfirmedReserveState {
     pub verified_slot: u64,
     pub verified_at: DateTime<Utc>,
     pub received_instant: Instant,
-}
-
-#[derive(Debug)]
-pub enum ConfirmedRefreshEvent {
-    Refreshed(Vec<ConfirmedReserveState>),
-    Failed(String),
 }
 
 #[derive(Clone)]
@@ -91,31 +74,5 @@ impl ConfirmedReserveVerifier {
             }
         }
         Ok(states)
-    }
-
-    pub fn spawn_periodic(
-        self,
-        reserves: Vec<Pubkey>,
-        interval: Duration,
-        tx: mpsc::UnboundedSender<ConfirmedRefreshEvent>,
-        running: Arc<AtomicBool>,
-    ) -> JoinHandle<()> {
-        tokio::spawn(async move {
-            let mut tick = time::interval_at(Instant::now() + interval, interval);
-            tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-            while running.load(Ordering::Relaxed) {
-                tick.tick().await;
-                if !running.load(Ordering::Relaxed) {
-                    break;
-                }
-                let event = match self.fetch(&reserves).await {
-                    Ok(states) => ConfirmedRefreshEvent::Refreshed(states),
-                    Err(error) => ConfirmedRefreshEvent::Failed(format!("{error:#}")),
-                };
-                if tx.send(event).is_err() {
-                    break;
-                }
-            }
-        })
     }
 }
