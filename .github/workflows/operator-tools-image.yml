@@ -66,7 +66,9 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           provenance: ${{ github.event_name == 'workflow_dispatch' && 'mode=max' || 'false' }}
           cache-from: type=gha,scope=operator-tools
-          cache-to: type=gha,scope=operator-tools,mode=max
+          # Pull requests read main's cache but never write their own; see the
+          # same note in worker-images.yml.
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,scope=operator-tools,mode=max' || '' }}
 
       - name: Pull dispatched image for runtime probe
         if: github.event_name == 'workflow_dispatch'

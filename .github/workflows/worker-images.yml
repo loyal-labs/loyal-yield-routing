@@ -115,7 +115,11 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           provenance: ${{ github.event_name == 'workflow_dispatch' && 'mode=max' || 'false' }}
           cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+          # Pull requests read main's cache but never write their own. Exporting
+          # every intermediate layer costs 19-64s per job and was the main driver
+          # of the repository's Actions cache overrun, which evicts main's warm
+          # layers and makes later builds start cold.
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,scope={0},mode=max', matrix.image) || '' }}
 
       - name: Pull dispatched image for runtime probe
         if: github.event_name == 'workflow_dispatch' && (inputs.images == 'both' || inputs.images == matrix.image)
