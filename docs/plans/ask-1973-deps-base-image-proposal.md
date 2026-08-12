@@ -1,7 +1,8 @@
 # ASK-1973 follow-up — prebuilt dependency base image
 
 Proposal only. Nothing here is implemented. Numbers are measured from the CI
-runs recorded in [`../build-timings/comparison.md`](../build-timings/comparison.md).
+runs, captured with `scripts/build-timings.sh`. The raw captures stay out of
+the repository.
 
 ## 1. The problem this solves
 

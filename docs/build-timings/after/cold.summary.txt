@@ -1,3 +1,0 @@
-scenario=cold
-elapsed_seconds=105
-exit_status=0

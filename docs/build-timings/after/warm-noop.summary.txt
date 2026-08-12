@@ -1,3 +1,0 @@
-scenario=warm-noop
-elapsed_seconds=0
-exit_status=0
