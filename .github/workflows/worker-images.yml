@@ -16,6 +16,27 @@ on:
       - packages/loyal-actions/**
       - scripts/execute-autodeposit-policy.ts
       - scripts/kamino-monitor-predeploy.sh
+  # Pull requests can only restore build caches from their own ref or from the
+  # default branch. Without this trigger, main's cache is only ever refreshed by
+  # a manual dispatch, so every PR after a merge rebuilds against a stale layer
+  # set. This run builds without pushing purely to keep main's cache current.
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/worker-images.yml
+      - Cargo.lock
+      - Cargo.toml
+      - bun.lock
+      - Dockerfile.laserstream-workers
+      - Dockerfile.light-workers
+      - package.json
+      - rust-toolchain.toml
+      - .sqlx/**
+      - crates/**
+      - packages/loyal-actions/**
+      - scripts/execute-autodeposit-policy.ts
+      - scripts/kamino-monitor-predeploy.sh
   workflow_dispatch:
     inputs:
       images:
@@ -63,11 +84,11 @@ jobs:
               /app/node_modules
     steps:
       - name: Check out repository
-        if: github.event_name == 'pull_request' || inputs.images == 'both' || inputs.images == matrix.image
+        if: github.event_name != 'workflow_dispatch' || inputs.images == 'both' || inputs.images == matrix.image
         uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        if: github.event_name == 'pull_request' || inputs.images == 'both' || inputs.images == matrix.image
+        if: github.event_name != 'workflow_dispatch' || inputs.images == 'both' || inputs.images == matrix.image
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
@@ -79,7 +100,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push image
-        if: github.event_name == 'pull_request' || inputs.images == 'both' || inputs.images == matrix.image
+        if: github.event_name != 'workflow_dispatch' || inputs.images == 'both' || inputs.images == matrix.image
         uses: docker/build-push-action@v6
         with:
           context: .

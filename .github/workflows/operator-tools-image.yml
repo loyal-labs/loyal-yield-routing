@@ -10,6 +10,20 @@ on:
       - rust-toolchain.toml
       - .sqlx/**
       - crates/**
+  # Keeps main's build cache current so pull requests opened after a merge start
+  # from a warm layer set instead of the last manual dispatch. Builds without
+  # pushing; see the same note in worker-images.yml.
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/operator-tools-image.yml
+      - Cargo.lock
+      - Cargo.toml
+      - Dockerfile.operator-tools
+      - rust-toolchain.toml
+      - .sqlx/**
+      - crates/**
   workflow_dispatch:
 
 permissions:
@@ -59,6 +73,9 @@ jobs:
         run: docker pull --platform linux/amd64 "${REGISTRY}/${IMAGE_NAMESPACE}/operator-tools:sha-${GITHUB_SHA}"
 
       - name: Probe operator image contents and command
+        # Cache-warming pushes never load the image locally, so there is nothing
+        # to probe.
+        if: github.event_name != 'push'
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/operator-tools:sha-${{ github.sha }}
           PROBE_BINARIES: >-
