@@ -31,7 +31,8 @@ pub use signer::{
 };
 pub use stable_mints::{
     enabled_stable_mints_from_env, enabled_stable_mints_hash, resolve_enabled_stable_mints,
-    supported_stable_mints, StableMintConfigError, ENABLED_STABLE_MINTS_ENV,
+    supported_idle_deposit_mints, supported_stable_mints, EarnAsset, EarnUniverse,
+    StableMintConfigError, ENABLED_STABLE_MINTS_ENV,
 };
 pub use store::{NeonSqlClient, OrchestratorStore, RouteLookupTableProvisioningLock};
 pub use types::*;

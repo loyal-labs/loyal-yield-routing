@@ -1935,7 +1935,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, Box<dyn
 }
 
 fn usage() -> &'static str {
-    "Usage: same-mint-yield-monitor [--once] [--execute] [--all-active-vaults | --settings <PUBKEY> --vault-index <N>] [--fleet-page-size <COUNT>] [--poll-interval-seconds <SECONDS>] [--rebalance-cooldown-seconds <SECONDS>] [--max-candidate-age-seconds <SECONDS>] [--min-edge-bps <BPS>] [--min-idle-deposit-raw <RAW>]\n\nDry-run is the default. Fleet mode reads POLICY_KEYPAIR for DB discovery, pages active vaults in batches of 50 by default, and never reads SOLANA_TESTING_PK. Explicit --settings/--vault-index mode does not read SOLANA_TESTING_PK. No-arg authority discovery mode is local dry-run/setup only and reads SOLANA_TESTING_PK. Live fleet execution passes idle-vault deposits through same-mint-reserve-swap, which reads POLICY_KEYPAIR as the delegated policy signer and transaction fee payer. Set EARN_ROUTER_ENABLED_STABLE_MINTS to a comma-separated subset of supported stable mint addresses for staged rollout. Idle-vault deposit routing is USDC-only and defaults to a 1_000_000 raw-unit threshold. The same-vault rebalance cooldown defaults to 300 seconds; pass --rebalance-cooldown-seconds 0 only for local/test disable."
+    "Usage: same-mint-yield-monitor [--once] [--execute] [--all-active-vaults | --settings <PUBKEY> --vault-index <N>] [--fleet-page-size <COUNT>] [--poll-interval-seconds <SECONDS>] [--rebalance-cooldown-seconds <SECONDS>] [--max-candidate-age-seconds <SECONDS>] [--min-edge-bps <BPS>] [--min-idle-deposit-raw <RAW>]\n\nDry-run is the default. Fleet mode reads POLICY_KEYPAIR for DB discovery, pages active vaults in batches of 50 by default, and never reads SOLANA_TESTING_PK. Explicit --settings/--vault-index mode does not read SOLANA_TESTING_PK. No-arg authority discovery mode is local dry-run/setup only and reads SOLANA_TESTING_PK. Live fleet execution passes idle-vault deposits through same-mint-reserve-swap, which reads POLICY_KEYPAIR as the delegated policy signer and transaction fee payer. EARN_ROUTER_ENABLED_STABLE_MINTS defaults to USDC only; set it to an explicit comma-separated subset of supported stable mint addresses for staged expansion. Idle-vault deposits default to a 1_000_000 raw-unit threshold. The same-vault rebalance cooldown defaults to 300 seconds; pass --rebalance-cooldown-seconds 0 only for local/test disable."
 }
 
 #[cfg(test)]
@@ -1986,8 +1986,16 @@ mod tests {
     }
 
     fn safe_target(reserve: &str) -> SupportedReserveLatestRow {
+        let observed_at = Utc::now();
         SupportedReserveLatestRow {
-            observed_at: Utc::now(),
+            state_event_id: 1,
+            account_data_hash: "test-hash".to_owned(),
+            state_observed_at: observed_at,
+            state_slot: 100,
+            verified_at: observed_at,
+            verified_slot: 100,
+            verification_commitment: "confirmed".to_owned(),
+            observed_at,
             slot: 100,
             reserve: reserve.to_owned(),
             market: Some(ALLOWED_MARKET.to_owned()),

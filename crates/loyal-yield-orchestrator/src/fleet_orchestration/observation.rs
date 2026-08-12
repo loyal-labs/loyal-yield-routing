@@ -1953,7 +1953,6 @@ async fn load_fleet_sources(
             JOIN loyal_yield.vault_idle_token_balances_current idle
               ON idle.vault_id = eligible.vault_id
             WHERE idle.amount_raw > 0
-              AND idle.mint = $6
               AND idle.mint = ANY($2::TEXT[])
               AND idle.mint = ANY(eligible.policy_stable_mints)
               AND idle.mint = ANY(eligible.policy_liquidity_mints)
@@ -2214,7 +2213,6 @@ async fn load_fleet_sources_without_queue_schema(
             JOIN loyal_yield.vault_idle_token_balances_current idle
               ON idle.vault_id = eligible.vault_id
             WHERE idle.amount_raw > 0
-              AND idle.mint = $6
               AND idle.mint = ANY($2::TEXT[])
               AND idle.mint = ANY(eligible.policy_stable_mints)
               AND idle.mint = ANY(eligible.policy_liquidity_mints)
