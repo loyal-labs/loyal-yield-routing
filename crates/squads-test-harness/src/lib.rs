@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 //! Vertical-slice helpers for Squads and Loyal Actions tests.
 //!
 //! The crate keeps the public API grouped by the concepts a test author is

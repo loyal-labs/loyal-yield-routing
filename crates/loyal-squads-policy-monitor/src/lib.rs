@@ -1,3 +1,5 @@
+#![allow(clippy::result_large_err)]
+
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use clap::ValueEnum;
 use futures_util::{future::BoxFuture, SinkExt, StreamExt};
@@ -7,7 +9,7 @@ use loyal_actions::{
     DetectedYieldRouteMode, DetectedYieldRoutePolicy, KaminoStableRiskProfile,
     SquadsSettingsActionView, YieldRouteUniversePreset, SQUADS_SMART_ACCOUNT_PROGRAM_ID,
 };
-use loyal_yield_orchestrator::{
+use loyal_yield_store::{
     BalanceSweepExecutionInput, BalanceSweepPolicyMatchInput, OrchestratorConfig,
     OrchestratorError, OrchestratorStore, PolicyMatchInput,
 };

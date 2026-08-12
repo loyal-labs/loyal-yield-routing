@@ -151,6 +151,17 @@ mod tests {
         assert!(universe.assets.iter().all(|asset| asset.decimals == 6));
     }
 
+    /// The store crate repeats these mints as plain strings so the small
+    /// workers stay off the Solana dependency graph. Both lists compile
+    /// independently, so pin them to each other here.
+    #[test]
+    fn store_idle_deposit_mints_match_the_canonical_universe() {
+        assert_eq!(
+            loyal_yield_store::domain::supported_idle_deposit_mints(),
+            supported_idle_deposit_mints()
+        );
+    }
+
     #[test]
     fn stable_mint_subset_is_canonical_and_rejects_unknowns() {
         let configured = format!(" {USDC_MINT}, {PYUSD_MINT} ");

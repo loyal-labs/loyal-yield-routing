@@ -1195,6 +1195,7 @@ async fn release_claim_once(pool: &PgPool, claim_token: &str) -> Result<ClaimOut
     Ok(outcome)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn claim_eligible_lots_once(
     pool: &PgPool,
     target_id: i64,

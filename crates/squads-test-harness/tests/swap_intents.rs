@@ -71,7 +71,7 @@ fn wallet_b_can_execute_allowed_usdc_to_pyusd_swap_intent() {
     .expect("build swap action");
     try_send_instructions(
         &mut context.svm,
-        &[swap_action_setup.instruction.clone()],
+        std::slice::from_ref(&swap_action_setup.instruction),
         &context.wallet,
         &[],
     )
@@ -175,7 +175,7 @@ fn wallet_b_can_execute_captured_jupiter_build_swap_instruction_through_policy()
     .expect("build Jupiter swap action");
     try_send_instructions(
         &mut context.svm,
-        &[swap_action_setup.instruction.clone()],
+        std::slice::from_ref(&swap_action_setup.instruction),
         &context.wallet,
         &[],
     )

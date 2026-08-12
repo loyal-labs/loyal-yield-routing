@@ -9,14 +9,14 @@ name = "loyal-hub"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1"
-clap = { version = "4.5", features = ["derive", "env"] }
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive", "env"] }
 loyal-actions = { path = "../loyal-actions" }
 loyal-hub-abi.workspace = true
-serde = { version = "1", features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
 serde_json = "1"
-solana-account-decoder = "2.3"
-solana-client = "2.3"
+solana-account-decoder.workspace = true
+solana-client.workspace = true
 solana-program.workspace = true
 solana-sdk.workspace = true
 spl-token.workspace = true

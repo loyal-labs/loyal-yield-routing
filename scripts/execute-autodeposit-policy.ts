@@ -1231,8 +1231,9 @@ export async function releaseAutodepositLotClaim(args: {
       RETURNING slot.id
     )
     UPDATE loyal_yield.balance_sweep_scheduled_slots
-    SET status = 'failed',
+    SET status = 'scheduled',
         claim_token = NULL,
+        eligible_after = now() + (${retryDelaySeconds} * interval '1 second'),
         last_error = ${args.lastError},
         updated_at = now()
     WHERE claim_token IN (SELECT claim_token FROM updated_claim)

@@ -1,10 +1,11 @@
-use crate::{NeonSqlClient, OrchestratorError, VaultId, STANDARD_POLICY_AUTHORITY};
+use crate::{NeonSqlClient, OrchestratorError, VaultId};
 use chrono::{DateTime, Utc};
 pub use loyal_actions::{
     compiler_lookup_eligible_addresses, LookupTableAccountAccess, LookupTableAccountProvenance,
     LookupTableManifest, LookupTableManifestError, MustRemainStatic, MustRemainStaticReason,
     SharedMarket, SharedMarketRole, Vault, VaultRole,
 };
+use loyal_solana_env::STANDARD_POLICY_AUTHORITY;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -2545,6 +2546,7 @@ pub enum LookupTableProvisionerBroadcastPermitResult {
     },
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum LookupTableSharedMarketOperationFenceResult {
     Current,
@@ -2982,6 +2984,7 @@ pub enum AtomicVaultAllocationResult {
     },
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ActiveVaultBindingDisposition {
     Ready,
@@ -5175,7 +5178,7 @@ impl NeonSqlClient {
     ) -> Result<AtomicVaultAllocationResult, OrchestratorError> {
         let mut tx = self.pool().begin().await?;
         let result = self
-            .allocate_vault_binding_and_queue_operation_in_connection(&mut *tx, request)
+            .allocate_vault_binding_and_queue_operation_in_connection(&mut tx, request)
             .await?;
         tx.commit().await?;
         Ok(result)
@@ -6181,7 +6184,7 @@ impl NeonSqlClient {
             .and_then(Value::as_u64)
             .and_then(|slot| i64::try_from(slot).ok());
         let shared_manifest = resolve_or_persist_request_manifest_in_tx(
-            &mut *tx,
+            &mut tx,
             cluster,
             &request,
             LookupTableManifestSubject::SharedMarket,
@@ -6230,7 +6233,7 @@ impl NeonSqlClient {
         // Shared drift is fenced above before deriving or allocating any vault
         // desired state. A catalog/code mismatch cannot consume shard capacity.
         let vault_manifest = resolve_or_persist_request_manifest_in_tx(
-            &mut *tx,
+            &mut tx,
             cluster,
             &request,
             LookupTableManifestSubject::Vault,
@@ -6277,7 +6280,7 @@ impl NeonSqlClient {
         .map_or(0, |ordinal| ordinal.saturating_add(1));
         let vault_allocation = self
             .allocate_vault_binding_and_queue_operation_in_connection(
-                &mut *tx,
+                &mut tx,
                 AtomicVaultAllocationRequest {
                     cluster: cluster.to_owned(),
                     family_id: vault_family_id,
@@ -6820,7 +6823,7 @@ impl NeonSqlClient {
             .iter()
             .find(|row| row.try_get::<i64, _>("id").ok() == Some(identity_table_id))
             .ok_or_else(|| stale_store_update("reusable lookup table", identity_table_id))?;
-        let table = reusable_lookup_table_from_row(&table_row)?;
+        let table = reusable_lookup_table_from_row(table_row)?;
         let durable: bool = table_row.try_get("durable")?;
         // Publishing a logical binding on an unchanged packed table does not
         // invalidate routes for other vaults that share the physical ALT.
@@ -7156,9 +7159,9 @@ impl NeonSqlClient {
                 .await?
                 .ok_or_else(|| stale_store_update("lookup-table family", family_id))?;
         let family = lookup_table_family_from_row(&family_row)?;
-        if !family
+        if family
             .rollback_until
-            .is_some_and(|rollback_until| rollback_until > Utc::now())
+            .is_none_or(|rollback_until| rollback_until <= Utc::now())
         {
             return Err(OrchestratorError::StoreInvariant(format!(
                 "family {family_id} rollback window is not active"
@@ -7191,9 +7194,9 @@ impl NeonSqlClient {
         .await?
         .ok_or_else(|| stale_store_update("active lookup-table binding", active_binding_id))?;
         let active = lookup_table_binding_from_row(&active_row)?;
-        if !active
+        if active
             .rollback_until
-            .is_some_and(|rollback_until| rollback_until > Utc::now())
+            .is_none_or(|rollback_until| rollback_until <= Utc::now())
         {
             return Err(OrchestratorError::StoreInvariant(format!(
                 "binding {active_binding_id} rollback window is not active"
@@ -13262,7 +13265,7 @@ impl NeonSqlClient {
             ));
         }
         let mut tx = self.pool().begin().await?;
-        Self::validate_cleanup_enqueue_in_tx(&mut *tx, &input).await?;
+        Self::validate_cleanup_enqueue_in_tx(&mut tx, &input).await?;
         let inserted_id = sqlx::query_scalar::<_, i64>(
             r#"
             INSERT INTO loyal_yield.lookup_table_operations
@@ -15591,6 +15594,7 @@ impl NeonSqlClient {
         reusable_lookup_table_from_row(&row)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn mark_reusable_lookup_table_verification(
         &self,
         table_id: i64,

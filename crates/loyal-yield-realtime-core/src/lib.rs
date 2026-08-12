@@ -133,7 +133,7 @@ impl fmt::Display for AuthError {
 
 impl std::error::Error for AuthError {}
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct RealtimeEventRow {
     pub id: i64,
     pub created_at: DateTime<Utc>,
@@ -148,6 +148,28 @@ pub struct RealtimeEventRow {
     pub scheduled_slot_id: Option<i64>,
     pub execution_id: Option<i64>,
     pub failure_code: Option<String>,
+}
+
+impl<'row> sqlx::FromRow<'row, sqlx::postgres::PgRow> for RealtimeEventRow {
+    fn from_row(row: &'row sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row;
+
+        Ok(Self {
+            id: row.try_get("id")?,
+            created_at: row.try_get("created_at")?,
+            event_type: row.try_get("event_type")?,
+            scope: row.try_get("scope")?,
+            reason: row.try_get("reason")?,
+            solana_env: row.try_get("solana_env")?,
+            wallet_address: row.try_get("wallet_address")?,
+            settings_pda: row.try_get("settings_pda")?,
+            earn_vault_address: row.try_get("earn_vault_address")?,
+            target_id: row.try_get("target_id")?,
+            scheduled_slot_id: row.try_get("scheduled_slot_id")?,
+            execution_id: row.try_get("execution_id")?,
+            failure_code: row.try_get("failure_code")?,
+        })
+    }
 }
 
 #[derive(Debug, Serialize)]

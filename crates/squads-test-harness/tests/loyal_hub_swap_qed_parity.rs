@@ -87,6 +87,7 @@ fn seed_direct_swap_accounts(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn direct_hub_swap_ix(
     user: Pubkey,
     user_input: Pubkey,

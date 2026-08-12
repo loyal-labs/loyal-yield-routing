@@ -425,6 +425,7 @@ fn final_expanded_shard_fits_packets_and_pins_the_zero_bin_window() {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_instruction(
     vault: Pubkey,
     vault_loyal: Pubkey,

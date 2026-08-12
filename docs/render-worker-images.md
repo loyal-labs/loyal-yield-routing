@@ -140,7 +140,20 @@ applied. Live readback on 2026-06-17 confirmed these six relations exist:
 `loyal_staging.latest_balance_sweep_wallet_ata_observations`. Both split streams
 were empty immediately after creation.
 
-CI builds both images in `.github/workflows/worker-images.yml` and tags them as `sha-${GITHUB_SHA}`. Render services should use those immutable SHA tags or image digests. Do not use `latest` as the only service image reference.
+CI builds the production images in `.github/workflows/worker-images.yml` and
+tags them as `sha-${GITHUB_SHA}`. Its `images` input can build both images or
+only `light-workers` / `laserstream-workers`. Render services should use those
+immutable SHA tags or image digests. Do not use `latest` as the only service
+image reference.
+
+Operator-only binaries are deliberately excluded from the production images.
+Build `Dockerfile.operator-tools` only through
+`.github/workflows/operator-tools-image.yml`. Pull requests build and probe the
+image without pushing it; manual dispatch publishes the immutable
+`operator-tools:sha-<commit>` image. It contains `loyal-timescale-migrations`,
+the fleet verifier and production-evidence tools, `same-mint-monitor-e2e`, and
+the shared-catalog, alert-monitor, legacy-import, and cleanup lookup-table
+tools. No Render service is pinned to this image.
 
 The production/staging stream-selector code in this change is not active on
 Render until the repo change is committed, the `worker-images` workflow builds
@@ -187,10 +200,11 @@ the Vercel UI or another non-echoing secret path. The Preview branch `staging`
 path and verified by env-name readback.
 
 The light worker image contains the Rust projector/trigger/realtime binaries,
-same-mint monitor/executor binaries, `route-lookup-table-provisioner`,
-`route-lookup-table-shared-catalog`, `route-lookup-table-legacy-import`,
-`route-lookup-table-cleanup`, `route-lookup-table-alert-monitor`, Bun
-production dependencies, and `scripts/execute-autodeposit-policy.ts`.
+the fleet planner/confirmer and same-mint monitor/executor binaries,
+`yield-migrations`, `route-lookup-table-provisioner`, Bun production
+dependencies, and `scripts/execute-autodeposit-policy.ts`. The shared-catalog,
+legacy-import, cleanup, and alert-monitor lookup-table tools are operator-only
+and exist exclusively in the `operator-tools` image described above.
 `loyal-yield-realtime` runs from the same immutable image as a Render Web
 Service with command `/usr/local/bin/loyal-yield-realtime`, health path
 `/healthz`, direct `NEON_DATABASE_URL`, and `REALTIME_AUTH_SECRET` from the

@@ -15,6 +15,7 @@ use loyal_hub_abi::{
     swap_exact_in_args, withdraw_inventory_args,
 };
 
+#[allow(clippy::large_enum_variant)]
 pub enum HubInstruction {
     InitializeConfig(HubConfig),
     SwapExactIn(SwapExactInArgs),

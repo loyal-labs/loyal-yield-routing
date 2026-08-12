@@ -1040,7 +1040,7 @@ fn collect_local_evidence(repository_root: &Path) -> Result<LocalEvidence, Box<d
     for (version, name, file_name) in VERIFIED_MIGRATIONS {
         let bytes = fs::read(
             repository_root
-                .join("crates/loyal-yield-orchestrator/migrations")
+                .join("crates/loyal-yield-store/migrations")
                 .join(file_name),
         )?;
         migration_files.push((version, name, file_name, bytes));
@@ -2079,7 +2079,7 @@ fn deterministic_evidence() -> Result<DeterministicEvidence, String> {
     .map_err(|error| format!("{error:?}"))?;
 
     let started = Instant::now();
-    let benchmark = run_deterministic_benchmark(10_000, 0x4c4f_5941_4c)
+    let benchmark = run_deterministic_benchmark(10_000, 0x004c_4f59_414c)
         .map_err(|error| format!("{error:?}"))?;
     let benchmark_millis = started.elapsed().as_millis();
 
@@ -5453,9 +5453,13 @@ async fn run_database_checks(
         .as_ref()
         .err()
         .map(ToString::to_string);
-    let commit_publication_rejected_during_commit = commit_publication_error
-        .as_deref()
-        .is_some_and(|error| error.contains("active rebalance opportunity cannot commit"));
+    let commit_publication_rejected_during_commit = matches!(
+        commit_publication_result.as_ref().err(),
+        Some(OrchestratorError::OpportunityDeferredBehindEpochLifetime {
+            stage: "database_commit_fence",
+            ..
+        })
+    );
     let commit_publication_rows: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM loyal_yield.rebalance_opportunities WHERE cluster = $1 AND vault_id = $2",
     )
@@ -8525,7 +8529,7 @@ async fn migration_repository_checks(
     let mut migrations = Vec::new();
     for (version, name, file_name) in VERIFIED_MIGRATIONS {
         let path = repository_root
-            .join("crates/loyal-yield-orchestrator/migrations")
+            .join("crates/loyal-yield-store/migrations")
             .join(file_name);
         match fs::read(&path) {
             Ok(sql) => migrations.push((version, name, path, sql)),
@@ -8891,12 +8895,10 @@ fn implementation_checks(
                     } else {
                         "deterministic in-memory plus isolated PostgreSQL queue evidence"
                     }
+                } else if runtime_was_run {
+                    "deterministic plus source-bound current-fleet evidence"
                 } else {
-                    if runtime_was_run {
-                        "deterministic plus source-bound current-fleet evidence"
-                    } else {
-                        "deterministic in-memory evidence only"
-                    }
+                    "deterministic in-memory evidence only"
                 },
                 "unverified": [
                     "every eligible current vault considered from one non-expired epoch",
@@ -9261,8 +9263,8 @@ fn load_production_evidence(
             path.as_str()
                 == "crates/loyal-yield-orchestrator/src/bin/fleet-orchestration-verifier.rs"
         });
-    if !artifact_head_is_checkout
-        && !(artifact_head_is_ancestor && post_evidence_diff_is_verifier_only)
+    if !(artifact_head_is_checkout
+        || artifact_head_is_ancestor && post_evidence_diff_is_verifier_only)
     {
         return Err(
             "production evidence HEAD differs outside the independent verifier source".into(),
@@ -9343,17 +9345,16 @@ fn env_value_fingerprint(nonce: &str, key: &str, value: &str) -> String {
 }
 
 fn role_service_scoped_env_keys(env_keys: &BTreeSet<String>) -> BTreeSet<String> {
-    env_keys
-        .iter()
-        .filter(|key| !key.starts_with("OBSERVABILITY_"))
-        .cloned()
-        .collect()
+    env_keys.clone()
 }
 
 fn role_scope_value_keys(name: &str, env_keys: &BTreeSet<String>) -> BTreeSet<String> {
     role_service_scoped_env_keys(env_keys)
         .into_iter()
         .filter(|key| key.as_str() != "RUST_LOG")
+        // Presence is required, but the local verifier does not need the
+        // ingestion secret and must never place it in evidence.
+        .filter(|key| key.as_str() != "OBSERVABILITY_INGESTION_API_KEY")
         .filter(|key| {
             !matches!(
                 key.as_str(),
@@ -9371,6 +9372,7 @@ fn monitor_scope_value_keys(env_keys: &BTreeSet<String>) -> BTreeSet<String> {
     env_keys
         .iter()
         .filter(|key| key.as_str() != "RUST_LOG")
+        .filter(|key| key.as_str() != "OBSERVABILITY_INGESTION_API_KEY")
         .cloned()
         .collect()
 }
@@ -9379,6 +9381,9 @@ fn expected_env_value(key: &str) -> Option<String> {
     match key {
         "YIELD_ALT_CLUSTER" => Some(PRODUCTION_CLUSTER.to_owned()),
         "KAMINO_UPDATE_SOURCE" => Some("laserstream".to_owned()),
+        "OBSERVABILITY_ENABLED" => Some("true".to_owned()),
+        "OBSERVABILITY_ENVIRONMENT" => Some("production".to_owned()),
+        "OBSERVABILITY_OTLP_ENDPOINT" => Some("https://loyal-clickstack.onrender.com".to_owned()),
         // A blank fee-payer pool is a valid explicit configuration: the
         // route workers intentionally fall back to POLICY_KEYPAIR.
         "YIELD_ROUTE_FEE_PAYER_KEYPAIRS" => env::var(key).ok(),
@@ -10216,7 +10221,7 @@ fn production_migration_subcheck(binding: &ProductionEvidenceBinding) -> Subchec
     for (version, expected_name, file_name) in VERIFIED_MIGRATIONS {
         let path = binding
             .repository_root
-            .join("crates/loyal-yield-orchestrator/migrations")
+            .join("crates/loyal-yield-store/migrations")
             .join(file_name);
         let expected_checksum = fs::read(path)
             .map(|bytes| sha256_hex(&bytes))
@@ -10364,6 +10369,7 @@ fn production_render_subcheck(
                 == Some(expected_role.pre_deploy_command.as_str())
             && live_env.as_ref() == Some(&expected_live_env)
             && blueprint_env.as_ref() == Some(&expected_role.env_keys)
+            && role.and_then(|role| value_bool(role, "observabilityBoundaryPasses")) == Some(true)
             && expected_fingerprints.is_some()
             && reported_fingerprints == expected_fingerprints
             && role
@@ -10844,6 +10850,7 @@ fn production_confirmed_market_data_plane_subcheck(
         && required_monitor_env_keys.is_subset(&expected_monitor.env_keys)
         && live_env_keys.as_ref() == Some(&expected_monitor.env_keys)
         && reported_blueprint_env_keys.as_ref() == Some(&expected_monitor.env_keys)
+        && value_bool(monitor, "observabilityBoundaryPasses") == Some(true)
         && expected_monitor_fingerprints.is_some()
         && reported_monitor_fingerprints == expected_monitor_fingerprints
         && value_string(deploy, "status") == Some("live")
@@ -11240,7 +11247,7 @@ fn production_complete_fleet_subcheck(binding: &ProductionEvidenceBinding) -> Su
     ]
     .into_iter()
     .all(|key| {
-        status_metric(queue, key).map_or(false, |value| {
+        status_metric(queue, key).is_some_and(|value| {
             value.is_null()
                 || value
                     .as_i64()
@@ -12591,5 +12598,26 @@ mod tests {
             "planner_executor_source_evidence_is_kind_scoped"
         );
         assert_eq!(result.verdict, Verdict::Pass);
+    }
+
+    #[test]
+    fn live_role_scope_keeps_observability_keys_without_fingerprinting_secret() {
+        let keys = [
+            "NEON_DATABASE_URL",
+            "OBSERVABILITY_ENABLED",
+            "OBSERVABILITY_ENVIRONMENT",
+            "OBSERVABILITY_OTLP_ENDPOINT",
+            "OBSERVABILITY_INGESTION_API_KEY",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+
+        assert_eq!(role_service_scoped_env_keys(&keys), keys);
+        let fingerprinted = role_scope_value_keys("loyal-fleet-opportunity-planner", &keys);
+        assert!(fingerprinted.contains("OBSERVABILITY_ENABLED"));
+        assert!(fingerprinted.contains("OBSERVABILITY_ENVIRONMENT"));
+        assert!(fingerprinted.contains("OBSERVABILITY_OTLP_ENDPOINT"));
+        assert!(!fingerprinted.contains("OBSERVABILITY_INGESTION_API_KEY"));
     }
 }

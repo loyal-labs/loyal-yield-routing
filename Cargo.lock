@@ -924,7 +924,9 @@ dependencies = [
  "commons",
  "klend-interface",
  "loyal-actions",
- "loyal-yield-orchestrator",
+ "loyal-kamino-codec",
+ "loyal-solana-env",
+ "loyal-yield-store",
  "serde",
  "serde_json",
  "solana-client",
@@ -1084,7 +1086,7 @@ dependencies = [
  "helius-laserstream",
  "loyal-actions",
  "loyal-observability",
- "loyal-yield-orchestrator",
+ "loyal-yield-store",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1106,7 +1108,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "futures-util",
- "loyal-yield-orchestrator",
+ "loyal-yield-store",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1121,7 +1123,7 @@ dependencies = [
  "balance-sweep-ata-observations",
  "clap",
  "loyal-observability",
- "loyal-yield-orchestrator",
+ "loyal-yield-store",
  "tokio",
  "tracing",
 ]
@@ -3267,8 +3269,9 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clap",
- "kamino-reserve-monitor",
  "klend-interface",
+ "loyal-kamino-codec",
+ "loyal-kamino-data",
  "prost 0.13.5",
  "serde",
  "serde_json",
@@ -3292,6 +3295,8 @@ dependencies = [
  "helius-laserstream",
  "klend-interface",
  "loyal-actions",
+ "loyal-kamino-codec",
+ "loyal-kamino-data",
  "loyal-observability",
  "reqwest 0.12.28",
  "serde",
@@ -3582,6 +3587,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "loyal-fleet-worker"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bincode",
+ "bs58",
+ "bytemuck",
+ "chrono",
+ "futures-util",
+ "klend-interface",
+ "loyal-actions",
+ "loyal-observability",
+ "loyal-yield-orchestrator",
+ "loyal-yield-router",
+ "num-bigint 0.4.6",
+ "num-traits",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "solana-account-decoder-client-types 2.3.13",
+ "solana-client",
+ "solana-rpc-client",
+ "solana-sdk",
+ "spl-token 8.0.0",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "loyal-hub-abi"
 version = "0.1.0"
 
@@ -3613,6 +3648,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "loyal-kamino-codec"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "klend-interface",
+ "serde",
+ "solana-sdk",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "loyal-kamino-data"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "klend-interface",
+ "loyal-actions",
+ "loyal-kamino-codec",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "solana-sdk",
+ "sqlx",
+ "tracing",
+]
+
+[[package]]
 name = "loyal-observability"
 version = "0.1.0"
 dependencies = [
@@ -3628,6 +3693,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "loyal-route-lookup-tables"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "loyal-actions",
+ "loyal-solana-env",
+ "loyal-yield-store",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "solana-sdk",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "loyal-solana-env"
+version = "0.1.0"
+dependencies = [
+ "bs58",
+ "reqwest 0.12.28",
+ "serde_json",
+ "solana-sdk",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "loyal-squads-policy-monitor"
 version = "0.1.0"
 dependencies = [
@@ -3637,7 +3730,7 @@ dependencies = [
  "clap",
  "futures-util",
  "loyal-actions",
- "loyal-yield-orchestrator",
+ "loyal-yield-store",
  "rustls 0.23.40",
  "serde",
  "serde_json",
@@ -3668,8 +3761,12 @@ dependencies = [
  "futures-util",
  "klend-interface",
  "loyal-actions",
+ "loyal-kamino-codec",
  "loyal-observability",
+ "loyal-route-lookup-tables",
+ "loyal-solana-env",
  "loyal-yield-router",
+ "loyal-yield-store",
  "num-bigint 0.4.6",
  "num-traits",
  "reqwest 0.12.28",
@@ -3728,6 +3825,19 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "tokio",
+]
+
+[[package]]
+name = "loyal-yield-store"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.18",
  "tokio",
 ]
 

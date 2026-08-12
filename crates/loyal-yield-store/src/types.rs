@@ -589,6 +589,7 @@ pub struct PlannedRebalanceDecisionInput {
 }
 
 impl PlannedRebalanceDecisionInput {
+    #[allow(clippy::too_many_arguments)]
     pub fn same_mint(
         source_snapshot_id: SnapshotId,
         source_reserve: impl Into<String>,
@@ -742,6 +743,7 @@ pub struct PlanOutcome {
     pub status: PlanOutcomeStatus,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanOutcomeStatus {
     Planned(RebalanceDecision),

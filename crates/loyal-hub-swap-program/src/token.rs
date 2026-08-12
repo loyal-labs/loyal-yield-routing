@@ -167,6 +167,7 @@ pub fn transfer_checked(
 }
 
 #[cfg(not(kani))]
+#[allow(clippy::too_many_arguments)]
 pub fn transfer_checked_signed(
     program_id: &Pubkey,
     source: &AccountInfo,
@@ -223,6 +224,7 @@ pub fn transfer_checked_signed(
 }
 
 #[cfg(not(kani))]
+#[allow(clippy::too_many_arguments)]
 fn invoke_token_transfer_checked(
     source: &AccountInfo,
     mint: &AccountInfo,

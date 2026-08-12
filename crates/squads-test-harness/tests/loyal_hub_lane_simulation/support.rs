@@ -855,7 +855,7 @@ fn create_sim_wallet(
     .expect("build simulated Loyal Hub swap action");
     try_send_instructions(
         &mut context.svm,
-        &[swap_action.instruction.clone()],
+        std::slice::from_ref(&swap_action.instruction),
         &signer,
         &[],
     )

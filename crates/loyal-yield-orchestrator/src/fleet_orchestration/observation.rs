@@ -1,4 +1,5 @@
 use super::domain::OpportunityInput;
+pub use super::queue::MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS;
 use crate::{route_amount_evidence_from_metadata, NeonSqlClient, ACTIVE_DECISION_STATUSES};
 use chrono::{DateTime, Duration, Utc};
 use loyal_actions::{CASH_MINT, PYUSD_MINT, USDC_MINT, USDG_MINT, USDS_MINT, USDT_MINT};
@@ -45,7 +46,6 @@ pub const MARKET_MATERIAL_CAPACITY_DRIFT_PPM: i64 = 1_000;
 /// Routes need enough immutable market lifetime to survive queue publication,
 /// claim, compilation, and a normal submission round without relaxing the
 /// hard confirmed-verification expiry.
-pub const MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS: i64 = 60;
 /// Exact confirmed verification is hard-expired after four minutes even if a
 /// caller supplies a looser market-age configuration.
 pub const MAXIMUM_CONFIRMED_VERIFICATION_AGE_SECONDS: i64 = 240;
@@ -1660,7 +1660,7 @@ fn reserve_economic_expires_at(
 }
 
 fn ratio_to_ppm(value: f64) -> Result<i64, FleetObservationError> {
-    if !value.is_finite() || value < 0.0 || value > 1.000_001 {
+    if !value.is_finite() || !(0.0..=1.000_001).contains(&value) {
         return Err(FleetObservationError::ArithmeticOverflow);
     }
     Ok((value * 1_000_000.0).round() as i64)

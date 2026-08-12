@@ -212,7 +212,7 @@ fn treasury_backed_simulation_covers_hub_jupiter_and_inventory_movement() {
     .expect("build Jupiter and Loyal Hub swap action");
     try_send_instructions(
         &mut context.svm,
-        &[swap_action.instruction.clone()],
+        std::slice::from_ref(&swap_action.instruction),
         &context.wallet,
         &[],
     )

@@ -1181,11 +1181,11 @@ fn split_fresh_candidates(
     (fresh, stale_count)
 }
 
-fn monitor_status_and_skip_reason<'a>(
-    plan: &'a Result<Option<PlannedMonitorMove>, String>,
+fn monitor_status_and_skip_reason(
+    plan: &Result<Option<PlannedMonitorMove>, String>,
     active_decisions: i64,
     execute: bool,
-) -> (&'static str, Option<&'a str>) {
+) -> (&'static str, Option<&str>) {
     if active_decisions > 0 {
         return ("skipped_active_decision", Some("active_decision"));
     }

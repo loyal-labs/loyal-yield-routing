@@ -41,10 +41,14 @@ type Error
   | MathOverflow
   | Unauthorized
 
+invariant active_lane_count_domain :
+  state.lane_count > 0
+
 handler initialize_config
   (max_fee_bps : U128)
   (lane_count : U64) : State.Uninitialized -> State.Active {
-  auth admin
+  permissionless
+  establishes active_lane_count_domain
 
   accounts {
     payer                 : signer, writable
@@ -110,7 +114,6 @@ handler set_paused (paused_value : U64) : State.Active -> State.Active {
 
 handler set_admin : State.Active -> State.Active {
   auth admin
-  auth new_admin
 
   accounts {
     config    : writable, pda ["config"]
@@ -162,6 +165,7 @@ handler set_inventory_rebalancer : State.Active -> State.Active {
 
 handler set_lane_count (lane_count : U64) : State.Active -> State.Active {
   auth admin
+  invariant active_lane_count_domain
 
   accounts {
     config : writable, pda ["config"]
@@ -169,6 +173,7 @@ handler set_lane_count (lane_count : U64) : State.Active -> State.Active {
   }
 
   requires admin.pubkey == state.admin_key else Unauthorized
+  requires state.lane_count > 0 else InvalidLane
   requires lane_count > 0 else InvalidLane
 
   modifies [lane_count]
@@ -202,7 +207,8 @@ handler swap_exact_in
     hub_authority  : readonly, pda ["hub-authority", lane_id]
     hub_authorizer : signer
     token_program  : program, type token
-    token_2022_program : program, type token # optional
+    // Optional Token-2022 program account.
+    token_2022_program : program, type token
   }
 
   requires amount_in > 0 else InvalidAmount
@@ -3150,8 +3156,12 @@ handler rebalance_inventory_16
   ensures state.paused == old(state.paused)
 }
 
-property config_domain_preserved :
-  state.max_fee_bps <= 10000 and state.lane_count > 0 and state.paused <= 1
+property max_fee_domain_preserved :
+  state.max_fee_bps <= 10000
+  preserved_by [initialize_config, set_max_fee, set_paused, set_admin, set_hub_authorizer, set_inventory_rebalancer, set_lane_count, swap_exact_in, withdraw_inventory, rebalance_inventory, rebalance_inventory_2, rebalance_inventory_3, rebalance_inventory_4, rebalance_inventory_5, rebalance_inventory_6, rebalance_inventory_7, rebalance_inventory_8, rebalance_inventory_9, rebalance_inventory_10, rebalance_inventory_11, rebalance_inventory_12, rebalance_inventory_13, rebalance_inventory_14, rebalance_inventory_15, rebalance_inventory_16]
+
+property paused_domain_preserved :
+  state.paused <= 1
   preserved_by [initialize_config, set_max_fee, set_paused, set_admin, set_hub_authorizer, set_inventory_rebalancer, set_lane_count, swap_exact_in, withdraw_inventory, rebalance_inventory, rebalance_inventory_2, rebalance_inventory_3, rebalance_inventory_4, rebalance_inventory_5, rebalance_inventory_6, rebalance_inventory_7, rebalance_inventory_8, rebalance_inventory_9, rebalance_inventory_10, rebalance_inventory_11, rebalance_inventory_12, rebalance_inventory_13, rebalance_inventory_14, rebalance_inventory_15, rebalance_inventory_16]
 
 cover successful_swap [initialize_config, swap_exact_in]

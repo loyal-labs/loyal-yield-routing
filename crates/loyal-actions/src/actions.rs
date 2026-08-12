@@ -865,11 +865,7 @@ fn all_in_one_constraints(
     swap_lanes: &[SwapLane],
 ) -> Result<Vec<SquadsInstructionConstraint>> {
     let compact_same_mint_usdc = is_compact_same_mint_usdc_policy(universe, swap_lanes);
-    let mut constraints = Vec::with_capacity(if compact_same_mint_usdc {
-        3 + swap_lanes.len()
-    } else {
-        3 + swap_lanes.len()
-    });
+    let mut constraints = Vec::with_capacity(3 + swap_lanes.len());
     if compact_same_mint_usdc {
         constraints.push(kamino_redeem_reserve_collateral_market_mint_constraint(
             vault,
@@ -959,6 +955,7 @@ fn setup(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn setup_from_parts(
     context: LoyalActionContext,
     topology: RouteTopology,
@@ -1144,6 +1141,7 @@ fn validate_action_seeds(topology: RouteTopology, seeds: YieldRouteActionSeeds) 
     }
 }
 
+#[allow(clippy::needless_borrow)]
 #[cfg(test)]
 mod tests {
     use super::*;

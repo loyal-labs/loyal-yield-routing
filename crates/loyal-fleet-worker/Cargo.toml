@@ -1,0 +1,38 @@
+[package]
+name = "loyal-fleet-worker"
+version = "0.1.0"
+edition = "2021"
+description = "Same-mint route execution and fleet reconciliation worker for Loyal"
+autobins = false
+
+[[bin]]
+name = "same-mint-reserve-swap"
+path = "src/main.rs"
+
+[dependencies]
+bincode = "1.3"
+base64.workspace = true
+bs58 = "0.5"
+chrono = { workspace = true, default-features = false, features = ["clock", "serde"] }
+futures-util.workspace = true
+klend-interface = { git = "https://github.com/Kamino-Finance/klend" }
+loyal-actions = { path = "../loyal-actions" }
+loyal-observability = { path = "../loyal-observability" }
+loyal-yield-orchestrator = { path = "../loyal-yield-orchestrator" }
+loyal-yield-router = { path = "../loyal-yield-router" }
+num-bigint = "0.4"
+num-traits = "0.2"
+reqwest = { workspace = true, default-features = false, features = ["json", "rustls-tls"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1"
+sha2.workspace = true
+solana-account-decoder-client-types = "2.3"
+solana-client.workspace = true
+solana-rpc-client = "2.3"
+solana-sdk.workspace = true
+spl-token.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[dev-dependencies]
+bytemuck = "1"

@@ -3,31 +3,104 @@ name = "loyal-yield-orchestrator"
 version = "0.1.0"
 edition = "2021"
 description = "Postgres-backed orchestration state for Loyal yield routing"
+autobins = false
+
+[[bin]]
+name = "fleet-opportunity-planner"
+path = "src/bin/fleet-opportunity-planner.rs"
+
+[[bin]]
+name = "fleet-orchestration-production-evidence"
+path = "src/bin/fleet-orchestration-production-evidence.rs"
+
+[[bin]]
+name = "fleet-orchestration-runtime-evidence"
+path = "src/bin/fleet-orchestration-runtime-evidence.rs"
+
+[[bin]]
+name = "fleet-orchestration-verifier"
+path = "src/bin/fleet-orchestration-verifier.rs"
+
+[[bin]]
+name = "fleet-route-confirmer"
+path = "src/bin/fleet-route-confirmer.rs"
+
+[[bin]]
+name = "loyal-hub-mainnet-route-files"
+path = "src/bin/loyal-hub-mainnet-route-files.rs"
+
+[[bin]]
+name = "route-lookup-table-alert-monitor"
+path = "src/bin/route-lookup-table-alert-monitor.rs"
+
+[[bin]]
+name = "route-lookup-table-cleanup"
+path = "src/bin/route-lookup-table-cleanup.rs"
+
+[[bin]]
+name = "route-lookup-table-legacy-import"
+path = "src/bin/route-lookup-table-legacy-import.rs"
+
+[[bin]]
+name = "route-lookup-table-provisioner"
+path = "src/bin/route-lookup-table-provisioner.rs"
+
+[[bin]]
+name = "route-lookup-table-shared-catalog"
+path = "src/bin/route-lookup-table-shared-catalog.rs"
+
+[[bin]]
+name = "same-mint-monitor-e2e"
+path = "src/bin/same-mint-monitor-e2e.rs"
+
+[[bin]]
+name = "same-mint-yield-monitor"
+path = "src/bin/same-mint-yield-monitor.rs"
+
+[[bin]]
+name = "signer-balance-monitor"
+path = "src/bin/signer-balance-monitor.rs"
+
+[[bin]]
+name = "verify-idle-deposit-reconcile"
+path = "src/bin/verify-idle-deposit-reconcile.rs"
+
+[[bin]]
+name = "verify-reusable-alt-db"
+path = "src/bin/verify-reusable-alt-db.rs"
+
+[[bin]]
+name = "yield-migrations"
+path = "src/bin/yield-migrations.rs"
 
 [dependencies]
 bincode = "1.3"
-base64 = "0.22"
+base64.workspace = true
 bs58 = "0.5"
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
-futures-util = "0.3"
+chrono = { workspace = true, default-features = false, features = ["clock", "serde"] }
+futures-util.workspace = true
 klend-interface = { git = "https://github.com/Kamino-Finance/klend" }
 loyal-actions = { path = "../loyal-actions" }
+loyal-kamino-codec = { path = "../loyal-kamino-codec" }
 loyal-observability = { path = "../loyal-observability" }
+loyal-route-lookup-tables = { path = "../loyal-route-lookup-tables" }
+loyal-solana-env = { path = "../loyal-solana-env" }
 loyal-yield-router = { path = "../loyal-yield-router" }
+loyal-yield-store = { path = "../loyal-yield-store" }
 num-bigint = "0.4"
 num-traits = "0.2"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-serde = { version = "1", features = ["derive"] }
+reqwest = { workspace = true, default-features = false, features = ["json", "rustls-tls"] }
+serde = { workspace = true, features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
-solana-client = "2.3"
+sha2.workspace = true
+solana-client.workspace = true
 solana-account-decoder-client-types = "2.3"
 solana-rpc-client = "2.3"
 solana-sdk.workspace = true
 spl-token.workspace = true
-sqlx = { version = "0.8", default-features = false, features = ["chrono", "json", "macros", "postgres", "runtime-tokio-rustls"] }
-thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+sqlx = { workspace = true, default-features = false, features = ["chrono", "json", "macros", "postgres", "runtime-tokio-rustls"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [dev-dependencies]
 bytemuck = "1"

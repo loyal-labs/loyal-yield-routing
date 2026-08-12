@@ -89,6 +89,7 @@ impl From<crate::LoyalActionError> for AutonomousVaultError {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn create_kamino_policies(
     settings: Pubkey,
     authority: Pubkey,
@@ -137,6 +138,7 @@ pub fn create_kamino_policies(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn policy_plan(
     settings: Pubkey,
     authority: Pubkey,

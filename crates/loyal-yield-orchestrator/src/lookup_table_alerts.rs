@@ -996,6 +996,7 @@ fn json_i64_array(value: Value) -> Result<Vec<i64>, OrchestratorError> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn record_lookup_table_alert_observation(
     pool: &PgPool,
     cluster: &str,
@@ -1169,6 +1170,7 @@ async fn load_incident_for_update(
     .transpose()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn persist_incident(
     tx: &mut Transaction<'_, Postgres>,
     cluster: &str,

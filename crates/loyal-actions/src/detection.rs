@@ -804,9 +804,7 @@ fn has_account_data_u8_equals(
     offset: u64,
     expected: u8,
 ) -> Option<()> {
-    if constraint.owner.is_none() {
-        return None;
-    }
+    constraint.owner?;
     let SquadsAccountConstraintKindView::AccountData(data_constraints) = &constraint.kind else {
         return None;
     };
@@ -863,7 +861,7 @@ fn has_hub_token_authority(
 }
 
 fn is_supported_hub_token_constraint_owner(owner: Option<Pubkey>) -> bool {
-    matches!(owner, None) || owner == Some(spl_token::id()) || owner == Some(TOKEN_2022_PROGRAM_ID)
+    owner.is_none() || owner == Some(spl_token::id()) || owner == Some(TOKEN_2022_PROGRAM_ID)
 }
 
 fn has_data_slice_equals(

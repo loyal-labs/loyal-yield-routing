@@ -6,7 +6,8 @@ service_id="${SAME_MINT_RENDER_SERVICE_ID:-srv-d8n7gqbbc2fs73emk610}"
 
 if [[ "${RUN_LOCAL_CHECKS:-0}" == "1" ]]; then
   NO_DNA=1 cargo fmt --check
-  NO_DNA=1 cargo check -p loyal-yield-orchestrator --bin same-mint-yield-monitor --bin same-mint-reserve-swap
+  NO_DNA=1 cargo check -p loyal-yield-orchestrator --bin same-mint-yield-monitor
+  NO_DNA=1 cargo check -p loyal-fleet-worker --bin same-mint-reserve-swap
 fi
 
 if [[ -z "${NEON_DATABASE_URL:-}" ]]; then

@@ -1,12 +1,56 @@
 [workspace]
 members = ["crates/*"]
+default-members = [
+    "crates/balance-sweep-ata-monitor",
+    "crates/balance-sweep-ata-observations",
+    "crates/balance-sweep-ata-projector",
+    "crates/balance-sweep-autodeposit-trigger",
+    "crates/kamino-reserve-monitor",
+    "crates/loyal-fleet-worker",
+    "crates/loyal-kamino-codec",
+    "crates/loyal-kamino-data",
+    "crates/loyal-actions",
+    "crates/loyal-hub-abi",
+    "crates/loyal-observability",
+    "crates/loyal-route-lookup-tables",
+    "crates/loyal-solana-env",
+    "crates/loyal-squads-policy-monitor",
+    "crates/loyal-timescale-migrations",
+    "crates/loyal-yield-orchestrator",
+    "crates/loyal-yield-store",
+    "crates/loyal-yield-realtime",
+    "crates/loyal-yield-realtime-core",
+    "crates/loyal-yield-router",
+]
 resolver = "2"
 
 [workspace.dependencies]
+anyhow = "1"
+base64 = "0.22"
 borsh = "1.5"
+chrono = { version = "0.4", default-features = false }
+clap = "4.5"
+futures-util = "0.3"
 litesvm = "0.7.1"
 loyal-hub-abi = { path = "crates/loyal-hub-abi" }
+reqwest = { version = "0.12", default-features = false }
+serde = "1"
+sha2 = "0.10"
+solana-account-decoder = "2.3"
+solana-client = "2.3"
+solana-pubsub-client = "2.3"
 solana-program = "2.3.0"
 solana-sdk = "2.3.1"
 solana-system-interface = { version = "1.0.0", features = ["bincode"] }
 spl-token = "8.0.0"
+sqlx = { version = "0.8", default-features = false }
+thiserror = "2"
+tokio = "1"
+tracing = "0.1"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+opt-level = 1

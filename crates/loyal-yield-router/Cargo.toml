@@ -6,10 +6,10 @@ description = "TimescaleDB reads and update streams for Loyal yield routing inpu
 readme = "README.md"
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
-serde = { version = "1", features = ["derive"] }
+chrono = { workspace = true, default-features = false, features = ["clock", "serde"] }
+serde = { workspace = true, features = ["derive"] }
 serde_json = "1"
-sqlx = { version = "0.8", default-features = false, features = ["chrono", "postgres", "runtime-tokio-rustls"] }
+sqlx = { workspace = true, default-features = false, features = ["chrono", "postgres", "runtime-tokio-rustls"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

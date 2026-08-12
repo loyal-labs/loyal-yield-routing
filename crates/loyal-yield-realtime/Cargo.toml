@@ -7,13 +7,13 @@ description = "Server-sent event gateway for Loyal Yield realtime invalidations"
 [dependencies]
 async-stream = "0.3"
 axum = "0.8"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
-futures-util = "0.3"
+chrono = { workspace = true, default-features = false, features = ["clock"] }
+futures-util.workspace = true
 loyal-observability = { path = "../loyal-observability" }
 loyal-yield-realtime-core = { path = "../loyal-yield-realtime-core" }
-serde = { version = "1", features = ["derive"] }
-sqlx = { version = "0.8", default-features = false, features = ["chrono", "json", "macros", "postgres", "runtime-tokio-rustls"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+serde = { workspace = true, features = ["derive"] }
+sqlx = { workspace = true, default-features = false, features = ["chrono", "json", "postgres", "runtime-tokio-rustls"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
 tokio-stream = "0.1"
 tower-http = { version = "0.6", features = ["cors"] }
 url = "2"

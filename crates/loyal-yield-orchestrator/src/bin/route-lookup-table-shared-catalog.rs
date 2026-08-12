@@ -1088,6 +1088,7 @@ where
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn verify_approval_fence(
     fence: Option<&SharedCatalogApprovalFence>,
     desired_set_hash: &str,

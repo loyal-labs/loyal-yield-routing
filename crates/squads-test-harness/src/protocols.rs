@@ -844,18 +844,14 @@ pub fn mock_yield_protocols_program_so_path() -> Option<PathBuf> {
     }
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for path in [
+    [
         manifest_dir
             .join("../../target/deploy")
             .join(MOCK_YIELD_PROTOCOLS_PROGRAM_SO),
         PathBuf::from("target/deploy").join(MOCK_YIELD_PROTOCOLS_PROGRAM_SO),
-    ] {
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
-    None
+    ]
+    .into_iter()
+    .find(|path| path.exists())
 }
 
 pub fn loyal_hub_swap_program_so_path() -> Option<PathBuf> {
@@ -866,16 +862,12 @@ pub fn loyal_hub_swap_program_so_path() -> Option<PathBuf> {
     }
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for path in [
+    [
         manifest_dir
             .join("../../target/deploy")
             .join(LOYAL_HUB_SWAP_PROGRAM_SO),
         PathBuf::from("target/deploy").join(LOYAL_HUB_SWAP_PROGRAM_SO),
-    ] {
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
-    None
+    ]
+    .into_iter()
+    .find(|path| path.exists())
 }

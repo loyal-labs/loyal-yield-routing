@@ -22,7 +22,7 @@ use helius_laserstream::{
     subscribe, LaserstreamConfig,
 };
 use loyal_actions::USDC_MINT;
-use loyal_yield_orchestrator::{BalanceSweepTarget, BalanceSweepTargetId};
+use loyal_yield_store::{BalanceSweepTarget, BalanceSweepTargetId};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};

@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 
 const PLANNING_ROUNDS: usize = 7;
 const REPLAY_VAULT_COUNT: usize = 10_000;
-const REPLAY_SEED: u64 = 0x4c4f_5941_4c;
+const REPLAY_SEED: u64 = 0x004c_4f59_414c;
 
 #[derive(Debug)]
 struct Options {

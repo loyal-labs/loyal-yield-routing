@@ -355,6 +355,7 @@ fn run_litesvm_hub_route(
         cross_mint_rebalances,
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn build_hub_rebalance_transaction(
     vault: Pubkey,
     signer: Pubkey,

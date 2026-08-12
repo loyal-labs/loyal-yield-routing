@@ -1277,6 +1277,7 @@ async fn defer_claims_after_error(
         .await?)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_submission(
     neon: &NeonSqlClient,
     rpc: Arc<RpcClient>,

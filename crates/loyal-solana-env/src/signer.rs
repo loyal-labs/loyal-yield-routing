@@ -114,7 +114,7 @@ fn keypair_from_bytes(bytes: &[u8]) -> Result<Keypair, PolicySignerError> {
     match bytes.len() {
         SOLANA_SECRET_KEY_LENGTH => {
             let mut seed = [0u8; SOLANA_SECRET_KEY_LENGTH];
-            seed.copy_from_slice(&bytes);
+            seed.copy_from_slice(bytes);
             Ok(Keypair::new_from_array(seed))
         }
         SOLANA_KEYPAIR_LENGTH => {

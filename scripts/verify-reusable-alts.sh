@@ -12,15 +12,15 @@ if [[ -n "$unmerged_paths" ]]; then
   exit 1
 fi
 git diff --check HEAD --
-git diff --exit-code HEAD -- crates/loyal-yield-orchestrator/migrations/0008_route_lookup_tables.sql
-git diff --exit-code HEAD -- crates/loyal-yield-orchestrator/migrations/0017_reusable_route_lookup_tables.sql
+git diff --exit-code HEAD -- crates/loyal-yield-store/migrations/0008_route_lookup_tables.sql
+git diff --exit-code HEAD -- crates/loyal-yield-store/migrations/0017_reusable_route_lookup_tables.sql
 
 for migration in \
-  crates/loyal-yield-orchestrator/migrations/0018_earn_activity_realtime.sql \
-  crates/loyal-yield-orchestrator/migrations/0019_legacy_lookup_table_imports.sql \
-  crates/loyal-yield-orchestrator/migrations/0020_demand_driven_shared_market_catalog.sql \
-  crates/loyal-yield-orchestrator/migrations/0021_reusable_alt_production_controls.sql \
-  crates/loyal-yield-orchestrator/migrations/0022_shared_market_alt_bundles.sql; do
+  crates/loyal-yield-store/migrations/0018_earn_activity_realtime.sql \
+  crates/loyal-yield-store/migrations/0019_legacy_lookup_table_imports.sql \
+  crates/loyal-yield-store/migrations/0020_demand_driven_shared_market_catalog.sql \
+  crates/loyal-yield-store/migrations/0021_reusable_alt_production_controls.sql \
+  crates/loyal-yield-store/migrations/0022_shared_market_alt_bundles.sql; do
   if [[ ! -f "$migration" ]]; then
     echo "required ordered migration is missing: $migration" >&2
     exit 1
@@ -51,11 +51,11 @@ if [[ "${REUSABLE_ALT_VERIFY_EXACT_COMMIT:-0}" == "1" ]]; then
     exit 1
   fi
   for migration in \
-    crates/loyal-yield-orchestrator/migrations/0018_earn_activity_realtime.sql \
-    crates/loyal-yield-orchestrator/migrations/0019_legacy_lookup_table_imports.sql \
-    crates/loyal-yield-orchestrator/migrations/0020_demand_driven_shared_market_catalog.sql \
-    crates/loyal-yield-orchestrator/migrations/0021_reusable_alt_production_controls.sql \
-    crates/loyal-yield-orchestrator/migrations/0022_shared_market_alt_bundles.sql; do
+    crates/loyal-yield-store/migrations/0018_earn_activity_realtime.sql \
+    crates/loyal-yield-store/migrations/0019_legacy_lookup_table_imports.sql \
+    crates/loyal-yield-store/migrations/0020_demand_driven_shared_market_catalog.sql \
+    crates/loyal-yield-store/migrations/0021_reusable_alt_production_controls.sql \
+    crates/loyal-yield-store/migrations/0022_shared_market_alt_bundles.sql; do
     if ! git cat-file -e "HEAD:$migration"; then
       echo "exact commit does not contain required migration: $migration" >&2
       exit 1
@@ -87,7 +87,7 @@ fi
 
 echo "checking reusable ALT formatting and compilation"
 NO_DNA=1 cargo fmt --all -- --check
-NO_DNA=1 cargo check -p loyal-actions -p loyal-yield-orchestrator --all-targets
+NO_DNA=1 cargo check -p loyal-actions -p loyal-fleet-worker -p loyal-route-lookup-tables -p loyal-yield-orchestrator --all-targets
 
 echo "checking that ALT mutation callsites stay inside audited worker boundaries"
 mutation_callers="$({ rg -l \
@@ -104,7 +104,7 @@ fi
 echo "checking that the normal Earn runtime has no legacy ALT resolver dependency"
 legacy_runtime_pattern='YIELD_ROUTE_LOOKUP_TABLES|legacy_lookup_tables_for_import\(|import_verified_legacy_lookup_table_fleet\(|retire_legacy_route_lookup_table\(|protected_legacy_route_lookup_table_addresses\(|LegacyLookupTableKind|LegacyLookupTableImport'
 legacy_runtime_files="$({ rg -l -- "$legacy_runtime_pattern" \
-  crates/loyal-yield-orchestrator/src/bin/same-mint-reserve-swap.rs \
+  crates/loyal-fleet-worker/src/lib.rs \
   crates/loyal-yield-orchestrator/src/bin/same-mint-yield-monitor.rs \
   crates/loyal-yield-orchestrator/src/bin/same-mint-monitor-e2e.rs || true; } | sort -u)"
 if [[ -n "$legacy_runtime_files" ]]; then
@@ -117,7 +117,7 @@ for required_runtime_guard in \
   reusable_runtime_rejects_every_legacy_rollout_state \
   legacy_lookup_table_cli_argument_is_rejected; do
   if ! rg -q -- "$required_runtime_guard" \
-    crates/loyal-yield-orchestrator/src/bin/same-mint-reserve-swap.rs; then
+    crates/loyal-fleet-worker/src/lib.rs; then
     echo "normal Earn runtime is missing required no-legacy regression guard: $required_runtime_guard" >&2
     exit 1
   fi
@@ -174,6 +174,8 @@ fi
 
 echo "running full reusable ALT implementation tests"
 NO_DNA=1 cargo test -p loyal-actions
+NO_DNA=1 cargo test -p loyal-fleet-worker
+NO_DNA=1 cargo test -p loyal-route-lookup-tables
 NO_DNA=1 cargo test -p loyal-yield-orchestrator
 NO_DNA=1 bun run verify:reusable-alts:routes
 NO_DNA=1 bun run yield:migrate -- --help

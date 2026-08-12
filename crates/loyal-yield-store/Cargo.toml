@@ -1,0 +1,18 @@
+[package]
+name = "loyal-yield-store"
+version = "0.1.0"
+edition = "2021"
+description = "Postgres-backed state and durable queue contracts for Loyal yield routing"
+
+[dependencies]
+chrono = { workspace = true, default-features = false, features = ["clock", "serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1"
+sha2.workspace = true
+sqlx = { workspace = true, default-features = false, features = ["chrono", "json", "macros", "postgres", "runtime-tokio-rustls"] }
+thiserror.workspace = true
+
+# Test-only. Keep this list free of Solana, RPC, and observability crates for
+# the same reason `[dependencies]` is: they are what the small workers pay for.
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
