@@ -62,8 +62,10 @@ impl EarnUniverse {
 pub enum StableMintConfigError {
     #[error("{ENABLED_STABLE_MINTS_ENV} contains unsupported stable mint {mint}")]
     UnsupportedMint { mint: String },
-    #[error("{ENABLED_STABLE_MINTS_ENV} did not contain any mints")]
-    EmptySelection,
+    #[error("{ENABLED_STABLE_MINTS_ENV} contains a duplicate stable mint {mint}")]
+    DuplicateMint { mint: String },
+    #[error("{ENABLED_STABLE_MINTS_ENV} contains an empty stable mint")]
+    EmptyMint,
 }
 
 pub fn supported_stable_mints() -> Vec<String> {
@@ -94,27 +96,29 @@ pub fn resolve_enabled_stable_mints(
     configured: Option<&str>,
 ) -> Result<Vec<String>, StableMintConfigError> {
     let supported_mints = supported_stable_mints();
+    let configured = configured.map(str::trim).filter(|value| !value.is_empty());
     let Some(configured) = configured else {
-        return Ok(supported_mints);
+        return Ok(vec![USDC_MINT.to_string()]);
     };
     let supported = supported_mints
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    let configured_set = configured
-        .split(',')
-        .map(str::trim)
-        .filter(|mint| !mint.is_empty())
-        .map(|mint| {
-            supported.contains(mint).then_some(mint).ok_or_else(|| {
-                StableMintConfigError::UnsupportedMint {
-                    mint: mint.to_owned(),
-                }
-            })
-        })
-        .collect::<Result<BTreeSet<_>, _>>()?;
-    if configured_set.is_empty() {
-        return Err(StableMintConfigError::EmptySelection);
+    let mut configured_set = BTreeSet::new();
+    for mint in configured.split(',').map(str::trim) {
+        if mint.is_empty() {
+            return Err(StableMintConfigError::EmptyMint);
+        }
+        if !supported.contains(mint) {
+            return Err(StableMintConfigError::UnsupportedMint {
+                mint: mint.to_owned(),
+            });
+        }
+        if !configured_set.insert(mint) {
+            return Err(StableMintConfigError::DuplicateMint {
+                mint: mint.to_owned(),
+            });
+        }
     }
     Ok(supported_mints
         .into_iter()
@@ -149,7 +153,7 @@ mod tests {
 
     #[test]
     fn stable_mint_subset_is_canonical_and_rejects_unknowns() {
-        let configured = format!(" {USDC_MINT}, {PYUSD_MINT}, {USDC_MINT} ");
+        let configured = format!(" {USDC_MINT}, {PYUSD_MINT} ");
         assert_eq!(
             resolve_enabled_stable_mints(Some(&configured)).unwrap(),
             vec![PYUSD_MINT.to_string(), USDC_MINT.to_string()]
@@ -157,6 +161,36 @@ mod tests {
         assert!(matches!(
             resolve_enabled_stable_mints(Some("not-a-supported-mint")),
             Err(StableMintConfigError::UnsupportedMint { .. })
+        ));
+    }
+
+    #[test]
+    fn stable_mint_rollout_defaults_to_usdc_and_requires_explicit_expansion() {
+        assert_eq!(
+            resolve_enabled_stable_mints(None).unwrap(),
+            vec![USDC_MINT.to_string()]
+        );
+        assert_eq!(
+            resolve_enabled_stable_mints(Some("  ")).unwrap(),
+            vec![USDC_MINT.to_string()]
+        );
+        assert_eq!(
+            resolve_enabled_stable_mints(Some(&supported_stable_mints().join(","))).unwrap(),
+            supported_stable_mints()
+        );
+    }
+
+    #[test]
+    fn stable_mint_rollout_rejects_duplicates_and_empty_entries() {
+        let duplicate = format!("{USDC_MINT},{USDC_MINT}");
+        assert!(matches!(
+            resolve_enabled_stable_mints(Some(&duplicate)),
+            Err(StableMintConfigError::DuplicateMint { .. })
+        ));
+        let empty_entry = format!("{USDC_MINT},,{PYUSD_MINT}");
+        assert!(matches!(
+            resolve_enabled_stable_mints(Some(&empty_entry)),
+            Err(StableMintConfigError::EmptyMint)
         ));
     }
 }

@@ -13,12 +13,13 @@ list gates the selector and every web/mobile manual-deposit prepare endpoint.
 It does not hide holdings or block withdrawals.
 
 The router uses `EARN_ROUTER_ENABLED_STABLE_MINTS`, a comma-separated mint
-address allowlist. Keep the app and router lists aligned by asset, but deploy
-them independently: app controls new deposits; router controls opportunity
-publication and execution.
+address allowlist. Missing or blank configuration means the USDC mint only;
+invalid, empty interior, or duplicate values are errors. Keep the app and
+router lists aligned by asset, but deploy them independently: app controls new
+deposits; router controls opportunity publication and execution.
 
-Invalid or duplicate app values are deployment errors. Never use an empty
-string to mean all assets.
+Invalid or duplicate values in either gate are deployment errors. Never use an
+empty string to mean all assets.
 
 ## Dark deployment
 

@@ -6,10 +6,10 @@ use loyal_yield_orchestrator::{
         redacted_external_error, redacted_rpc_endpoint, validate_rpc_endpoint,
         validate_rpc_genesis_hash,
     },
-    DerivedSharedMarketCatalog, LookupTableFamilyKind, LookupTableManifestAddressRecord,
-    LookupTableManifestSubject, NeonSqlClient, NeonSqlConfig, SharedMarketCatalogHeadRecord,
-    SharedMarketCatalogPlanPolicy, SharedMarketCatalogUpsert, SupportedKaminoReserve,
-    ENABLED_STABLE_MINTS_ENV, SHARED_MARKET_LOGICAL_CATALOG_MAX_ADDRESSES,
+    supported_stable_mints, DerivedSharedMarketCatalog, LookupTableFamilyKind,
+    LookupTableManifestAddressRecord, LookupTableManifestSubject, NeonSqlClient, NeonSqlConfig,
+    SharedMarketCatalogHeadRecord, SharedMarketCatalogPlanPolicy, SharedMarketCatalogUpsert,
+    SupportedKaminoReserve, ENABLED_STABLE_MINTS_ENV, SHARED_MARKET_LOGICAL_CATALOG_MAX_ADDRESSES,
 };
 use loyal_yield_router::timescale::{TimescaleRouterClient, TimescaleRouterClientConfig};
 use serde_json::{json, Value};
@@ -1066,7 +1066,13 @@ where
         address_count: expected_address_count.expect("all fence fields checked"),
         minimum_source_slot: expected_minimum_source_slot.expect("all fence fields checked"),
     });
-    let enabled_mints = resolve_enabled_stable_mints(enabled_mints_raw.as_deref())?;
+    // Catalog coverage is exit/compilation infrastructure, not runtime route
+    // eligibility. Keep the default catalog complete even while every runtime
+    // worker defaults its separate environment gate to USDC only.
+    let catalog_default = supported_stable_mints().join(",");
+    let enabled_mints = resolve_enabled_stable_mints(Some(
+        enabled_mints_raw.as_deref().unwrap_or(&catalog_default),
+    ))?;
     Ok(Options {
         cluster,
         rpc_url,
