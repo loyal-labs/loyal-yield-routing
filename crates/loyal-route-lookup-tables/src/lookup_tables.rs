@@ -17700,3 +17700,4 @@ impl NeonSqlClient {
 }
 
 // ci-probe: build-time measurement marker (run 1)
+// ci-probe: build-time measurement marker (run 2)
