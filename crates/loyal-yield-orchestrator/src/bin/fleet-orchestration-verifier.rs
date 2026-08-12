@@ -2520,7 +2520,7 @@ impl DatabaseFixture {
         });
         let snapshot = self
             .client
-            .reconcile_vault(
+            .apply_observed_patch(
                 VaultId(vault_id),
                 ReconciledVaultState {
                     observed_slot: 10_000,
