@@ -12,8 +12,9 @@ use anyhow::{bail, Context, Result};
 use kamino_reserve_monitor::{
     snapshot_from_account,
     source::{
-        AccountUpdateEvent, AccountUpdateSource, LaserstreamAccountUpdateSource,
-        SubscriptionConfig, CONFIRMED_COMMITMENT, LASERSTREAM_SOURCE,
+        AccountEventSender, AccountUpdateEvent, AccountUpdateSource, DurableReplayCursor,
+        LaserstreamAccountUpdateSource, SubscriptionConfig, CONFIRMED_COMMITMENT,
+        LASERSTREAM_SOURCE,
     },
     timescale::{ReserveUpdateRecord, TimescaleSink, TimescaleSinkConfig},
     ReserveSnapshot,
@@ -21,7 +22,6 @@ use kamino_reserve_monitor::{
 use klend_interface::KLEND_PROGRAM_ID;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
-use tokio::sync::mpsc;
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires live HELIUS_API_KEY, LASERSTREAM_ENDPOINT, and TIMESCALEDB_URL"]
@@ -51,11 +51,11 @@ async fn live_laserstream_account_update_inserts_confirmed_event() -> Result<()>
     let rpc = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
     let seed_slot = rpc.get_slot().context("fetch confirmed seed slot")?;
     let running = Arc::new(AtomicBool::new(true));
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = AccountEventSender::channel(256);
     let source = LaserstreamAccountUpdateSource {
         endpoint,
         api_key,
-        from_slot: seed_slot.saturating_sub(32),
+        replay_cursor: DurableReplayCursor::new(seed_slot, 32),
         config: SubscriptionConfig {
             max_reconnect_attempts: 3,
             reconnect_base_delay: Duration::from_millis(500),

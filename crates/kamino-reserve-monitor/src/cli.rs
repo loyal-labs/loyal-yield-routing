@@ -3,6 +3,8 @@ use clap::Parser;
 use clap::ValueEnum;
 use solana_sdk::pubkey::Pubkey;
 
+use crate::source::DEFAULT_ACCOUNT_EVENT_CHANNEL_CAPACITY;
+
 const DEFAULT_RPC_URL: &str = "https://api.mainnet-beta.solana.com";
 const DEFAULT_KAMINO_API_BASE: &str = "https://api.kamino.finance";
 const DEFAULT_SUPPORTED_RESERVE_REFRESH_INTERVAL_SECS: u64 = 120;
@@ -93,6 +95,13 @@ pub struct Args {
     #[arg(long, default_value_t = 15)]
     pub subscription_heartbeat_secs: u64,
 
+    #[arg(
+        long,
+        env = "KAMINO_ACCOUNT_EVENT_CHANNEL_CAPACITY",
+        default_value_t = DEFAULT_ACCOUNT_EVENT_CHANNEL_CAPACITY
+    )]
+    pub account_event_channel_capacity: usize,
+
     #[arg(long, default_value_t = 90)]
     pub progress_timeout_secs: u64,
 
@@ -139,6 +148,9 @@ pub fn validate_args(args: &Args) -> Result<()> {
     }
     if args.subscription_heartbeat_secs == 0 {
         bail!("--subscription-heartbeat-secs must be greater than zero");
+    }
+    if args.account_event_channel_capacity == 0 {
+        bail!("--account-event-channel-capacity must be greater than zero");
     }
     if args.progress_timeout_secs == 0 {
         bail!("--progress-timeout-secs must be greater than zero");

@@ -13,6 +13,7 @@ pub mod timescale {
     pub use loyal_kamino_data::timescale::*;
 }
 pub mod verification;
+pub mod verification_schedule;
 
 pub use apy::{
     diff_snapshot, snapshot_from_account, snapshot_from_account_at, ReserveDiff, ReserveSnapshot,
