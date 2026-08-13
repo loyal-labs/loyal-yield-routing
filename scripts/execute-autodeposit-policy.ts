@@ -2061,7 +2061,7 @@ async function sendPreparedOperation(args: {
   return { signature, slot: BigInt(parsed?.slot ?? 0) };
 }
 
-type SameMintTopUpResult = {
+export type SameMintTopUpResult = {
   command: string[];
   exitCode: number;
   stdout: string;
@@ -2121,6 +2121,36 @@ export async function runSameMintReserveTopUp(args: {
     command.push("--execute");
   }
 
+  return runSameMintCommand(command);
+}
+
+export async function runMissingObligationSetup(args: {
+  execute: boolean;
+  reserve: string;
+  rpcUrl: string;
+  target: EligibleTarget;
+}): Promise<SameMintTopUpResult> {
+  const command = [
+    ...sameMintReserveSwapCommand(),
+    "--settings",
+    args.target.settings,
+    "--vault-index",
+    args.target.vaultIndex.toString(),
+    "--setup-obligation-reserve",
+    args.reserve,
+    "--rpc-url",
+    args.rpcUrl,
+  ];
+  if (args.execute) {
+    command.push("--execute");
+  }
+
+  return runSameMintCommand(command);
+}
+
+async function runSameMintCommand(
+  command: string[]
+): Promise<SameMintTopUpResult> {
   const subprocess = Bun.spawn(command, {
     stdout: "pipe",
     stderr: "pipe",
@@ -2183,6 +2213,24 @@ function summarizeTopUpResult(result: SameMintTopUpResult) {
       policyDepositTransaction?.simulationSkippedReason?.toString() ?? null,
     stdoutTail: tailLines(result.stdout, 16).map(redactSensitiveText),
     stderrTail: tailLines(result.stderr, 16).map(redactSensitiveText),
+  };
+}
+
+function summarizeMissingObligationRecovery(
+  recovery: MissingObligationRecovery
+) {
+  return {
+    status: recovery.status,
+    missingObligation: recovery.missingObligation,
+    setupDryRun: recovery.setupDryRun
+      ? summarizeTopUpResult(recovery.setupDryRun)
+      : null,
+    setupExecution: recovery.setupExecution
+      ? summarizeTopUpResult(recovery.setupExecution)
+      : null,
+    setupReadiness: recovery.setupReadiness
+      ? summarizeLookupTableReadiness(recovery.setupReadiness)
+      : null,
   };
 }
 
@@ -2461,6 +2509,240 @@ export function assertLookupTableReadinessBeforePull(
       `coverage=${JSON.stringify(readiness.coverage)} ` +
       `topUp=${JSON.stringify(summarizeTopUpResult(readiness.dryRun))}`
   );
+}
+
+export type MissingObligationRecovery = {
+  status:
+    | "not_needed"
+    | "dry_run_ready"
+    | "executed"
+    | "concurrently_completed";
+  missingObligation: { obligation: string; reserve: string } | null;
+  setupDryRun: SameMintTopUpResult | null;
+  setupExecution: SameMintTopUpResult | null;
+  setupReadiness: TopUpLookupTableReadiness | null;
+};
+
+export async function recoverMissingObligationBeforePull(args: {
+  dryRun: SameMintTopUpResult;
+  execute: boolean;
+  reserve: string;
+  pollIntervalMs: number;
+  timeoutMs: number;
+  runSetup: (execute: boolean) => Promise<SameMintTopUpResult>;
+  refreshTopUp: () => Promise<SameMintTopUpResult>;
+  now?: () => number;
+  sleep?: (milliseconds: number) => Promise<void>;
+}): Promise<{
+  topUpDryRun: SameMintTopUpResult;
+  recovery: MissingObligationRecovery;
+}> {
+  const missingObligation = readMissingDepositObligation(args.dryRun);
+  if (!missingObligation) {
+    return {
+      topUpDryRun: args.dryRun,
+      recovery: {
+        status: "not_needed",
+        missingObligation: null,
+        setupDryRun: null,
+        setupExecution: null,
+        setupReadiness: null,
+      },
+    };
+  }
+  if (missingObligation.reserve !== args.reserve) {
+    throw new Error(
+      `Kamino missing-obligation reserve ${missingObligation.reserve} does not match selected top-up reserve ${args.reserve}; refusing to pull.`
+    );
+  }
+
+  const setupDryRun = await args.runSetup(false);
+  const setupDryRunStatus = setupDryRun.json?.status?.toString() ?? null;
+  if (setupDryRunStatus === "setup_obligation_reserve_skipped_existing") {
+    const refreshedTopUp = await requireRecoveredTopUp(args.refreshTopUp);
+    return {
+      topUpDryRun: refreshedTopUp,
+      recovery: {
+        status: "concurrently_completed",
+        missingObligation,
+        setupDryRun,
+        setupExecution: null,
+        setupReadiness: null,
+      },
+    };
+  }
+  requireSetupDryRun(setupDryRun, missingObligation);
+
+  const setupReadiness = await awaitTopUpLookupTableReadiness({
+    dryRun: setupDryRun,
+    refreshDryRun: () => args.runSetup(false),
+    reserve: args.reserve,
+    pollIntervalMs: args.pollIntervalMs,
+    timeoutMs: args.timeoutMs,
+    ...(args.now ? { now: args.now } : {}),
+    ...(args.sleep ? { sleep: args.sleep } : {}),
+  });
+  if (
+    setupReadiness.dryRun.json?.status ===
+    "setup_obligation_reserve_skipped_existing"
+  ) {
+    const refreshedTopUp = await requireRecoveredTopUp(args.refreshTopUp);
+    return {
+      topUpDryRun: refreshedTopUp,
+      recovery: {
+        status: "concurrently_completed",
+        missingObligation,
+        setupDryRun: setupReadiness.dryRun,
+        setupExecution: null,
+        setupReadiness,
+      },
+    };
+  }
+  assertLookupTableReadinessBeforePull(setupReadiness);
+
+  if (!args.execute) {
+    return {
+      topUpDryRun: args.dryRun,
+      recovery: {
+        status: "dry_run_ready",
+        missingObligation,
+        setupDryRun,
+        setupExecution: null,
+        setupReadiness,
+      },
+    };
+  }
+
+  let setupExecution: SameMintTopUpResult;
+  try {
+    setupExecution = await args.runSetup(true);
+  } catch (setupError) {
+    // Another executor may have won the setup race. Continue only if a fresh
+    // deposit dry-run independently proves the obligation now exists and the
+    // route plan builds; otherwise preserve the original setup failure.
+    try {
+      const refreshedTopUp = await requireRecoveredTopUp(args.refreshTopUp);
+      return {
+        topUpDryRun: refreshedTopUp,
+        recovery: {
+          status: "concurrently_completed",
+          missingObligation,
+          setupDryRun,
+          setupExecution: null,
+          setupReadiness,
+        },
+      };
+    } catch {
+      throw setupError;
+    }
+  }
+
+  const setupStatus = setupExecution.json?.status?.toString() ?? null;
+  const status =
+    setupStatus === "setup_obligation_reserve_skipped_existing"
+      ? "concurrently_completed"
+      : "executed";
+  if (status === "executed") {
+    requireSetupExecution(setupExecution, missingObligation);
+  }
+  const refreshedTopUp = await requireRecoveredTopUp(args.refreshTopUp);
+  return {
+    topUpDryRun: refreshedTopUp,
+    recovery: {
+      status,
+      missingObligation,
+      setupDryRun,
+      setupExecution,
+      setupReadiness,
+    },
+  };
+}
+
+function requireSetupDryRun(
+  result: SameMintTopUpResult,
+  expected: { obligation: string; reserve: string }
+): void {
+  if (result.json?.status !== "setup_obligation_reserve_dry_run") {
+    throw new Error(
+      `Kamino obligation setup did not report a dry run: ${JSON.stringify(
+        summarizeTopUpResult(result)
+      )}`
+    );
+  }
+  if (result.json.sendsTransactions !== false) {
+    throw new Error("Kamino obligation setup dry run claimed it sends transactions.");
+  }
+  const target = readRecord(result.json.target);
+  if (
+    target?.reserve?.toString() !== expected.reserve ||
+    target?.obligation?.toString() !== expected.obligation ||
+    target?.obligationExists !== false
+  ) {
+    throw new Error(
+      `Kamino obligation setup dry run target does not match the blocked top-up: ${JSON.stringify(
+        target
+      )}`
+    );
+  }
+  const missingSetup = readRecord(result.json.missingObligationSetup);
+  const initExecution = readRecord(missingSetup?.initExecution);
+  if (initExecution?.simulationError != null) {
+    throw new Error(
+      `Kamino obligation setup dry-run simulation failed: ${initExecution.simulationError}`
+    );
+  }
+}
+
+function requireSetupExecution(
+  result: SameMintTopUpResult,
+  expected: { obligation: string; reserve: string }
+): void {
+  if (
+    result.json?.status !== "setup_obligation_reserve_executed" ||
+    result.json.sendsTransactions !== true
+  ) {
+    throw new Error(
+      `Kamino obligation setup did not report execution: ${JSON.stringify(
+        summarizeTopUpResult(result)
+      )}`
+    );
+  }
+  const target = readRecord(result.json.target);
+  if (
+    target?.reserve?.toString() !== expected.reserve ||
+    target?.obligation?.toString() !== expected.obligation ||
+    target?.obligationExists !== true
+  ) {
+    throw new Error(
+      `Kamino obligation setup did not prove the expected account exists: ${JSON.stringify(
+        target
+      )}`
+    );
+  }
+  const setup = readRecord(result.json.setup);
+  const initExecution = readRecord(setup?.initExecution);
+  if (
+    !initExecution?.signature?.toString() ||
+    !initExecution.confirmedSlot?.toString()
+  ) {
+    throw new Error(
+      "Kamino obligation setup result is missing its signature or confirmed slot."
+    );
+  }
+}
+
+async function requireRecoveredTopUp(
+  refreshTopUp: () => Promise<SameMintTopUpResult>
+): Promise<SameMintTopUpResult> {
+  const refreshedTopUp = await refreshTopUp();
+  const stillMissing = readMissingDepositObligation(refreshedTopUp);
+  if (stillMissing) {
+    throw new Error(
+      `Kamino deposit obligation ${stillMissing.obligation} is still missing after setup; refusing to pull.`
+    );
+  }
+  assertNoTopUpPreflightBlockers(refreshedTopUp);
+  return refreshedTopUp;
 }
 
 const TOP_UP_PREFLIGHT_BLOCKED_MARKER =
@@ -3585,13 +3867,52 @@ async function main() {
       prepared: pull.prepared,
       signers: [policyKeypair],
     });
-    const topUpDryRun = await runSameMintReserveTopUp({
+    const initialTopUpDryRun = await runSameMintReserveTopUp({
       amountRaw: executionAmountRaw,
       execute: false,
       reserve: topUpReserve,
       rpcUrl,
       target,
     });
+    if (
+      options.execute &&
+      (pullSimulation.err || topUpPolicySimulationError(initialTopUpDryRun))
+    ) {
+      assertExecutablePreflight({
+        pullSimulation,
+        topUpDryRun: initialTopUpDryRun,
+      });
+    }
+    const refreshTopUpDryRun = () =>
+      runSameMintReserveTopUp({
+        amountRaw: executionAmountRaw,
+        execute: false,
+        reserve: topUpReserve,
+        rpcUrl,
+        target,
+      });
+    const recoveryResult = await recoverMissingObligationBeforePull({
+      dryRun: initialTopUpDryRun,
+      execute: options.execute,
+      reserve: topUpReserve,
+      pollIntervalMs: readEnvInteger(
+        AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS_ENV,
+        AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS
+      ),
+      timeoutMs: readEnvInteger(
+        AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS_ENV,
+        AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS
+      ),
+      runSetup: (execute) =>
+        runMissingObligationSetup({
+          execute,
+          reserve: topUpReserve,
+          rpcUrl,
+          target,
+        }),
+      refreshTopUp: refreshTopUpDryRun,
+    });
+    const topUpDryRun = recoveryResult.topUpDryRun;
     const topUpFeePayer = requireTopUpFeePayer(topUpDryRun, PublicKeyCtor);
 
     const plan = {
@@ -3640,6 +3961,9 @@ async function main() {
       cappedByRemainingAllowance: sweepDecision.cappedByRemainingAllowance,
       subscriptionAllowance: summarizeAllowance(allowance),
       transactionOrder: [
+        ...(recoveryResult.recovery.status === "not_needed"
+          ? []
+          : ["kamino_setup_obligation_before_pull"]),
         "subscription_pull_wallet_to_earn_vault",
         "kamino_route_policy_top_up_from_earn_vault",
       ],
@@ -3667,6 +3991,9 @@ async function main() {
         pull: summarizeSimulation(pullSimulation),
         kaminoTopUp: summarizeTopUpResult(topUpDryRun),
       },
+      kaminoObligationRecovery: summarizeMissingObligationRecovery(
+        recoveryResult.recovery
+      ),
       kaminoTopUpLookupTableCoverage: readTopUpLookupTableCoverage(
         topUpDryRun,
         topUpReserve
@@ -3688,14 +4015,7 @@ async function main() {
         AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS_ENV,
         AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS
       ),
-      refreshDryRun: () =>
-        runSameMintReserveTopUp({
-          amountRaw: executionAmountRaw,
-          execute: false,
-          reserve: topUpReserve,
-          rpcUrl,
-          target,
-        }),
+      refreshDryRun: refreshTopUpDryRun,
       reserve: topUpReserve,
       timeoutMs: readEnvInteger(
         AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS_ENV,
