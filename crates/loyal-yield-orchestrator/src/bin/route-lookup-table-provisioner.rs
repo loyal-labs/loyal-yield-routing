@@ -576,7 +576,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             }
         }
         if options.mode.may_sign() && signer.is_none() {
-            signer = Some(Arc::new(load_manager_signer()?));
+            signer = Some(Arc::new(load_manager_signer(&options.cluster)?));
         }
         let batch =
             run_operation_batch(&client, &rpc, signer.as_ref(), &options, &mut budget).await?;
@@ -2915,8 +2915,25 @@ fn policy_close_recipient(context: &Value, authority: Pubkey) -> Result<Pubkey, 
     Ok(recipient)
 }
 
-fn load_manager_signer() -> Result<Keypair, Box<dyn Error>> {
-    loyal_yield_orchestrator::standard_policy_keypair_from_env().map_err(Into::into)
+fn load_manager_signer(cluster: &str) -> Result<Keypair, Box<dyn Error>> {
+    loyal_yield_orchestrator::policy_keypair_for_cluster_from_env(cluster).map_err(Into::into)
+}
+
+fn expected_policy_authority(
+    cluster: &str,
+    configured: Option<Pubkey>,
+) -> Result<Pubkey, Box<dyn Error>> {
+    let standard = Pubkey::from_str(STANDARD_POLICY_AUTHORITY)?;
+    if cluster == "localnet" {
+        return configured.ok_or_else(|| "localnet requires an explicit policy authority".into());
+    }
+    if configured.is_some_and(|authority| authority != standard) {
+        return Err(format!(
+            "configured policy authority must equal {STANDARD_POLICY_AUTHORITY} outside localnet"
+        )
+        .into());
+    }
+    Ok(standard)
 }
 
 #[cfg(test)]
@@ -3789,11 +3806,12 @@ async fn repair_terminal_operations(
     if !control.paused {
         return Err("terminal ALT repair requires the durable cluster pause".into());
     }
-    let signer = load_manager_signer()?;
-    let standard_policy = Pubkey::from_str(STANDARD_POLICY_AUTHORITY)?;
-    if signer.pubkey() != standard_policy {
+    let signer = load_manager_signer(&options.cluster)?;
+    let expected_policy = expected_policy_authority(&options.cluster, Some(signer.pubkey()))?;
+    if signer.pubkey() != expected_policy {
         return Err(format!(
-            "POLICY_KEYPAIR must equal the standard policy authority {STANDARD_POLICY_AUTHORITY}"
+            "POLICY_KEYPAIR does not match the policy authority for cluster {}",
+            options.cluster
         )
         .into());
     }
@@ -3896,7 +3914,7 @@ async fn repair_terminal_operations(
             cluster: options.cluster.clone(),
             operation_id: candidate.operation.id,
             expected_control_epoch: control.control_epoch,
-            expected_policy_authority: standard_policy.to_string(),
+            expected_policy_authority: expected_policy.to_string(),
             chain: LookupTableTerminalChainEvidence {
                 observed_slot: i64::try_from(chain.observed_slot)?,
                 account_state,
@@ -3930,7 +3948,7 @@ async fn repair_terminal_operations(
                         "failedBindingCount": result.failed_binding_ids.len(),
                         "requeuedRequestCount": result.requeued_request_ids.len(),
                         "finalizedObservedSlot": chain.observed_slot,
-                        "policyAuthority": standard_policy.to_string(),
+                        "policyAuthority": expected_policy.to_string(),
                         "signerLoaded": true,
                         "transactionsSent": false,
                     })
@@ -4018,9 +4036,10 @@ fn bootstrap_family_inputs(
     let manager_pubkey = options
         .admin_policy_pubkey
         .ok_or("--bootstrap-families requires --policy-pubkey")?;
-    if manager_pubkey != Pubkey::from_str(STANDARD_POLICY_AUTHORITY)? {
+    if manager_pubkey != expected_policy_authority(&options.cluster, Some(manager_pubkey))? {
         return Err(format!(
-            "--bootstrap-families --policy-pubkey must equal the standard policy authority {STANDARD_POLICY_AUTHORITY}"
+            "--bootstrap-families --policy-pubkey does not match the policy authority for cluster {}",
+            options.cluster
         )
         .into());
     }
@@ -4370,13 +4389,14 @@ where
     {
         return Err("--bootstrap-families requires --policy-pubkey, --catalog-version, and --largest-atomic-expansion from measured catalog evidence".into());
     }
-    if admin_action == AdminAction::BootstrapFamilies
-        && admin_policy_pubkey != Some(Pubkey::from_str(STANDARD_POLICY_AUTHORITY)?)
-    {
-        return Err(format!(
-            "--bootstrap-families --policy-pubkey must equal the standard policy authority {STANDARD_POLICY_AUTHORITY}"
-        )
-        .into());
+    if admin_action == AdminAction::BootstrapFamilies {
+        let selected = admin_policy_pubkey.expect("checked above");
+        if selected != expected_policy_authority(&cluster, Some(selected))? {
+            return Err(format!(
+                "--bootstrap-families --policy-pubkey does not match the policy authority for cluster {cluster}"
+            )
+            .into());
+        }
     }
     if admin_vault_id.is_some() && !matches!(admin_action, AdminAction::SetRolloutMode(_)) {
         return Err("--vault-id is supported only with --set-rollout-mode".into());
@@ -4498,7 +4518,7 @@ fn default_worker_id() -> String {
 }
 
 fn usage() -> &'static str {
-    "Usage: route-lookup-table-provisioner --cluster <CLUSTER> [--status|--provisioner-pause-status|--reconcile-only|--execute|--precutover-probe --probe-vault-id <DB_ID>] [--watch] [--max-operations <N>] [--max-attempts <1..100>] [--address-chunk <1..20>] [--max-lamports <LAMPORTS>] [--budget-window-seconds <60..31536000>] [--lease-seconds <N>] [--rate-limit-ms <N>] [--concurrency <1..32>] [--safety-margin <N>] [--vault-growth-reservation <N>] [--max-vault-cohort <N>] [--worker-id <ID>]\n\nDry-run is the default and never loads a signer or writes. --precutover-probe requires a durable cluster pause, proves the complete exact shared ALT bundle at finalized RPC, executes the real drift/request paths in a rollback-only transaction, and commits only an immutable PASS audit row for that paused control epoch; it cannot be combined with worker/admin modes and never loads POLICY_KEYPAIR or sends. Reconcile-only may update durable reconciliation state but never signs or sends. Execute uses the standard POLICY_KEYPAIR as ALT authority/payer and requires an explicit positive PostgreSQL-backed rolling-window lamport budget that survives worker restarts. Bounded concurrency overlaps only independently fenced physical ALT tables; predecessor operations for one table remain serialized in the database. Every send first commits an exact broadcast permit in a short database transaction; no transaction or advisory lock crosses RPC. Reads NEON_DATABASE_URL, SOLANA_RPC_URL, and explicit YIELD_ALT_CLUSTER; cluster is never inferred from the RPC URL. The local YIELD_ALT_PROVISIONING_PAUSED environment gate remains an emergency process stop. Durable cluster pause controls are --set-provisioner-pause or --clear-provisioner-pause; read them with --provisioner-pause-status. Admin controls require --admin-write --reason <TEXT> --updated-by <ID>: --set-provisioner-pause, --clear-provisioner-pause, --repair-terminal-operations [--max-operations <1..100>] (requires the durable pause, finalized RPC, and the standard POLICY_KEYPAIR; quarantines only proven phantom tables or inserts an immutable failed-suffix successor and never sends), --activate-reusable-only (requires the paused/drained current exact PASS probe, fresh-verifies every shard in the exact active shared ALT bundle at finalized RPC, then atomically fences that evidence and aligns every rollout override), --force-legacy, --clear-force-legacy, --set-rollout-mode <MODE> [--vault-id <DB_ID>], --rollback-family <FAMILY_ID>, --rollback-binding <ACTIVE_BINDING_ID> --observed-slot <SLOT>, --finalize-rollbacks <FAMILY_ID>, --retire-legacy <TABLE> --expected-authority <PUBKEY> --expected-address-hash <HASH> --expected-address-count <N>, or --bootstrap-families --policy-pubkey <POLICY_PUBKEY> --catalog-version <VERSION> --largest-atomic-expansion <MEASURED_COUNT> [--safety-margin <N>] [--shared-family-name <NAME>] [--vault-family-name <NAME>]. Bootstrap rejects any policy identity other than the repo standard authority. The largest atomic expansion is catalog evidence and is independent of the transaction address chunk. Force-legacy remains global. Terminal repair is the only administrative action that loads POLICY_KEYPAIR, solely to prove standard policy identity; it never signs or broadcasts."
+    "Usage: route-lookup-table-provisioner --cluster <CLUSTER> [--status|--provisioner-pause-status|--reconcile-only|--execute|--precutover-probe --probe-vault-id <DB_ID>] [--watch] [--max-operations <N>] [--max-attempts <1..100>] [--address-chunk <1..20>] [--max-lamports <LAMPORTS>] [--budget-window-seconds <60..31536000>] [--lease-seconds <N>] [--rate-limit-ms <N>] [--concurrency <1..32>] [--safety-margin <N>] [--vault-growth-reservation <N>] [--max-vault-cohort <N>] [--worker-id <ID>]\n\nDry-run is the default and never loads a signer or writes. --precutover-probe requires a durable cluster pause, proves the complete exact shared ALT bundle at finalized RPC, executes the real drift/request paths in a rollback-only transaction, and commits only an immutable PASS audit row for that paused control epoch; it cannot be combined with worker/admin modes and never loads POLICY_KEYPAIR or sends. Reconcile-only may update durable reconciliation state but never signs or sends. Execute uses the cluster-appropriate POLICY_KEYPAIR as ALT authority/payer: canonical clusters stay pinned to the standard authority, while explicit localnet accepts the ephemeral authority that owns its local tables. Execute requires an explicit positive PostgreSQL-backed rolling-window lamport budget that survives worker restarts. Bounded concurrency overlaps only independently fenced physical ALT tables; predecessor operations for one table remain serialized in the database. Every send first commits an exact broadcast permit in a short database transaction; no transaction or advisory lock crosses RPC. Reads NEON_DATABASE_URL, SOLANA_RPC_URL, and explicit YIELD_ALT_CLUSTER; cluster is never inferred from the RPC URL. The local YIELD_ALT_PROVISIONING_PAUSED environment gate remains an emergency process stop. Durable cluster pause controls are --set-provisioner-pause or --clear-provisioner-pause; read them with --provisioner-pause-status. Admin controls require --admin-write --reason <TEXT> --updated-by <ID>: --set-provisioner-pause, --clear-provisioner-pause, --repair-terminal-operations [--max-operations <1..100>] (requires the durable pause, finalized RPC, and the cluster-appropriate POLICY_KEYPAIR; quarantines only proven phantom tables or inserts an immutable failed-suffix successor and never sends), --activate-reusable-only (requires the paused/drained current exact PASS probe, fresh-verifies every shard in the exact active shared ALT bundle at finalized RPC, then atomically fences that evidence and aligns every rollout override), --force-legacy, --clear-force-legacy, --set-rollout-mode <MODE> [--vault-id <DB_ID>], --rollback-family <FAMILY_ID>, --rollback-binding <ACTIVE_BINDING_ID> --observed-slot <SLOT>, --finalize-rollbacks <FAMILY_ID>, --retire-legacy <TABLE> --expected-authority <PUBKEY> --expected-address-hash <HASH> --expected-address-count <N>, or --bootstrap-families --policy-pubkey <POLICY_PUBKEY> --catalog-version <VERSION> --largest-atomic-expansion <MEASURED_COUNT> [--safety-margin <N>] [--shared-family-name <NAME>] [--vault-family-name <NAME>]. Bootstrap rejects nonstandard policy identities outside localnet. The largest atomic expansion is catalog evidence and is independent of the transaction address chunk. Force-legacy remains global. Terminal repair is the only administrative action that loads POLICY_KEYPAIR, solely to prove cluster policy identity; it never signs or broadcasts."
 }
 
 #[cfg(test)]
@@ -4661,6 +4681,51 @@ mod tests {
         assert_eq!(
             alt_authority_signer_env(),
             loyal_yield_orchestrator::POLICY_KEYPAIR_ENV
+        );
+    }
+
+    #[test]
+    fn localnet_bootstrap_accepts_an_ephemeral_policy_authority() {
+        let local_policy = Pubkey::new_unique();
+        let local_env = [
+            (CLUSTER_ENV, "localnet"),
+            (DATABASE_URL_ENV, "postgresql://redacted"),
+            (RPC_URL_ENV, "http://127.0.0.1:8899"),
+        ];
+        let policy = local_policy.to_string();
+        let options = parse_args(
+            [
+                "--bootstrap-families",
+                "--policy-pubkey",
+                policy.as_str(),
+                "--catalog-version",
+                "local-clone",
+                "--largest-atomic-expansion",
+                "40",
+                "--admin-write",
+                "--reason",
+                "local fixture",
+                "--updated-by",
+                "fleet-local-chain-e2e",
+            ],
+            env_map(&local_env),
+        )
+        .unwrap();
+
+        assert_eq!(options.cluster, "localnet");
+        assert_eq!(options.admin_policy_pubkey, Some(local_policy));
+        assert_eq!(
+            expected_policy_authority("localnet", Some(local_policy)).unwrap(),
+            local_policy
+        );
+    }
+
+    #[test]
+    fn canonical_bootstrap_rejects_an_ephemeral_policy_authority() {
+        assert!(expected_policy_authority("mainnet-beta", Some(Pubkey::new_unique())).is_err());
+        assert_eq!(
+            expected_policy_authority("mainnet-beta", None).unwrap(),
+            Pubkey::from_str(STANDARD_POLICY_AUTHORITY).unwrap()
         );
     }
 

@@ -1124,7 +1124,7 @@ fn build_market_epoch(
         for catalog_row in &mint_catalog {
             let reserve = Some(catalog_row.reserve.clone());
             let mut reserve_blockers = Vec::new();
-            if catalog_row.source != "kamino-api" {
+            if !is_accepted_catalog_source(&config.cluster, &catalog_row.source) {
                 push_market_blocker(
                     &mut reserve_blockers,
                     MarketMintBlockerCode::CatalogSourceMismatch,
@@ -1411,9 +1411,7 @@ fn validate_exact_verified_reserve(
             "verified row does not exactly match catalog reserve/market/mint".to_owned(),
         );
     }
-    if exact.verification_source != "http_snapshot"
-        && exact.verification_source != "http_confirmed_refresh"
-    {
+    if !is_accepted_verification_source(&config.cluster, &exact.verification_source) {
         push_market_blocker(
             blockers,
             MarketMintBlockerCode::VerificationSourceMismatch,
@@ -1578,6 +1576,15 @@ fn validate_exact_verified_reserve(
         );
     }
     target_economic_expiry
+}
+
+fn is_accepted_catalog_source(cluster: &str, source: &str) -> bool {
+    source == "kamino-api" || (cluster == "localnet" && source == "local-mainnet-clone-simulation")
+}
+
+fn is_accepted_verification_source(cluster: &str, source: &str) -> bool {
+    matches!(source, "http_snapshot" | "http_confirmed_refresh")
+        || (cluster == "localnet" && source == "local_fixture")
 }
 
 fn push_market_blocker(
@@ -2958,4 +2965,38 @@ fn usd_to_micros(usd: f64) -> Result<i64, FleetObservationError> {
         return Err(FleetObservationError::ArithmeticOverflow);
     }
     Ok(micros.round() as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_accepted_catalog_source, is_accepted_verification_source};
+
+    #[test]
+    fn local_fixture_provenance_is_scoped_to_localnet() {
+        assert!(is_accepted_catalog_source(
+            "localnet",
+            "local-mainnet-clone-simulation"
+        ));
+        assert!(is_accepted_verification_source("localnet", "local_fixture"));
+
+        for cluster in ["mainnet-beta", "devnet", "testnet"] {
+            assert!(!is_accepted_catalog_source(
+                cluster,
+                "local-mainnet-clone-simulation"
+            ));
+            assert!(!is_accepted_verification_source(cluster, "local_fixture"));
+        }
+    }
+
+    #[test]
+    fn production_provenance_remains_accepted_on_every_cluster() {
+        for cluster in ["mainnet-beta", "localnet"] {
+            assert!(is_accepted_catalog_source(cluster, "kamino-api"));
+            assert!(is_accepted_verification_source(cluster, "http_snapshot"));
+            assert!(is_accepted_verification_source(
+                cluster,
+                "http_confirmed_refresh"
+            ));
+        }
+    }
 }

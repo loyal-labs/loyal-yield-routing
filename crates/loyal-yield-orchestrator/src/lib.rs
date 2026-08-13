@@ -16,8 +16,8 @@ pub use lookup_tables::*;
 #[doc(inline)]
 pub use loyal_route_lookup_tables::{NeonSqlClient, OrchestratorStore};
 pub use loyal_solana_env::{
-    keypair_from_env, keypair_from_hex, keypair_from_string, policy_keypair_from_env,
-    route_fee_payer_keypairs_from_env, solana_testing_keypair_from_env,
+    keypair_from_env, keypair_from_hex, keypair_from_string, policy_keypair_for_cluster_from_env,
+    policy_keypair_from_env, route_fee_payer_keypairs_from_env, solana_testing_keypair_from_env,
     standard_policy_keypair_from_env, yield_router_keypair_from_env, PolicySignerError,
     POLICY_KEYPAIR_ENV, SOLANA_TESTING_PK_ENV, STANDARD_POLICY_AUTHORITY, YIELD_ROUTER_KEYPAIR_ENV,
     YIELD_ROUTE_FEE_PAYER_KEYPAIRS_ENV,

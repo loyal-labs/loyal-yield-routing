@@ -45,6 +45,31 @@ pub fn policy_keypair_from_env() -> Result<Keypair, PolicySignerError> {
 /// material so startup/status logs cannot turn signer validation into a leak.
 pub fn standard_policy_keypair_from_env() -> Result<Keypair, PolicySignerError> {
     let keypair = policy_keypair_from_env()?;
+    require_standard_policy_authority(keypair)
+}
+
+/// Loads the policy signer for an explicitly selected cluster.
+///
+/// Mainnet, devnet, and testnet retain the standard policy-authority fence.
+/// A local validator cannot possess that production signer, so `localnet`
+/// deliberately accepts the ephemeral policy key used to create its local
+/// settings and policy accounts. Callers still validate the cluster and match
+/// this signer to the decoded policy account before signing a transaction.
+pub fn policy_keypair_for_cluster_from_env(cluster: &str) -> Result<Keypair, PolicySignerError> {
+    policy_keypair_for_cluster(policy_keypair_from_env()?, cluster)
+}
+
+fn policy_keypair_for_cluster(
+    keypair: Keypair,
+    cluster: &str,
+) -> Result<Keypair, PolicySignerError> {
+    if cluster == "localnet" {
+        return Ok(keypair);
+    }
+    require_standard_policy_authority(keypair)
+}
+
+fn require_standard_policy_authority(keypair: Keypair) -> Result<Keypair, PolicySignerError> {
     if keypair.pubkey().to_string() != STANDARD_POLICY_AUTHORITY {
         return Err(PolicySignerError::UnexpectedPolicyAuthority);
     }
@@ -231,6 +256,29 @@ mod tests {
             PolicySignerError::InvalidLength { length: 3 }
         ));
         assert!(!error.to_string().contains("010203"));
+    }
+
+    #[test]
+    fn localnet_policy_identity_is_ephemeral() {
+        let keypair = Keypair::new();
+        let expected = keypair.pubkey();
+
+        let accepted = policy_keypair_for_cluster(keypair, "localnet").unwrap();
+
+        assert_eq!(accepted.pubkey(), expected);
+    }
+
+    #[test]
+    fn non_local_policy_identity_remains_pinned() {
+        for cluster in ["mainnet-beta", "devnet", "testnet"] {
+            let keypair = Keypair::new();
+            let result = policy_keypair_for_cluster(keypair, cluster);
+
+            assert!(matches!(
+                result,
+                Err(PolicySignerError::UnexpectedPolicyAuthority)
+            ));
+        }
     }
 
     fn hex_encode(bytes: &[u8]) -> String {

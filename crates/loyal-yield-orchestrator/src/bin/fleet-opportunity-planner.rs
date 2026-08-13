@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     error::Error,
+    str::FromStr,
     time::Instant,
 };
 
@@ -26,10 +27,12 @@ use loyal_yield_orchestrator::{
 };
 use loyal_yield_router::timescale::{TimescaleRouterClient, TimescaleRouterClientConfig};
 use serde_json::{json, Value};
+use solana_sdk::pubkey::Pubkey;
 use tokio::{task::JoinSet, time::Duration};
 
 const DEFAULT_CLUSTER: &str = "mainnet-beta";
 const CLUSTER_ENV: &str = "YIELD_ALT_CLUSTER";
+const POLICY_AUTHORITY_ENV: &str = "YIELD_ROUTE_POLICY_AUTHORITY";
 const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 1;
 const DEFAULT_FULL_SWEEP_INTERVAL_SECONDS: u64 = 30;
 const DEFAULT_MARKET_PROBE_INTERVAL_SECONDS: u64 = 5;
@@ -154,6 +157,25 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
 fn percentile_95(sorted: &[u128]) -> u128 {
     let index = (sorted.len() * 95).div_ceil(100).saturating_sub(1);
     sorted[index]
+}
+
+fn policy_authority_for_cluster(
+    cluster: &str,
+    configured: Option<&str>,
+) -> Result<String, Box<dyn Error>> {
+    if cluster == "localnet" {
+        let configured = configured
+            .filter(|value| !value.trim().is_empty())
+            .ok_or("YIELD_ROUTE_POLICY_AUTHORITY is required for localnet planning")?;
+        return Ok(Pubkey::from_str(configured)?.to_string());
+    }
+    if configured.is_some_and(|value| value != STANDARD_POLICY_AUTHORITY) {
+        return Err(format!(
+            "{POLICY_AUTHORITY_ENV} must equal the standard policy authority outside localnet"
+        )
+        .into());
+    }
+    Ok(STANDARD_POLICY_AUTHORITY.to_owned())
 }
 
 fn rejection_reason_counts<'a>(
@@ -1373,7 +1395,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
     // Discovery needs only the public delegated-signer identity. Private
     // POLICY key material is mounted exclusively into roles that sign or fund
     // transactions (executor and ALT provisioner).
-    let delegated_signer = STANDARD_POLICY_AUTHORITY.to_owned();
+    let configured_policy_authority = env::var(POLICY_AUTHORITY_ENV).ok();
+    let delegated_signer =
+        policy_authority_for_cluster(&options.cluster, configured_policy_authority.as_deref())?;
     let enabled_mints = enabled_stable_mints_from_env()?;
     let config = live_observation_config(&options.cluster, enabled_mints)?;
     let neon = NeonSqlClient::connect(
@@ -1682,6 +1706,32 @@ fn log_planner_wakeup_event(event: &DurablePgWakeupEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn localnet_requires_an_explicit_public_policy_identity() {
+        let local = Pubkey::new_unique().to_string();
+
+        assert_eq!(
+            policy_authority_for_cluster("localnet", Some(&local)).unwrap(),
+            local
+        );
+        assert!(policy_authority_for_cluster("localnet", None).is_err());
+        assert!(policy_authority_for_cluster("localnet", Some("not-a-pubkey")).is_err());
+    }
+
+    #[test]
+    fn canonical_clusters_remain_pinned_to_the_standard_identity() {
+        for cluster in ["mainnet-beta", "devnet", "testnet"] {
+            assert_eq!(
+                policy_authority_for_cluster(cluster, None).unwrap(),
+                STANDARD_POLICY_AUTHORITY
+            );
+            assert!(
+                policy_authority_for_cluster(cluster, Some(&Pubkey::new_unique().to_string()))
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn daemon_log_limiter_preserves_progress_and_coalesces_idle_cycles() {
