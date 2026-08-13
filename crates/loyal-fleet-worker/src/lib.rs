@@ -81,8 +81,8 @@ use loyal_yield_orchestrator::{
         MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS,
     },
     lookup_table_manifest_hash as control_plane_lookup_table_manifest_hash,
-    minimal_verified_table_bundle, policy_keypair_from_env, route_amount_evidence_from_metadata,
-    route_fee_payer_keypairs_from_env,
+    minimal_verified_table_bundle, policy_keypair_for_cluster_from_env, policy_keypair_from_env,
+    route_amount_evidence_from_metadata, route_fee_payer_keypairs_from_env,
     rpc_safety::{redacted_external_error, validate_rpc_endpoint, validate_rpc_genesis_hash},
     shared_market_manifest_addresses, shared_market_manifest_hash, solana_testing_keypair_from_env,
     standard_policy_keypair_from_env, supported_stable_mints, vault_manifest_addresses,
@@ -2105,6 +2105,26 @@ impl RuntimeLookupTableResolution {
             Err("reusable lookup-table coverage is incomplete or the exact simulation failure is not the expected missing-token-account prerequisite".into())
         }
     }
+
+    fn require_missing_squads_policy_deferred_simulation_coverage(
+        &self,
+        prerequisite_policy_is_missing: bool,
+    ) -> Result<(), Box<dyn Error>> {
+        if self.require_deferred_simulation_coverage().is_ok() {
+            return Ok(());
+        }
+        let missing_policy_deferred = prerequisite_policy_is_missing
+            && self.has_complete_reusable_static_coverage()
+            && self
+                .reusable_simulation_error
+                .as_deref()
+                .is_some_and(is_missing_squads_account_simulation_error);
+        if missing_policy_deferred {
+            Ok(())
+        } else {
+            Err("reusable lookup-table coverage is incomplete or the exact simulation failure is not the expected missing Squads policy prerequisite".into())
+        }
+    }
 }
 
 fn apply_policy_setup_funding_serialization(
@@ -2325,6 +2345,12 @@ fn is_account_not_initialized_simulation_error(error: &str) -> bool {
         || normalized.contains("account not initialized")
         || normalized.contains("custom(3012)")
         || normalized.contains("custom program error: 0xbc4")
+}
+
+fn is_missing_squads_account_simulation_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    (normalized.contains("custom(6024)") || normalized.contains("custom program error: 0x1788"))
+        && (normalized.contains("missingaccount") || normalized.contains("missing account"))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3286,9 +3312,13 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
     client
         .require_schema_migration(33, "policy_setup_funding_reservations")
         .await?;
-    // Validate the standard signer once at startup. Individual route builds
+    // Validate the cluster-appropriate signer once at startup. Mainnet stays
+    // pinned to the standard authority; explicit localnet uses the ephemeral
+    // signer that owns the locally created policy. Individual route builds
     // re-read and match it to the active policy before signing.
-    let delegated_signer = standard_policy_keypair_from_env()?.pubkey().to_string();
+    let delegated_signer = policy_keypair_for_cluster_from_env(&options.cluster)?
+        .pubkey()
+        .to_string();
     let (fee_payer_keypool_state, mounted_fee_payer_pubkeys) =
         match route_fee_payer_keypairs_from_env() {
             Ok(keypairs) if keypairs.is_empty() => ("unconfigured", BTreeSet::new()),
@@ -8271,14 +8301,19 @@ async fn run_policy_update_flow(
     )
     .await?;
     if options.execute && setup_policy_requires_landed_route_create {
-        setup_policy_lookup_table_phase
+        if let Err(error) = setup_policy_lookup_table_phase
             .resolution
-            .require_deferred_simulation_coverage()
-            .map_err(|error| {
-                format!(
-                    "setup-policy ALT coverage is incomplete before route-policy creation: {error}"
-                )
-            })?;
+            .require_missing_squads_policy_deferred_simulation_coverage(!policy_exists)
+        {
+            release_route_lookup_table_phase_leases(client, &route_policy_lookup_table_phase, None)
+                .await;
+            release_route_lookup_table_phase_leases(client, &setup_policy_lookup_table_phase, None)
+                .await;
+            return Err(format!(
+                "setup-policy ALT coverage is incomplete before route-policy creation: {error}"
+            )
+            .into());
+        }
     }
     let lookup_table_provisioning = json!({
         "mode": "active_reusable_resolver",
@@ -8388,6 +8423,10 @@ async fn run_policy_update_flow(
                 "policyFinalizeUpdate": Value::Null,
             }))?
         );
+        release_route_lookup_table_phase_leases(client, &route_policy_lookup_table_phase, None)
+            .await;
+        release_route_lookup_table_phase_leases(client, &setup_policy_lookup_table_phase, None)
+            .await;
         return Err(format!("fallback route policy simulation failed: {error}").into());
     }
     if let Some(error) = setup_policy_transaction.simulation_error.clone() {
@@ -8407,6 +8446,10 @@ async fn run_policy_update_flow(
                 "policyFinalizeUpdate": Value::Null,
             }))?
         );
+        release_route_lookup_table_phase_leases(client, &route_policy_lookup_table_phase, None)
+            .await;
+        release_route_lookup_table_phase_leases(client, &setup_policy_lookup_table_phase, None)
+            .await;
         return Err(format!("fallback setup policy simulation failed: {error}").into());
     }
 
@@ -21486,6 +21529,19 @@ mod tests {
         }
         assert!(!is_account_not_initialized_simulation_error(
             "InstructionError(2, Custom(6001))"
+        ));
+    }
+
+    #[test]
+    fn missing_squads_account_simulation_error_requires_code_and_message() {
+        assert!(is_missing_squads_account_simulation_error(
+            "InstructionError(0, Custom(6024)); AnchorError Error Code: MissingAccount; Error Message: Missing account; custom program error: 0x1788"
+        ));
+        assert!(!is_missing_squads_account_simulation_error(
+            "InstructionError(0, Custom(6024)); unrelated policy error"
+        ));
+        assert!(!is_missing_squads_account_simulation_error(
+            "Missing account while executing an unrelated program"
         ));
     }
 

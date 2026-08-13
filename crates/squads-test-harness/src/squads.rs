@@ -133,9 +133,22 @@ pub fn create_squads_smart_account_instruction(
     verifier: Pubkey,
     seed: u128,
 ) -> Instruction {
+    create_squads_smart_account_instruction_with_treasury(
+        payer,
+        verifier,
+        seed,
+        squads_test_treasury(),
+    )
+}
+
+pub fn create_squads_smart_account_instruction_with_treasury(
+    payer: Pubkey,
+    verifier: Pubkey,
+    seed: u128,
+    treasury: Pubkey,
+) -> Instruction {
     assert!(seed > 0, "Squads smart-account seed starts at 1");
     let program_config = derive_squads_program_config();
-    let treasury = squads_test_treasury();
     let (settings, _) = derive_squads_settings(seed);
 
     Instruction {

@@ -221,6 +221,8 @@ fn reusable_alt_v0_matrix_compiles_covers_and_executes_every_earn_shape() {
         get_spl_token_amount(&context.svm, vault_main_collateral),
         ROUTE_AMOUNT
     );
+    let main_before_route = get_spl_token_amount(&context.svm, vault_main_collateral);
+    let prime_before_route = get_spl_token_amount(&context.svm, vault_prime_collateral);
 
     // Ordinary same-mint source withdrawal plus target deposit runs through
     // the real Loyal Actions coalesced route and the real mock Kamino program.
@@ -255,6 +257,43 @@ fn reusable_alt_v0_matrix_compiles_covers_and_executes_every_earn_shape() {
     assert_eq!(
         get_spl_token_amount(&context.svm, vault_prime_collateral),
         ROUTE_AMOUNT
+    );
+    eprintln!(
+        "fleet_litesvm_main_prime_evidence={}",
+        serde_json::to_string(&serde_json::json!({
+            "schemaVersion": 1,
+            "engine": "LiteSVM",
+            "squadsExecution": "real-committed-sbf-fixture",
+            "loyalActionsExecution": "production-builders",
+            "kaminoExecution": "deterministic-mock-program",
+            "networkAccessed": false,
+            "rpcUsed": false,
+            "databaseUsed": false,
+            "ephemeralDelegatedSigner": true,
+            "route": {
+                "mainMarket": KAMINO_MAIN_MARKET.to_string(),
+                "mainReserve": KAMINO_MAIN_USDC_RESERVE.to_string(),
+                "primeMarket": KAMINO_PRIME_MARKET.to_string(),
+                "primeReserve": KAMINO_PRIME_USDC_RESERVE.to_string(),
+                "liquidityMint": USDC_MINT.to_string(),
+            },
+            "balances": {
+                "before": { "mainCollateralRaw": main_before_route, "primeCollateralRaw": prime_before_route },
+                "after": {
+                    "mainCollateralRaw": get_spl_token_amount(&context.svm, vault_main_collateral),
+                    "primeCollateralRaw": get_spl_token_amount(&context.svm, vault_prime_collateral),
+                },
+            },
+            "transaction": {
+                "version": "v0",
+                "exactAltCoverage": true,
+                "simulated": true,
+                "executed": true,
+                "nonzeroCompute": true,
+                "packetBelowLimit": true,
+            },
+        }))
+        .expect("LiteSVM Main-to-Prime evidence serializes")
     );
 
     // Full withdrawal and cleanup of a separate empty vault-owned token account

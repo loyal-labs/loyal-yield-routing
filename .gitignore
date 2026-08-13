@@ -42,6 +42,12 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+artifacts/fleet-db-load/
+artifacts/fleet-local-e2e/
+artifacts/fleet-local-load-lab/
+/artifacts/fleet-litesvm-e2e/
+/artifacts/fleet-local-chain-e2e/
+/fixtures/fleet-mainnet-clone-*/
 !.env.example
 
 # vercel
