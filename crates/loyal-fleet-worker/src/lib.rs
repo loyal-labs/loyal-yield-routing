@@ -5917,10 +5917,10 @@ async fn finish_fleet_worker_task(
                 None,
             ),
             (RebalanceOpportunityClaimKind::Execute, SameMintRouteExecutionState::Retry)
-                if outcome.reason.as_deref().is_some_and(|reason| {
-                    reason.contains("fee_payer_reselection_required")
-                        || reason.contains("target capacity telemetry changed")
-                }) =>
+                if outcome
+                    .reason
+                    .as_deref()
+                    .is_some_and(requires_fast_execute_revalidation) =>
             {
                 (
                     RebalanceOpportunityState::Revalidate,
@@ -6211,32 +6211,42 @@ fn classify_in_process_execution_error(reason: &str) -> SameMintRouteExecutionSt
         || reason.contains("lookup-table coverage") && reason.contains("missing")
     {
         SameMintRouteExecutionState::WaitingAlt
-    } else if [
-        "active decision",
-        "blockhash",
-        "connection",
-        "database",
-        "deadlock",
-        "fee_payer_reselection_required",
-        "insufficient funds",
-        "insufficient lamports",
-        "lease",
-        "rate limit",
-        "route_funding_required",
-        "rpc",
-        "serialization",
-        "stale rpc",
-        "target capacity",
-        "temporar",
-        "timeout",
-    ]
-    .iter()
-    .any(|retryable| reason.contains(retryable))
+    } else if requires_fast_execute_revalidation(&reason)
+        || [
+            "active decision",
+            "blockhash",
+            "connection",
+            "database",
+            "deadlock",
+            "insufficient funds",
+            "insufficient lamports",
+            "lease",
+            "rate limit",
+            "route_funding_required",
+            "rpc",
+            "serialization",
+            "stale rpc",
+            "target capacity",
+            "temporar",
+            "timeout",
+        ]
+        .iter()
+        .any(|retryable| reason.contains(retryable))
     {
         SameMintRouteExecutionState::Retry
     } else {
         SameMintRouteExecutionState::Terminal
     }
+}
+
+fn requires_fast_execute_revalidation(reason: &str) -> bool {
+    [
+        "fee_payer_reselection_required",
+        "policy_setup_funding_reselection_required",
+        "target capacity telemetry changed",
+    ]
+    .iter()
+    .any(|revalidation_required| reason.contains(revalidation_required))
 }
 
 fn classify_route_resolution_blocker(reason: &str) -> SameMintRouteExecutionState {
@@ -21301,6 +21311,29 @@ mod tests {
             route_fingerprint,
             requirements_fingerprint,
         }
+    }
+
+    #[test]
+    fn policy_setup_funding_reselection_retries_through_fast_revalidation() {
+        for reason in [
+            "unexpected store state: fee_payer_reselection_required: stale balance",
+            "unexpected store state: policy_setup_funding_reselection_required: stale balance",
+            "target capacity telemetry changed during execution",
+        ] {
+            assert_eq!(
+                classify_in_process_execution_error(reason),
+                SameMintRouteExecutionState::Retry,
+                "expected retryable execution outcome for {reason}"
+            );
+            assert!(
+                requires_fast_execute_revalidation(reason),
+                "expected fast revalidation for {reason}"
+            );
+        }
+
+        assert!(!requires_fast_execute_revalidation(
+            "rpc timeout while submitting"
+        ));
     }
 
     #[test]
