@@ -320,6 +320,10 @@ pub struct SignedRouteSubmissionInput {
     pub fee_payer_balance_lamports: Option<i64>,
     pub fee_payer_balance_slot: Option<i64>,
     pub fee_payer_balance_observed_at: Option<DateTime<Utc>>,
+    /// Exact non-fee lamports debited from the policy payer by explicit setup
+    /// instructions. `Some(0)` still requests fee reservation for a setup
+    /// route; `None` keeps the legacy semantic lock path.
+    pub policy_setup_funding_lamports: Option<i64>,
     pub compiled_fee_lamports: i64,
     /// Complete writable-account evidence from the compiled transaction.
     pub writable_account_keys: Vec<String>,
@@ -5333,13 +5337,28 @@ fn validate_signed_route_submission_input(
     }
     match (
         input.fee_payer_kind,
+        input.policy_setup_funding_lamports,
         input.fee_payer_balance_lamports,
         input.fee_payer_balance_slot,
         input.fee_payer_balance_observed_at,
     ) {
-        (RouteFeePayerKind::Policy, None, None, None) => {}
+        (RouteFeePayerKind::Policy, None, None, None, None) => {}
+        (
+            RouteFeePayerKind::Policy,
+            Some(setup_funding_lamports),
+            Some(balance),
+            Some(observed_slot),
+            Some(observed_at),
+        ) if setup_funding_lamports >= 0
+            && setup_funding_lamports
+                .checked_add(input.compiled_fee_lamports)
+                .is_some_and(|reserved| reserved > 0)
+            && balance >= 0
+            && observed_slot >= 0
+            && observed_at <= Utc::now() => {}
         (
             RouteFeePayerKind::FeeOnlyShard,
+            None,
             Some(balance),
             Some(observed_slot),
             Some(observed_at),
@@ -5417,6 +5436,9 @@ async fn reserve_fee_only_route_payer_spend(
                 "policy route fee payer is not the vault's durable delegated signer and reusable-v2 authority/payer"
                     .to_owned(),
             ));
+        }
+        if input.policy_setup_funding_lamports.is_some() {
+            reserve_policy_setup_funding(connection, input, signed_submission_id).await?;
         }
         return Ok(());
     }
@@ -5623,6 +5645,213 @@ async fn reserve_fee_only_route_payer_spend(
     .bind(input.opportunity_id)
     .bind(signed_submission_id)
     .bind(input.compiled_fee_lamports)
+    .bind(observed_balance_lamports)
+    .bind(observed_balance_slot)
+    .bind(observed_balance_at)
+    .execute(&mut *connection)
+    .await?;
+    Ok(())
+}
+
+async fn reserve_policy_setup_funding(
+    connection: &mut sqlx::PgConnection,
+    input: &SignedRouteSubmissionInput,
+    signed_submission_id: i64,
+) -> Result<(), OrchestratorError> {
+    let setup_funding_lamports = input.policy_setup_funding_lamports.ok_or_else(|| {
+        OrchestratorError::StoreInvariant(
+            "policy setup funding reservation is missing its exact setup debit".to_owned(),
+        )
+    })?;
+    let observed_balance_lamports = input.fee_payer_balance_lamports.ok_or_else(|| {
+        OrchestratorError::StoreInvariant(
+            "policy setup funding reservation is missing its payer balance".to_owned(),
+        )
+    })?;
+    let observed_balance_slot = input.fee_payer_balance_slot.ok_or_else(|| {
+        OrchestratorError::StoreInvariant(
+            "policy setup funding reservation is missing its payer balance slot".to_owned(),
+        )
+    })?;
+    let observed_balance_at = input.fee_payer_balance_observed_at.ok_or_else(|| {
+        OrchestratorError::StoreInvariant(
+            "policy setup funding reservation is missing its payer observation time".to_owned(),
+        )
+    })?;
+    let reserved_lamports = setup_funding_lamports
+        .checked_add(input.compiled_fee_lamports)
+        .filter(|reserved| *reserved > 0)
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "policy setup funding reservation amount overflowed or is empty".to_owned(),
+            )
+        })?;
+
+    if let Some(row) = sqlx::query(
+        r#"
+        SELECT cluster, payer, opportunity_id, signed_submission_id,
+               setup_funding_lamports, compiled_fee_lamports,
+               reserved_lamports, observed_balance_lamports,
+               observed_balance_slot, observed_balance_at
+        FROM loyal_yield.route_policy_setup_funding_reservations
+        WHERE semantic_key = $1
+        FOR SHARE
+        "#,
+    )
+    .bind(&input.semantic_key)
+    .fetch_optional(&mut *connection)
+    .await?
+    {
+        let matches = row.try_get::<String, _>("cluster")? == input.cluster
+            && row.try_get::<String, _>("payer")? == input.fee_payer
+            && row.try_get::<i64, _>("opportunity_id")? == input.opportunity_id
+            && row.try_get::<i64, _>("signed_submission_id")? == signed_submission_id
+            && row.try_get::<i64, _>("setup_funding_lamports")? == setup_funding_lamports
+            && row.try_get::<i64, _>("compiled_fee_lamports")? == input.compiled_fee_lamports
+            && row.try_get::<i64, _>("reserved_lamports")? == reserved_lamports
+            && row.try_get::<i64, _>("observed_balance_lamports")? == observed_balance_lamports
+            && row.try_get::<i64, _>("observed_balance_slot")? == observed_balance_slot
+            && row.try_get::<DateTime<Utc>, _>("observed_balance_at")? == observed_balance_at;
+        if !matches {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "policy setup funding reservation key {:?} collided with different immutable evidence",
+                input.semantic_key
+            )));
+        }
+        return Ok(());
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.route_policy_setup_funding_payers
+            (cluster, payer, observed_balance_lamports,
+             observed_balance_slot, observed_balance_at)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (cluster, payer) DO NOTHING
+        "#,
+    )
+    .bind(&input.cluster)
+    .bind(&input.fee_payer)
+    .bind(observed_balance_lamports)
+    .bind(observed_balance_slot)
+    .bind(observed_balance_at)
+    .execute(&mut *connection)
+    .await?;
+
+    let payer = sqlx::query(
+        r#"
+        SELECT observed_balance_lamports, observed_balance_slot,
+               minimum_balance_lamports,
+               clock_timestamp() AS admission_checked_at
+        FROM loyal_yield.route_policy_setup_funding_payers
+        WHERE cluster = $1 AND payer = $2
+        FOR UPDATE
+        "#,
+    )
+    .bind(&input.cluster)
+    .bind(&input.fee_payer)
+    .fetch_one(&mut *connection)
+    .await?;
+    let durable_observed_balance_lamports: i64 = payer.try_get("observed_balance_lamports")?;
+    let durable_observed_balance_slot: i64 = payer.try_get("observed_balance_slot")?;
+    let minimum_balance_lamports: i64 = payer.try_get("minimum_balance_lamports")?;
+    let admission_checked_at: DateTime<Utc> = payer.try_get("admission_checked_at")?;
+    if observed_balance_at < admission_checked_at - chrono::Duration::seconds(2)
+        || observed_balance_at > admission_checked_at + chrono::Duration::seconds(5)
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "policy_setup_funding_reselection_required: payer balance snapshot is stale or future-dated"
+                .to_owned(),
+        ));
+    }
+    if observed_balance_slot < durable_observed_balance_slot
+        || (observed_balance_slot == durable_observed_balance_slot
+            && observed_balance_lamports != durable_observed_balance_lamports)
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "policy_setup_funding_reselection_required: payer balance snapshot is older than the durable admission frontier"
+                .to_owned(),
+        ));
+    }
+
+    sqlx::query(
+        r#"
+        UPDATE loyal_yield.route_policy_setup_funding_payers
+        SET observed_balance_lamports = $3,
+            observed_balance_slot = $4,
+            observed_balance_at = $5,
+            updated_at = now()
+        WHERE cluster = $1
+          AND payer = $2
+          AND observed_balance_slot < $4
+        "#,
+    )
+    .bind(&input.cluster)
+    .bind(&input.fee_payer)
+    .bind(observed_balance_lamports)
+    .bind(observed_balance_slot)
+    .bind(observed_balance_at)
+    .execute(&mut *connection)
+    .await?;
+
+    // Subtract only reservations whose debit cannot already be reflected in
+    // this confirmed balance observation. A landed transaction remains held
+    // until an observation at or above its confirmation slot arrives.
+    let not_in_observed_balance_lamports: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(SUM(reservation.reserved_lamports), 0)::BIGINT
+        FROM loyal_yield.route_policy_setup_funding_reservations reservation
+        JOIN loyal_yield.signed_route_submissions submission
+          ON submission.id = reservation.signed_submission_id
+        WHERE reservation.cluster = $1
+          AND reservation.payer = $2
+          AND (
+              (
+                  submission.confirmed_slot IS NULL
+                  AND submission.submission_state NOT IN (
+                      'reconciled', 'expired', 'failed'
+                  )
+              )
+              OR submission.confirmed_slot > $3
+          )
+        "#,
+    )
+    .bind(&input.cluster)
+    .bind(&input.fee_payer)
+    .bind(observed_balance_slot)
+    .fetch_one(&mut *connection)
+    .await?;
+    let balance_after_reservations = observed_balance_lamports
+        .checked_sub(not_in_observed_balance_lamports)
+        .and_then(|balance| balance.checked_sub(reserved_lamports));
+    if observed_balance_lamports < minimum_balance_lamports
+        || balance_after_reservations.is_none_or(|balance| balance < minimum_balance_lamports)
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "policy_setup_funding_reselection_required: payer balance cannot fund concurrent setup reservations"
+                .to_owned(),
+        ));
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.route_policy_setup_funding_reservations
+            (cluster, payer, semantic_key, opportunity_id,
+             signed_submission_id, setup_funding_lamports,
+             compiled_fee_lamports, reserved_lamports,
+             observed_balance_lamports, observed_balance_slot,
+             observed_balance_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        "#,
+    )
+    .bind(&input.cluster)
+    .bind(&input.fee_payer)
+    .bind(&input.semantic_key)
+    .bind(input.opportunity_id)
+    .bind(signed_submission_id)
+    .bind(setup_funding_lamports)
+    .bind(input.compiled_fee_lamports)
+    .bind(reserved_lamports)
     .bind(observed_balance_lamports)
     .bind(observed_balance_slot)
     .bind(observed_balance_at)

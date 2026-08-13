@@ -201,6 +201,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0032_idle_vault_decision_lookup_index.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 33,
+        name: "policy_setup_funding_reservations",
+        sql: include_str!("../../../loyal-yield-store/migrations/0033_policy_setup_funding_reservations.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -581,6 +587,8 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "orchestration_outbox",
         "signed_route_submissions",
         "route_account_conflict_leases",
+        "route_policy_setup_funding_payers",
+        "route_policy_setup_funding_reservations",
         "fleet_orchestration_status",
         "vault_idle_token_balances_current",
         "realtime_events",

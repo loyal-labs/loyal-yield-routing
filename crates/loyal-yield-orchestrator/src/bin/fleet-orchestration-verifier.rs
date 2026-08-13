@@ -83,7 +83,7 @@ const PRODUCTION_SERVICE_NAMES: [&str; 6] = [
     "loyal-fleet-route-reconciler",
     "loyal-route-lookup-table-provisioner",
 ];
-const VERIFIED_MIGRATIONS: [(i64, &str, &str); 9] = [
+const VERIFIED_MIGRATIONS: [(i64, &str, &str); 11] = [
     (
         23,
         "value_priority_rebalance_queue",
@@ -128,6 +128,16 @@ const VERIFIED_MIGRATIONS: [(i64, &str, &str); 9] = [
         31,
         "fleet_commit_lifetime_fence_errcode",
         "0031_fleet_commit_lifetime_fence_errcode.sql",
+    ),
+    (
+        32,
+        "idle_vault_decision_lookup_index",
+        "0032_idle_vault_decision_lookup_index.sql",
+    ),
+    (
+        33,
+        "policy_setup_funding_reservations",
+        "0033_policy_setup_funding_reservations.sql",
     ),
 ];
 
@@ -2716,6 +2726,18 @@ impl DatabaseFixture {
             .bind(&cluster_pattern)
             .execute(self.client.pool())
             .await?;
+        sqlx::query(
+            "DELETE FROM loyal_yield.route_policy_setup_funding_reservations WHERE cluster LIKE $1",
+        )
+        .bind(&cluster_pattern)
+        .execute(self.client.pool())
+        .await?;
+        sqlx::query(
+            "DELETE FROM loyal_yield.route_policy_setup_funding_payers WHERE cluster LIKE $1",
+        )
+        .bind(&cluster_pattern)
+        .execute(self.client.pool())
+        .await?;
         sqlx::query("DELETE FROM loyal_yield.signed_route_submissions WHERE cluster LIKE $1")
             .bind(&cluster_pattern)
             .execute(self.client.pool())
@@ -2877,6 +2899,266 @@ fn p95_micros(samples: &mut [u128]) -> u128 {
     samples.sort_unstable();
     let index = (samples.len() * 95).div_ceil(100).saturating_sub(1);
     samples[index]
+}
+
+fn percentile_millis(samples: &mut [u128], percentile: usize) -> u128 {
+    samples.sort_unstable();
+    let index = (samples.len() * percentile).div_ceil(100).saturating_sub(1);
+    samples[index]
+}
+
+#[derive(Clone, Copy)]
+enum FleetLatencyLoadMode {
+    LegacyPolicyLock,
+    ReservationNonFused,
+    ReservationFused,
+}
+
+impl FleetLatencyLoadMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::LegacyPolicyLock => "legacy_policy_lock",
+            Self::ReservationNonFused => "reservation_non_fused",
+            Self::ReservationFused => "reservation_fused",
+        }
+    }
+
+    fn uses_policy_lock(self) -> bool {
+        matches!(self, Self::LegacyPolicyLock)
+    }
+
+    fn final_build_millis(self) -> u64 {
+        match self {
+            Self::LegacyPolicyLock | Self::ReservationNonFused => 126,
+            Self::ReservationFused => 5,
+        }
+    }
+
+    fn post_decision_millis(self) -> u64 {
+        match self {
+            Self::LegacyPolicyLock | Self::ReservationNonFused => 102,
+            Self::ReservationFused => 43,
+        }
+    }
+}
+
+async fn run_fleet_latency_load_mode(
+    fixture: &DatabaseFixture,
+    mode: FleetLatencyLoadMode,
+) -> Result<Value, Box<dyn Error>> {
+    const JOBS: usize = 8;
+    const PLANNER_WAKE_MILLIS: u64 = 10;
+    const REVALIDATION_MILLIS: u64 = 126;
+    const CONFLICT_RETRY_MILLIS: u64 = 20;
+    const OBSERVATION_AGE_MILLIS: u128 = 136;
+
+    let cluster = fixture.cluster(&format!("latency_load_{}", mode.label()));
+    let epoch = fixture.seed_epoch(&cluster).await?;
+    fixture
+        .seed_claim_latency_cluster(&cluster, epoch, i64::try_from(JOBS)?, 0, 0)
+        .await?;
+    let leases = fixture
+        .client
+        .lease_rebalance_opportunity_batch(
+            &cluster,
+            &format!("latency-load-{}", mode.label()),
+            RebalanceOpportunityClaimKind::Execute,
+            i64::try_from(JOBS)?,
+            Utc::now() + chrono::Duration::minutes(5),
+        )
+        .await?;
+    if leases.len() != JOBS {
+        return Err(format!(
+            "{} latency load claimed {} of {JOBS} jobs",
+            mode.label(),
+            leases.len()
+        )
+        .into());
+    }
+    let payer = format!("authority:{cluster}");
+    if !mode.uses_policy_lock() {
+        sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.route_policy_setup_funding_payers
+                (cluster, payer, observed_balance_lamports,
+                 observed_balance_slot, observed_balance_at)
+            VALUES ($1, $2, 1000000000, 10000, now())
+            ON CONFLICT (cluster, payer) DO NOTHING
+            "#,
+        )
+        .bind(&cluster)
+        .bind(&payer)
+        .execute(fixture.client.pool())
+        .await?;
+    }
+
+    let wave_started = Instant::now();
+    let mut tasks = Vec::with_capacity(JOBS);
+    for (index, lease) in leases.into_iter().enumerate() {
+        let client = fixture.client.clone();
+        let cluster = cluster.clone();
+        let payer = payer.clone();
+        tasks.push(tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(PLANNER_WAKE_MILLIS)).await;
+            tokio::time::sleep(Duration::from_millis(REVALIDATION_MILLIS)).await;
+            let ready_at = wave_started.elapsed().as_millis();
+            let mut conflict_keys = vec![
+                format!("fleet-shared-write-lane:latency-{index:02}"),
+                format!("vault-write:latency:{}", lease.opportunity.id),
+            ];
+            if mode.uses_policy_lock() {
+                conflict_keys.push(format!("policy-setup-funding:{payer}"));
+            }
+            conflict_keys.sort_unstable();
+            let mut conflict_retries = 0u64;
+            loop {
+                match client
+                    .acquire_route_account_conflict_leases(
+                        &lease,
+                        &conflict_keys,
+                        Utc::now() + chrono::Duration::minutes(4),
+                    )
+                    .await
+                {
+                    Ok(_) => break,
+                    Err(error) if mode.uses_policy_lock() && conflict_retries < 1_000 => {
+                        let _ = error;
+                        conflict_retries += 1;
+                        tokio::time::sleep(Duration::from_millis(CONFLICT_RETRY_MILLIS)).await;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+
+            let admission_started = Instant::now();
+            if !mode.uses_policy_lock() {
+                let mut tx = client.pool().begin().await?;
+                sqlx::query(
+                    r#"
+                    SELECT payer
+                    FROM loyal_yield.route_policy_setup_funding_payers
+                    WHERE cluster = $1 AND payer = $2
+                    FOR UPDATE
+                    "#,
+                )
+                .bind(&cluster)
+                .bind(&payer)
+                .fetch_one(&mut *tx)
+                .await?;
+                tx.commit().await?;
+            }
+            let admission_micros = admission_started.elapsed().as_micros();
+
+            tokio::time::sleep(Duration::from_millis(mode.final_build_millis())).await;
+            let decision_at = wave_started.elapsed().as_millis();
+            tokio::time::sleep(Duration::from_millis(32)).await;
+            let submitted_at = wave_started.elapsed().as_millis();
+            tokio::time::sleep(Duration::from_millis(
+                mode.post_decision_millis().saturating_sub(32),
+            ))
+            .await;
+            let completed_at = wave_started.elapsed().as_millis();
+            sqlx::query(
+                r#"
+                DELETE FROM loyal_yield.route_account_conflict_leases
+                WHERE cluster = $1
+                  AND opportunity_id = $2
+                  AND submission_id IS NULL
+                "#,
+            )
+            .bind(&cluster)
+            .bind(lease.opportunity.id)
+            .execute(client.pool())
+            .await?;
+            Ok::<_, OrchestratorError>((
+                ready_at,
+                decision_at,
+                submitted_at,
+                completed_at,
+                admission_micros,
+                conflict_retries,
+            ))
+        }));
+    }
+
+    let mut ready_to_decision = Vec::with_capacity(JOBS);
+    let mut ready_to_submitted = Vec::with_capacity(JOBS);
+    let mut monitor_to_submitted = Vec::with_capacity(JOBS);
+    let mut completion = Vec::with_capacity(JOBS);
+    let mut admission_micros = Vec::with_capacity(JOBS);
+    let mut conflict_retries = 0u64;
+    for task in tasks {
+        let (ready_at, decision_at, submitted_at, completed_at, admission, retries) =
+            task.await??;
+        ready_to_decision.push(decision_at.saturating_sub(ready_at));
+        ready_to_submitted.push(submitted_at.saturating_sub(ready_at));
+        monitor_to_submitted.push(submitted_at.saturating_add(OBSERVATION_AGE_MILLIS));
+        completion.push(completed_at);
+        admission_micros.push(admission);
+        conflict_retries = conflict_retries.saturating_add(retries);
+    }
+    let ready_to_decision_p50 = percentile_millis(&mut ready_to_decision.clone(), 50);
+    let ready_to_decision_p95 = percentile_millis(&mut ready_to_decision, 95);
+    let ready_to_submitted_p50 = percentile_millis(&mut ready_to_submitted.clone(), 50);
+    let monitor_to_submitted_p50 = percentile_millis(&mut monitor_to_submitted.clone(), 50);
+    let monitor_to_submitted_p95 = percentile_millis(&mut monitor_to_submitted, 95);
+    let completion_p95 = percentile_millis(&mut completion, 95);
+    let admission_p95_micros = p95_micros(&mut admission_micros);
+    Ok(json!({
+        "mode": mode.label(),
+        "jobs": JOBS,
+        "timeScale": 100,
+        "controlledDelays": {
+            "observationAgeMillis": OBSERVATION_AGE_MILLIS,
+            "plannerWakeMillis": PLANNER_WAKE_MILLIS,
+            "revalidationMillis": REVALIDATION_MILLIS,
+            "finalBuildMillis": mode.final_build_millis(),
+            "postDecisionMillis": mode.post_decision_millis(),
+            "conflictRetryMillis": CONFLICT_RETRY_MILLIS,
+        },
+        "readyToDecisionP50Millis": ready_to_decision_p50,
+        "readyToDecisionP95Millis": ready_to_decision_p95,
+        "readyToSubmittedP50Millis": ready_to_submitted_p50,
+        "monitorTimestampToSubmittedP50Millis": monitor_to_submitted_p50,
+        "monitorTimestampToSubmittedP95Millis": monitor_to_submitted_p95,
+        "waveCompletionP95Millis": completion_p95,
+        "reservationAdmissionP95Micros": admission_p95_micros,
+        "conflictRetries": conflict_retries,
+    }))
+}
+
+async fn run_fleet_latency_load(fixture: &DatabaseFixture) -> Result<Value, Box<dyn Error>> {
+    let legacy =
+        run_fleet_latency_load_mode(fixture, FleetLatencyLoadMode::LegacyPolicyLock).await?;
+    let non_fused =
+        run_fleet_latency_load_mode(fixture, FleetLatencyLoadMode::ReservationNonFused).await?;
+    let fused =
+        run_fleet_latency_load_mode(fixture, FleetLatencyLoadMode::ReservationFused).await?;
+    let legacy_p50 = legacy["readyToSubmittedP50Millis"]
+        .as_u64()
+        .unwrap_or_default();
+    let non_fused_p50 = non_fused["readyToSubmittedP50Millis"]
+        .as_u64()
+        .unwrap_or_default();
+    let fused_p50 = fused["readyToSubmittedP50Millis"]
+        .as_u64()
+        .unwrap_or_default();
+    Ok(json!({
+        "schemaVersion": 1,
+        "event": "fleet_latency_isolated_load",
+        "isolated": true,
+        "productionMutation": false,
+        "legacy": legacy,
+        "reservationNonFused": non_fused,
+        "reservationFused": fused,
+        "attribution": {
+            "policySerializationP50Millis": legacy_p50.saturating_sub(non_fused_p50),
+            "duplicateFinalBuildP50Millis": non_fused_p50.saturating_sub(fused_p50),
+            "readyToSubmittedP50SpeedupPercent": if legacy_p50 == 0 { 0 } else {
+                legacy_p50.saturating_sub(fused_p50).saturating_mul(100) / legacy_p50
+            },
+        }
+    }))
 }
 
 async fn claim_index_tuple_reads(client: &NeonSqlClient) -> Result<(i64, i64), Box<dyn Error>> {
@@ -3125,6 +3407,7 @@ async fn signed_input_for_lease(
         fee_payer_balance_lamports: None,
         fee_payer_balance_slot: None,
         fee_payer_balance_observed_at: None,
+        policy_setup_funding_lamports: None,
         compiled_fee_lamports: 5_000,
         writable_account_keys: vec![
             fee_payer,
@@ -4882,6 +5165,24 @@ async fn run_database_checks(
     .await?;
 
     let alt_runtime_measurements = run_alt_database_runtime_measurements(fixture).await?;
+    let fleet_latency_load = run_fleet_latency_load(fixture).await?;
+    let fleet_latency_speedup_passed = fleet_latency_load["legacy"]["conflictRetries"]
+        .as_u64()
+        .is_some_and(|retries| retries > 0)
+        && fleet_latency_load["reservationNonFused"]["conflictRetries"].as_u64() == Some(0)
+        && fleet_latency_load["reservationFused"]["conflictRetries"].as_u64() == Some(0)
+        && fleet_latency_load["reservationFused"]["reservationAdmissionP95Micros"]
+            .as_u64()
+            .is_some_and(|micros| micros < 50_000)
+        && fleet_latency_load["attribution"]["policySerializationP50Millis"]
+            .as_u64()
+            .is_some_and(|millis| millis > 0)
+        && fleet_latency_load["attribution"]["duplicateFinalBuildP50Millis"]
+            .as_u64()
+            .is_some_and(|millis| millis > 0)
+        && fleet_latency_load["attribution"]["readyToSubmittedP50SpeedupPercent"]
+            .as_u64()
+            .is_some_and(|percent| percent >= 50);
 
     let reclaim_cluster = fixture.cluster("reclaim");
     let reclaim_epoch = fixture.seed_epoch(&reclaim_cluster).await?;
@@ -6598,6 +6899,199 @@ async fn run_database_checks(
     let pre_send_terminal_failure_released_capacity =
         first_floor_broadcast_count == 0 && first_floor_capacity_state == "released";
 
+    let setup_funding_fixture = DatabaseFixture {
+        client: fixture.client.clone(),
+        latency_client: fixture.latency_client.clone(),
+        prefix: format!("setup_funding_{}", fixture.prefix),
+    };
+    let setup_funding_cluster = setup_funding_fixture.cluster("admission");
+    let setup_funding_epoch = setup_funding_fixture
+        .seed_epoch(&setup_funding_cluster)
+        .await?;
+    setup_funding_fixture
+        .seed_opportunity(
+            &setup_funding_cluster,
+            setup_funding_epoch,
+            "first",
+            "ready",
+            2_000,
+        )
+        .await?;
+    setup_funding_fixture
+        .seed_opportunity(
+            &setup_funding_cluster,
+            setup_funding_epoch,
+            "second",
+            "ready",
+            1_000,
+        )
+        .await?;
+    let setup_funding_payer = format!("authority:{setup_funding_cluster}");
+    let first_setup_lease = claim_one(
+        &fixture.client,
+        &setup_funding_cluster,
+        "setup-funding-first",
+        RebalanceOpportunityClaimKind::Execute,
+    )
+    .await?;
+    let first_setup_conflicts = vec![
+        format!(
+            "fleet-shared-write-lane:{}:first",
+            setup_funding_fixture.prefix
+        ),
+        format!(
+            "vault-write:{}:{}",
+            setup_funding_fixture.prefix,
+            first_setup_lease.opportunity.vault_id.as_i64()
+        ),
+    ];
+    fixture
+        .client
+        .acquire_route_account_conflict_leases(
+            &first_setup_lease,
+            &first_setup_conflicts,
+            Utc::now() + chrono::Duration::minutes(4),
+        )
+        .await?;
+    let mut first_setup_input = signed_input_for_lease(
+        &setup_funding_fixture,
+        &first_setup_lease,
+        first_setup_conflicts,
+        "first",
+    )
+    .await?;
+    first_setup_input.policy_setup_funding_lamports = Some(30_000);
+    first_setup_input.fee_payer_balance_lamports = Some(100_000);
+    first_setup_input.fee_payer_balance_slot = Some(10_000);
+    first_setup_input.fee_payer_balance_observed_at = Some(Utc::now());
+    let (_, first_setup_submission) = fixture
+        .client
+        .prepare_same_mint_rebalance_with_signed_submission(
+            same_mint_input_for_lease(&first_setup_lease)?,
+            &first_setup_lease,
+            target_capacity_input_for_lease(&setup_funding_fixture, &first_setup_lease).await?,
+            first_setup_input,
+        )
+        .await?;
+
+    let second_setup_lease = claim_one(
+        &fixture.client,
+        &setup_funding_cluster,
+        "setup-funding-second",
+        RebalanceOpportunityClaimKind::Execute,
+    )
+    .await?;
+    let second_setup_conflicts = vec![
+        format!(
+            "fleet-shared-write-lane:{}:second",
+            setup_funding_fixture.prefix
+        ),
+        format!(
+            "vault-write:{}:{}",
+            setup_funding_fixture.prefix,
+            second_setup_lease.opportunity.vault_id.as_i64()
+        ),
+    ];
+    fixture
+        .client
+        .acquire_route_account_conflict_leases(
+            &second_setup_lease,
+            &second_setup_conflicts,
+            Utc::now() + chrono::Duration::minutes(4),
+        )
+        .await?;
+    let mut second_setup_input = signed_input_for_lease(
+        &setup_funding_fixture,
+        &second_setup_lease,
+        second_setup_conflicts,
+        "second",
+    )
+    .await?;
+    second_setup_input.policy_setup_funding_lamports = Some(70_000);
+    second_setup_input.fee_payer_balance_lamports = Some(100_000);
+    second_setup_input.fee_payer_balance_slot = Some(10_000);
+    second_setup_input.fee_payer_balance_observed_at = Some(Utc::now());
+    let second_setup_same_mint = same_mint_input_for_lease(&second_setup_lease)?;
+    let second_setup_capacity =
+        target_capacity_input_for_lease(&setup_funding_fixture, &second_setup_lease).await?;
+    let second_setup_blocked = fixture
+        .client
+        .prepare_same_mint_rebalance_with_signed_submission(
+            second_setup_same_mint.clone(),
+            &second_setup_lease,
+            second_setup_capacity.clone(),
+            second_setup_input.clone(),
+        )
+        .await;
+    let second_setup_blocked_error = second_setup_blocked.as_ref().err().map(ToString::to_string);
+
+    let first_setup_confirmation_lease = fixture
+        .client
+        .lease_pending_signed_route_submissions(
+            &setup_funding_cluster,
+            "setup-funding-terminalizer",
+            1,
+            Utc::now() + chrono::Duration::minutes(2),
+        )
+        .await?
+        .into_iter()
+        .find(|lease| lease.submission.id == first_setup_submission.id)
+        .ok_or("setup-funding fixture could not lease its first submission")?;
+    let terminal_first_setup_submission = fixture
+        .client
+        .advance_signed_route_submission(
+            &first_setup_confirmation_lease,
+            SignedRouteSubmissionAdvance::Failed {
+                checked_at: Utc::now(),
+                confirmed_slot: None,
+                error_detail: "synthetic pre-send setup reservation release".to_owned(),
+            },
+        )
+        .await?;
+    second_setup_input.fee_payer_balance_lamports = Some(200_000);
+    second_setup_input.fee_payer_balance_slot = Some(9_999);
+    second_setup_input.fee_payer_balance_observed_at = Some(Utc::now());
+    let second_setup_stale_snapshot = fixture
+        .client
+        .prepare_same_mint_rebalance_with_signed_submission(
+            second_setup_same_mint.clone(),
+            &second_setup_lease,
+            second_setup_capacity.clone(),
+            second_setup_input.clone(),
+        )
+        .await;
+    let second_setup_stale_snapshot_error = second_setup_stale_snapshot
+        .as_ref()
+        .err()
+        .map(ToString::to_string);
+    second_setup_input.fee_payer_balance_lamports = Some(100_000);
+    second_setup_input.fee_payer_balance_slot = Some(10_000);
+    second_setup_input.fee_payer_balance_observed_at = Some(Utc::now());
+    let (_, second_setup_submission) = fixture
+        .client
+        .prepare_same_mint_rebalance_with_signed_submission(
+            second_setup_same_mint,
+            &second_setup_lease,
+            second_setup_capacity,
+            second_setup_input,
+        )
+        .await?;
+    let setup_funding_reservation_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.route_policy_setup_funding_reservations WHERE cluster = $1 AND payer = $2",
+    )
+    .bind(&setup_funding_cluster)
+    .bind(&setup_funding_payer)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let policy_setup_funding_reservations_passed = second_setup_blocked_error
+        .as_deref()
+        .is_some_and(|error| error.contains("policy_setup_funding_reselection_required"))
+        && second_setup_stale_snapshot_error
+            .as_deref()
+            .is_some_and(|error| error.contains("durable admission frontier"))
+        && setup_funding_reservation_count == 2
+        && second_setup_submission.state.as_str() == "signed";
+
     let submission_cluster = fixture.cluster("submission");
     let submission_epoch = fixture.seed_epoch(&submission_cluster).await?;
     let signed_route_seed = fixture
@@ -7737,6 +8231,8 @@ async fn run_database_checks(
         && alt_runtime_measurements.alt_authority_payer_identity_consistent
         && reciprocal_authority_separation
         && fee_floor_admission_passed
+        && policy_setup_funding_reservations_passed
+        && fleet_latency_speedup_passed
         && target_capacity_concurrency_passed
         && pre_send_terminal_failure_released_capacity
         && reconciled_capacity_retention_passed
@@ -7753,7 +8249,7 @@ async fn run_database_checks(
     Ok(DatabaseEvidence {
         migration_subchecks: vec![
             subcheck(
-                "isolated_database_migrated_through_31",
+                "isolated_database_migrated_through_33",
                 true,
                 json!({
                     "databaseNameGuard": "fleet_verify",
@@ -7766,6 +8262,8 @@ async fn run_database_checks(
                     "migration29": "fleet_commit_lifetime_fences",
                     "migration30": "fused_queue_accrual_binding",
                     "migration31": "fleet_commit_lifetime_fence_errcode",
+                    "migration32": "idle_vault_decision_lookup_index",
+                    "migration33": "policy_setup_funding_reservations",
                 }),
             ),
             subcheck(
@@ -7858,6 +8356,8 @@ async fn run_database_checks(
                         "reciprocalAuthoritySeparation": reciprocal_authority_separation,
                         "lowBalanceLimitsEnforced": fee_floor_admission_passed,
                         "atomicImmutableSpendReservation": fee_floor_admission_passed && fee_floor_reservations == 2,
+                        "policySetupFundingReservationBounded": policy_setup_funding_reservations_passed,
+                        "policySetupFundingReservationRows": setup_funding_reservation_count,
                         "targetCapacityConcurrentAdmissionBounded": target_capacity_concurrency_passed,
                         "preSendTargetCapacityReleased": pre_send_terminal_failure_released_capacity,
                         "reconciledCapacityStrictTelemetryFence": reconciled_capacity_retention_passed,
@@ -7867,6 +8367,7 @@ async fn run_database_checks(
                         "serializedReadinessRowCount": serialized_readiness_row_count,
                         "databaseDeadlocks": database_deadlocks,
                     },
+                    "latencyLoad": fleet_latency_load.clone(),
                 }),
             ),
             subcheck(
@@ -8323,6 +8824,29 @@ async fn run_database_checks(
                     "immutableReservationCount": fee_floor_reservations,
                     "retainedFixtureCluster": fee_floor_cluster,
                 }),
+            ),
+            subcheck(
+                "policy_setup_funding_reservation_bounds_concurrent_debits_without_global_queue_lock",
+                policy_setup_funding_reservations_passed,
+                json!({
+                    "sharedPayer": setup_funding_payer,
+                    "observedBalanceLamports": 100_000,
+                    "firstReservedLamports": 35_000,
+                    "secondAttemptReservedLamports": 75_000,
+                    "secondAdmissionBlockedWhileFirstNonterminal": second_setup_blocked_error.is_some(),
+                    "blockedError": second_setup_blocked_error,
+                    "staleHighBalanceSnapshotRejected": second_setup_stale_snapshot_error.is_some(),
+                    "staleSnapshotError": second_setup_stale_snapshot_error,
+                    "firstTerminalState": terminal_first_setup_submission.state.as_str(),
+                    "secondAdmissionAfterTerminal": true,
+                    "immutableReservationCount": setup_funding_reservation_count,
+                    "globalPolicyConflictKeyRequired": false,
+                }),
+            ),
+            subcheck(
+                "isolated_fleet_load_measures_policy_lock_removal_and_fused_handoff_speedup",
+                fleet_latency_speedup_passed,
+                fleet_latency_load,
             ),
             subcheck(
                 "concurrent_target_capacity_admits_until_headroom_and_rejects_only_excess",

@@ -126,7 +126,7 @@ database_url="postgresql://$(id -un)@127.0.0.1:$port/fleet_verify"
 NEON_DATABASE_URL="$database_url" target/release/yield-migrations --apply \
   >"$evidence_dir/migrations.log"
 
-echo "PASS: migrations 1-32 are available in disposable PostgreSQL"
+echo "PASS: migrations 1-33 are available in disposable PostgreSQL"
 echo
 
 echo "== Production-sized isolated database verification"
@@ -557,6 +557,13 @@ IFS='|' read -r process_load_failed process_load_leased process_load_terminal_re
   fail "expected a terminal reason for all process-load jobs, observed $process_load_terminal_reason"
 echo "PASS: real workers terminalized 4,160 poison jobs with no unexpected RPC or stranded lease"
 echo
+
+# Every database-backed fleet check above is complete. Stop this disposable
+# server before the independent health-poll verifier starts its own PostgreSQL
+# instance so macOS shared-memory limits cannot make two isolated fixtures
+# interfere with each other.
+pg_ctl -D "$data_dir" -m fast -w stop >/dev/null
+server_started=0
 
 echo "== Fleet health-poll load and contention verification"
 TMPDIR="$runtime_tmp_root" bash scripts/verify-fleet-health-poll-contention.sh \
