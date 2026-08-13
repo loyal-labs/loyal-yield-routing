@@ -6212,6 +6212,7 @@ fn classify_in_process_execution_error(reason: &str) -> SameMintRouteExecutionSt
     {
         SameMintRouteExecutionState::WaitingAlt
     } else if requires_fast_execute_revalidation(&reason)
+        || reason.contains("policy_setup_funding_reselection_required")
         || [
             "active decision",
             "blockhash",
@@ -6240,13 +6241,13 @@ fn classify_in_process_execution_error(reason: &str) -> SameMintRouteExecutionSt
 }
 
 fn requires_fast_execute_revalidation(reason: &str) -> bool {
-    [
-        "fee_payer_reselection_required",
-        "policy_setup_funding_reselection_required",
-        "target capacity telemetry changed",
-    ]
-    .iter()
-    .any(|revalidation_required| reason.contains(revalidation_required))
+    reason.contains("fee_payer_reselection_required")
+        || reason.contains("target capacity telemetry changed")
+        || (reason.contains("policy_setup_funding_reselection_required")
+            && (reason.contains("payer balance snapshot is stale or future-dated")
+                || reason.contains(
+                    "payer balance snapshot is older than the durable admission frontier",
+                )))
 }
 
 fn classify_route_resolution_blocker(reason: &str) -> SameMintRouteExecutionState {
@@ -21314,10 +21315,11 @@ mod tests {
     }
 
     #[test]
-    fn policy_setup_funding_reselection_retries_through_fast_revalidation() {
+    fn stale_policy_setup_funding_reselection_retries_through_fast_revalidation() {
         for reason in [
             "unexpected store state: fee_payer_reselection_required: stale balance",
-            "unexpected store state: policy_setup_funding_reselection_required: stale balance",
+            "unexpected store state: policy_setup_funding_reselection_required: payer balance snapshot is stale or future-dated",
+            "unexpected store state: policy_setup_funding_reselection_required: payer balance snapshot is older than the durable admission frontier",
             "target capacity telemetry changed during execution",
         ] {
             assert_eq!(
@@ -21331,9 +21333,20 @@ mod tests {
             );
         }
 
-        assert!(!requires_fast_execute_revalidation(
-            "rpc timeout while submitting"
-        ));
+        for reason in [
+            "unexpected store state: policy_setup_funding_reselection_required: payer balance cannot fund concurrent setup reservations",
+            "rpc timeout while submitting",
+        ] {
+            assert_eq!(
+                classify_in_process_execution_error(reason),
+                SameMintRouteExecutionState::Retry,
+                "expected retryable execution outcome for {reason}"
+            );
+            assert!(
+                !requires_fast_execute_revalidation(reason),
+                "expected normal retry backoff for {reason}"
+            );
+        }
     }
 
     #[test]
