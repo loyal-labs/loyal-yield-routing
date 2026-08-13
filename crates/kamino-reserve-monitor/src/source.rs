@@ -1,5 +1,7 @@
 use std::{
     collections::HashMap,
+    future::Future,
+    pin::Pin,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
@@ -10,13 +12,11 @@ use std::{
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
-use futures_util::{Stream, StreamExt};
-use helius_laserstream::{
-    grpc::{
-        subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
-        SubscribeRequestFilterAccounts, SubscribeUpdate,
-    },
-    subscribe, LaserstreamConfig,
+use futures_util::{Sink, SinkExt, Stream, StreamExt};
+use laserstream_core_client::{ClientTlsConfig, GeyserGrpcClient};
+use laserstream_core_proto::geyser::{
+    subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
+    SubscribeRequestFilterAccounts, SubscribeRequestPing, SubscribeUpdate,
 };
 use solana_account_decoder::{UiAccount, UiAccountData, UiAccountEncoding};
 use solana_client::rpc_config::RpcAccountInfoConfig;
@@ -237,6 +237,44 @@ async fn run_laserstream_subscription(
     tx: AccountEventSender,
     running: Arc<AtomicBool>,
 ) {
+    run_laserstream_subscription_with_attempt(
+        source,
+        reserves,
+        tx,
+        running,
+        |source, reserves, attempt, replay_from_slot, tx, running| {
+            Box::pin(run_laserstream_attempt(
+                source,
+                reserves,
+                attempt,
+                replay_from_slot,
+                tx,
+                running,
+            ))
+        },
+    )
+    .await;
+}
+
+type LaserstreamAttemptFuture<'a> =
+    Pin<Box<dyn Future<Output = std::result::Result<(), SubscriptionAttemptError>> + Send + 'a>>;
+
+async fn run_laserstream_subscription_with_attempt<F>(
+    source: LaserstreamAccountUpdateSource,
+    reserves: Vec<Pubkey>,
+    tx: AccountEventSender,
+    running: Arc<AtomicBool>,
+    mut run_attempt: F,
+) where
+    F: for<'a> FnMut(
+        &'a LaserstreamAccountUpdateSource,
+        &'a [Pubkey],
+        usize,
+        u64,
+        &'a AccountEventSender,
+        &'a Arc<AtomicBool>,
+    ) -> LaserstreamAttemptFuture<'a>,
+{
     let mut reconnect_attempts = 0usize;
     while running.load(Ordering::Relaxed) {
         let attempt = reconnect_attempts + 1;
@@ -254,7 +292,8 @@ async fn run_laserstream_subscription(
             }
         }
 
-        match run_laserstream_attempt(&source, &reserves, attempt, &tx, &running).await {
+        let replay_from_slot = source.replay_cursor.replay_from_slot();
+        match run_attempt(&source, &reserves, attempt, replay_from_slot, &tx, &running).await {
             Ok(()) => break,
             Err(error) => {
                 if !running.load(Ordering::Relaxed) {
@@ -302,21 +341,46 @@ async fn run_laserstream_attempt(
     source: &LaserstreamAccountUpdateSource,
     reserves: &[Pubkey],
     attempt: usize,
+    replay_from_slot: u64,
     tx: &AccountEventSender,
     running: &Arc<AtomicBool>,
 ) -> std::result::Result<(), SubscriptionAttemptError> {
-    let replay_from_slot = source.replay_cursor.replay_from_slot();
     let request = build_laserstream_subscribe_request(reserves, replay_from_slot);
     tracing::info!(
         replay_from_slot,
         attempt,
         "starting LaserStream subscription attempt"
     );
-    let config = LaserstreamConfig::new(source.endpoint.clone(), source.api_key.clone())
-        .with_max_reconnect_attempts(source.config.max_reconnect_attempts as u32)
-        .with_replay(true);
-    let (stream, _handle) = subscribe(config, request);
-    futures_util::pin_mut!(stream);
+    // Use one physical subscription per outer attempt. The Helius convenience
+    // wrapper reconnects internally from its receive-side slot, which can move
+    // ahead of Timescale. Returning every stream end/error to the outer loop
+    // keeps replay controlled by DurableReplayCursor.
+    let builder = GeyserGrpcClient::build_from_shared(source.endpoint.clone())
+        .map_err(|error| SubscriptionAttemptError::before_connected(error.to_string()))?
+        .x_token(Some(source.api_key.clone()))
+        .map_err(|error| SubscriptionAttemptError::before_connected(error.to_string()))?
+        .tls_config(ClientTlsConfig::new().with_enabled_roots())
+        .map_err(|error| SubscriptionAttemptError::before_connected(error.to_string()))?
+        .connect_timeout(WEBSOCKET_CONNECT_TIMEOUT)
+        .timeout(Duration::from_secs(30))
+        .http2_keep_alive_interval(Duration::from_secs(30))
+        .keep_alive_timeout(Duration::from_secs(5))
+        .keep_alive_while_idle(true)
+        .initial_stream_window_size(Some(4 * 1024 * 1024))
+        .initial_connection_window_size(Some(8 * 1024 * 1024))
+        .http2_adaptive_window(true)
+        .tcp_nodelay(true)
+        .buffer_size(Some(64 * 1024))
+        .max_decoding_message_size(1_000_000_000)
+        .max_encoding_message_size(32_000_000);
+    let mut client = builder
+        .connect()
+        .await
+        .map_err(|error| SubscriptionAttemptError::before_connected(error.to_string()))?;
+    let (subscription_sender, stream) = client
+        .subscribe_with_request(Some(request))
+        .await
+        .map_err(|error| SubscriptionAttemptError::before_connected(error.to_string()))?;
 
     for reserve in reserves {
         if !send_event(
@@ -332,13 +396,54 @@ async fn run_laserstream_attempt(
         }
     }
 
-    let mut heartbeat = time::interval(source.config.heartbeat_interval);
+    let result = consume_laserstream_stream(
+        stream,
+        subscription_sender,
+        reserves,
+        source.config.heartbeat_interval,
+        tx,
+        running,
+    )
+    .await;
+    result
+}
+
+async fn consume_laserstream_stream<S, E, W, WE>(
+    stream: S,
+    mut subscription_sender: W,
+    reserves: &[Pubkey],
+    heartbeat_interval: Duration,
+    tx: &AccountEventSender,
+    running: &Arc<AtomicBool>,
+) -> std::result::Result<(), SubscriptionAttemptError>
+where
+    S: Stream<Item = std::result::Result<SubscribeUpdate, E>> + Send,
+    E: std::fmt::Display,
+    W: Sink<SubscribeRequest, Error = WE> + Unpin + Send,
+    WE: std::fmt::Display,
+{
+    futures_util::pin_mut!(stream);
+    let mut heartbeat = time::interval(heartbeat_interval);
     heartbeat.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+    let mut ping_interval = time::interval(Duration::from_secs(30));
+    ping_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+    ping_interval.tick().await;
+    let mut ping_id = 0_i32;
 
     while running.load(Ordering::Relaxed) {
         tokio::select! {
             update = stream.next() => {
                 match update {
+                    Some(Ok(update)) if matches!(&update.update_oneof, Some(UpdateOneof::Ping(_))) => {
+                        subscription_sender
+                            .send(SubscribeRequest {
+                                ping: Some(SubscribeRequestPing { id: 1 }),
+                                ..Default::default()
+                            })
+                            .await
+                            .map_err(|error| SubscriptionAttemptError::after_connected(error.to_string()))?;
+                    }
+                    Some(Ok(update)) if matches!(&update.update_oneof, Some(UpdateOneof::Pong(_))) => {}
                     Some(Ok(update)) => {
                         if let Err(err) = forward_laserstream_update(update, tx).await {
                             return Err(SubscriptionAttemptError::after_connected(format!("{err:#}")));
@@ -348,9 +453,19 @@ async fn run_laserstream_attempt(
                         return Err(SubscriptionAttemptError::after_connected(err.to_string()));
                     }
                     None => {
-                        return Err(SubscriptionAttemptError::after_connected("LaserStream stream ended"));
+                        return Err(laserstream_stream_ended_error());
                     }
                 }
+            }
+            _ = ping_interval.tick() => {
+                ping_id = ping_id.wrapping_add(1);
+                subscription_sender
+                    .send(SubscribeRequest {
+                        ping: Some(SubscribeRequestPing { id: ping_id }),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(|error| SubscriptionAttemptError::after_connected(error.to_string()))?;
             }
             _ = heartbeat.tick() => {
                 for reserve in reserves {
@@ -363,6 +478,10 @@ async fn run_laserstream_attempt(
     }
 
     Ok(())
+}
+
+fn laserstream_stream_ended_error() -> SubscriptionAttemptError {
+    SubscriptionAttemptError::after_connected("LaserStream stream ended")
 }
 
 async fn forward_laserstream_update(
@@ -764,6 +883,8 @@ fn decode_ui_account_data(account: &UiAccount) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
 
     #[tokio::test]
@@ -810,6 +931,74 @@ mod tests {
         assert_eq!(source_view.replay_from_slot(), 108);
         cursor.advance_after_durable_write(120);
         assert_eq!(source_view.durable_slot(), 140);
+    }
+
+    #[tokio::test]
+    async fn clean_stream_closure_reconnects_from_latest_durable_cursor() {
+        let reserve = Pubkey::new_unique();
+        let cursor = DurableReplayCursor::new(100, 32);
+        let source = LaserstreamAccountUpdateSource {
+            endpoint: "https://example.invalid".to_string(),
+            api_key: "unused-in-test".to_string(),
+            replay_cursor: cursor.clone(),
+            config: SubscriptionConfig {
+                max_reconnect_attempts: 2,
+                reconnect_base_delay: Duration::from_millis(1),
+                reconnect_max_delay: Duration::from_millis(1),
+                heartbeat_interval: Duration::from_secs(60),
+            },
+        };
+        let running = Arc::new(AtomicBool::new(true));
+        let (tx, _rx) = AccountEventSender::channel(16);
+        let replay_starts = Arc::new(Mutex::new(Vec::new()));
+        let observed_replay_starts = Arc::clone(&replay_starts);
+        let test_cursor = cursor.clone();
+
+        run_laserstream_subscription_with_attempt(
+            source,
+            vec![reserve],
+            tx,
+            Arc::clone(&running),
+            move |_source, reserves, attempt, replay_from_slot, tx, running| {
+                let replay_starts = Arc::clone(&observed_replay_starts);
+                let test_cursor = test_cursor.clone();
+                let reserves = reserves.to_vec();
+                let tx = tx.clone();
+                let running = Arc::clone(running);
+                Box::pin(async move {
+                    replay_starts
+                        .lock()
+                        .expect("replay start lock")
+                        .push(replay_from_slot);
+                    if attempt == 1 {
+                        let closed_stream = futures_util::stream::empty::<
+                            std::result::Result<SubscribeUpdate, String>,
+                        >();
+                        let closure_error = consume_laserstream_stream(
+                            closed_stream,
+                            futures_util::sink::drain(),
+                            &reserves,
+                            Duration::from_secs(60),
+                            &tx,
+                            &running,
+                        )
+                        .await
+                        .expect_err("clean closure must return to the outer retry loop");
+                        test_cursor.advance_after_durable_write(140);
+                        Err(closure_error)
+                    } else {
+                        running.store(false, Ordering::Relaxed);
+                        Ok(())
+                    }
+                })
+            },
+        )
+        .await;
+
+        assert_eq!(
+            *replay_starts.lock().expect("replay start lock"),
+            vec![68, 108]
+        );
     }
 
     #[test]

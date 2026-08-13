@@ -12,6 +12,8 @@ Run this verifier from `/Users/zotho/Dev/loyal/service-fixes/loyal-yield-routing
    - The source-to-Timescale path remains FIFO and does not replace one `AccountUpdate` with another merely because both belong to the same reserve.
    - Distinct account hashes at the same reserve and slot remain distinct Timescale events under the existing deduplication contract.
    - LaserStream reconnects calculate replay start from the latest durably handled slot with overlap; merely receiving or enqueueing an update must not advance that cursor.
+   - The gRPC client performs one physical subscription attempt at a time; stream errors and clean closures return to the outer retry loop instead of reconnecting from an SDK receive-side cursor.
+   - A focused test closes the stream cleanly and proves the next request is rebuilt from the latest durable slot with overlap.
 
 3. **Verification work is latest-wins**
    - Every successfully persisted valid live update marks its reserve dirty for confirmation.
