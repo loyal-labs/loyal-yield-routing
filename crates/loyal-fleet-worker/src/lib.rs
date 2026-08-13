@@ -2002,6 +2002,10 @@ struct RuntimeLookupTableResolution {
     required_addresses: BTreeSet<String>,
     writable_account_keys: Vec<String>,
     conflict_account_keys: Vec<String>,
+    /// Exact explicit setup debit reserved atomically with the signed route.
+    /// `Some(0)` means only the compiled fee must be reserved. `None` means
+    /// this route either has no setup funding or retains the legacy lock.
+    policy_setup_funding_lamports: Option<u64>,
     reusable_missing_addresses: BTreeSet<String>,
     reusable_ready: bool,
     reusable_compiled_message_size: Option<usize>,
@@ -2112,17 +2116,30 @@ impl RuntimeLookupTableResolution {
 fn apply_policy_setup_funding_serialization(
     resolution: &mut RuntimeLookupTableResolution,
     policy_signer: &str,
-    required: bool,
+    legacy_lock_required: bool,
+    exact_setup_funding_lamports: Option<u64>,
 ) {
-    if required {
+    if legacy_lock_required {
         resolution
             .conflict_account_keys
             .push(format!("policy-setup-funding:{policy_signer}"));
         resolution.conflict_account_keys.sort_unstable();
         resolution.conflict_account_keys.dedup();
     }
+    resolution.policy_setup_funding_lamports = exact_setup_funding_lamports;
     if let Some(fields) = resolution.evidence.as_object_mut() {
-        fields.insert("serializesPolicySetupFunding".to_owned(), json!(required));
+        fields.insert(
+            "serializesPolicySetupFunding".to_owned(),
+            json!(legacy_lock_required),
+        );
+        fields.insert(
+            "reservesPolicySetupFunding".to_owned(),
+            json!(exact_setup_funding_lamports.is_some()),
+        );
+        fields.insert(
+            "policySetupFundingLamports".to_owned(),
+            exact_setup_funding_lamports.map_or(Value::Null, |lamports| json!(lamports)),
+        );
         fields.insert(
             "conflictAccountKeys".to_owned(),
             json!(&resolution.conflict_account_keys),
@@ -3271,6 +3288,9 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
     // persistence fault.
     client
         .require_schema_migration(31, "fleet_commit_lifetime_fence_errcode")
+        .await?;
+    client
+        .require_schema_migration(33, "policy_setup_funding_reservations")
         .await?;
     // Validate the standard signer once at startup. Individual route builds
     // re-read and match it to the active policy before signing.
@@ -7094,14 +7114,30 @@ async fn run_with_runtime(
             &transaction_signers,
         )
         .await?;
-        let serializes_policy_setup_funding =
-            route_execution.preview.missing_obligation_setup.is_some()
-                || route_execution.preview.source_farm_setup_required
-                || route_execution.preview.target_farm_setup_required;
+        let has_farm_setup = route_execution.preview.source_farm_setup_required
+            || route_execution.preview.target_farm_setup_required;
+        let exact_setup_funding_lamports = (!has_farm_setup)
+            .then(|| {
+                route_execution
+                    .preview
+                    .missing_obligation_setup
+                    .as_ref()
+                    .map(|setup| {
+                        setup
+                            .vault_rent_top_up
+                            .as_ref()
+                            .map_or(0, |funding| funding.lamports)
+                    })
+            })
+            .flatten();
+        let serializes_policy_setup_funding = has_farm_setup
+            || (route_execution.preview.missing_obligation_setup.is_some()
+                && exact_setup_funding_lamports.is_none());
         apply_policy_setup_funding_serialization(
             &mut resolution,
             &route_execution.preview.signer,
             serializes_policy_setup_funding,
+            exact_setup_funding_lamports,
         );
         if let Some(fields) = resolution.evidence.as_object_mut() {
             fields.insert(
@@ -9833,11 +9869,18 @@ async fn run_idle_vault_deposit_flow(
         } else {
             "idle_vault_deposit"
         };
-        let serializes_policy_setup_funding = atomic_queue_setup
-            || plan
-                .preview
-                .route_steps
-                .contains(&KAMINO_INIT_OBLIGATION_FARM_ROUTE_STEP);
+        let has_farm_setup = plan
+            .preview
+            .route_steps
+            .contains(&KAMINO_INIT_OBLIGATION_FARM_ROUTE_STEP);
+        let exact_setup_funding_lamports = (atomic_queue_setup && !has_farm_setup).then(|| {
+            missing_obligation_setup_plan
+                .as_ref()
+                .and_then(|setup| setup.vault_rent_top_up.as_ref())
+                .map_or(0, |funding| funding.lamports)
+        });
+        let serializes_policy_setup_funding =
+            has_farm_setup || (atomic_queue_setup && exact_setup_funding_lamports.is_none());
         let mut resolution = resolve_route_lookup_tables(
             client,
             &rpc,
@@ -9857,6 +9900,7 @@ async fn run_idle_vault_deposit_flow(
             &mut resolution,
             &plan.preview.signer,
             serializes_policy_setup_funding,
+            exact_setup_funding_lamports,
         );
         if let Some(blocker) = resolution.blocker.as_ref() {
             blockers.push(IdleVaultDepositBlocker::route_resolution(
@@ -13213,6 +13257,7 @@ async fn resolve_route_lookup_tables(
         required_addresses,
         writable_account_keys,
         conflict_account_keys,
+        policy_setup_funding_lamports: None,
         reusable_missing_addresses,
         reusable_ready,
         reusable_compiled_message_size,
@@ -13383,7 +13428,27 @@ async fn prepare_queue_signed_route_handoff(
         return Err("fleet route is missing POLICY_KEYPAIR as delegated policy signer".into());
     }
     let (fee_payer_kind, selected_fee_payer_observation) = if fee_payer == policy_fee_payer {
-        (RouteFeePayerKind::Policy, None)
+        let observation = if resolution.policy_setup_funding_lamports.is_some() {
+            let runtime = route_runtime
+                .ok_or("policy setup funding admission is missing its persistent runtime")?;
+            let fee_payer_pubkey = Pubkey::from_str(&fee_payer)?;
+            Some(
+                load_cached_fee_payer_balances(
+                    runtime,
+                    &[fee_payer_pubkey],
+                    options.optimizer_epoch_id,
+                    options
+                        .optimizer_market_slot
+                        .map(u64::try_from)
+                        .transpose()?,
+                )?
+                .remove(&fee_payer_pubkey)
+                .ok_or("policy setup payer is not a funded system account at admission")?,
+            )
+        } else {
+            None
+        };
+        (RouteFeePayerKind::Policy, observation)
     } else {
         if !fee_only_shard_allowed {
             return Err(
@@ -13522,6 +13587,10 @@ async fn prepare_queue_signed_route_handoff(
             fee_payer_balance_lamports,
             fee_payer_balance_slot,
             fee_payer_balance_observed_at,
+            policy_setup_funding_lamports: resolution
+                .policy_setup_funding_lamports
+                .map(i64::try_from)
+                .transpose()?,
             compiled_fee_lamports: actual_fee_lamports,
             writable_account_keys: resolution.writable_account_keys.clone(),
             conflict_account_keys: resolution.conflict_account_keys.clone(),

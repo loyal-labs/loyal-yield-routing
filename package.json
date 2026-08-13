@@ -71,6 +71,7 @@
     "verify:realtime:sse": "bun scripts/verify-realtime-sse-smoke.ts",
     "verify:balance-sweep-deadlock": "bash scripts/verify-balance-sweep-deadlock.sh",
     "verify:fleet-health-poll": "bash scripts/verify-fleet-health-poll-contention.sh",
+    "verify:fleet-latency-speedup-e2e": "bash scripts/verify-fleet-latency-speedup-e2e.sh",
     "verify:ask-1973-fleet-e2e": "bash scripts/verify-ask-1973-fleet-e2e.sh",
     "verify:ask-1973-images": "bash scripts/verify-ask-1973-images.sh",
     "verify:ask-1973-public-api": "bash scripts/verify-ask-1973-public-api.sh",
