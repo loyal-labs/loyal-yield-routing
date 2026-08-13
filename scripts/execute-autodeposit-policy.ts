@@ -1152,11 +1152,11 @@ export async function releaseAutodepositLotClaim(args: {
   lastError: string;
   pauseTargetForMissingDelegate: boolean;
   retryDelaySeconds?: number;
-}) {
+}): Promise<AutodepositLotClaimReleaseResult> {
   const sql = args.neon(args.databaseUrl);
   const retryDelaySeconds =
     args.retryDelaySeconds ?? PRE_SEND_FAILURE_RETRY_DELAY_SECONDS;
-  await sql`
+  const rows = await sql`
     WITH selected_claim AS (
       SELECT c.claim_token
       FROM loyal_yield.balance_sweep_lot_claims c
@@ -1229,15 +1229,82 @@ export async function releaseAutodepositLotClaim(args: {
         AND lot.id IN (SELECT id FROM restored)
         AND slot.status IN ('scheduled', 'requested')
       RETURNING slot.id
+    ),
+    updated_slot AS (
+      UPDATE loyal_yield.balance_sweep_scheduled_slots
+      SET status = 'scheduled',
+          claim_token = NULL,
+          eligible_after = now() + (${retryDelaySeconds} * interval '1 second'),
+          last_error = ${args.lastError},
+          updated_at = now()
+      WHERE claim_token IN (SELECT claim_token FROM updated_claim)
+      RETURNING id
     )
-    UPDATE loyal_yield.balance_sweep_scheduled_slots
-    SET status = 'scheduled',
-        claim_token = NULL,
-        eligible_after = now() + (${retryDelaySeconds} * interval '1 second'),
-        last_error = ${args.lastError},
-        updated_at = now()
-    WHERE claim_token IN (SELECT claim_token FROM updated_claim)
+    SELECT
+      EXISTS (SELECT 1 FROM updated_claim) AS claim_released,
+      EXISTS (SELECT 1 FROM updated_slot) AS slot_released,
+      EXISTS (SELECT 1 FROM paused_target) AS target_paused
   `;
+  const row = (rows[0] ?? {}) as Record<string, unknown>;
+  return {
+    claimReleased: row.claim_released === true,
+    slotReleased: row.slot_released === true,
+    targetPaused: row.target_paused === true,
+  };
+}
+
+export type AutodepositLotClaimReleaseResult = {
+  claimReleased: boolean;
+  slotReleased: boolean;
+  targetPaused: boolean;
+};
+
+export type MissingDelegateQuarantineEvent = {
+  status: "autodeposit_target_paused_missing_delegate";
+  targetId: string;
+  scheduledSlotId: string | null;
+  recoveryOwner: "user";
+  recoveryAction: "repair_autodeposit_token_delegate";
+  retryable: false;
+};
+
+export type MissingDelegateQuarantineResult =
+  | {
+      status: "quarantined";
+      release: AutodepositLotClaimReleaseResult;
+      event: MissingDelegateQuarantineEvent;
+    }
+  | {
+      status: "unproven";
+      release: AutodepositLotClaimReleaseResult;
+    };
+
+/**
+ * Completes the missing-delegate safety transition before allowing a caller to suppress
+ * the executor alert. If the release throws, or if its atomic SQL statement cannot prove
+ * every expected transition, `onQuarantined` is deliberately unreachable.
+ */
+export async function quarantineMissingAutodepositDelegate(args: {
+  releaseClaim: () => Promise<AutodepositLotClaimReleaseResult>;
+  targetId: bigint;
+  scheduledSlotId: bigint | null;
+  onQuarantined: (event: MissingDelegateQuarantineEvent) => void;
+}): Promise<MissingDelegateQuarantineResult> {
+  const release = await args.releaseClaim();
+  if (!release.claimReleased || !release.slotReleased || !release.targetPaused) {
+    return { status: "unproven", release };
+  }
+
+  const event: MissingDelegateQuarantineEvent = {
+    status: "autodeposit_target_paused_missing_delegate",
+    targetId: args.targetId.toString(),
+    scheduledSlotId: args.scheduledSlotId?.toString() ?? null,
+    recoveryOwner: "user",
+    recoveryAction: "repair_autodeposit_token_delegate",
+    retryable: false,
+  };
+  args.onQuarantined(event);
+  return { status: "quarantined", release, event };
 }
 
 async function markScheduledSlotFailed(args: {
@@ -3879,25 +3946,46 @@ async function main() {
     );
   } catch (error) {
     // A blocked route never moved funds, so it deserves its own exit code rather than
-    // the generic 1 that every unclassified failure shares, and a vault confirmed empty
-    // deserves neither an alert nor the fast retry cadence.
+    // the generic 1 that every unclassified failure shares. A vault confirmed empty,
+    // or a missing delegate whose quarantine completed, deserves neither an alert nor
+    // the fast retry cadence.
     const disposition = autodepositFailureDisposition(error);
+    const missingTokenDelegate =
+      isMissingAutodepositTokenDelegateFailure(error);
     if (!process.exitCode && disposition.failureCode) {
       process.exitCode = autodepositExecutorFailureExitCode(
         disposition.failureCode
       );
     }
     if (!pullSent && lotClaim?.status === "selected" && lotClaim.claimToken) {
+      const claimToken = lotClaim.claimToken;
       const lastError = error instanceof Error ? error.message : String(error);
-      await releaseAutodepositLotClaim({
-        neon: appModules.neon,
-        databaseUrl,
-        claimToken: lotClaim.claimToken,
-        lastError: lastError.slice(0, 4_000),
-        pauseTargetForMissingDelegate:
-          isMissingAutodepositTokenDelegateFailure(error),
-        retryDelaySeconds: disposition.retryDelaySeconds,
-      });
+      const releaseClaim = () =>
+        releaseAutodepositLotClaim({
+          neon: appModules.neon,
+          databaseUrl,
+          claimToken,
+          lastError: lastError.slice(0, 4_000),
+          pauseTargetForMissingDelegate: missingTokenDelegate,
+          retryDelaySeconds: disposition.retryDelaySeconds,
+        });
+      if (missingTokenDelegate) {
+        await quarantineMissingAutodepositDelegate({
+          releaseClaim,
+          targetId: target.id,
+          scheduledSlotId: options.scheduledSlotId,
+          onQuarantined: (event) => {
+            if (!process.exitCode) {
+              process.exitCode = autodepositExecutorFailureExitCode(
+                "not_actionable"
+              );
+            }
+            console.log(JSON.stringify(event));
+          },
+        });
+      } else {
+        await releaseClaim();
+      }
     }
     const reconciliation = await reconcileClosedRoutePolicyFailure({
       connection,
