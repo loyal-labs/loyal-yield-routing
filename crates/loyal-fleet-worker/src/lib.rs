@@ -69,7 +69,7 @@ use loyal_yield_orchestrator::{
         project_fleet_route_source_evidence, projected_target_apy_bps, reconciliation_is_stalled,
         reconciliation_retry_delay_seconds, validate_fleet_route_kind_binding,
         validate_fleet_route_source_evidence, DurablePgWakeupEvent, DurablePgWakeupListener,
-        EconomicPolicy, FleetObservationConfig, FleetRouteSourceEvidence,
+        EconomicPolicy, FleetObservationConfig, FleetOrchestrationStatus, FleetRouteSourceEvidence,
         FleetRouteSourceKind as SameMintRouteSourceKind, FleetWorkerRole, FreshRouteEconomicsInput,
         IdleDepositPostEffectDecision, IdleDepositPostEffectObservation, IdleDepositRouteContract,
         ImmutableMarketEpoch, OpportunityInput, OuterTaskFailureKind, RebalanceOpportunityAdvance,
@@ -167,16 +167,10 @@ const LOOKUP_TABLE_ROUTE_LEASE_MINUTES: i64 = 10;
 const LOOKUP_TABLE_PREPARED_LEASE_MINUTES: i64 = 5;
 const MAX_KAMINO_OBLIGATION_RENT_LAMPORTS: u64 = 25_000_000;
 const DEFAULT_FLEET_WORKER_POLL_MILLISECONDS: u64 = 250;
-// Health emission reads `loyal_yield.fleet_orchestration_status`, a plain view
-// whose CTE chain re-aggregates the opportunity, outbox, and submission tables
-// from scratch on every call — roughly 2s against production. At a 1s interval
-// the revalidate, execute, and reconcile processes each kept a backend busy on
-// that aggregate continuously, which is what starved every worker's pool on
-// 2026-08-03. This is observability only: nothing on the claim or transition
-// write path reads it, and stuck-stage thresholds come from the durable
-// recovery poll interval, not from this constant. Widening it cuts the
-// concurrent hit rate proportionally; the materialized-view follow-up removes
-// the per-read cost itself.
+// Health emission reads one cluster-keyed snapshot row. The dedicated projector
+// owns the history aggregation; workers never refresh or fall back to it. This
+// interval only controls log frequency and is independent of durable queue
+// recovery polling.
 const FLEET_HEALTH_OBSERVATION_INTERVAL_MILLISECONDS: u64 = 10_000;
 const DEFAULT_FLEET_WORKER_LEASE_SECONDS: i64 = 120;
 const DEFAULT_FLEET_REVALIDATE_CONCURRENCY: usize = 16;
@@ -3698,8 +3692,8 @@ async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box
     // reconciliation tasks are in flight. An idle reconciler claims nothing,
     // breaks out of that arm immediately, and reaches the outer-loop emission
     // below on every pass of a 250ms recovery poll. Both paths share this rate
-    // limit so the expensive `fleet_orchestration_status` read stays governed
-    // by the health interval instead of the poll interval.
+    // limit so health log emission stays governed by the health interval
+    // instead of the recovery poll interval.
     let health_emit_interval =
         Duration::from_millis(FLEET_HEALTH_OBSERVATION_INTERVAL_MILLISECONDS);
     let mut last_health_emit: Option<tokio::time::Instant> = None;
@@ -3898,8 +3892,8 @@ async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box
 
         // A `--once` run must always report before exiting; otherwise emit only
         // when the health interval is actually due. Without this gate an idle
-        // reconciler re-ran the `fleet_orchestration_status` aggregate on every
-        // 250ms recovery poll, which is the load the interval is meant to cap.
+        // reconciler emitted health on every 250ms recovery poll, which is the
+        // log amplification this interval is meant to cap.
         let health_due = options.once
             || last_health_emit.is_none_or(|last| last.elapsed() >= health_emit_interval);
         if health_due {
@@ -3936,6 +3930,29 @@ async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box
     Ok(())
 }
 
+async fn fleet_health_snapshot_or_degraded(
+    client: &NeonSqlClient,
+    cluster: &str,
+) -> (Vec<FleetOrchestrationStatus>, Option<String>) {
+    match client.fleet_orchestration_status(cluster).await {
+        Ok(status) => (status, None),
+        Err(error) => {
+            let detail = error.to_string();
+            eprintln!(
+                "{}",
+                json!({
+                    "status": "fleet_health_snapshot_degraded",
+                    "cluster": cluster,
+                    "error": detail,
+                    "historyFallbackAttempted": false,
+                    "queueProcessingContinues": true,
+                })
+            );
+            (Vec::new(), Some(detail))
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn emit_fleet_reconciler_health(
     client: &NeonSqlClient,
@@ -3952,7 +3969,8 @@ async fn emit_fleet_reconciler_health(
     wakeup_listener_connected: bool,
     position_sweep: &FleetPositionSweepCoordinator,
 ) -> Result<(), Box<dyn Error>> {
-    let status = client.fleet_orchestration_status(&options.cluster).await?;
+    let (status, health_snapshot_error) =
+        fleet_health_snapshot_or_degraded(client, &options.cluster).await;
     let observed_at = Utc::now();
     let stage_health = fleet_stage_health_report(
         &status,
@@ -3964,7 +3982,7 @@ async fn emit_fleet_reconciler_health(
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "status": "fleet_reconciler_healthy",
+            "status": if health_snapshot_error.is_some() { "fleet_reconciler_degraded" } else { "fleet_reconciler_healthy" },
             "cluster": options.cluster,
             "owner": options.owner,
             "concurrency": options.concurrency,
@@ -3987,6 +4005,8 @@ async fn emit_fleet_reconciler_health(
             "firstOuterTaskError": first_outer_task_error,
             "queue": status,
             "stageHealth": stage_health,
+            "healthSnapshotStatus": if health_snapshot_error.is_some() { "degraded" } else { "fresh" },
+            "healthSnapshotError": health_snapshot_error,
             "observedAt": observed_at,
         }))?
     );
@@ -6043,7 +6063,8 @@ async fn emit_fleet_worker_health(
     fused_execute_promotions: u64,
     wakeup_listener_connected: bool,
 ) -> Result<(), Box<dyn Error>> {
-    let status = client.fleet_orchestration_status(&options.cluster).await?;
+    let (status, health_snapshot_error) =
+        fleet_health_snapshot_or_degraded(client, &options.cluster).await;
     let observed_at = Utc::now();
     let stage_health = fleet_stage_health_report(
         &status,
@@ -6080,7 +6101,7 @@ async fn emit_fleet_worker_health(
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "status": "fleet_worker_healthy",
+            "status": if health_snapshot_error.is_some() { "fleet_worker_degraded" } else { "fleet_worker_healthy" },
             "lane": options.claim_kind.as_str(),
             "cluster": options.cluster,
             "owner": options.owner,
@@ -6129,6 +6150,8 @@ async fn emit_fleet_worker_health(
             "healthObservationIntervalMilliseconds": FLEET_HEALTH_OBSERVATION_INTERVAL_MILLISECONDS,
             "queue": status,
             "stageHealth": stage_health,
+            "healthSnapshotStatus": if health_snapshot_error.is_some() { "degraded" } else { "fresh" },
+            "healthSnapshotError": health_snapshot_error,
             "observedAt": observed_at,
         }))?
     );
