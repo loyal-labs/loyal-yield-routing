@@ -30,10 +30,10 @@ pub struct ExecutorFailureAlert {
 /// Returns the alert an executor exit deserves, or `None` when the exit reports a
 /// correct decision rather than a fault.
 ///
-/// Not every unsuccessful exit is an incident. A target whose vault is confirmed empty
-/// has nothing to deposit into, so the executor declining to pull is the system working.
-/// Paging on it produces an alert that no operator action can clear, which trains the
-/// fleet's real failures to be ignored.
+/// Not every unsuccessful exit is an incident. A target whose vault is confirmed empty,
+/// or whose missing token delegate was safely quarantined, has nothing the executor can
+/// act on. Paging on it produces an alert that no operator action can clear, which trains
+/// the fleet's real failures to be ignored.
 pub fn executor_failure_alert(exit_code: Option<i32>) -> Option<ExecutorFailureAlert> {
     match exit_code {
         Some(AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE) => Some(ExecutorFailureAlert {
@@ -442,5 +442,59 @@ mod tests {
     #[test]
     fn legacy_db_classification_is_not_scheduler_behavior() {
         assert_eq!(surplus_lot_classification_db_value(), "unknown");
+    }
+
+    #[test]
+    fn executor_failure_alert_suppresses_only_the_non_actionable_exit() {
+        assert_eq!(
+            executor_failure_alert(Some(AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE)),
+            None
+        );
+    }
+
+    #[test]
+    fn executor_failure_alert_keeps_generic_unsuccessful_exits_actionable() {
+        for exit_code in [Some(1), None, Some(99)] {
+            assert_eq!(
+                executor_failure_alert(exit_code),
+                Some(ExecutorFailureAlert {
+                    code: "autodeposit_executor_failed",
+                    operation: "execute_eligible_autodeposit_target",
+                    summary: "autodeposit executor exited unsuccessfully",
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn executor_failure_alert_preserves_specific_failure_mappings() {
+        let cases = [
+            (
+                AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE,
+                "kamino_top_up_failed",
+                "top_up_autodeposit_to_kamino",
+            ),
+            (
+                AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE,
+                "yield_persistence_failed",
+                "persist_autodeposit_yield_position",
+            ),
+            (
+                AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE,
+                "autodeposit_preflight_blocked",
+                "preflight_autodeposit_route",
+            ),
+            (
+                AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE,
+                "autodeposit_fee_payer_exhausted",
+                "fund_autodeposit_fee_payer",
+            ),
+        ];
+
+        for (exit_code, code, operation) in cases {
+            let alert = executor_failure_alert(Some(exit_code)).expect("specific alert");
+            assert_eq!(alert.code, code);
+            assert_eq!(alert.operation, operation);
+        }
     }
 }

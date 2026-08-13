@@ -3,9 +3,12 @@ import { Keypair, type Connection } from "@solana/web3.js";
 
 import {
   assertSolBalance,
+  autodepositExecutorFailureExitCode,
   computeSweepAmount,
   isMissingAutodepositTokenDelegateFailure,
   parseKeypairSecret,
+  quarantineMissingAutodepositDelegate,
+  releaseAutodepositLotClaim,
   runAfterFeePayerSolSafety,
 } from "./execute-autodeposit-policy";
 
@@ -213,6 +216,129 @@ describe("autodeposit token delegate failures", () => {
       )
     ).toBe(false);
   });
+
+  test("reports every transition made by the atomic claim release", async () => {
+    const neon = (() => {
+      return async () => [
+        {
+          claim_released: true,
+          slot_released: true,
+          target_paused: true,
+        },
+      ];
+    }) as Parameters<typeof releaseAutodepositLotClaim>[0]["neon"];
+
+    await expect(
+      releaseAutodepositLotClaim({
+        neon,
+        databaseUrl: "test-database",
+        claimToken: "test-claim",
+        lastError: "owner does not match",
+        pauseTargetForMissingDelegate: true,
+      })
+    ).resolves.toEqual({
+      claimReleased: true,
+      slotReleased: true,
+      targetPaused: true,
+    });
+  });
+
+  test("suppresses the alert only after a fully proven quarantine", async () => {
+    let exitCode = 1;
+    const events: unknown[] = [];
+    let releaseReturned = false;
+
+    const result = await quarantineMissingAutodepositDelegate({
+      releaseClaim: async () => {
+        releaseReturned = true;
+        return {
+          claimReleased: true,
+          slotReleased: true,
+          targetPaused: true,
+        };
+      },
+      targetId: BigInt(41),
+      scheduledSlotId: BigInt(73),
+      onQuarantined: (event) => {
+        expect(releaseReturned).toBe(true);
+        exitCode = autodepositExecutorFailureExitCode("not_actionable", {
+          AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE: "23",
+        });
+        events.push(event);
+      },
+    });
+
+    expect(exitCode).toBe(23);
+    expect(result.status).toBe("quarantined");
+    expect(events).toEqual([
+      {
+        status: "autodeposit_target_paused_missing_delegate",
+        targetId: "41",
+        scheduledSlotId: "73",
+        recoveryOwner: "user",
+        recoveryAction: "repair_autodeposit_token_delegate",
+        retryable: false,
+      },
+    ]);
+    const serializedEvent = JSON.stringify(events[0]);
+    for (const forbiddenField of [
+      "wallet",
+      "signer",
+      "claimToken",
+      "secret",
+      "rpc",
+      "database",
+    ]) {
+      expect(serializedEvent).not.toContain(forbiddenField);
+    }
+  });
+
+  test("keeps incomplete quarantine results on the generic failure exit", async () => {
+    const incompleteResults = [
+      { claimReleased: false, slotReleased: true, targetPaused: true },
+      { claimReleased: true, slotReleased: false, targetPaused: true },
+      { claimReleased: true, slotReleased: true, targetPaused: false },
+    ];
+
+    for (const release of incompleteResults) {
+      let exitCode = 1;
+      let lifecycleEvents = 0;
+      const result = await quarantineMissingAutodepositDelegate({
+        releaseClaim: async () => release,
+        targetId: BigInt(41),
+        scheduledSlotId: BigInt(73),
+        onQuarantined: () => {
+          exitCode = 23;
+          lifecycleEvents += 1;
+        },
+      });
+
+      expect(result).toEqual({ status: "unproven", release });
+      expect(exitCode).toBe(1);
+      expect(lifecycleEvents).toBe(0);
+    }
+  });
+
+  test("keeps a thrown claim release on the generic failure exit", async () => {
+    let exitCode = 1;
+    let lifecycleEvents = 0;
+
+    await expect(
+      quarantineMissingAutodepositDelegate({
+        releaseClaim: async () => {
+          throw new Error("claim release failed");
+        },
+        targetId: BigInt(41),
+        scheduledSlotId: BigInt(73),
+        onQuarantined: () => {
+          exitCode = 23;
+          lifecycleEvents += 1;
+        },
+      })
+    ).rejects.toThrow("claim release failed");
+    expect(exitCode).toBe(1);
+    expect(lifecycleEvents).toBe(0);
+  });
 });
 
 describe("runtime dependency boundary", () => {
@@ -297,7 +423,7 @@ describe("runtime dependency boundary", () => {
       /paused_target AS \([\s\S]*?\n    \),\n    updated_claim AS \(/
     )?.[0];
     const updatedClaimSql = releaseSql.match(
-      /updated_claim AS \([\s\S]*?\n    \)\n    UPDATE loyal_yield\.balance_sweep_scheduled_slots/
+      /updated_claim AS \([\s\S]*?\n    \),\n    -- The replacement slot/
     )?.[0];
 
     expect(pausedTargetSql).toContain("AND t.active");

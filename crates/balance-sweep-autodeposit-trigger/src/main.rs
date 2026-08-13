@@ -9,11 +9,12 @@ use anyhow::{Context, Result};
 use balance_sweep_autodeposit_trigger::{
     compute_sweep_amount, executor_failure_alert, initial_surplus_amount,
     positive_delta_surplus_amount, scheduled_eligible_after, surplus_lot_classification_db_value,
-    SweepAmountDecision, SweepCaps, AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE,
-    AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE_ENV, AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE,
-    AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE_ENV, AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE,
-    AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE_ENV, AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE,
-    AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE_ENV, AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE,
+    ExecutorFailureAlert, SweepAmountDecision, SweepCaps,
+    AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE, AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE_ENV,
+    AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE, AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE_ENV,
+    AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE, AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE_ENV,
+    AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE, AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE_ENV,
+    AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE,
     AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE_ENV,
 };
 use chrono::{DateTime, Utc};
@@ -130,6 +131,19 @@ struct ExecutorOutcome {
     executions_not_actionable: usize,
     stale_requested_slots_failed: i64,
     stale_claims_released: i64,
+}
+
+fn record_unsuccessful_executor_exit(
+    outcome: &mut ExecutorOutcome,
+    exit_code: Option<i32>,
+) -> Option<ExecutorFailureAlert> {
+    let alert = executor_failure_alert(exit_code);
+    if alert.is_some() {
+        outcome.executions_failed += 1;
+    } else {
+        outcome.executions_not_actionable += 1;
+    }
+    alert
 }
 
 #[derive(Debug, Default)]
@@ -583,32 +597,32 @@ async fn execute_eligible_targets_once(
             })?;
         if status.success() {
             outcome.executions_succeeded += 1;
-        } else if let Some(alert) = executor_failure_alert(status.code()) {
-            outcome.executions_failed += 1;
-            tracing::warn!(
-                target_id = target.target_id,
-                scheduled_slot_id = target.scheduled_slot_id,
-                claim_token,
-                status = ?status,
-                executor_failure_code = alert.code,
-                "autodeposit executor exited unsuccessfully"
-            );
-            OperationalError::new(alert.code, alert.operation, alert.summary)
-                .retryable(false)
-                .recovery_required(true)
-                .emit();
         } else {
-            // Counted apart from failures: the executor decided correctly that this
-            // target has nothing to deposit into, so folding it into the failure count
-            // would keep an operator hunting for a fault that does not exist.
-            outcome.executions_not_actionable += 1;
-            tracing::info!(
-                target_id = target.target_id,
-                scheduled_slot_id = target.scheduled_slot_id,
-                claim_token,
-                status = ?status,
-                "autodeposit target is not actionable and was backed off without alerting"
-            );
+            if let Some(alert) = record_unsuccessful_executor_exit(&mut outcome, status.code()) {
+                tracing::warn!(
+                    target_id = target.target_id,
+                    scheduled_slot_id = target.scheduled_slot_id,
+                    claim_token,
+                    status = ?status,
+                    executor_failure_code = alert.code,
+                    "autodeposit executor exited unsuccessfully"
+                );
+                OperationalError::new(alert.code, alert.operation, alert.summary)
+                    .retryable(false)
+                    .recovery_required(true)
+                    .emit();
+            } else {
+                // Counted apart from failures: the executor decided correctly that this
+                // target has nothing to deposit into, so folding it into the failure count
+                // would keep an operator hunting for a fault that does not exist.
+                tracing::info!(
+                    target_id = target.target_id,
+                    scheduled_slot_id = target.scheduled_slot_id,
+                    claim_token,
+                    status = ?status,
+                    "autodeposit target is not actionable and was backed off without alerting"
+                );
+            }
         }
     }
     Ok(outcome)
@@ -2045,5 +2059,26 @@ mod tests {
         .expect("global poll fallback must stay live without notifications");
 
         assert!(hints.drain(1).is_empty());
+    }
+
+    #[test]
+    fn executor_failure_alert_counts_non_actionable_separately() {
+        let mut outcome = ExecutorOutcome::default();
+
+        let alert = record_unsuccessful_executor_exit(
+            &mut outcome,
+            Some(AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE),
+        );
+        assert_eq!(alert, None);
+        assert_eq!(outcome.executions_not_actionable, 1);
+        assert_eq!(outcome.executions_failed, 0);
+
+        let alert = record_unsuccessful_executor_exit(&mut outcome, Some(1));
+        assert_eq!(
+            alert.expect("generic executor failure must alert").code,
+            "autodeposit_executor_failed"
+        );
+        assert_eq!(outcome.executions_not_actionable, 1);
+        assert_eq!(outcome.executions_failed, 1);
     }
 }
