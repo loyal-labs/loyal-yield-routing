@@ -72,6 +72,8 @@ require_text "$workflow" 'if: inputs.images != '\''none'\''' 'Cache-only main bu
 require_text "$workflow" 'uses: actions/download-artifact@v4' 'Image jobs download finished binaries'
 require_text "$workflow" 'needs: rust-build' 'Image packaging waits for the single Rust build job'
 require_text "$workflow" 'bash scripts/build-rust-image-binaries.sh' 'Workflow delegates the only Rust compilation to the build script'
+require_text "$build_script" 'BASH_SOURCE[0]' 'Build script resolves the checkout without invoking Git'
+forbid_pattern "$build_script" 'git rev-parse' 'Container build does not depend on Git checkout ownership'
 
 require_text "$worker_entry" 'uses: ./.github/workflows/rust-image-build.yml' 'Worker entry workflow delegates to the reusable build-once workflow'
 require_text "$worker_entry" 'images: none' 'Main push has a compile/cache-only path with no image packaging'
