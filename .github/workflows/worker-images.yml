@@ -3,164 +3,78 @@ name: worker-images
 on:
   pull_request:
     paths:
+      - .github/workflows/rust-image-build.yml
       - .github/workflows/worker-images.yml
+      - .github/workflows/operator-tools-image.yml
       - Cargo.lock
       - Cargo.toml
       - bun.lock
       - Dockerfile.laserstream-workers
       - Dockerfile.light-workers
+      - Dockerfile.operator-tools
       - package.json
       - rust-toolchain.toml
       - .sqlx/**
       - crates/**
       - packages/loyal-actions/**
+      - scripts/build-rust-image-binaries.sh
       - scripts/execute-autodeposit-policy.ts
       - scripts/kamino-monitor-predeploy.sh
-  # Pull requests can only restore build caches from their own ref or from the
-  # default branch. Without this trigger, main's cache is only ever refreshed by
-  # a manual dispatch, so every PR after a merge rebuilds against a stale layer
-  # set. This run builds without pushing purely to keep main's cache current.
+      - scripts/verify-rust-image-build-once.sh
   push:
     branches:
       - main
     paths:
+      - .github/workflows/rust-image-build.yml
       - .github/workflows/worker-images.yml
+      - .github/workflows/operator-tools-image.yml
       - Cargo.lock
       - Cargo.toml
-      - bun.lock
-      - Dockerfile.laserstream-workers
-      - Dockerfile.light-workers
-      - package.json
       - rust-toolchain.toml
       - .sqlx/**
       - crates/**
-      - packages/loyal-actions/**
-      - scripts/execute-autodeposit-policy.ts
-      - scripts/kamino-monitor-predeploy.sh
+      - scripts/build-rust-image-binaries.sh
   workflow_dispatch:
     inputs:
       images:
-        description: Worker image selection
+        description: Image selection
         type: choice
         options:
-          - both
+          - workers
           - light-workers
           - laserstream-workers
-        default: both
+          - operator-tools
+          - all
+        default: workers
 
 permissions:
   contents: read
   packages: write
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAMESPACE: loyal-labs/loyal-yield-routing
-
 jobs:
-  build:
-    name: Build worker images
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - image: laserstream-workers
-            dockerfile: Dockerfile.laserstream-workers
-            expected_cmd: /usr/local/bin/kamino-reserve-monitor
-            probe_binaries: >-
-              kamino-reserve-monitor balance-sweep-ata-monitor
-              loyal-timescale-migrations yield-migrations
-            probe_paths: /usr/local/bin/kamino-monitor-predeploy
-          - image: light-workers
-            dockerfile: Dockerfile.light-workers
-            expected_cmd: /usr/local/bin/balance-sweep-ata-projector
-            probe_binaries: >-
-              balance-sweep-ata-projector balance-sweep-autodeposit-trigger
-              loyal-yield-realtime yield-migrations same-mint-reserve-swap
-              same-mint-yield-monitor fleet-opportunity-planner
-              fleet-route-confirmer route-lookup-table-provisioner
-            probe_paths: >-
-              /usr/local/bin/bun /app/scripts/execute-autodeposit-policy.ts
-              /app/node_modules
-    steps:
-      - name: Check out repository
-        if: github.event_name != 'workflow_dispatch' || inputs.images == 'both' || inputs.images == matrix.image
-        uses: actions/checkout@v4
+  verify-pull-request:
+    name: Build once and verify all images
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/rust-image-build.yml
+    with:
+      images: all
+      publish: false
+    secrets: inherit
 
-      - name: Set up Docker Buildx
-        if: github.event_name != 'workflow_dispatch' || inputs.images == 'both' || inputs.images == matrix.image
-        uses: docker/setup-buildx-action@v3
+  warm-main-cache:
+    name: Refresh trusted Rust cache
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/rust-image-build.yml
+    with:
+      images: none
+      publish: false
+    secrets: inherit
 
-      - name: Log in to GHCR
-        if: github.event_name == 'workflow_dispatch' && (inputs.images == 'both' || inputs.images == matrix.image)
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push image
-        if: github.event_name != 'workflow_dispatch' || inputs.images == 'both' || inputs.images == matrix.image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          push: ${{ github.event_name == 'workflow_dispatch' }}
-          load: ${{ github.event_name == 'pull_request' }}
-          platforms: linux/amd64
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:sha-${{ github.sha }}
-          build-args: |
-            LOYAL_IMAGE_VERSION=sha-${{ github.sha }}
-          labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
-          provenance: ${{ github.event_name == 'workflow_dispatch' && 'mode=max' || 'false' }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          # Pull requests read main's cache but never write their own. Exporting
-          # every intermediate layer costs 19-64s per job and was the main driver
-          # of the repository's Actions cache overrun, which evicts main's warm
-          # layers and makes later builds start cold.
-          cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,scope={0},mode=max', matrix.image) || '' }}
-
-      - name: Pull dispatched image for runtime probe
-        if: github.event_name == 'workflow_dispatch' && (inputs.images == 'both' || inputs.images == matrix.image)
-        run: docker pull --platform linux/amd64 "${REGISTRY}/${IMAGE_NAMESPACE}/${{ matrix.image }}:sha-${GITHUB_SHA}"
-
-      - name: Probe runtime image contents
-        if: github.event_name == 'pull_request' || inputs.images == 'both' || inputs.images == matrix.image
-        env:
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:sha-${{ github.sha }}
-          EXPECTED_CMD: ${{ matrix.expected_cmd }}
-          PROBE_BINARIES: ${{ matrix.probe_binaries }}
-          PROBE_PATHS: ${{ matrix.probe_paths }}
-        run: |
-          docker image inspect --format '{{.Os}}/{{.Architecture}}' "$IMAGE" | grep -Fx 'linux/amd64'
-          docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE" | grep -Fx "$GITHUB_SHA"
-          docker image inspect "$IMAGE" | jq -e --arg cmd "$EXPECTED_CMD" --arg version "LOYAL_IMAGE_VERSION=sha-$GITHUB_SHA" \
-            '.[0].Config.Cmd == [$cmd] and (.[0].Config.Env | index($version)) != null' >/dev/null
-          docker run --rm --network=none --read-only --cap-drop=ALL \
-            --env PROBE_BINARIES --env PROBE_PATHS --security-opt=no-new-privileges --entrypoint sh "$IMAGE" -c \
-            'for binary in $PROBE_BINARIES; do test -x "/usr/local/bin/$binary"; done
-             for path in $PROBE_PATHS; do test -e "$path"; done
-             case " $PROBE_PATHS " in *" /usr/local/bin/bun "*) test -x /usr/local/bin/bun;; esac
-             case " $PROBE_PATHS " in *" /usr/local/bin/kamino-monitor-predeploy "*) test -x /usr/local/bin/kamino-monitor-predeploy;; esac'
-
-      - name: Probe all fleet role entrypoints
-        if: matrix.image == 'light-workers' && (github.event_name == 'pull_request' || inputs.images == 'both' || inputs.images == matrix.image)
-        env:
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:sha-${{ github.sha }}
-        run: |
-          probe_role() {
-            expected_role="$1"
-            shift
-            output="$(docker run --rm --network=none --read-only --cap-drop=ALL \
-              --security-opt=no-new-privileges --entrypoint "$1" "$IMAGE" "${@:2}")"
-            jq -e --arg role "$expected_role" \
-              '.schemaVersion == 1 and .event == "fleet_worker_role_probe" and .status == "pass" and .role == $role and .networkAccessed == false and .secretsLoaded == false and .databaseMutated == false and .transactionSent == false' \
-              <<<"$output" >/dev/null
-          }
-          probe_role planner /usr/local/bin/fleet-opportunity-planner --role-probe
-          probe_role revalidator /usr/local/bin/same-mint-reserve-swap --fleet-worker revalidate --role-probe
-          probe_role executor /usr/local/bin/same-mint-reserve-swap --fleet-worker execute --role-probe
-          probe_role confirmer /usr/local/bin/fleet-route-confirmer --role-probe
-          probe_role reconciler /usr/local/bin/same-mint-reserve-swap --fleet-reconciler --role-probe
-          probe_role priority_provisioner /usr/local/bin/route-lookup-table-provisioner --role-probe
+  publish-images:
+    name: Build once and publish selected images
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/rust-image-build.yml
+    with:
+      images: ${{ inputs.images }}
+      publish: true
+    secrets: inherit

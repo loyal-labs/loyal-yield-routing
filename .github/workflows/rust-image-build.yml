@@ -1,0 +1,267 @@
+name: reusable-rust-image-build
+
+on:
+  workflow_call:
+    inputs:
+      images:
+        description: Image family to package after the shared Rust build
+        required: true
+        type: string
+      publish:
+        description: Push packaged images to GHCR
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: loyal-labs/loyal-yield-routing
+  RUST_CACHE_PREFIX: rust-release-linux-amd64-rust-1.89
+
+jobs:
+  rust-build:
+    name: Build all Rust image binaries once
+    runs-on: ubuntu-latest
+    container: rust:1.89-bookworm
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install native build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates clang git jq libssl-dev pkg-config protobuf-compiler
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Restore shared Cargo build state
+        id: rust-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            /usr/local/cargo/registry
+            /usr/local/cargo/git
+            target
+          key: ${{ env.RUST_CACHE_PREFIX }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ env.RUST_CACHE_PREFIX }}-${{ hashFiles('Cargo.lock') }}-
+            ${{ env.RUST_CACHE_PREFIX }}-
+
+      - name: Compile and stage all shipped Rust binaries
+        run: bash scripts/build-rust-image-binaries.sh
+
+      - name: Upload compiled binaries
+        if: inputs.images != 'none'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-image-binaries
+          path: build-artifacts/rust
+          if-no-files-found: error
+          retention-days: 1
+          # Release binaries are already dense; skip CPU-heavy ZIP compression.
+          compression-level: 0
+
+      # Pull requests can restore default-branch caches but cannot poison them.
+      # Main writes a new immutable key after the merge build succeeds.
+      - name: Save trusted Cargo build state
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /usr/local/cargo/registry
+            /usr/local/cargo/git
+            target
+          key: ${{ env.RUST_CACHE_PREFIX }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+
+  laserstream-workers:
+    name: Package laserstream workers
+    if: inputs.images == 'all' || inputs.images == 'workers' || inputs.images == 'laserstream-workers'
+    needs: rust-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Download compiled binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-image-binaries
+          path: build-artifacts/rust
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        if: inputs.publish
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Package image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.laserstream-workers
+          platforms: linux/amd64
+          push: ${{ inputs.publish }}
+          load: ${{ inputs.publish == false }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/laserstream-workers:sha-${{ github.sha }}
+          build-args: LOYAL_IMAGE_VERSION=sha-${{ github.sha }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          provenance: ${{ inputs.publish && 'mode=max' || 'false' }}
+          cache-from: type=gha,scope=laserstream-workers-runtime
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,scope=laserstream-workers-runtime,mode=max' || '' }}
+      - name: Pull published image for probe
+        if: inputs.publish
+        run: docker pull --platform linux/amd64 "${REGISTRY}/${IMAGE_NAMESPACE}/laserstream-workers:sha-${GITHUB_SHA}"
+      - name: Probe runtime image
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/laserstream-workers:sha-${{ github.sha }}
+          PROBE_BINARIES: kamino-reserve-monitor balance-sweep-ata-monitor loyal-timescale-migrations yield-migrations
+        run: |
+          docker image inspect --format '{{.Os}}/{{.Architecture}}' "$IMAGE" | grep -Fx 'linux/amd64'
+          docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE" | grep -Fx "$GITHUB_SHA"
+          docker image inspect "$IMAGE" | jq -e --arg version "LOYAL_IMAGE_VERSION=sha-$GITHUB_SHA" \
+            '.[0].Config.Cmd == ["/usr/local/bin/kamino-reserve-monitor"] and (.[0].Config.Env | index($version)) != null' >/dev/null
+          docker run --rm --network=none --read-only --cap-drop=ALL \
+            --env PROBE_BINARIES --security-opt=no-new-privileges --entrypoint sh "$IMAGE" -c \
+            'for binary in $PROBE_BINARIES; do test -x "/usr/local/bin/$binary"; done
+             test -x /usr/local/bin/kamino-monitor-predeploy'
+
+  light-workers:
+    name: Package light workers
+    if: inputs.images == 'all' || inputs.images == 'workers' || inputs.images == 'light-workers'
+    needs: rust-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Download compiled binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-image-binaries
+          path: build-artifacts/rust
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        if: inputs.publish
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Package image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.light-workers
+          platforms: linux/amd64
+          push: ${{ inputs.publish }}
+          load: ${{ inputs.publish == false }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/light-workers:sha-${{ github.sha }}
+          build-args: LOYAL_IMAGE_VERSION=sha-${{ github.sha }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          provenance: ${{ inputs.publish && 'mode=max' || 'false' }}
+          cache-from: type=gha,scope=light-workers-runtime
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,scope=light-workers-runtime,mode=max' || '' }}
+      - name: Pull published image for probe
+        if: inputs.publish
+        run: docker pull --platform linux/amd64 "${REGISTRY}/${IMAGE_NAMESPACE}/light-workers:sha-${GITHUB_SHA}"
+      - name: Probe runtime image
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/light-workers:sha-${{ github.sha }}
+          PROBE_BINARIES: >-
+            balance-sweep-ata-projector balance-sweep-autodeposit-trigger
+            loyal-yield-realtime yield-migrations same-mint-reserve-swap
+            same-mint-yield-monitor fleet-opportunity-planner
+            fleet-health-projector fleet-route-confirmer
+            route-lookup-table-provisioner
+        run: |
+          docker image inspect --format '{{.Os}}/{{.Architecture}}' "$IMAGE" | grep -Fx 'linux/amd64'
+          docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE" | grep -Fx "$GITHUB_SHA"
+          docker image inspect "$IMAGE" | jq -e --arg version "LOYAL_IMAGE_VERSION=sha-$GITHUB_SHA" \
+            '.[0].Config.Cmd == ["/usr/local/bin/balance-sweep-ata-projector"] and (.[0].Config.Env | index($version)) != null' >/dev/null
+          docker run --rm --network=none --read-only --cap-drop=ALL \
+            --env PROBE_BINARIES --security-opt=no-new-privileges --entrypoint sh "$IMAGE" -c \
+            'for binary in $PROBE_BINARIES; do test -x "/usr/local/bin/$binary"; done
+             test -x /usr/local/bin/bun
+             test -e /app/scripts/execute-autodeposit-policy.ts
+             test -e /app/node_modules'
+      - name: Probe all fleet role entrypoints
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/light-workers:sha-${{ github.sha }}
+        run: |
+          probe_role() {
+            expected_role="$1"
+            shift
+            output="$(docker run --rm --network=none --read-only --cap-drop=ALL \
+              --security-opt=no-new-privileges --entrypoint "$1" "$IMAGE" "${@:2}")"
+            jq -e --arg role "$expected_role" \
+              '.schemaVersion == 1 and .event == "fleet_worker_role_probe" and .status == "pass" and .role == $role and .networkAccessed == false and .secretsLoaded == false and .databaseMutated == false and .transactionSent == false' \
+              <<<"$output" >/dev/null
+          }
+          probe_role planner /usr/local/bin/fleet-opportunity-planner --role-probe
+          probe_role revalidator /usr/local/bin/same-mint-reserve-swap --fleet-worker revalidate --role-probe
+          probe_role executor /usr/local/bin/same-mint-reserve-swap --fleet-worker execute --role-probe
+          probe_role confirmer /usr/local/bin/fleet-route-confirmer --role-probe
+          probe_role reconciler /usr/local/bin/same-mint-reserve-swap --fleet-reconciler --role-probe
+          probe_role priority_provisioner /usr/local/bin/route-lookup-table-provisioner --role-probe
+
+  operator-tools:
+    name: Package operator tools
+    if: inputs.images == 'all' || inputs.images == 'operator-tools'
+    needs: rust-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Download compiled binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-image-binaries
+          path: build-artifacts/rust
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        if: inputs.publish
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Package image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.operator-tools
+          platforms: linux/amd64
+          push: ${{ inputs.publish }}
+          load: ${{ inputs.publish == false }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/operator-tools:sha-${{ github.sha }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          provenance: ${{ inputs.publish && 'mode=max' || 'false' }}
+          cache-from: type=gha,scope=operator-tools-runtime
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,scope=operator-tools-runtime,mode=max' || '' }}
+      - name: Pull published image for probe
+        if: inputs.publish
+        run: docker pull --platform linux/amd64 "${REGISTRY}/${IMAGE_NAMESPACE}/operator-tools:sha-${GITHUB_SHA}"
+      - name: Probe runtime image
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/operator-tools:sha-${{ github.sha }}
+          PROBE_BINARIES: >-
+            loyal-timescale-migrations fleet-orchestration-verifier
+            fleet-orchestration-production-evidence same-mint-monitor-e2e
+            route-lookup-table-shared-catalog route-lookup-table-alert-monitor
+            route-lookup-table-legacy-import route-lookup-table-cleanup
+            signer-balance-monitor
+        run: |
+          docker image inspect --format '{{.Os}}/{{.Architecture}}' "$IMAGE" | grep -Fx 'linux/amd64'
+          docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE" | grep -Fx "$GITHUB_SHA"
+          docker image inspect "$IMAGE" | jq -e \
+            '.[0].Config.Cmd == ["/usr/local/bin/fleet-orchestration-verifier", "--help"]' >/dev/null
+          docker run --rm --network=none --read-only --cap-drop=ALL \
+            --env PROBE_BINARIES --security-opt=no-new-privileges --entrypoint sh "$IMAGE" -c \
+            'for binary in $PROBE_BINARIES; do test -x "/usr/local/bin/$binary"; done'
+          docker run --rm --network=none --read-only --cap-drop=ALL \
+            --security-opt=no-new-privileges "$IMAGE" >/dev/null

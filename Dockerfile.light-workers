@@ -1,84 +1,5 @@
 # syntax=docker/dockerfile:1.7
 
-FROM rust:1.89-bookworm AS chef
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        clang \
-        git \
-        libssl-dev \
-        pkg-config \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN cargo install cargo-chef --locked
-WORKDIR /app
-
-# Only Rust build inputs land in these stages, so edits to render.yaml, docs,
-# scripts, or workflows no longer invalidate the cook and build layers.
-FROM chef AS planner
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY crates crates
-RUN cargo chef prepare --recipe-path recipe.json
-
-FROM chef AS builder
-COPY --from=planner /app/recipe.json recipe.json
-# Cook and build must select the same packages and bins in a single invocation.
-# Splitting them narrows feature resolution on the second call, which changes the
-# fingerprint of hyper, hyper-util, tower, and tower-http and forces every crate
-# above them to recompile.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    cargo chef cook --release \
-        -p balance-sweep-ata-projector \
-        -p balance-sweep-autodeposit-trigger \
-        -p loyal-yield-realtime \
-        -p loyal-fleet-worker \
-        -p loyal-yield-orchestrator \
-        --bin balance-sweep-ata-projector \
-        --bin balance-sweep-autodeposit-trigger \
-        --bin loyal-yield-realtime \
-        --bin yield-migrations \
-        --bin same-mint-reserve-swap \
-        --bin same-mint-yield-monitor \
-        --bin fleet-opportunity-planner \
-        --bin fleet-health-projector \
-        --bin fleet-route-confirmer \
-        --bin route-lookup-table-provisioner \
-        --recipe-path recipe.json
-
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY .sqlx .sqlx
-COPY crates crates
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    cargo build --release \
-        -p balance-sweep-ata-projector \
-        -p balance-sweep-autodeposit-trigger \
-        -p loyal-yield-realtime \
-        -p loyal-fleet-worker \
-        -p loyal-yield-orchestrator \
-        --bin balance-sweep-ata-projector \
-        --bin balance-sweep-autodeposit-trigger \
-        --bin loyal-yield-realtime \
-        --bin yield-migrations \
-        --bin same-mint-reserve-swap \
-        --bin same-mint-yield-monitor \
-        --bin fleet-opportunity-planner \
-        --bin fleet-health-projector \
-        --bin fleet-route-confirmer \
-        --bin route-lookup-table-provisioner \
-    && cp /app/target/release/balance-sweep-ata-projector /usr/local/bin/balance-sweep-ata-projector \
-    && cp /app/target/release/balance-sweep-autodeposit-trigger /usr/local/bin/balance-sweep-autodeposit-trigger \
-    && cp /app/target/release/loyal-yield-realtime /usr/local/bin/loyal-yield-realtime \
-    && cp /app/target/release/yield-migrations /usr/local/bin/yield-migrations \
-    && cp /app/target/release/same-mint-reserve-swap /usr/local/bin/same-mint-reserve-swap \
-    && cp /app/target/release/same-mint-yield-monitor /usr/local/bin/same-mint-yield-monitor \
-    && cp /app/target/release/fleet-opportunity-planner /usr/local/bin/fleet-opportunity-planner \
-    && cp /app/target/release/fleet-health-projector /usr/local/bin/fleet-health-projector \
-    && cp /app/target/release/fleet-route-confirmer /usr/local/bin/fleet-route-confirmer \
-    && cp /app/target/release/route-lookup-table-provisioner /usr/local/bin/route-lookup-table-provisioner
-
 FROM oven/bun:1.2.17-debian AS bun-deps
 
 WORKDIR /app
@@ -87,6 +8,8 @@ COPY packages/loyal-actions/package.json packages/loyal-actions/package.json
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install --production --frozen-lockfile
 
+# Rust compilation happens once in rust-image-build.yml. This Dockerfile only
+# assembles the runtime image from the workflow artifact and Bun dependencies.
 FROM debian:bookworm-slim AS runtime
 
 ARG LOYAL_IMAGE_VERSION
@@ -103,15 +26,15 @@ COPY --from=bun-deps /app/package.json /app/bun.lock ./
 COPY --from=bun-deps /app/node_modules ./node_modules
 COPY packages/loyal-actions packages/loyal-actions
 COPY scripts/execute-autodeposit-policy.ts scripts/execute-autodeposit-policy.ts
-COPY --from=builder /usr/local/bin/balance-sweep-ata-projector /usr/local/bin/balance-sweep-ata-projector
-COPY --from=builder /usr/local/bin/balance-sweep-autodeposit-trigger /usr/local/bin/balance-sweep-autodeposit-trigger
-COPY --from=builder /usr/local/bin/loyal-yield-realtime /usr/local/bin/loyal-yield-realtime
-COPY --from=builder /usr/local/bin/yield-migrations /usr/local/bin/yield-migrations
-COPY --from=builder /usr/local/bin/same-mint-reserve-swap /usr/local/bin/same-mint-reserve-swap
-COPY --from=builder /usr/local/bin/same-mint-yield-monitor /usr/local/bin/same-mint-yield-monitor
-COPY --from=builder /usr/local/bin/fleet-opportunity-planner /usr/local/bin/fleet-opportunity-planner
-COPY --from=builder /usr/local/bin/fleet-health-projector /usr/local/bin/fleet-health-projector
-COPY --from=builder /usr/local/bin/fleet-route-confirmer /usr/local/bin/fleet-route-confirmer
-COPY --from=builder /usr/local/bin/route-lookup-table-provisioner /usr/local/bin/route-lookup-table-provisioner
+COPY --chmod=0755 build-artifacts/rust/balance-sweep-ata-projector /usr/local/bin/balance-sweep-ata-projector
+COPY --chmod=0755 build-artifacts/rust/balance-sweep-autodeposit-trigger /usr/local/bin/balance-sweep-autodeposit-trigger
+COPY --chmod=0755 build-artifacts/rust/loyal-yield-realtime /usr/local/bin/loyal-yield-realtime
+COPY --chmod=0755 build-artifacts/rust/yield-migrations /usr/local/bin/yield-migrations
+COPY --chmod=0755 build-artifacts/rust/same-mint-reserve-swap /usr/local/bin/same-mint-reserve-swap
+COPY --chmod=0755 build-artifacts/rust/same-mint-yield-monitor /usr/local/bin/same-mint-yield-monitor
+COPY --chmod=0755 build-artifacts/rust/fleet-opportunity-planner /usr/local/bin/fleet-opportunity-planner
+COPY --chmod=0755 build-artifacts/rust/fleet-health-projector /usr/local/bin/fleet-health-projector
+COPY --chmod=0755 build-artifacts/rust/fleet-route-confirmer /usr/local/bin/fleet-route-confirmer
+COPY --chmod=0755 build-artifacts/rust/route-lookup-table-provisioner /usr/local/bin/route-lookup-table-provisioner
 
 CMD ["/usr/local/bin/balance-sweep-ata-projector"]

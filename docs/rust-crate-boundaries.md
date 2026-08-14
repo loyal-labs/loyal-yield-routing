@@ -81,14 +81,19 @@ workspace check. Operator-only packages such as `autonomous-vaults`,
 
 The `worker-images` workflow has an `images` dispatch input:
 
+- `workers` packages both production worker images and is the default.
 - `light-workers` builds only the SQL/realtime/fleet worker image.
 - `laserstream-workers` builds only the two LaserStream monitor services.
-- `both` builds both images and is the default for coordinated releases.
+- `operator-tools` builds only the operator image.
+- `all` builds all three image families.
 
-Each image has its own GitHub Actions cache scope. Keep its cargo-chef cook
-selection byte-for-byte aligned with its cargo build selection. Operator and
-verification binaries live in `Dockerfile.operator-tools` and are not copied
-into either production worker image.
+All selections first run one shared Cargo invocation in
+`scripts/build-rust-image-binaries.sh`. Pull requests restore the trusted Cargo
+cache, then package its binary artifact with compiler-free Dockerfiles. Main
+pushes refresh that Cargo cache without packaging images; only manual dispatch
+publishes images. Operator and verification binaries live in
+`Dockerfile.operator-tools` and are not copied into either production worker
+image.
 
 ## Upstream version blockers
 

@@ -141,15 +141,18 @@ applied. Live readback on 2026-06-17 confirmed these six relations exist:
 were empty immediately after creation.
 
 CI builds the production images in `.github/workflows/worker-images.yml` and
-tags them as `sha-${GITHUB_SHA}`. Its `images` input can build both images or
-only `light-workers` / `laserstream-workers`. Render services should use those
+tags them as `sha-${GITHUB_SHA}`. Its `images` input can package both workers,
+either worker independently, the operator image, or all three image families.
+One reusable job compiles every shipped Rust binary first; the selected
+Dockerfiles only package that artifact. Render services should use those
 immutable SHA tags or image digests. Do not use `latest` as the only service
 image reference.
 
 Operator-only binaries are deliberately excluded from the production images.
 Build `Dockerfile.operator-tools` only through
-`.github/workflows/operator-tools-image.yml`. Pull requests build and probe the
-image without pushing it; manual dispatch publishes the immutable
+the shared Rust image workflow. Pull requests enter through `worker-images.yml`
+and build and probe all three image families without pushing. Manual dispatch
+of `operator-tools-image.yml` publishes only the immutable
 `operator-tools:sha-<commit>` image. It contains `loyal-timescale-migrations`,
 the fleet verifier and production-evidence tools, `same-mint-monitor-e2e`, and
 the shared-catalog, alert-monitor, legacy-import, and cleanup lookup-table
