@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const REBALANCE_OPPORTUNITY_WAKEUP_CHANNEL: &str = "loyal_yield_rebalance_wakeup";
 pub const MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS: i64 = 60;
+pub const FLEET_HEALTH_SNAPSHOT_MAX_AGE_SECONDS: i64 = 30;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizerEpochInput {
@@ -636,6 +637,26 @@ pub struct FleetOrchestrationStatus {
     /// admission bounds only and must not be read as physical independence.
     pub active_physical_writable_key_count: i64,
     pub top_physical_writable_key_congestion: Vec<PhysicalWritableKeyCongestion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FleetHealthProjectionLease {
+    pub cluster: String,
+    pub owner: String,
+    pub fencing_token: i64,
+    pub lease_expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FleetHealthSnapshotRefresh {
+    pub cluster: String,
+    pub status: Vec<FleetOrchestrationStatus>,
+    pub source_watermark: Value,
+    pub refresh_started_at: DateTime<Utc>,
+    pub refreshed_at: DateTime<Utc>,
+    pub refresh_duration_milliseconds: i64,
+    pub refresh_owner: String,
+    pub fencing_token: i64,
 }
 
 impl NeonSqlClient {
@@ -1890,6 +1911,196 @@ impl NeonSqlClient {
     }
 
     pub async fn fleet_orchestration_status(
+        &self,
+        cluster: &str,
+    ) -> Result<Vec<FleetOrchestrationStatus>, OrchestratorError> {
+        if cluster.trim().is_empty() {
+            return Err(OrchestratorError::StoreInvariant(
+                "fleet health snapshot read requires a cluster".to_owned(),
+            ));
+        }
+        let row = sqlx::query(
+            r#"
+            SELECT payload, refreshed_at
+            FROM loyal_yield.fleet_orchestration_health_snapshots
+            WHERE cluster = $1
+            "#,
+        )
+        .bind(cluster)
+        .fetch_optional(self.pool())
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(format!(
+                "fleet health snapshot is missing for cluster {cluster}"
+            ))
+        })?;
+        let refreshed_at: DateTime<Utc> = row.try_get("refreshed_at")?;
+        let age = Utc::now().signed_duration_since(refreshed_at);
+        if age.num_seconds() > FLEET_HEALTH_SNAPSHOT_MAX_AGE_SECONDS {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "fleet health snapshot is stale for cluster {cluster}: age={}s maximum={}s",
+                age.num_seconds(),
+                FLEET_HEALTH_SNAPSHOT_MAX_AGE_SECONDS
+            )));
+        }
+        let payload: Value = row.try_get("payload")?;
+        serde_json::from_value(payload).map_err(|error| {
+            OrchestratorError::StoreInvariant(format!(
+                "fleet health snapshot is malformed for cluster {cluster}: {error}"
+            ))
+        })
+    }
+
+    pub async fn claim_fleet_health_projection_lease(
+        &self,
+        cluster: &str,
+        owner: &str,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<Option<FleetHealthProjectionLease>, OrchestratorError> {
+        if cluster.trim().is_empty() || owner.trim().is_empty() || lease_expires_at <= Utc::now() {
+            return Err(OrchestratorError::StoreInvariant(
+                "fleet health projection lease requires cluster, owner, and future expiry"
+                    .to_owned(),
+            ));
+        }
+        let row = sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.fleet_health_projection_leases (
+                cluster, owner, fencing_token, lease_expires_at
+            ) VALUES ($1, $2, 1, $3)
+            ON CONFLICT (cluster) DO UPDATE
+            SET owner = EXCLUDED.owner,
+                fencing_token = loyal_yield.fleet_health_projection_leases.fencing_token + 1,
+                lease_expires_at = EXCLUDED.lease_expires_at,
+                updated_at = now()
+            WHERE loyal_yield.fleet_health_projection_leases.lease_expires_at <= now()
+               OR loyal_yield.fleet_health_projection_leases.owner = EXCLUDED.owner
+            RETURNING cluster, owner, fencing_token, lease_expires_at
+            "#,
+        )
+        .bind(cluster)
+        .bind(owner)
+        .bind(lease_expires_at)
+        .fetch_optional(self.pool())
+        .await?;
+        row.map(|row| {
+            Ok(FleetHealthProjectionLease {
+                cluster: row.try_get("cluster")?,
+                owner: row.try_get("owner")?,
+                fencing_token: row.try_get("fencing_token")?,
+                lease_expires_at: row.try_get("lease_expires_at")?,
+            })
+        })
+        .transpose()
+    }
+
+    pub async fn refresh_fleet_orchestration_health_snapshot(
+        &self,
+        lease: &FleetHealthProjectionLease,
+    ) -> Result<FleetHealthSnapshotRefresh, OrchestratorError> {
+        if lease.cluster.trim().is_empty()
+            || lease.owner.trim().is_empty()
+            || lease.fencing_token <= 0
+            || lease.lease_expires_at <= Utc::now()
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "fleet health snapshot refresh requires a live fenced lease".to_owned(),
+            ));
+        }
+        let refresh_started_at = Utc::now();
+        let status = self
+            .fleet_orchestration_status_source(&lease.cluster)
+            .await?;
+        let source_watermark: Value = sqlx::query_scalar(
+            r#"
+            SELECT jsonb_build_object(
+                'opportunityMaxId', COALESCE((
+                    SELECT max(id) FROM loyal_yield.rebalance_opportunities
+                    WHERE cluster = $1
+                ), 0),
+                'submissionMaxId', COALESCE((
+                    SELECT max(id) FROM loyal_yield.signed_route_submissions
+                    WHERE cluster = $1
+                ), 0),
+                'outboxMaxId', COALESCE((
+                    SELECT max(id) FROM loyal_yield.orchestration_outbox
+                    WHERE cluster = $1
+                ), 0)
+            )
+            "#,
+        )
+        .bind(&lease.cluster)
+        .fetch_one(self.pool())
+        .await?;
+        let refreshed_at = Utc::now();
+        let refresh_duration_milliseconds = refreshed_at
+            .signed_duration_since(refresh_started_at)
+            .num_milliseconds()
+            .max(0);
+        let payload = serde_json::to_value(&status).map_err(|error| {
+            OrchestratorError::StoreInvariant(format!(
+                "fleet health snapshot serialization failed: {error}"
+            ))
+        })?;
+        let rows_affected = sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.fleet_orchestration_health_snapshots (
+                cluster, payload, source_watermark, refresh_started_at,
+                refreshed_at, refresh_duration_milliseconds, refresh_owner,
+                fencing_token, row_count
+            )
+            SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9
+            WHERE EXISTS (
+                SELECT 1
+                FROM loyal_yield.fleet_health_projection_leases lease
+                WHERE lease.cluster = $1
+                  AND lease.owner = $7
+                  AND lease.fencing_token = $8
+                  AND lease.lease_expires_at > now()
+            )
+            ON CONFLICT (cluster) DO UPDATE
+            SET payload = EXCLUDED.payload,
+                source_watermark = EXCLUDED.source_watermark,
+                refresh_started_at = EXCLUDED.refresh_started_at,
+                refreshed_at = EXCLUDED.refreshed_at,
+                refresh_duration_milliseconds = EXCLUDED.refresh_duration_milliseconds,
+                refresh_owner = EXCLUDED.refresh_owner,
+                fencing_token = EXCLUDED.fencing_token,
+                row_count = EXCLUDED.row_count,
+                updated_at = now()
+            "#,
+        )
+        .bind(&lease.cluster)
+        .bind(&payload)
+        .bind(&source_watermark)
+        .bind(refresh_started_at)
+        .bind(refreshed_at)
+        .bind(refresh_duration_milliseconds)
+        .bind(&lease.owner)
+        .bind(lease.fencing_token)
+        .bind(i64::try_from(status.len()).unwrap_or(i64::MAX))
+        .execute(self.pool())
+        .await?
+        .rows_affected();
+        if rows_affected != 1 {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "fleet health projection lease was fenced for cluster {}",
+                lease.cluster
+            )));
+        }
+        Ok(FleetHealthSnapshotRefresh {
+            cluster: lease.cluster.clone(),
+            status,
+            source_watermark,
+            refresh_started_at,
+            refreshed_at,
+            refresh_duration_milliseconds,
+            refresh_owner: lease.owner.clone(),
+            fencing_token: lease.fencing_token,
+        })
+    }
+
+    pub async fn fleet_orchestration_status_source(
         &self,
         cluster: &str,
     ) -> Result<Vec<FleetOrchestrationStatus>, OrchestratorError> {

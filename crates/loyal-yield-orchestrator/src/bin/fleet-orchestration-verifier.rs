@@ -4540,7 +4540,7 @@ async fn run_database_checks(
     let empty_status_epoch = fixture.seed_epoch(&empty_status_cluster).await?;
     let empty_status_rows = fixture
         .client
-        .fleet_orchestration_status(&empty_status_cluster)
+        .fleet_orchestration_status_source(&empty_status_cluster)
         .await?;
     let empty_status_visible = empty_status_rows.len() == 1
         && empty_status_rows[0].opportunity_state.is_none()
@@ -7940,7 +7940,7 @@ async fn run_database_checks(
     }
     let physical_status = fixture
         .client
-        .fleet_orchestration_status(&physical_status_cluster)
+        .fleet_orchestration_status_source(&physical_status_cluster)
         .await?;
     let physical_status_row = physical_status
         .first()

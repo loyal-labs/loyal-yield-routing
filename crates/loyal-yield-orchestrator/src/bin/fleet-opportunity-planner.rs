@@ -33,6 +33,7 @@ const CLUSTER_ENV: &str = "YIELD_ALT_CLUSTER";
 const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 1;
 const DEFAULT_FULL_SWEEP_INTERVAL_SECONDS: u64 = 30;
 const DEFAULT_MARKET_PROBE_INTERVAL_SECONDS: u64 = 5;
+const DEFAULT_PLANNER_LOG_HEARTBEAT_SECONDS: u64 = 5;
 const DEFAULT_WAVE_SIZE: usize = 128;
 const DEFAULT_DIRTY_BATCH_SIZE: usize = 256;
 const DIRTY_LEASE_SECONDS: i64 = 60;
@@ -1095,6 +1096,45 @@ fn print_output(output: &Value, json_output: bool) -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
+struct PlannerLogLimiter {
+    next_heartbeat_at: Instant,
+}
+
+impl PlannerLogLimiter {
+    fn new() -> Self {
+        Self {
+            next_heartbeat_at: Instant::now(),
+        }
+    }
+
+    fn should_emit(&mut self, output: &Value) -> bool {
+        let published = output
+            .get("publishedCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > 0;
+        let heartbeat_due = Instant::now() >= self.next_heartbeat_at;
+        if published || heartbeat_due {
+            self.next_heartbeat_at =
+                Instant::now() + Duration::from_secs(DEFAULT_PLANNER_LOG_HEARTBEAT_SECONDS);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn print_daemon_output(
+    output: &Value,
+    json_output: bool,
+    limiter: &mut PlannerLogLimiter,
+) -> Result<(), Box<dyn Error>> {
+    if limiter.should_emit(output) {
+        print_output(output, json_output)?;
+    }
+    Ok(())
+}
+
 async fn durable_fleet_schema_available(neon: &NeonSqlClient) -> Result<bool, Box<dyn Error>> {
     Ok(loyal_yield_orchestrator::sqlx::query_scalar(
         r#"
@@ -1393,6 +1433,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let mut current_material_frontier_fingerprint = None::<String>;
     let mut current_material_frontier = None::<MaterialMarketFrontier>;
     let mut consecutive_cycle_failures = 0u32;
+    let mut log_limiter = PlannerLogLimiter::new();
     loop {
         // One planning cycle is the supervision unit. Startup already
         // fail-fast validated config, migrations, and both pools, so anything
@@ -1459,7 +1500,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                     json!(DEFAULT_MARKET_PROBE_INTERVAL_SECONDS),
                 );
             }
-            print_output(&run.output, options.json)?;
+            print_daemon_output(&run.output, options.json, &mut log_limiter)?;
             next_full_sweep_at = Instant::now() + delay;
             next_market_probe_at = Instant::now() + market_probe_interval;
         } else {
@@ -1510,7 +1551,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 )
                 .await?;
                 if dirty_run.fallback_to_full {
-                    print_output(&dirty_run.output, options.json)?;
+                    print_daemon_output(&dirty_run.output, options.json, &mut log_limiter)?;
                     let mut full_run =
                         run_full_sweep(&options, &neon, &timescale, &delegated_signer, &config)
                             .await?;
@@ -1536,7 +1577,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                         output.insert("triggeredByDirtyCohort".to_owned(), json!(vault_ids.len()));
                         output.insert("dirtyHintLeaseActions".to_owned(), json!(acknowledged));
                     }
-                    print_output(&full_run.output, options.json)?;
+                    print_daemon_output(&full_run.output, options.json, &mut log_limiter)?;
                     next_full_sweep_at = Instant::now() + delay;
                     next_market_probe_at = Instant::now() + market_probe_interval;
                 } else {
@@ -1547,7 +1588,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                         output.insert("dirtyHintLeaseActions".to_owned(), json!(acknowledged));
                         output.insert("fullFleetRowsRead".to_owned(), json!(0));
                     }
-                    print_output(&dirty_run.output, options.json)?;
+                    print_daemon_output(&dirty_run.output, options.json, &mut log_limiter)?;
                 }
             }
             }
@@ -1636,4 +1677,20 @@ fn log_planner_wakeup_event(event: &DurablePgWakeupEvent) {
             ),
         })
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daemon_log_limiter_preserves_progress_and_coalesces_idle_cycles() {
+        let mut limiter = PlannerLogLimiter {
+            next_heartbeat_at: Instant::now() + Duration::from_secs(60),
+        };
+
+        assert!(!limiter.should_emit(&json!({"status": "idle"})));
+        assert!(limiter.should_emit(&json!({"publishedCount": 1})));
+        assert!(!limiter.should_emit(&json!({"publishedCount": 0})));
+    }
 }

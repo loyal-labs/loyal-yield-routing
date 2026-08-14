@@ -207,6 +207,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0033_policy_setup_funding_reservations.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 34,
+        name: "fleet_health_snapshot_projection",
+        sql: include_str!("../../../loyal-yield-store/migrations/0034_fleet_health_snapshot_projection.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -590,6 +596,8 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "route_policy_setup_funding_payers",
         "route_policy_setup_funding_reservations",
         "fleet_orchestration_status",
+        "fleet_health_projection_leases",
+        "fleet_orchestration_health_snapshots",
         "vault_idle_token_balances_current",
         "realtime_events",
         "realtime_configuration",
