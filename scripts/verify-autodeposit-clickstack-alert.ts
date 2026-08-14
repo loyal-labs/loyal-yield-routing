@@ -117,7 +117,7 @@ async function main() {
   const [workflow, lightDockerfile, laserstreamDockerfile, renderBlueprint] =
     await Promise.all(
       [
-        ".github/workflows/worker-images.yml",
+        ".github/workflows/rust-image-build.yml",
         "Dockerfile.light-workers",
         "Dockerfile.laserstream-workers",
         "render.yaml",

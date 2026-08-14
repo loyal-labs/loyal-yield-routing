@@ -1,65 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
-FROM rust:1.89-bookworm AS chef
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        clang \
-        git \
-        libssl-dev \
-        pkg-config \
-        protobuf-compiler \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN cargo install cargo-chef --locked
-WORKDIR /app
-
-# Only Rust build inputs land in these stages, so edits to render.yaml, docs,
-# scripts, or workflows no longer invalidate the cook and build layers.
-FROM chef AS planner
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY crates crates
-RUN cargo chef prepare --recipe-path recipe.json
-
-FROM chef AS builder
-COPY --from=planner /app/recipe.json recipe.json
-# Cook and build must select the same packages and bins in a single invocation.
-# Splitting them narrows feature resolution on the second call, which changes the
-# fingerprint of hyper, hyper-util, tower, and tower-http and forces every crate
-# above them to recompile.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    cargo chef cook --release \
-        -p kamino-reserve-monitor \
-        -p balance-sweep-ata-monitor \
-        -p loyal-timescale-migrations \
-        -p loyal-yield-orchestrator \
-        --bin kamino-reserve-monitor \
-        --bin balance-sweep-ata-monitor \
-        --bin loyal-timescale-migrations \
-        --bin yield-migrations \
-        --recipe-path recipe.json
-
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY .sqlx .sqlx
-COPY crates crates
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    cargo build --release \
-        -p kamino-reserve-monitor \
-        -p balance-sweep-ata-monitor \
-        -p loyal-timescale-migrations \
-        -p loyal-yield-orchestrator \
-        --bin kamino-reserve-monitor \
-        --bin balance-sweep-ata-monitor \
-        --bin loyal-timescale-migrations \
-        --bin yield-migrations \
-    && cp /app/target/release/kamino-reserve-monitor /usr/local/bin/kamino-reserve-monitor \
-    && cp /app/target/release/balance-sweep-ata-monitor /usr/local/bin/balance-sweep-ata-monitor \
-    && cp /app/target/release/loyal-timescale-migrations /usr/local/bin/loyal-timescale-migrations \
-    && cp /app/target/release/yield-migrations /usr/local/bin/yield-migrations
-
+# Rust compilation happens once in rust-image-build.yml. This Dockerfile only
+# assembles the runtime image from the workflow artifact.
 FROM debian:bookworm-slim AS runtime
 
 ARG LOYAL_IMAGE_VERSION
@@ -69,10 +11,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /usr/local/bin/kamino-reserve-monitor /usr/local/bin/kamino-reserve-monitor
-COPY --from=builder /usr/local/bin/balance-sweep-ata-monitor /usr/local/bin/balance-sweep-ata-monitor
-COPY --from=builder /usr/local/bin/loyal-timescale-migrations /usr/local/bin/loyal-timescale-migrations
-COPY --from=builder /usr/local/bin/yield-migrations /usr/local/bin/yield-migrations
+COPY --chmod=0755 build-artifacts/rust/kamino-reserve-monitor /usr/local/bin/kamino-reserve-monitor
+COPY --chmod=0755 build-artifacts/rust/balance-sweep-ata-monitor /usr/local/bin/balance-sweep-ata-monitor
+COPY --chmod=0755 build-artifacts/rust/loyal-timescale-migrations /usr/local/bin/loyal-timescale-migrations
+COPY --chmod=0755 build-artifacts/rust/yield-migrations /usr/local/bin/yield-migrations
 COPY --chmod=0755 scripts/kamino-monitor-predeploy.sh /usr/local/bin/kamino-monitor-predeploy
 
 CMD ["/usr/local/bin/kamino-reserve-monitor"]

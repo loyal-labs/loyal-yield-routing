@@ -23,6 +23,7 @@
 
 # production
 /build
+/build-artifacts
 
 # rust
 /target

@@ -2,8 +2,10 @@
 set -euo pipefail
 
 # Non-pushing linux/amd64 build and runtime probe for every ASK-1973 image.
-# This is a packaging gate: it exercises cargo-chef, final-stage COPYs,
-# runtime libraries, declared commands, and all six fleet role entrypoints.
+# This is a packaging gate for binaries already staged by
+# scripts/build-rust-image-binaries.sh on the requested Linux platform. It
+# exercises artifact COPYs, runtime libraries, declared commands, and all six
+# fleet role entrypoints.
 # ASK1973_IMAGE_PLATFORM may select the native platform for a supplementary
 # local smoke run; CI and the default invocation always gate linux/amd64.
 
@@ -39,6 +41,9 @@ if [[ "$container_engine" == "podman" && -n "${ASK1973_PODMAN_CONNECTION:-}" ]];
   container_command+=(--connection "$ASK1973_PODMAN_CONNECTION")
 fi
 "${container_command[@]}" info >/dev/null || fail "$container_engine engine is not reachable"
+
+[[ -f build-artifacts/rust/balance-sweep-ata-projector ]] ||
+  fail "build-artifacts/rust is missing; run the shared Rust build on $image_platform first"
 
 runtime_tmp_root="${ASK1973_RUNTIME_TMPDIR:-/tmp}"
 evidence_dir="${ASK1973_IMAGE_EVIDENCE_DIR:-$(mktemp -d "$runtime_tmp_root/ask1973-image-evidence.XXXXXX")}"
@@ -149,6 +154,7 @@ probe_binaries light-workers "$light_image" \
   same-mint-reserve-swap \
   same-mint-yield-monitor \
   fleet-opportunity-planner \
+  fleet-health-projector \
   fleet-route-confirmer \
   route-lookup-table-provisioner
 probe_role planner "$light_image" /usr/local/bin/fleet-opportunity-planner --role-probe
@@ -184,7 +190,8 @@ probe_binaries operator-tools "$operator_image" \
   route-lookup-table-shared-catalog \
   route-lookup-table-alert-monitor \
   route-lookup-table-legacy-import \
-  route-lookup-table-cleanup
+  route-lookup-table-cleanup \
+  signer-balance-monitor
 "${container_command[@]}" run --rm --network=none --read-only --cap-drop=ALL \
   --security-opt=no-new-privileges "$operator_image" \
   >"$evidence_dir/operator-tools-command.log" 2>&1 ||
