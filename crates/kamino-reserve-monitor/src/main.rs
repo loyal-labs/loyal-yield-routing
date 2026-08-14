@@ -18,15 +18,16 @@ use kamino_reserve_monitor::{
     cli::{validate_args, Args, UpdateSourceKind},
     diff_snapshot, snapshot_from_account, snapshot_from_account_at,
     source::{
-        AccountUpdateEvent, AccountUpdateSource, LaserstreamAccountUpdateSource,
-        RpcWebsocketAccountUpdateSource, SubscriptionConfig, UpdateSourceMetadata,
-        CONFIRMED_COMMITMENT,
+        AccountEventSender, AccountUpdateEvent, AccountUpdateSource, DurableReplayCursor,
+        LaserstreamAccountUpdateSource, RpcWebsocketAccountUpdateSource, SubscriptionConfig,
+        UpdateSourceMetadata, CONFIRMED_COMMITMENT,
     },
     targets::{KaminoApi, ReserveTarget},
     timescale::{
         ConfirmedStateVerification, ReserveUpdateRecord, TimescaleSink, TimescaleSinkConfig,
     },
     verification::{ConfirmedReserveState, ConfirmedReserveVerifier},
+    verification_schedule::{DirtyReserveVerificationSchedule, VerificationBatch},
     ReserveDiff, ReserveSnapshot,
 };
 use klend_interface::KLEND_PROGRAM_ID;
@@ -37,6 +38,8 @@ use tokio::{
     task::{JoinHandle, JoinSet},
     time::{Instant, MissedTickBehavior},
 };
+
+const DIRTY_VERIFICATION_BATCH_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Debug)]
 struct ProcessingConfig {
@@ -230,14 +233,17 @@ async fn run() -> Result<()> {
         .cloned()
         .map(|target| (target.reserve, target))
         .collect::<HashMap<_, _>>();
-    let (tx, rx) = mpsc::unbounded_channel();
-    let (catalog_tx, catalog_rx) = mpsc::unbounded_channel();
+    let (account_events, rx) = AccountEventSender::channel(args.account_event_channel_capacity);
+    let account_event_telemetry = account_events.clone();
+    let (catalog_tx, catalog_rx) = mpsc::channel(1);
     let subscription_config = SubscriptionConfig {
         max_reconnect_attempts: args.max_reconnect_attempts,
         reconnect_base_delay: Duration::from_millis(args.reconnect_base_delay_ms),
         reconnect_max_delay: Duration::from_secs(args.reconnect_max_delay_secs),
         heartbeat_interval: Duration::from_secs(args.subscription_heartbeat_secs),
     };
+    let replay_cursor = (args.update_source == UpdateSourceKind::Laserstream)
+        .then(|| DurableReplayCursor::new(seed_slot, args.laserstream_replay_overlap_slots));
     let subscription_worker = match args.update_source {
         UpdateSourceKind::Laserstream => {
             let source = LaserstreamAccountUpdateSource {
@@ -249,12 +255,14 @@ async fn run() -> Result<()> {
                     .helius_api_key
                     .clone()
                     .expect("validated Helius API key"),
-                from_slot: seed_slot.saturating_sub(args.laserstream_replay_overlap_slots),
+                replay_cursor: replay_cursor
+                    .clone()
+                    .expect("LaserStream replay cursor was initialized"),
                 config: subscription_config,
             };
             source.spawn(
                 targets.iter().map(|target| target.reserve).collect(),
-                tx,
+                account_events.clone(),
                 running.clone(),
             )
         }
@@ -265,7 +273,7 @@ async fn run() -> Result<()> {
             };
             source.spawn(
                 targets.iter().map(|target| target.reserve).collect(),
-                tx,
+                account_events.clone(),
                 running.clone(),
             )
         }
@@ -286,6 +294,8 @@ async fn run() -> Result<()> {
         target_by_reserve,
         confirmed_verifier,
         Duration::from_secs(args.confirmed_refresh_interval_secs),
+        account_event_telemetry,
+        replay_cursor,
         processing,
         &timescale,
         &mut snapshots,
@@ -330,7 +340,7 @@ fn spawn_supported_reserve_catalog_refresh(
     kamino_api_timeout_secs: u64,
     requested_reserves: Vec<Pubkey>,
     interval: Duration,
-    tx: mpsc::UnboundedSender<SupportedReserveCatalogRefreshEvent>,
+    tx: mpsc::Sender<SupportedReserveCatalogRefreshEvent>,
     running: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -365,7 +375,7 @@ fn spawn_supported_reserve_catalog_refresh(
                 }
                 Err(error) => SupportedReserveCatalogRefreshEvent::Failed(format!("{error:#}")),
             };
-            if tx.send(event).is_err() {
+            if tx.send(event).await.is_err() {
                 break;
             }
         }
@@ -438,11 +448,13 @@ async fn seed_http_snapshots(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_event_loop(
-    mut rx: mpsc::UnboundedReceiver<AccountUpdateEvent>,
-    mut catalog_rx: mpsc::UnboundedReceiver<SupportedReserveCatalogRefreshEvent>,
+    mut rx: mpsc::Receiver<AccountUpdateEvent>,
+    mut catalog_rx: mpsc::Receiver<SupportedReserveCatalogRefreshEvent>,
     mut target_by_reserve: HashMap<Pubkey, ReserveTarget>,
     confirmed_verifier: ConfirmedReserveVerifier,
     confirmed_refresh_interval: Duration,
+    account_event_telemetry: AccountEventSender,
+    replay_cursor: Option<DurableReplayCursor>,
     processing: ProcessingConfig,
     timescale: &TimescaleSink,
     snapshots: &mut HashMap<Pubkey, ReserveSnapshot>,
@@ -465,12 +477,17 @@ async fn run_event_loop(
         Instant::now() + confirmed_refresh_interval,
         confirmed_refresh_interval,
     );
-    // A missed timer is one pending desire for fresh state, not one queued job
-    // per elapsed interval. The JoinSet is kept empty or contains exactly one
-    // RPC fetch; dropping it aborts that fetch on every event-loop exit path.
+    let mut dirty_verification_tick = tokio::time::interval(DIRTY_VERIFICATION_BATCH_INTERVAL);
+    dirty_verification_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    // The periodic timer is only a safety sweep for quiet reserves. Live updates
+    // enter the same latest-wins scheduler immediately after durable persistence.
     confirmed_refresh_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut confirmed_refresh_tasks =
-        JoinSet::<(Instant, Result<Vec<ConfirmedReserveState>>)>::new();
+    let mut confirmed_refresh_tasks = JoinSet::<(
+        VerificationBatch,
+        Instant,
+        Result<Vec<ConfirmedReserveState>>,
+    )>::new();
+    let mut verification_schedule = DirtyReserveVerificationSchedule::default();
     let mut updates_processed = 0_u64;
     let mut last_status_updates_processed = 0_u64;
     let mut confirmed_refreshes_started = 0_u64;
@@ -512,6 +529,10 @@ async fn run_event_loop(
                                     received_at,
                                 )
                                 .await?;
+                            if let Some(cursor) = &replay_cursor {
+                                cursor.advance_after_durable_write(slot);
+                            }
+                            verification_schedule.mark_dirty(reserve);
                             tracing::warn!(
                                 %reserve,
                                 slot,
@@ -541,6 +562,10 @@ async fn run_event_loop(
                                         received_at,
                                     )
                                     .await?;
+                                if let Some(cursor) = &replay_cursor {
+                                    cursor.advance_after_durable_write(slot);
+                                }
+                                verification_schedule.mark_dirty(reserve);
                                 tracing::warn!(
                                     %reserve,
                                     slot,
@@ -556,6 +581,10 @@ async fn run_event_loop(
                             snapshots,
                             jsonl.as_deref_mut(),
                         ).await?;
+                        if let Some(cursor) = &replay_cursor {
+                            cursor.advance_after_durable_write(slot);
+                        }
+                        verification_schedule.mark_dirty(reserve);
                         updates_processed = updates_processed.saturating_add(1);
                     }
                     AccountUpdateEvent::Heartbeat { reserve } => {
@@ -585,21 +614,32 @@ async fn run_event_loop(
                     }
                 }
             }
-            _ = confirmed_refresh_tick.tick(), if confirmed_refresh_tasks.is_empty() => {
-                let verifier = confirmed_verifier.clone();
-                let reserves = target_by_reserve.keys().copied().collect::<Vec<_>>();
-                confirmed_refreshes_started = confirmed_refreshes_started.saturating_add(1);
-                confirmed_refresh_tasks.spawn(async move {
-                    let fetch_started_at = Instant::now();
-                    let result = verifier.fetch(&reserves).await;
-                    (fetch_started_at, result)
-                });
+            _ = confirmed_refresh_tick.tick() => {
+                verification_schedule.request_safety_sweep(target_by_reserve.keys().copied());
+            }
+            _ = dirty_verification_tick.tick(), if confirmed_refresh_tasks.is_empty() => {
+                if let Some(batch) = verification_schedule.begin_batch() {
+                    let verifier = confirmed_verifier.clone();
+                    let reserves = batch.reserves();
+                    confirmed_refreshes_started = confirmed_refreshes_started.saturating_add(1);
+                    confirmed_refresh_tasks.spawn(async move {
+                        let fetch_started_at = Instant::now();
+                        let result = verifier.fetch(&reserves).await;
+                        (batch, fetch_started_at, result)
+                    });
+                }
             }
             completed = confirmed_refresh_tasks.join_next(), if !confirmed_refresh_tasks.is_empty() => {
                 let completed = completed.context("confirmed refresh task set became empty unexpectedly")?;
-                let (fetch_started_at, refresh) = completed.context("confirmed refresh task failed")?;
+                let (batch, fetch_started_at, refresh) = completed.context("confirmed refresh task failed")?;
                 match refresh {
                     Ok(states) => {
+                        let accepted_reserves = verification_schedule.complete_success(&batch);
+                        let stale_states = states.len().saturating_sub(accepted_reserves.len());
+                        let states = states
+                            .into_iter()
+                            .filter(|state| accepted_reserves.contains(&state.reserve))
+                            .collect();
                         let outcome = refresh_confirmed_snapshots(
                             states,
                             "http_confirmed_refresh",
@@ -621,10 +661,12 @@ async fn run_event_loop(
                             invalid_states = outcome.invalid_states,
                             existing_events = outcome.existing_events,
                             inserted_events = outcome.inserted_events,
+                            stale_states,
                             "confirmed reserve refresh completed"
                         );
                     }
                     Err(error) => {
+                        verification_schedule.complete_failure(&batch);
                         tracing::warn!(
                             fetch_to_failure_ms = fetch_started_at.elapsed().as_millis(),
                             error = %format!("{error:#}"),
@@ -692,8 +734,12 @@ async fn run_event_loop(
                     confirmed_refreshes_started,
                     confirmed_refreshes_completed,
                     confirmed_states_verified,
-                    confirmed_refresh_in_flight = !confirmed_refresh_tasks.is_empty(),
+                    confirmed_refresh_in_flight = verification_schedule.in_flight(),
+                    dirty_reserves = verification_schedule.pending_count(),
                     last_confirmed_fetch_to_commit_ms,
+                    account_event_queue_depth = account_event_telemetry.depth(),
+                    account_event_queue_capacity = account_event_telemetry.capacity(),
+                    account_event_backpressure_events = account_event_telemetry.backpressure_events(),
                     catalog_refreshes_completed,
                     catalog_refreshes_failed,
                     "reserve monitor status"

@@ -11,8 +11,9 @@ chrono = { workspace = true, default-features = false, features = ["clock", "ser
 clap = { workspace = true, features = ["derive", "env"] }
 ctrlc = { version = "3.4", features = ["termination"] }
 futures-util.workspace = true
-helius-laserstream = "0.1"
 klend-interface = { git = "https://github.com/Kamino-Finance/klend" }
+laserstream-core-client = "9.0.2"
+laserstream-core-proto = { version = "9.0.2", default-features = false, features = ["tonic", "tonic-compression"] }
 loyal-actions = { path = "../loyal-actions" }
 loyal-kamino-codec = { path = "../loyal-kamino-codec" }
 loyal-kamino-data = { path = "../loyal-kamino-data" }
