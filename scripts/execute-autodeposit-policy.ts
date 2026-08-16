@@ -1513,6 +1513,23 @@ export function isFeePayerExhaustedFailure(error: unknown): boolean {
   return /fee payer \w+ has \d+ lamports; \d+ required\./.test(message);
 }
 
+/**
+ * Whether a pre-send failure is worth waking the user for (ASK-2091).
+ *
+ * A drained vault promised nothing, and an unclassified failure is usually
+ * gone by the next hourly cycle; pushing for either trains users to ignore
+ * the channel that has to work when a sweep is genuinely stuck.
+ * `yield_persistence_failed` never reaches here — the deposit landed and only
+ * our bookkeeping failed, so the user has nothing to act on.
+ */
+export function shouldNotifyFailedSweep(
+  failureCode: AutodepositExecutorFailureCode | null
+): boolean {
+  return (
+    failureCode === "preflight_blocked" || failureCode === "fee_payer_exhausted"
+  );
+}
+
 export type AutodepositFailureDisposition = {
   /** Null when the failure is unclassified and keeps the generic exit code. */
   failureCode: AutodepositExecutorFailureCode | null;
@@ -2078,7 +2095,10 @@ export type TopUpFeePayerSolSafety = {
 };
 
 type SolanaWeekNotifyResult =
-  | { status: "skipped"; reason: "missing_endpoint" | "missing_secret" }
+  | {
+      status: "skipped";
+      reason: "missing_endpoint" | "missing_secret" | "no_scheduled_slot";
+    }
   | { status: "sent"; httpStatus: number }
   | { status: "failed"; httpStatus: number | null; error: string };
 
@@ -2978,6 +2998,11 @@ function redactSensitiveText(value: string): string {
 async function notifySolanaWeekSweep(args: {
   PublicKeyCtor: typeof PublicKey;
   ownerWalletAddress: string;
+  /** Defaults to "executed" on the app side when omitted. */
+  kind?: "executed" | "failed";
+  amountRaw?: bigint | null;
+  /** At-most-once key for the app's push sent-log; one push per sweep. */
+  dedupeKey?: string | null;
 }): Promise<SolanaWeekNotifyResult> {
   const endpoint = process.env[SOLANA_WEEK_NOTIFY_ENDPOINT_ENV]?.trim();
   const secret = process.env[SOLANA_WEEK_NOTIFY_SECRET_ENV]?.trim();
@@ -3004,7 +3029,18 @@ async function notifySolanaWeekSweep(args: {
         "Content-Type": "application/json",
       },
       signal: abortController.signal,
-      body: JSON.stringify({ walletAddress }),
+      body: JSON.stringify({
+        walletAddress,
+        ...(args.kind === "failed"
+          ? {
+              kind: "failed",
+              ...(args.amountRaw !== null && args.amountRaw !== undefined
+                ? { amountRaw: args.amountRaw.toString() }
+                : {}),
+              ...(args.dedupeKey ? { dedupeKey: args.dedupeKey } : {}),
+            }
+          : {}),
+      }),
     });
     if (!response.ok) {
       const body = await response.text();
@@ -3028,6 +3064,32 @@ async function notifySolanaWeekSweep(args: {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/**
+ * Report a scheduled sweep that did not land, so the app can push the user.
+ *
+ * Skipped when the run is not executing a scheduled slot: the "about to move"
+ * push is sent when a slot is scheduled, so without one there is no promise to
+ * break. The slot id doubles as the app-side at-most-once key, which is what
+ * keeps the hourly retries of one stuck sweep down to a single push.
+ */
+async function notifyFailedSweep(args: {
+  PublicKeyCtor: typeof PublicKey;
+  amountRaw: bigint | null;
+  ownerWalletAddress: string;
+  scheduledSlotId: bigint | null;
+}): Promise<SolanaWeekNotifyResult> {
+  if (args.scheduledSlotId === null) {
+    return { status: "skipped", reason: "no_scheduled_slot" };
+  }
+  return notifySolanaWeekSweep({
+    PublicKeyCtor: args.PublicKeyCtor,
+    amountRaw: args.amountRaw,
+    dedupeKey: `slot-${args.scheduledSlotId.toString()}`,
+    kind: "failed",
+    ownerWalletAddress: args.ownerWalletAddress,
+  });
 }
 
 function logSolanaWeekNotifyResult(result: SolanaWeekNotifyResult) {
@@ -4144,6 +4206,16 @@ async function main() {
           2
         )
       );
+      // The pull already left the user's wallet, so this is the state a silent
+      // failure hurts most: funds sitting in the vault, not earning (ASK-2091).
+      logSolanaWeekNotifyResult(
+        await notifyFailedSweep({
+          PublicKeyCtor,
+          amountRaw: executionAmountRaw,
+          ownerWalletAddress: target.wallet,
+          scheduledSlotId: options.scheduledSlotId,
+        })
+      );
       process.exitCode = autodepositExecutorFailureExitCode(
         "kamino_top_up_failed"
       );
@@ -4272,6 +4344,16 @@ async function main() {
     const disposition = autodepositFailureDisposition(error);
     const missingTokenDelegate =
       isMissingAutodepositTokenDelegateFailure(error);
+    if (shouldNotifyFailedSweep(disposition.failureCode)) {
+      logSolanaWeekNotifyResult(
+        await notifyFailedSweep({
+          PublicKeyCtor,
+          amountRaw: null,
+          ownerWalletAddress: target.wallet,
+          scheduledSlotId: options.scheduledSlotId,
+        })
+      );
+    }
     if (!process.exitCode && disposition.failureCode) {
       process.exitCode = autodepositExecutorFailureExitCode(
         disposition.failureCode

@@ -10,6 +10,7 @@ import {
   quarantineMissingAutodepositDelegate,
   releaseAutodepositLotClaim,
   runAfterFeePayerSolSafety,
+  shouldNotifyFailedSweep,
 } from "./execute-autodeposit-policy";
 
 function hex(bytes: Uint8Array): string {
@@ -499,6 +500,18 @@ describe("runtime dependency boundary", () => {
     expect(source).toContain(
       "new args.PublicKeyCtor(\n    args.ownerWalletAddress\n  ).toBase58()"
     );
+  });
+});
+
+describe("shouldNotifyFailedSweep", () => {
+  test("wakes the user only for failures that park a promised sweep", () => {
+    expect(shouldNotifyFailedSweep("preflight_blocked")).toBe(true);
+    expect(shouldNotifyFailedSweep("fee_payer_exhausted")).toBe(true);
+    // Nothing to sweep, deposit already landed, or a transient error the next
+    // cycle clears — pushing for these is noise.
+    expect(shouldNotifyFailedSweep("not_actionable")).toBe(false);
+    expect(shouldNotifyFailedSweep("yield_persistence_failed")).toBe(false);
+    expect(shouldNotifyFailedSweep(null)).toBe(false);
   });
 });
 
