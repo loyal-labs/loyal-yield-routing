@@ -11,8 +11,8 @@ const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const CLAIM_TOKEN = "autodeposit-release-selector-verification";
 const RETRY_DELAY_SECONDS = 6 * 60 * 60;
 
-const databaseUrl = process.env.AUTODEPOSIT_SELECTOR_DATABASE_URL;
-const triggerBinary = process.env.AUTODEPOSIT_SELECTOR_TRIGGER_BINARY;
+const databaseUrl = process.env.AUTODEPOSIT_SELECTOR_DATABASE_URL ?? "";
+const triggerBinary = process.env.AUTODEPOSIT_SELECTOR_TRIGGER_BINARY ?? "";
 if (!databaseUrl || !triggerBinary) {
   throw new Error(
     "AUTODEPOSIT_SELECTOR_DATABASE_URL and AUTODEPOSIT_SELECTOR_TRIGGER_BINARY are required"

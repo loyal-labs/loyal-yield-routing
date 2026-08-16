@@ -31,6 +31,8 @@ const MIGRATION_0010: &str = include_str!("../migrations/0010_realtime_events.sq
 const MIGRATION_0011: &str = include_str!("../migrations/0011_autodeposit_realtime_events.sql");
 const MIGRATION_0012: &str =
     include_str!("../migrations/0012_idle_vault_decision_plan_guardrails.sql");
+const MIGRATION_0035: &str = include_str!("../migrations/0035_durable_cross_mint_movements.sql");
+const MIGRATION_0036: &str = include_str!("../migrations/0036_cross_mint_swap_policies.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -73,6 +75,9 @@ impl RouteLookupTableProvisioningLock {
 #[derive(Debug, sqlx::FromRow)]
 struct RoutePolicyRow {
     id: i64,
+    cluster: String,
+    source_commitment: String,
+    finalized_eligible: bool,
     settings: String,
     authority: String,
     policy_seed: i64,
@@ -89,6 +94,31 @@ struct RoutePolicyRow {
     risk_profile: Option<String>,
     swap_lanes: Value,
     active: bool,
+    first_seen_at: DateTime<Utc>,
+    last_seen_at: DateTime<Utc>,
+    last_seen_slot: i64,
+    last_seen_signature: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct CrossMintSwapPolicyRow {
+    id: i64,
+    cluster: String,
+    settings: String,
+    authority: String,
+    policy_seed: Option<i64>,
+    policy_account: String,
+    vault_index: Option<i16>,
+    vault_pubkey: Option<String>,
+    delegated_signer: Option<String>,
+    source_shard: Option<String>,
+    max_slippage_bps: Option<i32>,
+    daily_source_mint_spending_cap: Option<i64>,
+    manifest_fingerprint: Option<String>,
+    active: bool,
+    start_eligible: bool,
+    last_mutation: String,
+    source_commitment: String,
     first_seen_at: DateTime<Utc>,
     last_seen_at: DateTime<Utc>,
     last_seen_slot: i64,
@@ -220,6 +250,33 @@ impl NeonSqlClient {
         Ok(())
     }
 
+    pub async fn schema_migration_applied(
+        &self,
+        version: i64,
+        name: &str,
+    ) -> Result<bool, OrchestratorError> {
+        let ledger_exists: bool =
+            sqlx::query_scalar("SELECT to_regclass('loyal_yield.schema_migrations') IS NOT NULL")
+                .fetch_one(&self.pool)
+                .await?;
+        if !ledger_exists {
+            return Ok(false);
+        }
+        Ok(sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM loyal_yield.schema_migrations
+                WHERE version = $1 AND name = $2
+            )
+            "#,
+        )
+        .bind(version)
+        .bind(name)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     pub async fn acquire_route_lookup_table_provisioning_lock(
         &self,
         cluster: &str,
@@ -309,6 +366,18 @@ impl NeonSqlClient {
                 version: 12,
                 name: "idle_vault_decision_plan_guardrails",
                 sql: MIGRATION_0012,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 35,
+                name: "durable_cross_mint_movements",
+                sql: MIGRATION_0035,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 36,
+                name: "cross_mint_swap_policies",
+                sql: MIGRATION_0036,
                 expected_checksum: None,
             },
         ] {
@@ -480,6 +549,231 @@ impl NeonSqlClient {
         let vault = upsert_vault(&mut tx, policy.id, &event).await?;
         tx.commit().await?;
         Ok(StoredPolicyMatch { policy, vault })
+    }
+
+    pub async fn record_cross_mint_swap_policy_manifest(
+        &self,
+        event: CrossMintSwapPolicyManifestInput,
+    ) -> Result<Option<CrossMintSwapPolicy>, OrchestratorError> {
+        validate_cross_mint_swap_policy_manifest_input(&event)?;
+        let slot = to_i64_slot(event.slot)?;
+        let policy_seed = event.policy_seed.map(to_i64_policy_seed).transpose()?;
+        let daily_source_mint_spending_cap = i64::try_from(event.daily_source_mint_spending_cap)
+            .map_err(|_| {
+                OrchestratorError::StoreInvariant(
+                    "cross-mint daily source-mint spending cap exceeds PostgreSQL BIGINT"
+                        .to_owned(),
+                )
+            })?;
+        let mut tx = self.pool.begin().await?;
+        let lock_key = format!(
+            "cross-mint-swap-policy:{}:{}",
+            event.cluster, event.policy_account
+        );
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0::bigint))")
+            .bind(&lock_key)
+            .execute(&mut *tx)
+            .await?;
+
+        let current =
+            fetch_cross_mint_swap_policy_for_update(&mut tx, &event.cluster, &event.policy_account)
+                .await?;
+        let row = match current {
+            None => Some(insert_cross_mint_swap_policy(&mut tx, &event, policy_seed, slot).await?),
+            Some(current) if current.last_mutation == "remove" => None,
+            Some(current) if slot < current.last_seen_slot => Some(current),
+            Some(current)
+                if slot == current.last_seen_slot
+                    && event.signature == current.last_seen_signature
+                    && Some(event.manifest_fingerprint.as_str())
+                        == current.manifest_fingerprint.as_deref()
+                    && Some(event.source_shard.as_str()) == current.source_shard.as_deref()
+                    && event.settings == current.settings
+                    && event.authority == current.authority
+                    && policy_seed == current.policy_seed
+                    && Some(i16::from(event.vault_index)) == current.vault_index
+                    && Some(event.vault_pubkey.as_str()) == current.vault_pubkey.as_deref()
+                    && Some(event.delegated_signer.as_str())
+                        == current.delegated_signer.as_deref()
+                    && Some(i32::from(event.max_slippage_bps)) == current.max_slippage_bps
+                    && Some(daily_source_mint_spending_cap)
+                        == current.daily_source_mint_spending_cap
+                    && event.mutation == current.last_mutation
+                    && commitment_rank(&event.source_commitment)?
+                        > commitment_rank(&current.source_commitment)? =>
+            {
+                Some(
+                    update_cross_mint_policy_finality(
+                        &mut tx,
+                        &event.cluster,
+                        &event.policy_account,
+                        &event.source_commitment,
+                    )
+                    .await?,
+                )
+            }
+            Some(current)
+                if slot == current.last_seen_slot
+                    && event.signature == current.last_seen_signature
+                    && Some(event.manifest_fingerprint.as_str())
+                        == current.manifest_fingerprint.as_deref()
+                    && Some(event.source_shard.as_str()) == current.source_shard.as_deref()
+                    && event.settings == current.settings
+                    && event.authority == current.authority
+                    && policy_seed == current.policy_seed
+                    && Some(i16::from(event.vault_index)) == current.vault_index
+                    && Some(event.vault_pubkey.as_str()) == current.vault_pubkey.as_deref()
+                    && Some(event.delegated_signer.as_str())
+                        == current.delegated_signer.as_deref()
+                    && Some(i32::from(event.max_slippage_bps)) == current.max_slippage_bps
+                    && Some(daily_source_mint_spending_cap)
+                        == current.daily_source_mint_spending_cap
+                    && event.mutation == current.last_mutation =>
+            {
+                Some(current)
+            }
+            Some(current) => Some(
+                mark_cross_mint_policy_ambiguous(
+                    &mut tx,
+                    &event.cluster,
+                    &event.policy_account,
+                    stronger_commitment(&event.source_commitment, &current.source_commitment)?,
+                    slot.max(current.last_seen_slot),
+                    &event.signature,
+                )
+                .await?,
+            ),
+        };
+        tx.commit().await?;
+        row.map(cross_mint_swap_policy_from_row).transpose()
+    }
+
+    pub async fn load_finalized_active_cross_mint_swap_policies(
+        &self,
+        lookup: CrossMintSwapPolicyLookup,
+    ) -> Result<Vec<CrossMintSwapPolicy>, OrchestratorError> {
+        let minimum_slot = to_i64_slot(lookup.minimum_slot)?;
+        let rows = sqlx::query_as::<_, CrossMintSwapPolicyRow>(
+            r#"
+            SELECT *
+            FROM loyal_yield.cross_mint_swap_policies
+            WHERE cluster = $1
+              AND settings = $2
+              AND vault_index = $3
+              AND vault_pubkey = $4
+              AND last_seen_slot >= $5
+              AND active
+              AND start_eligible
+              AND source_commitment = 'finalized'
+              AND last_mutation IN ('create', 'update')
+            ORDER BY last_seen_slot DESC, source_shard ASC, policy_account ASC
+            "#,
+        )
+        .bind(&lookup.cluster)
+        .bind(&lookup.settings)
+        .bind(i16::from(lookup.vault_index))
+        .bind(&lookup.vault_pubkey)
+        .bind(minimum_slot)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(cross_mint_swap_policy_from_row)
+            .collect()
+    }
+
+    pub async fn record_policy_removal(
+        &self,
+        event: PolicyRemovalInput,
+    ) -> Result<PolicyRemovalResult, OrchestratorError> {
+        commitment_rank(&event.source_commitment)?;
+        let slot = to_i64_slot(event.slot)?;
+        let mut tx = self.pool.begin().await?;
+        let lock_key = format!(
+            "cross-mint-swap-policy:{}:{}",
+            event.cluster, event.policy_account
+        );
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0::bigint))")
+            .bind(&lock_key)
+            .execute(&mut *tx)
+            .await?;
+
+        let swap_policy_deactivated =
+            deactivate_cross_mint_swap_policy(&mut tx, &event, slot).await?;
+        let route_policy_id = sqlx::query_scalar::<_, i64>(
+            r#"
+            UPDATE loyal_yield.route_policies
+            SET active = FALSE,
+                finalized_eligible = FALSE,
+                cluster = $1,
+                source_commitment = $2,
+                last_seen_at = now(),
+                last_seen_slot = $3,
+                last_seen_signature = $4
+            WHERE policy_account = $5
+              AND settings = $6
+              AND authority = $7
+              AND $3 >= last_seen_slot
+            RETURNING id
+            "#,
+        )
+        .bind(&event.cluster)
+        .bind(&event.source_commitment)
+        .bind(slot)
+        .bind(&event.signature)
+        .bind(&event.policy_account)
+        .bind(&event.settings)
+        .bind(&event.authority)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let managed_vault_deactivated = if let Some(policy_id) = route_policy_id {
+            sqlx::query(
+                r#"
+                UPDATE loyal_yield.managed_vaults
+                SET active = FALSE, last_seen_at = now()
+                WHERE active_policy_id = $1 AND active
+                "#,
+            )
+            .bind(policy_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+                > 0
+        } else {
+            false
+        };
+
+        let balance_sweep_target_deactivated = sqlx::query(
+            r#"
+            UPDATE loyal_yield.balance_sweep_targets
+            SET active = FALSE,
+                last_seen_at = now(),
+                last_seen_slot = $1,
+                last_seen_signature = $2
+            WHERE policy_account = $3
+              AND settings = $4
+              AND authority = $5
+              AND $1 >= last_seen_slot
+              AND active
+            "#,
+        )
+        .bind(slot)
+        .bind(&event.signature)
+        .bind(&event.policy_account)
+        .bind(&event.settings)
+        .bind(&event.authority)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            > 0;
+
+        tx.commit().await?;
+        Ok(PolicyRemovalResult {
+            swap_policy_deactivated,
+            route_policy_deactivated: route_policy_id.is_some(),
+            managed_vault_deactivated,
+            balance_sweep_target_deactivated,
+        })
     }
 
     pub async fn record_route_and_setup_policy_match(
@@ -2452,10 +2746,295 @@ fn migration_checksum(sql: &str) -> String {
     format!("{:x}", Sha256::digest(sql.as_bytes()))
 }
 
+fn validate_cross_mint_swap_policy_manifest_input(
+    event: &CrossMintSwapPolicyManifestInput,
+) -> Result<(), OrchestratorError> {
+    commitment_rank(&event.source_commitment)?;
+    if !matches!(event.mutation.as_str(), "create" | "update") {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "cross-mint manifest mutation must be create or update, got {:?}",
+            event.mutation
+        )));
+    }
+    if event.manifest_fingerprint.trim().is_empty()
+        || event.manifest_fingerprint != event.manifest_fingerprint.trim()
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "cross-mint manifest fingerprint must be non-empty and trimmed".to_owned(),
+        ));
+    }
+    if !matches!(event.source_shard.as_str(), "classic" | "token_2022")
+        || event.max_slippage_bps == 0
+        || event.max_slippage_bps > 10_000
+        || event.daily_source_mint_spending_cap == 0
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "cross-mint policy has an invalid source shard, slippage, or daily cap".to_owned(),
+        ));
+    }
+    if [
+        event.signature.as_str(),
+        event.cluster.as_str(),
+        event.settings.as_str(),
+        event.authority.as_str(),
+        event.policy_account.as_str(),
+        event.vault_pubkey.as_str(),
+        event.delegated_signer.as_str(),
+        event.source_shard.as_str(),
+    ]
+    .into_iter()
+    .any(str::is_empty)
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "cross-mint manifest identity fields must be non-empty".to_owned(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn commitment_rank(commitment: &str) -> Result<u8, OrchestratorError> {
+    match commitment {
+        "processed" => Ok(0),
+        "confirmed" => Ok(1),
+        "finalized" => Ok(2),
+        other => Err(OrchestratorError::StoreInvariant(format!(
+            "unsupported policy source commitment {other:?}"
+        ))),
+    }
+}
+
+fn stronger_commitment(left: &str, right: &str) -> Result<&'static str, OrchestratorError> {
+    match commitment_rank(left)?.max(commitment_rank(right)?) {
+        0 => Ok("processed"),
+        1 => Ok("confirmed"),
+        2 => Ok("finalized"),
+        _ => unreachable!("commitment rank is bounded"),
+    }
+}
+
+async fn insert_cross_mint_swap_policy(
+    tx: &mut Transaction<'_, Postgres>,
+    event: &CrossMintSwapPolicyManifestInput,
+    policy_seed: Option<i64>,
+    slot: i64,
+) -> Result<CrossMintSwapPolicyRow, OrchestratorError> {
+    let daily_cap = i64::try_from(event.daily_source_mint_spending_cap).map_err(|_| {
+        OrchestratorError::StoreInvariant(
+            "cross-mint daily source-mint spending cap exceeds PostgreSQL BIGINT".to_owned(),
+        )
+    })?;
+    Ok(sqlx::query_as::<_, CrossMintSwapPolicyRow>(
+        r#"
+        INSERT INTO loyal_yield.cross_mint_swap_policies
+            (cluster, settings, authority, policy_seed, policy_account,
+             vault_index, vault_pubkey, delegated_signer, source_shard,
+             max_slippage_bps, daily_source_mint_spending_cap,
+             manifest_fingerprint, active, start_eligible, last_mutation,
+             source_commitment, last_seen_slot, last_seen_signature)
+        VALUES
+            ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+             TRUE, $13, $14, $15, $16, $17)
+        RETURNING *
+        "#,
+    )
+    .bind(&event.cluster)
+    .bind(&event.settings)
+    .bind(&event.authority)
+    .bind(policy_seed)
+    .bind(&event.policy_account)
+    .bind(i16::from(event.vault_index))
+    .bind(&event.vault_pubkey)
+    .bind(&event.delegated_signer)
+    .bind(&event.source_shard)
+    .bind(i32::from(event.max_slippage_bps))
+    .bind(daily_cap)
+    .bind(&event.manifest_fingerprint)
+    .bind(event.source_commitment == "finalized")
+    .bind(&event.mutation)
+    .bind(&event.source_commitment)
+    .bind(slot)
+    .bind(&event.signature)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
+async fn fetch_cross_mint_swap_policy_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    cluster: &str,
+    policy_account: &str,
+) -> Result<Option<CrossMintSwapPolicyRow>, OrchestratorError> {
+    Ok(sqlx::query_as::<_, CrossMintSwapPolicyRow>(
+        r#"
+        SELECT *
+        FROM loyal_yield.cross_mint_swap_policies
+        WHERE cluster = $1 AND policy_account = $2
+        FOR UPDATE
+        "#,
+    )
+    .bind(cluster)
+    .bind(policy_account)
+    .fetch_optional(&mut **tx)
+    .await?)
+}
+
+async fn update_cross_mint_policy_finality(
+    tx: &mut Transaction<'_, Postgres>,
+    cluster: &str,
+    policy_account: &str,
+    source_commitment: &str,
+) -> Result<CrossMintSwapPolicyRow, OrchestratorError> {
+    Ok(sqlx::query_as::<_, CrossMintSwapPolicyRow>(
+        r#"
+        UPDATE loyal_yield.cross_mint_swap_policies
+        SET source_commitment = $3,
+            start_eligible = active AND $3 = 'finalized'
+                AND last_mutation IN ('create', 'update'),
+            last_seen_at = now()
+        WHERE cluster = $1 AND policy_account = $2
+        RETURNING *
+        "#,
+    )
+    .bind(cluster)
+    .bind(policy_account)
+    .bind(source_commitment)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
+async fn mark_cross_mint_policy_ambiguous(
+    tx: &mut Transaction<'_, Postgres>,
+    cluster: &str,
+    policy_account: &str,
+    source_commitment: &str,
+    slot: i64,
+    signature: &str,
+) -> Result<CrossMintSwapPolicyRow, OrchestratorError> {
+    Ok(sqlx::query_as::<_, CrossMintSwapPolicyRow>(
+        r#"
+        UPDATE loyal_yield.cross_mint_swap_policies
+        SET active = FALSE,
+            start_eligible = FALSE,
+            last_mutation = 'ambiguous',
+            source_commitment = $3,
+            last_seen_at = now(),
+            last_seen_slot = GREATEST(last_seen_slot, $4),
+            last_seen_signature = $5
+        WHERE cluster = $1 AND policy_account = $2
+        RETURNING *
+        "#,
+    )
+    .bind(cluster)
+    .bind(policy_account)
+    .bind(source_commitment)
+    .bind(slot)
+    .bind(signature)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
+async fn deactivate_cross_mint_swap_policy(
+    tx: &mut Transaction<'_, Postgres>,
+    event: &PolicyRemovalInput,
+    slot: i64,
+) -> Result<bool, OrchestratorError> {
+    let Some(current) =
+        fetch_cross_mint_swap_policy_for_update(tx, &event.cluster, &event.policy_account).await?
+    else {
+        insert_cross_mint_policy_removal_tombstone(tx, event, slot).await?;
+        return Ok(false);
+    };
+    if slot < current.last_seen_slot {
+        return Ok(false);
+    }
+
+    let was_enabled = current.active || current.start_eligible;
+    let identity_matches =
+        current.settings == event.settings && current.authority == event.authority;
+    if !identity_matches
+        || (slot == current.last_seen_slot
+            && current.last_seen_signature != event.signature
+            && current.last_mutation != "remove")
+    {
+        mark_cross_mint_policy_ambiguous(
+            tx,
+            &event.cluster,
+            &event.policy_account,
+            stronger_commitment(&event.source_commitment, &current.source_commitment)?,
+            slot,
+            &event.signature,
+        )
+        .await?;
+        return Ok(was_enabled);
+    }
+
+    if current.last_mutation == "remove"
+        && slot == current.last_seen_slot
+        && current.last_seen_signature == event.signature
+        && commitment_rank(&event.source_commitment)?
+            <= commitment_rank(&current.source_commitment)?
+    {
+        return Ok(false);
+    }
+
+    sqlx::query(
+        r#"
+        UPDATE loyal_yield.cross_mint_swap_policies
+        SET active = FALSE,
+            start_eligible = FALSE,
+            last_mutation = 'remove',
+            source_commitment = $3,
+            last_seen_at = now(),
+            last_seen_slot = $4,
+            last_seen_signature = $5
+        WHERE cluster = $1 AND policy_account = $2
+        "#,
+    )
+    .bind(&event.cluster)
+    .bind(&event.policy_account)
+    .bind(&event.source_commitment)
+    .bind(slot)
+    .bind(&event.signature)
+    .execute(&mut **tx)
+    .await?;
+    Ok(was_enabled)
+}
+
+async fn insert_cross_mint_policy_removal_tombstone(
+    tx: &mut Transaction<'_, Postgres>,
+    event: &PolicyRemovalInput,
+    slot: i64,
+) -> Result<(), OrchestratorError> {
+    sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.cross_mint_swap_policies
+            (cluster, settings, authority, policy_seed, policy_account,
+             vault_index, vault_pubkey, delegated_signer, source_shard,
+             max_slippage_bps, daily_source_mint_spending_cap,
+             manifest_fingerprint, active, start_eligible, last_mutation,
+             source_commitment, last_seen_slot, last_seen_signature)
+        VALUES
+            ($1, $2, $3, NULL, $4, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+             FALSE, FALSE, 'remove', $5, $6, $7)
+        "#,
+    )
+    .bind(&event.cluster)
+    .bind(&event.settings)
+    .bind(&event.authority)
+    .bind(&event.policy_account)
+    .bind(&event.source_commitment)
+    .bind(slot)
+    .bind(&event.signature)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 async fn upsert_policy(
     conn: &mut PgConnection,
     event: &PolicyMatchInput,
 ) -> Result<RoutePolicy, OrchestratorError> {
+    commitment_rank(&event.source_commitment)?;
     let slot =
         i64::try_from(event.slot).map_err(|_| OrchestratorError::SlotOutOfRange(event.slot))?;
     let policy_seed = i64::try_from(event.policy_seed)
@@ -2465,8 +3044,9 @@ async fn upsert_policy(
         INSERT INTO loyal_yield.route_policies
             (settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
              delegated_signers, threshold, route_modes, stable_mints, kamino_markets, kamino_liquidity_mints,
-             universe_preset, risk_profile, swap_lanes, active, last_seen_slot, last_seen_signature)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, TRUE, $16, $17)
+             universe_preset, risk_profile, swap_lanes, active, last_seen_slot, last_seen_signature,
+             cluster, source_commitment, finalized_eligible)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, TRUE, $16, $17, $18, $19, $20)
         ON CONFLICT (policy_account) DO UPDATE SET
             settings = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.settings ELSE loyal_yield.route_policies.settings END,
             authority = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.authority ELSE loyal_yield.route_policies.authority END,
@@ -2482,12 +3062,46 @@ async fn upsert_policy(
             universe_preset = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.universe_preset ELSE loyal_yield.route_policies.universe_preset END,
             risk_profile = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.risk_profile ELSE loyal_yield.route_policies.risk_profile END,
             swap_lanes = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.swap_lanes ELSE loyal_yield.route_policies.swap_lanes END,
-            active = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN TRUE ELSE loyal_yield.route_policies.active END,
-            last_seen_at = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN now() ELSE loyal_yield.route_policies.last_seen_at END,
+            cluster = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.cluster ELSE loyal_yield.route_policies.cluster END,
+            source_commitment = CASE
+                WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot
+                  OR (EXCLUDED.last_seen_slot = loyal_yield.route_policies.last_seen_slot
+                      AND EXCLUDED.last_seen_signature = loyal_yield.route_policies.last_seen_signature
+                      AND EXCLUDED.source_commitment = 'finalized')
+                THEN EXCLUDED.source_commitment
+                ELSE loyal_yield.route_policies.source_commitment
+            END,
+            finalized_eligible = CASE
+                WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot
+                  OR (EXCLUDED.last_seen_slot = loyal_yield.route_policies.last_seen_slot
+                      AND EXCLUDED.last_seen_signature = loyal_yield.route_policies.last_seen_signature
+                      AND EXCLUDED.source_commitment = 'finalized')
+                THEN EXCLUDED.finalized_eligible
+                ELSE loyal_yield.route_policies.finalized_eligible
+            END,
+            active = CASE
+                WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot
+                  OR (EXCLUDED.last_seen_slot = loyal_yield.route_policies.last_seen_slot
+                      AND EXCLUDED.last_seen_signature = loyal_yield.route_policies.last_seen_signature
+                      AND EXCLUDED.source_commitment = 'finalized')
+                THEN TRUE
+                ELSE loyal_yield.route_policies.active
+            END,
+            last_seen_at = CASE
+                WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot
+                  OR (EXCLUDED.last_seen_slot = loyal_yield.route_policies.last_seen_slot
+                      AND EXCLUDED.last_seen_signature = loyal_yield.route_policies.last_seen_signature
+                      AND EXCLUDED.source_commitment = 'finalized')
+                THEN now()
+                ELSE loyal_yield.route_policies.last_seen_at
+            END,
             last_seen_slot = GREATEST(loyal_yield.route_policies.last_seen_slot, EXCLUDED.last_seen_slot),
             last_seen_signature = CASE WHEN EXCLUDED.last_seen_slot > loyal_yield.route_policies.last_seen_slot THEN EXCLUDED.last_seen_signature ELSE loyal_yield.route_policies.last_seen_signature END
         RETURNING
             id,
+            cluster,
+            source_commitment,
+            finalized_eligible,
             settings,
             authority,
             policy_seed,
@@ -2527,6 +3141,9 @@ async fn upsert_policy(
     .bind(&event.swap_lanes)
     .bind(slot)
     .bind(&event.signature)
+    .bind(&event.cluster)
+    .bind(&event.source_commitment)
+    .bind(event.source_commitment == "finalized")
     .fetch_one(conn)
     .await?;
 
@@ -3651,6 +4268,42 @@ mod tests {
         IDLE_DEPOSIT_MINT_USDG, IDLE_DEPOSIT_MINT_USDS, IDLE_DEPOSIT_MINT_USDT,
     };
 
+    fn valid_cross_mint_manifest() -> CrossMintSwapPolicyManifestInput {
+        CrossMintSwapPolicyManifestInput {
+            signature: "manifest-test-signature".to_owned(),
+            slot: 1,
+            cluster: "manifest-test-cluster".to_owned(),
+            source_commitment: "finalized".to_owned(),
+            mutation: "create".to_owned(),
+            settings: "manifest-test-settings".to_owned(),
+            authority: "manifest-test-authority".to_owned(),
+            policy_seed: Some(1),
+            policy_account: "manifest-test-policy".to_owned(),
+            vault_index: 0,
+            vault_pubkey: "manifest-test-vault".to_owned(),
+            delegated_signer: "manifest-test-signer".to_owned(),
+            source_shard: "token_2022".to_owned(),
+            max_slippage_bps: 50,
+            daily_source_mint_spending_cap: 1_000,
+            manifest_fingerprint: "manifest-test-fingerprint".to_owned(),
+        }
+    }
+
+    #[test]
+    fn generalized_manifest_requires_source_shard() {
+        let mut manifest = valid_cross_mint_manifest();
+        manifest.source_shard = "unknown".to_owned();
+        let error = validate_cross_mint_swap_policy_manifest_input(&manifest).unwrap_err();
+        assert!(error.to_string().contains("source shard"));
+    }
+
+    #[test]
+    fn generalized_manifest_rejects_zero_slippage() {
+        let mut manifest = valid_cross_mint_manifest();
+        manifest.max_slippage_bps = 0;
+        assert!(validate_cross_mint_swap_policy_manifest_input(&manifest).is_err());
+    }
+
     fn atomic_idle_state() -> (VaultId, ReconciledVaultState, Vec<CurrentIdleTokenBalance>) {
         let vault_id = VaultId(419);
         let observed_at = Utc::now();
@@ -4418,6 +5071,9 @@ fn required_decision_field<'a>(
 fn route_policy_from_row(row: RoutePolicyRow) -> RoutePolicy {
     RoutePolicy {
         id: PolicyId(row.id),
+        cluster: row.cluster,
+        source_commitment: row.source_commitment,
+        finalized_eligible: row.finalized_eligible,
         settings: row.settings,
         authority: row.authority,
         policy_seed: row.policy_seed,
@@ -4439,6 +5095,69 @@ fn route_policy_from_row(row: RoutePolicyRow) -> RoutePolicy {
         last_seen_slot: row.last_seen_slot,
         last_seen_signature: row.last_seen_signature,
     }
+}
+
+fn cross_mint_swap_policy_from_row(
+    row: CrossMintSwapPolicyRow,
+) -> Result<CrossMintSwapPolicy, OrchestratorError> {
+    let vault_index = row.vault_index.ok_or_else(|| {
+        OrchestratorError::StoreInvariant(
+            "active cross-mint policy row is missing its vault index".to_owned(),
+        )
+    })?;
+    let vault_pubkey = row.vault_pubkey.ok_or_else(|| {
+        OrchestratorError::StoreInvariant(
+            "active cross-mint policy row is missing its vault pubkey".to_owned(),
+        )
+    })?;
+    let delegated_signer = row.delegated_signer.ok_or_else(|| {
+        OrchestratorError::StoreInvariant(
+            "active cross-mint policy row is missing its delegated signer".to_owned(),
+        )
+    })?;
+    let source_shard = row.source_shard.ok_or_else(|| {
+        OrchestratorError::StoreInvariant(
+            "active cross-mint policy row is missing its source shard".to_owned(),
+        )
+    })?;
+    let max_slippage_bps = row.max_slippage_bps.ok_or_else(|| {
+        OrchestratorError::StoreInvariant(
+            "active cross-mint policy row is missing its slippage cap".to_owned(),
+        )
+    })?;
+    let daily_source_mint_spending_cap = row.daily_source_mint_spending_cap.ok_or_else(|| {
+        OrchestratorError::StoreInvariant(
+            "active cross-mint policy row is missing its spending cap".to_owned(),
+        )
+    })?;
+    let manifest_fingerprint = row.manifest_fingerprint.ok_or_else(|| {
+        OrchestratorError::StoreInvariant(
+            "active cross-mint policy row is missing its manifest fingerprint".to_owned(),
+        )
+    })?;
+    Ok(CrossMintSwapPolicy {
+        id: row.id,
+        cluster: row.cluster,
+        settings: row.settings,
+        authority: row.authority,
+        policy_seed: row.policy_seed,
+        policy_account: row.policy_account,
+        vault_index,
+        vault_pubkey,
+        delegated_signer,
+        source_shard,
+        max_slippage_bps,
+        daily_source_mint_spending_cap,
+        manifest_fingerprint,
+        active: row.active,
+        start_eligible: row.start_eligible,
+        last_mutation: row.last_mutation,
+        source_commitment: row.source_commitment,
+        first_seen_at: row.first_seen_at,
+        last_seen_at: row.last_seen_at,
+        last_seen_slot: row.last_seen_slot,
+        last_seen_signature: row.last_seen_signature,
+    })
 }
 
 fn managed_vault_from_row(row: ManagedVaultRow) -> ManagedVault {

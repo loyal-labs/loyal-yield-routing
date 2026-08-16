@@ -17,6 +17,7 @@ cargo build --release --locked \
   -p balance-sweep-autodeposit-trigger \
   -p kamino-reserve-monitor \
   -p loyal-fleet-worker \
+  -p loyal-squads-policy-monitor \
   -p loyal-timescale-migrations \
   -p loyal-yield-orchestrator \
   -p loyal-yield-realtime \
@@ -30,6 +31,7 @@ cargo build --release --locked \
   --bin fleet-route-confirmer \
   --bin kamino-reserve-monitor \
   --bin loyal-timescale-migrations \
+  --bin loyal-squads-policy-monitor \
   --bin loyal-yield-realtime \
   --bin route-lookup-table-alert-monitor \
   --bin route-lookup-table-cleanup \
@@ -62,6 +64,7 @@ stage_binary fleet-orchestration-verifier
 stage_binary fleet-route-confirmer
 stage_binary kamino-reserve-monitor
 stage_binary loyal-timescale-migrations
+stage_binary loyal-squads-policy-monitor
 stage_binary loyal-yield-realtime
 stage_binary route-lookup-table-alert-monitor
 stage_binary route-lookup-table-cleanup

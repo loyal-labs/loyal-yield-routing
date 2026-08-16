@@ -1,8 +1,9 @@
+use crate::jupiter::{JupiterV2Dialect, JUPITER_ALPHAQ_ROUTE_BYTES, JUPITER_ALPHAQ_ROUTE_OFFSET};
 use crate::squads::{
     SquadsAccountConstraint, SquadsAccountConstraintType, SquadsDataConstraint, SquadsDataOperator,
     SquadsDataValue, SquadsInstructionConstraint,
 };
-use crate::{ids::*, LoyalActionError, Result};
+use crate::{derive_associated_token_account, earn_stablecoins, ids::*, LoyalActionError, Result};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey,
@@ -156,6 +157,8 @@ pub(crate) fn jupiter_constraint(
     contract: JupiterSwapContract,
 ) -> SquadsInstructionConstraint {
     let allowed_mints = unique_pubkeys(allowed_mints);
+    let hardened_usdc_usdt =
+        allowed_mints.contains(&USDC_MINT) && allowed_mints.contains(&USDT_MINT);
     let account_constraints = vec![
         pubkey_constraint(0, vec![vault], None),
         spl_token_authority_constraint(1, vault),
@@ -165,19 +168,77 @@ pub(crate) fn jupiter_constraint(
         pubkey_constraint(5, vec![spl_token::id()], None),
     ];
 
+    let mut data_constraints = vec![
+        SquadsDataConstraint {
+            data_offset: 0,
+            data_value: SquadsDataValue::U8Slice(contract.exact_in_discriminator.to_vec()),
+            operator: SquadsDataOperator::Equals,
+        },
+        SquadsDataConstraint {
+            data_offset: JUPITER_SWAP_SLIPPAGE_BPS_OFFSET,
+            data_value: SquadsDataValue::U16Le(contract.max_slippage_bps),
+            operator: SquadsDataOperator::LessThanOrEqualTo,
+        },
+    ];
+    if hardened_usdc_usdt {
+        data_constraints.push(SquadsDataConstraint {
+            data_offset: JUPITER_ALPHAQ_ROUTE_OFFSET as u64,
+            data_value: SquadsDataValue::U8Slice(JUPITER_ALPHAQ_ROUTE_BYTES.to_vec()),
+            operator: SquadsDataOperator::Equals,
+        });
+    }
+
     SquadsInstructionConstraint {
         program_id: contract.program_id,
         account_constraints,
+        data_constraints,
+    }
+}
+
+/// One durable Jupiter capability over the canonical Earn stablecoin universe.
+///
+/// The policy binds the destination to one of the six canonical vault ATAs.
+/// The source mint allowlist is the policy's three spending limits: Squads
+/// tracks every writable token account owned by the vault and rejects any
+/// decrease whose mint has no active limit. The source token account itself is
+/// therefore intentionally not duplicated here. Jupiter remains responsible
+/// for validating its mint, token-program, event-authority, and internal
+/// program-account relationships, just as Kamino owns its protocol-internal
+/// reserve relationships.
+pub(crate) fn jupiter_cross_mint_constraint(
+    vault: Pubkey,
+    dialect: JupiterV2Dialect,
+    max_slippage_bps: u16,
+) -> SquadsInstructionConstraint {
+    let canonical_vault_atas = earn_stablecoins()
+        .iter()
+        .map(|stablecoin| {
+            derive_associated_token_account(vault, stablecoin.mint, stablecoin.token_program)
+        })
+        .collect::<Vec<_>>();
+    let layout = dialect.account_layout();
+
+    SquadsInstructionConstraint {
+        program_id: JUPITER_V6_PROGRAM_ID,
+        account_constraints: vec![
+            pubkey_constraint(layout.authority, vec![vault], None),
+            pubkey_constraint(layout.output_token_account, canonical_vault_atas, None),
+        ],
         data_constraints: vec![
             SquadsDataConstraint {
                 data_offset: 0,
-                data_value: SquadsDataValue::U8Slice(contract.exact_in_discriminator.to_vec()),
+                data_value: SquadsDataValue::U8Slice(dialect.discriminator().to_vec()),
                 operator: SquadsDataOperator::Equals,
             },
             SquadsDataConstraint {
-                data_offset: JUPITER_SWAP_SLIPPAGE_BPS_OFFSET,
-                data_value: SquadsDataValue::U16Le(contract.max_slippage_bps),
+                data_offset: dialect.slippage_bps_offset(),
+                data_value: SquadsDataValue::U16Le(max_slippage_bps),
                 operator: SquadsDataOperator::LessThanOrEqualTo,
+            },
+            SquadsDataConstraint {
+                data_offset: dialect.platform_fee_bps_offset(),
+                data_value: SquadsDataValue::U8(0),
+                operator: SquadsDataOperator::Equals,
             },
         ],
     }
@@ -2264,8 +2325,8 @@ mod tests {
     #[test]
     fn jupiter_route_constraint_anchors_program_mints_token_program_and_output() {
         let vault = Pubkey::new_unique();
-        let usdc = Pubkey::new_unique();
-        let pyusd = Pubkey::new_unique();
+        let usdc = USDC_MINT;
+        let pyusd = USDT_MINT;
         let constraint = jupiter_constraint(
             vault,
             vec![usdc, pyusd],
@@ -2310,6 +2371,12 @@ mod tests {
             JUPITER_SWAP_SLIPPAGE_BPS_OFFSET,
             JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
             SquadsDataOperator::LessThanOrEqualTo,
+        ));
+        assert!(has_u8_slice_data_constraint(
+            &constraint.data_constraints,
+            JUPITER_ALPHAQ_ROUTE_OFFSET as u64,
+            &JUPITER_ALPHAQ_ROUTE_BYTES,
+            SquadsDataOperator::Equals,
         ));
     }
 

@@ -213,6 +213,18 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0034_fleet_health_snapshot_projection.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 35,
+        name: "durable_cross_mint_movements",
+        sql: include_str!("../../../loyal-yield-store/migrations/0035_durable_cross_mint_movements.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 36,
+        name: "cross_mint_swap_policies",
+        sql: include_str!("../../../loyal-yield-store/migrations/0036_cross_mint_swap_policies.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

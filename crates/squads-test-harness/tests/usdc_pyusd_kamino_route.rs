@@ -4,9 +4,9 @@ use common::{load_jupiter_usdc_pyusd_fixture, parse_fixture_amount};
 use loyal_actions::{
     create_all_in_one_market_mint_yield_route_action, create_preset_all_in_one_yield_route_action,
     create_swap_yield_route_action, create_three_step_yield_route_actions, KaminoStableRiskProfile,
-    SwapLane, YieldRouteActionSeeds, YieldRouteUniversePreset, KAMINO_ALTCOINS_MARKET,
-    KAMINO_BITCOIN_MARKET, KAMINO_HUMA_MARKET, KAMINO_JLP_MARKET, KAMINO_SOLSTICE_MARKET,
-    KAMINO_SUPERSTATE_OPENING_BELL_MARKET, KAMINO_XSTOCKS_MARKET,
+    SwapLane, YieldRouteActionSeeds, YieldRouteActionSetup, YieldRouteUniversePreset,
+    KAMINO_ALTCOINS_MARKET, KAMINO_BITCOIN_MARKET, KAMINO_HUMA_MARKET, KAMINO_JLP_MARKET,
+    KAMINO_SOLSTICE_MARKET, KAMINO_SUPERSTATE_OPENING_BELL_MARKET, KAMINO_XSTOCKS_MARKET,
     YIELD_ROUTE_STANDALONE_ACTION_SEED,
 };
 use solana_sdk::{
@@ -29,8 +29,9 @@ use squads_test_harness::{
     seed_mock_jupiter_spl_accounts, seed_mock_jupiter_stable_reserve_spl_accounts,
     seed_mock_kamino_reserve_spl_accounts, seed_mock_kamino_reserve_spl_accounts_with_mint,
     seed_spl_token_account, try_send_instructions, try_send_instructions_with_heap_frame,
-    yield_route_universe_from_mock_reserves, HubRouteExecution, HubSwapExecution,
-    JupiterRouteExecution, JupiterSwapExecution, MockJupiterStableReserveTokenAccount, MockProgram,
+    yield_route_universe_from_mock_reserves, FundedSquadsTestContext, HubRouteExecution,
+    HubSwapExecution, JupiterRouteExecution, JupiterSwapExecution,
+    MockJupiterStableReserveTokenAccount, MockKaminoReserveTokenAccounts, MockProgram,
     RouteActionExt, JUPITER_V6_PROGRAM_ID, KAMINO_MAIN_MARKET, KAMINO_MAIN_PYUSD_RESERVE,
     KAMINO_MAIN_USDC_RESERVE, KAMINO_PRIME_MARKET, KAMINO_PRIME_USDC_RESERVE, LAMPORTS_PER_SOL,
     MOCK_JUPITER_SOL_TO_USDC, PYUSD_DECIMALS, PYUSD_MINT, SQUADS_EXTENDED_HEAP_FRAME_BYTES,
@@ -39,6 +40,405 @@ use squads_test_harness::{
 
 const PACKET_DATA_SIZE: usize = solana_sdk::packet::PACKET_DATA_SIZE;
 const MAX_POLICY_ACCOUNT_DATA_BYTES_WITHOUT_FALLBACK: usize = 10 * 1024;
+
+struct CrossMintSagaFixture {
+    context: FundedSquadsTestContext,
+    wallet_b: Keypair,
+    actions: YieldRouteActionSetup,
+    vault_usdc: Pubkey,
+    vault_pyusd: Pubkey,
+    source: MockKaminoReserveTokenAccounts,
+    target: MockKaminoReserveTokenAccounts,
+    fallback_target: MockKaminoReserveTokenAccounts,
+}
+
+impl CrossMintSagaFixture {
+    fn new(source_amount: u64, target_amount: u64, preexisting_target_amount: u64) -> Option<Self> {
+        let mut context = create_funded_squads_test_context_with_mock_programs(&[
+            MockProgram::Jupiter,
+            MockProgram::KaminoLend,
+        ])
+        .expect("create funded Squads test context")?;
+
+        let wallet_b = Keypair::new();
+        context
+            .svm
+            .airdrop(&wallet_b.pubkey(), LAMPORTS_PER_SOL / 10)
+            .expect("airdrop wallet B");
+
+        let vault_usdc = Keypair::new().pubkey();
+        let vault_pyusd = Keypair::new().pubkey();
+        let source = seed_mock_kamino_reserve_spl_accounts(
+            &mut context.svm,
+            KAMINO_MAIN_USDC_RESERVE,
+            KAMINO_MAIN_MARKET,
+            context.vault,
+            vault_usdc,
+            Keypair::new().pubkey(),
+            Keypair::new().pubkey(),
+        );
+        let target = seed_mock_kamino_reserve_spl_accounts_with_mint(
+            &mut context.svm,
+            KAMINO_MAIN_PYUSD_RESERVE,
+            KAMINO_MAIN_MARKET,
+            PYUSD_MINT,
+            PYUSD_DECIMALS,
+            context.vault,
+            vault_pyusd,
+            Keypair::new().pubkey(),
+            Keypair::new().pubkey(),
+        );
+        let fallback_target = seed_mock_kamino_reserve_spl_accounts_with_mint(
+            &mut context.svm,
+            Keypair::new().pubkey(),
+            KAMINO_MAIN_MARKET,
+            PYUSD_MINT,
+            PYUSD_DECIMALS,
+            context.vault,
+            vault_pyusd,
+            Keypair::new().pubkey(),
+            Keypair::new().pubkey(),
+        );
+
+        seed_mock_jupiter_spl_accounts(&mut context.svm, source_amount, target_amount);
+        seed_mock_jupiter_stable_reserve_spl_accounts(
+            &mut context.svm,
+            &[
+                MockJupiterStableReserveTokenAccount {
+                    mint: USDC_MINT,
+                    reserve: mock_jupiter_stable_reserve_token_account(USDC_MINT),
+                },
+                MockJupiterStableReserveTokenAccount {
+                    mint: PYUSD_MINT,
+                    reserve: mock_jupiter_stable_reserve_token_account(PYUSD_MINT),
+                },
+            ],
+            source_amount.max(target_amount),
+        );
+        seed_spl_token_account(
+            &mut context.svm,
+            vault_usdc,
+            USDC_MINT,
+            context.vault,
+            source_amount,
+        );
+        seed_spl_token_account(
+            &mut context.svm,
+            vault_pyusd,
+            PYUSD_MINT,
+            context.vault,
+            preexisting_target_amount,
+        );
+
+        let actions = create_three_step_yield_route_actions(
+            loyal_action_context(&context, wallet_b.pubkey()),
+            yield_route_universe_from_mock_reserves(
+                vec![USDC_MINT, PYUSD_MINT],
+                vec![source, target, fallback_target],
+            ),
+            vec![mock_jupiter_swap_lane(true)],
+            YieldRouteActionSeeds::default(),
+        )
+        .expect("build three-step route actions");
+        try_send_instructions(
+            &mut context.svm,
+            &actions.instructions,
+            &context.wallet,
+            &[],
+        )
+        .expect("wallet A creates separate withdraw, swap, and deposit policies");
+
+        let (deposit_instructions, deposit_accounts) = mock_kamino_reserve_transaction(
+            context.vault,
+            source,
+            mock_kamino_deposit_reserve_liquidity_data(source_amount),
+        );
+        let initial_deposit = execute_squads_sync_transaction_instruction(
+            context.pool.settings,
+            context.wallet_pubkey(),
+            context.vault_index,
+            deposit_instructions,
+            deposit_accounts,
+        );
+        try_send_instructions(&mut context.svm, &[initial_deposit], &context.wallet, &[])
+            .expect("wallet A funds the source reserve");
+
+        assert_eq!(get_spl_token_amount(&context.svm, vault_usdc), 0);
+        assert_eq!(
+            get_spl_token_amount(&context.svm, source.reserve_collateral_supply),
+            source_amount
+        );
+        assert_eq!(
+            get_spl_token_amount(&context.svm, vault_pyusd),
+            preexisting_target_amount
+        );
+
+        Some(Self {
+            context,
+            wallet_b,
+            actions,
+            vault_usdc,
+            vault_pyusd,
+            source,
+            target,
+            fallback_target,
+        })
+    }
+
+    fn withdraw_source(&mut self, amount: u64) {
+        let (instructions, accounts) = mock_kamino_reserve_transaction(
+            self.context.vault,
+            self.source,
+            mock_kamino_withdraw_reserve_liquidity_data(amount),
+        );
+        let instruction = self.actions.withdraw().expect("route has withdraw").build(
+            self.wallet_b.pubkey(),
+            self.context.vault_index,
+            instructions,
+            accounts,
+        );
+        try_send_instructions(&mut self.context.svm, &[instruction], &self.wallet_b, &[])
+            .expect("withdraw commits as its own LiteSVM transaction");
+    }
+
+    fn swap(&mut self, in_amount: u64, out_amount: u64) -> Result<(), String> {
+        let instruction = self
+            .actions
+            .jupiter()
+            .expect("route has Jupiter swap")
+            .build(JupiterSwapExecution {
+                signer: self.wallet_b.pubkey(),
+                vault_index: self.context.vault_index,
+                vault: self.context.vault,
+                vault_input: self.vault_usdc,
+                vault_output: self.vault_pyusd,
+                input_mint: USDC_MINT,
+                output_mint: PYUSD_MINT,
+                in_amount,
+                out_amount,
+            });
+        try_send_instructions(&mut self.context.svm, &[instruction], &self.wallet_b, &[])
+    }
+
+    fn deposit(
+        &mut self,
+        reserve: MockKaminoReserveTokenAccounts,
+        amount: u64,
+    ) -> Result<(), String> {
+        let (instructions, accounts) = mock_kamino_reserve_transaction(
+            self.context.vault,
+            reserve,
+            mock_kamino_deposit_reserve_liquidity_data(amount),
+        );
+        let instruction = self.actions.deposit().expect("route has deposit").build(
+            self.wallet_b.pubkey(),
+            self.context.vault_index,
+            instructions,
+            accounts,
+        );
+        try_send_instructions(&mut self.context.svm, &[instruction], &self.wallet_b, &[])
+    }
+}
+
+#[test]
+fn cross_mint_saga_executes_three_reconciled_transactions() {
+    let planned_source_amount = 1_050_000;
+    let source_amount = 1_000_000;
+    let accepted_quote_amount = 998_000;
+    let realized_swap_amount = 997_500;
+    let preexisting_source_amount = 77_777;
+    let preexisting_target_amount = 123_456;
+    let Some(mut fixture) = CrossMintSagaFixture::new(
+        source_amount,
+        accepted_quote_amount,
+        preexisting_target_amount,
+    ) else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+    let vault_authority = fixture.context.vault;
+    seed_spl_token_account(
+        &mut fixture.context.svm,
+        fixture.vault_usdc,
+        USDC_MINT,
+        vault_authority,
+        preexisting_source_amount,
+    );
+
+    let source_before_withdraw = get_spl_token_amount(&fixture.context.svm, fixture.vault_usdc);
+    fixture.withdraw_source(source_amount);
+    let source_after_withdraw = get_spl_token_amount(&fixture.context.svm, fixture.vault_usdc);
+    let withdrawn_amount = source_after_withdraw
+        .checked_sub(source_before_withdraw)
+        .expect("withdraw credits source idle balance");
+    assert_eq!(withdrawn_amount, source_amount);
+    assert_ne!(
+        withdrawn_amount, planned_source_amount,
+        "the test must discriminate finalized W from the prior plan"
+    );
+
+    let target_before_swap = get_spl_token_amount(&fixture.context.svm, fixture.vault_pyusd);
+    fixture
+        .swap(withdrawn_amount, realized_swap_amount)
+        .expect("swap commits as its own LiteSVM transaction");
+    let target_after_swap = get_spl_token_amount(&fixture.context.svm, fixture.vault_pyusd);
+    let realized_target_amount = target_after_swap
+        .checked_sub(target_before_swap)
+        .expect("swap credits target idle balance");
+    assert_eq!(realized_target_amount, realized_swap_amount);
+    assert_ne!(
+        realized_target_amount, accepted_quote_amount,
+        "the test must discriminate finalized O from the accepted quote"
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, fixture.vault_usdc),
+        preexisting_source_amount,
+        "swap must debit only the movement-attributed withdrawal delta"
+    );
+
+    fixture
+        .deposit(fixture.target, realized_target_amount)
+        .expect("deposit commits as its own LiteSVM transaction");
+
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, fixture.vault_pyusd),
+        preexisting_target_amount,
+        "deposit must leave unrelated target tokens idle"
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, fixture.vault_usdc),
+        preexisting_source_amount,
+        "target deposit must not consume unrelated source tokens"
+    );
+    assert_eq!(
+        get_spl_token_amount(
+            &fixture.context.svm,
+            fixture.target.reserve_collateral_supply,
+        ),
+        realized_target_amount,
+        "deposit amount must come from the committed swap delta"
+    );
+}
+
+#[test]
+fn cross_mint_saga_failed_swap_preserves_withdraw_and_recovers_source() {
+    let source_amount = 1_000_000;
+    let quoted_target_amount = 997_500;
+    let preexisting_target_amount = 123_456;
+    let Some(mut fixture) = CrossMintSagaFixture::new(
+        source_amount,
+        quoted_target_amount,
+        preexisting_target_amount,
+    ) else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+
+    let source_before_withdraw = get_spl_token_amount(&fixture.context.svm, fixture.vault_usdc);
+    fixture.withdraw_source(source_amount);
+    let source_after_withdraw = get_spl_token_amount(&fixture.context.svm, fixture.vault_usdc);
+    let withdrawn_amount = source_after_withdraw - source_before_withdraw;
+
+    let failed_swap = fixture.swap(withdrawn_amount + 1, quoted_target_amount);
+    assert!(
+        failed_swap.is_err(),
+        "swap must fail when it tries to debit more than the committed withdraw produced"
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, fixture.vault_usdc),
+        withdrawn_amount,
+        "a later failed transaction cannot roll back the committed withdraw"
+    );
+    assert_eq!(
+        get_spl_token_amount(
+            &fixture.context.svm,
+            fixture.source.reserve_collateral_supply,
+        ),
+        0
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, fixture.vault_pyusd),
+        preexisting_target_amount
+    );
+
+    fixture
+        .deposit(fixture.source, withdrawn_amount)
+        .expect("source-mint recovery redeposits through the named deposit policy");
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, fixture.vault_usdc),
+        0
+    );
+    assert_eq!(
+        get_spl_token_amount(
+            &fixture.context.svm,
+            fixture.source.reserve_collateral_supply,
+        ),
+        source_amount
+    );
+}
+
+#[test]
+fn cross_mint_saga_deposit_failure_preserves_swap_and_uses_same_mint_fallback() {
+    let source_amount = 1_000_000;
+    let quoted_target_amount = 997_500;
+    let preexisting_target_amount = 123_456;
+    let Some(mut fixture) = CrossMintSagaFixture::new(
+        source_amount,
+        quoted_target_amount,
+        preexisting_target_amount,
+    ) else {
+        eprintln!("skipping real Squads policy test; set SQUADS_SMART_ACCOUNT_PROGRAM_SO");
+        return;
+    };
+
+    fixture.withdraw_source(source_amount);
+    let withdrawn_amount = get_spl_token_amount(&fixture.context.svm, fixture.vault_usdc);
+    let target_before_swap = get_spl_token_amount(&fixture.context.svm, fixture.vault_pyusd);
+    fixture
+        .swap(withdrawn_amount, quoted_target_amount)
+        .expect("swap commits as its own LiteSVM transaction");
+    let target_after_swap = get_spl_token_amount(&fixture.context.svm, fixture.vault_pyusd);
+    let realized_target_amount = target_after_swap - target_before_swap;
+
+    let mut invalid_target = fixture
+        .context
+        .svm
+        .get_account(&fixture.target.reserve)
+        .expect("primary target reserve exists");
+    invalid_target.data.clear();
+    fixture
+        .context
+        .svm
+        .set_account(fixture.target.reserve, invalid_target)
+        .expect("invalidate primary target reserve in the simulation");
+
+    let failed_deposit = fixture.deposit(fixture.target, realized_target_amount);
+    assert!(
+        failed_deposit.is_err(),
+        "deposit must fail after the primary target reserve becomes invalid"
+    );
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, fixture.vault_pyusd),
+        preexisting_target_amount + realized_target_amount,
+        "a later failed deposit cannot roll back the committed swap"
+    );
+
+    fixture
+        .deposit(fixture.fallback_target, realized_target_amount)
+        .expect("same-target-mint fallback deposit commits independently");
+    assert_eq!(
+        get_spl_token_amount(&fixture.context.svm, fixture.vault_pyusd),
+        preexisting_target_amount,
+        "fallback deposits only the movement-attributed swap delta"
+    );
+    assert_eq!(
+        get_spl_token_amount(
+            &fixture.context.svm,
+            fixture.fallback_target.reserve_collateral_supply,
+        ),
+        realized_target_amount
+    );
+}
 
 #[test]
 fn wallet_b_can_execute_bundled_kamino_yield_route_switches() {

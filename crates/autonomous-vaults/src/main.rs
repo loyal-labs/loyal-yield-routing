@@ -4565,6 +4565,8 @@ fn sync_routing_control_plane(
             slot: record
                 .finalized_slot
                 .context("finalized Kamino policy is missing its finalized slot")?,
+            cluster: "mainnet-beta".to_owned(),
+            source_commitment: "finalized".to_owned(),
             settings: smart.settings.clone(),
             authority: deployment.pubkey().to_string(),
             policy_seed: record.seed,

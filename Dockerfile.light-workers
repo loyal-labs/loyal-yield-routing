@@ -4,7 +4,6 @@ FROM oven/bun:1.2.17-debian AS bun-deps
 
 WORKDIR /app
 COPY package.json bun.lock ./
-COPY packages/loyal-actions/package.json packages/loyal-actions/package.json
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install --production --frozen-lockfile
 
@@ -24,11 +23,11 @@ WORKDIR /app
 COPY --from=bun-deps /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=bun-deps /app/package.json /app/bun.lock ./
 COPY --from=bun-deps /app/node_modules ./node_modules
-COPY packages/loyal-actions packages/loyal-actions
 COPY scripts/execute-autodeposit-policy.ts scripts/execute-autodeposit-policy.ts
 COPY --chmod=0755 build-artifacts/rust/balance-sweep-ata-projector /usr/local/bin/balance-sweep-ata-projector
 COPY --chmod=0755 build-artifacts/rust/balance-sweep-autodeposit-trigger /usr/local/bin/balance-sweep-autodeposit-trigger
 COPY --chmod=0755 build-artifacts/rust/loyal-yield-realtime /usr/local/bin/loyal-yield-realtime
+COPY --chmod=0755 build-artifacts/rust/loyal-squads-policy-monitor /usr/local/bin/loyal-squads-policy-monitor
 COPY --chmod=0755 build-artifacts/rust/yield-migrations /usr/local/bin/yield-migrations
 COPY --chmod=0755 build-artifacts/rust/same-mint-reserve-swap /usr/local/bin/same-mint-reserve-swap
 COPY --chmod=0755 build-artifacts/rust/same-mint-yield-monitor /usr/local/bin/same-mint-yield-monitor

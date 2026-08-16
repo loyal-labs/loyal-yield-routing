@@ -142,6 +142,8 @@ impl fmt::Display for DecisionId {
 pub struct PolicyMatchInput {
     pub signature: String,
     pub slot: u64,
+    pub cluster: String,
+    pub source_commitment: String,
     pub settings: String,
     pub authority: String,
     pub policy_seed: u64,
@@ -157,6 +159,85 @@ pub struct PolicyMatchInput {
     pub universe_preset: Option<String>,
     pub risk_profile: Option<String>,
     pub swap_lanes: Value,
+}
+
+/// Finality-aware event describing one immutable generalized swap policy.
+///
+/// This is deliberately the detector's strict semantic output. The policy's
+/// canonical source/target universe and Jupiter dialects are on-chain policy
+/// semantics, not store rows. A single account observation is the catalog
+/// identity; planners authorize a pair against the observed source shard.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CrossMintSwapPolicyManifestInput {
+    pub signature: String,
+    pub slot: u64,
+    pub cluster: String,
+    pub source_commitment: String,
+    pub mutation: String,
+    pub settings: String,
+    pub authority: String,
+    pub policy_seed: Option<u64>,
+    pub policy_account: String,
+    pub vault_index: u8,
+    pub vault_pubkey: String,
+    pub delegated_signer: String,
+    pub source_shard: String,
+    pub max_slippage_bps: u16,
+    pub daily_source_mint_spending_cap: u64,
+    pub manifest_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CrossMintSwapPolicy {
+    pub id: i64,
+    pub cluster: String,
+    pub settings: String,
+    pub authority: String,
+    pub policy_seed: Option<i64>,
+    pub policy_account: String,
+    pub vault_index: i16,
+    pub vault_pubkey: String,
+    pub delegated_signer: String,
+    pub source_shard: String,
+    pub max_slippage_bps: i32,
+    pub daily_source_mint_spending_cap: i64,
+    pub manifest_fingerprint: String,
+    pub active: bool,
+    pub start_eligible: bool,
+    pub last_mutation: String,
+    pub source_commitment: String,
+    pub first_seen_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+    pub last_seen_slot: i64,
+    pub last_seen_signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CrossMintSwapPolicyLookup {
+    pub cluster: String,
+    pub settings: String,
+    pub vault_index: u8,
+    pub vault_pubkey: String,
+    pub minimum_slot: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PolicyRemovalInput {
+    pub signature: String,
+    pub slot: u64,
+    pub cluster: String,
+    pub source_commitment: String,
+    pub settings: String,
+    pub authority: String,
+    pub policy_account: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PolicyRemovalResult {
+    pub swap_policy_deactivated: bool,
+    pub route_policy_deactivated: bool,
+    pub managed_vault_deactivated: bool,
+    pub balance_sweep_target_deactivated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -346,6 +427,9 @@ pub struct BalanceSweepExecution {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RoutePolicy {
     pub id: PolicyId,
+    pub cluster: String,
+    pub source_commitment: String,
+    pub finalized_eligible: bool,
     pub settings: String,
     pub authority: String,
     pub policy_seed: i64,

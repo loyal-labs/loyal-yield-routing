@@ -20,6 +20,7 @@ loyal-actions = { path = "../loyal-actions" }
 loyal-observability = { path = "../loyal-observability" }
 loyal-yield-orchestrator = { path = "../loyal-yield-orchestrator" }
 loyal-yield-router = { path = "../loyal-yield-router" }
+loyal-yield-store = { path = "../loyal-yield-store" }
 num-bigint = "0.4"
 num-traits = "0.2"
 reqwest = { workspace = true, default-features = false, features = ["json", "rustls-tls"] }
@@ -30,7 +31,9 @@ solana-account-decoder-client-types = "2.3"
 solana-client.workspace = true
 solana-rpc-client = "2.3"
 solana-sdk.workspace = true
+solana-transaction-status-client-types = "2.3"
 spl-token.workspace = true
+spl-token-2022.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 

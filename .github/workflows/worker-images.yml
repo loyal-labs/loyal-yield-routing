@@ -16,7 +16,6 @@ on:
       - rust-toolchain.toml
       - .sqlx/**
       - crates/**
-      - packages/loyal-actions/**
       - scripts/build-rust-image-binaries.sh
       - scripts/execute-autodeposit-policy.ts
       - scripts/kamino-monitor-predeploy.sh

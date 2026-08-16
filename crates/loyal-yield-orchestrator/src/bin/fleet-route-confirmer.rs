@@ -21,12 +21,12 @@ use futures_util::StreamExt;
 use loyal_observability::{init_from_env, OperationalError};
 use loyal_yield_orchestrator::{
     fleet_orchestration::{
-        classify_authoritative_signature_status, fleet_worker_role_probe,
+        classify_authoritative_signature_status_for_commitment, fleet_worker_role_probe,
         schedule_authoritative_status_poll, AuthoritativeConfirmationDecision,
         AuthoritativePollUrgency, AuthoritativeSignatureStatus, ConfirmationPollTrigger,
         DurablePgWakeupEvent, DurablePgWakeupListener, FleetWorkerRole,
-        SignedRouteSubmissionAdvance, SignedRouteSubmissionLease, SignedRouteSubmissionRecord,
-        SignedRouteSubmissionState,
+        RequiredConfirmationCommitment, SignedRouteSubmissionAdvance, SignedRouteSubmissionLease,
+        SignedRouteSubmissionRecord, SignedRouteSubmissionState,
     },
     rpc_safety::{redacted_external_error, validate_rpc_endpoint, validate_rpc_genesis_hash},
     NeonSqlClient, NeonSqlConfig,
@@ -110,6 +110,7 @@ struct SignatureHintArm {
 #[derive(Debug)]
 struct AuthoritativeStatusRequest {
     signature: Signature,
+    required_commitment: RequiredConfirmationCommitment,
     response: oneshot::Sender<AuthoritativeStatusReply>,
 }
 
@@ -128,6 +129,13 @@ struct AuthoritativeStatusBatcher {
 enum SignatureObservation {
     Confirmed {
         slot: i64,
+    },
+    Finalized {
+        slot: i64,
+    },
+    AwaitingFinalization {
+        slot: i64,
+        error_detail: Option<String>,
     },
     Failed {
         slot: i64,
@@ -282,16 +290,27 @@ impl AuthoritativeStatusBatcher {
                                 let error_detail = status.err.as_ref().map(|error| {
                                     safe_detail(&format!("transaction_error:{error:?}"))
                                 });
-                                match classify_authoritative_signature_status(
+                                let satisfies_finalized_commitment =
+                                    status.satisfies_commitment(CommitmentConfig::finalized());
+                                match classify_authoritative_signature_status_for_commitment(
                                     AuthoritativeSignatureStatus {
                                         slot: Some(slot),
                                         satisfies_confirmed_commitment: status
                                             .satisfies_commitment(CommitmentConfig::confirmed()),
                                         transaction_error: status.err.is_some(),
                                     },
+                                    request.required_commitment,
+                                    satisfies_finalized_commitment,
                                 ) {
                                     AuthoritativeConfirmationDecision::Confirmed { slot } => {
-                                        Ok(SignatureObservation::Confirmed { slot })
+                                        Ok(match request.required_commitment {
+                                            RequiredConfirmationCommitment::Confirmed => {
+                                                SignatureObservation::Confirmed { slot }
+                                            }
+                                            RequiredConfirmationCommitment::Finalized => {
+                                                SignatureObservation::Finalized { slot }
+                                            }
+                                        })
                                     }
                                     AuthoritativeConfirmationDecision::Failed { .. } => {
                                         Ok(SignatureObservation::Failed {
@@ -302,12 +321,23 @@ impl AuthoritativeStatusBatcher {
                                         })
                                     }
                                     AuthoritativeConfirmationDecision::Pending => {
-                                        Ok(SignatureObservation::Seen {
-                                            slot,
-                                            error_detail: error_detail.map(|detail| {
-                                                safe_detail(&format!("unconfirmed_{detail}"))
-                                            }),
-                                        })
+                                        if request.required_commitment
+                                            == RequiredConfirmationCommitment::Finalized
+                                            && status
+                                                .satisfies_commitment(CommitmentConfig::confirmed())
+                                        {
+                                            Ok(SignatureObservation::AwaitingFinalization {
+                                                slot,
+                                                error_detail,
+                                            })
+                                        } else {
+                                            Ok(SignatureObservation::Seen {
+                                                slot,
+                                                error_detail: error_detail.map(|detail| {
+                                                    safe_detail(&format!("unconfirmed_{detail}"))
+                                                }),
+                                            })
+                                        }
                                     }
                                     AuthoritativeConfirmationDecision::InvalidSlot => {
                                         Err("invalid_authoritative_subscription_hint_slot"
@@ -327,11 +357,16 @@ impl AuthoritativeStatusBatcher {
         Self { requests }
     }
 
-    async fn observe(&self, signature: Signature) -> Result<AuthoritativeStatusReply, String> {
+    async fn observe(
+        &self,
+        signature: Signature,
+        required_commitment: RequiredConfirmationCommitment,
+    ) -> Result<AuthoritativeStatusReply, String> {
         let (response, receiver) = oneshot::channel();
         self.requests
             .send(AuthoritativeStatusRequest {
                 signature,
+                required_commitment,
                 response,
             })
             .await
@@ -400,7 +435,11 @@ impl SignatureHintPool {
         }
     }
 
-    async fn arm(&self, signature: Signature) -> Option<SignatureHintArm> {
+    async fn arm(
+        &self,
+        signature: Signature,
+        required_commitment: RequiredConfirmationCommitment,
+    ) -> Option<SignatureHintArm> {
         let permit = Arc::clone(&self.permits).try_acquire_owned().ok()?;
         let client = self.ensure_connected().await.ok()?;
         let (ready_sender, ready_receiver) = oneshot::channel();
@@ -411,7 +450,10 @@ impl SignatureHintPool {
         let task = tokio::spawn(async move {
             let _permit = permit;
             let config = RpcSignatureSubscribeConfig {
-                commitment: Some(CommitmentConfig::confirmed()),
+                commitment: Some(match required_commitment {
+                    RequiredConfirmationCommitment::Confirmed => CommitmentConfig::confirmed(),
+                    RequiredConfirmationCommitment::Finalized => CommitmentConfig::finalized(),
+                }),
                 enable_received_notification: Some(false),
             };
             let subscription = client.signature_subscribe(&signature, Some(config)).await;
@@ -762,7 +804,16 @@ async fn run_poll(
     let mut status_leases = Vec::new();
     let mut signatures = Vec::new();
     for lease in leases.into_iter().chain(recovery_leases) {
-        if lease.submission.state == SignedRouteSubmissionState::Confirmed {
+        let required_commitment = match required_confirmation_commitment(&lease.submission) {
+            Ok(required_commitment) => required_commitment,
+            Err(detail) => {
+                work.push((lease, SignatureObservation::Invalid { detail }));
+                continue;
+            }
+        };
+        if lease.submission.state == SignedRouteSubmissionState::Confirmed
+            && required_commitment == RequiredConfirmationCommitment::Confirmed
+        {
             work.push((lease, SignatureObservation::AlreadyConfirmed));
             continue;
         }
@@ -811,16 +862,38 @@ async fn run_poll(
                                 .err
                                 .as_ref()
                                 .map(|error| safe_detail(&format!("transaction_error:{error:?}")));
-                            match classify_authoritative_signature_status(
+                            let required_commitment =
+                                match required_confirmation_commitment(&lease.submission) {
+                                    Ok(required_commitment) => required_commitment,
+                                    Err(detail) => {
+                                        work.push((
+                                            lease,
+                                            SignatureObservation::Invalid { detail },
+                                        ));
+                                        continue;
+                                    }
+                                };
+                            let satisfies_finalized_commitment =
+                                status.satisfies_commitment(CommitmentConfig::finalized());
+                            match classify_authoritative_signature_status_for_commitment(
                                 AuthoritativeSignatureStatus {
                                     slot: Some(slot),
                                     satisfies_confirmed_commitment: status
                                         .satisfies_commitment(CommitmentConfig::confirmed()),
                                     transaction_error: status.err.is_some(),
                                 },
+                                required_commitment,
+                                satisfies_finalized_commitment,
                             ) {
                                 AuthoritativeConfirmationDecision::Confirmed { slot } => {
-                                    SignatureObservation::Confirmed { slot }
+                                    match required_commitment {
+                                        RequiredConfirmationCommitment::Confirmed => {
+                                            SignatureObservation::Confirmed { slot }
+                                        }
+                                        RequiredConfirmationCommitment::Finalized => {
+                                            SignatureObservation::Finalized { slot }
+                                        }
+                                    }
                                 }
                                 AuthoritativeConfirmationDecision::Failed { .. } => {
                                     SignatureObservation::Failed {
@@ -831,11 +904,22 @@ async fn run_poll(
                                     }
                                 }
                                 AuthoritativeConfirmationDecision::Pending => {
-                                    SignatureObservation::Seen {
-                                        slot,
-                                        error_detail: error_detail.map(|detail| {
-                                            safe_detail(&format!("unconfirmed_{detail}"))
-                                        }),
+                                    if required_commitment
+                                        == RequiredConfirmationCommitment::Finalized
+                                        && status
+                                            .satisfies_commitment(CommitmentConfig::confirmed())
+                                    {
+                                        SignatureObservation::AwaitingFinalization {
+                                            slot,
+                                            error_detail,
+                                        }
+                                    } else {
+                                        SignatureObservation::Seen {
+                                            slot,
+                                            error_detail: error_detail.map(|detail| {
+                                                safe_detail(&format!("unconfirmed_{detail}"))
+                                            }),
+                                        }
                                     }
                                 }
                                 AuthoritativeConfirmationDecision::InvalidSlot => {
@@ -1325,6 +1409,49 @@ async fn process_submission(
                 ..ItemOutcome::default()
             })
         }
+        SignatureObservation::Finalized { slot } => {
+            advance_finalized_submission_to_reconciliation(neon, &lease, slot, checked_at).await?;
+            Ok(ItemOutcome {
+                status_seen: 1,
+                confirmed: 1,
+                reconciliation_pending: 1,
+                ..ItemOutcome::default()
+            })
+        }
+        SignatureObservation::AwaitingFinalization {
+            slot,
+            error_detail: _,
+        } => {
+            ensure_decision_confirming(neon, &lease.submission, Some(slot)).await?;
+            if lease.submission.state != SignedRouteSubmissionState::Confirmed {
+                neon.advance_signed_route_submission(
+                    &lease,
+                    SignedRouteSubmissionAdvance::Confirmed {
+                        checked_at,
+                        confirmed_slot: slot,
+                    },
+                )
+                .await?;
+            }
+            // Confirmed evidence is still forkable for a cross-leg movement.
+            // Persist it, then release this confirmation lease so another
+            // durable poll can observe finality promptly without rebroadcasting
+            // or waiting for the lease TTL.
+            neon.advance_signed_route_submission(
+                &lease,
+                SignedRouteSubmissionAdvance::AwaitingFinalization {
+                    checked_at,
+                    observed_slot: slot,
+                    next_poll_at,
+                },
+            )
+            .await?;
+            Ok(ItemOutcome {
+                status_seen: 1,
+                deferred: 1,
+                ..ItemOutcome::default()
+            })
+        }
         SignatureObservation::Failed { slot, detail } => {
             neon.advance_signed_route_submission(
                 &lease,
@@ -1450,7 +1577,9 @@ async fn process_submission(
             };
             let signature = Signature::from_str(&lease.submission.transaction_signature)
                 .map_err(|_| "persisted route signature became invalid after batch validation")?;
-            let mut hint_arm = signature_hints.arm(signature).await;
+            let required_commitment = required_confirmation_commitment(&lease.submission)
+                .map_err(|detail| format!("invalid persisted commitment: {detail}"))?;
+            let mut hint_arm = signature_hints.arm(signature, required_commitment).await;
             let subscription_was_unavailable = hint_arm.is_none();
             let permit = broadcast_limit.acquire().await?;
             if lease.submission.error_detail.as_deref() != Some("broadcast_intent_persisted")
@@ -1499,7 +1628,10 @@ async fn process_submission(
                     schedule_authoritative_status_poll(ConfirmationPollTrigger::SubscriptionHint);
                 debug_assert_eq!(directive.urgency, AuthoritativePollUrgency::Immediate);
                 outcome.authoritative_hint_polls = 1;
-                match authoritative_status_batcher.observe(signature).await {
+                match authoritative_status_batcher
+                    .observe(signature, required_commitment)
+                    .await
+                {
                     Ok(reply) => {
                         outcome.authoritative_hint_rpc_batches =
                             usize::from(reply.rpc_batch_leader);
@@ -1513,6 +1645,51 @@ async fn process_submission(
                                 outcome.status_seen += 1;
                                 outcome.confirmed = 1;
                                 outcome.reconciliation_pending = 1;
+                                return Ok(outcome);
+                            }
+                            Ok(SignatureObservation::Finalized { slot }) => {
+                                advance_finalized_submission_to_reconciliation(
+                                    neon,
+                                    &lease,
+                                    slot,
+                                    Utc::now(),
+                                )
+                                .await?;
+                                outcome.status_seen += 1;
+                                outcome.confirmed = 1;
+                                outcome.reconciliation_pending = 1;
+                                return Ok(outcome);
+                            }
+                            Ok(SignatureObservation::AwaitingFinalization {
+                                slot,
+                                error_detail,
+                            }) => {
+                                ensure_decision_confirming(neon, &lease.submission, Some(slot))
+                                    .await?;
+                                if let Some(error_detail) = error_detail {
+                                    neon.advance_signed_route_submission(
+                                        &lease,
+                                        SignedRouteSubmissionAdvance::Deferred {
+                                            checked_at: Utc::now(),
+                                            next_poll_at,
+                                            error_detail: Some(safe_detail(&format!(
+                                                "awaiting_finalized_transaction_error:{error_detail}"
+                                            ))),
+                                        },
+                                    )
+                                    .await?;
+                                } else {
+                                    neon.advance_signed_route_submission(
+                                        &lease,
+                                        SignedRouteSubmissionAdvance::Confirmed {
+                                            checked_at: Utc::now(),
+                                            confirmed_slot: slot,
+                                        },
+                                    )
+                                    .await?;
+                                }
+                                outcome.status_seen += 1;
+                                outcome.deferred = 1;
                                 return Ok(outcome);
                             }
                             Ok(SignatureObservation::Failed { slot, detail }) => {
@@ -1581,6 +1758,53 @@ async fn process_submission(
             }
         }
     }
+}
+
+fn required_confirmation_commitment(
+    submission: &SignedRouteSubmissionRecord,
+) -> Result<RequiredConfirmationCommitment, String> {
+    RequiredConfirmationCommitment::from_persisted(&submission.required_commitment).map_err(|_| {
+        safe_detail(&format!(
+            "unsupported_required_commitment:{}",
+            submission.required_commitment
+        ))
+    })
+}
+
+async fn advance_finalized_submission_to_reconciliation(
+    neon: &NeonSqlClient,
+    lease: &SignedRouteSubmissionLease,
+    finalized_slot: i64,
+    checked_at: chrono::DateTime<Utc>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    if required_confirmation_commitment(&lease.submission)?
+        != RequiredConfirmationCommitment::Finalized
+    {
+        return Err("finalized observation attached to a confirmed-only submission".into());
+    }
+    ensure_decision_confirming(neon, &lease.submission, Some(finalized_slot)).await?;
+    neon.advance_signed_route_submission(
+        lease,
+        SignedRouteSubmissionAdvance::Confirmed {
+            checked_at,
+            confirmed_slot: finalized_slot,
+        },
+    )
+    .await?;
+    neon.advance_signed_route_submission(
+        lease,
+        SignedRouteSubmissionAdvance::Finalized {
+            checked_at,
+            finalized_slot,
+        },
+    )
+    .await?;
+    neon.advance_signed_route_submission(
+        lease,
+        SignedRouteSubmissionAdvance::ReconciliationPending,
+    )
+    .await?;
+    Ok(())
 }
 
 async fn ensure_decision_confirming(

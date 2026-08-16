@@ -627,7 +627,7 @@ fn validate_reservation_input(
     Ok(())
 }
 
-fn target_capacity_reservation_from_row(
+pub(crate) fn target_capacity_reservation_from_row(
     row: &sqlx::postgres::PgRow,
 ) -> Result<TargetCapacityReservationRecord, OrchestratorError> {
     Ok(TargetCapacityReservationRecord {

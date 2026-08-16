@@ -13,6 +13,8 @@
  * finalized-RPC stubs, and throwaway worker files.
  */
 
+export {};
+
 type CommandCheck = {
   name: string;
   command: string[];

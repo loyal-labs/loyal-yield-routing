@@ -5,13 +5,16 @@ use clap::ValueEnum;
 use futures_util::{future::BoxFuture, SinkExt, StreamExt};
 use loyal_actions::{
     decode_squads_policy_create_actions, detect_balance_sweep_policy_create,
-    detect_yield_route_policy_create, DetectedBalanceSweepPolicy, DetectedSwapLane,
-    DetectedYieldRouteMode, DetectedYieldRoutePolicy, KaminoStableRiskProfile,
+    detect_jupiter_cross_mint_policy_action, detect_squads_policy_remove,
+    detect_squads_policy_update_identity, detect_yield_route_policy_create,
+    generalized_cross_mint_manifest_fingerprint, DetectedBalanceSweepPolicy,
+    DetectedJupiterCrossMintPolicy, DetectedJupiterPolicyIdentity, DetectedPolicyRemoval,
+    DetectedSwapLane, DetectedYieldRouteMode, DetectedYieldRoutePolicy, KaminoStableRiskProfile,
     SquadsSettingsActionView, YieldRouteUniversePreset, SQUADS_SMART_ACCOUNT_PROGRAM_ID,
 };
 use loyal_yield_store::{
-    BalanceSweepExecutionInput, BalanceSweepPolicyMatchInput, OrchestratorConfig,
-    OrchestratorError, OrchestratorStore, PolicyMatchInput,
+    BalanceSweepExecutionInput, BalanceSweepPolicyMatchInput, CrossMintSwapPolicyManifestInput,
+    OrchestratorConfig, OrchestratorError, OrchestratorStore, PolicyMatchInput, PolicyRemovalInput,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -40,7 +43,9 @@ pub enum Cluster {
 impl fmt::Display for Cluster {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Mainnet => formatter.write_str("mainnet"),
+            // The CLI keeps the short `mainnet` spelling, while persisted
+            // policy evidence must join the orchestration cluster exactly.
+            Self::Mainnet => formatter.write_str("mainnet-beta"),
             Self::Devnet => formatter.write_str("devnet"),
         }
     }
@@ -60,6 +65,12 @@ impl fmt::Display for Commitment {
             Self::Confirmed => formatter.write_str("confirmed"),
             Self::Finalized => formatter.write_str("finalized"),
         }
+    }
+}
+
+impl Commitment {
+    const fn finalized_eligible(self) -> bool {
+        matches!(self, Self::Finalized)
     }
 }
 
@@ -216,6 +227,18 @@ impl PolicyMatchSink for PostgresPolicyMatchSink {
                         ))
                         .await?;
                 }
+                PolicyMonitorEvent::CrossMintSwapPolicyManifest(event) => {
+                    store
+                        .record_cross_mint_swap_policy_manifest(
+                            CrossMintSwapPolicyManifestInput::from(event),
+                        )
+                        .await?;
+                }
+                PolicyMonitorEvent::PolicyRemoval(event) => {
+                    store
+                        .record_policy_removal(PolicyRemovalInput::from(event))
+                        .await?;
+                }
             }
             Ok(())
         })
@@ -269,6 +292,61 @@ impl PolicyMatchSink for PostgresPolicyMatchSink {
 pub enum PolicyMonitorEvent {
     YieldRoute(PolicyMatchEvent),
     BalanceSweep(BalanceSweepPolicyEvent),
+    CrossMintSwapPolicyManifest(CrossMintSwapPolicyManifestEvent),
+    PolicyRemoval(PolicyRemovalEvent),
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyMutationKind {
+    Create,
+    Update,
+    Remove,
+}
+
+impl PolicyMutationKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Create => "create",
+            Self::Update => "update",
+            Self::Remove => "remove",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CrossMintSwapPolicyManifestEvent {
+    pub signature: String,
+    pub slot: u64,
+    pub cluster: Cluster,
+    pub source_commitment: String,
+    pub finalized_eligible: bool,
+    pub mutation: PolicyMutationKind,
+    pub settings: String,
+    pub authority: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_seed: Option<u64>,
+    pub policy_account: String,
+    pub vault_index: u8,
+    pub vault_pubkey: String,
+    pub delegated_signer: String,
+    pub source_shard: String,
+    pub manifest_fingerprint: String,
+    pub max_slippage_bps: u16,
+    pub daily_source_mint_spending_cap: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PolicyRemovalEvent {
+    pub signature: String,
+    pub slot: u64,
+    pub cluster: Cluster,
+    pub source_commitment: String,
+    pub finalized_eligible: bool,
+    pub mutation: PolicyMutationKind,
+    pub settings: String,
+    pub authority: String,
+    pub policy_account: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -276,6 +354,8 @@ pub struct PolicyMatchEvent {
     pub signature: String,
     pub slot: u64,
     pub cluster: Cluster,
+    pub source_commitment: String,
+    pub finalized_eligible: bool,
     pub settings: String,
     pub authority: String,
     pub policy_seed: u64,
@@ -461,13 +541,62 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
         let instructions = decode_squads_instructions(notification.transaction, notification.meta)?;
         let mut emitted = 0;
         for instruction in instructions {
+            if let Ok(Some(policy)) = detect_jupiter_cross_mint_policy_action(&instruction) {
+                self.sink
+                    .emit(PolicyMonitorEvent::CrossMintSwapPolicyManifest(
+                        CrossMintSwapPolicyManifestEvent::from_policy(
+                            &notification.signature,
+                            notification.slot,
+                            self.config.cluster,
+                            self.config.commitment,
+                            policy,
+                        ),
+                    ))
+                    .await?;
+                emitted += 1;
+                continue;
+            }
+            if let Ok(Some(removal)) = detect_squads_policy_remove(&instruction) {
+                self.sink
+                    .emit(PolicyMonitorEvent::PolicyRemoval(
+                        PolicyRemovalEvent::from_removal(
+                            &notification.signature,
+                            notification.slot,
+                            self.config.cluster,
+                            self.config.commitment,
+                            removal,
+                        ),
+                    ))
+                    .await?;
+                emitted += 1;
+                continue;
+            }
             let actions = match decode_squads_policy_create_actions(&instruction) {
                 Ok(actions) => actions,
                 Err(_) => continue,
             };
+            let mut recognized = 0;
             for action in actions {
-                emitted += self.process_detected_action(&notification, &action).await?;
+                recognized += self.process_detected_action(&notification, &action).await?;
             }
+            if recognized == 0 {
+                if let Ok(Some(update)) = detect_squads_policy_update_identity(&instruction) {
+                    self.sink
+                        .emit(PolicyMonitorEvent::PolicyRemoval(
+                            PolicyRemovalEvent::from_update_invalidation(
+                                &notification.signature,
+                                notification.slot,
+                                self.config.cluster,
+                                self.config.commitment,
+                                update,
+                            ),
+                        ))
+                        .await?;
+                    emitted += 1;
+                    continue;
+                }
+            }
+            emitted += recognized;
         }
         for execution in detect_balance_sweep_execution_events(
             &notification,
@@ -494,6 +623,7 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
                         &notification.signature,
                         notification.slot,
                         self.config.cluster,
+                        self.config.commitment,
                         policy,
                     ),
                 ))
@@ -517,17 +647,106 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
     }
 }
 
+impl CrossMintSwapPolicyManifestEvent {
+    fn from_policy(
+        signature: &str,
+        slot: u64,
+        cluster: Cluster,
+        commitment: Commitment,
+        policy: DetectedJupiterCrossMintPolicy,
+    ) -> Self {
+        let mutation = match policy.identity {
+            DetectedJupiterPolicyIdentity::Create { .. } => PolicyMutationKind::Create,
+            DetectedJupiterPolicyIdentity::Update { .. } => PolicyMutationKind::Update,
+        };
+        let manifest_fingerprint =
+            generalized_cross_mint_manifest_fingerprint(&policy.manifest_semantics());
+
+        Self {
+            signature: signature.to_owned(),
+            slot,
+            cluster,
+            source_commitment: commitment.to_string(),
+            finalized_eligible: commitment.finalized_eligible(),
+            mutation,
+            settings: policy.settings.to_string(),
+            authority: policy.authority.to_string(),
+            policy_seed: policy.identity.policy_seed(),
+            policy_account: policy.identity.policy_account().to_string(),
+            vault_index: policy.account_index,
+            vault_pubkey: policy.vault.to_string(),
+            delegated_signer: policy.delegated_signer.to_string(),
+            source_shard: match policy.source_shard {
+                loyal_actions::jupiter::JupiterCrossMintSourceShard::Classic => {
+                    "classic".to_owned()
+                }
+                loyal_actions::jupiter::JupiterCrossMintSourceShard::Token2022 => {
+                    "token_2022".to_owned()
+                }
+            },
+            manifest_fingerprint,
+            max_slippage_bps: policy.max_slippage_bps,
+            daily_source_mint_spending_cap: policy.daily_source_mint_spending_cap,
+        }
+    }
+}
+
+impl PolicyRemovalEvent {
+    fn from_removal(
+        signature: &str,
+        slot: u64,
+        cluster: Cluster,
+        commitment: Commitment,
+        removal: DetectedPolicyRemoval,
+    ) -> Self {
+        Self {
+            signature: signature.to_owned(),
+            slot,
+            cluster,
+            source_commitment: commitment.to_string(),
+            finalized_eligible: commitment.finalized_eligible(),
+            mutation: PolicyMutationKind::Remove,
+            settings: removal.settings.to_string(),
+            authority: removal.authority.to_string(),
+            policy_account: removal.policy_account.to_string(),
+        }
+    }
+
+    fn from_update_invalidation(
+        signature: &str,
+        slot: u64,
+        cluster: Cluster,
+        commitment: Commitment,
+        update: DetectedPolicyRemoval,
+    ) -> Self {
+        Self {
+            signature: signature.to_owned(),
+            slot,
+            cluster,
+            source_commitment: commitment.to_string(),
+            finalized_eligible: false,
+            mutation: PolicyMutationKind::Update,
+            settings: update.settings.to_string(),
+            authority: update.authority.to_string(),
+            policy_account: update.policy_account.to_string(),
+        }
+    }
+}
+
 impl PolicyMatchEvent {
     fn from_policy(
         signature: &str,
         slot: u64,
         cluster: Cluster,
+        commitment: Commitment,
         policy: DetectedYieldRoutePolicy,
     ) -> Self {
         Self {
             signature: signature.to_owned(),
             slot,
             cluster,
+            source_commitment: commitment.to_string(),
+            finalized_eligible: commitment.finalized_eligible(),
             settings: policy.settings.to_string(),
             authority: policy.authority.to_string(),
             policy_seed: policy.policy_seed,
@@ -587,6 +806,8 @@ impl From<PolicyMatchEvent> for PolicyMatchInput {
         Self {
             signature: event.signature,
             slot: event.slot,
+            cluster: event.cluster.to_string(),
+            source_commitment: event.source_commitment,
             settings: event.settings,
             authority: event.authority,
             policy_seed: event.policy_seed,
@@ -602,6 +823,43 @@ impl From<PolicyMatchEvent> for PolicyMatchInput {
             universe_preset: event.universe_preset,
             risk_profile: event.risk_profile,
             swap_lanes: json!(event.swap_lanes),
+        }
+    }
+}
+
+impl From<CrossMintSwapPolicyManifestEvent> for CrossMintSwapPolicyManifestInput {
+    fn from(event: CrossMintSwapPolicyManifestEvent) -> Self {
+        Self {
+            signature: event.signature,
+            slot: event.slot,
+            cluster: event.cluster.to_string(),
+            source_commitment: event.source_commitment,
+            mutation: event.mutation.as_str().to_owned(),
+            settings: event.settings,
+            authority: event.authority,
+            policy_seed: event.policy_seed,
+            policy_account: event.policy_account,
+            vault_index: event.vault_index,
+            vault_pubkey: event.vault_pubkey,
+            delegated_signer: event.delegated_signer,
+            source_shard: event.source_shard,
+            manifest_fingerprint: event.manifest_fingerprint,
+            max_slippage_bps: event.max_slippage_bps,
+            daily_source_mint_spending_cap: event.daily_source_mint_spending_cap,
+        }
+    }
+}
+
+impl From<PolicyRemovalEvent> for PolicyRemovalInput {
+    fn from(event: PolicyRemovalEvent) -> Self {
+        Self {
+            signature: event.signature,
+            slot: event.slot,
+            cluster: event.cluster.to_string(),
+            source_commitment: event.source_commitment,
+            settings: event.settings,
+            authority: event.authority,
+            policy_account: event.policy_account,
         }
     }
 }
@@ -672,7 +930,7 @@ fn pubkeys_to_strings(pubkeys: Vec<Pubkey>) -> Vec<String> {
 
 fn route_mode_name(value: DetectedYieldRouteMode) -> String {
     match value {
-        DetectedYieldRouteMode::SameMint => "same_mint",
+        DetectedYieldRouteMode::SameMint => "same_mint_kamino",
         DetectedYieldRouteMode::CrossMintJupiter => "cross_mint_jupiter",
         DetectedYieldRouteMode::CrossMintLoyalHub => "cross_mint_loyal_hub",
     }
@@ -766,8 +1024,14 @@ fn decode_squads_instructions(
         let accounts = compiled
             .accounts
             .iter()
-            .filter_map(|index| account_keys.get(*index as usize).copied())
-            .map(|pubkey| AccountMeta::new_readonly(pubkey, false))
+            .filter_map(|index| {
+                let index = *index as usize;
+                account_keys.get(index).copied().map(|pubkey| AccountMeta {
+                    pubkey,
+                    is_signer: transaction.message.is_signer(index),
+                    is_writable: transaction.message.is_maybe_writable(index, None),
+                })
+            })
             .collect();
         instructions.push(Instruction {
             program_id,
@@ -951,4 +1215,227 @@ fn transaction_account_keys(
     let mut account_keys = transaction.message.static_account_keys().to_vec();
     account_keys.extend(loaded_addresses(meta)?);
     Ok(account_keys)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use loyal_actions::jupiter::{JupiterCrossMintPolicySpec, JupiterCrossMintSourceShard};
+    use loyal_actions::{
+        create_jupiter_cross_mint_policy_action, derive_squads_vault as sdk_derive_squads_vault,
+        remove_policy_instruction, LoyalActionContext,
+    };
+    use solana_sdk::{
+        message::{Message as SolanaMessage, VersionedMessage},
+        signature::Signature,
+    };
+
+    #[test]
+    fn mainnet_events_use_the_orchestration_cluster_name() {
+        assert_eq!(Cluster::Mainnet.to_string(), "mainnet-beta");
+        assert_eq!(Cluster::Devnet.to_string(), "devnet");
+    }
+
+    #[derive(Default)]
+    struct RecordingSink {
+        events: Vec<PolicyMonitorEvent>,
+        executions: Vec<BalanceSweepExecutionEvent>,
+    }
+
+    impl PolicyMatchSink for RecordingSink {
+        fn emit(&mut self, event: PolicyMonitorEvent) -> BoxFuture<'_, Result<(), MonitorError>> {
+            self.events.push(event);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn emit_execution(
+            &mut self,
+            event: BalanceSweepExecutionEvent,
+        ) -> BoxFuture<'_, Result<(), MonitorError>> {
+            self.executions.push(event);
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn action_context() -> LoyalActionContext {
+        let settings = Pubkey::new_unique();
+        let account_index = 7;
+        LoyalActionContext {
+            settings,
+            authority: Pubkey::new_unique(),
+            delegated_signer: Pubkey::new_unique(),
+            account_index,
+            vault: sdk_derive_squads_vault(&settings, account_index).0,
+        }
+    }
+
+    fn monitor(commitment: Commitment) -> PolicyMonitor<RecordingSink> {
+        PolicyMonitor::new(
+            MonitorConfig::new(
+                Cluster::Mainnet,
+                commitment,
+                Some("ws://test.invalid".to_owned()),
+                None,
+            )
+            .expect("test monitor config"),
+            RecordingSink::default(),
+        )
+    }
+
+    fn notification(instruction: Instruction, payer: Pubkey, signature: &str, slot: u64) -> Value {
+        let message = SolanaMessage::new(&[instruction], Some(&payer));
+        let transaction = VersionedTransaction {
+            signatures: vec![
+                Signature::default();
+                usize::from(message.header.num_required_signatures)
+            ],
+            message: VersionedMessage::Legacy(message),
+        };
+        let encoded = BASE64_STANDARD
+            .encode(bincode::serialize(&transaction).expect("serialize test settings transaction"));
+        json!({
+            "method": "transactionNotification",
+            "params": {
+                "result": {
+                    "signature": signature,
+                    "slot": slot,
+                    "transaction": {
+                        "transaction": [encoded, "base64"],
+                        "meta": { "err": null }
+                    }
+                }
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn generalized_swap_create_emits_one_atomic_manifest() {
+        let context = action_context();
+        let action = create_jupiter_cross_mint_policy_action(
+            context,
+            JupiterCrossMintPolicySpec {
+                source_shard: JupiterCrossMintSourceShard::Classic,
+                max_slippage_bps: 50,
+                daily_source_mint_spending_cap: 1_000_000_000,
+            },
+            51,
+        )
+        .expect("create generalized swap policy");
+        let detected = loyal_actions::detect_jupiter_cross_mint_policy_action(&action.instruction)
+            .unwrap()
+            .expect("detect generalized policy for canonical fingerprint");
+        let expected_fingerprint = loyal_actions::generalized_cross_mint_manifest_fingerprint(
+            &detected.manifest_semantics(),
+        );
+        let mut monitor = monitor(Commitment::Finalized);
+
+        let emitted = monitor
+            .process_notification(&notification(
+                action.instruction,
+                context.authority,
+                "generalized-swap-create",
+                111,
+            ))
+            .await
+            .expect("process generalized swap create");
+
+        assert_eq!(emitted, 1);
+        let [PolicyMonitorEvent::CrossMintSwapPolicyManifest(event)] =
+            monitor.sink.events.as_slice()
+        else {
+            panic!("generalized create must emit one policy-wide manifest");
+        };
+        assert_eq!(event.policy_account, action.account.to_string());
+        assert_eq!(event.source_shard, "classic");
+        assert_eq!(event.manifest_fingerprint.len(), 64);
+        assert_eq!(event.manifest_fingerprint, expected_fingerprint);
+        assert_eq!(event.max_slippage_bps, 50);
+        assert_eq!(event.daily_source_mint_spending_cap, 1_000_000_000);
+    }
+
+    #[tokio::test]
+    async fn removal_emits_family_neutral_policy_account_event() {
+        let context = action_context();
+        let policy_account = Pubkey::new_unique();
+        let instruction =
+            remove_policy_instruction(context.settings, context.authority, policy_account);
+        let mut monitor = monitor(Commitment::Finalized);
+
+        let emitted = monitor
+            .process_notification(&notification(
+                instruction,
+                context.authority,
+                "policy-remove",
+                103,
+            ))
+            .await
+            .expect("process policy removal");
+
+        assert_eq!(emitted, 1);
+        let [PolicyMonitorEvent::PolicyRemoval(event)] = monitor.sink.events.as_slice() else {
+            panic!("removal must emit exactly one family-neutral event");
+        };
+        assert_eq!(event.mutation, PolicyMutationKind::Remove);
+        assert_eq!(event.policy_account, policy_account.to_string());
+        assert_eq!(event.settings, context.settings.to_string());
+        assert_eq!(event.authority, context.authority.to_string());
+        assert!(event.finalized_eligible);
+
+        let serialized = serde_json::to_value(&monitor.sink.events[0])
+            .expect("serialize family-neutral removal");
+        assert_eq!(serialized["policy_kind"], "policy_removal");
+        assert!(serialized.get("policy_seed").is_none());
+        assert!(serialized.get("policy_family").is_none());
+    }
+
+    #[tokio::test]
+    async fn confirmed_observation_is_diagnostic_but_finalized_observation_is_eligible() {
+        let context = action_context();
+        let action = create_jupiter_cross_mint_policy_action(
+            context,
+            JupiterCrossMintPolicySpec {
+                source_shard: JupiterCrossMintSourceShard::Classic,
+                max_slippage_bps: 50,
+                daily_source_mint_spending_cap: 1_000_000_000,
+            },
+            42,
+        )
+        .expect("create generalized swap policy");
+        let mut confirmed = monitor(Commitment::Confirmed);
+        let mut finalized = monitor(Commitment::Finalized);
+
+        confirmed
+            .process_notification(&notification(
+                action.instruction.clone(),
+                context.authority,
+                "confirmed-create",
+                104,
+            ))
+            .await
+            .expect("process confirmed observation");
+        finalized
+            .process_notification(&notification(
+                action.instruction,
+                context.authority,
+                "finalized-create",
+                104,
+            ))
+            .await
+            .expect("process finalized observation");
+
+        let [PolicyMonitorEvent::CrossMintSwapPolicyManifest(confirmed_event)] =
+            confirmed.sink.events.as_slice()
+        else {
+            panic!("expected confirmed generalized policy observation");
+        };
+        let [PolicyMonitorEvent::CrossMintSwapPolicyManifest(finalized_event)] =
+            finalized.sink.events.as_slice()
+        else {
+            panic!("expected finalized generalized policy observation");
+        };
+        assert_eq!(confirmed_event.source_commitment, "confirmed");
+        assert!(!confirmed_event.finalized_eligible);
+        assert_eq!(finalized_event.source_commitment, "finalized");
+        assert!(finalized_event.finalized_eligible);
+    }
 }

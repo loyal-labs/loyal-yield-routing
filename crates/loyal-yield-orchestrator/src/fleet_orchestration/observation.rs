@@ -1,12 +1,16 @@
-use super::domain::OpportunityInput;
 pub use super::queue::MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS;
+use super::{
+    domain::OpportunityInput,
+    planner::{CandidateExecutionCosts, CandidateRouteKind},
+};
 use crate::{route_amount_evidence_from_metadata, NeonSqlClient, ACTIVE_DECISION_STATUSES};
 use chrono::{DateTime, Duration, Utc};
-use loyal_actions::{CASH_MINT, PYUSD_MINT, USDC_MINT, USDG_MINT, USDS_MINT, USDT_MINT};
+use loyal_actions::earn_stablecoins;
 use loyal_yield_router::timescale::{
     SupportedReserveCatalogRow, SupportedReserveMarketSnapshot,
     SupportedReserveMarketSnapshotQuery, TimescaleRouterClient, VerifiedSupportedReserveRow,
 };
+use loyal_yield_store::fleet_orchestration::CrossMintSwapPolicyBinding;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -80,16 +84,10 @@ pub struct StablecoinValuation {
 pub fn code_owned_stablecoin_valuations(
     enabled_mints: &[String],
 ) -> Result<Vec<StablecoinValuation>, FleetObservationError> {
-    let supported = [
-        CASH_MINT.to_string(),
-        USDG_MINT.to_string(),
-        PYUSD_MINT.to_string(),
-        USDC_MINT.to_string(),
-        USDT_MINT.to_string(),
-        USDS_MINT.to_string(),
-    ]
-    .into_iter()
-    .collect::<BTreeSet<_>>();
+    let supported = earn_stablecoins()
+        .iter()
+        .map(|stablecoin| stablecoin.mint.to_string())
+        .collect::<BTreeSet<_>>();
     let mut valuations = Vec::with_capacity(enabled_mints.len());
     for mint in enabled_mints.iter().cloned().collect::<BTreeSet<_>>() {
         if !supported.contains(mint.as_str()) {
@@ -124,6 +122,15 @@ pub struct FleetObservationConfig {
     pub expected_idle_deposit_service_millis: u64,
     pub estimated_reserve_move_cost_usd_micros: i64,
     pub estimated_idle_deposit_cost_usd_micros: i64,
+    /// Default-off rollout gate. Enabling it admits only exact, finalized,
+    /// directed swap capabilities observed independently from the base policy.
+    pub enable_cross_mint_jupiter: bool,
+    pub estimated_cross_mint_withdraw_cost_usd_micros: i64,
+    pub estimated_cross_mint_jupiter_swap_cost_usd_micros: i64,
+    pub estimated_cross_mint_deposit_cost_usd_micros: i64,
+    /// Protection ceiling for the fresh executable quote. It is intentionally
+    /// not treated as expected execution cost by the optimizer.
+    pub cross_mint_maximum_value_loss_bps: u16,
     /// Optional additive credits keyed by policy authority (the current tenant identity).
     pub tenant_fairness_credits: BTreeMap<String, i64>,
 }
@@ -145,6 +152,11 @@ impl Default for FleetObservationConfig {
             expected_idle_deposit_service_millis: 15_000,
             estimated_reserve_move_cost_usd_micros: 500_000,
             estimated_idle_deposit_cost_usd_micros: 500_000,
+            enable_cross_mint_jupiter: false,
+            estimated_cross_mint_withdraw_cost_usd_micros: 500_000,
+            estimated_cross_mint_jupiter_swap_cost_usd_micros: 500_000,
+            estimated_cross_mint_deposit_cost_usd_micros: 500_000,
+            cross_mint_maximum_value_loss_bps: 50,
             tenant_fairness_credits: BTreeMap::new(),
         }
     }
@@ -294,6 +306,14 @@ impl ImmutableMarketEpoch {
             .iter()
             .find(|coverage| coverage.complete && coverage.mint == mint)
             .and_then(|coverage| coverage.expires_at)
+    }
+
+    /// A cross-mint route is publishable only while both mint frontiers remain
+    /// valid. Same-mint callers naturally receive the existing mint lifetime.
+    pub fn route_expires_at(&self, source_mint: &str, target_mint: &str) -> Option<DateTime<Utc>> {
+        let source_expires_at = self.mint_expires_at(source_mint)?;
+        let target_expires_at = self.mint_expires_at(target_mint)?;
+        Some(source_expires_at.min(target_expires_at))
     }
 
     /// Compact diagnostic signature for the five-second market probe. Exact
@@ -640,6 +660,28 @@ pub enum ObservedSourceKind {
 #[serde(rename_all = "camelCase")]
 pub struct ObservedFleetOpportunity {
     pub economics: OpportunityInput,
+    pub route_kind: CandidateRouteKind,
+    pub source_liquidity_mint: String,
+    pub target_liquidity_mint: String,
+    pub estimated_execution_costs: CandidateExecutionCosts,
+    /// Present for cross-mint candidates so publication records exactly which
+    /// conservative loss ceiling was priced before the executable quote gate.
+    pub cross_mint_maximum_value_loss_bps: Option<u16>,
+    /// Exact stored Jupiter policy lane which admitted a cross-mint candidate.
+    /// Candidate planning never calls Jupiter; the executor must still obtain
+    /// and validate a fresh build before signing the swap leg.
+    pub jupiter_swap_lane: Option<CrossMintSwapPolicyBinding>,
+    /// Exact finalized Earn policy authorizing the cross-mint withdrawal.
+    /// Same-mint routes continue to use the active base-policy fields below.
+    pub source_earn_policy: Option<ObservedEarnPolicyEvidence>,
+    /// Exact finalized Earn policy authorizing the cross-mint deposit.
+    pub target_earn_policy: Option<ObservedEarnPolicyEvidence>,
+    /// Active base Earn policy retained for existing same-mint paths.
+    pub base_policy_account: String,
+    pub base_policy_delegated_signer: String,
+    pub base_policy_source_commitment: String,
+    pub base_policy_observed_slot: i64,
+    pub base_policy_observed_signature: String,
     pub source_kind: ObservedSourceKind,
     pub policy_id: i64,
     pub settings: String,
@@ -658,6 +700,24 @@ pub struct ObservedFleetOpportunity {
     pub source_observed_at: DateTime<Utc>,
     pub target_observed_at: DateTime<Utc>,
     pub target_observed_slot: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservedEarnPolicyEvidence {
+    pub settings: String,
+    pub authority: String,
+    pub policy_account: String,
+    pub vault_index: i16,
+    pub vault_pubkey: String,
+    pub delegated_signer: String,
+    pub threshold: i32,
+    pub stable_mints: Vec<String>,
+    pub kamino_markets: Vec<String>,
+    pub kamino_liquidity_mints: Vec<String>,
+    pub source_commitment: String,
+    pub observed_slot: i64,
+    pub observed_signature: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -899,10 +959,9 @@ async fn observe_fleet_opportunities_at_scope(
             Ok::<_, FleetObservationError>((
                 load_fleet_sources(
                     neon,
-                    &config.cluster,
                     delegated_signer,
+                    config,
                     &validated.enabled_mints,
-                    config.rebalance_cooldown_seconds,
                     captured_at,
                     vault_ids,
                 )
@@ -1003,6 +1062,11 @@ impl ValidatedConfig {
             || config.expected_idle_deposit_service_millis == 0
             || config.estimated_reserve_move_cost_usd_micros < 0
             || config.estimated_idle_deposit_cost_usd_micros < 0
+            || config.estimated_cross_mint_withdraw_cost_usd_micros < 0
+            || config.estimated_cross_mint_jupiter_swap_cost_usd_micros < 0
+            || config.estimated_cross_mint_deposit_cost_usd_micros < 0
+            || config.cross_mint_maximum_value_loss_bps == 0
+            || config.cross_mint_maximum_value_loss_bps > 1_000
         {
             return Err(FleetObservationError::InvalidConfig(
                 "invalid signer, mint universe, market bounds, cooldown, horizon, service time, or cost"
@@ -1678,10 +1742,20 @@ struct FleetSourceRow {
     vault_index: i16,
     vault_pubkey: String,
     policy_id: i64,
+    base_policy_account: String,
+    base_policy_delegated_signer: String,
+    base_policy_cluster: String,
+    base_policy_source_commitment: String,
+    base_policy_finalized_eligible: bool,
+    base_policy_observed_slot: i64,
+    base_policy_observed_signature: String,
     policy_authority: String,
     policy_markets: Vec<String>,
     policy_stable_mints: Vec<String>,
     policy_liquidity_mints: Vec<String>,
+    policy_route_modes: Vec<String>,
+    earn_policy_evidence: Vec<ObservedEarnPolicyEvidence>,
+    cross_mint_swap_policies: Vec<CrossMintSwapPolicyEvidence>,
     source_kind: String,
     source_reserve: Option<String>,
     liquidity_mint: String,
@@ -1691,6 +1765,26 @@ struct FleetSourceRow {
     observed_slot: i64,
     observed_at: DateTime<Utc>,
     planning_metadata: Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CrossMintSwapPolicyEvidence {
+    settings: String,
+    authority: String,
+    policy_account: String,
+    vault_index: i16,
+    vault_pubkey: String,
+    delegated_signer: String,
+    source_shard: String,
+    max_slippage_bps: i32,
+    daily_source_mint_spending_cap: i64,
+    manifest_fingerprint: String,
+    active: bool,
+    start_eligible: bool,
+    source_commitment: String,
+    last_seen_slot: i64,
+    last_seen_signature: String,
 }
 
 struct FleetSourceSet {
@@ -1751,10 +1845,9 @@ fn record_source_vault_rejection(
 
 async fn load_fleet_sources(
     neon: &NeonSqlClient,
-    cluster: &str,
     delegated_signer: &str,
+    config: &FleetObservationConfig,
     enabled_mints: &[String],
-    rebalance_cooldown_seconds: i64,
     captured_at: DateTime<Utc>,
     vault_ids: Option<&[i64]>,
 ) -> Result<FleetSourceSet, FleetObservationError> {
@@ -1768,12 +1861,12 @@ async fn load_fleet_sources(
             SELECT id, vault_id, source_reserve, target_reserve, liquidity_mint,
                    principal_usd_micros, opportunity_state, lease_kind
             FROM loyal_yield.rebalance_opportunities
-            WHERE cluster = $8
+            WHERE cluster = $7
               AND opportunity_state IN (
                 'waiting_alt', 'revalidate', 'ready', 'leased', 'decision_created'
             )
               AND (
-                  expires_at > $7::TIMESTAMPTZ
+                  expires_at > $6::TIMESTAMPTZ
                   OR opportunity_state IN ('leased', 'decision_created')
               )
         ),
@@ -1790,7 +1883,7 @@ async fn load_fleet_sources(
             FROM loyal_yield.target_capacity_reservations reservation
             JOIN loyal_yield.rebalance_opportunities opportunity
               ON opportunity.id = reservation.opportunity_id
-            WHERE reservation.cluster = $8
+            WHERE reservation.cluster = $7
               AND reservation.reservation_state <> 'released'
         ),
         committed_route_flows AS (
@@ -1821,8 +1914,8 @@ async fn load_fleet_sources(
                           'waiting_alt', 'revalidate', 'ready'
                       )
                       AND (
-                          $9::BIGINT[] IS NULL
-                          OR NOT (opportunity.vault_id = ANY($9::BIGINT[]))
+                          $8::BIGINT[] IS NULL
+                          OR NOT (opportunity.vault_id = ANY($8::BIGINT[]))
                       )
                   )
               )
@@ -1834,17 +1927,98 @@ async fn load_fleet_sources(
                 v.vault_index,
                 v.vault_pubkey,
                 p.id AS policy_id,
+                p.policy_account AS base_policy_account,
+                $1::TEXT AS base_policy_delegated_signer,
+                p.cluster AS base_policy_cluster,
+                p.source_commitment AS base_policy_source_commitment,
+                p.finalized_eligible AS base_policy_finalized_eligible,
+                p.last_seen_slot AS base_policy_observed_slot,
+                p.last_seen_signature AS base_policy_observed_signature,
                 p.authority AS policy_authority,
                 p.kamino_markets AS policy_markets,
                 p.stable_mints AS policy_stable_mints,
-                p.kamino_liquidity_mints AS policy_liquidity_mints
+                p.kamino_liquidity_mints AS policy_liquidity_mints,
+                p.route_modes AS policy_route_modes,
+                COALESCE((
+                    SELECT jsonb_agg(
+                        jsonb_build_object(
+                            'settings', earn_policy.settings,
+                            'authority', earn_policy.authority,
+                            'policyAccount', earn_policy.policy_account,
+                            'vaultIndex', earn_policy.vault_index,
+                            'vaultPubkey', earn_policy.vault_pubkey,
+                            'delegatedSigner', $1::TEXT,
+                            'threshold', earn_policy.threshold,
+                            'stableMints', earn_policy.stable_mints,
+                            'kaminoMarkets', earn_policy.kamino_markets,
+                            'kaminoLiquidityMints', earn_policy.kamino_liquidity_mints,
+                            'sourceCommitment', earn_policy.source_commitment,
+                            'observedSlot', earn_policy.last_seen_slot,
+                            'observedSignature', earn_policy.last_seen_signature
+                        )
+                        ORDER BY earn_policy.last_seen_slot DESC,
+                                 earn_policy.policy_account
+                    )
+                    FROM loyal_yield.route_policies earn_policy
+                    WHERE $9::BOOLEAN
+                      AND earn_policy.active = TRUE
+                      AND earn_policy.finalized_eligible = TRUE
+                      AND earn_policy.source_commitment = 'finalized'
+                      AND earn_policy.cluster = $7
+                      AND earn_policy.settings = v.settings
+                      AND earn_policy.authority = p.authority
+                      AND earn_policy.vault_index = v.vault_index
+                      AND earn_policy.vault_pubkey = v.vault_pubkey
+                      AND $1 = ANY(earn_policy.delegated_signers)
+                      AND $3 = ANY(earn_policy.route_modes)
+                ), '[]'::JSONB) AS earn_policy_evidence,
+                COALESCE((
+                    SELECT jsonb_agg(
+                        jsonb_build_object(
+                            'settings', swap_policy.settings,
+                            'authority', swap_policy.authority,
+                            'policyAccount', swap_policy.policy_account,
+                            'vaultIndex', swap_policy.vault_index,
+                            'vaultPubkey', swap_policy.vault_pubkey,
+                            'delegatedSigner', swap_policy.delegated_signer,
+                            'sourceShard', swap_policy.source_shard,
+                            'maxSlippageBps', swap_policy.max_slippage_bps,
+                            'dailySourceMintSpendingCap',
+                                swap_policy.daily_source_mint_spending_cap,
+                            'manifestFingerprint', swap_policy.manifest_fingerprint,
+                            'active', swap_policy.active,
+                            'startEligible', swap_policy.start_eligible,
+                            'sourceCommitment', swap_policy.source_commitment,
+                            'lastSeenSlot', swap_policy.last_seen_slot,
+                            'lastSeenSignature', swap_policy.last_seen_signature
+                        )
+                        ORDER BY swap_policy.source_shard,
+                                 swap_policy.last_seen_slot DESC,
+                                 swap_policy.policy_account
+                    )
+                    FROM loyal_yield.cross_mint_swap_policies swap_policy
+                    WHERE $9::BOOLEAN
+                      AND swap_policy.active = TRUE
+                      AND swap_policy.start_eligible = TRUE
+                      AND swap_policy.source_commitment = 'finalized'
+                      AND swap_policy.cluster = $7
+                      AND swap_policy.cluster = p.cluster
+                      AND swap_policy.settings = v.settings
+                      AND swap_policy.authority = p.authority
+                      AND swap_policy.vault_index = v.vault_index
+                      AND swap_policy.vault_pubkey = v.vault_pubkey
+                      AND swap_policy.delegated_signer = $1
+                ), '[]'::JSONB) AS cross_mint_swap_policies
             FROM loyal_yield.managed_vaults v
             JOIN loyal_yield.route_policies p ON p.id = v.active_policy_id
             WHERE v.active = TRUE
               AND p.active = TRUE
-              AND ($9::BIGINT[] IS NULL OR v.id = ANY($9::BIGINT[]))
+              AND ($8::BIGINT[] IS NULL OR v.id = ANY($8::BIGINT[]))
               AND $1 = ANY(p.delegated_signers)
               AND $3 = ANY(p.route_modes)
+              AND p.cluster = $7
+              AND p.source_commitment = 'finalized'
+              AND p.finalized_eligible = TRUE
               AND p.stable_mints && $2::TEXT[]
               AND p.kamino_liquidity_mints && $2::TEXT[]
               AND cardinality(p.kamino_markets) > 0
@@ -1861,7 +2035,7 @@ async fn load_fleet_sources(
             FROM active_opportunities opportunity
             JOIN eligible_vaults eligible
               ON eligible.vault_id = opportunity.vault_id
-            WHERE $9::BIGINT[] IS NULL
+            WHERE $8::BIGINT[] IS NULL
                OR opportunity.opportunity_state IN ('leased', 'decision_created')
             ORDER BY opportunity.vault_id,
                      CASE opportunity.opportunity_state
@@ -1930,7 +2104,7 @@ async fn load_fleet_sources(
                       WHERE recent.vault_id = eligible.vault_id
                         AND recent.status::TEXT = 'confirmed'
                         AND recent.source_reserve = position.reserve
-                        AND recent.updated_at >= $7::TIMESTAMPTZ - ($5::DOUBLE PRECISION * INTERVAL '1 second')
+                        AND recent.updated_at >= $6::TIMESTAMPTZ - ($5::DOUBLE PRECISION * INTERVAL '1 second')
                   )
               )
 
@@ -1963,7 +2137,7 @@ async fn load_fleet_sources(
                         AND recent.status::TEXT = 'confirmed'
                         AND recent.source_reserve IS NULL
                         AND recent.liquidity_mint = idle.mint
-                        AND recent.updated_at >= $7::TIMESTAMPTZ - ($5::DOUBLE PRECISION * INTERVAL '1 second')
+                        AND recent.updated_at >= $6::TIMESTAMPTZ - ($5::DOUBLE PRECISION * INTERVAL '1 second')
                   )
               )
         )
@@ -2003,10 +2177,20 @@ async fn load_fleet_sources(
                         'vaultIndex', source.vault_index,
                         'vaultPubkey', source.vault_pubkey,
                         'policyId', source.policy_id,
+                        'basePolicyAccount', source.base_policy_account,
+                        'basePolicyDelegatedSigner', source.base_policy_delegated_signer,
+                        'basePolicyCluster', source.base_policy_cluster,
+                        'basePolicySourceCommitment', source.base_policy_source_commitment,
+                        'basePolicyFinalizedEligible', source.base_policy_finalized_eligible,
+                        'basePolicyObservedSlot', source.base_policy_observed_slot,
+                        'basePolicyObservedSignature', source.base_policy_observed_signature,
                         'policyAuthority', source.policy_authority,
                         'policyMarkets', source.policy_markets,
                         'policyStableMints', source.policy_stable_mints,
                         'policyLiquidityMints', source.policy_liquidity_mints,
+                        'policyRouteModes', source.policy_route_modes,
+                        'earnPolicyEvidence', source.earn_policy_evidence,
+                        'crossMintSwapPolicies', source.cross_mint_swap_policies,
                         'sourceKind', source.source_kind,
                         'sourceReserve', source.source_reserve,
                         'liquidityMint', source.liquidity_mint,
@@ -2057,11 +2241,11 @@ async fn load_fleet_sources(
     .bind(enabled_mints)
     .bind(SAME_MINT_ROUTE_MODE)
     .bind(active_statuses)
-    .bind(rebalance_cooldown_seconds)
-    .bind(USDC_MINT.to_string())
+    .bind(config.rebalance_cooldown_seconds)
     .bind(captured_at)
-    .bind(cluster)
+    .bind(&config.cluster)
     .bind(vault_ids.map(|ids| ids.to_vec()))
+    .bind(config.enable_cross_mint_jupiter)
     .fetch_one(neon.pool())
     .await
     .map_err(FleetObservationError::NeonRead)?;
@@ -2130,10 +2314,20 @@ async fn load_fleet_sources_without_queue_schema(
                 v.vault_index,
                 v.vault_pubkey,
                 p.id AS policy_id,
+                p.policy_account AS base_policy_account,
+                $1::TEXT AS base_policy_delegated_signer,
+                'legacy-unverified'::TEXT AS base_policy_cluster,
+                'unknown'::TEXT AS base_policy_source_commitment,
+                FALSE AS base_policy_finalized_eligible,
+                p.last_seen_slot AS base_policy_observed_slot,
+                p.last_seen_signature AS base_policy_observed_signature,
                 p.authority AS policy_authority,
                 p.kamino_markets AS policy_markets,
                 p.stable_mints AS policy_stable_mints,
-                p.kamino_liquidity_mints AS policy_liquidity_mints
+                p.kamino_liquidity_mints AS policy_liquidity_mints,
+                p.route_modes AS policy_route_modes,
+                '[]'::JSONB AS earn_policy_evidence,
+                '[]'::JSONB AS cross_mint_swap_policies
             FROM loyal_yield.managed_vaults v
             JOIN loyal_yield.route_policies p ON p.id = v.active_policy_id
             WHERE v.active = TRUE
@@ -2190,7 +2384,7 @@ async fn load_fleet_sources_without_queue_schema(
                       WHERE recent.vault_id = eligible.vault_id
                         AND recent.status::TEXT = 'confirmed'
                         AND recent.source_reserve = position.reserve
-                        AND recent.updated_at >= $7::TIMESTAMPTZ - ($5::DOUBLE PRECISION * INTERVAL '1 second')
+                        AND recent.updated_at >= $6::TIMESTAMPTZ - ($5::DOUBLE PRECISION * INTERVAL '1 second')
                   )
               )
 
@@ -2223,7 +2417,7 @@ async fn load_fleet_sources_without_queue_schema(
                         AND recent.status::TEXT = 'confirmed'
                         AND recent.source_reserve IS NULL
                         AND recent.liquidity_mint = idle.mint
-                        AND recent.updated_at >= $7::TIMESTAMPTZ - ($5::DOUBLE PRECISION * INTERVAL '1 second')
+                        AND recent.updated_at >= $6::TIMESTAMPTZ - ($5::DOUBLE PRECISION * INTERVAL '1 second')
                   )
               )
         )
@@ -2262,10 +2456,20 @@ async fn load_fleet_sources_without_queue_schema(
                         'vaultIndex', source.vault_index,
                         'vaultPubkey', source.vault_pubkey,
                         'policyId', source.policy_id,
+                        'basePolicyAccount', source.base_policy_account,
+                        'basePolicyDelegatedSigner', source.base_policy_delegated_signer,
+                        'basePolicyCluster', source.base_policy_cluster,
+                        'basePolicySourceCommitment', source.base_policy_source_commitment,
+                        'basePolicyFinalizedEligible', source.base_policy_finalized_eligible,
+                        'basePolicyObservedSlot', source.base_policy_observed_slot,
+                        'basePolicyObservedSignature', source.base_policy_observed_signature,
                         'policyAuthority', source.policy_authority,
                         'policyMarkets', source.policy_markets,
                         'policyStableMints', source.policy_stable_mints,
                         'policyLiquidityMints', source.policy_liquidity_mints,
+                        'policyRouteModes', source.policy_route_modes,
+                        'earnPolicyEvidence', source.earn_policy_evidence,
+                        'crossMintSwapPolicies', source.cross_mint_swap_policies,
                         'sourceKind', source.source_kind,
                         'sourceReserve', source.source_reserve,
                         'liquidityMint', source.liquidity_mint,
@@ -2288,7 +2492,6 @@ async fn load_fleet_sources_without_queue_schema(
     .bind(SAME_MINT_ROUTE_MODE)
     .bind(active_statuses)
     .bind(rebalance_cooldown_seconds)
-    .bind(USDC_MINT.to_string())
     .bind(captured_at)
     .fetch_one(neon.pool())
     .await
@@ -2498,8 +2701,8 @@ fn build_observation_result(
                 Some(source.amount_raw),
             ),
         };
-        let source_apy_bps = match source_kind {
-            ObservedSourceKind::IdleVaultUsdc => 0,
+        let (source_apy_bps, source_market) = match source_kind {
+            ObservedSourceKind::IdleVaultUsdc => (0, None),
             ObservedSourceKind::ReservePosition => {
                 let Some(source_reserve) = source.source_reserve.as_ref() else {
                     stats.unsupported_market_semantics_source_count += 1;
@@ -2529,13 +2732,66 @@ fn build_observation_result(
                     );
                     continue;
                 };
-                source_epoch_reserve.supply_apy_bps
+                (
+                    source_epoch_reserve.supply_apy_bps,
+                    source_epoch_reserve.market.as_deref(),
+                )
             }
         };
-        let targets = policy_targets(&source, by_mint.get(source.liquidity_mint.as_str()))
-            .into_iter()
-            .filter(|target| target.supply_apy_bps > source_apy_bps)
-            .collect::<Vec<_>>();
+        let mut targets = Vec::new();
+        if policy_authorizes_route_mode(&source, SAME_MINT_ROUTE_MODE) {
+            targets.extend(
+                policy_targets(&source, by_mint.get(source.liquidity_mint.as_str()))
+                    .into_iter()
+                    .filter(|target| target.supply_apy_bps > source_apy_bps)
+                    .map(|target| {
+                        let route_kind = match source_kind {
+                            ObservedSourceKind::ReservePosition => CandidateRouteKind::SameMint,
+                            ObservedSourceKind::IdleVaultUsdc => {
+                                CandidateRouteKind::IdleVaultDeposit
+                            }
+                        };
+                        FleetCandidateTarget {
+                            route_kind,
+                            target,
+                            jupiter_swap_lane: None,
+                            source_earn_policy: None,
+                            target_earn_policy: None,
+                        }
+                    }),
+            );
+        }
+        if source_kind == ObservedSourceKind::ReservePosition && config.enable_cross_mint_jupiter {
+            for target_asset in earn_stablecoins() {
+                let target_mint = target_asset.mint.to_string();
+                let Some(capability) =
+                    cross_mint_policy_selection(&source, &config.cluster, target_mint.as_str())
+                else {
+                    continue;
+                };
+                let Some(source_market) = source_market else {
+                    continue;
+                };
+                let jupiter_swap_lane = jupiter_swap_lane(capability);
+                targets.extend(
+                    cross_mint_policy_targets(
+                        &source,
+                        source_market,
+                        target_mint.as_str(),
+                        by_mint.get(target_mint.as_str()),
+                    )
+                    .into_iter()
+                    .filter(|target| target.target.supply_apy_bps > source_apy_bps)
+                    .map(|target| FleetCandidateTarget {
+                        route_kind: CandidateRouteKind::CrossMintJupiter,
+                        target: target.target,
+                        jupiter_swap_lane: Some(jupiter_swap_lane.clone()),
+                        source_earn_policy: Some(target.source_policy),
+                        target_earn_policy: Some(target.target_policy),
+                    }),
+                );
+            }
+        }
         if targets.is_empty() {
             stats.missing_target_count += 1;
             record_source_vault_rejection(
@@ -2558,22 +2814,74 @@ fn build_observation_result(
             .source_reserve
             .clone()
             .unwrap_or_else(|| format!("idle-vault:{}", source.vault_pubkey));
-        let (expected_service_millis, estimated_cost) = match source_kind {
-            ObservedSourceKind::ReservePosition => (
-                config.expected_reserve_move_service_millis,
-                config.estimated_reserve_move_cost_usd_micros,
-            ),
-            ObservedSourceKind::IdleVaultUsdc => (
-                config.expected_idle_deposit_service_millis,
-                config.estimated_idle_deposit_cost_usd_micros,
-            ),
-        };
         let source_snapshot_id = source
             .source_snapshot_id
             .unwrap_or(source.observed_slot)
             .max(1);
         opportunity_vault_ids.insert(source.vault_id);
-        for target in targets {
+        for candidate in targets {
+            let FleetCandidateTarget {
+                route_kind,
+                target,
+                jupiter_swap_lane,
+                source_earn_policy,
+                target_earn_policy,
+            } = candidate;
+            let estimated_execution_costs = match route_kind {
+                CandidateRouteKind::SameMint => CandidateExecutionCosts::SameMint {
+                    route_usd_micros: config.estimated_reserve_move_cost_usd_micros,
+                },
+                CandidateRouteKind::IdleVaultDeposit => CandidateExecutionCosts::IdleVaultDeposit {
+                    deposit_usd_micros: config.estimated_idle_deposit_cost_usd_micros,
+                },
+                CandidateRouteKind::CrossMintJupiter => CandidateExecutionCosts::CrossMintJupiter {
+                    withdraw_usd_micros: config.estimated_cross_mint_withdraw_cost_usd_micros,
+                    jupiter_swap_usd_micros: config
+                        .estimated_cross_mint_jupiter_swap_cost_usd_micros,
+                    deposit_usd_micros: config.estimated_cross_mint_deposit_cost_usd_micros,
+                },
+            };
+            let estimated_cost = estimated_execution_costs
+                .total_usd_micros()
+                .ok_or(FleetObservationError::ArithmeticOverflow)?;
+            let expected_service_millis = match route_kind {
+                CandidateRouteKind::SameMint => config.expected_reserve_move_service_millis,
+                CandidateRouteKind::IdleVaultDeposit => config.expected_idle_deposit_service_millis,
+                CandidateRouteKind::CrossMintJupiter => config
+                    .expected_reserve_move_service_millis
+                    .checked_mul(3)
+                    .ok_or(FleetObservationError::ArithmeticOverflow)?,
+            };
+            let target_valuation = valuations.get(&target.liquidity_mint).ok_or_else(|| {
+                FleetObservationError::InvalidConfig(format!(
+                    "missing code-owned target valuation for mint {}",
+                    target.liquidity_mint
+                ))
+            })?;
+            let mut writable_conflict_keys = vec![
+                format!("vault:{}", source.vault_pubkey),
+                format!("policy:{}", source.policy_id),
+                format!(
+                    "source-reserve:{}",
+                    source.source_reserve.as_deref().unwrap_or("idle")
+                ),
+                format!("target-reserve:{}", target.reserve),
+            ];
+            if let Some(lane) = jupiter_swap_lane.as_ref() {
+                writable_conflict_keys.push(format!("swap-policy:{}", lane.policy_account));
+            }
+            if let Some(source_policy) = source_earn_policy.as_ref() {
+                writable_conflict_keys
+                    .push(format!("earn-policy:{}", source_policy.policy_account));
+            }
+            if let Some(target_policy) = target_earn_policy.as_ref() {
+                if source_earn_policy.as_ref().is_none_or(|source_policy| {
+                    source_policy.policy_account != target_policy.policy_account
+                }) {
+                    writable_conflict_keys
+                        .push(format!("earn-policy:{}", target_policy.policy_account));
+                }
+            }
             opportunities.push(ObservedFleetOpportunity {
                 economics: OpportunityInput {
                     opportunity_id: 1,
@@ -2588,22 +2896,33 @@ fn build_observation_result(
                     notional_usd_micros,
                     source_net_apy_bps: source_apy_bps,
                     target_net_apy_bps: target.supply_apy_bps,
-                    confidence_ppm: valuation.confidence_ppm,
+                    confidence_ppm: valuation
+                        .confidence_ppm
+                        .min(target_valuation.confidence_ppm),
                     expected_service_millis,
                     holding_horizon_seconds: config.holding_horizon_seconds,
                     estimated_execution_cost_usd_micros: estimated_cost,
                     age_seconds,
                     fairness_credit,
-                    writable_conflict_keys: vec![
-                        format!("vault:{}", source.vault_pubkey),
-                        format!("policy:{}", source.policy_id),
-                        format!(
-                            "source-reserve:{}",
-                            source.source_reserve.as_deref().unwrap_or("idle")
-                        ),
-                        format!("target-reserve:{}", target.reserve),
-                    ],
+                    writable_conflict_keys,
                 },
+                route_kind,
+                source_liquidity_mint: source.liquidity_mint.clone(),
+                target_liquidity_mint: target.liquidity_mint.clone(),
+                estimated_execution_costs,
+                cross_mint_maximum_value_loss_bps: matches!(
+                    route_kind,
+                    CandidateRouteKind::CrossMintJupiter
+                )
+                .then_some(config.cross_mint_maximum_value_loss_bps),
+                jupiter_swap_lane,
+                source_earn_policy,
+                target_earn_policy,
+                base_policy_account: source.base_policy_account.clone(),
+                base_policy_delegated_signer: source.base_policy_delegated_signer.clone(),
+                base_policy_source_commitment: source.base_policy_source_commitment.clone(),
+                base_policy_observed_slot: source.base_policy_observed_slot,
+                base_policy_observed_signature: source.base_policy_observed_signature.clone(),
                 source_kind,
                 policy_id: source.policy_id,
                 settings: source.settings.clone(),
@@ -2692,6 +3011,20 @@ fn build_observation_result(
     })
 }
 
+struct FleetCandidateTarget<'a> {
+    route_kind: CandidateRouteKind,
+    target: &'a MarketEpochReserve,
+    jupiter_swap_lane: Option<CrossMintSwapPolicyBinding>,
+    source_earn_policy: Option<ObservedEarnPolicyEvidence>,
+    target_earn_policy: Option<ObservedEarnPolicyEvidence>,
+}
+
+struct CrossMintEarnTarget<'a> {
+    target: &'a MarketEpochReserve,
+    source_policy: ObservedEarnPolicyEvidence,
+    target_policy: ObservedEarnPolicyEvidence,
+}
+
 fn policy_targets<'a>(
     source: &FleetSourceRow,
     reserves: Option<&Vec<&'a MarketEpochReserve>>,
@@ -2732,6 +3065,175 @@ fn policy_targets<'a>(
             .then_with(|| left.reserve.cmp(&right.reserve))
     });
     targets
+}
+
+fn cross_mint_policy_targets<'a>(
+    source: &FleetSourceRow,
+    source_market: &str,
+    target_mint: &str,
+    reserves: Option<&Vec<&'a MarketEpochReserve>>,
+) -> Vec<CrossMintEarnTarget<'a>> {
+    let mut targets = reserves
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .copied()
+        .filter_map(|target| {
+            let target_market = target.market.as_deref()?;
+            let (source_policy, target_policy) =
+                exact_cross_mint_earn_bindings(source, source_market, target_mint, target_market)?;
+            (target.target_eligible
+                && source
+                    .source_reserve
+                    .as_ref()
+                    .is_none_or(|source_reserve| target.reserve != *source_reserve))
+            .then(|| CrossMintEarnTarget {
+                target,
+                source_policy: source_policy.clone(),
+                target_policy: target_policy.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    targets.sort_by(|left, right| {
+        right
+            .target
+            .supply_apy_bps
+            .cmp(&left.target.supply_apy_bps)
+            .then_with(|| right.target.observed_at.cmp(&left.target.observed_at))
+            .then_with(|| right.target.slot.cmp(&left.target.slot))
+            .then_with(|| left.target.reserve.cmp(&right.target.reserve))
+    });
+    targets
+}
+
+fn exact_cross_mint_earn_bindings<'a>(
+    source: &'a FleetSourceRow,
+    source_market: &str,
+    target_mint: &str,
+    target_market: &str,
+) -> Option<(
+    &'a ObservedEarnPolicyEvidence,
+    &'a ObservedEarnPolicyEvidence,
+)> {
+    let source_policy = exact_earn_policy(source, &source.liquidity_mint, source_market)?;
+    let target_policy = exact_earn_policy(source, target_mint, target_market)?;
+    Some((source_policy, target_policy))
+}
+
+fn exact_earn_policy<'a>(
+    source: &'a FleetSourceRow,
+    mint: &str,
+    market: &str,
+) -> Option<&'a ObservedEarnPolicyEvidence> {
+    source
+        .earn_policy_evidence
+        .iter()
+        .filter(|policy| {
+            policy.settings == source.settings
+                && policy.authority == source.policy_authority
+                && policy.vault_index == source.vault_index
+                && policy.vault_pubkey == source.vault_pubkey
+                && policy.delegated_signer == source.base_policy_delegated_signer
+                && policy.source_commitment == "finalized"
+                && policy.threshold == 1
+                && policy.stable_mints.iter().any(|allowed| allowed == mint)
+                && policy
+                    .kamino_liquidity_mints
+                    .iter()
+                    .any(|allowed| allowed == mint)
+                && policy
+                    .kamino_markets
+                    .iter()
+                    .any(|allowed| allowed == market)
+        })
+        .min_by(|left, right| {
+            right
+                .observed_slot
+                .cmp(&left.observed_slot)
+                .then_with(|| left.policy_account.cmp(&right.policy_account))
+        })
+}
+
+fn policy_authorizes_route_mode(source: &FleetSourceRow, route_mode: &str) -> bool {
+    source
+        .policy_route_modes
+        .iter()
+        .any(|allowed| allowed == route_mode)
+}
+
+fn cross_mint_policy_selection<'a>(
+    source: &'a FleetSourceRow,
+    cluster: &str,
+    target_mint: &str,
+) -> Option<&'a CrossMintSwapPolicyEvidence> {
+    if !source.base_policy_finalized_eligible
+        || source.base_policy_cluster != cluster
+        || source.base_policy_source_commitment != "finalized"
+        || source.liquidity_mint == target_mint
+    {
+        return None;
+    }
+    let source_asset = earn_stablecoins()
+        .iter()
+        .find(|asset| asset.mint.to_string() == source.liquidity_mint)?;
+    earn_stablecoins()
+        .iter()
+        .find(|asset| asset.mint.to_string() == target_mint)?;
+    let required_shard = if source_asset.token_program == spl_token::ID {
+        "classic"
+    } else {
+        "token_2022"
+    };
+    let policies = source
+        .cross_mint_swap_policies
+        .iter()
+        .filter(|policy| {
+            policy.active
+                && policy.start_eligible
+                && policy.source_commitment == "finalized"
+                && policy.daily_source_mint_spending_cap > 0
+                && policy.max_slippage_bps > 0
+                && policy.manifest_fingerprint.len() == 64
+                && policy.settings == source.settings
+                && policy.authority == source.policy_authority
+                && policy.vault_index == source.vault_index
+                && policy.vault_pubkey == source.vault_pubkey
+                && policy.delegated_signer == source.base_policy_delegated_signer
+        })
+        .collect::<Vec<_>>();
+    if policies.len() != 2
+        || policies
+            .iter()
+            .filter(|policy| policy.source_shard == "classic")
+            .count()
+            != 1
+        || policies
+            .iter()
+            .filter(|policy| policy.source_shard == "token_2022")
+            .count()
+            != 1
+    {
+        return None;
+    }
+    policies
+        .into_iter()
+        .find(|policy| policy.source_shard == required_shard)
+}
+
+fn jupiter_swap_lane(policy: &CrossMintSwapPolicyEvidence) -> CrossMintSwapPolicyBinding {
+    CrossMintSwapPolicyBinding {
+        policy_account: policy.policy_account.clone(),
+        source_shard: policy.source_shard.clone(),
+        observed_slot: u64::try_from(policy.last_seen_slot)
+            .expect("stored swap policy slot must be nonnegative"),
+        observed_signature: policy.last_seen_signature.clone(),
+        source_commitment: policy.source_commitment.clone(),
+        max_slippage_bps: u16::try_from(policy.max_slippage_bps)
+            .expect("stored swap policy slippage must fit u16"),
+        daily_source_mint_spending_cap: u64::try_from(policy.daily_source_mint_spending_cap)
+            .expect("stored swap policy cap must be nonnegative"),
+        manifest_fingerprint: policy.manifest_fingerprint.clone(),
+    }
 }
 
 fn source_kind_rank(kind: ObservedSourceKind) -> u8 {
@@ -2958,4 +3460,213 @@ fn usd_to_micros(usd: f64) -> Result<i64, FleetObservationError> {
         return Err(FleetObservationError::ArithmeticOverflow);
     }
     Ok(micros.round() as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn swap_policy(source_shard: &str, policy_account: &str) -> CrossMintSwapPolicyEvidence {
+        CrossMintSwapPolicyEvidence {
+            settings: "settings".to_owned(),
+            authority: "authority".to_owned(),
+            policy_account: policy_account.to_owned(),
+            vault_index: 1,
+            vault_pubkey: "vault".to_owned(),
+            delegated_signer: "signer".to_owned(),
+            source_shard: source_shard.to_owned(),
+            max_slippage_bps: 50,
+            daily_source_mint_spending_cap: 1_000_000_000,
+            manifest_fingerprint: "a".repeat(64),
+            active: true,
+            start_eligible: true,
+            source_commitment: "finalized".to_owned(),
+            last_seen_slot: 100,
+            last_seen_signature: "swap-signature".to_owned(),
+        }
+    }
+
+    fn complete_swap_policies() -> Vec<CrossMintSwapPolicyEvidence> {
+        let classic = swap_policy("classic", "classic-policy");
+        let mut token_2022 = swap_policy("token_2022", "token-2022-policy");
+        token_2022.max_slippage_bps = 75;
+        token_2022.daily_source_mint_spending_cap = 2_000_000_000;
+        token_2022.manifest_fingerprint = "b".repeat(64);
+        token_2022.last_seen_slot = 110;
+        token_2022.last_seen_signature = "token-2022-signature".to_owned();
+        vec![classic, token_2022]
+    }
+
+    fn source_row(source_mint: &str, policies: Vec<CrossMintSwapPolicyEvidence>) -> FleetSourceRow {
+        let canonical_mints = earn_stablecoins()
+            .iter()
+            .map(|stablecoin| stablecoin.mint.to_string())
+            .collect::<Vec<_>>();
+        FleetSourceRow {
+            vault_id: 1,
+            settings: "settings".to_owned(),
+            vault_index: 1,
+            vault_pubkey: "vault".to_owned(),
+            policy_id: 2,
+            base_policy_account: "base-policy".to_owned(),
+            base_policy_delegated_signer: "signer".to_owned(),
+            base_policy_cluster: "mainnet-beta".to_owned(),
+            base_policy_source_commitment: "finalized".to_owned(),
+            base_policy_finalized_eligible: true,
+            base_policy_observed_slot: 99,
+            base_policy_observed_signature: "base-signature".to_owned(),
+            policy_authority: "authority".to_owned(),
+            policy_markets: vec!["market".to_owned()],
+            policy_stable_mints: canonical_mints.clone(),
+            policy_liquidity_mints: canonical_mints,
+            policy_route_modes: vec![SAME_MINT_ROUTE_MODE.to_owned()],
+            earn_policy_evidence: Vec::new(),
+            cross_mint_swap_policies: policies,
+            source_kind: "reserve_position".to_owned(),
+            source_reserve: Some("source-reserve".to_owned()),
+            liquidity_mint: source_mint.to_owned(),
+            amount_raw: 1_000_000,
+            source_snapshot_id: Some(3),
+            idle_token_account: None,
+            observed_slot: 101,
+            observed_at: Utc::now(),
+            planning_metadata: Value::Null,
+        }
+    }
+
+    fn earn_policy(
+        mint: &str,
+        market: &str,
+        policy_account: &str,
+        observed_slot: i64,
+    ) -> ObservedEarnPolicyEvidence {
+        ObservedEarnPolicyEvidence {
+            settings: "settings".to_owned(),
+            authority: "authority".to_owned(),
+            policy_account: policy_account.to_owned(),
+            vault_index: 1,
+            vault_pubkey: "vault".to_owned(),
+            delegated_signer: "signer".to_owned(),
+            threshold: 1,
+            stable_mints: vec![mint.to_owned()],
+            kamino_markets: vec![market.to_owned()],
+            kamino_liquidity_mints: vec![mint.to_owned()],
+            source_commitment: "finalized".to_owned(),
+            observed_slot,
+            observed_signature: format!("signature-{policy_account}"),
+        }
+    }
+
+    #[test]
+    fn cross_mint_earn_bindings_select_distinct_exact_policies_deterministically() {
+        let source_asset = &earn_stablecoins()[0];
+        let target_asset = earn_stablecoins()
+            .iter()
+            .find(|asset| asset.token_program != source_asset.token_program)
+            .expect("the Earn registry covers classic and Token-2022 mints");
+        assert_ne!(source_asset.token_program, target_asset.token_program);
+        let source_mint = source_asset.mint.to_string();
+        let target_mint = target_asset.mint.to_string();
+        let mut source = source_row(&source_mint, Vec::new());
+        source.earn_policy_evidence = vec![
+            earn_policy(&source_mint, "source-market", "source-older", 90),
+            earn_policy(&source_mint, "source-market", "source-z", 100),
+            earn_policy(&source_mint, "source-market", "source-a", 100),
+            earn_policy(&target_mint, "target-market", "target-policy", 95),
+        ];
+
+        let (withdraw, deposit) =
+            exact_cross_mint_earn_bindings(&source, "source-market", &target_mint, "target-market")
+                .expect("distinct source and target policies authorize the route");
+
+        assert_eq!(withdraw.policy_account, "source-a");
+        assert_eq!(deposit.policy_account, "target-policy");
+        assert_ne!(withdraw.policy_account, deposit.policy_account);
+        assert!(!withdraw.stable_mints.contains(&target_mint));
+        assert!(!deposit.stable_mints.contains(&source_mint));
+    }
+
+    #[test]
+    fn cross_mint_earn_bindings_reject_an_absent_exact_target_policy() {
+        let source_mint = earn_stablecoins()[0].mint.to_string();
+        let target_mint = earn_stablecoins()[4].mint.to_string();
+        let mut source = source_row(&source_mint, Vec::new());
+        source.earn_policy_evidence = vec![earn_policy(
+            &source_mint,
+            "source-market",
+            "source-policy",
+            100,
+        )];
+
+        assert!(exact_cross_mint_earn_bindings(
+            &source,
+            "source-market",
+            &target_mint,
+            "target-market",
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn two_generalized_policies_cover_all_canonical_directed_pairs() {
+        let source = &earn_stablecoins()[0];
+        let source_row = source_row(&source.mint.to_string(), complete_swap_policies());
+        let admitted_targets = earn_stablecoins()
+            .iter()
+            .filter(|target| {
+                cross_mint_policy_selection(&source_row, "mainnet-beta", &target.mint.to_string())
+                    .is_some()
+            })
+            .map(|target| target.mint.to_string())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(admitted_targets.len(), 5);
+        assert!(!admitted_targets.contains(&source.mint.to_string()));
+        let mut covered_mints = admitted_targets;
+        covered_mints.insert(source.mint.to_string());
+        assert_eq!(
+            covered_mints,
+            earn_stablecoins()
+                .iter()
+                .map(|stablecoin| stablecoin.mint.to_string())
+                .collect()
+        );
+    }
+
+    #[test]
+    fn generalized_manifest_requires_both_complete_source_shards() {
+        let source = &earn_stablecoins()[3];
+        let target = &earn_stablecoins()[2];
+        let complete = source_row(&source.mint.to_string(), complete_swap_policies());
+        let selection =
+            cross_mint_policy_selection(&complete, "mainnet-beta", &target.mint.to_string())
+                .unwrap();
+        let lane = jupiter_swap_lane(selection);
+        assert_eq!(lane.source_shard, "classic");
+        assert_eq!(lane.policy_account, "classic-policy");
+        assert_eq!(lane.manifest_fingerprint, "a".repeat(64));
+    }
+
+    #[test]
+    fn generalized_manifest_half_install_and_half_removal_fail_closed() {
+        let source = &earn_stablecoins()[3];
+        let target = &earn_stablecoins()[2];
+        let policies = complete_swap_policies();
+        let half_install = source_row(&source.mint.to_string(), vec![policies[0].clone()]);
+        assert!(cross_mint_policy_selection(
+            &half_install,
+            "mainnet-beta",
+            &target.mint.to_string()
+        )
+        .is_none());
+
+        let mut half_removed = policies;
+        half_removed[1].active = false;
+        assert!(cross_mint_policy_selection(
+            &source_row(&source.mint.to_string(), half_removed),
+            "mainnet-beta",
+            &target.mint.to_string()
+        )
+        .is_none());
+    }
 }

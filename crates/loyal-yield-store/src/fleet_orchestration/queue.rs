@@ -220,6 +220,8 @@ pub struct RebalanceOpportunityRecord {
     pub source_reserve: Option<String>,
     pub target_reserve: String,
     pub liquidity_mint: String,
+    pub source_liquidity_mint: String,
+    pub target_liquidity_mint: String,
     pub amount_raw: i64,
     pub principal_usd_micros: i64,
     pub source_apy_bps: i64,
@@ -464,6 +466,17 @@ pub struct SignedRouteSubmissionRecord {
     pub conflict_account_keys: Vec<String>,
     pub executor_owner: String,
     pub executor_fencing_token: i64,
+    pub movement_leg: String,
+    pub leg_purpose: String,
+    pub leg_generation: i64,
+    pub required_commitment: String,
+    pub policy_account: Option<String>,
+    pub expected_effect: Value,
+    pub expected_balance_anchors: Value,
+    pub reconciled_effect: Option<Value>,
+    pub reconciled_balance_anchors: Option<Value>,
+    pub finalized_slot: Option<i64>,
+    pub finalized_at: Option<DateTime<Utc>>,
     pub state: SignedRouteSubmissionState,
     pub confirmation_available_at: DateTime<Utc>,
     pub confirmation_lease_owner: Option<String>,
@@ -495,6 +508,35 @@ pub struct SignedRouteSubmissionLease {
 }
 
 #[derive(Debug, Clone)]
+pub struct CrossMintNoEffectProofInput {
+    pub observed_block_height: i64,
+    pub signature_history_checked_through_slot: i64,
+    pub effect_check_slot: i64,
+    pub observed_balance_anchors: Value,
+    pub signature_history_evidence: Value,
+    pub observed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CrossMintNoEffectReceiptRecord {
+    pub submission_id: i64,
+    pub decision_id: DecisionId,
+    pub movement_leg: String,
+    pub leg_generation: i64,
+    pub transaction_signature: String,
+    pub observed_block_height: i64,
+    pub signature_history_checked_through_slot: i64,
+    pub effect_check_slot: i64,
+    pub expected_balance_anchors: Value,
+    pub observed_balance_anchors: Value,
+    pub signature_history_evidence: Value,
+    pub evidence_hash: String,
+    pub observed_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
 pub enum SignedRouteSubmissionAdvance {
     BroadcastIntent {
         checked_at: DateTime<Utc>,
@@ -513,6 +555,15 @@ pub enum SignedRouteSubmissionAdvance {
     Confirmed {
         checked_at: DateTime<Utc>,
         confirmed_slot: i64,
+    },
+    Finalized {
+        checked_at: DateTime<Utc>,
+        finalized_slot: i64,
+    },
+    AwaitingFinalization {
+        checked_at: DateTime<Utc>,
+        observed_slot: i64,
+        next_poll_at: DateTime<Utc>,
     },
     ReconciliationPending,
     ExpiryCheckPending {
@@ -1561,7 +1612,8 @@ impl NeonSqlClient {
                 (cluster, idempotency_key, rediscovery_key, attempt_generation,
                  vault_id, source_snapshot_id, optimizer_epoch_id, route_fingerprint,
                  requirements_fingerprint, source_reserve, target_reserve,
-                 liquidity_mint, amount_raw, principal_usd_micros,
+                 liquidity_mint, source_liquidity_mint,
+                 target_liquidity_mint, amount_raw, principal_usd_micros,
                  source_apy_bps, target_apy_bps, estimated_edge_bps,
                  estimated_cost_lamports, annual_yield_gain_usd_micros,
                  expected_net_gain_usd_micros, economic_priority,
@@ -1569,7 +1621,10 @@ impl NeonSqlClient {
                  available_at, expires_at)
             SELECT
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+                $11, $12,
+                COALESCE(NULLIF($24::jsonb ->> 'source_liquidity_mint', ''), $12),
+                COALESCE(NULLIF($24::jsonb ->> 'target_liquidity_mint', ''), $12),
+                $13, $14, $15, $16, $17, $18, $19, $20,
                 $21, $22, $23, $24, $25, $26
             FROM loyal_yield.optimizer_epochs epoch
             WHERE epoch.id = $7
@@ -3262,6 +3317,15 @@ impl NeonSqlClient {
                       submission.confirmed_slot IS NULL
                       OR submission.confirmed_slot = claim.confirmed_slot
                   )
+                  AND (
+                      decision.movement_route <> 'cross_mint_jupiter'
+                      OR (
+                          submission.required_commitment = 'finalized'
+                          AND submission.finalized_slot IS NOT NULL
+                          AND submission.finalized_at IS NOT NULL
+                          AND submission.finalized_slot >= claim.confirmed_slot
+                      )
+                  )
                   AND submission.confirmation_lease_owner = claim.lease_owner
                   AND submission.confirmation_fencing_token = claim.fencing_token
                   AND submission.confirmation_lease_expires_at > clock_timestamp()
@@ -4127,6 +4191,138 @@ impl NeonSqlClient {
         Ok(leases)
     }
 
+    /// Persists the external finalized evidence that an expired cross-mint
+    /// transaction had no signature and left every anchored token-account
+    /// balance unchanged. The receipt is write-once and must exist before the
+    /// submission can become `expired` or a replacement generation can exist.
+    pub async fn record_cross_mint_no_effect_receipt(
+        &self,
+        lease: &SignedRouteSubmissionLease,
+        proof: CrossMintNoEffectProofInput,
+    ) -> Result<CrossMintNoEffectReceiptRecord, OrchestratorError> {
+        let expected_anchors = &lease.submission.expected_balance_anchors;
+        if proof.observed_block_height < 0
+            || proof.signature_history_checked_through_slot < proof.effect_check_slot
+            || proof.effect_check_slot < 0
+            || !expected_anchors.is_object()
+            || expected_anchors
+                .as_object()
+                .is_none_or(serde_json::Map::is_empty)
+            || proof.observed_balance_anchors != *expected_anchors
+            || !proof.signature_history_evidence.is_object()
+            || proof
+                .signature_history_evidence
+                .as_object()
+                .is_none_or(serde_json::Map::is_empty)
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "cross-mint no-effect proof requires finalized history evidence and unchanged nonempty balance anchors"
+                    .to_owned(),
+            ));
+        }
+        let decision_id = lease.submission.decision_id.ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "cross-mint no-effect proof requires an attached decision".to_owned(),
+            )
+        })?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"cross-mint-no-effect-receipt-v1");
+        hasher.update(lease.submission.id.to_le_bytes());
+        hasher.update(decision_id.as_i64().to_le_bytes());
+        hasher.update(lease.submission.transaction_signature.as_bytes());
+        hasher.update(proof.observed_block_height.to_le_bytes());
+        hasher.update(proof.signature_history_checked_through_slot.to_le_bytes());
+        hasher.update(proof.effect_check_slot.to_le_bytes());
+        hasher.update(serde_json::to_vec(expected_anchors).map_err(|error| {
+            OrchestratorError::StoreInvariant(format!(
+                "cross-mint expected anchors did not serialize: {error}"
+            ))
+        })?);
+        hasher.update(
+            serde_json::to_vec(&proof.signature_history_evidence).map_err(|error| {
+                OrchestratorError::StoreInvariant(format!(
+                    "cross-mint history evidence did not serialize: {error}"
+                ))
+            })?,
+        );
+        hasher.update(proof.observed_at.timestamp_micros().to_le_bytes());
+        let evidence_hash = format!("{:x}", hasher.finalize());
+
+        let mut tx = self.pool().begin().await?;
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.cross_mint_no_effect_receipts
+                (submission_id, decision_id, movement_leg, leg_generation,
+                 transaction_signature, observed_block_height,
+                 signature_history_checked_through_slot, effect_check_slot,
+                 expected_balance_anchors, observed_balance_anchors,
+                 signature_history_evidence, evidence_hash, observed_at)
+            SELECT submission.id, submission.decision_id,
+                   submission.movement_leg, submission.leg_generation,
+                   submission.transaction_signature, $4, $5, $6,
+                   submission.expected_balance_anchors, $7, $8, $9, $10
+            FROM loyal_yield.signed_route_submissions submission
+            JOIN loyal_yield.rebalance_decisions decision
+              ON decision.id = submission.decision_id
+            WHERE submission.id = $1
+              AND decision.movement_route = 'cross_mint_jupiter'
+              AND submission.movement_leg <> 'route'
+              AND submission.confirmation_lease_owner = $2
+              AND submission.confirmation_fencing_token = $3
+              AND submission.confirmation_lease_expires_at > now()
+              AND submission.last_valid_block_height < $4
+              AND submission.expected_balance_anchors = $7
+              AND (
+                  (
+                      submission.broadcast_count = 0
+                      AND submission.submission_state IN ('signed', 'submitted')
+                  ) OR (
+                      submission.broadcast_count > 0
+                      AND submission.submission_state IN (
+                          'expiry_check_pending', 'effect_ambiguous'
+                      )
+                      AND submission.expiry_observed_block_height = $4
+                      AND submission.effect_check_slot = $6
+                  )
+              )
+            ON CONFLICT (submission_id) DO NOTHING
+            RETURNING *
+            "#,
+        )
+        .bind(lease.submission.id)
+        .bind(&lease.owner)
+        .bind(lease.fencing_token)
+        .bind(proof.observed_block_height)
+        .bind(proof.signature_history_checked_through_slot)
+        .bind(proof.effect_check_slot)
+        .bind(&proof.observed_balance_anchors)
+        .bind(&proof.signature_history_evidence)
+        .bind(&evidence_hash)
+        .bind(proof.observed_at)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let row = match inserted {
+            Some(row) => row,
+            None => {
+                let existing = sqlx::query(
+                    "SELECT * FROM loyal_yield.cross_mint_no_effect_receipts WHERE submission_id = $1 AND evidence_hash = $2",
+                )
+                .bind(lease.submission.id)
+                .bind(&evidence_hash)
+                .fetch_optional(&mut *tx)
+                .await?;
+                existing.ok_or_else(|| {
+                    OrchestratorError::StoreInvariant(
+                        "cross-mint no-effect receipt is stale, divergent, or unfenced".to_owned(),
+                    )
+                })?
+            }
+        };
+        let receipt = cross_mint_no_effect_receipt_from_row(&row)?;
+        tx.commit().await?;
+        Ok(receipt)
+    }
+
     /// Applies one fenced submission transition. Every network observation is
     /// committed before the lease is released; confirmation intentionally
     /// retains the lease for the following reconciliation-pending handoff.
@@ -4287,21 +4483,112 @@ impl NeonSqlClient {
                 .fetch_optional(self.pool())
                 .await?
             }
+            SignedRouteSubmissionAdvance::Finalized {
+                checked_at,
+                finalized_slot,
+            } => {
+                if finalized_slot < 0 {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "finalized submission requires a nonnegative slot".to_owned(),
+                    ));
+                }
+                sqlx::query(
+                    r#"
+                    UPDATE loyal_yield.signed_route_submissions submission
+                    SET finalized_slot = $5,
+                        finalized_at = COALESCE(finalized_at, $4),
+                        last_status_checked_at = $4,
+                        error_detail = NULL,
+                        updated_at = now()
+                    FROM loyal_yield.rebalance_decisions decision
+                    WHERE submission.id = $1
+                      AND submission.decision_id = decision.id
+                      AND decision.movement_route = 'cross_mint_jupiter'
+                      AND submission.required_commitment = 'finalized'
+                      AND submission.submission_state = 'confirmed'
+                      AND submission.confirmed_slot IS NOT NULL
+                      AND $5 >= submission.confirmed_slot
+                      AND (submission.finalized_slot IS NULL OR submission.finalized_slot = $5)
+                      AND submission.confirmation_lease_owner = $2
+                      AND submission.confirmation_fencing_token = $3
+                      AND submission.confirmation_lease_expires_at > now()
+                    RETURNING submission.*
+                    "#,
+                )
+                .bind(lease.submission.id)
+                .bind(&lease.owner)
+                .bind(lease.fencing_token)
+                .bind(checked_at)
+                .bind(finalized_slot)
+                .fetch_optional(self.pool())
+                .await?
+            }
+            SignedRouteSubmissionAdvance::AwaitingFinalization {
+                checked_at,
+                observed_slot,
+                next_poll_at,
+            } => {
+                if observed_slot < 0 || next_poll_at < checked_at {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "finality deferral requires a nonnegative slot and nondecreasing poll time"
+                            .to_owned(),
+                    ));
+                }
+                sqlx::query(
+                    r#"
+                    UPDATE loyal_yield.signed_route_submissions submission
+                    SET confirmed_slot = COALESCE(confirmed_slot, $5),
+                        confirmed_at = COALESCE(confirmed_at, $4),
+                        confirmation_available_at = $6,
+                        confirmation_lease_owner = NULL,
+                        confirmation_lease_expires_at = NULL,
+                        last_status_checked_at = $4,
+                        error_detail = 'confirmed_awaiting_finalization',
+                        updated_at = now()
+                    FROM loyal_yield.rebalance_decisions decision
+                    WHERE submission.id = $1
+                      AND submission.decision_id = decision.id
+                      AND decision.movement_route = 'cross_mint_jupiter'
+                      AND submission.required_commitment = 'finalized'
+                      AND submission.submission_state = 'confirmed'
+                      AND submission.finalized_slot IS NULL
+                      AND (submission.confirmed_slot IS NULL OR submission.confirmed_slot = $5)
+                      AND submission.confirmation_lease_owner = $2
+                      AND submission.confirmation_fencing_token = $3
+                      AND submission.confirmation_lease_expires_at > now()
+                    RETURNING submission.*
+                    "#,
+                )
+                .bind(lease.submission.id)
+                .bind(&lease.owner)
+                .bind(lease.fencing_token)
+                .bind(checked_at)
+                .bind(observed_slot)
+                .bind(next_poll_at)
+                .fetch_optional(self.pool())
+                .await?
+            }
             SignedRouteSubmissionAdvance::ReconciliationPending => sqlx::query(
                 r#"
                 WITH pending AS (
-                    UPDATE loyal_yield.signed_route_submissions
+                    UPDATE loyal_yield.signed_route_submissions submission
                     SET submission_state = 'reconciliation_pending',
                         confirmation_lease_owner = NULL,
                         confirmation_lease_expires_at = NULL,
                         error_detail = NULL,
                         updated_at = now()
-                    WHERE id = $1
-                      AND submission_state = 'confirmed'
-                      AND confirmation_lease_owner = $2
-                      AND confirmation_fencing_token = $3
-                      AND confirmation_lease_expires_at > now()
-                    RETURNING *
+                    FROM loyal_yield.rebalance_decisions decision
+                    WHERE submission.id = $1
+                      AND submission.decision_id = decision.id
+                      AND submission.submission_state = 'confirmed'
+                      AND (
+                          decision.movement_route <> 'cross_mint_jupiter'
+                          OR submission.finalized_slot IS NOT NULL
+                      )
+                      AND submission.confirmation_lease_owner = $2
+                      AND submission.confirmation_fencing_token = $3
+                      AND submission.confirmation_lease_expires_at > now()
+                    RETURNING submission.*
                 ), released_transient_conflicts AS (
                     DELETE FROM loyal_yield.route_account_conflict_leases conflict
                     USING pending
@@ -4395,7 +4682,9 @@ impl NeonSqlClient {
                             error_detail = $5,
                             updated_at = now()
                         WHERE id = $1
-                          AND submission_state = 'expiry_check_pending'
+                          AND submission_state IN (
+                              'expiry_check_pending', 'reconciliation_pending'
+                          )
                           AND confirmation_lease_owner = $2
                           AND confirmation_fencing_token = $3
                           AND confirmation_lease_expires_at > now()
@@ -4463,9 +4752,12 @@ impl NeonSqlClient {
                 signature_history_absent,
                 effect_absence_proved,
             } => {
-                if observed_block_height < 0 || !signature_history_absent {
+                if observed_block_height < 0
+                    || (lease.submission.movement_leg == "route" && !signature_history_absent)
+                {
                     return Err(OrchestratorError::StoreInvariant(
-                        "expired submission requires history-absent signature evidence and a nonnegative observed block height".to_owned(),
+                        "expired submission requires a nonnegative observed block height"
+                            .to_owned(),
                     ));
                 }
                 let detail = format!("blockhash_expired_at_height_{observed_block_height}");
@@ -4489,7 +4781,15 @@ impl NeonSqlClient {
                                   'expiry_check_pending', 'effect_ambiguous'
                               )
                               AND broadcast_count > 0
-                              AND $7
+                              AND (
+                                  $7
+                                  OR EXISTS (
+                                      SELECT 1
+                                      FROM loyal_yield.cross_mint_no_effect_receipts receipt
+                                      WHERE receipt.submission_id =
+                                          signed_route_submissions.id
+                                  )
+                              )
                               AND expiry_observed_block_height = $6
                               AND effect_check_slot IS NOT NULL
                           )
@@ -4498,6 +4798,27 @@ impl NeonSqlClient {
                       AND confirmation_fencing_token = $3
                       AND confirmation_lease_expires_at > now()
                       AND last_valid_block_height < $6
+                      AND (
+                          NOT EXISTS (
+                              SELECT 1
+                              FROM loyal_yield.rebalance_decisions decision
+                              WHERE decision.id =
+                                  signed_route_submissions.decision_id
+                                AND decision.movement_route =
+                                  'cross_mint_jupiter'
+                          )
+                          OR EXISTS (
+                              SELECT 1
+                              FROM loyal_yield.cross_mint_no_effect_receipts receipt
+                              WHERE receipt.submission_id =
+                                  signed_route_submissions.id
+                                AND receipt.observed_block_height = $6
+                                AND receipt.transaction_signature =
+                                  signed_route_submissions.transaction_signature
+                                AND receipt.expected_balance_anchors =
+                                  signed_route_submissions.expected_balance_anchors
+                          )
+                      )
                     RETURNING *
                     "#,
                 )
@@ -5416,6 +5737,15 @@ fn validate_opportunity_input(input: &RebalanceOpportunityInput) -> Result<(), O
             "rebalance opportunity APYs do not match its estimated edge".to_owned(),
         ));
     }
+    let (source_mint, target_mint) = opportunity_mint_identity(input)?;
+    if input.execution_plan.get("kind").and_then(Value::as_str) == Some("cross_mint_jupiter")
+        && (source_mint == target_mint || target_mint != input.liquidity_mint)
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "cross-mint opportunity requires distinct source/target mints and target liquidity identity"
+                .to_owned(),
+        ));
+    }
     let now = Utc::now();
     if input.available_at >= input.expires_at || input.expires_at <= now {
         return Err(OrchestratorError::StoreInvariant(
@@ -5429,6 +5759,9 @@ fn rebalance_opportunity_matches_input(
     opportunity: &RebalanceOpportunityRecord,
     input: &RebalanceOpportunityInput,
 ) -> bool {
+    let Ok((source_mint, target_mint)) = opportunity_mint_identity(input) else {
+        return false;
+    };
     let compiler_enriched_original = input.route_fingerprint.is_none()
         && input.requirements_fingerprint.is_none()
         && opportunity.route_fingerprint.is_some()
@@ -5446,6 +5779,8 @@ fn rebalance_opportunity_matches_input(
         && opportunity.source_reserve == input.source_reserve
         && opportunity.target_reserve == input.target_reserve
         && opportunity.liquidity_mint == input.liquidity_mint
+        && opportunity.source_liquidity_mint == source_mint
+        && opportunity.target_liquidity_mint == target_mint
         && opportunity.amount_raw == input.amount_raw
         && opportunity.principal_usd_micros == input.principal_usd_micros
         && opportunity.source_apy_bps == input.source_apy_bps
@@ -5458,6 +5793,36 @@ fn rebalance_opportunity_matches_input(
         && opportunity.priority_version == input.priority_version
         && execution_evidence_matches
         && opportunity.expires_at == input.expires_at
+}
+
+fn opportunity_mint_identity(
+    input: &RebalanceOpportunityInput,
+) -> Result<(&str, &str), OrchestratorError> {
+    let kind = input.execution_plan.get("kind").and_then(Value::as_str);
+    if kind != Some("cross_mint_jupiter") {
+        return Ok((&input.liquidity_mint, &input.liquidity_mint));
+    }
+    let source = input
+        .execution_plan
+        .get("source_liquidity_mint")
+        .and_then(Value::as_str)
+        .filter(|mint| !mint.trim().is_empty())
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "cross-mint opportunity is missing source_liquidity_mint".to_owned(),
+            )
+        })?;
+    let target = input
+        .execution_plan
+        .get("target_liquidity_mint")
+        .and_then(Value::as_str)
+        .filter(|mint| !mint.trim().is_empty())
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "cross-mint opportunity is missing target_liquidity_mint".to_owned(),
+            )
+        })?;
+    Ok((source, target))
 }
 
 fn validate_opportunity_advance(
@@ -5591,7 +5956,7 @@ fn validate_signed_route_submission_input(
     Ok(())
 }
 
-async fn reserve_fee_only_route_payer_spend(
+pub(crate) async fn reserve_fee_only_route_payer_spend(
     connection: &mut sqlx::PgConnection,
     input: &SignedRouteSubmissionInput,
     signed_submission_id: i64,
@@ -6116,7 +6481,7 @@ fn signed_route_submission_alt_table_epochs(
     Ok(table_epochs)
 }
 
-fn canonical_writable_account_keys(
+pub(crate) fn canonical_writable_account_keys(
     writable_account_keys: &[String],
 ) -> Result<Vec<String>, OrchestratorError> {
     if writable_account_keys.is_empty()
@@ -6134,7 +6499,7 @@ fn canonical_writable_account_keys(
     Ok(canonical)
 }
 
-fn canonical_conflict_account_keys(
+pub(crate) fn canonical_conflict_account_keys(
     conflict_account_keys: &[String],
 ) -> Result<Vec<String>, OrchestratorError> {
     if conflict_account_keys.len() < 2
@@ -6227,6 +6592,8 @@ fn rebalance_opportunity_from_row(
         source_reserve: row.try_get("source_reserve")?,
         target_reserve: row.try_get("target_reserve")?,
         liquidity_mint: row.try_get("liquidity_mint")?,
+        source_liquidity_mint: row.try_get("source_liquidity_mint")?,
+        target_liquidity_mint: row.try_get("target_liquidity_mint")?,
         amount_raw: row.try_get("amount_raw")?,
         principal_usd_micros: row.try_get("principal_usd_micros")?,
         source_apy_bps: row.try_get("source_apy_bps")?,
@@ -6332,7 +6699,7 @@ fn orchestration_outbox_from_row(
     })
 }
 
-fn signed_route_submission_from_row(
+pub(crate) fn signed_route_submission_from_row(
     row: &sqlx::postgres::PgRow,
 ) -> Result<SignedRouteSubmissionRecord, OrchestratorError> {
     Ok(SignedRouteSubmissionRecord {
@@ -6363,6 +6730,17 @@ fn signed_route_submission_from_row(
         conflict_account_keys: row.try_get("conflict_account_keys")?,
         executor_owner: row.try_get("executor_owner")?,
         executor_fencing_token: row.try_get("executor_fencing_token")?,
+        movement_leg: row.try_get("movement_leg")?,
+        leg_purpose: row.try_get("leg_purpose")?,
+        leg_generation: row.try_get("leg_generation")?,
+        required_commitment: row.try_get("required_commitment")?,
+        policy_account: row.try_get("policy_account")?,
+        expected_effect: row.try_get("expected_effect")?,
+        expected_balance_anchors: row.try_get("expected_balance_anchors")?,
+        reconciled_effect: row.try_get("reconciled_effect")?,
+        reconciled_balance_anchors: row.try_get("reconciled_balance_anchors")?,
+        finalized_slot: row.try_get("finalized_slot")?,
+        finalized_at: row.try_get("finalized_at")?,
         state: SignedRouteSubmissionState::parse(row.try_get("submission_state")?)?,
         confirmation_available_at: row.try_get("confirmation_available_at")?,
         confirmation_lease_owner: row.try_get("confirmation_lease_owner")?,
@@ -6383,6 +6761,28 @@ fn signed_route_submission_from_row(
         error_detail: row.try_get("error_detail")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
+    })
+}
+
+fn cross_mint_no_effect_receipt_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<CrossMintNoEffectReceiptRecord, OrchestratorError> {
+    Ok(CrossMintNoEffectReceiptRecord {
+        submission_id: row.try_get("submission_id")?,
+        decision_id: DecisionId(row.try_get("decision_id")?),
+        movement_leg: row.try_get("movement_leg")?,
+        leg_generation: row.try_get("leg_generation")?,
+        transaction_signature: row.try_get("transaction_signature")?,
+        observed_block_height: row.try_get("observed_block_height")?,
+        signature_history_checked_through_slot: row
+            .try_get("signature_history_checked_through_slot")?,
+        effect_check_slot: row.try_get("effect_check_slot")?,
+        expected_balance_anchors: row.try_get("expected_balance_anchors")?,
+        observed_balance_anchors: row.try_get("observed_balance_anchors")?,
+        signature_history_evidence: row.try_get("signature_history_evidence")?,
+        evidence_hash: row.try_get("evidence_hash")?,
+        observed_at: row.try_get("observed_at")?,
+        created_at: row.try_get("created_at")?,
     })
 }
 

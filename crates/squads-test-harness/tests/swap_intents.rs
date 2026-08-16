@@ -3,7 +3,7 @@ mod common;
 use common::{
     assert_jupiter_usdc_pyusd_fixture_contract, decode_jupiter_swap_data, jupiter_build_url,
     jupiter_fixture_transaction, load_jupiter_usdc_pyusd_fixture, parse_fixture_amount,
-    seed_jupiter_fixture_accounts, shell_single_quote, JupiterBuildFixture,
+    seed_jupiter_fixture_accounts, JupiterBuildFixture,
 };
 use loyal_actions::{
     create_swap_yield_route_action, JupiterSwapContract, SwapLane,
@@ -20,7 +20,7 @@ use squads_test_harness::{
     MockJupiterStableReserveTokenAccount, MockProgram, RouteActionExt, SquadsCompiledInstruction,
     JUPITER_SWAP_DISCRIMINATOR, JUPITER_V6_PROGRAM_ID, LAMPORTS_PER_SOL, PYUSD_MINT, USDC_MINT,
 };
-use std::{env, process::Command};
+use std::{env, time::Duration};
 
 #[test]
 fn wallet_b_can_execute_allowed_usdc_to_pyusd_swap_intent() {
@@ -214,35 +214,31 @@ fn live_jupiter_usdc_pyusd_router_contract_matches_fixture_when_enabled() {
         return;
     }
 
-    let mut curl_command = String::from("curl -sSL");
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("build Jupiter HTTP client");
+    let mut request = client.get(jupiter_build_url());
     if let Ok(api_key) = env::var("JUPITER_API_KEY") {
-        curl_command.push_str(" --header ");
-        curl_command.push_str(&shell_single_quote(&format!("x-api-key: {api_key}")));
+        request = request.header("x-api-key", api_key);
     }
-    curl_command.push(' ');
-    curl_command.push_str(&shell_single_quote(&jupiter_build_url()));
-
-    let output = Command::new("/bin/zsh")
-        .arg("-lc")
-        .arg(curl_command)
-        .output()
-        .expect("fetch live Jupiter build response");
-    if matches!(output.status.code(), Some(6 | 7)) {
-        eprintln!(
-            "skipping live Jupiter fixture check; curl could not reach api.jup.ag: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return;
-    }
+    let response = match request.send() {
+        Ok(response) => response,
+        Err(error) if error.is_connect() => {
+            eprintln!("skipping live Jupiter fixture check; api.jup.ag is unreachable");
+            return;
+        }
+        Err(error) => panic!("Jupiter build request failed: {error}"),
+    };
+    let status = response.status();
+    let body = response.bytes().expect("read live Jupiter build response");
     assert!(
-        output.status.success(),
-        "Jupiter build request failed: status={:?}, stderr={}, stdout={}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
+        status.is_success(),
+        "Jupiter build request failed: status={status}, body={}",
+        String::from_utf8_lossy(&body)
     );
 
     let fixture: JupiterBuildFixture =
-        serde_json::from_slice(&output.stdout).expect("parse live Jupiter build response");
+        serde_json::from_slice(&body).expect("parse live Jupiter build response");
     assert_jupiter_usdc_pyusd_fixture_contract(&fixture);
 }

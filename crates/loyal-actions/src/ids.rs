@@ -7,6 +7,7 @@ pub(crate) const SQUADS_SEED_PREFIX: &[u8] = b"smart_account";
 pub(crate) const SQUADS_SEED_POLICY: &[u8] = b"policy";
 pub(crate) const SQUADS_FULL_PERMISSIONS_MASK: u8 = 7;
 pub(crate) const SQUADS_SYNC_SIGNER_COUNT: u8 = 1;
+pub const SQUADS_MAX_PROGRAM_INTERACTION_CONSTRAINTS: usize = 20;
 pub(crate) const SQUADS_EXECUTE_TRANSACTION_SYNC_V2_DISCRIMINATOR: [u8; 8] =
     [90, 81, 187, 81, 39, 70, 128, 78];
 

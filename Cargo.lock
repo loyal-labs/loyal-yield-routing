@@ -3581,10 +3581,18 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 name = "loyal-actions"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "bincode",
  "borsh 1.6.1",
  "loyal-hub-abi",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "solana-sdk",
+ "solana-system-interface 1.0.0",
  "spl-token 8.0.0",
+ "spl-token-2022 8.0.1",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3602,6 +3610,7 @@ dependencies = [
  "loyal-observability",
  "loyal-yield-orchestrator",
  "loyal-yield-router",
+ "loyal-yield-store",
  "num-bigint 0.4.6",
  "num-traits",
  "reqwest 0.12.28",
@@ -3612,7 +3621,9 @@ dependencies = [
  "solana-client",
  "solana-rpc-client",
  "solana-sdk",
+ "solana-transaction-status-client-types 2.3.13",
  "spl-token 8.0.0",
+ "spl-token-2022 8.0.1",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -3735,6 +3746,7 @@ dependencies = [
  "rustls 0.23.40",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "solana-sdk",
  "spl-token 8.0.0",
  "tokio",
@@ -10312,15 +10324,27 @@ dependencies = [
  "base64 0.22.1",
  "bincode",
  "borsh 1.6.1",
+ "klend-interface",
  "litesvm",
  "loyal-actions",
+ "loyal-solana-env",
+ "loyal-yield-router",
+ "num-bigint 0.4.6",
+ "num-traits",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "solana-client",
  "solana-program-runtime",
  "solana-sdk",
  "solana-system-interface 1.0.0",
+ "solana-transaction-status-client-types 2.3.13",
+ "spl-associated-token-account 7.0.0",
  "spl-token 8.0.0",
+ "spl-token-2022 8.0.1",
  "squads-multisig",
+ "tokio",
 ]
 
 [[package]]

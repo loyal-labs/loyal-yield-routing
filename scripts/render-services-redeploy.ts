@@ -32,7 +32,7 @@ import {
   runRenderServices,
   verifyCliDependencies,
   type CliDependency,
-} from "./render-services-table.ts";
+} from "./render-services-table";
 
 const WORKFLOW = "worker-images.yml";
 const WORKFLOW_REF = "main";

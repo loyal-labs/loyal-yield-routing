@@ -256,6 +256,25 @@ projects:
                 value: warn,balance_sweep_autodeposit_trigger=info
 
           - type: worker
+            name: loyal-squads-policy-monitor
+            runtime: image
+            region: oregon
+            plan: starter
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4a0242d31f0b0a534786bbd084ef92f76e2db800
+            preDeployCommand: /usr/local/bin/yield-migrations --apply
+            dockerCommand: /usr/local/bin/loyal-squads-policy-monitor --cluster mainnet --commitment finalized
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: HELIUS_API_KEY
+                sync: false
+              - key: RUST_LOG
+                value: warn,loyal_squads_policy_monitor=info
+
+          - type: worker
             name: loyal-fleet-opportunity-planner
             runtime: image
             region: oregon
@@ -281,6 +300,10 @@ projects:
                 sync: false
               - key: YIELD_ALT_CLUSTER
                 value: mainnet-beta
+              - key: EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER
+                value: "true"
+              - key: EARN_ROUTER_CROSS_MINT_MAX_VALUE_LOSS_BPS
+                value: "50"
               - key: RUST_LOG
                 value: warn,fleet_opportunity_planner=info
 
@@ -341,6 +364,14 @@ projects:
                 sync: false
               - key: YIELD_ROUTE_FEE_PAYER_KEYPAIRS
                 sync: false
+              - key: JUPITER_API_KEY
+                sync: false
+              - key: EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER
+                value: "true"
+              - key: EARN_ROUTER_CROSS_MINT_MAX_SLIPPAGE_BPS
+                value: "50"
+              - key: EARN_ROUTER_CROSS_MINT_MAX_VALUE_LOSS_BPS
+                value: "50"
               - key: RUST_LOG
                 value: warn,same_mint_reserve_swap=info
 
@@ -376,6 +407,14 @@ projects:
                 sync: false
               - key: YIELD_ROUTE_FEE_PAYER_KEYPAIRS
                 sync: false
+              - key: JUPITER_API_KEY
+                sync: false
+              - key: EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER
+                value: "true"
+              - key: EARN_ROUTER_CROSS_MINT_MAX_SLIPPAGE_BPS
+                value: "50"
+              - key: EARN_ROUTER_CROSS_MINT_MAX_VALUE_LOSS_BPS
+                value: "50"
               - key: RUST_LOG
                 value: warn,same_mint_reserve_swap=info
 

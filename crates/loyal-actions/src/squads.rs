@@ -10,6 +10,7 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoyalActionError {
     EmptySwapLanes,
+    EmptyStablecoinPairs,
     EmptyStableMints,
     EmptyKaminoMarkets,
     EmptyKaminoLiquidityMints,
@@ -25,12 +26,20 @@ pub enum LoyalActionError {
     MissingActionStep,
     SplitActionRoute,
     InvalidSettingsHandoff,
+    InvalidStablecoinPair,
+    DuplicateStablecoinPair,
+    TooManyStablecoinPairs,
+    InvalidSlippageBps,
+    InvalidDailySpendingCap,
 }
 
 impl fmt::Display for LoyalActionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptySwapLanes => formatter.write_str("at least one swap lane is required"),
+            Self::EmptyStablecoinPairs => {
+                formatter.write_str("at least one directed stablecoin pair is required")
+            }
             Self::EmptyStableMints => formatter.write_str("at least one stable mint is required"),
             Self::EmptyKaminoMarkets => {
                 formatter.write_str("at least one Kamino market is required")
@@ -80,6 +89,20 @@ impl fmt::Display for LoyalActionError {
             Self::InvalidSettingsHandoff => {
                 formatter.write_str("invalid atomic Squads Settings signer handoff")
             }
+            Self::InvalidStablecoinPair => formatter
+                .write_str("directed stablecoin pairs must use two different canonical Earn mints"),
+            Self::DuplicateStablecoinPair => {
+                formatter.write_str("directed stablecoin pairs must be unique")
+            }
+            Self::TooManyStablecoinPairs => formatter.write_str(
+                "directed stablecoin pairs exceed the Squads 20-constraint policy limit",
+            ),
+            Self::InvalidSlippageBps => {
+                formatter.write_str("slippage basis points must be at most 10000")
+            }
+            Self::InvalidDailySpendingCap => {
+                formatter.write_str("daily source-mint spending cap must be positive")
+            }
         }
     }
 }
@@ -120,8 +143,16 @@ pub fn derive_squads_v4_vault(multisig: &Pubkey, vault_index: u8) -> (Pubkey, u8
 }
 
 pub fn derive_classic_associated_token_account(owner: Pubkey, mint: Pubkey) -> Pubkey {
+    derive_associated_token_account(owner, mint, spl_token::id())
+}
+
+pub fn derive_associated_token_account(
+    owner: Pubkey,
+    mint: Pubkey,
+    token_program: Pubkey,
+) -> Pubkey {
     Pubkey::find_program_address(
-        &[owner.as_ref(), spl_token::id().as_ref(), mint.as_ref()],
+        &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
         &ASSOCIATED_TOKEN_PROGRAM_ID,
     )
     .0
@@ -533,11 +564,54 @@ pub(crate) fn create_program_interaction_action_instruction(
     account_index: u8,
     constraints: Vec<SquadsInstructionConstraint>,
 ) -> Result<Instruction> {
+    create_program_interaction_action_instruction_with_spending_limits(
+        settings,
+        authority,
+        delegated_signer,
+        action_seed,
+        account_index,
+        constraints,
+        Vec::new(),
+    )
+}
+
+pub(crate) fn create_program_interaction_action_instruction_with_daily_spending_limits(
+    settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    action_seed: u64,
+    account_index: u8,
+    constraints: Vec<SquadsInstructionConstraint>,
+    daily_spending_limits: &[(Pubkey, u64)],
+) -> Result<Instruction> {
+    create_program_interaction_action_instruction_with_spending_limits(
+        settings,
+        authority,
+        delegated_signer,
+        action_seed,
+        account_index,
+        constraints,
+        daily_spending_limits
+            .iter()
+            .map(|(mint, max_per_period)| daily_spending_limit(*mint, *max_per_period))
+            .collect(),
+    )
+}
+
+fn create_program_interaction_action_instruction_with_spending_limits(
+    settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    action_seed: u64,
+    account_index: u8,
+    constraints: Vec<SquadsInstructionConstraint>,
+    spending_limits: Vec<SquadsLimitedSpendingLimit>,
+) -> Result<Instruction> {
     let (action_account, _) = derive_action_account(&settings, action_seed);
     let action = SquadsSettingsAction::PolicyCreate {
         seed: action_seed,
         policy_creation_payload: SquadsPolicyCreationPayload::ProgramInteraction(
-            compile_program_interaction_payload(account_index, constraints)?,
+            compile_program_interaction_payload(account_index, constraints, spending_limits)?,
         ),
         signers: vec![SquadsSmartAccountSigner {
             key: delegated_signer,
@@ -573,10 +647,30 @@ pub(crate) fn update_program_interaction_action_instruction(
     account_index: u8,
     constraints: Vec<SquadsInstructionConstraint>,
 ) -> Result<Instruction> {
+    update_program_interaction_action_instruction_with_spending_limits(
+        settings,
+        authority,
+        policy,
+        delegated_signer,
+        account_index,
+        constraints,
+        Vec::new(),
+    )
+}
+
+fn update_program_interaction_action_instruction_with_spending_limits(
+    settings: Pubkey,
+    authority: Pubkey,
+    policy: Pubkey,
+    delegated_signer: Pubkey,
+    account_index: u8,
+    constraints: Vec<SquadsInstructionConstraint>,
+    spending_limits: Vec<SquadsLimitedSpendingLimit>,
+) -> Result<Instruction> {
     let action = SquadsSettingsAction::PolicyUpdate {
         policy,
         policy_update_payload: SquadsPolicyCreationPayload::ProgramInteraction(
-            compile_program_interaction_payload(account_index, constraints)?,
+            compile_program_interaction_payload(account_index, constraints, spending_limits)?,
         ),
         signers: vec![SquadsSmartAccountSigner {
             key: delegated_signer,
@@ -606,14 +700,27 @@ pub(crate) fn update_program_interaction_action_instruction(
 fn compile_program_interaction_payload(
     account_index: u8,
     constraints: Vec<SquadsInstructionConstraint>,
+    spending_limits: Vec<SquadsLimitedSpendingLimit>,
 ) -> Result<SquadsProgramInteractionPolicyCreationPayload> {
     Ok(SquadsProgramInteractionPolicyCreationPayload {
         account_index,
         instructions_constraints: constraints,
         pre_hook: None,
         post_hook: None,
-        spending_limits: Vec::new(),
+        spending_limits,
     })
+}
+
+fn daily_spending_limit(mint: Pubkey, max_per_period: u64) -> SquadsLimitedSpendingLimit {
+    SquadsLimitedSpendingLimit {
+        mint,
+        time_constraints: SquadsLimitedTimeConstraints {
+            start: 0,
+            expiration: None,
+            period: SquadsPeriodV2::Daily,
+        },
+        quantity_constraints: SquadsLimitedQuantityConstraints { max_per_period },
+    }
 }
 
 fn serialize_settings_actions(actions: Vec<SquadsSettingsAction>) -> Vec<u8> {
@@ -841,6 +948,7 @@ struct SquadsLimitedTimeConstraints {
 #[allow(dead_code)]
 enum SquadsPeriodV2 {
     OneTime,
+    Daily,
 }
 
 #[derive(BorshSerialize)]

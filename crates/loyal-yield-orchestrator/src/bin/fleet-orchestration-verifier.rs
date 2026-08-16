@@ -45,6 +45,15 @@ use loyal_yield_orchestrator::{
     SameMintRebalanceInput, SharedMarketCatalogUpsert, SignedLookupTableTransaction, VaultId,
     ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
+use loyal_yield_store::fleet_orchestration::{
+    CrossMintBalanceAnchors, CrossMintContinuationLease, CrossMintCustodyPhase,
+    CrossMintExpectedEffect, CrossMintFallbackCapacityInput, CrossMintLegPublicationInput,
+    CrossMintLegPurpose, CrossMintLegReconciliationInput, CrossMintMovementActivationInput,
+    CrossMintMovementCloseInput, CrossMintMovementLeg, CrossMintMovementRecord,
+    CrossMintNoEffectProofInput, CrossMintPolicyBindings, CrossMintReconciledEffect,
+    CrossMintTerminalOutcome, KaminoPositionAnchor, SignedRouteSubmissionLease, TokenBalanceAnchor,
+    TokenBalanceDelta,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -83,7 +92,7 @@ const PRODUCTION_SERVICE_NAMES: [&str; 6] = [
     "loyal-fleet-route-reconciler",
     "loyal-route-lookup-table-provisioner",
 ];
-const VERIFIED_MIGRATIONS: [(i64, &str, &str); 11] = [
+const VERIFIED_MIGRATIONS: [(i64, &str, &str); 14] = [
     (
         23,
         "value_priority_rebalance_queue",
@@ -139,6 +148,21 @@ const VERIFIED_MIGRATIONS: [(i64, &str, &str); 11] = [
         "policy_setup_funding_reservations",
         "0033_policy_setup_funding_reservations.sql",
     ),
+    (
+        34,
+        "fleet_health_snapshot_projection",
+        "0034_fleet_health_snapshot_projection.sql",
+    ),
+    (
+        35,
+        "durable_cross_mint_movements",
+        "0035_durable_cross_mint_movements.sql",
+    ),
+    (
+        36,
+        "cross_mint_swap_policies",
+        "0036_cross_mint_swap_policies.sql",
+    ),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -154,6 +178,10 @@ enum Verdict {
 struct Subcheck {
     name: &'static str,
     verdict: Verdict,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_failing_invariant: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    safe_response: Option<String>,
     evidence: Value,
 }
 
@@ -541,8 +569,44 @@ fn subcheck(name: &'static str, passed: bool, evidence: Value) -> Subcheck {
     Subcheck {
         name,
         verdict: if passed { Verdict::Pass } else { Verdict::Fail },
+        first_failing_invariant: (!passed).then(|| format!("{name} behavioral predicate failed")),
+        safe_response: (!passed).then(|| {
+            "fail closed: do not advance, replace, recover, or release capacity until this invariant is proved"
+                .to_owned()
+        }),
         evidence,
     }
+}
+
+fn not_run_subcheck(name: &'static str, evidence: Value) -> Subcheck {
+    Subcheck {
+        name,
+        verdict: Verdict::NotRun,
+        first_failing_invariant: Some(format!("{name} was not executed")),
+        safe_response: Some(
+            "keep the affected execution path disabled until the missing verifier evidence is collected"
+                .to_owned(),
+        ),
+        evidence,
+    }
+}
+
+fn cross_mint_not_run_subcheck(
+    name: &'static str,
+    invariant: &'static str,
+    missing_capabilities: Vec<String>,
+    connection_required: &'static str,
+) -> Subcheck {
+    not_run_subcheck(
+        name,
+        json!({
+            "invariant": invariant,
+            "status": "NOT_RUN",
+            "safeDefault": "cross-mint progression remains disabled",
+            "missingCapabilities": missing_capabilities,
+            "connectionRequired": connection_required,
+        }),
+    )
 }
 
 fn aggregate_verdicts(verdicts: impl IntoIterator<Item = Verdict>) -> Verdict {
@@ -2796,6 +2860,10 @@ impl DatabaseFixture {
             .bind(&settings_pattern)
             .execute(self.client.pool())
             .await?;
+        sqlx::query("DELETE FROM loyal_yield.cross_mint_swap_policies WHERE cluster LIKE $1")
+            .bind(&cluster_pattern)
+            .execute(self.client.pool())
+            .await?;
         sqlx::query("DELETE FROM loyal_yield.route_policies WHERE settings LIKE $1")
             .bind(&settings_pattern)
             .execute(self.client.pool())
@@ -2830,6 +2898,7 @@ impl DatabaseFixture {
               + (SELECT count(*) FROM loyal_yield.fleet_planning_clusters WHERE cluster LIKE $1)
               + (SELECT count(*) FROM loyal_yield.managed_vaults WHERE settings LIKE $2)
               + (SELECT count(*) FROM loyal_yield.route_policies WHERE settings LIKE $2)
+              + (SELECT count(*) FROM loyal_yield.cross_mint_swap_policies WHERE cluster LIKE $1)
               + (SELECT count(*) FROM loyal_yield.route_lookup_tables WHERE cluster LIKE $1)
               + (SELECT count(*) FROM loyal_yield.lookup_table_families WHERE cluster LIKE $1)
             "#,
@@ -4320,6 +4389,2496 @@ async fn run_alt_database_runtime_measurements(
         alt_authority_payer_identity_consistent: policy_identity_matches,
         policy_pubkey,
     })
+}
+
+fn missing_cross_mint_columns(
+    columns: &BTreeMap<String, BTreeSet<String>>,
+    table: &str,
+    required: &[&str],
+) -> Vec<String> {
+    let available = columns.get(table);
+    required
+        .iter()
+        .filter(|column| available.is_none_or(|available| !available.contains(**column)))
+        .map(|column| format!("loyal_yield.{table}.{column}"))
+        .collect()
+}
+
+struct ActivatedCrossMintFixture {
+    opportunity_lease: RebalanceOpportunityLease,
+    movement: CrossMintMovementRecord,
+    capacity: TargetCapacityReservationInput,
+    policy_bindings: CrossMintPolicyBindings,
+    reservation_id: i64,
+}
+
+fn cross_mint_fixture_policy_bindings(
+    opportunity: &RebalanceOpportunityRecord,
+) -> Result<CrossMintPolicyBindings, Box<dyn Error>> {
+    CrossMintPolicyBindings::from_execution_plan(&opportunity.execution_plan).map_err(Into::into)
+}
+
+async fn seed_cross_mint_ready_opportunity(
+    fixture: &DatabaseFixture,
+    cluster: &str,
+    epoch_id: i64,
+    label: &str,
+    economic_priority: i64,
+) -> Result<SeededOpportunity, Box<dyn Error>> {
+    let seeded = fixture
+        .seed_opportunity(cluster, epoch_id, label, "ready", economic_priority)
+        .await?;
+    let policy = sqlx::query(
+        r#"
+        SELECT vault.settings, vault.vault_index, vault.vault_pubkey,
+               policy.authority, policy.policy_account,
+               policy.delegated_signers[1] AS delegated_signer
+        FROM loyal_yield.rebalance_opportunities opportunity
+        JOIN loyal_yield.managed_vaults vault ON vault.id = opportunity.vault_id
+        JOIN loyal_yield.route_policies policy ON policy.id = vault.active_policy_id
+        WHERE opportunity.id = $1
+        "#,
+    )
+    .bind(seeded.id)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let settings: String = policy.try_get("settings")?;
+    let vault_index: i16 = policy.try_get("vault_index")?;
+    let vault_pubkey: String = policy.try_get("vault_pubkey")?;
+    let authority: String = policy.try_get("authority")?;
+    let base_policy_account: String = policy.try_get("policy_account")?;
+    let delegated_signer: String = policy.try_get("delegated_signer")?;
+    let swap_policy_account = format!("swap-policy:{}:{}", fixture.prefix, label);
+    let token_2022_swap_policy_account =
+        format!("swap-policy-token-2022:{}:{}", fixture.prefix, label);
+    let deposit_policy_account = format!("deposit-policy:{}:{}", fixture.prefix, label);
+    let base_signature = format!("base-finalized:{}:{}", fixture.prefix, label);
+    let swap_signature = format!("swap-finalized:{}:{}", fixture.prefix, label);
+    let token_2022_swap_signature =
+        format!("swap-token-2022-finalized:{}:{}", fixture.prefix, label);
+    let deposit_signature = format!("deposit-finalized:{}:{}", fixture.prefix, label);
+    sqlx::query(
+        r#"
+        UPDATE loyal_yield.route_policies
+        SET cluster = $2,
+            source_commitment = 'finalized',
+            finalized_eligible = TRUE,
+            route_modes = ARRAY['same_mint_kamino']::TEXT[],
+            stable_mints = ARRAY['USDC']::TEXT[],
+            kamino_liquidity_mints = ARRAY['USDC']::TEXT[],
+            last_seen_slot = 10000,
+            last_seen_signature = $3
+        WHERE policy_account = $1
+        "#,
+    )
+    .bind(&base_policy_account)
+    .bind(cluster)
+    .bind(&base_signature)
+    .execute(fixture.client.pool())
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.route_policies
+            (settings, authority, policy_seed, policy_account, vault_index,
+             vault_pubkey, delegated_signers, threshold, route_modes,
+             stable_mints, kamino_markets, kamino_liquidity_mints,
+             universe_preset, risk_profile, swap_lanes, active,
+             last_seen_slot, last_seen_signature, cluster, source_commitment,
+             finalized_eligible)
+        VALUES
+            ($1, $2, 3, $3, $4, $5, ARRAY[$6]::TEXT[], 1,
+             ARRAY['same_mint_kamino']::TEXT[], ARRAY['USDT']::TEXT[],
+             ARRAY['fixture-market']::TEXT[], ARRAY['USDT']::TEXT[],
+             NULL, 'safe', '[]'::JSONB, TRUE, 10000, $7, $8,
+             'finalized', TRUE)
+        "#,
+    )
+    .bind(&settings)
+    .bind(&authority)
+    .bind(&deposit_policy_account)
+    .bind(vault_index)
+    .bind(&vault_pubkey)
+    .bind(&delegated_signer)
+    .bind(&deposit_signature)
+    .bind(cluster)
+    .execute(fixture.client.pool())
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.cross_mint_swap_policies
+            (cluster, settings, authority, policy_seed, policy_account,
+             vault_index, vault_pubkey, delegated_signer, source_shard,
+             max_slippage_bps, daily_source_mint_spending_cap,
+             manifest_fingerprint,
+             active, start_eligible, last_mutation,
+             source_commitment, last_seen_slot, last_seen_signature)
+        VALUES
+            ($1, $2, $3, 2, $4, $5, $6, $7, 'classic',
+             50, 1000000000, repeat('a', 64), TRUE, TRUE,
+             'create', 'finalized', 10000, $8),
+            ($1, $2, $3, 3, $9, $5, $6, $7, 'token_2022',
+             50, 1000000000, repeat('b', 64), TRUE, TRUE,
+             'create', 'finalized', 10000, $10)
+        "#,
+    )
+    .bind(cluster)
+    .bind(&settings)
+    .bind(&authority)
+    .bind(&swap_policy_account)
+    .bind(vault_index)
+    .bind(&vault_pubkey)
+    .bind(&delegated_signer)
+    .bind(&swap_signature)
+    .bind(&token_2022_swap_policy_account)
+    .bind(&token_2022_swap_signature)
+    .execute(fixture.client.pool())
+    .await?;
+    let updated = sqlx::query(
+        r#"
+        UPDATE loyal_yield.rebalance_opportunities
+        SET liquidity_mint = 'USDT',
+            source_liquidity_mint = 'USDC',
+            target_liquidity_mint = 'USDT',
+            estimated_cost_lamports = 50000,
+            execution_plan = execution_plan || jsonb_build_object(
+                'kind', 'cross_mint_jupiter',
+                'source_liquidity_mint', 'USDC',
+                'target_liquidity_mint', 'USDT',
+                'swap_lane', 'jupiter_exact_in',
+                'policy_bindings', jsonb_build_object(
+                    'settings', $2,
+                    'vault_index', $3,
+                    'vault_pubkey', $4,
+                    'delegated_signer', $5,
+                    'withdraw', jsonb_build_object(
+                        'policy_account', $6,
+                        'observed_slot', 10000,
+                        'observed_signature', $7,
+                        'source_commitment', 'finalized',
+                        'constraint_index', 0
+                    ),
+                    'swap', jsonb_build_object(
+                        'policy_account', $8,
+                        'source_shard', 'classic',
+                        'observed_slot', 10000,
+                        'observed_signature', $9,
+                        'source_commitment', 'finalized',
+                        'max_slippage_bps', 50,
+                        'daily_source_mint_spending_cap', 1000000000,
+                        'manifest_fingerprint', repeat('a', 64)
+                    ),
+                    'deposit', jsonb_build_object(
+                        'policy_account', $10,
+                        'observed_slot', 10000,
+                        'observed_signature', $11,
+                        'source_commitment', 'finalized',
+                        'constraint_index', 1
+                    )
+                )
+            )
+        WHERE id = $1 AND opportunity_state = 'ready'
+        "#,
+    )
+    .bind(seeded.id)
+    .bind(&settings)
+    .bind(i64::from(vault_index))
+    .bind(&vault_pubkey)
+    .bind(&delegated_signer)
+    .bind(&base_policy_account)
+    .bind(&base_signature)
+    .bind(&swap_policy_account)
+    .bind(&swap_signature)
+    .bind(&deposit_policy_account)
+    .bind(&deposit_signature)
+    .execute(fixture.client.pool())
+    .await?;
+    if updated.rows_affected() != 1 {
+        return Err("cross-mint fixture did not update exactly one ready opportunity".into());
+    }
+    Ok(seeded)
+}
+
+async fn set_cross_mint_gates(
+    fixture: &DatabaseFixture,
+    cluster: &str,
+    start_new_movements: bool,
+    continue_or_recover_existing: bool,
+) -> Result<(), Box<dyn Error>> {
+    sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.cross_mint_movement_controls
+            (cluster, start_new_movements, continue_or_recover_existing,
+             generation, updated_by)
+        VALUES ($1, $2, $3, 1, 'fleet-orchestration-verifier')
+        ON CONFLICT (cluster) DO UPDATE
+        SET start_new_movements = EXCLUDED.start_new_movements,
+            continue_or_recover_existing = EXCLUDED.continue_or_recover_existing,
+            generation = loyal_yield.cross_mint_movement_controls.generation + 1,
+            updated_by = EXCLUDED.updated_by,
+            updated_at = now()
+        "#,
+    )
+    .bind(cluster)
+    .bind(start_new_movements)
+    .bind(continue_or_recover_existing)
+    .execute(fixture.client.pool())
+    .await?;
+    Ok(())
+}
+
+async fn cross_mint_capacity_input_for_lease(
+    fixture: &DatabaseFixture,
+    lease: &RebalanceOpportunityLease,
+) -> Result<TargetCapacityReservationInput, Box<dyn Error>> {
+    let observation = TargetCapacityObservation {
+        cluster: lease.opportunity.cluster.clone(),
+        target_reserve: lease.opportunity.target_reserve.clone(),
+        liquidity_mint: lease.opportunity.target_liquidity_mint.clone(),
+        observed_supply_usd_micros: 20_000_000_000,
+        observed_slot: 10_000,
+        maximum_inflight_usd_micros: 1_000_000_000,
+    };
+    Ok(target_capacity_input_from_projection(
+        lease,
+        fixture.client.observe_target_capacity(observation).await?,
+    ))
+}
+
+async fn activate_cross_mint_fixture(
+    fixture: &DatabaseFixture,
+    suffix: &str,
+) -> Result<ActivatedCrossMintFixture, Box<dyn Error>> {
+    let cluster = fixture.cluster(suffix);
+    let epoch_id = fixture.seed_epoch(&cluster).await?;
+    seed_cross_mint_ready_opportunity(fixture, &cluster, epoch_id, suffix, 50_000).await?;
+    set_cross_mint_gates(fixture, &cluster, true, true).await?;
+    let opportunity_lease = claim_one(
+        &fixture.client,
+        &cluster,
+        &format!("{suffix}-activate"),
+        RebalanceOpportunityClaimKind::Execute,
+    )
+    .await?;
+    let capacity = cross_mint_capacity_input_for_lease(fixture, &opportunity_lease).await?;
+    let policy_bindings = cross_mint_fixture_policy_bindings(&opportunity_lease.opportunity)?;
+    let movement = fixture
+        .client
+        .activate_cross_mint_movement(
+            &opportunity_lease,
+            CrossMintMovementActivationInput {
+                capacity: capacity.clone(),
+                initial_withdraw_compiled_fee_lamports: 5_000,
+                preflight_certification: json!({
+                    "kind": "cross_mint_preflight",
+                    "fixture": suffix,
+                }),
+                policy_bindings: policy_bindings.clone(),
+            },
+        )
+        .await?;
+    let reservation_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM loyal_yield.target_capacity_reservations WHERE decision_id = $1",
+    )
+    .bind(movement.decision_id.as_i64())
+    .fetch_one(fixture.client.pool())
+    .await?;
+    Ok(ActivatedCrossMintFixture {
+        opportunity_lease,
+        movement,
+        capacity,
+        policy_bindings,
+        reservation_id,
+    })
+}
+
+async fn claim_cross_mint_continuation(
+    fixture: &DatabaseFixture,
+    cluster: &str,
+    owner: &str,
+) -> Result<CrossMintContinuationLease, Box<dyn Error>> {
+    let crashed = fixture
+        .client
+        .claim_cross_mint_continuation(cluster, owner, 60)
+        .await?
+        .ok_or_else(|| format!("no cross-mint continuation was claimable in {cluster}"))?;
+    sqlx::query(
+        "UPDATE loyal_yield.rebalance_decisions SET continuation_lease_expires_at = now() - interval '1 second' WHERE id = $1 AND continuation_lease_owner = $2 AND continuation_fencing_token = $3",
+    )
+    .bind(crashed.movement.decision_id.as_i64())
+    .bind(&crashed.owner)
+    .bind(crashed.fencing_token)
+    .execute(fixture.client.pool())
+    .await?;
+    let restarted = fixture
+        .client
+        .claim_cross_mint_continuation(cluster, &format!("{owner}-restart"), 60)
+        .await?
+        .ok_or_else(|| {
+            format!("crashed cross-mint continuation was not reclaimable in {cluster}")
+        })?;
+    if restarted.fencing_token <= crashed.fencing_token
+        || restarted.control_generation != crashed.control_generation
+        || restarted.movement.decision_id != crashed.movement.decision_id
+    {
+        return Err("cross-mint before-persistence restart lost its durable fence".into());
+    }
+    Ok(restarted)
+}
+
+// Keeping each signed-leg invariant explicit at verifier call sites makes the
+// scenario evidence easier to audit than hiding it in a mutable fixture.
+#[allow(clippy::too_many_arguments)]
+async fn cross_mint_leg_input(
+    fixture: &DatabaseFixture,
+    opportunity_lease: &RebalanceOpportunityLease,
+    continuation: &CrossMintContinuationLease,
+    label: &str,
+    leg: CrossMintMovementLeg,
+    purpose: CrossMintLegPurpose,
+    generation: i64,
+    expected_effect: CrossMintExpectedEffect,
+) -> Result<CrossMintLegPublicationInput, Box<dyn Error>> {
+    let conflicts = vec![
+        format!("fleet-shared-write-lane:{}:{label}", fixture.prefix),
+        format!(
+            "vault-write:{}:{label}",
+            continuation.movement.decision_id.as_i64()
+        ),
+    ];
+    let mut submission =
+        signed_input_for_lease(fixture, opportunity_lease, conflicts, label).await?;
+    submission.decision_id = Some(continuation.movement.decision_id);
+    submission.executor_owner = continuation.owner.clone();
+    submission.executor_fencing_token = continuation.fencing_token;
+    let expected_balance_anchors = CrossMintBalanceAnchors {
+        debit: expected_effect
+            .debit
+            .as_ref()
+            .map(|delta| TokenBalanceAnchor {
+                mint: delta.mint.clone(),
+                token_account: delta.token_account.clone(),
+                amount_raw: continuation
+                    .movement
+                    .custody_observed_balance_raw
+                    .unwrap_or(delta.amount_raw),
+            }),
+        credit: expected_effect
+            .credit_mint
+            .as_ref()
+            .map(|mint| TokenBalanceAnchor {
+                mint: mint.clone(),
+                token_account: expected_effect
+                    .credit_token_account
+                    .clone()
+                    .expect("validated cross-mint credit account"),
+                amount_raw: 23,
+            }),
+        kamino_position: match leg {
+            CrossMintMovementLeg::Withdraw => Some(KaminoPositionAnchor {
+                reserve: continuation.movement.source_reserve.clone(),
+                market: format!("kamino-market:{}", fixture.prefix),
+                obligation: format!(
+                    "kamino-obligation:{}:{}",
+                    fixture.prefix,
+                    continuation.movement.decision_id.as_i64()
+                ),
+                obligation_exists: true,
+                deposited_collateral_amount_raw: continuation.movement.planned_amount_raw.max(1),
+                minimum_deposit_amount_raw: None,
+            }),
+            CrossMintMovementLeg::Deposit => Some(KaminoPositionAnchor {
+                reserve: if purpose == CrossMintLegPurpose::RecoverSource {
+                    continuation.movement.source_reserve.clone()
+                } else {
+                    continuation.movement.active_target_reserve.clone()
+                },
+                market: format!("kamino-market:{}", fixture.prefix),
+                obligation: format!(
+                    "kamino-obligation:{}:{}",
+                    fixture.prefix,
+                    continuation.movement.decision_id.as_i64()
+                ),
+                obligation_exists: true,
+                deposited_collateral_amount_raw: 0,
+                minimum_deposit_amount_raw: None,
+            }),
+            CrossMintMovementLeg::Swap => None,
+        },
+    };
+    let bindings = cross_mint_fixture_policy_bindings(&opportunity_lease.opportunity)?;
+    let policy_account = match (leg, purpose) {
+        (CrossMintMovementLeg::Withdraw, _) => bindings.withdraw.policy_account,
+        (CrossMintMovementLeg::Swap, _) => bindings.swap.policy_account,
+        (CrossMintMovementLeg::Deposit, CrossMintLegPurpose::RecoverSource) => {
+            bindings.withdraw.policy_account
+        }
+        (CrossMintMovementLeg::Deposit, _) => bindings.deposit.policy_account,
+    };
+    Ok(CrossMintLegPublicationInput {
+        leg,
+        purpose,
+        generation,
+        policy_account,
+        expected_effect,
+        expected_balance_anchors,
+        submission,
+    })
+}
+
+async fn lease_pending_cross_mint_submission(
+    fixture: &DatabaseFixture,
+    cluster: &str,
+    owner: &str,
+    submission_id: i64,
+) -> Result<SignedRouteSubmissionLease, Box<dyn Error>> {
+    let leases = fixture
+        .client
+        .lease_pending_signed_route_submissions(
+            cluster,
+            owner,
+            16,
+            Utc::now() + chrono::Duration::minutes(2),
+        )
+        .await?;
+    leases
+        .into_iter()
+        .find(|lease| lease.submission.id == submission_id)
+        .ok_or_else(|| {
+            format!("signed cross-mint submission {submission_id} was not claimable").into()
+        })
+}
+
+async fn lease_reconciliation_cross_mint_submission(
+    fixture: &DatabaseFixture,
+    cluster: &str,
+    owner: &str,
+    submission_id: i64,
+) -> Result<SignedRouteSubmissionLease, Box<dyn Error>> {
+    let leases = fixture
+        .client
+        .lease_reconciliation_pending_signed_route_submissions(
+            cluster,
+            owner,
+            16,
+            Utc::now() + chrono::Duration::minutes(2),
+        )
+        .await?;
+    leases
+        .into_iter()
+        .find(|lease| lease.submission.id == submission_id)
+        .ok_or_else(|| {
+            format!(
+                "reconciliation-pending cross-mint submission {submission_id} was not claimable"
+            )
+            .into()
+        })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CrossMintCrashWindowEvidence {
+    before_persistence_fence_reclaimed: bool,
+    persisted_prebroadcast_exact_wire: bool,
+    broadcast_prestatus_exact_wire: bool,
+    batch_finality_bypass_rejected: bool,
+    finalized_prereconcile_receipt_persisted: bool,
+    reconciled_precontinuation_projection_persisted: bool,
+}
+
+impl CrossMintCrashWindowEvidence {
+    fn passed(&self) -> bool {
+        self.before_persistence_fence_reclaimed
+            && self.persisted_prebroadcast_exact_wire
+            && self.broadcast_prestatus_exact_wire
+            && self.batch_finality_bypass_rejected
+            && self.finalized_prereconcile_receipt_persisted
+            && self.reconciled_precontinuation_projection_persisted
+    }
+}
+
+async fn finalize_and_reconcile_cross_mint_leg(
+    fixture: &DatabaseFixture,
+    cluster: &str,
+    submission_id: i64,
+    finalized_slot: i64,
+    effect: CrossMintReconciledEffect,
+) -> Result<(CrossMintMovementRecord, bool, CrossMintCrashWindowEvidence), Box<dyn Error>> {
+    let owner = format!("reconcile-{submission_id}");
+    let prebroadcast = lease_pending_cross_mint_submission(
+        fixture,
+        cluster,
+        &format!("prebroadcast-{submission_id}"),
+        submission_id,
+    )
+    .await?;
+    let persisted_bytes = prebroadcast.submission.signed_transaction.clone();
+    let now = Utc::now();
+    fixture
+        .client
+        .advance_signed_route_submission(
+            &prebroadcast,
+            SignedRouteSubmissionAdvance::Deferred {
+                checked_at: now,
+                next_poll_at: now,
+                error_detail: Some("verifier_persisted_prebroadcast_restart".to_owned()),
+            },
+        )
+        .await?;
+    let confirmation = lease_pending_cross_mint_submission(
+        fixture,
+        cluster,
+        &format!("confirm-{submission_id}"),
+        submission_id,
+    )
+    .await?;
+    let persisted_prebroadcast_exact_wire = confirmation.submission.signed_transaction
+        == persisted_bytes
+        && confirmation.submission.broadcast_count == 0;
+    fixture
+        .client
+        .advance_signed_route_submission(
+            &confirmation,
+            SignedRouteSubmissionAdvance::BroadcastIntent {
+                checked_at: Utc::now(),
+            },
+        )
+        .await?;
+    fixture
+        .client
+        .advance_signed_route_submission(
+            &confirmation,
+            SignedRouteSubmissionAdvance::Submitted {
+                checked_at: Utc::now(),
+                observed_slot: Some(finalized_slot.saturating_sub(1)),
+                next_poll_at: Utc::now(),
+                broadcasted: false,
+            },
+        )
+        .await?;
+    let confirmation = lease_pending_cross_mint_submission(
+        fixture,
+        cluster,
+        &format!("status-restart-{submission_id}"),
+        submission_id,
+    )
+    .await?;
+    if confirmation.submission.signed_transaction != persisted_bytes
+        || confirmation.submission.broadcast_count != 1
+    {
+        return Err(
+            "broadcast/prestatus restart changed exact signed bytes or broadcast count".into(),
+        );
+    }
+    fixture
+        .client
+        .advance_signed_route_submission(
+            &confirmation,
+            SignedRouteSubmissionAdvance::Confirmed {
+                checked_at: Utc::now(),
+                confirmed_slot: finalized_slot,
+            },
+        )
+        .await?;
+    let batch_finality_bypass_rejected = fixture
+        .client
+        .confirm_signed_route_submission_batch(
+            &[(confirmation.clone(), finalized_slot)],
+            Utc::now(),
+        )
+        .await
+        .is_err();
+    let rejected_before_finality = fixture
+        .client
+        .advance_signed_route_submission(
+            &confirmation,
+            SignedRouteSubmissionAdvance::ReconciliationPending,
+        )
+        .await
+        .is_err();
+    let finalized = fixture
+        .client
+        .advance_signed_route_submission(
+            &confirmation,
+            SignedRouteSubmissionAdvance::Finalized {
+                checked_at: Utc::now(),
+                finalized_slot,
+            },
+        )
+        .await?;
+    if finalized.finalized_slot != Some(finalized_slot) {
+        return Err("finalized/prereconcile checkpoint did not persist finality".into());
+    }
+    sqlx::query(
+        r#"
+        UPDATE loyal_yield.signed_route_submissions
+        SET confirmation_lease_expires_at = now() - interval '1 second'
+        WHERE id = $1
+        "#,
+    )
+    .bind(submission_id)
+    .execute(fixture.client.pool())
+    .await?;
+    let confirmation = lease_pending_cross_mint_submission(
+        fixture,
+        cluster,
+        &format!("finality-restart-{submission_id}"),
+        submission_id,
+    )
+    .await?;
+    if confirmation.submission.signed_transaction != persisted_bytes
+        || confirmation.submission.finalized_slot != Some(finalized_slot)
+    {
+        return Err("finalized/prereconcile restart lost exact wire or finality receipt".into());
+    }
+    fixture
+        .client
+        .advance_signed_route_submission(
+            &confirmation,
+            SignedRouteSubmissionAdvance::ReconciliationPending,
+        )
+        .await?;
+    let reconciliation =
+        lease_reconciliation_cross_mint_submission(fixture, cluster, &owner, submission_id).await?;
+    let expected_anchors: CrossMintBalanceAnchors =
+        serde_json::from_value(reconciliation.submission.expected_balance_anchors.clone())?;
+    let reconciled_balance_anchors = CrossMintBalanceAnchors {
+        debit: expected_anchors
+            .debit
+            .as_ref()
+            .map(|pre| TokenBalanceAnchor {
+                mint: pre.mint.clone(),
+                token_account: pre.token_account.clone(),
+                amount_raw: pre.amount_raw
+                    - effect
+                        .debit
+                        .as_ref()
+                        .expect("expected debit fixture")
+                        .amount_raw,
+            }),
+        credit: expected_anchors
+            .credit
+            .as_ref()
+            .map(|pre| TokenBalanceAnchor {
+                mint: pre.mint.clone(),
+                token_account: pre.token_account.clone(),
+                amount_raw: pre.amount_raw
+                    + effect
+                        .credit
+                        .as_ref()
+                        .expect("expected credit fixture")
+                        .amount_raw,
+            }),
+        kamino_position: expected_anchors.kamino_position.as_ref().map(|pre| {
+            let withdrawal = effect.debit.is_none() && effect.credit.is_some();
+            KaminoPositionAnchor {
+                reserve: pre.reserve.clone(),
+                market: pre.market.clone(),
+                obligation: pre.obligation.clone(),
+                obligation_exists: !withdrawal,
+                deposited_collateral_amount_raw: if withdrawal {
+                    0
+                } else {
+                    pre.deposited_collateral_amount_raw + 1
+                },
+                minimum_deposit_amount_raw: (!withdrawal).then_some(2),
+            }
+        }),
+    };
+    let movement = fixture
+        .client
+        .reconcile_cross_mint_leg(
+            &reconciliation,
+            CrossMintLegReconciliationInput {
+                finalized_slot,
+                effect,
+                reconciled_balance_anchors,
+            },
+        )
+        .await?;
+    let durable_movement = fixture
+        .client
+        .cross_mint_movement(movement.decision_id)
+        .await?;
+    let continuation_attempt_count: i32 = sqlx::query_scalar(
+        "SELECT continuation_attempt_count FROM loyal_yield.rebalance_decisions WHERE id = $1",
+    )
+    .bind(movement.decision_id.as_i64())
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let crash_windows = CrossMintCrashWindowEvidence {
+        before_persistence_fence_reclaimed: continuation_attempt_count >= 2
+            && reconciliation.submission.executor_fencing_token >= 2,
+        persisted_prebroadcast_exact_wire,
+        broadcast_prestatus_exact_wire: confirmation.submission.signed_transaction
+            == persisted_bytes,
+        batch_finality_bypass_rejected,
+        finalized_prereconcile_receipt_persisted: confirmation.submission.finalized_slot
+            == Some(finalized_slot),
+        reconciled_precontinuation_projection_persisted: durable_movement.custody_version
+            == movement.custody_version
+            && durable_movement.custody_amount_raw == movement.custody_amount_raw
+            && durable_movement.custody_account == movement.custody_account
+            && durable_movement.terminal_outcome == movement.terminal_outcome,
+    };
+    Ok((movement, rejected_before_finality, crash_windows))
+}
+
+async fn cross_mint_capacity_state(
+    fixture: &DatabaseFixture,
+    decision_id: i64,
+) -> Result<(i64, String, String, i64), Box<dyn Error>> {
+    Ok(sqlx::query_as(
+        r#"
+        SELECT id, reservation_state::TEXT, target_reserve, reservation_generation
+        FROM loyal_yield.target_capacity_reservations
+        WHERE decision_id = $1
+        "#,
+    )
+    .bind(decision_id)
+    .fetch_one(fixture.client.pool())
+    .await?)
+}
+
+async fn cross_mint_movement_subchecks(
+    fixture: &DatabaseFixture,
+    same_mint_regression_passed: bool,
+    same_mint_regression_evidence: Value,
+) -> Result<Vec<Subcheck>, Box<dyn Error>> {
+    let column_rows = sqlx::query(
+        r#"
+        SELECT table_name, column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'loyal_yield'
+          AND table_name IN (
+              'rebalance_opportunities',
+              'rebalance_decisions',
+              'signed_route_submissions',
+              'target_capacity_reservations',
+              'cross_mint_movement_controls',
+              'cross_mint_no_effect_receipts',
+              'cross_mint_swap_policies'
+          )
+        ORDER BY table_name, ordinal_position
+        "#,
+    )
+    .fetch_all(fixture.client.pool())
+    .await?;
+    let mut columns = BTreeMap::<String, BTreeSet<String>>::new();
+    for row in column_rows {
+        columns
+            .entry(row.try_get("table_name")?)
+            .or_default()
+            .insert(row.try_get("column_name")?);
+    }
+
+    let index_rows = sqlx::query(
+        r#"
+        SELECT tablename, indexname
+        FROM pg_indexes
+        WHERE schemaname = 'loyal_yield'
+          AND tablename IN (
+              'rebalance_decisions',
+              'signed_route_submissions',
+              'target_capacity_reservations',
+              'cross_mint_swap_policies'
+          )
+        ORDER BY tablename, indexname
+        "#,
+    )
+    .fetch_all(fixture.client.pool())
+    .await?;
+    let indexes = index_rows
+        .iter()
+        .map(|row| {
+            Ok(json!({
+                "table": row.try_get::<String, _>("tablename")?,
+                "index": row.try_get::<String, _>("indexname")?,
+            }))
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()?;
+    let index_names = index_rows
+        .iter()
+        .map(|row| row.try_get::<String, _>("indexname"))
+        .collect::<Result<BTreeSet<_>, sqlx::Error>>()?;
+
+    let movement_migration = sqlx::query_as::<_, (String, String)>(
+        "SELECT name, checksum FROM loyal_yield.schema_migrations WHERE version = 35",
+    )
+    .fetch_optional(fixture.client.pool())
+    .await?;
+    let capability_migration = sqlx::query_as::<_, (String, String)>(
+        "SELECT name, checksum FROM loyal_yield.schema_migrations WHERE version = 36",
+    )
+    .fetch_optional(fixture.client.pool())
+    .await?;
+    let opportunity_movement_columns = ["source_liquidity_mint", "target_liquidity_mint"];
+    let decision_movement_columns = [
+        "movement_route",
+        "active_target_reserve",
+        "custody_mint",
+        "custody_amount_raw",
+        "custody_account",
+        "custody_reconciled_slot",
+        "custody_version",
+        "continuation_available_at",
+        "continuation_lease_owner",
+        "continuation_lease_expires_at",
+        "continuation_fencing_token",
+        "cross_mint_activation_control_generation",
+        "cross_mint_preflight_certification",
+        "continuation_control_generation",
+        "terminal_outcome",
+        "terminal_evidence",
+        "terminal_reason",
+        "terminal_observed_slot",
+    ];
+    let submission_leg_columns = [
+        "movement_leg",
+        "leg_purpose",
+        "leg_generation",
+        "required_commitment",
+        "policy_account",
+        "finalized_slot",
+        "expected_effect",
+        "reconciled_effect",
+    ];
+    let gate_columns = [
+        "start_new_movements",
+        "continue_or_recover_existing",
+        "generation",
+    ];
+    let no_effect_receipt_columns = [
+        "submission_id",
+        "decision_id",
+        "movement_leg",
+        "leg_generation",
+        "transaction_signature",
+        "observed_block_height",
+        "signature_history_checked_through_slot",
+        "effect_check_slot",
+        "expected_balance_anchors",
+        "observed_balance_anchors",
+        "signature_history_evidence",
+        "evidence_hash",
+    ];
+    let swap_policy_columns = [
+        "cluster",
+        "settings",
+        "authority",
+        "policy_account",
+        "vault_index",
+        "vault_pubkey",
+        "delegated_signer",
+        "source_shard",
+        "max_slippage_bps",
+        "daily_source_mint_spending_cap",
+        "manifest_fingerprint",
+        "active",
+        "start_eligible",
+        "last_mutation",
+        "source_commitment",
+        "last_seen_slot",
+        "last_seen_signature",
+    ];
+
+    let mut all_missing = missing_cross_mint_columns(
+        &columns,
+        "rebalance_opportunities",
+        &opportunity_movement_columns,
+    );
+    all_missing.extend(missing_cross_mint_columns(
+        &columns,
+        "rebalance_decisions",
+        &decision_movement_columns,
+    ));
+    all_missing.extend(missing_cross_mint_columns(
+        &columns,
+        "signed_route_submissions",
+        &submission_leg_columns,
+    ));
+    all_missing.extend(missing_cross_mint_columns(
+        &columns,
+        "cross_mint_movement_controls",
+        &gate_columns,
+    ));
+    all_missing.extend(missing_cross_mint_columns(
+        &columns,
+        "cross_mint_no_effect_receipts",
+        &no_effect_receipt_columns,
+    ));
+    all_missing.extend(missing_cross_mint_columns(
+        &columns,
+        "cross_mint_swap_policies",
+        &swap_policy_columns,
+    ));
+    for index in [
+        "rebalance_decisions_cross_mint_continuation_idx",
+        "signed_route_submissions_movement_leg_generation_uidx",
+        "signed_route_submissions_one_nonterminal_opportunity_idx",
+        "cross_mint_swap_policies_start_idx",
+        "cross_mint_swap_policies_account_idx",
+    ] {
+        if !index_names.contains(index) {
+            all_missing.push(format!("database index: {index}"));
+        }
+    }
+    if movement_migration.is_none() {
+        all_missing.push("schema migration 35: durable_cross_mint_movements".to_owned());
+    }
+    if capability_migration.is_none() {
+        all_missing.push("schema migration 36: cross_mint_swap_policies".to_owned());
+    }
+
+    let available_columns = columns
+        .iter()
+        .map(|(table, columns)| (table.clone(), columns.iter().cloned().collect::<Vec<_>>()))
+        .collect::<BTreeMap<_, _>>();
+    let behavior_contracts = [
+        (
+            "cross_mint_one_movement_one_nonterminal_submission",
+            "one active movement per vault and one nonterminal leg submission per movement",
+        ),
+        (
+            "cross_mint_activated_intent_and_economics_are_immutable",
+            "an activated movement cannot mutate its amount, route, plan, or economics",
+        ),
+        (
+            "cross_mint_finalized_only_sequential_leg_advancement",
+            "leg n+1 cannot be published before leg n is finalized and atomically reconciled",
+        ),
+        (
+            "cross_mint_reconciliation_uses_exact_w_and_o_deltas",
+            "withdraw custody W and swap output O come from finalized deltas",
+        ),
+        (
+            "cross_mint_intermediate_reconciliation_keeps_movement_active",
+            "withdraw and swap reconciliation keep the parent movement active",
+        ),
+        (
+            "cross_mint_target_capacity_is_movement_scoped",
+            "capacity remains attached across intermediate terminal submissions",
+        ),
+        (
+            "cross_mint_continuation_claim_is_fenced",
+            "one continuation claimant wins and stale fences cannot publish",
+        ),
+        (
+            "cross_mint_pre_persistence_restart_reclaims_without_wire",
+            "a crashed compiler before persistence leaves no signed wire and a higher fence can reclaim",
+        ),
+        (
+            "cross_mint_retry_reuses_exact_signed_bytes",
+            "retry leases preserve exact signed bytes, hash, and signature",
+        ),
+        (
+            "cross_mint_proved_no_effect_advances_leg_generation",
+            "generation advances only after a terminal no-effect receipt",
+        ),
+        (
+            "cross_mint_ambiguous_effect_freezes_progression",
+            "ambiguity blocks continuation and retains capacity",
+        ),
+        (
+            "cross_mint_source_idle_recovers_to_source_mint_reserve",
+            "source-idle custody recovers through a source-mint deposit",
+        ),
+        (
+            "cross_mint_target_fallback_atomically_rebinds_capacity",
+            "target-idle custody atomically rebinds same-mint capacity",
+        ),
+        (
+            "cross_mint_start_and_continue_gates_are_independent",
+            "new starts stop while existing movement continuation remains enabled",
+        ),
+        (
+            "cross_mint_manual_closure_requires_evidence",
+            "manual closure is fenced, evidence-backed, and releases capacity",
+        ),
+    ];
+    if !all_missing.is_empty() {
+        let mut checks = vec![not_run_subcheck(
+            "cross_mint_movement_schema_and_store_capabilities",
+            json!({
+                "status": "NOT_RUN",
+                "reason": "the disposable database is missing the cross-mint movement schema contract",
+                "safeDefault": "cross-mint progression remains disabled",
+                "missingCapabilities": all_missing,
+                "availableColumns": available_columns,
+                "relevantIndexes": indexes,
+                "migration35": movement_migration.as_ref().map(|(name, checksum)| json!({
+                    "name": name,
+                    "checksum": checksum,
+                })),
+                "migration36": capability_migration.as_ref().map(|(name, checksum)| json!({
+                    "name": name,
+                    "checksum": checksum,
+                })),
+                "connectionRequired": "apply migrations 35-36 to the fleet_verify database and rerun",
+            }),
+        )];
+        checks.extend(behavior_contracts.into_iter().map(|(name, invariant)| {
+            cross_mint_not_run_subcheck(
+                name,
+                invariant,
+                vec!["disposable database schema contract".to_owned()],
+                "apply migrations 35-36 to the fleet_verify database and rerun",
+            )
+        }));
+        checks.push(subcheck(
+            "same_mint_signed_lifecycle_regression_remains_behavioral",
+            same_mint_regression_passed,
+            same_mint_regression_evidence,
+        ));
+        return Ok(checks);
+    }
+
+    let mut checks = vec![subcheck(
+        "cross_mint_movement_schema_and_store_capabilities",
+        true,
+        json!({
+            "migration35": movement_migration.as_ref().map(|(name, checksum)| json!({
+                "name": name,
+                "checksum": checksum,
+            })),
+            "migration36": capability_migration.as_ref().map(|(name, checksum)| json!({
+                "name": name,
+                "checksum": checksum,
+            })),
+            "availableColumns": available_columns,
+            "relevantIndexes": indexes,
+            "typedStoreContract": [
+                "activate_cross_mint_movement",
+                "claim_cross_mint_continuation",
+                "append_cross_mint_leg",
+                "reconcile_cross_mint_leg",
+                "rebind_cross_mint_fallback_capacity",
+                "close_cross_mint_movement",
+            ],
+        }),
+    )];
+
+    let pre_persistence =
+        activate_cross_mint_fixture(fixture, "cross_mint_pre_persistence_restart").await?;
+    let pre_first = claim_cross_mint_continuation(
+        fixture,
+        &pre_persistence.movement.cluster,
+        "pre-persistence-crashed-worker",
+    )
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE loyal_yield.rebalance_decisions
+        SET continuation_lease_expires_at = now() - interval '1 second'
+        WHERE id = $1
+        "#,
+    )
+    .bind(pre_persistence.movement.decision_id.as_i64())
+    .execute(fixture.client.pool())
+    .await?;
+    let pre_reclaimed = claim_cross_mint_continuation(
+        fixture,
+        &pre_persistence.movement.cluster,
+        "pre-persistence-restarted-worker",
+    )
+    .await?;
+    let pre_submission_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.signed_route_submissions WHERE decision_id = $1",
+    )
+    .bind(pre_persistence.movement.decision_id.as_i64())
+    .fetch_one(fixture.client.pool())
+    .await?;
+    checks.push(subcheck(
+        "cross_mint_pre_persistence_restart_reclaims_without_wire",
+        pre_submission_count == 0 && pre_reclaimed.fencing_token > pre_first.fencing_token,
+        json!({
+            "decisionId": pre_persistence.movement.decision_id.as_i64(),
+            "crashedFence": pre_first.fencing_token,
+            "reclaimedFence": pre_reclaimed.fencing_token,
+            "signedSubmissionCount": pre_submission_count,
+            "safeResponse": "rebuild only after the expired continuation fence is reclaimed",
+        }),
+    ));
+
+    let success = activate_cross_mint_fixture(fixture, "cross_mint_success").await?;
+    let repeated_activation = fixture
+        .client
+        .activate_cross_mint_movement(
+            &success.opportunity_lease,
+            CrossMintMovementActivationInput {
+                capacity: success.capacity.clone(),
+                initial_withdraw_compiled_fee_lamports: 5_000,
+                preflight_certification: success.movement.preflight_certification.clone(),
+                policy_bindings: success.policy_bindings.clone(),
+            },
+        )
+        .await?;
+    let success_cluster = success.movement.cluster.clone();
+    let activated_intent_mutation_rejected = sqlx::query(
+        "UPDATE loyal_yield.rebalance_opportunities SET amount_raw = amount_raw + 1 WHERE id = $1",
+    )
+    .bind(success.movement.opportunity_id)
+    .execute(fixture.client.pool())
+    .await
+    .is_err();
+    checks.push(subcheck(
+        "cross_mint_activated_intent_and_economics_are_immutable",
+        activated_intent_mutation_rejected,
+        json!({
+            "opportunityId": success.movement.opportunity_id,
+            "amountMutationRejected": activated_intent_mutation_rejected,
+            "safeResponse": "retain the original movement intent and do not create a replacement while custody is active",
+        }),
+    ));
+    let claim_a =
+        fixture
+            .client
+            .claim_cross_mint_continuation(&success_cluster, "cross-mint-racer-a", 60);
+    let claim_b =
+        fixture
+            .client
+            .claim_cross_mint_continuation(&success_cluster, "cross-mint-racer-b", 60);
+    let (claim_a, claim_b) = tokio::join!(claim_a, claim_b);
+    let claim_a = claim_a?;
+    let claim_b = claim_b?;
+    let winner_count = usize::from(claim_a.is_some()) + usize::from(claim_b.is_some());
+    let race_winner = claim_a
+        .or(claim_b)
+        .ok_or("continuation race had no winner")?;
+    let source_idle_account = format!("source-idle:{}", success.movement.decision_id.as_i64());
+    let withdraw_expected = CrossMintExpectedEffect {
+        debit: None,
+        credit_mint: Some("USDC".to_owned()),
+        credit_token_account: Some(source_idle_account.clone()),
+        minimum_credit_amount_raw: Some(850_000),
+    };
+    let stale_input = cross_mint_leg_input(
+        fixture,
+        &success.opportunity_lease,
+        &race_winner,
+        "success-withdraw-stale",
+        CrossMintMovementLeg::Withdraw,
+        CrossMintLegPurpose::OptimizeYield,
+        1,
+        withdraw_expected.clone(),
+    )
+    .await?;
+    sqlx::query(
+        "UPDATE loyal_yield.rebalance_decisions SET continuation_lease_expires_at = now() - interval '1 second' WHERE id = $1 AND continuation_lease_owner = $2 AND continuation_fencing_token = $3",
+    )
+    .bind(success.movement.decision_id.as_i64())
+    .bind(&race_winner.owner)
+    .bind(race_winner.fencing_token)
+    .execute(fixture.client.pool())
+    .await?;
+    let continuation = claim_cross_mint_continuation(
+        fixture,
+        &success_cluster,
+        "success-withdraw-before-persistence",
+    )
+    .await?;
+    let withdraw_input = cross_mint_leg_input(
+        fixture,
+        &success.opportunity_lease,
+        &continuation,
+        "success-withdraw",
+        CrossMintMovementLeg::Withdraw,
+        CrossMintLegPurpose::OptimizeYield,
+        1,
+        withdraw_expected,
+    )
+    .await?;
+    let withdraw_submission = fixture
+        .client
+        .append_cross_mint_leg(&continuation, withdraw_input)
+        .await?;
+    let stale_publish_rejected = fixture
+        .client
+        .append_cross_mint_leg(&race_winner, stale_input)
+        .await
+        .is_err();
+    let (movement_count, nonterminal_count): (i64, i64) = sqlx::query_as(
+        r#"
+        SELECT
+            (SELECT count(*) FROM loyal_yield.rebalance_decisions
+             WHERE vault_id = $1 AND movement_route = 'cross_mint_jupiter'
+               AND status = 'confirming'),
+            (SELECT count(*) FROM loyal_yield.signed_route_submissions
+             WHERE decision_id = $2
+               AND submission_state NOT IN ('reconciled', 'expired', 'failed'))
+        "#,
+    )
+    .bind(success.movement.vault_id.as_i64())
+    .bind(success.movement.decision_id.as_i64())
+    .fetch_one(fixture.client.pool())
+    .await?;
+    checks.push(subcheck(
+        "cross_mint_one_movement_one_nonterminal_submission",
+        repeated_activation.decision_id == success.movement.decision_id
+            && movement_count == 1
+            && nonterminal_count == 1,
+        json!({
+            "decisionId": success.movement.decision_id.as_i64(),
+            "repeatedActivationDecisionId": repeated_activation.decision_id.as_i64(),
+            "activeMovementCount": movement_count,
+            "nonterminalSubmissionCount": nonterminal_count,
+        }),
+    ));
+    checks.push(subcheck(
+        "cross_mint_continuation_claim_is_fenced",
+        winner_count == 1 && stale_publish_rejected,
+        json!({
+            "concurrentClaimWinners": winner_count,
+            "raceWinnerFencingToken": race_winner.fencing_token,
+            "restartWinnerFencingToken": continuation.fencing_token,
+            "stalePublishRejected": stale_publish_rejected,
+        }),
+    ));
+
+    let first_retry = lease_pending_cross_mint_submission(
+        fixture,
+        &success_cluster,
+        "success-retry-one",
+        withdraw_submission.id,
+    )
+    .await?;
+    let retry_identity = (
+        first_retry.submission.signed_transaction.clone(),
+        first_retry.submission.signed_transaction_hash.clone(),
+        first_retry.submission.transaction_signature.clone(),
+    );
+    let now = Utc::now();
+    fixture
+        .client
+        .advance_signed_route_submission(
+            &first_retry,
+            SignedRouteSubmissionAdvance::Deferred {
+                checked_at: now,
+                next_poll_at: now,
+                error_detail: Some("verifier_retry_boundary".to_owned()),
+            },
+        )
+        .await?;
+    let second_retry = lease_pending_cross_mint_submission(
+        fixture,
+        &success_cluster,
+        "success-retry-two",
+        withdraw_submission.id,
+    )
+    .await?;
+    let exact_retry = retry_identity
+        == (
+            second_retry.submission.signed_transaction.clone(),
+            second_retry.submission.signed_transaction_hash.clone(),
+            second_retry.submission.transaction_signature.clone(),
+        );
+    let now = Utc::now();
+    fixture
+        .client
+        .advance_signed_route_submission(
+            &second_retry,
+            SignedRouteSubmissionAdvance::Deferred {
+                checked_at: now,
+                next_poll_at: now,
+                error_detail: None,
+            },
+        )
+        .await?;
+    checks.push(subcheck(
+        "cross_mint_retry_reuses_exact_signed_bytes",
+        exact_retry,
+        json!({
+            "submissionId": withdraw_submission.id,
+            "signedTransactionSha256": withdraw_submission.signed_transaction_hash,
+            "transactionSignature": withdraw_submission.transaction_signature,
+            "leaseAttemptsCompared": 2,
+        }),
+    ));
+
+    let withdraw_amount = 900_000;
+    let (after_withdraw, withdraw_rejected_before_finality, withdraw_crash_windows) =
+        finalize_and_reconcile_cross_mint_leg(
+            fixture,
+            &success_cluster,
+            withdraw_submission.id,
+            10_101,
+            CrossMintReconciledEffect {
+                debit: None,
+                credit: Some(TokenBalanceDelta {
+                    mint: "USDC".to_owned(),
+                    token_account: source_idle_account.clone(),
+                    amount_raw: withdraw_amount,
+                }),
+            },
+        )
+        .await?;
+    let capacity_after_withdraw =
+        cross_mint_capacity_state(fixture, success.movement.decision_id.as_i64()).await?;
+    let swap_continuation =
+        claim_cross_mint_continuation(fixture, &success_cluster, "success-swap").await?;
+    let target_idle_account = format!("target-idle:{}", success.movement.decision_id.as_i64());
+    let swap_submission = fixture
+        .client
+        .append_cross_mint_leg(
+            &swap_continuation,
+            cross_mint_leg_input(
+                fixture,
+                &success.opportunity_lease,
+                &swap_continuation,
+                "success-swap",
+                CrossMintMovementLeg::Swap,
+                CrossMintLegPurpose::OptimizeYield,
+                1,
+                CrossMintExpectedEffect {
+                    debit: Some(TokenBalanceDelta {
+                        mint: "USDC".to_owned(),
+                        token_account: source_idle_account.clone(),
+                        amount_raw: withdraw_amount,
+                    }),
+                    credit_mint: Some("USDT".to_owned()),
+                    credit_token_account: Some(target_idle_account.clone()),
+                    minimum_credit_amount_raw: Some(890_000),
+                },
+            )
+            .await?,
+        )
+        .await?;
+    let swap_output = 895_000;
+    let (after_swap, swap_rejected_before_finality, swap_crash_windows) =
+        finalize_and_reconcile_cross_mint_leg(
+            fixture,
+            &success_cluster,
+            swap_submission.id,
+            10_202,
+            CrossMintReconciledEffect {
+                debit: Some(TokenBalanceDelta {
+                    mint: "USDC".to_owned(),
+                    token_account: source_idle_account.clone(),
+                    amount_raw: withdraw_amount,
+                }),
+                credit: Some(TokenBalanceDelta {
+                    mint: "USDT".to_owned(),
+                    token_account: target_idle_account.clone(),
+                    amount_raw: swap_output,
+                }),
+            },
+        )
+        .await?;
+    let capacity_after_swap =
+        cross_mint_capacity_state(fixture, success.movement.decision_id.as_i64()).await?;
+    checks.push(subcheck(
+        "cross_mint_finalized_only_sequential_leg_advancement",
+        withdraw_submission.required_commitment == "finalized"
+            && swap_submission.required_commitment == "finalized"
+            && withdraw_rejected_before_finality
+            && swap_rejected_before_finality
+            && after_withdraw.custody_reconciled_slot == Some(10_101)
+            && after_swap.custody_reconciled_slot == Some(10_202),
+        json!({
+            "withdrawRequiredCommitment": withdraw_submission.required_commitment,
+            "swapRequiredCommitment": swap_submission.required_commitment,
+            "withdrawRejectedBeforeFinality": withdraw_rejected_before_finality,
+            "swapRejectedBeforeFinality": swap_rejected_before_finality,
+            "withdrawFinalizedSlot": after_withdraw.custody_reconciled_slot,
+            "swapFinalizedSlot": after_swap.custody_reconciled_slot,
+        }),
+    ));
+    checks.push(subcheck(
+        "cross_mint_reconciliation_uses_exact_w_and_o_deltas",
+        after_withdraw.planned_amount_raw == 1_000_000
+            && after_withdraw.custody_amount_raw == withdraw_amount
+            && after_withdraw.custody_observed_balance_raw == Some(23 + withdraw_amount)
+            && after_swap.custody_amount_raw == swap_output
+            && after_swap.custody_observed_balance_raw == Some(23 + swap_output)
+            && after_swap.custody_account == target_idle_account,
+        json!({
+            "plannedAmountRaw": after_withdraw.planned_amount_raw,
+            "withdrawDeltaW": after_withdraw.custody_amount_raw,
+            "sourcePreexistingBalanceRaw": 23,
+            "sourceObservedAggregateRaw": after_withdraw.custody_observed_balance_raw,
+            "swapOutputDeltaO": after_swap.custody_amount_raw,
+            "targetPreexistingBalanceRaw": 23,
+            "targetObservedAggregateRaw": after_swap.custody_observed_balance_raw,
+            "sourceIdleAccount": source_idle_account,
+            "targetIdleAccount": target_idle_account,
+        }),
+    ));
+    checks.push(subcheck(
+        "cross_mint_intermediate_reconciliation_keeps_movement_active",
+        after_withdraw.phase == CrossMintCustodyPhase::SourceIdle
+            && after_swap.phase == CrossMintCustodyPhase::TargetIdle
+            && after_withdraw.terminal_outcome.is_none()
+            && after_swap.terminal_outcome.is_none(),
+        json!({
+            "withdrawPhase": after_withdraw.phase,
+            "swapPhase": after_swap.phase,
+            "withdrawCustodyVersion": after_withdraw.custody_version,
+            "swapCustodyVersion": after_swap.custody_version,
+        }),
+    ));
+    checks.push(subcheck(
+        "cross_mint_target_capacity_is_movement_scoped",
+        capacity_after_withdraw.0 == success.reservation_id
+            && capacity_after_swap.0 == success.reservation_id
+            && capacity_after_withdraw.1 == "active"
+            && capacity_after_swap.1 == "active",
+        json!({
+            "reservationId": success.reservation_id,
+            "afterWithdraw": capacity_after_withdraw,
+            "afterSwap": capacity_after_swap,
+        }),
+    ));
+
+    let deposit_continuation =
+        claim_cross_mint_continuation(fixture, &success_cluster, "success-deposit").await?;
+    let deposit_submission = fixture
+        .client
+        .append_cross_mint_leg(
+            &deposit_continuation,
+            cross_mint_leg_input(
+                fixture,
+                &success.opportunity_lease,
+                &deposit_continuation,
+                "success-deposit",
+                CrossMintMovementLeg::Deposit,
+                CrossMintLegPurpose::OptimizeYield,
+                1,
+                CrossMintExpectedEffect {
+                    debit: Some(TokenBalanceDelta {
+                        mint: "USDT".to_owned(),
+                        token_account: target_idle_account.clone(),
+                        amount_raw: swap_output,
+                    }),
+                    credit_mint: None,
+                    credit_token_account: None,
+                    minimum_credit_amount_raw: None,
+                },
+            )
+            .await?,
+        )
+        .await?;
+    let (completed, deposit_rejected_before_finality, deposit_crash_windows) =
+        finalize_and_reconcile_cross_mint_leg(
+            fixture,
+            &success_cluster,
+            deposit_submission.id,
+            10_303,
+            CrossMintReconciledEffect {
+                debit: Some(TokenBalanceDelta {
+                    mint: "USDT".to_owned(),
+                    token_account: target_idle_account,
+                    amount_raw: swap_output - 1,
+                }),
+                credit: None,
+            },
+        )
+        .await?;
+    let completed_capacity =
+        cross_mint_capacity_state(fixture, success.movement.decision_id.as_i64()).await?;
+    let completed_continuation = fixture
+        .client
+        .claim_cross_mint_continuation(&success_cluster, "completed-must-not-continue", 60)
+        .await?;
+    checks.push(subcheck(
+        "cross_mint_success_terminalizes_only_after_target_deposit",
+        deposit_rejected_before_finality
+            && completed.phase == CrossMintCustodyPhase::TargetReserve
+            && completed.terminal_outcome == Some(CrossMintTerminalOutcome::CompletedTarget)
+            && completed.custody_amount_raw == 1
+            && completed.custody_observed_balance_raw == Some(24)
+            && completed.terminal_reason.as_deref() == Some("kamino_unmintable_rounding_dust")
+            && completed.terminal_observed_slot == Some(10_303)
+            && completed
+                .terminal_evidence
+                .as_ref()
+                .is_some_and(|evidence| {
+                    evidence.get("residualAmountRaw").and_then(Value::as_i64) == Some(1)
+                        && evidence
+                            .get("minimumDepositAmountRaw")
+                            .and_then(Value::as_i64)
+                            == Some(2)
+                })
+            && completed_continuation.is_none()
+            && completed_capacity.1 == "awaiting_telemetry",
+        json!({
+            "phase": completed.phase,
+            "terminalOutcome": completed.terminal_outcome,
+            "terminalEvidence": completed.terminal_evidence,
+            "terminalReason": completed.terminal_reason,
+            "custodyVersion": completed.custody_version,
+            "capacityState": completed_capacity.1,
+            "continuationClaimedAfterTerminal": completed_continuation.is_some(),
+        }),
+    ));
+
+    // No-effect receipts are intentionally immutable, including against
+    // fixture cleanup. Keep this audit lineage under a separate disposable-DB
+    // prefix just like fee-spend receipts.
+    let no_effect_fixture = DatabaseFixture {
+        client: fixture.client.clone(),
+        latency_client: fixture.latency_client.clone(),
+        prefix: format!("immutable_no_effect_{}", fixture.prefix),
+    };
+    let no_effect = activate_cross_mint_fixture(&no_effect_fixture, "cross_mint_no_effect").await?;
+    let no_effect_continuation = claim_cross_mint_continuation(
+        &no_effect_fixture,
+        &no_effect.movement.cluster,
+        "no-effect-generation-one",
+    )
+    .await?;
+    let no_effect_account = format!("source-idle:{}", no_effect.movement.decision_id.as_i64());
+    let no_effect_expected = CrossMintExpectedEffect {
+        debit: None,
+        credit_mint: Some("USDC".to_owned()),
+        credit_token_account: Some(no_effect_account),
+        minimum_credit_amount_raw: Some(1),
+    };
+    let mut unanchored_no_effect_input = cross_mint_leg_input(
+        &no_effect_fixture,
+        &no_effect.opportunity_lease,
+        &no_effect_continuation,
+        "no-effect-withdraw-unanchored",
+        CrossMintMovementLeg::Withdraw,
+        CrossMintLegPurpose::OptimizeYield,
+        1,
+        no_effect_expected.clone(),
+    )
+    .await?;
+    unanchored_no_effect_input.expected_balance_anchors = CrossMintBalanceAnchors::default();
+    let unanchored_publication_rejected = fixture
+        .client
+        .append_cross_mint_leg(&no_effect_continuation, unanchored_no_effect_input)
+        .await
+        .is_err();
+    let generation_one = fixture
+        .client
+        .append_cross_mint_leg(
+            &no_effect_continuation,
+            cross_mint_leg_input(
+                &no_effect_fixture,
+                &no_effect.opportunity_lease,
+                &no_effect_continuation,
+                "no-effect-withdraw-one",
+                CrossMintMovementLeg::Withdraw,
+                CrossMintLegPurpose::OptimizeYield,
+                1,
+                no_effect_expected.clone(),
+            )
+            .await?,
+        )
+        .await?;
+    let generation_one_lease = lease_pending_cross_mint_submission(
+        &no_effect_fixture,
+        &no_effect.movement.cluster,
+        "no-effect-expirer",
+        generation_one.id,
+    )
+    .await?;
+    let expired_height = generation_one.last_valid_block_height + 1;
+    let caller_booleans_without_receipt_rejected = fixture
+        .client
+        .advance_signed_route_submission(
+            &generation_one_lease,
+            SignedRouteSubmissionAdvance::Expired {
+                checked_at: Utc::now(),
+                observed_block_height: expired_height,
+                signature_history_absent: true,
+                effect_absence_proved: true,
+            },
+        )
+        .await
+        .is_err();
+    let receipt = fixture
+        .client
+        .record_cross_mint_no_effect_receipt(
+            &generation_one_lease,
+            CrossMintNoEffectProofInput {
+                observed_block_height: expired_height,
+                signature_history_checked_through_slot: 10_802,
+                effect_check_slot: 10_801,
+                observed_balance_anchors: generation_one.expected_balance_anchors.clone(),
+                signature_history_evidence: json!({
+                    "rpcCommitment": "finalized",
+                    "transactionSignature": generation_one.transaction_signature,
+                    "historyResult": "absent",
+                    "checkedThroughSlot": 10_802,
+                }),
+                observed_at: Utc::now(),
+            },
+        )
+        .await?;
+    let receipt_mutation_rejected = sqlx::query(
+        "UPDATE loyal_yield.cross_mint_no_effect_receipts SET observed_block_height = observed_block_height + 1 WHERE submission_id = $1",
+    )
+    .bind(generation_one.id)
+    .execute(fixture.client.pool())
+    .await
+    .is_err();
+    fixture
+        .client
+        .advance_signed_route_submission(
+            &generation_one_lease,
+            SignedRouteSubmissionAdvance::Expired {
+                checked_at: Utc::now(),
+                observed_block_height: expired_height,
+                signature_history_absent: false,
+                effect_absence_proved: false,
+            },
+        )
+        .await?;
+    let generation_two_continuation = claim_cross_mint_continuation(
+        &no_effect_fixture,
+        &no_effect.movement.cluster,
+        "no-effect-generation-two",
+    )
+    .await?;
+    fixture
+        .client
+        .append_cross_mint_leg(
+            &generation_two_continuation,
+            cross_mint_leg_input(
+                &no_effect_fixture,
+                &no_effect.opportunity_lease,
+                &generation_two_continuation,
+                "no-effect-withdraw-two",
+                CrossMintMovementLeg::Withdraw,
+                CrossMintLegPurpose::OptimizeYield,
+                2,
+                no_effect_expected,
+            )
+            .await?,
+        )
+        .await?;
+    let generations: Vec<(i64, String)> = sqlx::query_as(
+        r#"
+        SELECT leg_generation, submission_state::TEXT
+        FROM loyal_yield.signed_route_submissions
+        WHERE decision_id = $1 AND movement_leg = 'withdraw'
+        ORDER BY leg_generation
+        "#,
+    )
+    .bind(no_effect.movement.decision_id.as_i64())
+    .fetch_all(fixture.client.pool())
+    .await?;
+    checks.push(subcheck(
+        "cross_mint_proved_no_effect_advances_leg_generation",
+        unanchored_publication_rejected
+            && caller_booleans_without_receipt_rejected
+            && receipt_mutation_rejected
+            && receipt.submission_id == generation_one.id
+            && generations == vec![(1, "expired".to_owned()), (2, "signed".to_owned())],
+        json!({
+            "legHistory": generations,
+            "unanchoredPublicationRejected": unanchored_publication_rejected,
+            "callerBooleansWithoutReceiptRejected": caller_booleans_without_receipt_rejected,
+            "receiptId": receipt.submission_id,
+            "receiptHash": receipt.evidence_hash,
+            "receiptMutationRejected": receipt_mutation_rejected,
+            "safeResponse": "persist an immutable finalized history and unchanged-balance receipt before expiring or replacing a cross-mint leg",
+        }),
+    ));
+
+    let ambiguous = activate_cross_mint_fixture(fixture, "cross_mint_ambiguous").await?;
+    let ambiguous_continuation =
+        claim_cross_mint_continuation(fixture, &ambiguous.movement.cluster, "ambiguous-withdraw")
+            .await?;
+    let ambiguous_submission = fixture
+        .client
+        .append_cross_mint_leg(
+            &ambiguous_continuation,
+            cross_mint_leg_input(
+                fixture,
+                &ambiguous.opportunity_lease,
+                &ambiguous_continuation,
+                "ambiguous-withdraw",
+                CrossMintMovementLeg::Withdraw,
+                CrossMintLegPurpose::OptimizeYield,
+                1,
+                CrossMintExpectedEffect {
+                    debit: None,
+                    credit_mint: Some("USDC".to_owned()),
+                    credit_token_account: Some(format!(
+                        "source-idle:{}",
+                        ambiguous.movement.decision_id.as_i64()
+                    )),
+                    minimum_credit_amount_raw: Some(1),
+                },
+            )
+            .await?,
+        )
+        .await?;
+    let ambiguous_submit_lease = lease_pending_cross_mint_submission(
+        fixture,
+        &ambiguous.movement.cluster,
+        "ambiguous-broadcast",
+        ambiguous_submission.id,
+    )
+    .await?;
+    let now = Utc::now();
+    fixture
+        .client
+        .advance_signed_route_submission(
+            &ambiguous_submit_lease,
+            SignedRouteSubmissionAdvance::Submitted {
+                checked_at: now,
+                observed_slot: Some(10_400),
+                next_poll_at: now,
+                broadcasted: true,
+            },
+        )
+        .await?;
+    let ambiguous_finality_lease = lease_pending_cross_mint_submission(
+        fixture,
+        &ambiguous.movement.cluster,
+        "ambiguous-finality",
+        ambiguous_submission.id,
+    )
+    .await?;
+    fixture
+        .client
+        .advance_signed_route_submission(
+            &ambiguous_finality_lease,
+            SignedRouteSubmissionAdvance::Confirmed {
+                checked_at: Utc::now(),
+                confirmed_slot: 10_401,
+            },
+        )
+        .await?;
+    fixture
+        .client
+        .advance_signed_route_submission(
+            &ambiguous_finality_lease,
+            SignedRouteSubmissionAdvance::Finalized {
+                checked_at: Utc::now(),
+                finalized_slot: 10_401,
+            },
+        )
+        .await?;
+    fixture
+        .client
+        .advance_signed_route_submission(
+            &ambiguous_finality_lease,
+            SignedRouteSubmissionAdvance::ReconciliationPending,
+        )
+        .await?;
+    let ambiguous_effect_lease = lease_reconciliation_cross_mint_submission(
+        fixture,
+        &ambiguous.movement.cluster,
+        "ambiguous-effect",
+        ambiguous_submission.id,
+    )
+    .await?;
+    fixture
+        .client
+        .advance_signed_route_submission(
+            &ambiguous_effect_lease,
+            SignedRouteSubmissionAdvance::EffectAmbiguous {
+                checked_at: Utc::now(),
+                error_detail: "finalized custody metadata cannot be attributed".to_owned(),
+            },
+        )
+        .await?;
+    let ambiguity_continuation = fixture
+        .client
+        .claim_cross_mint_continuation(&ambiguous.movement.cluster, "ambiguous-must-freeze", 60)
+        .await?;
+    let ambiguous_capacity =
+        cross_mint_capacity_state(fixture, ambiguous.movement.decision_id.as_i64()).await?;
+    let ambiguous_state: String = sqlx::query_scalar(
+        "SELECT submission_state::TEXT FROM loyal_yield.signed_route_submissions WHERE id = $1",
+    )
+    .bind(ambiguous_submission.id)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    checks.push(subcheck(
+        "cross_mint_ambiguous_effect_freezes_progression",
+        ambiguous_state == "effect_ambiguous"
+            && ambiguity_continuation.is_none()
+            && ambiguous_capacity.1 == "active",
+        json!({
+            "submissionState": ambiguous_state,
+            "continuationClaimed": ambiguity_continuation.is_some(),
+            "capacityState": ambiguous_capacity.1,
+        }),
+    ));
+
+    let recovery = activate_cross_mint_fixture(fixture, "cross_mint_recovery").await?;
+    let recovery_withdraw_continuation =
+        claim_cross_mint_continuation(fixture, &recovery.movement.cluster, "recovery-withdraw")
+            .await?;
+    let recovery_idle = format!("source-idle:{}", recovery.movement.decision_id.as_i64());
+    let recovery_withdraw = fixture
+        .client
+        .append_cross_mint_leg(
+            &recovery_withdraw_continuation,
+            cross_mint_leg_input(
+                fixture,
+                &recovery.opportunity_lease,
+                &recovery_withdraw_continuation,
+                "recovery-withdraw",
+                CrossMintMovementLeg::Withdraw,
+                CrossMintLegPurpose::OptimizeYield,
+                1,
+                CrossMintExpectedEffect {
+                    debit: None,
+                    credit_mint: Some("USDC".to_owned()),
+                    credit_token_account: Some(recovery_idle.clone()),
+                    minimum_credit_amount_raw: Some(700_000),
+                },
+            )
+            .await?,
+        )
+        .await?;
+    let recovery_amount = 750_000;
+    finalize_and_reconcile_cross_mint_leg(
+        fixture,
+        &recovery.movement.cluster,
+        recovery_withdraw.id,
+        10_501,
+        CrossMintReconciledEffect {
+            debit: None,
+            credit: Some(TokenBalanceDelta {
+                mint: "USDC".to_owned(),
+                token_account: recovery_idle.clone(),
+                amount_raw: recovery_amount,
+            }),
+        },
+    )
+    .await?;
+    let recovery_deposit_continuation =
+        claim_cross_mint_continuation(fixture, &recovery.movement.cluster, "recovery-deposit")
+            .await?;
+    let recovery_deposit = fixture
+        .client
+        .append_cross_mint_leg(
+            &recovery_deposit_continuation,
+            cross_mint_leg_input(
+                fixture,
+                &recovery.opportunity_lease,
+                &recovery_deposit_continuation,
+                "recovery-deposit",
+                CrossMintMovementLeg::Deposit,
+                CrossMintLegPurpose::RecoverSource,
+                1,
+                CrossMintExpectedEffect {
+                    debit: Some(TokenBalanceDelta {
+                        mint: "USDC".to_owned(),
+                        token_account: recovery_idle.clone(),
+                        amount_raw: recovery_amount,
+                    }),
+                    credit_mint: None,
+                    credit_token_account: None,
+                    minimum_credit_amount_raw: None,
+                },
+            )
+            .await?,
+        )
+        .await?;
+    let (recovered, _, recovery_crash_windows) = finalize_and_reconcile_cross_mint_leg(
+        fixture,
+        &recovery.movement.cluster,
+        recovery_deposit.id,
+        10_502,
+        CrossMintReconciledEffect {
+            debit: Some(TokenBalanceDelta {
+                mint: "USDC".to_owned(),
+                token_account: recovery_idle,
+                amount_raw: recovery_amount,
+            }),
+            credit: None,
+        },
+    )
+    .await?;
+    let recovered_capacity =
+        cross_mint_capacity_state(fixture, recovery.movement.decision_id.as_i64()).await?;
+    let recovered_continuation = fixture
+        .client
+        .claim_cross_mint_continuation(
+            &recovery.movement.cluster,
+            "recovered-must-not-continue",
+            60,
+        )
+        .await?;
+    checks.push(subcheck(
+        "cross_mint_source_idle_recovers_to_source_mint_reserve",
+        recovered.phase == CrossMintCustodyPhase::SourceReserve
+            && recovered.terminal_outcome == Some(CrossMintTerminalOutcome::RecoveredSource)
+            && recovered.custody_amount_raw == 0
+            && recovered.custody_observed_balance_raw.is_none()
+            && recovered_continuation.is_none()
+            && recovered_capacity.1 == "released",
+        json!({
+            "phase": recovered.phase,
+            "terminalOutcome": recovered.terminal_outcome,
+            "custodyAccount": recovered.custody_account,
+            "capacityState": recovered_capacity.1,
+            "continuationClaimedAfterTerminal": recovered_continuation.is_some(),
+        }),
+    ));
+
+    let fallback = activate_cross_mint_fixture(fixture, "cross_mint_fallback").await?;
+    let fallback_source_idle = format!("source-idle:{}", fallback.movement.decision_id.as_i64());
+    let fallback_target_idle = format!("target-idle:{}", fallback.movement.decision_id.as_i64());
+    let fallback_withdraw_continuation =
+        claim_cross_mint_continuation(fixture, &fallback.movement.cluster, "fallback-withdraw")
+            .await?;
+    let fallback_withdraw = fixture
+        .client
+        .append_cross_mint_leg(
+            &fallback_withdraw_continuation,
+            cross_mint_leg_input(
+                fixture,
+                &fallback.opportunity_lease,
+                &fallback_withdraw_continuation,
+                "fallback-withdraw",
+                CrossMintMovementLeg::Withdraw,
+                CrossMintLegPurpose::OptimizeYield,
+                1,
+                CrossMintExpectedEffect {
+                    debit: None,
+                    credit_mint: Some("USDC".to_owned()),
+                    credit_token_account: Some(fallback_source_idle.clone()),
+                    minimum_credit_amount_raw: Some(800_000),
+                },
+            )
+            .await?,
+        )
+        .await?;
+    finalize_and_reconcile_cross_mint_leg(
+        fixture,
+        &fallback.movement.cluster,
+        fallback_withdraw.id,
+        10_601,
+        CrossMintReconciledEffect {
+            debit: None,
+            credit: Some(TokenBalanceDelta {
+                mint: "USDC".to_owned(),
+                token_account: fallback_source_idle.clone(),
+                amount_raw: 810_000,
+            }),
+        },
+    )
+    .await?;
+    let fallback_swap_continuation =
+        claim_cross_mint_continuation(fixture, &fallback.movement.cluster, "fallback-swap").await?;
+    let fallback_swap = fixture
+        .client
+        .append_cross_mint_leg(
+            &fallback_swap_continuation,
+            cross_mint_leg_input(
+                fixture,
+                &fallback.opportunity_lease,
+                &fallback_swap_continuation,
+                "fallback-swap",
+                CrossMintMovementLeg::Swap,
+                CrossMintLegPurpose::OptimizeYield,
+                1,
+                CrossMintExpectedEffect {
+                    debit: Some(TokenBalanceDelta {
+                        mint: "USDC".to_owned(),
+                        token_account: fallback_source_idle.clone(),
+                        amount_raw: 810_000,
+                    }),
+                    credit_mint: Some("USDT".to_owned()),
+                    credit_token_account: Some(fallback_target_idle.clone()),
+                    minimum_credit_amount_raw: Some(790_000),
+                },
+            )
+            .await?,
+        )
+        .await?;
+    finalize_and_reconcile_cross_mint_leg(
+        fixture,
+        &fallback.movement.cluster,
+        fallback_swap.id,
+        10_602,
+        CrossMintReconciledEffect {
+            debit: Some(TokenBalanceDelta {
+                mint: "USDC".to_owned(),
+                token_account: fallback_source_idle,
+                amount_raw: 810_000,
+            }),
+            credit: Some(TokenBalanceDelta {
+                mint: "USDT".to_owned(),
+                token_account: fallback_target_idle.clone(),
+                amount_raw: 800_000,
+            }),
+        },
+    )
+    .await?;
+    let fallback_rebind_lease =
+        claim_cross_mint_continuation(fixture, &fallback.movement.cluster, "fallback-rebind")
+            .await?;
+    let original_capacity =
+        cross_mint_capacity_state(fixture, fallback.movement.decision_id.as_i64()).await?;
+    let fallback_reserve = format!("fallback-target:{}", fallback.movement.decision_id.as_i64());
+    let fallback_observation = TargetCapacityObservation {
+        cluster: fallback.movement.cluster.clone(),
+        target_reserve: fallback_reserve.clone(),
+        liquidity_mint: "USDT".to_owned(),
+        observed_supply_usd_micros: 30_000_000_000,
+        observed_slot: 10_603,
+        maximum_inflight_usd_micros: 1_000_000_000,
+    };
+    let fallback_projection = fixture
+        .client
+        .observe_target_capacity(fallback_observation.clone())
+        .await?;
+    let capacity_deadlocks_before: i64 = sqlx::query_scalar(
+        "SELECT deadlocks FROM pg_stat_database WHERE datname = current_database()",
+    )
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let concurrent_observation = fallback.capacity.projection.observation.clone();
+    let concurrent_started = Instant::now();
+    let rebind = fixture.client.rebind_cross_mint_fallback_capacity(
+        &fallback_rebind_lease,
+        CrossMintFallbackCapacityInput {
+            target: fallback_projection,
+        },
+    );
+    let observe = fixture
+        .client
+        .observe_target_capacity(concurrent_observation);
+    let (rebound, concurrent_projection) = tokio::join!(rebind, observe);
+    let rebound = rebound?;
+    let concurrent_projection = concurrent_projection?;
+    let concurrent_capacity_elapsed_millis = concurrent_started.elapsed().as_millis();
+    let capacity_deadlocks_after: i64 = sqlx::query_scalar(
+        "SELECT deadlocks FROM pg_stat_database WHERE datname = current_database()",
+    )
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let rebound_movement: (String, i64) = sqlx::query_as(
+        "SELECT active_target_reserve, continuation_fencing_token FROM loyal_yield.rebalance_decisions WHERE id = $1",
+    )
+    .bind(fallback.movement.decision_id.as_i64())
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let fallback_deposit_continuation =
+        claim_cross_mint_continuation(fixture, &fallback.movement.cluster, "fallback-deposit")
+            .await?;
+    let fallback_deposit = fixture
+        .client
+        .append_cross_mint_leg(
+            &fallback_deposit_continuation,
+            cross_mint_leg_input(
+                fixture,
+                &fallback.opportunity_lease,
+                &fallback_deposit_continuation,
+                "fallback-deposit",
+                CrossMintMovementLeg::Deposit,
+                CrossMintLegPurpose::FallbackTarget,
+                1,
+                CrossMintExpectedEffect {
+                    debit: Some(TokenBalanceDelta {
+                        mint: "USDT".to_owned(),
+                        token_account: fallback_target_idle.clone(),
+                        amount_raw: 800_000,
+                    }),
+                    credit_mint: None,
+                    credit_token_account: None,
+                    minimum_credit_amount_raw: None,
+                },
+            )
+            .await?,
+        )
+        .await?;
+    let (fallback_completed, _, fallback_crash_windows) = finalize_and_reconcile_cross_mint_leg(
+        fixture,
+        &fallback.movement.cluster,
+        fallback_deposit.id,
+        10_604,
+        CrossMintReconciledEffect {
+            debit: Some(TokenBalanceDelta {
+                mint: "USDT".to_owned(),
+                token_account: fallback_target_idle,
+                amount_raw: 800_000,
+            }),
+            credit: None,
+        },
+    )
+    .await?;
+    let fallback_terminal_continuation = fixture
+        .client
+        .claim_cross_mint_continuation(
+            &fallback.movement.cluster,
+            "fallback-terminal-must-not-continue",
+            60,
+        )
+        .await?;
+    checks.push(subcheck(
+        "cross_mint_target_fallback_atomically_rebinds_capacity",
+        rebound.id == original_capacity.0
+            && rebound.target_reserve == fallback_reserve
+            && rebound.reservation_generation > original_capacity.3
+            && rebound_movement.0 == fallback_reserve
+            && capacity_deadlocks_after == capacity_deadlocks_before
+            && fallback_terminal_continuation.is_none()
+            && fallback_completed.terminal_outcome
+                == Some(CrossMintTerminalOutcome::CompletedTarget),
+        json!({
+            "reservationIdBefore": original_capacity.0,
+            "reservationIdAfter": rebound.id,
+            "generationBefore": original_capacity.3,
+            "generationAfter": rebound.reservation_generation,
+            "activeTargetReserve": rebound_movement.0,
+            "concurrentObservationTelemetryVersion": concurrent_projection.telemetry_version,
+            "concurrentCapacityElapsedMillis": concurrent_capacity_elapsed_millis,
+            "deadlocksBefore": capacity_deadlocks_before,
+            "deadlocksAfter": capacity_deadlocks_after,
+            "terminalOutcome": fallback_completed.terminal_outcome,
+            "continuationClaimedAfterTerminal": fallback_terminal_continuation.is_some(),
+        }),
+    ));
+    let every_leg_purpose_crash_window = [
+        withdraw_crash_windows.passed(),
+        swap_crash_windows.passed(),
+        deposit_crash_windows.passed(),
+        recovery_crash_windows.passed(),
+        fallback_crash_windows.passed(),
+    ]
+    .into_iter()
+    .all(|passed| passed);
+    checks.push(subcheck(
+        "cross_mint_every_valid_leg_purpose_survives_every_crash_window",
+        every_leg_purpose_crash_window,
+        json!({
+            "withdrawOptimizeYield": withdraw_crash_windows,
+            "swapOptimizeYield": swap_crash_windows,
+            "depositOptimizeYield": deposit_crash_windows,
+            "depositRecoverSource": recovery_crash_windows,
+            "depositFallbackTarget": fallback_crash_windows,
+            "windows": [
+                "before_persistence",
+                "persisted_prebroadcast",
+                "broadcast_prestatus",
+                "finalized_prereconcile",
+                "reconciled_precontinuation",
+            ],
+        }),
+    ));
+
+    let revoked_start =
+        activate_cross_mint_fixture(fixture, "cross_mint_policy_revoked_before_withdraw").await?;
+    let revoked_start_lease = fixture
+        .client
+        .claim_cross_mint_continuation(
+            &revoked_start.movement.cluster,
+            "policy-revoked-before-withdraw",
+            60,
+        )
+        .await?
+        .ok_or("policy-revocation movement was not claimable")?;
+    let revoked_start_input = cross_mint_leg_input(
+        fixture,
+        &revoked_start.opportunity_lease,
+        &revoked_start_lease,
+        "policy-revoked-before-withdraw",
+        CrossMintMovementLeg::Withdraw,
+        CrossMintLegPurpose::OptimizeYield,
+        1,
+        CrossMintExpectedEffect {
+            debit: None,
+            credit_mint: Some("USDC".to_owned()),
+            credit_token_account: Some(format!(
+                "source-idle:{}",
+                revoked_start.movement.decision_id.as_i64()
+            )),
+            minimum_credit_amount_raw: Some(600_000),
+        },
+    )
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE loyal_yield.cross_mint_swap_policies
+        SET active = FALSE,
+            start_eligible = FALSE,
+            last_mutation = 'remove',
+            last_seen_slot = last_seen_slot + 1,
+            last_seen_signature = 'verifier-revoked-before-withdraw'
+        WHERE cluster = $1 AND policy_account = $2
+        "#,
+    )
+    .bind(&revoked_start.movement.cluster)
+    .bind(&revoked_start.policy_bindings.swap.policy_account)
+    .execute(fixture.client.pool())
+    .await?;
+    let revoked_start_rejected = fixture
+        .client
+        .append_cross_mint_leg(&revoked_start_lease, revoked_start_input)
+        .await
+        .is_err();
+    let revoked_start_signed_count: i64 = sqlx::query_scalar(
+        "SELECT count(*)::BIGINT FROM loyal_yield.signed_route_submissions WHERE decision_id = $1",
+    )
+    .bind(revoked_start.movement.decision_id.as_i64())
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let revoked_start_cancelled = fixture
+        .client
+        .close_cross_mint_movement(
+            &revoked_start_lease,
+            CrossMintMovementCloseInput {
+                outcome: CrossMintTerminalOutcome::CancelledBeforeWithdraw,
+                observed_slot: 10_650,
+                reason: "start_authority_revoked_before_withdraw".to_owned(),
+                evidence: json!({
+                    "kind": "start_authority_revoked_before_withdraw",
+                    "policyAccount": revoked_start.policy_bindings.swap.policy_account,
+                }),
+            },
+        )
+        .await?;
+    let revoked_start_capacity =
+        cross_mint_capacity_state(fixture, revoked_start.movement.decision_id.as_i64()).await?;
+    checks.push(subcheck(
+        "cross_mint_policy_revocation_linearizes_before_initial_signature_admission",
+        revoked_start_rejected
+            && revoked_start_signed_count == 0
+            && revoked_start_cancelled.terminal_outcome
+                == Some(CrossMintTerminalOutcome::CancelledBeforeWithdraw)
+            && revoked_start_cancelled.custody_version == 0
+            && revoked_start_capacity.1 == "released",
+        json!({
+            "publicationRejected": revoked_start_rejected,
+            "signedSubmissionCount": revoked_start_signed_count,
+            "terminalOutcome": revoked_start_cancelled.terminal_outcome,
+            "custodyVersion": revoked_start_cancelled.custody_version,
+            "capacityState": revoked_start_capacity.1,
+        }),
+    ));
+
+    let default_gate_values = fixture
+        .client
+        .cross_mint_movement_gates(&format!("{}_missing_gate", fixture.prefix))
+        .await?;
+
+    let gate_race = activate_cross_mint_fixture(fixture, "cross_mint_gate_race").await?;
+    let stale_control_lease = fixture
+        .client
+        .claim_cross_mint_continuation(&gate_race.movement.cluster, "gate-race-before-disable", 60)
+        .await?
+        .ok_or("gate-race movement was not claimable")?;
+    let stale_control_account = format!("source-idle:{}", gate_race.movement.decision_id.as_i64());
+    let stale_control_input = cross_mint_leg_input(
+        fixture,
+        &gate_race.opportunity_lease,
+        &stale_control_lease,
+        "gate-race-stale-publication",
+        CrossMintMovementLeg::Withdraw,
+        CrossMintLegPurpose::OptimizeYield,
+        1,
+        CrossMintExpectedEffect {
+            debit: None,
+            credit_mint: Some("USDC".to_owned()),
+            credit_token_account: Some(stale_control_account),
+            minimum_credit_amount_raw: Some(600_000),
+        },
+    )
+    .await?;
+    set_cross_mint_gates(fixture, &gate_race.movement.cluster, false, false).await?;
+    let stale_control_publish_rejected = fixture
+        .client
+        .append_cross_mint_leg(&stale_control_lease, stale_control_input)
+        .await
+        .is_err();
+    let disabled_race_claim = fixture
+        .client
+        .claim_cross_mint_continuation(&gate_race.movement.cluster, "gate-race-disabled-claim", 60)
+        .await?;
+
+    let gates = activate_cross_mint_fixture(fixture, "cross_mint_gates").await?;
+    let continuing = claim_cross_mint_continuation(
+        fixture,
+        &gates.movement.cluster,
+        "gates-withdraw-before-disable",
+    )
+    .await?;
+    let gate_idle_account = format!("source-idle:{}", gates.movement.decision_id.as_i64());
+    let gate_withdraw = fixture
+        .client
+        .append_cross_mint_leg(
+            &continuing,
+            cross_mint_leg_input(
+                fixture,
+                &gates.opportunity_lease,
+                &continuing,
+                "policy-revoked-after-withdraw",
+                CrossMintMovementLeg::Withdraw,
+                CrossMintLegPurpose::OptimizeYield,
+                1,
+                CrossMintExpectedEffect {
+                    debit: None,
+                    credit_mint: Some("USDC".to_owned()),
+                    credit_token_account: Some(gate_idle_account.clone()),
+                    minimum_credit_amount_raw: Some(600_000),
+                },
+            )
+            .await?,
+        )
+        .await?;
+    let gate_race_cancelled = fixture
+        .client
+        .close_cross_mint_movement(
+            &stale_control_lease,
+            CrossMintMovementCloseInput {
+                outcome: CrossMintTerminalOutcome::CancelledBeforeWithdraw,
+                observed_slot: 10_675,
+                reason: "start_authority_revoked_before_withdraw".to_owned(),
+                evidence: json!({
+                    "kind": "start_authority_revoked_before_withdraw",
+                    "controlGeneration": stale_control_lease.control_generation,
+                }),
+            },
+        )
+        .await?;
+    let gate_race_capacity =
+        cross_mint_capacity_state(fixture, gate_race.movement.decision_id.as_i64()).await?;
+    let (gate_idle, _, _) = finalize_and_reconcile_cross_mint_leg(
+        fixture,
+        &gates.movement.cluster,
+        gate_withdraw.id,
+        10_699,
+        CrossMintReconciledEffect {
+            debit: None,
+            credit: Some(TokenBalanceDelta {
+                mint: "USDC".to_owned(),
+                token_account: gate_idle_account,
+                amount_raw: 610_000,
+            }),
+        },
+    )
+    .await?;
+    set_cross_mint_gates(fixture, &gates.movement.cluster, false, false).await?;
+    let continuation_blocked = fixture
+        .client
+        .claim_cross_mint_continuation(
+            &gates.movement.cluster,
+            "continuation-disabled-must-not-claim",
+            60,
+        )
+        .await?;
+    set_cross_mint_gates(fixture, &gates.movement.cluster, false, true).await?;
+    let gate_values = fixture
+        .client
+        .cross_mint_movement_gates(&gates.movement.cluster)
+        .await?;
+    let continuing = claim_cross_mint_continuation(
+        fixture,
+        &gates.movement.cluster,
+        "policy-revoked-idle-custody",
+    )
+    .await?;
+    let blocked_seed = seed_cross_mint_ready_opportunity(
+        fixture,
+        &gates.movement.cluster,
+        gates.opportunity_lease.opportunity.optimizer_epoch_id,
+        "cross-mint-gates-blocked",
+        40_000,
+    )
+    .await?;
+    let blocked_lease = claim_one(
+        &fixture.client,
+        &gates.movement.cluster,
+        "gates-blocked-start",
+        RebalanceOpportunityClaimKind::Execute,
+    )
+    .await?;
+    if blocked_lease.opportunity.id != blocked_seed.id {
+        return Err("gate fixture claimed an unexpected opportunity".into());
+    }
+    let blocked_capacity = cross_mint_capacity_input_for_lease(fixture, &blocked_lease).await?;
+    let blocked_policy_bindings = cross_mint_fixture_policy_bindings(&blocked_lease.opportunity)?;
+    let blocked_start = fixture
+        .client
+        .activate_cross_mint_movement(
+            &blocked_lease,
+            CrossMintMovementActivationInput {
+                capacity: blocked_capacity,
+                initial_withdraw_compiled_fee_lamports: 5_000,
+                preflight_certification: json!({
+                    "kind": "cross_mint_preflight",
+                    "fixture": "blocked_start",
+                }),
+                policy_bindings: blocked_policy_bindings,
+            },
+        )
+        .await;
+    let closed = fixture
+        .client
+        .close_cross_mint_movement(
+            &continuing,
+            CrossMintMovementCloseInput {
+                outcome: CrossMintTerminalOutcome::ManualIntervention,
+                observed_slot: 10_700,
+                reason: "verifier policy-revocation fixture".to_owned(),
+                evidence: json!({
+                    "kind": "policy_revoked",
+                    "policyAccount": format!("policy:{}", fixture.prefix),
+                    "custodyMint": gate_idle.custody_mint,
+                    "custodyAccount": gate_idle.custody_account,
+                    "attributedAmountRaw": gate_idle.custody_amount_raw,
+                    "observedAggregateAmountRaw": gate_idle.custody_observed_balance_raw,
+                }),
+            },
+        )
+        .await?;
+    let closed_capacity =
+        cross_mint_capacity_state(fixture, gates.movement.decision_id.as_i64()).await?;
+    checks.push(subcheck(
+        "cross_mint_start_and_continue_gates_are_independent",
+        !gate_values.start_new_movements
+            && gate_values.continue_or_recover_existing
+            && !default_gate_values.start_new_movements
+            && default_gate_values.continue_or_recover_existing
+            && continuation_blocked.is_none()
+            && disabled_race_claim.is_none()
+            && stale_control_publish_rejected
+            && gate_race_cancelled.terminal_outcome
+                == Some(CrossMintTerminalOutcome::CancelledBeforeWithdraw)
+            && gate_race_capacity.1 == "released"
+            && blocked_start.is_err()
+            && continuing.movement.decision_id == gates.movement.decision_id,
+        json!({
+            "startNewMovements": gate_values.start_new_movements,
+            "continueOrRecoverExisting": gate_values.continue_or_recover_existing,
+            "missingGateStartDefault": default_gate_values.start_new_movements,
+            "missingGateContinueDefault": default_gate_values.continue_or_recover_existing,
+            "continuationClaimedWhileDisabled": continuation_blocked.is_some(),
+            "staleGenerationPublishRejected": stale_control_publish_rejected,
+            "disabledRaceClaimed": disabled_race_claim.is_some(),
+            "gateRaceTerminalOutcome": gate_race_cancelled.terminal_outcome,
+            "gateRaceCapacityState": gate_race_capacity.1,
+            "staleControlGeneration": stale_control_lease.control_generation,
+            "currentControlGeneration": gate_values.generation,
+            "blockedStartError": blocked_start.err().map(|error| error.to_string()),
+            "continuedDecisionId": continuing.movement.decision_id.as_i64(),
+        }),
+    ));
+    checks.push(subcheck(
+        "cross_mint_manual_closure_requires_evidence",
+        closed.phase == CrossMintCustodyPhase::ManualIntervention
+            && closed.terminal_outcome == Some(CrossMintTerminalOutcome::ManualIntervention)
+            && closed.terminal_evidence.is_some()
+            && closed.terminal_reason.as_deref() == Some("verifier policy-revocation fixture")
+            && gate_idle.phase == CrossMintCustodyPhase::SourceIdle
+            && gate_idle.custody_amount_raw == 610_000
+            && closed_capacity.1 == "released",
+        json!({
+            "phase": closed.phase,
+            "terminalOutcome": closed.terminal_outcome,
+            "terminalEvidence": closed.terminal_evidence,
+            "terminalReason": closed.terminal_reason,
+            "capacityState": closed_capacity.1,
+        }),
+    ));
+
+    checks.push(subcheck(
+        "same_mint_signed_lifecycle_regression_remains_behavioral",
+        same_mint_regression_passed,
+        same_mint_regression_evidence,
+    ));
+    Ok(checks)
 }
 
 async fn run_database_checks(
@@ -8193,6 +10752,27 @@ async fn run_database_checks(
         && poison_capacity_state == "released"
         && poison_opportunity_state == "failed"
         && poison_decision_state == "failed";
+    let cross_mint_movement_checks = cross_mint_movement_subchecks(
+        fixture,
+        decision_linked
+            && confirming_state_after_explicit_transition == "confirming"
+            && terminal_opportunity_state == "completed"
+            && signed_evidence_immutable
+            && fee_payer_kind_immutable
+            && submission_state_timestamp_immutable,
+        json!({
+            "routeKind": "same_mint",
+            "submissionId": persisted.id,
+            "decisionId": decision_id.as_i64(),
+            "decisionLinked": decision_linked,
+            "stateAfterExplicitConfirmingTransition": confirming_state_after_explicit_transition,
+            "terminalOpportunityState": terminal_opportunity_state,
+            "signedBytesImmutable": signed_evidence_immutable,
+            "feePayerKindImmutable": fee_payer_kind_immutable,
+            "submissionStateTimestampImmutable": submission_state_timestamp_immutable,
+        }),
+    )
+    .await?;
     let runtime_measurements_passed = alt_runtime_measurements.typed_provisioner_dry_run_plans > 0
         && alt_runtime_measurements.reusable_v2_plans
             == alt_runtime_measurements.typed_provisioner_dry_run_plans
@@ -8249,7 +10829,7 @@ async fn run_database_checks(
     Ok(DatabaseEvidence {
         migration_subchecks: vec![
             subcheck(
-                "isolated_database_migrated_through_33",
+                "isolated_database_migrated_through_36",
                 true,
                 json!({
                     "databaseNameGuard": "fleet_verify",
@@ -8264,6 +10844,9 @@ async fn run_database_checks(
                     "migration31": "fleet_commit_lifetime_fence_errcode",
                     "migration32": "idle_vault_decision_lookup_index",
                     "migration33": "policy_setup_funding_reservations",
+                    "migration34": "fleet_health_snapshot_projection",
+                    "migration35": "durable_cross_mint_movements",
+                    "migration36": "cross_mint_swap_policies",
                 }),
             ),
             subcheck(
@@ -8372,8 +10955,7 @@ async fn run_database_checks(
             ),
             subcheck(
                 "readiness_parent_lock_precedes_physical_alt_lock",
-                readiness_parent_before_physical_lock_order_proved
-                    && database_deadlocks == 0,
+                readiness_parent_before_physical_lock_order_proved && database_deadlocks == 0,
                 json!({
                     "readinessWaitedOnLogicalParent": readiness_waited_on_parent,
                     "lifecycleAcquiredPhysicalWhileReadinessWaited": lifecycle_acquired_physical_while_readiness_waited,
@@ -8553,7 +11135,8 @@ async fn run_database_checks(
                 }),
             ),
         ],
-        execution_subchecks: vec![
+        execution_subchecks: {
+            let mut checks = vec![
             subcheck(
                 "active_slot_conflict_is_contained",
                 active_slot_conflict_is_contained,
@@ -9004,7 +11587,10 @@ async fn run_database_checks(
                     "terminalConflictRows": remaining_terminal_conflicts,
                 }),
             ),
-        ],
+            ];
+            checks.extend(cross_mint_movement_checks);
+            checks
+        },
     })
 }
 

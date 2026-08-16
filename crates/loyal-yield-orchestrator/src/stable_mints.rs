@@ -1,18 +1,10 @@
-use loyal_actions::{CASH_MINT, PYUSD_MINT, USDC_MINT, USDG_MINT, USDS_MINT, USDT_MINT};
+use loyal_actions::{earn_stablecoins, EarnStablecoin, USDC_MINT};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, env, str::FromStr};
+use std::{collections::BTreeSet, env};
 use thiserror::Error;
 
 pub const ENABLED_STABLE_MINTS_ENV: &str = "EARN_ROUTER_ENABLED_STABLE_MINTS";
-const TOKEN_2022_PROGRAM: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EarnAsset {
-    pub symbol: &'static str,
-    pub mint: solana_sdk::pubkey::Pubkey,
-    pub token_program: solana_sdk::pubkey::Pubkey,
-    pub decimals: u8,
-}
+pub type EarnAsset = EarnStablecoin;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EarnUniverse {
@@ -21,26 +13,8 @@ pub struct EarnUniverse {
 
 impl EarnUniverse {
     pub fn canonical() -> Self {
-        let token = spl_token::ID;
-        let token_2022 = solana_sdk::pubkey::Pubkey::from_str(TOKEN_2022_PROGRAM)
-            .expect("Token-2022 program id");
         Self {
-            assets: [
-                ("CASH", CASH_MINT, token_2022),
-                ("USDG", USDG_MINT, token_2022),
-                ("PYUSD", PYUSD_MINT, token_2022),
-                ("USDC", USDC_MINT, token),
-                ("USDT", USDT_MINT, token),
-                ("USDS", USDS_MINT, token),
-            ]
-            .into_iter()
-            .map(|(symbol, mint, token_program)| EarnAsset {
-                symbol,
-                mint,
-                token_program,
-                decimals: 6,
-            })
-            .collect(),
+            assets: earn_stablecoins().to_vec(),
         }
     }
 
@@ -129,6 +103,7 @@ pub fn resolve_enabled_stable_mints(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loyal_actions::PYUSD_MINT;
 
     #[test]
     fn canonical_universe_has_exact_mints_and_programs() {

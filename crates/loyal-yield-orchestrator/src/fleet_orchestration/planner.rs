@@ -8,6 +8,46 @@ use std::{
     collections::{BTreeMap, BTreeSet, BinaryHeap},
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateRouteKind {
+    SameMint,
+    IdleVaultDeposit,
+    CrossMintJupiter,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum CandidateExecutionCosts {
+    SameMint {
+        route_usd_micros: i64,
+    },
+    IdleVaultDeposit {
+        deposit_usd_micros: i64,
+    },
+    CrossMintJupiter {
+        withdraw_usd_micros: i64,
+        jupiter_swap_usd_micros: i64,
+        deposit_usd_micros: i64,
+    },
+}
+
+impl CandidateExecutionCosts {
+    pub fn total_usd_micros(&self) -> Option<i64> {
+        match self {
+            Self::SameMint { route_usd_micros } => Some(*route_usd_micros),
+            Self::IdleVaultDeposit { deposit_usd_micros } => Some(*deposit_usd_micros),
+            Self::CrossMintJupiter {
+                withdraw_usd_micros,
+                jupiter_swap_usd_micros,
+                deposit_usd_micros,
+            } => withdraw_usd_micros
+                .checked_add(*jupiter_swap_usd_micros)
+                .and_then(|total| total.checked_add(*deposit_usd_micros)),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RankedOpportunity {

@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-use chrono::{Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use loyal_observability::{init_from_env, OperationalError};
 use loyal_yield_orchestrator::fleet_orchestration::{
     code_owned_stablecoin_valuations, fleet_worker_role_probe, observe_fleet_opportunities,
@@ -25,6 +25,7 @@ use loyal_yield_orchestrator::{
     STANDARD_POLICY_AUTHORITY,
 };
 use loyal_yield_router::timescale::{TimescaleRouterClient, TimescaleRouterClientConfig};
+use loyal_yield_store::fleet_orchestration::{CrossMintEarnPolicyBinding, CrossMintPolicyBindings};
 use serde_json::{json, Value};
 use tokio::{task::JoinSet, time::Duration};
 
@@ -39,6 +40,9 @@ const DEFAULT_DIRTY_BATCH_SIZE: usize = 256;
 const DIRTY_LEASE_SECONDS: i64 = 60;
 const DEFAULT_QUEUE_CONNECTIONS: u32 = 20;
 const DEFAULT_ESTIMATED_COST_USD_MICROS: i64 = 100_000;
+const CROSS_MINT_JUPITER_ENABLED_ENV: &str = "EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER";
+const CROSS_MINT_MAXIMUM_VALUE_LOSS_BPS_ENV: &str = "EARN_ROUTER_CROSS_MINT_MAX_VALUE_LOSS_BPS";
+const DEFAULT_CROSS_MINT_MAXIMUM_VALUE_LOSS_BPS: u16 = 50;
 const PLANNER_MAXIMUM_CYCLE_BACKOFF_SECONDS: u64 = 30;
 const PLANNER_RECOVERY_VERIFICATION_CYCLES: usize = 10_000;
 const PRIORITY_VERSION: &str = "lost-yield-service-net-reserve-capacity-v3";
@@ -57,6 +61,7 @@ struct Options {
     full_sweep_interval_seconds: u64,
     max_opportunities_per_wave: usize,
     dirty_batch_size: usize,
+    enable_cross_mint_jupiter: bool,
 }
 
 fn parse_options() -> Result<Options, Box<dyn Error>> {
@@ -73,6 +78,7 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
         full_sweep_interval_seconds: DEFAULT_FULL_SWEEP_INTERVAL_SECONDS,
         max_opportunities_per_wave: DEFAULT_WAVE_SIZE,
         dirty_batch_size: DEFAULT_DIRTY_BATCH_SIZE,
+        enable_cross_mint_jupiter: false,
     };
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -81,6 +87,7 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
             "--dry-run" => options.dry_run = true,
             "--benchmark" => options.benchmark = true,
             "--json" => options.json = true,
+            "--enable-cross-mint-jupiter" => options.enable_cross_mint_jupiter = true,
             "--count" => {
                 options.count = args.next().ok_or("--count requires a value")?.parse()?;
             }
@@ -119,8 +126,9 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "fleet-opportunity-planner [--once] [--dry-run] [--json] [--cluster NAME] [--poll-interval-seconds N] [--full-sweep-interval-seconds N] [--dirty-batch-size N] [--max-opportunities-per-wave N]\n\
+                    "fleet-opportunity-planner [--once] [--dry-run] [--json] [--enable-cross-mint-jupiter] [--cluster NAME] [--poll-interval-seconds N] [--full-sweep-interval-seconds N] [--dirty-batch-size N] [--max-opportunities-per-wave N]\n\
                      fleet-opportunity-planner --once --dry-run --benchmark [--json] [--count N] [--rounds N] [--seed N]\n\n\
+                     Cross-mint planning is default-off and requires --enable-cross-mint-jupiter or EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER=true.\n\
                      Live mode reads YIELD_ALT_CLUSTER (overridden by --cluster), NEON_DATABASE_URL, and TIMESCALEDB_URL."
                 );
                 std::process::exit(0);
@@ -130,6 +138,20 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
     }
     if options.benchmark && (!options.once || !options.dry_run) {
         return Err("--benchmark requires --once and --dry-run".into());
+    }
+    if !options.enable_cross_mint_jupiter {
+        options.enable_cross_mint_jupiter = match env::var(CROSS_MINT_JUPITER_ENABLED_ENV) {
+            Ok(value) if value.eq_ignore_ascii_case("true") || value == "1" => true,
+            Ok(value) if value.eq_ignore_ascii_case("false") || value == "0" => false,
+            Ok(value) => {
+                return Err(format!(
+                    "{CROSS_MINT_JUPITER_ENABLED_ENV} must be true, false, 1, or 0; got {value:?}"
+                )
+                .into())
+            }
+            Err(env::VarError::NotPresent) => false,
+            Err(error) => return Err(error.into()),
+        };
     }
     if options.count == 0
         || options.rounds == 0
@@ -227,8 +249,23 @@ fn run_benchmark(options: &Options) -> Result<Value, Box<dyn Error>> {
 fn live_observation_config(
     cluster: &str,
     enabled_mints: Vec<String>,
+    enable_cross_mint_jupiter: bool,
 ) -> Result<FleetObservationConfig, Box<dyn Error>> {
     let stablecoin_valuations = code_owned_stablecoin_valuations(&enabled_mints)?;
+    let cross_mint_maximum_value_loss_bps = if enable_cross_mint_jupiter {
+        match env::var(CROSS_MINT_MAXIMUM_VALUE_LOSS_BPS_ENV) {
+            Ok(value) => value.parse::<u16>().map_err(|_| {
+                format!("{CROSS_MINT_MAXIMUM_VALUE_LOSS_BPS_ENV} must be an integer in 1..=1000")
+            })?,
+            Err(env::VarError::NotPresent) => DEFAULT_CROSS_MINT_MAXIMUM_VALUE_LOSS_BPS,
+            Err(error) => return Err(error.into()),
+        }
+    } else {
+        DEFAULT_CROSS_MINT_MAXIMUM_VALUE_LOSS_BPS
+    };
+    if !(1..=1_000).contains(&cross_mint_maximum_value_loss_bps) {
+        return Err(format!("{CROSS_MINT_MAXIMUM_VALUE_LOSS_BPS_ENV} must be in 1..=1000").into());
+    }
     Ok(FleetObservationConfig {
         cluster: cluster.to_owned(),
         // Stable notional and reserve capacity use this code-owned contract;
@@ -237,6 +274,11 @@ fn live_observation_config(
         enabled_mints,
         estimated_reserve_move_cost_usd_micros: DEFAULT_ESTIMATED_COST_USD_MICROS,
         estimated_idle_deposit_cost_usd_micros: DEFAULT_ESTIMATED_COST_USD_MICROS,
+        enable_cross_mint_jupiter,
+        estimated_cross_mint_withdraw_cost_usd_micros: DEFAULT_ESTIMATED_COST_USD_MICROS,
+        estimated_cross_mint_jupiter_swap_cost_usd_micros: DEFAULT_ESTIMATED_COST_USD_MICROS,
+        estimated_cross_mint_deposit_cost_usd_micros: DEFAULT_ESTIMATED_COST_USD_MICROS,
+        cross_mint_maximum_value_loss_bps,
         ..FleetObservationConfig::default()
     })
 }
@@ -369,11 +411,52 @@ fn opportunity_execution_plan(
     fee_tier: &'static str,
     fee_policy: RouteFeePolicy,
 ) -> Value {
-    json!({
-        "kind": match observed.source_kind {
-            ObservedSourceKind::ReservePosition => "same_mint",
-            ObservedSourceKind::IdleVaultUsdc => "idle_vault_deposit",
-        },
+    let policy_bindings = matches!(
+        observed.route_kind,
+        loyal_yield_orchestrator::fleet_orchestration::CandidateRouteKind::CrossMintJupiter
+    )
+    .then(|| {
+        let withdraw = observed
+            .source_earn_policy
+            .as_ref()
+            .expect("cross-mint observation must include an exact withdraw policy");
+        let swap = observed
+            .jupiter_swap_lane
+            .as_ref()
+            .expect("cross-mint observation must include a generalized swap policy")
+            .clone();
+        let deposit = observed
+            .target_earn_policy
+            .as_ref()
+            .expect("cross-mint observation must include an exact deposit policy");
+        CrossMintPolicyBindings {
+            settings: observed.settings.clone(),
+            vault_index: u8::try_from(observed.vault_index)
+                .expect("cross-mint vault index must fit an unsigned byte"),
+            vault_pubkey: observed.vault_pubkey.clone(),
+            delegated_signer: withdraw.delegated_signer.clone(),
+            withdraw: CrossMintEarnPolicyBinding {
+                policy_account: withdraw.policy_account.clone(),
+                observed_slot: u64::try_from(withdraw.observed_slot)
+                    .expect("withdraw policy slot must be nonnegative"),
+                observed_signature: withdraw.observed_signature.clone(),
+                source_commitment: withdraw.source_commitment.clone(),
+                constraint_index: 0,
+            },
+            swap,
+            deposit: CrossMintEarnPolicyBinding {
+                policy_account: deposit.policy_account.clone(),
+                observed_slot: u64::try_from(deposit.observed_slot)
+                    .expect("deposit policy slot must be nonnegative"),
+                observed_signature: deposit.observed_signature.clone(),
+                source_commitment: deposit.source_commitment.clone(),
+                constraint_index: 1,
+            },
+        }
+    });
+    let mut plan = json!({
+        "kind": observed.route_kind,
+        "route_kind": observed.route_kind,
         "settings": observed.settings,
         "vault_index": observed.vault_index,
         "vault_pubkey": observed.vault_pubkey,
@@ -385,6 +468,8 @@ fn opportunity_execution_plan(
         },
         "target_reserve": observed.economics.target_reserve,
         "liquidity_mint": observed.economics.mint,
+        "source_liquidity_mint": observed.source_liquidity_mint,
+        "target_liquidity_mint": observed.target_liquidity_mint,
         "amount_raw": observed.amount_raw,
         "route_amount_semantics": observed.route_amount_semantics,
         "source_amount_semantics": observed.source_amount_semantics,
@@ -402,6 +487,7 @@ fn opportunity_execution_plan(
         "expected_service_millis": observed.economics.expected_service_millis,
         "holding_horizon_seconds": observed.economics.holding_horizon_seconds,
         "estimated_execution_cost_usd_micros": observed.economics.estimated_execution_cost_usd_micros,
+        "estimated_execution_costs": observed.estimated_execution_costs,
         "fee_cap_lamports": fee_cap_lamports,
         "fee_tier": fee_tier,
         "fee_gain_fraction_ppm": fee_policy.maximum_fraction_of_net_gain_ppm,
@@ -412,7 +498,93 @@ fn opportunity_execution_plan(
         "target_observed_at": observed.target_observed_at,
         "target_observed_slot": observed.target_observed_slot,
         "writable_conflict_keys": observed.economics.writable_conflict_keys,
-    })
+    });
+    let plan_object = plan
+        .as_object_mut()
+        .expect("opportunity execution plan literal must be an object");
+    plan_object.insert("policy_bindings".to_owned(), json!(policy_bindings));
+    plan_object.insert(
+        "cross_mint_maximum_value_loss_bps".to_owned(),
+        json!(observed.cross_mint_maximum_value_loss_bps),
+    );
+    plan_object.insert(
+        "planning_economics_are_executable_quote".to_owned(),
+        Value::Bool(false),
+    );
+    plan_object.insert(
+        "fresh_executable_jupiter_minimum_output_required".to_owned(),
+        Value::Bool(matches!(
+            observed.route_kind,
+            loyal_yield_orchestrator::fleet_orchestration::CandidateRouteKind::CrossMintJupiter
+        )),
+    );
+    plan
+}
+
+struct PublicationTerms<'a> {
+    cluster: &'a str,
+    optimizer_epoch_id: i64,
+    optimizer_market_slot: i64,
+    admitted_source_apy_bps: i64,
+    admitted_target_apy_bps: i64,
+    annual_yield_gain_usd_micros: i64,
+    expected_net_gain_usd_micros: i64,
+    economic_priority: i64,
+    fee_cap_lamports: i64,
+    fee_tier: &'static str,
+    fee_policy: RouteFeePolicy,
+    available_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+}
+
+fn rebalance_opportunity_input(
+    observed: &ObservedFleetOpportunity,
+    terms: PublicationTerms<'_>,
+) -> RebalanceOpportunityInput {
+    RebalanceOpportunityInput {
+        cluster: terms.cluster.to_owned(),
+        vault_id: loyal_yield_orchestrator::VaultId(observed.economics.vault_id),
+        source_snapshot_id: match observed.source_kind {
+            ObservedSourceKind::ReservePosition => {
+                Some(SnapshotId(observed.economics.source_snapshot_id))
+            }
+            ObservedSourceKind::IdleVaultUsdc => None,
+        },
+        optimizer_epoch_id: terms.optimizer_epoch_id,
+        route_fingerprint: None,
+        requirements_fingerprint: None,
+        source_reserve: match observed.source_kind {
+            ObservedSourceKind::ReservePosition => Some(observed.economics.source_reserve.clone()),
+            ObservedSourceKind::IdleVaultUsdc => None,
+        },
+        target_reserve: observed.economics.target_reserve.clone(),
+        // The legacy queue mint is target-authoritative for cross-mint rows.
+        // Source and target remain explicit, immutable fields in the plan and
+        // are materialized by the store into their dedicated columns.
+        liquidity_mint: observed.target_liquidity_mint.clone(),
+        amount_raw: observed.amount_raw,
+        principal_usd_micros: observed.economics.notional_usd_micros,
+        source_apy_bps: terms.admitted_source_apy_bps,
+        target_apy_bps: terms.admitted_target_apy_bps,
+        estimated_edge_bps: terms.admitted_target_apy_bps - terms.admitted_source_apy_bps,
+        estimated_cost_lamports: terms.fee_cap_lamports,
+        annual_yield_gain_usd_micros: terms.annual_yield_gain_usd_micros,
+        expected_net_gain_usd_micros: terms.expected_net_gain_usd_micros,
+        economic_priority: terms.economic_priority.max(1),
+        priority_version: PRIORITY_VERSION.to_owned(),
+        execution_plan: opportunity_execution_plan(
+            observed,
+            terms.optimizer_market_slot,
+            terms.admitted_source_apy_bps,
+            terms.admitted_target_apy_bps,
+            terms.fee_cap_lamports,
+            terms.fee_tier,
+            terms.fee_policy,
+        ),
+        available_at: terms.available_at,
+        expires_at: terms.expires_at,
+        provisioning_request_id: None,
+    }
 }
 
 #[derive(Debug, Default)]
@@ -833,20 +1005,19 @@ async fn run_live_once(
         let observed = by_id
             .get(&selected.opportunity.opportunity_id)
             .ok_or("selected opportunity disappeared from immutable observation")?;
-        let Some(mint_expires_at) = observation
-            .market_epoch
-            .mint_expires_at(&observed.economics.mint)
-        else {
+        let Some(route_expires_at) = observation.market_epoch.route_expires_at(
+            &observed.source_liquidity_mint,
+            &observed.target_liquidity_mint,
+        ) else {
             mint_lifetime_deferred_count += 1;
             continue;
         };
-        if mint_expires_at <= publication_minimum_usable_until {
+        if route_expires_at <= publication_minimum_usable_until {
             mint_lifetime_deferred_count += 1;
             continue;
         }
         let admitted_target_apy = selected.economics.capacity_adjusted_target_net_apy_bps;
         let admitted_source_apy = selected.economics.capacity_adjusted_source_net_apy_bps;
-        let actual_edge = admitted_target_apy - admitted_source_apy;
         let annual_yield_gain = selected
             .economics
             .lost_yield_usd_micros_per_hour
@@ -866,52 +1037,27 @@ async fn run_live_once(
             .saturating_add(i128::from(
                 selected.economics.lost_yield_usd_micros_per_hour,
             ));
-        queue_inputs.push(RebalanceOpportunityInput {
-            cluster: options.cluster.clone(),
-            vault_id: loyal_yield_orchestrator::VaultId(observed.economics.vault_id),
-            source_snapshot_id: match observed.source_kind {
-                ObservedSourceKind::ReservePosition => {
-                    Some(SnapshotId(observed.economics.source_snapshot_id))
-                }
-                ObservedSourceKind::IdleVaultUsdc => None,
-            },
-            optimizer_epoch_id,
-            route_fingerprint: None,
-            requirements_fingerprint: None,
-            source_reserve: match observed.source_kind {
-                ObservedSourceKind::ReservePosition => {
-                    Some(observed.economics.source_reserve.clone())
-                }
-                ObservedSourceKind::IdleVaultUsdc => None,
-            },
-            target_reserve: observed.economics.target_reserve.clone(),
-            liquidity_mint: observed.economics.mint.clone(),
-            amount_raw: observed.amount_raw,
-            principal_usd_micros: observed.economics.notional_usd_micros,
-            source_apy_bps: admitted_source_apy,
-            target_apy_bps: admitted_target_apy,
-            estimated_edge_bps: actual_edge,
-            estimated_cost_lamports: fee_budget.cap_lamports,
-            annual_yield_gain_usd_micros: annual_yield_gain,
-            expected_net_gain_usd_micros: selected.economics.net_holding_gain_usd_micros,
-            economic_priority: selected.economics.total_priority.max(1),
-            priority_version: PRIORITY_VERSION.to_owned(),
-            execution_plan: opportunity_execution_plan(
-                observed,
-                observation
+        queue_inputs.push(rebalance_opportunity_input(
+            observed,
+            PublicationTerms {
+                cluster: &options.cluster,
+                optimizer_epoch_id,
+                optimizer_market_slot: observation
                     .market_epoch
                     .maximum_market_slot
                     .unwrap_or_default(),
-                admitted_source_apy,
-                selected.economics.capacity_adjusted_target_net_apy_bps,
-                fee_budget.cap_lamports,
-                fee_budget.tier.as_str(),
+                admitted_source_apy_bps: admitted_source_apy,
+                admitted_target_apy_bps: admitted_target_apy,
+                annual_yield_gain_usd_micros: annual_yield_gain,
+                expected_net_gain_usd_micros: selected.economics.net_holding_gain_usd_micros,
+                economic_priority: selected.economics.total_priority,
+                fee_cap_lamports: fee_budget.cap_lamports,
+                fee_tier: fee_budget.tier.as_str(),
                 fee_policy,
-            ),
-            available_at: Utc::now(),
-            expires_at: mint_expires_at,
-            provisioning_request_id: None,
-        });
+                available_at: Utc::now(),
+                expires_at: route_expires_at,
+            },
+        ));
     }
 
     let queue_input_count = queue_inputs.len();
@@ -920,6 +1066,22 @@ async fn run_live_once(
         .map(|input| input.vault_id.as_i64())
         .collect::<BTreeSet<_>>()
         .into_iter()
+        .collect::<Vec<_>>();
+    let planned_routes = queue_inputs
+        .iter()
+        .map(|input| {
+            json!({
+                "vaultId": input.vault_id.as_i64(),
+                "sourceReserve": input.source_reserve,
+                "targetReserve": input.target_reserve,
+                "routeKind": input.execution_plan.get("route_kind"),
+                "sourceLiquidityMint": input.execution_plan.get("source_liquidity_mint"),
+                "targetLiquidityMint": input.execution_plan.get("target_liquidity_mint"),
+                "estimatedExecutionCostUsdMicros": input.execution_plan.get("estimated_execution_cost_usd_micros"),
+                "estimatedExecutionCosts": input.execution_plan.get("estimated_execution_costs"),
+                "expiresAt": input.expires_at,
+            })
+        })
         .collect::<Vec<_>>();
     let publish = if options.dry_run {
         PublishWaveResult::default()
@@ -1047,6 +1209,11 @@ async fn run_live_once(
     })).collect::<Vec<_>>(),
     });
     if let Some(fields) = output.as_object_mut() {
+        fields.insert(
+            "crossMintJupiterEnabled".to_owned(),
+            json!(options.enable_cross_mint_jupiter),
+        );
+        fields.insert("plannedRoutes".to_owned(), json!(planned_routes));
         fields.insert(
             "rejectionReasonCounts".to_owned(),
             json!(rejection_reason_counts),
@@ -1375,7 +1542,11 @@ async fn run() -> Result<(), Box<dyn Error>> {
     // transactions (executor and ALT provisioner).
     let delegated_signer = STANDARD_POLICY_AUTHORITY.to_owned();
     let enabled_mints = enabled_stable_mints_from_env()?;
-    let config = live_observation_config(&options.cluster, enabled_mints)?;
+    let config = live_observation_config(
+        &options.cluster,
+        enabled_mints,
+        options.enable_cross_mint_jupiter,
+    )?;
     let neon = NeonSqlClient::connect(
         NeonSqlConfig::new(neon_url).with_max_connections(DEFAULT_QUEUE_CONNECTIONS),
     )
@@ -1682,6 +1853,10 @@ fn log_planner_wakeup_event(event: &DurablePgWakeupEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loyal_yield_orchestrator::fleet_orchestration::{
+        CandidateExecutionCosts, CandidateRouteKind, ObservedEarnPolicyEvidence, OpportunityInput,
+    };
+    use loyal_yield_orchestrator::sqlx::postgres::PgPoolOptions;
 
     #[test]
     fn daemon_log_limiter_preserves_progress_and_coalesces_idle_cycles() {
@@ -1692,5 +1867,234 @@ mod tests {
         assert!(!limiter.should_emit(&json!({"status": "idle"})));
         assert!(limiter.should_emit(&json!({"publishedCount": 1})));
         assert!(!limiter.should_emit(&json!({"publishedCount": 0})));
+    }
+
+    #[tokio::test]
+    async fn generated_cross_mint_candidate_passes_actual_store_publication_validation() {
+        let now = Utc::now();
+        let observed = ObservedFleetOpportunity {
+            economics: OpportunityInput {
+                opportunity_id: 1,
+                optimizer_epoch_id: 7,
+                vault_id: 11,
+                tenant_id: "test-tenant".to_owned(),
+                source_snapshot_id: 13,
+                observed_slot: 17,
+                mint: "source-mint".to_owned(),
+                source_reserve: "source-reserve".to_owned(),
+                target_reserve: "target-reserve".to_owned(),
+                notional_usd_micros: 1_000_000,
+                source_net_apy_bps: 100,
+                target_net_apy_bps: 200,
+                confidence_ppm: 950_000,
+                expected_service_millis: 45_000,
+                holding_horizon_seconds: 86_400,
+                estimated_execution_cost_usd_micros: 5_000,
+                age_seconds: 0,
+                fairness_credit: 0,
+                writable_conflict_keys: vec!["vault:test".to_owned()],
+            },
+            route_kind: CandidateRouteKind::CrossMintJupiter,
+            source_liquidity_mint: "source-mint".to_owned(),
+            target_liquidity_mint: "target-mint".to_owned(),
+            estimated_execution_costs: CandidateExecutionCosts::CrossMintJupiter {
+                withdraw_usd_micros: 1_000,
+                jupiter_swap_usd_micros: 3_000,
+                deposit_usd_micros: 1_000,
+            },
+            cross_mint_maximum_value_loss_bps: Some(50),
+            jupiter_swap_lane: Some(
+                loyal_yield_store::fleet_orchestration::CrossMintSwapPolicyBinding {
+                    policy_account: "swap-policy".to_owned(),
+                    source_shard: "classic".to_owned(),
+                    observed_slot: 23,
+                    observed_signature: "swap-signature".to_owned(),
+                    source_commitment: "finalized".to_owned(),
+                    max_slippage_bps: 50,
+                    daily_source_mint_spending_cap: 1_000_000,
+                    manifest_fingerprint: "a".repeat(64),
+                },
+            ),
+            source_earn_policy: Some(ObservedEarnPolicyEvidence {
+                settings: "test-settings".to_owned(),
+                authority: "test-authority".to_owned(),
+                policy_account: "withdraw-policy".to_owned(),
+                vault_index: 1,
+                vault_pubkey: "test-vault".to_owned(),
+                delegated_signer: "test-signer".to_owned(),
+                threshold: 1,
+                stable_mints: vec!["source-mint".to_owned()],
+                kamino_markets: vec!["source-market".to_owned()],
+                kamino_liquidity_mints: vec!["source-mint".to_owned()],
+                source_commitment: "finalized".to_owned(),
+                observed_slot: 19,
+                observed_signature: "withdraw-signature".to_owned(),
+            }),
+            target_earn_policy: Some(ObservedEarnPolicyEvidence {
+                settings: "test-settings".to_owned(),
+                authority: "test-authority".to_owned(),
+                policy_account: "deposit-policy".to_owned(),
+                vault_index: 1,
+                vault_pubkey: "test-vault".to_owned(),
+                delegated_signer: "test-signer".to_owned(),
+                threshold: 1,
+                stable_mints: vec!["target-mint".to_owned()],
+                kamino_markets: vec!["target-market".to_owned()],
+                kamino_liquidity_mints: vec!["target-mint".to_owned()],
+                source_commitment: "finalized".to_owned(),
+                observed_slot: 21,
+                observed_signature: "deposit-signature".to_owned(),
+            }),
+            base_policy_account: "base-policy".to_owned(),
+            base_policy_delegated_signer: "test-signer".to_owned(),
+            base_policy_source_commitment: "finalized".to_owned(),
+            base_policy_observed_slot: 19,
+            base_policy_observed_signature: "base-signature".to_owned(),
+            source_kind: ObservedSourceKind::ReservePosition,
+            policy_id: 19,
+            settings: "test-settings".to_owned(),
+            vault_index: 1,
+            vault_pubkey: "test-vault".to_owned(),
+            amount_raw: 1_000_000,
+            route_amount_semantics: "redeemable_liquidity".to_owned(),
+            source_amount_semantics: Some("collateral_deposited".to_owned()),
+            source_collateral_amount_raw: Some(1_000_000),
+            redeemable_source_liquidity_amount_raw: Some(1_000_000),
+            idle_vault_liquidity_amount_raw: None,
+            idle_token_account: None,
+            source_observed_slot: 17,
+            source_observed_at: now,
+            target_observed_at: now,
+            target_observed_slot: 17,
+        };
+        let input = rebalance_opportunity_input(
+            &observed,
+            PublicationTerms {
+                cluster: "localnet",
+                optimizer_epoch_id: 7,
+                optimizer_market_slot: 17,
+                admitted_source_apy_bps: 100,
+                admitted_target_apy_bps: 200,
+                annual_yield_gain_usd_micros: 10_000,
+                expected_net_gain_usd_micros: 5_000,
+                economic_priority: 1,
+                fee_cap_lamports: 1_000,
+                fee_tier: "standard",
+                fee_policy: RouteFeePolicy::default(),
+                available_at: now,
+                expires_at: now + ChronoDuration::minutes(5),
+            },
+        );
+
+        assert_eq!(input.liquidity_mint, "target-mint");
+        assert_eq!(
+            input
+                .execution_plan
+                .get("source_liquidity_mint")
+                .and_then(Value::as_str),
+            Some("source-mint")
+        );
+        assert_eq!(
+            input
+                .execution_plan
+                .get("target_liquidity_mint")
+                .and_then(Value::as_str),
+            Some("target-mint")
+        );
+        let bindings = input
+            .execution_plan
+            .get("policy_bindings")
+            .expect("cross-mint publication must freeze policy bindings");
+        assert_eq!(
+            bindings,
+            &json!({
+                "settings": "test-settings",
+                "vault_index": 1,
+                "vault_pubkey": "test-vault",
+                "delegated_signer": "test-signer",
+                "withdraw": {
+                    "policy_account": "withdraw-policy",
+                    "observed_slot": 19,
+                    "observed_signature": "withdraw-signature",
+                    "source_commitment": "finalized",
+                    "constraint_index": 0,
+                },
+                "swap": {
+                    "policy_account": "swap-policy",
+                    "source_shard": "classic",
+                    "observed_slot": 23,
+                    "observed_signature": "swap-signature",
+                    "source_commitment": "finalized",
+                    "max_slippage_bps": 50,
+                    "daily_source_mint_spending_cap": 1_000_000,
+                    "manifest_fingerprint": "a".repeat(64),
+                },
+                "deposit": {
+                    "policy_account": "deposit-policy",
+                    "observed_slot": 21,
+                    "observed_signature": "deposit-signature",
+                    "source_commitment": "finalized",
+                    "constraint_index": 1,
+                },
+            })
+        );
+        assert_ne!(
+            bindings
+                .pointer("/withdraw/policy_account")
+                .and_then(Value::as_str),
+            bindings
+                .pointer("/deposit/policy_account")
+                .and_then(Value::as_str),
+            "cross-class routes must preserve independent Earn policy accounts"
+        );
+        assert!(bindings.get("base").is_none());
+        assert!(input
+            .execution_plan
+            .get("route_fingerprint_material")
+            .is_none());
+        assert!(input
+            .execution_plan
+            .get("requirements_fingerprint_material")
+            .is_none());
+        assert_eq!(
+            input
+                .execution_plan
+                .pointer("/estimated_execution_costs/jupiter_swap_usd_micros")
+                .and_then(Value::as_i64),
+            Some(3_000)
+        );
+        assert_eq!(
+            input
+                .execution_plan
+                .get("estimated_execution_cost_usd_micros")
+                .and_then(Value::as_i64),
+            Some(5_000),
+            "the 50 bps protection cap must not be priced as expected loss"
+        );
+        assert_eq!(
+            input
+                .execution_plan
+                .get("cross_mint_maximum_value_loss_bps")
+                .and_then(Value::as_u64),
+            Some(50)
+        );
+
+        // upsert_rebalance_opportunity runs the production validator before
+        // opening its transaction. A deliberately unreachable lazy pool lets
+        // this test prove validation accepted the generated input without
+        // mutating a database.
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(25))
+            .connect_lazy("postgres://planner-test@127.0.0.1:1/planner-test")
+            .expect("construct deliberately unreachable lazy pool");
+        let client = NeonSqlClient::from_pool(pool);
+        let error = client
+            .upsert_rebalance_opportunity(input)
+            .await
+            .expect_err("publication should reach the deliberately unavailable database");
+        assert!(
+            matches!(error, OrchestratorError::Sqlx(_)),
+            "generated planner input was rejected before the database boundary: {error}"
+        );
     }
 }

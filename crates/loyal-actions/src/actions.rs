@@ -1,17 +1,23 @@
 use crate::ids::*;
+use crate::jupiter::{
+    JupiterCrossMintPolicySeeds, JupiterCrossMintPolicySpec, JupiterCrossMintSourceShard,
+    JupiterV2Dialect,
+};
 use crate::lookup_tables::YieldRouteLookupTableRequirements;
 use crate::protocols::{
-    jupiter_constraint, kamino_deposit_reserve_liquidity_constraint,
+    jupiter_constraint, jupiter_cross_mint_constraint, kamino_deposit_reserve_liquidity_constraint,
     kamino_deposit_reserve_liquidity_market_mint_constraint, kamino_init_obligation_constraint,
     kamino_redeem_reserve_collateral_constraint,
     kamino_redeem_reserve_collateral_market_mint_constraint, kamino_refresh_obligation_constraint,
     loyal_hub_constraint, unique_pubkeys,
 };
 use crate::squads::{
-    create_program_interaction_action_instruction, derive_action_account,
-    update_program_interaction_action_instruction, LoyalActionError, Result,
+    create_program_interaction_action_instruction,
+    create_program_interaction_action_instruction_with_daily_spending_limits,
+    derive_action_account, update_program_interaction_action_instruction, LoyalActionError, Result,
     SquadsInstructionConstraint,
 };
+use crate::EarnStablecoinPair;
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,6 +271,64 @@ pub struct YieldRouteActionInstruction {
     steps: YieldRouteSteps,
     pub spec: YieldRouteActionSpec,
     lookup_table_requirements: YieldRouteLookupTableRequirements,
+}
+
+/// One of the two durable cross-mint policy shards.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JupiterCrossMintPolicyAction {
+    pub account: Pubkey,
+    pub instruction: Instruction,
+    pub spec: JupiterCrossMintPolicySpec,
+    lookup_table_requirements: YieldRouteLookupTableRequirements,
+}
+
+impl JupiterCrossMintPolicyAction {
+    /// Select the immutable constraint index for a fresh Jupiter build.
+    ///
+    /// Pair choice is deliberately dynamic, but its source must belong to this
+    /// shard and its target must be a different canonical Earn stablecoin.
+    pub fn step_for_pair(
+        &self,
+        pair: EarnStablecoinPair,
+        dialect: JupiterV2Dialect,
+    ) -> Result<LoyalActionStep> {
+        if !self.spec.source_shard.contains(pair.input_mint)
+            || pair.input_mint == pair.output_mint
+            || crate::earn_stablecoin(pair.output_mint).is_none()
+        {
+            return Err(LoyalActionError::MissingActionStep);
+        }
+        let constraint_index = match dialect {
+            JupiterV2Dialect::RouteV2 => 0,
+            JupiterV2Dialect::SharedAccountsRouteV2 => 1,
+        };
+        Ok(LoyalActionStep::new(self.account, constraint_index))
+    }
+
+    pub fn lookup_table_requirements(&self) -> &YieldRouteLookupTableRequirements {
+        &self.lookup_table_requirements
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JupiterCrossMintPolicySet {
+    pub classic: JupiterCrossMintPolicyAction,
+    pub token_2022: JupiterCrossMintPolicyAction,
+}
+
+impl JupiterCrossMintPolicySet {
+    pub fn action_for_source_mint(
+        &self,
+        source_mint: Pubkey,
+    ) -> Result<&JupiterCrossMintPolicyAction> {
+        if self.classic.spec.source_shard.contains(source_mint) {
+            Ok(&self.classic)
+        } else if self.token_2022.spec.source_shard.contains(source_mint) {
+            Ok(&self.token_2022)
+        } else {
+            Err(LoyalActionError::InvalidStablecoinPair)
+        }
+    }
 }
 
 impl YieldRouteActionInstruction {
@@ -711,6 +775,96 @@ pub fn create_swap_yield_route_action(
     })
 }
 
+/// Create one durable source-mint shard with both supported Jupiter dialects.
+pub fn create_jupiter_cross_mint_policy_action(
+    context: LoyalActionContext,
+    spec: JupiterCrossMintPolicySpec,
+    action_seed: u64,
+) -> Result<JupiterCrossMintPolicyAction> {
+    validate_jupiter_cross_mint_policy_spec(spec)?;
+    let account = derive_action_account(&context.settings, action_seed).0;
+    let constraints = vec![
+        jupiter_cross_mint_constraint(
+            context.vault,
+            JupiterV2Dialect::RouteV2,
+            spec.max_slippage_bps,
+        ),
+        jupiter_cross_mint_constraint(
+            context.vault,
+            JupiterV2Dialect::SharedAccountsRouteV2,
+            spec.max_slippage_bps,
+        ),
+    ];
+    let spending_limits = spec
+        .source_shard
+        .source_mints()
+        .into_iter()
+        .map(|mint| (mint, spec.daily_source_mint_spending_cap))
+        .collect::<Vec<_>>();
+    let instruction = create_program_interaction_action_instruction_with_daily_spending_limits(
+        context.settings,
+        context.authority,
+        context.delegated_signer,
+        action_seed,
+        context.account_index,
+        constraints,
+        &spending_limits,
+    )?;
+    let accounts = YieldRouteActionAccounts {
+        withdraw: account,
+        swap: account,
+        deposit: account,
+    };
+
+    Ok(JupiterCrossMintPolicyAction {
+        account,
+        instruction,
+        spec,
+        lookup_table_requirements: action_lookup_table_requirements(context, accounts),
+    })
+}
+
+/// Build the complete V1 cross-mint authority set.
+///
+/// The two policies have disjoint source mints and both contain both Jupiter
+/// dialects, so each source-mint cap exists exactly once.
+pub fn create_jupiter_cross_mint_policy_set(
+    context: LoyalActionContext,
+    max_slippage_bps: u16,
+    daily_source_mint_spending_cap: u64,
+    seeds: JupiterCrossMintPolicySeeds,
+) -> Result<JupiterCrossMintPolicySet> {
+    if seeds.classic == seeds.token_2022 {
+        return Err(LoyalActionError::DuplicateActionSeeds);
+    }
+    let create = |source_shard, action_seed| {
+        create_jupiter_cross_mint_policy_action(
+            context,
+            JupiterCrossMintPolicySpec {
+                source_shard,
+                max_slippage_bps,
+                daily_source_mint_spending_cap,
+            },
+            action_seed,
+        )
+    };
+
+    Ok(JupiterCrossMintPolicySet {
+        classic: create(JupiterCrossMintSourceShard::Classic, seeds.classic)?,
+        token_2022: create(JupiterCrossMintSourceShard::Token2022, seeds.token_2022)?,
+    })
+}
+
+fn validate_jupiter_cross_mint_policy_spec(spec: JupiterCrossMintPolicySpec) -> Result<()> {
+    if spec.max_slippage_bps == 0 || spec.max_slippage_bps > 10_000 {
+        return Err(LoyalActionError::InvalidSlippageBps);
+    }
+    if spec.daily_source_mint_spending_cap == 0 {
+        return Err(LoyalActionError::InvalidDailySpendingCap);
+    }
+    Ok(())
+}
+
 fn build_yield_route_actions(plan: YieldRouteActionPlan) -> Result<YieldRouteActionSetup> {
     validate_plan(&plan)?;
 
@@ -1146,6 +1300,13 @@ fn validate_action_seeds(topology: RouteTopology, seeds: YieldRouteActionSeeds) 
 mod tests {
     use super::*;
     use crate::protocols::derive_loyal_hub_config;
+    use solana_sdk::{
+        hash::Hash,
+        message::Message,
+        packet::PACKET_DATA_SIZE,
+        signature::{Keypair, Signer},
+        transaction::Transaction,
+    };
     use std::collections::BTreeMap;
 
     fn context() -> LoyalActionContext {
@@ -1228,6 +1389,237 @@ mod tests {
     fn rejects_empty_swap_lanes() {
         let result = create_swap_yield_route_action(context(), vec![USDC_MINT], vec![], 42);
         assert_eq!(result.unwrap_err(), LoyalActionError::EmptySwapLanes);
+    }
+
+    #[test]
+    fn measures_generalized_cross_mint_policy_packet_shapes() {
+        let authority = Keypair::new();
+        let context = LoyalActionContext {
+            settings: Pubkey::new_unique(),
+            authority: authority.pubkey(),
+            delegated_signer: Pubkey::new_unique(),
+            account_index: 0,
+            vault: Pubkey::new_unique(),
+        };
+        let all_spending_limits = crate::earn_stablecoins()
+            .iter()
+            .map(|stablecoin| (stablecoin.mint, 1_000_000_000))
+            .collect::<Vec<_>>();
+        let constraint = |dialect| {
+            crate::protocols::jupiter_cross_mint_constraint(
+                context.vault,
+                dialect,
+                JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
+            )
+        };
+        let instruction = |seed, constraints, spending_limits: &[(Pubkey, u64)]| {
+            crate::squads::create_program_interaction_action_instruction_with_daily_spending_limits(
+                context.settings,
+                context.authority,
+                context.delegated_signer,
+                seed,
+                context.account_index,
+                constraints,
+                spending_limits,
+            )
+            .unwrap()
+        };
+        let both_dialects_all_mints = instruction(
+            42,
+            vec![
+                constraint(JupiterV2Dialect::RouteV2),
+                constraint(JupiterV2Dialect::SharedAccountsRouteV2),
+            ],
+            &all_spending_limits,
+        );
+        let classic_shard = create_jupiter_cross_mint_policy_action(
+            context,
+            JupiterCrossMintPolicySpec {
+                source_shard: JupiterCrossMintSourceShard::Classic,
+                max_slippage_bps: JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
+                daily_source_mint_spending_cap: 1_000_000_000,
+            },
+            43,
+        )
+        .unwrap();
+
+        let packet_bytes = |instruction: Instruction| {
+            let message = Message::new_with_blockhash(
+                &[instruction],
+                Some(&authority.pubkey()),
+                &Hash::new_unique(),
+            );
+            bincode::serialize(&Transaction::new(
+                &[&authority],
+                message,
+                Hash::new_unique(),
+            ))
+            .unwrap()
+            .len()
+        };
+        let all_mints_data_bytes = both_dialects_all_mints.data.len();
+        let all_mints_packet_bytes = packet_bytes(both_dialects_all_mints);
+        let classic_shard_data_bytes = classic_shard.instruction.data.len();
+        let classic_shard_packet_bytes = packet_bytes(classic_shard.instruction);
+
+        eprintln!(
+            "generalized_cross_mint_policy_measurement packet_limit={PACKET_DATA_SIZE} all_mints_data_bytes={all_mints_data_bytes} all_mints_packet_bytes={all_mints_packet_bytes} classic_shard_data_bytes={classic_shard_data_bytes} classic_shard_packet_bytes={classic_shard_packet_bytes}"
+        );
+        assert_eq!(all_mints_packet_bytes, 1_298);
+        assert_eq!(classic_shard_packet_bytes, 1_148);
+    }
+
+    #[test]
+    fn generalized_cross_mint_policy_set_covers_all_pairs_with_two_immutable_shards() {
+        let context = context();
+        let set = create_jupiter_cross_mint_policy_set(
+            context,
+            JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
+            1_000_000_000,
+            JupiterCrossMintPolicySeeds {
+                classic: 41,
+                token_2022: 42,
+            },
+        )
+        .unwrap();
+        let canonical_atas = crate::earn_stablecoins()
+            .iter()
+            .map(|stablecoin| {
+                crate::derive_associated_token_account(
+                    context.vault,
+                    stablecoin.mint,
+                    stablecoin.token_program,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        for action in [&set.classic, &set.token_2022] {
+            let decoded = decode_program_interaction_policy_create(&action.instruction);
+            assert_eq!(decoded.account_index, context.account_index);
+            assert_eq!(decoded.constraints.len(), 2);
+            for (constraint_index, dialect) in [
+                JupiterV2Dialect::RouteV2,
+                JupiterV2Dialect::SharedAccountsRouteV2,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let constraint = &decoded.constraints[constraint_index];
+                assert_eq!(constraint.program_id, JUPITER_V6_PROGRAM_ID);
+                let accounts = constraint.account_constraints_by_index();
+                let layout = dialect.account_layout();
+                assert_eq!(accounts.len(), 2);
+                assert_pubkey_constraint(&accounts[&layout.authority], &[context.vault], None);
+                assert_pubkey_constraint(
+                    &accounts[&layout.output_token_account],
+                    &canonical_atas,
+                    None,
+                );
+                assert_data_slice_equals(
+                    &constraint.data_constraints[0],
+                    0,
+                    &dialect.discriminator(),
+                );
+                assert_data_u16_lte(
+                    &constraint.data_constraints[1],
+                    dialect.slippage_bps_offset(),
+                    JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
+                );
+                assert_data_u8_equals(
+                    &constraint.data_constraints[2],
+                    dialect.platform_fee_bps_offset(),
+                    0,
+                );
+            }
+        }
+
+        for pair in crate::earn_stablecoin_pairs() {
+            let action = set.action_for_source_mint(pair.input_mint).unwrap();
+            assert_eq!(
+                action
+                    .step_for_pair(pair, JupiterV2Dialect::RouteV2)
+                    .unwrap()
+                    .instruction_constraint_index(),
+                0
+            );
+            assert_eq!(
+                action
+                    .step_for_pair(pair, JupiterV2Dialect::SharedAccountsRouteV2)
+                    .unwrap()
+                    .instruction_constraint_index(),
+                1
+            );
+            let other = if action.spec.source_shard == JupiterCrossMintSourceShard::Classic {
+                &set.token_2022
+            } else {
+                &set.classic
+            };
+            assert_eq!(
+                other
+                    .step_for_pair(pair, JupiterV2Dialect::RouteV2)
+                    .unwrap_err(),
+                LoyalActionError::MissingActionStep
+            );
+        }
+    }
+
+    #[test]
+    fn generalized_cross_mint_policy_rejects_unbounded_risk_and_duplicate_seeds() {
+        let context = context();
+        let spec = JupiterCrossMintPolicySpec {
+            source_shard: JupiterCrossMintSourceShard::Classic,
+            max_slippage_bps: JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
+            daily_source_mint_spending_cap: 1,
+        };
+        assert_eq!(
+            create_jupiter_cross_mint_policy_action(
+                context,
+                JupiterCrossMintPolicySpec {
+                    max_slippage_bps: 10_001,
+                    ..spec
+                },
+                41,
+            )
+            .unwrap_err(),
+            LoyalActionError::InvalidSlippageBps
+        );
+        assert_eq!(
+            create_jupiter_cross_mint_policy_action(
+                context,
+                JupiterCrossMintPolicySpec {
+                    max_slippage_bps: 0,
+                    ..spec
+                },
+                41,
+            )
+            .unwrap_err(),
+            LoyalActionError::InvalidSlippageBps
+        );
+        assert_eq!(
+            create_jupiter_cross_mint_policy_action(
+                context,
+                JupiterCrossMintPolicySpec {
+                    daily_source_mint_spending_cap: 0,
+                    ..spec
+                },
+                41,
+            )
+            .unwrap_err(),
+            LoyalActionError::InvalidDailySpendingCap
+        );
+        assert_eq!(
+            create_jupiter_cross_mint_policy_set(
+                context,
+                JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
+                1,
+                JupiterCrossMintPolicySeeds {
+                    classic: 41,
+                    token_2022: 41,
+                },
+            )
+            .unwrap_err(),
+            LoyalActionError::DuplicateActionSeeds
+        );
     }
 
     #[test]
@@ -2044,7 +2436,17 @@ mod tests {
         let constraints = read_vec(&mut cursor, read_instruction_constraint);
         assert_eq!(cursor.read_u8(), 0);
         assert_eq!(cursor.read_u8(), 0);
-        assert_eq!(cursor.read_u32(), 0);
+        let spending_limit_count = cursor.read_u32();
+        for _ in 0..spending_limit_count {
+            cursor.skip(32 + 8);
+            if cursor.read_u8() == 1 {
+                cursor.skip(8);
+            }
+            if cursor.read_u8() == 4 {
+                cursor.skip(8);
+            }
+            cursor.skip(8);
+        }
 
         DecodedProgramInteractionPolicy {
             account_index,

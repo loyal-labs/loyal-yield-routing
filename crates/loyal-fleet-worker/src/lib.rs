@@ -1,3 +1,5 @@
+mod cross_mint;
+
 use std::process::Command;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -68,14 +70,14 @@ use loyal_yield_orchestrator::{
         maximum_target_inflight_usd_micros, observe_market_epoch, outer_task_failure_recovery,
         project_fleet_route_source_evidence, projected_target_apy_bps, reconciliation_is_stalled,
         reconciliation_retry_delay_seconds, validate_fleet_route_kind_binding,
-        validate_fleet_route_source_evidence, DurablePgWakeupEvent, DurablePgWakeupListener,
-        EconomicPolicy, FleetObservationConfig, FleetOrchestrationStatus, FleetRouteSourceEvidence,
-        FleetRouteSourceKind as SameMintRouteSourceKind, FleetWorkerRole, FreshRouteEconomicsInput,
-        IdleDepositPostEffectDecision, IdleDepositPostEffectObservation, IdleDepositRouteContract,
-        ImmutableMarketEpoch, OpportunityInput, OuterTaskFailureKind, RebalanceOpportunityAdvance,
-        RebalanceOpportunityClaimKind, RebalanceOpportunityLease, RebalanceOpportunityRecord,
-        RebalanceOpportunityState, ReconciliationStallLatch, RouteFeePayerKind,
-        RouteFeePayerShardConfig, RouteFeePolicy, SignedRouteSubmissionAdvance,
+        validate_fleet_route_source_evidence, CrossMintNoEffectProofInput, DurablePgWakeupEvent,
+        DurablePgWakeupListener, EconomicPolicy, FleetObservationConfig, FleetOrchestrationStatus,
+        FleetRouteSourceEvidence, FleetRouteSourceKind as SameMintRouteSourceKind, FleetWorkerRole,
+        FreshRouteEconomicsInput, IdleDepositPostEffectDecision, IdleDepositPostEffectObservation,
+        IdleDepositRouteContract, ImmutableMarketEpoch, OpportunityInput, OuterTaskFailureKind,
+        RebalanceOpportunityAdvance, RebalanceOpportunityClaimKind, RebalanceOpportunityLease,
+        RebalanceOpportunityRecord, RebalanceOpportunityState, ReconciliationStallLatch,
+        RouteFeePayerKind, RouteFeePayerShardConfig, RouteFeePolicy, SignedRouteSubmissionAdvance,
         SignedRouteSubmissionInput, SignedRouteSubmissionLease, SignedRouteSubmissionState,
         TargetCapacityObservation, TargetCapacityReservationInput,
         MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS,
@@ -141,6 +143,7 @@ use tokio::{
 };
 
 const KAMINO_PRIME_USDC_RESERVE: &str = "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu";
+const CROSS_MINT_JUPITER_ENABLED_ENV: &str = "EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER";
 const KAMINO_MAIN_MARKET: &str = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF";
 const KAMINO_PRIME_MARKET: &str = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA";
 const KAMINO_MAPLE_MARKET: &str = "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y";
@@ -3247,6 +3250,18 @@ fn parse_fleet_reconciler_options(
     })
 }
 
+fn cross_mint_rollout_enabled_from_env() -> Result<bool, Box<dyn Error>> {
+    match env::var(CROSS_MINT_JUPITER_ENABLED_ENV) {
+        Ok(value) if value == "1" || value.eq_ignore_ascii_case("true") => Ok(true),
+        Ok(value) if value == "0" || value.eq_ignore_ascii_case("false") => Ok(false),
+        Ok(_) => {
+            Err(format!("{CROSS_MINT_JUPITER_ENABLED_ENV} must be true, false, 1, or 0").into())
+        }
+        Err(env::VarError::NotPresent) => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Error>> {
     let database_url =
         env::var("NEON_DATABASE_URL").map_err(|_| "NEON_DATABASE_URL must be set")?;
@@ -3286,6 +3301,21 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
     client
         .require_schema_migration(33, "policy_setup_funding_reservations")
         .await?;
+    let cross_mint_enabled = cross_mint_rollout_enabled_from_env()?;
+    let cross_mint_schema_ready = client
+        .schema_migration_applied(36, "cross_mint_swap_policies")
+        .await?;
+    if cross_mint_enabled && !cross_mint_schema_ready {
+        client
+            .require_schema_migration(36, "cross_mint_swap_policies")
+            .await?;
+    }
+    // Once the schema exists, continuation remains available even while new
+    // cross-mint admission is disabled. Source-idle custody recovers to its
+    // source reserve; target-idle custody continues to a safe target.
+    let cross_mint_config = cross_mint_schema_ready
+        .then(cross_mint::CrossMintWorkerConfig::from_env)
+        .transpose()?;
     // Validate the standard signer once at startup. Individual route builds
     // re-read and match it to the active policy before signing.
     let delegated_signer = standard_policy_keypair_from_env()?.pubkey().to_string();
@@ -3324,6 +3354,116 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
     health_interval.tick().await;
 
     loop {
+        // Existing custody always outranks new optimization. This durable scan
+        // happens on startup, every poll, and after listener reconnects; the
+        // notification channel is only a latency hint.
+        if options.claim_kind == RebalanceOpportunityClaimKind::Execute {
+            if let Some(cross_mint_config) = cross_mint_config.as_ref() {
+                match cross_mint::process_continuation_before_new_work(
+                    route_runtime.as_ref(),
+                    &options,
+                    cross_mint_config,
+                )
+                .await
+                {
+                    Ok(cross_mint::CrossMintWorkResult::Continued {
+                        decision_id,
+                        leg,
+                        purpose,
+                        submission_id,
+                    }) => {
+                        claimed = claimed.saturating_add(1);
+                        completed = completed.saturating_add(1);
+                        println!(
+                            "{}",
+                            serde_json::to_string(&json!({
+                                "status": "cross_mint_leg_submission_queued",
+                                "decisionId": decision_id,
+                                "submissionId": submission_id,
+                                "leg": leg.as_str(),
+                                "purpose": purpose.as_str(),
+                                "persistsSignedBytes": true,
+                                "sendsTransactions": false,
+                                "continuationBeforeNewOptimization": true,
+                            }))?
+                        );
+                        // Drain recoveries before leasing any new opportunity.
+                        continue;
+                    }
+                    Ok(cross_mint::CrossMintWorkResult::ClosedForManualIntervention {
+                        decision_id,
+                    }) => {
+                        completed = completed.saturating_add(1);
+                        println!(
+                            "{}",
+                            serde_json::to_string(&json!({
+                                "status": "cross_mint_movement_manual_intervention",
+                                "decisionId": decision_id,
+                                "reason": "finalized custody balance no longer equals movement attribution",
+                                "sendsTransactions": false,
+                            }))?
+                        );
+                        continue;
+                    }
+                    Ok(cross_mint::CrossMintWorkResult::CancelledBeforeWithdraw {
+                        decision_id,
+                    }) => {
+                        completed = completed.saturating_add(1);
+                        println!(
+                            "{}",
+                            serde_json::to_string(&json!({
+                                "status": "cross_mint_movement_cancelled_before_withdraw",
+                                "decisionId": decision_id,
+                                "reason": "cross-mint rollout disabled before withdrawal",
+                                "sendsTransactions": false,
+                            }))?
+                        );
+                        continue;
+                    }
+                    Ok(cross_mint::CrossMintWorkResult::NoWork) => {
+                        if cross_mint::owner_has_live_continuation_lease(
+                            &client,
+                            &options.cluster,
+                            &options.owner,
+                        )
+                        .await?
+                        {
+                            // A build failed after this worker acquired the fence.
+                            // Do not compensate by starting new withdrawals while
+                            // that recovery lease is still live.
+                            tokio::time::sleep(Duration::from_millis(
+                                options.poll_interval_milliseconds,
+                            ))
+                            .await;
+                            continue;
+                        }
+                    }
+                    Err(error) => {
+                        failed = failed.saturating_add(1);
+                        OperationalError::new(
+                            "cross_mint_continuation_failed",
+                            "continue_cross_mint_movement",
+                            "cross-mint continuation failed before signed publication",
+                        )
+                        .retryable(true)
+                        .recovery_required(true)
+                        .emit();
+                        eprintln!(
+                            "{}",
+                            serde_json::to_string(&json!({
+                                "status": "cross_mint_continuation_failed",
+                                "error": redacted_external_error(&error.to_string()),
+                                "sendsTransactions": false,
+                            }))?
+                        );
+                        // Retry/recovery remains ahead of new optimization. The
+                        // live continuation fence is observed at the top of the
+                        // next iteration and prevents new withdrawals meanwhile.
+                        continue;
+                    }
+                }
+            }
+        }
         if options.claim_kind == RebalanceOpportunityClaimKind::Revalidate
             && last_outbox_ack.is_none_or(|last| last.elapsed() >= Duration::from_secs(1))
         {
@@ -3351,6 +3491,115 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
             }
             claimed = claimed.saturating_add(u64::try_from(leases.len())?);
             for lease in leases {
+                match cross_mint::classify_opportunity(&lease.opportunity) {
+                    Ok(cross_mint::CrossMintOpportunityDisposition::CrossMint) => {
+                        let Some(cross_mint_config) = cross_mint_config.as_ref() else {
+                            failed = failed.saturating_add(1);
+                            defer_cross_mint_opportunity_after_error(
+                                &client,
+                                &lease,
+                                &"cross-mint Jupiter execution is disabled at the worker",
+                            )
+                            .await?;
+                            continue;
+                        };
+                        let cross_result = match lease.claim_kind {
+                            RebalanceOpportunityClaimKind::Revalidate => {
+                                cross_mint::revalidate_cross_mint_opportunity(
+                                    route_runtime.as_ref(),
+                                    cross_mint_config,
+                                    &lease,
+                                )
+                                .await
+                                .map(|()| cross_mint::CrossMintWorkResult::NoWork)
+                            }
+                            RebalanceOpportunityClaimKind::Execute => {
+                                cross_mint::activate_cross_mint_opportunity(
+                                    route_runtime.as_ref(),
+                                    &options,
+                                    cross_mint_config,
+                                    &lease,
+                                )
+                                .await
+                            }
+                        };
+                        match cross_result {
+                            Ok(cross_mint::CrossMintWorkResult::Continued {
+                                decision_id,
+                                leg,
+                                purpose,
+                                submission_id,
+                            }) => {
+                                completed = completed.saturating_add(1);
+                                println!(
+                                    "{}",
+                                    serde_json::to_string(&json!({
+                                        "status": "cross_mint_movement_activated",
+                                        "opportunityId": lease.opportunity.id,
+                                        "decisionId": decision_id,
+                                        "submissionId": submission_id,
+                                        "leg": leg.as_str(),
+                                        "purpose": purpose.as_str(),
+                                        "persistsSignedBytes": true,
+                                        "sendsTransactions": false,
+                                    }))?
+                                );
+                            }
+                            Ok(cross_mint::CrossMintWorkResult::NoWork) => {
+                                completed = completed.saturating_add(1);
+                            }
+                            Ok(cross_mint::CrossMintWorkResult::ClosedForManualIntervention {
+                                decision_id,
+                            }) => {
+                                completed = completed.saturating_add(1);
+                                println!(
+                                    "{}",
+                                    serde_json::to_string(&json!({
+                                        "status": "cross_mint_movement_manual_intervention",
+                                        "decisionId": decision_id,
+                                        "sendsTransactions": false,
+                                    }))?
+                                );
+                            }
+                            Ok(cross_mint::CrossMintWorkResult::CancelledBeforeWithdraw {
+                                decision_id,
+                            }) => {
+                                completed = completed.saturating_add(1);
+                                println!(
+                                    "{}",
+                                    serde_json::to_string(&json!({
+                                        "status": "cross_mint_movement_cancelled_before_withdraw",
+                                        "opportunityId": lease.opportunity.id,
+                                        "decisionId": decision_id,
+                                        "sendsTransactions": false,
+                                    }))?
+                                );
+                            }
+                            Err(error) => {
+                                failed = failed.saturating_add(1);
+                                defer_cross_mint_opportunity_after_error(&client, &lease, &error)
+                                    .await?;
+                                eprintln!(
+                                    "{}",
+                                    serde_json::to_string(&json!({
+                                        "status": "cross_mint_opportunity_deferred",
+                                        "opportunityId": lease.opportunity.id,
+                                        "lane": lease.claim_kind.as_str(),
+                                        "error": redacted_external_error(&error.to_string()),
+                                        "sendsTransactions": false,
+                                    }))?
+                                );
+                            }
+                        }
+                        continue;
+                    }
+                    Ok(cross_mint::CrossMintOpportunityDisposition::SameMint) => {}
+                    Err(error) => {
+                        failed = failed.saturating_add(1);
+                        defer_cross_mint_opportunity_after_error(&client, &lease, &error).await?;
+                        continue;
+                    }
+                }
                 let fused_execute_permit =
                     if lease.claim_kind == RebalanceOpportunityClaimKind::Revalidate {
                         fused_execute_slots.clone().try_acquire_owned().ok()
@@ -3637,6 +3886,46 @@ async fn wait_for_rebalance_wakeup(
             );
         }
     }
+}
+
+async fn defer_cross_mint_opportunity_after_error(
+    client: &NeonSqlClient,
+    lease: &RebalanceOpportunityLease,
+    error: &dyn std::fmt::Display,
+) -> Result<(), Box<dyn Error>> {
+    let Some(current) = client.rebalance_opportunity(lease.opportunity.id).await? else {
+        return Ok(());
+    };
+    // Activation consumes the optimizer lease and turns the opportunity into
+    // a movement. Its continuation lease, not this stale queue lease, owns all
+    // subsequent recovery. Never try to roll that state backward.
+    if current.state != RebalanceOpportunityState::Leased
+        || current.lease_owner.as_deref() != Some(lease.owner.as_str())
+        || current.fencing_token != lease.fencing_token
+    {
+        return Ok(());
+    }
+    let next_state = match lease.claim_kind {
+        RebalanceOpportunityClaimKind::Revalidate => RebalanceOpportunityState::Revalidate,
+        RebalanceOpportunityClaimKind::Execute => RebalanceOpportunityState::Ready,
+    };
+    client
+        .advance_rebalance_opportunity(
+            current.id,
+            lease,
+            RebalanceOpportunityAdvance {
+                next_state,
+                available_at: Some(Utc::now() + ChronoDuration::seconds(2)),
+                decision_id: None,
+                reason: Some(redacted_external_error(&error.to_string())),
+                route_fingerprint: current.route_fingerprint,
+                requirements_fingerprint: current.requirements_fingerprint,
+                execution_plan: Some(current.execution_plan),
+                provisioning_request_id: None,
+            },
+        )
+        .await?;
+    Ok(())
 }
 
 async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box<dyn Error>> {
@@ -4935,7 +5224,11 @@ async fn reconcile_signed_route_submission(
     ) {
         let recovering_ambiguous =
             lease.submission.state == SignedRouteSubmissionState::EffectAmbiguous;
-        let result = inspect_expired_route(&runtime, &lease).await;
+        let result = if cross_mint::is_cross_mint_submission(&lease.submission) {
+            cross_mint::inspect_expired_submission(&runtime, &lease).await
+        } else {
+            inspect_expired_route(&runtime, &lease).await
+        };
         return match result {
             Ok(ExpiredRouteCheckOutcome::EffectAbsent { observed_slot }) => {
                 let observed_block_height = lease
@@ -4944,6 +5237,36 @@ async fn reconcile_signed_route_submission(
                     .ok_or_else(|| {
                         "expiry-check submission is missing observed block height".to_owned()
                     })?;
+                if cross_mint::is_cross_mint_submission(&lease.submission) {
+                    let effect_check_slot =
+                        lease.submission.effect_check_slot.ok_or_else(|| {
+                            "cross-mint expiry-check submission is missing effect_check_slot"
+                                .to_owned()
+                        })?;
+                    runtime
+                        .client
+                        .record_cross_mint_no_effect_receipt(
+                            &lease,
+                            CrossMintNoEffectProofInput {
+                                observed_block_height,
+                                signature_history_checked_through_slot: observed_slot,
+                                effect_check_slot,
+                                observed_balance_anchors: lease
+                                    .submission
+                                    .expected_balance_anchors
+                                    .clone(),
+                                signature_history_evidence: json!({
+                                    "transactionSignature": lease.submission.transaction_signature.clone(),
+                                    "signatureHistoryAbsent": true,
+                                    "anchoredTokenAccountHistoryVerified": true,
+                                    "checkedThroughSlot": observed_slot,
+                                }),
+                                observed_at: Utc::now(),
+                            },
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
                 runtime
                     .client
                     .advance_signed_route_submission(
@@ -4993,6 +5316,48 @@ async fn reconcile_signed_route_submission(
                         "status": "fleet_expired_route_late_confirmation",
                         "submissionId": lease.submission.id,
                         "confirmedSlot": slot,
+                    })
+                );
+                Ok(true)
+            }
+            Ok(ExpiredRouteCheckOutcome::Finalized { slot }) => {
+                let checked_at = Utc::now();
+                runtime
+                    .client
+                    .advance_signed_route_submission(
+                        &lease,
+                        SignedRouteSubmissionAdvance::Confirmed {
+                            checked_at,
+                            confirmed_slot: slot,
+                        },
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                runtime
+                    .client
+                    .advance_signed_route_submission(
+                        &lease,
+                        SignedRouteSubmissionAdvance::Finalized {
+                            checked_at,
+                            finalized_slot: slot,
+                        },
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                runtime
+                    .client
+                    .advance_signed_route_submission(
+                        &lease,
+                        SignedRouteSubmissionAdvance::ReconciliationPending,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                println!(
+                    "{}",
+                    json!({
+                        "status": "fleet_expired_cross_mint_late_finalization",
+                        "submissionId": lease.submission.id,
+                        "finalizedSlot": slot,
                     })
                 );
                 Ok(true)
@@ -5088,6 +5453,63 @@ async fn reconcile_signed_route_submission(
             }
         };
     }
+    if cross_mint::is_cross_mint_submission(&lease.submission) {
+        return match cross_mint::reconcile_finalized_submission(&runtime, &lease).await {
+            Ok(_) => Ok(true),
+            Err(error) => {
+                let detail = safe_same_mint_operational_error(error.as_ref());
+                if cross_mint::reconciliation_error_requires_quarantine(error.as_ref()) {
+                    runtime
+                        .client
+                        .advance_signed_route_submission(
+                            &lease,
+                            SignedRouteSubmissionAdvance::EffectAmbiguous {
+                                checked_at: Utc::now(),
+                                error_detail: detail.clone(),
+                            },
+                        )
+                        .await
+                        .map_err(|advance_error| {
+                            format!(
+                                "cross-mint invariant quarantine failed after {detail}: {advance_error}"
+                            )
+                        })?;
+                    eprintln!(
+                        "{}",
+                        json!({
+                            "status": "cross_mint_finalized_effect_quarantined",
+                            "submissionId": lease.submission.id,
+                            "decisionId": lease.submission.decision_id.map(DecisionId::as_i64),
+                            "invariant": detail,
+                            "safeResponse": "keep vault conflict and capacity; require operator review before any continuation or recovery",
+                        })
+                    );
+                    return Ok(true);
+                }
+                runtime
+                    .client
+                    .advance_signed_route_submission(
+                        &lease,
+                        SignedRouteSubmissionAdvance::Deferred {
+                            checked_at: Utc::now(),
+                            next_poll_at: deferred_reconciliation_poll_at(
+                                &lease,
+                                "cross_mint_finalized_effect_reconciliation",
+                                &detail,
+                            ),
+                            error_detail: Some(detail.clone()),
+                        },
+                    )
+                    .await
+                    .map_err(|advance_error| {
+                        format!(
+                            "cross-mint reconciliation defer failed after {detail}: {advance_error}"
+                        )
+                    })?;
+                Ok(false)
+            }
+        };
+    }
     let result = reconcile_same_mint_submission_effect(&runtime, &lease).await;
     match result {
         Ok(reconciled_slot) => runtime
@@ -5170,6 +5592,7 @@ fn deferred_reconciliation_poll_at(
 enum ExpiredRouteCheckOutcome {
     EffectAbsent { observed_slot: i64 },
     Confirmed { slot: i64 },
+    Finalized { slot: i64 },
     ConfirmedFailure { slot: i64, detail: String },
     SeenUnconfirmed { detail: String },
     EffectAmbiguous { detail: String },
@@ -8092,6 +8515,8 @@ async fn run_policy_update_flow(
             .record_policy_match(PolicyMatchInput {
                 signature: signature.clone(),
                 slot: confirmed_slot,
+                cluster: options.cluster.clone(),
+                source_commitment: "confirmed".to_owned(),
                 settings: settings.to_string(),
                 authority: authority.to_string(),
                 policy_seed,
@@ -8558,6 +8983,8 @@ async fn run_policy_update_flow(
             PolicyMatchInput {
                 signature: route_signature.clone(),
                 slot: route_confirmed_slot,
+                cluster: options.cluster.clone(),
+                source_commitment: "confirmed".to_owned(),
                 settings: settings.to_string(),
                 authority: authority.to_string(),
                 policy_seed,
@@ -8577,6 +9004,8 @@ async fn run_policy_update_flow(
             PolicyMatchInput {
                 signature: setup_signature.clone(),
                 slot: setup_confirmed_slot,
+                cluster: options.cluster.clone(),
+                source_commitment: "confirmed".to_owned(),
                 settings: settings.to_string(),
                 authority: authority.to_string(),
                 policy_seed: setup_policy_seed_u64,
@@ -19179,7 +19608,7 @@ fn load_kamino_reserve_summary_at_or_after(
         reserve,
         RpcAccountInfoConfig {
             encoding: Some(UiAccountEncoding::Base64),
-            commitment: Some(CommitmentConfig::confirmed()),
+            commitment: Some(rpc.commitment()),
             min_context_slot,
             ..RpcAccountInfoConfig::default()
         },
@@ -19296,6 +19725,25 @@ fn collateral_to_redeemable_liquidity_amount(
         .ok_or_else(|| "redeemable liquidity amount does not fit u64".into())
 }
 
+fn minimum_kamino_deposit_amount_raw(
+    reserve: &KaminoReserveSummary,
+) -> Result<u64, Box<dyn Error>> {
+    if reserve.collateral_total_supply == 0 || reserve.total_liquidity_scaled.is_zero() {
+        return Ok(1);
+    }
+
+    // Kamino mints floor(liquidity * collateral_supply / total_liquidity).
+    // This ceiling is therefore the first raw liquidity amount that can mint
+    // one raw collateral unit at the finalized reserve exchange rate.
+    let scale = BigUint::from(1_u128 << 60);
+    let denominator = BigUint::from(reserve.collateral_total_supply) * scale;
+    let numerator = &reserve.total_liquidity_scaled + &denominator - BigUint::from(1_u8);
+    (numerator / denominator)
+        .to_u64()
+        .filter(|amount| *amount > 0)
+        .ok_or_else(|| "minimum Kamino deposit amount does not fit positive u64".into())
+}
+
 fn non_default_pubkey(pubkey: Pubkey) -> Option<Pubkey> {
     if pubkey == Pubkey::default() {
         None
@@ -19341,7 +19789,7 @@ fn load_kamino_obligation_summary_at_or_after(
         obligation_account,
         RpcAccountInfoConfig {
             encoding: Some(UiAccountEncoding::Base64),
-            commitment: Some(CommitmentConfig::confirmed()),
+            commitment: Some(rpc.commitment()),
             min_context_slot,
             ..RpcAccountInfoConfig::default()
         },
@@ -19491,7 +19939,7 @@ fn load_spl_token_account_amount_at_or_after(
         token_account,
         RpcAccountInfoConfig {
             encoding: Some(UiAccountEncoding::Base64),
-            commitment: Some(CommitmentConfig::confirmed()),
+            commitment: Some(rpc.commitment()),
             min_context_slot,
             ..RpcAccountInfoConfig::default()
         },
@@ -19543,7 +19991,7 @@ fn decode_spl_token_account_amount(
 }
 
 fn load_account_proof(rpc: &RpcClient, pubkey: &Pubkey) -> Result<AccountProof, Box<dyn Error>> {
-    let response = rpc.get_account_with_commitment(pubkey, CommitmentConfig::confirmed())?;
+    let response = rpc.get_account_with_commitment(pubkey, rpc.commitment())?;
     let Some(account) = response.value else {
         return Ok(AccountProof {
             pubkey: pubkey.to_string(),
@@ -19567,8 +20015,7 @@ fn load_obligation_account_proof(
     expected_market: &Pubkey,
     reserve: &Pubkey,
 ) -> Result<ObligationAccountProof, Box<dyn Error>> {
-    let response =
-        rpc.get_account_with_commitment(obligation_account, CommitmentConfig::confirmed())?;
+    let response = rpc.get_account_with_commitment(obligation_account, rpc.commitment())?;
     let Some(account) = response.value else {
         return Ok(ObligationAccountProof {
             account: AccountProof {
@@ -19645,7 +20092,7 @@ fn account_exists_with_owner_at_or_after(
         pubkey,
         RpcAccountInfoConfig {
             encoding: Some(UiAccountEncoding::Base64),
-            commitment: Some(CommitmentConfig::confirmed()),
+            commitment: Some(rpc.commitment()),
             min_context_slot,
             ..RpcAccountInfoConfig::default()
         },
