@@ -874,21 +874,21 @@ pub(super) async fn inspect_expired_submission(
             },
         )?;
         let Some(account) = response.value else {
-            return Ok(ExpiredRouteCheckOutcome::EffectAmbiguous {
+            return Ok(ExpiredRouteCheckOutcome::ExternalStateChanged {
                 detail: "expired_cross_mint_anchor_account_missing".to_owned(),
             });
         };
         let amount = match unpack_token_account_amount(&account, token_program, mint, vault_owner) {
             Ok(amount) => amount,
             Err(_) => {
-                return Ok(ExpiredRouteCheckOutcome::EffectAmbiguous {
+                return Ok(ExpiredRouteCheckOutcome::ExternalStateChanged {
                     detail: "expired_cross_mint_anchor_program_or_binding_changed".to_owned(),
                 })
             }
         };
         if i64::try_from(amount)? != anchor.amount_raw {
-            return Ok(ExpiredRouteCheckOutcome::EffectAmbiguous {
-                detail: "expired_cross_mint_balance_changed_or_ownership_ambiguous".to_owned(),
+            return Ok(ExpiredRouteCheckOutcome::ExternalStateChanged {
+                detail: "expired_cross_mint_balance_changed_by_external_state".to_owned(),
             });
         }
         // Read the finalized account first, then inspect history. A mutation
@@ -903,13 +903,18 @@ pub(super) async fn inspect_expired_submission(
             if error
                 .downcast_ref::<CrossMintCustodyHistoryMismatch>()
                 .is_some()
-                || error
-                    .downcast_ref::<CrossMintCustodyHistoryUnavailable>()
-                    .is_some()
+            {
+                return Ok(ExpiredRouteCheckOutcome::ExternalStateChanged {
+                    detail: "expired_cross_mint_anchor_history_contains_external_signature"
+                        .to_owned(),
+                });
+            }
+            if error
+                .downcast_ref::<CrossMintCustodyHistoryUnavailable>()
+                .is_some()
             {
                 return Ok(ExpiredRouteCheckOutcome::EffectAmbiguous {
-                    detail: "expired_cross_mint_anchor_history_is_unproven_or_contains_unrecognized_signature"
-                        .to_owned(),
+                    detail: "expired_cross_mint_anchor_history_is_unproven".to_owned(),
                 });
             }
             return Err(error);
@@ -931,8 +936,8 @@ pub(super) async fn inspect_expired_submission(
             }
         };
         if &observed != expected_position {
-            return Ok(ExpiredRouteCheckOutcome::EffectAmbiguous {
-                detail: "expired_cross_mint_kamino_position_changed".to_owned(),
+            return Ok(ExpiredRouteCheckOutcome::ExternalStateChanged {
+                detail: "expired_cross_mint_kamino_position_changed_by_external_state".to_owned(),
             });
         }
         if !finalized_account_history_is_recognized(
@@ -941,10 +946,9 @@ pub(super) async fn inspect_expired_submission(
             custody_anchor_slot,
             &recognized_signatures,
         )? {
-            return Ok(ExpiredRouteCheckOutcome::EffectAmbiguous {
-                detail:
-                    "expired_cross_mint_kamino_position_history_contains_unrecognized_signature"
-                        .to_owned(),
+            return Ok(ExpiredRouteCheckOutcome::ExternalStateChanged {
+                detail: "expired_cross_mint_kamino_position_history_contains_external_signature"
+                    .to_owned(),
             });
         }
     }

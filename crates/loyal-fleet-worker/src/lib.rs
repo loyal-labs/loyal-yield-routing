@@ -5403,6 +5403,31 @@ async fn reconcile_signed_route_submission(
                 .await
                 .map(|_| false)
                 .map_err(|error| error.to_string()),
+            Ok(ExpiredRouteCheckOutcome::ExternalStateChanged { detail }) => {
+                runtime
+                    .client
+                    .advance_signed_route_submission(
+                        &lease,
+                        SignedRouteSubmissionAdvance::Failed {
+                            checked_at: Utc::now(),
+                            confirmed_slot: None,
+                            error_detail: detail.clone(),
+                        },
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                println!(
+                    "{}",
+                    json!({
+                        "status": "fleet_expired_route_invalidated_by_external_state",
+                        "submissionId": lease.submission.id,
+                        "originalSignatureAbsent": true,
+                        "continuationWoken": true,
+                        "reason": detail,
+                    })
+                );
+                Ok(true)
+            }
             Ok(ExpiredRouteCheckOutcome::EffectAmbiguous { detail }) => {
                 if recovering_ambiguous {
                     runtime
@@ -5610,6 +5635,7 @@ enum ExpiredRouteCheckOutcome {
     Finalized { slot: i64 },
     ConfirmedFailure { slot: i64, detail: String },
     SeenUnconfirmed { detail: String },
+    ExternalStateChanged { detail: String },
     EffectAmbiguous { detail: String },
 }
 

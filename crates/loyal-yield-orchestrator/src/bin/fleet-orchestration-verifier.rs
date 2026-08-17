@@ -6411,6 +6411,116 @@ async fn cross_mint_movement_subchecks(
             "capacityState": ambiguous_capacity.1,
         }),
     ));
+    let external_state = activate_cross_mint_fixture(fixture, "cross_mint_external_state").await?;
+    let external_state_continuation = claim_cross_mint_continuation(
+        fixture,
+        &external_state.movement.cluster,
+        "external-state-withdraw",
+    )
+    .await?;
+    let external_state_submission = fixture
+        .client
+        .append_cross_mint_leg(
+            &external_state_continuation,
+            cross_mint_leg_input(
+                fixture,
+                &external_state.opportunity_lease,
+                &external_state_continuation,
+                "external-state-withdraw",
+                CrossMintMovementLeg::Withdraw,
+                CrossMintLegPurpose::OptimizeYield,
+                1,
+                CrossMintExpectedEffect {
+                    debit: None,
+                    credit_mint: Some("USDC".to_owned()),
+                    credit_token_account: Some(format!(
+                        "source-idle:{}",
+                        external_state.movement.decision_id.as_i64()
+                    )),
+                    minimum_credit_amount_raw: Some(1),
+                },
+            )
+            .await?,
+        )
+        .await?;
+    let external_state_confirmation = lease_pending_cross_mint_submission(
+        fixture,
+        &external_state.movement.cluster,
+        "external-state-expiry",
+        external_state_submission.id,
+    )
+    .await?;
+    fixture
+        .client
+        .advance_signed_route_submission(
+            &external_state_confirmation,
+            SignedRouteSubmissionAdvance::ExpiryCheckPending {
+                checked_at: Utc::now(),
+                observed_block_height: external_state_submission.last_valid_block_height + 1,
+                effect_check_slot: 10_402,
+            },
+        )
+        .await?;
+    let external_state_lease = lease_reconciliation_cross_mint_submission(
+        fixture,
+        &external_state.movement.cluster,
+        "external-state-resolution",
+        external_state_submission.id,
+    )
+    .await?;
+    fixture
+        .client
+        .advance_signed_route_submission(
+            &external_state_lease,
+            SignedRouteSubmissionAdvance::Failed {
+                checked_at: Utc::now(),
+                confirmed_slot: None,
+                error_detail: "expired_cross_mint_balance_changed_by_external_state".to_owned(),
+            },
+        )
+        .await?;
+    let external_state_close_lease = claim_cross_mint_continuation(
+        fixture,
+        &external_state.movement.cluster,
+        "external-state-manual-close",
+    )
+    .await?;
+    let externally_invalidated = fixture
+        .client
+        .close_cross_mint_movement(
+            &external_state_close_lease,
+            CrossMintMovementCloseInput {
+                outcome: CrossMintTerminalOutcome::ManualIntervention,
+                observed_slot: 10_402,
+                reason: "finalized custody changed outside the signed route".to_owned(),
+                evidence: json!({
+                    "kind": "custody_history_mismatch",
+                    "commitment": "finalized",
+                    "safeResponse": "leave the remaining funds user-owned and require a fresh movement",
+                }),
+            },
+        )
+        .await?;
+    let external_state_capacity =
+        cross_mint_capacity_state(fixture, external_state.movement.decision_id.as_i64()).await?;
+    let external_state_submission_state: String = sqlx::query_scalar(
+        "SELECT submission_state::TEXT FROM loyal_yield.signed_route_submissions WHERE id = $1",
+    )
+    .bind(external_state_submission.id)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    checks.push(subcheck(
+        "cross_mint_proven_external_state_change_closes_for_manual_intervention",
+        external_state_submission_state == "failed"
+            && externally_invalidated.terminal_outcome
+                == Some(CrossMintTerminalOutcome::ManualIntervention)
+            && external_state_capacity.1 == "released",
+        json!({
+            "submissionState": external_state_submission_state,
+            "terminalOutcome": externally_invalidated.terminal_outcome,
+            "capacityState": external_state_capacity.1,
+        }),
+    ));
 
     let recovery = activate_cross_mint_fixture(fixture, "cross_mint_recovery").await?;
     let recovery_withdraw_continuation =
