@@ -146,12 +146,35 @@ struct PreparedCrossMintLeg {
     alt_requirements_fingerprint: String,
     alt_selection_fingerprint: String,
     alt_mutation_epochs: Value,
+    alt_route_fingerprint: String,
+    alt_active_binding_fingerprint: String,
+    alt_binding_id: Option<i64>,
+    alt_table_ids: Vec<i64>,
 }
 
 #[derive(Debug)]
 struct PreparedCrossMintContinuation {
     lease: CrossMintContinuationLease,
     leg: PreparedCrossMintLeg,
+}
+
+fn cross_mint_alt_mutation_epochs(
+    resolution: &RuntimeLookupTableResolution,
+) -> Result<Value, Box<dyn Error>> {
+    let selected_bundle = resolution
+        .selected_bundle
+        .as_ref()
+        .ok_or("cross-mint leg has no selected lookup-table bundle")?;
+    Ok(json!({
+        "resolver": resolution.evidence,
+        "tables": selected_bundle.tables.iter().map(|table| json!({
+            "tableId": table.table_id,
+            "tableAddress": table.table_address,
+            "mutationEpoch": table.mutation_epoch,
+            "usablePrefixLen": table.usable_prefix_len,
+            "addressHash": table.address_hash,
+        })).collect::<Vec<_>>(),
+    }))
 }
 
 fn kamino_position_anchor(
@@ -1131,14 +1154,52 @@ async fn publish_prepared_leg(
     // A first swap follows a successful withdrawal with generation 1; only a
     // proved-no-effect retry of that swap advances it to generation 2.
     let generation = next_leg_generation(client, lease.movement.decision_id, leg).await?;
+    let alt_route_fingerprint = prepared.alt_route_fingerprint.clone();
+    let alt_requirements_fingerprint = prepared.alt_requirements_fingerprint.clone();
+    let alt_active_binding_fingerprint = prepared.alt_active_binding_fingerprint.clone();
+    let alt_binding_id = prepared.alt_binding_id;
+    let alt_table_ids = prepared.alt_table_ids.clone();
+    let policy_account = prepared.policy_account.clone();
+    let expected_effect = prepared.expected_effect.clone();
+    let expected_balance_anchors = prepared.expected_balance_anchors.clone();
+    let submission = signed_submission_input(&lease, prepared, generation)?;
+    let expires_at = Utc::now() + ChronoDuration::minutes(LOOKUP_TABLE_PREPARED_LEASE_MINUTES);
+    client
+        .upsert_lookup_table_usage_leases(LookupTableUsageLeaseBundle {
+            cluster: lease.movement.cluster.clone(),
+            lease_kind: LookupTableUsageLeaseKind::PreparedTransaction,
+            reference_key: submission.semantic_key.clone(),
+            route_lookup_table_ids: alt_table_ids.clone(),
+            vault_id: Some(lease.movement.vault_id),
+            binding_id: alt_binding_id,
+            route_fingerprint: Some(alt_route_fingerprint),
+            requirements_fingerprint: Some(alt_requirements_fingerprint.clone()),
+            expires_at,
+        })
+        .await?;
+    client
+        .validate_lookup_table_usage_leases(
+            LookupTableUsageLeaseKind::PreparedTransaction,
+            &submission.semantic_key,
+            &alt_table_ids,
+            &alt_requirements_fingerprint,
+            Utc::now() + ChronoDuration::minutes(4),
+        )
+        .await?;
+    let (current_binding_fingerprint, _) =
+        active_lookup_table_binding_fingerprint(client, lease.movement.vault_id, &alt_table_ids)
+            .await?;
+    if current_binding_fingerprint != alt_active_binding_fingerprint {
+        return Err("active reusable lookup-table binding changed before publication".into());
+    }
     let input = CrossMintLegPublicationInput {
         leg,
         purpose,
         generation,
-        policy_account: prepared.policy_account.clone(),
-        expected_effect: prepared.expected_effect.clone(),
-        expected_balance_anchors: prepared.expected_balance_anchors.clone(),
-        submission: signed_submission_input(&lease, prepared, generation)?,
+        policy_account,
+        expected_effect,
+        expected_balance_anchors,
+        submission,
     };
     let submission = client.append_cross_mint_leg(&lease, input).await?;
     Ok(CrossMintWorkResult::Continued {
@@ -1878,6 +1939,7 @@ async fn prepare_kamino_leg(
                 .ok_or_else(|| format!("verified lookup table {} is missing", table.table_id))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let alt_mutation_epochs = cross_mint_alt_mutation_epochs(&resolution)?;
     if leg == CrossMintMovementLeg::Deposit {
         // The resolver compiles and signs internally. Re-read finalized
         // custody before accepting those bytes for durable publication; any
@@ -1966,7 +2028,11 @@ async fn prepare_kamino_leg(
         alt_selection_fingerprint: resolution
             .selection_fingerprint
             .ok_or("cross-mint leg omitted ALT selection fingerprint")?,
-        alt_mutation_epochs: resolution.evidence,
+        alt_mutation_epochs,
+        alt_route_fingerprint: resolution.route_fingerprint,
+        alt_active_binding_fingerprint: resolution.active_binding_fingerprint,
+        alt_binding_id: resolution.active_binding_id,
+        alt_table_ids: selected_tables.iter().map(|table| table.table_id).collect(),
     })
 }
 
@@ -2082,6 +2148,11 @@ async fn prepare_jupiter_swap_leg(
         output_mint,
         custody_anchor_slot,
     )?;
+    let additional_token_account_addresses = additional_token_accounts
+        .iter()
+        .map(|account| account.address)
+        .collect::<Vec<_>>();
+    let intermediate_mints = jupiter_intermediate_route_mints(&envelope, input_mint, output_mint)?;
     let expected = JupiterExactInBuildExpectation {
         authority: vault_pubkey,
         input_mint: JupiterMintSnapshot {
@@ -2150,12 +2221,10 @@ async fn prepare_jupiter_swap_leg(
         )
         .into());
     }
-    // The strict parser accepts only idempotent creation of the already-derived
-    // canonical output ATA. Finalized snapshots above prove that ATA already
-    // exists with the expected canonical token-program owner and mint, so omit Jupiter's
-    // redundant setup instruction and keep the signed swap leg setup-free.
-    let (route_blockhash, route_last_valid_block_height) =
-        rpc.get_latest_blockhash_with_commitment(CommitmentConfig::finalized())?;
+    // The strict parser accepts only idempotent creation of canonical vault
+    // ATAs. Finalized snapshots above prove they already exist, so the signed
+    // swap leg remains setup-free.
+    validated.instructions_with_compute_unit_limit(SOLANA_MAX_COMPUTE_UNITS)?;
     let signer = policy_keypair_from_env()?;
     let fee_payer = signer.pubkey();
     let swap_outer = wrap_policy_instruction(
@@ -2165,62 +2234,101 @@ async fn prepare_jupiter_swap_leg(
         validated.swap_instruction.clone(),
         swap_constraint_index,
     );
-    let measurement_instructions = vec![
-        ComputeBudgetInstruction::set_compute_unit_limit(SOLANA_MAX_COMPUTE_UNITS),
-        ComputeBudgetInstruction::set_compute_unit_price(
-            validated.compute_budget.unit_price_micro_lamports,
-        ),
-        swap_outer.clone(),
-    ];
+    let mut lookup_table_requirements = YieldRouteLookupTableRequirements::default();
+    lookup_table_requirements.add_policy(lane.action_account);
+    for mint in std::iter::once(input_mint)
+        .chain(std::iter::once(output_mint))
+        .chain(intermediate_mints.iter().copied())
+    {
+        lookup_table_requirements.add_shared_liquidity_mint(mint);
+    }
+    let mut vault_token_accounts = vec![input_ata, output_ata];
+    vault_token_accounts.extend(additional_token_account_addresses);
+    let vault_token_account_set = vault_token_accounts
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let route_mints = std::iter::once(input_mint)
+        .chain(std::iter::once(output_mint))
+        .chain(intermediate_mints.iter().copied())
+        .collect::<BTreeSet<_>>();
+    for account in &validated.swap_instruction.accounts {
+        if account.pubkey != vault_pubkey
+            && !vault_token_account_set.contains(&account.pubkey)
+            && !route_mints.contains(&account.pubkey)
+        {
+            lookup_table_requirements.add_infrastructure(account.pubkey);
+        }
+    }
+    lookup_table_requirements.add_infrastructure(validated.swap_instruction.program_id);
+    let instructions = vec![swap_outer];
+    let manifest = route_lookup_table_manifest(
+        fee_payer,
+        &instructions,
+        &vault,
+        &lookup_table_requirements,
+        &vault_token_accounts,
+    )?;
+    let options = cross_mint_cli_options(opportunity, &vault, runtime.rpc.url());
     let signers: [&dyn Signer; 1] = [&signer];
-    let measurement = compile_versioned_transaction(
+    let phase = prepare_route_lookup_table_phase(
+        &runtime.client,
+        &rpc,
+        &options,
+        &vault,
+        &movement.source_reserve,
+        &opportunity.target_reserve,
+        CROSS_MINT_ROUTE_KIND,
+        format!("cross_mint:{}:swap", movement.decision_id.as_i64()),
         fee_payer,
-        &measurement_instructions,
-        &validated.lookup_tables,
-        route_blockhash,
+        instructions,
+        manifest,
         &signers,
-    )?;
-    let simulation = rpc.simulate_transaction(&measurement)?;
-    if let Some(error) = simulation.value.err {
-        return Err(format!("Jupiter measurement simulation failed: {error:?}").into());
+        false,
+    )
+    .await?;
+    let RouteLookupTablePhase {
+        instructions,
+        resolution,
+        ..
+    } = phase;
+    let selected_tables = resolution
+        .selected_bundle
+        .as_ref()
+        .ok_or_else(|| {
+            resolution
+                .blocker
+                .clone()
+                .unwrap_or_else(|| "cross-mint swap has no selected lookup-table bundle".to_owned())
+        })?
+        .tables
+        .clone();
+    let (_, mut lookup_tables_by_id, lookup_table_failures) =
+        verify_reusable_lookup_table_candidates(
+            &rpc,
+            selected_tables.clone(),
+            u64::try_from(resolution.observed_slot)?,
+        );
+    if !lookup_table_failures.is_empty() {
+        return Err("cross-mint swap lookup tables changed after resolution".into());
     }
-    let units = simulation
-        .value
-        .units_consumed
-        .ok_or("Jupiter measurement simulation omitted unitsConsumed")?;
-    let compute_limit = validated.compute_budget.buffered_unit_limit(units);
-    validated.instructions_with_compute_unit_limit(compute_limit)?;
-    let final_instructions = vec![
-        ComputeBudgetInstruction::set_compute_unit_limit(compute_limit),
-        ComputeBudgetInstruction::set_compute_unit_price(
-            validated.compute_budget.unit_price_micro_lamports,
-        ),
-        swap_outer,
-    ];
-    let preflight_instructions = final_instructions.iter().skip(2).cloned().collect();
-    let preflight_lookup_tables = validated.lookup_tables.clone();
-    // Last finalized custody read before signing the exact wrapped message.
+    let preflight_lookup_tables = selected_tables
+        .iter()
+        .map(|table| {
+            lookup_tables_by_id
+                .remove(&table.table_id)
+                .ok_or_else(|| format!("verified lookup table {} is missing", table.table_id))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let alt_mutation_epochs = cross_mint_alt_mutation_epochs(&resolution)?;
+    // Last finalized custody read before accepting the exact resolver-signed
+    // transaction for durable publication.
     verify_attributed_custody_with_history(runtime, &rpc, movement, vault_pubkey).await?;
-    let transaction = compile_versioned_transaction(
-        fee_payer,
-        &final_instructions,
-        &validated.lookup_tables,
-        route_blockhash,
-        &signers,
-    )?;
-    let packet = transaction_packet_summary(&transaction, &validated.lookup_tables)?;
-    if !packet.fits_packet_data_size {
-        return Err("wrapped Jupiter transaction exceeds Solana packet limit".into());
-    }
-    let final_simulation = rpc.simulate_transaction(&transaction)?;
-    if let Some(error) = final_simulation.value.err {
-        return Err(format!("Jupiter final simulation failed: {error:?}").into());
-    }
-    if rpc.get_block_height()? > route_last_valid_block_height {
-        return Err("Jupiter blockhash expired before signing".into());
-    }
-    verify_attributed_custody_with_history(runtime, &rpc, movement, vault_pubkey).await?;
-    let fee = versioned_message_fee(&rpc, &transaction.message)?;
+    let transaction = resolution.selected_transaction.ok_or_else(|| {
+        resolution
+            .blocker
+            .unwrap_or_else(|| "cross-mint swap has no compiled transaction".to_owned())
+    })?;
     Ok(PreparedCrossMintLeg {
         leg: CrossMintMovementLeg::Swap,
         purpose: CrossMintLegPurpose::OptimizeYield,
@@ -2248,39 +2356,27 @@ async fn prepare_jupiter_swap_leg(
             }),
             kamino_position: None,
         },
-        preflight_instructions,
+        preflight_instructions: instructions,
         preflight_lookup_tables,
         transaction,
         optimizer_epoch_id: opportunity.optimizer_epoch_id,
-        last_valid_block_height: i64::try_from(route_last_valid_block_height)?,
-        compiled_fee_lamports: i64::try_from(fee)?,
-        writable_account_keys: exact_writable_account_keys(fee_payer, &final_instructions),
-        conflict_account_keys: semantic_route_conflict_keys(&vault),
-        alt_requirements_fingerprint: stable_fingerprint(&[
-            "jupiter-build-v2",
-            &validated.structure.unique_account_count.to_string(),
-            &validated
-                .structure
-                .packet_bytes_with_compute_limit
-                .to_string(),
-        ]),
-        alt_selection_fingerprint: stable_fingerprint(
-            &validated
-                .lookup_tables
-                .iter()
-                .map(|table| table.key.to_string())
-                .collect::<Vec<_>>()
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-        ),
-        alt_mutation_epochs: json!({
-            "source": "jupiter_build_v2_finalized_rpc",
-            "blockhashFetchedAt": validated.blockhash_fetched_at,
-            "computeUnitLimit": compute_limit,
-            "simulationUnits": units,
-            "lookupTables": validated.lookup_tables.iter().map(|table| table.key.to_string()).collect::<Vec<_>>(),
-        }),
+        last_valid_block_height: resolution.last_valid_block_height,
+        compiled_fee_lamports: i64::try_from(
+            resolution
+                .selected_compiled_fee_lamports
+                .ok_or("cross-mint swap omitted compiled fee")?,
+        )?,
+        writable_account_keys: resolution.writable_account_keys,
+        conflict_account_keys: resolution.conflict_account_keys,
+        alt_requirements_fingerprint: resolution.requirements_fingerprint,
+        alt_selection_fingerprint: resolution
+            .selection_fingerprint
+            .ok_or("cross-mint swap omitted ALT selection fingerprint")?,
+        alt_mutation_epochs,
+        alt_route_fingerprint: resolution.route_fingerprint,
+        alt_active_binding_fingerprint: resolution.active_binding_fingerprint,
+        alt_binding_id: resolution.active_binding_id,
+        alt_table_ids: selected_tables.iter().map(|table| table.table_id).collect(),
     })
 }
 
