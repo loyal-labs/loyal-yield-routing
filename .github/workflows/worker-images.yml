@@ -17,6 +17,7 @@ on:
       - .sqlx/**
       - crates/**
       - scripts/build-rust-image-binaries.sh
+      - scripts/durable-autodeposit-confirmation.ts
       - scripts/execute-autodeposit-policy.ts
       - scripts/kamino-monitor-predeploy.sh
       - scripts/verify-rust-image-build-once.sh

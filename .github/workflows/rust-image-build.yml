@@ -186,8 +186,8 @@ jobs:
             --env PROBE_BINARIES --security-opt=no-new-privileges --entrypoint sh "$IMAGE" -c \
             'for binary in $PROBE_BINARIES; do test -x "/usr/local/bin/$binary"; done
              test -x /usr/local/bin/bun
-             test -e /app/scripts/execute-autodeposit-policy.ts
-             test -e /app/node_modules'
+             test -e /app/node_modules
+             /usr/local/bin/bun -e "await import(\"/app/scripts/execute-autodeposit-policy.ts\")"'
       - name: Probe all fleet role entrypoints
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/light-workers:sha-${{ github.sha }}
