@@ -1786,9 +1786,14 @@ async fn prepare_kamino_leg(
         routed,
         policy_index,
     )?;
-    let mut instructions = vec![kamino_refresh_reserve_instruction(position)?
-        .instruction()
-        .clone()];
+    let refresh_positions = obligation_refresh_positions_for_route(&preview, position, position)?;
+    let mut instructions = refresh_positions
+        .into_iter()
+        .map(|position| {
+            kamino_refresh_reserve_instruction(position)
+                .map(|instruction| instruction.instruction().clone())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     if position.obligation_exists {
         instructions.push(
             kamino_refresh_obligation_instruction(position)?
