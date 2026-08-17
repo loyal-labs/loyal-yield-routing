@@ -491,6 +491,22 @@ Read-only inspection is the safe starting point. A mutating command also require
 `CONFIRM_MAINNET=1`, simulates the signed transaction before sending, waits for
 finalized commitment, and reloads the affected account from RPC.
 
+To claim all Meteora fees from the active position and put only the exact
+finalized token deltas back into the pool, run:
+
+```sh
+op run --env-file=.env.1password -- sh -c \
+  'CONFIRM_MAINNET=1 bun run vault:meteora -- compound-meteora-fees'
+```
+
+The command claims every policy-sized position chunk, records each signature
+before broadcast, waits for finalization, and derives the reinvestment budget
+from the vault's finalized token-account deltas. Pre-existing vault inventory is
+excluded. LOYAL is placed immediately above the active bin and USDC immediately
+below it; every add is simulated again and fails closed if the active bin moves.
+Interrupted cycles resume from their persisted steps, while a later invocation
+starts a new cycle so newly accrued fees can be compounded independently.
+
 The main policy commands are:
 
 ```text

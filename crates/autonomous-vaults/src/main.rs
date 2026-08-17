@@ -355,6 +355,16 @@ fn main() -> Result<()> {
                 &delegated,
             )
         }
+        "compound-meteora-fees" => {
+            require_mainnet_confirmation()?;
+            execute_meteora_fee_compound_v2(
+                &rpc,
+                &path,
+                persisted.as_mut().context("Smart Account state is missing")?,
+                &deployment,
+                &delegated,
+            )
+        }
         "simulate-meteora-add-policy" => simulate_meteora_policy(
             &rpc,
             persisted.as_ref().context("Smart Account state is missing")?,
@@ -3558,6 +3568,383 @@ fn verify_meteora_claim_chunk(
         }
     }
     Ok(after)
+}
+
+const METEORA_FEE_COMPOUND_V2_PREFIX: &str = "meteora-fee-compound-v2-cycle-";
+
+fn meteora_fee_compound_v2_step(cycle: u64, phase: &str, index: usize) -> String {
+    format!("{METEORA_FEE_COMPOUND_V2_PREFIX}{cycle}-{phase}-{index}")
+}
+
+fn latest_meteora_fee_compound_v2_cycle(state: &VaultState) -> Result<Option<u64>> {
+    let mut cycles = BTreeSet::new();
+    for step in &state
+        .meteora
+        .as_ref()
+        .context("Meteora state is missing")?
+        .live_steps
+    {
+        let Some(suffix) = step.name.strip_prefix(METEORA_FEE_COMPOUND_V2_PREFIX) else {
+            continue;
+        };
+        let cycle = suffix
+            .split_once('-')
+            .context("malformed Meteora fee-compound v2 step")?
+            .0
+            .parse::<u64>()
+            .context("parse Meteora fee-compound v2 cycle")?;
+        cycles.insert(cycle);
+    }
+    Ok(cycles.into_iter().next_back())
+}
+
+fn meteora_fee_compound_v2_cycle_complete(
+    state: &VaultState,
+    cycle: u64,
+    chunk_count: usize,
+) -> Result<bool> {
+    let Ok((claimed_loyal, claimed_usdc)) =
+        meteora_fee_compound_v2_claim_totals(state, cycle, chunk_count)
+    else {
+        return Ok(false);
+    };
+    let expected_adds = usize::from(claimed_usdc > 0) + usize::from(claimed_loyal > 0);
+    for index in 0..expected_adds {
+        let Ok(step) = meteora_live_step(state, &meteora_fee_compound_v2_step(cycle, "add", index))
+        else {
+            return Ok(false);
+        };
+        if step.status != PolicyStatus::Finalized
+            || step.finalized_signature.is_none()
+            || step.finalized_slot.is_none()
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn build_meteora_dynamic_add_policy_execution(
+    state: &VaultState,
+    delegated: Pubkey,
+    vault: Pubkey,
+    plan: &meteora::MeteoraPlan,
+    active_id: i32,
+    range: meteora::BinRange,
+    loyal_raw: u64,
+    usdc_raw: u64,
+) -> Result<(Instruction, Pubkey)> {
+    if loyal_raw == 0 && usdc_raw == 0 {
+        bail!("Meteora fee compound add requires a nonzero token amount");
+    }
+    let inner =
+        meteora::add_liquidity_instruction(vault, plan, loyal_raw, usdc_raw, active_id, range)?;
+    let record =
+        meteora_policy_record_for_range(state, meteora::MeteoraPolicyKind::AddLiquidity, range)?;
+    let policy_address = Pubkey::from_str(&record.policy)?;
+    let mut transaction_accounts = Vec::new();
+    let compiled = compile_squads_inner_instruction(&mut transaction_accounts, inner);
+    Ok((
+        execute_program_interaction_policy_instruction(
+            policy_address,
+            delegated,
+            VAULT_INDEX,
+            vec![compiled],
+            vec![0],
+            transaction_accounts,
+        ),
+        policy_address,
+    ))
+}
+
+fn verify_meteora_fee_compound_v2_claim(
+    rpc: &RpcClient,
+    vault: Pubkey,
+    plan: &meteora::MeteoraPlan,
+    before: &BTreeMap<String, u64>,
+) -> Result<BTreeMap<String, u64>> {
+    let mut after = meteora_liquidity_observations(rpc, vault, plan)?;
+    let claimed_loyal = observed(&after, "vault_loyal_raw")?
+        .checked_sub(observed(before, "vault_loyal_raw")?)
+        .context("Meteora fee claim reduced vault LOYAL")?;
+    let claimed_usdc = observed(&after, "vault_usdc_raw")?
+        .checked_sub(observed(before, "vault_usdc_raw")?)
+        .context("Meteora fee claim reduced vault USDC")?;
+    for field in [
+        "vault_lamports",
+        "position_lamports",
+        "position_data_len",
+        "position_nonzero_liquidity_bins",
+    ] {
+        if before.get(field) != after.get(field) {
+            bail!("Meteora fee claim changed protected position field {field}");
+        }
+    }
+    if after.get("position_exists") != Some(&1) {
+        bail!("Meteora fee claim removed the approved position");
+    }
+    after.insert("claimed_loyal_raw".to_owned(), claimed_loyal);
+    after.insert("claimed_usdc_raw".to_owned(), claimed_usdc);
+    Ok(after)
+}
+
+fn meteora_fee_compound_v2_claim_totals(
+    state: &VaultState,
+    cycle: u64,
+    chunk_count: usize,
+) -> Result<(u64, u64)> {
+    let mut loyal = 0_u64;
+    let mut usdc = 0_u64;
+    for index in 0..chunk_count {
+        let step = meteora_live_step(state, &meteora_fee_compound_v2_step(cycle, "claim", index))?;
+        if step.status != PolicyStatus::Finalized {
+            bail!("Meteora fee-compound claim chunk {index} is not finalized");
+        }
+        loyal = loyal
+            .checked_add(observed(&step.after, "claimed_loyal_raw")?)
+            .context("claimed LOYAL overflow")?;
+        usdc = usdc
+            .checked_add(observed(&step.after, "claimed_usdc_raw")?)
+            .context("claimed USDC overflow")?;
+    }
+    Ok((loyal, usdc))
+}
+
+fn meteora_fee_compound_v2_layers(
+    plan: &meteora::MeteoraPlan,
+    active_id: i32,
+    loyal_raw: u64,
+    usdc_raw: u64,
+) -> Result<Vec<(meteora::BinRange, u64, u64)>> {
+    if active_id < plan.position_lower_bin_id || active_id >= plan.position_upper_bin_id {
+        bail!("Meteora active bin is outside the approved position bounds");
+    }
+    let mut layers = Vec::new();
+    if usdc_raw > 0 {
+        layers.push((
+            meteora::BinRange {
+                min: plan.position_lower_bin_id.max(active_id.saturating_sub(69)),
+                max: active_id,
+            },
+            0,
+            usdc_raw,
+        ));
+    }
+    if loyal_raw > 0 {
+        layers.push((
+            meteora::BinRange {
+                min: active_id + 1,
+                max: plan.position_upper_bin_id.min(active_id.saturating_add(70)),
+            },
+            loyal_raw,
+            0,
+        ));
+    }
+    Ok(layers)
+}
+
+fn verify_meteora_fee_compound_v2_add(
+    rpc: &RpcClient,
+    vault: Pubkey,
+    plan: &meteora::MeteoraPlan,
+    before: &BTreeMap<String, u64>,
+) -> Result<BTreeMap<String, u64>> {
+    let mut after = meteora_liquidity_observations(rpc, vault, plan)?;
+    let loyal = observed(before, "vault_loyal_raw")?
+        .checked_sub(observed(&after, "vault_loyal_raw")?)
+        .context("Meteora compound add increased vault LOYAL")?;
+    let usdc = observed(before, "vault_usdc_raw")?
+        .checked_sub(observed(&after, "vault_usdc_raw")?)
+        .context("Meteora compound add increased vault USDC")?;
+    let loyal_cap = observed(before, "requested_loyal_raw")?;
+    let usdc_cap = observed(before, "requested_usdc_raw")?;
+    if (loyal == 0 && usdc == 0) || loyal > loyal_cap || usdc > usdc_cap {
+        bail!("Meteora compound add consumed zero or exceeded its claimed-fee cap");
+    }
+    for field in [
+        "vault_lamports",
+        "position_lamports",
+        "position_data_len",
+        "position_nonzero_liquidity_bins",
+    ] {
+        if before.get(field) != after.get(field) {
+            bail!("Meteora compound add changed protected position field {field}");
+        }
+    }
+    after.insert("compounded_loyal_raw".to_owned(), loyal);
+    after.insert("compounded_usdc_raw".to_owned(), usdc);
+    Ok(after)
+}
+
+fn execute_meteora_fee_compound_v2(
+    rpc: &RpcClient,
+    path: &std::path::PathBuf,
+    state: &mut VaultState,
+    deployment: &solana_sdk::signature::Keypair,
+    delegated: &solana_sdk::signature::Keypair,
+) -> Result<()> {
+    let (_, vault, initial_plan) = load_meteora_plan(rpc, state, deployment, delegated)?;
+    require_finalized_meteora_policies(state)?;
+    let chunks = meteora::position_range_chunks(&initial_plan)?;
+    let latest_cycle = latest_meteora_fee_compound_v2_cycle(state)?;
+    let cycle = match latest_cycle {
+        Some(latest) if !meteora_fee_compound_v2_cycle_complete(state, latest, chunks.len())? => {
+            latest
+        }
+        Some(latest) => rpc
+            .get_slot_with_commitment(CommitmentConfig::finalized())?
+            .max(latest.saturating_add(1)),
+        None => rpc.get_slot_with_commitment(CommitmentConfig::finalized())?,
+    };
+
+    for (index, range) in chunks.iter().copied().enumerate() {
+        let step_name = meteora_fee_compound_v2_step(cycle, "claim", index);
+        if let Ok(step) = meteora_live_step(state, &step_name) {
+            if step.status == PolicyStatus::Finalized {
+                println!("{step_name}=PASS already_finalized=true");
+                continue;
+            }
+            let before = step.before.clone();
+            if let Some(signature) = recover_finalized_meteora_live_step(rpc, state, &step_name)? {
+                let after =
+                    verify_meteora_fee_compound_v2_claim(rpc, vault, &initial_plan, &before)?;
+                finalize_meteora_live_step(rpc, path, state, &step_name, signature, after)?;
+                continue;
+            }
+        }
+        let (_, current_vault, plan) = load_meteora_plan(rpc, state, deployment, delegated)?;
+        if current_vault != vault {
+            bail!("Meteora compound claim resolved a different vault");
+        }
+        let mut before = meteora_liquidity_observations(rpc, vault, &plan)?;
+        before.insert("range_min_i32_bits".to_owned(), u64::from(range.min as u32));
+        before.insert("range_max_i32_bits".to_owned(), u64::from(range.max as u32));
+        before.insert("compound_cycle_slot".to_owned(), cycle);
+        ensure_meteora_live_step(path, state, &step_name, before)?;
+        let recorded_before = meteora_live_step(state, &step_name)?.before.clone();
+        let (execute, policy_address) =
+            build_meteora_claim_policy_execution(state, delegated.pubkey(), vault, &plan, range)?;
+        let compute = ComputeBudgetInstruction::set_compute_unit_limit(600_000);
+        let (transaction, blockhash, last_valid_block_height) =
+            build_signed_transaction(rpc, &[compute, execute], delegated)?;
+        let units = simulate_signed_transaction(rpc, &transaction, &step_name)?;
+        println!("{step_name}_prebroadcast=PASS range={}..={} policy={policy_address} units_consumed={units} transaction_sent=false", range.min, range.max);
+        let signature = send_meteora_live_transaction(
+            rpc,
+            path,
+            state,
+            &step_name,
+            transaction,
+            blockhash,
+            last_valid_block_height,
+        )?;
+        let after = verify_meteora_fee_compound_v2_claim(rpc, vault, &plan, &recorded_before)?;
+        finalize_meteora_live_step(rpc, path, state, &step_name, signature, after)?;
+    }
+
+    let (claimed_loyal, claimed_usdc) =
+        meteora_fee_compound_v2_claim_totals(state, cycle, chunks.len())?;
+    if claimed_loyal == 0 && claimed_usdc == 0 {
+        println!("meteora_fee_compound_v2_final=PASS cycle={cycle} claimed_loyal_raw=0 claimed_usdc_raw=0 transaction_sent=true");
+        return Ok(());
+    }
+    let (_, _, plan) = load_meteora_plan(rpc, state, deployment, delegated)?;
+    let active_id = plan.active_bin_id;
+    let layers = meteora_fee_compound_v2_layers(&plan, active_id, claimed_loyal, claimed_usdc)?;
+    for (index, (range, loyal_cap, usdc_cap)) in layers.iter().copied().enumerate() {
+        let step_name = meteora_fee_compound_v2_step(cycle, "add", index);
+        if let Ok(step) = meteora_live_step(state, &step_name) {
+            if step.status == PolicyStatus::Finalized {
+                println!("{step_name}=PASS already_finalized=true");
+                continue;
+            }
+            let before = step.before.clone();
+            if i32_observation(&before, "active_id_i32_bits")? != active_id
+                || meteora_range_from_observations(&before)? != range
+                || observed(&before, "requested_loyal_raw")? != loyal_cap
+                || observed(&before, "requested_usdc_raw")? != usdc_cap
+            {
+                bail!("recorded Meteora compound add no longer matches the active bin or fee caps");
+            }
+            if let Some(signature) = recover_finalized_meteora_live_step(rpc, state, &step_name)? {
+                let after = verify_meteora_fee_compound_v2_add(rpc, vault, &plan, &before)?;
+                finalize_meteora_live_step(rpc, path, state, &step_name, signature, after)?;
+                continue;
+            }
+        }
+        let (_, current_vault, current_plan) =
+            load_meteora_plan(rpc, state, deployment, delegated)?;
+        if current_vault != vault || current_plan.active_bin_id != active_id {
+            bail!("Meteora active bin moved during compounding; no further add was sent");
+        }
+        let mut before = meteora_liquidity_observations(rpc, vault, &current_plan)?;
+        if observed(&before, "vault_loyal_raw")? < loyal_cap
+            || observed(&before, "vault_usdc_raw")? < usdc_cap
+        {
+            bail!("vault lacks the exact claimed-fee budget for compounding");
+        }
+        before.insert("requested_loyal_raw".to_owned(), loyal_cap);
+        before.insert("requested_usdc_raw".to_owned(), usdc_cap);
+        before.insert("range_min_i32_bits".to_owned(), u64::from(range.min as u32));
+        before.insert("range_max_i32_bits".to_owned(), u64::from(range.max as u32));
+        before.insert("active_id_i32_bits".to_owned(), u64::from(active_id as u32));
+        before.insert("compound_cycle_slot".to_owned(), cycle);
+        ensure_meteora_live_step(path, state, &step_name, before)?;
+        let recorded_before = meteora_live_step(state, &step_name)?.before.clone();
+        let (execute, policy_address) = build_meteora_dynamic_add_policy_execution(
+            state,
+            delegated.pubkey(),
+            vault,
+            &current_plan,
+            active_id,
+            range,
+            loyal_cap,
+            usdc_cap,
+        )?;
+        let compute = ComputeBudgetInstruction::set_compute_unit_limit(1_400_000);
+        let (transaction, blockhash, last_valid_block_height) =
+            build_signed_transaction(rpc, &[compute, execute], delegated)?;
+        let units = simulate_signed_transaction(rpc, &transaction, &step_name)?;
+        let (_, _, latest_plan) = load_meteora_plan(rpc, state, deployment, delegated)?;
+        if latest_plan.active_bin_id != active_id {
+            bail!("Meteora active bin moved after simulation; add was not sent");
+        }
+        println!("{step_name}_prebroadcast=PASS range={}..={} loyal_cap_raw={loyal_cap} usdc_cap_raw={usdc_cap} policy={policy_address} units_consumed={units} transaction_sent=false", range.min, range.max);
+        let signature = send_meteora_live_transaction(
+            rpc,
+            path,
+            state,
+            &step_name,
+            transaction,
+            blockhash,
+            last_valid_block_height,
+        )?;
+        let after =
+            verify_meteora_fee_compound_v2_add(rpc, vault, &current_plan, &recorded_before)?;
+        finalize_meteora_live_step(rpc, path, state, &step_name, signature, after)?;
+    }
+
+    let mut compounded_loyal = 0_u64;
+    let mut compounded_usdc = 0_u64;
+    for index in 0..layers.len() {
+        let step = meteora_live_step(state, &meteora_fee_compound_v2_step(cycle, "add", index))?;
+        compounded_loyal = compounded_loyal
+            .checked_add(observed(&step.after, "compounded_loyal_raw")?)
+            .context("compounded LOYAL overflow")?;
+        compounded_usdc = compounded_usdc
+            .checked_add(observed(&step.after, "compounded_usdc_raw")?)
+            .context("compounded USDC overflow")?;
+    }
+    let dust_bound = u64::try_from(plan.position_width)?;
+    if compounded_loyal > claimed_loyal
+        || compounded_usdc > claimed_usdc
+        || claimed_loyal - compounded_loyal > dust_bound
+        || claimed_usdc - compounded_usdc > dust_bound
+    {
+        bail!("Meteora compound left excessive rounding dust or exceeded claimed fees");
+    }
+    println!("meteora_fee_compound_v2_final=PASS cycle={cycle} active_bin={active_id} claimed_loyal_raw={claimed_loyal} claimed_usdc_raw={claimed_usdc} compounded_loyal_raw={compounded_loyal} compounded_usdc_raw={compounded_usdc} loyal_dust_raw={} usdc_dust_raw={} existing_vault_inventory_excluded=true transaction_sent=true", claimed_loyal - compounded_loyal, claimed_usdc - compounded_usdc);
+    Ok(())
 }
 
 fn build_meteora_liquidity_policy_execution(
