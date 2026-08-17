@@ -83,6 +83,37 @@ require_fixed_count() {
   fi
 }
 
+normalize_inventory() {
+  tr ' ' '\n' | sed '/^$/d' | LC_ALL=C sort -u
+}
+
+require_inventory_equal() {
+  local expected=$1
+  local actual=$2
+  local description=$3
+  if [[ "$expected" == "$actual" ]]; then
+    pass "$description"
+  else
+    fail "$description (expected: $(printf '%s' "$expected" | tr '\n' ' '); found: $(printf '%s' "$actual" | tr '\n' ' '))"
+  fi
+}
+
+dockerfile_inventory() {
+  local dockerfile=$1
+  sed -nE 's|^COPY --chmod=0755 build-artifacts/rust/([^ ]+) /usr/local/bin/([^ ]+)$|\1 \2|p' "$dockerfile" \
+    | while read -r source destination; do
+        if [[ "$source" == "$destination" ]]; then
+          printf '%s\n' "$source"
+        fi
+      done \
+    | LC_ALL=C sort -u
+}
+
+workflow_probe_inventory() {
+  local variable=$1
+  sed -nE "s/^[[:space:]]{2}${variable}:[[:space:]]*(.*)$/\\1/p" "$workflow" | normalize_inventory
+}
+
 workflow=.github/workflows/rust-image-build.yml
 worker_entry=.github/workflows/worker-images.yml
 operator_entry=.github/workflows/operator-tools-image.yml
@@ -170,24 +201,51 @@ forbid_pattern "$build_script" 'git rev-parse' 'Container build does not depend 
 
 # Runtime-image inventory remains complete and compiler-free.
 dockerfiles='Dockerfile.laserstream-workers Dockerfile.light-workers Dockerfile.operator-tools'
-laserstream_binaries='kamino-reserve-monitor balance-sweep-ata-monitor loyal-timescale-migrations yield-migrations'
-light_binaries='balance-sweep-ata-projector balance-sweep-autodeposit-trigger loyal-yield-realtime yield-migrations same-mint-reserve-swap same-mint-yield-monitor fleet-opportunity-planner fleet-health-projector fleet-route-confirmer route-lookup-table-provisioner'
-operator_binaries='loyal-timescale-migrations fleet-orchestration-verifier fleet-orchestration-production-evidence same-mint-monitor-e2e route-lookup-table-shared-catalog route-lookup-table-alert-monitor route-lookup-table-legacy-import route-lookup-table-cleanup signer-balance-monitor'
-all_binaries="$laserstream_binaries $light_binaries $operator_binaries"
+cargo_binaries=$(sed -nE 's/^[[:space:]]*--bin ([^ ]+).*/\1/p' "$build_script" | LC_ALL=C sort -u)
+staged_binaries=$(sed -nE 's/^[[:space:]]*stage_binary ([^ ]+).*/\1/p' "$build_script" | LC_ALL=C sort -u)
+dockerfile_binaries=$(for dockerfile in $dockerfiles; do dockerfile_inventory "$dockerfile"; done | LC_ALL=C sort -u)
+
+require_inventory_equal "$cargo_binaries" "$staged_binaries" 'Cargo build and staged artifact inventories are exactly equal'
+require_inventory_equal "$staged_binaries" "$dockerfile_binaries" 'Staged artifact and runtime Dockerfile inventories are exactly equal'
 
 for dockerfile in $dockerfiles; do
+  require_file "$dockerfile"
+  rust_copy_count=$(rg -c 'build-artifacts/rust/' "$dockerfile" || true)
+  parsed_copy_count=$(sed -nE 's|^COPY --chmod=0755 build-artifacts/rust/([^ ]+) /usr/local/bin/([^ ]+)$|\1 \2|p' "$dockerfile" | sed '/^$/d' | wc -l | tr -d ' ')
+  if [[ "$rust_copy_count" == "$parsed_copy_count" ]]; then
+    pass "$dockerfile uses the canonical artifact-copy form for every Rust binary"
+  else
+    fail "$dockerfile has a Rust artifact copy outside the canonical executable-copy form"
+  fi
+
+  while read -r source destination; do
+    if [[ "$source" == "$destination" ]]; then
+      pass "$dockerfile installs $source under the same binary name"
+    else
+      fail "$dockerfile renames Rust binary $source to $destination"
+    fi
+  done < <(sed -nE 's|^COPY --chmod=0755 build-artifacts/rust/([^ ]+) /usr/local/bin/([^ ]+)$|\1 \2|p' "$dockerfile")
+
   case "$dockerfile" in
-    Dockerfile.laserstream-workers) binaries=$laserstream_binaries ;;
-    Dockerfile.light-workers) binaries=$light_binaries ;;
-    Dockerfile.operator-tools) binaries=$operator_binaries ;;
+    Dockerfile.laserstream-workers)
+      probe_variable=LASERSTREAM_PROBE_BINARIES
+      ;;
+    Dockerfile.light-workers)
+      probe_variable=LIGHT_WORKER_PROBE_BINARIES
+      ;;
+    Dockerfile.operator-tools)
+      probe_variable=OPERATOR_TOOLS_PROBE_BINARIES
+      ;;
     *) fail "Verifier has no binary inventory for $dockerfile"; continue ;;
   esac
-  require_file "$dockerfile"
+  binaries=$(dockerfile_inventory "$dockerfile")
+  probe_binaries=$(workflow_probe_inventory "$probe_variable")
+  require_inventory_equal "$binaries" "$probe_binaries" "$dockerfile runtime and probe inventories are exactly equal"
+  require_fixed_count "$workflow" "PROBE_BINARIES: \${{ env.$probe_variable }}" 1 "$dockerfile probe consumes $probe_variable"
   forbid_pattern "$dockerfile" '^FROM rust:' "$dockerfile has no Rust compiler stage"
   forbid_pattern "$dockerfile" 'cargo (chef|build)' "$dockerfile performs no Rust compilation"
   forbid_pattern "$dockerfile" '/app/target' "$dockerfile does not transport Cargo target state"
   for binary in $binaries; do
-    require_text "$dockerfile" "COPY --chmod=0755 build-artifacts/rust/$binary /usr/local/bin/$binary" "$dockerfile restores executable mode for $binary from the job artifact"
     require_text "$build_script" "stage_binary $binary" "$build_script stages $binary"
   done
 done
@@ -209,7 +267,7 @@ metadata_file=$(mktemp)
 trap 'rm -f "$metadata_file"' EXIT
 if cargo metadata --no-deps --format-version 1 >"$metadata_file"; then
   missing_targets=0
-  for binary in $(printf '%s\n' "$all_binaries" | tr ' ' '\n' | sort -u); do
+  for binary in $staged_binaries; do
     if ! jq -e --arg binary "$binary" '.packages[].targets[] | select(.name == $binary)' "$metadata_file" >/dev/null; then
       fail "Cargo metadata has no target named $binary"
       missing_targets=1
