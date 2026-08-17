@@ -143,7 +143,6 @@ use tokio::{
 };
 
 const KAMINO_PRIME_USDC_RESERVE: &str = "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu";
-const CROSS_MINT_JUPITER_ENABLED_ENV: &str = "EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER";
 const KAMINO_MAIN_MARKET: &str = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF";
 const KAMINO_PRIME_MARKET: &str = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA";
 const KAMINO_MAPLE_MARKET: &str = "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y";
@@ -3250,18 +3249,6 @@ fn parse_fleet_reconciler_options(
     })
 }
 
-fn cross_mint_rollout_enabled_from_env() -> Result<bool, Box<dyn Error>> {
-    match env::var(CROSS_MINT_JUPITER_ENABLED_ENV) {
-        Ok(value) if value == "1" || value.eq_ignore_ascii_case("true") => Ok(true),
-        Ok(value) if value == "0" || value.eq_ignore_ascii_case("false") => Ok(false),
-        Ok(_) => {
-            Err(format!("{CROSS_MINT_JUPITER_ENABLED_ENV} must be true, false, 1, or 0").into())
-        }
-        Err(env::VarError::NotPresent) => Ok(false),
-        Err(error) => Err(error.into()),
-    }
-}
-
 async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Error>> {
     let database_url =
         env::var("NEON_DATABASE_URL").map_err(|_| "NEON_DATABASE_URL must be set")?;
@@ -3301,21 +3288,13 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
     client
         .require_schema_migration(33, "policy_setup_funding_reservations")
         .await?;
-    let cross_mint_enabled = cross_mint_rollout_enabled_from_env()?;
-    let cross_mint_schema_ready = client
-        .schema_migration_applied(36, "cross_mint_swap_policies")
+    client
+        .require_schema_migration(37, "cross_mint_vault_opt_ins")
         .await?;
-    if cross_mint_enabled && !cross_mint_schema_ready {
-        client
-            .require_schema_migration(36, "cross_mint_swap_policies")
-            .await?;
-    }
     // Once the schema exists, continuation remains available even while new
     // cross-mint admission is disabled. Source-idle custody recovers to its
     // source reserve; target-idle custody continues to a safe target.
-    let cross_mint_config = cross_mint_schema_ready
-        .then(cross_mint::CrossMintWorkerConfig::from_env)
-        .transpose()?;
+    let cross_mint_config = cross_mint::CrossMintWorkerConfig::from_env()?;
     // Validate the standard signer once at startup. Individual route builds
     // re-read and match it to the active policy before signing.
     let delegated_signer = standard_policy_keypair_from_env()?.pubkey().to_string();
@@ -3358,109 +3337,105 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
         // happens on startup, every poll, and after listener reconnects; the
         // notification channel is only a latency hint.
         if options.claim_kind == RebalanceOpportunityClaimKind::Execute {
-            if let Some(cross_mint_config) = cross_mint_config.as_ref() {
-                match cross_mint::process_continuation_before_new_work(
-                    route_runtime.as_ref(),
-                    &options,
-                    cross_mint_config,
-                )
-                .await
-                {
-                    Ok(cross_mint::CrossMintWorkResult::Continued {
-                        decision_id,
-                        leg,
-                        purpose,
-                        submission_id,
-                    }) => {
-                        claimed = claimed.saturating_add(1);
-                        completed = completed.saturating_add(1);
-                        println!(
-                            "{}",
-                            serde_json::to_string(&json!({
-                                "status": "cross_mint_leg_submission_queued",
-                                "decisionId": decision_id,
-                                "submissionId": submission_id,
-                                "leg": leg.as_str(),
-                                "purpose": purpose.as_str(),
-                                "persistsSignedBytes": true,
-                                "sendsTransactions": false,
-                                "continuationBeforeNewOptimization": true,
-                            }))?
-                        );
-                        // Drain recoveries before leasing any new opportunity.
+            match cross_mint::process_continuation_before_new_work(
+                route_runtime.as_ref(),
+                &options,
+                &cross_mint_config,
+            )
+            .await
+            {
+                Ok(cross_mint::CrossMintWorkResult::Continued {
+                    decision_id,
+                    leg,
+                    purpose,
+                    submission_id,
+                }) => {
+                    claimed = claimed.saturating_add(1);
+                    completed = completed.saturating_add(1);
+                    println!(
+                        "{}",
+                        serde_json::to_string(&json!({
+                            "status": "cross_mint_leg_submission_queued",
+                            "decisionId": decision_id,
+                            "submissionId": submission_id,
+                            "leg": leg.as_str(),
+                            "purpose": purpose.as_str(),
+                            "persistsSignedBytes": true,
+                            "sendsTransactions": false,
+                            "continuationBeforeNewOptimization": true,
+                        }))?
+                    );
+                    // Drain recoveries before leasing any new opportunity.
+                    continue;
+                }
+                Ok(cross_mint::CrossMintWorkResult::ClosedForManualIntervention {
+                    decision_id,
+                }) => {
+                    completed = completed.saturating_add(1);
+                    println!(
+                        "{}",
+                        serde_json::to_string(&json!({
+                            "status": "cross_mint_movement_manual_intervention",
+                            "decisionId": decision_id,
+                            "reason": "finalized custody balance no longer equals movement attribution",
+                            "sendsTransactions": false,
+                        }))?
+                    );
+                    continue;
+                }
+                Ok(cross_mint::CrossMintWorkResult::CancelledBeforeWithdraw { decision_id }) => {
+                    completed = completed.saturating_add(1);
+                    println!(
+                        "{}",
+                        serde_json::to_string(&json!({
+                            "status": "cross_mint_movement_cancelled_before_withdraw",
+                            "decisionId": decision_id,
+                            "reason": "cross-mint rollout disabled before withdrawal",
+                            "sendsTransactions": false,
+                        }))?
+                    );
+                    continue;
+                }
+                Ok(cross_mint::CrossMintWorkResult::NoWork) => {
+                    if cross_mint::owner_has_live_continuation_lease(
+                        &client,
+                        &options.cluster,
+                        &options.owner,
+                    )
+                    .await?
+                    {
+                        // A build failed after this worker acquired the fence.
+                        // Do not compensate by starting new withdrawals while
+                        // that recovery lease is still live.
+                        tokio::time::sleep(Duration::from_millis(
+                            options.poll_interval_milliseconds,
+                        ))
+                        .await;
                         continue;
                     }
-                    Ok(cross_mint::CrossMintWorkResult::ClosedForManualIntervention {
-                        decision_id,
-                    }) => {
-                        completed = completed.saturating_add(1);
-                        println!(
-                            "{}",
-                            serde_json::to_string(&json!({
-                                "status": "cross_mint_movement_manual_intervention",
-                                "decisionId": decision_id,
-                                "reason": "finalized custody balance no longer equals movement attribution",
-                                "sendsTransactions": false,
-                            }))?
-                        );
-                        continue;
-                    }
-                    Ok(cross_mint::CrossMintWorkResult::CancelledBeforeWithdraw {
-                        decision_id,
-                    }) => {
-                        completed = completed.saturating_add(1);
-                        println!(
-                            "{}",
-                            serde_json::to_string(&json!({
-                                "status": "cross_mint_movement_cancelled_before_withdraw",
-                                "decisionId": decision_id,
-                                "reason": "cross-mint rollout disabled before withdrawal",
-                                "sendsTransactions": false,
-                            }))?
-                        );
-                        continue;
-                    }
-                    Ok(cross_mint::CrossMintWorkResult::NoWork) => {
-                        if cross_mint::owner_has_live_continuation_lease(
-                            &client,
-                            &options.cluster,
-                            &options.owner,
-                        )
-                        .await?
-                        {
-                            // A build failed after this worker acquired the fence.
-                            // Do not compensate by starting new withdrawals while
-                            // that recovery lease is still live.
-                            tokio::time::sleep(Duration::from_millis(
-                                options.poll_interval_milliseconds,
-                            ))
-                            .await;
-                            continue;
-                        }
-                    }
-                    Err(error) => {
-                        failed = failed.saturating_add(1);
-                        OperationalError::new(
-                            "cross_mint_continuation_failed",
-                            "continue_cross_mint_movement",
-                            "cross-mint continuation failed before signed publication",
-                        )
-                        .retryable(true)
-                        .recovery_required(true)
-                        .emit();
-                        eprintln!(
-                            "{}",
-                            serde_json::to_string(&json!({
-                                "status": "cross_mint_continuation_failed",
-                                "error": redacted_external_error(&error.to_string()),
-                                "sendsTransactions": false,
-                            }))?
-                        );
-                        // Retry/recovery remains ahead of new optimization. The
-                        // live continuation fence is observed at the top of the
-                        // next iteration and prevents new withdrawals meanwhile.
-                        continue;
-                    }
+                }
+                Err(error) => {
+                    failed = failed.saturating_add(1);
+                    OperationalError::new(
+                        "cross_mint_continuation_failed",
+                        "continue_cross_mint_movement",
+                        "cross-mint continuation failed before signed publication",
+                    )
+                    .retryable(true)
+                    .recovery_required(true)
+                    .emit();
+                    eprintln!(
+                        "{}",
+                        serde_json::to_string(&json!({
+                            "status": "cross_mint_continuation_failed",
+                            "error": redacted_external_error(&error.to_string()),
+                            "sendsTransactions": false,
+                        }))?
+                    );
+                    // Retry/recovery remains ahead of new optimization. The
+                    // live continuation fence is observed at the top of the
+                    // next iteration and prevents new withdrawals meanwhile.
+                    continue;
                 }
             }
         }
@@ -3493,21 +3468,11 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
             for lease in leases {
                 match cross_mint::classify_opportunity(&lease.opportunity) {
                     Ok(cross_mint::CrossMintOpportunityDisposition::CrossMint) => {
-                        let Some(cross_mint_config) = cross_mint_config.as_ref() else {
-                            failed = failed.saturating_add(1);
-                            defer_cross_mint_opportunity_after_error(
-                                &client,
-                                &lease,
-                                &"cross-mint Jupiter execution is disabled at the worker",
-                            )
-                            .await?;
-                            continue;
-                        };
                         let cross_result = match lease.claim_kind {
                             RebalanceOpportunityClaimKind::Revalidate => {
                                 cross_mint::revalidate_cross_mint_opportunity(
                                     route_runtime.as_ref(),
-                                    cross_mint_config,
+                                    &cross_mint_config,
                                     &lease,
                                 )
                                 .await
@@ -3517,7 +3482,7 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
                                 cross_mint::activate_cross_mint_opportunity(
                                     route_runtime.as_ref(),
                                     &options,
-                                    cross_mint_config,
+                                    &cross_mint_config,
                                     &lease,
                                 )
                                 .await

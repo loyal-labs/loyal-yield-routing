@@ -31,8 +31,8 @@ use loyal_yield_orchestrator::fleet_orchestration::{
 };
 use loyal_yield_orchestrator::{
     lookup_table_manifest_address_records_hash, lookup_table_rollout_lock_acquisition_count,
-    supported_stable_mints, AtomicVaultAllocationResult, DecisionAdvance,
-    LookupTableAllocationKind, LookupTableFamilyKind, LookupTableFamilyRecord,
+    supported_stable_mints, AtomicVaultAllocationResult, CrossMintVaultOptInLookup,
+    DecisionAdvance, LookupTableAllocationKind, LookupTableFamilyKind, LookupTableFamilyRecord,
     LookupTableFamilyState, LookupTableFamilyUpsert, LookupTableLifecycle,
     LookupTableManifestAddressRecord, LookupTableManifestSubject, LookupTableMembershipAddress,
     LookupTableOperationEnqueue, LookupTableOperationKind, LookupTableOperationLease,
@@ -92,7 +92,7 @@ const PRODUCTION_SERVICE_NAMES: [&str; 6] = [
     "loyal-fleet-route-reconciler",
     "loyal-route-lookup-table-provisioner",
 ];
-const VERIFIED_MIGRATIONS: [(i64, &str, &str); 14] = [
+const VERIFIED_MIGRATIONS: [(i64, &str, &str); 15] = [
     (
         23,
         "value_priority_rebalance_queue",
@@ -162,6 +162,11 @@ const VERIFIED_MIGRATIONS: [(i64, &str, &str); 14] = [
         36,
         "cross_mint_swap_policies",
         "0036_cross_mint_swap_policies.sql",
+    ),
+    (
+        37,
+        "cross_mint_vault_opt_ins",
+        "0037_cross_mint_vault_opt_ins.sql",
     ),
 ];
 
@@ -2864,6 +2869,10 @@ impl DatabaseFixture {
             .bind(&cluster_pattern)
             .execute(self.client.pool())
             .await?;
+        sqlx::query("DELETE FROM loyal_yield.cross_mint_vault_opt_ins WHERE cluster LIKE $1")
+            .bind(&cluster_pattern)
+            .execute(self.client.pool())
+            .await?;
         sqlx::query("DELETE FROM loyal_yield.route_policies WHERE settings LIKE $1")
             .bind(&settings_pattern)
             .execute(self.client.pool())
@@ -2899,6 +2908,7 @@ impl DatabaseFixture {
               + (SELECT count(*) FROM loyal_yield.managed_vaults WHERE settings LIKE $2)
               + (SELECT count(*) FROM loyal_yield.route_policies WHERE settings LIKE $2)
               + (SELECT count(*) FROM loyal_yield.cross_mint_swap_policies WHERE cluster LIKE $1)
+              + (SELECT count(*) FROM loyal_yield.cross_mint_vault_opt_ins WHERE cluster LIKE $1)
               + (SELECT count(*) FROM loyal_yield.route_lookup_tables WHERE cluster LIKE $1)
               + (SELECT count(*) FROM loyal_yield.lookup_table_families WHERE cluster LIKE $1)
             "#,
@@ -4533,6 +4543,24 @@ async fn seed_cross_mint_ready_opportunity(
     .bind(&token_2022_swap_signature)
     .execute(fixture.client.pool())
     .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.cross_mint_vault_opt_ins
+            (cluster, settings, vault_index, vault_pubkey, enabled,
+             classic_policy_account, classic_policy_seed,
+             token_2022_policy_account, token_2022_policy_seed,
+             max_slippage_bps, daily_source_mint_spending_cap)
+        VALUES ($1, $2, $3, $4, TRUE, $5, 2, $6, 3, 50, 1000000000)
+        "#,
+    )
+    .bind(cluster)
+    .bind(&settings)
+    .bind(vault_index)
+    .bind(&vault_pubkey)
+    .bind(&swap_policy_account)
+    .bind(&token_2022_swap_policy_account)
+    .execute(fixture.client.pool())
+    .await?;
     let updated = sqlx::query(
         r#"
         UPDATE loyal_yield.rebalance_opportunities
@@ -5156,7 +5184,8 @@ async fn cross_mint_movement_subchecks(
               'target_capacity_reservations',
               'cross_mint_movement_controls',
               'cross_mint_no_effect_receipts',
-              'cross_mint_swap_policies'
+              'cross_mint_swap_policies',
+              'cross_mint_vault_opt_ins'
           )
         ORDER BY table_name, ordinal_position
         "#,
@@ -5180,7 +5209,8 @@ async fn cross_mint_movement_subchecks(
               'rebalance_decisions',
               'signed_route_submissions',
               'target_capacity_reservations',
-              'cross_mint_swap_policies'
+              'cross_mint_swap_policies',
+              'cross_mint_vault_opt_ins'
           )
         ORDER BY tablename, indexname
         "#,
@@ -5280,6 +5310,22 @@ async fn cross_mint_movement_subchecks(
         "last_seen_slot",
         "last_seen_signature",
     ];
+    let vault_opt_in_columns = [
+        "cluster",
+        "settings",
+        "vault_index",
+        "vault_pubkey",
+        "enabled",
+        "classic_policy_account",
+        "classic_policy_seed",
+        "token_2022_policy_account",
+        "token_2022_policy_seed",
+        "max_slippage_bps",
+        "daily_source_mint_spending_cap",
+        "generation",
+        "created_at",
+        "updated_at",
+    ];
 
     let mut all_missing = missing_cross_mint_columns(
         &columns,
@@ -5311,12 +5357,18 @@ async fn cross_mint_movement_subchecks(
         "cross_mint_swap_policies",
         &swap_policy_columns,
     ));
+    all_missing.extend(missing_cross_mint_columns(
+        &columns,
+        "cross_mint_vault_opt_ins",
+        &vault_opt_in_columns,
+    ));
     for index in [
         "rebalance_decisions_cross_mint_continuation_idx",
         "signed_route_submissions_movement_leg_generation_uidx",
         "signed_route_submissions_one_nonterminal_opportunity_idx",
         "cross_mint_swap_policies_start_idx",
         "cross_mint_swap_policies_account_idx",
+        "cross_mint_vault_opt_ins_enabled_idx",
     ] {
         if !index_names.contains(index) {
             all_missing.push(format!("database index: {index}"));
@@ -5327,6 +5379,14 @@ async fn cross_mint_movement_subchecks(
     }
     if capability_migration.is_none() {
         all_missing.push("schema migration 36: cross_mint_swap_policies".to_owned());
+    }
+    let opt_in_migration = sqlx::query_as::<_, (String, String)>(
+        "SELECT name, checksum FROM loyal_yield.schema_migrations WHERE version = 37",
+    )
+    .fetch_optional(fixture.client.pool())
+    .await?;
+    if opt_in_migration.is_none() {
+        all_missing.push("schema migration 37: cross_mint_vault_opt_ins".to_owned());
     }
 
     let available_columns = columns
@@ -5413,7 +5473,11 @@ async fn cross_mint_movement_subchecks(
                     "name": name,
                     "checksum": checksum,
                 })),
-                "connectionRequired": "apply migrations 35-36 to the fleet_verify database and rerun",
+                "migration37": opt_in_migration.as_ref().map(|(name, checksum)| json!({
+                    "name": name,
+                    "checksum": checksum,
+                })),
+                "connectionRequired": "apply migrations 35-37 to the fleet_verify database and rerun",
             }),
         )];
         checks.extend(behavior_contracts.into_iter().map(|(name, invariant)| {
@@ -5421,7 +5485,7 @@ async fn cross_mint_movement_subchecks(
                 name,
                 invariant,
                 vec!["disposable database schema contract".to_owned()],
-                "apply migrations 35-36 to the fleet_verify database and rerun",
+                "apply migrations 35-37 to the fleet_verify database and rerun",
             )
         }));
         checks.push(subcheck(
@@ -5444,6 +5508,10 @@ async fn cross_mint_movement_subchecks(
                 "name": name,
                 "checksum": checksum,
             })),
+            "migration37": opt_in_migration.as_ref().map(|(name, checksum)| json!({
+                "name": name,
+                "checksum": checksum,
+            })),
             "availableColumns": available_columns,
             "relevantIndexes": indexes,
             "typedStoreContract": [
@@ -5453,6 +5521,10 @@ async fn cross_mint_movement_subchecks(
                 "reconcile_cross_mint_leg",
                 "rebind_cross_mint_fallback_capacity",
                 "close_cross_mint_movement",
+                "load_cross_mint_vault_opt_in",
+                "upsert_cross_mint_vault_opt_in",
+                "disable_cross_mint_vault_opt_in",
+                "enable_cross_mint_vault_opt_in",
             ],
         }),
     )];
@@ -5711,6 +5783,22 @@ async fn cross_mint_movement_subchecks(
             },
         )
         .await?;
+    let success_opt_in_lookup = CrossMintVaultOptInLookup {
+        cluster: success_cluster.clone(),
+        settings: success.policy_bindings.settings.clone(),
+        vault_index: success.policy_bindings.vault_index,
+        vault_pubkey: success.policy_bindings.vault_pubkey.clone(),
+    };
+    let success_opt_in = fixture
+        .client
+        .load_cross_mint_vault_opt_in(success_opt_in_lookup.clone())
+        .await?
+        .ok_or("successful cross-mint fixture lacks its enrollment")?;
+    let paused_after_withdraw = fixture
+        .client
+        .disable_cross_mint_vault_opt_in(success_opt_in_lookup, success_opt_in.generation)
+        .await?
+        .ok_or("successful cross-mint enrollment disappeared while pausing")?;
     let capacity_after_withdraw =
         cross_mint_capacity_state(fixture, success.movement.decision_id.as_i64()).await?;
     let swap_continuation =
@@ -5907,6 +5995,22 @@ async fn cross_mint_movement_subchecks(
             "custodyVersion": completed.custody_version,
             "capacityState": completed_capacity.1,
             "continuationClaimedAfterTerminal": completed_continuation.is_some(),
+        }),
+    ));
+    checks.push(subcheck(
+        "cross_mint_pause_after_withdraw_allows_safe_continuation",
+        !paused_after_withdraw.enabled
+            && paused_after_withdraw.generation == success_opt_in.generation + 1
+            && after_withdraw.phase == CrossMintCustodyPhase::SourceIdle
+            && after_swap.phase == CrossMintCustodyPhase::TargetIdle
+            && completed.terminal_outcome == Some(CrossMintTerminalOutcome::CompletedTarget),
+        json!({
+            "enabledAfterPause": paused_after_withdraw.enabled,
+            "generationBefore": success_opt_in.generation,
+            "generationAfter": paused_after_withdraw.generation,
+            "withdrawPhase": after_withdraw.phase,
+            "swapPhase": after_swap.phase,
+            "terminalOutcome": completed.terminal_outcome,
         }),
     ));
 
@@ -6555,6 +6659,221 @@ async fn cross_mint_movement_subchecks(
                 "finalized_prereconcile",
                 "reconciled_precontinuation",
             ],
+        }),
+    ));
+
+    let seed_mismatch_cluster = fixture.cluster("cross_mint_policy_seed_mismatch");
+    let seed_mismatch_epoch = fixture.seed_epoch(&seed_mismatch_cluster).await?;
+    seed_cross_mint_ready_opportunity(
+        fixture,
+        &seed_mismatch_cluster,
+        seed_mismatch_epoch,
+        "cross_mint_policy_seed_mismatch",
+        50_000,
+    )
+    .await?;
+    set_cross_mint_gates(fixture, &seed_mismatch_cluster, true, true).await?;
+    let seed_mismatch_lease = claim_one(
+        &fixture.client,
+        &seed_mismatch_cluster,
+        "cross-mint-policy-seed-mismatch",
+        RebalanceOpportunityClaimKind::Execute,
+    )
+    .await?;
+    let seed_mismatch_capacity =
+        cross_mint_capacity_input_for_lease(fixture, &seed_mismatch_lease).await?;
+    let seed_mismatch_bindings =
+        cross_mint_fixture_policy_bindings(&seed_mismatch_lease.opportunity)?;
+    let corrupted_opt_in = sqlx::query(
+        r#"
+        UPDATE loyal_yield.cross_mint_vault_opt_ins
+        SET classic_policy_seed = classic_policy_seed + 1000000,
+            updated_at = now()
+        WHERE cluster = $1
+        "#,
+    )
+    .bind(&seed_mismatch_cluster)
+    .execute(fixture.client.pool())
+    .await?;
+    let seed_mismatch_error = fixture
+        .client
+        .activate_cross_mint_movement(
+            &seed_mismatch_lease,
+            CrossMintMovementActivationInput {
+                capacity: seed_mismatch_capacity,
+                initial_withdraw_compiled_fee_lamports: 5_000,
+                preflight_certification: json!({
+                    "kind": "cross_mint_preflight",
+                    "fixture": "policy_seed_mismatch",
+                }),
+                policy_bindings: seed_mismatch_bindings,
+            },
+        )
+        .await
+        .expect_err("a mismatched enrolled policy seed cannot activate a movement");
+    checks.push(subcheck(
+        "cross_mint_activation_requires_exact_opted_in_policy_seed",
+        corrupted_opt_in.rows_affected() == 1
+            && seed_mismatch_error
+                .to_string()
+                .contains("lost an opted-in finalized policy binding"),
+        json!({
+            "corruptedEnrollmentRows": corrupted_opt_in.rows_affected(),
+            "activationError": seed_mismatch_error.to_string(),
+        }),
+    ));
+
+    let paused_before_activation_cluster = fixture.cluster("cross_mint_paused_before_activation");
+    let paused_before_activation_epoch = fixture
+        .seed_epoch(&paused_before_activation_cluster)
+        .await?;
+    seed_cross_mint_ready_opportunity(
+        fixture,
+        &paused_before_activation_cluster,
+        paused_before_activation_epoch,
+        "cross_mint_paused_before_activation",
+        50_000,
+    )
+    .await?;
+    set_cross_mint_gates(fixture, &paused_before_activation_cluster, true, true).await?;
+    let paused_before_activation_lease = claim_one(
+        &fixture.client,
+        &paused_before_activation_cluster,
+        "cross-mint-paused-before-activation",
+        RebalanceOpportunityClaimKind::Execute,
+    )
+    .await?;
+    let paused_before_activation_capacity =
+        cross_mint_capacity_input_for_lease(fixture, &paused_before_activation_lease).await?;
+    let paused_before_activation_bindings =
+        cross_mint_fixture_policy_bindings(&paused_before_activation_lease.opportunity)?;
+    let paused_before_activation_lookup = CrossMintVaultOptInLookup {
+        cluster: paused_before_activation_cluster.clone(),
+        settings: paused_before_activation_bindings.settings.clone(),
+        vault_index: paused_before_activation_bindings.vault_index,
+        vault_pubkey: paused_before_activation_bindings.vault_pubkey.clone(),
+    };
+    let activation_opt_in = fixture
+        .client
+        .load_cross_mint_vault_opt_in(paused_before_activation_lookup.clone())
+        .await?
+        .ok_or("pre-activation fixture lacks its enrollment")?;
+    let paused_before_activation = fixture
+        .client
+        .disable_cross_mint_vault_opt_in(
+            paused_before_activation_lookup,
+            activation_opt_in.generation,
+        )
+        .await?
+        .ok_or("pre-activation enrollment disappeared while pausing")?;
+    let paused_activation_error = fixture
+        .client
+        .activate_cross_mint_movement(
+            &paused_before_activation_lease,
+            CrossMintMovementActivationInput {
+                capacity: paused_before_activation_capacity,
+                initial_withdraw_compiled_fee_lamports: 5_000,
+                preflight_certification: json!({
+                    "kind": "cross_mint_preflight",
+                    "fixture": "paused_before_activation",
+                }),
+                policy_bindings: paused_before_activation_bindings,
+            },
+        )
+        .await
+        .expect_err("a paused enrollment cannot activate a new movement");
+
+    let paused_before_withdraw =
+        activate_cross_mint_fixture(fixture, "cross_mint_paused_before_withdraw").await?;
+    let paused_before_withdraw_lease = fixture
+        .client
+        .claim_cross_mint_continuation(
+            &paused_before_withdraw.movement.cluster,
+            "paused-before-withdraw",
+            60,
+        )
+        .await?
+        .ok_or("paused-before-withdraw movement was not claimable")?;
+    let paused_before_withdraw_input = cross_mint_leg_input(
+        fixture,
+        &paused_before_withdraw.opportunity_lease,
+        &paused_before_withdraw_lease,
+        "paused-before-withdraw",
+        CrossMintMovementLeg::Withdraw,
+        CrossMintLegPurpose::OptimizeYield,
+        1,
+        CrossMintExpectedEffect {
+            debit: None,
+            credit_mint: Some("USDC".to_owned()),
+            credit_token_account: Some(format!(
+                "source-idle:{}",
+                paused_before_withdraw.movement.decision_id.as_i64()
+            )),
+            minimum_credit_amount_raw: Some(600_000),
+        },
+    )
+    .await?;
+    let paused_before_withdraw_lookup = CrossMintVaultOptInLookup {
+        cluster: paused_before_withdraw.movement.cluster.clone(),
+        settings: paused_before_withdraw.policy_bindings.settings.clone(),
+        vault_index: paused_before_withdraw.policy_bindings.vault_index,
+        vault_pubkey: paused_before_withdraw.policy_bindings.vault_pubkey.clone(),
+    };
+    let withdraw_opt_in = fixture
+        .client
+        .load_cross_mint_vault_opt_in(paused_before_withdraw_lookup.clone())
+        .await?
+        .ok_or("pre-withdraw fixture lacks its enrollment")?;
+    let paused_before_publication = fixture
+        .client
+        .disable_cross_mint_vault_opt_in(paused_before_withdraw_lookup, withdraw_opt_in.generation)
+        .await?
+        .ok_or("pre-withdraw enrollment disappeared while pausing")?;
+    let paused_withdraw_rejected = fixture
+        .client
+        .append_cross_mint_leg(&paused_before_withdraw_lease, paused_before_withdraw_input)
+        .await
+        .is_err();
+    let paused_withdraw_signed_count: i64 = sqlx::query_scalar(
+        "SELECT count(*)::BIGINT FROM loyal_yield.signed_route_submissions WHERE decision_id = $1",
+    )
+    .bind(paused_before_withdraw.movement.decision_id.as_i64())
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let paused_before_withdraw_closed = fixture
+        .client
+        .close_cross_mint_movement(
+            &paused_before_withdraw_lease,
+            CrossMintMovementCloseInput {
+                outcome: CrossMintTerminalOutcome::CancelledBeforeWithdraw,
+                observed_slot: 10_640,
+                reason: "start_authority_revoked_before_withdraw".to_owned(),
+                evidence: json!({
+                    "kind": "start_authority_revoked_before_withdraw",
+                    "cause": "user_pause",
+                    "optInGeneration": paused_before_publication.generation,
+                }),
+            },
+        )
+        .await?;
+    checks.push(subcheck(
+        "cross_mint_pause_fences_activation_and_initial_withdraw",
+        !paused_before_activation.enabled
+            && paused_activation_error
+                .to_string()
+                .contains("lost an opted-in finalized policy binding")
+            && !paused_before_publication.enabled
+            && paused_withdraw_rejected
+            && paused_withdraw_signed_count == 0
+            && paused_before_withdraw_closed.terminal_outcome
+                == Some(CrossMintTerminalOutcome::CancelledBeforeWithdraw),
+        json!({
+            "activationEnabledAfterPause": paused_before_activation.enabled,
+            "activationError": paused_activation_error.to_string(),
+            "publicationEnabledAfterPause": paused_before_publication.enabled,
+            "publicationRejected": paused_withdraw_rejected,
+            "signedSubmissionCount": paused_withdraw_signed_count,
+            "terminalOutcome": paused_before_withdraw_closed.terminal_outcome,
         }),
     ));
 
@@ -10829,7 +11148,7 @@ async fn run_database_checks(
     Ok(DatabaseEvidence {
         migration_subchecks: vec![
             subcheck(
-                "isolated_database_migrated_through_36",
+                "isolated_database_migrated_through_37",
                 true,
                 json!({
                     "databaseNameGuard": "fleet_verify",
@@ -10847,6 +11166,7 @@ async fn run_database_checks(
                     "migration34": "fleet_health_snapshot_projection",
                     "migration35": "durable_cross_mint_movements",
                     "migration36": "cross_mint_swap_policies",
+                    "migration37": "cross_mint_vault_opt_ins",
                 }),
             ),
             subcheck(

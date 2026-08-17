@@ -2008,7 +2008,63 @@ async fn load_fleet_sources(
                       AND swap_policy.vault_index = v.vault_index
                       AND swap_policy.vault_pubkey = v.vault_pubkey
                       AND swap_policy.delegated_signer = $1
-                ), '[]'::JSONB) AS cross_mint_swap_policies
+                      AND EXISTS (
+                          SELECT 1
+                          FROM loyal_yield.cross_mint_vault_opt_ins opt_in
+                          WHERE opt_in.enabled = TRUE
+                            AND opt_in.cluster = swap_policy.cluster
+                            AND opt_in.settings = swap_policy.settings
+                            AND opt_in.vault_index = swap_policy.vault_index
+                            AND opt_in.vault_pubkey = swap_policy.vault_pubkey
+                            AND CASE swap_policy.source_shard
+                                WHEN 'classic' THEN
+                                    opt_in.classic_policy_account = swap_policy.policy_account
+                                    AND opt_in.classic_policy_seed = swap_policy.policy_seed
+                                WHEN 'token_2022' THEN
+                                    opt_in.token_2022_policy_account = swap_policy.policy_account
+                                    AND opt_in.token_2022_policy_seed = swap_policy.policy_seed
+                                ELSE FALSE
+                            END
+                            AND opt_in.max_slippage_bps = swap_policy.max_slippage_bps
+                            AND opt_in.daily_source_mint_spending_cap =
+                                swap_policy.daily_source_mint_spending_cap
+                      )
+                      AND 2 = (
+                          SELECT count(DISTINCT policy.source_shard)
+                          FROM loyal_yield.cross_mint_swap_policies policy
+                          WHERE policy.cluster = swap_policy.cluster
+                            AND policy.settings = swap_policy.settings
+                            AND policy.authority = swap_policy.authority
+                            AND policy.vault_index = swap_policy.vault_index
+                            AND policy.vault_pubkey = swap_policy.vault_pubkey
+                            AND policy.delegated_signer = swap_policy.delegated_signer
+                            AND policy.active = TRUE
+                            AND policy.start_eligible = TRUE
+                            AND policy.source_commitment = 'finalized'
+                            AND policy.last_mutation IN ('create', 'update')
+                            AND policy.max_slippage_bps = swap_policy.max_slippage_bps
+                            AND policy.daily_source_mint_spending_cap =
+                                swap_policy.daily_source_mint_spending_cap
+                            AND EXISTS (
+                                SELECT 1
+                                FROM loyal_yield.cross_mint_vault_opt_ins opt_in
+                                WHERE opt_in.enabled = TRUE
+                                  AND opt_in.cluster = policy.cluster
+                                  AND opt_in.settings = policy.settings
+                                  AND opt_in.vault_index = policy.vault_index
+                                  AND opt_in.vault_pubkey = policy.vault_pubkey
+                                  AND CASE policy.source_shard
+                                      WHEN 'classic' THEN
+                                          opt_in.classic_policy_account = policy.policy_account
+                                          AND opt_in.classic_policy_seed = policy.policy_seed
+                                      WHEN 'token_2022' THEN
+                                          opt_in.token_2022_policy_account = policy.policy_account
+                                          AND opt_in.token_2022_policy_seed = policy.policy_seed
+                                      ELSE FALSE
+                                  END
+                            )
+                      )
+                      ), '[]'::JSONB) AS cross_mint_swap_policies
             FROM loyal_yield.managed_vaults v
             JOIN loyal_yield.route_policies p ON p.id = v.active_policy_id
             WHERE v.active = TRUE
@@ -3215,6 +3271,14 @@ fn cross_mint_policy_selection<'a>(
     {
         return None;
     }
+    let configured_slippage_bps = policies[0].max_slippage_bps;
+    let configured_daily_cap = policies[0].daily_source_mint_spending_cap;
+    if policies.iter().any(|policy| {
+        policy.max_slippage_bps != configured_slippage_bps
+            || policy.daily_source_mint_spending_cap != configured_daily_cap
+    }) {
+        return None;
+    }
     policies
         .into_iter()
         .find(|policy| policy.source_shard == required_shard)
@@ -3489,8 +3553,6 @@ mod tests {
     fn complete_swap_policies() -> Vec<CrossMintSwapPolicyEvidence> {
         let classic = swap_policy("classic", "classic-policy");
         let mut token_2022 = swap_policy("token_2022", "token-2022-policy");
-        token_2022.max_slippage_bps = 75;
-        token_2022.daily_source_mint_spending_cap = 2_000_000_000;
         token_2022.manifest_fingerprint = "b".repeat(64);
         token_2022.last_seen_slot = 110;
         token_2022.last_seen_signature = "token-2022-signature".to_owned();
@@ -3664,6 +3726,29 @@ mod tests {
         half_removed[1].active = false;
         assert!(cross_mint_policy_selection(
             &source_row(&source.mint.to_string(), half_removed),
+            "mainnet-beta",
+            &target.mint.to_string()
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn generalized_manifest_mismatched_risk_settings_fail_closed() {
+        let source = &earn_stablecoins()[0];
+        let target = &earn_stablecoins()[1];
+        let mut policies = complete_swap_policies();
+        policies[1].max_slippage_bps = 75;
+        assert!(cross_mint_policy_selection(
+            &source_row(&source.mint.to_string(), policies),
+            "mainnet-beta",
+            &target.mint.to_string()
+        )
+        .is_none());
+
+        let mut policies = complete_swap_policies();
+        policies[1].daily_source_mint_spending_cap += 1;
+        assert!(cross_mint_policy_selection(
+            &source_row(&source.mint.to_string(), policies),
             "mainnet-beta",
             &target.mint.to_string()
         )

@@ -580,6 +580,24 @@ impl NeonSqlClient {
                    AND sibling.source_commitment = 'finalized'
                    AND sibling.last_mutation IN ('create', 'update')
              )
+            JOIN loyal_yield.cross_mint_vault_opt_ins opt_in
+              ON opt_in.enabled = TRUE
+             AND opt_in.cluster = swap_policy.cluster
+             AND opt_in.settings = swap_policy.settings
+             AND opt_in.vault_index = swap_policy.vault_index
+             AND opt_in.vault_pubkey = swap_policy.vault_pubkey
+             AND CASE swap_policy.source_shard
+                 WHEN 'classic' THEN
+                     opt_in.classic_policy_account = swap_policy.policy_account
+                     AND opt_in.classic_policy_seed = swap_policy.policy_seed
+                 WHEN 'token_2022' THEN
+                     opt_in.token_2022_policy_account = swap_policy.policy_account
+                     AND opt_in.token_2022_policy_seed = swap_policy.policy_seed
+                 ELSE FALSE
+             END
+             AND opt_in.max_slippage_bps = swap_policy.max_slippage_bps
+             AND opt_in.daily_source_mint_spending_cap =
+                 swap_policy.daily_source_mint_spending_cap
             JOIN loyal_yield.cross_mint_swap_policies sibling_policy
               ON sibling_policy.cluster = swap_policy.cluster
              AND sibling_policy.settings = swap_policy.settings
@@ -593,6 +611,18 @@ impl NeonSqlClient {
              AND sibling_policy.start_eligible
              AND sibling_policy.source_commitment = 'finalized'
              AND sibling_policy.last_mutation IN ('create', 'update')
+             AND sibling_policy.max_slippage_bps = swap_policy.max_slippage_bps
+             AND sibling_policy.daily_source_mint_spending_cap =
+                 swap_policy.daily_source_mint_spending_cap
+             AND CASE sibling_policy.source_shard
+                 WHEN 'classic' THEN
+                     opt_in.classic_policy_account = sibling_policy.policy_account
+                     AND opt_in.classic_policy_seed = sibling_policy.policy_seed
+                 WHEN 'token_2022' THEN
+                     opt_in.token_2022_policy_account = sibling_policy.policy_account
+                     AND opt_in.token_2022_policy_seed = sibling_policy.policy_seed
+                 ELSE FALSE
+             END
              AND 2 = (
                  SELECT count(DISTINCT sibling.source_shard)
                  FROM loyal_yield.cross_mint_swap_policies sibling
@@ -606,6 +636,9 @@ impl NeonSqlClient {
                    AND sibling.start_eligible
                    AND sibling.source_commitment = 'finalized'
                    AND sibling.last_mutation IN ('create', 'update')
+                   AND sibling.max_slippage_bps = swap_policy.max_slippage_bps
+                   AND sibling.daily_source_mint_spending_cap =
+                       swap_policy.daily_source_mint_spending_cap
              )
             WHERE opportunity.id = $1
               AND opportunity.opportunity_state = 'leased'
@@ -618,7 +651,7 @@ impl NeonSqlClient {
                     <> opportunity.target_liquidity_mint
               AND opportunity.execution_plan ->> 'kind' = 'cross_mint_jupiter'
             FOR UPDATE OF opportunity, vault, withdraw_policy, deposit_policy,
-                swap_policy, sibling_policy
+                swap_policy, sibling_policy, opt_in
             "#,
         )
         .bind(opportunity_lease.opportunity.id)
@@ -642,7 +675,7 @@ impl NeonSqlClient {
         .await?
         .ok_or_else(|| {
             OrchestratorError::StoreInvariant(
-                "cross-mint reserve-source opportunity is stale, mismatched, or fenced".to_owned(),
+                "cross-mint reserve-source opportunity lost an opted-in finalized policy binding, is mismatched, or was fenced".to_owned(),
             )
         })?;
         let vault_id: i64 = opportunity.try_get("vault_id")?;
@@ -2448,6 +2481,24 @@ async fn validate_initial_cross_mint_policy_bindings(
                AND sibling.source_commitment = 'finalized'
                AND sibling.last_mutation IN ('create', 'update')
          )
+        JOIN loyal_yield.cross_mint_vault_opt_ins opt_in
+          ON opt_in.enabled = TRUE
+         AND opt_in.cluster = swap_policy.cluster
+         AND opt_in.settings = swap_policy.settings
+         AND opt_in.vault_index = swap_policy.vault_index
+         AND opt_in.vault_pubkey = swap_policy.vault_pubkey
+         AND CASE swap_policy.source_shard
+             WHEN 'classic' THEN
+                 opt_in.classic_policy_account = swap_policy.policy_account
+                 AND opt_in.classic_policy_seed = swap_policy.policy_seed
+             WHEN 'token_2022' THEN
+                 opt_in.token_2022_policy_account = swap_policy.policy_account
+                 AND opt_in.token_2022_policy_seed = swap_policy.policy_seed
+             ELSE FALSE
+         END
+         AND opt_in.max_slippage_bps = swap_policy.max_slippage_bps
+         AND opt_in.daily_source_mint_spending_cap =
+             swap_policy.daily_source_mint_spending_cap
         JOIN loyal_yield.cross_mint_swap_policies sibling_policy
           ON sibling_policy.cluster = swap_policy.cluster
          AND sibling_policy.settings = swap_policy.settings
@@ -2461,6 +2512,18 @@ async fn validate_initial_cross_mint_policy_bindings(
          AND sibling_policy.start_eligible
          AND sibling_policy.source_commitment = 'finalized'
          AND sibling_policy.last_mutation IN ('create', 'update')
+         AND sibling_policy.max_slippage_bps = swap_policy.max_slippage_bps
+         AND sibling_policy.daily_source_mint_spending_cap =
+             swap_policy.daily_source_mint_spending_cap
+         AND CASE sibling_policy.source_shard
+             WHEN 'classic' THEN
+                 opt_in.classic_policy_account = sibling_policy.policy_account
+                 AND opt_in.classic_policy_seed = sibling_policy.policy_seed
+             WHEN 'token_2022' THEN
+                 opt_in.token_2022_policy_account = sibling_policy.policy_account
+                 AND opt_in.token_2022_policy_seed = sibling_policy.policy_seed
+             ELSE FALSE
+         END
          AND 2 = (
              SELECT count(DISTINCT sibling.source_shard)
              FROM loyal_yield.cross_mint_swap_policies sibling
@@ -2474,6 +2537,9 @@ async fn validate_initial_cross_mint_policy_bindings(
                AND sibling.start_eligible
                AND sibling.source_commitment = 'finalized'
                AND sibling.last_mutation IN ('create', 'update')
+               AND sibling.max_slippage_bps = swap_policy.max_slippage_bps
+               AND sibling.daily_source_mint_spending_cap =
+                   swap_policy.daily_source_mint_spending_cap
          )
         WHERE withdraw_policy.cluster = $1
           AND withdraw_policy.settings = $2
@@ -2489,7 +2555,7 @@ async fn validate_initial_cross_mint_policy_bindings(
           AND 'same_mint_kamino' = ANY(withdraw_policy.route_modes)
           AND $7 = ANY(withdraw_policy.stable_mints)
           AND $7 = ANY(withdraw_policy.kamino_liquidity_mints)
-        FOR SHARE OF withdraw_policy, deposit_policy, swap_policy, sibling_policy
+        FOR SHARE OF withdraw_policy, deposit_policy, swap_policy, sibling_policy, opt_in
         "#,
     )
     .bind(&movement.cluster)

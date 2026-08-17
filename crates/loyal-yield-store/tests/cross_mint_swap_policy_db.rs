@@ -1,6 +1,6 @@
 use loyal_yield_store::{
-    CrossMintSwapPolicyLookup, CrossMintSwapPolicyManifestInput, NeonSqlClient, NeonSqlConfig,
-    PolicyRemovalInput,
+    CrossMintSwapPolicyLookup, CrossMintSwapPolicyManifestInput, CrossMintVaultOptInLookup,
+    CrossMintVaultOptInUpsert, NeonSqlClient, NeonSqlConfig, PolicyRemovalInput,
 };
 
 const DATABASE_URL_ENV: &str = "CROSS_MINT_STORE_TEST_DATABASE_URL";
@@ -59,7 +59,7 @@ async fn catalog(client: &NeonSqlClient, minimum_slot: u64) -> Vec<String> {
 }
 
 #[tokio::test]
-#[ignore = "requires CROSS_MINT_STORE_TEST_DATABASE_URL pointing at a throwaway database with migrations 0001-0036 applied"]
+#[ignore = "requires CROSS_MINT_STORE_TEST_DATABASE_URL pointing at a throwaway database with migrations 0001-0037 applied"]
 async fn one_row_policy_catalog_is_finality_and_ambiguity_safe() {
     let database_url = match std::env::var(DATABASE_URL_ENV) {
         Ok(value) => value,
@@ -268,4 +268,149 @@ async fn one_row_policy_catalog_is_finality_and_ambiguity_safe() {
     .await
     .expect("count one-row policy catalog");
     assert_eq!(row_count, 5);
+}
+
+#[tokio::test]
+#[ignore = "requires CROSS_MINT_STORE_TEST_DATABASE_URL pointing at a throwaway database with migrations 0001-0037 applied"]
+async fn per_vault_opt_in_is_immutable_and_disable_is_committed() {
+    let database_url = match std::env::var(DATABASE_URL_ENV) {
+        Ok(value) => value,
+        Err(_) => {
+            eprintln!("skipping: {DATABASE_URL_ENV} is not set");
+            return;
+        }
+    };
+    let client = NeonSqlClient::connect(NeonSqlConfig::new(database_url))
+        .await
+        .expect("connect to throwaway opt-in database");
+    client
+        .apply_migrations()
+        .await
+        .expect("apply the undeployed store migrations");
+
+    let database_name: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(client.pool())
+        .await
+        .expect("read test database name");
+    assert!(
+        database_name.contains("cross_mint_store_test"),
+        "refusing to mutate database {database_name:?}"
+    );
+
+    let lookup = CrossMintVaultOptInLookup {
+        cluster: "cross-mint-opt-in-db-test".to_owned(),
+        settings: "opt-in-settings".to_owned(),
+        vault_index: 1,
+        vault_pubkey: "opt-in-vault".to_owned(),
+    };
+    assert!(client
+        .load_cross_mint_vault_opt_in(lookup.clone())
+        .await
+        .expect("read absent opt-in")
+        .is_none());
+
+    let created = client
+        .upsert_cross_mint_vault_opt_in(CrossMintVaultOptInUpsert {
+            cluster: lookup.cluster.clone(),
+            settings: lookup.settings.clone(),
+            vault_index: lookup.vault_index,
+            vault_pubkey: lookup.vault_pubkey.clone(),
+            enabled: true,
+            classic_policy_account: "opt-in-classic-policy".to_owned(),
+            classic_policy_seed: 11,
+            token_2022_policy_account: "opt-in-token-2022-policy".to_owned(),
+            token_2022_policy_seed: 12,
+            max_slippage_bps: 50,
+            daily_source_mint_spending_cap: 1_000_000,
+        })
+        .await
+        .expect("create enabled opt-in");
+    assert!(created.enabled);
+    assert_eq!(created.generation, 1);
+
+    let disabled = client
+        .disable_cross_mint_vault_opt_in(lookup.clone(), created.generation)
+        .await
+        .expect("disable opt-in in a committed transaction")
+        .expect("existing opt-in is returned");
+    assert!(!disabled.enabled);
+    assert_eq!(disabled.generation, 2);
+    let duplicate_disable = client
+        .disable_cross_mint_vault_opt_in(lookup.clone(), created.generation)
+        .await
+        .expect("an idempotent stale retry returns the committed pause")
+        .expect("paused opt-in is returned");
+    assert_eq!(duplicate_disable.generation, disabled.generation);
+    assert!(
+        !client
+            .load_cross_mint_vault_opt_in(lookup.clone())
+            .await
+            .expect("read committed disable")
+            .expect("disabled opt-in remains durable")
+            .enabled
+    );
+
+    let enabled = client
+        .enable_cross_mint_vault_opt_in(lookup.clone(), disabled.generation)
+        .await
+        .expect("enable opt-in in a committed transaction")
+        .expect("existing opt-in is returned");
+    assert!(enabled.enabled);
+    assert_eq!(enabled.generation, 3);
+    let stale_pause_error = client
+        .disable_cross_mint_vault_opt_in(lookup.clone(), created.generation)
+        .await
+        .expect_err("a stale pause cannot overwrite the resumed state");
+    assert!(stale_pause_error
+        .to_string()
+        .contains("generation changed before transition"));
+
+    let replayed_setup = client
+        .upsert_cross_mint_vault_opt_in(CrossMintVaultOptInUpsert {
+            cluster: lookup.cluster.clone(),
+            settings: lookup.settings.clone(),
+            vault_index: lookup.vault_index,
+            vault_pubkey: lookup.vault_pubkey.clone(),
+            enabled: false,
+            classic_policy_account: "opt-in-classic-policy".to_owned(),
+            classic_policy_seed: 11,
+            token_2022_policy_account: "opt-in-token-2022-policy".to_owned(),
+            token_2022_policy_seed: 12,
+            max_slippage_bps: 50,
+            daily_source_mint_spending_cap: 1_000_000,
+        })
+        .await
+        .expect("setup confirmation replay is idempotent");
+    assert!(replayed_setup.enabled);
+    assert_eq!(replayed_setup.generation, enabled.generation);
+
+    let immutable_error = client
+        .upsert_cross_mint_vault_opt_in(CrossMintVaultOptInUpsert {
+            cluster: lookup.cluster.clone(),
+            settings: lookup.settings.clone(),
+            vault_index: lookup.vault_index,
+            vault_pubkey: lookup.vault_pubkey.clone(),
+            enabled: true,
+            classic_policy_account: "opt-in-classic-policy".to_owned(),
+            classic_policy_seed: 11,
+            token_2022_policy_account: "opt-in-token-2022-policy".to_owned(),
+            token_2022_policy_seed: 12,
+            max_slippage_bps: 50,
+            daily_source_mint_spending_cap: 2_000_000,
+        })
+        .await
+        .expect_err("a changed risk envelope requires remove and recreate");
+    assert!(immutable_error
+        .to_string()
+        .contains("risk configuration cannot change"));
+
+    let persisted = client
+        .load_cross_mint_vault_opt_in(lookup)
+        .await
+        .expect("read unchanged opt-in")
+        .expect("opt-in remains durable after rejected update");
+    assert!(persisted.enabled);
+    assert_eq!(persisted.max_slippage_bps, 50);
+    assert_eq!(persisted.daily_source_mint_spending_cap, 1_000_000);
+    assert_eq!(persisted.generation, 3);
 }

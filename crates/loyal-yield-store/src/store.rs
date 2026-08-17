@@ -33,6 +33,7 @@ const MIGRATION_0012: &str =
     include_str!("../migrations/0012_idle_vault_decision_plan_guardrails.sql");
 const MIGRATION_0035: &str = include_str!("../migrations/0035_durable_cross_mint_movements.sql");
 const MIGRATION_0036: &str = include_str!("../migrations/0036_cross_mint_swap_policies.sql");
+const MIGRATION_0037: &str = include_str!("../migrations/0037_cross_mint_vault_opt_ins.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -123,6 +124,24 @@ struct CrossMintSwapPolicyRow {
     last_seen_at: DateTime<Utc>,
     last_seen_slot: i64,
     last_seen_signature: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct CrossMintVaultOptInRow {
+    cluster: String,
+    settings: String,
+    vault_index: i16,
+    vault_pubkey: String,
+    enabled: bool,
+    classic_policy_account: String,
+    classic_policy_seed: i64,
+    token_2022_policy_account: String,
+    token_2022_policy_seed: i64,
+    max_slippage_bps: i32,
+    daily_source_mint_spending_cap: i64,
+    generation: i64,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -378,6 +397,12 @@ impl NeonSqlClient {
                 version: 36,
                 name: "cross_mint_swap_policies",
                 sql: MIGRATION_0036,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 37,
+                name: "cross_mint_vault_opt_ins",
+                sql: MIGRATION_0037,
                 expected_checksum: None,
             },
         ] {
@@ -679,6 +704,246 @@ impl NeonSqlClient {
         rows.into_iter()
             .map(cross_mint_swap_policy_from_row)
             .collect()
+    }
+
+    pub async fn load_cross_mint_vault_opt_in(
+        &self,
+        lookup: CrossMintVaultOptInLookup,
+    ) -> Result<Option<CrossMintVaultOptIn>, OrchestratorError> {
+        validate_cross_mint_vault_opt_in_lookup(&lookup)?;
+        let row = sqlx::query_as::<_, CrossMintVaultOptInRow>(
+            r#"
+            SELECT cluster, settings, vault_index, vault_pubkey, enabled,
+                   classic_policy_account, classic_policy_seed,
+                   token_2022_policy_account, token_2022_policy_seed,
+                   max_slippage_bps, daily_source_mint_spending_cap,
+                   generation, created_at, updated_at
+            FROM loyal_yield.cross_mint_vault_opt_ins
+            WHERE cluster = $1
+              AND settings = $2
+              AND vault_index = $3
+              AND vault_pubkey = $4
+            "#,
+        )
+        .bind(&lookup.cluster)
+        .bind(&lookup.settings)
+        .bind(i16::from(lookup.vault_index))
+        .bind(&lookup.vault_pubkey)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(cross_mint_vault_opt_in_from_row).transpose()
+    }
+
+    /// Records a finalized enrollment. Replaying setup confirmation returns
+    /// the existing row without changing user intent or its generation. The
+    /// exact policy pair and risk envelope are immutable for the row's lifetime.
+    pub async fn upsert_cross_mint_vault_opt_in(
+        &self,
+        input: CrossMintVaultOptInUpsert,
+    ) -> Result<CrossMintVaultOptIn, OrchestratorError> {
+        validate_cross_mint_vault_opt_in_upsert(&input)?;
+        let daily_cap = to_i64_cross_mint_cap(input.daily_source_mint_spending_cap)?;
+        let mut tx = self.pool.begin().await?;
+        let lock_key = format!(
+            "cross-mint-vault-opt-in:{}:{}:{}:{}",
+            input.cluster, input.settings, input.vault_index, input.vault_pubkey
+        );
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0::bigint))")
+            .bind(&lock_key)
+            .execute(&mut *tx)
+            .await?;
+        let current = sqlx::query_as::<_, CrossMintVaultOptInRow>(
+            r#"
+            SELECT cluster, settings, vault_index, vault_pubkey, enabled,
+                   classic_policy_account, classic_policy_seed,
+                   token_2022_policy_account, token_2022_policy_seed,
+                   max_slippage_bps, daily_source_mint_spending_cap,
+                   generation, created_at, updated_at
+            FROM loyal_yield.cross_mint_vault_opt_ins
+            WHERE cluster = $1
+              AND settings = $2
+              AND vault_index = $3
+              AND vault_pubkey = $4
+            FOR UPDATE
+            "#,
+        )
+        .bind(&input.cluster)
+        .bind(&input.settings)
+        .bind(i16::from(input.vault_index))
+        .bind(&input.vault_pubkey)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let row = match current {
+            Some(current) => {
+                if current.max_slippage_bps != i32::from(input.max_slippage_bps)
+                    || current.daily_source_mint_spending_cap != daily_cap
+                    || current.classic_policy_account != input.classic_policy_account
+                    || current.classic_policy_seed
+                        != i64::try_from(input.classic_policy_seed).map_err(|_| {
+                            OrchestratorError::StoreInvariant(
+                                "cross-mint classic policy seed exceeds PostgreSQL BIGINT"
+                                    .to_owned(),
+                            )
+                        })?
+                    || current.token_2022_policy_account != input.token_2022_policy_account
+                    || current.token_2022_policy_seed
+                        != i64::try_from(input.token_2022_policy_seed).map_err(|_| {
+                            OrchestratorError::StoreInvariant(
+                                "cross-mint Token-2022 policy seed exceeds PostgreSQL BIGINT"
+                                    .to_owned(),
+                            )
+                        })?
+                {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "cross-mint opt-in policy identity and risk configuration cannot change; remove and recreate the enrollment".to_owned(),
+                    ));
+                }
+                current
+            }
+            None => {
+                let classic_policy_seed =
+                    i64::try_from(input.classic_policy_seed).map_err(|_| {
+                        OrchestratorError::StoreInvariant(
+                            "cross-mint classic policy seed exceeds PostgreSQL BIGINT".to_owned(),
+                        )
+                    })?;
+                let token_2022_policy_seed =
+                    i64::try_from(input.token_2022_policy_seed).map_err(|_| {
+                        OrchestratorError::StoreInvariant(
+                            "cross-mint Token-2022 policy seed exceeds PostgreSQL BIGINT"
+                                .to_owned(),
+                        )
+                    })?;
+                sqlx::query_as::<_, CrossMintVaultOptInRow>(
+                    r#"
+                INSERT INTO loyal_yield.cross_mint_vault_opt_ins
+                    (cluster, settings, vault_index, vault_pubkey, enabled,
+                     classic_policy_account, classic_policy_seed,
+                     token_2022_policy_account, token_2022_policy_seed,
+                     max_slippage_bps, daily_source_mint_spending_cap)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                RETURNING cluster, settings, vault_index, vault_pubkey, enabled,
+                          classic_policy_account, classic_policy_seed,
+                          token_2022_policy_account, token_2022_policy_seed,
+                          max_slippage_bps, daily_source_mint_spending_cap,
+                          generation, created_at, updated_at
+                "#,
+                )
+                .bind(&input.cluster)
+                .bind(&input.settings)
+                .bind(i16::from(input.vault_index))
+                .bind(&input.vault_pubkey)
+                .bind(input.enabled)
+                .bind(&input.classic_policy_account)
+                .bind(classic_policy_seed)
+                .bind(&input.token_2022_policy_account)
+                .bind(token_2022_policy_seed)
+                .bind(i32::from(input.max_slippage_bps))
+                .bind(daily_cap)
+                .fetch_one(&mut *tx)
+                .await?
+            }
+        };
+        tx.commit().await?;
+        cross_mint_vault_opt_in_from_row(row)
+    }
+
+    /// Disables new cross-mint starts in its own committed transaction. Callers
+    /// must await this method before beginning on-chain policy removal.
+    pub async fn disable_cross_mint_vault_opt_in(
+        &self,
+        lookup: CrossMintVaultOptInLookup,
+        expected_generation: i64,
+    ) -> Result<Option<CrossMintVaultOptIn>, OrchestratorError> {
+        self.set_cross_mint_vault_opt_in_enabled(lookup, false, expected_generation)
+            .await
+    }
+
+    pub async fn enable_cross_mint_vault_opt_in(
+        &self,
+        lookup: CrossMintVaultOptInLookup,
+        expected_generation: i64,
+    ) -> Result<Option<CrossMintVaultOptIn>, OrchestratorError> {
+        self.set_cross_mint_vault_opt_in_enabled(lookup, true, expected_generation)
+            .await
+    }
+
+    async fn set_cross_mint_vault_opt_in_enabled(
+        &self,
+        lookup: CrossMintVaultOptInLookup,
+        enabled: bool,
+        expected_generation: i64,
+    ) -> Result<Option<CrossMintVaultOptIn>, OrchestratorError> {
+        validate_cross_mint_vault_opt_in_lookup(&lookup)?;
+        if expected_generation <= 0 {
+            return Err(OrchestratorError::StoreInvariant(
+                "cross-mint opt-in transition requires a positive expected generation".to_owned(),
+            ));
+        }
+        let mut tx = self.pool.begin().await?;
+        let current = sqlx::query_as::<_, CrossMintVaultOptInRow>(
+            r#"
+            SELECT cluster, settings, vault_index, vault_pubkey, enabled,
+                   classic_policy_account, classic_policy_seed,
+                   token_2022_policy_account, token_2022_policy_seed,
+                   max_slippage_bps, daily_source_mint_spending_cap,
+                   generation, created_at, updated_at
+            FROM loyal_yield.cross_mint_vault_opt_ins
+            WHERE cluster = $1
+              AND settings = $2
+              AND vault_index = $3
+              AND vault_pubkey = $4
+            FOR UPDATE
+            "#,
+        )
+        .bind(&lookup.cluster)
+        .bind(&lookup.settings)
+        .bind(i16::from(lookup.vault_index))
+        .bind(&lookup.vault_pubkey)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(current) = current else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        if current.enabled == enabled {
+            tx.commit().await?;
+            return cross_mint_vault_opt_in_from_row(current).map(Some);
+        }
+        if current.generation != expected_generation {
+            return Err(OrchestratorError::StoreInvariant(
+                "cross-mint opt-in generation changed before transition".to_owned(),
+            ));
+        }
+        let row = sqlx::query_as::<_, CrossMintVaultOptInRow>(
+            r#"
+            UPDATE loyal_yield.cross_mint_vault_opt_ins
+            SET enabled = $5,
+                generation = generation + 1,
+                updated_at = now()
+            WHERE cluster = $1
+              AND settings = $2
+              AND vault_index = $3
+              AND vault_pubkey = $4
+              AND generation = $6
+            RETURNING cluster, settings, vault_index, vault_pubkey, enabled,
+                      classic_policy_account, classic_policy_seed,
+                      token_2022_policy_account, token_2022_policy_seed,
+                      max_slippage_bps, daily_source_mint_spending_cap,
+                      generation, created_at, updated_at
+            "#,
+        )
+        .bind(&lookup.cluster)
+        .bind(&lookup.settings)
+        .bind(i16::from(lookup.vault_index))
+        .bind(&lookup.vault_pubkey)
+        .bind(enabled)
+        .bind(expected_generation)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        cross_mint_vault_opt_in_from_row(row).map(Some)
     }
 
     pub async fn record_policy_removal(
@@ -2791,6 +3056,59 @@ fn validate_cross_mint_swap_policy_manifest_input(
     }
 
     Ok(())
+}
+
+fn validate_cross_mint_vault_opt_in_lookup(
+    lookup: &CrossMintVaultOptInLookup,
+) -> Result<(), OrchestratorError> {
+    if lookup.cluster.trim().is_empty()
+        || lookup.settings.trim().is_empty()
+        || lookup.vault_pubkey.trim().is_empty()
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "cross-mint opt-in identity fields must be non-empty".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_cross_mint_vault_opt_in_upsert(
+    input: &CrossMintVaultOptInUpsert,
+) -> Result<(), OrchestratorError> {
+    validate_cross_mint_vault_opt_in_lookup(&CrossMintVaultOptInLookup {
+        cluster: input.cluster.clone(),
+        settings: input.settings.clone(),
+        vault_index: input.vault_index,
+        vault_pubkey: input.vault_pubkey.clone(),
+    })?;
+    if input.classic_policy_account.trim().is_empty()
+        || input.token_2022_policy_account.trim().is_empty()
+        || input.classic_policy_account == input.token_2022_policy_account
+        || input.classic_policy_seed == 0
+        || input.token_2022_policy_seed == 0
+        || input.classic_policy_seed == input.token_2022_policy_seed
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "cross-mint opt-in requires two distinct policy accounts and seeds".to_owned(),
+        ));
+    }
+    if input.max_slippage_bps == 0
+        || input.max_slippage_bps > 10_000
+        || input.daily_source_mint_spending_cap == 0
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "cross-mint opt-in has an invalid slippage or daily spending cap".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn to_i64_cross_mint_cap(value: u64) -> Result<i64, OrchestratorError> {
+    i64::try_from(value).map_err(|_| {
+        OrchestratorError::StoreInvariant(
+            "cross-mint opt-in daily spending cap exceeds PostgreSQL BIGINT".to_owned(),
+        )
+    })
 }
 
 fn commitment_rank(commitment: &str) -> Result<u8, OrchestratorError> {
@@ -5157,6 +5475,36 @@ fn cross_mint_swap_policy_from_row(
         last_seen_at: row.last_seen_at,
         last_seen_slot: row.last_seen_slot,
         last_seen_signature: row.last_seen_signature,
+    })
+}
+
+fn cross_mint_vault_opt_in_from_row(
+    row: CrossMintVaultOptInRow,
+) -> Result<CrossMintVaultOptIn, OrchestratorError> {
+    if row.vault_index < 0
+        || row.generation <= 0
+        || row.classic_policy_seed <= 0
+        || row.token_2022_policy_seed <= 0
+    {
+        return Err(OrchestratorError::StoreInvariant(
+            "cross-mint opt-in row has an invalid vault index or generation".to_owned(),
+        ));
+    }
+    Ok(CrossMintVaultOptIn {
+        cluster: row.cluster,
+        settings: row.settings,
+        vault_index: row.vault_index,
+        vault_pubkey: row.vault_pubkey,
+        enabled: row.enabled,
+        classic_policy_account: row.classic_policy_account,
+        classic_policy_seed: row.classic_policy_seed,
+        token_2022_policy_account: row.token_2022_policy_account,
+        token_2022_policy_seed: row.token_2022_policy_seed,
+        max_slippage_bps: row.max_slippage_bps,
+        daily_source_mint_spending_cap: row.daily_source_mint_spending_cap,
+        generation: row.generation,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
     })
 }
 

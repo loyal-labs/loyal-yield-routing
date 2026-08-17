@@ -201,12 +201,13 @@ async function verifyDatabase(): Promise<void> {
   const migrations = await sql`
     SELECT version, name
     FROM loyal_yield.schema_migrations
-    WHERE version IN (35, 36)
+    WHERE version IN (35, 36, 37)
     ORDER BY version
   `;
-  equal(migrations.length, 2, "production cross-mint migrations");
+  equal(migrations.length, 3, "production cross-mint migrations");
   equal(migrations[0]?.name, "durable_cross_mint_movements", "migration 35");
   equal(migrations[1]?.name, "cross_mint_swap_policies", "migration 36");
+  equal(migrations[2]?.name, "cross_mint_vault_opt_ins", "migration 37");
 
   const [gate] = await sql`
     SELECT start_new_movements, continue_or_recover_existing
@@ -241,8 +242,14 @@ async function verifyDatabase(): Promise<void> {
   `;
   equal(String(movements?.active_count), "0", "active cross-mint movement count");
 
+  const [enrollments] = await sql`
+    SELECT count(*)::BIGINT AS enrollment_count
+    FROM loyal_yield.cross_mint_vault_opt_ins
+    WHERE cluster = 'mainnet-beta'
+  `;
+
   console.log(
-    `production_database=PASS activeEarnPolicies=${policies?.active_count} activeCrossMintMovements=0 startNewMovements=false`,
+    `production_database=PASS activeEarnPolicies=${policies?.active_count} autoswapEnrollments=${enrollments?.enrollment_count} activeCrossMintMovements=0 startNewMovements=false`,
   );
 }
 

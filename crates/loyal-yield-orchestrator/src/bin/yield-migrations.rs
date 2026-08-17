@@ -225,6 +225,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0036_cross_mint_swap_policies.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 37,
+        name: "cross_mint_vault_opt_ins",
+        sql: include_str!("../../../loyal-yield-store/migrations/0037_cross_mint_vault_opt_ins.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

@@ -3,7 +3,7 @@ use sqlx::{postgres::PgPoolOptions, Row};
 const DATABASE_URL_ENV: &str = "CROSS_MINT_STORE_TEST_DATABASE_URL";
 
 #[tokio::test]
-#[ignore = "requires CROSS_MINT_STORE_TEST_DATABASE_URL pointing at a throwaway database with migrations 0001-0036 applied"]
+#[ignore = "requires CROSS_MINT_STORE_TEST_DATABASE_URL pointing at a throwaway database with migrations 0001-0037 applied"]
 async fn finalized_effects_drive_custody_parent_and_capacity_lifecycle() {
     let database_url = match std::env::var(DATABASE_URL_ENV) {
         Ok(value) => value,
