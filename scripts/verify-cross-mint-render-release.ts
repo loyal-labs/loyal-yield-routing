@@ -29,6 +29,8 @@ type RenderEnvVar = { key: string; value?: string };
 const API_BASE = "https://api.render.com/v1";
 const PRODUCTION_ENVIRONMENT_ID = "evm-d8kgt4r7uimc73b1ul1g";
 const PREDEPLOY = "/usr/local/bin/yield-migrations --apply";
+const ENABLED_STABLE_MINTS =
+  "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH,2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH,2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB,USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA";
 
 const services = [
   {
@@ -43,6 +45,7 @@ const services = [
       "/usr/local/bin/fleet-opportunity-planner --json --poll-interval-seconds 1 --full-sweep-interval-seconds 30 --dirty-batch-size 256 --max-opportunities-per-wave 128",
     env: {
       EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER: "true",
+      EARN_ROUTER_ENABLED_STABLE_MINTS: ENABLED_STABLE_MINTS,
       EARN_ROUTER_CROSS_MINT_MAX_VALUE_LOSS_BPS: "50",
     },
   },
@@ -59,6 +62,7 @@ const services = [
     env: {
       JUPITER_API_KEY: null,
       EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER: "true",
+      EARN_ROUTER_ENABLED_STABLE_MINTS: ENABLED_STABLE_MINTS,
       EARN_ROUTER_CROSS_MINT_MAX_SLIPPAGE_BPS: "50",
       EARN_ROUTER_CROSS_MINT_MAX_VALUE_LOSS_BPS: "50",
     },
@@ -70,6 +74,7 @@ const services = [
     env: {
       JUPITER_API_KEY: null,
       EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER: "true",
+      EARN_ROUTER_ENABLED_STABLE_MINTS: ENABLED_STABLE_MINTS,
       EARN_ROUTER_CROSS_MINT_MAX_SLIPPAGE_BPS: "50",
       EARN_ROUTER_CROSS_MINT_MAX_VALUE_LOSS_BPS: "50",
     },
@@ -143,6 +148,12 @@ function equal(actual: unknown, expected: unknown, label: string): void {
   }
 }
 
+function canonicalMintSet(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const mints = value.split(",").map((mint) => mint.trim()).sort();
+  return new Set(mints).size === mints.length ? mints.join(",") : undefined;
+}
+
 async function verifyRender(expectedImage: string): Promise<void> {
   const listed = await renderFetch<unknown[]>("/services?limit=100");
   const liveServices = listed.map((entry) => unwrap<RenderService>(entry, "service"));
@@ -179,7 +190,13 @@ async function verifyRender(expectedImage: string): Promise<void> {
     const vars = await envVars(service.id);
     for (const [key, value] of Object.entries(expected.env)) {
       const actual = vars.get(key)?.value;
-      if (value === null ? !actual : actual !== value) {
+      const valid =
+        value === null
+          ? Boolean(actual)
+          : key === "EARN_ROUTER_ENABLED_STABLE_MINTS"
+            ? canonicalMintSet(actual) === canonicalMintSet(value)
+            : actual === value;
+      if (!valid) {
         throw new Error(`${expected.name} has invalid or missing ${key}`);
       }
     }

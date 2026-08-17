@@ -302,6 +302,8 @@ projects:
                 value: mainnet-beta
               - key: EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER
                 value: "true"
+              - key: EARN_ROUTER_ENABLED_STABLE_MINTS
+                value: CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH,2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH,2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB,USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA
               - key: EARN_ROUTER_CROSS_MINT_MAX_VALUE_LOSS_BPS
                 value: "50"
               - key: RUST_LOG
@@ -368,6 +370,8 @@ projects:
                 sync: false
               - key: EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER
                 value: "true"
+              - key: EARN_ROUTER_ENABLED_STABLE_MINTS
+                value: CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH,2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH,2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB,USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA
               - key: EARN_ROUTER_CROSS_MINT_MAX_SLIPPAGE_BPS
                 value: "50"
               - key: EARN_ROUTER_CROSS_MINT_MAX_VALUE_LOSS_BPS
@@ -411,6 +415,8 @@ projects:
                 sync: false
               - key: EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER
                 value: "true"
+              - key: EARN_ROUTER_ENABLED_STABLE_MINTS
+                value: CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH,2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH,2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB,USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA
               - key: EARN_ROUTER_CROSS_MINT_MAX_SLIPPAGE_BPS
                 value: "50"
               - key: EARN_ROUTER_CROSS_MINT_MAX_VALUE_LOSS_BPS

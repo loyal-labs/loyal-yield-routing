@@ -1993,20 +1993,35 @@ async fn prepare_jupiter_swap_leg(
         &opportunity.execution_plan,
         config.maximum_value_loss_bps,
     )?;
-    let (response, envelope) = fetch_value_loss_bounded_jupiter_build(
+    let minimum_required_output = minimum_economic_output(
+        u64::try_from(movement.custody_amount_raw)?,
+        effective_value_loss_bps,
+    )?
+    .max(minimum_profitable_target_amount(
+        &opportunity.execution_plan,
+        movement.custody_amount_raw,
+        current_source_apy_bps,
+        current_target_apy_bps,
+    )?);
+    let (response, envelope) = fetch_minimum_output_bounded_jupiter_build(
         config,
         input_mint,
         output_mint,
         u64::try_from(movement.custody_amount_raw)?,
         vault_pubkey,
         effective_slippage_bps,
-        effective_value_loss_bps,
+        minimum_required_output,
     )
     .await?;
     let minimum_output = envelope.other_amount_threshold.parse::<u64>()?;
     if envelope.slippage_bps > effective_slippage_bps {
         return Err("fresh Jupiter build fails post-withdraw economics".into());
     }
+    validate_signed_minimum_output_value_loss(
+        u64::try_from(movement.custody_amount_raw)?,
+        minimum_output,
+        effective_value_loss_bps,
+    )?;
     validate_post_withdraw_swap_economics(
         &opportunity.execution_plan,
         movement.custody_amount_raw,
@@ -2263,26 +2278,27 @@ fn minimum_economic_output(
     source_amount: u64,
     maximum_value_loss_bps: u16,
 ) -> Result<u64, Box<dyn Error>> {
+    let numerator = u128::from(source_amount)
+        .checked_mul(u128::from(10_000u16 - maximum_value_loss_bps))
+        .ok_or("maximum value-loss calculation overflowed")?;
     Ok(u64::try_from(
-        u128::from(source_amount)
-            .checked_mul(u128::from(10_000u16 - maximum_value_loss_bps))
-            .ok_or("maximum value-loss calculation overflowed")?
+        numerator
+            .checked_add(9_999)
+            .ok_or("maximum value-loss rounding overflowed")?
             / 10_000,
     )?)
 }
 
 fn tighter_jupiter_slippage_bps(
-    source_amount: u64,
     quoted_output: u64,
     requested_slippage_bps: u16,
-    maximum_value_loss_bps: u16,
+    minimum_required_output: u64,
 ) -> Result<u16, Box<dyn Error>> {
-    let minimum_output = minimum_economic_output(source_amount, maximum_value_loss_bps)?;
-    if quoted_output < minimum_output {
-        return Err("fresh Jupiter quoted output exceeds the maximum value loss".into());
+    if quoted_output < minimum_required_output {
+        return Err("fresh Jupiter quoted output is below the required economic minimum".into());
     }
     let available_bps = u16::try_from(
-        u128::from(quoted_output - minimum_output)
+        u128::from(quoted_output - minimum_required_output)
             .checked_mul(10_000)
             .ok_or("Jupiter residual slippage calculation overflowed")?
             / u128::from(quoted_output),
@@ -2329,14 +2345,14 @@ async fn fetch_jupiter_build(
     Ok(bytes.to_vec())
 }
 
-async fn fetch_value_loss_bounded_jupiter_build(
+async fn fetch_minimum_output_bounded_jupiter_build(
     config: &CrossMintWorkerConfig,
     input_mint: Pubkey,
     output_mint: Pubkey,
     amount: u64,
     taker: Pubkey,
     maximum_slippage_bps: u16,
-    maximum_value_loss_bps: u16,
+    minimum_required_output: u64,
 ) -> Result<(Vec<u8>, JupiterBuildEnvelope), Box<dyn Error>> {
     let response = fetch_jupiter_build(
         config,
@@ -2349,17 +2365,14 @@ async fn fetch_value_loss_bounded_jupiter_build(
     .await?;
     let envelope: JupiterBuildEnvelope = serde_json::from_slice(&response)?;
     let minimum_output = envelope.other_amount_threshold.parse::<u64>()?;
-    if validate_signed_minimum_output_value_loss(amount, minimum_output, maximum_value_loss_bps)
-        .is_ok()
-    {
+    if minimum_output >= minimum_required_output {
         return Ok((response, envelope));
     }
 
     let tightened_slippage_bps = tighter_jupiter_slippage_bps(
-        amount,
         envelope.out_amount.parse::<u64>()?,
         maximum_slippage_bps,
-        maximum_value_loss_bps,
+        minimum_required_output,
     )?;
     let response = fetch_jupiter_build(
         config,
@@ -2371,11 +2384,9 @@ async fn fetch_value_loss_bounded_jupiter_build(
     )
     .await?;
     let envelope: JupiterBuildEnvelope = serde_json::from_slice(&response)?;
-    validate_signed_minimum_output_value_loss(
-        amount,
-        envelope.other_amount_threshold.parse::<u64>()?,
-        maximum_value_loss_bps,
-    )?;
+    if envelope.other_amount_threshold.parse::<u64>()? < minimum_required_output {
+        return Err("signed Jupiter minimum output is below the required economic minimum".into());
+    }
     Ok((response, envelope))
 }
 
@@ -2492,6 +2503,15 @@ async fn certify_cross_mint_before_withdraw(
         &opportunity.execution_plan,
         config.maximum_value_loss_bps,
     )?;
+    let (current_source_apy_bps, current_target_apy_bps) =
+        current_post_withdraw_route_apys(runtime, opportunity).await?;
+    let minimum_required_output = minimum_economic_output(input_amount, effective_value_loss_bps)?
+        .max(minimum_profitable_target_amount(
+            &opportunity.execution_plan,
+            i64::try_from(input_amount)?,
+            current_source_apy_bps,
+            current_target_apy_bps,
+        )?);
     let minimum_policy_slot = bindings
         .withdraw
         .observed_slot
@@ -2518,14 +2538,14 @@ async fn certify_cross_mint_before_withdraw(
         output_mint,
         vault_pubkey,
     )?;
-    let (response, envelope) = fetch_value_loss_bounded_jupiter_build(
+    let (response, envelope) = fetch_minimum_output_bounded_jupiter_build(
         config,
         input_mint,
         output_mint,
         input_amount,
         vault_pubkey,
         effective_slippage_bps,
-        effective_value_loss_bps,
+        minimum_required_output,
     )
     .await?;
     let response_sha256 = format!("{:x}", Sha256::digest(&response));
@@ -2533,6 +2553,11 @@ async fn certify_cross_mint_before_withdraw(
     if envelope.slippage_bps > effective_slippage_bps {
         return Err("pre-withdraw Jupiter build exceeds effective slippage".into());
     }
+    validate_signed_minimum_output_value_loss(
+        input_amount,
+        minimum_output,
+        effective_value_loss_bps,
+    )?;
     let target_preview = load_chain_reconcile_preview_from_rpc(
         &rpc,
         &vault,
@@ -2566,8 +2591,6 @@ async fn certify_cross_mint_before_withdraw(
         )
         .into());
     }
-    let (current_source_apy_bps, current_target_apy_bps) =
-        current_post_withdraw_route_apys(runtime, opportunity).await?;
     validate_post_withdraw_swap_economics(
         &opportunity.execution_plan,
         i64::try_from(input_amount)?,
@@ -3211,6 +3234,47 @@ fn validate_post_withdraw_swap_economics(
     Ok(())
 }
 
+fn minimum_profitable_target_amount(
+    execution_plan: &Value,
+    source_amount_raw: i64,
+    source_apy_bps: i64,
+    target_apy_bps: i64,
+) -> Result<u64, Box<dyn Error>> {
+    let source_amount = u64::try_from(source_amount_raw)
+        .map_err(|_| "minimum profitable output requires a positive source amount")?;
+    if validate_post_withdraw_swap_economics(
+        execution_plan,
+        source_amount_raw,
+        source_amount_raw,
+        source_apy_bps,
+        target_apy_bps,
+    )
+    .is_err()
+    {
+        return Err("swap economics do not beat source recovery even at zero value loss".into());
+    }
+
+    let mut low = 1_u64;
+    let mut high = source_amount;
+    while low < high {
+        let midpoint = low + (high - low) / 2;
+        if validate_post_withdraw_swap_economics(
+            execution_plan,
+            source_amount_raw,
+            i64::try_from(midpoint)?,
+            source_apy_bps,
+            target_apy_bps,
+        )
+        .is_ok()
+        {
+            high = midpoint;
+        } else {
+            low = midpoint + 1;
+        }
+    }
+    Ok(low)
+}
+
 async fn cross_mint_capacity_reservation(
     runtime: &SameMintRouteRuntime,
     lease: &RebalanceOpportunityLease,
@@ -3589,7 +3653,8 @@ mod cross_mint_reconciliation_tests {
     fn jupiter_slippage_tightens_to_keep_the_signed_threshold_inside_total_loss() {
         let source_amount = 244_510_313;
         let quoted_output = 244_422_389;
-        let slippage = tighter_jupiter_slippage_bps(source_amount, quoted_output, 50, 50)
+        let minimum_output = minimum_economic_output(source_amount, 50).unwrap();
+        let slippage = tighter_jupiter_slippage_bps(quoted_output, 50, minimum_output)
             .expect("the live-sized quote leaves a positive residual slippage budget");
         assert_eq!(slippage, 45);
 
@@ -3601,8 +3666,8 @@ mod cross_mint_reconciliation_tests {
 
     #[test]
     fn jupiter_slippage_does_not_mask_a_quote_outside_total_loss() {
-        let error = tighter_jupiter_slippage_bps(1_000_000, 994_999, 50, 50).unwrap_err();
-        assert!(error.to_string().contains("quoted output"));
+        let error = tighter_jupiter_slippage_bps(994_999, 50, 995_000).unwrap_err();
+        assert!(error.to_string().contains("required economic minimum"));
     }
 
     #[test]
@@ -3931,5 +3996,38 @@ mod cross_mint_reconciliation_tests {
         let error =
             validate_post_withdraw_swap_economics(&plan, 1_000_000, 950_000, 100, 200).unwrap_err();
         assert!(error.to_string().contains("do not beat source recovery"));
+    }
+
+    #[test]
+    fn signed_threshold_tightens_to_both_user_loss_and_live_sized_route_economics() {
+        let plan = json!({
+            "holding_horizon_seconds": 30 * 24 * 60 * 60,
+            "estimated_execution_costs": {
+                "kind": "cross_mint_jupiter",
+                "withdraw_usd_micros": 100_000,
+                "jupiter_swap_usd_micros": 100_000,
+                "deposit_usd_micros": 100_000,
+            }
+        });
+        let source_amount = 244_510_313_u64;
+        let quoted_output = 244_422_389_u64;
+        let profitable =
+            minimum_profitable_target_amount(&plan, source_amount as i64, 397, 816).unwrap();
+        let required = profitable.max(minimum_economic_output(source_amount, 50).unwrap());
+        let slippage = tighter_jupiter_slippage_bps(quoted_output, 50, required).unwrap();
+        let signed_minimum =
+            u64::try_from(u128::from(quoted_output) * u128::from(10_000u16 - slippage) / 10_000)
+                .unwrap();
+
+        assert!(slippage < 45);
+        validate_signed_minimum_output_value_loss(source_amount, signed_minimum, 50).unwrap();
+        validate_post_withdraw_swap_economics(
+            &plan,
+            source_amount as i64,
+            signed_minimum as i64,
+            397,
+            816,
+        )
+        .unwrap();
     }
 }
