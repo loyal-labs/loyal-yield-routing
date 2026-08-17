@@ -262,7 +262,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4a0242d31f0b0a534786bbd084ef92f76e2db800
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3967556486019b52267dfb5f62ec36e6188d33df
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/loyal-squads-policy-monitor --cluster mainnet --commitment finalized
             maxShutdownDelaySeconds: 60
@@ -281,7 +281,7 @@ projects:
             plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4a0242d31f0b0a534786bbd084ef92f76e2db800
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3967556486019b52267dfb5f62ec36e6188d33df
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/fleet-opportunity-planner --json --poll-interval-seconds 1 --full-sweep-interval-seconds 30 --dirty-batch-size 256 --max-opportunities-per-wave 128
             maxShutdownDelaySeconds: 60
@@ -314,7 +314,7 @@ projects:
             plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4a0242d31f0b0a534786bbd084ef92f76e2db800
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3967556486019b52267dfb5f62ec36e6188d33df
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/fleet-health-projector --cluster mainnet-beta --refresh-interval-seconds 5 --lease-seconds 15
             maxShutdownDelaySeconds: 30
@@ -339,7 +339,7 @@ projects:
             plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4a0242d31f0b0a534786bbd084ef92f76e2db800
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3967556486019b52267dfb5f62ec36e6188d33df
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-worker revalidate --concurrency 16 --fused-execute-concurrency 8 --poll-interval-milliseconds 250
             maxShutdownDelaySeconds: 60
@@ -382,7 +382,7 @@ projects:
             plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4a0242d31f0b0a534786bbd084ef92f76e2db800
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3967556486019b52267dfb5f62ec36e6188d33df
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-worker execute --concurrency 4 --poll-interval-milliseconds 250
             maxShutdownDelaySeconds: 60
@@ -425,7 +425,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4a0242d31f0b0a534786bbd084ef92f76e2db800
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3967556486019b52267dfb5f62ec36e6188d33df
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/fleet-route-confirmer --execute --batch-size 128 --broadcast-concurrency 16 --poll-interval-milliseconds 1000
             maxShutdownDelaySeconds: 60
@@ -454,7 +454,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4a0242d31f0b0a534786bbd084ef92f76e2db800
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3967556486019b52267dfb5f62ec36e6188d33df
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-reconciler --concurrency 64 --batch-size 32 --poll-interval-milliseconds 250 --position-sweep-interval-seconds 300
             maxShutdownDelaySeconds: 60
