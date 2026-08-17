@@ -3465,6 +3465,7 @@ impl NeonSqlClient {
             .iter()
             .map(|lease| lease.submission.transaction_signature.clone())
             .collect::<Vec<_>>();
+        let mut tx = self.pool().begin().await?;
         let released = sqlx::query_scalar::<_, i64>(
             r#"
             WITH expected AS (
@@ -3504,9 +3505,19 @@ impl NeonSqlClient {
         .bind(checked_at)
         .bind(next_poll_at)
         .bind(error_detail)
-        .fetch_one(self.pool())
+        .fetch_one(&mut *tx)
         .await?;
-        Ok(u64::try_from(released).unwrap_or_default())
+        let released = u64::try_from(released).unwrap_or_default();
+        match require_exact_confirmation_defer_count(leases.len(), released) {
+            Ok(released) => {
+                tx.commit().await?;
+                Ok(released)
+            }
+            Err(error) => {
+                tx.rollback().await?;
+                Err(error)
+            }
+        }
     }
 
     /// Returns send/recovery work only after the decision trigger has linked
@@ -6916,4 +6927,32 @@ fn fleet_status_from_row(
         active_physical_writable_key_count: 0,
         top_physical_writable_key_congestion: Vec::new(),
     })
+}
+
+fn require_exact_confirmation_defer_count(
+    requested: usize,
+    released: u64,
+) -> Result<u64, OrchestratorError> {
+    if u64::try_from(requested).ok() != Some(released) {
+        return Err(OrchestratorError::StoreInvariant(
+            "signed-route defer batch contains a stale, expired, or divergent fence".to_owned(),
+        ));
+    }
+    Ok(released)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_confirmation_defer_count_accepts_full_batch() {
+        assert_eq!(require_exact_confirmation_defer_count(2, 2).unwrap(), 2);
+    }
+
+    #[test]
+    fn exact_confirmation_defer_count_rejects_partial_batch() {
+        let error = require_exact_confirmation_defer_count(2, 1).unwrap_err();
+        assert!(matches!(error, OrchestratorError::StoreInvariant(_)));
+    }
 }
