@@ -1806,7 +1806,7 @@ async fn prepare_kamino_leg(
     )?;
     let options = cross_mint_cli_options(opportunity, &vault, runtime.rpc.url());
     let signers: [&dyn Signer; 1] = [&signer];
-    let resolution = resolve_route_lookup_tables(
+    let phase = prepare_route_lookup_table_phase(
         &runtime.client,
         &rpc,
         &options,
@@ -1814,22 +1814,33 @@ async fn prepare_kamino_leg(
         &movement.source_reserve,
         reserve,
         CROSS_MINT_ROUTE_KIND,
-        &format!(
+        format!(
             "cross_mint:{}:{}:{}",
             movement.decision_id.as_i64(),
             leg.as_str(),
             reserve
         ),
         fee_payer,
-        &instructions,
-        &manifest,
+        instructions,
+        manifest,
         &signers,
+        false,
     )
     .await?;
+    let RouteLookupTablePhase {
+        instructions,
+        resolution,
+        ..
+    } = phase;
     let selected_tables = resolution
         .selected_bundle
         .as_ref()
-        .ok_or("cross-mint leg has no selected lookup-table bundle")?
+        .ok_or_else(|| {
+            resolution
+                .blocker
+                .clone()
+                .unwrap_or_else(|| "cross-mint leg has no selected lookup-table bundle".to_owned())
+        })?
         .tables
         .clone();
     let (_, mut lookup_tables_by_id, lookup_table_failures) =
