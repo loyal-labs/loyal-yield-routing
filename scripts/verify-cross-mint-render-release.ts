@@ -52,7 +52,7 @@ const services = [
   {
     name: "loyal-fleet-health-projector",
     command:
-      "/usr/local/bin/fleet-health-projector --cluster mainnet-beta --refresh-interval-seconds 5 --lease-seconds 15",
+      "/usr/local/bin/fleet-health-projector --cluster mainnet-beta --refresh-interval-seconds 5",
     env: {},
   },
   {

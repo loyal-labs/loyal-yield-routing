@@ -1,20 +1,19 @@
 use std::{env, error::Error, time::Duration};
 
-use chrono::{Duration as ChronoDuration, Utc};
+use chrono::Duration as ChronoDuration;
 use loyal_observability::init_from_env;
-use loyal_yield_orchestrator::{NeonSqlClient, NeonSqlConfig};
+use loyal_yield_orchestrator::{
+    fleet_orchestration::FleetHealthSnapshotProjection, NeonSqlClient, NeonSqlConfig,
+};
 use serde_json::json;
 
 const DEFAULT_REFRESH_INTERVAL_SECONDS: u64 = 5;
-const DEFAULT_LEASE_SECONDS: i64 = 15;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Options {
     database_url: String,
     cluster: String,
-    owner: String,
     refresh_interval_seconds: u64,
-    lease_seconds: i64,
     once: bool,
 }
 
@@ -28,7 +27,6 @@ fn parse_args_with_env(
         .or_else(|| read_env("YIELD_ALT_CLUSTER"))
         .unwrap_or_else(|| "mainnet-beta".to_owned());
     let mut refresh_interval_seconds = DEFAULT_REFRESH_INTERVAL_SECONDS;
-    let mut lease_seconds = DEFAULT_LEASE_SECONDS;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--once" => once = true,
@@ -39,34 +37,21 @@ fn parse_args_with_env(
                     .ok_or("--refresh-interval-seconds requires a value")?
                     .parse()?;
             }
-            "--lease-seconds" => {
-                lease_seconds = args
-                    .next()
-                    .ok_or("--lease-seconds requires a value")?
-                    .parse()?;
-            }
             "--help" | "-h" => {
-                return Err("fleet-health-projector [--once] [--cluster NAME] [--refresh-interval-seconds N] [--lease-seconds N]".into());
+                return Err("fleet-health-projector [--once] [--cluster NAME] [--refresh-interval-seconds N]".into());
             }
             value => return Err(format!("unknown argument {value}").into()),
         }
     }
-    if cluster.trim().is_empty()
-        || refresh_interval_seconds == 0
-        || !(3..=300).contains(&lease_seconds)
-        || i64::try_from(refresh_interval_seconds).unwrap_or(i64::MAX) >= lease_seconds
-    {
-        return Err("projector requires a cluster, refresh interval > 0, lease in 3..=300 seconds, and lease longer than refresh interval".into());
+    if cluster.trim().is_empty() || !(1..=300).contains(&refresh_interval_seconds) {
+        return Err("projector requires a cluster and refresh interval in 1..=300 seconds".into());
     }
     let database_url = read_env("NEON_DATABASE_URL")
         .ok_or("NEON_DATABASE_URL must be set for fleet health projection")?;
-    let owner = format!("fleet-health-projector:{cluster}:{}", std::process::id());
     Ok(Options {
         database_url,
         cluster,
-        owner,
         refresh_interval_seconds,
-        lease_seconds,
         once,
     })
 }
@@ -81,18 +66,14 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .require_schema_migration(34, "fleet_health_snapshot_projection")
         .await?;
     loop {
-        let lease = client
-            .claim_fleet_health_projection_lease(
+        let projection = client
+            .project_fleet_orchestration_health_snapshot(
                 &options.cluster,
-                &options.owner,
-                Utc::now() + ChronoDuration::seconds(options.lease_seconds),
+                ChronoDuration::seconds(options.refresh_interval_seconds as i64),
             )
             .await?;
-        match lease {
-            Some(lease) => {
-                let refresh = client
-                    .refresh_fleet_orchestration_health_snapshot(&lease)
-                    .await?;
+        match projection {
+            FleetHealthSnapshotProjection::Published(refresh) => {
                 let cached = client.fleet_orchestration_status(&options.cluster).await?;
                 if serde_json::to_value(&cached)? != serde_json::to_value(&refresh.status)? {
                     return Err(
@@ -118,12 +99,21 @@ async fn run() -> Result<(), Box<dyn Error>> {
                     })
                 );
             }
-            None => println!(
+            FleetHealthSnapshotProjection::Busy => println!(
                 "{}",
                 json!({
                     "status": "fleet_health_snapshot_refresh_skipped",
                     "cluster": options.cluster,
-                    "reason": "another_projector_holds_live_lease",
+                    "reason": "another_projector_is_refreshing",
+                })
+            ),
+            FleetHealthSnapshotProjection::NotDue { refreshed_at } => println!(
+                "{}",
+                json!({
+                    "status": "fleet_health_snapshot_refresh_skipped",
+                    "cluster": options.cluster,
+                    "reason": "snapshot_is_fresh",
+                    "refreshedAt": refreshed_at,
                 })
             ),
         }
@@ -156,15 +146,20 @@ mod tests {
     }
 
     #[test]
-    fn defaults_keep_lease_longer_than_refresh_interval() {
+    fn defaults_to_five_second_refresh_interval() {
         let options = options(&[]).unwrap();
         assert_eq!(options.cluster, "localnet");
         assert_eq!(options.refresh_interval_seconds, 5);
-        assert_eq!(options.lease_seconds, 15);
     }
 
     #[test]
-    fn rejects_refresh_interval_that_can_outlive_lease() {
-        assert!(options(&["--refresh-interval-seconds", "15", "--lease-seconds", "15"]).is_err());
+    fn rejects_zero_refresh_interval() {
+        assert!(options(&["--refresh-interval-seconds", "0"]).is_err());
+        assert!(options(&["--refresh-interval-seconds", "301"]).is_err());
+    }
+
+    #[test]
+    fn rejects_removed_lease_option() {
+        assert!(options(&["--lease-seconds", "15"]).is_err());
     }
 }

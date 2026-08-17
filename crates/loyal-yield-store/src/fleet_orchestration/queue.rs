@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::Row;
+use sqlx::{PgConnection, Row};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const REBALANCE_OPPORTUNITY_WAKEUP_CHANNEL: &str = "loyal_yield_rebalance_wakeup";
@@ -690,14 +690,6 @@ pub struct FleetOrchestrationStatus {
     pub top_physical_writable_key_congestion: Vec<PhysicalWritableKeyCongestion>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct FleetHealthProjectionLease {
-    pub cluster: String,
-    pub owner: String,
-    pub fencing_token: i64,
-    pub lease_expires_at: DateTime<Utc>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FleetHealthSnapshotRefresh {
     pub cluster: String,
@@ -708,6 +700,13 @@ pub struct FleetHealthSnapshotRefresh {
     pub refresh_duration_milliseconds: i64,
     pub refresh_owner: String,
     pub fencing_token: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FleetHealthSnapshotProjection {
+    Published(FleetHealthSnapshotRefresh),
+    Busy,
+    NotDue { refreshed_at: DateTime<Utc> },
 }
 
 impl NeonSqlClient {
@@ -2006,66 +2005,60 @@ impl NeonSqlClient {
         })
     }
 
-    pub async fn claim_fleet_health_projection_lease(
+    pub async fn project_fleet_orchestration_health_snapshot(
         &self,
         cluster: &str,
-        owner: &str,
-        lease_expires_at: DateTime<Utc>,
-    ) -> Result<Option<FleetHealthProjectionLease>, OrchestratorError> {
-        if cluster.trim().is_empty() || owner.trim().is_empty() || lease_expires_at <= Utc::now() {
+        minimum_refresh_interval: chrono::Duration,
+    ) -> Result<FleetHealthSnapshotProjection, OrchestratorError> {
+        let minimum_refresh_milliseconds = minimum_refresh_interval.num_milliseconds();
+        if cluster.trim().is_empty() || minimum_refresh_milliseconds <= 0 {
             return Err(OrchestratorError::StoreInvariant(
-                "fleet health projection lease requires cluster, owner, and future expiry"
+                "fleet health snapshot projection requires a cluster and positive refresh interval"
                     .to_owned(),
             ));
         }
-        let row = sqlx::query(
+
+        let mut transaction = self.pool().begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            .execute(&mut *transaction)
+            .await?;
+        let acquired: bool = sqlx::query_scalar(
             r#"
-            INSERT INTO loyal_yield.fleet_health_projection_leases (
-                cluster, owner, fencing_token, lease_expires_at
-            ) VALUES ($1, $2, 1, $3)
-            ON CONFLICT (cluster) DO UPDATE
-            SET owner = EXCLUDED.owner,
-                fencing_token = loyal_yield.fleet_health_projection_leases.fencing_token + 1,
-                lease_expires_at = EXCLUDED.lease_expires_at,
-                updated_at = now()
-            WHERE loyal_yield.fleet_health_projection_leases.lease_expires_at <= now()
-               OR loyal_yield.fleet_health_projection_leases.owner = EXCLUDED.owner
-            RETURNING cluster, owner, fencing_token, lease_expires_at
+            SELECT pg_try_advisory_xact_lock(
+                hashtextextended('fleet-health-projector:' || $1, 0)
+            )
             "#,
         )
         .bind(cluster)
-        .bind(owner)
-        .bind(lease_expires_at)
-        .fetch_optional(self.pool())
+        .fetch_one(&mut *transaction)
         .await?;
-        row.map(|row| {
-            Ok(FleetHealthProjectionLease {
-                cluster: row.try_get("cluster")?,
-                owner: row.try_get("owner")?,
-                fencing_token: row.try_get("fencing_token")?,
-                lease_expires_at: row.try_get("lease_expires_at")?,
-            })
-        })
-        .transpose()
-    }
-
-    pub async fn refresh_fleet_orchestration_health_snapshot(
-        &self,
-        lease: &FleetHealthProjectionLease,
-    ) -> Result<FleetHealthSnapshotRefresh, OrchestratorError> {
-        if lease.cluster.trim().is_empty()
-            || lease.owner.trim().is_empty()
-            || lease.fencing_token <= 0
-            || lease.lease_expires_at <= Utc::now()
-        {
-            return Err(OrchestratorError::StoreInvariant(
-                "fleet health snapshot refresh requires a live fenced lease".to_owned(),
-            ));
+        if !acquired {
+            transaction.rollback().await?;
+            return Ok(FleetHealthSnapshotProjection::Busy);
         }
+
+        let current_refreshed_at: Option<DateTime<Utc>> = sqlx::query_scalar(
+            r#"
+            SELECT refreshed_at
+            FROM loyal_yield.fleet_orchestration_health_snapshots
+            WHERE cluster = $1
+              AND refreshed_at >= clock_timestamp()
+                  - ($2::BIGINT * interval '1 millisecond')
+            "#,
+        )
+        .bind(cluster)
+        .bind(minimum_refresh_milliseconds)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if let Some(refreshed_at) = current_refreshed_at {
+            transaction.commit().await?;
+            return Ok(FleetHealthSnapshotProjection::NotDue { refreshed_at });
+        }
+
         let refresh_started_at = Utc::now();
-        let status = self
-            .fleet_orchestration_status_source(&lease.cluster)
-            .await?;
+        let status =
+            Self::fleet_orchestration_status_source_on_connection(&mut transaction, cluster)
+                .await?;
         let source_watermark: Value = sqlx::query_scalar(
             r#"
             SELECT jsonb_build_object(
@@ -2084,8 +2077,8 @@ impl NeonSqlClient {
             )
             "#,
         )
-        .bind(&lease.cluster)
-        .fetch_one(self.pool())
+        .bind(cluster)
+        .fetch_one(&mut *transaction)
         .await?;
         let refreshed_at = Utc::now();
         let refresh_duration_milliseconds = refreshed_at
@@ -2097,22 +2090,14 @@ impl NeonSqlClient {
                 "fleet health snapshot serialization failed: {error}"
             ))
         })?;
-        let rows_affected = sqlx::query(
+        let fencing_token: i64 = sqlx::query_scalar(
             r#"
             INSERT INTO loyal_yield.fleet_orchestration_health_snapshots (
                 cluster, payload, source_watermark, refresh_started_at,
                 refreshed_at, refresh_duration_milliseconds, refresh_owner,
                 fencing_token, row_count
             )
-            SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9
-            WHERE EXISTS (
-                SELECT 1
-                FROM loyal_yield.fleet_health_projection_leases lease
-                WHERE lease.cluster = $1
-                  AND lease.owner = $7
-                  AND lease.fencing_token = $8
-                  AND lease.lease_expires_at > now()
-            )
+            VALUES ($1, $2, $3, $4, $5, $6, 'postgres-advisory-xact-lock', 1, $7)
             ON CONFLICT (cluster) DO UPDATE
             SET payload = EXCLUDED.payload,
                 source_watermark = EXCLUDED.source_watermark,
@@ -2120,43 +2105,46 @@ impl NeonSqlClient {
                 refreshed_at = EXCLUDED.refreshed_at,
                 refresh_duration_milliseconds = EXCLUDED.refresh_duration_milliseconds,
                 refresh_owner = EXCLUDED.refresh_owner,
-                fencing_token = EXCLUDED.fencing_token,
+                fencing_token = loyal_yield.fleet_orchestration_health_snapshots.fencing_token + 1,
                 row_count = EXCLUDED.row_count,
                 updated_at = now()
+            RETURNING fencing_token
             "#,
         )
-        .bind(&lease.cluster)
+        .bind(cluster)
         .bind(&payload)
         .bind(&source_watermark)
         .bind(refresh_started_at)
         .bind(refreshed_at)
         .bind(refresh_duration_milliseconds)
-        .bind(&lease.owner)
-        .bind(lease.fencing_token)
         .bind(i64::try_from(status.len()).unwrap_or(i64::MAX))
-        .execute(self.pool())
-        .await?
-        .rows_affected();
-        if rows_affected != 1 {
-            return Err(OrchestratorError::StoreInvariant(format!(
-                "fleet health projection lease was fenced for cluster {}",
-                lease.cluster
-            )));
-        }
-        Ok(FleetHealthSnapshotRefresh {
-            cluster: lease.cluster.clone(),
-            status,
-            source_watermark,
-            refresh_started_at,
-            refreshed_at,
-            refresh_duration_milliseconds,
-            refresh_owner: lease.owner.clone(),
-            fencing_token: lease.fencing_token,
-        })
+        .fetch_one(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(FleetHealthSnapshotProjection::Published(
+            FleetHealthSnapshotRefresh {
+                cluster: cluster.to_owned(),
+                status,
+                source_watermark,
+                refresh_started_at,
+                refreshed_at,
+                refresh_duration_milliseconds,
+                refresh_owner: "postgres-advisory-xact-lock".to_owned(),
+                fencing_token,
+            },
+        ))
     }
 
     pub async fn fleet_orchestration_status_source(
         &self,
+        cluster: &str,
+    ) -> Result<Vec<FleetOrchestrationStatus>, OrchestratorError> {
+        let mut connection = self.pool().acquire().await?;
+        Self::fleet_orchestration_status_source_on_connection(&mut connection, cluster).await
+    }
+
+    async fn fleet_orchestration_status_source_on_connection(
+        connection: &mut PgConnection,
         cluster: &str,
     ) -> Result<Vec<FleetOrchestrationStatus>, OrchestratorError> {
         const HOT_WRITABLE_KEY_LIMIT: i64 = 16;
@@ -2169,7 +2157,7 @@ impl NeonSqlClient {
             "#,
         )
         .bind(cluster)
-        .fetch_all(self.pool())
+        .fetch_all(&mut *connection)
         .await?;
         // Match the two partial queue indexes from migration 24 exactly. The
         // UNION keeps each branch indexable and limits expansion to current
@@ -2246,7 +2234,7 @@ impl NeonSqlClient {
         )
         .bind(cluster)
         .bind(HOT_WRITABLE_KEY_LIMIT)
-        .fetch_all(self.pool())
+        .fetch_all(&mut *connection)
         .await?;
         let active_physical_writable_key_count = congestion_rows
             .first()
