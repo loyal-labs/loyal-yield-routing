@@ -14,3 +14,6 @@ tracing.workspace = true
 tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }
 url = "2"
+
+[dev-dependencies]
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["metrics", "testing"] }
