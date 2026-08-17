@@ -1376,7 +1376,20 @@ async fn prepare_next_leg(
                         leg: prepared,
                     })
                 }
-                (SourceIdleContinuation::RecoverSource, Some(Err(_)) | None) => {
+                (SourceIdleContinuation::RecoverSource, Some(Err(error))) => {
+                    eprintln!(
+                        "{}",
+                        serde_json::to_string(&json!({
+                            "status": "cross_mint_swap_preparation_failed_recovering_source",
+                            "decisionId": lease.movement.decision_id.as_i64(),
+                            "error": redacted_external_error(&error.to_string()),
+                            "recovery": "deposit_source_mint_to_source_reserve",
+                            "sendsTransactions": false,
+                        }))?
+                    );
+                    prepare_source_recovery(runtime, &opportunity, lease).await
+                }
+                (SourceIdleContinuation::RecoverSource, None) => {
                     prepare_source_recovery(runtime, &opportunity, lease).await
                 }
                 _ => Err("source-idle continuation selection became inconsistent".into()),
