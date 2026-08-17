@@ -2520,6 +2520,43 @@ enum PlanBlocker {
     },
 }
 
+const SAME_MINT_ROUTE_POLICY_MISSING_EXIT_CODE: i32 = 23;
+
+#[derive(Debug, PartialEq, Eq)]
+enum SameMintProcessFailureDisposition {
+    RoutePolicyMissing { policy_account: String },
+    Fatal,
+}
+
+fn same_mint_process_failure_disposition(
+    args: &[String],
+    error: &str,
+) -> SameMintProcessFailureDisposition {
+    if !args.iter().any(|arg| arg == "--deposit-reserve") {
+        return SameMintProcessFailureDisposition::Fatal;
+    }
+    let Some(suffix) = error.strip_prefix("policy account ") else {
+        return SameMintProcessFailureDisposition::Fatal;
+    };
+    let Some(policy_account) = suffix.strip_suffix(" does not exist") else {
+        return SameMintProcessFailureDisposition::Fatal;
+    };
+    if policy_account.is_empty() || policy_account.chars().any(char::is_whitespace) {
+        return SameMintProcessFailureDisposition::Fatal;
+    }
+    SameMintProcessFailureDisposition::RoutePolicyMissing {
+        policy_account: policy_account.to_owned(),
+    }
+}
+
+fn same_mint_route_policy_missing_payload(policy_account: &str) -> Value {
+    json!({
+        "event": "same_mint_route_policy_missing",
+        "error": format!("policy account {policy_account} does not exist"),
+        "policyAccount": policy_account,
+    })
+}
+
 #[tokio::main]
 pub async fn run_main() {
     let args = env::args().skip(1).collect::<Vec<_>>();
@@ -2539,18 +2576,31 @@ pub async fn run_main() {
             std::process::exit(1);
         }
     };
+    let failure_args = args.clone();
     if let Err(error) = run(args).await {
-        OperationalError::new(
-            "same_mint_route_worker_fatal",
-            "run_same_mint_route_worker",
-            "same-mint route worker stopped after a fatal error",
-        )
-        .retryable(false)
-        .recovery_required(true)
-        .emit();
-        eprintln!("{}", same_mint_fatal_error_payload(error.as_ref()));
-        let _ = observability.force_flush();
-        std::process::exit(1);
+        match same_mint_process_failure_disposition(&failure_args, &error.to_string()) {
+            SameMintProcessFailureDisposition::RoutePolicyMissing { policy_account } => {
+                eprintln!(
+                    "{}",
+                    same_mint_route_policy_missing_payload(&policy_account)
+                );
+                let _ = observability.force_flush();
+                std::process::exit(SAME_MINT_ROUTE_POLICY_MISSING_EXIT_CODE);
+            }
+            SameMintProcessFailureDisposition::Fatal => {
+                OperationalError::new(
+                    "same_mint_route_worker_fatal",
+                    "run_same_mint_route_worker",
+                    "same-mint route worker stopped after a fatal error",
+                )
+                .retryable(false)
+                .recovery_required(true)
+                .emit();
+                eprintln!("{}", same_mint_fatal_error_payload(error.as_ref()));
+                let _ = observability.force_flush();
+                std::process::exit(1);
+            }
+        }
     }
 }
 
@@ -21925,6 +21975,39 @@ mod tests {
         let payload = same_mint_fatal_error_payload(&CREDENTIAL_BEARING_RPC_ERROR);
         assert_eq!(payload["event"], "same_mint_route_worker_fatal");
         assert_safe_operational_error(payload["error"].as_str().unwrap());
+    }
+
+    #[test]
+    fn autodeposit_deposit_missing_policy_is_terminal_not_fatal() {
+        let policy_account = "81VcmD8y6UzeRX7nJT1ztBhbhQ2hfzQtAeCYeDuuWTye";
+        let args = vec![
+            "--settings".to_owned(),
+            "5XTtJAGTPdnz7T7Hnvpwv4A8NHxUCqtKuMQjnYTkRqdW".to_owned(),
+            "--vault-index".to_owned(),
+            "1".to_owned(),
+            "--deposit-reserve".to_owned(),
+            "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59".to_owned(),
+            "16940199".to_owned(),
+        ];
+        let error = format!("policy account {policy_account} does not exist");
+
+        assert_eq!(
+            same_mint_process_failure_disposition(&args, &error),
+            SameMintProcessFailureDisposition::RoutePolicyMissing {
+                policy_account: policy_account.to_owned(),
+            }
+        );
+        assert_eq!(
+            same_mint_process_failure_disposition(&args, "database unavailable"),
+            SameMintProcessFailureDisposition::Fatal
+        );
+        assert_eq!(
+            same_mint_process_failure_disposition(
+                &["--fleet-worker".to_owned(), "execute".to_owned()],
+                &error,
+            ),
+            SameMintProcessFailureDisposition::Fatal
+        );
     }
 
     #[test]
