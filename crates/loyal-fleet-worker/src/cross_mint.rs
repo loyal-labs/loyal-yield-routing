@@ -76,7 +76,21 @@ struct JupiterBuildEnvelope {
     out_amount: String,
     other_amount_threshold: String,
     slippage_bps: u16,
+    route_plan: Vec<JupiterBuildRouteEnvelope>,
     addresses_by_lookup_table_address: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JupiterBuildRouteEnvelope {
+    swap_info: JupiterBuildSwapInfoEnvelope,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JupiterBuildSwapInfoEnvelope {
+    input_mint: String,
+    output_mint: String,
 }
 
 #[derive(Clone, Debug)]
@@ -2060,6 +2074,14 @@ async fn prepare_jupiter_swap_leg(
         &envelope.addresses_by_lookup_table_address,
         custody_anchor_slot,
     )?;
+    let additional_token_accounts = finalized_jupiter_route_token_accounts(
+        &rpc,
+        vault_pubkey,
+        &envelope,
+        input_mint,
+        output_mint,
+        custody_anchor_slot,
+    )?;
     let expected = JupiterExactInBuildExpectation {
         authority: vault_pubkey,
         input_mint: JupiterMintSnapshot {
@@ -2082,7 +2104,7 @@ async fn prepare_jupiter_swap_leg(
             owner_program: output_token_account.owner,
             data: output_token_account.data,
         },
-        additional_token_accounts: vec![],
+        additional_token_accounts,
         input_amount: u64::try_from(movement.custody_amount_raw)?,
         minimum_output_amount: minimum_output,
         maximum_slippage_bps: effective_slippage_bps,
@@ -2603,6 +2625,14 @@ async fn certify_cross_mint_before_withdraw(
         &envelope.addresses_by_lookup_table_address,
         minimum_policy_slot,
     )?;
+    let additional_token_accounts = finalized_jupiter_route_token_accounts(
+        &rpc,
+        vault_pubkey,
+        &envelope,
+        input_mint,
+        output_mint,
+        minimum_policy_slot,
+    )?;
     let expected = JupiterExactInBuildExpectation {
         authority: vault_pubkey,
         input_mint: JupiterMintSnapshot {
@@ -2625,7 +2655,7 @@ async fn certify_cross_mint_before_withdraw(
             owner_program: output_token_account.owner,
             data: output_token_account.data,
         },
-        additional_token_accounts: vec![],
+        additional_token_accounts,
         input_amount,
         minimum_output_amount: minimum_output,
         maximum_slippage_bps: effective_slippage_bps,
@@ -2809,6 +2839,76 @@ fn finalized_swap_accounts(
         output_mint_account,
         output_token_account,
     ))
+}
+
+fn jupiter_intermediate_route_mints(
+    envelope: &JupiterBuildEnvelope,
+    input_mint: Pubkey,
+    output_mint: Pubkey,
+) -> Result<Vec<Pubkey>, Box<dyn Error>> {
+    if envelope.route_plan.is_empty() || envelope.route_plan.len() > 2 {
+        return Err("Jupiter route has an unsupported step count".into());
+    }
+    let mut mints = Vec::new();
+    for route in &envelope.route_plan {
+        for raw_mint in [
+            route.swap_info.input_mint.as_str(),
+            route.swap_info.output_mint.as_str(),
+        ] {
+            let mint = Pubkey::from_str(raw_mint)?;
+            if mint != input_mint && mint != output_mint && !mints.contains(&mint) {
+                canonical_earn_token_program(mint)?;
+                mints.push(mint);
+            }
+        }
+    }
+    Ok(mints)
+}
+
+fn finalized_jupiter_route_token_accounts(
+    rpc: &RpcClient,
+    authority: Pubkey,
+    envelope: &JupiterBuildEnvelope,
+    input_mint: Pubkey,
+    output_mint: Pubkey,
+    minimum_slot: u64,
+) -> Result<Vec<JupiterTokenAccountSnapshot>, Box<dyn Error>> {
+    let mints = jupiter_intermediate_route_mints(envelope, input_mint, output_mint)?;
+    if mints.is_empty() {
+        return Ok(Vec::new());
+    }
+    let token_accounts = mints
+        .iter()
+        .map(|mint| {
+            let token_program = canonical_earn_token_program(*mint)?;
+            Ok(derive_associated_token_address(
+                &authority,
+                mint,
+                &token_program,
+            ))
+        })
+        .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+    let response = rpc.get_multiple_accounts_with_config(
+        &token_accounts,
+        RpcAccountInfoConfig {
+            encoding: Some(UiAccountEncoding::Base64),
+            commitment: Some(CommitmentConfig::finalized()),
+            min_context_slot: Some(minimum_slot),
+            ..RpcAccountInfoConfig::default()
+        },
+    )?;
+    token_accounts
+        .into_iter()
+        .zip(response.value)
+        .map(|(address, account)| {
+            let account = account.ok_or("Jupiter intermediate vault ATA is missing")?;
+            Ok(JupiterTokenAccountSnapshot {
+                address,
+                owner_program: account.owner,
+                data: account.data,
+            })
+        })
+        .collect()
 }
 
 fn finalized_jupiter_lookup_tables(
@@ -3668,6 +3768,29 @@ mod cross_mint_reconciliation_tests {
     fn jupiter_slippage_does_not_mask_a_quote_outside_total_loss() {
         let error = tighter_jupiter_slippage_bps(994_999, 50, 995_000).unwrap_err();
         assert!(error.to_string().contains("required economic minimum"));
+    }
+
+    #[test]
+    fn jupiter_two_step_route_identifies_only_the_supported_intermediate_mint() {
+        let cash = Pubkey::from_str("CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH").unwrap();
+        let usdc = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+        let usdg = Pubkey::from_str("2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH").unwrap();
+        let envelope: JupiterBuildEnvelope = serde_json::from_value(json!({
+            "outAmount": "244407680",
+            "otherAmountThreshold": "243821102",
+            "slippageBps": 24,
+            "routePlan": [
+                {"swapInfo": {"inputMint": cash.to_string(), "outputMint": usdc.to_string()}},
+                {"swapInfo": {"inputMint": usdc.to_string(), "outputMint": usdg.to_string()}}
+            ],
+            "addressesByLookupTableAddress": {}
+        }))
+        .unwrap();
+
+        assert_eq!(
+            jupiter_intermediate_route_mints(&envelope, cash, usdg).unwrap(),
+            vec![usdc]
+        );
     }
 
     #[test]
