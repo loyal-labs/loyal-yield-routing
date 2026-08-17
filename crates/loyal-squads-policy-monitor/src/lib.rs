@@ -534,7 +534,7 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
         let Some(notification) = HeliusNotification::from_value(value) else {
             return Ok(0);
         };
-        if !self.seen_signatures.insert(notification.signature.clone()) {
+        if self.seen_signatures.contains(&notification.signature) {
             return Ok(0);
         }
 
@@ -606,6 +606,12 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
             self.sink.emit_execution(execution).await?;
             emitted += 1;
         }
+
+        // Only acknowledge the transaction after every database sink write has
+        // succeeded. A failed write must be replayable after the websocket
+        // reconnects; marking it before the sink call would permanently lose
+        // policy removals (and leave their catalog rows active).
+        self.seen_signatures.insert(notification.signature);
 
         Ok(emitted)
     }
@@ -1257,6 +1263,31 @@ mod tests {
         }
     }
 
+    struct RetryOnceSink {
+        fail_emits: usize,
+        events: Vec<PolicyMonitorEvent>,
+    }
+
+    impl PolicyMatchSink for RetryOnceSink {
+        fn emit(&mut self, event: PolicyMonitorEvent) -> BoxFuture<'_, Result<(), MonitorError>> {
+            if self.fail_emits > 0 {
+                self.fail_emits -= 1;
+                return Box::pin(async {
+                    Err(MonitorError::Decode("transient sink failure".to_owned()))
+                });
+            }
+            self.events.push(event);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn emit_execution(
+            &mut self,
+            _event: BalanceSweepExecutionEvent,
+        ) -> BoxFuture<'_, Result<(), MonitorError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
     fn action_context() -> LoyalActionContext {
         let settings = Pubkey::new_unique();
         let account_index = 7;
@@ -1386,6 +1417,38 @@ mod tests {
         assert_eq!(serialized["policy_kind"], "policy_removal");
         assert!(serialized.get("policy_seed").is_none());
         assert!(serialized.get("policy_family").is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_sink_does_not_acknowledge_policy_removal_transaction() {
+        let context = action_context();
+        let policy_account = Pubkey::new_unique();
+        let instruction =
+            remove_policy_instruction(context.settings, context.authority, policy_account);
+        let mut monitor = PolicyMonitor::new(
+            MonitorConfig::new(
+                Cluster::Mainnet,
+                Commitment::Finalized,
+                Some("ws://test.invalid".to_owned()),
+                None,
+            )
+            .expect("test monitor config"),
+            RetryOnceSink {
+                fail_emits: 1,
+                events: Vec::new(),
+            },
+        );
+        let value = notification(instruction, context.authority, "retry-removal", 105);
+
+        assert!(monitor.process_notification(&value).await.is_err());
+        assert_eq!(monitor.sink.events.len(), 0);
+
+        assert_eq!(monitor.process_notification(&value).await.unwrap(), 1);
+        assert_eq!(monitor.sink.events.len(), 1);
+        assert!(matches!(
+            monitor.sink.events[0],
+            PolicyMonitorEvent::PolicyRemoval(_)
+        ));
     }
 
     #[tokio::test]

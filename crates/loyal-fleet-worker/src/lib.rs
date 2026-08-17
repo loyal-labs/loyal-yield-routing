@@ -13500,8 +13500,13 @@ async fn resolve_route_lookup_tables(
         .await?;
     let shared_catalog_covered =
         shared_catalog_validation.state == SharedMarketCatalogRouteValidationState::Covered;
+    // The route RPC may be load balanced. A confirmed blockhash returned by one
+    // backend is not guaranteed to be known by the backend that immediately
+    // handles simulation, which makes an otherwise valid route fail closed with
+    // BlockhashNotFound. Finalized keeps compilation and simulation portable
+    // across those backends.
     let (blockhash, last_valid_block_height) =
-        rpc.get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())?;
+        rpc.get_latest_blockhash_with_commitment(CommitmentConfig::finalized())?;
     let mut reusable_resolution_error_code = None;
     let (mut reusable, reusable_resolution_state) =
         match resolve_and_compile_reusable_lookup_table_bundle(
