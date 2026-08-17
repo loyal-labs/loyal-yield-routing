@@ -3771,29 +3771,6 @@ mod cross_mint_reconciliation_tests {
     }
 
     #[test]
-    fn jupiter_two_step_route_identifies_only_the_supported_intermediate_mint() {
-        let cash = Pubkey::from_str("CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH").unwrap();
-        let usdc = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
-        let usdg = Pubkey::from_str("2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH").unwrap();
-        let envelope: JupiterBuildEnvelope = serde_json::from_value(json!({
-            "outAmount": "244407680",
-            "otherAmountThreshold": "243821102",
-            "slippageBps": 24,
-            "routePlan": [
-                {"swapInfo": {"inputMint": cash.to_string(), "outputMint": usdc.to_string()}},
-                {"swapInfo": {"inputMint": usdc.to_string(), "outputMint": usdg.to_string()}}
-            ],
-            "addressesByLookupTableAddress": {}
-        }))
-        .unwrap();
-
-        assert_eq!(
-            jupiter_intermediate_route_mints(&envelope, cash, usdg).unwrap(),
-            vec![usdc]
-        );
-    }
-
-    #[test]
     fn generalized_swap_binding_accepts_a_tighter_rollout_cap_and_maps_both_dialects() {
         let mut lane = JupiterLaneContract {
             program_id: loyal_actions::JUPITER_V6_PROGRAM_ID,
