@@ -1787,26 +1787,24 @@ async fn prepare_kamino_leg(
         policy_index,
     )?;
     let refresh_positions = obligation_refresh_positions_for_route(&preview, position, position)?;
-    let mut instructions = refresh_positions
-        .into_iter()
-        .map(|position| {
-            kamino_refresh_reserve_instruction(position)
-                .map(|instruction| instruction.instruction().clone())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut lookup_table_requirements = outer.lookup_table_requirements().clone();
+    let mut instructions = Vec::with_capacity(refresh_positions.len() + 2);
+    for position in refresh_positions {
+        let refresh = kamino_refresh_reserve_instruction(position)?;
+        lookup_table_requirements.merge(refresh.lookup_table_requirements())?;
+        instructions.push(refresh.instruction().clone());
+    }
     if position.obligation_exists {
-        instructions.push(
-            kamino_refresh_obligation_instruction(position)?
-                .instruction()
-                .clone(),
-        );
+        let refresh = kamino_refresh_obligation_instruction(position)?;
+        lookup_table_requirements.merge(refresh.lookup_table_requirements())?;
+        instructions.push(refresh.instruction().clone());
     }
     instructions.push(outer.instruction().clone());
     let manifest = route_lookup_table_manifest(
         fee_payer,
         &instructions,
         &vault,
-        outer.lookup_table_requirements(),
+        &lookup_table_requirements,
         &[vault_ata],
     )?;
     let options = cross_mint_cli_options(opportunity, &vault, runtime.rpc.url());
