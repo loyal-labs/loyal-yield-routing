@@ -1134,6 +1134,8 @@ impl NeonSqlClient {
             SET continuation_available_at = NULL,
                 continuation_lease_owner = NULL,
                 continuation_lease_expires_at = NULL,
+                signature = NULL,
+                confirmed_slot = NULL,
                 updated_at = now()
             WHERE id = $1
               AND continuation_lease_owner = $2

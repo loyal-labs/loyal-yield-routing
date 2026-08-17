@@ -4947,6 +4947,7 @@ async fn finalize_and_reconcile_cross_mint_leg(
     )
     .await?;
     let persisted_bytes = prebroadcast.submission.signed_transaction.clone();
+    let initial_broadcast_count = prebroadcast.submission.broadcast_count;
     let now = Utc::now();
     fixture
         .client
@@ -4968,16 +4969,17 @@ async fn finalize_and_reconcile_cross_mint_leg(
     .await?;
     let persisted_prebroadcast_exact_wire = confirmation.submission.signed_transaction
         == persisted_bytes
-        && confirmation.submission.broadcast_count == 0;
-    fixture
+        && confirmation.submission.broadcast_count == initial_broadcast_count;
+    let mut prepared = fixture
         .client
-        .advance_signed_route_submission(
-            &confirmation,
-            SignedRouteSubmissionAdvance::BroadcastIntent {
-                checked_at: Utc::now(),
-            },
-        )
+        .prepare_signed_route_broadcast_batch(&[confirmation], Utc::now())
         .await?;
+    let confirmation = prepared
+        .pop()
+        .ok_or("cross-mint broadcast preparation returned no submission")?;
+    if !prepared.is_empty() {
+        return Err("cross-mint broadcast preparation returned duplicate submissions".into());
+    }
     fixture
         .client
         .advance_signed_route_submission(
@@ -4998,7 +5000,7 @@ async fn finalize_and_reconcile_cross_mint_leg(
     )
     .await?;
     if confirmation.submission.signed_transaction != persisted_bytes
-        || confirmation.submission.broadcast_count != 1
+        || confirmation.submission.broadcast_count != initial_broadcast_count + 1
     {
         return Err(
             "broadcast/prestatus restart changed exact signed bytes or broadcast count".into(),
@@ -5806,6 +5808,23 @@ async fn cross_mint_movement_subchecks(
         .disable_cross_mint_vault_opt_in(success_opt_in_lookup, success_opt_in.generation)
         .await?
         .ok_or("successful cross-mint enrollment disappeared while pausing")?;
+    let withdraw_signature = withdraw_submission.transaction_signature.clone();
+    let seeded_stale_confirmation = sqlx::query(
+        r#"
+        UPDATE loyal_yield.rebalance_decisions
+        SET confirmed_slot = $2
+        WHERE id = $1
+          AND signature = $3
+          AND status = 'confirming'::loyal_yield.decision_status
+        "#,
+    )
+    .bind(success.movement.decision_id.as_i64())
+    .bind(10_101_i64)
+    .bind(&withdraw_signature)
+    .execute(fixture.client.pool())
+    .await?
+    .rows_affected()
+        == 1;
     let capacity_after_withdraw =
         cross_mint_capacity_state(fixture, success.movement.decision_id.as_i64()).await?;
     let swap_continuation =
@@ -5837,6 +5856,52 @@ async fn cross_mint_movement_subchecks(
             .await?,
         )
         .await?;
+    let decision_after_append = sqlx::query(
+        r#"
+        SELECT signature, confirmed_slot, status::text AS status
+        FROM loyal_yield.rebalance_decisions
+        WHERE id = $1
+        "#,
+    )
+    .bind(success.movement.decision_id.as_i64())
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let sequential_leg_decision_reset = decision_after_append
+        .try_get::<Option<String>, _>("signature")?
+        .is_none()
+        && decision_after_append
+            .try_get::<Option<i64>, _>("confirmed_slot")?
+            .is_none()
+        && decision_after_append.try_get::<String, _>("status")? == "confirming";
+    let swap_broadcast_lease = lease_pending_cross_mint_submission(
+        fixture,
+        &success_cluster,
+        "success-swap-broadcast-prepare",
+        swap_submission.id,
+    )
+    .await?;
+    let prepared_swap_broadcast = fixture
+        .client
+        .prepare_signed_route_broadcast_batch(&[swap_broadcast_lease], Utc::now())
+        .await?;
+    let sequential_leg_broadcast_prepared = prepared_swap_broadcast.len() == 1
+        && prepared_swap_broadcast[0].submission.id == swap_submission.id
+        && prepared_swap_broadcast[0].submission.broadcast_count == 1
+        && prepared_swap_broadcast[0]
+            .submission
+            .error_detail
+            .as_deref()
+            == Some("broadcast_intent_persisted");
+    let now = Utc::now();
+    fixture
+        .client
+        .defer_signed_route_submission_lease_batch(
+            &prepared_swap_broadcast,
+            now,
+            now,
+            "verifier_sequential_leg_broadcast_boundary",
+        )
+        .await?;
     let swap_output = 895_000;
     let (after_swap, swap_rejected_before_finality, swap_crash_windows) =
         finalize_and_reconcile_cross_mint_leg(
@@ -5864,6 +5929,9 @@ async fn cross_mint_movement_subchecks(
         "cross_mint_finalized_only_sequential_leg_advancement",
         withdraw_submission.required_commitment == "finalized"
             && swap_submission.required_commitment == "finalized"
+            && seeded_stale_confirmation
+            && sequential_leg_decision_reset
+            && sequential_leg_broadcast_prepared
             && withdraw_rejected_before_finality
             && swap_rejected_before_finality
             && after_withdraw.custody_reconciled_slot == Some(10_101)
@@ -5871,6 +5939,9 @@ async fn cross_mint_movement_subchecks(
         json!({
             "withdrawRequiredCommitment": withdraw_submission.required_commitment,
             "swapRequiredCommitment": swap_submission.required_commitment,
+            "seededStaleConfirmation": seeded_stale_confirmation,
+            "sequentialLegDecisionReset": sequential_leg_decision_reset,
+            "sequentialLegBroadcastPrepared": sequential_leg_broadcast_prepared,
             "withdrawRejectedBeforeFinality": withdraw_rejected_before_finality,
             "swapRejectedBeforeFinality": swap_rejected_before_finality,
             "withdrawFinalizedSlot": after_withdraw.custody_reconciled_slot,
