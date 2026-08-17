@@ -5,8 +5,14 @@
 //! loaded only after `--execute` has passed all CLI and control-plane gates.
 
 use std::{
-    collections::BTreeSet, env, error::Error, fmt, process::ExitCode, str::FromStr, sync::Arc,
-    time::Duration,
+    collections::BTreeSet,
+    env,
+    error::Error,
+    fmt,
+    process::ExitCode,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
 };
 
 use chrono::Utc;
@@ -40,7 +46,11 @@ use loyal_yield_orchestrator::{
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use solana_client::rpc_client::RpcClient;
+use solana_client::{
+    client_error::{ClientError, ClientErrorKind},
+    rpc_client::RpcClient,
+    rpc_response::Response as RpcResponse,
+};
 use solana_sdk::{
     account::Account,
     address_lookup_table::{
@@ -85,6 +95,173 @@ const DEFAULT_MAX_VAULT_COHORT: u16 = 16;
 const PLANNER_VERSION: &str = "reusable-alt-provisioner-v1";
 const DEFAULT_SHARED_FAMILY_NAME: &str = "stable-market";
 const DEFAULT_VAULT_FAMILY_NAME: &str = "vault-shards";
+const RPC_READ_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(250);
+const RPC_READ_RETRY_MAXIMUM_DELAY: Duration = Duration::from_secs(5);
+const RPC_READ_RETRY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+const RPC_READ_UNAVAILABLE_ALERT_AFTER: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Debug, Clone, Copy)]
+struct RpcReadRetryPolicy {
+    initial_delay: Duration,
+    maximum_delay: Duration,
+    heartbeat_interval: Duration,
+    unavailable_alert_after: Duration,
+    max_attempts: Option<u32>,
+}
+
+impl RpcReadRetryPolicy {
+    fn delay_after(self, consecutive_failures: u32) -> Duration {
+        let shift = consecutive_failures.saturating_sub(1).min(31);
+        let multiplier = 1_u32.checked_shl(shift).unwrap_or(u32::MAX);
+        self.initial_delay
+            .saturating_mul(multiplier)
+            .min(self.maximum_delay)
+    }
+}
+
+impl Default for RpcReadRetryPolicy {
+    fn default() -> Self {
+        Self {
+            initial_delay: RPC_READ_RETRY_INITIAL_DELAY,
+            maximum_delay: RPC_READ_RETRY_MAXIMUM_DELAY,
+            heartbeat_interval: RPC_READ_RETRY_HEARTBEAT_INTERVAL,
+            unavailable_alert_after: RPC_READ_UNAVAILABLE_ALERT_AFTER,
+            max_attempts: None,
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn retry_read_only_rpc<T>(
+    rpc_operation: &'static str,
+    policy: RpcReadRetryPolicy,
+    mut request: impl FnMut() -> Result<T, ClientError>,
+) -> Result<T, ClientError> {
+    let outage_started_at = Instant::now();
+    let mut consecutive_failures = 0_u32;
+    let mut next_heartbeat_at = policy.heartbeat_interval;
+    let mut unavailable_alert_emitted = false;
+
+    loop {
+        match request() {
+            Ok(value) => {
+                if consecutive_failures > 0 {
+                    println!(
+                        "{}",
+                        json!({
+                            "event": "alt_provisioner_rpc_recovered",
+                            "dependency": "solana_rpc",
+                            "rpcOperation": rpc_operation,
+                            "consecutiveFailures": consecutive_failures,
+                            "outageMilliseconds": outage_started_at.elapsed().as_millis(),
+                        })
+                    );
+                }
+                return Ok(value);
+            }
+            Err(error) if is_transient_read_only_rpc_error(&error) => {
+                consecutive_failures = consecutive_failures.saturating_add(1);
+                let elapsed = outage_started_at.elapsed();
+                let retry_delay = policy.delay_after(consecutive_failures);
+                if consecutive_failures == 1 || elapsed >= next_heartbeat_at {
+                    println!(
+                        "{}",
+                        json!({
+                            "event": "alt_provisioner_rpc_degraded",
+                            "dependency": "solana_rpc",
+                            "rpcOperation": rpc_operation,
+                            "failureKind": transient_rpc_failure_kind(&error),
+                            "consecutiveFailures": consecutive_failures,
+                            "outageMilliseconds": elapsed.as_millis(),
+                            "retryInMilliseconds": retry_delay.as_millis(),
+                        })
+                    );
+                    next_heartbeat_at = elapsed.saturating_add(policy.heartbeat_interval);
+                }
+                if !unavailable_alert_emitted && elapsed >= policy.unavailable_alert_after {
+                    OperationalError::new(
+                        "alt_provisioner_rpc_unavailable",
+                        "read_alt_rpc",
+                        "ALT provisioner Solana RPC has remained unavailable for five minutes",
+                    )
+                    .retryable(true)
+                    .recovery_required(true)
+                    .emit();
+                    unavailable_alert_emitted = true;
+                }
+                if policy
+                    .max_attempts
+                    .is_some_and(|max_attempts| consecutive_failures >= max_attempts)
+                {
+                    return Err(error);
+                }
+                tokio::time::sleep(retry_delay).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn is_transient_read_only_rpc_error(error: &ClientError) -> bool {
+    match error.kind() {
+        ClientErrorKind::Reqwest(error) => {
+            error.is_timeout()
+                || error.is_connect()
+                || error.status().is_some_and(|status| {
+                    matches!(status.as_u16(), 408 | 429) || status.is_server_error()
+                })
+        }
+        ClientErrorKind::Io(error) => matches!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::ConnectionRefused
+                | std::io::ErrorKind::NotConnected
+                | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::TimedOut
+                | std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::WouldBlock
+                | std::io::ErrorKind::Interrupted
+        ),
+        _ => false,
+    }
+}
+
+fn transient_rpc_failure_kind(error: &ClientError) -> &'static str {
+    match error.kind() {
+        ClientErrorKind::Reqwest(error) if error.is_timeout() => "timeout",
+        ClientErrorKind::Reqwest(error) if error.is_connect() => "connect",
+        ClientErrorKind::Reqwest(error) => match error.status().map(|status| status.as_u16()) {
+            Some(408) => "http_request_timeout",
+            Some(429) => "http_rate_limited",
+            Some(500..=599) => "http_server_error",
+            _ => "http_transport",
+        },
+        ClientErrorKind::Io(_) => "io",
+        _ => "unknown",
+    }
+}
+
+async fn finalized_slot_with_retry(
+    rpc: &RpcClient,
+    rpc_operation: &'static str,
+) -> Result<u64, ClientError> {
+    retry_read_only_rpc(rpc_operation, RpcReadRetryPolicy::default(), || {
+        rpc.get_slot_with_commitment(CommitmentConfig::finalized())
+    })
+    .await
+}
+
+async fn finalized_accounts_with_retry(
+    rpc: &RpcClient,
+    addresses: &[Pubkey],
+    rpc_operation: &'static str,
+) -> Result<RpcResponse<Vec<Option<Account>>>, ClientError> {
+    retry_read_only_rpc(rpc_operation, RpcReadRetryPolicy::default(), || {
+        rpc.get_multiple_accounts_with_commitment(addresses, CommitmentConfig::finalized())
+    })
+    .await
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RunMode {
@@ -832,7 +1009,7 @@ async fn reconcile_shared_market_catalog(
     if shared_family.id != before.family_id {
         return Err("shared-market catalog head does not belong to the active family".into());
     }
-    let recent_slot = rpc.get_slot_with_commitment(CommitmentConfig::finalized())?;
+    let recent_slot = finalized_slot_with_retry(rpc, "reconcile_shared_market_catalog").await?;
     let after = client
         .reconcile_shared_market_catalog_head(
             &options.cluster,
@@ -891,7 +1068,8 @@ async fn report_finalized_shared_drift_if_any(
         .map(|table| Pubkey::from_str(&table.table_address))
         .collect::<Result<Vec<_>, _>>()?;
     let response =
-        rpc.get_multiple_accounts_with_commitment(&table_addresses, CommitmentConfig::finalized())?;
+        finalized_accounts_with_retry(rpc, &table_addresses, "report_finalized_shared_drift")
+            .await?;
     if response.value.len() != preflight.shared_tables.len() {
         return Err("finalized RPC returned an incomplete shared-table bundle".into());
     }
@@ -1021,6 +1199,12 @@ async fn plan_next_provisioning_request(
     rpc: &RpcClient,
     options: &Options,
 ) -> Result<bool, Box<dyn Error>> {
+    // Read dependency inputs before claiming a durable request. A transient RPC
+    // outage must not leave a planning lease behind or consume an item attempt.
+    let recent_slot = finalized_slot_with_retry(rpc, "plan_next_provisioning_request").await?;
+    let families = client
+        .active_lookup_table_families(&options.cluster)
+        .await?;
     let lease_expires_at =
         Utc::now() + chrono::Duration::seconds(i64::try_from(options.lease_seconds)?);
     let Some(request) = client
@@ -1034,10 +1218,6 @@ async fn plan_next_provisioning_request(
         return Ok(false);
     };
     let lease = provisioning_request_lease(&request)?;
-    let recent_slot = rpc.get_slot_with_commitment(CommitmentConfig::finalized())?;
-    let families = client
-        .active_lookup_table_families(&options.cluster)
-        .await?;
     let vault_family = families
         .iter()
         .find(|family| family.kind == LookupTableFamilyKind::VaultShards)
@@ -4504,6 +4684,15 @@ fn usage() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        thread,
+    };
 
     fn env_map<'a>(values: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |name| {
@@ -4520,6 +4709,117 @@ mod tests {
             (DATABASE_URL_ENV, "postgresql://redacted"),
             (RPC_URL_ENV, "https://rpc.invalid"),
         ]
+    }
+
+    fn test_rpc_retry_policy() -> RpcReadRetryPolicy {
+        RpcReadRetryPolicy {
+            initial_delay: Duration::from_millis(1),
+            maximum_delay: Duration::from_millis(2),
+            heartbeat_interval: Duration::from_secs(60),
+            unavailable_alert_after: Duration::from_secs(60),
+            max_attempts: Some(3),
+        }
+    }
+
+    fn spawn_fake_rpc(
+        responses: Vec<(u16, &'static str)>,
+    ) -> (
+        String,
+        Arc<AtomicUsize>,
+        thread::JoinHandle<Result<(), String>>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake RPC");
+        let address = listener.local_addr().expect("fake RPC address");
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let observed_count = Arc::clone(&request_count);
+        let handle = thread::spawn(move || {
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().map_err(|error| error.to_string())?;
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .map_err(|error| error.to_string())?;
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                loop {
+                    let read = stream
+                        .read(&mut buffer)
+                        .map_err(|error| error.to_string())?;
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                observed_count.fetch_add(1, Ordering::SeqCst);
+                let reason = match status {
+                    200 => "OK",
+                    400 => "Bad Request",
+                    500 => "Internal Server Error",
+                    _ => "Test Response",
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .map_err(|error| error.to_string())?;
+                stream.flush().map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        });
+        (format!("http://{address}"), request_count, handle)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn alt_provisioner_read_only_rpc_retries_http_500_then_recovers() {
+        let (url, request_count, server) = spawn_fake_rpc(vec![
+            (500, r#"{"error":"temporary"}"#),
+            (200, r#"{"jsonrpc":"2.0","result":4242,"id":1}"#),
+        ]);
+        let rpc = RpcClient::new(url);
+
+        let slot = retry_read_only_rpc("test_get_slot", test_rpc_retry_policy(), || {
+            rpc.get_slot_with_commitment(CommitmentConfig::finalized())
+        })
+        .await
+        .expect("HTTP 500 should be retried");
+
+        assert_eq!(slot, 4242);
+        assert_eq!(request_count.load(Ordering::SeqCst), 2);
+        server.join().expect("join fake RPC").expect("fake RPC");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn alt_provisioner_read_only_rpc_does_not_retry_http_400() {
+        let (url, request_count, server) =
+            spawn_fake_rpc(vec![(400, r#"{"error":"bad request"}"#)]);
+        let rpc = RpcClient::new(url);
+
+        let error = retry_read_only_rpc("test_get_slot", test_rpc_retry_policy(), || {
+            rpc.get_slot_with_commitment(CommitmentConfig::finalized())
+        })
+        .await
+        .expect_err("HTTP 400 must not be retried");
+
+        assert!(!is_transient_read_only_rpc_error(&error));
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+        server.join().expect("join fake RPC").expect("fake RPC");
+    }
+
+    #[test]
+    fn alt_provisioner_read_only_rpc_backoff_is_capped() {
+        let policy = RpcReadRetryPolicy {
+            initial_delay: Duration::from_millis(10),
+            maximum_delay: Duration::from_millis(25),
+            ..test_rpc_retry_policy()
+        };
+
+        assert_eq!(policy.delay_after(1), Duration::from_millis(10));
+        assert_eq!(policy.delay_after(2), Duration::from_millis(20));
+        assert_eq!(policy.delay_after(3), Duration::from_millis(25));
+        assert_eq!(policy.delay_after(u32::MAX), Duration::from_millis(25));
     }
 
     #[test]
