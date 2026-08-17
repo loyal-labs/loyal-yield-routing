@@ -237,6 +237,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0038_durable_autodeposit_confirmation.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 39,
+        name: "unbroadcast_cross_mint_expiry_check",
+        sql: include_str!("../../../loyal-yield-store/migrations/0039_unbroadcast_cross_mint_expiry_check.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

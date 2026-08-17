@@ -1015,17 +1015,18 @@ async fn run_poll(
         }
     }
 
-    let expired_attempted_ids = current_height.map_or_else(BTreeSet::new, |height| {
+    let expired_effect_check_ids = current_height.map_or_else(BTreeSet::new, |height| {
         work.iter()
             .filter_map(|(lease, observation)| {
                 (matches!(observation, SignatureObservation::Missing)
-                    && lease.submission.broadcast_count > 0
+                    && (lease.submission.broadcast_count > 0
+                        || lease.submission.movement_leg != "route")
                     && height > lease.submission.last_valid_block_height)
                     .then_some(lease.submission.id)
             })
             .collect()
     });
-    if !expired_attempted_ids.is_empty() {
+    if !expired_effect_check_ids.is_empty() {
         match rpc
             .get_slot_with_commitment(CommitmentConfig::finalized())
             .await
@@ -1039,7 +1040,7 @@ async fn run_poll(
             }) {
             Ok(slot) => current_finalized_slot = Some(slot),
             Err(error) => {
-                let deferred = take_work_leases(&mut work, &expired_attempted_ids);
+                let deferred = take_work_leases(&mut work, &expired_effect_check_ids);
                 let detail = safe_detail(&format!("finalized_effect_slot_failed:{error}"));
                 let deferred_count =
                     defer_claims_after_error(neon, &deferred, options.poll_interval, &detail)
@@ -1534,7 +1535,7 @@ async fn process_submission(
             if current_height
                 .is_some_and(|height| height > lease.submission.last_valid_block_height) =>
         {
-            if lease.submission.broadcast_count == 0 {
+            if lease.submission.broadcast_count == 0 && lease.submission.movement_leg == "route" {
                 let observed_block_height = current_height.expect("matched Some height");
                 neon.advance_signed_route_submission(
                     &lease,

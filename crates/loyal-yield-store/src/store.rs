@@ -36,6 +36,8 @@ const MIGRATION_0036: &str = include_str!("../migrations/0036_cross_mint_swap_po
 const MIGRATION_0037: &str = include_str!("../migrations/0037_cross_mint_vault_opt_ins.sql");
 const MIGRATION_0038: &str =
     include_str!("../migrations/0038_durable_autodeposit_confirmation.sql");
+const MIGRATION_0039: &str =
+    include_str!("../migrations/0039_unbroadcast_cross_mint_expiry_check.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -411,6 +413,12 @@ impl NeonSqlClient {
                 version: 38,
                 name: "durable_autodeposit_confirmation",
                 sql: MIGRATION_0038,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 39,
+                name: "unbroadcast_cross_mint_expiry_check",
+                sql: MIGRATION_0039,
                 expected_checksum: None,
             },
         ] {

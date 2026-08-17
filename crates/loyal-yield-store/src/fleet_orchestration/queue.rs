@@ -4285,11 +4285,11 @@ impl NeonSqlClient {
               AND submission.expected_balance_anchors = $7
               AND (
                   (
-                      submission.broadcast_count = 0
-                      AND submission.submission_state IN ('signed', 'submitted')
-                  ) OR (
-                      submission.broadcast_count > 0
-                      AND submission.submission_state IN (
+                      submission.submission_state IN ('signed', 'submitted')
+                      AND submission.broadcast_count = 0
+                  )
+                  OR (
+                      submission.submission_state IN (
                           'expiry_check_pending', 'effect_ambiguous'
                       )
                       AND submission.expiry_observed_block_height = $4
@@ -4656,7 +4656,19 @@ impl NeonSqlClient {
                         updated_at = now()
                     WHERE id = $1
                       AND submission_state IN ('signed', 'submitted')
-                      AND broadcast_count > 0
+                      AND (
+                          broadcast_count > 0
+                          OR EXISTS (
+                              SELECT 1
+                              FROM loyal_yield.rebalance_decisions decision
+                              WHERE decision.id =
+                                  signed_route_submissions.decision_id
+                                AND decision.movement_route =
+                                  'cross_mint_jupiter'
+                                AND signed_route_submissions.movement_leg <>
+                                  'route'
+                          )
+                      )
                       AND confirmation_lease_owner = $2
                       AND confirmation_fencing_token = $3
                       AND confirmation_lease_expires_at > now()
@@ -4791,7 +4803,19 @@ impl NeonSqlClient {
                               submission_state IN (
                                   'expiry_check_pending', 'effect_ambiguous'
                               )
-                              AND broadcast_count > 0
+                              AND (
+                                  broadcast_count > 0
+                                  OR EXISTS (
+                                      SELECT 1
+                                      FROM loyal_yield.rebalance_decisions decision
+                                      WHERE decision.id =
+                                          signed_route_submissions.decision_id
+                                        AND decision.movement_route =
+                                          'cross_mint_jupiter'
+                                        AND signed_route_submissions.movement_leg <>
+                                          'route'
+                                  )
+                              )
                               AND (
                                   $7
                                   OR EXISTS (

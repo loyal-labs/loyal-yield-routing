@@ -51,8 +51,8 @@ use loyal_yield_store::fleet_orchestration::{
     CrossMintLegPurpose, CrossMintLegReconciliationInput, CrossMintMovementActivationInput,
     CrossMintMovementCloseInput, CrossMintMovementLeg, CrossMintMovementRecord,
     CrossMintNoEffectProofInput, CrossMintPolicyBindings, CrossMintReconciledEffect,
-    CrossMintTerminalOutcome, KaminoPositionAnchor, SignedRouteSubmissionLease, TokenBalanceAnchor,
-    TokenBalanceDelta,
+    CrossMintTerminalOutcome, KaminoPositionAnchor, SignedRouteSubmissionLease,
+    SignedRouteSubmissionState, TokenBalanceAnchor, TokenBalanceDelta,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -6169,6 +6169,33 @@ async fn cross_mint_movement_subchecks(
         )
         .await
         .is_err();
+    let generation_one_expiry_check_slot = 10_801;
+    let generation_one_expiry_pending = fixture
+        .client
+        .advance_signed_route_submission(
+            &generation_one_lease,
+            SignedRouteSubmissionAdvance::ExpiryCheckPending {
+                checked_at: Utc::now(),
+                observed_block_height: expired_height,
+                effect_check_slot: generation_one_expiry_check_slot,
+            },
+        )
+        .await?;
+    let unbroadcast_cross_mint_uses_effect_lane = generation_one_expiry_pending.state
+        == SignedRouteSubmissionState::ExpiryCheckPending
+        && generation_one_expiry_pending.broadcast_count == 0;
+    let generation_one_lease = fixture
+        .client
+        .lease_reconciliation_pending_signed_route_submissions(
+            &no_effect.movement.cluster,
+            "no-effect-reconciler",
+            1,
+            Utc::now() + chrono::Duration::minutes(2),
+        )
+        .await?
+        .into_iter()
+        .find(|lease| lease.submission.id == generation_one.id)
+        .ok_or("unbroadcast cross-mint expiry did not enter the effect-check lane")?;
     let receipt = fixture
         .client
         .record_cross_mint_no_effect_receipt(
@@ -6176,7 +6203,7 @@ async fn cross_mint_movement_subchecks(
             CrossMintNoEffectProofInput {
                 observed_block_height: expired_height,
                 signature_history_checked_through_slot: 10_802,
-                effect_check_slot: 10_801,
+                effect_check_slot: generation_one_expiry_check_slot,
                 observed_balance_anchors: generation_one.expected_balance_anchors.clone(),
                 signature_history_evidence: json!({
                     "rpcCommitment": "finalized",
@@ -6245,6 +6272,7 @@ async fn cross_mint_movement_subchecks(
         "cross_mint_proved_no_effect_advances_leg_generation",
         unanchored_publication_rejected
             && caller_booleans_without_receipt_rejected
+            && unbroadcast_cross_mint_uses_effect_lane
             && receipt_mutation_rejected
             && receipt.submission_id == generation_one.id
             && generations == vec![(1, "expired".to_owned()), (2, "signed".to_owned())],
@@ -6252,6 +6280,7 @@ async fn cross_mint_movement_subchecks(
             "legHistory": generations,
             "unanchoredPublicationRejected": unanchored_publication_rejected,
             "callerBooleansWithoutReceiptRejected": caller_booleans_without_receipt_rejected,
+            "unbroadcastCrossMintUsesEffectLane": unbroadcast_cross_mint_uses_effect_lane,
             "receiptId": receipt.submission_id,
             "receiptHash": receipt.evidence_hash,
             "receiptMutationRejected": receipt_mutation_rejected,
