@@ -73,6 +73,7 @@ pub(super) enum CrossMintWorkResult {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct JupiterBuildEnvelope {
+    out_amount: String,
     other_amount_threshold: String,
     slippage_bps: u16,
     addresses_by_lookup_table_address: BTreeMap<String, Vec<String>>,
@@ -1988,26 +1989,21 @@ async fn prepare_jupiter_swap_leg(
     }
     let rpc = RpcClient::new_with_commitment(runtime.rpc.url(), CommitmentConfig::finalized());
     verify_attributed_custody_with_history(runtime, &rpc, movement, vault_pubkey).await?;
-    let response = fetch_jupiter_build(
+    let effective_value_loss_bps = effective_maximum_value_loss_bps(
+        &opportunity.execution_plan,
+        config.maximum_value_loss_bps,
+    )?;
+    let (response, envelope) = fetch_value_loss_bounded_jupiter_build(
         config,
         input_mint,
         output_mint,
         u64::try_from(movement.custody_amount_raw)?,
         vault_pubkey,
         effective_slippage_bps,
+        effective_value_loss_bps,
     )
     .await?;
-    let envelope: JupiterBuildEnvelope = serde_json::from_slice(&response)?;
     let minimum_output = envelope.other_amount_threshold.parse::<u64>()?;
-    let effective_value_loss_bps = effective_maximum_value_loss_bps(
-        &opportunity.execution_plan,
-        config.maximum_value_loss_bps,
-    )?;
-    validate_signed_minimum_output_value_loss(
-        u64::try_from(movement.custody_amount_raw)?,
-        minimum_output,
-        effective_value_loss_bps,
-    )?;
     if envelope.slippage_bps > effective_slippage_bps {
         return Err("fresh Jupiter build fails post-withdraw economics".into());
     }
@@ -2256,16 +2252,46 @@ fn validate_signed_minimum_output_value_loss(
     signed_minimum_output: u64,
     maximum_value_loss_bps: u16,
 ) -> Result<(), Box<dyn Error>> {
-    let minimum_economic_output = u64::try_from(
-        u128::from(source_amount)
-            .checked_mul(u128::from(10_000u16 - maximum_value_loss_bps))
-            .ok_or("maximum value-loss calculation overflowed")?
-            / 10_000,
-    )?;
+    let minimum_economic_output = minimum_economic_output(source_amount, maximum_value_loss_bps)?;
     if signed_minimum_output == 0 || signed_minimum_output < minimum_economic_output {
         return Err("signed Jupiter minimum output exceeds the maximum value loss".into());
     }
     Ok(())
+}
+
+fn minimum_economic_output(
+    source_amount: u64,
+    maximum_value_loss_bps: u16,
+) -> Result<u64, Box<dyn Error>> {
+    Ok(u64::try_from(
+        u128::from(source_amount)
+            .checked_mul(u128::from(10_000u16 - maximum_value_loss_bps))
+            .ok_or("maximum value-loss calculation overflowed")?
+            / 10_000,
+    )?)
+}
+
+fn tighter_jupiter_slippage_bps(
+    source_amount: u64,
+    quoted_output: u64,
+    requested_slippage_bps: u16,
+    maximum_value_loss_bps: u16,
+) -> Result<u16, Box<dyn Error>> {
+    let minimum_output = minimum_economic_output(source_amount, maximum_value_loss_bps)?;
+    if quoted_output < minimum_output {
+        return Err("fresh Jupiter quoted output exceeds the maximum value loss".into());
+    }
+    let available_bps = u16::try_from(
+        u128::from(quoted_output - minimum_output)
+            .checked_mul(10_000)
+            .ok_or("Jupiter residual slippage calculation overflowed")?
+            / u128::from(quoted_output),
+    )?;
+    let tightened = requested_slippage_bps.min(available_bps).saturating_sub(1);
+    if tightened == 0 || tightened >= requested_slippage_bps {
+        return Err("fresh Jupiter quote leaves no safe positive slippage budget".into());
+    }
+    Ok(tightened)
 }
 
 async fn fetch_jupiter_build(
@@ -2301,6 +2327,56 @@ async fn fetch_jupiter_build(
         return Err("Jupiter /build response exceeds 2 MB".into());
     }
     Ok(bytes.to_vec())
+}
+
+async fn fetch_value_loss_bounded_jupiter_build(
+    config: &CrossMintWorkerConfig,
+    input_mint: Pubkey,
+    output_mint: Pubkey,
+    amount: u64,
+    taker: Pubkey,
+    maximum_slippage_bps: u16,
+    maximum_value_loss_bps: u16,
+) -> Result<(Vec<u8>, JupiterBuildEnvelope), Box<dyn Error>> {
+    let response = fetch_jupiter_build(
+        config,
+        input_mint,
+        output_mint,
+        amount,
+        taker,
+        maximum_slippage_bps,
+    )
+    .await?;
+    let envelope: JupiterBuildEnvelope = serde_json::from_slice(&response)?;
+    let minimum_output = envelope.other_amount_threshold.parse::<u64>()?;
+    if validate_signed_minimum_output_value_loss(amount, minimum_output, maximum_value_loss_bps)
+        .is_ok()
+    {
+        return Ok((response, envelope));
+    }
+
+    let tightened_slippage_bps = tighter_jupiter_slippage_bps(
+        amount,
+        envelope.out_amount.parse::<u64>()?,
+        maximum_slippage_bps,
+        maximum_value_loss_bps,
+    )?;
+    let response = fetch_jupiter_build(
+        config,
+        input_mint,
+        output_mint,
+        amount,
+        taker,
+        tightened_slippage_bps,
+    )
+    .await?;
+    let envelope: JupiterBuildEnvelope = serde_json::from_slice(&response)?;
+    validate_signed_minimum_output_value_loss(
+        amount,
+        envelope.other_amount_threshold.parse::<u64>()?,
+        maximum_value_loss_bps,
+    )?;
+    Ok((response, envelope))
 }
 
 fn effective_maximum_value_loss_bps(
@@ -2442,23 +2518,18 @@ async fn certify_cross_mint_before_withdraw(
         output_mint,
         vault_pubkey,
     )?;
-    let response = fetch_jupiter_build(
+    let (response, envelope) = fetch_value_loss_bounded_jupiter_build(
         config,
         input_mint,
         output_mint,
         input_amount,
         vault_pubkey,
         effective_slippage_bps,
+        effective_value_loss_bps,
     )
     .await?;
     let response_sha256 = format!("{:x}", Sha256::digest(&response));
-    let envelope: JupiterBuildEnvelope = serde_json::from_slice(&response)?;
     let minimum_output = envelope.other_amount_threshold.parse::<u64>()?;
-    validate_signed_minimum_output_value_loss(
-        input_amount,
-        minimum_output,
-        effective_value_loss_bps,
-    )?;
     if envelope.slippage_bps > effective_slippage_bps {
         return Err("pre-withdraw Jupiter build exceeds effective slippage".into());
     }
@@ -2632,7 +2703,7 @@ async fn certify_cross_mint_before_withdraw(
         "targetMint": opportunity.target_liquidity_mint,
         "inputAmountRaw": input_amount.to_string(),
         "minimumOutputAmountRaw": minimum_output.to_string(),
-        "effectiveSlippageBps": effective_slippage_bps,
+        "effectiveSlippageBps": envelope.slippage_bps,
         "effectiveMaximumValueLossBps": effective_value_loss_bps,
         "finalizedPolicyReadbacks": {
             "withdraw": {
@@ -3512,6 +3583,26 @@ mod cross_mint_reconciliation_tests {
         validate_signed_minimum_output_value_loss(1_000_000, 995_000, 50).unwrap();
         let error = validate_signed_minimum_output_value_loss(1_000_000, 990_025, 50).unwrap_err();
         assert!(error.to_string().contains("signed Jupiter minimum output"));
+    }
+
+    #[test]
+    fn jupiter_slippage_tightens_to_keep_the_signed_threshold_inside_total_loss() {
+        let source_amount = 244_510_313;
+        let quoted_output = 244_422_389;
+        let slippage = tighter_jupiter_slippage_bps(source_amount, quoted_output, 50, 50)
+            .expect("the live-sized quote leaves a positive residual slippage budget");
+        assert_eq!(slippage, 45);
+
+        let signed_minimum =
+            u64::try_from(u128::from(quoted_output) * u128::from(10_000u16 - slippage) / 10_000)
+                .unwrap();
+        validate_signed_minimum_output_value_loss(source_amount, signed_minimum, 50).unwrap();
+    }
+
+    #[test]
+    fn jupiter_slippage_does_not_mask_a_quote_outside_total_loss() {
+        let error = tighter_jupiter_slippage_bps(1_000_000, 994_999, 50, 50).unwrap_err();
+        assert!(error.to_string().contains("quoted output"));
     }
 
     #[test]
