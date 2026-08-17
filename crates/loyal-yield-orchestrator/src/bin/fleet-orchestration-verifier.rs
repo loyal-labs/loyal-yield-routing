@@ -4588,6 +4588,7 @@ async fn seed_cross_mint_ready_opportunity(
                     'swap', jsonb_build_object(
                         'policy_account', $8,
                         'source_shard', 'classic',
+                        'enrollment_generation', 1,
                         'observed_slot', 10000,
                         'observed_signature', $9,
                         'source_commitment', 'finalized',
@@ -6761,11 +6762,19 @@ async fn cross_mint_movement_subchecks(
     let paused_before_activation = fixture
         .client
         .disable_cross_mint_vault_opt_in(
-            paused_before_activation_lookup,
+            paused_before_activation_lookup.clone(),
             activation_opt_in.generation,
         )
         .await?
         .ok_or("pre-activation enrollment disappeared while pausing")?;
+    let resumed_before_activation = fixture
+        .client
+        .enable_cross_mint_vault_opt_in(
+            paused_before_activation_lookup,
+            paused_before_activation.generation,
+        )
+        .await?
+        .ok_or("pre-activation enrollment disappeared while resuming")?;
     let paused_activation_error = fixture
         .client
         .activate_cross_mint_movement(
@@ -6777,11 +6786,11 @@ async fn cross_mint_movement_subchecks(
                     "kind": "cross_mint_preflight",
                     "fixture": "paused_before_activation",
                 }),
-                policy_bindings: paused_before_activation_bindings,
+                policy_bindings: paused_before_activation_bindings.clone(),
             },
         )
         .await
-        .expect_err("a paused enrollment cannot activate a new movement");
+        .expect_err("a plan from before pause and resume cannot activate a new movement");
 
     let paused_before_withdraw =
         activate_cross_mint_fixture(fixture, "cross_mint_paused_before_withdraw").await?;
@@ -6826,9 +6835,20 @@ async fn cross_mint_movement_subchecks(
         .ok_or("pre-withdraw fixture lacks its enrollment")?;
     let paused_before_publication = fixture
         .client
-        .disable_cross_mint_vault_opt_in(paused_before_withdraw_lookup, withdraw_opt_in.generation)
+        .disable_cross_mint_vault_opt_in(
+            paused_before_withdraw_lookup.clone(),
+            withdraw_opt_in.generation,
+        )
         .await?
         .ok_or("pre-withdraw enrollment disappeared while pausing")?;
+    let resumed_before_publication = fixture
+        .client
+        .enable_cross_mint_vault_opt_in(
+            paused_before_withdraw_lookup,
+            paused_before_publication.generation,
+        )
+        .await?
+        .ok_or("pre-withdraw enrollment disappeared while resuming")?;
     let paused_withdraw_rejected = fixture
         .client
         .append_cross_mint_leg(&paused_before_withdraw_lease, paused_before_withdraw_input)
@@ -6850,8 +6870,8 @@ async fn cross_mint_movement_subchecks(
                 reason: "start_authority_revoked_before_withdraw".to_owned(),
                 evidence: json!({
                     "kind": "start_authority_revoked_before_withdraw",
-                    "cause": "user_pause",
-                    "optInGeneration": paused_before_publication.generation,
+                    "cause": "stale_enrollment_generation",
+                    "optInGeneration": resumed_before_publication.generation,
                 }),
             },
         )
@@ -6859,18 +6879,30 @@ async fn cross_mint_movement_subchecks(
     checks.push(subcheck(
         "cross_mint_pause_fences_activation_and_initial_withdraw",
         !paused_before_activation.enabled
+            && resumed_before_activation.enabled
+            && resumed_before_activation.generation
+                > paused_before_activation_bindings.swap.enrollment_generation
             && paused_activation_error
                 .to_string()
                 .contains("lost an opted-in finalized policy binding")
             && !paused_before_publication.enabled
+            && resumed_before_publication.enabled
+            && resumed_before_publication.generation
+                > paused_before_withdraw.policy_bindings.swap.enrollment_generation
             && paused_withdraw_rejected
             && paused_withdraw_signed_count == 0
             && paused_before_withdraw_closed.terminal_outcome
                 == Some(CrossMintTerminalOutcome::CancelledBeforeWithdraw),
         json!({
             "activationEnabledAfterPause": paused_before_activation.enabled,
+            "activationEnabledAfterResume": resumed_before_activation.enabled,
+            "activationPlannedGeneration": paused_before_activation_bindings.swap.enrollment_generation,
+            "activationCurrentGeneration": resumed_before_activation.generation,
             "activationError": paused_activation_error.to_string(),
             "publicationEnabledAfterPause": paused_before_publication.enabled,
+            "publicationEnabledAfterResume": resumed_before_publication.enabled,
+            "publicationPlannedGeneration": paused_before_withdraw.policy_bindings.swap.enrollment_generation,
+            "publicationCurrentGeneration": resumed_before_publication.generation,
             "publicationRejected": paused_withdraw_rejected,
             "signedSubmissionCount": paused_withdraw_signed_count,
             "terminalOutcome": paused_before_withdraw_closed.terminal_outcome,

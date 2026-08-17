@@ -365,13 +365,28 @@ async fn per_vault_opt_in_is_immutable_and_disable_is_committed() {
         .to_string()
         .contains("generation changed before transition"));
 
+    let disabled_again = client
+        .disable_cross_mint_vault_opt_in(lookup.clone(), enabled.generation)
+        .await
+        .expect("disable the resumed opt-in")
+        .expect("existing opt-in is returned");
+    assert!(!disabled_again.enabled);
+    assert_eq!(disabled_again.generation, 4);
+    let aba_stale_pause_error = client
+        .disable_cross_mint_vault_opt_in(lookup.clone(), created.generation)
+        .await
+        .expect_err("an ABA-stale pause retry cannot match a later pause");
+    assert!(aba_stale_pause_error
+        .to_string()
+        .contains("generation changed before transition"));
+
     let replayed_setup = client
         .upsert_cross_mint_vault_opt_in(CrossMintVaultOptInUpsert {
             cluster: lookup.cluster.clone(),
             settings: lookup.settings.clone(),
             vault_index: lookup.vault_index,
             vault_pubkey: lookup.vault_pubkey.clone(),
-            enabled: false,
+            enabled: true,
             classic_policy_account: "opt-in-classic-policy".to_owned(),
             classic_policy_seed: 11,
             token_2022_policy_account: "opt-in-token-2022-policy".to_owned(),
@@ -381,8 +396,8 @@ async fn per_vault_opt_in_is_immutable_and_disable_is_committed() {
         })
         .await
         .expect("setup confirmation replay is idempotent");
-    assert!(replayed_setup.enabled);
-    assert_eq!(replayed_setup.generation, enabled.generation);
+    assert!(!replayed_setup.enabled);
+    assert_eq!(replayed_setup.generation, disabled_again.generation);
 
     let immutable_error = client
         .upsert_cross_mint_vault_opt_in(CrossMintVaultOptInUpsert {
@@ -409,8 +424,8 @@ async fn per_vault_opt_in_is_immutable_and_disable_is_committed() {
         .await
         .expect("read unchanged opt-in")
         .expect("opt-in remains durable after rejected update");
-    assert!(persisted.enabled);
+    assert!(!persisted.enabled);
     assert_eq!(persisted.max_slippage_bps, 50);
     assert_eq!(persisted.daily_source_mint_spending_cap, 1_000_000);
-    assert_eq!(persisted.generation, 3);
+    assert_eq!(persisted.generation, 4);
 }

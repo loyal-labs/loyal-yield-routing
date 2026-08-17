@@ -265,6 +265,7 @@ pub struct CrossMintEarnPolicyBinding {
 pub struct CrossMintSwapPolicyBinding {
     pub policy_account: String,
     pub source_shard: String,
+    pub enrollment_generation: i64,
     pub observed_slot: u64,
     pub observed_signature: String,
     pub source_commitment: String,
@@ -325,6 +326,7 @@ impl CrossMintPolicyBindings {
             || !finalized
             || self.swap.source_commitment != "finalized"
             || !matches!(self.swap.source_shard.as_str(), "classic" | "token_2022")
+            || self.swap.enrollment_generation <= 0
             || self.swap.max_slippage_bps == 0
             || self.swap.max_slippage_bps > 10_000
             || self.swap.daily_source_mint_spending_cap == 0
@@ -598,6 +600,7 @@ impl NeonSqlClient {
              AND opt_in.max_slippage_bps = swap_policy.max_slippage_bps
              AND opt_in.daily_source_mint_spending_cap =
                  swap_policy.daily_source_mint_spending_cap
+             AND opt_in.generation = $18
             JOIN loyal_yield.cross_mint_swap_policies sibling_policy
               ON sibling_policy.cluster = swap_policy.cluster
              AND sibling_policy.settings = swap_policy.settings
@@ -671,6 +674,7 @@ impl NeonSqlClient {
         .bind(i32::from(bindings.swap.max_slippage_bps))
         .bind(swap_daily_source_mint_spending_cap)
         .bind(&bindings.swap.manifest_fingerprint)
+        .bind(bindings.swap.enrollment_generation)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| {
@@ -2499,6 +2503,7 @@ async fn validate_initial_cross_mint_policy_bindings(
          AND opt_in.max_slippage_bps = swap_policy.max_slippage_bps
          AND opt_in.daily_source_mint_spending_cap =
              swap_policy.daily_source_mint_spending_cap
+         AND opt_in.generation = $18
         JOIN loyal_yield.cross_mint_swap_policies sibling_policy
           ON sibling_policy.cluster = swap_policy.cluster
          AND sibling_policy.settings = swap_policy.settings
@@ -2575,6 +2580,7 @@ async fn validate_initial_cross_mint_policy_bindings(
     .bind(withdraw_observed_slot)
     .bind(swap_daily_source_mint_spending_cap)
     .bind(&bindings.swap.manifest_fingerprint)
+    .bind(bindings.swap.enrollment_generation)
     .fetch_optional(&mut *connection)
     .await?;
     if valid.is_none() {

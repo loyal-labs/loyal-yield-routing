@@ -3583,6 +3583,7 @@ mod cross_mint_reconciliation_tests {
                 "swap": {
                     "policy_account": Pubkey::new_unique().to_string(),
                     "source_shard": "classic",
+                    "enrollment_generation": 1,
                     "observed_slot": 11,
                     "observed_signature": "swap-signature",
                     "source_commitment": "finalized",
@@ -3602,6 +3603,7 @@ mod cross_mint_reconciliation_tests {
 
         let bindings = cross_mint_policy_bindings(&plan).unwrap();
         assert_eq!(bindings.swap.source_shard, "classic");
+        assert_eq!(bindings.swap.enrollment_generation, 1);
         assert_eq!(bindings.swap.manifest_fingerprint, "a".repeat(64));
         let lane = jupiter_lane_contract(&plan).unwrap();
         assert_eq!(lane.constraint_index(JupiterV2Dialect::RouteV2).unwrap(), 0);

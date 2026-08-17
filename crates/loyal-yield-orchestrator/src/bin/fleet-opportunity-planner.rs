@@ -1907,6 +1907,7 @@ mod tests {
                 loyal_yield_store::fleet_orchestration::CrossMintSwapPolicyBinding {
                     policy_account: "swap-policy".to_owned(),
                     source_shard: "classic".to_owned(),
+                    enrollment_generation: 1,
                     observed_slot: 23,
                     observed_signature: "swap-signature".to_owned(),
                     source_commitment: "finalized".to_owned(),
@@ -2022,6 +2023,7 @@ mod tests {
                 "swap": {
                     "policy_account": "swap-policy",
                     "source_shard": "classic",
+                    "enrollment_generation": 1,
                     "observed_slot": 23,
                     "observed_signature": "swap-signature",
                     "source_commitment": "finalized",

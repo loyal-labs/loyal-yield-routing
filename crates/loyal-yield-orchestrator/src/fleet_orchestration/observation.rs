@@ -1777,6 +1777,7 @@ struct CrossMintSwapPolicyEvidence {
     vault_pubkey: String,
     delegated_signer: String,
     source_shard: String,
+    enrollment_generation: i64,
     max_slippage_bps: i32,
     daily_source_mint_spending_cap: i64,
     manifest_fingerprint: String,
@@ -1982,6 +1983,7 @@ async fn load_fleet_sources(
                             'vaultPubkey', swap_policy.vault_pubkey,
                             'delegatedSigner', swap_policy.delegated_signer,
                             'sourceShard', swap_policy.source_shard,
+                            'enrollmentGeneration', opt_in.generation,
                             'maxSlippageBps', swap_policy.max_slippage_bps,
                             'dailySourceMintSpendingCap',
                                 swap_policy.daily_source_mint_spending_cap,
@@ -1997,6 +1999,24 @@ async fn load_fleet_sources(
                                  swap_policy.policy_account
                     )
                     FROM loyal_yield.cross_mint_swap_policies swap_policy
+                    JOIN loyal_yield.cross_mint_vault_opt_ins opt_in
+                      ON opt_in.enabled = TRUE
+                     AND opt_in.cluster = swap_policy.cluster
+                     AND opt_in.settings = swap_policy.settings
+                     AND opt_in.vault_index = swap_policy.vault_index
+                     AND opt_in.vault_pubkey = swap_policy.vault_pubkey
+                     AND CASE swap_policy.source_shard
+                         WHEN 'classic' THEN
+                             opt_in.classic_policy_account = swap_policy.policy_account
+                             AND opt_in.classic_policy_seed = swap_policy.policy_seed
+                         WHEN 'token_2022' THEN
+                             opt_in.token_2022_policy_account = swap_policy.policy_account
+                             AND opt_in.token_2022_policy_seed = swap_policy.policy_seed
+                         ELSE FALSE
+                     END
+                     AND opt_in.max_slippage_bps = swap_policy.max_slippage_bps
+                     AND opt_in.daily_source_mint_spending_cap =
+                         swap_policy.daily_source_mint_spending_cap
                     WHERE $9::BOOLEAN
                       AND swap_policy.active = TRUE
                       AND swap_policy.start_eligible = TRUE
@@ -2008,27 +2028,6 @@ async fn load_fleet_sources(
                       AND swap_policy.vault_index = v.vault_index
                       AND swap_policy.vault_pubkey = v.vault_pubkey
                       AND swap_policy.delegated_signer = $1
-                      AND EXISTS (
-                          SELECT 1
-                          FROM loyal_yield.cross_mint_vault_opt_ins opt_in
-                          WHERE opt_in.enabled = TRUE
-                            AND opt_in.cluster = swap_policy.cluster
-                            AND opt_in.settings = swap_policy.settings
-                            AND opt_in.vault_index = swap_policy.vault_index
-                            AND opt_in.vault_pubkey = swap_policy.vault_pubkey
-                            AND CASE swap_policy.source_shard
-                                WHEN 'classic' THEN
-                                    opt_in.classic_policy_account = swap_policy.policy_account
-                                    AND opt_in.classic_policy_seed = swap_policy.policy_seed
-                                WHEN 'token_2022' THEN
-                                    opt_in.token_2022_policy_account = swap_policy.policy_account
-                                    AND opt_in.token_2022_policy_seed = swap_policy.policy_seed
-                                ELSE FALSE
-                            END
-                            AND opt_in.max_slippage_bps = swap_policy.max_slippage_bps
-                            AND opt_in.daily_source_mint_spending_cap =
-                                swap_policy.daily_source_mint_spending_cap
-                      )
                       AND 2 = (
                           SELECT count(DISTINCT policy.source_shard)
                           FROM loyal_yield.cross_mint_swap_policies policy
@@ -3273,9 +3272,11 @@ fn cross_mint_policy_selection<'a>(
     }
     let configured_slippage_bps = policies[0].max_slippage_bps;
     let configured_daily_cap = policies[0].daily_source_mint_spending_cap;
+    let enrollment_generation = policies[0].enrollment_generation;
     if policies.iter().any(|policy| {
         policy.max_slippage_bps != configured_slippage_bps
             || policy.daily_source_mint_spending_cap != configured_daily_cap
+            || policy.enrollment_generation != enrollment_generation
     }) {
         return None;
     }
@@ -3288,6 +3289,7 @@ fn jupiter_swap_lane(policy: &CrossMintSwapPolicyEvidence) -> CrossMintSwapPolic
     CrossMintSwapPolicyBinding {
         policy_account: policy.policy_account.clone(),
         source_shard: policy.source_shard.clone(),
+        enrollment_generation: policy.enrollment_generation,
         observed_slot: u64::try_from(policy.last_seen_slot)
             .expect("stored swap policy slot must be nonnegative"),
         observed_signature: policy.last_seen_signature.clone(),
@@ -3539,6 +3541,7 @@ mod tests {
             vault_pubkey: "vault".to_owned(),
             delegated_signer: "signer".to_owned(),
             source_shard: source_shard.to_owned(),
+            enrollment_generation: 1,
             max_slippage_bps: 50,
             daily_source_mint_spending_cap: 1_000_000_000,
             manifest_fingerprint: "a".repeat(64),

@@ -908,8 +908,15 @@ impl NeonSqlClient {
             return Ok(None);
         };
         if current.enabled == enabled {
-            tx.commit().await?;
-            return cross_mint_vault_opt_in_from_row(current).map(Some);
+            if current.generation == expected_generation
+                || expected_generation.checked_add(1) == Some(current.generation)
+            {
+                tx.commit().await?;
+                return cross_mint_vault_opt_in_from_row(current).map(Some);
+            }
+            return Err(OrchestratorError::StoreInvariant(
+                "cross-mint opt-in generation changed before transition".to_owned(),
+            ));
         }
         if current.generation != expected_generation {
             return Err(OrchestratorError::StoreInvariant(
