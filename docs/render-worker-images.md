@@ -140,28 +140,29 @@ applied. Live readback on 2026-06-17 confirmed these six relations exist:
 `loyal_staging.latest_balance_sweep_wallet_ata_observations`. Both split streams
 were empty immediately after creation.
 
-CI builds the production images in `.github/workflows/worker-images.yml` and
-tags them as `sha-${GITHUB_SHA}`. Its `images` input can package both workers,
-either worker independently, the operator image, or all three image families.
-One reusable job compiles every shipped Rust binary first; the selected
-Dockerfiles only package that artifact. Render services should use those
-immutable SHA tags or image digests. Do not use `latest` as the only service
-image reference.
+CI builds the images in `.github/workflows/worker-images.yml` and tags them as
+`sha-${GITHUB_SHA}`. Pull requests compile every shipped Rust binary once, then
+package and probe all three compiler-free Dockerfiles without publishing.
+
+A trusted `main` push compiles the shared Rust artifact once and publishes all three immutable image families.
+Publishing these images does not deploy them.
+Deployment selects an already-published immutable SHA tag or digest; it never rebuilds Rust.
+Render services should use those immutable references and must not use `latest`
+as their only image reference.
 
 Operator-only binaries are deliberately excluded from the production images.
-Build `Dockerfile.operator-tools` only through
-the shared Rust image workflow. Pull requests enter through `worker-images.yml`
-and build and probe all three image families without pushing. Manual dispatch
-of `operator-tools-image.yml` publishes only the immutable
-`operator-tools:sha-<commit>` image. It contains `loyal-timescale-migrations`,
-the fleet verifier and production-evidence tools, `same-mint-monitor-e2e`, and
-the shared-catalog, alert-monitor, legacy-import, and cleanup lookup-table
-tools. No Render service is pinned to this image.
+`Dockerfile.operator-tools` is packaged from the same shared artifact and its
+immutable `operator-tools:sha-<commit>` image is published on trusted `main`
+pushes. It contains `loyal-timescale-migrations`, the fleet verifier and
+production-evidence tools, `same-mint-monitor-e2e`, and the shared-catalog,
+alert-monitor, legacy-import, and cleanup lookup-table tools. No Render service
+is pinned to this image.
 
 The production/staging stream-selector code in this change is not active on
-Render until the repo change is committed, the `worker-images` workflow builds
-`laserstream-workers` and `light-workers` for that commit, and the Render
-services are repointed to those resulting `sha-<commit>` images or digests.
+Render until the repo change is committed, the `worker-images` workflow
+publishes `laserstream-workers` and `light-workers` for that commit, and the
+Render services are repointed to those resulting `sha-<commit>` images or
+digests.
 Existing live image pins predate this work unless explicitly updated in a later
 verification run. Do not create or start the staging ATA monitor/projector on
 older images; older binaries do not honor `BALANCE_SWEEP_ATA_STREAM` and can use

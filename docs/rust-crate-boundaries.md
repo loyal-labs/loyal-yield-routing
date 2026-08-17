@@ -79,21 +79,17 @@ workspace check. Operator-only packages such as `autonomous-vaults`,
 
 ## Worker images
 
-The `worker-images` workflow has an `images` dispatch input:
+The `worker-images` workflow has two automatic paths. Pull requests run one
+shared Cargo invocation in `scripts/build-rust-image-binaries.sh`, then package
+and probe all three image families without publishing them.
 
-- `workers` packages both production worker images and is the default.
-- `light-workers` builds only the SQL/realtime/fleet worker image.
-- `laserstream-workers` builds only the two LaserStream monitor services.
-- `operator-tools` builds only the operator image.
-- `all` builds all three image families.
+Main pushes compile once, package all three image families, and publish immutable SHA tags.
 
-All selections first run one shared Cargo invocation in
-`scripts/build-rust-image-binaries.sh`. Pull requests restore the trusted Cargo
-cache, then package its binary artifact with compiler-free Dockerfiles. Main
-pushes refresh that Cargo cache without packaging images; only manual dispatch
-publishes images. Operator and verification binaries live in
-`Dockerfile.operator-tools` and are not copied into either production worker
-image.
+Manual deployment selects an already-published immutable image tag or digest and never rebuilds Rust.
+Publishing remains separate from deployment because Render services keep their
+explicit image pins and `autoDeploy: false`.
+Operator and verification binaries live in `Dockerfile.operator-tools` and are
+not copied into either production worker image.
 
 ## Upstream version blockers
 

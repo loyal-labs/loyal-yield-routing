@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-repo_root=$(git rev-parse --show-toplevel)
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
 
 failures=0
@@ -25,11 +25,31 @@ require_file() {
   fi
 }
 
+require_absent() {
+  local path=$1
+  if [[ -e "$path" ]]; then
+    fail "$path must be absent"
+  else
+    pass "$path is absent"
+  fi
+}
+
 require_text() {
   local path=$1
   local text=$2
   local description=$3
   if [[ -f "$path" ]] && rg -F -q -- "$text" "$path"; then
+    pass "$description"
+  else
+    fail "$description"
+  fi
+}
+
+require_pattern() {
+  local path=$1
+  local pattern=$2
+  local description=$3
+  if [[ -f "$path" ]] && rg -q -- "$pattern" "$path"; then
     pass "$description"
   else
     fail "$description"
@@ -47,44 +67,114 @@ forbid_pattern() {
   fi
 }
 
+require_fixed_count() {
+  local path=$1
+  local text=$2
+  local expected=$3
+  local description=$4
+  local actual=0
+  if [[ -f "$path" ]]; then
+    actual=$(rg -F -c -- "$text" "$path" || true)
+  fi
+  if [[ "$actual" == "$expected" ]]; then
+    pass "$description"
+  else
+    fail "$description (expected $expected, found $actual)"
+  fi
+}
+
+normalize_inventory() {
+  tr ' ' '\n' | sed '/^$/d' | LC_ALL=C sort -u
+}
+
+require_inventory_equal() {
+  local expected=$1
+  local actual=$2
+  local description=$3
+  if [[ "$expected" == "$actual" ]]; then
+    pass "$description"
+  else
+    fail "$description (expected: $(printf '%s' "$expected" | tr '\n' ' '); found: $(printf '%s' "$actual" | tr '\n' ' '))"
+  fi
+}
+
+dockerfile_inventory() {
+  local dockerfile=$1
+  sed -nE 's|^COPY --chmod=0755 build-artifacts/rust/([^ ]+) /usr/local/bin/([^ ]+)$|\1 \2|p' "$dockerfile" \
+    | while read -r source destination; do
+        if [[ "$source" == "$destination" ]]; then
+          printf '%s\n' "$source"
+        fi
+      done \
+    | LC_ALL=C sort -u
+}
+
+workflow_probe_inventory() {
+  local variable=$1
+  sed -nE "s/^[[:space:]]{2}${variable}:[[:space:]]*(.*)$/\\1/p" "$workflow" | normalize_inventory
+}
+
 workflow=.github/workflows/rust-image-build.yml
 worker_entry=.github/workflows/worker-images.yml
 operator_entry=.github/workflows/operator-tools-image.yml
 build_script=scripts/build-rust-image-binaries.sh
+verifier=scripts/verify-rust-image-build-once.sh
 crate_boundaries=docs/rust-crate-boundaries.md
 worker_image_docs=docs/render-worker-images.md
 
 require_file "$workflow"
 require_file "$worker_entry"
-require_file "$operator_entry"
+require_absent "$operator_entry"
 require_file "$build_script"
+require_file "$verifier"
 require_file "$crate_boundaries"
 require_file "$worker_image_docs"
 
-require_text "$workflow" 'container: rust:1.89-bookworm' 'Rust compiles once in the Bookworm toolchain container'
-require_text "$workflow" 'uses: actions/cache/restore@v4' 'Rust build restores an explicit Cargo cache'
-require_text "$workflow" 'uses: actions/cache/save@v4' 'Trusted main builds save the refreshed Cargo cache'
-require_text "$workflow" 'target' 'Cargo cache includes the target directory'
-require_text "$workflow" 'github.event_name == '\''push'\''' 'Cargo cache save is guarded by a trusted push event'
-require_text "$workflow" 'github.ref == '\''refs/heads/main'\''' 'Cargo cache save is restricted to main'
-require_text "$workflow" 'uses: actions/upload-artifact@v4' 'Rust build uploads finished binaries as an artifact'
-require_text "$workflow" 'if: inputs.images != '\''none'\''' 'Cache-only main builds skip the binary artifact upload'
-require_text "$workflow" 'uses: actions/download-artifact@v4' 'Image jobs download finished binaries'
-require_text "$workflow" 'needs: rust-build' 'Image packaging waits for the single Rust build job'
-require_text "$workflow" 'bash scripts/build-rust-image-binaries.sh' 'Workflow delegates the only Rust compilation to the build script'
-require_text "$build_script" 'BASH_SOURCE[0]' 'Build script resolves the checkout without invoking Git'
-forbid_pattern "$build_script" 'git rev-parse' 'Container build does not depend on Git checkout ownership'
+# Event contract: PRs verify; main builds and publishes; no manual build path remains.
+require_text "$worker_entry" 'pull_request:' 'Worker images verify pull requests'
+require_text "$worker_entry" 'push:' 'Worker images build trusted main pushes'
+require_text "$worker_entry" 'branches:' 'Main push trigger is branch-scoped'
+require_text "$worker_entry" '- main' 'Main push trigger names the main branch'
+forbid_pattern "$worker_entry" '^[[:space:]]*workflow_dispatch:' 'Worker image workflow has no rebuild-capable manual trigger'
+require_text "$worker_entry" 'verify-pull-request:' 'Pull requests have a dedicated verification job'
+require_text "$worker_entry" 'publish-main-images:' 'Main pushes have a dedicated publication job'
+require_fixed_count "$worker_entry" 'uses: ./.github/workflows/rust-image-build.yml' 2 'PR and main are the only reusable workflow callers'
+require_fixed_count "$worker_entry" 'publish: false' 1 'Only the PR caller disables publication'
+require_fixed_count "$worker_entry" 'publish: true' 1 'Only the main caller enables publication'
+forbid_pattern "$worker_entry" '^[[:space:]]+images:' 'Entry workflow has no image-selection branch that can trigger a second build'
 
-require_text "$worker_entry" 'uses: ./.github/workflows/rust-image-build.yml' 'Worker entry workflow delegates to the reusable build-once workflow'
-require_text "$worker_entry" 'images: none' 'Main push has a compile/cache-only path with no image packaging'
-require_text "$worker_entry" 'images: all' 'Pull requests verify all packaged image families after the single build'
-require_text "$operator_entry" 'uses: ./.github/workflows/rust-image-build.yml' 'Operator entry workflow delegates to the reusable build-once workflow'
-require_text "$operator_entry" 'images: operator-tools' 'Operator dispatch packages only operator tools'
-forbid_pattern "$operator_entry" '^[[:space:]]+(pull_request|push):' 'Operator workflow has no duplicate automatic PR or push trigger'
-require_text "$crate_boundaries" 'one shared Cargo invocation' 'Crate-boundary docs describe the shared Cargo build'
-forbid_pattern "$crate_boundaries" 'cargo-chef|cargo chef' 'Crate-boundary docs do not prescribe the removed Docker compiler path'
-require_text "$worker_image_docs" 'Dockerfiles only package that artifact' 'Worker image docs describe artifact-only Docker packaging'
+# Build contract: one artifact production job feeds all image families.
+require_text "$workflow" 'container: rust:1.89-bookworm' 'Rust compiles in the pinned Bookworm toolchain container'
+require_text "$workflow" 'bash scripts/verify-rust-image-build-once.sh' 'CI runs this verifier before compiling release binaries'
+require_text "$workflow" 'bash scripts/build-rust-image-binaries.sh' 'Workflow delegates the only release compilation to the build script'
+require_text "$workflow" 'uses: actions/upload-artifact@v4' 'Rust build uploads its finished binaries once'
+forbid_pattern "$workflow" 'if:[[:space:]]*inputs\.images' 'Binary artifact upload is not conditional on an image selection'
+require_fixed_count "$workflow" 'uses: actions/download-artifact@v4' 3 'All three image jobs download the shared binary artifact'
+require_fixed_count "$workflow" 'needs: rust-build' 3 'All three image jobs depend on the single Rust build'
+forbid_pattern "$workflow" 'inputs\.images|^[[:space:]]+images:' 'Reusable workflow has no image-selection control flow'
 
+# Cache contract: dependency downloads use a lockfile key; compiler outputs use sccache.
+require_text "$workflow" 'uses: actions/cache/restore@v4' 'Cargo dependency state is restored explicitly'
+require_text "$workflow" 'uses: actions/cache/save@v4' 'Trusted main builds save Cargo dependency state explicitly'
+require_text "$workflow" "hashFiles('Cargo.lock')" 'Cargo dependency cache is keyed by the lockfile'
+forbid_pattern "$workflow" 'key:.*github\.sha' 'Cargo dependency cache key is not unique per commit SHA'
+forbid_pattern "$workflow" '^[[:space:]]+target[[:space:]]*$' 'Cargo target directory is not archived'
+require_pattern "$workflow" 'mozilla-actions/sccache-action@v[0-9]' 'A versioned sccache action provides content-addressed compiler reuse'
+require_text "$workflow" 'SCCACHE_GHA_ENABLED: "true"' 'sccache uses the GitHub Actions cache backend'
+require_text "$workflow" 'RUSTC_WRAPPER: sccache' 'Rust compilation is routed through sccache'
+require_text "$workflow" "github.event_name == 'push'" 'Dependency-cache writes require a trusted push event'
+require_text "$workflow" "github.ref == 'refs/heads/main'" 'Dependency-cache writes are restricted to main'
+
+# Publication contract: every main build produces all immutable image families.
+require_fixed_count "$workflow" 'push: ${{ inputs.publish }}' 3 'Every image family follows the caller publication decision'
+require_text "$workflow" '${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/laserstream-workers:sha-${{ github.sha }}' 'LaserStream image uses an immutable commit tag'
+require_text "$workflow" '${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/light-workers:sha-${{ github.sha }}' 'Light-worker image uses an immutable commit tag'
+require_text "$workflow" '${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/operator-tools:sha-${{ github.sha }}' 'Operator image uses an immutable commit tag'
+forbid_pattern "$workflow" '(^|[^[:alnum:]_-])latest([^[:alnum:]_-]|$)' 'Release workflow never publishes a mutable latest tag'
+forbid_pattern "$worker_entry" 'render[[:space:]]+(deploy|services)' 'Image publication does not mutate Render deployment state'
+forbid_pattern "$workflow" 'render[[:space:]]+(deploy|services)' 'Reusable image build does not mutate Render deployment state'
+
+# No other workflow or Dockerfile may reintroduce a release Cargo build.
 compile_files=$(rg -l 'cargo build --release --locked' \
   "$build_script" \
   .github/workflows \
@@ -98,41 +188,87 @@ else
   fail "Expected the only release Cargo compilation path in $build_script; found: ${compile_files:-none}"
 fi
 
+reusable_callers=$(rg -l -F 'uses: ./.github/workflows/rust-image-build.yml' .github/workflows 2>/dev/null || true)
+caller_count=$(printf '%s\n' "$reusable_callers" | sed '/^$/d' | wc -l | tr -d ' ')
+if [[ "$caller_count" == 1 && "$reusable_callers" == "$worker_entry" ]]; then
+  pass 'Only the automatic worker-image entry workflow can invoke the Rust image build'
+else
+  fail "Expected only $worker_entry to call the Rust image build; found: ${reusable_callers:-none}"
+fi
+
+require_text "$build_script" 'BASH_SOURCE[0]' 'Build script resolves the checkout without invoking Git'
+forbid_pattern "$build_script" 'git rev-parse' 'Container build does not depend on Git checkout ownership'
+
+# Runtime-image inventory remains complete and compiler-free.
 dockerfiles='Dockerfile.laserstream-workers Dockerfile.light-workers Dockerfile.operator-tools'
-laserstream_binaries='kamino-reserve-monitor balance-sweep-ata-monitor loyal-timescale-migrations yield-migrations'
-light_binaries='balance-sweep-ata-projector balance-sweep-autodeposit-trigger loyal-yield-realtime yield-migrations same-mint-reserve-swap same-mint-yield-monitor fleet-opportunity-planner fleet-health-projector fleet-route-confirmer route-lookup-table-provisioner'
-operator_binaries='loyal-timescale-migrations fleet-orchestration-verifier fleet-orchestration-production-evidence same-mint-monitor-e2e route-lookup-table-shared-catalog route-lookup-table-alert-monitor route-lookup-table-legacy-import route-lookup-table-cleanup signer-balance-monitor'
-all_binaries="$laserstream_binaries $light_binaries $operator_binaries"
+cargo_binaries=$(sed -nE 's/^[[:space:]]*--bin ([^ ]+).*/\1/p' "$build_script" | LC_ALL=C sort -u)
+staged_binaries=$(sed -nE 's/^[[:space:]]*stage_binary ([^ ]+).*/\1/p' "$build_script" | LC_ALL=C sort -u)
+dockerfile_binaries=$(for dockerfile in $dockerfiles; do dockerfile_inventory "$dockerfile"; done | LC_ALL=C sort -u)
+
+require_inventory_equal "$cargo_binaries" "$staged_binaries" 'Cargo build and staged artifact inventories are exactly equal'
+require_inventory_equal "$staged_binaries" "$dockerfile_binaries" 'Staged artifact and runtime Dockerfile inventories are exactly equal'
 
 for dockerfile in $dockerfiles; do
+  require_file "$dockerfile"
+  rust_copy_count=$(rg -c 'build-artifacts/rust/' "$dockerfile" || true)
+  parsed_copy_count=$(sed -nE 's|^COPY --chmod=0755 build-artifacts/rust/([^ ]+) /usr/local/bin/([^ ]+)$|\1 \2|p' "$dockerfile" | sed '/^$/d' | wc -l | tr -d ' ')
+  if [[ "$rust_copy_count" == "$parsed_copy_count" ]]; then
+    pass "$dockerfile uses the canonical artifact-copy form for every Rust binary"
+  else
+    fail "$dockerfile has a Rust artifact copy outside the canonical executable-copy form"
+  fi
+
+  while read -r source destination; do
+    if [[ "$source" == "$destination" ]]; then
+      pass "$dockerfile installs $source under the same binary name"
+    else
+      fail "$dockerfile renames Rust binary $source to $destination"
+    fi
+  done < <(sed -nE 's|^COPY --chmod=0755 build-artifacts/rust/([^ ]+) /usr/local/bin/([^ ]+)$|\1 \2|p' "$dockerfile")
+
   case "$dockerfile" in
-    Dockerfile.laserstream-workers) binaries=$laserstream_binaries ;;
-    Dockerfile.light-workers) binaries=$light_binaries ;;
-    Dockerfile.operator-tools) binaries=$operator_binaries ;;
+    Dockerfile.laserstream-workers)
+      probe_variable=LASERSTREAM_PROBE_BINARIES
+      ;;
+    Dockerfile.light-workers)
+      probe_variable=LIGHT_WORKER_PROBE_BINARIES
+      ;;
+    Dockerfile.operator-tools)
+      probe_variable=OPERATOR_TOOLS_PROBE_BINARIES
+      ;;
     *) fail "Verifier has no binary inventory for $dockerfile"; continue ;;
   esac
-  require_file "$dockerfile"
+  binaries=$(dockerfile_inventory "$dockerfile")
+  probe_binaries=$(workflow_probe_inventory "$probe_variable")
+  require_inventory_equal "$binaries" "$probe_binaries" "$dockerfile runtime and probe inventories are exactly equal"
+  require_fixed_count "$workflow" "PROBE_BINARIES: \${{ env.$probe_variable }}" 1 "$dockerfile probe consumes $probe_variable"
   forbid_pattern "$dockerfile" '^FROM rust:' "$dockerfile has no Rust compiler stage"
   forbid_pattern "$dockerfile" 'cargo (chef|build)' "$dockerfile performs no Rust compilation"
   forbid_pattern "$dockerfile" '/app/target' "$dockerfile does not transport Cargo target state"
   for binary in $binaries; do
-    require_text "$dockerfile" "COPY --chmod=0755 build-artifacts/rust/$binary /usr/local/bin/$binary" "$dockerfile restores executable mode for $binary from the job artifact"
     require_text "$build_script" "stage_binary $binary" "$build_script stages $binary"
   done
 done
 
-if [[ -f "$build_script" ]]; then
-  if bash -n "$build_script"; then
-    pass "$build_script passes bash syntax validation"
-  else
-    fail "$build_script fails bash syntax validation"
-  fi
+# Documentation must describe artifact publication separately from deployment.
+require_text "$crate_boundaries" 'Main pushes compile once, package all three image families, and publish immutable SHA tags.' 'Crate-boundary docs describe automatic immutable publication'
+require_text "$crate_boundaries" 'Manual deployment selects an already-published immutable image tag or digest and never rebuilds Rust.' 'Crate-boundary docs separate deployment from compilation'
+require_text "$worker_image_docs" 'A trusted `main` push compiles the shared Rust artifact once and publishes all three immutable image families.' 'Worker-image docs describe the single trusted build'
+require_text "$worker_image_docs" 'Publishing these images does not deploy them.' 'Worker-image docs distinguish publication from deployment'
+require_text "$worker_image_docs" 'Deployment selects an already-published immutable SHA tag or digest; it never rebuilds Rust.' 'Worker-image docs prohibit deployment-time rebuilding'
+
+if bash -n "$build_script" && bash -n "$verifier"; then
+  pass 'Build and verifier scripts pass Bash syntax validation'
+else
+  fail 'Build or verifier script fails Bash syntax validation'
 fi
 
-if cargo metadata --no-deps --format-version 1 >/tmp/loyal-rust-image-metadata.json; then
+metadata_file=$(mktemp)
+trap 'rm -f "$metadata_file"' EXIT
+if cargo metadata --no-deps --format-version 1 >"$metadata_file"; then
   missing_targets=0
-  for binary in $(printf '%s\n' "$all_binaries" | tr ' ' '\n' | sort -u); do
-    if ! jq -e --arg binary "$binary" '.packages[].targets[] | select(.name == $binary)' /tmp/loyal-rust-image-metadata.json >/dev/null; then
+  for binary in $staged_binaries; do
+    if ! jq -e --arg binary "$binary" '.packages[].targets[] | select(.name == $binary)' "$metadata_file" >/dev/null; then
       fail "Cargo metadata has no target named $binary"
       missing_targets=1
     fi

@@ -5,7 +5,6 @@ on:
     paths:
       - .github/workflows/rust-image-build.yml
       - .github/workflows/worker-images.yml
-      - .github/workflows/operator-tools-image.yml
       - Cargo.lock
       - Cargo.toml
       - bun.lock
@@ -27,25 +26,21 @@ on:
     paths:
       - .github/workflows/rust-image-build.yml
       - .github/workflows/worker-images.yml
-      - .github/workflows/operator-tools-image.yml
       - Cargo.lock
       - Cargo.toml
+      - bun.lock
+      - Dockerfile.laserstream-workers
+      - Dockerfile.light-workers
+      - Dockerfile.operator-tools
+      - package.json
       - rust-toolchain.toml
       - .sqlx/**
       - crates/**
       - scripts/build-rust-image-binaries.sh
-  workflow_dispatch:
-    inputs:
-      images:
-        description: Image selection
-        type: choice
-        options:
-          - workers
-          - light-workers
-          - laserstream-workers
-          - operator-tools
-          - all
-        default: workers
+      - scripts/durable-autodeposit-confirmation.ts
+      - scripts/execute-autodeposit-policy.ts
+      - scripts/kamino-monitor-predeploy.sh
+      - scripts/verify-rust-image-build-once.sh
 
 permissions:
   contents: read
@@ -57,24 +52,13 @@ jobs:
     if: github.event_name == 'pull_request'
     uses: ./.github/workflows/rust-image-build.yml
     with:
-      images: all
       publish: false
     secrets: inherit
 
-  warm-main-cache:
-    name: Refresh trusted Rust cache
+  publish-main-images:
+    name: Build once and publish immutable images
     if: github.event_name == 'push'
     uses: ./.github/workflows/rust-image-build.yml
     with:
-      images: none
-      publish: false
-    secrets: inherit
-
-  publish-images:
-    name: Build once and publish selected images
-    if: github.event_name == 'workflow_dispatch'
-    uses: ./.github/workflows/rust-image-build.yml
-    with:
-      images: ${{ inputs.images }}
       publish: true
     secrets: inherit
