@@ -568,20 +568,6 @@ impl NeonSqlClient {
              AND swap_policy.start_eligible
              AND swap_policy.source_commitment = 'finalized'
              AND swap_policy.last_mutation IN ('create', 'update')
-             AND 2 = (
-                 SELECT count(*)
-                 FROM loyal_yield.cross_mint_swap_policies sibling
-                 WHERE sibling.cluster = swap_policy.cluster
-                   AND sibling.settings = swap_policy.settings
-                   AND sibling.authority = swap_policy.authority
-                   AND sibling.vault_index = swap_policy.vault_index
-                   AND sibling.vault_pubkey = swap_policy.vault_pubkey
-                   AND sibling.delegated_signer = swap_policy.delegated_signer
-                   AND sibling.active
-                   AND sibling.start_eligible
-                   AND sibling.source_commitment = 'finalized'
-                   AND sibling.last_mutation IN ('create', 'update')
-             )
             JOIN loyal_yield.cross_mint_vault_opt_ins opt_in
               ON opt_in.enabled = TRUE
              AND opt_in.cluster = swap_policy.cluster
@@ -2471,20 +2457,6 @@ async fn validate_initial_cross_mint_policy_bindings(
          AND swap_policy.start_eligible
          AND swap_policy.source_commitment = 'finalized'
          AND swap_policy.last_mutation IN ('create', 'update')
-         AND 2 = (
-             SELECT count(*)
-             FROM loyal_yield.cross_mint_swap_policies sibling
-             WHERE sibling.cluster = swap_policy.cluster
-               AND sibling.settings = swap_policy.settings
-               AND sibling.authority = swap_policy.authority
-               AND sibling.vault_index = swap_policy.vault_index
-               AND sibling.vault_pubkey = swap_policy.vault_pubkey
-               AND sibling.delegated_signer = swap_policy.delegated_signer
-               AND sibling.active
-               AND sibling.start_eligible
-               AND sibling.source_commitment = 'finalized'
-               AND sibling.last_mutation IN ('create', 'update')
-         )
         JOIN loyal_yield.cross_mint_vault_opt_ins opt_in
           ON opt_in.enabled = TRUE
          AND opt_in.cluster = swap_policy.cluster

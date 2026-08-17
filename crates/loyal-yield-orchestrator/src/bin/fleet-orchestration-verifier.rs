@@ -4528,7 +4528,13 @@ async fn seed_cross_mint_ready_opportunity(
              'create', 'finalized', 10000, $8),
             ($1, $2, $3, 3, $9, $5, $6, $7, 'token_2022',
              50, 1000000000, repeat('b', 64), TRUE, TRUE,
-             'create', 'finalized', 10000, $10)
+             'create', 'finalized', 10000, $10),
+            ($1, $2, $3, 20, $4 || ':historical', $5, $6, $7, 'classic',
+             50, 1000000000, repeat('a', 64), TRUE, TRUE,
+             'create', 'finalized', 9999, $8 || ':historical'),
+            ($1, $2, $3, 21, $9 || ':historical', $5, $6, $7, 'token_2022',
+             50, 1000000000, repeat('b', 64), TRUE, TRUE,
+             'create', 'finalized', 9999, $10 || ':historical')
         "#,
     )
     .bind(cluster)
