@@ -59,6 +59,8 @@ const DEFAULT_BATCH_SIZE: i64 = 128;
 const DEFAULT_LEASE_SECONDS: i64 = 30;
 const DEFAULT_BROADCAST_CONCURRENCY: usize = 16;
 const MAX_BATCH_SIZE: i64 = 256;
+const RPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const RETRY_ALERT_AFTER: Duration = Duration::from_secs(60);
 const PUBSUB_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const PUBSUB_RECONNECT_BACKOFF: Duration = Duration::from_secs(2);
 const PUBSUB_CLEANUP_TIMEOUT: Duration = Duration::from_millis(250);
@@ -77,6 +79,29 @@ struct Options {
     batch_size: i64,
     lease_seconds: i64,
     broadcast_concurrency: usize,
+}
+
+#[derive(Debug, Default)]
+struct RetryAlertState {
+    failure_started_at: Option<Instant>,
+    reported: bool,
+}
+
+impl RetryAlertState {
+    fn observe_poll(&mut self, observed_at: Instant, claimed: usize, item_errors: usize) -> bool {
+        if item_errors > 0 {
+            let failure_started_at = self.failure_started_at.get_or_insert(observed_at);
+            if !self.reported
+                && observed_at.duration_since(*failure_started_at) >= RETRY_ALERT_AFTER
+            {
+                self.reported = true;
+                return true;
+            }
+        } else if claimed > 0 {
+            *self = Self::default();
+        }
+        false
+    }
 }
 
 #[derive(Debug)]
@@ -594,8 +619,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let options = parse_options()?;
     validate_rpc_endpoint(&options.rpc_url)
         .map_err(|error| format!("invalid fleet route RPC endpoint: {error}"))?;
-    let rpc = Arc::new(RpcClient::new_with_commitment(
+    let rpc = Arc::new(RpcClient::new_with_timeout_and_commitment(
         options.rpc_url.clone(),
+        RPC_REQUEST_TIMEOUT,
         CommitmentConfig::confirmed(),
     ));
     let genesis_hash = rpc
@@ -644,7 +670,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         DurablePgWakeupListener::new("loyal_yield_route_confirmation_wakeup")?;
     let broadcast_limit = Arc::new(Semaphore::new(options.broadcast_concurrency));
     let mut poll_error_reported = false;
-    let mut item_errors_reported = false;
+    let mut retry_alert_state = RetryAlertState::default();
 
     loop {
         let started = Instant::now();
@@ -661,20 +687,19 @@ async fn run() -> Result<(), Box<dyn Error>> {
         {
             Ok(mut health) => {
                 poll_error_reported = false;
-                if health.item_errors > 0 {
-                    if !item_errors_reported {
-                        OperationalError::new(
-                            "fleet_route_confirmer_items_deferred_after_error",
-                            "confirm_signed_route_submissions",
-                            "Fleet route confirmer deferred submissions after item failures",
-                        )
-                        .retryable(true)
-                        .recovery_required(true)
-                        .emit();
-                        item_errors_reported = true;
-                    }
-                } else {
-                    item_errors_reported = false;
+                if retry_alert_state.observe_poll(
+                    Instant::now(),
+                    health.claimed,
+                    health.item_errors,
+                ) {
+                    OperationalError::new(
+                        "fleet_route_confirmer_items_deferred_after_error",
+                        "confirm_signed_route_submissions",
+                        "Fleet route confirmer retries stalled without successful claimed work",
+                    )
+                    .retryable(true)
+                    .recovery_required(true)
+                    .emit();
                 }
                 health.elapsed_milliseconds = started.elapsed().as_millis();
                 claimed = health.claimed;
@@ -937,18 +962,20 @@ async fn run_poll(
             }
             Ok(_) => {
                 let detail = "signature status batch length did not match the durable claim";
-                defer_claims_after_error(neon, &status_leases, options.poll_interval, detail)
-                    .await?;
+                let deferred =
+                    defer_claims_after_error(neon, &status_leases, options.poll_interval, detail)
+                        .await?;
                 pre_task_item_errors = pre_task_item_errors.saturating_add(status_leases.len());
-                pre_task_deferred = pre_task_deferred.saturating_add(status_leases.len());
+                pre_task_deferred = pre_task_deferred.saturating_add(deferred);
                 first_pre_task_error.get_or_insert_with(|| detail.to_owned());
             }
             Err(error) => {
                 let detail = safe_detail(&format!("authoritative_status_poll_failed:{error}"));
-                defer_claims_after_error(neon, &status_leases, options.poll_interval, &detail)
-                    .await?;
+                let deferred =
+                    defer_claims_after_error(neon, &status_leases, options.poll_interval, &detail)
+                        .await?;
                 pre_task_item_errors = pre_task_item_errors.saturating_add(status_leases.len());
-                pre_task_deferred = pre_task_deferred.saturating_add(status_leases.len());
+                pre_task_deferred = pre_task_deferred.saturating_add(deferred);
                 first_pre_task_error.get_or_insert(detail);
             }
         }
@@ -978,9 +1005,11 @@ async fn run_poll(
             Err(error) => {
                 let deferred = take_work_leases(&mut work, &missing_ids);
                 let detail = safe_detail(&format!("finalized_block_height_failed:{error}"));
-                defer_claims_after_error(neon, &deferred, options.poll_interval, &detail).await?;
+                let deferred_count =
+                    defer_claims_after_error(neon, &deferred, options.poll_interval, &detail)
+                        .await?;
                 pre_task_item_errors = pre_task_item_errors.saturating_add(deferred.len());
-                pre_task_deferred = pre_task_deferred.saturating_add(deferred.len());
+                pre_task_deferred = pre_task_deferred.saturating_add(deferred_count);
                 first_pre_task_error.get_or_insert(detail);
             }
         }
@@ -1012,9 +1041,11 @@ async fn run_poll(
             Err(error) => {
                 let deferred = take_work_leases(&mut work, &expired_attempted_ids);
                 let detail = safe_detail(&format!("finalized_effect_slot_failed:{error}"));
-                defer_claims_after_error(neon, &deferred, options.poll_interval, &detail).await?;
+                let deferred_count =
+                    defer_claims_after_error(neon, &deferred, options.poll_interval, &detail)
+                        .await?;
                 pre_task_item_errors = pre_task_item_errors.saturating_add(deferred.len());
-                pre_task_deferred = pre_task_deferred.saturating_add(deferred.len());
+                pre_task_deferred = pre_task_deferred.saturating_add(deferred_count);
                 first_pre_task_error.get_or_insert(detail);
             }
         }
@@ -1035,8 +1066,9 @@ async fn run_poll(
     if !recovery_wait_ids.is_empty() {
         let deferred = take_work_leases(&mut work, &recovery_wait_ids);
         let detail = "recovery_only_waiting_for_blockhash_expiry";
-        defer_claims_after_error(neon, &deferred, options.poll_interval, detail).await?;
-        pre_task_deferred = pre_task_deferred.saturating_add(deferred.len());
+        let deferred_count =
+            defer_claims_after_error(neon, &deferred, options.poll_interval, detail).await?;
+        pre_task_deferred = pre_task_deferred.saturating_add(deferred_count);
     }
     for (lease, observation) in &mut work {
         if recovery_ids.contains(&lease.submission.id) {
@@ -1097,7 +1129,7 @@ async fn run_poll(
                 .as_deref()
                 .unwrap_or("invalid_confirmed_submission_evidence"),
         );
-        defer_claims_after_error(
+        let deferred = defer_claims_after_error(
             neon,
             &invalid_confirmation_leases,
             options.poll_interval,
@@ -1106,7 +1138,7 @@ async fn run_poll(
         .await?;
         pre_task_item_errors =
             pre_task_item_errors.saturating_add(invalid_confirmation_leases.len());
-        pre_task_deferred = pre_task_deferred.saturating_add(invalid_confirmation_leases.len());
+        pre_task_deferred = pre_task_deferred.saturating_add(deferred);
         first_pre_task_error.get_or_insert(detail);
     }
     let mut outcome = ItemOutcome::default();
@@ -1128,9 +1160,10 @@ async fn run_poll(
                     .map(|(lease, _)| lease.clone())
                     .collect::<Vec<_>>();
                 let detail = safe_detail(&format!("confirmation_batch_commit_failed:{error}"));
-                defer_claims_after_error(neon, &leases, options.poll_interval, &detail).await?;
+                let deferred =
+                    defer_claims_after_error(neon, &leases, options.poll_interval, &detail).await?;
                 pre_task_item_errors = pre_task_item_errors.saturating_add(leases.len());
-                pre_task_deferred = pre_task_deferred.saturating_add(leases.len());
+                pre_task_deferred = pre_task_deferred.saturating_add(deferred);
                 first_pre_task_error.get_or_insert(detail);
             }
         }
@@ -1177,7 +1210,7 @@ async fn run_poll(
                 .as_deref()
                 .unwrap_or("invalid_broadcast_wire_evidence"),
         );
-        defer_claims_after_error(
+        let deferred = defer_claims_after_error(
             neon,
             &invalid_broadcast_leases,
             options.poll_interval,
@@ -1185,7 +1218,7 @@ async fn run_poll(
         )
         .await?;
         pre_task_item_errors = pre_task_item_errors.saturating_add(invalid_broadcast_leases.len());
-        pre_task_deferred = pre_task_deferred.saturating_add(invalid_broadcast_leases.len());
+        pre_task_deferred = pre_task_deferred.saturating_add(deferred);
         first_pre_task_error.get_or_insert(detail);
         broadcast_leases.retain(|lease| !invalid_ids.contains(&lease.submission.id));
     }
@@ -1211,21 +1244,22 @@ async fn run_poll(
                     .map(|lease| lease.submission.id)
                     .collect::<BTreeSet<_>>();
                 let detail = safe_detail(&format!("broadcast_batch_prepare_failed:{error}"));
-                defer_claims_after_error(neon, &broadcast_leases, options.poll_interval, &detail)
-                    .await?;
+                let deferred = defer_claims_after_error(
+                    neon,
+                    &broadcast_leases,
+                    options.poll_interval,
+                    &detail,
+                )
+                .await?;
                 work.retain(|(lease, _)| !failed_ids.contains(&lease.submission.id));
                 pre_task_item_errors = pre_task_item_errors.saturating_add(broadcast_leases.len());
-                pre_task_deferred = pre_task_deferred.saturating_add(broadcast_leases.len());
+                pre_task_deferred = pre_task_deferred.saturating_add(deferred);
                 first_pre_task_error.get_or_insert(detail);
             }
         }
     }
 
     let mut tasks = JoinSet::new();
-    let task_leases = work
-        .iter()
-        .map(|(lease, _)| lease.clone())
-        .collect::<Vec<_>>();
     for (lease, observation) in work {
         let neon = neon.clone();
         let rpc = Arc::clone(&rpc);
@@ -1234,8 +1268,9 @@ async fn run_poll(
         let authoritative_status_batcher = Arc::clone(&authoritative_status_batcher);
         let poll_interval = options.poll_interval;
         let encoded_wire = encoded_wire_by_id.remove(&lease.submission.id);
+        let failed_lease = lease.clone();
         tasks.spawn(async move {
-            process_submission(
+            let result = process_submission(
                 &neon,
                 rpc,
                 lease,
@@ -1248,31 +1283,42 @@ async fn run_poll(
                 authoritative_status_batcher,
                 encoded_wire,
             )
-            .await
+            .await;
+            (failed_lease, result)
         });
     }
 
     let mut item_errors = pre_task_item_errors;
     let mut first_item_error = first_pre_task_error;
+    let mut failed_task_leases = Vec::new();
+    let mut join_error = None;
     outcome.deferred = outcome.deferred.saturating_add(pre_task_deferred);
     while let Some(result) = tasks.join_next().await {
         match result {
-            Ok(Ok(item)) => outcome.merge(item),
-            Ok(Err(error)) => {
+            Ok((_, Ok(item))) => outcome.merge(item),
+            Ok((lease, Err(error))) => {
                 item_errors += 1;
                 first_item_error.get_or_insert_with(|| safe_detail(&error.to_string()));
+                failed_task_leases.push(lease);
             }
             Err(error) => {
                 item_errors += 1;
                 first_item_error.get_or_insert_with(|| safe_detail(&error.to_string()));
+                join_error.get_or_insert(error);
             }
         }
     }
-    if item_errors > pre_task_item_errors {
+    if !failed_task_leases.is_empty() {
         let detail = first_item_error
             .clone()
             .unwrap_or_else(|| "confirmation_task_failed".to_owned());
-        defer_claims_after_error(neon, &task_leases, options.poll_interval, &detail).await?;
+        let deferred =
+            defer_claims_after_error(neon, &failed_task_leases, options.poll_interval, &detail)
+                .await?;
+        outcome.deferred = outcome.deferred.saturating_add(deferred);
+    }
+    if let Some(error) = join_error {
+        return Err(error.into());
     }
     Ok(PollHealth {
         event: "fleet_route_confirmer_poll",
@@ -1348,17 +1394,18 @@ async fn defer_claims_after_error(
     leases: &[SignedRouteSubmissionLease],
     poll_interval: Duration,
     detail: &str,
-) -> Result<u64, Box<dyn Error>> {
+) -> Result<usize, Box<dyn Error>> {
     let checked_at = Utc::now();
     let next_poll_at = checked_at + ChronoDuration::from_std(poll_interval)?;
-    Ok(neon
+    let released = neon
         .defer_signed_route_submission_lease_batch(
             leases,
             checked_at,
             next_poll_at,
             &safe_detail(detail),
         )
-        .await?)
+        .await?;
+    Ok(usize::try_from(released)?)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2009,6 +2056,7 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
     if !(10..=300).contains(&lease_seconds) {
         return Err("--lease-seconds must be in 10..=300".into());
     }
+    validate_rpc_timeout_lease(RPC_REQUEST_TIMEOUT, lease_seconds)?;
     if !(1..=64).contains(&broadcast_concurrency) {
         return Err("--broadcast-concurrency must be in 1..=64".into());
     }
@@ -2024,6 +2072,18 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
         lease_seconds,
         broadcast_concurrency,
     })
+}
+
+fn validate_rpc_timeout_lease(
+    rpc_timeout: Duration,
+    lease_seconds: i64,
+) -> Result<(), &'static str> {
+    let lease_seconds = u64::try_from(lease_seconds)
+        .map_err(|_| "confirmation lease must be a positive duration")?;
+    if rpc_timeout >= Duration::from_secs(lease_seconds) {
+        return Err("confirmation lease must be longer than the RPC request timeout");
+    }
+    Ok(())
 }
 
 fn next_argument(
@@ -2051,4 +2111,49 @@ fn safe_detail(detail: &str) -> String {
 
 fn usage() -> &'static str {
     "Usage: fleet-route-confirmer --execute [--once] [--cluster CLUSTER] [--rpc-url URL] [--ws-url URL] [--worker-id ID] [--poll-interval-milliseconds N] [--batch-size 1..256] [--lease-seconds 10..300] [--broadcast-concurrency 1..64]\n\nRequires NEON_DATABASE_URL, SOLANA_RPC_URL, and explicit YIELD_ROUTE_CLUSTER (YIELD_ALT_CLUSTER is accepted for shared deployment configuration). SOLANA_WS_URL is optional and otherwise derived from the RPC URL. WebSocket notifications only accelerate an authoritative getSignatureStatuses read; the bounded batched polling path remains the durable fallback. The worker never loads a signer, rebuilds, or re-signs, and stops successful routes at durable reconciliation_pending for a separate route-specific reconciler."
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_alert_state_requires_sixty_seconds_of_failures() {
+        let started_at = Instant::now();
+        let mut state = RetryAlertState::default();
+
+        assert!(!state.observe_poll(started_at, 1, 1));
+        assert!(!state.observe_poll(started_at + Duration::from_secs(59), 1, 1));
+        assert!(state.observe_poll(started_at + Duration::from_secs(60), 1, 1));
+        assert!(!state.observe_poll(started_at + Duration::from_secs(61), 1, 1));
+    }
+
+    #[test]
+    fn retry_alert_state_ignores_idle_polls() {
+        let started_at = Instant::now();
+        let mut state = RetryAlertState::default();
+
+        assert!(!state.observe_poll(started_at, 1, 1));
+        assert!(!state.observe_poll(started_at + Duration::from_secs(30), 0, 0));
+        assert!(state.observe_poll(started_at + Duration::from_secs(60), 1, 1));
+    }
+
+    #[test]
+    fn retry_alert_state_resets_after_successful_claimed_work() {
+        let started_at = Instant::now();
+        let mut state = RetryAlertState::default();
+
+        assert!(!state.observe_poll(started_at, 1, 1));
+        assert!(!state.observe_poll(started_at + Duration::from_secs(30), 1, 0));
+        assert!(!state.observe_poll(started_at + Duration::from_secs(90), 1, 1));
+        assert!(!state.observe_poll(started_at + Duration::from_secs(149), 1, 1));
+        assert!(state.observe_poll(started_at + Duration::from_secs(150), 1, 1));
+    }
+
+    #[test]
+    fn rpc_timeout_must_be_shorter_than_confirmation_lease() {
+        assert!(validate_rpc_timeout_lease(Duration::from_secs(10), 30).is_ok());
+        assert!(validate_rpc_timeout_lease(Duration::from_secs(10), 10).is_err());
+        assert!(validate_rpc_timeout_lease(Duration::from_secs(10), 9).is_err());
+    }
 }
