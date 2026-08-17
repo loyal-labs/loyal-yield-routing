@@ -7,7 +7,17 @@ import {
   type TransactionInstruction,
 } from "@solana/web3.js";
 import bs58 from "bs58";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
+
+import {
+  attemptAllowsSafeRequeue,
+  operationalAlertForAttempt,
+  settleDurableAutodepositAttempt,
+  type AttemptObservation,
+  type AutodepositOperationKind,
+  type DurableAutodepositAttempt,
+} from "./durable-autodeposit-confirmation";
 
 type PreparedOperation = {
   operation: string;
@@ -324,6 +334,8 @@ const AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE_ENV =
   "AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE";
 const AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE_ENV =
   "AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE";
+const AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE_ENV =
+  "AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE";
 const SOLANA_WEEK_NOTIFY_ENDPOINT_ENV = "SOLANA_WEEK_NOTIFY_ENDPOINT";
 const SOLANA_WEEK_NOTIFY_SECRET_ENV = "SOLANA_WEEK_NOTIFY_SECRET";
 const SOLANA_WEEK_NOTIFY_TIMEOUT_MS = 5_000;
@@ -333,7 +345,8 @@ type AutodepositExecutorFailureCode =
   | "yield_persistence_failed"
   | "preflight_blocked"
   | "not_actionable"
-  | "fee_payer_exhausted";
+  | "fee_payer_exhausted"
+  | "transaction_effect_ambiguous";
 
 const AUTODEPOSIT_EXECUTOR_FAILURE_EXIT_CODE_ENVS: Record<
   AutodepositExecutorFailureCode,
@@ -344,6 +357,8 @@ const AUTODEPOSIT_EXECUTOR_FAILURE_EXIT_CODE_ENVS: Record<
   preflight_blocked: AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE_ENV,
   not_actionable: AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE_ENV,
   fee_payer_exhausted: AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE_ENV,
+  transaction_effect_ambiguous:
+    AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE_ENV,
 };
 
 export function autodepositExecutorFailureExitCode(
@@ -2039,43 +2054,457 @@ async function simulatePreparedOperation(args: {
   };
 }
 
+function parseDurableAutodepositAttempt(
+  row: Record<string, unknown>
+): DurableAutodepositAttempt {
+  return {
+    id: readRequiredString(row.id, "attempt.id"),
+    claimToken: readRequiredString(row.claim_token, "attempt.claim_token"),
+    operationKind: readRequiredString(
+      row.operation_kind,
+      "attempt.operation_kind"
+    ) as AutodepositOperationKind,
+    executionId: readNullableString(row.execution_id),
+    amountRaw: BigInt(readRequiredString(row.amount_raw, "attempt.amount_raw")),
+    sourcePreBalanceRaw: BigInt(
+      readRequiredString(
+        row.source_pre_balance_raw,
+        "attempt.source_pre_balance_raw"
+      )
+    ),
+    destinationPreBalanceRaw: BigInt(
+      readRequiredString(
+        row.destination_pre_balance_raw,
+        "attempt.destination_pre_balance_raw"
+      )
+    ),
+    signature: readRequiredString(row.signature, "attempt.signature"),
+    signedTransactionBase64: readRequiredString(
+      row.signed_transaction_base64,
+      "attempt.signed_transaction_base64"
+    ),
+    signedTransactionSha256: readRequiredString(
+      row.signed_transaction_sha256,
+      "attempt.signed_transaction_sha256"
+    ),
+    blockhash: readRequiredString(
+      row.recent_blockhash,
+      "attempt.recent_blockhash"
+    ),
+    lastValidBlockHeight: BigInt(
+      readRequiredString(
+        row.last_valid_block_height,
+        "attempt.last_valid_block_height"
+      )
+    ),
+    state: readRequiredString(
+      row.attempt_state,
+      "attempt.attempt_state"
+    ) as DurableAutodepositAttempt["state"],
+    broadcastCount: Number(
+      readRequiredString(row.broadcast_count, "attempt.broadcast_count")
+    ),
+    confirmedSlot:
+      row.confirmed_slot === null || row.confirmed_slot === undefined
+        ? null
+        : BigInt(readRequiredString(row.confirmed_slot, "attempt.confirmed_slot")),
+  };
+}
+
+async function loadDurableAutodepositAttempt(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  claimToken: string;
+  operationKind: AutodepositOperationKind;
+}): Promise<DurableAutodepositAttempt | null> {
+  const sql = args.neon(args.databaseUrl);
+  const rows = await sql`
+    SELECT *
+    FROM loyal_yield.balance_sweep_transaction_attempts
+    WHERE claim_token = ${args.claimToken}
+      AND operation_kind = ${args.operationKind}
+    ORDER BY attempt_number DESC
+    LIMIT 1
+  `;
+  const row = rows[0] as Record<string, unknown> | undefined;
+  return row ? parseDurableAutodepositAttempt(row) : null;
+}
+
+async function persistPreparedAutodepositAttempt(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  claimToken: string;
+  targetId: bigint;
+  scheduledSlotId: bigint;
+  operationKind: AutodepositOperationKind;
+  executionId: bigint | null;
+  amountRaw: bigint;
+  sourcePreBalanceRaw: bigint;
+  destinationPreBalanceRaw: bigint;
+  signature: string;
+  signedTransactionBase64: string;
+  signedTransactionSha256: string;
+  blockhash: string;
+  lastValidBlockHeight: bigint;
+}): Promise<DurableAutodepositAttempt> {
+  const sql = args.neon(args.databaseUrl);
+  const rows = await sql`
+    WITH guarded_claim AS (
+      UPDATE loyal_yield.balance_sweep_lot_claims
+      SET updated_at = now()
+      WHERE claim_token = ${args.claimToken}
+        AND target_id = ${args.targetId.toString()}
+        AND status = 'selected'
+      RETURNING claim_token
+    ),
+    existing_active AS (
+      SELECT *
+      FROM loyal_yield.balance_sweep_transaction_attempts
+      WHERE claim_token = ${args.claimToken}
+        AND operation_kind = ${args.operationKind}
+        AND attempt_state IN (
+          'prepared', 'submitted', 'confirmed', 'unknown', 'ambiguous'
+        )
+      ORDER BY attempt_number DESC
+      LIMIT 1
+    ),
+    next_attempt AS (
+      SELECT COALESCE(MAX(attempt_number), 0) + 1 AS attempt_number
+      FROM loyal_yield.balance_sweep_transaction_attempts
+      WHERE claim_token = ${args.claimToken}
+        AND operation_kind = ${args.operationKind}
+    ),
+    inserted AS (
+      INSERT INTO loyal_yield.balance_sweep_transaction_attempts (
+        claim_token,
+        target_id,
+        scheduled_slot_id,
+        execution_id,
+        operation_kind,
+        attempt_number,
+        amount_raw,
+        source_pre_balance_raw,
+        destination_pre_balance_raw,
+        signature,
+        signed_transaction_base64,
+        signed_transaction_sha256,
+        recent_blockhash,
+        last_valid_block_height,
+        attempt_state
+      )
+      SELECT
+        ${args.claimToken},
+        ${args.targetId.toString()},
+        ${args.scheduledSlotId.toString()},
+        ${args.executionId?.toString() ?? null},
+        ${args.operationKind},
+        next_attempt.attempt_number,
+        ${args.amountRaw.toString()},
+        ${args.sourcePreBalanceRaw.toString()},
+        ${args.destinationPreBalanceRaw.toString()},
+        ${args.signature},
+        ${args.signedTransactionBase64},
+        ${args.signedTransactionSha256},
+        ${args.blockhash},
+        ${args.lastValidBlockHeight.toString()},
+        'prepared'
+      FROM next_attempt
+      CROSS JOIN guarded_claim
+      WHERE NOT EXISTS (SELECT 1 FROM existing_active)
+      ON CONFLICT DO NOTHING
+      RETURNING *
+    )
+    SELECT * FROM inserted
+    UNION ALL
+    SELECT * FROM existing_active
+    LIMIT 1
+  `;
+  const row = rows[0] as Record<string, unknown> | undefined;
+  if (!row) {
+    throw new Error(
+      `Could not persist or recover durable ${args.operationKind} attempt for claim ${args.claimToken}.`
+    );
+  }
+  return parseDurableAutodepositAttempt(row);
+}
+
+function attemptErrorDetail(error: unknown): string | null {
+  if (error === null || error === undefined) {
+    return null;
+  }
+  const detail =
+    error instanceof Error ? error.message : JSON.stringify(error) ?? String(error);
+  return detail.slice(0, 4_000);
+}
+
+async function recordAutodepositAttemptBroadcast(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  attempt: DurableAutodepositAttempt;
+}): Promise<DurableAutodepositAttempt> {
+  const sql = args.neon(args.databaseUrl);
+  const rows = await sql`
+    UPDATE loyal_yield.balance_sweep_transaction_attempts
+    SET attempt_state = 'submitted',
+        broadcast_count = broadcast_count + 1,
+        last_broadcast_at = now(),
+        last_status_checked_at = now(),
+        error_detail = NULL,
+        updated_at = now()
+    WHERE id = ${args.attempt.id}
+      AND signature = ${args.attempt.signature}
+      AND signed_transaction_sha256 = ${args.attempt.signedTransactionSha256}
+      AND attempt_state IN ('prepared', 'submitted', 'unknown')
+    RETURNING *
+  `;
+  const row = rows[0] as Record<string, unknown> | undefined;
+  if (!row) {
+    throw new Error(
+      `Durable attempt ${args.attempt.id} lost its immutable broadcast identity.`
+    );
+  }
+  return parseDurableAutodepositAttempt(row);
+}
+
+async function recordAutodepositAttemptObservation(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  attempt: DurableAutodepositAttempt;
+  observation: AttemptObservation;
+}): Promise<DurableAutodepositAttempt> {
+  const sql = args.neon(args.databaseUrl);
+  const rows = await sql`
+    UPDATE loyal_yield.balance_sweep_transaction_attempts
+    SET attempt_state = ${args.observation.state},
+        confirmed_slot = ${args.observation.confirmedSlot?.toString() ?? null},
+        last_status_checked_at = now(),
+        error_detail = ${attemptErrorDetail(args.observation.error)},
+        updated_at = now()
+    WHERE id = ${args.attempt.id}
+      AND signature = ${args.attempt.signature}
+      AND signed_transaction_sha256 = ${args.attempt.signedTransactionSha256}
+      AND attempt_state IN ('prepared', 'submitted', 'unknown', 'ambiguous')
+    RETURNING *
+  `;
+  const row = rows[0] as Record<string, unknown> | undefined;
+  if (!row) {
+    const current = await loadDurableAutodepositAttempt({
+      neon: args.neon,
+      databaseUrl: args.databaseUrl,
+      claimToken: args.attempt.claimToken,
+      operationKind: args.attempt.operationKind,
+    });
+    if (current?.signature === args.attempt.signature) {
+      return current;
+    }
+    throw new Error(
+      `Durable attempt ${args.attempt.id} could not record signature observation.`
+    );
+  }
+  return parseDurableAutodepositAttempt(row);
+}
+
+export async function observeDurableAutodepositAttempt(args: {
+  connection: Connection;
+  attempt: DurableAutodepositAttempt;
+}): Promise<AttemptObservation> {
+  let statusError: unknown = null;
+  let status: Awaited<ReturnType<Connection["getSignatureStatuses"]>>["value"][number] =
+    null;
+  try {
+    const statuses = await args.connection.getSignatureStatuses(
+      [args.attempt.signature],
+      { searchTransactionHistory: true }
+    );
+    status = statuses.value[0] ?? null;
+  } catch (error) {
+    statusError = error;
+  }
+
+  if (status?.err) {
+    return { state: "failed", confirmedSlot: null, error: status.err };
+  }
+  if (
+    status?.confirmationStatus === "confirmed" ||
+    status?.confirmationStatus === "finalized"
+  ) {
+    return {
+      state: "confirmed",
+      confirmedSlot: BigInt(status.slot),
+      error: null,
+    };
+  }
+
+  let currentBlockHeight: bigint | null = null;
+  let heightError: unknown = null;
+  try {
+    currentBlockHeight = BigInt(
+      await args.connection.getBlockHeight("finalized")
+    );
+  } catch (error) {
+    heightError = error;
+  }
+  const expired =
+    currentBlockHeight !== null &&
+    currentBlockHeight > args.attempt.lastValidBlockHeight;
+  if (status || (expired && statusError !== null)) {
+    return {
+      state: expired ? "ambiguous" : "unknown",
+      confirmedSlot: null,
+      error: statusError ?? heightError,
+    };
+  }
+  if (expired) {
+    return { state: "expired", confirmedSlot: null, error: null };
+  }
+  return {
+    state: "unknown",
+    confirmedSlot: null,
+    error: statusError ?? heightError,
+  };
+}
+
+type DurablePreparedOperationResult =
+  | {
+      status: "confirmed";
+      signature: string;
+      slot: bigint;
+      attempt: DurableAutodepositAttempt;
+    }
+  | {
+      status: "pending" | "failed" | "expired" | "ambiguous";
+      attempt: DurableAutodepositAttempt;
+      error: unknown | null;
+    };
+
 async function sendPreparedOperation(args: {
   compilePreparedOperation: AppModules["compilePreparedOperation"];
   connection: Connection;
-  prepared: PreparedOperation;
+  prepared: PreparedOperation | null;
   signers: Keypair[];
-}): Promise<{ signature: string; slot: bigint }> {
-  const latestBlockhash = await args.connection.getLatestBlockhash(
-    DEFAULT_COMMITMENT
-  );
-  const transaction = args.compilePreparedOperation({
-    prepared: args.prepared,
-    blockhash: latestBlockhash.blockhash,
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  claimToken: string;
+  targetId: bigint;
+  scheduledSlotId: bigint;
+  amountRaw: bigint;
+  sourcePreBalanceRaw: bigint;
+  destinationPreBalanceRaw: bigint;
+}): Promise<DurablePreparedOperationResult> {
+  let attempt = await loadDurableAutodepositAttempt({
+    neon: args.neon,
+    databaseUrl: args.databaseUrl,
+    claimToken: args.claimToken,
+    operationKind: "pull",
   });
-  transaction.sign(args.signers);
-  const signature = await args.connection.sendRawTransaction(
-    transaction.serialize()
-  );
-  const confirmation = await args.connection.confirmTransaction(
-    {
-      signature,
-      blockhash: latestBlockhash.blockhash,
-      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-    },
-    DEFAULT_COMMITMENT
-  );
-  if (confirmation.value.err) {
-    throw new Error(
-      `Transaction ${signature} failed: ${JSON.stringify(
-        confirmation.value.err
-      )}`
+  if (!attempt) {
+    if (!args.prepared) {
+      throw new Error(
+        `No persisted pull attempt or prepared operation exists for claim ${args.claimToken}.`
+      );
+    }
+    const latestBlockhash = await args.connection.getLatestBlockhash(
+      DEFAULT_COMMITMENT
     );
+    const transaction = args.compilePreparedOperation({
+      prepared: args.prepared,
+      blockhash: latestBlockhash.blockhash,
+    });
+    transaction.sign(args.signers);
+    const signedTransaction = transaction.serialize();
+    const signatureBytes = transaction.signatures[0];
+    if (!signatureBytes) {
+      throw new Error("Prepared autodeposit pull has no deterministic signature.");
+    }
+    const signature = bs58.encode(signatureBytes);
+    const signedTransactionBase64 =
+      Buffer.from(signedTransaction).toString("base64");
+    const signedTransactionSha256 = createHash("sha256")
+      .update(signedTransaction)
+      .digest("hex");
+    attempt = await persistPreparedAutodepositAttempt({
+      neon: args.neon,
+      databaseUrl: args.databaseUrl,
+      claimToken: args.claimToken,
+      targetId: args.targetId,
+      scheduledSlotId: args.scheduledSlotId,
+      operationKind: "pull",
+      executionId: null,
+      amountRaw: args.amountRaw,
+      sourcePreBalanceRaw: args.sourcePreBalanceRaw,
+      destinationPreBalanceRaw: args.destinationPreBalanceRaw,
+      signature,
+      signedTransactionBase64,
+      signedTransactionSha256,
+      blockhash: latestBlockhash.blockhash,
+      lastValidBlockHeight: BigInt(latestBlockhash.lastValidBlockHeight),
+    });
   }
-  const parsed = await args.connection.getTransaction(signature, {
-    commitment: DEFAULT_COMMITMENT,
-    maxSupportedTransactionVersion: 0,
+
+  const settlement = await settleDurableAutodepositAttempt({
+    attempt,
+    dependencies: {
+      observe: (candidate) =>
+        observeDurableAutodepositAttempt({
+          connection: args.connection,
+          attempt: candidate,
+        }),
+      broadcastExact: async (candidate) => {
+        const bytes = Buffer.from(
+          candidate.signedTransactionBase64,
+          "base64"
+        );
+        const transaction = VersionedTransaction.deserialize(bytes);
+        const derivedSignature = transaction.signatures[0]
+          ? bs58.encode(transaction.signatures[0])
+          : null;
+        if (derivedSignature !== candidate.signature) {
+          throw new Error(
+            `Persisted autodeposit transaction derives ${derivedSignature}, expected ${candidate.signature}.`
+          );
+        }
+        return args.connection.sendRawTransaction(bytes, {
+          maxRetries: 0,
+          skipPreflight: true,
+        });
+      },
+      recordBroadcast: (candidate) =>
+        recordAutodepositAttemptBroadcast({
+          neon: args.neon,
+          databaseUrl: args.databaseUrl,
+          attempt: candidate,
+        }),
+      recordObservation: (candidate, observation) =>
+        recordAutodepositAttemptObservation({
+          neon: args.neon,
+          databaseUrl: args.databaseUrl,
+          attempt: candidate,
+          observation,
+        }),
+    },
   });
-  return { signature, slot: BigInt(parsed?.slot ?? 0) };
+
+  if (settlement.observation.state === "confirmed") {
+    if (settlement.observation.confirmedSlot === null) {
+      throw new Error(
+        `Confirmed autodeposit attempt ${settlement.attempt.signature} has no slot.`
+      );
+    }
+    return {
+      status: "confirmed",
+      signature: settlement.attempt.signature,
+      slot: settlement.observation.confirmedSlot,
+      attempt: settlement.attempt,
+    };
+  }
+  return {
+    status:
+      settlement.observation.state === "unknown"
+        ? "pending"
+        : settlement.observation.state,
+    attempt: settlement.attempt,
+    error: settlement.observation.error,
+  };
 }
 
 export type SameMintTopUpResult = {
@@ -2865,10 +3294,21 @@ export function classifyTopUpFailure(error: unknown): string {
 }
 
 export async function runTopUpWithLookupTableRetry(args: {
-  attempt: () => Promise<SameMintTopUpResult>;
+  attempt: (context: {
+    attempt: number;
+    executionId: string;
+    amountRaw: bigint;
+  }) => Promise<SameMintTopUpResult>;
   attempts: number;
+  executionId: string;
+  amountRaw: bigint;
   delayMs: number;
-  onRetry?: (info: { attempt: number; error: unknown }) => void;
+  onRetry?: (info: {
+    attempt: number;
+    executionId: string;
+    amountRaw: bigint;
+    error: unknown;
+  }) => void;
   sleep?: (milliseconds: number) => Promise<void>;
 }): Promise<SameMintTopUpResult> {
   const sleep = args.sleep ?? defaultSleep;
@@ -2877,13 +3317,22 @@ export async function runTopUpWithLookupTableRetry(args: {
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      return await args.attempt();
+      return await args.attempt({
+        attempt,
+        executionId: args.executionId,
+        amountRaw: args.amountRaw,
+      });
     } catch (error) {
       lastError = error;
       if (attempt >= maxAttempts || !isLookupTableCoverageTopUpFailure(error)) {
         throw error;
       }
-      args.onRetry?.({ attempt, error });
+      args.onRetry?.({
+        attempt,
+        executionId: args.executionId,
+        amountRaw: args.amountRaw,
+        error,
+      });
       await sleep(args.delayMs);
     }
   }
@@ -3746,35 +4195,6 @@ async function main() {
     remainingAllowanceRaw: allowance.remainingAmountInPeriodRaw,
   });
 
-  if (
-    sweepDecision.kind === "no_excess" ||
-    sweepDecision.kind === "allowance_exhausted"
-  ) {
-    console.log(
-      JSON.stringify(
-        {
-          status: "noop",
-          reason:
-            sweepDecision.kind === "no_excess"
-              ? "wallet_balance_not_above_floor"
-              : "subscription_allowance_exhausted",
-          targetId: target.id.toString(),
-          scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
-          walletBalanceRaw: walletBalanceRaw.toString(),
-          walletBalanceFloorRaw: effectiveFloorRaw.toString(),
-          persistedWalletBalanceFloorRaw:
-            target.walletBalanceFloorRaw.toString(),
-          overrideFloorRaw: options.overrideFloorRaw?.toString() ?? null,
-          excessRaw: sweepDecision.excessRaw.toString(),
-          subscriptionAllowance: summarizeAllowance(allowance),
-        },
-        null,
-        2
-      )
-    );
-    return;
-  }
-
   const client = appModules.createSmartAccountVaultsClient({
     connection: createPrepareConnection(connection),
     programId,
@@ -3796,7 +4216,8 @@ async function main() {
   }
 
   let lotClaim: LotClaimResult | null = null;
-  let executionAmountRaw = sweepDecision.amountRaw;
+  let executionAmountRaw =
+    sweepDecision.kind === "sweep" ? sweepDecision.amountRaw : BigInt(0);
   if (options.requireLotClaim) {
     if (!options.execute) {
       lotClaim = {
@@ -3849,24 +4270,75 @@ async function main() {
     }
   }
 
+  if (
+    lotClaim?.status !== "selected" &&
+    (sweepDecision.kind === "no_excess" ||
+      sweepDecision.kind === "allowance_exhausted")
+  ) {
+    console.log(
+      JSON.stringify(
+        {
+          status: "noop",
+          reason:
+            sweepDecision.kind === "no_excess"
+              ? "wallet_balance_not_above_floor"
+              : "subscription_allowance_exhausted",
+          targetId: target.id.toString(),
+          scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
+          walletBalanceRaw: walletBalanceRaw.toString(),
+          walletBalanceFloorRaw: effectiveFloorRaw.toString(),
+          persistedWalletBalanceFloorRaw:
+            target.walletBalanceFloorRaw.toString(),
+          overrideFloorRaw: options.overrideFloorRaw?.toString() ?? null,
+          excessRaw: sweepDecision.excessRaw.toString(),
+          subscriptionAllowance: summarizeAllowance(allowance),
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
+
   let pullSent = false;
   try {
-    await assertSolBalance({
-      connection,
-      feePayer: policyKeypair.publicKey,
-      minimumLamports: AUTODEPOSIT_PULL_FEE_PAYER_MIN_LAMPORTS,
-      role: "Autodeposit pull fee payer",
-    });
+    const existingDurablePullAttempt =
+      options.execute && lotClaim?.status === "selected" && lotClaim.claimToken
+        ? await loadDurableAutodepositAttempt({
+            neon: appModules.neon,
+            databaseUrl,
+            claimToken: lotClaim.claimToken,
+            operationKind: "pull",
+          })
+        : null;
+    if (
+      existingDurablePullAttempt &&
+      existingDurablePullAttempt.amountRaw !== executionAmountRaw
+    ) {
+      throw new Error(
+        `Persisted pull amount ${existingDurablePullAttempt.amountRaw} does not match selected claim amount ${executionAmountRaw}.`
+      );
+    }
+    if (!existingDurablePullAttempt) {
+      await assertSolBalance({
+        connection,
+        feePayer: policyKeypair.publicKey,
+        minimumLamports: AUTODEPOSIT_PULL_FEE_PAYER_MIN_LAMPORTS,
+        role: "Autodeposit pull fee payer",
+      });
+    }
 
-    const pull = await client.prepareEarnUsdcAutodepositPull({
-      policy: new PublicKeyCtor(target.sweepPolicyAccount),
-      walletAddress: new PublicKeyCtor(target.wallet),
-      feePayer: policyKeypair.publicKey,
-      policySigner: policyKeypair.publicKey,
-      recurringDelegation: new PublicKeyCtor(target.recurringDelegation),
-      amountRaw: executionAmountRaw,
-      cluster: appModules.LoyalCluster.MainnetBeta,
-    });
+    const pull = existingDurablePullAttempt
+      ? null
+      : await client.prepareEarnUsdcAutodepositPull({
+          policy: new PublicKeyCtor(target.sweepPolicyAccount),
+          walletAddress: new PublicKeyCtor(target.wallet),
+          feePayer: policyKeypair.publicKey,
+          policySigner: policyKeypair.publicKey,
+          recurringDelegation: new PublicKeyCtor(target.recurringDelegation),
+          amountRaw: executionAmountRaw,
+          cluster: appModules.LoyalCluster.MainnetBeta,
+        });
     // The stored pointer can outlive the position it names, so reconcile it against the
     // observed holdings before choosing a destination for user funds.
     const currentReserveResolution = target.currentReserve
@@ -3916,19 +4388,27 @@ async function main() {
     const topUpLiquidityMint =
       reconciledReserve?.liquidityMint ??
       target.currentLiquidityMint ??
-      pull.persistence.liquidityMint;
-    if (topUpLiquidityMint !== pull.persistence.liquidityMint) {
+      pull?.persistence.liquidityMint ??
+      target.tokenMint;
+    const pulledLiquidityMint = pull?.persistence.liquidityMint ?? target.tokenMint;
+    if (topUpLiquidityMint !== pulledLiquidityMint) {
       throw new Error(
-        `Autodeposit top-up liquidity mint ${topUpLiquidityMint} does not match pulled mint ${pull.persistence.liquidityMint}.`
+        `Autodeposit top-up liquidity mint ${topUpLiquidityMint} does not match pulled mint ${pulledLiquidityMint}.`
       );
     }
 
-    const pullSimulation = await simulatePreparedOperation({
-      compilePreparedOperation: appModules.compilePreparedOperation,
-      connection,
-      prepared: pull.prepared,
-      signers: [policyKeypair],
-    });
+    const pullSimulation: SimulationSummary = pull
+      ? await simulatePreparedOperation({
+          compilePreparedOperation: appModules.compilePreparedOperation,
+          connection,
+          prepared: pull.prepared,
+          signers: [policyKeypair],
+        })
+      : {
+          err: null,
+          logs: ["persisted signed pull is reconciled instead of rebuilt"],
+          unitsConsumed: null,
+        };
     const initialTopUpDryRun = await runSameMintReserveTopUp({
       amountRaw: executionAmountRaw,
       execute: false,
@@ -4019,8 +4499,14 @@ async function main() {
       excessRaw: sweepDecision.excessRaw.toString(),
       amountRaw: executionAmountRaw.toString(),
       amountUi: Number(executionAmountRaw) / 10 ** USDC_DECIMALS,
-      cappedByMaxPerPeriod: sweepDecision.cappedByMaxPerPeriod,
-      cappedByRemainingAllowance: sweepDecision.cappedByRemainingAllowance,
+      cappedByMaxPerPeriod:
+        sweepDecision.kind === "sweep"
+          ? sweepDecision.cappedByMaxPerPeriod
+          : false,
+      cappedByRemainingAllowance:
+        sweepDecision.kind === "sweep"
+          ? sweepDecision.cappedByRemainingAllowance
+          : false,
       subscriptionAllowance: summarizeAllowance(allowance),
       transactionOrder: [
         ...(recoveryResult.recovery.status === "not_needed"
@@ -4088,7 +4574,18 @@ async function main() {
     const lookupTableReadinessSummary =
       summarizeLookupTableReadiness(lookupTableReadiness);
 
-    const { result: pullSend, safety: topUpFeePayerSafety } =
+    if (
+      lotClaim?.status !== "selected" ||
+      !lotClaim.claimToken ||
+      options.scheduledSlotId === null
+    ) {
+      throw new Error(
+        "Durable autodeposit execution requires a selected lot claim and scheduled slot."
+      );
+    }
+    const durableClaimToken = lotClaim.claimToken;
+    const durableScheduledSlotId = options.scheduledSlotId;
+    const { result: durablePullSend, safety: topUpFeePayerSafety } =
       await runAfterFeePayerSolSafety({
         connection,
         feePayer: topUpFeePayer,
@@ -4096,10 +4593,51 @@ async function main() {
           sendPreparedOperation({
             compilePreparedOperation: appModules.compilePreparedOperation,
             connection,
-            prepared: pull.prepared,
+            prepared: pull?.prepared ?? null,
             signers: [policyKeypair],
+            neon: appModules.neon,
+            databaseUrl,
+            claimToken: durableClaimToken,
+            targetId: target.id,
+            scheduledSlotId: durableScheduledSlotId,
+            amountRaw: executionAmountRaw,
+            sourcePreBalanceRaw: walletBalanceRaw,
+            destinationPreBalanceRaw: vaultPreBalanceRaw,
           }),
       });
+    if (durablePullSend.status !== "confirmed") {
+      const alert = operationalAlertForAttempt(durablePullSend.attempt.state);
+      if (attemptAllowsSafeRequeue(durablePullSend.attempt.state)) {
+        await releaseAutodepositLotClaim({
+          neon: appModules.neon,
+          databaseUrl,
+          claimToken: durableClaimToken,
+          lastError: `durable pull attempt ${durablePullSend.attempt.signature} ${durablePullSend.status}`,
+          pauseTargetForMissingDelegate: false,
+          retryDelaySeconds: PRE_SEND_FAILURE_RETRY_DELAY_SECONDS,
+        });
+      }
+      console.log(
+        JSON.stringify({
+          status: `autodeposit_pull_${durablePullSend.status}`,
+          targetId: target.id.toString(),
+          scheduledSlotId: durableScheduledSlotId.toString(),
+          signature: durablePullSend.attempt.signature,
+          attemptState: durablePullSend.attempt.state,
+          retryable: durablePullSend.status !== "ambiguous",
+          recoveryRequired: durablePullSend.status === "ambiguous",
+          error: attemptErrorDetail(durablePullSend.error),
+          alert,
+        })
+      );
+      if (alert) {
+        process.exitCode = autodepositExecutorFailureExitCode(
+          "transaction_effect_ambiguous"
+        );
+      }
+      return;
+    }
+    const pullSend = durablePullSend;
     pullSent = true;
     const walletPostPullRaw = await getTokenBalanceRaw(
       connection,
@@ -4112,10 +4650,10 @@ async function main() {
       target,
       signature: pullSend.signature,
       slot: pullSend.slot,
-      amountRaw: executionAmountRaw,
-      sourcePreBalanceRaw: walletBalanceRaw,
+      amountRaw: pullSend.attempt.amountRaw,
+      sourcePreBalanceRaw: pullSend.attempt.sourcePreBalanceRaw,
       sourcePostBalanceRaw: walletPostPullRaw,
-      destinationPreBalanceRaw: vaultPreBalanceRaw,
+      destinationPreBalanceRaw: pullSend.attempt.destinationPreBalanceRaw,
       destinationPostBalanceRaw: vaultPostPullRaw,
     });
     if (lotClaim?.status === "selected" && lotClaim.claimToken) {
@@ -4131,9 +4669,9 @@ async function main() {
     let topUpExecution: { signature: string; confirmedSlot: bigint };
     try {
       topUpExecute = await runTopUpWithLookupTableRetry({
-        attempt: () =>
+        attempt: ({ amountRaw }) =>
           runSameMintReserveTopUp({
-            amountRaw: executionAmountRaw,
+            amountRaw,
             execute: true,
             reserve: topUpReserve,
             rpcUrl,
@@ -4143,16 +4681,19 @@ async function main() {
           AUTODEPOSIT_TOP_UP_ALT_RETRY_ATTEMPTS_ENV,
           AUTODEPOSIT_TOP_UP_ALT_RETRY_ATTEMPTS
         ),
+        executionId: executionRecord.executionId,
+        amountRaw: pullSend.attempt.amountRaw,
         delayMs: readEnvInteger(
           AUTODEPOSIT_TOP_UP_ALT_RETRY_DELAY_MS_ENV,
           AUTODEPOSIT_TOP_UP_ALT_RETRY_DELAY_MS
         ),
-        onRetry: ({ attempt, error }) => {
+        onRetry: ({ attempt, executionId, amountRaw, error }) => {
           console.error(
             JSON.stringify({
               status: "kamino_top_up_lookup_table_retry",
               attempt,
-              executionId: executionRecord.executionId,
+              executionId,
+              amountRaw: amountRaw.toString(),
               error: error instanceof Error ? error.message : String(error),
             })
           );
@@ -4359,7 +4900,29 @@ async function main() {
         disposition.failureCode
       );
     }
-    if (!pullSent && lotClaim?.status === "selected" && lotClaim.claimToken) {
+    let unresolvedPullAttempt: DurableAutodepositAttempt | null = null;
+    let pullAttemptLookupFailed = false;
+    if (!pullSent && lotClaim?.claimToken) {
+      try {
+        unresolvedPullAttempt = await loadDurableAutodepositAttempt({
+          neon: appModules.neon,
+          databaseUrl,
+          claimToken: lotClaim.claimToken,
+          operationKind: "pull",
+        });
+      } catch {
+        // Fail closed. Losing the database read is not evidence that the exact
+        // signed transaction was never persisted or broadcast.
+        pullAttemptLookupFailed = true;
+      }
+    }
+    if (
+      !pullSent &&
+      !unresolvedPullAttempt &&
+      !pullAttemptLookupFailed &&
+      lotClaim?.status === "selected" &&
+      lotClaim.claimToken
+    ) {
       const claimToken = lotClaim.claimToken;
       const lastError = error instanceof Error ? error.message : String(error);
       const releaseClaim = () =>

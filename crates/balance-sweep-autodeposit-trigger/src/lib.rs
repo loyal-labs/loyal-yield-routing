@@ -19,12 +19,16 @@ pub const AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE: i32 = 23;
 pub const AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE_ENV: &str =
     "AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE";
 pub const AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE: i32 = 24;
+pub const AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE_ENV: &str =
+    "AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE";
+pub const AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE: i32 = 25;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExecutorFailureAlert {
     pub code: &'static str,
     pub operation: &'static str,
     pub summary: &'static str,
+    pub retryable: bool,
 }
 
 /// Returns the alert an executor exit deserves, or `None` when the exit reports a
@@ -40,11 +44,13 @@ pub fn executor_failure_alert(exit_code: Option<i32>) -> Option<ExecutorFailureA
             code: "kamino_top_up_failed",
             operation: "top_up_autodeposit_to_kamino",
             summary: "autodeposit pull succeeded but Kamino top-up failed",
+            retryable: false,
         }),
         Some(AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE) => Some(ExecutorFailureAlert {
             code: "yield_persistence_failed",
             operation: "persist_autodeposit_yield_position",
             summary: "autodeposit top-up succeeded but yield persistence failed",
+            retryable: false,
         }),
         // The route itself is unexecutable and no funds moved. Waiting cannot clear it,
         // so it must not page as a lookup-table or top-up fault.
@@ -52,6 +58,7 @@ pub fn executor_failure_alert(exit_code: Option<i32>) -> Option<ExecutorFailureA
             code: "autodeposit_preflight_blocked",
             operation: "preflight_autodeposit_route",
             summary: "autodeposit route preflight blocked before any funds moved",
+            retryable: true,
         }),
         // Names the remedy rather than the symptom. This failure stops every target at
         // once and no code change can clear it, so an operator reading the alert should
@@ -60,12 +67,20 @@ pub fn executor_failure_alert(exit_code: Option<i32>) -> Option<ExecutorFailureA
             code: "autodeposit_fee_payer_exhausted",
             operation: "fund_autodeposit_fee_payer",
             summary: "autodeposit fee payer is out of SOL; top up the delegated signer",
+            retryable: true,
+        }),
+        Some(AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE) => Some(ExecutorFailureAlert {
+            code: "autodeposit_transaction_effect_ambiguous",
+            operation: "reconcile_autodeposit_transaction",
+            summary: "autodeposit transaction effect remains ambiguous after blockhash expiry",
+            retryable: false,
         }),
         Some(AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE) => None,
         _ => Some(ExecutorFailureAlert {
             code: "autodeposit_executor_failed",
             operation: "execute_eligible_autodeposit_target",
             summary: "autodeposit executor exited unsuccessfully",
+            retryable: true,
         }),
     }
 }
@@ -461,6 +476,7 @@ mod tests {
                     code: "autodeposit_executor_failed",
                     operation: "execute_eligible_autodeposit_target",
                     summary: "autodeposit executor exited unsuccessfully",
+                    retryable: true,
                 })
             );
         }
@@ -473,28 +489,39 @@ mod tests {
                 AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE,
                 "kamino_top_up_failed",
                 "top_up_autodeposit_to_kamino",
+                false,
             ),
             (
                 AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE,
                 "yield_persistence_failed",
                 "persist_autodeposit_yield_position",
+                false,
             ),
             (
                 AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE,
                 "autodeposit_preflight_blocked",
                 "preflight_autodeposit_route",
+                true,
             ),
             (
                 AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE,
                 "autodeposit_fee_payer_exhausted",
                 "fund_autodeposit_fee_payer",
+                true,
+            ),
+            (
+                AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE,
+                "autodeposit_transaction_effect_ambiguous",
+                "reconcile_autodeposit_transaction",
+                false,
             ),
         ];
 
-        for (exit_code, code, operation) in cases {
+        for (exit_code, code, operation, retryable) in cases {
             let alert = executor_failure_alert(Some(exit_code)).expect("specific alert");
             assert_eq!(alert.code, code);
             assert_eq!(alert.operation, operation);
+            assert_eq!(alert.retryable, retryable);
         }
     }
 }

@@ -8,10 +8,13 @@ import {
   isMissingAutodepositTokenDelegateFailure,
   parseKeypairSecret,
   quarantineMissingAutodepositDelegate,
+  observeDurableAutodepositAttempt,
   releaseAutodepositLotClaim,
   runAfterFeePayerSolSafety,
+  runTopUpWithLookupTableRetry,
   shouldNotifyFailedSweep,
 } from "./execute-autodeposit-policy";
+import type { DurableAutodepositAttempt } from "./durable-autodeposit-confirmation";
 
 function hex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
@@ -138,7 +141,7 @@ describe("pull fee-payer SOL safety", () => {
       "await client.prepareEarnUsdcAutodepositPull({"
     );
     const simulatePull = source.indexOf(
-      "const pullSimulation = await simulatePreparedOperation({"
+      "? await simulatePreparedOperation({"
     );
 
     expect(balanceCheck).toBeGreaterThan(-1);
@@ -199,6 +202,147 @@ describe("top-up fee-payer SOL safety", () => {
         checked: true,
       },
     });
+  });
+});
+
+describe("durable pull signature observations", () => {
+  const durableAttempt: DurableAutodepositAttempt = {
+    id: "1",
+    claimToken: "claim-1",
+    operationKind: "pull",
+    executionId: null,
+    amountRaw: BigInt(10),
+    sourcePreBalanceRaw: BigInt(110),
+    destinationPreBalanceRaw: BigInt(20),
+    signature: "signature-1",
+    signedTransactionBase64: "d2lyZQ==",
+    signedTransactionSha256: "a".repeat(64),
+    blockhash: "blockhash-1",
+    lastValidBlockHeight: BigInt(100),
+    state: "submitted",
+    broadcastCount: 1,
+    confirmedSlot: null,
+  };
+
+  test("classifies confirmed history as landed", async () => {
+    const connection = {
+      getSignatureStatuses: async () => ({
+        context: { apiVersion: "test", slot: 43 },
+        value: [
+          {
+            confirmationStatus: "finalized",
+            confirmations: null,
+            err: null,
+            slot: 42,
+            status: { Ok: null },
+          },
+        ],
+      }),
+      getBlockHeight: async () => 101,
+    } as unknown as Connection;
+
+    await expect(
+      observeDurableAutodepositAttempt({
+        connection,
+        attempt: durableAttempt,
+      })
+    ).resolves.toEqual({
+      state: "confirmed",
+      confirmedSlot: BigInt(42),
+      error: null,
+    });
+  });
+
+  test("classifies a missing expired signature as safe to requeue", async () => {
+    const connection = {
+      getSignatureStatuses: async () => ({ value: [null] }),
+      getBlockHeight: async () => 101,
+    } as unknown as Connection;
+
+    await expect(
+      observeDurableAutodepositAttempt({
+        connection,
+        attempt: durableAttempt,
+      })
+    ).resolves.toEqual({
+      state: "expired",
+      confirmedSlot: null,
+      error: null,
+    });
+  });
+
+  test("holds a processed fork after expiry as ambiguous", async () => {
+    const connection = {
+      getSignatureStatuses: async () => ({
+        value: [
+          {
+            confirmationStatus: "processed",
+            confirmations: 0,
+            err: null,
+            slot: 42,
+            status: { Ok: null },
+          },
+        ],
+      }),
+      getBlockHeight: async () => 101,
+    } as unknown as Connection;
+
+    const observation = await observeDurableAutodepositAttempt({
+      connection,
+      attempt: durableAttempt,
+    });
+    expect(observation.state).toBe("ambiguous");
+  });
+
+  test("keeps a missing unexpired signature pending", async () => {
+    const connection = {
+      getSignatureStatuses: async () => ({ value: [null] }),
+      getBlockHeight: async () => 100,
+    } as unknown as Connection;
+
+    const observation = await observeDurableAutodepositAttempt({
+      connection,
+      attempt: durableAttempt,
+    });
+    expect(observation.state).toBe("unknown");
+  });
+});
+
+describe("top-up retry identity", () => {
+  test("retries only the top-up tied to the recorded pull execution and amount", async () => {
+    const contexts: Array<{
+      attempt: number;
+      executionId: string;
+      amountRaw: bigint;
+    }> = [];
+    const result = await runTopUpWithLookupTableRetry({
+      attempts: 2,
+      executionId: "execution-9",
+      amountRaw: BigInt(10),
+      delayMs: 0,
+      sleep: async () => {},
+      attempt: async (context) => {
+        contexts.push(context);
+        if (context.attempt === 1) {
+          throw new Error(
+            "reusable lookup-table coverage is incomplete or the exact simulation failure"
+          );
+        }
+        return {
+          command: ["same-mint-reserve-swap"],
+          exitCode: 0,
+          stdout: "{}",
+          stderr: "",
+          json: {},
+        };
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(contexts).toEqual([
+      { attempt: 1, executionId: "execution-9", amountRaw: BigInt(10) },
+      { attempt: 2, executionId: "execution-9", amountRaw: BigInt(10) },
+    ]);
   });
 });
 

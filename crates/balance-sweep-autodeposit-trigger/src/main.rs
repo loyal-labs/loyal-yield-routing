@@ -14,6 +14,8 @@ use balance_sweep_autodeposit_trigger::{
     AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE, AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE_ENV,
     AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE, AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE_ENV,
     AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE, AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE_ENV,
+    AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE,
+    AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE_ENV,
     AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE,
     AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE_ENV,
 };
@@ -34,6 +36,9 @@ const REQUESTED_SLOT_TIMEOUT_ERROR: &str = "Autodeposit request timed out before
 const MAX_DEBOUNCED_WAKEUPS: u64 = 1000;
 const DEFAULT_REALTIME_HINT_QUEUE_CAPACITY: usize = 1024;
 const DEFAULT_AUTODEPOSIT_WAKE_CHANNEL: &str = "loyal_yield_autodeposit_wakeup";
+const CLAIM_HOLDING_PULL_ATTEMPT_STATES: &[&str] =
+    &["prepared", "submitted", "confirmed", "unknown", "ambiguous"];
+const AUTOMATIC_PULL_RECOVERY_STATES: &[&str] = &["prepared", "submitted", "confirmed", "unknown"];
 
 #[derive(Debug, Parser)]
 #[command(about = "Project autodeposit surplus lots from Loyal wallet balance events")]
@@ -157,6 +162,7 @@ struct MissingRoutePolicyPauseOutcome {
 struct ExecutableTargetRow {
     target_id: i64,
     scheduled_slot_id: i64,
+    claim_token: Option<String>,
 }
 
 #[derive(Debug)]
@@ -547,14 +553,16 @@ async fn execute_eligible_targets_once(
     };
     for target in targets {
         outcome.executions_attempted += 1;
-        let claim_token = format!(
-            "autodeposit-trigger:{}:{}:{}",
-            target.target_id,
-            target.scheduled_slot_id,
-            Utc::now()
-                .timestamp_nanos_opt()
-                .unwrap_or_else(|| Utc::now().timestamp_micros())
-        );
+        let claim_token = target.claim_token.unwrap_or_else(|| {
+            format!(
+                "autodeposit-trigger:{}:{}:{}",
+                target.target_id,
+                target.scheduled_slot_id,
+                Utc::now()
+                    .timestamp_nanos_opt()
+                    .unwrap_or_else(|| Utc::now().timestamp_micros())
+            )
+        });
         let status = Command::new("sh")
             .arg("-c")
             .arg(build_executor_shell_command(
@@ -583,6 +591,10 @@ async fn execute_eligible_targets_once(
                 AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE_ENV,
                 AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE.to_string(),
             )
+            .env(
+                AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE_ENV,
+                AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE.to_string(),
+            )
             .status()
             .with_context(|| format!("spawn autodeposit executor for target {}", target.target_id))
             .inspect_err(|_| {
@@ -608,7 +620,7 @@ async fn execute_eligible_targets_once(
                     "autodeposit executor exited unsuccessfully"
                 );
                 OperationalError::new(alert.code, alert.operation, alert.summary)
-                    .retryable(false)
+                    .retryable(alert.retryable)
                     .recovery_required(true)
                     .emit();
             } else {
@@ -825,6 +837,13 @@ async fn release_stale_selected_claims_once(
              AND balance.mint = target.token_mint
             WHERE claim.status = 'selected'
               AND claim.execution_id IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM loyal_yield.balance_sweep_transaction_attempts AS attempt
+                  WHERE attempt.claim_token = claim.claim_token
+                    AND attempt.operation_kind = 'pull'
+                    AND attempt.attempt_state = ANY($5::text[])
+              )
               AND target.token_mint = $3
               AND target.wallet_balance_floor_raw IS NOT NULL
               AND balance.amount_raw - target.wallet_balance_floor_raw >= claim.amount_raw
@@ -891,6 +910,7 @@ async fn release_stale_selected_claims_once(
     .bind(limit)
     .bind(USDC_MINT_ADDRESS)
     .bind(CONSUMER_NAME)
+    .bind(CLAIM_HOLDING_PULL_ATTEMPT_STATES)
     .fetch_one(pool)
     .await?;
 
@@ -914,6 +934,46 @@ async fn load_executable_targets(
     limit: i64,
     hinted_slot_ids: &[i64],
 ) -> Result<Vec<ExecutableTargetRow>> {
+    let recovery_rows = sqlx::query(
+        r#"
+        SELECT DISTINCT ON (attempt.claim_token)
+            target.id AS target_id,
+            slot.id AS scheduled_slot_id,
+            claim.claim_token
+        FROM loyal_yield.balance_sweep_transaction_attempts AS attempt
+        JOIN loyal_yield.balance_sweep_lot_claims AS claim
+          ON claim.claim_token = attempt.claim_token
+         AND claim.status = 'selected'
+        JOIN loyal_yield.balance_sweep_scheduled_slots AS slot
+          ON slot.claim_token = claim.claim_token
+         AND slot.target_id = claim.target_id
+        JOIN loyal_yield.balance_sweep_targets AS target
+          ON target.id = claim.target_id
+        WHERE attempt.operation_kind = 'pull'
+          AND attempt.attempt_state = ANY($3::text[])
+          AND target.active = true
+          AND target.lifecycle_status = 'active'
+          AND target.token_mint = $2
+        ORDER BY attempt.claim_token, attempt.updated_at ASC, attempt.id ASC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .bind(USDC_MINT_ADDRESS)
+    .bind(AUTOMATIC_PULL_RECOVERY_STATES)
+    .fetch_all(pool)
+    .await?;
+    let recovery_targets = recovery_rows
+        .into_iter()
+        .map(|row| {
+            Ok(ExecutableTargetRow {
+                target_id: row.try_get("target_id")?,
+                scheduled_slot_id: row.try_get("scheduled_slot_id")?,
+                claim_token: Some(row.try_get("claim_token")?),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let remaining_limit = limit.saturating_sub(recovery_targets.len() as i64);
     let rows = sqlx::query(
         r#"
         SELECT
@@ -981,7 +1041,7 @@ async fn load_executable_targets(
         LIMIT $1
         "#,
     )
-    .bind(limit)
+    .bind(remaining_limit)
     .bind(USDC_MINT_ADDRESS)
     .bind(hinted_slot_ids)
     .fetch_all(pool)
@@ -992,11 +1052,12 @@ async fn load_executable_targets(
             Ok(ExecutableTargetRow {
                 target_id: row.try_get("target_id")?,
                 scheduled_slot_id: row.try_get("scheduled_slot_id")?,
+                claim_token: None,
             })
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(prioritize_executable_targets(
-        targets,
+        recovery_targets.into_iter().chain(targets).collect(),
         hinted_slot_ids,
         limit.max(0) as usize,
     ))
@@ -1014,10 +1075,13 @@ fn prioritize_executable_targets(
         .map(|(index, slot_id)| (slot_id, index))
         .collect::<HashMap<_, _>>();
     targets.sort_by_key(|target| {
-        hint_rank
-            .get(&target.scheduled_slot_id)
-            .copied()
-            .unwrap_or(usize::MAX)
+        (
+            target.claim_token.is_none(),
+            hint_rank
+                .get(&target.scheduled_slot_id)
+                .copied()
+                .unwrap_or(usize::MAX),
+        )
     });
     targets.truncate(limit);
     targets
@@ -2005,6 +2069,19 @@ mod tests {
         ExecutableTargetRow {
             target_id,
             scheduled_slot_id,
+            claim_token: None,
+        }
+    }
+
+    fn recovery_target(
+        target_id: i64,
+        scheduled_slot_id: i64,
+        claim_token: &str,
+    ) -> ExecutableTargetRow {
+        ExecutableTargetRow {
+            target_id,
+            scheduled_slot_id,
+            claim_token: Some(claim_token.to_owned()),
         }
     }
 
@@ -2038,6 +2115,30 @@ mod tests {
         assert!(ordered
             .iter()
             .all(|candidate| candidate.scheduled_slot_id != 999));
+    }
+
+    #[test]
+    fn unfinished_signed_attempts_precede_new_hinted_work() {
+        let recovery = recovery_target(7, 107, "existing-claim");
+        let ordered = prioritize_executable_targets(
+            vec![target(1, 101), recovery.clone(), target(2, 102)],
+            &[102, 101],
+            3,
+        );
+
+        assert_eq!(ordered, vec![recovery, target(2, 102), target(1, 101)]);
+    }
+
+    #[test]
+    fn confirmed_pull_stays_claim_holding_and_restart_recoverable() {
+        assert!(CLAIM_HOLDING_PULL_ATTEMPT_STATES.contains(&"confirmed"));
+        assert!(AUTOMATIC_PULL_RECOVERY_STATES.contains(&"confirmed"));
+        assert!(CLAIM_HOLDING_PULL_ATTEMPT_STATES.contains(&"ambiguous"));
+        assert!(!AUTOMATIC_PULL_RECOVERY_STATES.contains(&"ambiguous"));
+        for conclusive_retry_state in ["failed", "expired"] {
+            assert!(!CLAIM_HOLDING_PULL_ATTEMPT_STATES.contains(&conclusive_retry_state));
+            assert!(!AUTOMATIC_PULL_RECOVERY_STATES.contains(&conclusive_retry_state));
+        }
     }
 
     #[tokio::test]

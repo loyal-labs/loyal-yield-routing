@@ -231,6 +231,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0037_cross_mint_vault_opt_ins.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 38,
+        name: "durable_autodeposit_confirmation",
+        sql: include_str!("../../../loyal-yield-store/migrations/0038_durable_autodeposit_confirmation.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -3599,6 +3605,32 @@ mod tests {
                     .find(|migration| migration.version == version)
                     .map(|migration| migration.name),
                 Some(name),
+            );
+        }
+    }
+
+    #[test]
+    fn durable_autodeposit_attempt_migration_preserves_signed_wire_identity() {
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 38)
+            .expect("migration 38 exists");
+
+        for required in [
+            "balance_sweep_transaction_attempts",
+            "signed_transaction_base64 TEXT NOT NULL",
+            "signed_transaction_sha256 TEXT NOT NULL",
+            "recent_blockhash TEXT NOT NULL",
+            "last_valid_block_height BIGINT NOT NULL",
+            "source_pre_balance_raw BIGINT NOT NULL",
+            "destination_pre_balance_raw BIGINT NOT NULL",
+            "guard_balance_sweep_attempt_wire",
+            "autodeposit signed-attempt wire identity is immutable",
+            "'prepared', 'submitted', 'confirmed', 'unknown', 'ambiguous'",
+        ] {
+            assert!(
+                migration.sql.contains(required),
+                "migration 38 is missing {required}"
             );
         }
     }
