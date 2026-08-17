@@ -3,10 +3,6 @@ name: reusable-rust-image-build
 on:
   workflow_call:
     inputs:
-      images:
-        description: Image family to package after the shared Rust build
-        required: true
-        type: string
       publish:
         description: Push packaged images to GHCR
         required: false
@@ -20,7 +16,9 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAMESPACE: loyal-labs/loyal-yield-routing
-  RUST_CACHE_PREFIX: rust-release-linux-amd64-rust-1.89
+  CARGO_DEPENDENCY_CACHE_PREFIX: cargo-deps-linux-amd64-rust-1.89
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
 
 jobs:
   rust-build:
@@ -37,24 +35,29 @@ jobs:
           apt-get install -y --no-install-recommends ca-certificates clang git jq libssl-dev pkg-config protobuf-compiler
           rm -rf /var/lib/apt/lists/*
 
-      - name: Restore shared Cargo build state
-        id: rust-cache
+      - name: Restore Cargo dependency state
+        id: cargo-dependency-cache
         uses: actions/cache/restore@v4
         with:
           path: |
             /usr/local/cargo/registry
             /usr/local/cargo/git
-            target
-          key: ${{ env.RUST_CACHE_PREFIX }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          key: ${{ env.CARGO_DEPENDENCY_CACHE_PREFIX }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ env.RUST_CACHE_PREFIX }}-${{ hashFiles('Cargo.lock') }}-
-            ${{ env.RUST_CACHE_PREFIX }}-
+            ${{ env.CARGO_DEPENDENCY_CACHE_PREFIX }}-
+
+      - name: Set up content-addressed Rust compiler cache
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: v0.17.0
+
+      - name: Verify single-build image workflow contract
+        run: bash scripts/verify-rust-image-build-once.sh
 
       - name: Compile and stage all shipped Rust binaries
         run: bash scripts/build-rust-image-binaries.sh
 
       - name: Upload compiled binaries
-        if: inputs.images != 'none'
         uses: actions/upload-artifact@v4
         with:
           name: rust-image-binaries
@@ -64,21 +67,19 @@ jobs:
           # Release binaries are already dense; skip CPU-heavy ZIP compression.
           compression-level: 0
 
-      # Pull requests can restore default-branch caches but cannot poison them.
-      # Main writes a new immutable key after the merge build succeeds.
-      - name: Save trusted Cargo build state
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.rust-cache.outputs.cache-hit != 'true'
+      # Pull requests can restore default-branch dependency caches but cannot
+      # poison them. Compiler outputs are content-addressed by sccache.
+      - name: Save trusted Cargo dependency state
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-dependency-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
             /usr/local/cargo/registry
             /usr/local/cargo/git
-            target
-          key: ${{ env.RUST_CACHE_PREFIX }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          key: ${{ env.CARGO_DEPENDENCY_CACHE_PREFIX }}-${{ hashFiles('Cargo.lock') }}
 
   laserstream-workers:
     name: Package laserstream workers
-    if: inputs.images == 'all' || inputs.images == 'workers' || inputs.images == 'laserstream-workers'
     needs: rust-build
     runs-on: ubuntu-latest
     steps:
@@ -131,7 +132,6 @@ jobs:
 
   light-workers:
     name: Package light workers
-    if: inputs.images == 'all' || inputs.images == 'workers' || inputs.images == 'light-workers'
     needs: rust-build
     runs-on: ubuntu-latest
     steps:
@@ -210,7 +210,6 @@ jobs:
 
   operator-tools:
     name: Package operator tools
-    if: inputs.images == 'all' || inputs.images == 'operator-tools'
     needs: rust-build
     runs-on: ubuntu-latest
     steps:
