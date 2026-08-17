@@ -32,7 +32,7 @@ jobs:
       - name: Install native build dependencies
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates clang git jq libssl-dev pkg-config protobuf-compiler
+          apt-get install -y --no-install-recommends ca-certificates clang git jq libssl-dev pkg-config protobuf-compiler ripgrep
           rm -rf /var/lib/apt/lists/*
 
       - name: Restore Cargo dependency state
