@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod sqlx_metrics;
 mod wallet;
 mod workflow;
 
@@ -28,6 +29,7 @@ use tracing::Level;
 use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 use url::Url;
 
+use sqlx_metrics::{is_sqlx_metrics_event, SqlxMetrics, SqlxMetricsLayer};
 pub use wallet::ObservabilityWalletAddress;
 use workflow::WORKFLOW_TRACE_TARGET;
 pub use workflow::{WorkflowMetrics, WorkflowOutcome, WorkflowSpan};
@@ -323,6 +325,8 @@ pub fn init(config: ObservabilityConfig) -> Result<ObservabilityGuard, InitError
         .build();
     let meter = meter_provider.meter("loyal-observability");
     let workflow_metrics = WorkflowMetrics::new(&meter);
+    let sqlx_metrics_layer = SqlxMetricsLayer::new(SqlxMetrics::new(&meter))
+        .with_filter(filter::filter_fn(is_sqlx_metrics_event));
 
     let span_exporter = SpanExporter::builder()
         .with_http()
@@ -364,6 +368,7 @@ pub fn init(config: ObservabilityConfig) -> Result<ObservabilityGuard, InitError
         .with(fmt_layer)
         .with(log_layer)
         .with(trace_layer)
+        .with(sqlx_metrics_layer)
         .try_init()
     {
         let _ = shutdown_providers(&mut providers);

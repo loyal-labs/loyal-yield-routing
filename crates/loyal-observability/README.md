@@ -4,17 +4,52 @@ A shared crate for exporting privacy-safe logs, metrics, and traces from Loyal R
 
 Current service integrations initialize this crate and emit bounded `OperationalError` records. They do not yet record `WorkflowMetrics` or `WorkflowSpan` signals; those APIs are available for explicit adoption by individual workflows.
 
+When remote observability is enabled, SQLx's existing tracing events are also
+converted automatically into privacy-safe database duration metrics. Services do
+not need to wrap store calls or pass metric handles through their database layer.
+
 ## Signals
 
 | ClickStack data source | Crate API | Exported data |
 | --- | --- | --- |
 | Logs | `OperationalError` | Explicit operational failures with stable codes and optional wallet correlation |
 | Metrics | `WorkflowMetrics` | Low-cardinality execution counts and duration histograms |
+| Metrics | automatic SQLx layer | PostgreSQL operation and connection-acquisition duration histograms |
 | Traces | `WorkflowSpan` | Nested workflow operations with duration, outcome, and error status |
 
 Regular `tracing` events and spans are not exported remotely. The OTLP layers accept only the bounded targets created by this crate. All regular events still use the local formatting layer controlled by `RUST_LOG`.
 
 `OBSERVABILITY_ENABLED` controls all three remote exporters together. A service emits workflow metrics or traces only after its code explicitly calls `WorkflowMetrics` or `WorkflowSpan`.
+
+## SQLx database metrics
+
+The metrics subscriber listens only to SQLx's `sqlx::query` and
+`sqlx::pool::acquire` tracing targets. It extracts the numeric durations already
+measured by SQLx and emits:
+
+| Metric | Type | Unit | Attributes |
+| --- | --- | --- | --- |
+| `db.client.operation.duration` | Histogram | `s` | `db.system.name=postgresql`, `db.operation.name` |
+| `db.client.connection.wait_time` | Histogram | `s` | `db.system.name=postgresql` |
+
+`db.operation.name` is deliberately fixed to `OTHER`. SQLx exposes the specific
+operation only inside its query payload, and this layer does not inspect that
+payload. SQL statements, bind values, SQLx query summaries, row values, and all
+other event fields are discarded rather than copied to metric attributes or
+remote logs. If per-operation breakdowns become necessary, callers should add a
+separate bounded static operation label instead of parsing SQL here.
+
+SQLx emits query timing events at `DEBUG` for normal statements and `WARN` for
+slow statements. The dedicated per-layer filter observes both without enabling
+unrelated debug events or changing the local `RUST_LOG` output. SQLx emits slow
+pool acquisitions by default; a pool may opt into timing every successful
+acquisition with SQLx's `acquire_time_level` option.
+
+The histograms use OpenTelemetry's recommended database duration boundaries:
+1 ms, 5 ms, 10 ms, 50 ms, 100 ms, 500 ms, 1 s, 5 s, and 10 s. Exact normalized
+statement diagnosis remains the database's responsibility through tools such as
+PostgreSQL `pg_stat_statements`; these client metrics answer whether a service's
+database calls or connection acquisition are becoming slow.
 
 ## Initialization
 
