@@ -86,12 +86,6 @@ const services = [
       "/usr/local/bin/same-mint-reserve-swap --fleet-reconciler --concurrency 64 --batch-size 32 --poll-interval-milliseconds 250 --position-sweep-interval-seconds 300",
     env: {},
   },
-  {
-    name: "loyal-same-mint-yield-monitor",
-    command:
-      "/usr/local/bin/same-mint-yield-monitor --all-active-vaults --poll-interval-seconds 300 --rebalance-cooldown-seconds 300",
-    env: {},
-  },
 ] as const;
 
 function requiredEnv(name: string): string {
