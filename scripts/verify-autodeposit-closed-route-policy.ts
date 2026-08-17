@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { PublicKey } from "@solana/web3.js";
 
 import {
+  closedRoutePolicyReconciliationIsNotActionable,
   readClosedRoutePolicyAccount,
   reconcileClosedRoutePolicy,
   reconcileClosedRoutePolicyFailure,
@@ -85,6 +86,7 @@ type RoutePolicyRow = {
   id: string;
   policy_account: string;
   active: boolean;
+  finalized_eligible?: boolean;
   last_seen_slot?: string;
   settings?: string;
   vault_index?: number;
@@ -125,8 +127,17 @@ function createFakeNeon(rows: RoutePolicyRow[]) {
           (row.active_policy_id ?? row.id) === row.id &&
           (row.vault_active ?? true)
       );
+      const clearsFinalizedEligibility = /finalized_eligible\s*=\s*false/i.test(
+        sql
+      );
       for (const row of updated) {
+        if ((row.finalized_eligible ?? true) && !clearsFinalizedEligibility) {
+          throw new Error(
+            'new row for relation "route_policies" violates check constraint "route_policies_finalized_eligible_check"'
+          );
+        }
         row.active = false;
+        row.finalized_eligible = false;
       }
       return updated.map((row) => ({ id: row.id }));
     };
@@ -216,8 +227,9 @@ async function simulateTicks(args: {
   connection: never;
   reconcile: boolean;
   ticks: number;
-}): Promise<number> {
+}): Promise<{ alerts: number; spawns: number }> {
   let spawns = 0;
+  let alerts = 0;
   for (let tick = 0; tick < args.ticks; tick += 1) {
     const eligible = args.rows.some(
       (row) => row.policy_account === ROUTE_POLICY && row.active
@@ -230,9 +242,10 @@ async function simulateTicks(args: {
       await dryRun();
     } catch (error) {
       if (!args.reconcile) {
+        alerts += 1;
         continue;
       }
-      await reconcileClosedRoutePolicyFailure({
+      const reconciliation = await reconcileClosedRoutePolicyFailure({
         connection: args.connection,
         databaseUrl: DATABASE_URL,
         error,
@@ -240,9 +253,15 @@ async function simulateTicks(args: {
         neon: args.neon,
         target,
       });
+      if (
+        !reconciliation ||
+        !closedRoutePolicyReconciliationIsNotActionable(reconciliation)
+      ) {
+        alerts += 1;
+      }
     }
   }
-  return spawns;
+  return { alerts, spawns };
 }
 
 async function scenarioStormReproduced(directory: string): Promise<void> {
@@ -254,7 +273,7 @@ async function scenarioStormReproduced(directory: string): Promise<void> {
   const { neon } = createFakeNeon(rows);
   const { connection } = createFakeChain([false, false]);
 
-  const spawns = await simulateTicks({
+  const outcome = await simulateTicks({
     connection,
     directory,
     neon,
@@ -263,7 +282,7 @@ async function scenarioStormReproduced(directory: string): Promise<void> {
     ticks: 10,
   });
 
-  check("every tick spawns the executor", spawns === 10, spawns);
+  check("every tick spawns the executor", outcome.spawns === 10, outcome);
   check(
     "every spawn really ran the binary",
     spawnCount(directory) === 10,
@@ -281,7 +300,7 @@ async function scenarioStormStopped(directory: string): Promise<void> {
   const { neon, statements } = createFakeNeon(rows);
   const { connection, configs, reads } = createFakeChain([false, false]);
 
-  const spawns = await simulateTicks({
+  const outcome = await simulateTicks({
     connection,
     directory,
     neon,
@@ -290,13 +309,19 @@ async function scenarioStormStopped(directory: string): Promise<void> {
     ticks: 10,
   });
 
-  check("only the first tick spawns the executor", spawns === 1, spawns);
+  check("only the first tick spawns the executor", outcome.spawns === 1, outcome);
+  check("expected closure emits no operational alert", outcome.alerts === 0, outcome);
   check(
     "no further binary invocations",
     spawnCount(directory) === 1,
     spawnCount(directory)
   );
   check("the policy is deactivated", rows[0].active === false);
+  check(
+    "the policy is no longer finalized-eligible",
+    rows[0].finalized_eligible === false,
+    rows[0]
+  );
   check("chain was consulted twice before writing", reads() === 2, reads());
   check(
     "second finalized read is fenced to the first context",
@@ -591,6 +616,7 @@ async function scenarioProductionShapedWorkerLoad(
   );
 
   let spawnedWorkers = 0;
+  let operationalAlerts = 0;
   let fleetRowsScanned = 0;
   for (let tick = 0; tick < PRODUCTION_TRIGGER_TICKS; tick += 1) {
     fleetRowsScanned += rows.length;
@@ -605,7 +631,7 @@ async function scenarioProductionShapedWorkerLoad(
         try {
           await dryRunTarget(workerTarget);
         } catch (error) {
-          await reconcileClosedRoutePolicyFailure({
+          const reconciliation = await reconcileClosedRoutePolicyFailure({
             connection,
             databaseUrl: DATABASE_URL,
             error,
@@ -613,6 +639,12 @@ async function scenarioProductionShapedWorkerLoad(
             neon,
             target: workerTarget,
           });
+          if (
+            !reconciliation ||
+            !closedRoutePolicyReconciliationIsNotActionable(reconciliation)
+          ) {
+            operationalAlerts += 1;
+          }
         }
       })
     );
@@ -640,6 +672,17 @@ async function scenarioProductionShapedWorkerLoad(
     rows.filter((row) => !row.active).length
   );
   check(
+    "every reconciled policy is no longer finalized-eligible",
+    rows
+      .filter((row) => !row.active)
+      .every((row) => row.finalized_eligible === false)
+  );
+  check(
+    "expected closures emit no operational alerts",
+    operationalAlerts === 0,
+    operationalAlerts
+  );
+  check(
     "healthy fleet remains active",
     rows.filter((row) => row.active).length ===
       PRODUCTION_FLEET_TARGET_COUNT - PRODUCTION_CLOSED_POLICY_COUNT,
@@ -654,6 +697,35 @@ async function scenarioProductionShapedWorkerLoad(
     "one compare-and-set statement is issued per closed target",
     statements.length === PRODUCTION_CLOSED_POLICY_COUNT,
     statements.length
+  );
+}
+
+async function scenarioProductionWorkerUsesTerminalMissingPolicyResult(): Promise<void> {
+  console.log(
+    "\nworker contract: autodeposit policy absence is terminal, not fatal"
+  );
+  const subprocess = Bun.spawn(
+    [
+      "cargo",
+      "test",
+      "-p",
+      "loyal-fleet-worker",
+      "tests::autodeposit_deposit_missing_policy_is_terminal_not_fatal",
+      "--",
+      "--exact",
+    ],
+    { stdout: "pipe", stderr: "pipe" }
+  );
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(subprocess.stdout).text(),
+    new Response(subprocess.stderr).text(),
+    subprocess.exited,
+  ]);
+  const output = `${stdout}\n${stderr}`;
+  check(
+    "the real worker returns a typed missing-policy result without the fatal path",
+    exitCode === 0 && /test result: ok\. 1 passed/.test(output),
+    { exitCode, output: output.slice(-2_000) }
   );
 }
 
@@ -676,14 +748,10 @@ const targetKey = argValue("--settings") + ":" + argValue("--vault-index");
 const missingAccount =
   plan.missingAccountsByTarget?.[targetKey] ?? plan.missingAccount;
 
-console.log(
-  "2026-08-04T19:54:43.859632Z ERROR loyal.observability.operational_error: " +
-    'error_code="same_mint_route_worker_fatal" retryable=false recovery_required=true'
-);
 console.error(
   JSON.stringify({
     error: "policy account " + missingAccount + " does not exist",
-    event: "same_mint_route_worker_fatal",
+    event: "same_mint_route_policy_missing",
   })
 );
 process.exit(1);
@@ -710,6 +778,7 @@ async function main(): Promise<void> {
     scenarioUnrelatedErrorsAreIgnored();
     await scenarioReconciliationIsIdempotent();
     await scenarioProductionShapedWorkerLoad(directory);
+    await scenarioProductionWorkerUsesTerminalMissingPolicyResult();
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }

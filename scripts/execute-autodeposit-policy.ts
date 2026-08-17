@@ -1433,7 +1433,9 @@ export async function reconcileClosedRoutePolicy(args: {
       FOR UPDATE OF policy
     )
     UPDATE loyal_yield.route_policies policy
-    SET active = false, last_seen_at = now()
+    SET active = false,
+        finalized_eligible = false,
+        last_seen_at = now()
     FROM locked_policy
     WHERE policy.id = locked_policy.id
     RETURNING policy.id
@@ -1456,6 +1458,22 @@ export async function reconcileClosedRoutePolicy(args: {
     firstFinalizedContextSlot: firstProbe.context.slot,
     secondFinalizedContextSlot: secondProbe.context.slot,
   };
+}
+
+/**
+ * A finalized missing policy is an expected terminal lifecycle outcome once its
+ * database binding is retired. A binding change is terminal for this stale
+ * executor snapshot as well; the next scheduler read will use the new binding.
+ * Contradictory finalized evidence stays actionable instead of being hidden.
+ */
+export function closedRoutePolicyReconciliationIsNotActionable(
+  reconciliation: ClosedRoutePolicyReconciliation
+): boolean {
+  return (
+    reconciliation.status === "reconciled" ||
+    (reconciliation.status === "skipped" &&
+      reconciliation.reason === "policy_binding_changed")
+  );
 }
 
 /**
@@ -4969,6 +4987,13 @@ async function main() {
           reconciliation,
         })
       );
+    }
+    if (
+      reconciliation &&
+      closedRoutePolicyReconciliationIsNotActionable(reconciliation)
+    ) {
+      process.exitCode = autodepositExecutorFailureExitCode("not_actionable");
+      return;
     }
     throw error;
   }
