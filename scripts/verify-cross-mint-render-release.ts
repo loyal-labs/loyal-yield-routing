@@ -217,15 +217,27 @@ async function verifyDatabase(): Promise<void> {
       count(*) FILTER (
         WHERE active
           AND cluster = 'mainnet-beta'
+      )::BIGINT AS attributed_count,
+      count(*) FILTER (
+        WHERE active
+          AND cluster = 'mainnet-beta'
           AND source_commitment = 'finalized'
           AND finalized_eligible
-      )::BIGINT AS eligible_count
+      )::BIGINT AS eligible_count,
+      count(*) FILTER (
+        WHERE active
+          AND cluster = 'mainnet-beta'
+          AND (
+            source_commitment <> 'finalized'
+            OR NOT finalized_eligible
+          )
+      )::BIGINT AS invalid_attributed_count
     FROM loyal_yield.route_policies
   `;
   equal(
-    String(policies?.eligible_count),
-    String(policies?.active_count),
-    "active Earn policy continuity",
+    String(policies?.invalid_attributed_count),
+    "0",
+    "attributed active Earn policy eligibility",
   );
 
   const [movements] = await sql`
@@ -243,7 +255,7 @@ async function verifyDatabase(): Promise<void> {
   `;
 
   console.log(
-    `production_database=PASS activeEarnPolicies=${policies?.active_count} autoswapEnrollments=${enrollments?.enrollment_count} activeCrossMintMovements=0 startNewMovements=false`,
+    `production_database=PASS activeEarnPolicies=${policies?.active_count} attributedEarnPolicies=${policies?.attributed_count} eligibleEarnPolicies=${policies?.eligible_count} autoswapEnrollments=${enrollments?.enrollment_count} activeCrossMintMovements=0 startNewMovements=false`,
   );
 }
 

@@ -24,6 +24,7 @@ struct Cli {
 #[tokio::main]
 #[allow(clippy::result_large_err)]
 async fn main() -> Result<(), MonitorError> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
     let config = MonitorConfig::new(cli.cluster, cli.commitment, cli.ws_url, cli.api_key)?;
     match cli.postgres_url {
