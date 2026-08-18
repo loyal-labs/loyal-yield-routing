@@ -11834,7 +11834,7 @@ async fn repair_idle_vault_deposit_partial_pull_history(
 
     let target_row = loyal_yield_orchestrator::sqlx::query(
         r#"
-        SELECT id, wallet, token_mint, vault_token_ata
+        SELECT wallet, vault_token_ata
         FROM loyal_yield.balance_sweep_targets
         WHERE settings = $1
           AND vault_index = $2
@@ -11859,27 +11859,32 @@ async fn repair_idle_vault_deposit_partial_pull_history(
             "appHistoryRepair": "skipped_no_balance_sweep_target",
         }));
     };
-    let target_id: i64 = target_row.try_get("id")?;
     let wallet: String = target_row.try_get("wallet")?;
     let vault_token_ata: String = target_row.try_get("vault_token_ata")?;
 
     let execution_rows = loyal_yield_orchestrator::sqlx::query(
         r#"
-        SELECT id, amount_raw, signature
-        FROM loyal_yield.balance_sweep_executions
-        WHERE target_id = $1
-          AND token_mint = $2
-          AND COALESCE(destination_token_ata, destination_vault_ata) = $3
-          AND decoded_evidence->>'status' IN (
+        SELECT execution.id, execution.amount_raw, execution.signature
+        FROM loyal_yield.balance_sweep_executions AS execution
+        JOIN loyal_yield.balance_sweep_targets AS execution_target
+          ON execution_target.id = execution.target_id
+        WHERE execution_target.settings = $1
+          AND execution_target.vault_index = $2
+          AND execution_target.vault_pubkey = $3
+          AND execution.token_mint = $4
+          AND COALESCE(execution.destination_token_ata, execution.destination_vault_ata) = $5
+          AND execution.decoded_evidence->>'status' IN (
               'partial_executed_pull_top_up_blocked',
               'partial_executed_pull_idle_vault_handoff'
           )
-          AND decoded_evidence->>'idleVaultDepositDecisionId' IS NULL
-        ORDER BY slot ASC, id ASC
-        FOR UPDATE
+          AND execution.decoded_evidence->>'idleVaultDepositDecisionId' IS NULL
+        ORDER BY execution.slot ASC, execution.id ASC
+        FOR UPDATE OF execution
         "#,
     )
-    .bind(target_id)
+    .bind(&vault.settings)
+    .bind(vault.vault_index)
+    .bind(&vault.vault_pubkey)
     .bind(USDC_MINT.to_string())
     .bind(&vault_token_ata)
     .fetch_all(&mut *tx)

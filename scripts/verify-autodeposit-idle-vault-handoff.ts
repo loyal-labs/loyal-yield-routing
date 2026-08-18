@@ -220,6 +220,10 @@ async function main(): Promise<void> {
     trigger.indexOf("async fn load_executable_targets"),
     trigger.indexOf("let remaining_limit"),
   );
+  const fleetHistoryRepair = fleet.slice(
+    fleet.indexOf("async fn repair_idle_vault_deposit_partial_pull_history"),
+    fleet.indexOf("async fn repair_idle_vault_deposit_app_history_in_tx"),
+  );
   check(
     "publication failure alert claim is durable",
     executor.includes("claimIdleHandoffFailureAlert") &&
@@ -276,6 +280,20 @@ async function main(): Promise<void> {
       fleet.includes(AUTODEPOSIT_IDLE_HANDOFF_STATUS) &&
       fleet.includes("repair_idle_vault_deposit_partial_pull_history"),
     "fleet selects idle source and repairs autodeposit history after confirmation",
+  );
+  check(
+    "history repair follows stable vault identity across replaced targets",
+    fleetHistoryRepair.includes(
+      "JOIN loyal_yield.balance_sweep_targets AS execution_target",
+    ) &&
+      fleetHistoryRepair.includes("execution_target.settings = $1") &&
+      fleetHistoryRepair.includes("execution_target.vault_index = $2") &&
+      fleetHistoryRepair.includes("execution_target.vault_pubkey = $3") &&
+      fleetHistoryRepair.includes(
+        "COALESCE(execution.destination_token_ata, execution.destination_vault_ata) = $5",
+      ) &&
+      !fleetHistoryRepair.includes("WHERE target_id = $1"),
+    "replaced target rows cannot hide an older confirmed pull for the same vault ATA",
   );
   check(
     "SLA alert is durably claimed",
