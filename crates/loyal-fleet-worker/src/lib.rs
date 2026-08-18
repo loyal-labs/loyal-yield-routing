@@ -82,15 +82,16 @@ use loyal_yield_orchestrator::{
         TargetCapacityObservation, TargetCapacityReservationInput,
         MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS,
     },
+    lookup_table_manifest_address_records_hash,
     lookup_table_manifest_hash as control_plane_lookup_table_manifest_hash,
     minimal_verified_table_bundle, policy_keypair_from_env, route_amount_evidence_from_metadata,
     route_fee_payer_keypairs_from_env,
     rpc_safety::{redacted_external_error, validate_rpc_endpoint, validate_rpc_genesis_hash},
-    shared_market_manifest_addresses, shared_market_manifest_hash, solana_testing_keypair_from_env,
+    shared_market_manifest_addresses, solana_testing_keypair_from_env,
     standard_policy_keypair_from_env, supported_stable_mints, vault_manifest_addresses,
-    vault_manifest_hash, ConfirmSameMintRebalanceInput, CurrentIdleTokenBalance, DecisionAdvance,
-    DecisionId, DecisionStatus, EarnUniverse, EffectiveLookupTableRollout,
-    IdleVaultDepositDecisionInput, LookupTableAllocationKind, LookupTableManifestSubject,
+    ConfirmSameMintRebalanceInput, CurrentIdleTokenBalance, DecisionAdvance, DecisionId,
+    DecisionStatus, EarnUniverse, EffectiveLookupTableRollout, IdleVaultDepositDecisionInput,
+    LookupTableAllocationKind, LookupTableManifestAddressRecord, LookupTableManifestSubject,
     LookupTableProvisioningRequestUpsert, LookupTableReadinessRecord, LookupTableReadinessStatus,
     LookupTableRolloutMode, LookupTableSelectionKind, LookupTableSimulationState,
     LookupTableUsageLeaseBundle, LookupTableUsageLeaseKind, NeonSqlClient, NeonSqlConfig,
@@ -2009,6 +2010,8 @@ struct RuntimeLookupTableResolution {
     reusable_simulation_units_consumed: Option<u64>,
     reusable_simulation_error: Option<String>,
     shared_catalog_covered: bool,
+    durable_shared_addresses: Vec<LookupTableManifestAddressRecord>,
+    durable_vault_addresses: Vec<LookupTableManifestAddressRecord>,
     observed_slot: i64,
     evidence: Value,
 }
@@ -7673,7 +7676,6 @@ async fn run_with_runtime(
                 &reserve_move.source_reserve,
                 &reserve_move.target_reserve,
                 "same_mint_kamino",
-                &route_execution.lookup_table_manifest,
                 &resolution,
                 acquire_route_lease,
                 true,
@@ -10452,7 +10454,6 @@ async fn run_idle_vault_deposit_flow(
                 &phase.source_reserve,
                 &phase.target_reserve,
                 phase.route_kind,
-                &phase.manifest,
                 &phase.resolution,
                 (options.execute || options.fused_execute) && acquire_leases,
                 true,
@@ -10467,7 +10468,6 @@ async fn run_idle_vault_deposit_flow(
                 &phase.source_reserve,
                 &phase.target_reserve,
                 phase.route_kind,
-                &phase.manifest,
                 &phase.resolution,
                 (options.execute || options.fused_execute) && acquire_leases,
                 true,
@@ -13625,12 +13625,16 @@ async fn resolve_route_lookup_tables_with_external(
     let rollout = client
         .effective_lookup_table_rollout(&options.cluster, vault.id)
         .await?;
-    let shared_catalog_requirements = shared_market_manifest_addresses(manifest)
-        .into_iter()
-        .filter(|address| !external_addresses.contains(&address.address))
-        .collect::<Vec<_>>();
+    let durable_shared_addresses = durable_lookup_table_manifest_addresses(
+        shared_market_manifest_addresses(manifest),
+        &external_addresses,
+    );
+    let durable_vault_addresses = durable_lookup_table_manifest_addresses(
+        vault_manifest_addresses(manifest),
+        &external_addresses,
+    );
     let shared_catalog_validation = client
-        .validate_shared_market_catalog_route(&options.cluster, shared_catalog_requirements)
+        .validate_shared_market_catalog_route(&options.cluster, durable_shared_addresses.clone())
         .await?;
     let shared_catalog_covered =
         shared_catalog_validation.state == SharedMarketCatalogRouteValidationState::Covered;
@@ -13840,9 +13844,26 @@ async fn resolve_route_lookup_tables_with_external(
         reusable_simulation_units_consumed,
         reusable_simulation_error,
         shared_catalog_covered,
+        durable_shared_addresses,
+        durable_vault_addresses,
         observed_slot,
         evidence,
     })
+}
+
+fn durable_lookup_table_manifest_addresses(
+    addresses: Vec<LookupTableManifestAddressRecord>,
+    external_addresses: &BTreeSet<String>,
+) -> Vec<LookupTableManifestAddressRecord> {
+    addresses
+        .into_iter()
+        .filter(|address| !external_addresses.contains(&address.address))
+        .enumerate()
+        .map(|(ordinal, mut address)| {
+            address.ordinal = ordinal as i32;
+            address
+        })
+        .collect()
 }
 
 fn exact_writable_account_keys(fee_payer: Pubkey, instructions: &[Instruction]) -> Vec<String> {
@@ -14757,7 +14778,6 @@ async fn persist_route_lookup_table_resolution(
     source_reserve: &str,
     target_reserve: &str,
     route_kind: &str,
-    manifest: &LookupTableManifest,
     resolution: &RuntimeLookupTableResolution,
     acquire_route_lease: bool,
     request_provisioning: bool,
@@ -14836,9 +14856,10 @@ async fn persist_route_lookup_table_resolution(
         })
         .await?;
 
-    let missing_vault_addresses = vault_manifest_addresses(manifest)
-        .into_iter()
-        .map(|address| address.address)
+    let missing_vault_addresses = resolution
+        .durable_vault_addresses
+        .iter()
+        .map(|address| address.address.clone())
         .filter(|address| resolution.reusable_missing_addresses.contains(address))
         .collect::<BTreeSet<_>>();
     let provisioning_request_id = if request_provisioning
@@ -14855,10 +14876,14 @@ async fn persist_route_lookup_table_resolution(
                     requirements_fingerprint: resolution.requirements_fingerprint.clone(),
                     shared_manifest_id: None,
                     vault_manifest_id: None,
-                    desired_shared_hash: Some(shared_market_manifest_hash(manifest)),
-                    desired_vault_hash: Some(vault_manifest_hash(manifest)),
-                    shared_addresses: shared_market_manifest_addresses(manifest),
-                    vault_addresses: vault_manifest_addresses(manifest),
+                    desired_shared_hash: Some(lookup_table_manifest_address_records_hash(
+                        &resolution.durable_shared_addresses,
+                    )),
+                    desired_vault_hash: Some(lookup_table_manifest_address_records_hash(
+                        &resolution.durable_vault_addresses,
+                    )),
+                    shared_addresses: resolution.durable_shared_addresses.clone(),
+                    vault_addresses: resolution.durable_vault_addresses.clone(),
                 })
                 .await?
                 .id,
@@ -14927,7 +14952,6 @@ async fn prepare_route_lookup_table_phase(
         source_reserve,
         target_reserve,
         route_kind,
-        &manifest,
         &resolution,
         acquire_route_lease,
         true,
@@ -14986,7 +15010,6 @@ async fn prepare_route_lookup_table_phase_with_external(
         source_reserve,
         target_reserve,
         route_kind,
-        &manifest,
         &resolution,
         false,
         false,
@@ -15116,7 +15139,6 @@ async fn resolve_route_lookup_tables_immediately_before_send(
         &predecision.source_reserve,
         &predecision.target_reserve,
         predecision.route_kind,
-        manifest,
         &presend,
         false,
         false,
@@ -18910,7 +18932,6 @@ async fn execute_prepared_same_mint_route_inner(
         &decision.source_reserve,
         &decision.target_reserve,
         "same_mint_kamino",
-        &route_execution.lookup_table_manifest,
         &presend_lookup_tables,
         false,
         false,
@@ -22995,6 +23016,42 @@ mod tests {
         let shuffled_hash = ordered_lookup_table_address_hash(&[third, first, second]);
 
         assert_ne!(ordered_hash, shuffled_hash);
+    }
+
+    #[test]
+    fn external_alt_accounts_are_not_persisted_as_durable_provisioning_demand() {
+        let first = Pubkey::new_unique().to_string();
+        let external = Pubkey::new_unique().to_string();
+        let third = Pubkey::new_unique().to_string();
+        let addresses = [first.clone(), external.clone(), third.clone()]
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, address)| LookupTableManifestAddressRecord {
+                address,
+                ordinal: ordinal as i32,
+                semantic_class: LookupTableManifestSubject::SharedMarket,
+                account_role: format!("route_account_{ordinal}"),
+                is_writable: ordinal != 1,
+            })
+            .collect();
+
+        let durable =
+            durable_lookup_table_manifest_addresses(addresses, &BTreeSet::from([external]));
+
+        assert_eq!(
+            durable
+                .iter()
+                .map(|address| (address.ordinal, address.address.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(0, first.as_str()), (1, third.as_str())]
+        );
+        assert!(durable
+            .iter()
+            .all(|address| !address.account_role.is_empty()));
+        assert_eq!(
+            lookup_table_manifest_address_records_hash(&durable).len(),
+            64
+        );
     }
 
     #[test]
