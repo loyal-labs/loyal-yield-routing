@@ -1081,9 +1081,14 @@ async fn load_executable_targets(
           ON target.id = claim.target_id
         WHERE attempt.operation_kind = 'pull'
           AND attempt.attempt_state = ANY($3::text[])
-          AND target.active = true
-          AND target.lifecycle_status = 'active'
           AND target.token_mint = $2
+          AND (
+              attempt.attempt_state = 'confirmed'
+              OR (
+                  target.active = true
+                  AND target.lifecycle_status = 'active'
+              )
+          )
         ORDER BY attempt.claim_token, attempt.updated_at ASC, attempt.id ASC
         LIMIT $1
         "#,

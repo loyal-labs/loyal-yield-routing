@@ -144,6 +144,24 @@ export type EligibleTarget = {
   currentLiquidityMint: string | null;
 };
 
+type ConfirmedPullHandoffTarget = Pick<
+  EligibleTarget,
+  | "id"
+  | "managedVaultId"
+  | "wallet"
+  | "walletUsdcAta"
+  | "walletTokenAta"
+  | "vaultPubkey"
+  | "vaultUsdcAta"
+  | "vaultTokenAta"
+  | "tokenMint"
+>;
+
+type ConfirmedPullRecoveryContext = {
+  attempt: DurableAutodepositAttempt;
+  target: ConfirmedPullHandoffTarget & { managedVaultId: bigint };
+};
+
 type SimulationSummary = {
   err: unknown;
   logs: string[];
@@ -1902,7 +1920,7 @@ async function publishConfirmedPullAndCompleteClaim(args: {
   observedAmountRaw: bigint;
   observedAt: string;
   observedSlot: bigint;
-  target: EligibleTarget;
+  target: ConfirmedPullHandoffTarget;
 }) {
   const managedVaultId = args.target.managedVaultId;
   if (managedVaultId === undefined) {
@@ -2362,6 +2380,103 @@ async function loadDurableAutodepositAttempt(args: {
   `;
   const row = rows[0] as Record<string, unknown> | undefined;
   return row ? parseDurableAutodepositAttempt(row) : null;
+}
+
+async function loadConfirmedPullRecoveryContext(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  claimToken: string;
+  targetId: bigint;
+  scheduledSlotId: bigint;
+}): Promise<ConfirmedPullRecoveryContext | null> {
+  const sql = args.neon(args.databaseUrl);
+  const rows = await sql`
+    SELECT
+      attempt.*,
+      target.wallet AS recovery_wallet,
+      COALESCE(target.wallet_usdc_ata, target.wallet_token_ata) AS recovery_wallet_usdc_ata,
+      target.wallet_token_ata AS recovery_wallet_token_ata,
+      target.vault_pubkey AS recovery_vault_pubkey,
+      COALESCE(target.vault_usdc_ata, target.vault_token_ata) AS recovery_vault_usdc_ata,
+      target.vault_token_ata AS recovery_vault_token_ata,
+      target.token_mint AS recovery_token_mint,
+      managed.id AS recovery_managed_vault_id
+    FROM loyal_yield.balance_sweep_transaction_attempts AS attempt
+    JOIN loyal_yield.balance_sweep_lot_claims AS claim
+      ON claim.claim_token = attempt.claim_token
+     AND claim.target_id = attempt.target_id
+     AND claim.status = 'selected'
+    JOIN loyal_yield.balance_sweep_scheduled_slots AS slot
+      ON slot.id = attempt.scheduled_slot_id
+     AND slot.target_id = attempt.target_id
+     AND slot.claim_token = attempt.claim_token
+    JOIN loyal_yield.balance_sweep_targets AS target
+      ON target.id = attempt.target_id
+     AND target.token_mint = ${USDC_MINT_ADDRESS}
+    JOIN LATERAL (
+      SELECT vault.id
+      FROM loyal_yield.managed_vaults AS vault
+      WHERE vault.settings = target.settings
+        AND vault.vault_index = target.vault_index
+        AND vault.vault_pubkey = target.vault_pubkey
+      ORDER BY vault.active DESC, vault.id DESC
+      LIMIT 1
+    ) AS managed ON TRUE
+    WHERE attempt.claim_token = ${args.claimToken}
+      AND attempt.target_id = ${args.targetId.toString()}
+      AND attempt.scheduled_slot_id = ${args.scheduledSlotId.toString()}
+      AND attempt.operation_kind = 'pull'
+      AND attempt.attempt_state = 'confirmed'
+    ORDER BY attempt.attempt_number DESC
+    LIMIT 1
+  `;
+  const row = rows[0] as Record<string, unknown> | undefined;
+  if (!row) {
+    return null;
+  }
+  const attempt = parseDurableAutodepositAttempt(row);
+  if (attempt.confirmedSlot === null) {
+    throw new Error(
+      `Confirmed autodeposit pull ${attempt.id} has no confirmed slot.`
+    );
+  }
+  return {
+    attempt,
+    target: {
+      id: args.targetId,
+      managedVaultId: BigInt(
+        readRequiredString(
+          row.recovery_managed_vault_id,
+          "recovery.managed_vault_id"
+        )
+      ),
+      wallet: readRequiredString(row.recovery_wallet, "recovery.wallet"),
+      walletUsdcAta: readRequiredString(
+        row.recovery_wallet_usdc_ata,
+        "recovery.wallet_usdc_ata"
+      ),
+      walletTokenAta: readRequiredString(
+        row.recovery_wallet_token_ata,
+        "recovery.wallet_token_ata"
+      ),
+      vaultPubkey: readRequiredString(
+        row.recovery_vault_pubkey,
+        "recovery.vault_pubkey"
+      ),
+      vaultUsdcAta: readRequiredString(
+        row.recovery_vault_usdc_ata,
+        "recovery.vault_usdc_ata"
+      ),
+      vaultTokenAta: readRequiredString(
+        row.recovery_vault_token_ata,
+        "recovery.vault_token_ata"
+      ),
+      tokenMint: readRequiredString(
+        row.recovery_token_mint,
+        "recovery.token_mint"
+      ),
+    },
+  };
 }
 
 async function persistPreparedAutodepositAttempt(args: {
@@ -3754,7 +3869,7 @@ function tailLines(value: string, count: number): string[] {
 async function recordPullExecution(args: {
   neon: AppModules["neon"];
   databaseUrl: string;
-  target: EligibleTarget;
+  target: ConfirmedPullHandoffTarget;
   signature: string;
   slot: bigint;
   amountRaw: bigint;
@@ -3835,6 +3950,126 @@ async function recordPullExecution(args: {
   };
 }
 
+async function publishConfirmedPullHandoff(args: {
+  attempt: DurableAutodepositAttempt;
+  claimToken: string;
+  connection: Connection;
+  databaseUrl: string;
+  neon: AppModules["neon"];
+  target: ConfirmedPullHandoffTarget;
+}) {
+  if (args.attempt.confirmedSlot === null) {
+    throw new Error(
+      `Confirmed autodeposit pull ${args.attempt.id} has no confirmed slot.`
+    );
+  }
+  const walletPostPullRaw = await getTokenBalanceRaw(
+    args.connection,
+    new PublicKey(args.target.walletUsdcAta)
+  );
+  const vaultObservation = await getContextFencedTokenBalance({
+    connection: args.connection,
+    minimumSlot: args.attempt.confirmedSlot,
+    tokenAccount: new PublicKey(args.target.vaultUsdcAta),
+  });
+  const executionRecord = await recordPullExecution({
+    neon: args.neon,
+    databaseUrl: args.databaseUrl,
+    target: args.target,
+    signature: args.attempt.signature,
+    slot: args.attempt.confirmedSlot,
+    amountRaw: args.attempt.amountRaw,
+    sourcePreBalanceRaw: args.attempt.sourcePreBalanceRaw,
+    sourcePostBalanceRaw: walletPostPullRaw,
+    destinationPreBalanceRaw: args.attempt.destinationPreBalanceRaw,
+    destinationPostBalanceRaw: vaultObservation.amountRaw,
+  });
+  const idleVaultPublication = await publishConfirmedPullAndCompleteClaim({
+    attemptId: args.attempt.id,
+    claimToken: args.claimToken,
+    databaseUrl: args.databaseUrl,
+    executionId: executionRecord.executionId,
+    neon: args.neon,
+    observedAmountRaw: vaultObservation.amountRaw,
+    observedAt: new Date().toISOString(),
+    observedSlot: vaultObservation.observedSlot,
+    target: args.target,
+  });
+  return { idleVaultPublication, vaultObservation, walletPostPullRaw };
+}
+
+async function recoverConfirmedPullHandoff(args: {
+  context: ConfirmedPullRecoveryContext;
+  connection: Connection;
+  databaseUrl: string;
+  neon: AppModules["neon"];
+  scheduledSlotId: bigint;
+}): Promise<void> {
+  try {
+    const result = await publishConfirmedPullHandoff({
+      attempt: args.context.attempt,
+      claimToken: args.context.attempt.claimToken,
+      connection: args.connection,
+      databaseUrl: args.databaseUrl,
+      neon: args.neon,
+      target: args.context.target,
+    });
+    console.log(
+      JSON.stringify(
+        {
+          status: AUTODEPOSIT_IDLE_HANDOFF_STATUS,
+          recoverySource: "persisted_confirmed_pull",
+          targetId: args.context.target.id.toString(),
+          scheduledSlotId: args.scheduledSlotId.toString(),
+          signature: args.context.attempt.signature,
+          confirmedSlot: args.context.attempt.confirmedSlot?.toString(),
+          walletPostPullRaw: result.walletPostPullRaw.toString(),
+          vaultPostPullRaw: result.vaultObservation.amountRaw.toString(),
+          idleVaultObservedSlot:
+            result.vaultObservation.observedSlot.toString(),
+          idleVaultPublication: {
+            amountRaw: result.idleVaultPublication.amountRaw.toString(),
+            observedSlot:
+              result.idleVaultPublication.observedSlot.toString(),
+          },
+          vaultToEarnOwner: "loyal-fleet-worker",
+        },
+        null,
+        2
+      )
+    );
+  } catch (error) {
+    let shouldAlert = true;
+    try {
+      shouldAlert = await claimIdleHandoffFailureAlert({
+        attemptId: args.context.attempt.id,
+        databaseUrl: args.databaseUrl,
+        neon: args.neon,
+      });
+    } catch {
+      // A database outage is not evidence that the confirmed handoff is safe.
+    }
+    if (!shouldAlert) {
+      console.log(
+        JSON.stringify({
+          status: "autodeposit_idle_handoff_recovery_pending",
+          recoverySource: "persisted_confirmed_pull",
+          targetId: args.context.target.id.toString(),
+          scheduledSlotId: args.scheduledSlotId.toString(),
+          signature: args.context.attempt.signature,
+          alertAlreadyClaimed: true,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      );
+      return;
+    }
+    process.exitCode = autodepositExecutorFailureExitCode(
+      "idle_handoff_failed"
+    );
+    throw new IdleVaultHandoffPersistenceError(error);
+  }
+}
+
 function summarizeSimulation(summary: SimulationSummary) {
   return {
     err: summary.err,
@@ -3850,6 +4085,30 @@ async function main() {
   const options = parseOptions(Bun.argv.slice(2));
   const databaseUrl = requireEnv("NEON_DATABASE_URL");
   const rpcUrl = requireEnv("SOLANA_RPC_URL");
+  const connection = new Connection(rpcUrl, DEFAULT_COMMITMENT);
+  const confirmedPullRecovery =
+    options.execute &&
+    options.claimToken !== null &&
+    options.targetId !== null &&
+    options.scheduledSlotId !== null
+      ? await loadConfirmedPullRecoveryContext({
+          neon: appModules.neon,
+          databaseUrl,
+          claimToken: options.claimToken,
+          targetId: options.targetId,
+          scheduledSlotId: options.scheduledSlotId,
+        })
+      : null;
+  if (confirmedPullRecovery && options.scheduledSlotId !== null) {
+    await recoverConfirmedPullHandoff({
+      context: confirmedPullRecovery,
+      connection,
+      databaseUrl,
+      neon: appModules.neon,
+      scheduledSlotId: options.scheduledSlotId,
+    });
+    return;
+  }
   const policyKeypair = parseKeypairSecretWith(
     appModules.Keypair,
     requireEnv("POLICY_KEYPAIR")
@@ -3857,7 +4116,6 @@ async function main() {
   const programId = new PublicKeyCtor(
     process.env.LOYAL_SMART_ACCOUNTS_PROGRAM_ID ?? appModules.PROGRAM_ADDRESS
   );
-  const connection = new Connection(rpcUrl, DEFAULT_COMMITMENT);
 
   let target: EligibleTarget | null;
   try {
@@ -4215,36 +4473,12 @@ async function main() {
     const pullSend = durablePullSend;
     pullSent = true;
     try {
-      const walletPostPullRaw = await getTokenBalanceRaw(
-        connection,
-        walletUsdcAta
-      );
-      const vaultObservation = await getContextFencedTokenBalance({
-        connection,
-        minimumSlot: pullSend.slot,
-        tokenAccount: vaultUsdcAta,
-      });
-      const executionRecord = await recordPullExecution({
-        neon: appModules.neon,
-        databaseUrl,
-        target,
-        signature: pullSend.signature,
-        slot: pullSend.slot,
-        amountRaw: pullSend.attempt.amountRaw,
-        sourcePreBalanceRaw: pullSend.attempt.sourcePreBalanceRaw,
-        sourcePostBalanceRaw: walletPostPullRaw,
-        destinationPreBalanceRaw: pullSend.attempt.destinationPreBalanceRaw,
-        destinationPostBalanceRaw: vaultObservation.amountRaw,
-      });
-      const idleVaultPublication = await publishConfirmedPullAndCompleteClaim({
-        attemptId: pullSend.attempt.id,
+      const handoff = await publishConfirmedPullHandoff({
+        attempt: pullSend.attempt,
         claimToken: durableClaimToken,
+        connection,
         databaseUrl,
-        executionId: executionRecord.executionId,
         neon: appModules.neon,
-        observedAmountRaw: vaultObservation.amountRaw,
-        observedAt: new Date().toISOString(),
-        observedSlot: vaultObservation.observedSlot,
         target,
       });
       console.log(
@@ -4258,12 +4492,14 @@ async function main() {
             confirmedSlots: {
               pull: pullSend.slot.toString(),
             },
-            walletPostPullRaw: walletPostPullRaw.toString(),
-            vaultPostPullRaw: vaultObservation.amountRaw.toString(),
-            idleVaultObservedSlot: vaultObservation.observedSlot.toString(),
+            walletPostPullRaw: handoff.walletPostPullRaw.toString(),
+            vaultPostPullRaw: handoff.vaultObservation.amountRaw.toString(),
+            idleVaultObservedSlot:
+              handoff.vaultObservation.observedSlot.toString(),
             idleVaultPublication: {
-              amountRaw: idleVaultPublication.amountRaw.toString(),
-              observedSlot: idleVaultPublication.observedSlot.toString(),
+              amountRaw: handoff.idleVaultPublication.amountRaw.toString(),
+              observedSlot:
+                handoff.idleVaultPublication.observedSlot.toString(),
             },
             vaultToEarnOwner: "loyal-fleet-worker",
           },

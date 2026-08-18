@@ -194,14 +194,32 @@ async function main(): Promise<void> {
     "only unresolved positive finalized balance is projected",
   );
 
-  const [executor, trigger, fleet, recovery, packageJson] = await Promise.all([
+  const [
+    executor,
+    trigger,
+    fleet,
+    recovery,
+    packageJson,
+    lightDockerfile,
+    workerImagesWorkflow,
+  ] = await Promise.all([
     readText("./execute-autodeposit-policy.ts"),
     readText("../crates/balance-sweep-autodeposit-trigger/src/main.rs"),
     readText("../crates/loyal-fleet-worker/src/lib.rs"),
     readText("./recover-autodeposit-idle-vault-handoffs.ts"),
     readText("../package.json"),
+    readText("../Dockerfile.light-workers"),
+    readText("../.github/workflows/worker-images.yml"),
   ]);
   const executorMain = executor.slice(executor.indexOf("async function main()"));
+  const confirmedRecoveryLoader = executor.slice(
+    executor.indexOf("async function loadConfirmedPullRecoveryContext"),
+    executor.indexOf("function attemptErrorDetail"),
+  );
+  const triggerRecoveryQuery = trigger.slice(
+    trigger.indexOf("async fn load_executable_targets"),
+    trigger.indexOf("let remaining_limit"),
+  );
   check(
     "publication failure alert claim is durable",
     executor.includes("claimIdleHandoffFailureAlert") &&
@@ -211,7 +229,8 @@ async function main(): Promise<void> {
   );
   check(
     "executor publishes before completing the claim",
-    executorMain.includes("publishConfirmedPullAndCompleteClaim") &&
+    executor.includes("publishConfirmedPullAndCompleteClaim") &&
+      executorMain.includes("publishConfirmedPullHandoff") &&
       executor.includes("valid_publication") &&
       executor.includes("updated_claim"),
     "publication, execution evidence, claim, and slot share one SQL statement",
@@ -228,6 +247,28 @@ async function main(): Promise<void> {
       'AUTOMATIC_PULL_RECOVERY_STATES: &[&str] = &["prepared", "submitted", "confirmed", "unknown"]',
     ),
     "confirmed durable attempt remains in automatic recovery states",
+  );
+  check(
+    "confirmed recovery bypasses route-policy and target-active gates",
+    confirmedRecoveryLoader.includes("attempt.attempt_state = 'confirmed'") &&
+      confirmedRecoveryLoader.includes("managed_vaults") &&
+      !confirmedRecoveryLoader.includes("route_policies") &&
+      executorMain.indexOf("loadConfirmedPullRecoveryContext") <
+        executorMain.indexOf("loadEligibleTarget") &&
+      triggerRecoveryQuery.includes("attempt.attempt_state = 'confirmed'") &&
+      triggerRecoveryQuery.indexOf("attempt.attempt_state = 'confirmed'") <
+        triggerRecoveryQuery.indexOf("target.active = true"),
+    "persisted confirmed pull resolves its vault directly before normal eligibility",
+  );
+  check(
+    "light-worker packaging tracks the handoff runtime module",
+    lightDockerfile.includes(
+      "COPY scripts/autodeposit-idle-vault-handoff.ts scripts/autodeposit-idle-vault-handoff.ts",
+    ) &&
+      (workerImagesWorkflow.match(
+        /scripts\/autodeposit-idle-vault-handoff\.ts/g,
+      )?.length ?? 0) === 2,
+    "runtime image includes the module and both PR and main changes rebuild it",
   );
   check(
     "existing fleet remains sole vault-to-Earn owner",
