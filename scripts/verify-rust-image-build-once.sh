@@ -153,12 +153,20 @@ require_fixed_count "$workflow" 'uses: actions/download-artifact@v4' 3 'All thre
 require_fixed_count "$workflow" 'needs: rust-build' 3 'All three image jobs depend on the single Rust build'
 forbid_pattern "$workflow" 'inputs\.images|^[[:space:]]+images:' 'Reusable workflow has no image-selection control flow'
 
-# Cache contract: dependency downloads use a lockfile key; compiler outputs use sccache.
+# Cache contract: Cargo fingerprints come from one dependency-graph snapshot;
+# sccache remains the content-addressed fallback for changed compiler outputs.
 require_text "$workflow" 'uses: actions/cache/restore@v4' 'Cargo dependency state is restored explicitly'
 require_text "$workflow" 'uses: actions/cache/save@v4' 'Trusted main builds save Cargo dependency state explicitly'
 require_text "$workflow" "hashFiles('Cargo.lock')" 'Cargo dependency cache is keyed by the lockfile'
-forbid_pattern "$workflow" 'key:.*github\.sha' 'Cargo dependency cache key is not unique per commit SHA'
-forbid_pattern "$workflow" '^[[:space:]]+target[[:space:]]*$' 'Cargo target directory is not archived'
+require_fixed_count "$workflow" 'uses: actions/cache/restore@v4' 2 'Dependency downloads and Cargo target state have separate restore steps'
+require_fixed_count "$workflow" 'uses: actions/cache/save@v4' 2 'Trusted main can save dependency downloads and Cargo target state separately'
+require_text "$workflow" 'RUST_TARGET_CACHE_PREFIX: rust-target-linux-amd64-rust-1.89-v1' 'Cargo target cache has an explicit generation and toolchain scope'
+require_text "$workflow" 'id: cargo-target-cache' 'Cargo target restore exposes its exact-hit result'
+require_text "$workflow" 'path: target' 'Cargo target fingerprints and outputs are restored'
+require_fixed_count "$workflow" "hashFiles('Cargo.lock', 'rust-toolchain.toml', '**/Cargo.toml')" 2 'Cargo target restore and save share one dependency-graph key'
+require_text "$workflow" 'rust-release-linux-amd64-rust-1.89-${{ hashFiles('\''Cargo.lock'\'') }}-' 'First target-cache run can migrate the previous trusted main snapshot'
+require_text "$workflow" "steps.cargo-target-cache.outputs.cache-hit != 'true'" 'Cargo target state is saved only when the dependency-graph snapshot is absent'
+forbid_pattern "$workflow" 'key:.*github\.sha' 'Cargo caches do not create a new archive for every commit SHA'
 require_pattern "$workflow" 'mozilla-actions/sccache-action@v[0-9]' 'A versioned sccache action provides content-addressed compiler reuse'
 require_text "$workflow" 'SCCACHE_GHA_ENABLED: "true"' 'sccache uses the GitHub Actions cache backend'
 require_text "$workflow" 'RUSTC_WRAPPER: sccache' 'Rust compilation is routed through sccache'

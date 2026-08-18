@@ -17,6 +17,7 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAMESPACE: loyal-labs/loyal-yield-routing
   CARGO_DEPENDENCY_CACHE_PREFIX: cargo-deps-linux-amd64-rust-1.89
+  RUST_TARGET_CACHE_PREFIX: rust-target-linux-amd64-rust-1.89-v1
   SCCACHE_GHA_ENABLED: "true"
   RUSTC_WRAPPER: sccache
   LASERSTREAM_PROBE_BINARIES: kamino-reserve-monitor balance-sweep-ata-monitor loyal-timescale-migrations yield-migrations
@@ -49,6 +50,19 @@ jobs:
           restore-keys: |
             ${{ env.CARGO_DEPENDENCY_CACHE_PREFIX }}-
 
+      # Restoring Cargo's fingerprints lets unchanged crates remain Fresh.
+      # Keep one snapshot per dependency graph instead of archiving target for
+      # every commit; sccache handles source changes after the snapshot.
+      - name: Restore trusted Cargo target state
+        id: cargo-target-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: target
+          key: ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ env.RUST_TARGET_CACHE_PREFIX }}-
+            rust-release-linux-amd64-rust-1.89-${{ hashFiles('Cargo.lock') }}-
+
       - name: Set up content-addressed Rust compiler cache
         uses: mozilla-actions/sccache-action@v0.0.11
         with:
@@ -70,8 +84,14 @@ jobs:
           # Release binaries are already dense; skip CPU-heavy ZIP compression.
           compression-level: 0
 
-      # Pull requests can restore default-branch dependency caches but cannot
-      # poison them. Compiler outputs are content-addressed by sccache.
+      # Pull requests can restore default-branch caches but cannot poison them.
+      - name: Save trusted Cargo target state
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-target-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: target
+          key: ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '**/Cargo.toml') }}
+
       - name: Save trusted Cargo dependency state
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-dependency-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
