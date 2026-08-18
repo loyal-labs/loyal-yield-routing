@@ -137,7 +137,7 @@ struct PreparedCrossMintLeg {
     /// pre-withdraw atomic simulation. These are never published as a combined
     /// transaction; each durable movement leg remains independently signed.
     preflight_instructions: Vec<Instruction>,
-    preflight_lookup_tables: Vec<AddressLookupTableAccount>,
+    preflight_lookup_table_requirements: YieldRouteLookupTableRequirements,
     transaction: VersionedTransaction,
     optimizer_epoch_id: i64,
     last_valid_block_height: i64,
@@ -2026,23 +2026,14 @@ async fn prepare_kamino_leg(
         })?
         .tables
         .clone();
-    let (_, mut lookup_tables_by_id, lookup_table_failures) =
-        verify_reusable_lookup_table_candidates(
-            &rpc,
-            selected_tables.clone(),
-            u64::try_from(resolution.observed_slot)?,
-        );
+    let (_, _, lookup_table_failures) = verify_reusable_lookup_table_candidates(
+        &rpc,
+        selected_tables.clone(),
+        u64::try_from(resolution.observed_slot)?,
+    );
     if !lookup_table_failures.is_empty() {
         return Err("cross-mint leg lookup tables changed after resolution".into());
     }
-    let preflight_lookup_tables = selected_tables
-        .iter()
-        .map(|table| {
-            lookup_tables_by_id
-                .remove(&table.table_id)
-                .ok_or_else(|| format!("verified lookup table {} is missing", table.table_id))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
     let alt_mutation_epochs = cross_mint_alt_mutation_epochs(&resolution)?;
     if leg == CrossMintMovementLeg::Deposit {
         // The resolver compiles and signs internally. Re-read finalized
@@ -2117,7 +2108,7 @@ async fn prepare_kamino_leg(
         expected_effect,
         expected_balance_anchors,
         preflight_instructions: instructions,
-        preflight_lookup_tables,
+        preflight_lookup_table_requirements: lookup_table_requirements,
         transaction,
         optimizer_epoch_id: opportunity.optimizer_epoch_id,
         last_valid_block_height: resolution.last_valid_block_height,
@@ -2345,13 +2336,18 @@ async fn prepare_jupiter_swap_leg(
     let mut vault_token_accounts = vec![input_ata, output_ata];
     vault_token_accounts.extend(additional_token_account_addresses);
     let instructions = vec![swap_outer];
-    let manifest = jupiter_swap_lookup_table_manifest(
-        fee_payer,
-        &vault,
+    let lookup_table_requirements = jupiter_swap_lookup_table_requirements(
         lane.action_account,
-        &instructions[0],
         &validated.swap_instruction,
         &route_mints,
+        &vault_token_accounts,
+        vault_pubkey,
+    );
+    let manifest = route_lookup_table_manifest(
+        fee_payer,
+        &instructions,
+        &vault,
+        &lookup_table_requirements,
         &vault_token_accounts,
     )?;
     let mut options = cross_mint_cli_options(opportunity, &vault, runtime.rpc.url());
@@ -2397,30 +2393,13 @@ async fn prepare_jupiter_swap_leg(
         })?
         .tables
         .clone();
-    let (_, mut lookup_tables_by_id, lookup_table_failures) =
-        verify_reusable_lookup_table_candidates(
-            &rpc,
-            selected_tables.clone(),
-            u64::try_from(resolution.observed_slot)?,
-        );
+    let (_, _, lookup_table_failures) = verify_reusable_lookup_table_candidates(
+        &rpc,
+        selected_tables.clone(),
+        u64::try_from(resolution.observed_slot)?,
+    );
     if !lookup_table_failures.is_empty() {
         return Err("cross-mint swap lookup tables changed after resolution".into());
-    }
-    let mut preflight_lookup_tables = selected_tables
-        .iter()
-        .map(|table| {
-            lookup_tables_by_id
-                .remove(&table.table_id)
-                .ok_or_else(|| format!("verified lookup table {} is missing", table.table_id))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    for table in &validated.lookup_tables {
-        if !preflight_lookup_tables
-            .iter()
-            .any(|existing| existing.key == table.key)
-        {
-            preflight_lookup_tables.push(table.clone());
-        }
     }
     let alt_mutation_epochs = cross_mint_alt_mutation_epochs(&resolution)?;
     // Last finalized custody read before accepting the exact resolver-signed
@@ -2459,7 +2438,7 @@ async fn prepare_jupiter_swap_leg(
             kamino_position: None,
         },
         preflight_instructions: instructions,
-        preflight_lookup_tables,
+        preflight_lookup_table_requirements: lookup_table_requirements,
         transaction,
         optimizer_epoch_id: opportunity.optimizer_epoch_id,
         last_valid_block_height: resolution.last_valid_block_height,
@@ -2482,21 +2461,18 @@ async fn prepare_jupiter_swap_leg(
     })
 }
 
-fn jupiter_swap_lookup_table_manifest(
-    fee_payer: Pubkey,
-    vault: &SelectedVault,
+fn jupiter_swap_lookup_table_requirements(
     swap_policy_account: Pubkey,
-    wrapped_swap: &Instruction,
     swap_instruction: &Instruction,
     route_mints: &[Pubkey],
     vault_token_accounts: &[Pubkey],
-) -> Result<LookupTableManifest, Box<dyn Error>> {
+    vault_pubkey: Pubkey,
+) -> YieldRouteLookupTableRequirements {
     let route_mint_set = route_mints.iter().copied().collect::<BTreeSet<_>>();
     let vault_token_account_set = vault_token_accounts
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
-    let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
     let mut requirements = YieldRouteLookupTableRequirements::default();
     requirements.add_policy(swap_policy_account);
     for mint in route_mints {
@@ -2511,13 +2487,7 @@ fn jupiter_swap_lookup_table_manifest(
         }
     }
     requirements.add_infrastructure(swap_instruction.program_id);
-    route_lookup_table_manifest(
-        fee_payer,
-        std::slice::from_ref(wrapped_swap),
-        vault,
-        &requirements,
-        vault_token_accounts,
-    )
+    requirements
 }
 
 fn validate_signed_minimum_output_value_loss(
@@ -2929,8 +2899,6 @@ async fn certify_cross_mint_before_withdraw(
         .into());
     }
 
-    let (blockhash, last_valid_block_height) =
-        rpc.get_latest_blockhash_with_commitment(CommitmentConfig::finalized())?;
     let compute_limit = SOLANA_MAX_COMPUTE_UNITS;
     validated.instructions_with_compute_unit_limit(compute_limit)?;
     let wrapped = wrap_policy_instruction(
@@ -2948,38 +2916,13 @@ async fn certify_cross_mint_before_withdraw(
         .chain(std::iter::once(output_ata))
         .chain(additional_token_account_addresses)
         .collect::<Vec<_>>();
-    let swap_manifest = jupiter_swap_lookup_table_manifest(
-        signer.pubkey(),
-        &vault,
+    let swap_lookup_table_requirements = jupiter_swap_lookup_table_requirements(
         swap_policy_account,
-        &wrapped,
         &validated.swap_instruction,
         &route_mints,
         &vault_token_accounts,
-    )?;
-    let external_addresses = validated
-        .lookup_tables
-        .iter()
-        .flat_map(|table| table.addresses.iter().map(ToString::to_string))
-        .collect::<BTreeSet<_>>();
-    let durable_shared_addresses = durable_lookup_table_manifest_addresses(
-        shared_market_manifest_addresses(&swap_manifest),
-        &external_addresses,
+        vault_pubkey,
     );
-    let shared_catalog = runtime
-        .client
-        .validate_shared_market_catalog_route(&opportunity.cluster, durable_shared_addresses)
-        .await?;
-    if shared_catalog.state != SharedMarketCatalogRouteValidationState::Covered {
-        return Err(format!(
-            "pre-withdraw Jupiter route is outside the active shared catalog: missing={:?}, semanticMismatch={:?}, activeMissing={}, activeExtra={}",
-            shared_catalog.route_missing_addresses,
-            shared_catalog.semantic_mismatch_addresses,
-            shared_catalog.active_missing_addresses.len(),
-            shared_catalog.active_extra_addresses.len(),
-        )
-        .into());
-    }
     let mut instructions = vec![
         ComputeBudgetInstruction::set_compute_unit_limit(compute_limit),
         ComputeBudgetInstruction::set_compute_unit_price(
@@ -2988,40 +2931,73 @@ async fn certify_cross_mint_before_withdraw(
     ];
     instructions.extend(withdraw.preflight_instructions.iter().cloned());
     instructions.push(wrapped);
-    let mut simulation_lookup_tables = withdraw.preflight_lookup_tables.clone();
-    for table in &validated.lookup_tables {
-        if !simulation_lookup_tables
-            .iter()
-            .any(|existing| existing.key == table.key)
-        {
-            simulation_lookup_tables.push(table.clone());
-        }
-    }
-    let signers: [&dyn Signer; 1] = [&signer];
-    let transaction = compile_versioned_transaction(
+    let mut combined_lookup_table_requirements =
+        withdraw.preflight_lookup_table_requirements.clone();
+    combined_lookup_table_requirements.merge(&swap_lookup_table_requirements)?;
+    let manifest = route_lookup_table_manifest(
         signer.pubkey(),
         &instructions,
-        &simulation_lookup_tables,
-        blockhash,
-        &signers,
+        &vault,
+        &combined_lookup_table_requirements,
+        &vault_token_accounts,
     )?;
-    let packet = transaction_packet_summary(&transaction, &simulation_lookup_tables)?;
-    if !packet.fits_packet_data_size {
+    let source_reserve = opportunity
+        .source_reserve
+        .as_deref()
+        .ok_or("cross-mint preflight source reserve is missing")?;
+    let mut options = cross_mint_cli_options(opportunity, &vault, runtime.rpc.url());
+    // This combined transaction is a verifier only and is never published.
+    // Keep its exact Jupiter compute budget instead of adding the executor's
+    // per-leg dynamic fee budget a second time.
+    options.opportunity_id = None;
+    let signers: [&dyn Signer; 1] = [&signer];
+    let resolution = resolve_route_lookup_tables_with_external(
+        &runtime.client,
+        &rpc,
+        &options,
+        &vault,
+        source_reserve,
+        &opportunity.target_reserve,
+        CROSS_MINT_ROUTE_KIND,
+        &format!("cross_mint:{}:prewithdraw", opportunity.id),
+        signer.pubkey(),
+        &instructions,
+        &manifest,
+        &signers,
+        &validated.lookup_tables,
+    )
+    .await?;
+    let provisioning_request_id = persist_route_lookup_table_resolution(
+        &runtime.client,
+        &options,
+        &vault,
+        source_reserve,
+        &opportunity.target_reserve,
+        CROSS_MINT_ROUTE_KIND,
+        &resolution,
+        false,
+        true,
+    )
+    .await?;
+    if provisioning_request_id.is_some() {
         return Err(
-            "atomic withdraw-plus-swap preflight exceeds the Solana simulation packet limit".into(),
+            "pre-withdraw route is waiting for reusable vault lookup-table provisioning".into(),
         );
     }
-    let simulation = rpc.simulate_transaction(&transaction)?;
-    if let Some(error) = simulation.value.err {
-        return Err(
-            format!("atomic withdraw-plus-swap preflight simulation failed: {error:?}").into(),
-        );
-    }
-    let simulation_units = simulation
-        .value
-        .units_consumed
+    resolution.require_ready()?;
+    let transaction = resolution
+        .selected_transaction
+        .as_ref()
+        .ok_or("atomic withdraw-plus-swap preflight omitted its transaction")?;
+    let packet = resolution
+        .selected_transaction_packet
+        .as_ref()
+        .ok_or("atomic withdraw-plus-swap preflight omitted its packet measurement")?;
+    let simulation_units = resolution
+        .selected_simulation_units_consumed
         .ok_or("atomic withdraw-plus-swap simulation omitted unitsConsumed")?;
-    let observed_block_height = rpc.get_block_height()?;
+    let last_valid_block_height = resolution.last_valid_block_height;
+    let observed_block_height = i64::try_from(rpc.get_block_height()?)?;
     if observed_block_height > last_valid_block_height {
         return Err("pre-withdraw Jupiter certification blockhash expired".into());
     }
@@ -3029,6 +3005,25 @@ async fn certify_cross_mint_before_withdraw(
         "{:x}",
         Sha256::digest(bincode::serialize(&transaction.message)?)
     );
+    let mut simulation_lookup_tables = resolution
+        .selected_bundle
+        .as_ref()
+        .into_iter()
+        .flat_map(|bundle| {
+            bundle
+                .tables
+                .iter()
+                .map(|table| table.table_address.clone())
+        })
+        .chain(
+            validated
+                .lookup_tables
+                .iter()
+                .map(|table| table.key.to_string()),
+        )
+        .collect::<Vec<_>>();
+    simulation_lookup_tables.sort_unstable();
+    simulation_lookup_tables.dedup();
     Ok(json!({
         "kind": "cross_mint_preflight",
         "certifiedAt": Utc::now(),
@@ -3084,7 +3079,7 @@ async fn certify_cross_mint_before_withdraw(
             "simulationAttempted": true,
             "simulationUnits": simulation_units,
             "simulationTopology": "withdraw_then_swap_atomic_preflight_only",
-            "simulationLookupTables": simulation_lookup_tables.iter().map(|table| table.key.to_string()).collect::<Vec<_>>(),
+            "simulationLookupTables": simulation_lookup_tables,
             "targetDepositPolicyValidated": true,
             "targetReserve": opportunity.target_reserve,
             "targetObligation": target_position.obligation,
