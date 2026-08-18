@@ -318,7 +318,7 @@ projects:
             image:
               url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3967556486019b52267dfb5f62ec36e6188d33df
             preDeployCommand: /usr/local/bin/yield-migrations --apply
-            dockerCommand: /usr/local/bin/fleet-health-projector --cluster mainnet-beta --refresh-interval-seconds 5 --lease-seconds 15
+            dockerCommand: /usr/local/bin/fleet-health-projector --cluster mainnet-beta --refresh-interval-seconds 5
             maxShutdownDelaySeconds: 30
             envVars:
               - key: OBSERVABILITY_ENABLED
