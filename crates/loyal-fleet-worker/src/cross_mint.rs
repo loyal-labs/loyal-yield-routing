@@ -1911,9 +1911,25 @@ async fn prepare_kamino_leg(
         CrossMintMovementLeg::Withdraw => {
             let collateral_amount =
                 required_plan_i64(&opportunity.execution_plan, "source_collateral_amount_raw")?;
-            if collateral_amount <= 0 || position.amount_raw != u64::try_from(collateral_amount)? {
+            let recovery_anchor = required_plan_i64(
+                &opportunity.execution_plan,
+                "source_recovery_anchor_collateral_raw",
+            )?;
+            if recovery_anchor != 1 {
                 return Err(
-                    "cross-mint withdrawal collateral no longer matches planned custody".into(),
+                    "cross-mint withdrawal must preserve exactly one collateral unit for recovery"
+                        .into(),
+                );
+            }
+            let expected_source_collateral = collateral_amount
+                .checked_add(recovery_anchor)
+                .ok_or("cross-mint source collateral anchor overflowed")?;
+            if collateral_amount <= 0
+                || position.amount_raw != u64::try_from(expected_source_collateral)?
+            {
+                return Err(
+                    "cross-mint withdrawal collateral no longer matches the anchored recovery plan"
+                        .into(),
                 );
             }
             kamino_withdraw_instruction(

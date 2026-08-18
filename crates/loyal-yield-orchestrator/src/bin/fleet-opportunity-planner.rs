@@ -511,6 +511,14 @@ fn opportunity_execution_plan(
     let plan_object = plan
         .as_object_mut()
         .expect("opportunity execution plan literal must be an object");
+    plan_object.insert(
+        "source_recovery_anchor_collateral_raw".to_owned(),
+        json!(matches!(
+            observed.route_kind,
+            loyal_yield_orchestrator::fleet_orchestration::CandidateRouteKind::CrossMintJupiter
+        )
+        .then_some(1_i64)),
+    );
     plan_object.insert("policy_bindings".to_owned(), json!(policy_bindings));
     plan_object.insert(
         "cross_mint_maximum_value_loss_bps".to_owned(),

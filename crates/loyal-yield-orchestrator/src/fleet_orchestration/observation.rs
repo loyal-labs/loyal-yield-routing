@@ -2856,7 +2856,6 @@ fn build_observation_result(
             );
             continue;
         }
-        let notional_usd_micros = stablecoin_raw_to_usd_micros(amount_raw, valuation)?;
         // Scheduler aging starts when a durable opportunity enters the queue;
         // source telemetry age is evidence freshness, not fairness credit.
         let age_seconds = 0;
@@ -2873,7 +2872,6 @@ fn build_observation_result(
             .source_snapshot_id
             .unwrap_or(source.observed_slot)
             .max(1);
-        opportunity_vault_ids.insert(source.vault_id);
         for candidate in targets {
             let FleetCandidateTarget {
                 route_kind,
@@ -2882,6 +2880,21 @@ fn build_observation_result(
                 source_earn_policy,
                 target_earn_policy,
             } = candidate;
+            let (candidate_amount_raw, candidate_source_collateral, candidate_redeemable_liquidity) =
+                if route_kind == CandidateRouteKind::CrossMintJupiter {
+                    let Some((amount, collateral)) = cross_mint_recovery_anchored_amounts(
+                        amount_raw,
+                        source_collateral,
+                        redeemable_liquidity,
+                    ) else {
+                        continue;
+                    };
+                    (amount, Some(collateral), Some(amount))
+                } else {
+                    (amount_raw, source_collateral, redeemable_liquidity)
+                };
+            let notional_usd_micros =
+                stablecoin_raw_to_usd_micros(candidate_amount_raw, valuation)?;
             let estimated_execution_costs = match route_kind {
                 CandidateRouteKind::SameMint => CandidateExecutionCosts::SameMint {
                     route_usd_micros: config.estimated_reserve_move_cost_usd_micros,
@@ -2937,6 +2950,7 @@ fn build_observation_result(
                         .push(format!("earn-policy:{}", target_policy.policy_account));
                 }
             }
+            opportunity_vault_ids.insert(source.vault_id);
             opportunities.push(ObservedFleetOpportunity {
                 economics: OpportunityInput {
                     opportunity_id: 1,
@@ -2983,11 +2997,11 @@ fn build_observation_result(
                 settings: source.settings.clone(),
                 vault_index: source.vault_index,
                 vault_pubkey: source.vault_pubkey.clone(),
-                amount_raw,
+                amount_raw: candidate_amount_raw,
                 route_amount_semantics: route_amount_semantics.clone(),
                 source_amount_semantics: source_amount_semantics.clone(),
-                source_collateral_amount_raw: source_collateral,
-                redeemable_source_liquidity_amount_raw: redeemable_liquidity,
+                source_collateral_amount_raw: candidate_source_collateral,
+                redeemable_source_liquidity_amount_raw: candidate_redeemable_liquidity,
                 idle_vault_liquidity_amount_raw: idle_liquidity,
                 idle_token_account: source.idle_token_account.clone(),
                 source_observed_slot: source.observed_slot,
@@ -3064,6 +3078,29 @@ fn build_observation_result(
         committed_source_outflows: source_set.committed_source_outflows,
         stats,
     })
+}
+
+/// Cross-mint recovery must remain executable after withdrawal without asking
+/// the user to recreate a Kamino obligation. Leaving one raw collateral unit
+/// keeps the source obligation alive. The proportional liquidity amount is a
+/// conservative quote input; finalized custody becomes authoritative after
+/// the withdrawal lands.
+fn cross_mint_recovery_anchored_amounts(
+    amount_raw: i64,
+    source_collateral_amount_raw: Option<i64>,
+    redeemable_source_liquidity_amount_raw: Option<i64>,
+) -> Option<(i64, i64)> {
+    let collateral = source_collateral_amount_raw?;
+    let redeemable = redeemable_source_liquidity_amount_raw?;
+    if collateral <= 1 || redeemable <= 0 || amount_raw != redeemable {
+        return None;
+    }
+    let withdraw_collateral = collateral.checked_sub(1)?;
+    let withdraw_liquidity = i128::from(redeemable)
+        .checked_mul(i128::from(withdraw_collateral))?
+        .checked_div(i128::from(collateral))?;
+    let withdraw_liquidity = i64::try_from(withdraw_liquidity).ok()?;
+    (withdraw_liquidity > 0).then_some((withdraw_liquidity, withdraw_collateral))
 }
 
 struct FleetCandidateTarget<'a> {
