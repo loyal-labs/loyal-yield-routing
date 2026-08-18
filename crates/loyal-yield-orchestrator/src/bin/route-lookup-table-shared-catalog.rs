@@ -576,6 +576,11 @@ where
             FROM loyal_yield.lookup_table_route_readiness_current readiness
             WHERE readiness.source_reserve IS NOT NULL
               AND readiness.cluster = $1
+              -- Policy lifecycle phases use semantic labels in these legacy
+              -- source/target columns; they do not identify Kamino reserves.
+              AND readiness.route_kind NOT IN (
+                  'route_policy_update', 'setup_policy_update'
+              )
         ) source
         WHERE length(btrim(source.reserve)) > 0
         ORDER BY source.reserve, source.reason
