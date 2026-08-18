@@ -2181,7 +2181,9 @@ fn validate_kamino_position_transition(
     let valid_amount_transition = if withdrawal {
         before.obligation_exists
             && before.deposited_collateral_amount_raw > 0
-            && after.deposited_collateral_amount_raw == 0
+            && before.deposited_collateral_amount_raw > after.deposited_collateral_amount_raw
+            && (after.deposited_collateral_amount_raw == 0
+                || (after.obligation_exists && after.deposited_collateral_amount_raw == 1))
     } else {
         after.obligation_exists
             && after.deposited_collateral_amount_raw > before.deposited_collateral_amount_raw
