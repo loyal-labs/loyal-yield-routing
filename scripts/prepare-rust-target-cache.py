@@ -16,9 +16,16 @@ OLD_MTIME = 315532800  # 1980-01-01 UTC, older than every repository commit.
 MARKER_NAME = ".ci-source-revision"
 
 
+def git_command(*args: str) -> list[str]:
+    # GitHub job containers run as root while actions/checkout leaves the
+    # mounted workspace owned by the host runner. Scope the ownership exception
+    # to this invocation instead of changing global Git configuration.
+    return ["git", "-c", f"safe.directory={Path.cwd().resolve()}", *args]
+
+
 def git(*args: str, check: bool = True) -> bytes:
     return subprocess.run(
-        ["git", *args],
+        git_command(*args),
         check=check,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -48,7 +55,7 @@ def restore(target_dir: Path) -> int:
         return 0
 
     if subprocess.run(
-        ["git", "merge-base", "--is-ancestor", base_revision, "HEAD"],
+        git_command("merge-base", "--is-ancestor", base_revision, "HEAD"),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     ).returncode != 0:

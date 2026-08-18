@@ -166,7 +166,6 @@ docker run --rm \
   bash -ceu '
     sccache --start-server >/dev/null
     sccache --zero-stats >/dev/null
-    git config --global --add safe.directory /workspace
     python3 scripts/prepare-rust-target-cache.py restore
     bash scripts/verify-rust-image-build-once.sh
     build_started=$(date +%s)
