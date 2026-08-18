@@ -10,6 +10,7 @@ use crate::fleet_orchestration::{
 use crate::types::*;
 use crate::{OrchestratorError, ACTIVE_DECISION_STATUSES};
 use chrono::{DateTime, Utc};
+use log::LevelFilter;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
@@ -222,6 +223,7 @@ impl NeonSqlClient {
         let pool = PgPoolOptions::new()
             .max_connections(config.max_connections)
             .acquire_timeout(config.acquire_timeout)
+            .acquire_time_level(LevelFilter::Debug)
             .connect(&config.url)
             .await?;
         Ok(Self { pool })
