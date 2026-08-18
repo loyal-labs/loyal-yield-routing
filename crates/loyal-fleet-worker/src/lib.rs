@@ -18436,9 +18436,11 @@ fn build_initial_reserve_deposit_policy_plan(
         )
         .into());
     }
+    let liquidity_mint = Pubkey::from_str(&deposit.liquidity_mint)?;
+    let liquidity_token_program = Pubkey::from_str(&deposit.liquidity_token_program)?;
     let vault_liquidity_ata =
-        derive_associated_token_address(&vault_pubkey, &USDC_MINT, &spl_token::ID);
-    let reserve_refresh_instruction = kamino_refresh_reserve_instruction(deposit)?;
+        derive_associated_token_address(&vault_pubkey, &liquidity_mint, &liquidity_token_program);
+    let refresh_positions = obligation_refresh_positions_for_route(preview, deposit, deposit)?;
     let farm_init_instruction =
         kamino_init_obligation_collateral_farm_instruction(payer_pubkey, vault_pubkey, deposit)?;
     let refresh_instruction = kamino_refresh_obligation_instruction(deposit)?;
@@ -18481,7 +18483,10 @@ fn build_initial_reserve_deposit_policy_plan(
         .as_ref()
         .map(|instruction| instruction.instruction().data[..8].to_vec());
     let has_farm_init = farm_init_instruction.is_some();
-    let mut routed_pre_instructions = vec![reserve_refresh_instruction];
+    let mut routed_pre_instructions = refresh_positions
+        .iter()
+        .map(|position| kamino_refresh_reserve_instruction(position))
+        .collect::<Result<Vec<_>, _>>()?;
     if let Some(farm_init_instruction) = farm_init_instruction {
         routed_pre_instructions.push(farm_init_instruction);
     }
