@@ -24,6 +24,7 @@ use chrono::{DateTime, Utc};
 use clap::Parser;
 use loyal_observability::{init_from_env, OperationalError};
 use loyal_yield_realtime_core::neon_url_looks_pooled;
+use loyal_yield_store::fleet_orchestration::EconomicPolicy;
 use sqlx::{
     postgres::{PgConnectOptions, PgListener, PgPoolOptions},
     PgPool, Row,
@@ -348,6 +349,7 @@ async fn main() -> Result<()> {
         let stalled_handoffs = claim_stalled_idle_vault_handoff_alerts_once(
             &pool,
             args.idle_vault_recovery_sla_seconds,
+            minimum_actionable_idle_amount_raw(),
             args.batch_limit,
         )
         .await
@@ -719,9 +721,10 @@ fn emit_idle_vault_recovery_sla_check_failed() {
 async fn claim_stalled_idle_vault_handoff_alerts_once(
     pool: &PgPool,
     recovery_sla_seconds: i64,
+    minimum_actionable_amount_raw: i64,
     limit: i64,
 ) -> Result<Vec<StalledIdleVaultHandoff>> {
-    if recovery_sla_seconds <= 0 || limit <= 0 {
+    if recovery_sla_seconds <= 0 || minimum_actionable_amount_raw <= 0 || limit <= 0 {
         return Ok(Vec::new());
     }
     let rows = sqlx::query(
@@ -744,13 +747,13 @@ async fn claim_stalled_idle_vault_handoff_alerts_once(
             WHERE execution.decoded_evidence->>'status' =
                     'partial_executed_pull_idle_vault_handoff'
               AND execution.decoded_evidence->>'idleVaultRecoveryAlertedAt' IS NULL
-              AND idle.amount_raw > 0
+              AND idle.amount_raw >= $2
               AND COALESCE(
                     (execution.decoded_evidence->>'idleVaultObservedAt')::timestamptz,
                     execution.inserted_at
                   ) <= now() - make_interval(secs => $1::double precision)
             ORDER BY idle.vault_id, idle.mint, execution.id
-            LIMIT $2
+            LIMIT $3
         ),
         claimed AS (
             UPDATE loyal_yield.balance_sweep_executions AS execution
@@ -778,6 +781,7 @@ async fn claim_stalled_idle_vault_handoff_alerts_once(
         "#,
     )
     .bind(recovery_sla_seconds)
+    .bind(minimum_actionable_amount_raw)
     .bind(limit)
     .fetch_all(pool)
     .await?;
@@ -790,6 +794,13 @@ async fn claim_stalled_idle_vault_handoff_alerts_once(
             })
         })
         .collect()
+}
+
+fn minimum_actionable_idle_amount_raw() -> i64 {
+    // Fleet observation values every supported six-decimal, $1 stablecoin so
+    // one raw unit equals one USD micro. Reuse the planner's economic floor so
+    // recovery alerts cannot drift from the work the fleet will admit.
+    EconomicPolicy::default().minimum_notional_usd_micros
 }
 
 fn emit_missing_route_policy_pause_failed() {
@@ -2274,6 +2285,19 @@ mod tests {
             assert!(!CLAIM_HOLDING_PULL_ATTEMPT_STATES.contains(&conclusive_retry_state));
             assert!(!AUTOMATIC_PULL_RECOVERY_STATES.contains(&conclusive_retry_state));
         }
+    }
+
+    #[test]
+    fn idle_recovery_alert_floor_matches_fleet_minimum_notional() {
+        let minimum = minimum_actionable_idle_amount_raw();
+
+        assert_eq!(
+            minimum,
+            EconomicPolicy::default().minimum_notional_usd_micros
+        );
+        assert!(201 < minimum);
+        assert!(201_750 < minimum);
+        assert_eq!(minimum, 1_000_000);
     }
 
     #[tokio::test]

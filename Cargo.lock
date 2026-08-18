@@ -1137,6 +1137,7 @@ dependencies = [
  "clap",
  "loyal-observability",
  "loyal-yield-realtime-core",
+ "loyal-yield-store",
  "serde",
  "serde_json",
  "sqlx",
