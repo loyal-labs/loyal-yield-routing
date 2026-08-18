@@ -11,6 +11,7 @@ use balance_sweep_autodeposit_trigger::{
     positive_delta_surplus_amount, scheduled_eligible_after, surplus_lot_classification_db_value,
     ExecutorFailureAlert, SweepAmountDecision, SweepCaps,
     AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE, AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE_ENV,
+    AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE, AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE_ENV,
     AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE, AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE_ENV,
     AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE, AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE_ENV,
     AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE, AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE_ENV,
@@ -36,6 +37,7 @@ const REQUESTED_SLOT_TIMEOUT_ERROR: &str = "Autodeposit request timed out before
 const MAX_DEBOUNCED_WAKEUPS: u64 = 1000;
 const DEFAULT_REALTIME_HINT_QUEUE_CAPACITY: usize = 1024;
 const DEFAULT_AUTODEPOSIT_WAKE_CHANNEL: &str = "loyal_yield_autodeposit_wakeup";
+const DEFAULT_IDLE_VAULT_RECOVERY_SLA_SECONDS: i64 = 15 * 60;
 const CLAIM_HOLDING_PULL_ATTEMPT_STATES: &[&str] =
     &["prepared", "submitted", "confirmed", "unknown", "ambiguous"];
 const AUTOMATIC_PULL_RECOVERY_STATES: &[&str] = &["prepared", "submitted", "confirmed", "unknown"];
@@ -103,6 +105,12 @@ struct Args {
         default_value_t = 900
     )]
     stale_selected_claim_seconds: i64,
+    #[arg(
+        long,
+        env = "AUTODEPOSIT_IDLE_VAULT_RECOVERY_SLA_SECONDS",
+        default_value_t = DEFAULT_IDLE_VAULT_RECOVERY_SLA_SECONDS
+    )]
+    idle_vault_recovery_sla_seconds: i64,
 }
 
 #[derive(Debug)]
@@ -136,6 +144,13 @@ struct ExecutorOutcome {
     executions_not_actionable: usize,
     stale_requested_slots_failed: i64,
     stale_claims_released: i64,
+}
+
+#[derive(Debug)]
+struct StalledIdleVaultHandoff {
+    vault_id: i64,
+    mint: String,
+    amount_raw: i64,
 }
 
 fn record_unsuccessful_executor_exit(
@@ -330,6 +345,30 @@ async fn main() -> Result<()> {
             lot_amount_depleted_raw = outcome.lot_amount_depleted_raw,
             "projected autodeposit surplus lots"
         );
+        let stalled_handoffs = claim_stalled_idle_vault_handoff_alerts_once(
+            &pool,
+            args.idle_vault_recovery_sla_seconds,
+            args.batch_limit,
+        )
+        .await
+        .inspect_err(|_| emit_idle_vault_recovery_sla_check_failed())?;
+        for stalled in stalled_handoffs {
+            OperationalError::new(
+                "autodeposit_idle_vault_recovery_stalled",
+                "recover_autodeposit_idle_vault_balance",
+                "autodeposit funds remained idle in the vault beyond the recovery SLA",
+            )
+            .retryable(true)
+            .recovery_required(true)
+            .emit();
+            tracing::warn!(
+                vault_id = stalled.vault_id,
+                mint = stalled.mint,
+                amount_raw = stalled.amount_raw,
+                recovery_sla_seconds = args.idle_vault_recovery_sla_seconds,
+                "autodeposit idle-vault recovery exceeded its SLA"
+            );
+        }
         if args.execute_eligible {
             let executor_command = args.executor_command.as_deref().context(
                 "--executor-command or BALANCE_SWEEP_EXECUTOR_COMMAND is required with --execute-eligible",
@@ -595,6 +634,10 @@ async fn execute_eligible_targets_once(
                 AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE_ENV,
                 AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE.to_string(),
             )
+            .env(
+                AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE_ENV,
+                AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE.to_string(),
+            )
             .status()
             .with_context(|| format!("spawn autodeposit executor for target {}", target.target_id))
             .inspect_err(|_| {
@@ -660,6 +703,93 @@ fn emit_execution_queue_preparation_failed() {
     .retryable(true)
     .recovery_required(true)
     .emit();
+}
+
+fn emit_idle_vault_recovery_sla_check_failed() {
+    OperationalError::new(
+        "autodeposit_idle_vault_recovery_sla_check_failed",
+        "check_autodeposit_idle_vault_recovery_sla",
+        "autodeposit worker could not inspect stalled idle-vault recovery work",
+    )
+    .retryable(true)
+    .recovery_required(true)
+    .emit();
+}
+
+async fn claim_stalled_idle_vault_handoff_alerts_once(
+    pool: &PgPool,
+    recovery_sla_seconds: i64,
+    limit: i64,
+) -> Result<Vec<StalledIdleVaultHandoff>> {
+    if recovery_sla_seconds <= 0 || limit <= 0 {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query(
+        r#"
+        WITH stalled_keys AS (
+            SELECT DISTINCT ON (idle.vault_id, idle.mint)
+                idle.vault_id,
+                idle.mint,
+                idle.amount_raw
+            FROM loyal_yield.balance_sweep_executions AS execution
+            JOIN loyal_yield.balance_sweep_targets AS target
+              ON target.id = execution.target_id
+            JOIN loyal_yield.managed_vaults AS vault
+              ON vault.settings = target.settings
+             AND vault.vault_index = target.vault_index
+             AND vault.vault_pubkey = target.vault_pubkey
+            JOIN loyal_yield.vault_idle_token_balances_current AS idle
+              ON idle.vault_id = vault.id
+             AND idle.mint = execution.token_mint
+            WHERE execution.decoded_evidence->>'status' =
+                    'partial_executed_pull_idle_vault_handoff'
+              AND execution.decoded_evidence->>'idleVaultRecoveryAlertedAt' IS NULL
+              AND idle.amount_raw > 0
+              AND COALESCE(
+                    (execution.decoded_evidence->>'idleVaultObservedAt')::timestamptz,
+                    execution.inserted_at
+                  ) <= now() - make_interval(secs => $1::double precision)
+            ORDER BY idle.vault_id, idle.mint, execution.id
+            LIMIT $2
+        ),
+        claimed AS (
+            UPDATE loyal_yield.balance_sweep_executions AS execution
+            SET
+                decoded_evidence = COALESCE(execution.decoded_evidence, '{}'::jsonb)
+                  || jsonb_build_object('idleVaultRecoveryAlertedAt', now()::text),
+                decoded_at = now()
+            FROM loyal_yield.balance_sweep_targets AS target,
+                 loyal_yield.managed_vaults AS vault,
+                 stalled_keys AS stalled
+            WHERE target.id = execution.target_id
+              AND vault.settings = target.settings
+              AND vault.vault_index = target.vault_index
+              AND vault.vault_pubkey = target.vault_pubkey
+              AND stalled.vault_id = vault.id
+              AND stalled.mint = execution.token_mint
+              AND execution.decoded_evidence->>'status' =
+                    'partial_executed_pull_idle_vault_handoff'
+              AND execution.decoded_evidence->>'idleVaultRecoveryAlertedAt' IS NULL
+            RETURNING stalled.vault_id, stalled.mint, stalled.amount_raw
+        )
+        SELECT DISTINCT vault_id, mint, amount_raw
+        FROM claimed
+        ORDER BY vault_id, mint
+        "#,
+    )
+    .bind(recovery_sla_seconds)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(StalledIdleVaultHandoff {
+                vault_id: row.try_get("vault_id")?,
+                mint: row.try_get("mint")?,
+                amount_raw: row.try_get("amount_raw")?,
+            })
+        })
+        .collect()
 }
 
 fn emit_missing_route_policy_pause_failed() {

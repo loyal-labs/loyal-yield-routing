@@ -11870,7 +11870,10 @@ async fn repair_idle_vault_deposit_partial_pull_history(
         WHERE target_id = $1
           AND token_mint = $2
           AND COALESCE(destination_token_ata, destination_vault_ata) = $3
-          AND decoded_evidence->>'status' = 'partial_executed_pull_top_up_blocked'
+          AND decoded_evidence->>'status' IN (
+              'partial_executed_pull_top_up_blocked',
+              'partial_executed_pull_idle_vault_handoff'
+          )
           AND decoded_evidence->>'idleVaultDepositDecisionId' IS NULL
         ORDER BY slot ASC, id ASC
         FOR UPDATE
@@ -11921,7 +11924,10 @@ async fn repair_idle_vault_deposit_partial_pull_history(
                     'kaminoDepositSlot', $4::text,
                     'idleVaultDepositAmountRaw', $5::text
                  ),
-            decoded_at = now()
+            decoded_at = now(),
+            kamino_deposit_signature = $3,
+            completed_at = COALESCE(completed_at, now()),
+            completion_failure_code = NULL
         WHERE id = ANY($1)
         "#,
     )
