@@ -42,8 +42,9 @@ separate bounded static operation label instead of parsing SQL here.
 SQLx emits query timing events at `DEBUG` for normal statements and `WARN` for
 slow statements. The dedicated per-layer filter observes both without enabling
 unrelated debug events or changing the local `RUST_LOG` output. SQLx emits slow
-pool acquisitions by default; a pool may opt into timing every successful
-acquisition with SQLx's `acquire_time_level` option.
+pool acquisitions by default. `NeonSqlClient` also enables SQLx's normal
+acquisition event at `DEBUG`, so every successful acquisition contributes to
+`db.client.connection.wait_time` without changing local log verbosity.
 
 The histograms use OpenTelemetry's recommended database duration boundaries:
 1 ms, 5 ms, 10 ms, 50 ms, 100 ms, 500 ms, 1 s, 5 s, and 10 s. Exact normalized
