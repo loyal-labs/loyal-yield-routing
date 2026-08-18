@@ -58,7 +58,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: target
-          key: ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '**/Cargo.toml') }}
+          key: ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/*/Cargo.toml') }}
           restore-keys: |
             ${{ env.RUST_TARGET_CACHE_PREFIX }}-
             rust-release-linux-amd64-rust-1.89-${{ hashFiles('Cargo.lock') }}-
@@ -90,7 +90,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: target
-          key: ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '**/Cargo.toml') }}
+          key: ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/*/Cargo.toml') }}
 
       - name: Save trusted Cargo dependency state
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-dependency-cache.outputs.cache-hit != 'true'

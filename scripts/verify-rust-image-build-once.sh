@@ -163,7 +163,7 @@ require_fixed_count "$workflow" 'uses: actions/cache/save@v4' 2 'Trusted main ca
 require_text "$workflow" 'RUST_TARGET_CACHE_PREFIX: rust-target-linux-amd64-rust-1.89-v1' 'Cargo target cache has an explicit generation and toolchain scope'
 require_text "$workflow" 'id: cargo-target-cache' 'Cargo target restore exposes its exact-hit result'
 require_text "$workflow" 'path: target' 'Cargo target fingerprints and outputs are restored'
-require_fixed_count "$workflow" "hashFiles('Cargo.lock', 'rust-toolchain.toml', '**/Cargo.toml')" 2 'Cargo target restore and save share one dependency-graph key'
+require_fixed_count "$workflow" "hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/*/Cargo.toml')" 2 'Cargo target restore and save share one dependency-graph key'
 require_text "$workflow" 'rust-release-linux-amd64-rust-1.89-${{ hashFiles('\''Cargo.lock'\'') }}-' 'First target-cache run can migrate the previous trusted main snapshot'
 require_text "$workflow" "steps.cargo-target-cache.outputs.cache-hit != 'true'" 'Cargo target state is saved only when the dependency-graph snapshot is absent'
 forbid_pattern "$workflow" 'key:.*github\.sha' 'Cargo caches do not create a new archive for every commit SHA'
