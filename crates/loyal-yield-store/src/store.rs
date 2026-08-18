@@ -4315,14 +4315,30 @@ async fn validate_idle_vault_source_for_update(
     if amount_raw != input.amount_raw
         || owner != vault.vault_pubkey
         || token_account != input.idle_token_account
-        || observed_slot != input.idle_observed_slot
-        || observed_at != input.idle_observed_at
+        || !idle_source_observation_covers(
+            observed_slot,
+            observed_at,
+            input.idle_observed_slot,
+            input.idle_observed_at,
+        )
     {
         return Err(OrchestratorError::SameMintRebalanceValidation(
             "idle vault source changed before atomic fleet handoff".to_owned(),
         ));
     }
     Ok(())
+}
+
+fn idle_source_observation_covers(
+    current_slot: i64,
+    current_observed_at: DateTime<Utc>,
+    planned_slot: i64,
+    planned_observed_at: DateTime<Utc>,
+) -> bool {
+    // A newer finalized observation of the same amount, owner, and token
+    // account strengthens the source proof. Treating its provenance timestamp
+    // as source identity lets the balance projector starve every queued route.
+    current_slot >= planned_slot && current_observed_at >= planned_observed_at
 }
 
 fn idle_vault_deposit_execution_plan(input: &IdleVaultDepositDecisionInput) -> Value {
@@ -4610,6 +4626,29 @@ mod tests {
         IDLE_DEPOSIT_MINT_CASH, IDLE_DEPOSIT_MINT_PYUSD, IDLE_DEPOSIT_MINT_USDC,
         IDLE_DEPOSIT_MINT_USDG, IDLE_DEPOSIT_MINT_USDS, IDLE_DEPOSIT_MINT_USDT,
     };
+
+    #[test]
+    fn newer_idle_observation_covers_queued_source_proof() {
+        let planned_at = Utc::now();
+        assert!(idle_source_observation_covers(
+            101,
+            planned_at + chrono::Duration::seconds(1),
+            100,
+            planned_at,
+        ));
+        assert!(!idle_source_observation_covers(
+            99,
+            planned_at + chrono::Duration::seconds(1),
+            100,
+            planned_at,
+        ));
+        assert!(!idle_source_observation_covers(
+            101,
+            planned_at - chrono::Duration::seconds(1),
+            100,
+            planned_at,
+        ));
+    }
 
     fn valid_cross_mint_manifest() -> CrossMintSwapPolicyManifestInput {
         CrossMintSwapPolicyManifestInput {
