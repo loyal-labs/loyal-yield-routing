@@ -118,6 +118,8 @@ workflow=.github/workflows/rust-image-build.yml
 worker_entry=.github/workflows/worker-images.yml
 operator_entry=.github/workflows/operator-tools-image.yml
 build_script=scripts/build-rust-image-binaries.sh
+target_cache_script=scripts/prepare-rust-target-cache.py
+target_cache_verifier=scripts/verify-rust-target-cache-freshness.sh
 verifier=scripts/verify-rust-image-build-once.sh
 crate_boundaries=docs/rust-crate-boundaries.md
 worker_image_docs=docs/render-worker-images.md
@@ -126,6 +128,8 @@ require_file "$workflow"
 require_file "$worker_entry"
 require_absent "$operator_entry"
 require_file "$build_script"
+require_file "$target_cache_script"
+require_file "$target_cache_verifier"
 require_file "$verifier"
 require_file "$crate_boundaries"
 require_file "$worker_image_docs"
@@ -143,14 +147,24 @@ require_fixed_count "$worker_entry" 'publish: false' 1 'Only the PR caller disab
 require_fixed_count "$worker_entry" 'publish: true' 1 'Only the main caller enables publication'
 forbid_pattern "$worker_entry" '^[[:space:]]+images:' 'Entry workflow has no image-selection branch that can trigger a second build'
 
-# Build contract: one artifact production job feeds all image families.
+# Build contract: one matrix entry per image family compiles in parallel and
+# feeds only that family's runtime image.
 require_text "$workflow" 'container: rust:1.89-bookworm' 'Rust compiles in the pinned Bookworm toolchain container'
+require_fixed_count "$workflow" 'fetch-depth: 0' 1 'Rust build fetches history for target-cache ancestry checks'
 require_text "$workflow" 'bash scripts/verify-rust-image-build-once.sh' 'CI runs this verifier before compiling release binaries'
-require_text "$workflow" 'bash scripts/build-rust-image-binaries.sh' 'Workflow delegates the only release compilation to the build script'
-require_text "$workflow" 'uses: actions/upload-artifact@v4' 'Rust build uploads its finished binaries once'
+require_text "$workflow" 'bash scripts/build-rust-image-binaries.sh --family "${{ matrix.family }}"' 'Each matrix entry delegates its release compilation to the family-aware build script'
+require_text "$workflow" 'name: Build Rust binaries (${{ matrix.family }})' 'Rust build exposes the image-family matrix entry'
+require_text "$workflow" '          - laserstream-workers' 'Rust matrix includes laserstream workers'
+require_text "$workflow" '          - light-workers' 'Rust matrix includes light workers'
+require_text "$workflow" '          - operator-tools' 'Rust matrix includes operator tools'
+require_text "$workflow" 'uses: actions/upload-artifact@v4' 'Each Rust matrix entry uploads its family artifact'
+require_text "$workflow" 'name: rust-image-binaries-${{ matrix.family }}' 'Rust artifacts are isolated by image family'
 forbid_pattern "$workflow" 'if:[[:space:]]*inputs\.images' 'Binary artifact upload is not conditional on an image selection'
-require_fixed_count "$workflow" 'uses: actions/download-artifact@v4' 3 'All three image jobs download the shared binary artifact'
-require_fixed_count "$workflow" 'needs: rust-build' 3 'All three image jobs depend on the single Rust build'
+require_fixed_count "$workflow" 'uses: actions/download-artifact@v4' 3 'All three image jobs download their family artifact'
+require_text "$workflow" 'name: rust-image-binaries-laserstream-workers' 'LaserStream image downloads only its binaries'
+require_text "$workflow" 'name: rust-image-binaries-light-workers' 'Light-worker image downloads only its binaries'
+require_text "$workflow" 'name: rust-image-binaries-operator-tools' 'Operator image downloads only its binaries'
+require_fixed_count "$workflow" 'needs: rust-build' 3 'All three image jobs wait for the parallel Rust matrix'
 forbid_pattern "$workflow" 'inputs\.images|^[[:space:]]+images:' 'Reusable workflow has no image-selection control flow'
 
 # Cache contract: Cargo fingerprints come from one dependency-graph snapshot;
@@ -160,18 +174,26 @@ require_text "$workflow" 'uses: actions/cache/save@v4' 'Trusted main builds save
 require_text "$workflow" "hashFiles('Cargo.lock')" 'Cargo dependency cache is keyed by the lockfile'
 require_fixed_count "$workflow" 'uses: actions/cache/restore@v4' 2 'Dependency downloads and Cargo target state have separate restore steps'
 require_fixed_count "$workflow" 'uses: actions/cache/save@v4' 2 'Trusted main can save dependency downloads and Cargo target state separately'
-require_text "$workflow" 'RUST_TARGET_CACHE_PREFIX: rust-target-linux-amd64-rust-1.89-v1' 'Cargo target cache has an explicit generation and toolchain scope'
+require_text "$workflow" 'RUST_TARGET_CACHE_PREFIX: rust-target-linux-amd64-rust-1.89-v2' 'Cargo target cache has an explicit generation and toolchain scope'
+require_text "$workflow" 'id: cargo-target-generation' 'Cargo target cache selects a rolling generation'
+require_text "$workflow" 'utc-date=$(date -u +%Y-%m-%d)' 'Cargo target cache rolls forward at most once per UTC day'
 require_text "$workflow" 'id: cargo-target-cache' 'Cargo target restore exposes its exact-hit result'
 require_text "$workflow" 'path: target' 'Cargo target fingerprints and outputs are restored'
-require_fixed_count "$workflow" "hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/*/Cargo.toml')" 2 'Cargo target restore and save share one dependency-graph key'
-require_text "$workflow" 'rust-release-linux-amd64-rust-1.89-${{ hashFiles('\''Cargo.lock'\'') }}-' 'First target-cache run can migrate the previous trusted main snapshot'
-require_text "$workflow" "steps.cargo-target-cache.outputs.cache-hit != 'true'" 'Cargo target state is saved only when the dependency-graph snapshot is absent'
+require_fixed_count "$workflow" "key: \${{ env.RUST_TARGET_CACHE_PREFIX }}-\${{ matrix.family }}-\${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/*/Cargo.toml') }}-\${{ steps.cargo-target-generation.outputs.utc-date }}" 2 'Cargo target restore and save share one family-scoped daily key'
+require_text "$workflow" "\${{ env.RUST_TARGET_CACHE_PREFIX }}-\${{ matrix.family }}-\${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/*/Cargo.toml') }}-" 'Cargo target restore can roll forward from the latest compatible daily snapshot'
+require_text "$workflow" "rust-target-linux-amd64-rust-1.89-v1-\${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/*/Cargo.toml') }}" 'First family-cache run can migrate the previous trusted main snapshot'
+require_text "$workflow" "steps.cargo-target-cache.outputs.cache-hit != 'true'" 'Cargo target state is saved only when the daily family snapshot is absent'
 forbid_pattern "$workflow" 'key:.*github\.sha' 'Cargo caches do not create a new archive for every commit SHA'
+require_text "$workflow" 'python3 scripts/prepare-rust-target-cache.py restore' 'Restored Cargo state is prepared from its trusted source revision'
+require_text "$workflow" 'python3 scripts/prepare-rust-target-cache.py record' 'Successful Cargo state records its source revision before saving'
+require_text "$target_cache_script" 'git", "merge-base", "--is-ancestor"' 'Target-cache preparation rejects unrelated source revisions'
+require_text "$target_cache_script" 'git("diff", "--name-only", "-z", base_revision, "HEAD", "--")' 'Target-cache preparation derives changed paths from Git'
 require_pattern "$workflow" 'mozilla-actions/sccache-action@v[0-9]' 'A versioned sccache action provides content-addressed compiler reuse'
 require_text "$workflow" 'SCCACHE_GHA_ENABLED: "true"' 'sccache uses the GitHub Actions cache backend'
 require_text "$workflow" 'RUSTC_WRAPPER: sccache' 'Rust compilation is routed through sccache'
 require_text "$workflow" "github.event_name == 'push'" 'Dependency-cache writes require a trusted push event'
 require_text "$workflow" "github.ref == 'refs/heads/main'" 'Dependency-cache writes are restricted to main'
+require_text "$workflow" "matrix.family == 'light-workers'" 'Only one matrix entry can save the shared dependency cache'
 
 # Publication contract: every main build produces all immutable image families.
 require_fixed_count "$workflow" 'push: ${{ inputs.publish }}' 3 'Every image family follows the caller publication decision'
@@ -209,8 +231,8 @@ forbid_pattern "$build_script" 'git rev-parse' 'Container build does not depend 
 
 # Runtime-image inventory remains complete and compiler-free.
 dockerfiles='Dockerfile.laserstream-workers Dockerfile.light-workers Dockerfile.operator-tools'
-cargo_binaries=$(sed -nE 's/^[[:space:]]*--bin ([^ ]+).*/\1/p' "$build_script" | LC_ALL=C sort -u)
-staged_binaries=$(sed -nE 's/^[[:space:]]*stage_binary ([^ ]+).*/\1/p' "$build_script" | LC_ALL=C sort -u)
+cargo_binaries=$(bash "$build_script" --family all --list-binaries | LC_ALL=C sort -u)
+staged_binaries=$cargo_binaries
 dockerfile_binaries=$(for dockerfile in $dockerfiles; do dockerfile_inventory "$dockerfile"; done | LC_ALL=C sort -u)
 
 require_inventory_equal "$cargo_binaries" "$staged_binaries" 'Cargo build and staged artifact inventories are exactly equal'
@@ -247,21 +269,21 @@ for dockerfile in $dockerfiles; do
     *) fail "Verifier has no binary inventory for $dockerfile"; continue ;;
   esac
   binaries=$(dockerfile_inventory "$dockerfile")
+  family=${dockerfile#Dockerfile.}
+  build_binaries=$(bash "$build_script" --family "$family" --list-binaries | LC_ALL=C sort -u)
+  require_inventory_equal "$binaries" "$build_binaries" "$dockerfile build-family and runtime inventories are exactly equal"
   probe_binaries=$(workflow_probe_inventory "$probe_variable")
   require_inventory_equal "$binaries" "$probe_binaries" "$dockerfile runtime and probe inventories are exactly equal"
   require_fixed_count "$workflow" "PROBE_BINARIES: \${{ env.$probe_variable }}" 1 "$dockerfile probe consumes $probe_variable"
   forbid_pattern "$dockerfile" '^FROM rust:' "$dockerfile has no Rust compiler stage"
   forbid_pattern "$dockerfile" 'cargo (chef|build)' "$dockerfile performs no Rust compilation"
   forbid_pattern "$dockerfile" '/app/target' "$dockerfile does not transport Cargo target state"
-  for binary in $binaries; do
-    require_text "$build_script" "stage_binary $binary" "$build_script stages $binary"
-  done
 done
 
 # Documentation must describe artifact publication separately from deployment.
-require_text "$crate_boundaries" 'Main pushes compile once, package all three image families, and publish immutable SHA tags.' 'Crate-boundary docs describe automatic immutable publication'
+require_text "$crate_boundaries" 'Main pushes compile the three image-family inventories in parallel and publish immutable SHA tags.' 'Crate-boundary docs describe automatic immutable publication'
 require_text "$crate_boundaries" 'Manual deployment selects an already-published immutable image tag or digest and never rebuilds Rust.' 'Crate-boundary docs separate deployment from compilation'
-require_text "$worker_image_docs" 'A trusted `main` push compiles the shared Rust artifact once and publishes all three immutable image families.' 'Worker-image docs describe the single trusted build'
+require_text "$worker_image_docs" 'A trusted `main` push compiles the three image-family inventories in parallel and publishes all three immutable image families.' 'Worker-image docs describe the parallel family build'
 require_text "$worker_image_docs" 'Publishing these images does not deploy them.' 'Worker-image docs distinguish publication from deployment'
 require_text "$worker_image_docs" 'Deployment selects an already-published immutable SHA tag or digest; it never rebuilds Rust.' 'Worker-image docs prohibit deployment-time rebuilding'
 
@@ -269,6 +291,12 @@ if bash -n "$build_script" && bash -n "$verifier"; then
   pass 'Build and verifier scripts pass Bash syntax validation'
 else
   fail 'Build or verifier script fails Bash syntax validation'
+fi
+
+if bash "$target_cache_verifier" >/dev/null; then
+  pass 'Cargo target cache freshness behavior passes its isolated verifier'
+else
+  fail 'Cargo target cache freshness behavior fails its isolated verifier'
 fi
 
 metadata_file=$(mktemp)
