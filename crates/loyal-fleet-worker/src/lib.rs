@@ -11500,6 +11500,10 @@ async fn run_idle_vault_deposit_flow(
             .apply_observed_patch(vault.id, post_reconcile_state)
             .await?;
         let post_deposit_position = chain_position_for_reserve(&post_preview, deposit_reserve)?;
+        // App current_amount_raw follows the reconciled Kamino collateral position;
+        // the deposit decision amount is only this transaction's liquidity delta.
+        let post_confirm_position_amount_raw = i64::try_from(post_deposit_position.amount_raw)
+            .map_err(|_| "post-confirm Kamino position does not fit Postgres BIGINT")?;
         let idle_after = client
             .record_current_idle_token_balance(CurrentIdleTokenBalance {
                 vault_id: vault.id,
@@ -11528,28 +11532,35 @@ async fn run_idle_vault_deposit_flow(
             post_snapshot,
             idle_after,
             confirmed,
+            post_confirm_position_amount_raw,
         ))
     }
     .await;
-    let (post_reconcile_reserves, post_preview, post_snapshot, idle_after, confirmed) =
-        match post_confirm {
-            Ok(value) => value,
-            Err(error) => {
-                let reason = safe_same_mint_operational_error_with_context(
-                    "idle_vault_policy_deposit_confirmed_reconcile_failed",
-                    error.as_ref(),
-                );
-                client
-                    .advance_decision(
-                        decision.id,
-                        DecisionAdvance::Fail {
-                            reason: reason.clone(),
-                        },
-                    )
-                    .await?;
-                return Err(reason.into());
-            }
-        };
+    let (
+        post_reconcile_reserves,
+        post_preview,
+        post_snapshot,
+        idle_after,
+        confirmed,
+        post_confirm_position_amount_raw,
+    ) = match post_confirm {
+        Ok(value) => value,
+        Err(error) => {
+            let reason = safe_same_mint_operational_error_with_context(
+                "idle_vault_policy_deposit_confirmed_reconcile_failed",
+                error.as_ref(),
+            );
+            client
+                .advance_decision(
+                    decision.id,
+                    DecisionAdvance::Fail {
+                        reason: reason.clone(),
+                    },
+                )
+                .await?;
+            return Err(reason.into());
+        }
+    };
     let repair = repair_idle_vault_deposit_partial_pull_history(
         client,
         vault,
@@ -11559,6 +11570,7 @@ async fn run_idle_vault_deposit_flow(
         &signature,
         confirmed_slot,
         amount_i64,
+        post_confirm_position_amount_raw,
     )
     .await?;
 
@@ -11810,6 +11822,113 @@ fn idle_vault_deposit_decision_json(decision: &RebalanceDecision) -> Value {
     })
 }
 
+const PARTIAL_PULL_TOP_UP_BLOCKED_STATUS: &str = "partial_executed_pull_top_up_blocked";
+const PARTIAL_PULL_IDLE_VAULT_HANDOFF_STATUS: &str = "partial_executed_pull_idle_vault_handoff";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PartialPullRecoveryCandidate {
+    id: i64,
+    signature: String,
+    status: String,
+    slot: i64,
+    amount_raw: i64,
+    recovered_amount_raw: i64,
+    observed_idle_amount_raw: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PartialPullRecoveryAllocation {
+    id: i64,
+    signature: String,
+    allocated_amount_raw: i64,
+    recovered_amount_raw: i64,
+    fully_recovered: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PartialPullRecoveryPlan {
+    allocations: Vec<PartialPullRecoveryAllocation>,
+    attributed_amount_raw: i64,
+}
+
+fn partial_pull_recovery_priority(
+    candidate: &PartialPullRecoveryCandidate,
+    planned_amount_raw: i64,
+) -> u8 {
+    if candidate.status == PARTIAL_PULL_IDLE_VAULT_HANDOFF_STATUS
+        && candidate.observed_idle_amount_raw == Some(planned_amount_raw)
+    {
+        0
+    } else if candidate.status == PARTIAL_PULL_IDLE_VAULT_HANDOFF_STATUS {
+        1
+    } else if candidate.status == PARTIAL_PULL_TOP_UP_BLOCKED_STATUS {
+        2
+    } else {
+        3
+    }
+}
+
+fn plan_partial_pull_recovery(
+    mut candidates: Vec<PartialPullRecoveryCandidate>,
+    planned_amount_raw: i64,
+) -> Result<PartialPullRecoveryPlan, Box<dyn Error>> {
+    if planned_amount_raw <= 0 {
+        return Err("partial-pull repair requires a positive deposit amount".into());
+    }
+
+    candidates.sort_by(|left, right| {
+        partial_pull_recovery_priority(left, planned_amount_raw)
+            .cmp(&partial_pull_recovery_priority(right, planned_amount_raw))
+            .then_with(|| right.slot.cmp(&left.slot))
+            .then_with(|| right.id.cmp(&left.id))
+    });
+
+    let mut remaining_amount_raw = planned_amount_raw;
+    let mut allocations = Vec::new();
+    for candidate in candidates {
+        if candidate.amount_raw <= 0
+            || candidate.recovered_amount_raw < 0
+            || candidate.recovered_amount_raw > candidate.amount_raw
+        {
+            return Err(format!(
+                "partial-pull execution {} has invalid amount/recovery evidence: amount={} recovered={}",
+                candidate.id, candidate.amount_raw, candidate.recovered_amount_raw
+            )
+            .into());
+        }
+        let residual_amount_raw = candidate
+            .amount_raw
+            .checked_sub(candidate.recovered_amount_raw)
+            .ok_or("partial-pull residual amount overflowed")?;
+        if residual_amount_raw == 0 {
+            continue;
+        }
+        let allocated_amount_raw = residual_amount_raw.min(remaining_amount_raw);
+        let recovered_amount_raw = candidate
+            .recovered_amount_raw
+            .checked_add(allocated_amount_raw)
+            .ok_or("partial-pull recovered amount overflowed")?;
+        allocations.push(PartialPullRecoveryAllocation {
+            id: candidate.id,
+            signature: candidate.signature,
+            allocated_amount_raw,
+            recovered_amount_raw,
+            fully_recovered: recovered_amount_raw == candidate.amount_raw,
+        });
+        remaining_amount_raw = remaining_amount_raw
+            .checked_sub(allocated_amount_raw)
+            .ok_or("partial-pull remaining amount underflowed")?;
+        if remaining_amount_raw == 0 {
+            break;
+        }
+    }
+
+    Ok(PartialPullRecoveryPlan {
+        allocations,
+        attributed_amount_raw: planned_amount_raw - remaining_amount_raw,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn repair_idle_vault_deposit_partial_pull_history(
     client: &NeonSqlClient,
@@ -11820,6 +11939,7 @@ async fn repair_idle_vault_deposit_partial_pull_history(
     deposit_signature: &str,
     confirmed_slot: i64,
     planned_amount_raw: i64,
+    post_confirm_position_amount_raw: i64,
 ) -> Result<Value, Box<dyn Error>> {
     let mut tx = client.pool().begin().await?;
     let app_tables_exist: bool = loyal_yield_orchestrator::sqlx::query_scalar(
@@ -11861,10 +11981,44 @@ async fn repair_idle_vault_deposit_partial_pull_history(
     };
     let wallet: String = target_row.try_get("wallet")?;
     let vault_token_ata: String = target_row.try_get("vault_token_ata")?;
+    if app_tables_exist {
+        let deposit_already_recorded: bool = loyal_yield_orchestrator::sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM loyal_yield.user_yield_position_deposits
+                WHERE deposit_signature = $1
+            )
+            "#,
+        )
+        .bind(deposit_signature)
+        .fetch_one(&mut *tx)
+        .await?;
+        if deposit_already_recorded {
+            tx.commit().await?;
+            return Ok(json!({
+                "matchedPartialPullCount": 0,
+                "matchedPartialPullAmountRaw": "0",
+                "balanceSweepTargetFound": true,
+                "appHistoryRepair": "already_repaired_deposit_signature",
+            }));
+        }
+    }
 
     let execution_rows = loyal_yield_orchestrator::sqlx::query(
         r#"
-        SELECT execution.id, execution.amount_raw, execution.signature
+        SELECT
+            execution.id,
+            execution.amount_raw,
+            execution.signature,
+            execution.decoded_evidence->>'status' AS status,
+            execution.decoded_evidence->>'idleVaultRecoveredAmountRaw' AS recovered_amount_raw,
+            execution.decoded_evidence->>'idleVaultAmountRaw' AS observed_idle_amount_raw,
+            COALESCE(
+                execution.decoded_evidence->>'idleVaultLastDepositSignature',
+                execution.decoded_evidence->>'kaminoDepositSignature'
+            ) AS last_deposit_signature,
+            COALESCE(execution.slot, 0) AS slot
         FROM loyal_yield.balance_sweep_executions AS execution
         JOIN loyal_yield.balance_sweep_targets AS execution_target
           ON execution_target.id = execution.target_id
@@ -11873,12 +12027,16 @@ async fn repair_idle_vault_deposit_partial_pull_history(
           AND execution_target.vault_pubkey = $3
           AND execution.token_mint = $4
           AND COALESCE(execution.destination_token_ata, execution.destination_vault_ata) = $5
-          AND execution.decoded_evidence->>'status' IN (
-              'partial_executed_pull_top_up_blocked',
-              'partial_executed_pull_idle_vault_handoff'
+          AND (
+              execution.decoded_evidence->>'status' IN (
+                  'partial_executed_pull_top_up_blocked',
+                  'partial_executed_pull_idle_vault_handoff'
+              )
+              OR COALESCE(
+                    execution.decoded_evidence->>'idleVaultLastDepositSignature',
+                    execution.decoded_evidence->>'kaminoDepositSignature'
+                 ) = $6
           )
-          AND execution.decoded_evidence->>'idleVaultDepositDecisionId' IS NULL
-        ORDER BY execution.slot ASC, execution.id ASC
         FOR UPDATE OF execution
         "#,
     )
@@ -11887,62 +12045,105 @@ async fn repair_idle_vault_deposit_partial_pull_history(
     .bind(&vault.vault_pubkey)
     .bind(USDC_MINT.to_string())
     .bind(&vault_token_ata)
+    .bind(deposit_signature)
     .fetch_all(&mut *tx)
     .await?;
 
-    let mut matched_ids = Vec::new();
-    let mut matched_signatures = Vec::new();
-    let mut matched_amount_raw = 0_i64;
-    for row in execution_rows {
-        let amount: i64 = row.try_get("amount_raw")?;
-        if matched_amount_raw + amount > planned_amount_raw {
-            break;
-        }
-        matched_amount_raw += amount;
-        matched_ids.push(row.try_get::<i64, _>("id")?);
-        matched_signatures.push(row.try_get::<String, _>("signature")?);
-        if matched_amount_raw == planned_amount_raw {
+    let mut execution_already_repaired = false;
+    for row in &execution_rows {
+        if row
+            .try_get::<Option<String>, _>("last_deposit_signature")?
+            .as_deref()
+            == Some(deposit_signature)
+        {
+            execution_already_repaired = true;
             break;
         }
     }
-
-    if matched_ids.is_empty() {
+    if execution_already_repaired {
         tx.commit().await?;
         return Ok(json!({
             "matchedPartialPullCount": 0,
             "matchedPartialPullAmountRaw": "0",
             "balanceSweepTargetFound": true,
-            "appHistoryRepair": "skipped_no_matching_partial_pull",
+            "appHistoryRepair": "already_repaired_deposit_signature",
         }));
     }
 
-    loyal_yield_orchestrator::sqlx::query(
-        r#"
+    let recovery_candidates = execution_rows
+        .into_iter()
+        .map(|row| {
+            let recovered_amount_raw = row
+                .try_get::<Option<String>, _>("recovered_amount_raw")?
+                .map(|value| value.parse::<i64>())
+                .transpose()?
+                .unwrap_or_default();
+            let observed_idle_amount_raw = row
+                .try_get::<Option<String>, _>("observed_idle_amount_raw")?
+                .map(|value| value.parse::<i64>())
+                .transpose()?;
+            Ok::<_, Box<dyn Error>>(PartialPullRecoveryCandidate {
+                id: row.try_get("id")?,
+                signature: row.try_get("signature")?,
+                status: row.try_get("status")?,
+                slot: row.try_get("slot")?,
+                amount_raw: row.try_get("amount_raw")?,
+                recovered_amount_raw,
+                observed_idle_amount_raw,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let recovery_plan = plan_partial_pull_recovery(recovery_candidates, planned_amount_raw)?;
+
+    if recovery_plan.attributed_amount_raw != planned_amount_raw {
+        tx.commit().await?;
+        return Ok(json!({
+            "matchedPartialPullCount": recovery_plan.allocations.len(),
+            "matchedPartialPullAmountRaw": recovery_plan.attributed_amount_raw.to_string(),
+            "plannedAmountRaw": planned_amount_raw.to_string(),
+            "balanceSweepTargetFound": true,
+            "appHistoryRepair": "skipped_incomplete_partial_pull_attribution",
+        }));
+    }
+
+    for allocation in &recovery_plan.allocations {
+        loyal_yield_orchestrator::sqlx::query(
+            r#"
         UPDATE loyal_yield.balance_sweep_executions
         SET
             decoded_evidence = COALESCE(decoded_evidence, '{}'::jsonb)
               || jsonb_build_object(
+                    'idleVaultRecoveredAmountRaw', $6::text,
+                    'idleVaultLastDepositDecisionId', $2::text,
+                    'idleVaultLastDepositSignature', $3,
+                    'idleVaultLastDepositSlot', $4::text,
+                    'idleVaultLastDepositAmountRaw', $5::text
+                 )
+              || CASE WHEN $7 THEN jsonb_build_object(
                     'previousStatus', decoded_evidence->>'status',
                     'status', 'partial_executed_pull_idle_vault_deposited',
                     'idleVaultDepositDecisionId', $2::text,
                     'kaminoDepositSignature', $3,
                     'kaminoDepositSlot', $4::text,
-                    'idleVaultDepositAmountRaw', $5::text
-                 ),
+                    'idleVaultDepositAmountRaw', $6::text
+                 ) ELSE '{}'::jsonb END,
             decoded_at = now(),
-            kamino_deposit_signature = $3,
-            completed_at = COALESCE(completed_at, now()),
-            completion_failure_code = NULL
-        WHERE id = ANY($1)
+            kamino_deposit_signature = CASE WHEN $7 THEN $3 ELSE kamino_deposit_signature END,
+            completed_at = CASE WHEN $7 THEN COALESCE(completed_at, now()) ELSE completed_at END,
+            completion_failure_code = CASE WHEN $7 THEN NULL ELSE completion_failure_code END
+        WHERE id = $1
         "#,
-    )
-    .bind(&matched_ids)
-    .bind(decision.id.as_i64())
-    .bind(deposit_signature)
-    .bind(confirmed_slot)
-    .bind(planned_amount_raw)
-    .execute(&mut *tx)
-    .await?;
+        )
+        .bind(allocation.id)
+        .bind(decision.id.as_i64())
+        .bind(deposit_signature)
+        .bind(confirmed_slot)
+        .bind(allocation.allocated_amount_raw)
+        .bind(allocation.recovered_amount_raw)
+        .bind(allocation.fully_recovered)
+        .execute(&mut *tx)
+        .await?;
+    }
 
     let mut app_history_repair = json!("skipped_app_tables_missing");
     if app_tables_exist {
@@ -11954,22 +12155,54 @@ async fn repair_idle_vault_deposit_partial_pull_history(
             &wallet,
             deposit_signature,
             confirmed_slot,
-            matched_amount_raw,
+            planned_amount_raw,
+            post_confirm_position_amount_raw,
             decision,
         )
         .await?;
     }
 
     tx.commit().await?;
+    let matched_ids = recovery_plan
+        .allocations
+        .iter()
+        .map(|allocation| allocation.id)
+        .collect::<Vec<_>>();
+    let matched_signatures = recovery_plan
+        .allocations
+        .iter()
+        .map(|allocation| allocation.signature.clone())
+        .collect::<Vec<_>>();
     Ok(json!({
         "matchedPartialPullCount": matched_ids.len(),
         "matchedPartialPullIds": matched_ids,
         "matchedPartialPullSignatures": matched_signatures,
-        "matchedPartialPullAmountRaw": matched_amount_raw.to_string(),
+        "matchedPartialPullAmountRaw": recovery_plan.attributed_amount_raw.to_string(),
+        "partialPullRecoveryAllocations": recovery_plan.allocations.iter().map(|allocation| json!({
+            "executionId": allocation.id,
+            "allocatedAmountRaw": allocation.allocated_amount_raw.to_string(),
+            "recoveredAmountRaw": allocation.recovered_amount_raw.to_string(),
+            "fullyRecovered": allocation.fully_recovered,
+        })).collect::<Vec<_>>(),
         "plannedAmountRaw": planned_amount_raw.to_string(),
+        "postConfirmPositionAmountRaw": post_confirm_position_amount_raw.to_string(),
         "balanceSweepTargetFound": true,
         "appHistoryRepair": app_history_repair,
     }))
+}
+
+fn repaired_position_holding(
+    current_amount_raw: i64,
+    same_current_holding: bool,
+    post_confirm_position_amount_raw: i64,
+) -> Result<(i64, Option<i64>), Box<dyn Error>> {
+    if !same_current_holding {
+        return Ok((post_confirm_position_amount_raw, None));
+    }
+    let holding_delta_raw = post_confirm_position_amount_raw
+        .checked_sub(current_amount_raw)
+        .ok_or("post-confirm position holding delta overflowed")?;
+    Ok((post_confirm_position_amount_raw, Some(holding_delta_raw)))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -11985,6 +12218,7 @@ async fn repair_idle_vault_deposit_app_history_in_tx(
     deposit_signature: &str,
     confirmed_slot: i64,
     principal_delta_raw: i64,
+    post_confirm_position_amount_raw: i64,
     decision: &RebalanceDecision,
 ) -> Result<Value, Box<dyn Error>> {
     let deposit_row = loyal_yield_orchestrator::sqlx::query(
@@ -12057,7 +12291,7 @@ async fn repair_idle_vault_deposit_app_history_in_tx(
     .fetch_optional(&mut **tx)
     .await?;
 
-    let observed_current_amount = decision.amount_raw.unwrap_or(principal_delta_raw);
+    let observed_current_amount = post_confirm_position_amount_raw;
     let (position_id, event_type, next_amount_raw, next_principal_raw, holding_delta_raw) =
         if let Some(existing) = existing {
             let position_id: i64 = existing.try_get("id")?;
@@ -12067,17 +12301,12 @@ async fn repair_idle_vault_deposit_app_history_in_tx(
             let current_liquidity_mint: String = existing.try_get("current_liquidity_mint")?;
             let same_current_holding = current_reserve == target_reserve
                 && current_liquidity_mint == USDC_MINT.to_string();
-            let next_amount_raw = if same_current_holding {
-                observed_current_amount
-            } else {
-                current_amount_raw
-            };
+            let (next_amount_raw, holding_delta_raw) = repaired_position_holding(
+                current_amount_raw,
+                same_current_holding,
+                observed_current_amount,
+            )?;
             let next_principal_raw = principal_amount_raw + principal_delta_raw;
-            let holding_delta_raw = if same_current_holding {
-                Some(next_amount_raw - current_amount_raw)
-            } else {
-                None
-            };
             loyal_yield_orchestrator::sqlx::query(
                 r#"
                 UPDATE loyal_yield.user_yield_positions
@@ -12174,7 +12403,7 @@ async fn repair_idle_vault_deposit_app_history_in_tx(
                 "deposit_initialized",
                 observed_current_amount,
                 principal_delta_raw,
-                Some(principal_delta_raw),
+                Some(observed_current_amount),
             )
         };
 
@@ -22172,6 +22401,105 @@ mod tests {
         assert!(idle_source_commitment_is_at_least_confirmed("confirmed"));
         assert!(idle_source_commitment_is_at_least_confirmed("finalized"));
         assert!(!idle_source_commitment_is_at_least_confirmed("processed"));
+    }
+
+    fn partial_pull_candidate(
+        id: i64,
+        status: &str,
+        slot: i64,
+        amount_raw: i64,
+        recovered_amount_raw: i64,
+        observed_idle_amount_raw: Option<i64>,
+    ) -> PartialPullRecoveryCandidate {
+        PartialPullRecoveryCandidate {
+            id,
+            signature: format!("signature-{id}"),
+            status: status.to_owned(),
+            slot,
+            amount_raw,
+            recovered_amount_raw,
+            observed_idle_amount_raw,
+        }
+    }
+
+    #[test]
+    fn current_idle_handoff_wins_over_an_older_oversized_failure() {
+        let plan = plan_partial_pull_recovery(
+            vec![
+                partial_pull_candidate(
+                    1,
+                    PARTIAL_PULL_TOP_UP_BLOCKED_STATUS,
+                    100,
+                    100_000_000,
+                    0,
+                    None,
+                ),
+                partial_pull_candidate(
+                    2,
+                    PARTIAL_PULL_IDLE_VAULT_HANDOFF_STATUS,
+                    200,
+                    10_000_000,
+                    0,
+                    Some(10_000_000),
+                ),
+            ],
+            10_000_000,
+        )
+        .unwrap();
+
+        assert_eq!(plan.attributed_amount_raw, 10_000_000);
+        assert_eq!(plan.allocations.len(), 1);
+        assert_eq!(plan.allocations[0].id, 2);
+        assert_eq!(plan.allocations[0].allocated_amount_raw, 10_000_000);
+        assert!(plan.allocations[0].fully_recovered);
+    }
+
+    #[test]
+    fn oversized_historical_failure_is_repaired_only_by_the_observed_residual() {
+        let plan = plan_partial_pull_recovery(
+            vec![partial_pull_candidate(
+                1,
+                PARTIAL_PULL_TOP_UP_BLOCKED_STATUS,
+                100,
+                100_000_000,
+                0,
+                None,
+            )],
+            10_000_000,
+        )
+        .unwrap();
+
+        assert_eq!(plan.attributed_amount_raw, 10_000_000);
+        assert_eq!(plan.allocations[0].allocated_amount_raw, 10_000_000);
+        assert_eq!(plan.allocations[0].recovered_amount_raw, 10_000_000);
+        assert!(!plan.allocations[0].fully_recovered);
+
+        let completion = plan_partial_pull_recovery(
+            vec![partial_pull_candidate(
+                1,
+                PARTIAL_PULL_TOP_UP_BLOCKED_STATUS,
+                100,
+                100_000_000,
+                10_000_000,
+                None,
+            )],
+            90_000_000,
+        )
+        .unwrap();
+        assert_eq!(completion.allocations[0].recovered_amount_raw, 100_000_000);
+        assert!(completion.allocations[0].fully_recovered);
+    }
+
+    #[test]
+    fn app_history_uses_the_post_confirm_position_total() {
+        assert_eq!(
+            repaired_position_holding(100_000_000, true, 110_000_000).unwrap(),
+            (110_000_000, Some(10_000_000))
+        );
+        assert_eq!(
+            repaired_position_holding(25_000_000, false, 110_000_000).unwrap(),
+            (110_000_000, None)
+        );
     }
 
     #[test]

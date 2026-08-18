@@ -224,6 +224,10 @@ async function main(): Promise<void> {
     fleet.indexOf("async fn repair_idle_vault_deposit_partial_pull_history"),
     fleet.indexOf("async fn repair_idle_vault_deposit_app_history_in_tx"),
   );
+  const fleetAppHistoryRepair = fleet.slice(
+    fleet.indexOf("async fn repair_idle_vault_deposit_app_history_in_tx"),
+    fleet.indexOf("async fn deactivate_vault_policy_after_full_withdraw"),
+  );
   check(
     "publication failure alert claim is durable",
     executor.includes("claimIdleHandoffFailureAlert") &&
@@ -294,6 +298,30 @@ async function main(): Promise<void> {
       ) &&
       !fleetHistoryRepair.includes("WHERE target_id = $1"),
     "replaced target rows cannot hide an older confirmed pull for the same vault ATA",
+  );
+  check(
+    "history repair preserves the post-confirm Kamino position total",
+    fleet.includes("i64::try_from(post_deposit_position.amount_raw)") &&
+      fleetHistoryRepair.includes("post_confirm_position_amount_raw") &&
+      fleetAppHistoryRepair.includes(
+        "let observed_current_amount = post_confirm_position_amount_raw",
+      ) &&
+      !fleetAppHistoryRepair.includes(
+        "let observed_current_amount = decision.amount_raw",
+      ),
+    "the deposit delta updates principal while the reconciled chain total updates current_amount_raw",
+  );
+  check(
+    "oversized historical failures cannot block a newer handoff",
+    fleet.includes("fn plan_partial_pull_recovery(") &&
+      fleet.includes("partial_pull_recovery_priority") &&
+      fleetHistoryRepair.includes("idleVaultRecoveredAmountRaw") &&
+      fleetHistoryRepair.includes("idleVaultLastDepositSignature") &&
+      fleetHistoryRepair.includes("already_repaired_deposit_signature") &&
+      fleetHistoryRepair.includes("allocation.fully_recovered") &&
+      !fleetHistoryRepair.includes("matched_amount_raw + amount") &&
+      !fleetHistoryRepair.includes("ORDER BY execution.slot ASC"),
+    "the current handoff is preferred and historical executions consume only their unrecovered residual",
   );
   check(
     "SLA alert is durably claimed",
