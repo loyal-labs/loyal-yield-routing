@@ -5924,13 +5924,13 @@ impl NeonSqlClient {
     /// Reconciles the current catalog readiness and atomically activates a
     /// fully materialized target generation. Incomplete work remains in the
     /// provisioning state for the generic operation worker to continue.
-    pub async fn reconcile_shared_market_catalog_head(
+    pub async fn reconcile_shared_market_catalog_head_if_current(
         &self,
         cluster: &str,
         expected_catalog_revision_id: i64,
         policy: SharedMarketCatalogPlanPolicy,
         rollback_until: DateTime<Utc>,
-    ) -> Result<SharedMarketCatalogHeadRecord, OrchestratorError> {
+    ) -> Result<Option<SharedMarketCatalogHeadRecord>, OrchestratorError> {
         if rollback_until <= Utc::now() || policy.max_extension_addresses == 0 {
             return Err(OrchestratorError::StoreInvariant(
                 "shared-market catalog reconciliation requires a future rollback deadline and positive extension size"
@@ -5950,10 +5950,7 @@ impl NeonSqlClient {
             ))
         })?;
         if catalog.catalog_revision_id != expected_catalog_revision_id {
-            return Err(OrchestratorError::StoreInvariant(format!(
-                "shared-market catalog head changed from revision id {expected_catalog_revision_id} to {}",
-                catalog.catalog_revision_id
-            )));
+            return Ok(None);
         }
         let (planned_target_generation, _) = self
             .plan_shared_market_operations_in_connection(
@@ -6091,7 +6088,28 @@ impl NeonSqlClient {
             )
         })?;
         tx.commit().await?;
-        Ok(catalog)
+        Ok(Some(catalog))
+    }
+
+    pub async fn reconcile_shared_market_catalog_head(
+        &self,
+        cluster: &str,
+        expected_catalog_revision_id: i64,
+        policy: SharedMarketCatalogPlanPolicy,
+        rollback_until: DateTime<Utc>,
+    ) -> Result<SharedMarketCatalogHeadRecord, OrchestratorError> {
+        self.reconcile_shared_market_catalog_head_if_current(
+            cluster,
+            expected_catalog_revision_id,
+            policy,
+            rollback_until,
+        )
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(format!(
+                "shared-market catalog head changed from revision id {expected_catalog_revision_id} before reconciliation"
+            ))
+        })
     }
 
     pub async fn plan_lookup_table_provisioning_request(
@@ -8736,8 +8754,14 @@ impl NeonSqlClient {
         let current_preflight = load_reusable_only_cutover_preflight_in_connection(
             &mut tx,
             &input.drift_report.cluster,
+            None,
         )
-        .await?;
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "pre-cutover probe shared catalog changed while already locked".to_owned(),
+            )
+        })?;
         let locked_finalized_addresses = validate_finalized_shared_tables_against_preflight(
             &current_preflight,
             &input.finalized_observation,
@@ -11190,7 +11214,8 @@ async fn shared_market_catalog_generation_evidence_in_connection(
 async fn load_reusable_only_cutover_preflight_in_connection(
     tx: &mut sqlx::PgConnection,
     cluster: &str,
-) -> Result<ReusableOnlyCutoverPreflight, OrchestratorError> {
+    expected_catalog_revision_id: Option<i64>,
+) -> Result<Option<ReusableOnlyCutoverPreflight>, OrchestratorError> {
     let catalog = load_shared_market_catalog_head_in_connection(
         tx,
         cluster,
@@ -11202,6 +11227,10 @@ async fn load_reusable_only_cutover_preflight_in_connection(
             "cluster {cluster:?} has no authoritative shared-market catalog head"
         ))
     })?;
+    if expected_catalog_revision_id.is_some_and(|expected| catalog.catalog_revision_id != expected)
+    {
+        return Ok(None);
+    }
     let active_generation = catalog.active_generation.ok_or_else(|| {
         OrchestratorError::StoreInvariant(
             "shared-market catalog has no active generation".to_owned(),
@@ -11300,7 +11329,7 @@ async fn load_reusable_only_cutover_preflight_in_connection(
         });
     }
     let shared_table_bundle_hash = reusable_only_cutover_shared_table_bundle_hash(&shared_tables);
-    Ok(ReusableOnlyCutoverPreflight {
+    Ok(Some(ReusableOnlyCutoverPreflight {
         cluster: cluster.to_owned(),
         catalog_revision_id: catalog.catalog_revision_id,
         catalog_revision: catalog.catalog_revision,
@@ -11313,7 +11342,7 @@ async fn load_reusable_only_cutover_preflight_in_connection(
         target_generation,
         shared_table_bundle_hash,
         shared_tables,
-    })
+    }))
 }
 
 async fn lookup_table_in_flight_mutation_count_in_connection(
@@ -16189,7 +16218,36 @@ impl NeonSqlClient {
             ));
         }
         let mut tx = self.pool().begin().await?;
-        let evidence = load_reusable_only_cutover_preflight_in_connection(&mut tx, cluster).await?;
+        let evidence = load_reusable_only_cutover_preflight_in_connection(&mut tx, cluster, None)
+            .await?
+            .ok_or_else(|| {
+                OrchestratorError::StoreInvariant(
+                    "reusable-only cutover catalog changed while already locked".to_owned(),
+                )
+            })?;
+        tx.commit().await?;
+        Ok(evidence)
+    }
+
+    /// Returns no evidence when the caller's catalog snapshot is no longer
+    /// current. Revision comparison and validation share one family/head lock.
+    pub async fn reusable_only_cutover_preflight_if_current(
+        &self,
+        cluster: &str,
+        expected_catalog_revision_id: i64,
+    ) -> Result<Option<ReusableOnlyCutoverPreflight>, OrchestratorError> {
+        if cluster.trim().is_empty() {
+            return Err(OrchestratorError::StoreInvariant(
+                "reusable-only cutover preflight requires a cluster".to_owned(),
+            ));
+        }
+        let mut tx = self.pool().begin().await?;
+        let evidence = load_reusable_only_cutover_preflight_in_connection(
+            &mut tx,
+            cluster,
+            Some(expected_catalog_revision_id),
+        )
+        .await?;
         tx.commit().await?;
         Ok(evidence)
     }
@@ -16252,7 +16310,13 @@ impl NeonSqlClient {
             )));
         }
         let current_preflight =
-            load_reusable_only_cutover_preflight_in_connection(&mut tx, cluster).await?;
+            load_reusable_only_cutover_preflight_in_connection(&mut tx, cluster, None)
+                .await?
+                .ok_or_else(|| {
+                    OrchestratorError::StoreInvariant(
+                        "reusable-only cutover catalog changed while already locked".to_owned(),
+                    )
+                })?;
         if current_preflight != *expected_preflight {
             return Err(OrchestratorError::StoreInvariant(
                 "reusable-only cutover preflight evidence changed after finalized RPC verification"

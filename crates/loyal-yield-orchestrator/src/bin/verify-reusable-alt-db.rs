@@ -54,6 +54,25 @@ async fn main() -> VerifyResult<()> {
     let run = format!("{}-{}", std::process::id(), Utc::now().timestamp_micros());
     let mut passed = Vec::new();
 
+    if env::var("ASK_2158_ALT_CATALOG_VERIFY_ONLY").as_deref() == Ok("1") {
+        verify_shared_catalog_revision_fence_noop(&client, &run).await?;
+        passed.push("stale catalog snapshots are no-op and same-revision corruption stays fatal");
+        println!(
+            "{}",
+            json!({
+                "event": "ask_2158_alt_catalog_db_verifier",
+                "result": "PASS",
+                "databaseClass": "explicitly_isolated_disposable",
+                "checks": passed,
+                "externalRpcUsed": false,
+                "signerLoaded": false,
+                "productionActions": false,
+            })
+        );
+        pool.close().await;
+        return Ok(());
+    }
+
     verify_policy_authority_reuse_and_family_identity(&client, &run).await?;
     passed.push("policy authority reuse, authority/payer consistency, and family identity fencing");
 
@@ -61,6 +80,9 @@ async fn main() -> VerifyResult<()> {
     passed.push(
         "vault-independent shared catalog head, finalized physical-drift rollover, signerless rollback-only probe, rollback-safe revisions, exact activation, and fenced direct cutover",
     );
+
+    verify_shared_catalog_revision_fence_noop(&client, &run).await?;
+    passed.push("stale catalog snapshots are no-op and same-revision corruption stays fatal");
 
     verify_shared_catalog_revision_and_operation_fences(&client, &run).await?;
     passed.push(
@@ -1003,6 +1025,130 @@ async fn verify_shared_market_catalog_control_plane(
             && rollback_head.readiness_state == SharedMarketCatalogReadiness::Pending,
         "monotonic catalog rollback could not reuse its prior immutable sealed manifest",
     )
+}
+
+async fn verify_shared_catalog_revision_fence_noop(
+    client: &NeonSqlClient,
+    run: &str,
+) -> VerifyResult<()> {
+    let cluster = format!("db-verify-shared-revision-noop-{run}");
+    let authority = unique_pubkey("shared-revision-noop-authority").to_string();
+    let (shared_family, _vault_family) = create_families(client, &cluster, &authority, 40).await?;
+    let revision_a_addresses = normalize_catalog_addresses([typed_addresses(
+        LookupTableManifestSubject::SharedMarket,
+        2,
+        "shared-revision-noop-a",
+    )]);
+    let revision_a = publish_and_activate_shared_catalog(
+        client,
+        &cluster,
+        revision_a_addresses.clone(),
+        run,
+        105_000,
+    )
+    .await?;
+    ensure(
+        revision_a.readiness_state == SharedMarketCatalogReadiness::Active
+            && revision_a.active_generation == revision_a.target_generation,
+        "ASK-2158 fixture revision A did not become active",
+    )?;
+
+    let revision_b_addresses = normalize_catalog_addresses([
+        revision_a_addresses,
+        typed_addresses(
+            LookupTableManifestSubject::SharedMarket,
+            1,
+            "shared-revision-noop-b",
+        ),
+    ]);
+    let revision_b = force_advance_shared_catalog_head_for_race_fixture(
+        client,
+        &revision_a,
+        revision_b_addresses,
+        run,
+        105_002,
+        "ask_2158_revision_changed",
+    )
+    .await?;
+    ensure(
+        revision_b.catalog_revision_id != revision_a.catalog_revision_id
+            && revision_b.readiness_state == SharedMarketCatalogReadiness::Pending
+            && revision_b.target_generation.is_none(),
+        "ASK-2158 fixture revision B was not the expected pending replacement",
+    )?;
+
+    let counts_before =
+        catalog_revision_fence_side_effect_counts(client, shared_family.id, &cluster).await?;
+    let stale_preflight = client
+        .reusable_only_cutover_preflight_if_current(&cluster, revision_a.catalog_revision_id)
+        .await?;
+    let stale_reconciliation = client
+        .reconcile_shared_market_catalog_head_if_current(
+            &cluster,
+            revision_a.catalog_revision_id,
+            shared_catalog_policy(105_003),
+            Utc::now() + Duration::hours(1),
+        )
+        .await?;
+    let counts_after =
+        catalog_revision_fence_side_effect_counts(client, shared_family.id, &cluster).await?;
+    let head_after = client
+        .shared_market_catalog_head(&cluster)
+        .await?
+        .ok_or_else(|| io::Error::other("ASK-2158 catalog head disappeared"))?;
+    ensure(
+        stale_preflight.is_none()
+            && stale_reconciliation.is_none()
+            && counts_after == counts_before
+            && head_after.catalog_revision_id == revision_b.catalog_revision_id
+            && head_after.readiness_state == revision_b.readiness_state
+            && head_after.target_generation == revision_b.target_generation,
+        "stale catalog revision work was not a zero-mutation no-op",
+    )?;
+
+    match client
+        .reusable_only_cutover_preflight_if_current(&cluster, revision_b.catalog_revision_id)
+        .await
+    {
+        Err(OrchestratorError::StoreInvariant(message))
+            if message == "shared-market catalog has no target generation" => {}
+        Err(error) => {
+            return fail(format!(
+                "same-revision pending catalog returned the wrong error: {error}"
+            ));
+        }
+        Ok(_) => {
+            return fail(
+                "same-revision pending catalog hid the missing target-generation invariant",
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn catalog_revision_fence_side_effect_counts(
+    client: &NeonSqlClient,
+    family_id: i64,
+    cluster: &str,
+) -> VerifyResult<(i64, i64, i64)> {
+    Ok(loyal_yield_orchestrator::sqlx::query_as(
+        r#"
+        SELECT
+            (SELECT count(*)::BIGINT
+             FROM loyal_yield.lookup_table_operations
+             WHERE family_id = $1),
+            (SELECT count(*)::BIGINT
+             FROM loyal_yield.lookup_table_provisioning_requests
+             WHERE cluster = $2),
+            (SELECT count(*)::BIGINT
+             FROM loyal_yield.lookup_table_provisioner_broadcast_permits
+             WHERE cluster = $2)
+        "#,
+    )
+    .bind(family_id)
+    .bind(cluster)
+    .fetch_one(client.pool())
+    .await?)
 }
 
 async fn verify_shared_catalog_revision_and_operation_fences(

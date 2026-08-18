@@ -989,9 +989,15 @@ async fn reconcile_shared_market_catalog(
         return Ok(false);
     };
     if before.readiness_state == SharedMarketCatalogReadiness::Active {
-        let preflight = client
-            .reusable_only_cutover_preflight(&options.cluster)
-            .await?;
+        let Some(preflight) = client
+            .reusable_only_cutover_preflight_if_current(
+                &options.cluster,
+                before.catalog_revision_id,
+            )
+            .await?
+        else {
+            return Ok(false);
+        };
         if report_finalized_shared_drift_if_any(client, rpc, options, &preflight).await? {
             before = client
                 .shared_market_catalog_head(&options.cluster)
@@ -1010,8 +1016,8 @@ async fn reconcile_shared_market_catalog(
         return Err("shared-market catalog head does not belong to the active family".into());
     }
     let recent_slot = finalized_slot_with_retry(rpc, "reconcile_shared_market_catalog").await?;
-    let after = client
-        .reconcile_shared_market_catalog_head(
+    let Some(after) = client
+        .reconcile_shared_market_catalog_head_if_current(
             &options.cluster,
             before.catalog_revision_id,
             SharedMarketCatalogPlanPolicy {
@@ -1028,7 +1034,10 @@ async fn reconcile_shared_market_catalog(
             },
             Utc::now() + chrono::Duration::hours(24),
         )
-        .await?;
+        .await?
+    else {
+        return Ok(false);
+    };
     let changed = before.target_generation != after.target_generation
         || before.active_generation != after.active_generation
         || before.readiness_state != after.readiness_state
