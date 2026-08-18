@@ -1799,6 +1799,31 @@ struct FleetSourceSet {
     committed_source_outflows: Vec<CommittedSourceOutflow>,
 }
 
+fn derive_no_positive_current_source_vault_count(
+    eligible_vault_count: i64,
+    active_opportunity_vaults_excluded: i64,
+    source_candidate_vault_count: i64,
+) -> Result<i64, FleetObservationError> {
+    let invalid_partition = || {
+        FleetObservationError::CompletenessInvariant(format!(
+            "eligible={eligible_vault_count}, active={active_opportunity_vaults_excluded}, source_candidates={source_candidate_vault_count}"
+        ))
+    };
+    if eligible_vault_count < 0
+        || active_opportunity_vaults_excluded < 0
+        || source_candidate_vault_count < 0
+    {
+        return Err(invalid_partition());
+    }
+    eligible_vault_count
+        .checked_sub(active_opportunity_vaults_excluded)
+        .and_then(|planning_vault_count| {
+            planning_vault_count.checked_sub(source_candidate_vault_count)
+        })
+        .filter(|no_source_vault_count| *no_source_vault_count >= 0)
+        .ok_or_else(invalid_partition)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SourceVaultRejection {
     MissingValuation,
@@ -2203,14 +2228,6 @@ async fn load_fleet_sources(
                 AS source_candidate_vault_count,
             (SELECT count(*)::BIGINT FROM excluded_active_vaults)
                 AS active_opportunity_vaults_excluded,
-            (
-                SELECT count(*)::BIGINT
-                FROM planning_vaults planning
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM sources source
-                    WHERE source.vault_id = planning.vault_id
-                )
-            ) AS no_positive_current_source_vault_count,
             COALESCE((
                 SELECT jsonb_object_agg(
                     excluded_state.opportunity_state,
@@ -2314,9 +2331,11 @@ async fn load_fleet_sources(
     let active_opportunity_vaults_excluded = row
         .try_get("active_opportunity_vaults_excluded")
         .map_err(FleetObservationError::NeonRead)?;
-    let no_positive_current_source_vault_count = row
-        .try_get("no_positive_current_source_vault_count")
-        .map_err(FleetObservationError::NeonRead)?;
+    let no_positive_current_source_vault_count = derive_no_positive_current_source_vault_count(
+        eligible_vault_count,
+        active_opportunity_vaults_excluded,
+        source_candidate_vault_count,
+    )?;
     let active_opportunity_vaults_excluded_by_state_json: Value = row
         .try_get("active_opportunity_vaults_excluded_by_state")
         .map_err(FleetObservationError::NeonRead)?;
@@ -2483,14 +2502,6 @@ async fn load_fleet_sources_without_queue_schema(
                 AS source_candidate_vault_count,
             (SELECT count(*)::BIGINT FROM excluded_active_vaults)
                 AS active_opportunity_vaults_excluded,
-            (
-                SELECT count(*)::BIGINT
-                FROM planning_vaults planning
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM sources source
-                    WHERE source.vault_id = planning.vault_id
-                )
-            ) AS no_positive_current_source_vault_count,
             COALESCE((
                 SELECT jsonb_object_agg(
                     excluded_state.opportunity_state,
@@ -2561,9 +2572,11 @@ async fn load_fleet_sources_without_queue_schema(
     let active_opportunity_vaults_excluded = row
         .try_get("active_opportunity_vaults_excluded")
         .map_err(FleetObservationError::NeonRead)?;
-    let no_positive_current_source_vault_count = row
-        .try_get("no_positive_current_source_vault_count")
-        .map_err(FleetObservationError::NeonRead)?;
+    let no_positive_current_source_vault_count = derive_no_positive_current_source_vault_count(
+        eligible_vault_count,
+        active_opportunity_vaults_excluded,
+        source_candidate_vault_count,
+    )?;
     let active_opportunity_vaults_excluded_by_state_json: Value = row
         .try_get("active_opportunity_vaults_excluded_by_state")
         .map_err(FleetObservationError::NeonRead)?;
@@ -3568,6 +3581,32 @@ fn usd_to_micros(usd: f64) -> Result<i64, FleetObservationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_positive_current_source_vault_count_is_partition_remainder() {
+        assert_eq!(
+            derive_no_positive_current_source_vault_count(7, 2, 3).unwrap(),
+            2
+        );
+        assert_eq!(
+            derive_no_positive_current_source_vault_count(4, 1, 0).unwrap(),
+            3
+        );
+        // Multiple source rows for one vault are already represented by the
+        // query's distinct source-candidate count.
+        assert_eq!(
+            derive_no_positive_current_source_vault_count(2, 0, 1).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn no_positive_current_source_vault_count_rejects_invalid_partition() {
+        assert!(matches!(
+            derive_no_positive_current_source_vault_count(2, 1, 2),
+            Err(FleetObservationError::CompletenessInvariant(_))
+        ));
+    }
 
     fn swap_policy(source_shard: &str, policy_account: &str) -> CrossMintSwapPolicyEvidence {
         CrossMintSwapPolicyEvidence {
