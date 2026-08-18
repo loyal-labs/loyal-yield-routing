@@ -75,9 +75,10 @@ use loyal_yield_orchestrator::{
         FleetRouteSourceEvidence, FleetRouteSourceKind as SameMintRouteSourceKind, FleetWorkerRole,
         FreshRouteEconomicsInput, IdleDepositPostEffectDecision, IdleDepositPostEffectObservation,
         IdleDepositRouteContract, ImmutableMarketEpoch, OpportunityInput, OuterTaskFailureKind,
-        RebalanceOpportunityAdvance, RebalanceOpportunityClaimKind, RebalanceOpportunityLease,
-        RebalanceOpportunityRecord, RebalanceOpportunityState, ReconciliationStallLatch,
-        RouteFeePayerKind, RouteFeePayerShardConfig, RouteFeePolicy, SignedRouteSubmissionAdvance,
+        RebalanceOpportunityAdvance, RebalanceOpportunityAdvanceOutcome,
+        RebalanceOpportunityClaimKind, RebalanceOpportunityLease, RebalanceOpportunityRecord,
+        RebalanceOpportunityState, ReconciliationStallLatch, RouteFeePayerKind,
+        RouteFeePayerShardConfig, RouteFeePolicy, SignedRouteSubmissionAdvance,
         SignedRouteSubmissionInput, SignedRouteSubmissionLease, SignedRouteSubmissionState,
         TargetCapacityObservation, TargetCapacityReservationInput,
         MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS,
@@ -3942,7 +3943,8 @@ async fn defer_cross_mint_opportunity_after_error(
                 provisioning_request_id: None,
             },
         )
-        .await?;
+        .await?
+        .into_applied(current.id)?;
     Ok(())
 }
 
@@ -6495,7 +6497,11 @@ async fn finish_fleet_worker_task(
         }
         object.insert("alt_readiness".to_owned(), readiness);
     }
-    client
+    let outcome_state = outcome.state;
+    let writes_decision = outcome.writes_decision;
+    let sends_transactions = outcome.sends_transactions;
+    let opportunity_id = outcome.opportunity_id;
+    let advance_outcome = client
         .advance_rebalance_opportunity(
             lease.opportunity.id,
             &lease,
@@ -6511,7 +6517,54 @@ async fn finish_fleet_worker_task(
             },
         )
         .await?;
+    if validate_fleet_worker_advance_outcome(
+        opportunity_id,
+        outcome_state,
+        writes_decision,
+        sends_transactions,
+        advance_outcome,
+    )? {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "status": "fleet_worker_retry_expired",
+                "lane": lease.claim_kind.as_str(),
+                "opportunityId": opportunity_id,
+                "stateChanged": false,
+                "writesDecision": false,
+                "transactionsSent": false,
+                "recoveryRequired": false,
+            }))?
+        );
+    }
     Ok(())
+}
+
+fn validate_fleet_worker_advance_outcome(
+    opportunity_id: i64,
+    state: SameMintRouteExecutionState,
+    writes_decision: bool,
+    sends_transactions: bool,
+    advance_outcome: RebalanceOpportunityAdvanceOutcome,
+) -> Result<bool, OrchestratorError> {
+    match advance_outcome {
+        RebalanceOpportunityAdvanceOutcome::Applied(_) => Ok(false),
+        RebalanceOpportunityAdvanceOutcome::Expired
+            if state == SameMintRouteExecutionState::Retry
+                && !writes_decision
+                && !sends_transactions =>
+        {
+            Ok(true)
+        }
+        RebalanceOpportunityAdvanceOutcome::Expired => Err(OrchestratorError::StoreInvariant(
+            format!(
+                "rebalance opportunity {opportunity_id} expired after a potentially effectful worker outcome"
+            ),
+        )),
+        RebalanceOpportunityAdvanceOutcome::Fenced => Err(OrchestratorError::StoreInvariant(
+            format!("rebalance opportunity {opportunity_id} lost fencing while advancing"),
+        )),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -21988,6 +22041,102 @@ mod tests {
             route_fingerprint,
             requirements_fingerprint,
         }
+    }
+
+    fn fleet_worker_advance_record(opportunity_id: i64) -> RebalanceOpportunityRecord {
+        let now = Utc::now();
+        RebalanceOpportunityRecord {
+            id: opportunity_id,
+            cluster: "mainnet-beta".to_owned(),
+            idempotency_key: format!("test-{opportunity_id}"),
+            rediscovery_key: format!("rediscovery-{opportunity_id}"),
+            attempt_generation: 1,
+            vault_id: VaultId(7),
+            source_snapshot_id: Some(SnapshotId(11)),
+            optimizer_epoch_id: 13,
+            route_fingerprint: Some("route-v1".to_owned()),
+            requirements_fingerprint: Some("requirements-v1".to_owned()),
+            source_reserve: Some("source".to_owned()),
+            target_reserve: "target".to_owned(),
+            liquidity_mint: USDC_MINT.to_string(),
+            source_liquidity_mint: USDC_MINT.to_string(),
+            target_liquidity_mint: USDC_MINT.to_string(),
+            amount_raw: 1_000_000,
+            principal_usd_micros: 1_000_000,
+            source_apy_bps: 100,
+            target_apy_bps: 200,
+            estimated_edge_bps: 100,
+            estimated_cost_lamports: 5_000,
+            annual_yield_gain_usd_micros: 100_000,
+            expected_net_gain_usd_micros: 90_000,
+            economic_priority: 90_000,
+            priority_version: "test".to_owned(),
+            state: RebalanceOpportunityState::Ready,
+            execution_plan: json!({}),
+            available_at: now,
+            expires_at: now + ChronoDuration::minutes(5),
+            lease_kind: None,
+            lease_owner: None,
+            lease_expires_at: None,
+            fencing_token: 1,
+            attempt_count: 1,
+            decision_id: None,
+            terminal_reason: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn fleet_worker_advance_outcome_accepts_applied() {
+        let result = validate_fleet_worker_advance_outcome(
+            41,
+            SameMintRouteExecutionState::Retry,
+            false,
+            false,
+            RebalanceOpportunityAdvanceOutcome::Applied(Box::new(fleet_worker_advance_record(41))),
+        );
+
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[test]
+    fn fleet_worker_advance_outcome_accepts_only_effect_free_expired_retry() {
+        let expected_expiry = validate_fleet_worker_advance_outcome(
+            42,
+            SameMintRouteExecutionState::Retry,
+            false,
+            false,
+            RebalanceOpportunityAdvanceOutcome::Expired,
+        );
+        assert_eq!(expected_expiry.unwrap(), true);
+
+        for (state, writes_decision, sends_transactions) in [
+            (SameMintRouteExecutionState::Ready, false, false),
+            (SameMintRouteExecutionState::Retry, true, false),
+            (SameMintRouteExecutionState::Retry, false, true),
+        ] {
+            assert!(validate_fleet_worker_advance_outcome(
+                42,
+                state,
+                writes_decision,
+                sends_transactions,
+                RebalanceOpportunityAdvanceOutcome::Expired,
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn fleet_worker_advance_outcome_rejects_fenced() {
+        assert!(validate_fleet_worker_advance_outcome(
+            43,
+            SameMintRouteExecutionState::Retry,
+            false,
+            false,
+            RebalanceOpportunityAdvanceOutcome::Fenced,
+        )
+        .is_err());
     }
 
     #[test]

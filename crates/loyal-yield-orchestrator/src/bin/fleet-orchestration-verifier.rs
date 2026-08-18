@@ -22,12 +22,12 @@ use loyal_yield_orchestrator::fleet_orchestration::{
     CapacityBand, ConfirmationPollTrigger, EconomicPolicy, FleetStuckStage, FleetWorkerRole,
     FreshRouteEconomicsError, FreshRouteEconomicsInput, ImmutableMarketEpoch, IneligibleReason,
     MarketEpochReserve, MarketMintCoverage, MaterialFrontierDisposition, OpportunityInput,
-    RebalanceOpportunityAdvance, RebalanceOpportunityClaimKind, RebalanceOpportunityInput,
-    RebalanceOpportunityLease, RebalanceOpportunityRecord, RebalanceOpportunityState,
-    RouteFeeBudgetError, RouteFeePayerKind, RouteFeePolicy, RuntimeSourceBinding,
-    SignedRouteSubmissionAdvance, SignedRouteSubmissionInput, SignedRouteSubmissionRecord,
-    TargetCapacityCurve, TargetCapacityObservation, TargetCapacityProjection,
-    TargetCapacityReservationInput, WaveLimits,
+    RebalanceOpportunityAdvance, RebalanceOpportunityAdvanceOutcome, RebalanceOpportunityClaimKind,
+    RebalanceOpportunityInput, RebalanceOpportunityLease, RebalanceOpportunityRecord,
+    RebalanceOpportunityState, RouteFeeBudgetError, RouteFeePayerKind, RouteFeePolicy,
+    RuntimeSourceBinding, SignedRouteSubmissionAdvance, SignedRouteSubmissionInput,
+    SignedRouteSubmissionRecord, TargetCapacityCurve, TargetCapacityObservation,
+    TargetCapacityProjection, TargetCapacityReservationInput, WaveLimits,
 };
 use loyal_yield_orchestrator::{
     lookup_table_manifest_address_records_hash, lookup_table_rollout_lock_acquisition_count,
@@ -8487,7 +8487,8 @@ async fn run_database_checks(
                 provisioning_request_id: None,
             },
         )
-        .await?;
+        .await?
+        .into_applied(retry_first.opportunity.id)?;
     let retry_conflicts_after_release: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM loyal_yield.route_account_conflict_leases WHERE opportunity_id = $1",
     )
@@ -8501,6 +8502,133 @@ async fn run_database_checks(
         RebalanceOpportunityClaimKind::Execute,
     )
     .await?;
+
+    let expired_retry_cluster = fixture.cluster("expired_retry_advance");
+    let expired_retry_epoch = fixture.seed_epoch(&expired_retry_cluster).await?;
+    let expired_retry_seed = fixture
+        .seed_opportunity(
+            &expired_retry_cluster,
+            expired_retry_epoch,
+            "expired-retry-advance",
+            "ready",
+            940,
+        )
+        .await?;
+    let mut expired_retry_lease = claim_one(
+        &fixture.client,
+        &expired_retry_cluster,
+        "expired-retry-worker",
+        RebalanceOpportunityClaimKind::Execute,
+    )
+    .await?;
+    let expired_retry_deadline: DateTime<Utc> = sqlx::query_scalar(
+        r#"
+        UPDATE loyal_yield.rebalance_opportunities
+        SET expires_at = clock_timestamp() - interval '1 second',
+            lease_expires_at = clock_timestamp() - interval '1 second'
+        WHERE id = $1
+        RETURNING expires_at
+        "#,
+    )
+    .bind(expired_retry_seed.id)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    expired_retry_lease.opportunity.expires_at = expired_retry_deadline;
+    expired_retry_lease.opportunity.lease_expires_at = Some(expired_retry_deadline);
+    expired_retry_lease.expires_at = expired_retry_deadline;
+    let expired_retry_swept = fixture
+        .client
+        .sweep_expired_rebalance_opportunities(&expired_retry_cluster, 1)
+        .await?;
+    let expired_retry_outcome = fixture
+        .client
+        .advance_rebalance_opportunity(
+            expired_retry_seed.id,
+            &expired_retry_lease,
+            RebalanceOpportunityAdvance {
+                next_state: RebalanceOpportunityState::Ready,
+                available_at: Some(Utc::now() + chrono::Duration::seconds(2)),
+                decision_id: None,
+                reason: Some("synthetic effect-free retry".to_owned()),
+                route_fingerprint: expired_retry_lease.opportunity.route_fingerprint.clone(),
+                requirements_fingerprint: expired_retry_lease
+                    .opportunity
+                    .requirements_fingerprint
+                    .clone(),
+                execution_plan: Some(expired_retry_lease.opportunity.execution_plan.clone()),
+                provisioning_request_id: None,
+            },
+        )
+        .await?;
+    let expired_retry_current = fixture
+        .client
+        .rebalance_opportunity(expired_retry_seed.id)
+        .await?
+        .ok_or("expired-retry opportunity disappeared")?;
+    let expired_retry_advance_classified = matches!(
+        expired_retry_outcome,
+        RebalanceOpportunityAdvanceOutcome::Expired
+    ) && expired_retry_swept == 1
+        && expired_retry_current.state == RebalanceOpportunityState::Stale
+        && expired_retry_current.terminal_reason.as_deref() == Some("optimizer_epoch_expired")
+        && expired_retry_current.decision_id.is_none();
+
+    let fenced_advance_cluster = fixture.cluster("fenced_advance");
+    let fenced_advance_epoch = fixture.seed_epoch(&fenced_advance_cluster).await?;
+    let fenced_advance_seed = fixture
+        .seed_opportunity(
+            &fenced_advance_cluster,
+            fenced_advance_epoch,
+            "fenced-advance",
+            "ready",
+            930,
+        )
+        .await?;
+    let fenced_advance_lease = claim_one(
+        &fixture.client,
+        &fenced_advance_cluster,
+        "fenced-advance-owner",
+        RebalanceOpportunityClaimKind::Execute,
+    )
+    .await?;
+    let mut stale_fenced_advance_lease = fenced_advance_lease.clone();
+    stale_fenced_advance_lease.owner = "different-owner".to_owned();
+    stale_fenced_advance_lease.fencing_token = stale_fenced_advance_lease
+        .fencing_token
+        .checked_add(1)
+        .ok_or("fenced-advance token overflow")?;
+    let fenced_advance_outcome = fixture
+        .client
+        .advance_rebalance_opportunity(
+            fenced_advance_seed.id,
+            &stale_fenced_advance_lease,
+            RebalanceOpportunityAdvance {
+                next_state: RebalanceOpportunityState::Ready,
+                available_at: Some(Utc::now()),
+                decision_id: None,
+                reason: Some("synthetic stolen lease".to_owned()),
+                route_fingerprint: fenced_advance_lease.opportunity.route_fingerprint.clone(),
+                requirements_fingerprint: fenced_advance_lease
+                    .opportunity
+                    .requirements_fingerprint
+                    .clone(),
+                execution_plan: Some(fenced_advance_lease.opportunity.execution_plan.clone()),
+                provisioning_request_id: None,
+            },
+        )
+        .await?;
+    let fenced_advance_current = fixture
+        .client
+        .rebalance_opportunity(fenced_advance_seed.id)
+        .await?
+        .ok_or("fenced-advance opportunity disappeared")?;
+    let fenced_advance_classified = matches!(
+        fenced_advance_outcome,
+        RebalanceOpportunityAdvanceOutcome::Fenced
+    ) && fenced_advance_current.state
+        == RebalanceOpportunityState::Leased
+        && fenced_advance_current.lease_owner == fenced_advance_lease.opportunity.lease_owner
+        && fenced_advance_current.fencing_token == fenced_advance_lease.fencing_token;
 
     // A failed attempt is immutable audit evidence. Republish the exact same
     // economics only when the prior attempt is terminal and has a database-
@@ -8569,7 +8697,8 @@ async fn run_database_checks(
                 provisioning_request_id: None,
             },
         )
-        .await?;
+        .await?
+        .into_applied(retry_generation_first.id)?;
     let retry_generation_client_a = fixture.client.clone();
     let retry_generation_client_b = fixture.client.clone();
     let retry_generation_input_a = retry_generation_input.clone();
@@ -10267,7 +10396,8 @@ async fn run_database_checks(
                 provisioning_request_id: None,
             },
         )
-        .await?;
+        .await?
+        .into_applied(signed_route_published.id)?;
     fixture
         .seed_opportunity(
             &submission_cluster,
@@ -11756,6 +11886,31 @@ async fn run_database_checks(
                     "firstFence": retry_first.fencing_token,
                     "reclaimedFence": retry_reclaimed.fencing_token,
                     "unattachedConflictRowsAfterRetry": retry_conflicts_after_release,
+                }),
+            ),
+            subcheck(
+                "expired_effect_free_retry_advance_is_classified_without_reopening_stale_work",
+                expired_retry_advance_classified,
+                json!({
+                    "opportunityId": expired_retry_seed.id,
+                    "sweptRows": expired_retry_swept,
+                    "outcome": format!("{expired_retry_outcome:?}"),
+                    "durableState": expired_retry_current.state.as_str(),
+                    "terminalReason": expired_retry_current.terminal_reason,
+                    "decisionId": expired_retry_current.decision_id.map(|id| id.as_i64()),
+                }),
+            ),
+            subcheck(
+                "mismatched_live_lease_advance_is_fenced_without_mutation",
+                fenced_advance_classified,
+                json!({
+                    "opportunityId": fenced_advance_seed.id,
+                    "outcome": format!("{fenced_advance_outcome:?}"),
+                    "durableState": fenced_advance_current.state.as_str(),
+                    "durableOwner": fenced_advance_current.lease_owner,
+                    "durableFence": fenced_advance_current.fencing_token,
+                    "staleOwner": stale_fenced_advance_lease.owner,
+                    "staleFence": stale_fenced_advance_lease.fencing_token,
                 }),
             ),
             subcheck(
