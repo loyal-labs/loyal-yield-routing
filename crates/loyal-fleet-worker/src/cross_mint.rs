@@ -37,6 +37,7 @@ const CROSS_MINT_MAX_VALUE_LOSS_BPS_ENV: &str = "EARN_ROUTER_CROSS_MINT_MAX_VALU
 const DEFAULT_JUPITER_BUILD_URL: &str = "https://api.jup.ag/swap/v2/build";
 const DEFAULT_MAX_SLIPPAGE_BPS: u16 = 50;
 const DEFAULT_MAX_VALUE_LOSS_BPS: u16 = 50;
+const DEFAULT_MINIMUM_TRANSACTION_FEE_LAMPORTS: i64 = 5_000;
 
 #[derive(Clone, Debug)]
 pub(super) struct CrossMintWorkerConfig {
@@ -357,6 +358,20 @@ fn manual_intervention_evidence(
         ));
     }
     let detail = error.to_string();
+    if detail.contains("cross-mint leg fees exceed the movement's immutable total fee cap") {
+        return Some((
+            "the immutable movement fee cap cannot fund another safe leg".to_owned(),
+            json!({
+                "kind": "immutable_fee_cap_exhausted",
+                "phase": format!("{:?}", movement.phase),
+                "custodyMint": movement.custody_mint,
+                "custodyAccount": movement.custody_account,
+                "attributedAmountRaw": movement.custody_amount_raw.to_string(),
+                "commitment": "finalized",
+                "safeResponse": "leave funds in the vault-owned custody account and require operator-approved recovery",
+            }),
+        ));
+    }
     let kind = if detail.contains("vault is no longer active")
         || detail.contains("policy no longer authorizes")
     {
@@ -638,7 +653,31 @@ pub(super) async fn process_continuation_before_new_work(
                 .into()),
             }
         }
-        Err(error) => Err(error),
+        Err(error) => {
+            let Some((reason, evidence)) =
+                manual_intervention_evidence(&cancellation_lease.movement, error.as_ref())
+            else {
+                return Err(error);
+            };
+            let rpc =
+                RpcClient::new_with_commitment(runtime.rpc.url(), CommitmentConfig::finalized());
+            let observed_slot = i64::try_from(rpc.get_slot()?)?;
+            let closed = runtime
+                .client
+                .close_cross_mint_movement(
+                    &cancellation_lease,
+                    CrossMintMovementCloseInput {
+                        outcome: CrossMintTerminalOutcome::ManualIntervention,
+                        observed_slot,
+                        reason,
+                        evidence,
+                    },
+                )
+                .await?;
+            Ok(CrossMintWorkResult::ClosedForManualIntervention {
+                decision_id: closed.decision_id.as_i64(),
+            })
+        }
     }
 }
 
@@ -1718,6 +1757,52 @@ fn cross_mint_requirements_fingerprint(
     ]))
 }
 
+async fn remaining_cross_mint_leg_fee_cap(
+    runtime: &SameMintRouteRuntime,
+    opportunity: &RebalanceOpportunityRecord,
+    leg: CrossMintMovementLeg,
+    purpose: CrossMintLegPurpose,
+) -> Result<i64, Box<dyn Error>> {
+    let spent: i64 = loyal_yield_orchestrator::sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(sum(compiled_fee_lamports), 0)::BIGINT
+        FROM loyal_yield.signed_route_submissions
+        WHERE opportunity_id = $1
+          AND decision_id IS NOT NULL
+        "#,
+    )
+    .bind(opportunity.id)
+    .fetch_one(&runtime.pool)
+    .await?;
+    let minimum_transaction_fee = opportunity
+        .execution_plan
+        .get("minimum_transaction_fee_lamports")
+        .and_then(Value::as_i64)
+        .unwrap_or(DEFAULT_MINIMUM_TRANSACTION_FEE_LAMPORTS);
+    if minimum_transaction_fee <= 0 {
+        return Err("cross-mint minimum transaction fee is invalid".into());
+    }
+    let future_leg_count = match (leg, purpose) {
+        (CrossMintMovementLeg::Withdraw, CrossMintLegPurpose::OptimizeYield) => 2,
+        (CrossMintMovementLeg::Swap, CrossMintLegPurpose::OptimizeYield) => 1,
+        (CrossMintMovementLeg::Deposit, _)
+        | (CrossMintMovementLeg::Swap, _)
+        | (CrossMintMovementLeg::Withdraw, _) => 0,
+    };
+    let reserved_for_future = minimum_transaction_fee
+        .checked_mul(future_leg_count)
+        .ok_or("cross-mint future-leg fee reservation overflowed")?;
+    let available = opportunity
+        .estimated_cost_lamports
+        .checked_sub(spent)
+        .and_then(|remaining| remaining.checked_sub(reserved_for_future))
+        .ok_or("cross-mint leg fees exceed the movement's immutable total fee cap")?;
+    if available < minimum_transaction_fee {
+        return Err("cross-mint leg fees exceed the movement's immutable total fee cap".into());
+    }
+    Ok(available)
+}
+
 // The transaction-building functions below are kept separate by leg. They
 // share compilation helpers but never compose more than one protected value
 // movement into a Solana transaction.
@@ -1900,7 +1985,9 @@ async fn prepare_kamino_leg(
         &lookup_table_requirements,
         &[vault_ata],
     )?;
-    let options = cross_mint_cli_options(opportunity, &vault, runtime.rpc.url());
+    let mut options = cross_mint_cli_options(opportunity, &vault, runtime.rpc.url());
+    options.current_economic_fee_cap_lamports =
+        Some(remaining_cross_mint_leg_fee_cap(runtime, opportunity, leg, purpose).await?);
     let signers: [&dyn Signer; 1] = [&signer];
     let phase = prepare_route_lookup_table_phase(
         &runtime.client,
@@ -2286,9 +2373,18 @@ async fn prepare_jupiter_swap_leg(
         &lookup_table_requirements,
         &vault_token_accounts,
     )?;
-    let options = cross_mint_cli_options(opportunity, &vault, runtime.rpc.url());
+    let mut options = cross_mint_cli_options(opportunity, &vault, runtime.rpc.url());
+    options.current_economic_fee_cap_lamports = Some(
+        remaining_cross_mint_leg_fee_cap(
+            runtime,
+            opportunity,
+            CrossMintMovementLeg::Swap,
+            CrossMintLegPurpose::OptimizeYield,
+        )
+        .await?,
+    );
     let signers: [&dyn Signer; 1] = [&signer];
-    let phase = prepare_route_lookup_table_phase(
+    let phase = prepare_route_lookup_table_phase_with_external(
         &runtime.client,
         &rpc,
         &options,
@@ -2301,7 +2397,7 @@ async fn prepare_jupiter_swap_leg(
         instructions,
         manifest,
         &signers,
-        false,
+        &validated.lookup_tables,
     )
     .await?;
     let RouteLookupTablePhase {
@@ -2329,7 +2425,7 @@ async fn prepare_jupiter_swap_leg(
     if !lookup_table_failures.is_empty() {
         return Err("cross-mint swap lookup tables changed after resolution".into());
     }
-    let preflight_lookup_tables = selected_tables
+    let mut preflight_lookup_tables = selected_tables
         .iter()
         .map(|table| {
             lookup_tables_by_id
@@ -2337,6 +2433,14 @@ async fn prepare_jupiter_swap_leg(
                 .ok_or_else(|| format!("verified lookup table {} is missing", table.table_id))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    for table in &validated.lookup_tables {
+        if !preflight_lookup_tables
+            .iter()
+            .any(|existing| existing.key == table.key)
+        {
+            preflight_lookup_tables.push(table.clone());
+        }
+    }
     let alt_mutation_epochs = cross_mint_alt_mutation_epochs(&resolution)?;
     // Last finalized custody read before accepting the exact resolver-signed
     // transaction for durable publication.

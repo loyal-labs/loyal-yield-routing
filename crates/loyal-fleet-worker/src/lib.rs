@@ -11730,13 +11730,17 @@ fn live_idle_vault_balance_sync_conflict(
             balance.observed_slot, preview.observed_slot
         ));
     }
-    if balance.source_commitment != "confirmed" {
+    if !idle_source_commitment_is_at_least_confirmed(&balance.source_commitment) {
         return Some(format!(
-            "DB returned idle source commitment {}, expected confirmed",
+            "DB returned idle source commitment {}, expected confirmed or finalized",
             balance.source_commitment
         ));
     }
     None
+}
+
+fn idle_source_commitment_is_at_least_confirmed(source_commitment: &str) -> bool {
+    matches!(source_commitment, "confirmed" | "finalized")
 }
 
 fn idle_vault_deposit_request_json(
@@ -13429,6 +13433,7 @@ async fn resolve_and_compile_reusable_lookup_table_bundle(
     blockhash: Hash,
     signers: &[&dyn Signer],
     fee_budget: Option<TransactionFeeBudget>,
+    external_lookup_table_accounts: &[AddressLookupTableAccount],
 ) -> Result<CompiledLookupTableBundle, Box<dyn Error>> {
     let reusable_resolution = client
         .resolve_reusable_lookup_table_bundle(
@@ -13462,6 +13467,7 @@ async fn resolve_and_compile_reusable_lookup_table_bundle(
         blockhash,
         signers,
         fee_budget,
+        external_lookup_table_accounts,
     );
     reusable
         .verification_failures
@@ -13544,20 +13550,71 @@ async fn resolve_route_lookup_tables(
     manifest: &LookupTableManifest,
     signers: &[&dyn Signer],
 ) -> Result<RuntimeLookupTableResolution, Box<dyn Error>> {
+    resolve_route_lookup_tables_with_external(
+        client,
+        rpc,
+        options,
+        vault,
+        source_reserve,
+        target_reserve,
+        route_kind,
+        scope,
+        fee_payer,
+        instructions,
+        manifest,
+        signers,
+        &[],
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn resolve_route_lookup_tables_with_external(
+    client: &NeonSqlClient,
+    rpc: &RpcClient,
+    options: &CliOptions,
+    vault: &SelectedVault,
+    source_reserve: &str,
+    target_reserve: &str,
+    route_kind: &str,
+    scope: &str,
+    fee_payer: Pubkey,
+    instructions: &[Instruction],
+    manifest: &LookupTableManifest,
+    signers: &[&dyn Signer],
+    external_lookup_table_accounts: &[AddressLookupTableAccount],
+) -> Result<RuntimeLookupTableResolution, Box<dyn Error>> {
     guard_lookup_table_mutations(instructions, "route lookup-table resolution")?;
     manifest.validate_against_instructions(fee_payer, instructions)?;
 
     let observed_slot_u64 = rpc.get_slot()?;
     let observed_slot = i64::try_from(observed_slot_u64)?;
+    let external_addresses = external_lookup_table_accounts
+        .iter()
+        .flat_map(|table| table.addresses.iter().map(ToString::to_string))
+        .collect::<BTreeSet<_>>();
     let required_addresses = manifest
         .lookup_eligible_addresses()
         .into_iter()
         .map(|address| address.to_string())
+        .filter(|address| !external_addresses.contains(address))
         .collect::<BTreeSet<_>>();
     let writable_account_keys = exact_writable_account_keys(fee_payer, instructions);
     let conflict_account_keys = semantic_route_conflict_keys(vault);
     let fee_budget = fleet_transaction_fee_budget(rpc, options, &writable_account_keys)?;
-    let requirements_fingerprint = control_plane_lookup_table_manifest_hash(manifest);
+    let manifest_fingerprint = control_plane_lookup_table_manifest_hash(manifest);
+    let requirements_fingerprint = if external_lookup_table_accounts.is_empty() {
+        manifest_fingerprint
+    } else {
+        let mut parts = vec![manifest_fingerprint];
+        let mut tables = external_lookup_table_accounts.iter().collect::<Vec<_>>();
+        tables.sort_by_key(|table| table.key);
+        for table in tables {
+            parts.push(table.key.to_string());
+            parts.extend(table.addresses.iter().map(ToString::to_string));
+        }
+        stable_fingerprint_owned(&parts)
+    };
     let route_fingerprint = stable_fingerprint(&[
         route_kind,
         &options.cluster,
@@ -13568,11 +13625,12 @@ async fn resolve_route_lookup_tables(
     let rollout = client
         .effective_lookup_table_rollout(&options.cluster, vault.id)
         .await?;
+    let shared_catalog_requirements = shared_market_manifest_addresses(manifest)
+        .into_iter()
+        .filter(|address| !external_addresses.contains(&address.address))
+        .collect::<Vec<_>>();
     let shared_catalog_validation = client
-        .validate_shared_market_catalog_route(
-            &options.cluster,
-            shared_market_manifest_addresses(manifest),
-        )
+        .validate_shared_market_catalog_route(&options.cluster, shared_catalog_requirements)
         .await?;
     let shared_catalog_covered =
         shared_catalog_validation.state == SharedMarketCatalogRouteValidationState::Covered;
@@ -13598,6 +13656,7 @@ async fn resolve_route_lookup_tables(
             blockhash,
             signers,
             fee_budget,
+            external_lookup_table_accounts,
         )
         .await
         {
@@ -13744,6 +13803,13 @@ async fn resolve_route_lookup_tables(
         "reusable": reusable_evidence,
         "sharedMarketCatalog": shared_market_catalog_validation_json(&shared_catalog_validation),
         "typedManifest": lookup_table_manifest_json(manifest),
+        "externalLookupTables": external_lookup_table_accounts.iter().map(|table| json!({
+            "tableAddress": table.key.to_string(),
+            "addressCount": table.addresses.len(),
+            "orderedAddressHash": ordered_lookup_table_address_hash(
+                &table.addresses.iter().map(ToString::to_string).collect::<Vec<_>>()
+            ),
+        })).collect::<Vec<_>>(),
     });
     Ok(RuntimeLookupTableResolution {
         rollout,
@@ -14380,11 +14446,20 @@ fn compile_lookup_table_bundle(
     blockhash: Hash,
     signers: &[&dyn Signer],
     fee_budget: Option<TransactionFeeBudget>,
+    external_lookup_table_accounts: &[AddressLookupTableAccount],
 ) -> CompiledLookupTableBundle {
     let mut lookup_table_accounts = tables
         .iter()
         .filter_map(|table| account_by_table_id.get(&table.table_id).cloned())
         .collect::<Vec<_>>();
+    for external in external_lookup_table_accounts {
+        if !lookup_table_accounts
+            .iter()
+            .any(|existing| existing.key == external.key)
+        {
+            lookup_table_accounts.push(external.clone());
+        }
+    }
     let mut transaction = None;
     let mut transaction_packet = None;
     let mut simulation_units_consumed = None;
@@ -14856,6 +14931,65 @@ async fn prepare_route_lookup_table_phase(
         &resolution,
         acquire_route_lease,
         true,
+    )
+    .await?;
+    Ok(RouteLookupTablePhase {
+        route_kind,
+        scope,
+        source_reserve: source_reserve.to_owned(),
+        target_reserve: target_reserve.to_owned(),
+        instructions,
+        manifest,
+        resolution,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepare_route_lookup_table_phase_with_external(
+    client: &NeonSqlClient,
+    rpc: &RpcClient,
+    options: &CliOptions,
+    vault: &SelectedVault,
+    source_reserve: &str,
+    target_reserve: &str,
+    route_kind: &'static str,
+    scope: String,
+    fee_payer: Pubkey,
+    instructions: Vec<Instruction>,
+    manifest: LookupTableManifest,
+    signers: &[&dyn Signer],
+    external_lookup_table_accounts: &[AddressLookupTableAccount],
+) -> Result<RouteLookupTablePhase, Box<dyn Error>> {
+    let resolution = resolve_route_lookup_tables_with_external(
+        client,
+        rpc,
+        options,
+        vault,
+        source_reserve,
+        target_reserve,
+        route_kind,
+        &scope,
+        fee_payer,
+        &instructions,
+        &manifest,
+        signers,
+        external_lookup_table_accounts,
+    )
+    .await?;
+    // Jupiter's finalized, validated ALTs are route inputs, not Loyal catalog
+    // demand. A missing Loyal vault table is recovered by the ordinary
+    // Kamino leg path; never enqueue Jupiter venue accounts for provisioning.
+    persist_route_lookup_table_resolution(
+        client,
+        options,
+        vault,
+        source_reserve,
+        target_reserve,
+        route_kind,
+        &manifest,
+        &resolution,
+        false,
+        false,
     )
     .await?;
     Ok(RouteLookupTablePhase {
@@ -21999,6 +22133,13 @@ mod tests {
             IdleVaultDepositBlocker::source_stale("source snapshot changed"),
             IdleVaultDepositBlocker::safety("unrelated safety blocker"),
         ]));
+    }
+
+    #[test]
+    fn finalized_idle_observation_satisfies_confirmed_source_fence() {
+        assert!(idle_source_commitment_is_at_least_confirmed("confirmed"));
+        assert!(idle_source_commitment_is_at_least_confirmed("finalized"));
+        assert!(!idle_source_commitment_is_at_least_confirmed("processed"));
     }
 
     #[test]

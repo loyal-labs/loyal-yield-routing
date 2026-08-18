@@ -43,6 +43,14 @@ const DEFAULT_ESTIMATED_COST_USD_MICROS: i64 = 100_000;
 const CROSS_MINT_JUPITER_ENABLED_ENV: &str = "EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER";
 const CROSS_MINT_MAXIMUM_VALUE_LOSS_BPS_ENV: &str = "EARN_ROUTER_CROSS_MINT_MAX_VALUE_LOSS_BPS";
 const DEFAULT_CROSS_MINT_MAXIMUM_VALUE_LOSS_BPS: u16 = 50;
+const CROSS_MINT_LOGICAL_LEG_COUNT: i64 = 3;
+
+fn cross_mint_fee_envelope_is_covered(fee_cap_lamports: i64, fee_policy: RouteFeePolicy) -> bool {
+    fee_policy
+        .minimum_cap_lamports
+        .checked_mul(CROSS_MINT_LOGICAL_LEG_COUNT)
+        .is_some_and(|minimum| fee_cap_lamports >= minimum)
+}
 const PLANNER_MAXIMUM_CYCLE_BACKOFF_SECONDS: u64 = 30;
 const PLANNER_RECOVERY_VERIFICATION_CYCLES: usize = 10_000;
 const PRIORITY_VERSION: &str = "lost-yield-service-net-reserve-capacity-v3";
@@ -491,6 +499,7 @@ fn opportunity_execution_plan(
         "fee_cap_lamports": fee_cap_lamports,
         "fee_tier": fee_tier,
         "fee_gain_fraction_ppm": fee_policy.maximum_fraction_of_net_gain_ppm,
+        "minimum_transaction_fee_lamports": fee_policy.minimum_cap_lamports,
         "conservative_sol_price_usd_micros": fee_policy.conservative_sol_price_usd_micros,
         "source_observed_at": observed.source_observed_at,
         "source_observed_slot": observed.source_observed_slot,
@@ -1031,6 +1040,18 @@ async fn run_live_once(
                     continue;
                 }
             };
+        if matches!(
+            observed.route_kind,
+            loyal_yield_orchestrator::fleet_orchestration::CandidateRouteKind::CrossMintJupiter
+        ) && !cross_mint_fee_envelope_is_covered(fee_budget.cap_lamports, fee_policy)
+        {
+            // A cross-mint movement may consume three separately finalized
+            // transactions. The economic cap is immutable after publication,
+            // so work that cannot fund all three base-fee floors must remain
+            // ineligible instead of stranding custody after withdrawal.
+            fee_budget_rejected_count += 1;
+            continue;
+        }
         queued_notional_usd_micros = queued_notional_usd_micros
             .saturating_add(i128::from(observed.economics.notional_usd_micros));
         queued_lost_yield_usd_micros_per_hour = queued_lost_yield_usd_micros_per_hour
@@ -1853,6 +1874,24 @@ fn log_planner_wakeup_event(event: &DurablePgWakeupEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cross_mint_requires_three_base_fee_legs_inside_the_economic_cap() {
+        let policy = RouteFeePolicy::default();
+        let underfunded = route_fee_budget(105_912, policy).unwrap();
+        assert_eq!(underfunded.cap_lamports, 5_295);
+        assert!(!cross_mint_fee_envelope_is_covered(
+            underfunded.cap_lamports,
+            policy
+        ));
+
+        let funded = route_fee_budget(300_000, policy).unwrap();
+        assert_eq!(funded.cap_lamports, 15_000);
+        assert!(cross_mint_fee_envelope_is_covered(
+            funded.cap_lamports,
+            policy
+        ));
+    }
     use loyal_yield_orchestrator::fleet_orchestration::{
         CandidateExecutionCosts, CandidateRouteKind, ObservedEarnPolicyEvidence, OpportunityInput,
     };
