@@ -1,6 +1,9 @@
 use chrono::{DateTime, Utc};
 use klend_interface::{FARMS_PROGRAM_ID, KLEND_PROGRAM_ID};
-use loyal_actions::{SharedMarketRole, ASSOCIATED_TOKEN_PROGRAM_ID};
+use loyal_actions::{
+    jupiter::JUPITER_EVENT_AUTHORITY, SharedMarketRole, ASSOCIATED_TOKEN_PROGRAM_ID,
+    JUPITER_V6_PROGRAM_ID,
+};
 pub use loyal_kamino_codec::{
     decode_kamino_reserve_account, validate_supported_reserve, KaminoReserveCatalogAccount,
     SharedMarketCatalogError,
@@ -192,6 +195,8 @@ pub fn derive_shared_market_catalog(
     for infrastructure in [
         KLEND_PROGRAM_ID,
         FARMS_PROGRAM_ID,
+        JUPITER_V6_PROGRAM_ID,
+        JUPITER_EVENT_AUTHORITY,
         // The outer route and Kamino collateral instructions always use the
         // classic token program, even when a reserve's liquidity mint uses
         // Token-2022.
@@ -387,6 +392,13 @@ mod tests {
                 && row.account_role == SharedMarketRole::Market.as_str()
                 && !row.is_writable
         }));
+        for jupiter_address in [JUPITER_V6_PROGRAM_ID, JUPITER_EVENT_AUTHORITY] {
+            assert!(forward.addresses.iter().any(|row| {
+                row.address == jupiter_address.to_string()
+                    && row.account_role == SharedMarketRole::Infrastructure.as_str()
+                    && !row.is_writable
+            }));
+        }
         assert_eq!(forward.desired_set_hash.len(), 64);
         assert_eq!(forward.ordered_address_hash.len(), 64);
         assert_eq!(forward.reserve_set_hash.len(), 64);

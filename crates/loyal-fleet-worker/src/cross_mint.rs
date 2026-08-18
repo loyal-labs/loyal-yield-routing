@@ -2338,39 +2338,20 @@ async fn prepare_jupiter_swap_leg(
         validated.swap_instruction.clone(),
         swap_constraint_index,
     );
-    let mut lookup_table_requirements = YieldRouteLookupTableRequirements::default();
-    lookup_table_requirements.add_policy(lane.action_account);
-    for mint in std::iter::once(input_mint)
-        .chain(std::iter::once(output_mint))
-        .chain(intermediate_mints.iter().copied())
-    {
-        lookup_table_requirements.add_shared_liquidity_mint(mint);
-    }
-    let mut vault_token_accounts = vec![input_ata, output_ata];
-    vault_token_accounts.extend(additional_token_account_addresses);
-    let vault_token_account_set = vault_token_accounts
-        .iter()
-        .copied()
-        .collect::<BTreeSet<_>>();
     let route_mints = std::iter::once(input_mint)
         .chain(std::iter::once(output_mint))
         .chain(intermediate_mints.iter().copied())
-        .collect::<BTreeSet<_>>();
-    for account in &validated.swap_instruction.accounts {
-        if account.pubkey != vault_pubkey
-            && !vault_token_account_set.contains(&account.pubkey)
-            && !route_mints.contains(&account.pubkey)
-        {
-            lookup_table_requirements.add_infrastructure(account.pubkey);
-        }
-    }
-    lookup_table_requirements.add_infrastructure(validated.swap_instruction.program_id);
+        .collect::<Vec<_>>();
+    let mut vault_token_accounts = vec![input_ata, output_ata];
+    vault_token_accounts.extend(additional_token_account_addresses);
     let instructions = vec![swap_outer];
-    let manifest = route_lookup_table_manifest(
+    let manifest = jupiter_swap_lookup_table_manifest(
         fee_payer,
-        &instructions,
         &vault,
-        &lookup_table_requirements,
+        lane.action_account,
+        &instructions[0],
+        &validated.swap_instruction,
+        &route_mints,
         &vault_token_accounts,
     )?;
     let mut options = cross_mint_cli_options(opportunity, &vault, runtime.rpc.url());
@@ -2499,6 +2480,44 @@ async fn prepare_jupiter_swap_leg(
         alt_binding_id: resolution.active_binding_id,
         alt_table_ids: selected_tables.iter().map(|table| table.table_id).collect(),
     })
+}
+
+fn jupiter_swap_lookup_table_manifest(
+    fee_payer: Pubkey,
+    vault: &SelectedVault,
+    swap_policy_account: Pubkey,
+    wrapped_swap: &Instruction,
+    swap_instruction: &Instruction,
+    route_mints: &[Pubkey],
+    vault_token_accounts: &[Pubkey],
+) -> Result<LookupTableManifest, Box<dyn Error>> {
+    let route_mint_set = route_mints.iter().copied().collect::<BTreeSet<_>>();
+    let vault_token_account_set = vault_token_accounts
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let vault_pubkey = Pubkey::from_str(&vault.vault_pubkey)?;
+    let mut requirements = YieldRouteLookupTableRequirements::default();
+    requirements.add_policy(swap_policy_account);
+    for mint in route_mints {
+        requirements.add_shared_liquidity_mint(*mint);
+    }
+    for account in &swap_instruction.accounts {
+        if account.pubkey != vault_pubkey
+            && !vault_token_account_set.contains(&account.pubkey)
+            && !route_mint_set.contains(&account.pubkey)
+        {
+            requirements.add_infrastructure(account.pubkey);
+        }
+    }
+    requirements.add_infrastructure(swap_instruction.program_id);
+    route_lookup_table_manifest(
+        fee_payer,
+        std::slice::from_ref(wrapped_swap),
+        vault,
+        &requirements,
+        vault_token_accounts,
+    )
 }
 
 fn validate_signed_minimum_output_value_loss(
@@ -2850,6 +2869,11 @@ async fn certify_cross_mint_before_withdraw(
         output_mint,
         minimum_policy_slot,
     )?;
+    let additional_token_account_addresses = additional_token_accounts
+        .iter()
+        .map(|account| account.address)
+        .collect::<Vec<_>>();
+    let intermediate_mints = jupiter_intermediate_route_mints(&envelope, input_mint, output_mint)?;
     let expected = JupiterExactInBuildExpectation {
         authority: vault_pubkey,
         input_mint: JupiterMintSnapshot {
@@ -2916,6 +2940,46 @@ async fn certify_cross_mint_before_withdraw(
         validated.swap_instruction.clone(),
         swap_constraint_index,
     );
+    let route_mints = std::iter::once(input_mint)
+        .chain(std::iter::once(output_mint))
+        .chain(intermediate_mints)
+        .collect::<Vec<_>>();
+    let vault_token_accounts = std::iter::once(input_ata)
+        .chain(std::iter::once(output_ata))
+        .chain(additional_token_account_addresses)
+        .collect::<Vec<_>>();
+    let swap_manifest = jupiter_swap_lookup_table_manifest(
+        signer.pubkey(),
+        &vault,
+        swap_policy_account,
+        &wrapped,
+        &validated.swap_instruction,
+        &route_mints,
+        &vault_token_accounts,
+    )?;
+    let external_addresses = validated
+        .lookup_tables
+        .iter()
+        .flat_map(|table| table.addresses.iter().map(ToString::to_string))
+        .collect::<BTreeSet<_>>();
+    let durable_shared_addresses = durable_lookup_table_manifest_addresses(
+        shared_market_manifest_addresses(&swap_manifest),
+        &external_addresses,
+    );
+    let shared_catalog = runtime
+        .client
+        .validate_shared_market_catalog_route(&opportunity.cluster, durable_shared_addresses)
+        .await?;
+    if shared_catalog.state != SharedMarketCatalogRouteValidationState::Covered {
+        return Err(format!(
+            "pre-withdraw Jupiter route is outside the active shared catalog: missing={:?}, semanticMismatch={:?}, activeMissing={}, activeExtra={}",
+            shared_catalog.route_missing_addresses,
+            shared_catalog.semantic_mismatch_addresses,
+            shared_catalog.active_missing_addresses.len(),
+            shared_catalog.active_extra_addresses.len(),
+        )
+        .into());
+    }
     let mut instructions = vec![
         ComputeBudgetInstruction::set_compute_unit_limit(compute_limit),
         ComputeBudgetInstruction::set_compute_unit_price(
