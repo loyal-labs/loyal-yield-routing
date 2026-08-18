@@ -9567,6 +9567,51 @@ async fn run_database_checks(
         )
         .await?;
 
+    let stale_rediscovery_cluster = fixture.cluster("stale_rediscovery");
+    let stale_rediscovery_epoch = fixture.seed_epoch(&stale_rediscovery_cluster).await?;
+    let stale_rediscovery_fixture = fixture
+        .seed_opportunity(
+            &stale_rediscovery_cluster,
+            stale_rediscovery_epoch,
+            "stale-rediscovery",
+            "ready",
+            901,
+        )
+        .await?;
+    let stale_rediscovery_fixture_record = fixture
+        .client
+        .rebalance_opportunity(stale_rediscovery_fixture.id)
+        .await?
+        .ok_or("stale rediscovery fixture disappeared")?;
+    let stale_retry_seed = fixture
+        .client
+        .upsert_rebalance_opportunity(rediscovery_input_for_opportunity(
+            &stale_rediscovery_fixture_record,
+        ))
+        .await?;
+    sqlx::query(
+        r#"
+        UPDATE loyal_yield.rebalance_opportunities
+        SET opportunity_state = 'stale',
+            terminal_reason = 'optimizer_epoch_expired',
+            updated_at = clock_timestamp()
+        WHERE id = $1
+        "#,
+    )
+    .bind(stale_retry_seed.id)
+    .execute(fixture.client.pool())
+    .await?;
+    let stale_rediscovered = fixture
+        .client
+        .upsert_rebalance_opportunity(rediscovery_input_for_opportunity(&stale_retry_seed))
+        .await?;
+    let stale_attempt_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM loyal_yield.rebalance_opportunities WHERE rediscovery_key = $1",
+    )
+    .bind(&stale_retry_seed.rediscovery_key)
+    .fetch_one(fixture.client.pool())
+    .await?;
+
     let conflict_cluster = fixture.cluster("conflicts");
     let conflict_epoch = fixture.seed_epoch(&conflict_cluster).await?;
     for index in 0..66 {
@@ -12088,6 +12133,21 @@ async fn run_database_checks(
                     "sweptCount": swept_expired,
                     "state": swept_state,
                     "claimReturned": swept_claim.is_some(),
+                }),
+            ),
+            subcheck(
+                "stale_no_effect_opportunity_is_republished_as_a_fresh_attempt",
+                stale_rediscovered.id != stale_retry_seed.id
+                    && stale_rediscovered.attempt_generation
+                        == stale_retry_seed.attempt_generation + 1
+                    && stale_rediscovered.state == RebalanceOpportunityState::Revalidate
+                    && stale_attempt_count == 2,
+                json!({
+                    "staleOpportunityId": stale_retry_seed.id,
+                    "rediscoveredOpportunityId": stale_rediscovered.id,
+                    "rediscoveredAttemptGeneration": stale_rediscovered.attempt_generation,
+                    "rediscoveredState": stale_rediscovered.state.as_str(),
+                    "attemptCount": stale_attempt_count,
                 }),
             ),
             subcheck(

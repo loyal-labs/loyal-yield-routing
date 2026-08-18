@@ -1514,7 +1514,7 @@ impl NeonSqlClient {
 
             let terminal_no_effect_proved: bool = sqlx::query_scalar(
                 r#"
-                SELECT opportunity.opportunity_state = 'failed'
+                SELECT opportunity.opportunity_state IN ('failed', 'stale')
                    AND NOT EXISTS (
                        SELECT 1
                        FROM loyal_yield.target_capacity_reservations reservation
