@@ -534,7 +534,8 @@ pub(super) async fn revalidate_cross_mint_opportunity(
                 provisioning_request_id: None,
             },
         )
-        .await?;
+        .await?
+        .into_applied(lease.opportunity.id)?;
     Ok(())
 }
 

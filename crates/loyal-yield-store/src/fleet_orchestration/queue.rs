@@ -270,6 +270,30 @@ pub struct RebalanceOpportunityAdvance {
     pub provisioning_request_id: Option<i64>,
 }
 
+#[derive(Debug, Clone)]
+pub enum RebalanceOpportunityAdvanceOutcome {
+    Applied(Box<RebalanceOpportunityRecord>),
+    Expired,
+    Fenced,
+}
+
+impl RebalanceOpportunityAdvanceOutcome {
+    pub fn into_applied(
+        self,
+        opportunity_id: i64,
+    ) -> Result<RebalanceOpportunityRecord, OrchestratorError> {
+        match self {
+            Self::Applied(opportunity) => Ok(*opportunity),
+            Self::Expired => Err(OrchestratorError::StoreInvariant(format!(
+                "rebalance opportunity {opportunity_id} expired while advancing"
+            ))),
+            Self::Fenced => Err(OrchestratorError::StoreInvariant(format!(
+                "rebalance opportunity {opportunity_id} lost fencing while advancing"
+            ))),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestrationOutboxRecord {
     pub id: i64,
@@ -5397,7 +5421,7 @@ impl NeonSqlClient {
         opportunity_id: i64,
         lease: &RebalanceOpportunityLease,
         advance: RebalanceOpportunityAdvance,
-    ) -> Result<RebalanceOpportunityRecord, OrchestratorError> {
+    ) -> Result<RebalanceOpportunityAdvanceOutcome, OrchestratorError> {
         validate_opportunity_advance(lease.claim_kind, &advance)?;
         let release_unattached_conflicts = lease.claim_kind
             == RebalanceOpportunityClaimKind::Execute
@@ -5442,25 +5466,62 @@ impl NeonSqlClient {
         }
         let current = sqlx::query(
             r#"
-            SELECT * FROM loyal_yield.rebalance_opportunities
-            WHERE id = $1 AND opportunity_state = 'leased'
-              AND lease_kind = $2 AND lease_owner = $3 AND fencing_token = $4
-              AND lease_expires_at > now()
-            FOR UPDATE
+            SELECT opportunity.*,
+                   clock_timestamp() AS advance_database_now,
+                   EXISTS (
+                       SELECT 1
+                       FROM loyal_yield.signed_route_submissions submission
+                       WHERE submission.opportunity_id = opportunity.id
+                         AND submission.submission_state NOT IN (
+                             'reconciled', 'expired', 'failed'
+                         )
+                   ) AS has_active_signed_route
+            FROM loyal_yield.rebalance_opportunities opportunity
+            WHERE opportunity.id = $1
+            FOR UPDATE OF opportunity
             "#,
         )
         .bind(opportunity_id)
-        .bind(lease.claim_kind.as_str())
-        .bind(&lease.owner)
-        .bind(lease.fencing_token)
         .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| {
-            OrchestratorError::StoreInvariant(format!(
-                "rebalance opportunity {opportunity_id} lease is stale, expired, or fenced"
-            ))
-        })?;
+        .await?;
+        let Some(current) = current else {
+            tx.commit().await?;
+            return Ok(RebalanceOpportunityAdvanceOutcome::Fenced);
+        };
+        let advance_database_now = current.try_get::<DateTime<Utc>, _>("advance_database_now")?;
+        let has_active_signed_route = current.try_get::<bool, _>("has_active_signed_route")?;
         let current = rebalance_opportunity_from_row(&current)?;
+        let identity_matches = current.id == lease.opportunity.id
+            && current.cluster == lease.opportunity.cluster
+            && current.vault_id == lease.opportunity.vault_id
+            && current.optimizer_epoch_id == lease.opportunity.optimizer_epoch_id
+            && current.attempt_generation == lease.opportunity.attempt_generation
+            && current.route_fingerprint == lease.opportunity.route_fingerprint
+            && current.requirements_fingerprint == lease.opportunity.requirements_fingerprint;
+        let exact_live_lease = identity_matches
+            && current.state == RebalanceOpportunityState::Leased
+            && current.lease_kind == Some(lease.claim_kind)
+            && current.lease_owner.as_deref() == Some(lease.owner.as_str())
+            && current.fencing_token == lease.fencing_token;
+        let exact_lease_expired = exact_live_lease
+            && (current
+                .lease_expires_at
+                .is_none_or(|expires_at| expires_at <= advance_database_now)
+                || current.expires_at <= advance_database_now);
+        let swept_for_epoch_expiry = identity_matches
+            && current.state == RebalanceOpportunityState::Stale
+            && current.terminal_reason.as_deref() == Some("optimizer_epoch_expired")
+            && current.expires_at <= advance_database_now
+            && current.decision_id.is_none()
+            && !has_active_signed_route;
+        if exact_lease_expired || swept_for_epoch_expiry {
+            tx.commit().await?;
+            return Ok(RebalanceOpportunityAdvanceOutcome::Expired);
+        }
+        if !exact_live_lease {
+            tx.commit().await?;
+            return Ok(RebalanceOpportunityAdvanceOutcome::Fenced);
+        }
 
         let route_fingerprint = advance
             .route_fingerprint
@@ -5563,11 +5624,9 @@ impl NeonSqlClient {
             }
         }
 
-        let available_at = advance.available_at.unwrap_or_else(Utc::now);
+        let available_at = advance.available_at.unwrap_or(advance_database_now);
         if available_at >= current.expires_at {
-            return Err(OrchestratorError::StoreInvariant(
-                "rebalance opportunity retry cannot start at or after expiry".to_owned(),
-            ));
+            return Ok(RebalanceOpportunityAdvanceOutcome::Expired);
         }
         let row = sqlx::query(
             r#"
@@ -5601,12 +5660,10 @@ impl NeonSqlClient {
         .bind(advance.requirements_fingerprint)
         .bind(advance.execution_plan)
         .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| {
-            OrchestratorError::StoreInvariant(format!(
-                "rebalance opportunity {opportunity_id} lost fencing while advancing"
-            ))
-        })?;
+        .await?;
+        let Some(row) = row else {
+            return Ok(RebalanceOpportunityAdvanceOutcome::Fenced);
+        };
         let opportunity = rebalance_opportunity_from_row(&row)?;
         if release_unattached_conflicts {
             sqlx::query(
@@ -5625,7 +5682,9 @@ impl NeonSqlClient {
             .await?;
         }
         tx.commit().await?;
-        Ok(opportunity)
+        Ok(RebalanceOpportunityAdvanceOutcome::Applied(Box::new(
+            opportunity,
+        )))
     }
 }
 
@@ -6956,6 +7015,16 @@ fn require_exact_confirmation_defer_count(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advance_rebalance_opportunity_non_applied_outcomes_remain_errors_for_strict_callers() {
+        for outcome in [
+            RebalanceOpportunityAdvanceOutcome::Expired,
+            RebalanceOpportunityAdvanceOutcome::Fenced,
+        ] {
+            assert!(outcome.into_applied(17).is_err());
+        }
+    }
 
     #[test]
     fn exact_confirmation_defer_count_accepts_full_batch() {
