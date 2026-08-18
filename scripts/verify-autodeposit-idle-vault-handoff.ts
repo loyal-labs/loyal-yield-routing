@@ -244,6 +244,17 @@ async function main(): Promise<void> {
     "publication, execution evidence, claim, and slot share one SQL statement",
   );
   check(
+    "idle handoff JSON strings have explicit SQL types",
+    executor.includes(
+      "'status', ${AUTODEPOSIT_IDLE_HANDOFF_STATUS}::text",
+    ) &&
+      executor.includes("'idleVaultObservedAt', ${args.observedAt}::text") &&
+      executor.includes(
+        "'idleVaultSourceCommitment', ${DEFAULT_COMMITMENT}::text",
+      ),
+    "PostgreSQL can resolve every interpolated jsonb_build_object string",
+  );
+  check(
     "executor does not own a Kamino top-up",
     !executorMain.includes("runSameMintReserveTopUp({") &&
       !executorMain.includes('"kamino_top_up_failed"'),

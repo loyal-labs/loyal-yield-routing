@@ -2011,11 +2011,11 @@ async function publishConfirmedPullAndCompleteClaim(args: {
       SET
         decoded_evidence = COALESCE(decoded_evidence, '{}'::jsonb) ||
           jsonb_build_object(
-            'status', ${AUTODEPOSIT_IDLE_HANDOFF_STATUS},
+            'status', ${AUTODEPOSIT_IDLE_HANDOFF_STATUS}::text,
             'idleVaultAmountRaw', ${args.observedAmountRaw.toString()}::text,
             'idleVaultObservedSlot', ${args.observedSlot.toString()}::text,
-            'idleVaultObservedAt', ${args.observedAt},
-            'idleVaultSourceCommitment', ${DEFAULT_COMMITMENT}
+            'idleVaultObservedAt', ${args.observedAt}::text,
+            'idleVaultSourceCommitment', ${DEFAULT_COMMITMENT}::text
           ),
         decoded_at = now()
       WHERE id = ${args.executionId}
