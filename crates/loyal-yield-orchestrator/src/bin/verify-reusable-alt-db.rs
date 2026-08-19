@@ -73,6 +73,27 @@ async fn main() -> VerifyResult<()> {
         return Ok(());
     }
 
+    if env::var("ASK_2161_ALT_BINDING_VERIFY_ONLY").as_deref() == Ok("1") {
+        verify_atomic_binding_activation_fence(&client, &run).await?;
+        passed.push(
+            "binding activation defers stale observed slots and live leases without writes, retries at the required slot, and keeps malformed state fatal",
+        );
+        println!(
+            "{}",
+            json!({
+                "event": "ask_2161_alt_binding_activation_db_verifier",
+                "result": "PASS",
+                "databaseClass": "explicitly_isolated_disposable",
+                "checks": passed,
+                "externalRpcUsed": false,
+                "signerLoaded": false,
+                "productionActions": false,
+            })
+        );
+        pool.close().await;
+        return Ok(());
+    }
+
     verify_policy_authority_reuse_and_family_identity(&client, &run).await?;
     passed.push("policy authority reuse, authority/payer consistency, and family identity fencing");
 
@@ -2441,14 +2462,17 @@ async fn verify_nonempty_eventual_satisfaction_and_requeue(
             Utc::now() + Duration::hours(1),
         )
         .await?;
-    let active_binding = client
-        .flip_lookup_table_binding_head(
-            vault_binding.id,
-            observed_slot,
-            Utc::now() + Duration::hours(1),
-        )
-        .await?
-        .active;
+    let active_binding = require_binding_activation(
+        client
+            .flip_lookup_table_binding_head(
+                vault_binding.id,
+                observed_slot,
+                Utc::now() + Duration::hours(1),
+            )
+            .await?,
+        "eventual-satisfaction binding",
+    )?
+    .active;
 
     loyal_yield_orchestrator::sqlx::query(
         "UPDATE loyal_yield.lookup_table_provisioning_requests SET next_attempt_at = now() - interval '1 second' WHERE id = $1",
@@ -3015,14 +3039,17 @@ async fn verify_active_head_growth_and_relocation(
             predecessor_binding_id: None,
         })
         .await?;
-    let base_binding = client
-        .flip_lookup_table_binding_head(
-            base_binding.id,
-            observed_slot,
-            Utc::now() + Duration::hours(1),
-        )
-        .await?
-        .active;
+    let base_binding = require_binding_activation(
+        client
+            .flip_lookup_table_binding_head(
+                base_binding.id,
+                observed_slot,
+                Utc::now() + Duration::hours(1),
+            )
+            .await?,
+        "active-head growth base binding",
+    )?
+    .active;
 
     base_addresses.push(LookupTableManifestAddressRecord {
         address: unique_pubkey("growth-plus-one").to_string(),
@@ -3250,10 +3277,13 @@ async fn verify_canonical_vault_route_cohorts(
         }
     };
     materialize_binding_manifest(client, &binding_a, 70_001).await?;
-    let binding_a = client
-        .flip_lookup_table_binding_head(binding_a.id, 70_001, Utc::now() + Duration::hours(1))
-        .await?
-        .active;
+    let binding_a = require_binding_activation(
+        client
+            .flip_lookup_table_binding_head(binding_a.id, 70_001, Utc::now() + Duration::hours(1))
+            .await?,
+        "canonical cohort binding A",
+    )?
+    .active;
     loyal_yield_orchestrator::sqlx::query(
         "UPDATE loyal_yield.lookup_table_provisioning_requests SET request_status = 'satisfied', satisfied_at = now() WHERE id = $1",
     )
@@ -3357,10 +3387,13 @@ async fn verify_canonical_vault_route_cohorts(
         "relocated vault aggregate did not contain the complete A union B cohort",
     )?;
     materialize_binding_manifest(client, &binding_b, 70_003).await?;
-    let binding_b = client
-        .flip_lookup_table_binding_head(binding_b.id, 70_003, Utc::now() + Duration::hours(1))
-        .await?
-        .active;
+    let binding_b = require_binding_activation(
+        client
+            .flip_lookup_table_binding_head(binding_b.id, 70_003, Utc::now() + Duration::hours(1))
+            .await?,
+        "canonical cohort binding B",
+    )?
+    .active;
     loyal_yield_orchestrator::sqlx::query(
         "UPDATE loyal_yield.lookup_table_provisioning_requests SET request_status = 'satisfied', satisfied_at = now() WHERE id IN ($1, $2)",
     )
@@ -4734,12 +4767,58 @@ async fn verify_atomic_binding_activation_fence(
             121,
         )
         .await?;
+    let head_before_deferral: Vec<(i64, String, Option<i64>, Option<i64>, Option<i64>)> =
+        loyal_yield_orchestrator::sqlx::query_as(
+            r#"
+            SELECT id, lifecycle_state, active_from_slot, active_until_slot,
+                   predecessor_binding_id
+            FROM loyal_yield.lookup_table_vault_bindings
+            WHERE family_id = $1 AND vault_id = $2 AND binding_ordinal = $3
+            ORDER BY id
+            "#,
+        )
+        .bind(candidate.family_id)
+        .bind(candidate.vault_id.as_i64())
+        .bind(candidate.binding_ordinal)
+        .fetch_all(client.pool())
+        .await?;
+    let slot_deferral = client
+        .flip_lookup_table_binding_head(candidate.id, 120, Utc::now() + Duration::hours(1))
+        .await?;
     ensure(
-        client
-            .flip_lookup_table_binding_head(candidate.id, 120, Utc::now() + Duration::hours(1))
-            .await
-            .is_err(),
-        "binding activation ignored the ALT warmup slot",
+        matches!(
+            slot_deferral,
+            LookupTableBindingActivationOutcome::Deferred(
+                LookupTableBindingActivationDeferral::VerificationSlotAhead {
+                    binding_id,
+                    observed_slot: 120,
+                    required_slot: 121,
+                }
+            ) if binding_id == candidate.id
+        ),
+        "binding activation did not return the exact verification-slot deferral",
+    )?;
+    let head_after_deferral: Vec<(i64, String, Option<i64>, Option<i64>, Option<i64>)> =
+        loyal_yield_orchestrator::sqlx::query_as(
+            r#"
+            SELECT id, lifecycle_state, active_from_slot, active_until_slot,
+                   predecessor_binding_id
+            FROM loyal_yield.lookup_table_vault_bindings
+            WHERE family_id = $1 AND vault_id = $2 AND binding_ordinal = $3
+            ORDER BY id
+            "#,
+        )
+        .bind(candidate.family_id)
+        .bind(candidate.vault_id.as_i64())
+        .bind(candidate.binding_ordinal)
+        .fetch_all(client.pool())
+        .await?;
+    ensure(
+        head_after_deferral == head_before_deferral
+            && head_after_deferral.iter().any(|(id, lifecycle, ..)| {
+                *id == candidate.id && matches!(lifecycle.as_str(), "preparing" | "warming")
+            }),
+        "verification-slot deferral changed binding head state",
     )?;
     let pending = client
         .enqueue_lookup_table_operation(LookupTableOperationEnqueue {
@@ -4771,10 +4850,13 @@ async fn verify_atomic_binding_activation_fence(
     .bind(pending.id)
     .execute(client.pool())
     .await?;
-    let active = client
-        .flip_lookup_table_binding_head(candidate.id, 121, Utc::now() + Duration::hours(1))
-        .await?
-        .active;
+    let active = require_binding_activation(
+        client
+            .flip_lookup_table_binding_head(candidate.id, 121, Utc::now() + Duration::hours(1))
+            .await?,
+        "verification-slot retry binding",
+    )?
+    .active;
 
     let mut contenders = Vec::new();
     for label in ["a", "b"] {
@@ -4820,12 +4902,17 @@ async fn verify_atomic_binding_activation_fence(
             expires_at: Utc::now() + Duration::minutes(5),
         })
         .await?;
+    let lease_deferral = client
+        .flip_lookup_table_binding_head(contenders[1].id, 122, Utc::now() + Duration::hours(1))
+        .await?;
     ensure(
-        client
-            .flip_lookup_table_binding_head(contenders[1].id, 122, Utc::now() + Duration::hours(1))
-            .await
-            .is_err(),
-        "binding head flip ignored a live predecessor usage lease",
+        matches!(
+            lease_deferral,
+            LookupTableBindingActivationOutcome::Deferred(
+                LookupTableBindingActivationDeferral::LogicalHeadUsageLease { binding_id }
+            ) if binding_id == contenders[1].id
+        ),
+        "binding head flip did not defer behind a live predecessor usage lease",
     )?;
     client
         .release_lookup_table_usage_leases(
@@ -4860,7 +4947,13 @@ async fn verify_atomic_binding_activation_fence(
     let first = first.await?;
     let second = second.await?;
     ensure(
-        usize::from(first.is_ok()) + usize::from(second.is_ok()) == 1,
+        usize::from(matches!(
+            first,
+            Ok(LookupTableBindingActivationOutcome::Activated(_))
+        )) + usize::from(matches!(
+            second,
+            Ok(LookupTableBindingActivationOutcome::Activated(_))
+        )) == 1,
         "concurrent binding head activation did not have exactly one predecessor-fenced winner",
     )?;
     let active_count: i64 = loyal_yield_orchestrator::sqlx::query_scalar(
@@ -4994,10 +5087,13 @@ async fn verify_rollbacks_and_finalization(client: &NeonSqlClient, run: &str) ->
             predecessor_binding_id: None,
         })
         .await?;
-    let binding_one = client
-        .flip_lookup_table_binding_head(binding_one.id, 10, Utc::now() + Duration::hours(1))
-        .await?
-        .active;
+    let binding_one = require_binding_activation(
+        client
+            .flip_lookup_table_binding_head(binding_one.id, 10, Utc::now() + Duration::hours(1))
+            .await?,
+        "rollback generation-one binding",
+    )?
+    .active;
     let binding_two = client
         .insert_lookup_table_vault_binding(LookupTableVaultBindingInsert {
             vault_id,
@@ -5061,9 +5157,12 @@ async fn verify_rollbacks_and_finalization(client: &NeonSqlClient, run: &str) ->
             .is_err(),
         "usage lease acquired the generation that activation had made standby",
     )?;
-    let binding_flip = client
-        .flip_lookup_table_binding_head(binding_two.id, 20, Utc::now() + Duration::hours(1))
-        .await?;
+    let binding_flip = require_binding_activation(
+        client
+            .flip_lookup_table_binding_head(binding_two.id, 20, Utc::now() + Duration::hours(1))
+            .await?,
+        "rollback generation-two binding",
+    )?;
     ensure(
         binding_flip.predecessor.as_ref().map(|row| row.id) == Some(binding_one.id),
         "binding activation did not preserve predecessor",
@@ -5239,10 +5338,13 @@ async fn verify_rollbacks_and_finalization(client: &NeonSqlClient, run: &str) ->
             predecessor_binding_id: None,
         })
         .await?;
-    let binding_three = client
-        .flip_lookup_table_binding_head(binding_three.id, 40, Utc::now() + Duration::hours(1))
-        .await?
-        .active;
+    let binding_three = require_binding_activation(
+        client
+            .flip_lookup_table_binding_head(binding_three.id, 40, Utc::now() + Duration::hours(1))
+            .await?,
+        "rollback binding three",
+    )?
+    .active;
     let binding_four = client
         .insert_lookup_table_vault_binding(LookupTableVaultBindingInsert {
             vault_id,
@@ -5255,10 +5357,13 @@ async fn verify_rollbacks_and_finalization(client: &NeonSqlClient, run: &str) ->
             predecessor_binding_id: Some(binding_three.id),
         })
         .await?;
-    let binding_four = client
-        .flip_lookup_table_binding_head(binding_four.id, 41, Utc::now() + Duration::hours(1))
-        .await?
-        .active;
+    let binding_four = require_binding_activation(
+        client
+            .flip_lookup_table_binding_head(binding_four.id, 41, Utc::now() + Duration::hours(1))
+            .await?,
+        "rollback binding four",
+    )?
+    .active;
     client
         .rollback_lookup_table_binding_head(binding_four.id, 42)
         .await?;
@@ -7260,6 +7365,19 @@ fn finalized_shared_observation(
         observed_slot,
         shared_table_bundle_hash,
         shared_tables,
+    }
+}
+
+fn require_binding_activation(
+    outcome: LookupTableBindingActivationOutcome,
+    context: &str,
+) -> VerifyResult<LookupTableBindingHeadFlip> {
+    match outcome {
+        LookupTableBindingActivationOutcome::Activated(flip) => Ok(flip),
+        LookupTableBindingActivationOutcome::Deferred(deferral) => fail(format!(
+            "{context} was unexpectedly deferred with {}",
+            deferral.error_code()
+        )),
     }
 }
 
