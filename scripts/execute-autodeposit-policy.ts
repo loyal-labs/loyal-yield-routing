@@ -189,7 +189,17 @@ type AutodepositRecoveryContext = {
 };
 
 class AutodepositOwnershipLostError extends Error {}
-class AutodepositEffectAmbiguousError extends Error {}
+export class AutodepositEffectAmbiguousError extends Error {}
+
+export function throwIfAutodepositAttemptRequiresOperator(
+  attempt: Pick<DurableAutodepositAttempt, "signature" | "state">
+) {
+  if (operationalAlertForAttempt(attempt.state)) {
+    throw new AutodepositEffectAmbiguousError(
+      `Durable Kamino top-up ${attempt.signature} has ambiguous chain effect.`
+    );
+  }
+}
 
 type SimulationSummary = {
   err: unknown;
@@ -4309,29 +4319,40 @@ async function completeAutodepositClaim(args: {
 }) {
   const sql = args.neon(args.databaseUrl);
   const rows = await sql`
-    WITH confirmed_top_up AS (
-      SELECT signature, confirmed_slot
-      FROM loyal_yield.balance_sweep_transaction_attempts
+    WITH owned_claim AS MATERIALIZED (
+      SELECT claim_token
+      FROM loyal_yield.balance_sweep_lot_claims
       WHERE claim_token = ${args.claimToken}
-        AND execution_id = ${args.executionId}
-        AND operation_kind = 'top_up'
-        AND attempt_state = 'confirmed'
-        AND confirmed_slot IS NOT NULL
-      ORDER BY attempt_number DESC
+        AND status = 'selected'
+        AND autodeposit_executor_lease_token = ${args.leaseToken}
+        AND autodeposit_executor_lease_expires_at > now()
+      FOR UPDATE
+    ),
+    confirmed_top_up AS (
+      SELECT attempt.signature, attempt.confirmed_slot
+      FROM loyal_yield.balance_sweep_transaction_attempts AS attempt
+      JOIN owned_claim ON TRUE
+      WHERE attempt.claim_token = ${args.claimToken}
+        AND attempt.execution_id = ${args.executionId}
+        AND attempt.operation_kind = 'top_up'
+        AND attempt.attempt_state = 'confirmed'
+        AND attempt.confirmed_slot IS NOT NULL
+      ORDER BY attempt.attempt_number DESC
       LIMIT 1
     ),
     existing_position AS MATERIALIZED (
       SELECT
-        id, current_amount_raw, principal_amount_raw,
-        current_reserve, current_liquidity_mint
-      FROM loyal_yield.user_yield_positions
-      WHERE settings = ${args.plan.target.settings}
-        AND vault_index = ${args.plan.target.vaultIndex}
-        AND wallet_address = ${args.plan.target.wallet}
-        AND status = 'active'
-      ORDER BY updated_at DESC, id DESC
+        position.id, position.current_amount_raw, position.principal_amount_raw,
+        position.current_reserve, position.current_liquidity_mint
+      FROM loyal_yield.user_yield_positions AS position
+      JOIN owned_claim ON TRUE
+      WHERE position.settings = ${args.plan.target.settings}
+        AND position.vault_index = ${args.plan.target.vaultIndex}
+        AND position.wallet_address = ${args.plan.target.wallet}
+        AND position.status = 'active'
+      ORDER BY position.updated_at DESC, position.id DESC
       LIMIT 1
-      FOR UPDATE
+      FOR UPDATE OF position
     ),
     inserted_deposit AS (
       INSERT INTO loyal_yield.user_yield_position_deposits (
@@ -4669,12 +4690,18 @@ async function resumeDirectKaminoDeposit(args: {
         }),
     });
   } catch (error) {
+    if (error instanceof AutodepositOwnershipLostError) {
+      throw error;
+    }
     await releaseAutodepositClaimLease({
       neon: args.neon,
       databaseUrl: args.databaseUrl,
       claimToken: args.claimToken,
       leaseToken: args.leaseToken,
     });
+    if (error instanceof AutodepositEffectAmbiguousError) {
+      throw error;
+    }
     return {
       status: "deposit_pending" as const,
       executionRecord,
@@ -4684,18 +4711,13 @@ async function resumeDirectKaminoDeposit(args: {
     };
   }
   if (topUpSend.status !== "confirmed") {
-    const alert = operationalAlertForAttempt(topUpSend.attempt.state);
     await releaseAutodepositClaimLease({
       neon: args.neon,
       databaseUrl: args.databaseUrl,
       claimToken: args.claimToken,
       leaseToken: args.leaseToken,
     });
-    if (alert) {
-      throw new Error(
-        `Durable Kamino top-up ${topUpSend.attempt.signature} has ambiguous chain effect.`
-      );
-    }
+    throwIfAutodepositAttemptRequiresOperator(topUpSend.attempt);
     return {
       status: "deposit_pending" as const,
       executionRecord,

@@ -24,8 +24,16 @@ async function exists(path: string) {
 }
 
 async function main() {
-  const [executor, trigger, fleetWorker, store, migration, dockerfile, workflow] =
-    await Promise.all([
+  const [
+    executor,
+    trigger,
+    fleetWorker,
+    store,
+    migration,
+    productionMigrations,
+    dockerfile,
+    workflow,
+  ] = await Promise.all([
       source("scripts/execute-autodeposit-policy.ts"),
       source("crates/balance-sweep-autodeposit-trigger/src/main.rs"),
       source("crates/loyal-fleet-worker/src/lib.rs"),
@@ -33,6 +41,7 @@ async function main() {
       source(
         "crates/loyal-yield-store/migrations/0040_durable_autodeposit_operation.sql",
       ),
+      source("crates/loyal-yield-orchestrator/src/bin/yield-migrations.rs"),
       source("Dockerfile.light-workers"),
       source(".github/workflows/worker-images.yml"),
     ]);
@@ -50,6 +59,14 @@ async function main() {
       migration.includes("autodeposit_executor_lease_token") &&
       migration.includes("autodeposit_executor_lease_expires_at") &&
       migration.includes("autodeposit_deposit_plan"),
+  );
+  check(
+    "the production migration runner applies migration 40",
+    productionMigrations.includes("version: 40") &&
+      productionMigrations.includes('name: "durable_autodeposit_operation"') &&
+      productionMigrations.includes(
+        'migrations/0040_durable_autodeposit_operation.sql',
+      ),
   );
   check(
     "no parallel autodeposit operation table exists",
@@ -118,15 +135,36 @@ async function main() {
       store.includes("direct_pull.attempt_state = 'confirmed'") &&
       store.includes("direct_top_up.operation_kind = 'top_up'") &&
       store.includes("direct_top_up.attempt_state = 'confirmed'") &&
-      store.includes("direct_top_up.id IS NULL"),
+      store.includes("direct_top_up.id IS NULL") &&
+      store.includes("direct_target.token_mint = idle.mint"),
+  );
+  const completionStart = executor.indexOf("async function completeAutodepositClaim");
+  const completion = executor.slice(
+    completionStart,
+    executor.indexOf("async function resumeDirectKaminoDeposit", completionStart),
+  );
+  check(
+    "claim completion locks and validates ownership before accounting",
+    completion.includes("owned_claim AS MATERIALIZED") &&
+      completion.includes("autodeposit_executor_lease_token") &&
+      completion.includes("autodeposit_executor_lease_expires_at > now()") &&
+      completion.includes("FOR UPDATE") &&
+      completion.includes("JOIN owned_claim ON TRUE") &&
+      completion.indexOf("owned_claim AS MATERIALIZED") <
+        completion.indexOf("inserted_deposit AS"),
   );
   check(
     "claim completion is gated by the confirmed top-up attempt",
-    executor.includes("completeAutodepositClaim") &&
-      executor.includes("operation_kind = 'top_up'") &&
-      executor.includes("attempt_state = 'confirmed'") &&
-      executor.includes("completed_claim") &&
-      executor.includes("completed_slot"),
+    completion.includes("operation_kind = 'top_up'") &&
+      completion.includes("attempt_state = 'confirmed'") &&
+      completion.includes("completed_claim") &&
+      completion.includes("completed_slot"),
+  );
+  check(
+    "ambiguous top-ups retain a typed operator-action failure",
+    executor.includes("throwIfAutodepositAttemptRequiresOperator") &&
+      executor.includes("throw new AutodepositEffectAmbiguousError") &&
+      executor.includes("error instanceof AutodepositEffectAmbiguousError"),
   );
   check(
     "app accounting completes with the claim from the reconciled total",

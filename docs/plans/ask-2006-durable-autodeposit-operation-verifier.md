@@ -11,7 +11,8 @@ Run from the repository root:
 bun run verify:autodeposit-durable-operation
 bun test scripts/durable-autodeposit-confirmation.test.ts scripts/execute-autodeposit-policy.test.ts
 cargo fmt --all -- --check
-cargo check -p balance-sweep-autodeposit-trigger -p loyal-fleet-worker
+cargo check -p balance-sweep-autodeposit-trigger -p loyal-fleet-worker -p loyal-yield-orchestrator
+cargo test -p loyal-yield-orchestrator --bin yield-migrations durable_autodeposit_operation_migration_is_registered_for_production
 git diff --check
 ```
 
@@ -22,7 +23,8 @@ Required observable properties:
 
 1. `balance_sweep_lot_claims` is the sole job owner. It holds one expiring
    executor lease and one immutable direct-deposit plan. There is no
-   `balance_sweep_autodeposit_operations` table or runtime query.
+   `balance_sweep_autodeposit_operations` table or runtime query. Migration 40
+   is registered in the production `yield-migrations` binary used by Render.
 2. `balance_sweep_transaction_attempts` is the sole transaction ledger. Exact
    signed pull and top-up bytes are persisted before first broadcast and
    reconciled by signature before any replacement.
@@ -30,8 +32,9 @@ Required observable properties:
    confirmed pull without confirmed top-up means deposit work; both confirmed
    permit atomic completion. There is no second operation-state enum or copied
    pull/top-up signature state.
-4. One claim lease fences concurrent executors. A stale owner cannot persist,
-   broadcast, release, or complete work after losing the lease.
+4. One claim lease fences concurrent executors. Completion first locks and
+   validates that lease; every accounting mutation depends on that locked row.
+   A stale owner cannot persist, broadcast, release, or complete work.
 5. Deposit readiness and an immutable plan are stored before pull broadcast.
    Pull-only state cannot complete the claim, slot, execution, or success
    notification. Restart recovery of a persisted pull attempt does not depend
@@ -39,19 +42,20 @@ Required observable properties:
 6. The direct executor never publishes its funds to
    `vault_idle_token_balances_current`. The fleet planner cannot race the direct
    deposit: its idle-vault candidate query excludes a vault while a selected
-   claim has a confirmed pull and no confirmed top-up. The route helper only
-   builds/simulates the top-up; the owner persists and broadcasts the exact
-   returned transaction. A new direct pull is deferred while the vault already
-   has idle funds, so a previously planned fleet deposit cannot consume the new
-   pull.
+   claim for the same mint has a confirmed pull and no confirmed top-up. The
+   route helper only builds/simulates the top-up; the owner persists and
+   broadcasts the exact returned transaction. A new direct pull is deferred
+   while the vault already has idle funds, so a previously planned fleet
+   deposit cannot consume the new pull.
 7. Completion of the execution, app deposit/position/holding history, claim,
    and scheduled slot is one database statement gated by a confirmed top-up
    attempt owned by the same claim. Principal increases by this deposit delta;
    current holding uses the reconciled post-confirm Kamino total.
 8. Retryable readiness, RPC, expiry, and send failures remain pending without
-   an operational alert. Ambiguous chain effect, lost ownership/invariants, or
-   another explicit operator-action condition may alert. The removed idle-age
-   SLA alert stays absent.
+   an operational alert. Ambiguous top-ups retain a typed failure that reaches
+   the trigger alert boundary. Ambiguous chain effect, lost
+   ownership/invariants, or another explicit operator-action condition may
+   alert. The removed idle-age SLA alert stays absent.
 9. Runtime packaging contains every imported executor module and no removed
    duplicate operation-model module.
 

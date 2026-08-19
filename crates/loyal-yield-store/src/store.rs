@@ -1542,6 +1542,7 @@ impl NeonSqlClient {
                 FROM loyal_yield.balance_sweep_lot_claims AS direct_claim
                 JOIN loyal_yield.balance_sweep_targets AS direct_target
                   ON direct_target.id = direct_claim.target_id
+                 AND direct_target.token_mint = idle.mint
                 JOIN loyal_yield.managed_vaults AS direct_vault
                   ON direct_vault.settings = direct_target.settings
                  AND direct_vault.vault_index = direct_target.vault_index

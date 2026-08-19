@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Keypair, type Connection } from "@solana/web3.js";
 
 import {
+  AutodepositEffectAmbiguousError,
   assertEmptyVaultBeforeDirectAutodeposit,
   assertSolBalance,
   autodepositExecutorFailureExitCode,
@@ -14,6 +15,7 @@ import {
   runAfterFeePayerSolSafety,
   runTopUpWithLookupTableRetry,
   shouldNotifyFailedSweep,
+  throwIfAutodepositAttemptRequiresOperator,
 } from "./execute-autodeposit-policy";
 import type { DurableAutodepositAttempt } from "./durable-autodeposit-confirmation";
 
@@ -117,6 +119,23 @@ describe("direct autodeposit vault ownership", () => {
     );
     expect(() =>
       assertEmptyVaultBeforeDirectAutodeposit(BigInt(0))
+    ).not.toThrow();
+  });
+});
+
+describe("autodeposit top-up alert boundary", () => {
+  test("raises a typed operator error only for an ambiguous chain effect", () => {
+    expect(() =>
+      throwIfAutodepositAttemptRequiresOperator({
+        signature: "ambiguous-top-up",
+        state: "ambiguous",
+      })
+    ).toThrow(AutodepositEffectAmbiguousError);
+    expect(() =>
+      throwIfAutodepositAttemptRequiresOperator({
+        signature: "pending-top-up",
+        state: "unknown",
+      })
     ).not.toThrow();
   });
 });
