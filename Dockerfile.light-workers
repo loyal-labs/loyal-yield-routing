@@ -26,7 +26,6 @@ COPY --from=bun-deps /app/node_modules ./node_modules
 COPY scripts/execute-autodeposit-policy.ts scripts/execute-autodeposit-policy.ts
 COPY scripts/autodeposit-idle-vault-handoff.ts scripts/autodeposit-idle-vault-handoff.ts
 COPY scripts/durable-autodeposit-confirmation.ts scripts/durable-autodeposit-confirmation.ts
-COPY scripts/durable-autodeposit-operation.ts scripts/durable-autodeposit-operation.ts
 COPY --chmod=0755 build-artifacts/rust/balance-sweep-ata-projector /usr/local/bin/balance-sweep-ata-projector
 COPY --chmod=0755 build-artifacts/rust/balance-sweep-autodeposit-trigger /usr/local/bin/balance-sweep-autodeposit-trigger
 COPY --chmod=0755 build-artifacts/rust/loyal-yield-realtime /usr/local/bin/loyal-yield-realtime

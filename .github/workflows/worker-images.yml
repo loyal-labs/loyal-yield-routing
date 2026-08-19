@@ -18,7 +18,6 @@ on:
       - scripts/autodeposit-idle-vault-handoff.ts
       - scripts/build-rust-image-binaries.sh
       - scripts/durable-autodeposit-confirmation.ts
-      - scripts/durable-autodeposit-operation.ts
       - scripts/execute-autodeposit-policy.ts
       - scripts/kamino-monitor-predeploy.sh
       - scripts/verify-rust-image-build-once.sh
@@ -41,7 +40,6 @@ on:
       - scripts/autodeposit-idle-vault-handoff.ts
       - scripts/build-rust-image-binaries.sh
       - scripts/durable-autodeposit-confirmation.ts
-      - scripts/durable-autodeposit-operation.ts
       - scripts/execute-autodeposit-policy.ts
       - scripts/kamino-monitor-predeploy.sh
       - scripts/verify-rust-image-build-once.sh

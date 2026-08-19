@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 type Check = { name: string; pass: boolean; detail?: string };
@@ -14,140 +14,137 @@ async function source(path: string) {
   return readFile(join(root, path), "utf8");
 }
 
-async function main() {
-  let model: typeof import("./durable-autodeposit-operation");
+async function exists(path: string) {
   try {
-    model = await import("./durable-autodeposit-operation");
-  } catch (error) {
-    check("durable operation model exists", false, String(error));
-    return;
+    await access(join(root, path));
+    return true;
+  } catch {
+    return false;
   }
+}
 
-  const initial = model.initialDurableAutodepositState();
-  check(
-    "deposit is preflighted before pull",
-    model.nextDurableAutodepositAction(initial) === "preflight_deposit",
-  );
+async function main() {
+  const [executor, trigger, fleetWorker, store, migration, dockerfile, workflow] =
+    await Promise.all([
+      source("scripts/execute-autodeposit-policy.ts"),
+      source("crates/balance-sweep-autodeposit-trigger/src/main.rs"),
+      source("crates/loyal-fleet-worker/src/lib.rs"),
+      source("crates/loyal-yield-store/src/store.rs"),
+      source(
+        "crates/loyal-yield-store/migrations/0040_durable_autodeposit_operation.sql",
+      ),
+      source("Dockerfile.light-workers"),
+      source(".github/workflows/worker-images.yml"),
+    ]);
 
-  const ready = model.reduceDurableAutodepositState(initial, {
-    type: "deposit_preflight_ready",
-  });
-  check(
-    "pull starts only after deposit readiness",
-    model.nextDurableAutodepositAction(ready) === "execute_pull",
+  const duplicateModelExists = await exists(
+    "scripts/durable-autodeposit-operation.ts",
   );
-
-  const pulled = model.reduceDurableAutodepositState(ready, {
-    type: "pull_confirmed",
-    signature: "pull-signature",
-  });
-  check(
-    "confirmed pull resumes deposit",
-    model.nextDurableAutodepositAction(pulled) === "execute_deposit",
-  );
-  check("pull-only state cannot complete", !model.canCompleteDurableAutodeposit(pulled));
-  check("pull-only state cannot notify success", !model.canNotifyDurableAutodepositSuccess(pulled));
-
-  const retrying = model.reduceDurableAutodepositState(pulled, {
-    type: "deposit_retryable_failure",
-  });
-  check(
-    "retryable deposit resumes without another pull",
-    model.nextDurableAutodepositAction(retrying) === "execute_deposit",
-  );
-  check(
-    "retryable failure does not page",
-    model.operationalAlertForDurableAutodeposit(retrying) === null,
+  const duplicateModelTestExists = await exists(
+    "scripts/durable-autodeposit-operation.test.ts",
   );
 
-  const completed = model.reduceDurableAutodepositState(retrying, {
-    type: "deposit_confirmed",
-    signature: "deposit-signature",
-  });
-  check("deposit confirmation permits completion", model.canCompleteDurableAutodeposit(completed));
   check(
-    "deposit confirmation permits success notification",
-    model.canNotifyDurableAutodepositSuccess(completed),
-  );
-
-  const ambiguous = model.reduceDurableAutodepositState(pulled, {
-    type: "deposit_ambiguous",
-  });
-  check(
-    "ambiguous chain effect pages",
-    model.operationalAlertForDurableAutodeposit(ambiguous) === "transaction_effect_ambiguous",
-  );
-
-  const ownershipLost = model.reduceDurableAutodepositState(pulled, {
-    type: "durable_ownership_lost",
-  });
-  check(
-    "lost durable ownership pages",
-    model.operationalAlertForDurableAutodeposit(ownershipLost) === "durable_ownership_lost",
+    "the existing lot claim is the sole durable job owner",
+    migration.includes("ALTER TABLE loyal_yield.balance_sweep_lot_claims") &&
+      migration.includes("autodeposit_executor_lease_token") &&
+      migration.includes("autodeposit_executor_lease_expires_at") &&
+      migration.includes("autodeposit_deposit_plan"),
   );
   check(
-    "a decreased post-pull source balance blocks another deposit",
-    model.durableDepositRetryEffect({
-      currentSourceBalanceRaw: 105n,
-      postPullSourceBalanceRaw: 110n,
-    }) === "ambiguous_prior_effect",
-  );
-
-  const [executor, trigger, fleetWorker, migration, dockerfile, workflow] = await Promise.all([
-    source("scripts/execute-autodeposit-policy.ts"),
-    source("crates/balance-sweep-autodeposit-trigger/src/main.rs"),
-    source("crates/loyal-fleet-worker/src/lib.rs"),
-    source("crates/loyal-yield-store/migrations/0040_durable_autodeposit_operation.sql"),
-    source("Dockerfile.light-workers"),
-    source(".github/workflows/worker-images.yml"),
-  ]);
-
-  check(
-    "executor uses durable operation model",
-    executor.includes("durable-autodeposit-operation"),
+    "no parallel autodeposit operation table exists",
+    !migration.includes("balance_sweep_autodeposit_operations") &&
+      !executor.includes("balance_sweep_autodeposit_operations"),
   );
   check(
-    "executor preflights the direct Kamino deposit",
-    executor.includes("preflightDurableKaminoDeposit"),
+    "no duplicate operation state model exists",
+    !duplicateModelExists &&
+      !duplicateModelTestExists &&
+      !executor.includes("durable-autodeposit-operation"),
   );
   check(
-    "confirmed pull resumes the direct Kamino deposit",
-    executor.includes("resumeDurableKaminoDeposit"),
+    "claim lease is acquired and checked by the executor",
+    executor.includes("acquireAutodepositClaimLease") &&
+      executor.includes("renewAutodepositClaimLease") &&
+      executor.includes("releaseAutodepositClaimLease") &&
+      executor.includes("autodeposit_executor_lease_token"),
   );
   check(
-    "the exact signed Kamino transaction is durable before broadcast",
+    "an immutable deposit plan is persisted before pull",
+    executor.includes("persistAutodepositDepositPlan") &&
+      executor.includes("autodeposit_deposit_plan") &&
+      executor.includes("deposit plan conflicts with this execution"),
+  );
+  const recoveryQueryStart = trigger.indexOf("let recovery_rows = sqlx::query");
+  const recoveryQuery = trigger.slice(
+    recoveryQueryStart,
+    trigger.indexOf(".fetch_all(pool)", recoveryQueryStart),
+  );
+  check(
+    "restart recovery does not depend on the target remaining active",
+    recoveryQuery.includes("attempt.attempt_state = ANY($3::text[])") &&
+      !recoveryQuery.includes("target.active = true") &&
+      !recoveryQuery.includes("target.lifecycle_status = 'active'"),
+  );
+  check(
+    "signed attempts remain the only transaction ledger",
+    executor.includes("balance_sweep_transaction_attempts") &&
+      executor.includes('operationKind: "pull"') &&
+      executor.includes('operationKind: "top_up"') &&
+      executor.includes("persistPreparedAutodepositAttempt"),
+  );
+  check(
+    "the route helper exposes exact signed top-up bytes but does not execute them",
     fleetWorker.includes("durablePolicyDepositTransaction") &&
       fleetWorker.includes("signedTransactionBase64") &&
-      executor.includes('operationKind: "top_up"') &&
-      executor.includes("sendPreparedTopUpOperation"),
+      executor.includes("prepareSameMintReserveTopUp") &&
+      !executor.includes("runSameMintReserveTopUp"),
   );
   check(
-    "concurrent deposit runners are fenced",
-    migration.includes("deposit_lease_token") &&
-      migration.includes("deposit_lease_expires_at") &&
-      executor.includes("another executor owns the active deposit lease"),
+    "the direct path never publishes a fleet idle-balance handoff",
+    !executor.includes(
+      "INSERT INTO loyal_yield.vault_idle_token_balances_current",
+    ) && !executor.includes("publishConfirmedPullHandoff"),
   );
   check(
-    "a crash after an unrecorded deposit cannot consume unrelated idle funds",
-    migration.includes("deposit_source_balance_raw") &&
-      executor.includes("depositSourceBalanceRaw") &&
-      executor.includes("durable post-pull baseline"),
+    "a pre-existing idle balance defers the direct pull",
+    executor.includes("assertEmptyVaultBeforeDirectAutodeposit") &&
+      executor.includes("existing idle vault balance must drain before direct autodeposit"),
   );
   check(
-    "old idle-vault handoff is not the completion boundary",
-    !executor.includes("publishConfirmedPullHandoff"),
+    "fleet idle candidates exclude an in-flight direct deposit",
+    store.includes("balance_sweep_transaction_attempts AS direct_pull") &&
+      store.includes("direct_pull.operation_kind = 'pull'") &&
+      store.includes("direct_pull.attempt_state = 'confirmed'") &&
+      store.includes("direct_top_up.operation_kind = 'top_up'") &&
+      store.includes("direct_top_up.attempt_state = 'confirmed'") &&
+      store.includes("direct_top_up.id IS NULL"),
   );
   check(
-    "trigger no longer pages on recoverable idle-vault age",
+    "claim completion is gated by the confirmed top-up attempt",
+    executor.includes("completeAutodepositClaim") &&
+      executor.includes("operation_kind = 'top_up'") &&
+      executor.includes("attempt_state = 'confirmed'") &&
+      executor.includes("completed_claim") &&
+      executor.includes("completed_slot"),
+  );
+  check(
+    "app accounting completes with the claim from the reconciled total",
+    executor.includes("reconcileDirectDepositPosition") &&
+      executor.includes("completed_deposit") &&
+      executor.includes("completed_position") &&
+      executor.includes("completed_holding_event") &&
+      executor.includes("principal_amount_raw +") &&
+      executor.includes("postConfirmPositionAmountRaw"),
+  );
+  check(
+    "the removed idle-age operational alert stays absent",
     !trigger.includes("autodeposit_idle_vault_recovery_stalled"),
   );
   check(
-    "runtime image includes operation model",
-    dockerfile.includes("durable-autodeposit-operation.ts"),
-  );
-  check(
-    "worker image workflow watches operation model",
-    workflow.includes("durable-autodeposit-operation.ts"),
+    "runtime packaging does not carry the removed duplicate model",
+    !dockerfile.includes("durable-autodeposit-operation.ts") &&
+      !workflow.includes("durable-autodeposit-operation.ts"),
   );
 }
 
@@ -155,7 +152,9 @@ await main();
 
 for (const result of checks) {
   const prefix = result.pass ? "ok" : "not ok";
-  console.log(`${prefix} - ${result.name}${result.detail ? `: ${result.detail}` : ""}`);
+  console.log(
+    `${prefix} - ${result.name}${result.detail ? `: ${result.detail}` : ""}`,
+  );
 }
 
 if (checks.length === 0 || checks.some((result) => !result.pass)) {

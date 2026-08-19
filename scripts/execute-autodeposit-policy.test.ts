@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Keypair, type Connection } from "@solana/web3.js";
 
 import {
+  assertEmptyVaultBeforeDirectAutodeposit,
   assertSolBalance,
   autodepositExecutorFailureExitCode,
   computeSweepAmount,
@@ -106,6 +107,17 @@ describe("computeSweepAmount", () => {
       excessRaw: BigInt(150),
       remainingAllowanceRaw: BigInt(0),
     });
+  });
+});
+
+describe("direct autodeposit vault ownership", () => {
+  test("defers a pull until pre-existing idle funds drain", () => {
+    expect(() => assertEmptyVaultBeforeDirectAutodeposit(BigInt(1))).toThrow(
+      "existing idle vault balance must drain before direct autodeposit"
+    );
+    expect(() =>
+      assertEmptyVaultBeforeDirectAutodeposit(BigInt(0))
+    ).not.toThrow();
   });
 });
 
@@ -515,7 +527,8 @@ describe("runtime dependency boundary", () => {
       new URL("./execute-autodeposit-policy.ts", import.meta.url)
     ).text();
 
-    expect(source).toContain("runSameMintReserveTopUp");
+    expect(source).toContain("prepareSameMintReserveTopUp");
+    expect(source).not.toContain("runSameMintReserveTopUp");
     expect(source).toContain('"--deposit-reserve"');
     expect(source).toContain("same-mint:swap");
     expect(source).not.toContain("prepareEarnUsdcDeposit");

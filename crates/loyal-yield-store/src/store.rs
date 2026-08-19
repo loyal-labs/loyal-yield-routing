@@ -1525,19 +1525,40 @@ impl NeonSqlClient {
         let rows = sqlx::query(
             r#"
             SELECT
-                vault_id,
-                mint,
-                amount_raw,
-                owner,
-                token_account,
-                observed_slot,
-                observed_at,
-                source_commitment,
-                updated_at
-            FROM loyal_yield.vault_idle_token_balances_current
-            WHERE vault_id = ANY($1)
-              AND mint = $2
-            ORDER BY vault_id, mint
+                idle.vault_id,
+                idle.mint,
+                idle.amount_raw,
+                idle.owner,
+                idle.token_account,
+                idle.observed_slot,
+                idle.observed_at,
+                idle.source_commitment,
+                idle.updated_at
+            FROM loyal_yield.vault_idle_token_balances_current AS idle
+            WHERE idle.vault_id = ANY($1)
+              AND idle.mint = $2
+              AND NOT EXISTS (
+                SELECT 1
+                FROM loyal_yield.balance_sweep_lot_claims AS direct_claim
+                JOIN loyal_yield.balance_sweep_targets AS direct_target
+                  ON direct_target.id = direct_claim.target_id
+                JOIN loyal_yield.managed_vaults AS direct_vault
+                  ON direct_vault.settings = direct_target.settings
+                 AND direct_vault.vault_index = direct_target.vault_index
+                 AND direct_vault.vault_pubkey = direct_target.vault_pubkey
+                 AND direct_vault.id = idle.vault_id
+                JOIN loyal_yield.balance_sweep_transaction_attempts AS direct_pull
+                  ON direct_pull.claim_token = direct_claim.claim_token
+                 AND direct_pull.operation_kind = 'pull'
+                 AND direct_pull.attempt_state = 'confirmed'
+                LEFT JOIN loyal_yield.balance_sweep_transaction_attempts AS direct_top_up
+                  ON direct_top_up.claim_token = direct_claim.claim_token
+                 AND direct_top_up.operation_kind = 'top_up'
+                 AND direct_top_up.attempt_state = 'confirmed'
+                WHERE direct_claim.status = 'selected'
+                  AND direct_top_up.id IS NULL
+              )
+            ORDER BY idle.vault_id, idle.mint
             "#,
         )
         .bind(&ids)

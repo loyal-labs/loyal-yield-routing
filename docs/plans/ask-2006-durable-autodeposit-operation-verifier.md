@@ -1,32 +1,59 @@
-# ASK-2006 durable autodeposit operation verifier
+# ASK-2006 single-owner autodeposit verifier
 
-The implementation is complete only when one durable operation owns both unavoidable Solana transactions: the vault pull and the Kamino deposit.
+The fix is complete only when one existing lot claim owns the unavoidable pull
+and Kamino-deposit transactions. Transaction attempts are the only durable
+record of transaction state. No parallel operation state machine or fleet
+idle-balance handoff may participate in this direct path.
 
 Run from the repository root:
 
 ```sh
 bun run verify:autodeposit-durable-operation
-bun test scripts/durable-autodeposit-operation.test.ts scripts/durable-autodeposit-confirmation.test.ts scripts/execute-autodeposit-policy.test.ts
+bun test scripts/durable-autodeposit-confirmation.test.ts scripts/execute-autodeposit-policy.test.ts
 cargo fmt --all -- --check
 cargo check -p balance-sweep-autodeposit-trigger -p loyal-fleet-worker
 git diff --check
 ```
 
-The first command must exit zero and print `PASS_AUTODEPOSIT_DURABLE_OPERATION`. The remaining commands must also exit zero.
+The first command must exit zero and print
+`PASS_AUTODEPOSIT_DURABLE_OPERATION`. Every other command must exit zero.
 
-The verifier must prove these observable properties:
+Required observable properties:
 
-1. Kamino deposit readiness is established before a pull may be broadcast.
-2. Pull confirmation advances the same durable operation to a deposit-pending state; it does not complete the claim, slot, execution, or success notification.
-3. Restarting after pull confirmation resumes the deposit and cannot broadcast the pull again.
-   The exact signed Kamino transaction is persisted before its first broadcast and reconciled by signature before replacement.
-   Concurrent runners are fenced so only one may submit the deposit leg.
-   A post-pull source-balance baseline prevents an unrecorded prior deposit from consuming unrelated idle funds on retry.
-4. A retryable pre-send or deposit failure remains pending and does not emit an operational alert.
-5. A missing destination token account is treated as repairable readiness work before pull, not as a generic executor alert.
-6. The operation completes, releases its claim, and becomes eligible for success notification only after the Kamino deposit is confirmed and its durable history is recorded.
-7. Per-operation operational alerts are limited to ambiguous chain effect or loss of durable ownership/invariants. Global worker-stopped monitoring remains independent.
-8. Mandatory post-pull completion is executed directly by the operation owner and never depends on economic planner eligibility or an idle-balance SLA alert.
-9. Runtime images and workflow path filters include every new module imported by the autodeposit executor.
+1. `balance_sweep_lot_claims` is the sole job owner. It holds one expiring
+   executor lease and one immutable direct-deposit plan. There is no
+   `balance_sweep_autodeposit_operations` table or runtime query.
+2. `balance_sweep_transaction_attempts` is the sole transaction ledger. Exact
+   signed pull and top-up bytes are persisted before first broadcast and
+   reconciled by signature before any replacement.
+3. Progress is derived from attempt facts: no confirmed pull means pull work;
+   confirmed pull without confirmed top-up means deposit work; both confirmed
+   permit atomic completion. There is no second operation-state enum or copied
+   pull/top-up signature state.
+4. One claim lease fences concurrent executors. A stale owner cannot persist,
+   broadcast, release, or complete work after losing the lease.
+5. Deposit readiness and an immutable plan are stored before pull broadcast.
+   Pull-only state cannot complete the claim, slot, execution, or success
+   notification. Restart recovery of a persisted pull attempt does not depend
+   on the target or its route policy remaining active.
+6. The direct executor never publishes its funds to
+   `vault_idle_token_balances_current`. The fleet planner cannot race the direct
+   deposit: its idle-vault candidate query excludes a vault while a selected
+   claim has a confirmed pull and no confirmed top-up. The route helper only
+   builds/simulates the top-up; the owner persists and broadcasts the exact
+   returned transaction. A new direct pull is deferred while the vault already
+   has idle funds, so a previously planned fleet deposit cannot consume the new
+   pull.
+7. Completion of the execution, app deposit/position/holding history, claim,
+   and scheduled slot is one database statement gated by a confirmed top-up
+   attempt owned by the same claim. Principal increases by this deposit delta;
+   current holding uses the reconciled post-confirm Kamino total.
+8. Retryable readiness, RPC, expiry, and send failures remain pending without
+   an operational alert. Ambiguous chain effect, lost ownership/invariants, or
+   another explicit operator-action condition may alert. The removed idle-age
+   SLA alert stays absent.
+9. Runtime packaging contains every imported executor module and no removed
+   duplicate operation-model module.
 
-The verifier must fail closed when the operation model or its executor/trigger integration is absent.
+Verdict: FAIL if any required property or command fails. PASS only when every
+required property and command passes.
