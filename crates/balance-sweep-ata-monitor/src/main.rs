@@ -14,17 +14,24 @@ use balance_sweep_ata_monitor::earn_apy::{
 use balance_sweep_ata_monitor::{
     ata_target_set, diff_ata_target_sets, laserstream_replay_from_slot, run_event_loop,
     seed_current_balances, spawn_ata_recheck_worker, AtaRecheckConfig, AtaRecheckHandle, AtaTarget,
-    AtaUpdateSource, LaserstreamAtaUpdateSource, SubscriptionConfig, TimescaleAtaConfig,
-    TimescaleAtaObservationSink, TimescaleAtaStream, WebsocketAtaUpdateSource,
+    AtaUpdateSource, EarnUpdateContext, LaserstreamAtaUpdateSource,
+    LaserstreamSubscriptionUpdateHandle, SubscriptionConfig, SubscriptionWatchSet,
+    TimescaleAtaConfig, TimescaleAtaObservationSink, TimescaleAtaStream, WebsocketAtaUpdateSource,
 };
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
 use loyal_actions::USDC_MINT;
 use loyal_observability::{init_from_env, OperationalError};
-use loyal_yield_store::{OrchestratorConfig, OrchestratorError, OrchestratorStore};
+use loyal_yield_store::{
+    EarnReconciliationJobInput, OrchestratorConfig, OrchestratorError, OrchestratorStore,
+};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
-use tokio::{sync::mpsc, task::JoinHandle, time};
+use tokio::{
+    sync::{mpsc, RwLock},
+    task::JoinHandle,
+    time,
+};
 
 const EARN_APY_FAILURE_REPORT_THRESHOLD: u32 = 3;
 
@@ -112,6 +119,8 @@ struct Args {
 
 struct MonitorSession {
     target_atas: HashSet<Pubkey>,
+    earn_watch_set: SubscriptionWatchSet,
+    subscription_update: Option<LaserstreamSubscriptionUpdateHandle>,
     running: Arc<AtomicBool>,
     source_task: JoinHandle<()>,
     event_loop_task: JoinHandle<Result<()>>,
@@ -170,6 +179,7 @@ async fn run() -> Result<()> {
     };
 
     let targets = load_active_ata_targets(&store, &args.cluster).await?;
+    let watch_set = load_subscription_watch_set(&store, &args.cluster, &targets).await?;
     if args.once {
         seed_current_balances(&args.rpc_url, &targets, &observations).await?;
         tracing::info!(
@@ -200,7 +210,16 @@ async fn run() -> Result<()> {
         },
     );
 
-    supervise_monitor_sessions(args, store, observations, config, targets, recheck).await
+    supervise_monitor_sessions(
+        args,
+        store,
+        observations,
+        config,
+        targets,
+        watch_set,
+        recheck,
+    )
+    .await
 }
 
 async fn connect_earn_apy_refresher(args: &Args) -> Result<EarnApySnapshotRefresher> {
@@ -288,11 +307,12 @@ async fn supervise_monitor_sessions(
     observations: TimescaleAtaObservationSink,
     config: SubscriptionConfig,
     initial_targets: Vec<AtaTarget>,
+    initial_watch_set: SubscriptionWatchSet,
     recheck: AtaRecheckHandle,
 ) -> Result<()> {
     let refresh_interval = Duration::from_secs(args.target_refresh_seconds);
     let mut session: Option<MonitorSession> = None;
-    let mut next_targets = Some(initial_targets);
+    let mut next_state = Some((initial_targets, initial_watch_set));
 
     loop {
         if session.as_ref().is_some_and(MonitorSession::has_exited) {
@@ -300,25 +320,38 @@ async fn supervise_monitor_sessions(
             log_finished_session(finished).await;
         }
 
-        let targets = match next_targets.take() {
-            Some(targets) => targets,
-            None => load_active_ata_targets(&store, &args.cluster).await?,
+        let (targets, mut watch_set) = match next_state.take() {
+            Some(state) => state,
+            None => {
+                let targets = load_active_ata_targets(&store, &args.cluster).await?;
+                let watch_set =
+                    load_subscription_watch_set(&store, &args.cluster, &targets).await?;
+                (targets, watch_set)
+            }
         };
+        if let Some(existing) = session.as_ref() {
+            watch_set.retain_previous_earn_bindings(&existing.earn_watch_set)?;
+        }
         let desired_atas = ata_target_set(&targets);
         let current_atas = session
             .as_ref()
             .map(|session| session.target_atas.clone())
             .unwrap_or_default();
         let diff = diff_ata_target_sets(&current_atas, &desired_atas);
+        let earn_changed = session
+            .as_ref()
+            .is_none_or(|session| session.earn_watch_set != watch_set);
 
         tracing::info!(
             target_count = targets.len(),
             added_count = diff.added.len(),
             removed_count = diff.removed.len(),
+            earn_vault_count = watch_set.earn_vaults.len(),
+            earn_changed,
             "loaded active balance sweep ATA targets"
         );
 
-        if desired_atas.is_empty() {
+        if desired_atas.is_empty() && watch_set.earn_vaults.is_empty() {
             if let Some(existing) = session.take() {
                 tracing::info!(
                     "stopping balance sweep ATA subscription because target set is empty"
@@ -355,6 +388,8 @@ async fn supervise_monitor_sessions(
                 start_session(
                     &args,
                     targets,
+                    watch_set,
+                    store.clone(),
                     observations.clone(),
                     config,
                     recheck.clone(),
@@ -362,6 +397,23 @@ async fn supervise_monitor_sessions(
                 .await
                 .context("start balance sweep ATA monitor session")?,
             );
+        } else if earn_changed {
+            let existing = session.as_mut().expect("session exists");
+            let previous_watch_set = existing.earn_watch_set.clone();
+            let update = existing.subscription_update.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("Earn account monitoring requires LaserStream update source")
+            })?;
+            update.replace(watch_set.clone())?;
+            enqueue_earn_subscription_bootstrap(
+                &store,
+                &format!("earn-smart-account:{}", args.cluster),
+                &watch_set,
+                Some(&previous_watch_set),
+                &args.rpc_url,
+                args.laserstream_replay_overlap_slots,
+            )
+            .await?;
+            existing.earn_watch_set = watch_set;
         } else {
             tracing::debug!(
                 target_count = targets.len(),
@@ -389,6 +441,24 @@ async fn load_active_ata_targets(
     Ok(targets)
 }
 
+async fn load_subscription_watch_set(
+    store: &OrchestratorStore,
+    environment: &str,
+    balance_targets: &[AtaTarget],
+) -> Result<SubscriptionWatchSet> {
+    let targets = store
+        .load_earn_subscription_targets(environment)
+        .await
+        .map_err(orchestrator_error)?;
+    SubscriptionWatchSet::from_targets(
+        balance_targets
+            .iter()
+            .map(|target| target.wallet_usdc_ata.to_string())
+            .collect(),
+        targets,
+    )
+}
+
 fn orchestrator_error(error: OrchestratorError) -> anyhow::Error {
     anyhow::anyhow!(error)
 }
@@ -396,10 +466,17 @@ fn orchestrator_error(error: OrchestratorError) -> anyhow::Error {
 async fn start_session(
     args: &Args,
     targets: Vec<AtaTarget>,
+    watch_set: SubscriptionWatchSet,
+    store: OrchestratorStore,
     observations: TimescaleAtaObservationSink,
     config: SubscriptionConfig,
     recheck: AtaRecheckHandle,
 ) -> Result<MonitorSession> {
+    if args.update_source == UpdateSourceKind::Websocket && !watch_set.earn_vaults.is_empty() {
+        anyhow::bail!(
+            "Earn smart-account monitoring requires BALANCE_SWEEP_UPDATE_SOURCE=laserstream"
+        );
+    }
     let accounts = targets
         .iter()
         .map(|target| target.wallet_usdc_ata)
@@ -411,56 +488,146 @@ async fn start_session(
         .collect::<HashMap<_, _>>();
     let (tx, rx) = mpsc::unbounded_channel();
     let running = Arc::new(AtomicBool::new(true));
-    let source_task = match args.update_source {
-        UpdateSourceKind::Laserstream => LaserstreamAtaUpdateSource {
-            endpoint: args
-                .laserstream_endpoint
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("LASERSTREAM_ENDPOINT is required"))?,
-            api_key: args
-                .helius_api_key
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("HELIUS_API_KEY is required"))?,
-            from_slot: laserstream_replay_start_slot(
+    let watch_set_state = Arc::new(RwLock::new(watch_set.clone()));
+    let (source_task, subscription_update) = match args.update_source {
+        UpdateSourceKind::Laserstream => {
+            let consumer_name = format!("earn-smart-account:{}", args.cluster);
+            let from_slot = laserstream_replay_start_slot(
+                &store,
+                &consumer_name,
                 &args.rpc_url,
                 args.laserstream_replay_overlap_slots,
-            )?,
-            config,
+            )
+            .await?;
+            let source = LaserstreamAtaUpdateSource {
+                endpoint: args
+                    .laserstream_endpoint
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("LASERSTREAM_ENDPOINT is required"))?,
+                api_key: args
+                    .helius_api_key
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("HELIUS_API_KEY is required"))?,
+                from_slot,
+                config,
+                watch_set: Some(watch_set.clone()),
+            };
+            enqueue_earn_subscription_bootstrap(
+                &store,
+                &consumer_name,
+                &watch_set,
+                None,
+                &args.rpc_url,
+                args.laserstream_replay_overlap_slots,
+            )
+            .await?;
+            let (task, handle) =
+                source.spawn_with_updates(accounts, tx, running.clone(), watch_set_state.clone());
+            (task, Some(handle))
         }
-        .spawn(accounts, tx, running.clone()),
-        UpdateSourceKind::Websocket => WebsocketAtaUpdateSource {
-            ws_url: args
-                .ws_url
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("SOLANA_WS_URL is required"))?,
-            config,
-        }
-        .spawn(accounts, tx, running.clone()),
+        UpdateSourceKind::Websocket => (
+            WebsocketAtaUpdateSource {
+                ws_url: args
+                    .ws_url
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("SOLANA_WS_URL is required"))?,
+                config,
+            }
+            .spawn(accounts, tx, running.clone()),
+            None,
+        ),
     };
+    let earn = (args.update_source == UpdateSourceKind::Laserstream).then(|| EarnUpdateContext {
+        store,
+        consumer_name: format!("earn-smart-account:{}", args.cluster),
+        watch_set: watch_set_state,
+    });
     let event_loop_task = tokio::spawn(run_event_loop(
         rx,
         target_by_ata,
         observations,
         running.clone(),
         Some(recheck),
+        earn,
     ));
     Ok(MonitorSession {
         target_atas,
+        earn_watch_set: watch_set,
+        subscription_update,
         running,
         source_task,
         event_loop_task,
     })
 }
 
-fn laserstream_replay_start_slot(rpc_url: &str, replay_overlap_slots: u64) -> Result<u64> {
+async fn enqueue_earn_subscription_bootstrap(
+    store: &OrchestratorStore,
+    consumer_name: &str,
+    watch_set: &SubscriptionWatchSet,
+    previous: Option<&SubscriptionWatchSet>,
+    rpc_url: &str,
+    replay_overlap_slots: u64,
+) -> Result<()> {
+    let new_vaults = watch_set.new_earn_vaults(previous);
+    if new_vaults.is_empty() {
+        return Ok(());
+    }
+    let rpc = RpcClient::new_with_commitment(rpc_url.to_owned(), CommitmentConfig::confirmed());
+    let current_slot = rpc
+        .get_slot()
+        .context("fetch confirmed RPC slot for Earn subscription bootstrap")?;
+    let durable_slot = store
+        .load_laserstream_replay_cursor(consumer_name)
+        .await
+        .map_err(orchestrator_error)?
+        .unwrap_or_else(|| laserstream_replay_from_slot(current_slot, replay_overlap_slots));
+    let jobs = new_vaults
+        .into_iter()
+        .map(|vault| EarnReconciliationJobInput {
+            event_key: format!("subscription-bootstrap:{}:{current_slot}", vault.vault),
+            environment: vault.environment.clone(),
+            settings: vault.settings.clone(),
+            wallet: vault.wallet.clone(),
+            vault_pubkey: vault.vault.clone(),
+            vault_index: vault.vault_index,
+            filter_name: "earn_vault_accounts".to_owned(),
+            event_kind: "subscription_bootstrap".to_owned(),
+            trigger_slot: current_slot,
+            signature: None,
+            account_pubkey: Some(vault.vault.clone()),
+        })
+        .collect::<Vec<_>>();
+    store
+        .record_earn_reconciliation_batch(consumer_name, durable_slot, &jobs)
+        .await
+        .map_err(orchestrator_error)?;
+    tracing::info!(
+        job_count = jobs.len(),
+        current_slot,
+        durable_slot,
+        "enqueued bounded reconciliation bootstrap for new Earn subscriptions"
+    );
+    Ok(())
+}
+
+async fn laserstream_replay_start_slot(
+    store: &OrchestratorStore,
+    consumer_name: &str,
+    rpc_url: &str,
+    replay_overlap_slots: u64,
+) -> Result<u64> {
     let rpc = RpcClient::new_with_commitment(rpc_url.to_owned(), CommitmentConfig::confirmed());
     let current_slot = rpc
         .get_slot()
         .context("fetch confirmed RPC slot for Laserstream replay overlap")?;
-    Ok(laserstream_replay_from_slot(
-        current_slot,
-        replay_overlap_slots,
-    ))
+    let current_fallback = laserstream_replay_from_slot(current_slot, replay_overlap_slots);
+    let durable = store
+        .load_laserstream_replay_cursor(consumer_name)
+        .await
+        .map_err(orchestrator_error)?;
+    Ok(durable
+        .map(|slot| laserstream_replay_from_slot(slot, replay_overlap_slots).min(current_slot))
+        .unwrap_or(current_fallback))
 }
 
 async fn stop_session(session: MonitorSession) {

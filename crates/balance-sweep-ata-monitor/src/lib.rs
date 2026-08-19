@@ -15,14 +15,11 @@ pub use balance_sweep_ata_observations::{
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use helius_laserstream::{
-    grpc::{
-        subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
-        SubscribeRequestFilterAccounts, SubscribeUpdate,
-    },
+    grpc::{subscribe_update::UpdateOneof, SubscribeRequest, SubscribeUpdate},
     subscribe, LaserstreamConfig,
 };
 use loyal_actions::USDC_MINT;
-use loyal_yield_store::{BalanceSweepTarget, BalanceSweepTargetId};
+use loyal_yield_store::{BalanceSweepTarget, BalanceSweepTargetId, OrchestratorStore};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -32,13 +29,21 @@ use solana_program::program_pack::Pack;
 use solana_pubsub_client::nonblocking::pubsub_client::PubsubClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
 use tokio::{
-    sync::mpsc,
+    sync::{mpsc, RwLock},
     task::{JoinHandle, JoinSet},
     time,
 };
 
 pub mod ata_recheck;
 pub mod earn_apy;
+pub mod smart_account;
+
+pub use smart_account::{
+    build_multi_channel_subscribe_request, earn_jobs_for_update, normalize_laserstream_update,
+    persist_normalized_earn_update, subscribe_request_json, EarnVaultWatch, EarnWatchAccount,
+    NormalizedEarnUpdate, SubscriptionWatchSet, BALANCE_SWEEP_WALLET_ATAS,
+    EARN_IDLE_TOKEN_ACCOUNTS, EARN_OBLIGATIONS, EARN_POLICY_ACCOUNTS, EARN_VAULT_ACCOUNTS,
+};
 
 pub use ata_recheck::{
     record_missing_ata_zero_balance, record_skipped_ata_zero_balance, spawn_ata_recheck_worker,
@@ -113,6 +118,9 @@ pub enum AtaUpdateEvent {
         source_commitment: &'static str,
         txn_signature: Option<String>,
         received_at: DateTime<Utc>,
+    },
+    EarnUpdate {
+        update: NormalizedEarnUpdate,
     },
     Heartbeat {
         account: Pubkey,
@@ -204,6 +212,45 @@ pub struct LaserstreamAtaUpdateSource {
     pub api_key: String,
     pub from_slot: u64,
     pub config: SubscriptionConfig,
+    /// Optional Earn bindings are folded into the same physical LaserStream
+    /// SubscribeRequest.  `None` preserves the legacy ATA-only caller.
+    pub watch_set: Option<SubscriptionWatchSet>,
+}
+
+#[derive(Clone)]
+pub struct LaserstreamSubscriptionUpdateHandle {
+    tx: mpsc::UnboundedSender<SubscriptionWatchSet>,
+}
+
+impl LaserstreamSubscriptionUpdateHandle {
+    pub fn replace(&self, watch_set: SubscriptionWatchSet) -> Result<()> {
+        self.tx
+            .send(watch_set)
+            .map_err(|_| anyhow::anyhow!("LaserStream subscription update task stopped"))
+    }
+}
+
+#[derive(Clone)]
+pub struct EarnUpdateContext {
+    pub store: OrchestratorStore,
+    pub consumer_name: String,
+    pub watch_set: Arc<RwLock<SubscriptionWatchSet>>,
+}
+
+impl LaserstreamAtaUpdateSource {
+    pub fn spawn_with_updates(
+        self,
+        accounts: Vec<Pubkey>,
+        tx: mpsc::UnboundedSender<AtaUpdateEvent>,
+        running: Arc<AtomicBool>,
+        watch_set: Arc<RwLock<SubscriptionWatchSet>>,
+    ) -> (JoinHandle<()>, LaserstreamSubscriptionUpdateHandle) {
+        let (update_tx, update_rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            run_laserstream_loop(self, accounts, tx, running, update_rx, watch_set).await;
+        });
+        (task, LaserstreamSubscriptionUpdateHandle { tx: update_tx })
+    }
 }
 
 impl AtaUpdateSource for LaserstreamAtaUpdateSource {
@@ -213,8 +260,14 @@ impl AtaUpdateSource for LaserstreamAtaUpdateSource {
         tx: mpsc::UnboundedSender<AtaUpdateEvent>,
         running: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
+        let (_update_tx, update_rx) = mpsc::unbounded_channel();
+        let initial_watch_set = self.watch_set.clone().unwrap_or(SubscriptionWatchSet {
+            balance_sweep_accounts: accounts.iter().map(ToString::to_string).collect(),
+            earn_vaults: Vec::new(),
+        });
+        let watch_set = Arc::new(RwLock::new(initial_watch_set));
         tokio::spawn(async move {
-            run_laserstream_loop(self, accounts, tx, running).await;
+            run_laserstream_loop(self, accounts, tx, running, update_rx, watch_set).await;
         })
     }
 }
@@ -397,10 +450,33 @@ pub async fn run_event_loop(
     sink: impl AtaObservationSink,
     running: Arc<AtomicBool>,
     recheck: Option<AtaRecheckHandle>,
+    earn: Option<EarnUpdateContext>,
 ) -> Result<()> {
     while running.load(Ordering::Relaxed) {
         let Some(event) = rx.recv().await else {
             break;
+        };
+        let event = match event {
+            AtaUpdateEvent::EarnUpdate { update } => {
+                let Some(earn) = earn.as_ref() else {
+                    tracing::warn!(
+                        slot = update.slot,
+                        "dropping Earn update without persistence context"
+                    );
+                    continue;
+                };
+                let watch_set = earn.watch_set.read().await.clone();
+                persist_normalized_earn_update(
+                    &earn.store,
+                    &earn.consumer_name,
+                    &update,
+                    &watch_set,
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!(error))?;
+                continue;
+            }
+            other => other,
         };
         if let AtaUpdateEvent::AccountUpdate {
             account,
@@ -461,21 +537,13 @@ pub fn build_laserstream_subscribe_request(
     accounts: &[Pubkey],
     from_slot: u64,
 ) -> SubscribeRequest {
-    SubscribeRequest {
-        accounts: HashMap::from([(
-            "balance_sweep_wallet_atas".to_string(),
-            SubscribeRequestFilterAccounts {
-                account: accounts.iter().map(ToString::to_string).collect(),
-                owner: Vec::new(),
-                filters: Vec::new(),
-                nonempty_txn_signature: Some(true),
-            },
-        )]),
-        commitment: Some(CommitmentLevel::Confirmed as i32),
-        accounts_data_slice: Vec::new(),
-        from_slot: Some(from_slot),
-        ..Default::default()
-    }
+    build_multi_channel_subscribe_request(
+        &SubscriptionWatchSet {
+            balance_sweep_accounts: accounts.iter().map(ToString::to_string).collect(),
+            earn_vaults: Vec::new(),
+        },
+        from_slot,
+    )
 }
 
 async fn run_laserstream_loop(
@@ -483,8 +551,21 @@ async fn run_laserstream_loop(
     accounts: Vec<Pubkey>,
     tx: mpsc::UnboundedSender<AtaUpdateEvent>,
     running: Arc<AtomicBool>,
+    mut subscription_updates: mpsc::UnboundedReceiver<SubscriptionWatchSet>,
+    watch_set_state: Arc<RwLock<SubscriptionWatchSet>>,
 ) {
-    let request = build_laserstream_subscribe_request(&accounts, source.from_slot);
+    let mut current_watch_set = source.watch_set.clone().unwrap_or(SubscriptionWatchSet {
+        balance_sweep_accounts: Vec::new(),
+        earn_vaults: Vec::new(),
+    });
+    current_watch_set
+        .balance_sweep_accounts
+        .extend(accounts.iter().map(ToString::to_string));
+    current_watch_set.balance_sweep_accounts.sort();
+    current_watch_set.balance_sweep_accounts.dedup();
+    *watch_set_state.write().await = current_watch_set.clone();
+    let mut request = build_multi_channel_subscribe_request(&current_watch_set, source.from_slot);
+    let mut subscription_updates_open = true;
     tracing::info!(
         account_count = accounts.len(),
         endpoint = %source.endpoint,
@@ -502,7 +583,7 @@ async fn run_laserstream_loop(
         let config = LaserstreamConfig::new(source.endpoint.clone(), source.api_key.clone())
             .with_max_reconnect_attempts(0)
             .with_replay(true);
-        let (stream, _handle) = subscribe(config, request.clone());
+        let (stream, handle) = subscribe(config, request.clone());
         futures_util::pin_mut!(stream);
         for account in &accounts {
             tracing::info!(
@@ -537,6 +618,31 @@ async fn run_laserstream_loop(
                     for account in &accounts {
                         let _ = tx.send(AtaUpdateEvent::Heartbeat { account: *account });
                     }
+                }
+                replacement = subscription_updates.recv(), if subscription_updates_open => {
+                    let Some(mut replacement) = replacement else {
+                        subscription_updates_open = false;
+                        continue;
+                    };
+                    replacement
+                        .balance_sweep_accounts
+                        .extend(accounts.iter().map(ToString::to_string));
+                    replacement.balance_sweep_accounts.sort();
+                    replacement.balance_sweep_accounts.dedup();
+                    // Publish the routing map before Helius can deliver an
+                    // update for a newly subscribed address.
+                    *watch_set_state.write().await = replacement.clone();
+                    let replacement_request =
+                        build_multi_channel_subscribe_request(&replacement, source.from_slot);
+                    if let Err(error) = handle.write(replacement_request.clone()).await {
+                        break Some(format!("replace LaserStream subscription: {error}"));
+                    }
+                    current_watch_set = replacement;
+                    request = replacement_request;
+                    tracing::info!(
+                        earn_vault_count = current_watch_set.earn_vaults.len(),
+                        "replaced live LaserStream smart-account subscription"
+                    );
                 }
             }
         };
@@ -587,30 +693,38 @@ fn forward_laserstream_update(
     update: SubscribeUpdate,
     tx: &mpsc::UnboundedSender<AtaUpdateEvent>,
 ) -> Result<()> {
-    let Some(UpdateOneof::Account(account_update)) = update.update_oneof else {
-        return Ok(());
-    };
-    let account = account_update
-        .account
-        .context("LaserStream account update was missing account payload")?;
-    let pubkey = pubkey_from_laserstream_bytes(&account.pubkey, "account pubkey")?;
-    let owner = pubkey_from_laserstream_bytes(&account.owner, "account owner")?;
-    let txn_signature = account
-        .txn_signature
-        .as_deref()
-        .map(signature_from_laserstream_bytes)
-        .transpose()?;
-    let _ = tx.send(AtaUpdateEvent::AccountUpdate {
-        account: pubkey,
-        lamports: account.lamports,
-        slot: account_update.slot,
-        owner,
-        data: account.data,
-        source: LASERSTREAM_SOURCE,
-        source_commitment: CONFIRMED_COMMITMENT,
-        txn_signature,
-        received_at: Utc::now(),
-    });
+    let earn_update = normalize_laserstream_update(update.clone())?;
+    if let Some(UpdateOneof::Account(account_update)) = update.update_oneof {
+        let account = account_update
+            .account
+            .context("LaserStream account update was missing account payload")?;
+        let pubkey = pubkey_from_laserstream_bytes(&account.pubkey, "account pubkey")?;
+        let owner = pubkey_from_laserstream_bytes(&account.owner, "account owner")?;
+        let txn_signature = account
+            .txn_signature
+            .as_deref()
+            .map(signature_from_laserstream_bytes)
+            .transpose()?;
+        // A shared binding is first delivered to the established ATA path;
+        // its independent Earn wake-up follows below and is never decoded as
+        // a balance delta.
+        let _ = tx.send(AtaUpdateEvent::AccountUpdate {
+            account: pubkey,
+            lamports: account.lamports,
+            slot: account_update.slot,
+            owner,
+            data: account.data,
+            source: LASERSTREAM_SOURCE,
+            source_commitment: CONFIRMED_COMMITMENT,
+            txn_signature,
+            received_at: Utc::now(),
+        });
+    }
+    if let Some(earn_update) = earn_update {
+        let _ = tx.send(AtaUpdateEvent::EarnUpdate {
+            update: earn_update,
+        });
+    }
     Ok(())
 }
 

@@ -367,6 +367,35 @@ pub struct WalletAtaBalanceUpdateInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnReconciliationJobInput {
+    pub event_key: String,
+    pub environment: String,
+    pub settings: String,
+    pub wallet: String,
+    pub vault_pubkey: String,
+    pub vault_index: u8,
+    pub filter_name: String,
+    pub event_kind: String,
+    pub trigger_slot: u64,
+    pub signature: Option<String>,
+    pub account_pubkey: Option<String>,
+}
+
+/// Database identity used to build the in-memory Earn LaserStream watch set.
+/// Solana address derivation remains in the monitor so this store crate stays
+/// free of Solana dependencies.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnSubscriptionTarget {
+    pub environment: String,
+    pub settings: String,
+    pub wallet: String,
+    pub vault_index: i16,
+    pub vault_pubkey: Option<String>,
+    pub policy_accounts: Vec<String>,
+    pub markets: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WalletAtaBalanceCurrent {
     pub target_id: BalanceSweepTargetId,
     pub wallet: String,

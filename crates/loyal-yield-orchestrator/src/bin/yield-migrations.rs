@@ -704,6 +704,9 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "vault_idle_token_balances_current",
         "realtime_events",
         "realtime_configuration",
+        "earn_reconciliation_jobs",
+        "earn_reconciliation_receipts",
+        "laserstream_replay_cursors",
     ] {
         let exists: bool = sqlx::query_scalar(
             r#"

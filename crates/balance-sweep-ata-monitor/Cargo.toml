@@ -13,6 +13,7 @@ clap = { workspace = true, features = ["derive", "env"] }
 futures-util.workspace = true
 helius-laserstream = "0.1"
 loyal-actions = { path = "../loyal-actions" }
+loyal-kamino-data = { path = "../loyal-kamino-data" }
 loyal-observability = { path = "../loyal-observability" }
 loyal-yield-store = { path = "../loyal-yield-store" }
 serde = { workspace = true, features = ["derive"] }

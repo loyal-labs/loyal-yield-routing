@@ -1085,6 +1085,7 @@ dependencies = [
  "futures-util",
  "helius-laserstream",
  "loyal-actions",
+ "loyal-kamino-data",
  "loyal-observability",
  "loyal-yield-store",
  "serde",

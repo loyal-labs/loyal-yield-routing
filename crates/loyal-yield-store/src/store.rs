@@ -436,6 +436,289 @@ impl NeonSqlClient {
         Ok(())
     }
 
+    /// Atomically records Earn wake-ups, coalesces the per-vault jobs, and
+    /// advances the consumer cursor.  The cursor is deliberately committed in
+    /// this transaction: a replay is safe, while a failed write cannot create
+    /// a blind window in front of the durable job queue.
+    pub async fn record_earn_reconciliation_batch(
+        &self,
+        consumer_name: &str,
+        durable_slot: u64,
+        jobs: &[EarnReconciliationJobInput],
+    ) -> Result<(), OrchestratorError> {
+        let durable_slot = i64::try_from(durable_slot)
+            .map_err(|_| OrchestratorError::SlotOutOfRange(durable_slot))?;
+        let mut tx = self.pool.begin().await?;
+
+        for job in jobs {
+            let trigger_slot = i64::try_from(job.trigger_slot)
+                .map_err(|_| OrchestratorError::SlotOutOfRange(job.trigger_slot))?;
+            let inserted = sqlx::query(
+                r#"
+                INSERT INTO loyal_yield.earn_reconciliation_receipts
+                    (consumer_name, event_key, vault_pubkey, filter_name, event_kind, trigger_slot,
+                     signature, account_pubkey)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (consumer_name, event_key, vault_pubkey) DO NOTHING
+                RETURNING event_key
+                "#,
+            )
+            .bind(consumer_name)
+            .bind(&job.event_key)
+            .bind(&job.vault_pubkey)
+            .bind(&job.filter_name)
+            .bind(&job.event_kind)
+            .bind(trigger_slot)
+            .bind(&job.signature)
+            .bind(&job.account_pubkey)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if inserted.is_none() {
+                continue;
+            }
+
+            sqlx::query(
+                r#"
+                INSERT INTO loyal_yield.earn_reconciliation_jobs
+                    (environment, settings, wallet, vault_index, vault_pubkey,
+                     highest_trigger_slot, latest_signature, trigger_kinds)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, ARRAY[$8]::TEXT[])
+                ON CONFLICT (environment, vault_pubkey) DO UPDATE SET
+                    settings = EXCLUDED.settings,
+                    wallet = EXCLUDED.wallet,
+                    vault_index = EXCLUDED.vault_index,
+                    highest_trigger_slot = GREATEST(
+                        loyal_yield.earn_reconciliation_jobs.highest_trigger_slot,
+                        EXCLUDED.highest_trigger_slot
+                    ),
+                    latest_signature = CASE
+                        WHEN EXCLUDED.highest_trigger_slot > loyal_yield.earn_reconciliation_jobs.highest_trigger_slot
+                          OR (EXCLUDED.highest_trigger_slot = loyal_yield.earn_reconciliation_jobs.highest_trigger_slot
+                              AND COALESCE(EXCLUDED.latest_signature, '') >= COALESCE(loyal_yield.earn_reconciliation_jobs.latest_signature, ''))
+                        THEN EXCLUDED.latest_signature
+                        ELSE loyal_yield.earn_reconciliation_jobs.latest_signature
+                    END,
+                    trigger_kinds = ARRAY(
+                        SELECT DISTINCT unnest(
+                            loyal_yield.earn_reconciliation_jobs.trigger_kinds || EXCLUDED.trigger_kinds
+                        )
+                    ),
+                    status = 'queued',
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    fencing_token = loyal_yield.earn_reconciliation_jobs.fencing_token + 1,
+                    available_at = NOW(),
+                    last_error = NULL,
+                    updated_at = NOW()
+                "#,
+            )
+            .bind(&job.environment)
+            .bind(&job.settings)
+            .bind(&job.wallet)
+            .bind(i32::from(job.vault_index))
+            .bind(&job.vault_pubkey)
+            .bind(trigger_slot)
+            .bind(&job.signature)
+            .bind(&job.event_kind)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.laserstream_replay_cursors (consumer_name, durable_slot)
+            VALUES ($1, $2)
+            ON CONFLICT (consumer_name) DO UPDATE SET
+                durable_slot = GREATEST(
+                    loyal_yield.laserstream_replay_cursors.durable_slot,
+                    EXCLUDED.durable_slot
+                ),
+                updated_at = NOW()
+            "#,
+        )
+        .bind(consumer_name)
+        .bind(durable_slot)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn load_laserstream_replay_cursor(
+        &self,
+        consumer_name: &str,
+    ) -> Result<Option<u64>, OrchestratorError> {
+        let slot = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT durable_slot
+            FROM loyal_yield.laserstream_replay_cursors
+            WHERE consumer_name = $1
+            "#,
+        )
+        .bind(consumer_name)
+        .fetch_optional(&self.pool)
+        .await?;
+        slot.map(|slot| {
+            u64::try_from(slot).map_err(|_| {
+                OrchestratorError::StoreInvariant(format!(
+                    "LaserStream replay cursor {slot} is negative"
+                ))
+            })
+        })
+        .transpose()
+    }
+
+    /// Load only identity and already-recorded policy/market metadata. Address
+    /// derivation is deliberately performed by the monitor from this compact
+    /// snapshot rather than persisted in a second catalog.
+    pub async fn load_earn_subscription_targets(
+        &self,
+        environment: &str,
+    ) -> Result<Vec<EarnSubscriptionTarget>, OrchestratorError> {
+        let mut targets = Vec::new();
+        let mut environment_settings = BTreeSet::new();
+
+        let app_accounts_exist: bool = sqlx::query_scalar(
+            "SELECT to_regclass('app_user_smart_accounts') IS NOT NULL AND to_regclass('app_users') IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if app_accounts_exist {
+            let rows = sqlx::query(
+                r#"
+                SELECT smart.solana_env AS environment,
+                       smart.settings_pda AS settings,
+                       smart.state,
+                       app.subject_address AS wallet
+                FROM app_user_smart_accounts smart
+                JOIN app_users app ON app.id = smart.user_id
+                WHERE smart.solana_env = $1
+                "#,
+            )
+            .bind(environment)
+            .fetch_all(&self.pool)
+            .await?;
+            for row in rows {
+                let settings: String = row.get("settings");
+                environment_settings.insert(settings.clone());
+                if row.get::<String, _>("state") == "ready" {
+                    targets.push(EarnSubscriptionTarget {
+                        environment: row.get("environment"),
+                        settings,
+                        wallet: row.get("wallet"),
+                        vault_index: 1,
+                        vault_pubkey: None,
+                        policy_accounts: Vec::new(),
+                        markets: Vec::new(),
+                    });
+                }
+            }
+        }
+
+        let onboarding_exists: bool = sqlx::query_scalar(
+            "SELECT to_regclass('loyal_yield.earn_deposit_onboarding_attempts') IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if onboarding_exists {
+            let rows = sqlx::query(
+                r#"
+                SELECT wallet_address AS wallet, settings, vault_index,
+                       vault_pubkey, policy_account, setup_policy_account,
+                       market
+                FROM loyal_yield.earn_deposit_onboarding_attempts
+                WHERE status <> 'complete'
+                "#,
+            )
+            .fetch_all(&self.pool)
+            .await?;
+            for row in rows {
+                let settings: String = row.get("settings");
+                if app_accounts_exist && !environment_settings.contains(&settings) {
+                    continue;
+                }
+                targets.push(EarnSubscriptionTarget {
+                    environment: environment.to_owned(),
+                    settings,
+                    wallet: row.get("wallet"),
+                    vault_index: row.get("vault_index"),
+                    vault_pubkey: Some(row.get("vault_pubkey")),
+                    policy_accounts: [
+                        row.try_get::<Option<String>, _>("policy_account")?,
+                        row.try_get::<Option<String>, _>("setup_policy_account")?,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+                    markets: row
+                        .try_get::<Option<String>, _>("market")?
+                        .into_iter()
+                        .collect(),
+                });
+            }
+        }
+
+        let positions_exist: bool = sqlx::query_scalar(
+            "SELECT to_regclass('loyal_yield.user_yield_positions') IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if positions_exist {
+            let rows = sqlx::query(
+                r#"
+                SELECT position.wallet_address AS wallet,
+                       position.settings,
+                       position.vault_index,
+                       position.vault_pubkey,
+                       position.policy_account,
+                       position.current_market AS market,
+                       active_policy.policy_account AS active_policy_account,
+                       setup_policy.policy_account AS setup_policy_account
+                FROM loyal_yield.user_yield_positions position
+                LEFT JOIN loyal_yield.managed_vaults vault
+                  ON vault.settings = position.settings
+                 AND vault.vault_index = position.vault_index
+                 AND vault.vault_pubkey = position.vault_pubkey
+                LEFT JOIN loyal_yield.route_policies active_policy
+                  ON active_policy.id = vault.active_policy_id
+                LEFT JOIN loyal_yield.route_policies setup_policy
+                  ON setup_policy.id = vault.setup_policy_id
+                WHERE position.status = 'active'
+                "#,
+            )
+            .fetch_all(&self.pool)
+            .await?;
+            for row in rows {
+                let settings: String = row.get("settings");
+                if app_accounts_exist && !environment_settings.contains(&settings) {
+                    continue;
+                }
+                targets.push(EarnSubscriptionTarget {
+                    environment: environment.to_owned(),
+                    settings,
+                    wallet: row.get("wallet"),
+                    vault_index: row.get("vault_index"),
+                    vault_pubkey: Some(row.get("vault_pubkey")),
+                    policy_accounts: [
+                        row.try_get::<Option<String>, _>("policy_account")?,
+                        row.try_get::<Option<String>, _>("active_policy_account")?,
+                        row.try_get::<Option<String>, _>("setup_policy_account")?,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+                    markets: row
+                        .try_get::<Option<String>, _>("market")?
+                        .into_iter()
+                        .collect(),
+                });
+            }
+        }
+
+        Ok(targets)
+    }
+
     pub async fn protected_route_lookup_table_addresses(
         &self,
     ) -> Result<Vec<String>, OrchestratorError> {
