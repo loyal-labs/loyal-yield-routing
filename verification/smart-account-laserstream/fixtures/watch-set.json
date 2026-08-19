@@ -1,0 +1,33 @@
+{
+  "balance_sweep_accounts": [
+    "11111111111111111111111111111111",
+    "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+  ],
+  "earn_vaults": [
+    {
+      "environment": "verification",
+      "settings": "Vote111111111111111111111111111111111111111",
+      "wallet": "Stake11111111111111111111111111111111111111",
+      "vault": "Config1111111111111111111111111111111111111",
+      "vault_index": 1,
+      "accounts": [
+        { "pubkey": "AddressLookupTab1e1111111111111111111111111", "role": "policy" },
+        { "pubkey": "Config1111111111111111111111111111111111111", "role": "vault" },
+        { "pubkey": "SysvarRent111111111111111111111111111111111", "role": "idle_token" }
+      ]
+    },
+    {
+      "environment": "verification",
+      "settings": "SysvarC1ock11111111111111111111111111111111",
+      "wallet": "ComputeBudget111111111111111111111111111111",
+      "vault": "BPFLoaderUpgradeab1e11111111111111111111111",
+      "vault_index": 1,
+      "accounts": [
+        { "pubkey": "BPFLoaderUpgradeab1e11111111111111111111111", "role": "vault" },
+        { "pubkey": "So11111111111111111111111111111111111111112", "role": "idle_token" },
+        { "pubkey": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "role": "obligation" },
+        { "pubkey": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", "role": "idle_token" }
+      ]
+    }
+  ]
+}

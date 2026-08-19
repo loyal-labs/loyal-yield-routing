@@ -1,0 +1,5 @@
+{"event_key":"policy-a-created","kind":"account","filters":["earn_policy_accounts"],"pubkey":"AddressLookupTab1e1111111111111111111111111","slot":100,"signature":"sig-policy-create-a"}
+{"event_key":"vault-b-deposit","kind":"account","filters":["earn_idle_token_accounts"],"pubkey":"So11111111111111111111111111111111111111112","slot":110,"signature":"sig-deposit-b"}
+{"event_key":"obligation-b-change","kind":"account","filters":["earn_obligations"],"pubkey":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","slot":105,"signature":"sig-obligation-b"}
+{"event_key":"shared-b-change","kind":"account","filters":["balance_sweep_wallet_atas","earn_idle_token_accounts"],"pubkey":"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL","slot":107,"signature":"sig-shared-b"}
+{"event_key":"balance-only-change","kind":"account","filters":["balance_sweep_wallet_atas"],"pubkey":"11111111111111111111111111111111","slot":108,"signature":"sig-balance-only"}
